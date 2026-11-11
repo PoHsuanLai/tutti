@@ -36,7 +36,7 @@ impl Bands {
 
 impl Node for Bands {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::STEREO).with_param_addrs(&[BAND0, BAND1])
+        Shape::source_unassigned(ChannelLayout::STEREO).with_param_addrs(&[BAND0, BAND1])
     }
 
     fn prepare(&mut self, _: &Prepare) {}

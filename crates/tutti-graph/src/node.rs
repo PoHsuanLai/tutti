@@ -213,7 +213,7 @@ impl Shape {
     /// honour its event offsets, and says otherwise explicitly.
     ///
     /// A bus names its speakers or says it names none
-    /// ([`Buses::discrete`]): unplaced is a statement, never a default, so a
+    /// ([`Buses::unassigned`]): unplaced is a statement, never a default, so a
     /// node whose main buses differ in width and name no speakers has no pass,
     /// visibly in its own constructor.
     #[must_use]
@@ -238,7 +238,7 @@ impl Shape {
 
     /// One bus of `topology` in and the same out: output `c` is input `c` on
     /// the dry path. A stereo processor says [`BusTopology::STEREO`]; one that
-    /// knows only a width says so with [`through_discrete`](Self::through_discrete).
+    /// knows only a width says so with [`through_unassigned`](Self::through_unassigned).
     #[must_use]
     pub const fn through(topology: BusTopology) -> Self {
         Self::buses(Buses::main(topology), Buses::main(topology))
@@ -251,7 +251,7 @@ impl Shape {
     /// ([`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS)) the channels are
     /// ports with no bus, passed by index all the same.
     #[must_use]
-    pub const fn through_discrete(width: ChannelLayout) -> Self {
+    pub const fn through_unassigned(width: ChannelLayout) -> Self {
         Self::buses(Buses::unplaced(width), Buses::unplaced(width)).with_ports(width, width)
     }
 
@@ -264,7 +264,7 @@ impl Shape {
     /// No audio input, `width` channels out that name no speaker (ports with
     /// no bus past a bus's width).
     #[must_use]
-    pub const fn source_discrete(width: ChannelLayout) -> Self {
+    pub const fn source_unassigned(width: ChannelLayout) -> Self {
         Self::buses(Buses::NONE, Buses::unplaced(width)).with_ports(ChannelLayout::EMPTY, width)
     }
 
@@ -276,7 +276,7 @@ impl Shape {
 
     /// `width` channels in that name no speaker, no audio output.
     #[must_use]
-    pub const fn sink_discrete(width: ChannelLayout) -> Self {
+    pub const fn sink_unassigned(width: ChannelLayout) -> Self {
         Self::buses(Buses::unplaced(width), Buses::NONE).with_ports(width, ChannelLayout::EMPTY)
     }
 
@@ -386,7 +386,7 @@ impl Shape {
     /// use tutti_graph::Shape;
     /// use tutti_types::{ChannelLayout, Samples};
     /// let echo_time = Samples(24_000);
-    /// let _ = Shape::through_discrete(ChannelLayout::MONO).with_latency(echo_time);
+    /// let _ = Shape::through_unassigned(ChannelLayout::MONO).with_latency(echo_time);
     /// ```
     ///
     /// — and there is no conversion that would make it one silently:
@@ -402,7 +402,7 @@ impl Shape {
     /// use tutti_graph::Shape;
     /// use tutti_types::{ChannelLayout, Latency, Samples};
     /// let lookahead = Latency::new(Samples(512));
-    /// let s = Shape::through_discrete(ChannelLayout::MONO).with_latency(lookahead);
+    /// let s = Shape::through_unassigned(ChannelLayout::MONO).with_latency(lookahead);
     /// assert_eq!(s.latency.samples(), Samples(512));
     /// ```
     #[must_use]
@@ -446,7 +446,7 @@ impl Shape {
     /// ```
     /// use tutti_graph::{Cost, Shape};
     /// use tutti_types::ChannelLayout;
-    /// let gain = Shape::through_discrete(ChannelLayout::STEREO).with_cost(Cost::Light);
+    /// let gain = Shape::through_unassigned(ChannelLayout::STEREO).with_cost(Cost::Light);
     /// assert_eq!(gain.cost, Cost::Light);
     /// ```
     #[must_use]
@@ -1178,7 +1178,7 @@ pub(crate) fn narrow_tail(ceiling: Tail, reported: Tail) -> Option<Tail> {
 ///
 /// impl Node for Gain {
 ///     fn shape(&self) -> Shape {
-///         Shape::through_discrete(ChannelLayout::MONO)
+///         Shape::through_unassigned(ChannelLayout::MONO)
 ///     }
 ///     fn prepare(&mut self, _: &Prepare) {}
 ///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1262,7 +1262,7 @@ pub trait Node: Send + 'static {
 /// # use tutti_graph::NodeKey;
 /// struct Silence;
 /// impl Node for Silence {
-///     fn shape(&self) -> Shape { Shape::source_discrete(ChannelLayout::MONO) }
+///     fn shape(&self) -> Shape { Shape::source_unassigned(ChannelLayout::MONO) }
 ///     fn prepare(&mut self, _: &Prepare) {}
 ///     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
 ///     fn reset(&mut self) {}

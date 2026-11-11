@@ -382,7 +382,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
             LfoMode::FreeRunning => 2,
             LfoMode::BeatSynced => 1,
         };
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unbounded)
             .with_params(&LFO_PARAMS[..ports])

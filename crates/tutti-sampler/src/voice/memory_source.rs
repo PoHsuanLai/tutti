@@ -1536,7 +1536,7 @@ impl Node for MemorySource {
     /// No inputs, [`channels`](Self::channels) outputs; a generator, never
     /// skipped.
     fn shape(&self) -> Shape {
-        Shape::source_discrete(self.channels)
+        Shape::source_unassigned(self.channels)
             .with_tail(Tail::Unbounded)
             // A cubic Hermite read per frame and channel, behind the
             // placement gate: measured 16–17 ns per frame and channel,

@@ -243,7 +243,7 @@ impl From<BufferTarget> for Target {
     }
 }
 
-/// What the channels of a tap are: the speakers (or discrete feeds) its lanes
+/// What the channels of a tap are: the speakers (or unassigned feeds) its lanes
 /// carry, in lane order, so the fold onto the target's layout can place them.
 ///
 /// Built by whoever opened the tap (the session, for a stem); the pipeline

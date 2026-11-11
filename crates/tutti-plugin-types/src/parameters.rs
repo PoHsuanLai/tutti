@@ -710,7 +710,7 @@ impl ParameterInfo {
         self.range.default_value()
     }
 
-    /// Returns the number of discrete positions, or [`None`] when the parameter
+    /// Returns the number of unassigned positions, or [`None`] when the parameter
     /// is continuous *or* the format never said.
     ///
     /// Those two collapse deliberately: both mean "do not draw this as a

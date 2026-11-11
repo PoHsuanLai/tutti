@@ -133,8 +133,8 @@ impl Node for Sink {
             }
         };
         Shape::buses(
-            tutti_graph::Buses::discrete(layout(self.audio_in)),
-            tutti_graph::Buses::discrete(layout(self.audio_out)),
+            tutti_graph::Buses::unassigned(layout(self.audio_in)),
+            tutti_graph::Buses::unassigned(layout(self.audio_out)),
         )
         .with_events(1, 0)
     }
@@ -206,7 +206,7 @@ struct Latent(usize);
 
 impl Node for Latent {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.0)))
+        Shape::source_unassigned(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.0)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

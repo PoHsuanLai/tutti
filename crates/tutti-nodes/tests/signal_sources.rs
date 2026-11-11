@@ -47,7 +47,7 @@ struct Pulse {
 
 impl Node for Pulse {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(self.width)
+        Shape::source_unassigned(self.width)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -79,7 +79,7 @@ struct Kick {
 
 impl Node for Kick {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::STEREO)
+        Shape::source_unassigned(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -201,7 +201,7 @@ struct Tap {
 
 impl Node for Tap {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::from_count(4)).with_events(1, 0)
+        Shape::source_unassigned(ChannelLayout::from_count(4)).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -251,7 +251,7 @@ struct Probe;
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
+        Shape::source_unassigned(ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

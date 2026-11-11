@@ -44,7 +44,7 @@ struct TransportTone;
 
 impl tutti_graph::Node for TransportTone {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::source_discrete(ChannelLayout::STEREO)
+        tutti_graph::Shape::source_unassigned(ChannelLayout::STEREO)
             .with_events(1, 0)
             .with_tail(tutti_types::Tail::Unbounded)
     }
@@ -536,7 +536,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     struct BeatWalk;
     impl Node for BeatWalk {
         fn shape(&self) -> Shape {
-            Shape::source_discrete(ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+            Shape::source_unassigned(ChannelLayout::STEREO).with_tail(Tail::Unbounded)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

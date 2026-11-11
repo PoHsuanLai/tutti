@@ -159,7 +159,7 @@ fn the_inlet_refuses_to_fork() {
 /// The node is as wide as its ring: six lanes are six outputs, each channel on
 /// its own output in the order the producer pushed it, and the shape says so.
 ///
-/// Mutation (run): `Shape::source_discrete(ChannelLayout::STEREO)` back in `shape`
+/// Mutation (run): `Shape::source_unassigned(ChannelLayout::STEREO)` back in `shape`
 /// fails the width assertion; `pop_planes` handing lane `c` the plane `5 - c`
 /// fails the order.
 #[test]

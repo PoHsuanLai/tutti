@@ -171,7 +171,7 @@ const LATE: usize = 100;
 
 impl Node for Late {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_latency(tutti_types::Latency::new(Samples(LATE)))
     }
     fn prepare(&mut self, _: &Prepare) {}

@@ -16,7 +16,7 @@ struct Five;
 
 impl Node for Five {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::from_count(5)).with_events(1, 0)
+        Shape::source_unassigned(ChannelLayout::from_count(5)).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

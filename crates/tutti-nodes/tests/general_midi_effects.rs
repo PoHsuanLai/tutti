@@ -142,7 +142,7 @@ fn a_recirculating_chorus_keeps_an_unknown_tail() {
 /// The reverb is one channel in and two out, and silent until its first comb
 /// has gone round (a wet-only effect passes nothing straight through).
 ///
-/// Mutation (run): `Shape::through_discrete(STEREO)` fails the shape.
+/// Mutation (run): `Shape::through_unassigned(STEREO)` fails the shape.
 #[test]
 fn the_reverb_is_mono_in_stereo_out_and_wet_only() {
     let node = FreeverbNode::general_midi();

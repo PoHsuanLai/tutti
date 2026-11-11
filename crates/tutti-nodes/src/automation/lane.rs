@@ -155,7 +155,7 @@ impl AutomationLaneNode {
 impl Node for AutomationLaneNode {
     /// One audio output.
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unbounded)
     }

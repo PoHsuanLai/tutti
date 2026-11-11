@@ -627,7 +627,7 @@ struct Gated;
 
 impl tutti_graph::Node for Gated {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::source_discrete(ChannelLayout::MONO)
+        tutti_graph::Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(

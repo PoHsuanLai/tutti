@@ -638,7 +638,7 @@ struct ParamSink;
 
 impl Node for ParamSink {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_params(&[tutti_types::UnitParam::Cutoff, tutti_types::UnitParam::Q])
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -1238,7 +1238,7 @@ impl Node for Wire {
         // The first `outs` inputs are its main bus, which its bypass and mix
         // pass by index; a wider input's rest are ports.
         let main = ch(self.ins.min(self.outs));
-        Shape::buses(Buses::discrete(main), Buses::discrete(main))
+        Shape::buses(Buses::unassigned(main), Buses::unassigned(main))
             .with_ports(ch(self.ins), ch(self.outs))
             .with_latency(Latency::new(Samples(self.latency)))
             .with_events(self.ein, self.eout)

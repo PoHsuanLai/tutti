@@ -40,7 +40,7 @@ fn offline(builder: SessionBuilder, device: u16) -> Result<Session, Error> {
 }
 
 fn buses(n: u16) -> ChannelTopology {
-    ChannelTopology::discrete(ChannelLayout::from(n))
+    ChannelTopology::unassigned(ChannelLayout::from(n))
 }
 
 /// Four declared buses on a six-wide device stay at 0..4. The root is the
@@ -49,7 +49,7 @@ fn buses(n: u16) -> ChannelTopology {
 /// Mutation (run): `SessionBuilder::declare` not called → the engine reads the
 /// root as quad and the frame is `[.1, .2, 0, 0, .3, .4]`.
 #[test]
-fn a_declared_discrete_root_keeps_its_buses_by_index() {
+fn a_declared_unassigned_root_keeps_its_buses_by_index() {
     let mut s = offline(Session::builder().root_topology(buses(4)), 6).unwrap();
     assert_eq!(s.graph_ref().outputs(), 4);
     assert_eq!(s.root_topology(), Some(&buses(4)));
@@ -115,7 +115,7 @@ fn an_undeclared_root_is_as_it_was() {
 /// A declaration the device cannot place is refused, at build and after, and
 /// leaves the session as it was.
 ///
-/// Mutation (run): `Fold::declared` reading a discrete source as `to_width`
+/// Mutation (run): `Fold::declared` reading an unassigned source as `to_width`
 /// does (quad) → the refusals succeed and the cases here fail.
 /// (`check_placement` skipping a declared root alone survives: the build's
 /// `declare` refuses the same pair a step later, so the refusal is doubly held.)
@@ -129,7 +129,7 @@ fn an_unplaceable_declaration_is_refused() {
         refused(offline(Session::builder().root_topology(buses(4)), 2)),
         FoldError::Unplaced {
             channel: 2,
-            speaker: Speaker::Discrete
+            speaker: Speaker::Unassigned
         }
     );
     let unnamed = ChannelTopology::new([Speaker::FrontLeft, Speaker::Unknown(9)]);

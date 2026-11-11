@@ -174,7 +174,7 @@ impl Default for EventAddress {
 /// and [`EndGesture`](Self::EndGesture) — the AU telling the host "the user
 /// grabbed this control" and "the user let go". Between them, every
 /// [`ParameterChanged`](Self::ParameterChanged) belongs to one continuous user
-/// action; outside them, a change is a discrete jump. Collapsing the three into
+/// action; outside them, a change is an unassigned jump. Collapsing the three into
 /// one "something changed" callback is what makes touch/latch automation
 /// impossible.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -623,7 +623,7 @@ A scope has one or more members; a member is addressed by its **element**. Input
 
 ```c
 kAudioUnitParameterUnit_Generic             = 0,   // untyped value, generally 0..1
-kAudioUnitParameterUnit_Indexed             = 1,   // discrete menu; see ParameterValueStrings
+kAudioUnitParameterUnit_Indexed             = 1,   // unassigned menu; see ParameterValueStrings
 kAudioUnitParameterUnit_Boolean             = 2,   // 0 = false, > 0 = true
 kAudioUnitParameterUnit_Percent             = 3,
 kAudioUnitParameterUnit_Seconds             = 4,

@@ -33,7 +33,7 @@
 //! # Which inputs
 //!
 //! A device's inputs are numbered, not placed: cpal reports a count and no
-//! channel map, so they are [`Speaker::Discrete`](tutti_types::Speaker::Discrete)
+//! channel map, so they are [`Speaker::Unassigned`](tutti_types::Speaker::Unassigned)
 //! and never go through a surround matrix (a 6-input interface is six
 //! microphones, not 5.1). The mic delivers the inputs it was opened with:
 //! [`open`](MicIn::open) takes the first two (a mono device's one input on both
@@ -333,11 +333,11 @@ impl MicIn {
     }
 
     /// Which speaker each delivered channel feeds: none, they are numbered
-    /// device inputs ([`Speaker::Discrete`](tutti_types::Speaker::Discrete)).
+    /// device inputs ([`Speaker::Unassigned`](tutti_types::Speaker::Unassigned)).
     /// [`Fold::between`] this to the topology a mic should be placed in.
     #[must_use]
     pub fn topology(&self) -> ChannelTopology {
-        ChannelTopology::discrete(self.tap.layout())
+        ChannelTopology::unassigned(self.tap.layout())
     }
 
     /// Creates a file sink that matches this mic: its sample rate, its

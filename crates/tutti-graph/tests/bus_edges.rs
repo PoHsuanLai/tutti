@@ -68,8 +68,8 @@ fn smpte(n: usize) -> Bus {
     main_bus(BusTopology::try_from(&topology).expect("fits a bus"))
 }
 
-fn discrete(n: usize) -> Bus {
-    main_bus(BusTopology::discrete(ch(n)).expect("fits a bus"))
+fn unassigned(n: usize) -> Bus {
+    main_bus(BusTopology::unassigned(ch(n)).expect("fits a bus"))
 }
 
 fn buses(list: &[Bus]) -> Buses {
@@ -92,14 +92,14 @@ fn source(n: usize, out: Bus) -> Kind {
             gain: 1.0,
             width: n,
         },
-        &[discrete(n)],
+        &[unassigned(n)],
         &[out],
     )
 }
 
 /// A pass-through of `n` channels declaring `input` as its input bus.
 fn sink(n: usize, input: Bus) -> Kind {
-    bused(Kind::Thru { width: n }, &[input], &[discrete(n)])
+    bused(Kind::Thru { width: n }, &[input], &[unassigned(n)])
 }
 
 fn spec_of(kind: &Kind) -> NodeSpec {
@@ -495,15 +495,15 @@ fn editor(kinds: &[(u64, Kind)], inputs: usize) -> (Editor, tutti_graph::Executo
 }
 
 /// A bus edge whose topologies cannot be folded is refused at the call, with
-/// the fold's own reason, and nothing is stored: discrete channels meet
-/// another bus only at its width, as a relabelling (`Discrete`), whether that
-/// bus is discrete or named.
+/// the fold's own reason, and nothing is stored: unassigned channels meet
+/// another bus only at its width, as a relabelling (`Unassigned`), whether that
+/// bus is unassigned or named.
 #[test]
 fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
     let (mut ed, _exec) = editor(
         &[
-            (1, source(3, discrete(3))),
-            (2, sink(2, discrete(2))),
+            (1, source(3, unassigned(3))),
+            (2, sink(2, unassigned(2))),
             (3, sink(2, smpte(2))),
         ],
         0,
@@ -513,7 +513,7 @@ fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
         matches!(
             refused,
             BusError::Fold {
-                error: FoldError::Discrete { .. },
+                error: FoldError::Unassigned { .. },
                 ..
             }
         ),
@@ -525,7 +525,7 @@ fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
         BusError::Fold {
             from: from(1, 0),
             to: bus_ref(3, 0),
-            error: FoldError::Discrete {
+            error: FoldError::Unassigned {
                 src: ch(3),
                 dst: ch(2)
             }
@@ -535,14 +535,14 @@ fn an_unfoldable_bus_edge_is_refused_at_the_call_and_stores_nothing() {
 }
 
 /// By index is asked for by name, never a fallback: a stereo pair into a
-/// six-channel discrete bus is refused by speaker and taken channel for channel
+/// six-channel unassigned bus is refused by speaker and taken channel for channel
 /// by index (the first two ports, the rest silent), and by index never narrows.
 #[test]
 fn by_index_is_its_own_edge() {
     let (mut ed, _exec) = editor(
         &[
             (1, source(2, smpte(2))),
-            (2, sink(6, discrete(6))),
+            (2, sink(6, unassigned(6))),
             (3, source(6, smpte(6))),
             (4, sink(2, smpte(2))),
         ],
@@ -551,7 +551,7 @@ fn by_index_is_its_own_edge() {
     assert!(matches!(
         ed.connect_bus(from(1, 0), bus_ref(2, 0)),
         Err(BusError::Fold {
-            error: FoldError::Discrete { .. },
+            error: FoldError::Unassigned { .. },
             ..
         })
     ));
@@ -575,14 +575,14 @@ fn by_index_is_its_own_edge() {
     ));
 }
 
-/// The global input is a discrete bus: with no global input at all there is
+/// The global input is an unassigned bus: with no global input at all there is
 /// nothing to read (`Empty`), and one wider than a bus is refused by name.
 ///
 /// Mutation (run): `BusSource::Global` taking the sink's width instead of the
 /// global input's -> the empty input folds.
 #[test]
-fn the_global_input_is_a_discrete_bus() {
-    let (mut ed, _exec) = editor(&[(1, sink(2, discrete(2)))], 0);
+fn the_global_input_is_a_unassigned_bus() {
+    let (mut ed, _exec) = editor(&[(1, sink(2, unassigned(2)))], 0);
     let refused = ed
         .connect_bus(BusSource::Global, bus_ref(1, 0))
         .unwrap_err();
@@ -596,7 +596,7 @@ fn the_global_input_is_a_discrete_bus() {
         ),
         "{refused:?}"
     );
-    // Discrete(2) into discrete(2): the same width folds.
+    // Unassigned(2) into unassigned(2): the same width folds.
     ed.spec_mut().topology.inputs = ch(2);
     ed.connect_bus(BusSource::Global, bus_ref(1, 0)).unwrap();
     // Wider than a bus holds.
@@ -623,13 +623,13 @@ fn a_missing_node_a_missing_bus_and_a_wrong_side_are_named() {
             gain: 1.0,
             width: 4,
         },
-        &[discrete(4)],
+        &[unassigned(4)],
         &[smpte(2), smpte(2)],
     );
     let two_in = bused(
         Kind::Thru { width: 4 },
         &[smpte(2), smpte(2)],
-        &[discrete(4)],
+        &[unassigned(4)],
     );
     let (mut ed, _exec) = editor(&[(1, two_out), (2, two_in)], 0);
 
@@ -720,11 +720,11 @@ fn a_replaced_node_whose_bus_no_longer_folds_fails_the_commit() {
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
-    // A source of three discrete channels: no place in a named stereo bus.
+    // A source of three unassigned channels: no place in a named stereo bus.
     ed.insert(
         key(1),
         "test",
-        Unforkable(TestNode::new(source(3, discrete(3)))),
+        Unforkable(TestNode::new(source(3, unassigned(3)))),
     );
     let refused = ed.commit().unwrap_err();
     assert!(
@@ -940,7 +940,7 @@ fn latent(n: usize, latency: usize, out: Bus) -> Kind {
             latency,
             tail: Tail::None,
         },
-        &[discrete(n)],
+        &[unassigned(n)],
         &[out],
     )
 }
@@ -1030,7 +1030,7 @@ fn a_fork_of_a_bus_edge_renders_the_fold() {
         fn shape(&self) -> Shape {
             Shape::buses(
                 buses(&[smpte(1)]),
-                tutti_graph::Buses::discrete(ChannelLayout::MONO),
+                tutti_graph::Buses::unassigned(ChannelLayout::MONO),
             )
         }
         fn prepare(&mut self, _: &tutti_graph::Prepare) {}
@@ -1165,15 +1165,15 @@ fn an_undeclared_root_refuses_a_bus_edge_and_stores_nothing() {
     assert!(ed.spec().root_sources.is_empty());
     assert_eq!(ed.revision(), before, "nothing marked edited");
 
-    // Declared, but three discrete channels have no place in a named stereo.
-    let (mut ed, _exec) = editor(&[(1, source(3, discrete(3)))], 3);
+    // Declared, but three unassigned channels have no place in a named stereo.
+    let (mut ed, _exec) = editor(&[(1, source(3, unassigned(3)))], 3);
     ed.spec_mut().root = Some(smpte(2).topology);
     ed.spec_mut().topology.outputs = vec![Vec::new(); 2];
     let before = ed.revision();
     assert!(matches!(
         ed.connect_bus_to_root(from(1, 0)),
         Err(BusError::RootFold {
-            error: FoldError::Unplaced { .. } | FoldError::Discrete { .. },
+            error: FoldError::Unplaced { .. } | FoldError::Unassigned { .. },
             ..
         })
     ));
@@ -1236,8 +1236,8 @@ fn a_redeclared_root_that_no_longer_folds_fails_the_commit() {
     exec.apply_pending();
     ed.collect();
 
-    // Named stereo has no place in one discrete channel.
-    ed.spec_mut().root = Some(discrete(1).topology);
+    // Named stereo has no place in one unassigned channel.
+    ed.spec_mut().root = Some(unassigned(1).topology);
     let refused = ed.commit().unwrap_err();
     assert!(
         matches!(

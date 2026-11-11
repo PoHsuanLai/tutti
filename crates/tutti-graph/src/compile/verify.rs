@@ -1034,7 +1034,7 @@ mod tests {
                     k,
                     NodeSpec::new("gen", ChannelLayout::EMPTY, ChannelLayout::MONO),
                 );
-                (k, Shape::source_discrete(ChannelLayout::MONO))
+                (k, Shape::source_unassigned(ChannelLayout::MONO))
             })
             .collect();
         t.set_outputs(vec![
@@ -1067,9 +1067,9 @@ mod tests {
         use crate::param::ParamIn;
         use crate::spec::EventOut;
         use tutti_types::UnitParam;
-        let generator = Shape::source_discrete(ChannelLayout::MONO);
-        let sender = Shape::source_discrete(ChannelLayout::MONO).with_events(0, 1);
-        let thru = Shape::through_discrete(ChannelLayout::MONO)
+        let generator = Shape::source_unassigned(ChannelLayout::MONO);
+        let sender = Shape::source_unassigned(ChannelLayout::MONO).with_events(0, 1);
+        let thru = Shape::through_unassigned(ChannelLayout::MONO)
             .with_in_place()
             .with_params(&[UnitParam::Cutoff]);
         let mut t = Topology::default();
@@ -1260,8 +1260,8 @@ mod tests {
                 (
                     k,
                     Shape::buses(
-                        crate::Buses::discrete(s.inputs),
-                        crate::Buses::discrete(s.outputs),
+                        crate::Buses::unassigned(s.inputs),
+                        crate::Buses::unassigned(s.outputs),
                     ),
                 )
             })
@@ -1322,7 +1322,7 @@ mod tests {
                     k,
                     NodeSpec::new("gen", ChannelLayout::EMPTY, ChannelLayout::MONO),
                 );
-                (k, Shape::source_discrete(ChannelLayout::MONO))
+                (k, Shape::source_unassigned(ChannelLayout::MONO))
             })
             .collect();
         t.outputs = vec![
@@ -1612,8 +1612,8 @@ mod tests {
         let mut t = Topology::default();
         let (generator, thru) = (NodeKey(1), NodeKey(2));
         let (sg, st) = (
-            Shape::source_discrete(ChannelLayout::MONO),
-            Shape::through_discrete(ChannelLayout::MONO),
+            Shape::source_unassigned(ChannelLayout::MONO),
+            Shape::through_unassigned(ChannelLayout::MONO),
         );
         t.nodes.insert(
             generator,
@@ -1671,8 +1671,8 @@ mod tests {
         let mut t = Topology::default();
         let (generator, thru) = (NodeKey(1), NodeKey(2));
         let (sg, st) = (
-            Shape::source_discrete(ChannelLayout::STEREO),
-            Shape::through_discrete(ChannelLayout::STEREO),
+            Shape::source_unassigned(ChannelLayout::STEREO),
+            Shape::through_unassigned(ChannelLayout::STEREO),
         );
         t.nodes.insert(
             generator,
@@ -1847,7 +1847,7 @@ mod tests {
     fn fades_are_checked_against_both_plans() {
         use crate::fade::{CrossfadeCurve, Fade};
         let (a, b) = (NodeKey(1), NodeKey(2));
-        let generator = || Shape::source_discrete(ChannelLayout::MONO);
+        let generator = || Shape::source_unassigned(ChannelLayout::MONO);
         let build = |shape_a: Shape, gen_a: u32, prev: Option<&Plan>| {
             let mut t = Topology::default();
             let shapes: Shapes = [(a, shape_a), (b, generator())]
@@ -1892,13 +1892,13 @@ mod tests {
         let twice = check(generator(), vec![(a, fade), (a, fade)]).unwrap_err();
         assert!(twice.0.contains("twice"), "{twice}");
         let in_place = check(
-            Shape::source_discrete(ChannelLayout::MONO).with_in_place(),
+            Shape::source_unassigned(ChannelLayout::MONO).with_in_place(),
             vec![(a, fade)],
         )
         .unwrap_err();
         assert!(in_place.0.contains("only the tail"), "{in_place}");
         let capacity = check(
-            Shape::source_discrete(ChannelLayout::MONO).with_event_capacity(4),
+            Shape::source_unassigned(ChannelLayout::MONO).with_event_capacity(4),
             vec![(a, fade)],
         )
         .unwrap_err();

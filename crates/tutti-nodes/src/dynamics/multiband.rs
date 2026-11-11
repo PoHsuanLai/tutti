@@ -339,7 +339,7 @@ impl Node for MultibandCompressorNode {
     /// filters': the crossover rings after the input stops.
     fn shape(&self) -> Shape {
         let (addrs, n) = self.port_addrs();
-        Shape::through_discrete(self.layout)
+        Shape::through_unassigned(self.layout)
             .with_cost(Cost::Heavy)
             .with_tail(Tail::Unknown)
             .with_param_addrs(&addrs[..n])

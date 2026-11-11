@@ -196,7 +196,7 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
     assert_eq!(Source::layout(&mic), ChannelLayout::STEREO);
     assert_eq!(
         mic.topology().positions(),
-        [tutti_types::Speaker::Discrete; 2]
+        [tutti_types::Speaker::Unassigned; 2]
     );
     assert_eq!(mic.device_inputs(), ChannelLayout::from(16u16));
     let mut out = [0.0f32; 8];
@@ -221,7 +221,7 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
     assert_eq!(heard[1], [3.0, 103.0, 203.0]);
 }
 
-/// A six-input interface delivers six discrete channels when asked, and is no
+/// A six-input interface delivers six unassigned channels when asked, and is no
 /// longer folded as 5.1: the sixth input arrives untouched beside the first.
 /// One input may feed both sides (`&[0, 0]`), which is what `open` does for a
 /// mono device.

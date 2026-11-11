@@ -80,7 +80,7 @@ struct Recorder {
 
 impl Node for Recorder {
     fn shape(&self) -> Shape {
-        Shape::sink_discrete(ChannelLayout::MONO).with_events(self.ports, 0)
+        Shape::sink_unassigned(ChannelLayout::MONO).with_events(self.ports, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -106,7 +106,7 @@ struct Lag {
 
 impl Node for Lag {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_latency(Latency::new(Samples(self.latency)))
             .with_tail(Tail::Unknown)
     }
@@ -160,7 +160,7 @@ fn spec_of(ph: &Phase, emitters: &[(u32, u64)]) -> (GraphSpec, Shapes) {
     add(
         &mut t,
         REC,
-        Shape::sink_discrete(ChannelLayout::MONO).with_events(REC_PORTS, 0),
+        Shape::sink_unassigned(ChannelLayout::MONO).with_events(REC_PORTS, 0),
     );
     t.edges.insert(
         InPort { node: REC, port: 0 },
@@ -529,7 +529,7 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
             );
             shapes.insert(NodeKey(i as u64), s);
         }
-        let rs = Shape::sink_discrete(ChannelLayout::MONO).with_events(1, 0);
+        let rs = Shape::sink_unassigned(ChannelLayout::MONO).with_events(1, 0);
         t.nodes
             .insert(REC, NodeSpec::new("r", rs.audio_in(), rs.audio_out()));
         shapes.insert(REC, rs);
@@ -614,7 +614,7 @@ struct Clock;
 
 impl Node for Clock {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_events(0, 1)
+        Shape::source_unassigned(ChannelLayout::MONO).with_events(0, 1)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -639,7 +639,7 @@ struct Tap(Inbox);
 
 impl Node for Tap {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Unknown)
     }
@@ -822,7 +822,7 @@ fn wide_fan_in_matches_the_reference() {
         );
         shapes.insert(NodeKey(i as u64), s);
     }
-    let rs = Shape::sink_discrete(ChannelLayout::MONO).with_events(1, 0);
+    let rs = Shape::sink_unassigned(ChannelLayout::MONO).with_events(1, 0);
     t.nodes
         .insert(REC, NodeSpec::new("r", rs.audio_in(), rs.audio_out()));
     shapes.insert(REC, rs);

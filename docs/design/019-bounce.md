@@ -291,7 +291,7 @@ Without normalize (streaming; encoding happens during the render):
 
 | Stage | Fraction range | Advances by |
 |---|---|---|
-| Preparing | 0.00 to 0.05 | Session steps (gather, fork build, edit, tap open, commit); reported as discrete steps, `frames: None`. |
+| Preparing | 0.00 to 0.05 | Session steps (gather, fork build, edit, tap open, commit); reported as unassigned steps, `frames: None`. |
 | Rendering | 0.05 to 0.95 | Rendered frames of `latency + length + tail`; includes the per-block encode of every output. |
 | Finalizing | 0.95 to 1.00 | Outputs finished (resample flush, encoder finish, fork-health check, rename), one step per output. |
 
@@ -381,7 +381,7 @@ pub struct Stem<N = NodeKey> {
 
 | Declaration | Meaning |
 |---|---|
-| `Stem::new(node, path)` | Every output channel of `node`, file width = that width, topology = `ChannelTopology::assumed(width)` (mono, stereo, quad, 5.1, 7.1, 7.1.4), else discrete by index. |
+| `Stem::new(node, path)` | Every output channel of `node`, file width = that width, topology = `ChannelTopology::assumed(width)` (mono, stereo, quad, 5.1, 7.1, 7.1.4), else unassigned by index. |
 | `.channels([0, 1])` | Tap a subset or reorder; the tap has that many lanes, one `Source::Node(PortRef { node, port })` each. A channel past the node's width is refused at open (`MissingSource`, surfaced as `StemChannelMissing`). |
 | `.topology(t)` | States what the tapped channels are (`t.width()` must equal the lane count); the one place a stem says "these two are Ls, Rs". |
 | `.channels_layout(layout)` / `.layout(layout)` | The file's width. If it differs from the tapped width, the session builds `Fold::widths` or `Fold::to_width` from `topology` to `layout` at start. A fold that cannot place (`FoldError`) is `ConfigError::Placement { target }` at start, not at render; a narrowing with no placement is an error, never a truncation. |

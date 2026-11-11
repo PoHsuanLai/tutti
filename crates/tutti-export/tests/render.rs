@@ -287,7 +287,7 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
 
     impl Node for Unreporting {
         fn shape(&self) -> Shape {
-            Shape::through_discrete(ChannelLayout::MONO).with_tail(tutti_types::Tail::Unknown)
+            Shape::through_unassigned(ChannelLayout::MONO).with_tail(tutti_types::Tail::Unknown)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -351,7 +351,7 @@ struct Integrator([f32; 2]);
 
 impl Node for Integrator {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::STEREO).with_tail(tutti_types::Tail::Unbounded)
+        Shape::through_unassigned(ChannelLayout::STEREO).with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1308,7 +1308,7 @@ fn first_frame(graph: &mut RenderGraph, width: u16) -> Result<Vec<f32>, tutti_ex
     Ok(out.planes().iter().map(|p| p[0]).collect())
 }
 
-/// A declared root is what the file is placed from: four `Discrete` buses into
+/// A declared root is what the file is placed from: four `Unassigned` buses into
 /// a six-channel file keep channels 2 and 3 at 2 and 3 (undeclared, a four is
 /// quad and its rears land on the side pair at 4 and 5), a declared 5.1 folds
 /// into stereo by the 5.1 rules, and a declaration the file cannot take, or
@@ -1322,7 +1322,7 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
         first_frame(&mut graph, 6).unwrap(),
         [0.1, 0.2, 0.0, 0.0, 0.3, 0.4]
     );
-    let mut graph = four_buses(Some(ChannelTopology::discrete(ChannelLayout::QUAD)));
+    let mut graph = four_buses(Some(ChannelTopology::unassigned(ChannelLayout::QUAD)));
     assert_eq!(
         first_frame(&mut graph, 6).unwrap(),
         [0.1, 0.2, 0.3, 0.4, 0.0, 0.0]
@@ -1335,7 +1335,7 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
         )))
     ));
     // A declaration of another width than the graph is refused.
-    let mut graph = four_buses(Some(ChannelTopology::discrete(ChannelLayout::from(6u16))));
+    let mut graph = four_buses(Some(ChannelTopology::unassigned(ChannelLayout::from(6u16))));
     assert!(matches!(
         first_frame(&mut graph, 6),
         Err(tutti_export::Error::InvalidConfig(ConfigError::Placement(
@@ -1392,7 +1392,7 @@ struct Narrowing;
 
 impl Node for Narrowing {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_tail(tutti_types::Tail::Finite(tutti_types::Samples(4_000)))
     }
     fn prepare(&mut self, _: &Prepare) {}

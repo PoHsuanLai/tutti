@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn a_default_node_is_worth_a_task_at_one_frame() {
-        let heavy = node_work(&Shape::through_discrete(tutti_types::ChannelLayout::MONO));
+        let heavy = node_work(&Shape::through_unassigned(tutti_types::ChannelLayout::MONO));
         let task = heavy.plus(w(TASK_DISPATCH, 0));
         assert_eq!(
             schedule(heavy.plus(heavy), task, 2, 2, Samples(1), 2),

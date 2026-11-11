@@ -7090,8 +7090,8 @@ values, where both sides say where their channels sit. `Fold::between(src,
 dst)` takes two topologies and refuses (`FoldError::Unplaced`,
 `FoldError::Empty`) when a channel has no place; it never reads a width. The
 coercion here is only ever between two declared topologies, and a port that
-declares only a width is `Discrete` (a channel with no speaker), which folds
-to another `Discrete` only when the widths agree, and otherwise is refused,
+declares only a width is `Unassigned` (a channel with no speaker), which folds
+to another `Unassigned` only when the widths agree, and otherwise is refused,
 exactly as the root's declaration is (`FoldError`, never a silent drop). So
 the new edge adds no guessing: it moves a fold the author would have asked
 for into the edge.
@@ -7125,7 +7125,7 @@ pub struct BusTopology { /* len: u8, [Speaker; 16], Copy */ }  // From/Into Chan
   so a port is still a channel and every existing consumer is untouched. Buses
   are a grouping **over** the ports: bus `b` is the contiguous run of
   `audio_in` channels after the earlier buses. `Shape::audio(in, out)` (the
-  existing constructor) builds one `Main` bus per side, `Discrete` of that
+  existing constructor) builds one `Main` bus per side, `Unassigned` of that
   width, with no placement claim.
 - **Who declares.** Nodes that know their layout say so through
   `Shape::with_buses_in / with_buses_out` (**new**): a node built on a
@@ -7142,7 +7142,7 @@ pub struct BusTopology { /* len: u8, [Speaker; 16], Copy */ }  // From/Into Chan
 ```rust
 // graph.rs (new)
 pub struct BusRef { pub node: NodeKey, pub bus: u8 }
-pub enum BusSource { Node(BusRef), Global }          // the global input is a Discrete bus
+pub enum BusSource { Node(BusRef), Global }          // the global input is a Unassigned bus
 // GraphSpec
 pub bus_edges: BTreeMap<BusRef, Vec<BusSource>>,     // sink bus -> sources, as a set like `edges`
 ```
@@ -7217,7 +7217,7 @@ the same argument. The reference lowers the same way, from the same `Fold`.
 - Analytic folds: 5.1 into stereo, the centre at `M3DB` into each side, the
   LFE dropped as `Fold` documents; mono into stereo; stereo into mono; each
   channel's figure computed from the fold's table.
-- Refusal: `Discrete(3)` into `Discrete(2)` is `BusError::Fold(Unplaced)`
+- Refusal: `Unassigned(3)` into `Unassigned(2)` is `BusError::Fold(Unplaced)`
   at the call, nothing stored; a node replaced by one whose bus no longer folds
   fails the commit with `CompileError::Fold`; an undeclared root refuses a bus
   edge.
@@ -7238,7 +7238,7 @@ spec.
 yet, so no plan, op or render moves.
 
 - **Types.** `tutti_types::BusTopology` (`new(impl IntoIterator<Item =
-  Speaker>) -> Option`, `discrete(ChannelLayout) -> Option` (const), `EMPTY`,
+  Speaker>) -> Option`, `unassigned(ChannelLayout) -> Option` (const), `EMPTY`,
   `positions`, `layout`, `From<BusTopology> for ChannelTopology`,
   `TryFrom<&ChannelTopology>` with `BusTooWide { width }`), `MAX_BUS_CHANNELS =
   16`. `tutti_graph::{Bus, BusRole, Buses, MAX_BUSES}` in their own private
@@ -7246,12 +7246,12 @@ yet, so no plan, op or render moves.
   `Shape::{buses_in, buses_out, with_buses_in, with_buses_out}`. `Buses` is a
   `Copy` inline list with `NONE`, `main`, `of_width`, `with`, `new`, `get`,
   `iter`, `main_bus`, `width`, `first_port`.
-- **`Shape::audio` builds `Discrete`, not `assumed`.** The text above says
-  `Discrete` of that width with no placement claim; the staging note's "built
+- **`Shape::audio` builds `Unassigned`, not `assumed`.** The text above says
+  `Unassigned` of that width with no placement claim; the staging note's "built
   from widths" is the same. `ChannelTopology::assumed` is the guess "a width is
   not a placement" forbids, and it would make a 6-wide node a 5.1 that a
-  `Discrete(2)` sink refuses by luck of the count. So a width-only node's bus
-  folds to another `Discrete` bus of equal width and to nothing else.
+  `Unassigned(2)` sink refuses by luck of the count. So a width-only node's bus
+  folds to another `Unassigned` bus of equal width and to nothing else.
 - **The buses cover a prefix of the ports.** The text says `audio_in` "equals
   the sum of the buses' widths". That cannot hold for a node of 17 to 64
   channels (`MAX_PORTS` is 64, a bus is 16), nor for a plugin with more than
@@ -7280,7 +7280,7 @@ yet, so no plan, op or render moves.
   VST2 has and AU's element 0 are `Main`, every other bus `Aux`. No format
   marks a bus a sidechain, so no loader reports `Sidechain`; a node that
   knows better declares it itself. A bus without a placement (or one that
-  disagrees with its width) is `Discrete`. It stops at the first bus past
+  disagrees with its width) is `Unassigned`. It stops at the first bus past
   `MAX_BUSES` or past 16 channels. A direction with no audio is an empty
   list, not a bus of no channels.
 
@@ -7337,12 +7337,12 @@ bypass rule are untouched (B3).
   shapes as they are then: a node replaced by one whose bus no longer folds
   fails the commit and the plan sent last stays.
 - **A silent destination channel has no lane**: a fold row with no
-  contribution (a stereo source into a three-channel discrete bus, whose third
+  contribution (a stereo source into a three-channel unassigned bus, whose third
   channel the fold zero-fills) adds nothing and reads silence.
-- **`Fold::between`'s refusals, as they are.** Discrete(3) into Discrete(2) is
-  `Unplaced`, as the text says; a discrete source into a *named* bus of
-  another width is `FoldError::Discrete`; a named source into a *wider*
-  discrete bus folds by index, zero-filling.
+- **`Fold::between`'s refusals, as they are.** Unassigned(3) into Unassigned(2) is
+  `Unplaced`, as the text says; an unassigned source into a *named* bus of
+  another width is `FoldError::Unassigned`; a named source into a *wider*
+  unassigned bus folds by index, zero-filling.
 - **The root is not a sink yet.** `BusRef` names a node's bus; the root's topology
   lives in the engine's output control and the session's
   `declare_root_topology`, which the editor does not see, so a bus edge into
@@ -7383,7 +7383,7 @@ bit for bit (the M1 tests, unedited, are the proof).
 - **The bypass mapping** is `Pass` (`tutti-graph/src/pass.rs`), built on the
   control side from the shape's `Main` input and `Main` output buses and kept in
   the unit's `ModeState`; the reference builds the same value. Three cases:
-  (1) both are `Discrete` (what `Shape::through_discrete` builds, which names no
+  (1) both are `Unassigned` (what `Shape::through_unassigned` builds, which names no
   placement) **of one width**, or a side has no `Main` bus and the widths agree:
   output `c` is input `c`, unchanged to the bit; (2) a named pair that folds to
   the identity: the same copy; (3) a named pair, or one named side against an
@@ -7400,7 +7400,7 @@ bit for bit (the M1 tests, unedited, are the proof).
   no placement (`Unplaced { inputs, outputs }`; by index, the old width rule, a mono input
   under a stereo output was heard on the left alone, the bug the reverbs shipped
   with after they went wet only), or named buses that do not fold (`Fold`, six
-  `Discrete` channels into a named stereo bus). `Editor::check_pass` is the one
+  `Unassigned` channels into a named stereo bus). `Editor::check_pass` is the one
   check, and every door that would hear a pass asks it: `set_mode(Bypassed)`
   (`ModeError::Unplaced`), `set_mix` short of `WET` (`MixError::Unplaced`), a
   commit of a spec that bypasses, mixes, or drives the mix of such a node from a
@@ -7486,11 +7486,11 @@ took B3's recommendation.
 **Why.** A node's audio ports were described up to four times, and none was derived from another:
 
 1. the widths in `Shape::audio(in, out)`;
-2. the `Buses` over those ports, optional, defaulting to one `Main` bus of `Discrete` channels, which states nothing;
+2. the `Buses` over those ports, optional, defaulting to one `Main` bus of `Unassigned` channels, which states nothing;
 3. index arithmetic in `process` (`ins.get(ch + c)` for a key, `o * width + c` for a band);
 4. for a design, `tutti_dsp::Channels` and its `Placement`.
 
-`Fold::between` also held a by-index rule: a named source onto a `Discrete` destination is taken by index, zero-filling.
+`Fold::between` also held a by-index rule: a named source onto a `Unassigned` destination is taken by index, zero-filling.
 Every defect of the dry path came from two of these disagreeing, or from the default standing in for a statement
 nobody made. The reverbs' mono dry was heard on the left alone (2 standing in for a placement, #567). The gate, the
 compressor and the crossover were right only because (3) happened to match (2). #570 makes the guess loud: `PassError`
@@ -7501,15 +7501,15 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
 
 - Three constructors for the shapes with nothing to guess:
   - `Shape::through(topology)`: one bus of `topology` in and the same out; its pass is output `c` = input `c`. The
-    caller names the topology (`stereo()`, `discrete(n)`), never a width alone: a width names no speakers (B1), and a
+    caller names the topology (`stereo()`, `unassigned(n)`), never a width alone: a width names no speakers (B1), and a
     bare 6 bus-edged into a stereo bus would otherwise be downmixed as if it were 5.1. A test that wants only a width
-    writes `Shape::through_discrete(n)`, which spells the unplaced out.
+    writes `Shape::through_unassigned(n)`, which spells the unplaced out.
   - `Shape::source(out)`: no audio input; nothing passes.
   - `Shape::sink(in)`: no audio output; nothing passes.
 - Every other shape is `Shape::buses(inputs: Buses, outputs: Buses)`, and its widths are the buses' widths. A bus names
-  its speakers, or says `Bus::discrete(n)`: unplaced is a statement, never a default.
+  its speakers, or says `Bus::unassigned(n)`: unplaced is a statement, never a default.
 - `Shape::audio(in, out)` goes. Its equal-width calls become `through`, and its unequal ones state their buses. A
-  mono-in, stereo-out node with no placement must write `Bus::discrete(2)` on its output, and then it has no pass
+  mono-in, stereo-out node with no placement must write `Bus::unassigned(2)` on its output, and then it has no pass
   (`PassError::Unplaced`), visibly in its own constructor.
 - **The pass is a property of the shape.** `Shape::pass() -> Result<&Pass, PassError>` is computed when the shape is
   built. The editor's doors (`set_mode`, `set_mix`, a commit that bypasses, mixes or drives a mix, the reconciler's
@@ -7521,22 +7521,22 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
     one byte for the count.
   - Raising `MAX_BUSES` to 8 instead would make `Shape` about 1.2 KB, which plan apply copies once per unit.
 - **`Fold` splits by intent.** `Fold::between` takes two topologies that both name their speakers, or two identical
-  ones (a relabelling). A `Discrete` side meeting a named one at another width is `FoldError::Discrete`. By index exists
+  ones (a relabelling). A `Unassigned` side meeting a named one at another width is `FoldError::Unassigned`. By index exists
   only where a caller asks for it: `Fold::by_index`, `Fold::widths`, `Fold::to_width`, `Fold::select`, for an edge that
   knows only a width (a device, a file, the graph root undeclared). Today's three callers of `between`:
   - the pass: named pairs only, as #570 already enforces;
-  - `bus_edge`: a named bus into a `Discrete` sink bus of another width is refused, where today it went by index. An
+  - `bus_edge`: a named bus into a `Unassigned` sink bus of another width is refused, where today it went by index. An
     edge that wants index order says so with its own method, `connect_bus_by_index(from, to)` (and
-    `connect_bus_to_root_by_index`), never a fallback; `connect_bus` stays speakers only. B2's "a named source into a wider discrete bus is accepted
+    `connect_bus_to_root_by_index`), never a fallback; `connect_bus` stays speakers only. B2's "a named source into a wider unassigned bus is accepted
     (zero-fill)" becomes that explicit option.
   - export's driver calls `Fold::between(root or ChannelTopology::for_width(graph), file topology)` today. It changes
-    only where the file's topology is `Discrete` at another width than a named root. Today that goes by index; under T1
+    only where the file's topology is `Unassigned` at another width than a named root. Today that goes by index; under T1
     it becomes an explicit `Fold::by_index`, as a file that names no speaker says.
     Named into named, and an equal-width relabelling, do not change.
   - **Measured** (the workspace, and `tutti-session` with
-    `clap,export,modulation,device,record,midi,sampler`, with `between` refusing a named source into a `Discrete`
-    destination of another width): the only test that flips is `tutti-types`' `fold::tests::discrete_channels_map_one_to_one`,
-    whose "a named source into a wider discrete bus is an index copy" case becomes a refusal. No bus-edge test flips:
+    `clap,export,modulation,device,record,midi,sampler`, with `between` refusing a named source into a `Unassigned`
+    destination of another width): the only test that flips is `tutti-types`' `fold::tests::unassigned_channels_map_one_to_one`,
+    whose "a named source into a wider unassigned bus is an index copy" case becomes a refusal. No bus-edge test flips:
     `bus_edges.rs::widening_zero_fills_the_new_channels` is SMPTE stereo into SMPTE 5.1, named into named, and stays
     zero-filled.
 
@@ -7544,23 +7544,30 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
 
 - `Shape`'s widths and buses are private, read with `audio_in()`, `audio_out()`, `buses_in()`, `buses_out()`; a
   shape is built from its buses: `Shape::buses(inputs, outputs)`, `through(topology)`, `source(topology)`,
-  `sink(topology)`, `EMPTY` for an events-only node, and `through_discrete(n)`, `source_discrete(n)`,
-  `sink_discrete(n)` for a node that knows only a width (one `Discrete` main bus, or past 16 channels ports with no
-  bus). `Buses::of_width` is `Buses::discrete`, which refuses a width past a bus (const panic).
+  `sink(topology)`, `EMPTY` for an events-only node, and `through_unassigned(n)`, `source_unassigned(n)`,
+  `sink_unassigned(n)` for a node that knows only a width (one `Unassigned` main bus, or past 16 channels ports with no
+  bus). `Buses::of_width` is `Buses::unassigned`, which refuses a width past a bus (const panic).
 - `Shape::with_ports(in, out)` keeps ports past the buses: a plugin's bus wider than 16 or past `MAX_BUSES`, the
   keyed nodes past 8 channels until T3, and test nodes that sum ports which are not a bus. A side with ports and no
   main bus has a pass only at equal width, as before.
 - `Shape::pass()` returns the public `Pass` (`inputs`, `outputs`, `contributions(c)`) or the `PassError`.
-- `Fold::between` refuses a discrete side at any other width, a discrete destination included (`FoldError::Discrete`);
-  `discrete_channels_map_one_to_one` asserts the refusals. A bus edge is `BusFold::Speakers` or `BusFold::ByIndex`,
+- `Fold::between` refuses an unassigned side at any other width, an unassigned destination included (`FoldError::Unassigned`);
+  `unassigned_channels_map_one_to_one` asserts the refusals. A bus edge is `BusFold::Speakers` or `BusFold::ByIndex`,
   stored with its source as a `BusFeed { source, fold }` (`GraphSpec::bus_edges`, `root_sources`), and `connect_bus_by_index` /
   `connect_bus_to_root_by_index` (editor and session) are the by-index edge.
-- Export: a file whose topology is discrete takes the graph's channels with `Fold::by_index`, which is what
+- Export: a file whose topology is unassigned takes the graph's channels with `Fold::by_index`, which is what
   `between` did for it before; nothing else in the driver changes.
 - Fixed-stereo nodes name their buses: `ClickNode` and `PolySynth` are `source(BusTopology::STEREO)`, the HRTF
   panner `through(BusTopology::STEREO)` (`BusTopology::STEREO` is new). The per-channel processors built for a
-  width are `through_discrete` until T3 gives their designs a topology. `PluginClient::declared_shape` states its
+  width are `through_unassigned` until T3 gives their designs a topology. `PluginClient::declared_shape` states its
   ports only; the bound node states the plugin's buses.
+
+**Renamed after T1 (owner, 2026-11-11).** A channel that feeds no speaker is `Speaker::Unassigned`, not `Discrete`:
+to most audio engineers "discrete 5.1" means six channels *each* with its speaker, the opposite. The constructors
+follow (`ChannelTopology::unassigned`, `BusTopology::unassigned`, `Buses::unassigned`, `Shape::through_unassigned`,
+`source_unassigned`, `sink_unassigned`, `FoldError::Unassigned`). The plugin database's file is version 2 (its JSON
+names the variant); the IPC and probe wires are postcard, by variant index, and do not change. Text above this note
+that says "unassigned" for such a channel predates the rename.
 
 **T2. Bus handles, not indices.**
 
@@ -7611,9 +7618,9 @@ would otherwise be written once on the old API and migrated again.
 **Decided in review (core, 2026-11-11).**
 
 - (a) The by-index bus edge is its own method, `connect_bus_by_index` (`connect_bus_to_root_by_index` for the root).
-- (b) `through` takes a topology, never a width; `through_discrete(n)` spells an unplaced one.
+- (b) `through` takes a topology, never a width; `through_unassigned(n)` spells an unplaced one.
 - (c) The handles are `InBus` and `OutBus`, the band inside.
-- T1's `Fold` split turns the flipped case of `fold::tests::discrete_channels_map_one_to_one` into a refusal assertion;
+- T1's `Fold` split turns the flipped case of `fold::tests::unassigned_channels_map_one_to_one` into a refusal assertion;
   it does not delete it.
 
 #### What else is, and is not, a graph primitive
@@ -10147,12 +10154,12 @@ file, a device, a plugin bus) states the `ChannelTopology` it has, and
 way two topologies meet. It replaces the `fold_*` family, which chose a matrix
 by width alone.
 
-- **`Speaker::Discrete`** is a channel known to feed no speaker (a numbered
+- **`Speaker::Unassigned`** is a channel known to feed no speaker (a numbered
   interface input, a track, B-format), distinct from `Speaker::Unknown` (a
-  position a format named and the vocabulary cannot). Discrete channels are
-  never matrixed: a discrete side relabels at equal width only, and
+  position a format named and the vocabulary cannot). Unassigned channels are
+  never matrixed: an unassigned side relabels at equal width only, and
   `Fold::between` refuses any other width (amendment T1); by index is
-  `Fold::by_index`, asked for by name. `Fold::select` takes chosen source channels onto a discrete
+  `Fold::by_index`, asked for by name. `Fold::select` takes chosen source channels onto an unassigned
   destination (the mic and the meter, in their ports).
 - **`ChannelTopology::smpte`** now has 12 (7.1.4). A width of 4 stays without an
   order (quad or B-format); `Fold::assuming_smpte` is the named assumption and
@@ -10178,9 +10185,9 @@ by width alone.
   channel is the centre. A flag with no `Speaker` (LFE2, rear-of-centre, wide,
   high) is `Unknown(bit)`: it keeps its slot, and a fold refuses it
   (`FoldError::Unnamed`) rather than guess. A `Wave` built from a count is SMPTE
-  where the engine has an order and `Discrete` elsewhere. The mic is a
+  where the engine has an order and `Unassigned` elsewhere. The mic is a
   `TapReader`/`TapWriter` pair (whole frames, any width), delivers the inputs it
-  was opened with (`MicIn::open_inputs`, `Fold::select`) as `Discrete`, and
+  was opened with (`MicIn::open_inputs`, `Fold::select`) as `Unassigned`, and
   `InletNode` is as wide as its ring. The sampler places a mono source with
   `MonoSpread`, the lone-centre rule: the centre of a 6, 8 or 12-wide memory
   voice (a 12-wide one is placed as an 8-wide frame, the most the sampler
@@ -10194,7 +10201,7 @@ by width alone.
     up. `Fold::widths(src, dst)` / `Fold::to_width(&src, dst)` place by position
     where both ends have an order, and by index (`Fold::by_index`: copy, then
     zero-fill, widening only) where either has none. A source with an `Unknown` channel is
-    `FoldError::Unnamed` whatever the destination; a `Discrete` source is read in
+    `FoldError::Unnamed` whatever the destination; a `Unassigned` source is read in
     the engine's order for its width (a count-built wave of 4 is quad).
     `fold_frame` is deleted, and so are `fold_frame_to_mono`,
     `fold_frame_to_stereo`, `fold_buffer_to_mono` and `fold_planar_to_mono`
@@ -10211,7 +10218,7 @@ by width alone.
     A buffer of an unsupported width is a silent counted block, in every build.
     Mono lands on the centre of a 6, 8 or 12-wide device and on the front pair of
     a 4 or 2-wide one; an undeclared 4-wide root is treated as quad into 6, 8 and
-    12 (declare it `Discrete`, below).
+    12 (declare it `Unassigned`, below).
   - **Export.** `GraphSource::new` builds `Fold::widths(graph, file)`, or
     `Fold::between` the graph and `EncodeConfig::topology` when the config states
     one, and the render writes through `planar_to_interleaved`. A graph wider than
@@ -10222,7 +10229,7 @@ by width alone.
     resource (a pure translation; `rebuild` calls the session). `None` (the
     default) is `ChannelTopology::assumed(width)`, so nothing changes until one
     is declared. `Fold::declared(root, dst_width)` is the placement: an
-    all-`Discrete` root is placed **by index** (`by_index`: channel `i` stays
+    all-`Unassigned` root is placed **by index** (`by_index`: channel `i` stays
     `i`, a wider device is zero-filled, a narrower one is `FoldError::Unplaced`),
     where `to_width` would read a bare 4 as quad; any other root is `to_width`'s.
     - **Engine.** `OutputFolds` carries the declaration and builds the fold for
@@ -10252,7 +10259,7 @@ by width alone.
       The declared width is at most `MAX_ROOT_CHANNELS` and at least 1;
       otherwise `FoldError`. Refusing
       was chosen over re-deriving because a re-derived topology would have to
-      invent the new channels' meaning (discrete? a speaker?) and a wrong guess
+      invent the new channels' meaning (unassigned? a speaker?) and a wrong guess
       is a silent misplacement.
     - **Refusals are values.** The session keeps the requested declaration
       (`requested_root_topology`) and `root_topology_status()`:

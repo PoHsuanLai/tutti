@@ -722,7 +722,7 @@ impl Session {
 
     /// Declares what the graph root's channels are: the session's output as the
     /// engine and an export place it on the device and in a file.
-    /// `Some(`[`ChannelTopology::discrete`]`)` is independent buses, kept by
+    /// `Some(`[`ChannelTopology::unassigned`]`)` is independent buses, kept by
     /// index (a 4-wide one on a 6-wide device stays at 0..4, where a bare
     /// 4 is quad and its rears land at 4 and 5); a named topology is speaker
     /// feeds, folded by position. `None` takes the declaration back, and the
@@ -746,7 +746,7 @@ impl Session {
     ///
     /// [`Error::Output`](crate::Error::Output) when the declaration is empty, wider than the engine
     /// renders ([`MAX_ROOT_CHANNELS`](tutti_graph::MAX_ROOT_CHANNELS)), or the
-    /// device cannot place it (a discrete root wider than the device, a channel
+    /// device cannot place it (an unassigned root wider than the device, a channel
     /// no speaker names). Nothing is changed.
     pub fn declare_root_topology(&mut self, root: Option<ChannelTopology>) -> crate::Result<()> {
         // The same request again, in force, is nothing to do.

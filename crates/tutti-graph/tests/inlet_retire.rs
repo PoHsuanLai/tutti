@@ -76,7 +76,7 @@ struct DropsInBlock(Option<TapReader>);
 
 impl tutti_graph::Node for DropsInBlock {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::source_discrete(ChannelLayout::STEREO)
+        tutti_graph::Shape::source_unassigned(ChannelLayout::STEREO)
     }
     fn process(
         &mut self,

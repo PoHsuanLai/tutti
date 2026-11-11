@@ -64,7 +64,7 @@ impl Bus {
 /// use tutti_types::{BusTopology, ChannelLayout, Speaker};
 ///
 /// let stereo = BusTopology::new([Speaker::FrontLeft, Speaker::FrontRight]).unwrap();
-/// let key = BusTopology::discrete(ChannelLayout::MONO).unwrap();
+/// let key = BusTopology::unassigned(ChannelLayout::MONO).unwrap();
 /// let buses = Buses::NONE
 ///     .with(Bus { topology: stereo, role: BusRole::Main }).unwrap()
 ///     .with(Bus { topology: key, role: BusRole::Sidechain }).unwrap();
@@ -98,28 +98,28 @@ impl Buses {
     }
 
     /// One [`Main`](BusRole::Main) bus of `width` channels that name no
-    /// speaker ([`Discrete`](tutti_types::Speaker::Discrete)): unplaced, said
+    /// speaker ([`Unassigned`](tutti_types::Speaker::Unassigned)): unplaced, said
     /// so. [`NONE`](Self::NONE) for a width of 0.
     ///
     /// # Panics
     ///
     /// Past [`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS) (in a `const`
     /// context, at compile time): a wider side is
-    /// [`Shape::through_discrete`](crate::Shape::through_discrete) and its
+    /// [`Shape::through_unassigned`](crate::Shape::through_unassigned) and its
     /// kin, or several buses.
     #[must_use]
-    pub const fn discrete(width: ChannelLayout) -> Self {
+    pub const fn unassigned(width: ChannelLayout) -> Self {
         assert!(
             width.count() as usize <= tutti_types::MAX_BUS_CHANNELS,
-            "a discrete bus wider than a bus holds"
+            "an unassigned bus wider than a bus holds"
         );
         Self::unplaced(width)
     }
 
-    /// [`discrete`](Self::discrete), or [`NONE`](Self::NONE) past a bus's
+    /// [`unassigned`](Self::unassigned), or [`NONE`](Self::NONE) past a bus's
     /// width, whose channels are then ports with no bus.
     pub(crate) const fn unplaced(width: ChannelLayout) -> Self {
-        match BusTopology::discrete(width) {
+        match BusTopology::unassigned(width) {
             Some(topology) if width.count() > 0 => Self::main(topology),
             _ => Self::NONE,
         }

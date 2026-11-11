@@ -9,7 +9,7 @@ use tutti_types::{SampleRate, Seconds};
 
 /// Fixed scheduling parameters for one render.
 ///
-/// Every field is [`Samples`] — a discrete frame count, which is what the type
+/// Every field is [`Samples`] — an unassigned frame count, which is what the type
 /// exists for (its own doc names the compensation-delay path). Note that
 /// `Samples` has no `Sub`: use `remaining_after` / `align_to`, which is why the
 /// driver reads the way it does.

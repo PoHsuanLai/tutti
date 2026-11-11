@@ -13,7 +13,7 @@ use tutti_types::{BusTopology, ChannelLayout, ChannelTopology};
 pub(crate) fn main_bus(width: ChannelLayout) -> Buses {
     ChannelTopology::assumed(width)
         .and_then(|t| BusTopology::try_from(&t).ok())
-        .or_else(|| BusTopology::discrete(width))
+        .or_else(|| BusTopology::unassigned(width))
         .map_or(Buses::NONE, Buses::main)
 }
 
@@ -37,7 +37,7 @@ pub(crate) struct Keyed {
 impl Keyed {
     pub(crate) fn new(width: ChannelLayout) -> Self {
         let main = main_bus(width);
-        let inputs = match BusTopology::discrete(width) {
+        let inputs = match BusTopology::unassigned(width) {
             Some(key) if !main.is_empty() => main
                 .with(Bus {
                     topology: key,

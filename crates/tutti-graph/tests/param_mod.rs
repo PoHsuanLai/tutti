@@ -117,8 +117,8 @@ impl Node for Probe {
         // Output 0 is its main channel, which a bypass passes its input to;
         // the other two are readouts.
         Shape::buses(
-            tutti_graph::Buses::discrete(ChannelLayout::MONO),
-            tutti_graph::Buses::discrete(ChannelLayout::MONO),
+            tutti_graph::Buses::unassigned(ChannelLayout::MONO),
+            tutti_graph::Buses::unassigned(ChannelLayout::MONO),
         )
         .with_ports(ChannelLayout::MONO, ChannelLayout::from_count(3))
         .with_params(&self.declared)
@@ -174,7 +174,7 @@ struct Signal {
 
 impl Node for Signal {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_events(0, 1)
             .with_event_capacity(256)
     }
@@ -236,7 +236,7 @@ impl Lag {
 
 impl Node for Lag {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.n)))
+        Shape::through_unassigned(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.n)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -638,8 +638,8 @@ fn a_fade_keeps_the_params_it_declares() {
     impl Node for CutoffOnly {
         fn shape(&self) -> Shape {
             Shape::buses(
-                tutti_graph::Buses::discrete(ChannelLayout::MONO),
-                tutti_graph::Buses::discrete(ChannelLayout::from_count(3)),
+                tutti_graph::Buses::unassigned(ChannelLayout::MONO),
+                tutti_graph::Buses::unassigned(ChannelLayout::from_count(3)),
             )
             .with_params(&[UnitParam::Cutoff])
         }

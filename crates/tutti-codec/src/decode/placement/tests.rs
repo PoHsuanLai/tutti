@@ -50,9 +50,9 @@ fn a_lone_channel_is_mono() {
 }
 
 /// A flag with no speaker keeps its slot as `Unknown(bit index)`, never
-/// `Discrete` and never dropped: the second LFE is bit 25.
+/// `Unassigned` and never dropped: the second LFE is bit 25.
 ///
-/// Mutation (run): mapping `other` to `Discrete` fails the equality; filtering
+/// Mutation (run): mapping `other` to `Unassigned` fails the equality; filtering
 /// it out of the iterator fails the width.
 #[test]
 fn a_flag_with_no_speaker_keeps_its_slot_as_unknown() {

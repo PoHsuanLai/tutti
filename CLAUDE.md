@@ -1033,7 +1033,7 @@ Scalars use `Param<U>`.
   length up to `Prepare::max_block`, the transport from `Env`.
 - **A channel fold goes through `tutti_types::Fold`**, built on the control side
   and applied without allocating. A width is not a placement: an edge reports a
-  topology (a channel with no speaker is `Speaker::Discrete`), and an edge that
+  topology (a channel with no speaker is `Speaker::Unassigned`), and an edge that
   knows only a width (a device, an export file, the graph root) builds
   `Fold::widths` / `Fold::to_width`: the engine's order where the width has one
   (`ChannelTopology::assumed`: mono, stereo, quad at 4, 5.1, 7.1, 7.1.4), channels
@@ -1049,7 +1049,7 @@ Scalars use `Param<U>`.
   no speaker names (`FoldError::Unnamed`) is refused there as a `PlaceError`;
   the streaming tier reads a file at its own width and order. The input edges
   report a topology: a decoded file (`Wave::topology`, `FileIn::topology`,
-  `WaveMetadata::topology`), a capture device (its inputs are `Discrete`;
+  `WaveMetadata::topology`), a capture device (its inputs are `Unassigned`;
   `MicIn::open_inputs` chooses them with `Fold::select`). The quad spelling is
   WAVE's (`FL FR BL BR`); `Fold` treats the side-surround spelling the plugin
   hosts decode as the same four feeds.
@@ -1077,7 +1077,7 @@ Scalars use `Param<U>`.
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
 - **The root's channels are declared too** (`MasterTopology`, a pure
   translation into `Session::declare_root_topology` /
-  `SessionBuilder::root_topology`): `Discrete` for independent buses, a named
+  `SessionBuilder::root_topology`): `Unassigned` for independent buses, a named
   topology for speaker feeds, nothing for the engine's `assumed` order. A
   declaration sets the root's width (no device floor) and the width cannot
   leave it: `Graph::widen_outputs` refuses to widen a declared root, and a

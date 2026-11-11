@@ -34,7 +34,7 @@ struct Latent(usize);
 
 impl Node for Latent {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.0)))
+        Shape::source_unassigned(ChannelLayout::MONO).with_latency(Latency::new(Samples(self.0)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -53,8 +53,8 @@ struct Probe;
 impl Node for Probe {
     fn shape(&self) -> Shape {
         Shape::buses(
-            tutti_graph::Buses::discrete(ChannelLayout::MONO),
-            tutti_graph::Buses::discrete(ChannelLayout::STEREO),
+            tutti_graph::Buses::unassigned(ChannelLayout::MONO),
+            tutti_graph::Buses::unassigned(ChannelLayout::STEREO),
         )
     }
     fn prepare(&mut self, _: &Prepare) {}

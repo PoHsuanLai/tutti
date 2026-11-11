@@ -91,7 +91,7 @@ struct TailProbe {
 
 impl Node for TailProbe {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_latency(Latency::new(self.latency))
             .with_tail(self.tail)
     }
@@ -192,7 +192,7 @@ fn status_silent_zeroes_and_flags() {
     struct Liar;
     impl Node for Liar {
         fn shape(&self) -> Shape {
-            Shape::source_discrete(ChannelLayout::MONO)
+            Shape::source_unassigned(ChannelLayout::MONO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -242,7 +242,7 @@ fn masked_status_reaches_the_next_nodes_mask() {
     struct HalfSilent;
     impl Node for HalfSilent {
         fn shape(&self) -> Shape {
-            Shape::source_discrete(ChannelLayout::STEREO)
+            Shape::source_unassigned(ChannelLayout::STEREO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -259,8 +259,8 @@ fn masked_status_reaches_the_next_nodes_mask() {
     impl Node for Observer {
         fn shape(&self) -> Shape {
             Shape::buses(
-                tutti_graph::Buses::discrete(ChannelLayout::STEREO),
-                tutti_graph::Buses::discrete(ChannelLayout::MONO),
+                tutti_graph::Buses::unassigned(ChannelLayout::STEREO),
+                tutti_graph::Buses::unassigned(ChannelLayout::MONO),
             )
             .with_tail(Tail::Unknown)
         }
@@ -313,7 +313,7 @@ fn freeing_a_control_freed_value_inside_process_panics_in_debug() {
     struct Freer(Option<ControlFreed>);
     impl Node for Freer {
         fn shape(&self) -> Shape {
-            Shape::source_discrete(ChannelLayout::MONO)
+            Shape::source_unassigned(ChannelLayout::MONO)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -433,7 +433,7 @@ impl IntoNode for GainBuilder {
 
 impl Node for GainNode {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO).with_in_place()
+        Shape::through_unassigned(ChannelLayout::MONO).with_in_place()
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -726,7 +726,7 @@ impl Synth {
 
 impl Node for Synth {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_events(1, 0)
             .with_tail(Tail::Finite(Samples(self.release)))
     }
@@ -1004,8 +1004,8 @@ impl OutOfBand {
 impl Node for OutOfBand {
     fn shape(&self) -> Shape {
         Shape::buses(
-            tutti_graph::Buses::discrete(ChannelLayout::from_count(self.inputs)),
-            tutti_graph::Buses::discrete(ChannelLayout::from_count(self.outputs)),
+            tutti_graph::Buses::unassigned(ChannelLayout::from_count(self.inputs)),
+            tutti_graph::Buses::unassigned(ChannelLayout::from_count(self.outputs)),
         )
         .with_tail(Tail::None)
     }

@@ -17,8 +17,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
-/// The version of the file layout [`save`] writes and [`load`] reads.
-const VERSION: u64 = 1;
+/// The version of the file layout [`save`] writes and [`load`] reads. 2: a
+/// bus's speakers name a channel with no speaker `Unassigned` (was
+/// `Unassigned`).
+const VERSION: u64 = 2;
 
 #[derive(Serialize)]
 struct Out<'a> {

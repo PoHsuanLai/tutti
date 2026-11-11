@@ -363,9 +363,9 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
     );
 }
 
-/// A 7.1.4 (12ch) graph exported to a STEREO file folds the discrete surround /
+/// A 7.1.4 (12ch) graph exported to a STEREO file folds the unassigned surround /
 /// height channels into the front pair — they must NOT be dropped. A hard
-/// rear-left source (150° → the rear-left-surround channel, Lrs=6, a *discrete*
+/// rear-left source (150° → the rear-left-surround channel, Lrs=6, a *unassigned*
 /// channel the front pair does not carry) must reach the LEFT downmix channel at
 /// −3 dB and stay out of the right. Guards the 12→stereo fold arm: a truncating
 /// front-pair pick would drop Lrs entirely and leave the left channel silent.
@@ -376,7 +376,7 @@ fn atmos_7_1_4_downmixes_surround_into_front() {
     vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),
-        &[(src, Azimuth::new(150.0))], // hard rear-left → Lrs (discrete ch 6)
+        &[(src, Azimuth::new(150.0))], // hard rear-left → Lrs (unassigned ch 6)
     )
     .expect("build 7.1.4 mix");
     bass_send(&mut g, ChannelLayout::from(12u16), &[src]);

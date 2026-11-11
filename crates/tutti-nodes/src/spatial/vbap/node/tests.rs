@@ -421,17 +421,17 @@ fn a_channels_speaker_skips_the_lfe() {
 }
 
 /// A topology is a bed only in the engine's order: the right width in another
-/// order (discrete channels) has no angles to pan to, and the error names it.
+/// order (unassigned channels) has no angles to pan to, and the error names it.
 ///
 /// Mutation (run): `for_topology` dropping the `assumed` comparison -> the
-/// discrete cases build a panner and fail.
+/// unassigned cases build a panner and fail.
 #[test]
 fn a_topology_that_is_not_a_bed_is_refused_by_name() {
     for width in [4u16, 6, 12] {
-        let discrete = ChannelTopology::discrete(ChannelLayout::from(width));
+        let unassigned = ChannelTopology::unassigned(ChannelLayout::from(width));
         assert!(
-            matches!(VbapPannerNode::for_topology(&discrete), Err(VbapError::NoBed(t)) if t == discrete),
-            "{width} discrete channels"
+            matches!(VbapPannerNode::for_topology(&unassigned), Err(VbapError::NoBed(t)) if t == unassigned),
+            "{width} unassigned channels"
         );
     }
     let quad = ChannelTopology::quad();

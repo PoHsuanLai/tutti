@@ -700,7 +700,7 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
 }
 
 /// The node's shape declares the plugin's buses: VST2 reports a width and no
-/// placement, so each bus is `Discrete`, the first is `Main`, and together the
+/// placement, so each bus is `Unassigned`, the first is `Main`, and together the
 /// buses cover every port the shape has.
 ///
 /// Mutation (run): the bus role of the first bus `Aux` fails it. Whether
@@ -726,7 +726,7 @@ fn the_shape_declares_the_plugins_buses() {
                 .topology
                 .positions()
                 .iter()
-                .all(|&s| s == Speaker::Discrete)),
+                .all(|&s| s == Speaker::Unassigned)),
             "VST2 states no placement"
         );
     }

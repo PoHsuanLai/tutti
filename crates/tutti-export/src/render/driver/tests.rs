@@ -237,7 +237,7 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
     struct BeatPorts;
     impl tutti_graph::Node for BeatPorts {
         fn shape(&self) -> tutti_graph::Shape {
-            tutti_graph::Shape::source_discrete(ChannelLayout::STEREO)
+            tutti_graph::Shape::source_unassigned(ChannelLayout::STEREO)
                 .with_tail(tutti_types::Tail::Unbounded)
         }
         fn prepare(&mut self, _: &tutti_graph::Prepare) {}

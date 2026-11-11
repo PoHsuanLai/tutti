@@ -56,7 +56,7 @@ struct Recorder(Seen);
 
 impl Node for Recorder {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_events(1, 0)
+        Shape::source_unassigned(ChannelLayout::MONO).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

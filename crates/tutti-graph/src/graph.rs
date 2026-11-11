@@ -203,7 +203,7 @@ pub enum ParamValue {
     Scalar(f32),
     /// A switch.
     Bool(bool),
-    /// A choice from a discrete list.
+    /// A choice from an unassigned list.
     Index(u32),
 }
 

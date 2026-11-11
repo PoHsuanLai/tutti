@@ -146,7 +146,7 @@ fn a_rear_stands_in_only_for_a_missing_side() {
 ///
 /// Mutation (run): treating a missing topology as the identity order
 /// (`return Ok(None)`) fails the first loop; an unplaced slot falling back to
-/// its own index fails the discrete row.
+/// its own index fails the unassigned row.
 #[test]
 fn a_width_with_no_vorbis_layout_is_refused() {
     for width in [3u16, 4, 5, 7] {
@@ -156,9 +156,9 @@ fn a_width_with_no_vorbis_layout_is_refused() {
             "{width}: {err}"
         );
     }
-    let discrete = ChannelTopology::discrete(ChannelLayout::from(6u16));
+    let unassigned = ChannelTopology::unassigned(ChannelLayout::from(6u16));
     assert!(matches!(
-        vorbis_order(&vorbis_spec(6, Some(discrete))),
+        vorbis_order(&vorbis_spec(6, Some(unassigned))),
         Err(Error::Spec(SpecError::VorbisLayout { channels: 6, .. }))
     ));
     assert!(matches!(
@@ -174,7 +174,7 @@ fn mono_stereo_and_past_eight_are_not_permuted() {
     for width in [1u16, 2, 9, 12] {
         assert!(vorbis_order(&vorbis_spec(width, None)).unwrap().is_none());
     }
-    let t = ChannelTopology::discrete(ChannelLayout::from(10u16));
+    let t = ChannelTopology::unassigned(ChannelLayout::from(10u16));
     assert!(vorbis_order(&vorbis_spec(10, Some(t))).unwrap().is_none());
 }
 

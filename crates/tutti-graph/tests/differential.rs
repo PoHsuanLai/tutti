@@ -3096,7 +3096,7 @@ fn bus_of(width: usize, named: bool) -> Bus {
     let layout = ChannelLayout::from_count(width as u16);
     let topology = match ChannelTopology::smpte(layout).filter(|_| named) {
         Some(t) => BusTopology::try_from(&t).expect("fits a bus"),
-        None => BusTopology::discrete(layout).expect("fits a bus"),
+        None => BusTopology::unassigned(layout).expect("fits a bus"),
     };
     Bus {
         topology,
@@ -3256,7 +3256,7 @@ fn the_bus_generator_reaches_folds_copies_and_mixes() {
 /// `bus_graph(seed)` with a declared root and bus edges into it, drawn from a
 /// stream of their own (`seed ^ 0x0B05_4007`), after the graph, so neither
 /// `bus_graph`'s draws nor any other generator's move. The root is 1, 2 or 6
-/// channels, named or discrete; its ordinary output sources past its width
+/// channels, named or unassigned; its ordinary output sources past its width
 /// are dropped, and a root edge is kept when the spec still lowers (an
 /// unfoldable pair, or a lane on an ordinary output source, is not).
 fn root_bus_graph(seed: u64) -> BusGraph {

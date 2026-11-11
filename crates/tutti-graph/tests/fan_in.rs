@@ -517,7 +517,7 @@ struct Switch(Arc<AtomicBool>);
 
 impl Node for Switch {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -540,7 +540,7 @@ struct Probe {
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

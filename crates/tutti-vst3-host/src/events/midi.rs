@@ -91,23 +91,19 @@ impl MidiEncoder {
     fn voice2(&self, offset: i32, channel: MidiChannel, voice: Voice2) -> Option<Event> {
         let ch = channel.get();
         match voice {
-            // A MIDI 2.0 Note On at velocity 0 is sent as a Note Off at
-            // release velocity 0, though M2-104 §7.4.2 keeps it a Note On. A
-            // widened MIDI 1.0 Note On at velocity 0 never gets here: it
-            // arrives as a Note Off.
+            // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 §7.4.2:
+            // velocity 0 "does not function as a Note Off"). VST3 plugins, and
+            // the SDK's own MIDI conversion, read a NoteOnEvent at velocity 0
+            // as a release, so it goes at the smallest velocity the field
+            // carries above 0: M2-104 D.2's rule for a note-on that cannot be
+            // 0 (velocity 0 -> 1). CLAP carries the 0 (its note-on has no such
+            // convention). A widened MIDI 1.0 Note On at velocity 0 never gets
+            // here: it arrives as a Note Off.
             Voice2::NoteOn {
                 note, velocity: 0, ..
-            } => Some(note_off(offset, channel, note, 0)),
+            } => Some(note_on(offset, channel, note, 1)),
             // The attribute is not read: the Note On's `tuning` stays 0.
-            Voice2::NoteOn { note, velocity, .. } => Some(Event::at(
-                offset,
-                Payload::NoteOn(NoteOn::new(
-                    ch.into(),
-                    note.get().into(),
-                    u16_to_unit_f32(velocity),
-                    note_id_for(channel, note),
-                )),
-            )),
+            Voice2::NoteOn { note, velocity, .. } => Some(note_on(offset, channel, note, velocity)),
             Voice2::NoteOff { note, velocity, .. } => {
                 // The release velocity, at its full width.
                 Some(note_off(offset, channel, note, velocity))
@@ -213,6 +209,18 @@ pub(super) fn bank_program(ump: &Ump) -> Option<[Midi1Bytes; 3]> {
     })?;
     let mut messages = midi1(message);
     Some([messages.next()?, messages.next()?, messages.next()?])
+}
+
+fn note_on(offset: i32, channel: MidiChannel, note: NoteNumber, velocity: u16) -> Event {
+    Event::at(
+        offset,
+        Payload::NoteOn(NoteOn::new(
+            channel.get().into(),
+            note.get().into(),
+            u16_to_unit_f32(velocity),
+            note_id_for(channel, note),
+        )),
+    )
 }
 
 fn note_off(offset: i32, channel: MidiChannel, note: NoteNumber, velocity: u16) -> Event {

@@ -1,14 +1,14 @@
 //! The lookahead limiter's delay ring with its sliding gain minimum, and the
 //! brickwall clip.
 
-use crate::buffer::{CircularBuffer, MonotonicMinDeque};
+use super::window::{FixedDelay, MonotonicMinDeque};
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 #[derive(Clone, Debug)]
 pub struct LookaheadRing {
     /// One lookahead ring per audio channel; `buffers.len()` == width. Built at
     /// construction — never resized in the RT path.
-    buffers: Vec<CircularBuffer<f32>>,
+    buffers: Vec<FixedDelay>,
     min_deque: MonotonicMinDeque,
     sample_counter: u64,
     lookahead_samples: usize,
@@ -20,9 +20,7 @@ impl LookaheadRing {
     pub fn new(channels: usize, lookahead_samples: usize) -> Self {
         let n = lookahead_samples.max(1);
         Self {
-            buffers: (0..channels.max(1))
-                .map(|_| CircularBuffer::new(n))
-                .collect(),
+            buffers: (0..channels.max(1)).map(|_| FixedDelay::new(n)).collect(),
             // n + 1 frames: the one delayed out now and the n after it.
             min_deque: MonotonicMinDeque::new(n + 1),
             sample_counter: 0,
@@ -72,7 +70,7 @@ impl LookaheadRing {
     pub fn delay_scaled(&mut self, c: usize, input: &[f32], gains: &[f32], out: &mut [f32]) {
         let ring = &mut self.buffers[c];
         for ((o, &x), &g) in out.iter_mut().zip(input).zip(gains) {
-            let d = ring.replace_oldest(x);
+            let d = ring.step(x);
             // A NaN in both operands: x86 returns the first one's and which
             // is first is up to the compiler, so pick the delayed sample's
             // (as the per-frame product did) to keep the sign bit.

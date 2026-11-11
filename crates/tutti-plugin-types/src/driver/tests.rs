@@ -13,9 +13,9 @@
 use super::*;
 use crate::fake::{Call, FakeLoaded, FakePlugin};
 use crate::{
-    AudioBuffer, AudioBufferMut, ContentScale, HostOp, MaxBlock, PluginError, PluginIo, PluginTail,
+    AudioBuffer, AudioBufferMut, HostOp, MaxBlock, PluginError, PluginIo, PluginTail,
     ProcessContext, ProcessOutput, RenderMode, Request, RequestWord, SampleFormat, Samples, Stage,
-    WindowHandle, taken,
+    taken,
 };
 
 /// The test process's main thread: nextest runs each test in its own process,
@@ -823,12 +823,6 @@ fn the_fake_control_answers_nothing_in_either_state() {
 
         assert!(!control.set_render_mode(&main, RenderMode::Offline));
         assert!(!control.has_editor(&main));
-        // SAFETY: the null handle is never dereferenced: the default refuses.
-        let parent = unsafe { WindowHandle::from_raw(std::ptr::null_mut()) };
-        assert!(matches!(
-            control.open_editor(&main, parent, ContentScale::IDENTITY),
-            Err(PluginError::Editor(_))
-        ));
         assert!(matches!(
             control.open_floating_editor(&main),
             Err(PluginError::Editor(_))

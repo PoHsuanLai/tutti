@@ -24,9 +24,9 @@
 # - outside `tutti-vst2-ffi` and `tutti-vst2-host`, `unsafe` before the test module of a file
 #   whose path has `vst2` in it or that names `tutti_vst2_host` or `tutti_vst2_ffi` is pinned
 #   to the known caller sites (`VST2_CALLERS`, none now: the in-process node is generic over
-#   the format and names no VST2 type; its `WindowHandle` decode for
-#   `PluginHandle::open_editor`'s raw pointer, in `tutti-plugin-host`). A
-#   new one fails here, and so does a removed one until its pin is lowered.
+#   the format and names no VST2 type, and a parent window is built safely,
+#   `WindowHandle::from_window`). A new one fails here, and so does a removed one
+#   until its pin is lowered.
 #
 # Comments and string literals are not code: prose that says "unsafe" is fine.
 #
@@ -64,11 +64,15 @@ FORMATS = [
             "crates/tutti-plugin-server/src/loaders/vst3.rs",
         ],
     ),
-    # The AU loaders still carry two `unsafe` sites of their own
-    # (`WindowHandle::from_raw`, doc 016 step 5), so only the host and the FFI
-    # crate are held here.
-    ("AU", "crates/tutti-au-host", "crates/tutti-au-ffi", []),
-    # The loaders' `WindowHandle` decodes are pinned below (`VST2_CALLERS`).
+    (
+        "AU",
+        "crates/tutti-au-host",
+        "crates/tutti-au-ffi",
+        [
+            "crates/tutti-plugin-server/src/loaders/au.rs",
+            "crates/tutti-plugin/src/format/gui/au.rs",
+        ],
+    ),
     ("VST2", "crates/tutti-vst2-host", "crates/tutti-vst2-ffi", []),
 ]
 

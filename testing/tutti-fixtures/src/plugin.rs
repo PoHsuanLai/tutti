@@ -4,13 +4,47 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use tutti_plugin_types::{Loaded, MainThread, PluginError, Prepare};
+use tutti_plugin_types::{Loaded, MainThread, PluginError, Prepare, WindowHandle};
 
 /// This process's main thread, claimed by the calling thread. Each test is its
 /// own process under nextest, so the claim cannot be refused; a test that calls
 /// it from two threads panics, which is the point.
 pub fn main_thread() -> MainThread {
     MainThread::claim().expect("one test, one process")
+}
+
+/// A window that names no window, for a test whose plugin, or whose host path,
+/// refuses or ignores its parent before embedding: a probe that never touches
+/// it, a host that must reject an editorless plugin first, a plugin that cannot
+/// be loaded. Pass it where an API takes `impl HasWindowHandle`, or its
+/// [`handle`](Self::handle) where one takes a [`WindowHandle`].
+///
+/// Handing it to a plugin that does embed is a crash in that plugin, which is
+/// why the suites reach a stand-in only here.
+#[derive(Debug, Clone, Copy)]
+pub struct StandInWindow;
+
+impl StandInWindow {
+    /// The stand-in as a plugin's parent [`WindowHandle`].
+    pub fn handle(self) -> WindowHandle {
+        WindowHandle::from_window(&self).expect("an AppKit handle is one every platform names")
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for StandInWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let view = std::ptr::NonNull::<std::ffi::c_void>::dangling();
+        let raw = raw_window_handle::RawWindowHandle::AppKit(
+            raw_window_handle::AppKitWindowHandle::new(view),
+        );
+        #[allow(unsafe_code, reason = "a test's stand-in window; see the type")]
+        // SAFETY: `borrow_raw` wants a window valid for the borrow. This one is
+        // not, which the type's callers allow: their path fails or ignores
+        // the parent before it embeds.
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
+    }
 }
 
 /// How one format makes and unmakes an activation's two halves: the part of

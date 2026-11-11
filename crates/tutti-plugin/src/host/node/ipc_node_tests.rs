@@ -365,15 +365,8 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
     use tutti_plugin_ipc::{BridgeConfig, Ipc};
     use tutti_plugin_types::Control;
     let _machine = machine_lock();
-    // SAFETY: the machine lock is held for the whole test.
-    unsafe {
-        std::env::set_var(
-            "TUTTI_PLUGIN_SERVER",
-            tutti_fixtures::plugin_server()
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
+    let mut env = tutti_fixtures::ScopedEnv::new();
+    env.set("TUTTI_PLUGIN_SERVER", tutti_fixtures::plugin_server());
     let first = Ipc::launch(
         BridgeConfig::default(),
         tutti_fixtures::clap_probe().to_path_buf(),

@@ -23,7 +23,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::main_thread;
 
-use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, LoadOptions, WindowHandle};
+use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, LoadOptions};
 use tutti_clap_test_plugin::{
     GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE, GUI_CALL_CREATE,
     GUI_CALL_DESTROY, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE, GUI_CALL_HIDE,
@@ -33,16 +33,13 @@ use tutti_clap_test_plugin::{
     GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH,
     GuiCapture, GuiMode,
 };
+use tutti_fixtures::StandInWindow;
 use tutti_plugin_types::EditorWindow;
 
 /// Serializes whole scenarios — set mode → reset → load → drive → read — so one
 /// test cannot observe another's calls or run against another's selected
 /// [`GuiMode`].
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
-
-/// A stand-in parent window handle, never dereferenced. Non-null rather than
-/// null so it proves the host forwarded *our* handle instead of a zero.
-const FAKE_PARENT: usize = 0xDEAD_BEEF;
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -105,14 +102,6 @@ impl Drop for Probe {
     fn drop(&mut self) {
         set_gui_mode(GuiMode::Absent as u32);
     }
-}
-
-/// A parent-window handle for `open_editor`.
-///
-/// # Safety
-/// The probe never dereferences it; see [`FAKE_PARENT`].
-fn fake_parent() -> WindowHandle {
-    unsafe { WindowHandle::from_raw(FAKE_PARENT as *mut std::ffi::c_void) }
 }
 
 // --- the exported C symbols, reached across the dlopen seam -----------------
@@ -248,7 +237,11 @@ fn has_editor_false_for_floating_only_plugin() {
 
     assert!(
         loaded
-            .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+            .open_editor(
+                &main_thread(),
+                StandInWindow.handle(),
+                ContentScale::IDENTITY
+            )
             .is_err(),
         "and open_editor confirms it — the two must not disagree"
     );
@@ -371,7 +364,11 @@ fn open_editor_runs_the_spec_embed_sequence() {
     let mut loaded = probe.load();
 
     let size = loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("embeddable plugin opens");
 
     assert_eq!(
@@ -431,7 +428,7 @@ fn open_editor_calls_set_scale_only_on_a_physical_pixel_api() {
     loaded
         .open_editor(
             &main_thread(),
-            fake_parent(),
+            StandInWindow.handle(),
             ContentScale::new(2.0).expect("a scale"),
         )
         .expect("embeddable plugin opens");
@@ -479,7 +476,11 @@ fn open_editor_refuses_floating_only_before_create() {
     let mut loaded = probe.load();
 
     let err = loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect_err("floating-only plugin cannot be embedded");
     let msg = format!("{err}");
     assert!(
@@ -508,7 +509,11 @@ fn close_editor_destroys_exactly_once() {
     let mut loaded = probe.load();
 
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
     assert_eq!(probe.capture().create_balance, 1, "one live editor");
 
@@ -556,7 +561,11 @@ fn close_editor_destroys_after_plugin_window_was_destroyed() {
     let mut loaded = probe.load();
 
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
 
     // Driven out-of-band — *between* the host's calls. The during-`show` case
@@ -615,7 +624,11 @@ fn close_editor_destroys_after_window_was_destroyed_during_show() {
     // of the host's embed sequence.
     probe.command(GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW);
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
 
     assert!(
@@ -663,7 +676,11 @@ fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
 
     probe.command(GUI_CMD_CLOSED_NOT_DESTROYED);
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
 
     assert!(loaded.take_gui_closed(), "the host records the callback");
@@ -702,7 +719,11 @@ fn editor_capabilities_reports_plugin_hints() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
     gui_reset();
 
@@ -764,7 +785,11 @@ fn resize_editor_forwards_the_adjusted_size() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
     gui_reset();
 
@@ -820,7 +845,11 @@ fn resize_editor_fails_when_plugin_cannot_adjust() {
     let probe = Probe::acquire(GuiMode::FixedSize);
     let mut loaded = probe.load();
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
     gui_reset();
 
@@ -864,7 +893,11 @@ fn editor_capabilities_reports_fixed_size_as_not_resizable() {
     let probe = Probe::acquire(GuiMode::FixedSize);
     let mut loaded = probe.load();
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
 
     let caps = loaded.editor_capabilities(&main_thread());
@@ -900,7 +933,11 @@ fn take_editor_resize_request_delivers_once() {
     // the host still considers the editor live.
     probe.command(GUI_CMD_REQUEST_RESIZE);
     loaded
-        .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
         .expect("opens");
 
     assert_eq!(
@@ -934,7 +971,11 @@ fn drop_destroys_a_live_editor() {
     {
         let mut loaded = probe.load();
         loaded
-            .open_editor(&main_thread(), fake_parent(), ContentScale::IDENTITY)
+            .open_editor(
+                &main_thread(),
+                StandInWindow.handle(),
+                ContentScale::IDENTITY,
+            )
             .expect("opens");
         assert_eq!(probe.capture().create_balance, 1, "one live editor");
     }
@@ -979,7 +1020,7 @@ fn open_floating_editor_runs_the_spec_sequence() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(StandInWindow.handle()), TEST_TITLE)
         .expect("a floating-only plugin must open in floating mode");
 
     let cap = probe.capture();
@@ -1013,7 +1054,7 @@ fn the_floating_path_asks_only_the_floating_question() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(StandInWindow.handle()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let cap = probe.capture();
@@ -1044,7 +1085,7 @@ fn a_floating_editor_is_asked_for_no_geometry() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(StandInWindow.handle()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let observed = calls(&probe.capture());
@@ -1076,7 +1117,7 @@ fn the_host_suggests_a_window_title() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(StandInWindow.handle()), TEST_TITLE)
         .expect("floating open should succeed");
 
     let cap = probe.capture();
@@ -1125,7 +1166,7 @@ fn close_editor_tears_down_a_floating_editor() {
     let mut loaded = probe.load();
 
     loaded
-        .open_floating_editor_with(&main_thread(), Some(fake_parent()), TEST_TITLE)
+        .open_floating_editor_with(&main_thread(), Some(StandInWindow.handle()), TEST_TITLE)
         .expect("floating open should succeed");
     loaded.close_editor(&main_thread());
 

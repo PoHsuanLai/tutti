@@ -253,10 +253,10 @@ fn opening_an_editor_on_an_editorless_plugin_says_so() {
     let _guard = lock_probe();
     let mut instance = load_probe_with(&[]);
 
-    // SAFETY: the null parent is never dereferenced. A correct host rejects
+    // The null parent is never dereferenced. A correct host rejects
     // before dispatching `effEditOpen` (the property under test), and on a
     // regression the probe's editor refuses to open rather than touching it.
-    let parent = unsafe { tutti_vst2_host::WindowHandle::from_raw(std::ptr::null_mut()) };
+    let parent = tutti_fixtures::StandInWindow.handle();
 
     let err = instance
         .loaded_mut()

@@ -21,8 +21,8 @@ pub use host::{
     Vst3Controller, Vst3Editor, Vst3Loaded, Vst3Processor, descriptor_of,
 };
 pub use types::{
-    AudioBuffer, BufferPtrs, BusInfo, BusType, ContentScale, EditorCapabilities, EditorSize,
-    KeyEvent, KeyModifiers, KeyOutcome, KeyswitchKind, NoteExpressionFlags, NoteExpressionIntValue,
+    AudioBuffer, BusInfo, BusType, ContentScale, EditorCapabilities, EditorSize, KeyEvent,
+    KeyModifiers, KeyOutcome, KeyswitchKind, NoteExpressionFlags, NoteExpressionIntValue,
     NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterFlags, ParameterPoint,
     ParameterQueue, PhysicalUiType, PlainRange, PluginInfo, PrefetchSupport,
     ProcessContextRequirements, ProcessMode, ProcessOutput, ProcessOutputRef, Sample,

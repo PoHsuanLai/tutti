@@ -6,6 +6,7 @@
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+mod bundle;
 mod callback;
 mod cf;
 mod component;
@@ -23,6 +24,7 @@ mod status;
 mod transport;
 mod unit;
 
+pub use bundle::{BundleError, DeclaredComponent, declared_components};
 pub use cf::{
     NotADictionary, PresetFacts, cfstring_to_string_checked, preset_facts, preset_with_identity,
 };

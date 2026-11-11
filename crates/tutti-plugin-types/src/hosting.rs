@@ -38,7 +38,8 @@ impl Load {
     }
 
     /// The plugin with this id in a file that exports several: a CLAP plugin
-    /// id, a VST3 class name. A format whose files hold one plugin refuses a
+    /// id, a VST3 class name, an AU descriptor id (`au.<type>.<subtype>.<manufacturer>`).
+    /// A format whose files hold one plugin refuses a
     /// choice.
     #[must_use]
     pub fn plugin(mut self, id: impl Into<String>) -> Self {

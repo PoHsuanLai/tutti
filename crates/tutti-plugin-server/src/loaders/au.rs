@@ -42,16 +42,17 @@ pub struct AuInstance {
 impl AuInstance {
     /// Loads and initializes an Audio Unit from a `.component` bundle path.
     ///
-    /// AU plugins are registered system-wide; the path is used for identification
-    /// but the actual loading goes through the component registry.
+    /// The bundle declares its units and `load` picks one (the bundle's first
+    /// with no choice); the instance comes from the component registry.
     #[cfg(test)]
     pub fn load(
         main: &MainThread,
         path: &Path,
+        load: &Load,
         sample_rate: f64,
         block_size: usize,
     ) -> BridgeResult<Self> {
-        Self::load_with_state(main, path, sample_rate, block_size, None, &mut || {})
+        Self::load_with_state(main, path, load, sample_rate, block_size, None, &mut || {})
             .map(|(instance, _)| instance)
     }
 
@@ -62,12 +63,13 @@ impl AuInstance {
     pub fn load_with_state(
         main: &MainThread,
         path: &Path,
+        load: &Load,
         sample_rate: f64,
         block_size: usize,
         state: Option<&[u8]>,
         before_restore: &mut dyn FnMut(),
     ) -> BridgeResult<(Self, Option<String>)> {
-        let loaded = AuLoaded::load(main, path, &Load::new()).map_err(|e| match e {
+        let loaded = AuLoaded::load(main, path, load).map_err(|e| match e {
             PluginError::Load { stage, reason } => BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage,
@@ -493,9 +495,18 @@ mod tests {
     };
 
     const RATE: f64 = 44_100.0;
+    /// The bundle every Apple unit is declared in.
+    const CORE_AUDIO: &str = "/System/Library/Components/CoreAudio.component";
 
     fn delay() -> AuInstance {
-        AuInstance::load(&main_thread(), Path::new("AUDelay"), RATE, 512).expect("AUDelay loads")
+        AuInstance::load(
+            &main_thread(),
+            Path::new(CORE_AUDIO),
+            &Load::new().plugin("au.aufx.dely.appl"),
+            RATE,
+            512,
+        )
+        .expect("AUDelay loads")
     }
 
     /// One stereo block of `frames` through `au`, with the given context pieces.

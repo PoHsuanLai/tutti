@@ -1,19 +1,22 @@
 //! Finding an Audio Unit by the bundle it was installed from, and loading it.
 //!
-//! AU plugins are registered system-wide: the path names the bundle, but the
-//! instance comes from the component registry (`AudioComponentFindNext`), so
-//! the lookup matches the bundle's file stem against the registered names.
+//! AU plugins are registered system-wide: the instance comes from the component
+//! registry (`AudioComponentFindNext`), but the bundle says which units it
+//! installed. The lookup reads the bundle's declared components and resolves
+//! the chosen one by its exact type, subtype and manufacturer.
 
 #![cfg(target_os = "macos")]
 
 use std::path::Path;
 
+use tutti_au_ffi::declared_components;
 use tutti_plugin_types::{Load, LoadStage, MainThread, Origin, PluginError, PluginResult};
 
 use crate::bus::BusDirection;
-use crate::component::{AuComponentInfo, enumerate_components};
-use crate::control::plugin_error;
+use crate::component::{AuType, find_component};
+use crate::control::{descriptor_id, plugin_error};
 use crate::instance::AuLoaded;
+use crate::types::AudioComponentDescription;
 
 /// The stream configuration a unit is created at: the activation applies its
 /// own rate and block ceiling, so these only have to be a configuration the
@@ -21,38 +24,61 @@ use crate::instance::AuLoaded;
 const LOAD_RATE: f64 = 44_100.0;
 const LOAD_BLOCK: u32 = 512;
 
-/// The registered component whose name matches the bundle's file stem.
-fn find(path: &Path) -> PluginResult<AuComponentInfo> {
-    let bundle_name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
+/// The Audio Units the bundle at `path` declares, as the descriptor id a
+/// [`Load`] names them by and the exact description the registry resolves.
+fn declared(path: &Path) -> PluginResult<Vec<(String, AudioComponentDescription)>> {
+    let scanning = |reason: String| PluginError::Load {
+        stage: LoadStage::Scanning,
+        reason,
+    };
+    let entries = declared_components(path).map_err(|e| {
+        scanning(format!(
+            "'{}' is not an Audio Unit bundle: {e}",
+            path.display()
+        ))
+    })?;
+    // The host classifies the types it knows; a declared type it cannot is no
+    // unit it can load.
+    let units: Vec<_> = entries
+        .into_iter()
+        .filter(|c| !matches!(AuType::from_raw(c.desc.componentType), AuType::Unknown(_)))
+        .map(|c| (descriptor_id(&c.desc), c.desc))
+        .collect();
+    if units.is_empty() {
+        return Err(scanning(format!(
+            "'{}' declares no Audio Unit",
+            path.display()
+        )));
+    }
+    Ok(units)
+}
 
-    let components = enumerate_components();
-    let matching = components.iter().find(|c| {
-        // AU names are typically "Manufacturer: PluginName": match if the name
-        // contains this plugin's bundle name, or is exactly the part after ": ".
-        c.name.contains(&bundle_name)
-            || c.name.ends_with(&bundle_name)
-            || c.name.split(": ").last().is_some_and(|n| n == bundle_name)
-    });
-    match matching {
-        Some(info) => Ok(info.clone()),
-        None => Err(PluginError::Load {
+/// The unit `load` selects among the bundle's `units`: the first with no
+/// choice, otherwise the one whose id is the choice.
+fn select(
+    path: &Path,
+    units: &[(String, AudioComponentDescription)],
+    chosen: Option<&str>,
+) -> PluginResult<AudioComponentDescription> {
+    let Some(id) = chosen else {
+        return Ok(units[0].1);
+    };
+    units
+        .iter()
+        .find(|(declared, _)| declared == id)
+        .map(|(_, desc)| *desc)
+        .ok_or_else(|| PluginError::Load {
             stage: LoadStage::Scanning,
             reason: format!(
-                "No Audio Unit component found matching '{}'. Available AUs: {}",
-                bundle_name,
-                components
+                "'{}' declares no Audio Unit '{id}'; it declares: {}",
+                path.display(),
+                units
                     .iter()
-                    .take(10)
-                    .map(|c| c.name.as_str())
+                    .map(|(declared, _)| declared.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-        }),
-    }
+        })
 }
 
 impl AuLoaded {
@@ -65,22 +91,31 @@ impl AuLoaded {
     /// not a failed load. The property listener is started
     /// ([`watch_properties`](Self::watch_properties)).
     ///
-    /// An AU file holds one plugin, so a [`Load`] that names one is refused.
+    /// The unit is chosen from the bundle's own declaration (`AudioComponents`
+    /// in its `Info.plist`) and resolved in the registry by its exact type,
+    /// subtype and manufacturer. With no choice it is the bundle's first Audio
+    /// Unit; a [`Load`] that names a plugin picks the one whose descriptor id
+    /// (`au.<type>.<subtype>.<manufacturer>`, see
+    /// [`PluginDescriptor::id`](tutti_plugin_types::PluginDescriptor::id)) it is.
     ///
     /// # Errors
-    /// [`PluginError::Load`] with the stage reached: `Scanning` when no
-    /// registered component matches, `Instantiation` when the component cannot be
+    /// [`PluginError::Load`] with the stage reached: `Scanning` when the path
+    /// is not a bundle that declares an Audio Unit, the choice is not among its
+    /// units, or the chosen unit is not registered, `Instantiation` when the component cannot be
     /// created, `Initialization` for a bus no channel layout holds.
     pub fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
         let _ = main;
-        if let Some(chosen) = load.chosen() {
-            return Err(PluginError::Load {
-                stage: LoadStage::Opening,
-                reason: format!("an Audio Unit bundle holds one plugin, not '{chosen}'"),
-            });
-        }
-        let info = find(path)?;
-        let mut loaded = AuLoaded::new(info.component, LOAD_RATE, LOAD_BLOCK).map_err(|e| {
+        let units = declared(path)?;
+        let desc = select(path, &units, load.chosen())?;
+        let component = find_component(&desc).ok_or_else(|| PluginError::Load {
+            stage: LoadStage::Scanning,
+            reason: format!(
+                "'{}' declares {}, which the system has not registered",
+                path.display(),
+                descriptor_id(&desc)
+            ),
+        })?;
+        let mut loaded = AuLoaded::new(component, LOAD_RATE, LOAD_BLOCK).map_err(|e| {
             match plugin_error(e) {
                 // The component's own failure, at the stage it reports.
                 load @ PluginError::Load { .. } => load,

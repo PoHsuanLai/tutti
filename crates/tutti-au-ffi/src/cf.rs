@@ -301,7 +301,7 @@ pub struct PresetFacts {
     pub name: Option<String>,
 }
 
-type PresetDict = CFDictionary<CfCFString, CFType>;
+pub(crate) type PresetDict = CFDictionary<CfCFString, CFType>;
 
 /// Why a byte string is not a preset dictionary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,7 +350,7 @@ fn parse_dict(bytes: &[u8]) -> std::result::Result<PresetDict, NotADictionary> {
     Ok(dict)
 }
 
-fn dict_i64(dict: &PresetDict, key: &str) -> Option<i64> {
+pub(crate) fn dict_i64(dict: &PresetDict, key: &str) -> Option<i64> {
     let cf_key = CfCFString::new(key);
     let value = dict.find(&cf_key)?;
     if value.type_of() != CFNumber::type_id() {
@@ -366,7 +366,7 @@ fn dict_i64(dict: &PresetDict, key: &str) -> Option<i64> {
     number.to_i64()
 }
 
-fn dict_string(dict: &PresetDict, key: &str) -> Option<String> {
+pub(crate) fn dict_string(dict: &PresetDict, key: &str) -> Option<String> {
     let cf_key = CfCFString::new(key);
     let value = dict.find(&cf_key)?;
     // SAFETY: a value of a live dictionary is a live CoreFoundation object.

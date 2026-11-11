@@ -31,7 +31,7 @@ use crate::handle::AuHandle;
 use crate::instance::AuLoaded;
 use crate::parameters;
 use crate::ranges::RangeTable;
-use crate::types::fourcc_to_string;
+use crate::types::{AudioComponentDescription, fourcc_to_string};
 
 /// The wire's mirror of the AU host's component type.
 fn class_of(au_type: AuType) -> AuComponentType {
@@ -48,17 +48,34 @@ fn class_of(au_type: AuType) -> AuComponentType {
     }
 }
 
+/// The id a unit carries in a [`PluginDescriptor`], and the one a
+/// [`Load`](tutti_plugin_types::Load) names to choose it from a bundle:
+/// `au.<type>.<subtype>.<manufacturer>`, each the four characters of its code
+/// (a space kept: `au.aumu.dls .appl`). The type is in it because an effect and
+/// an instrument of one manufacturer can share a subtype. The descriptor and
+/// the bundle lookup both use this function, so they cannot disagree.
+pub(crate) fn descriptor_id(desc: &AudioComponentDescription) -> String {
+    format!(
+        "au.{}.{}.{}",
+        fourcc_to_string(desc.componentType),
+        fourcc_to_string(desc.componentSubType),
+        fourcc_to_string(desc.componentManufacturer),
+    )
+}
+
 /// The unit's identity in the shared vocabulary, with the editor measured now:
 /// a Cocoa view is a property of the instance, readable before `initialize`.
 pub(crate) fn describe(handle: &AuHandle) -> PluginDescriptor {
     let info = component_info(handle.component());
     let (id, vendor, version) = match &info {
         Some(info) => (
-            format!(
-                "au.{}.{}",
-                fourcc_to_string(info.manufacturer_code),
-                fourcc_to_string(info.sub_type),
-            ),
+            descriptor_id(&AudioComponentDescription {
+                componentType: info.component_type.to_raw(),
+                componentSubType: info.sub_type,
+                componentManufacturer: info.manufacturer_code,
+                componentFlags: 0,
+                componentFlagsMask: 0,
+            }),
             info.manufacturer.clone(),
             info.version.clone(),
         ),

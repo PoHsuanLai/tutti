@@ -31,7 +31,11 @@ pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> BridgeResult<
         #[cfg(feature = "clap")]
         PluginFormat::Clap => editor::<tutti_clap_host::ClapLoaded>(main, path, "CLAP"),
         #[cfg(all(feature = "au", target_os = "macos"))]
-        PluginFormat::AudioUnit => Ok(Box::new(au::AuGuiInstance::load(main, path)?)),
+        PluginFormat::AudioUnit => Ok(Box::new(au::AuGuiInstance::load(
+            main,
+            path,
+            &tutti_plugin_types::Load::new(),
+        )?)),
         PluginFormat::Vst2 => Err(BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Opening,

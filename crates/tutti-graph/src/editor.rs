@@ -1140,6 +1140,32 @@ impl Editor {
         self.spec.disconnect_bus(from, to)
     }
 
+    /// Declares the bus edge `from -> root`: the output bus `from` feeds the
+    /// graph's outputs, folded to the declared root topology
+    /// ([`GraphSpec::root`]). Checked here, as [`connect_bus`](Self::connect_bus)
+    /// is, and nothing is stored on a failure. An undeclared root refuses it.
+    ///
+    /// # Errors
+    ///
+    /// [`BusError::RootUndeclared`], [`BusError::NoSuchNode`],
+    /// [`BusError::NoSuchBus`], [`BusError::GlobalTooWide`],
+    /// [`BusError::RootFold`], and [`BusError::Overlaps`] /
+    /// [`BusError::GainOnLane`] when a lane lands on an output source or a
+    /// gain the spec already has.
+    pub fn connect_bus_to_root(&mut self, from: BusSource) -> Result<(), BusError> {
+        self.spec.check_root_bus_edge(&self.shapes, from)?;
+        self.touch();
+        self.spec.connect_bus_to_root(from);
+        Ok(())
+    }
+
+    /// Removes the bus edge `from -> root`, its lanes with it. Returns
+    /// whether it was declared.
+    pub fn disconnect_bus_from_root(&mut self, from: BusSource) -> bool {
+        self.touch();
+        self.spec.disconnect_bus_from_root(from)
+    }
+
     /// The spec with its bus edges lowered against the shapes as they stand:
     /// what the next commit compiles ([`GraphSpec::lowered`]).
     ///
@@ -1158,7 +1184,7 @@ impl Editor {
         spec: &GraphSpec,
         shapes: &Shapes,
     ) -> Result<(ValidGraph, BTreeMap<EdgeId, Amplitude>), CommitError> {
-        if spec.bus_edges.is_empty() {
+        if !spec.has_bus_edges() {
             let valid = spec.validate().map_err(CommitError::Invalid)?;
             return Ok((valid, BTreeMap::new()));
         }
@@ -1662,9 +1688,7 @@ impl Editor {
         if self.spec.has_edge(id) {
             return Ok(());
         }
-        if !self.spec.bus_edges.is_empty()
-            && self.lowered().is_ok_and(|l| l.lanes.contains_key(&id))
-        {
+        if self.spec.has_bus_edges() && self.lowered().is_ok_and(|l| l.lanes.contains_key(&id)) {
             return Err(GraphInvalid::GainOnBusLane { id });
         }
         Err(GraphInvalid::GainWithoutEdge { id })
@@ -1909,6 +1933,9 @@ impl Editor {
     pub fn remove(&mut self, key: NodeKey) {
         self.touch();
         // A bus edge that touches the node goes with it, as its edges do.
+        self.spec
+            .root_sources
+            .retain(|s| !matches!(s, BusSource::Node(b) if b.node == key));
         self.spec.bus_edges.retain(|to, sources| {
             sources.retain(|s| !matches!(s, BusSource::Node(b) if b.node == key));
             to.node != key && !sources.is_empty()

@@ -897,7 +897,7 @@ impl Editor {
     ) -> Result<PendingFork, ForkError> {
         // A bus edge is its lanes in the fork: it forks the lowered spec, so
         // the lanes are edges (and its weights are gains) like any other.
-        let lowered = if self.spec().bus_edges.is_empty() {
+        let lowered = if !self.spec().has_bus_edges() {
             None
         } else {
             Some(
@@ -1037,6 +1037,8 @@ impl Editor {
             // The fork is of the lowered spec: a bus edge is already its
             // lanes.
             bus_edges: BTreeMap::new(),
+            root: None,
+            root_sources: Vec::new(),
         };
         // The edge gains whose edge the fork kept (an output channel the
         // fork rewired to one node has none): the fork sums as the live graph

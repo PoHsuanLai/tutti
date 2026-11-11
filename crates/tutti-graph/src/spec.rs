@@ -22,7 +22,7 @@ use crate::{ChannelFeed, LatencyGraph, PortFeed};
 use crate::{Edge, EdgeId, InPort, Sink, Source};
 use crate::{Invalid, Valid};
 use crate::{NodeKey, Topology};
-use tutti_types::{Mix, Samples};
+use tutti_types::{BusTopology, Mix, Samples};
 
 use crate::node::Resolution;
 use crate::param::{ParamIn, ParamMod, ParamRange};
@@ -177,6 +177,17 @@ pub struct GraphSpec {
     /// [`Editor::commit`](crate::Editor::commit) lowers for you. An empty
     /// `Vec` is the same as an absent key.
     pub bus_edges: BTreeMap<BusRef, Vec<BusSource>>,
+    /// The declared topology of the root, the graph's outputs, as a bus (doc
+    /// 013, "Buses", B4): what a bus edge into the root folds to. `None` is
+    /// undeclared. Every root the engine renders
+    /// ([`MAX_ROOT_CHANNELS`](crate::MAX_ROOT_CHANNELS), 8) fits a bus
+    /// ([`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS), 16). The session
+    /// keeps it in step with its root declaration.
+    pub root: Option<BusTopology>,
+    /// Bus edges into the root, in source order
+    /// ([`connect_bus_to_root`](Self::connect_bus_to_root)): lowered, as
+    /// `bus_edges` are, to lanes on the output channels.
+    pub root_sources: Vec<BusSource>,
 }
 
 impl GraphSpec {
@@ -509,6 +520,8 @@ impl GraphSpec {
             params,
             gains,
             bus_edges,
+            root,
+            root_sources,
             // A control: the plan does not read it.
             modes: _,
             mixes: _,
@@ -519,6 +532,8 @@ impl GraphSpec {
         *topology == other.topology
             && *events == other.events
             && *bus_edges == other.bus_edges
+            && *root == other.root
+            && *root_sources == other.root_sources
             && *generations == other.generations
             && *required_resolution == other.required_resolution
             && wired(params).eq(wired(&other.params))
@@ -609,7 +624,7 @@ impl GraphSpec {
                 });
             }
         }
-        if !self.bus_edges.is_empty() {
+        if self.has_bus_edges() {
             errs.push(GraphInvalid::BusEdgesUnlowered);
         }
         for &node in self.modes.keys() {

@@ -153,7 +153,7 @@ prelude.
 handed), so it cannot own the proof. The caller that has one makes a view:
 
 ```rust
-let mut ui: MainSession<'_> = session.main(main);   // &mut Session + MainThread; !Send
+let mut ui: MainSession<'_> = session.main(main);   // &mut Session + MainThread; !Send; no state of its own
 ui.update();                                         // services editors, lands jobs
 let node = ui.add_plugin(loaded)?;
 ui.plugin(node)?.editor().open(&window, scale)?;
@@ -192,9 +192,11 @@ Session::builder().spawn_with(|job: Job| { std::thread::spawn(move || job.run())
 
 A `Job` is `Send` and blocks (a server launch, a state round trip, a reload).
 The session hands its due jobs to the spawner and lands their results in the
-next `update()`. Without a spawner the session runs them on a thread of its
-own; `load_plugin(..).run()` stays for a host that wants the load's latency in
-its own hands.
+next `update()`, as events. The default spawner is `std::thread`, so a headless
+host writes nothing. It is the session's facility, not the plugins': the
+bounce's job (`bounce_start` / `finish_bounce`) moves onto it later.
+`load_plugin(..).run()` stays for a host that wants the load's latency in its
+own hands.
 
 ### 3.5 Where it meets the graph and MIDI
 
@@ -215,11 +217,12 @@ doing each thing:
   N to CLAP note port or VST3 event bus N); there is no plugin port index on a
   route. Per-note control is MIDI 2.0's own messages (no note-expression type);
   a plugin's MIDI out is read by the same event tap as a native node's.
-- **Events.** `SessionEvent::Plugin { node, event: PluginEvent }` beside
-  `SessionEvent::Midi(MidiEvent)`; both inner enums `#[non_exhaustive]`.
-- **Errors.** One `tutti::plugin::Error`, its specifics (`BridgeError`,
-  `StateError`, `PresetError`, `EditorError`) as sources, folded into
-  `tutti::Error` as one variant.
+- **Events.** The session's rule, agreed with core and MIDI: one variant per
+  area, `SessionEvent::Plugin { node, event: PluginEvent }` beside
+  `SessionEvent::Midi(MidiEvent)`, `#[non_exhaustive]` at both levels.
+- **Errors.** The session's rule: one variant per area. One
+  `tutti::plugin::Error`, its specifics (`BridgeError`, `StateError`,
+  `PresetError`, `EditorError`) as sources, is `tutti::Error::Plugin`.
 - **The prelude** (feature `plugin`): `Catalog`, `PluginRef`, the load request,
   `PluginState`, `PluginEvent`, `ParamId`, `Normalized`, `MainThread`,
   `ContentScale`, `EditorSize` and the `Plugin` marker. Not `PluginHandle`,
@@ -248,4 +251,4 @@ Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 | Q1 | Does `Plugin<'_>` borrow `&Session`, or is it a cheap owned handle (`Arc` inside) that can be kept? | Borrowed. A kept handle is how a stale plugin gets touched after a crossfade; a host that keeps something keeps the `NodeKey` and the `ParamId` |
 | Q2 | Does `PluginState` carry the plugin's version, and refuse across versions? | Carry it, do not refuse: plugins read their old states. Refuse only another plugin |
 | Q3 | A window-system adapter (`tutti-plugin-winit`) as its own crate? | Yes, outside the engine's layers, depending on winit and `tutti` only; Bevy keeps its own. Owner's call: it is a new crate |
-| Q4 | Without `spawn_with`, does the session spawn its own thread, or refuse to start the job? | Spawn one: a host that never configures it still recovers a crashed plugin |
+| Q4 | Without `spawn_with`, does the session spawn its own thread, or refuse to start the job? | **Decided with core:** `std::thread` is the default spawner, and the spawner is a session facility (the bounce moves onto it) |

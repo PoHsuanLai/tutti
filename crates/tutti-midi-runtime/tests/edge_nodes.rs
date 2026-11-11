@@ -511,8 +511,8 @@ fn a_requested_mpe_mode_is_adopted_once() {
 /// at the reset's ±48 → fails.
 #[test]
 fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
-    use tutti_midi_protocol::PitchBendSensitivity;
     use tutti_fixtures::midi::BendRanges;
+    use tutti_midi_protocol::PitchBendSensitivity;
     use tutti_ump::Rpn;
     let range = at(
         0,

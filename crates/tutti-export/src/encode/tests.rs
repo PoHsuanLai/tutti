@@ -1,31 +1,34 @@
 use super::*;
-use crate::config::{EncodeConfig, ExportConfig, RenderConfig};
-use crate::{Format, Pcm};
-use tutti_types::Seconds;
+use crate::{Format, Job, Pcm, Resample};
 
-/// The plan of a config's render.
-fn plan_of(config: &ExportConfig) -> RenderPlan {
-    RenderPlan::of(&config.job().expect("a render"))
+/// What these tests vary: a 1 kHz, eight-frame render into a WAV of `pcm`.
+struct Case {
+    rate: SampleRate,
+    channels: ChannelLayout,
+    pcm: Pcm,
+    topology: Option<tutti_types::ChannelTopology>,
+    resample: Option<Resample>,
 }
 
-/// `config`'s file at `path`.
-fn target(config: &ExportConfig, path: &Path) -> FileTarget {
-    config.file_target(path, None)
+impl Case {
+    fn plan(&self) -> RenderPlan {
+        RenderPlan::of(&Job::new(self.rate, Samples(8), Samples(0), Samples(0)).unwrap())
+    }
+
+    fn target(&self, path: &Path) -> FileTarget {
+        FileTarget::new(path, Format::Wav(self.pcm), self.channels)
+            .with_topology(self.topology.clone())
+            .with_resample(self.resample)
+    }
 }
 
-fn config(channels: u16, pcm: Pcm) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: SampleRate::new(1_000.0),
-            duration_seconds: Seconds(0.008),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(pcm),
-            channels: ChannelLayout::from(channels),
-            topology: None,
-        },
-        ..Default::default()
+fn config(channels: u16, pcm: Pcm) -> Case {
+    Case {
+        rate: SampleRate::new(1_000.0),
+        channels: ChannelLayout::from(channels),
+        pcm,
+        topology: None,
+        resample: None,
     }
 }
 
@@ -48,10 +51,10 @@ fn a_plan_that_cannot_fit_is_refused_before_the_file_is_touched() {
         output_length: frames,
         latency: Samples(0),
     };
-    let rate = config.render.sample_rate;
+    let rate = config.rate;
     let path = dir.path().join("keep.wav");
     std::fs::write(&path, b"sentinel").unwrap();
-    let err = open_file(&target(&config, &path), &plan, rate)
+    let err = open_file(&config.target(&path), &plan, rate)
         .map(drop)
         .expect_err("2^32 mono 16-bit frames do not fit a WAV file");
     assert!(
@@ -83,13 +86,12 @@ fn the_limit_is_judged_at_the_output_rate() {
         output_length: frames,
         latency: Samples(0),
     };
-    let rate = config.render.sample_rate;
-    let max = config.encode.format.max_frames(config.encode.channels);
+    let rate = config.rate;
+    let max = Format::Wav(config.pcm).max_frames(config.channels);
     let path = Path::new("unused.wav");
-    check_fits(&plan, rate, &target(&config, path), max)
-        .expect("2^31 - 1000 mono 16-bit frames fit");
-    config.resample = Some(crate::Resample::to(SampleRate::new(2_000.0)));
-    assert!(check_fits(&plan, rate, &target(&config, path), max).is_err());
+    check_fits(&plan, rate, &config.target(path), max).expect("2^31 - 1000 mono 16-bit frames fit");
+    config.resample = Some(Resample::to(SampleRate::new(2_000.0)));
+    assert!(check_fits(&plan, rate, &config.target(path), max).is_err());
 }
 
 /// The frames a file will hold are the plan's, scaled by the resample ratio
@@ -100,15 +102,15 @@ fn the_limit_is_judged_at_the_output_rate() {
 #[test]
 fn the_planned_frames_follow_the_plan_and_the_resample() {
     let mut config = config(2, Pcm::Int16);
-    let plan = plan_of(&config);
-    let rate = config.render.sample_rate;
+    let plan = config.plan();
+    let rate = config.rate;
     let path = Path::new("unused.wav");
-    assert_eq!(planned_frames(&plan, rate, &target(&config, path)), 8);
-    config.resample = Some(crate::Resample::to(SampleRate::new(1_100.0)));
-    assert_eq!(planned_frames(&plan, rate, &target(&config, path)), 9);
-    config.resample = Some(crate::Resample::to(SampleRate::new(1_000.0)));
+    assert_eq!(planned_frames(&plan, rate, &config.target(path)), 8);
+    config.resample = Some(Resample::to(SampleRate::new(1_100.0)));
+    assert_eq!(planned_frames(&plan, rate, &config.target(path)), 9);
+    config.resample = Some(Resample::to(SampleRate::new(1_000.0)));
     assert_eq!(
-        planned_frames(&plan, rate, &target(&config, path)),
+        planned_frames(&plan, rate, &config.target(path)),
         8,
         "the same rate is no resample"
     );
@@ -136,11 +138,10 @@ fn the_topology_reaches_the_file_and_must_match_its_width() {
         (6, None, 0x60F),
     ] {
         let mut cfg = config(channels, Pcm::Int24);
-        cfg.encode.topology = topology;
+        cfg.topology = topology;
         let path = dir.path().join(format!("m{channels}_{mask}.wav"));
         let layout = ChannelLayout::from(channels);
-        let mut chain =
-            open_file(&target(&cfg, &path), &plan_of(&cfg), cfg.render.sample_rate).unwrap();
+        let mut chain = open_file(&cfg.target(&path), &cfg.plan(), cfg.rate).unwrap();
         chain
             .block(Interleaved::new(
                 &vec![0.5f32; 8 * usize::from(channels)],
@@ -161,9 +162,9 @@ fn the_topology_reaches_the_file_and_must_match_its_width() {
     }
 
     let mut cfg = config(2, Pcm::Int24);
-    cfg.encode.topology = Some(tutti_types::ChannelTopology::quad());
+    cfg.topology = Some(tutti_types::ChannelTopology::quad());
     let path = dir.path().join("bad.wav");
-    let err = open_file(&target(&cfg, &path), &plan_of(&cfg), cfg.render.sample_rate)
+    let err = open_file(&cfg.target(&path), &cfg.plan(), cfg.rate)
         .map(drop)
         .expect_err("a quad topology is not stereo");
     assert!(

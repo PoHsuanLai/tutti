@@ -29,11 +29,11 @@
 #![cfg(all(feature = "wav", feature = "flac"))]
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::render_to_file;
 use tutti_export::{
-    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth, Pcm,
-    RenderConfig, RenderGraph, Setup,
+    ChannelLayout, FlacLevel, Format, FrozenClock, IntDepth, Pcm, RenderGraph, Setup,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;

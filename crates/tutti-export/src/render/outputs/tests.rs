@@ -170,3 +170,24 @@ fn a_cancelled_or_failed_render_removes_its_spill() {
     assert!(matches!(err, Error::Unmeasurable { .. }), "{err:?}");
     assert!(names(dir.path()).is_empty());
 }
+
+/// **A render too long to hold in memory is an error, not an abort**: planes
+/// are reserved fallibly, so a span no allocator can give (more frames than
+/// an address space has bytes) is `RenderTooLarge`, where `Vec::with_capacity`
+/// takes the process down.
+///
+/// Checked to fail by swapping `try_reserve_exact` for `Vec::with_capacity`
+/// once locally: the test process aborts.
+#[test]
+fn planes_no_allocator_can_give_are_render_too_large() {
+    let plan = RenderPlan {
+        total: Samples(usize::MAX / 2),
+        output_length: Samples(usize::MAX / 2),
+        latency: Samples(0),
+    };
+    let err = reserve_planes(&plan, ChannelLayout::STEREO).unwrap_err();
+    assert!(
+        matches!(err, Error::RenderTooLarge { channels, .. } if channels == ChannelLayout::STEREO),
+        "{err:?}"
+    );
+}

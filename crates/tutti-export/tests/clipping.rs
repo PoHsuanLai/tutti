@@ -2,13 +2,11 @@
 //! headroom so that it does not clip.
 
 mod support;
+use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::{render_normalized_to_file, render_to_file};
 use tutti_dsp::DitherShape;
-use tutti_export::{
-    EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig, RenderGraph,
-    Setup,
-};
+use tutti_export::{Format, FrozenClock, Normalize, Pcm, RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Seconds;

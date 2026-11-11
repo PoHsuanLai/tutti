@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_export::{ChannelLayout, Produced};
 use tutti_fixtures::assert_golden;
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
@@ -17,9 +17,7 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
-use tutti_session::{
-    ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, Session,
-};
+use tutti_session::{Bounce, ExportClock, Latency, Range, Session, Tail};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -35,19 +33,39 @@ const NOTE: usize = 4_096;
 /// fork that lost the live unit's preset is heard.
 const PRESET: U7 = U7::of(24);
 
-fn config(seconds: f64) -> ExportConfig {
-    ExportConfig {
-        render: RenderConfig {
-            sample_rate: SampleRate(RATE),
-            duration_seconds: tutti_types::Seconds(seconds),
-            ..Default::default()
-        },
-        encode: EncodeConfig {
-            format: Format::Wav(Pcm::Float32),
-            channels: ChannelLayout::STEREO,
-            topology: None,
-        },
-        ..Default::default()
+/// Which audio a bounce renders: the mix, or one node alone.
+#[derive(Debug, Clone, Copy)]
+enum ExportSource {
+    Mix,
+    Node(NodeKey),
+}
+
+/// A bounce of `source` into memory for `seconds` at `rate`: stereo, trimming
+/// nothing and keeping no tail, on `clock`.
+fn bounce_of(source: ExportSource, seconds: f64, rate: f64, clock: ExportClock) -> Bounce {
+    let bounce = match source {
+        ExportSource::Mix => Bounce::project(),
+        ExportSource::Node(node) => Bounce::node(node),
+    };
+    bounce
+        .master_buffers()
+        .channels(ChannelLayout::STEREO)
+        .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
+        .sample_rate(SampleRate(rate))
+        .clock(clock)
+        .latency(Latency::Keep)
+        .tail(Tail::None)
+}
+
+fn render(session: &mut Session, bounce: Bounce) -> Vec<Vec<f32>> {
+    match session
+        .bounce(bounce)
+        .expect("the bounce renders")
+        .finished()
+        .map(|b| b.into_master())
+    {
+        Some(Produced::Buffers(rendered)) => rendered.into_planes(),
+        other => panic!("expected rendered buffers, got {other:?}"),
     }
 }
 
@@ -58,17 +76,6 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
         h.f32s(plane);
     }
     h.finish()
-}
-
-fn render(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
-    match session
-        .export_blocking(request)
-        .expect("the export renders")
-        .finished()
-    {
-        Some(ExportOutput::Buffers(rendered)) => rendered.into_planes(),
-        other => panic!("expected rendered buffers, got {other:?}"),
-    }
 }
 
 /// A saw with an instant attack, built at the live graph's rate.
@@ -156,19 +163,8 @@ fn timeline(rate: f64) -> Arc<OfflineTimeline> {
 }
 
 /// Export `source` for 0.8 s at `rate` against [`timeline`].
-fn request(source: ExportSource, rate: f64) -> ExportRequest {
-    ExportRequest::new(
-        source,
-        ExportTarget::Buffers,
-        ExportConfig {
-            render: RenderConfig {
-                sample_rate: SampleRate(rate),
-                ..config(0.8).render
-            },
-            ..config(0.8)
-        },
-        ExportClock::timeline(timeline(rate)),
-    )
+fn request(source: ExportSource, rate: f64) -> Bounce {
+    bounce_of(source, 0.8, rate, ExportClock::timeline(timeline(rate)))
 }
 
 /// `unit` prepared at `rate` and fed a note-on at frame 0 on its event

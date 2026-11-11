@@ -22,9 +22,9 @@ use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Phase {
-    /// Crossfades that waited out a re-prepare are retried, what exports
-    /// sent back is dropped (feature `export`; and an export in flight for
-    /// `EXPORT_STALL_WARNING` of `PhaseCx::now` warned about, once), then
+    /// Crossfades that waited out a re-prepare are retried, what bounces
+    /// sent back is dropped (feature `export`; and a bounce in flight for
+    /// `BOUNCE_STALL_WARNING` of `PhaseCx::now` warned about, once), then
     /// `Editor::collect` frees what the audio thread retired (here, on the
     /// main thread) and, mid re-prepare, sends the resumed plan.
     Collect,
@@ -701,9 +701,9 @@ pub struct Session {
     /// The render mode last announced.
     #[cfg(feature = "plugin")]
     pub(crate) render_mode: crate::plugin::RenderModeState,
-    /// The export token and the leftovers' channel.
+    /// The bounce token and the leftovers' channel.
     #[cfg(feature = "export")]
-    pub(crate) export: crate::export::ExportState,
+    pub(crate) bounce: crate::bounce::BounceState,
 }
 
 impl Session {
@@ -848,8 +848,8 @@ impl Session {
                 // that never ran) drops here, on the main thread.
                 #[cfg(feature = "export")]
                 {
-                    self.export.drop_leftovers();
-                    self.export.watch_stall(cx.now);
+                    self.bounce.drop_leftovers();
+                    self.bounce.watch_stall(cx.now);
                 }
                 let repreparing = self.graph.is_repreparing();
                 self.graph.collect();

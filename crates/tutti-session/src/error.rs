@@ -153,24 +153,6 @@ pub enum Error {
     #[error("Plugin: {0}")]
     Plugin(#[from] tutti_plugin_types::BridgeError),
 
-    /// Offline rendering / export subsystem failure. Wraps
-    /// `tutti_export::Error`.
-    #[cfg(feature = "export")]
-    #[error("Export: {0}")]
-    Export(#[from] tutti_export::Error),
-
-    /// An export that cannot start or finish for a reason of the session's
-    /// own: an empty graph or source, or an edit that spoiled the fork.
-    #[cfg(feature = "export")]
-    #[error("Export: {0}")]
-    ExportConfig(#[from] crate::ExportConfigError),
-
-    /// Another export is in flight: its job, or what the job returned, is
-    /// still alive (`Session::export`). Finish or drop it first.
-    #[cfg(feature = "export")]
-    #[error("another export is in flight")]
-    ExportInFlight,
-
     /// Standard I/O error encountered while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),

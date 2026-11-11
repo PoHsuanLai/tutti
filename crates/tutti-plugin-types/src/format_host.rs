@@ -21,7 +21,7 @@
 //! These traits do the opposite. There is no `activate` here, no `deactivate`,
 //! and no state enum anywhere in this file. A plugin is described by what it can
 //! *do* — [`PluginMeta`], [`PluginAudio`], [`PluginParams`], [`PluginState`],
-//! [`PluginPresets`], [`PluginEditorHost`] — and never by what state it is in.
+//! [`PluginPresets`] — and never by what state it is in.
 //!
 //! The reason is that the shared shape is the only part the formats agree on.
 //! Underneath it they disagree about what the states are called, which calls are
@@ -72,9 +72,8 @@
 //! docs compare all four and give the rule for choosing between them.
 
 use crate::{
-    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, MainThread, Normalized, ParamId,
-    ParameterInfo, PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext,
-    ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, LoadedPlugin, MainThread, Normalized, ParamId, ParameterInfo, PluginDescriptor,
+    PluginResult as Result, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
 };
 
 /// A plugin's catalog identity and load-time wiring snapshot.
@@ -397,40 +396,6 @@ pub trait PluginPresets: Send {
     }
 }
 
-/// Opens and closes a loaded plugin's editor inside the plugin process.
-///
-/// The editor runs on the platform GUI toolkit's own run loop. Idle ticking is
-/// not part of this trait: editors are pumped through `tutti-plugin`'s
-/// host-side editor surface.
-pub trait PluginEditorHost {
-    /// Embeds the plugin's editor into `parent`, whose backing-store scale is
-    /// `scale`, returning the size it asks for.
-    ///
-    /// A format whose ABI takes the scale forwards it (see [`ContentScale`]
-    /// for where); one without such a call ignores it.
-    ///
-    /// Runs on the platform GUI toolkit's run loop inside the plugin-server
-    /// subprocess, never on the audio thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PluginError::Editor`](crate::PluginError::Editor) when the
-    /// plugin has no editor or fails to open it.
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> Result<EditorSize>;
-
-    /// Tears the editor down.
-    ///
-    /// Infallible and idempotent: a caller unwinding from a failed
-    /// [`open_editor`](Self::open_editor) has nothing better to do than ask, so
-    /// closing an editor that was never opened must be a no-op.
-    fn close_editor(&mut self, main: &MainThread);
-}
-
 /// The full capability bundle a loaded plugin instance implements.
 ///
 /// This is a marker supertrait over the fine-grained capabilities, with a
@@ -445,17 +410,11 @@ pub trait PluginEditorHost {
 /// out would mean the dispatch could not reach presets on a loader that *does*
 /// offer them without a second bound at every call site.
 pub trait PluginInstance:
-    PluginMeta + PluginAudio + PluginParams + PluginState + PluginEditorHost + PluginPresets + Send
+    PluginMeta + PluginAudio + PluginParams + PluginState + PluginPresets + Send
 {
 }
 
 impl<T> PluginInstance for T where
-    T: PluginMeta
-        + PluginAudio
-        + PluginParams
-        + PluginState
-        + PluginEditorHost
-        + PluginPresets
-        + Send
+    T: PluginMeta + PluginAudio + PluginParams + PluginState + PluginPresets + Send
 {
 }

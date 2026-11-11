@@ -30,3 +30,11 @@ crate-type = ["cdylib", "rlib"]
 # bound in scope. Pinned to what tutti-vst2-ffi already resolves, so no new tree.
 num-traits = "0.2"
 tutti-vst2-author = { path = "../tutti-vst2-author" }
+
+# `probe`: the typed doors into this plugin's exported probe symbols
+# (`probe.rs`), opened on its cdylib through `libloading`, for the suites that
+# load it. Off in the plugin itself.
+libloading = { version = "0.8", optional = true }
+
+[features]
+probe = ["dep:libloading"]

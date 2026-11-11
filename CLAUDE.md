@@ -195,8 +195,14 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
   safe wrapper and forbids `unsafe`: a parent window is
   `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
   `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
-  `WindowHandle::from_u64`, is for a number that crossed a process edge. Test-only
-  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`).
+  `WindowHandle::from_u64`, is for a host holding only a bare platform handle. Test-only
+  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`), and a reference
+  plugin's probe exports are reached through its own crate's typed door
+  (`tutti_clap_test_plugin::ClapProbe`, `tutti_vst2_test_plugin::Vst2Probe`, feature
+  `probe`): `tutti-fixtures` depends on no plugin, since a plugin's rlib carries its
+  entry point and two in one test binary do not link.
+  `tutti-plugin-ipc` and `tutti-plugin-server` forbid `unsafe` too: the process
+  edge's is `tutti-plugin-ipc-ffi`'s.
   MIDI's OS `unsafe` lives only in `tutti-alsa-ffi` (Linux) and `tutti-coremidi-ffi`
   (macOS), which `deny` `undocumented_unsafe_blocks` and `missing_safety_doc`;
   `tutti-midi-hardware` forbids `unsafe` and names no raw-binding crate

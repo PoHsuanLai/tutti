@@ -3522,6 +3522,7 @@ version = "0.1.0"
 dependencies = [
  "clap-sys",
  "libc",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -3951,7 +3952,6 @@ dependencies = [
  "bytemuck",
  "interprocess",
  "libc",
- "libloading 0.8.9",
  "memmap2",
  "serde",
  "tracing",
@@ -4270,6 +4270,7 @@ dependencies = [
 name = "tutti-vst2-test-plugin"
 version = "0.1.0"
 dependencies = [
+ "libloading 0.8.9",
  "num-traits",
  "tutti-vst2-author",
 ]

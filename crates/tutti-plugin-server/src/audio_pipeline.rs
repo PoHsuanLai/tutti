@@ -664,8 +664,8 @@ mod tests {
     use super::*;
 
     use tutti_plugin::server::{
-        Normalized, ParamId, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
-        PluginTail, Samples,
+        Normalized, ParamId, PluginAudio, PluginMeta, PluginParams, PluginState, PluginTail,
+        Samples,
     };
 
     #[test]
@@ -718,7 +718,7 @@ mod tests {
     use crate::loaders::common::Meta;
     use tutti_plugin::server::{
         ChannelLayout, Features, LoadedPlugin, PluginDescriptor, PluginResult, ProcessOutput,
-        SlabLayout, WindowHandle,
+        SlabLayout,
     };
 
     /// A stand-in plugin whose `process` fills every output sample with a
@@ -781,17 +781,6 @@ mod tests {
         ) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
-    }
-    impl PluginEditorHost for NanPlugin {
-        fn open_editor(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _parent: WindowHandle,
-            _scale: tutti_plugin::server::ContentScale,
-        ) -> PluginResult<tutti_plugin::server::EditorSize> {
-            unreachable!("editor not used in this test")
-        }
-        fn close_editor(&mut self, _main: &tutti_plugin_types::MainThread) {}
     }
     /// The probe has no presets; the defaults say so.
     impl tutti_plugin::server::PluginPresets for NanPlugin {}
@@ -884,17 +873,6 @@ mod tests {
         ) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
-    }
-    impl PluginEditorHost for EchoProbe {
-        fn open_editor(
-            &mut self,
-            _main: &tutti_plugin_types::MainThread,
-            _parent: WindowHandle,
-            _scale: tutti_plugin::server::ContentScale,
-        ) -> PluginResult<tutti_plugin::server::EditorSize> {
-            unreachable!("editor not used in this test")
-        }
-        fn close_editor(&mut self, _main: &tutti_plugin_types::MainThread) {}
     }
     /// The probe has no presets; the defaults say so.
     impl tutti_plugin::server::PluginPresets for EchoProbe {}

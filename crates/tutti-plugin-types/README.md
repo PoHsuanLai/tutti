@@ -14,8 +14,8 @@ harmony changes, [`AudioBuffer`] in its f32/f64 forms, editor vocabulary
 [`Features`] capability bitset.
 
 It also carries the fine-grained capability traits ([`PluginMeta`],
-[`PluginAudio`], [`PluginParams`], [`PluginState`], [`PluginPresets`],
-[`PluginEditorHost`]) that each format loader implements, reassembled by the
+[`PluginAudio`], [`PluginParams`], [`PluginState`], [`PluginPresets`])
+that each format loader implements, reassembled by the
 blanket-impl [`PluginInstance`], and the [`bundle`] helpers that find the
 loadable module inside a `.vst3` / `.vst` bundle.
 
@@ -164,7 +164,6 @@ MIT OR Apache-2.0
 [`PluginParams`]: crate::PluginParams
 [`PluginState`]: crate::PluginState
 [`PluginPresets`]: crate::PluginPresets
-[`PluginEditorHost`]: crate::PluginEditorHost
 [`PluginInstance`]: crate::PluginInstance
 [`bundle`]: crate::bundle
 [`set_sample_rate`]: crate::PluginAudio::set_sample_rate

@@ -9388,7 +9388,7 @@ present. The out-of-process snapshot crosses the wire with
 `system_time_ns`, so `ProcessAudioData`'s encoding grew by that field.
 
 **Editor scale.** `open_editor` takes a `ContentScale` (finite, positive)
-at every layer, down to `HostMessage::OpenEditor`. CLAP's `gui.set_scale`
+at every layer, down to each format's embed call. CLAP's `gui.set_scale`
 and VST3's `setContentScaleFactor` are sent it only on a physical-pixel
 window system (Win32, X11); a macOS view is in points, so neither is sent
 there. bevy-tutti passes the editor window's `scale_factor` and sizes that

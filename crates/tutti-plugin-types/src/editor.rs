@@ -160,8 +160,8 @@ pub struct InvalidContentScale(pub f64);
 /// relies on what the constructors promise: the number names a live window of
 /// this process. [`from_window`](Self::from_window) has it from
 /// `raw-window-handle` (a borrowed window handle cannot be made without that
-/// promise); [`from_u64`](Self::from_u64), for a number that crossed a process
-/// edge, is `unsafe` because it has it only from its caller.
+/// promise); [`from_u64`](Self::from_u64), for a host that holds only the
+/// platform handle's number, is `unsafe` because it has it only from its caller.
 ///
 /// No type here can check that the window outlives the editor opened on it: a
 /// host closes the editor before it destroys the window.
@@ -201,12 +201,13 @@ impl WindowHandle {
         Ok(Self(number))
     }
 
-    /// The window a number names, as it arrives over IPC.
+    /// The window a platform handle's number names (an `HWND`, an `NSView*`, an
+    /// X11 window ID), for a host with no `raw-window-handle` window to pass to
+    /// [`from_window`](Self::from_window).
     ///
     /// # Safety
     ///
-    /// `raw` must be [`as_u64`](Self::as_u64) of a window that is live in this
-    /// process (or the number of one a plugin is known never to embed into,
+    /// `raw` must name a window that is live in this process (or the number of one a plugin is known never to embed into,
     /// as a test's stand-in), and the window must outlive any editor opened on
     /// it.
     #[must_use]
@@ -224,7 +225,7 @@ impl WindowHandle {
         self.0 as *mut c_void
     }
 
-    /// The handle's number, the form it takes over IPC.
+    /// The handle's number.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
         self.0

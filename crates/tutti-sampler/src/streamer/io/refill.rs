@@ -132,6 +132,74 @@ pub(crate) fn refill_all_parallel(
         });
 }
 
+/// What a ring's window says about where its reader plays: the one decision the
+/// streamer's refill and a voice's ring both make (doc 025 §7), so they never
+/// disagree about "below threshold".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Refill {
+    /// The reader is outside the window, behind it or far past its end: the
+    /// window moves to the reader and fills from there.
+    Jumped,
+    /// The window is at its refill threshold ahead of the reader, or holds
+    /// all the mapping writes (an unlooped stream's end): nothing to do.
+    Satisfied {
+        /// The fraction of the ring ahead of the reader (0 to 1).
+        fill: f32,
+    },
+    /// Below the threshold with room to write: `room` frames can still land.
+    Below {
+        /// The fraction of the ring ahead of the reader (0 to 1).
+        fill: f32,
+        /// Frames the window may still grow by (to most of a ring ahead of
+        /// the reader, never past `end`).
+        room: u64,
+    },
+}
+
+/// Whether a ring whose window is `window` (`[from, to)`, in positions) of
+/// `frames` slots needs the streamer for a reader at `play`, in a mapping that
+/// writes up to `end` (`None`: unbounded).
+///
+/// A reader a little past the window's end (the refill fell behind) is caught
+/// up by appending; only one far ahead, or behind the window, moves it. Moving
+/// it is a shrink, which holds back writes the reader's block may cover until
+/// it claims again, so moving it every cycle would never let the refill land.
+/// A window already parked at the position limit (a reader that ran off to an
+/// unbounded position) stays: it reads as a miss, so that voice is silent, and
+/// moving it again each cycle would only shrink it again.
+///
+/// Pure and allocation-free: the audio thread calls it.
+#[inline]
+pub(crate) fn needs_refill(
+    play: u64,
+    window: (u64, u64),
+    frames: usize,
+    end: Option<u64>,
+) -> Refill {
+    let (from, to) = window;
+    let far = (frames / 4) as u64;
+    let parked = to >= MAX_POS_RING_POSITION;
+    if play < from || (play > to.saturating_add(far) && !parked && end.is_none_or(|end| play < end))
+    {
+        return Refill::Jumped;
+    }
+    let frames = frames as u64;
+    let ahead = play.saturating_add(frames - frames / 8);
+    // Nothing is written at the position limit, so nothing is read for it.
+    let limit = end
+        .map_or(ahead, |end| end.min(ahead))
+        .min(MAX_POS_RING_POSITION);
+    let fill = ((to.saturating_sub(play) as f64 / frames as f64) as f32).clamp(0.0, 1.0);
+    if fill >= FILL_THRESHOLD || to >= limit {
+        Refill::Satisfied { fill }
+    } else {
+        Refill::Below {
+            fill,
+            room: limit - to,
+        }
+    }
+}
+
 /// Refill one ring: follow its reader, then fill ahead of it.
 ///
 /// A reader outside the window moves it (see the module docs); a pending
@@ -153,22 +221,11 @@ fn refill_one(
 ) -> Refilled {
     let ring = Arc::clone(writer.ring());
     let play = writer.play();
-    let (from, to) = writer.window();
     // A reader past what the mapping writes (an unlooped stream's end) plays
     // silence: nothing to follow there.
     let end = writer.content().current.end();
-    // A reader a little past the window's end (the refill fell behind) is
-    // caught up by appending; only one far ahead, or behind the window, moves
-    // it. Moving it is a shrink, which holds back writes the reader's block
-    // may cover until it claims again, so moving it every cycle would never
-    // let the refill land.
-    let far = (writer.frames() / 4) as u64;
-    // A window already parked at the position limit (a reader that ran off to
-    // an unbounded position) stays: it reads as a miss, so that voice is
-    // silent, and moving it again each cycle would only shrink it again.
-    let parked = to >= MAX_POS_RING_POSITION;
-    if play < from || (play > to.saturating_add(far) && !parked && end.is_none_or(|end| play < end))
-    {
+    let mut need = needs_refill(play, writer.window(), writer.frames(), end);
+    if need == Refill::Jumped {
         writer.reset(play.saturating_sub(HISTORY_FRAMES));
         if writer.content().switch_at.is_some() {
             let mut content = Content::new(writer.content().current.clone());
@@ -176,25 +233,30 @@ fn refill_one(
             ring.publish_map(RingMap::plain(content.current.arrangement(), content.epoch));
             writer.set_content(content);
         }
+        need = needs_refill(play, writer.window(), writer.frames(), end);
     }
-    let (_, to) = writer.window();
-    let frames = writer.frames() as u64;
-    let ahead = play.saturating_add(frames - frames / 8);
-    // Nothing is written at the position limit, so nothing is read for it.
-    let limit = end
-        .map_or(ahead, |end| end.min(ahead))
-        .min(MAX_POS_RING_POSITION);
-    let fill = ((to.saturating_sub(play) as f64 / frames as f64) as f32).clamp(0.0, 1.0);
-    if fill >= FILL_THRESHOLD || to >= limit {
-        return Refilled {
-            read_ok: true,
-            primed: true,
-            fill,
-        };
-    }
+    let (fill, room) = match need {
+        Refill::Satisfied { fill } => {
+            return Refilled {
+                read_ok: true,
+                primed: true,
+                fill,
+            };
+        }
+        Refill::Below { fill, room } => (fill, room),
+        // A window just reset at the reader's position holds it: not reached.
+        Refill::Jumped => {
+            return Refilled {
+                read_ok: true,
+                primed: false,
+                fill: 0.0,
+            };
+        }
+    };
     let speed = cells.read_rate().get() as f32;
     let chunk = varifill_chunk(fill, base_chunk_size, read_rate, speed);
-    let n = (chunk as u64).min(limit - to) as usize;
+    let n = (chunk as u64).min(room) as usize;
+    let (_, to) = writer.window();
     let ch = writer.channels().count() as usize;
     buffer.clear();
     buffer.resize(n * ch, 0.0);
@@ -216,13 +278,56 @@ pub(in crate::streamer) struct Refilled {
     /// this refill wrote anything: a voice starting now has frames to read.
     pub(in crate::streamer) primed: bool,
     /// How full the ring was before this refill wrote, as a fraction of its
-    /// capacity (0 to 1): what the pacing reads to park or come straight back.
+    /// capacity (0 to 1): what the loop reads to sleep or come straight back.
     pub(in crate::streamer) fill: f32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `needs_refill`, the one decision the streamer's refill and a voice's
+    /// ring share, as a table over a 1000-slot ring (threshold 0.75, so 750
+    /// frames ahead; far is 250; a reader may be refilled up to 875 ahead).
+    /// Each row is `(label, play, window, end, expected)`.
+    ///
+    /// Mutation (run): the threshold test `fill >= FILL_THRESHOLD` as `>` ->
+    /// the "exactly at threshold" row says `Below`. Mutation (run): the `to >=
+    /// limit` arm removed -> the "all of the file is in" and "tail" rows say
+    /// `Below`, which is the spin `Stalled` exists to stop. Mutation (run): the
+    /// jump test's `play < from` removed -> the "behind" row says `Satisfied`.
+    #[test]
+    fn needs_refill_follows_its_documented_rule() {
+        const F: usize = 1000;
+        use Refill::{Below, Jumped, Satisfied};
+        #[rustfmt::skip]
+        let rows: &[(&str, u64, (u64, u64), Option<u64>, Refill)] = &[
+            ("ahead by more than the threshold", 100, (96, 900), None, Satisfied { fill: 0.8 }),
+            ("exactly at threshold", 100, (96, 850), None, Satisfied { fill: 0.75 }),
+            ("just below threshold", 100, (96, 849), None, Below { fill: 0.749, room: 126 }),
+            ("an empty window just behind the reader", 100, (96, 96), None, Below { fill: 0.0, room: 879 }),
+            ("behind the window", 90, (96, 900), None, Jumped),
+            ("a little past the end: caught up by appending", 1000, (96, 900), None, Below { fill: 0.0, room: 975 }),
+            ("far past the end", 1300, (96, 900), None, Jumped),
+            ("far past, but past the file's end too: nothing to follow", 1300, (96, 900), Some(900), Satisfied { fill: 0.0 }),
+            ("all of the file is in", 100, (96, 400), Some(400), Satisfied { fill: 0.3 }),
+            ("the tail: below threshold, nothing left to write", 300, (96, 400), Some(400), Satisfied { fill: 0.1 }),
+            ("the tail with frames to come", 300, (96, 400), Some(500), Below { fill: 0.1, room: 100 }),
+        ];
+        for (label, play, window, end, expected) in rows {
+            let got = needs_refill(*play, *window, F, *end);
+            match (got, *expected) {
+                (Satisfied { fill: a }, Satisfied { fill: b })
+                | (Below { fill: a, .. }, Below { fill: b, .. }) => {
+                    assert!((a - b).abs() < 1e-3, "{label}: {got:?} vs {expected:?}");
+                    if let (Below { room: x, .. }, Below { room: y, .. }) = (got, *expected) {
+                        assert_eq!(x, y, "{label}");
+                    }
+                }
+                (g, e) => assert_eq!(g, e, "{label}"),
+            }
+        }
+    }
 
     /// The whole `varifill_chunk` surface as one table, each row a `(fill,
     /// base, bytes/sec, speed)` input and the exact frame count it must return.

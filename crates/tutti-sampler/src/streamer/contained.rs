@@ -26,7 +26,13 @@ const WAIT: Duration = Duration::from_secs(10);
 
 /// A stereo float WAV of `seconds` at `rate`, every sample `value` (a dyadic
 /// value is read back exactly).
-fn constant_file(dir: &Path, name: &str, rate: u32, seconds: u32, value: f32) -> PathBuf {
+pub(super) fn constant_file(
+    dir: &Path,
+    name: &str,
+    rate: u32,
+    seconds: u32,
+    value: f32,
+) -> PathBuf {
     let path = dir.join(name);
     let spec = hound::WavSpec {
         channels: 2,
@@ -452,7 +458,7 @@ fn a_refused_spawn_is_an_error() {
 /// cannot seek, which a stream decodes whole. Pinned as such, or the lane
 /// tests prove nothing.
 #[cfg(feature = "mp3")]
-fn mp3(dir: &Path) -> PathBuf {
+pub(super) fn mp3(dir: &Path) -> PathBuf {
     let mut bytes = std::fs::read(tutti_fixtures::asset("audio/stereo.mp3")).expect("fixture");
     let at = bytes
         .windows(4)

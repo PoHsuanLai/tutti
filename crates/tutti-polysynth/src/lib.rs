@@ -10,7 +10,7 @@
 //!   and [`FilterModConfig`].
 //! - Voice allocation: [`VoiceMode`] and [`AllocationStrategy`].
 //! - [`UnisonConfig`], [`PortamentoConfig`] (with [`PortamentoMode`] and
-//!   [`PortamentoCurve`]) and [`Tuning`].
+//!   the `tutti_curve::Law` of its `curve`) and [`Tuning`].
 //! - [`enum@Error`] and [`Result`]: what construction can fail with.
 
 mod error;
@@ -34,7 +34,7 @@ pub use unison::UnisonConfig;
 mod portamento;
 pub(crate) use portamento::Portamento;
 // Public: these appear in `SynthConfig` (`portamento` field + its config).
-pub use portamento::{PortamentoConfig, PortamentoCurve, PortamentoMode};
+pub use portamento::{PortamentoConfig, PortamentoMode};
 
 mod tuning;
 // Public: `Tuning` appears in `SynthConfig`.

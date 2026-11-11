@@ -1,9 +1,10 @@
 use super::*;
 use crate::synth_voice::SynthVoice;
 use crate::{
-    Adsr, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve, PortamentoMode,
-    SynthConfig, UnisonConfig, VoiceMode,
+    Adsr, FilterType, OscillatorType, PortamentoConfig, PortamentoMode, SynthConfig, UnisonConfig,
+    VoiceMode,
 };
+use tutti_curve::Law;
 use tutti_fixtures::midi;
 use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32};
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
@@ -1059,7 +1060,7 @@ fn test_portamento_with_pitch_bend() {
         },
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
-            curve: PortamentoCurve::Linear,
+            curve: Law::Linear,
             time: tutti_types::Seconds(0.05), // 50ms glide
             constant_time: true,
         }),
@@ -2089,7 +2090,7 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
         },
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
-            curve: PortamentoCurve::Linear,
+            curve: Law::Linear,
             time: Seconds(0.004),
             constant_time: true,
         }),
@@ -2216,7 +2217,7 @@ fn process_and_tick_agree_through_a_glide() {
         envelope: Adsr::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.1)),
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
-            curve: PortamentoCurve::Linear,
+            curve: Law::Linear,
             time: Seconds(0.05),
             constant_time: true,
         }),

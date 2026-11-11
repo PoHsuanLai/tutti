@@ -9,16 +9,16 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_fixtures::midi::{key_of, note_off, note_on};
+use tutti_fixtures::midi::{cc, key_of, note_off, note_on, pitch_bend};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges, Unforkable,
 };
-use tutti_midi_runtime::{MidiClipControls, MidiClipNode, TimedMidiEvent};
+use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, U7, U14, Voice1};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;
@@ -758,4 +758,281 @@ fn a_loop_shorter_than_a_frame_costs_one_pass_a_frame() {
         let offs = seen.iter().filter(|&&(_, w)| w == off(60)).count();
         assert_eq!((ons, offs), (256, 255), "[{start:?}, {end:?})");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Controllers back to their normal positions when playback stops or jumps.
+// ---------------------------------------------------------------------------
+
+const DOWN: u32 = 0xFFFF_FFFF;
+const CENTRE: u32 = 0x8000_0000;
+
+fn pedal(channel: u8, controller: CCNumber, value: u32) -> Ump {
+    cc(
+        MidiGroup::FIRST,
+        MidiChannel::of(channel),
+        controller,
+        value,
+    )
+}
+
+fn bend(channel: u8, value: u32) -> Ump {
+    pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), value)
+}
+
+/// **A stop returns every pedal and the bend to their normal positions,
+/// after the note-offs, once.** MIDI 1.0 Detailed Spec p. 31 (Stop): "any
+/// controllers not in their initialized position (pitch wheels, sustain
+/// pedal, etc.) should be returned to their normal positions"; A-5: a pedal
+/// down "takes priority over Note Off and All Notes Off until it is
+/// released", so the offs come first and the pedals are lifted after them.
+/// Sustain, sostenuto, soft and hold 2 are down and the bend is off centre;
+/// a second stopped block sends nothing.
+///
+/// Mutation: `release_all` without `lift_all` (the controllers table) → no
+/// pedal-up and no centred bend → fails. Mutation: `lift_all` before the
+/// notes are ended → the pedal-ups precede the note-off → fails.
+#[test]
+fn stopping_lifts_the_pedals_and_centres_the_bend_after_the_note_offs() {
+    let sustain = CCNumber::SUSTAIN;
+    let sostenuto = CCNumber::SOSTENUTO;
+    let soft = CCNumber::SOFT_PEDAL;
+    let hold2 = CCNumber::new(69).unwrap();
+    let clip = MidiClipNode::new([
+        at(10, on(60)),
+        at(20, pedal(0, sustain, DOWN)),
+        at(21, pedal(0, sostenuto, DOWN)),
+        at(22, pedal(0, soft, DOWN)),
+        at(23, pedal(0, hold2, DOWN)),
+        at(24, bend(0, 0x9000_0000)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 64);
+    exec.process(64, &rolling(0), &[], &mut []);
+    let stopped = Transport::new(false, Bpm::of(120.0), beat_of(64), None);
+    exec.process(64, &stopped, &[], &mut []);
+    exec.process(64, &stopped, &[], &mut []);
+    let seen = seen.lock().unwrap();
+    let after: Vec<(u64, Ump)> = seen.iter().copied().filter(|&(f, _)| f == 64).collect();
+    assert_eq!(
+        after,
+        vec![
+            (64, off(60)),
+            (64, pedal(0, sustain, 0)),
+            (64, pedal(0, sostenuto, 0)),
+            (64, pedal(0, soft, 0)),
+            (64, pedal(0, hold2, 0)),
+            (64, bend(0, CENTRE)),
+        ]
+    );
+    assert_eq!(seen.len(), 6 + 6, "nothing after the first stopped block");
+}
+
+/// **A controller already at its normal position is not sent again.**
+/// Channel 0's sustain goes down and up and its bend goes off centre and
+/// back; channel 1's sustain stays down. A stop sends one pedal-up, for
+/// channel 1, and nothing else (M1 p. 31 asks only for controllers "not in
+/// their initialized position").
+///
+/// Mutation: a pedal-up for a lane whose state bit is clear (skip the
+/// `held` test in `lift_all`) → channel 0's pedal and bend are resent →
+/// fails. Mutation: `observe` ignoring a value that returns to rest → the
+/// same.
+#[test]
+fn a_controller_at_rest_is_not_resent_at_a_stop() {
+    let s = CCNumber::SUSTAIN;
+    let clip = MidiClipNode::new([
+        at(10, pedal(0, s, DOWN)),
+        at(11, pedal(0, s, 0)),
+        at(12, bend(0, 0xA000_0000)),
+        at(13, bend(0, CENTRE)),
+        at(14, pedal(1, s, DOWN)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 64);
+    exec.process(64, &rolling(0), &[], &mut []);
+    exec.process(
+        64,
+        &Transport::new(false, Bpm::of(120.0), beat_of(64), None),
+        &[],
+        &mut [],
+    );
+    let late: Vec<(u64, Ump)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .filter(|&(f, _)| f >= 64)
+        .collect();
+    assert_eq!(late, vec![(64, pedal(1, s, 0))]);
+}
+
+/// **A loop wrap lifts the pedal after ending the notes it held.** The loop
+/// is beat [0, 1): note 60 and the sustain pedal go down at timeline frame
+/// 23 850; the block that wraps at its frame 100 (executor frame 200) ends the
+/// note, then lifts the pedal, on that frame (M1 p. 31; A-5 for the order).
+///
+/// Mutation: skip the controllers in the wrap's release → the pedal stays
+/// down across the loop → fails.
+#[test]
+fn a_loop_wrap_lifts_the_pedal_after_the_note_off() {
+    let clip = MidiClipNode::new([
+        at(23_850, on(60)),
+        at(23_851, pedal(0, CCNumber::SUSTAIN, DOWN)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    let lp = Some(LoopRange {
+        start: Beat(0.0),
+        end: Beat(1.0),
+    });
+    let looping = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), lp);
+    exec.process(100, &looping(23_800), &[], &mut []);
+    exec.process(512, &looping(23_900), &[], &mut []);
+    let tail: Vec<(u64, Ump)> = seen.lock().unwrap().iter().copied().skip(2).collect();
+    assert_eq!(
+        tail,
+        vec![(200, off(60)), (200, pedal(0, CCNumber::SUSTAIN, 0))]
+    );
+}
+
+/// **A seek lifts the pedal and centres the bend where the jump happens.**
+/// Playback seeks to beat 2 at frame 200 of a 512-frame block, with the
+/// pedal down and the bend off centre: both are returned at frame 200, after
+/// the note-off, and not again by the next block.
+///
+/// Mutation: `Playing::jump` ending the notes without the controllers (an
+/// older `release_all`) → the pedal stays down across the seek → fails.
+#[test]
+fn a_seek_returns_the_controllers_where_the_jump_happens() {
+    let clip = MidiClipNode::new([
+        at(24, on(60)),
+        at(25, pedal(0, CCNumber::SUSTAIN, DOWN)),
+        at(26, bend(0, 0x7000_0000)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    let mut changes = TransportChanges::NONE;
+    changes
+        .push(Offset::new(200, Samples(512)).unwrap(), rolling(96_000))
+        .unwrap();
+    exec.process_with_changes(512, &rolling(0), &changes, &[], &mut []);
+    exec.process(512, &rolling(96_512), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (24, on(60)),
+            (25, pedal(0, CCNumber::SUSTAIN, DOWN)),
+            (26, bend(0, 0x7000_0000)),
+            (200, off(60)),
+            (200, pedal(0, CCNumber::SUSTAIN, 0)),
+            (200, bend(0, CENTRE)),
+        ]
+    );
+}
+
+/// **A pedal-up the port refuses is owed and goes out after the note-offs.**
+/// 400 notes and a sustain pedal are down when a seek ends them into a port
+/// with room for 296 offs: the offs the port refuses are paid in the blocks
+/// after, and the pedal-up, refused behind them, goes out only after the last
+/// of them (A-5: a pedal still down takes priority over a note-off), exactly
+/// once.
+///
+/// Mutation: a refused pedal-up dropped instead of owed (do not set the owed
+/// bit in `lift_all`) → no pedal-up ever → fails.
+#[test]
+fn a_refused_pedal_up_is_owed_and_follows_the_last_note_off() {
+    let note = |i: u16| {
+        note_on(
+            MidiGroup::FIRST,
+            MidiChannel::of((i / 128) as u8),
+            (i % 128) as u8,
+            0xFFFF,
+        )
+    };
+    let s = CCNumber::SUSTAIN;
+    let clip = MidiClipNode::new(
+        (0..400u16)
+            .map(|i| at(if i < 200 { 10 } else { 300 }, note(i)))
+            .chain([at(5, pedal(15, s, DOWN))]),
+    );
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    roll(&mut exec, 512, 256);
+    for f in [48_000u64, 48_256, 48_512] {
+        exec.process(256, &rolling(f), &[], &mut []);
+    }
+    let seen = seen.lock().unwrap();
+    let last_off = seen
+        .iter()
+        .rposition(|(_, u)| key_of(u).is_some_and(|(_, _, on)| !on))
+        .unwrap();
+    let ups: Vec<usize> = seen
+        .iter()
+        .enumerate()
+        .filter(|&(_, &(_, u))| u == pedal(15, s, 0))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(ups.len(), 1, "the pedal is lifted exactly once");
+    assert!(ups[0] > last_off, "after every note-off");
+}
+
+/// Block 0 sends `script` through a ledger; block 1 releases it all.
+struct SendThenRelease {
+    ledger: NoteLedger<()>,
+    script: Vec<Ump>,
+    block: u32,
+}
+
+impl Node for SendThenRelease {
+    fn shape(&self) -> Shape {
+        Shape::EMPTY.with_events(0, 1).with_event_capacity(64)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let first = cx.env.offset(0).unwrap();
+        let mut sending = self.ledger.block(io.event_out(0), first);
+        if self.block == 0 {
+            for &u in &self.script {
+                sending.send(first, u, None);
+            }
+        } else {
+            sending.release_all(first);
+        }
+        self.block += 1;
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **A MIDI 1.0 pedal and bend are returned in MIDI 1.0.** The ledger sends
+/// the return in the protocol the message it was told about used: a MIDI 1.0
+/// Control Change 64 with value 0 and a MIDI 1.0 Pitch Bend at 0x2000, never
+/// a MIDI 2.0 packet (M1 p. 31, Stop; the 14-bit centre is 0x2000, M1 table
+/// of Pitch Bend). A pedal value below 64 is up (M1 CC 64 "0-63 off"), so a
+/// pedal sent at 63 is not lifted again.
+///
+/// Mutation: build every reset as a MIDI 2.0 packet (`m2` always true in
+/// `Controllers::reset`) → the packets differ → fails.
+#[test]
+fn a_midi_1_pedal_and_bend_are_returned_in_midi_1() {
+    let ch = MidiChannel::of(2);
+    let m1_bend = |v: u16| tutti_fixtures::midi::m1(ch, Voice1::PitchBend(U14::of(v)));
+    let m1_pedal = |controller, v: u8| tutti_fixtures::midi::m1_cc(ch, controller, U7::of(v));
+    let script = vec![
+        m1_pedal(CCNumber::SUSTAIN, 127),
+        m1_pedal(CCNumber::SOSTENUTO, 63),
+        m1_bend(0x3000),
+    ];
+    let node = SendThenRelease {
+        ledger: NoteLedger::new(16),
+        script: script.clone(),
+        block: 0,
+    };
+    let (_ed, mut exec, _c, seen) = rig_with(Unforkable(node), 64);
+    exec.process(64, &rolling(0), &[], &mut []);
+    exec.process(64, &rolling(64), &[], &mut []);
+    let late: Vec<Ump> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|&&(f, _)| f >= 64)
+        .map(|&(_, u)| u)
+        .collect();
+    assert_eq!(late, vec![m1_pedal(CCNumber::SUSTAIN, 0), m1_bend(0x2000)]);
 }

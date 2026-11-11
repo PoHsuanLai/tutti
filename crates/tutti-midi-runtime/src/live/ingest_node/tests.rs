@@ -4,7 +4,7 @@ use super::*;
 /// node adopts it on its next block.
 #[test]
 fn the_controls_report_the_mode_last_asked_for() {
-    let parts = MidiInputNode::new(None).into_parts();
+    let parts = MidiIngestNode::new(1).into_parts();
     let controls = parts.controls;
     assert_eq!(controls.pending_mpe_mode(), None);
     let lower = tutti_fixtures::midi::lower_zone(15);
@@ -15,22 +15,23 @@ fn the_controls_report_the_mode_last_asked_for() {
 
     // A node over the same request, reading it through a reader of its
     // own, as the inserted one is.
-    let mut node = MidiInputNode {
+    let mut node = MidiIngestNode {
         mpe_request: controls.request.reader(),
-        ..MidiInputNode::new(None)
+        ..MidiIngestNode::new(1)
     };
     node.adopt_mpe_request();
-    assert_eq!(*node.mpe.mode(), upper, "the node adopts it");
+    assert_eq!(node.mpe_mode, upper, "the node adopts it");
 }
 
 /// **A request the node held across the next `set_mpe_mode` is freed by
 /// the next `reclaim`**, with no further publish.
 #[test]
 fn reclaim_frees_a_request_a_block_held_across_the_next() {
-    let mut node = MidiInputNode::new(None);
-    let controls = MidiInputControls {
+    let mut node = MidiIngestNode::new(1);
+    let controls = MidiIngestControls {
         request: Arc::clone(node.mpe_request.cell()),
         dropped: Arc::clone(&node.dropped),
+        restarts: Arc::clone(&node.restarts),
     };
     {
         // A block in progress across the request.

@@ -1,19 +1,21 @@
 //! Regression gate for RT-safety: the MIDI border nodes process a block
-//! without allocating, events flowing — a wire's through the input node's
-//! translation onto its ports, a control thread's through the event inlet into
-//! the event tap's ring, and the clock's ticks.
+//! without allocating, events flowing — a device inlet's through the ingest
+//! node's translation onto its ports, a control thread's through the event
+//! inlet into the event tap's ring, and the clock's ticks.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
 use tutti_graph::NodeKey;
-use tutti_graph::UmpAt;
-use tutti_graph::{Editor, EventInletNode, Harmony, LoopRange, Offset, Prepare, Transport};
+use tutti_graph::{
+    Editor, EventEdge, EventIn, EventInletNode, EventInletWriter, EventOut, Harmony, LoopRange,
+    Prepare, Transport,
+};
 use tutti_midi_runtime::{
-    ClockNode, HarmonyNode, LIVE_INLET_CAPACITY, MidiClipNode, MidiIn, MidiInputNode, MidiKeys,
+    ClockNode, HarmonyNode, LIVE_INLET_CAPACITY, MidiClipNode, MidiIngestNode, MidiKeys,
     MidiMailbox, TimedHarmony, TimedMidiEvent,
 };
-use tutti_types::{At, Beat, Bpm, Frame, FrameClock, SampleRate, Samples};
+use tutti_types::{At, Beat, Bpm, Frame, FrameClock, Moment, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
 mod common;
@@ -30,25 +32,46 @@ fn note_on(ch: u8, note: u8) -> Ump {
     )
 }
 
-/// A wire with a fresh note on four channels every poll.
-struct Busy;
+/// A device's inlet (key `inlet`) feeding the first event input of the ingest
+/// node at key 1: what the device's thread pushes into.
+fn device(ed: &mut Editor, inlet: u64) -> EventInletWriter {
+    let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
+    ed.insert(NodeKey(inlet), "device", node);
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(1),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(inlet),
+            port: 0,
+        }),
+    );
+    writer
+}
 
-impl MidiIn for Busy {
-    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
-        for (i, slot) in buffer.iter_mut().take(4).enumerate() {
-            *slot = (
-                Offset::new(40 - 10 * i, Samples(512)).unwrap(),
+/// The first frame of block `block` (blocks of 512).
+fn frame_of(block: u64, offset: u64) -> At {
+    At::Frame(Frame(512 * block + offset))
+}
+
+/// A fresh note on four channels for block `block`.
+fn busy(device: &mut EventInletWriter, block: u64) {
+    for i in 0..4u64 {
+        device
+            .push_at(
+                Moment::new(Frame(512 * block + 40 - 10 * i), SampleRate(48_000.0)),
                 note_on(i as u8 * 3, 60),
-            );
-        }
-        4
+            )
+            .unwrap();
     }
 }
 
 #[test]
 fn the_border_nodes_process_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-    ed.insert(NodeKey(1), "in", MidiInputNode::new(Some(Box::new(Busy))));
+    ed.insert(NodeKey(1), "in", MidiIngestNode::new(1));
+    let mut dev = device(&mut ed, 4);
     let (inlet, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     ed.insert(NodeKey(2), "keys", inlet);
     let mut keys = MidiKeys::new(writer);
@@ -59,12 +82,14 @@ fn the_border_nodes_process_without_allocating() {
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
     // Warm up outside the gate.
+    busy(&mut dev, 0);
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
     let (tx, rx) = MidiMailbox::pair();
     assert_no_alloc::assert_no_alloc(|| {
         for b in 1..200u32 {
+            busy(&mut dev, u64::from(b));
             keys.note_on(
                 At::NextBlock,
                 MidiChannel::FIRST,
@@ -88,22 +113,20 @@ fn the_border_nodes_process_without_allocating() {
     assert_eq!(out.dropped(), 0);
 }
 
-/// A wire with a bend range on MPE member channel 2 every poll.
-struct BendRange;
-
-impl MidiIn for BendRange {
-    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
-        buffer[0] = (
-            Offset::ZERO,
+/// A bend range on MPE member channel 2, for the block starting at frame
+/// `512 * block`.
+fn bend_range(device: &mut EventInletWriter, block: u64) {
+    device
+        .push(
+            frame_of(block, 0),
             registered_rpn(
                 MidiGroup::FIRST,
                 MidiChannel::of(2),
                 tutti_ump::Rpn::PITCH_BEND_SENSITIVITY,
                 tutti_midi_protocol::PitchBendSensitivity::of(12).to_rpn_bits(),
             ),
-        );
-        1
-    }
+        )
+        .unwrap();
 }
 
 /// The input node fans a member channel's bend range out over its zone
@@ -114,19 +137,21 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     ed.insert(
         NodeKey(1),
         "in",
-        MidiInputNode::new(Some(Box::new(BendRange)))
-            .with_mpe(tutti_fixtures::midi::lower_zone(15)),
+        MidiIngestNode::new(1).with_mpe(tutti_fixtures::midi::lower_zone(15)),
     );
+    let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
     ed.commit().unwrap();
     let t = Transport::default();
     let mut drain = [(0, Ump([0; 4])); 256];
+    bend_range(&mut dev, 0);
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
     let mut reached = 0;
     assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..50 {
+        for b in 1..=50 {
+            bend_range(&mut dev, b);
             exec.process(512, &t, &[], &mut []);
             reached += out.poll_into(&mut drain);
         }
@@ -134,24 +159,16 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     assert_eq!(reached, 50, "the last member's port carries one per block");
 }
 
-/// A wire alternating an upper-zone and a lower-zone MPE Configuration
-/// Message, one per poll.
-struct Mcms(bool);
-
-impl MidiIn for Mcms {
-    fn poll_block(&mut self, _block_size: Samples, buffer: &mut [UmpAt]) -> usize {
-        use tutti_midi_protocol::MpeZoneConfig;
-        self.0 = !self.0;
-        buffer[0] = (
-            Offset::ZERO,
-            if self.0 {
-                MpeZoneConfig::upper(3).unwrap().to_mcm()
-            } else {
-                MpeZoneConfig::lower(3).unwrap().to_mcm()
-            },
-        );
-        1
-    }
+/// An upper-zone MPE Configuration Message for block `block` when `upper`, a
+/// lower-zone one otherwise.
+fn mcm(device: &mut EventInletWriter, block: u64, upper: bool) {
+    use tutti_midi_protocol::MpeZoneConfig;
+    let message = if upper {
+        MpeZoneConfig::upper(3).unwrap().to_mcm()
+    } else {
+        MpeZoneConfig::lower(3).unwrap().to_mcm()
+    };
+    device.push(frame_of(block, 0), message).unwrap();
 }
 
 /// The input node adopts a host-set MPE mode, sends its zones' reset ranges
@@ -162,15 +179,13 @@ impl MidiIn for Mcms {
 #[test]
 fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-    let controls = ed.insert(
-        NodeKey(1),
-        "in",
-        MidiInputNode::new(Some(Box::new(Mcms(false)))),
-    );
+    let controls = ed.insert(NodeKey(1), "in", MidiIngestNode::new(1));
+    let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
     ed.commit().unwrap();
     let t = Transport::default();
     let mut drain = [(0, Ump([0; 4])); 256];
+    mcm(&mut dev, 0, true);
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
@@ -181,6 +196,9 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
     let mut reached = 0;
     for i in 0..50 {
         controls.set_mpe_mode(modes[i % 2]);
+        // The device's thread pushes the block's message: upper on the odd
+        // blocks, as the first (warm-up) block's was.
+        mcm(&mut dev, i as u64 + 1, i % 2 == 1);
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
             reached += out.poll_into(&mut drain);

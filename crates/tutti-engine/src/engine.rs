@@ -85,6 +85,7 @@ use tutti_graph::{
     TransportChanges,
 };
 
+use crate::block_clock::{BlockClock, BlockClockReader};
 use crate::output::{DEFAULT_DEVICE_WIDTHS, OutputControl, OutputFolds};
 use std::time::Instant;
 use tutti_metering::{LoadMeter, LoadRecorder};
@@ -177,6 +178,8 @@ pub struct Engine {
     hearing: AudioThreadCell<crate::hearing::Hearing>,
     /// Its control side.
     heard_taps: crate::HeardTaps,
+    /// A reader of the block clock the graph render writes.
+    clock_reader: BlockClockReader,
     /// The folds from the root to the device, published by
     /// [`support_output`](Self::support_output).
     output: OutputControl,
@@ -211,6 +214,10 @@ struct GraphRender {
     /// The executor's [`dropped_event_count`](Executor::dropped_event_count) already
     /// forwarded to the load meter.
     dropped_seen: u64,
+    /// Where each render call's start stands on the OS clock and the graph's
+    /// frame clock: what a producer thread's `ClockMap` is fed
+    /// ([`Engine::block_clock`]).
+    clock: BlockClock,
 }
 
 impl Engine {
@@ -314,6 +321,8 @@ impl Engine {
         let dropped_seen = executor.dropped_event_count();
         let (recorder, meter) = LoadMeter::pair();
         let (heard_taps, hearing) = crate::hearing::link();
+        let clock = BlockClock::new();
+        let clock_reader = clock.reader();
         // Every bare root width places into every bare device width up to
         // `DEFAULT_DEVICE_WIDTHS` (`every_root_width_places_into_any_device`).
         let output = OutputControl::new(OutputFolds::up_to(DEFAULT_DEVICE_WIDTHS));
@@ -326,6 +335,7 @@ impl Engine {
                 stride,
                 playhead: Playhead::new(),
                 dropped_seen,
+                clock,
             }),
             fader: AudioThreadCell::new(Fader::new(fade_frames(rate))),
             capacity: Samples(stride),
@@ -333,6 +343,7 @@ impl Engine {
             meter,
             hearing: AudioThreadCell::new(hearing),
             heard_taps,
+            clock_reader,
             output,
             folds,
         })
@@ -417,6 +428,16 @@ impl Engine {
         &self.meter
     }
 
+    /// A reader of the block clock: each [`process`](Self::process) and
+    /// [`process_segment`](Self::process_segment) call publishes the OS time
+    /// it began and the graph frame it began at, and a thread that holds an OS
+    /// time (a hardware MIDI input) reads the latest to place it on a frame
+    /// (`tutti-midi-runtime`'s `ClockMap`). `None` from the reader until the
+    /// first call. Control side.
+    pub fn block_clock(&self) -> BlockClockReader {
+        self.clock_reader.clone()
+    }
+
     /// The control side of the tap after the fader ("what I'm hearing"): the
     /// device-width output of every [`process`](Self::process) and
     /// [`process_segment`](Self::process_segment) call, read through a
@@ -490,6 +511,13 @@ impl Engine {
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
+            if done == 0 {
+                // The call's start and the frame it renders first: one
+                // reading per call, for producer threads that hold an OS
+                // time (doc 017 section 5, "Timing at the edge").
+                g.clock
+                    .write(tutti_rt::monotonic_ns(), g.exec.frame(), rate);
+            }
             let len = (frames - done).min(bound);
             let t = g.transport.begin_block();
             // The tempo steps inside the block, if the map has any; a block
@@ -572,6 +600,13 @@ impl Engine {
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
+            if done == 0 {
+                // The call's start and the frame it renders first: one
+                // reading per call, for producer threads that hold an OS
+                // time (doc 017 section 5, "Timing at the edge").
+                g.clock
+                    .write(tutti_rt::monotonic_ns(), g.exec.frame(), rate);
+            }
             let len = (frames - done).min(bound);
             let frame0 = g.exec.frame();
             let mut pieces = GraphPieces {

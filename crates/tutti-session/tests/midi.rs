@@ -565,32 +565,6 @@ fn the_sessions_midi_nodes_keep_their_reclaimers() {
     );
 }
 
-/// **The update frees a port set a drain held across a port's removal**:
-/// with the OS MIDI layer open, a port removed while the engine's drain
-/// borrows the port set retires the set, and the next update's `Reclaim`
-/// phase frees it (`HardwareMidiInputs::collect`) with no further change.
-#[cfg(feature = "midi-hardware")]
-#[test]
-fn an_update_frees_a_port_set_a_drain_held_across_a_removal() {
-    let mut s = Session::builder()
-        .midi_hardware()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
-        .expect("builds");
-    let ports = Arc::clone(s.midi_io().expect("the OS MIDI layer").ports());
-    let mut handle = ports.open_input_port("Gone");
-    let id = handle.port_id();
-    assert!(handle.push(midi::noop(), Instant::now()));
-    drop(handle);
-
-    // A block in progress: the drain borrows the set while the port goes.
-    tutti_midi_hardware::HardwareMidiDrain::new(Arc::clone(&ports))
-        .cycle_start_read_all_inputs(512, |_, _| assert!(ports.remove_input_port(id)));
-    assert_eq!(ports.retired_sets(), 1, "the drain held the set");
-
-    s.update();
-    assert_eq!(ports.retired_sets(), 0, "the update freed it");
-}
-
 /// A session over a fake OS with no devices, and the handle that plugs some.
 #[cfg(feature = "midi-hardware")]
 fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounters) {
@@ -679,6 +653,177 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
     );
     assert!(io.connected_input_names().is_empty());
     assert!(io.ports().list_input_ports().is_empty(), "the port is gone");
+}
+
+/// A session over a fake OS with the device `Keys` (id 1) and `Pads` (id 2)
+/// present, and a stand-in synth that every channel of the hardware input
+/// routes to.
+#[cfg(feature = "midi-hardware")]
+fn keyboards(
+    devices: usize,
+) -> (
+    Session,
+    tutti_midi_hardware::test_support::FakeCounters,
+    Seen,
+) {
+    let (backend, fake) = tutti_midi_hardware::test_support::FakeBackend::build_with(
+        vec![
+            tutti_midi_hardware::test_support::endpoint(1, "Keys"),
+            tutti_midi_hardware::test_support::endpoint(2, "Pads"),
+        ],
+        vec![],
+        usize::MAX,
+    );
+    let mut s = Session::builder()
+        .midi_hardware_over(backend)
+        .midi_devices(devices)
+        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .expect("builds");
+    let (synth, seen) = tap(&mut s);
+    s.midi()
+        .route(MidiRouteRule::any_channel().to(synth))
+        .expect("routes");
+    s.update();
+    (s, fake, seen)
+}
+
+/// Connects `name`, and updates: the `Poll` phase wires the new inlet.
+#[cfg(feature = "midi-hardware")]
+fn connect(s: &mut Session, name: &str) {
+    s.midi_io()
+        .expect("the OS MIDI layer")
+        .connect_input_by_name(name)
+        .expect("connects");
+    s.update();
+}
+
+/// A note-on on channel `channel`.
+#[cfg(feature = "midi-hardware")]
+fn key(channel: u8, n: u8) -> Ump {
+    midi::note_on(MidiGroup::FIRST, MidiChannel::of(channel), n, MF)
+}
+
+/// **A connected device's note reaches the synth its channel routes to**
+/// through the device's own event inlet, once: the update after the connection
+/// wires the inlet to the ingest node (doc 017 stage E5), the device's thread
+/// pushes, and the synth hears it.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_connected_devices_note_reaches_the_synth_through_its_inlet() {
+    let (mut s, fake, seen) = keyboards(4);
+    connect(&mut s, "keys");
+    roll(&s, 1_024);
+    assert!(fake.send_input(EndpointId::from_raw(1), key(2, 60), Instant::now()));
+    roll(&s, 8_192);
+    let heard = note_ons(&seen);
+    assert_eq!(heard.len(), 1, "once: {heard:?}");
+    assert_eq!(heard[0].1, 60);
+}
+
+/// **Two devices are two inlets, merged at the synth**: each device's note is
+/// heard, and one device going leaves the other's inlet in the graph.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
+    let (mut s, fake, seen) = keyboards(4);
+    let before = plan_nodes(&s);
+    connect(&mut s, "keys");
+    connect(&mut s, "pads");
+    assert_eq!(plan_nodes(&s), before + 2, "an inlet for each device");
+    roll(&s, 1_024);
+    assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
+    assert!(fake.send_input(EndpointId::from_raw(2), key(0, 64), Instant::now()));
+    roll(&s, 8_192);
+    let mut notes: Vec<u8> = note_ons(&seen).iter().map(|n| n.1).collect();
+    notes.sort_unstable();
+    assert_eq!(notes, vec![60, 64], "both devices are heard");
+
+    s.midi_io()
+        .expect("the OS MIDI layer")
+        .disconnect_input_by_name("keys");
+    s.update();
+    assert_eq!(
+        plan_nodes(&s),
+        before + 1,
+        "only the closed device's inlet left"
+    );
+    assert!(
+        fake.send_input(EndpointId::from_raw(2), key(0, 65), Instant::now()),
+        "the other device is still connected"
+    );
+}
+
+/// **An arrival is placed on the engine's clock**: a note the OS stamps one
+/// second ahead of now sounds a second of frames on, not at the next block.
+/// An event pushed for the next block (the path of a session with no clock)
+/// sounds within one.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_devices_arrival_is_placed_on_the_engines_clock() {
+    let (mut s, fake, seen) = keyboards(4);
+    connect(&mut s, "keys");
+    roll(&s, 1_024);
+    let ahead = Instant::now() + Duration::from_secs(1);
+    assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), ahead));
+    roll(&s, 4_096);
+    assert!(note_ons(&seen).is_empty(), "not yet: it is a second away");
+    roll(&s, 60_000);
+    let heard = note_ons(&seen);
+    assert_eq!(heard.len(), 1);
+    assert!(
+        heard[0].0 >= 48_000,
+        "a second of frames on, not at the next block: frame {}",
+        heard[0].0
+    );
+}
+
+/// **A device whose inlet overflows is reported**: 3,000 events pushed before
+/// any block reads them against an inlet of 2,048 lose 952, and the next update
+/// reports `MidiInputDropped` with that total, once.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_device_whose_inlet_overflows_is_reported() {
+    let (mut s, fake, _seen) = keyboards(4);
+    connect(&mut s, "keys");
+    for n in 0..3_000u32 {
+        fake.send_input(
+            EndpointId::from_raw(1),
+            key(0, (n % 128) as u8),
+            Instant::now(),
+        );
+    }
+    let dropped = |events: Vec<SessionEvent>| {
+        events
+            .into_iter()
+            .filter_map(|e| match e {
+                SessionEvent::MidiInputDropped(total) => Some(total),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(dropped(s.update()), vec![952]);
+    assert!(dropped(s.update()).is_empty(), "reported once");
+}
+
+/// **A device past the slots is refused and leaves nothing**: with one slot,
+/// the second connection fails (`NoFreeSlot`) and holds no port; the first is
+/// still heard.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_device_past_the_slots_is_refused() {
+    let (mut s, fake, seen) = keyboards(1);
+    connect(&mut s, "keys");
+    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let refused = io.connect_input_by_name("pads").unwrap_err();
+    assert!(
+        matches!(refused, tutti_midi_hardware::Error::NoFreeSlot(_)),
+        "{refused:?}"
+    );
+    assert_eq!(io.ports().list_input_ports().len(), 1);
+    roll(&s, 1_024);
+    assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
+    roll(&s, 8_192);
+    assert_eq!(note_ons(&seen).len(), 1);
 }
 
 /// **A held output whose device vanishes is closed and reported.**

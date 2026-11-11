@@ -18,11 +18,13 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tutti_types::SampleRate;
+
+mod common;
+use common::Listener;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::Offset;
-use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiSession};
+use tutti_midi_hardware::{DeviceInlets, HardwareMidiInputs, MidiSession};
 use tutti_midi_protocol::channel_voice;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, Ump};
 
@@ -37,9 +39,11 @@ fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware
 }
 
 fn main() {
-    let pm = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(44_100.0)));
-    // The audio side's drain: what a `MidiInputNode` would own.
-    let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
+    // One inlet slot, 256 events, each event placed 20 ms after it arrived.
+    let inlets = Arc::new(DeviceInlets::new(1, 256, Duration::from_millis(20)));
+    let pm = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
+    // The graph's side: the engine's part, played on the wall clock.
+    let mut graph = Listener::over(&inlets);
     let io = MidiSession::open(pm.clone()).expect("open MIDI");
 
     let inputs = io.inputs();
@@ -52,11 +56,12 @@ fn main() {
     println!("out: [{}] {}", out.id, out.name);
 
     io.connect_input(&inp.id).expect("connect input");
+    graph.apply();
     io.connect_output(&out.id).expect("connect output");
     thread::sleep(Duration::from_millis(200));
 
-    // Drain anything buffered before the test.
-    drain.cycle_start_read_all_inputs(512, |_, _| {});
+    // Whatever was buffered before the test.
+    graph.listen(Duration::from_millis(50));
 
     let mut failures = 0usize;
 
@@ -66,13 +71,7 @@ fn main() {
             1,
             "the session accepted the event"
         );
-        thread::sleep(Duration::from_millis(150));
-        let mut first = None;
-        drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
-            if first.is_none() {
-                first = Some(ev);
-            }
-        });
+        let first = graph.listen(Duration::from_millis(150)).first().copied();
         match first {
             Some(ev) if check(ev) => println!("  PASS [{label}]: {:?}", channel_voice(ev)),
             Some(ev) => {
@@ -107,13 +106,9 @@ fn main() {
             note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xA000),
         )]);
     }
-    thread::sleep(Duration::from_millis(250));
-    let mut count = 0usize;
-    let mut all_on = true;
-    drain.cycle_start_read_all_inputs(512, |_, (_, ev)| {
-        count += 1;
-        all_on &= is_note_on(ev);
-    });
+    let heard = graph.listen(Duration::from_millis(250));
+    let count = heard.len();
+    let all_on = heard.iter().all(|&ev| is_note_on(ev));
     if count == 10 && all_on {
         println!("  PASS: received 10/10, all note_on");
     } else {

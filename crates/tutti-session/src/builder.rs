@@ -42,6 +42,9 @@ pub struct SessionBuilder {
     mpe_mode: tutti_midi_protocol::MpeMode,
     #[cfg(feature = "midi")]
     midi_ports: tutti_midi_runtime::MidiInputPorts,
+    /// How many hardware MIDI devices may be connected at once.
+    #[cfg(feature = "midi")]
+    midi_devices: usize,
     #[cfg(feature = "modulation")]
     unresolved_warning: std::time::Duration,
     #[cfg(feature = "plugin")]
@@ -77,6 +80,8 @@ impl Default for SessionBuilder {
             mpe_mode: tutti_midi_protocol::MpeMode::Disabled,
             #[cfg(feature = "midi")]
             midi_ports: tutti_midi_runtime::MidiInputPorts::FIRST_GROUP,
+            #[cfg(feature = "midi")]
+            midi_devices: crate::MIDI_INPUT_DEVICES,
             #[cfg(feature = "modulation")]
             unresolved_warning: crate::UNRESOLVED_WARNING,
             #[cfg(feature = "plugin")]
@@ -162,7 +167,7 @@ impl SessionBuilder {
     }
 
     /// Open the OS MIDI layer ([`Session::midi_io`]) and feed the engine's
-    /// MIDI input node from its ports. Default off.
+    /// MIDI ingest node, an event inlet for each connected device. Default off.
     #[cfg(feature = "midi-hardware")]
     #[must_use]
     pub fn midi_hardware(mut self) -> Self {
@@ -202,6 +207,18 @@ impl SessionBuilder {
     #[must_use]
     pub fn midi_groups(mut self, last: tutti_ump::MidiGroup) -> Self {
         self.midi_ports = tutti_midi_runtime::MidiInputPorts::through(last);
+        self
+    }
+
+    /// How many hardware MIDI devices may be connected at once: the ingest
+    /// node has one event input, and each device one event inlet and one
+    /// translator state, for each ([`MIDI_INPUT_DEVICES`](crate::MIDI_INPUT_DEVICES)
+    /// by default). Connecting one past it is refused
+    /// (`tutti_midi_hardware::Error::NoFreeSlot`). At least one.
+    #[cfg(feature = "midi")]
+    #[must_use]
+    pub fn midi_devices(mut self, devices: usize) -> Self {
+        self.midi_devices = devices.max(1);
         self
     }
 
@@ -256,17 +273,20 @@ impl SessionBuilder {
         quantum: Option<Samples>,
         outputs: usize,
     ) -> Result<Parts> {
-        // Built first so its port manager can feed the graph's MIDI input.
+        // Built first so its port list can feed the graph's MIDI input.
         #[cfg(feature = "midi-hardware")]
         let backend = self.midi_backend.take();
         #[cfg(feature = "midi-hardware")]
         let midi_io = self.midi_hardware.then(|| -> Result<_> {
-            // It times each inbound event by turning a wall-clock delta into a
-            // frame offset, which takes the device's real rate.
-            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(
-                tutti_midi_hardware::HardwareMidiInputs::DEFAULT_FIFO,
-                rate,
+            // One event inlet for each device, which its thread pushes into
+            // for the frame the engine's block clock puts its arrival on: a
+            // block later, so no event is late (the lead, doc 017 E5).
+            let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
+                self.midi_devices,
+                crate::midi::MIDI_INPUT_INLET_CAPACITY,
+                crate::midi::input_lead(quantum.unwrap_or(max_block), rate),
             ));
+            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(inlets));
             let io = match backend {
                 Some(MidiBackend(backend)) => {
                     tutti_midi_hardware::MidiSession::open_over(backend, ports)?
@@ -301,23 +321,15 @@ impl SessionBuilder {
         let (click, _settings) =
             graph.insert(ClickNode::new(&transport, Arc::clone(&click_settings)));
 
-        // The engine's MIDI as graph nodes: the hardware input (translating,
+        // The engine's MIDI as graph nodes: the hardware input's ingest (translating,
         // and ingesting MPE in the builder's mode), the clock (off until a
         // host enables it), and the event tap on the clock that is the hardware out.
         #[cfg(feature = "midi")]
         let midi = {
-            // The node owns its drain: the read state on the port set, built
-            // here on the control thread.
-            #[cfg(feature = "midi-hardware")]
-            let wire: Option<Box<dyn tutti_midi_runtime::MidiIn>> = midi_io.as_ref().map(|io| {
-                Box::new(tutti_midi_hardware::HardwareMidiDrain::new(Arc::clone(
-                    io.ports(),
-                ))) as Box<dyn tutti_midi_runtime::MidiIn>
-            });
-            #[cfg(not(feature = "midi-hardware"))]
-            let wire: Option<Box<dyn tutti_midi_runtime::MidiIn>> = None;
+            // One event input for each device slot; the session wires a
+            // device's inlet to its slot as the device connects.
             let (input, input_controls) = graph.add(
-                tutti_midi_runtime::MidiInputNode::new(wire)
+                tutti_midi_runtime::MidiIngestNode::new(self.midi_devices)
                     .hearing(self.midi_ports)
                     .with_mpe(self.mpe_mode),
             );
@@ -335,6 +347,7 @@ impl SessionBuilder {
                 Some(crate::MidiNodes {
                     input,
                     input_ports: self.midi_ports,
+                    input_devices: self.midi_devices,
                     input_controls,
                     clock,
                     clock_master,
@@ -454,6 +467,7 @@ impl SessionBuilder {
         self.check_placement(root, layout)?;
         let mut parts = self.parts(rate, max_block, None, root)?;
         let engine = parts.graph.engine(&parts.transport)?;
+        Self::clock_midi(&parts, &engine);
         // The width of every block the host pulls.
         engine.support_output(layout)?;
         self.declare(&mut parts.graph, layout)?;
@@ -572,6 +586,7 @@ impl SessionBuilder {
         self.check_placement(root, spec.channels)?;
         let mut parts = self.parts(spec.sample_rate, LIVE_MAX_BLOCK, spec.quantum, root)?;
         let engine = parts.graph.engine(&parts.transport)?;
+        Self::clock_midi(&parts, &engine);
         self.declare(&mut parts.graph, spec.channels)?;
         let mut session = self.session(parts, None, true)?;
         session.load = Some(engine.load_meter().clone());
@@ -585,6 +600,19 @@ impl SessionBuilder {
 }
 
 impl SessionBuilder {
+    /// Gives the hardware MIDI devices' threads the engine's block clock, so
+    /// each places its arrivals on frames.
+    fn clock_midi(parts: &Parts, engine: &tutti_engine::Engine) {
+        #[cfg(feature = "midi-hardware")]
+        if let Some(io) = &parts.midi_io {
+            io.ports()
+                .inlets()
+                .set_clock(Some(crate::midi::arrival_clock(engine.block_clock())));
+        }
+        #[cfg(not(feature = "midi-hardware"))]
+        let _ = (parts, engine);
+    }
+
     /// The root's width for `device`: the declared topology's, or else
     /// [`root_width`] of the floor.
     /// The global input count as a layout, or the refusal of a count none holds.

@@ -3,7 +3,6 @@
 //! and dropping one is a hot-plug the kernel announces: nothing here is faked.
 
 use std::time::{Duration, Instant};
-use tutti_types::SampleRate;
 
 use crate::{Devices, HardwareMidiInputs};
 use tutti_alsa_ffi::Client;
@@ -255,7 +254,9 @@ fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
 #[test]
 fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+        tutti_midi_runtime::DeviceInlets::new(4, 16, Duration::ZERO),
+    )));
     let name = unique("held");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
@@ -346,7 +347,9 @@ fn an_idle_devices_does_not_wake_itself() {
 #[test]
 fn the_engines_own_clients_are_not_listed() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+        tutti_midi_runtime::DeviceInlets::new(4, 16, Duration::ZERO),
+    )));
     let name = unique("own");
     let device = plug(&name);
     let mut backlog = Vec::new();
@@ -581,26 +584,30 @@ fn send_note(device: &Virtual) {
         .expect("send failed");
 }
 
-/// A device and an input pump connected to its port, with the ring the pump
-/// fills and the drain that reads it.
+/// A device and an input pump connected to its port, with the inlet the pump
+/// fills and the graph (on the wall clock) that plays it.
 struct Pumped {
     device: Virtual,
-    drain: crate::HardwareMidiDrain,
+    rig: crate::testing::Rig,
     connection: Option<Box<dyn crate::endpoints::InputConnection>>,
     _ports: std::sync::Arc<HardwareMidiInputs>,
 }
 
 impl Pumped {
-    fn open() -> Self {
-        let ports = std::sync::Arc::new(HardwareMidiInputs::new(64, SampleRate::new(44_100.0)));
+    /// A pump whose events are placed `lead` after they arrived.
+    fn open(lead: Duration) -> Self {
+        let inlets = std::sync::Arc::new(tutti_midi_runtime::DeviceInlets::new(4, 64, lead));
+        let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::clone(&inlets)));
         let device = plug(&unique("pump"));
         let id = super::enumerate::pack_id(device.0.id(), 0);
-        let producer = ports.open_input_port("pump");
+        let producer = ports.open_input_port("pump").expect("a slot");
+        let mut rig = crate::testing::Rig::over(&inlets, Instant::now());
+        rig.apply();
+        rig.run(1);
         let connection = super::input::open(id, producer).expect("the pump to open");
-        let drain = crate::HardwareMidiDrain::new(std::sync::Arc::clone(&ports));
         Self {
             device,
-            drain,
+            rig,
             connection: Some(connection),
             _ports: ports,
         }
@@ -611,11 +618,13 @@ impl Pumped {
         send_note(&self.device);
     }
 
-    /// Spins on the drain until one event arrives, and how long that took.
+    /// Plays the graph in real time until an event reaches it, and how long
+    /// that took.
     fn arrival(&mut self, limit: Duration) -> Option<Duration> {
         let start = Instant::now();
         while start.elapsed() < limit {
-            if self.drain.cycle_start_read_all_inputs(64, |_, _| {}) > 0 {
+            self.rig.run_to(Instant::now());
+            if !self.rig.take().is_empty() {
                 return Some(start.elapsed());
             }
             std::thread::yield_now();
@@ -629,7 +638,7 @@ impl Pumped {
 /// bound far above a wake and far below any timer the pump could be using.
 #[test]
 fn input_sent_to_an_idle_pump_arrives_promptly() {
-    let mut pumped = Pumped::open();
+    let mut pumped = Pumped::open(Duration::ZERO);
     let mut seen = Vec::new();
     for _ in 0..9 {
         // Idle long enough for the pump to be parked in `poll`.
@@ -648,7 +657,7 @@ fn input_sent_to_an_idle_pump_arrives_promptly() {
 /// An idle pump sleeps: it does not come back from `poll` on a timer.
 #[test]
 fn an_idle_pump_does_not_wake() {
-    let pumped = Pumped::open();
+    let pumped = Pumped::open(Duration::ZERO);
     std::thread::sleep(Duration::from_millis(50));
     let before = super::input::PUMP_WAKES.load(std::sync::atomic::Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(300));
@@ -661,7 +670,7 @@ fn an_idle_pump_does_not_wake() {
 /// Dropping an input returns while its pump is blocked in `poll`.
 #[test]
 fn dropping_an_input_stops_a_blocked_pump_promptly() {
-    let mut pumped = Pumped::open();
+    let mut pumped = Pumped::open(Duration::ZERO);
     std::thread::sleep(Duration::from_millis(100));
     let connection = pumped.connection.take().unwrap();
     let (done, finished) = std::sync::mpsc::channel();
@@ -683,7 +692,9 @@ fn dropping_an_input_stops_a_blocked_pump_promptly() {
 #[test]
 fn an_input_whose_pump_fails_reads_as_gone() {
     let devices = Watched::open();
-    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, SampleRate::new(44_100.0)));
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+        tutti_midi_runtime::DeviceInlets::new(4, 16, Duration::ZERO),
+    )));
     let name = unique("dies");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
@@ -715,15 +726,15 @@ fn an_input_whose_pump_fails_reads_as_gone() {
 /// The time an event is given is when it arrived, not when the pump read it.
 /// The pump is held 400 ms after its wake (`PUMP_STALL_MS`), so three notes sent
 /// 50 and 100 ms apart are all in the queue when it reads; their spacing as the
-/// drain sees it must be the sender's, within the sequencer clock's resolution
-/// and the scheduler's, and a read-time stamp would put all three within
-/// microseconds.
+/// graph hears them (the frames they sound on) must be the sender's, within the
+/// sequencer clock's resolution and the scheduler's, and a read-time stamp would
+/// put all three within microseconds. The inlets' lead (one second) is longer
+/// than the stall, so no event is late and its frame is its arrival's.
 #[test]
 fn events_keep_the_spacing_they_arrived_with_when_the_pump_is_late() {
-    let rate = 44_100.0;
-    let window = 441_000; // 10 s of frames: nothing clamps
+    let rate = crate::testing::RATE;
     super::input::PUMP_STALL_MS.store(400, std::sync::atomic::Ordering::SeqCst);
-    let mut pumped = Pumped::open();
+    let mut pumped = Pumped::open(Duration::from_secs(1));
     std::thread::sleep(Duration::from_millis(50));
 
     let t0 = Instant::now();
@@ -734,28 +745,26 @@ fn events_keep_the_spacing_they_arrived_with_when_the_pump_is_late() {
         pumped.send();
     }
 
-    // Each event's arrival in seconds after `t0`, from the offset the drain
-    // gave it and the block start it was given.
-    let mut arrived = Vec::new();
+    // Each event's frame, as the graph plays it: the graph runs on the wall
+    // clock until all three have sounded.
+    let mut heard: Vec<u64> = Vec::new();
     let deadline = Instant::now() + PATIENCE;
-    while arrived.len() < 3 {
-        assert!(Instant::now() < deadline, "got {arrived:?}");
-        let block_start = Instant::now();
-        pumped
-            .drain
-            .cycle_start_read_all_inputs_at(window, block_start, |_, (offset, _)| {
-                let ago = (window - offset.index()) as f64 / rate;
-                arrived.push(block_start.duration_since(t0).as_secs_f64() - ago);
-            });
+    while heard.len() < 3 {
+        assert!(Instant::now() < deadline, "got {heard:?}");
+        pumped.rig.run_to(Instant::now());
+        heard.extend(pumped.rig.take().iter().map(|e| e.1));
         std::thread::sleep(Duration::from_millis(5));
     }
     super::input::PUMP_STALL_MS.store(0, std::sync::atomic::Ordering::SeqCst);
 
     for i in 1..3 {
-        let (heard, sent) = (arrived[i] - arrived[i - 1], sent[i] - sent[i - 1]);
+        let (spacing, sent) = (
+            (heard[i] - heard[i - 1]) as f64 / rate,
+            sent[i] - sent[i - 1],
+        );
         assert!(
-            (heard - sent).abs() < 0.020,
-            "gap {i}: sent {sent:.4} s apart, arrived {heard:.4} s apart"
+            (spacing - sent).abs() < 0.020,
+            "gap {i}: sent {sent:.4} s apart, heard {spacing:.4} s apart"
         );
     }
 }
@@ -765,7 +774,7 @@ fn events_keep_the_spacing_they_arrived_with_when_the_pump_is_late() {
 #[test]
 fn dropping_an_input_does_not_wait_on_a_stuck_pump() {
     super::input::PUMP_STALL_MS.store(3000, std::sync::atomic::Ordering::SeqCst);
-    let mut pumped = Pumped::open();
+    let mut pumped = Pumped::open(Duration::ZERO);
     std::thread::sleep(Duration::from_millis(50));
     pumped.send();
     std::thread::sleep(Duration::from_millis(100));

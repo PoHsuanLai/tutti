@@ -575,7 +575,7 @@ impl Harmony {
 }
 
 /// A MIDI packet at its position in the current block: what a MIDI edge
-/// (`MidiIn`, `MidiOut`, a plugin's input) carries.
+/// (`MidiOut`, a plugin's input) carries.
 ///
 /// An alias, not a type: both halves are already checked ([`Offset`] against
 /// a block, [`Ump`] as the packet), so the pair adds no rule of its own, and a

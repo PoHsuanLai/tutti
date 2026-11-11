@@ -126,16 +126,11 @@ fn the_scratch_covers_both_directions() {
 /// differs from scalar bitwise in nearly every bin of this frame, so a swap
 /// to it moves the digest on any machine with SIMD.
 ///
-/// The digest is a self-recorded golden, asserted only where it was
-/// recorded: the twiddles come from libm (`sin`, `cos` in f64), which can
-/// differ in the last ulp between CRTs. The input is integer-valued, with
-/// no libm in it. (It is the digest the time-stretch vocoder's copy of
-/// this code recorded, so moving the code here changed no bit.)
-///
-/// Only the x86_64 Linux/glibc golden exists: aarch64 and the other
-/// platforms are covered by the analytic DFT tests alone, which pin
-/// correctness but not the scalar choice.
-#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+/// The digest is a golden (`assert_golden`): the twiddles come from libm
+/// (`sin`, `cos` in f64), which can differ in the last ulp between CRTs, so it
+/// is asserted only on the recorded target; elsewhere the analytic DFT tests
+/// pin correctness but not the scalar choice. The input is integer-valued,
+/// with no libm in it. It pins a portability guarantee, not a sound.
 #[test]
 fn the_fft_is_scalar_so_results_match_across_cpus() {
     let n = 1024usize;
@@ -153,24 +148,16 @@ fn the_fft_is_scalar_so_results_match_across_cpus() {
     let mut back = vec![0.0f32; n];
     fft.inverse(&mut bins.clone(), &mut back, &mut scratch);
 
-    let mut digest = 0xcbf2_9ce4_8422_2325u64;
-    let mut eat = |x: f32| {
-        digest = (digest ^ x.to_bits() as u64).wrapping_mul(0x0000_0100_0000_01b3);
-    };
-    for b in &bins {
-        eat(b.re);
-        eat(b.im);
-    }
-    back.iter().copied().for_each(&mut eat);
-    assert_eq!(digest, 1_168_166_466_409_112_443);
+    tutti_fixtures::assert_golden(
+        "the even scalar FFT",
+        word_fnv(&bins, &back),
+        1_168_166_466_409_112_443,
+    );
 }
 
 /// The odd path is scalar too: a digest of an odd-size round trip, gated
 /// like the even one.
 ///
-/// Like the even one, it exists only on x86_64 Linux/glibc; aarch64 and the
-/// other platforms are covered by the analytic DFT tests alone.
-#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
 #[test]
 fn the_odd_fft_is_scalar_too() {
     let n = 255usize;
@@ -188,14 +175,24 @@ fn the_odd_fft_is_scalar_too() {
     let mut back = vec![0.0f32; n];
     fft.inverse(&mut bins.clone(), &mut back, &mut scratch);
 
+    tutti_fixtures::assert_golden(
+        "the odd scalar FFT",
+        word_fnv(&bins, &back),
+        9_419_405_582_622_979_040,
+    );
+}
+
+/// FNV-1a over each `f32`'s bits as one 64-bit word (not byte by byte as
+/// `tutti_fixtures::Fnv` does): the fold the two scalar-FFT goldens were
+/// recorded with.
+fn word_fnv(bins: &[Complex32], back: &[f32]) -> u64 {
     let mut digest = 0xcbf2_9ce4_8422_2325u64;
-    let mut eat = |x: f32| {
-        digest = (digest ^ x.to_bits() as u64).wrapping_mul(0x0000_0100_0000_01b3);
-    };
-    for b in &bins {
-        eat(b.re);
-        eat(b.im);
+    let words = bins
+        .iter()
+        .flat_map(|b| [b.re, b.im])
+        .chain(back.iter().copied());
+    for x in words {
+        digest = (digest ^ u64::from(x.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
     }
-    back.iter().copied().for_each(&mut eat);
-    assert_eq!(digest, 9_419_405_582_622_979_040);
+    digest
 }

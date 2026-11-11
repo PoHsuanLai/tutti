@@ -6,9 +6,9 @@
 //! belongs to. Logic, Live, Reaper and GarageBand all read and write exactly this
 //! shape, so it is how a user shares a patch or loads one they downloaded.
 //!
-//! ## Why this module exists rather than reusing `get_state`/`set_state`
+//! ## Why this module exists rather than reusing `save_state`/`load_state`
 //!
-//! [`AuLoaded::get_state`](crate::instance::AuLoaded::get_state) already
+//! [`AuLoaded::save_state`](tutti_plugin_types::Control::save_state) already
 //! returns the `ClassInfo` dictionary as a binary plist, and that is *almost* the
 //! file format. Two things separate them: the identity keys must be populated
 //! from the AU's own component description, not from anything the caller

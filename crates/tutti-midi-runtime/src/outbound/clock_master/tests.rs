@@ -621,10 +621,13 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
             u64::from(tc.frames()) < tc.frame_rate().labels_per_second(),
             "{rate} Hz {fps:?}: {tc}"
         );
-        // Piece 0 sits on an even frame of the timeline, and the label is
-        // that frame: they differ by under the sample the event is placed
-        // on.
-        let lag = piece0_at - tc.to_seconds().get();
+        // Piece 0 sits on an even frame of the timeline, and the label the
+        // cycle spells is that frame: the decoder reports it two frames on
+        // (MTC: "A receiver of this time must keep an internal offset of +2
+        // frames"), and the two differ by under the sample the event is
+        // placed on.
+        let (num, den) = fps.ratio();
+        let lag = piece0_at - (tc.to_seconds().get() - 2.0 * den as f64 / num as f64);
         assert!(
             lag.abs() < 2.0 / rate,
             "{rate} Hz {fps:?}: {tc} is {lag} s from piece 0"

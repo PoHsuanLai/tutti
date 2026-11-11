@@ -2,7 +2,7 @@
 //! one it is told about the chain after it.
 //!
 //! The host transport callbacks an AU pulls (tempo, beat, play state) are
-//! `tutti-au-ffi`'s [`TransportState`]; this module is the property reads and
+//! `tutti-au-ffi`'s [`TransportState`](tutti_au_ffi::TransportState); this module is the property reads and
 //! writes around them.
 
 #![cfg(target_os = "macos")]

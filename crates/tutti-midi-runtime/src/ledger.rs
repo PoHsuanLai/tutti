@@ -7,6 +7,12 @@
 //! port only through a [`Sending`], which [`NoteLedger::block`] returns after
 //! it has paid what is owed.
 //!
+//! The ledger also tracks the hold pedals (CC 64, 66, 67, 69) and the pitch
+//! bend of each Group and Channel, in the protocol they were sent in: they
+//! are the other state a stopped source leaves in its receiver (MIDI 1.0
+//! Detailed Spec p. 31, Stop). [`Sending::release_all`] ends the notes, then
+//! returns what is off its normal position to it.
+//!
 //! A key is a note's Group, Channel and Note Number (M2-104 section 7.4,
 //! Appendix C): the wire has no other note identity, so there is one held
 //! note per key. A note-on of a key that sounds ends the sounding note first,
@@ -49,6 +55,9 @@
 //! }
 //! ```
 
+mod controllers;
+
+use controllers::Controllers;
 use tutti_graph::{Event, EventWriter, Offset};
 use tutti_ump::{Address, Key, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
@@ -132,6 +141,9 @@ pub struct NoteLedger<T> {
     capacity: usize,
     /// How many entries are `Owing`, so a block with no debt pays in one test.
     owing: usize,
+    /// The hold pedals and the pitch bend the port has been told are off
+    /// their normal position.
+    controllers: Controllers,
 }
 
 impl<T> std::fmt::Debug for NoteLedger<T> {
@@ -151,6 +163,7 @@ impl<T: Copy + PartialEq> NoteLedger<T> {
             entries: Vec::with_capacity(capacity),
             capacity,
             owing: 0,
+            controllers: Controllers::new(),
         }
     }
 
@@ -165,6 +178,7 @@ impl<T: Copy + PartialEq> NoteLedger<T> {
     pub fn forget(&mut self) {
         self.entries.clear();
         self.owing = 0;
+        self.controllers.forget();
     }
 
     /// The handle a block sends through. Everything owed goes out first, at
@@ -241,6 +255,8 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     /// its count back, so a delayed off nets zero.
     fn pay(&mut self, at: Offset) {
         if self.ledger.owing == 0 {
+            // The pedals only after every owed note-off (A-5).
+            self.ledger.controllers.pay(self.out, at);
             return;
         }
         let mut full = false;
@@ -258,6 +274,9 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
             !taken || e.refused > 0
         });
         self.ledger.recount();
+        if self.ledger.owing == 0 {
+            self.ledger.controllers.pay(self.out, at);
+        }
     }
 
     /// Writes `ump` at `at`. A note message is kept track of: a note-on the
@@ -271,7 +290,9 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     pub fn send(&mut self, at: Offset, ump: Ump, owner: Option<T>) {
         match Class::of(ump) {
             Class::Other => {
-                let _ = self.out.push(Event::midi(at, ump));
+                if self.out.push(Event::midi(at, ump)).is_ok() {
+                    self.ledger.controllers.observe(ump);
+                }
             }
             Class::On(key) => self.on(at, ump, key, owner),
             Class::Off(key) => self.off(at, ump, key, owner),
@@ -390,7 +411,12 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     }
 
     /// Ends every note at `at` (playback stopped or jumped, or the clip was
-    /// replaced). An off the port refuses stays owed. Once the port refuses
+    /// replaced), then returns every hold pedal (CC 64, 66, 67, 69) and pitch
+    /// bend the port was told is off its normal position to it, in the
+    /// protocol it was sent in; one already at rest sends nothing. MIDI 1.0
+    /// Detailed Spec p. 31 (Stop) asks for the return; the pedals come after
+    /// the offs because "a Hold or Sustain pedal 'On' message takes priority
+    /// over Note Off and All Notes Off until it is released" (A-5). An off the port refuses stays owed. Once the port refuses
     /// one the rest are not tried (it is full), but each is owed and counted:
     /// a note that gets no off is a lost event whether or not its push was
     /// attempted.
@@ -417,6 +443,9 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
             true
         });
         self.ledger.recount();
+        // Then the controllers: a pedal still down holds the notes just ended
+        // (MIDI 1.0 Detailed Spec A-5), so it is lifted after them.
+        self.ledger.controllers.lift_all(self.out, at);
     }
 }
 

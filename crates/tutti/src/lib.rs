@@ -231,5 +231,5 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "plugin"))]
     pub use tutti_session::PluginLoadRequest;
     #[cfg(all(feature = "session", feature = "export"))]
-    pub use tutti_session::{Bounce, BounceError, Bounced, Latency, Range};
+    pub use tutti_session::{Bounce, BounceError, Bounced, Latency, Range, Stem, StemGain};
 }

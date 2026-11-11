@@ -17,7 +17,7 @@
 //!
 //! CoreMIDI delivers a packet as a *packed word stream* — several concatenated
 //! UMP messages with no separators, each one's length implied by its type nibble.
-//! [`split_stream`](tutti_ump::split_stream) walks that.
+//! [`split_stream`] walks that.
 
 use coremidi::{EventList, Protocol, VirtualDestination};
 use tracing::debug;

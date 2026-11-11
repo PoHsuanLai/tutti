@@ -74,7 +74,7 @@ use tutti_au_ffi::Unit;
 /// compile error**, and a `from_raw` written as a chain of `if x == k…` would
 /// silently resolve to whichever alias came first. This enum therefore has
 /// exactly **one variant per distinct value**, and each variant's doc names the
-/// aliases it also answers for. The [`tests`] module pins the aliasing so a
+/// aliases it also answers for. The `tests` module pins the aliasing so a
 /// future SDK that splits a pair fails a test rather than changing behaviour.
 ///
 /// See [`Self::channel_count`] for how the width is recovered from the raw tag.
@@ -485,7 +485,7 @@ pub(crate) fn set_layout_tag(
 /// one CFString per read on every third-party AU. A UI polling bus names on a
 /// redraw leaks unboundedly.
 ///
-/// [`crate::cf::CfString::from_copied`] takes that +1 and releases on drop, on
+/// `CfString::from_copied` takes that +1 and releases on drop, on
 /// every path out including the `checked` rejection below.
 ///
 /// # `_checked`, not the bare converter

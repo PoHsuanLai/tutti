@@ -1549,7 +1549,9 @@ MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only 
 
 `sync`'s clock and MTC decoders have no consumer today beyond `ClockMaster`'s loopback
 tests. They are in the runtime (stage 5b), and are deleted if a clock slave (§9) does
-not use them. `cc::mapping` was deleted (stage 5b part (b); it had no user and is
+not use them. `MtcDecoder` ignores the quarter-frame bits the MTC text reserves ("receiver should
+ignore!") and reports the assembled position plus the two frames the text says a receiver
+"must keep" ("the information is now actually 2 frames old"). `cc::mapping` was deleted (stage 5b part (b); it had no user and is
 replaced by a CC modulation source, §9), and `jr_timestamp` is rewritten in
 `tutti-midi-device`, where it can be negotiated and driven by elapsed time.
 
@@ -1662,6 +1664,19 @@ holds the second borrow of the port).
   128 held notes 0.31 to 0.41 µs, 1,500 held notes with 4 changing a block 0.39 to
   1.06 µs. The table is a sorted `Vec`, so a change to a large table is a
   `memmove`.
+- **Controllers go back with the notes.** The ledger also keeps, per protocol, Group
+  and Channel, whether the hold pedals (CC 64, 66, 67, 69) are down and whether the
+  pitch bend is off centre (512 `u16`s, `ledger/controllers.rs`; a MIDI 1.0 value of 64
+  or more, a MIDI 2.0 one at or above `0x8000_0000`, is down). MIDI 1.0 Detailed Spec
+  p. 31 (Stop): "any controllers not in their initialized position (pitch wheels,
+  sustain pedal, etc.) should be returned to their normal positions", and A-5: a
+  pedal on "takes priority over Note Off and All Notes Off until it is released", so
+  `release_all` (the clip's stop, seek, loop wrap and replacement) writes the
+  note-offs first, then a pedal-up (value 0) and a centred bend (`0x2000` or
+  `0x8000_0000`) in the protocol the controller was sent in, for each that is off
+  and only those. A reset the port refuses is owed like an off and goes out on a
+  later block, after every owed off. Per-note pitch bend is not tracked: it ends with
+  its note (M2-104), and every note is ended first.
 - **Fork and reset.** The table is not `Clone`; a fork builds a fresh node over a
   snapshot of the clip and starts with an empty table, and `Node::reset` clears it.
 - **The clip node uses it; the relays do not yet.** The input and queue nodes, a
@@ -1685,7 +1700,7 @@ holds the second borrow of the port).
   same key. So can a close still owed after a replacement: past about 72 held
   keys (what a block's slot takes) it can end a note the new unit started on the
   same key. A fork starts with empty tables and closes what it has seen itself.
-  Sostenuto, CC 120 and 123, per-note controllers and pitch bend are not tracked.
+  Sostenuto, CC 120 and 123, per-note controllers and pitch bend are not tracked at the edge (the clip's ledger returns the pedals and the bend, above).
 
 ## 9. Missing capabilities, in the order a DAW needs them
 
@@ -1783,6 +1798,15 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
   `F7`. Text is bytes (the specification names no encoding); the registered meta events
   `Meta` does not type (sequence number, channel prefix, port, SMPTE offset, sequencer
   specific) are `Other { kind, data }`.
+- **A fixed-size meta event can be longer than it defines.** SMF 1.0 section 3.3:
+  programs "shouldn't be surprised if it's bigger than they expected. If so, they must
+  ignore everything past what they know about." Set Tempo, Time Signature and Key
+  Signature each carry an `extra` (the bytes past the ones they define, empty for an
+  exact event), so the typed event is read and the file still writes back as it was (a
+  real Time Signature with the compound-signature bytes is `FF 58 06 ...`). An End of
+  Track that is not a track's last event is refused (`Error::MidiFileParse`): section
+  3.3 says it "must occur as the last event in the track", and ending the track there
+  would drop what follows.
 - **A `PairedNote`** is `(group, channel, note, 16-bit velocity, start, end)` in ticks,
   for both containers (a MIDI 1.0 velocity widened by the specification's scaling, a
   MIDI 2.0 Note On at velocity 0 neither a start nor an end); `SmfNote`, `ClipNote` and
@@ -2088,7 +2112,8 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    - The SoundFont reads Registered Controllers 0, 1 and 2 (pitch bend
      sensitivity, fine and coarse tuning) and a Program Change's bank, which is
      stage 2's SoundFont residue, done here because the translator absorbs the
-     Bank Select the SoundFont followed before.
+     Bank Select the SoundFont followed before. The SoundFont holds a Bank Select (CC 0 and 32; an
+     MSB zeroes the held LSB, M1 p.12) until the next Program Change applies it (M1 p.13).
    The plan was: Deletes
    the SoundFont's RPN state machine (`Channel::{set_rpn_*, data_entry_*}`, which
    then reads a registered-controller `Voice2`, NRPN included), `mpe_ingest`'s

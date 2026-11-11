@@ -819,9 +819,6 @@ fn most_blocked(steps: usize) -> usize {
 /// thread (a bridge starting, a sibling subprocess being spawned) maps
 /// memory, which is the kernel's wait, not the step's. A CI runner showed two
 /// such ~350 us sleeps in 400 steps; a wait of ours takes no fault.
-/// Mutation (run): a 100 us sleep in every 32nd `Batcher::collect` → "6 of
-/// 200 steps blocked without a page fault (0 more with one)" at one plugin →
-/// fails.
 ///
 /// **Steps that look like a wait: fewer than half**, of each of three
 /// populations, where a step looks like a wait if it blocked or took at

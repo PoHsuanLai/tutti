@@ -109,8 +109,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `NonSend` resource `PluginEditorMainThread`. AU also asks the OS.
 - Plugin hosts are a pure `step` core, the `Loaded` typestate trait whose
   `activate` splits a plugin into a realtime `Processor` and a main-thread
-  `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP and the served `Ipc` are;
-  AU is doc 021 step 7) per
+  `Controller`, and `Lifecycle<L>` (VST2, VST3, CLAP, AU and the served `Ipc` are;
+  AU's editor mirror and served hosting are doc 021 step 7) per
   [`docs/design/016-plugin-hosts.md`](docs/design/016-plugin-hosts.md).
 
 ## The parallel executor (doc 013)

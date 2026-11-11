@@ -759,3 +759,33 @@ fn a_loop_shorter_than_a_frame_costs_one_pass_a_frame() {
         assert_eq!((ons, offs), (256, 255), "[{start:?}, {end:?})");
     }
 }
+
+/// **A clip that sets an RPN with a CC 6 alone keeps it, at the CC 6's own
+/// frame** (M2-104 D.3.3: a CC 6 waits for a CC 38, a later CC 6 or a new
+/// select; the clip's end is the one trigger a stream never sends, so the
+/// loader flushes). `B0 65 00, B0 64 00, B0 06 0C` with notes after it on
+/// other beats: one Registered Controller, bank 0 index 0, 12 semitones
+/// zero-extended (M2-115 section 4.1, `12 << 25`), on the CC 6's frame and
+/// before the later note.
+#[test]
+fn a_clip_ending_on_a_lone_cc_6_flushes_its_rpn_at_the_cc_6() {
+    use tutti_fixtures::midi::m1_cc;
+    use tutti_ump::{CCNumber, Message, U7, Voice2, decode};
+    let ch = MidiChannel::FIRST;
+    let cc = |n: CCNumber, v: u8| m1_cc(ch, n, U7::of(v));
+    let clip = MidiClipNode::new([
+        at(100, cc(CCNumber::RPN_MSB, 0)),
+        at(200, cc(CCNumber::RPN_LSB, 0)),
+        at(300, cc(CCNumber::DATA_ENTRY, 12)),
+        at(5_000, on(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    roll(&mut exec, 6_000, 256);
+    let seen = seen.lock().unwrap();
+    let frames: Vec<u64> = seen.iter().map(|&(f, _)| f).collect();
+    assert_eq!(frames, [300, 5_000]);
+    let Ok(Message::Midi2(_, Voice2::Registered { bank, index, value })) = decode(seen[0].1) else {
+        panic!("a Registered Controller, got {:?}", decode(seen[0].1));
+    };
+    assert_eq!((bank.get(), index.get(), value), (0, 0, 12 << 25));
+}

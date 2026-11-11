@@ -53,7 +53,7 @@ use tutti_graph::{
 };
 use tutti_midi_protocol::Translator;
 use tutti_rt::{ArcLend, Reader};
-use tutti_ump::Ump;
+use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice1};
 
 use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
 
@@ -159,7 +159,9 @@ fn class_of(timed: &TimedMidiEvent) -> Class {
 /// from a wire), each translated event at its source's beat and in its
 /// source's place in the list, which the note pairing below reads. An event
 /// the translator absorbs (an RPN select, Data Entry, Bank Select) is gone; a
-/// select or Data Entry that ends a run is replaced by the run's controller.
+/// select or Data Entry that ends a run is replaced by the run's controller,
+/// and a run the clip ends on (a CC 6 with no CC 38 after it) is sent right
+/// after its CC 6's place, on its beat.
 /// A beat that is not finite is dropped here, as [`sorted`] would. Control
 /// thread.
 fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidiEvent> {
@@ -170,15 +172,45 @@ fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidi
     // Stable: events on one beat are translated in list order.
     order.sort_by(|&a, &b| events[a].beat.get().total_cmp(&events[b].beat.get()));
     let mut out: Vec<Option<Ump>> = vec![None; events.len()];
+    // A run the clip ends on, at the position of its Data Entry.
+    let mut flushed: Vec<Option<Ump>> = vec![None; events.len()];
+    // The last Data Entry (CC 6 or 38) of each group and channel: a run still
+    // waiting when the clip ends is waiting on it.
+    let mut data_entry: HashMap<(MidiGroup, MidiChannel), usize> = HashMap::new();
     let mut translator = Translator::new();
     for i in order {
         // The translator sends at most one packet per packet fed.
         translator.feed(events[i].event, |u| out[i] = Some(u));
+        if let Ok(Message::Midi1(
+            address,
+            Voice1::ControlChange {
+                controller: CCNumber::DATA_ENTRY | CCNumber::DATA_ENTRY_LSB,
+                ..
+            },
+        )) = tutti_ump::decode(events[i].event)
+        {
+            data_entry.insert((address.group, address.channel), i);
+        }
     }
+    // Nothing follows the last event, so a CC 6 with no CC 38 after it is
+    // complete: send it where the CC 6 stood, not at a later trigger that
+    // never comes (a clip has no live timeout; M2-104 D.3.3).
+    translator.flush(|address, ump| {
+        if let Some(&i) = data_entry.get(&(address.group, address.channel)) {
+            flushed[i] = Some(ump);
+        }
+    });
     events
         .iter()
-        .zip(out)
-        .filter_map(|(e, u)| u.map(|u| TimedMidiEvent::new(e.beat, u)))
+        .zip(out.into_iter().zip(flushed))
+        .flat_map(|(e, (sent, flushed))| {
+            // Both at the source's beat: the run an earlier CC 6 left, then
+            // this CC 6's own.
+            [sent, flushed]
+                .into_iter()
+                .flatten()
+                .map(|u| TimedMidiEvent::new(e.beat, u))
+        })
         .collect()
 }
 

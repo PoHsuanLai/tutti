@@ -7,12 +7,12 @@
 //! ([`SvfDesign`]); the node is a [`DesignNode`] over it, and this file holds the
 //! cells and how a block reads them.
 
-use tutti_dsp::{Cadence, Design, Real, SvfControls, SvfDesign, SvfType};
+use tutti_dsp::{Real, Svf, SvfControls, SvfDesign, SvfType};
 use tutti_types::{ChannelLayout, Db, Hz, Q, UnitAddr, UnitParam};
 
-use crate::blend::NoBlend;
-use crate::params::{ControlSet, Params};
-use crate::reverb::{DesignNode, NodeDesign};
+use super::NodeKernel;
+use crate::params::ControlSet;
+use crate::reverb::DesignNode;
 
 /// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
 /// coefficient set shared across the channels and one integrator pair per
@@ -40,7 +40,7 @@ use crate::reverb::{DesignNode, NodeDesign};
 /// assert!(solo.controls().set(UnitParam::Cutoff, 2_000.0));
 /// ```
 ///
-/// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Params`] shared across
+/// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Params`](crate::Params) shared across
 /// clones. A held value costs nothing: the model is designed again only when one
 /// moves past a small dead-band ([`SvfControls::moved_from`]). The filter is
 /// designed on a 16-frame grid counted from the last reset, at each segment's
@@ -137,6 +137,10 @@ pub struct SvfSet(SvfType);
 impl ControlSet for SvfSet {
     type Controls = SvfControls;
 
+    fn moved(&self, applied: &SvfControls, target: &SvfControls) -> bool {
+        target.moved_from(applied)
+    }
+
     fn addrs(&self) -> &'static [UnitAddr] {
         const ADDRS: [UnitAddr; 3] = [
             UnitAddr::first(UnitParam::Cutoff),
@@ -164,20 +168,11 @@ impl ControlSet for SvfSet {
     }
 }
 
-impl<F: Real> NodeDesign for SvfDesign<F> {
-    type Params = Params<SvfSet>;
-    type Blend = NoBlend;
+impl<F: Real> NodeKernel for Svf<F> {
+    type Set = SvfSet;
 
-    /// A filter declares an unknown tail and never parks.
-    const PARKS: bool = false;
-    const SAMPLING: Cadence = <Self as Design>::CADENCE;
-
-    fn params(&self, initial: SvfControls) -> Self::Params {
-        Params::new(SvfSet(initial.ty), &initial)
-    }
-
-    fn moved(applied: &SvfControls, target: &SvfControls) -> bool {
-        target.moved_from(applied)
+    fn set(&self, initial: &SvfControls) -> SvfSet {
+        SvfSet(initial.ty)
     }
 }
 

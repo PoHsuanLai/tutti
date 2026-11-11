@@ -100,7 +100,7 @@ pub use distortion::{DISTORTION_PARAMS, DistortionNode};
 pub use tutti_dsp::ShapeKind;
 
 mod filter;
-pub use filter::{CrossoverNode, EqBandNode, LadderFilterNode, SvfFilterNode};
+pub use filter::{CrossoverNode, EqBandNode, LadderFilterNode, NodeKernel, SvfFilterNode};
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.
@@ -131,8 +131,8 @@ pub use blend::{Blend, DryWet, NoBlend};
 // The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
-pub use params::{ControlSet, Params};
-pub use reverb::{At, ControlParams, DesignNode, FreeverbNode, NodeDesign};
+pub use params::{At, ControlSet, Params};
+pub use reverb::{DesignNode, FreeverbNode, NodeDesign};
 
 // The feedback delay network as a `DesignNode`, and the choice between the two.
 mod reverb_fdn;

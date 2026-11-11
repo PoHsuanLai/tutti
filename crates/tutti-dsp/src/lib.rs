@@ -122,17 +122,18 @@ pub use fdn::FdnKernel;
 pub use fdn_design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
-    Biquad, Crossover, CrossoverControls, CrossoverDesign, CrossoverError, CrossoverModel,
-    CrossoverRealization, DirectForm1, FilterSizes, LadderCoeffs, LadderControls, LadderDesign,
-    LadderModel, LadderRealization, LadderType, MAX_SPLITS, Real, SOLVE_CEILING, SvfCoeffs,
-    SvfControls, SvfDesign, SvfModel, SvfRealization, SvfType, fit_to_rate,
+    Biquad, ChannelKernel, Crossover, CrossoverControls, CrossoverDesign, CrossoverError,
+    CrossoverModel, CrossoverTree, DirectForm1, Filter, FilterSizes, Ladder, LadderCoeffs,
+    LadderControls, LadderDesign, LadderModel, LadderType, MAX_SPLITS, PerChannel, Real,
+    SOLVE_CEILING, Svf, SvfCoeffs, SvfControls, SvfDesign, SvfModel, SvfType, fit_to_rate,
 };
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use interp::cubic_hermite;
 pub use model::{
-    Anchor, Cadence, Ceiling, Channels, Design, Effect, Effort, Lti, MaxDecay, MaxDecayError,
-    Period, Range, Realization, Ring, Setup, Sizes, Step, System,
+    Anchor, Approach, Cadence, Ceiling, Channels, Design, Effect, Effort, Glide, Kernel, Lerp, Lti,
+    MaxDecay, MaxDecayError, Period, Range, Realization, Realized, Ring, Setup, Sizes, Step,
+    System,
 };
 pub use network::{
     Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Full, Gains, Inline, Line,

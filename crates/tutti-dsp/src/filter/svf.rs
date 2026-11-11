@@ -5,6 +5,7 @@
 //! switching type is as cheap as any parameter change.
 
 use super::Real;
+use crate::Lerp;
 use tutti_types::{Db, Hz, Q, SampleRate};
 
 /// Which response the state-variable filter presents.
@@ -158,7 +159,7 @@ impl SvfCoeffs {
 /// One set serves every channel: the controls are one linked surface, so
 /// widening replicates only the integrator state.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SvfCoefficients<F: Real> {
+pub struct SvfCoefficients<F: Real> {
     a1: F,
     a2: F,
     a3: F,
@@ -181,12 +182,12 @@ impl<F: Real> From<&SvfCoeffs> for SvfCoefficients<F> {
     }
 }
 
-impl<F: Real> SvfCoefficients<F> {
-    /// Linear blend toward `to` by `t` in `0..=1`: an interpolated set is only
+impl<F: Real> Lerp for SvfCoefficients<F> {
+    /// Each coefficient blended linearly, `t = k / n` in `F`: an interpolated set is only
     /// ever used for one sample and never stored.
     #[inline]
-    #[must_use]
-    pub(crate) fn lerp(&self, to: &Self, t: F) -> Self {
+    fn lerp(&self, to: &Self, k: u32, n: u32) -> Self {
+        let t = F::from_f64(f64::from(k)) / F::from_f64(f64::from(n));
         Self {
             a1: self.a1 + (to.a1 - self.a1) * t,
             a2: self.a2 + (to.a2 - self.a2) * t,

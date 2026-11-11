@@ -12,11 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::StreamerSender;
 use super::cells::Cells;
 use super::command::{StreamId, StreamerCommand};
-use super::control::{StreamFile, StreamerGone};
+use super::control::{LoopError, StreamFile, StreamerGone};
 use super::loops::RingControl;
 use super::status::{StatusCell, StreamStatus};
 use crate::voice::{Direction, LoopSetting};
 use tutti_rt::ArcLend;
+use tutti_types::SamplePosition;
 
 /// The way onto one streamer's command queue, cloned into every [`Stream`].
 ///
@@ -44,21 +45,33 @@ impl StreamerPort {
 
 /// The streamer's command for a loop `setting` on `stream`.
 ///
-/// Negative positions are clamped to zero (a file has no frame before its
-/// first). A refusal instead needs an error on `set_loop` (doc 025, "As built,
-/// cut 6": left to cut 7, with the other bare frame counts).
-fn loop_command(stream: StreamId, setting: LoopSetting) -> StreamerCommand {
+/// A position that is not a frame of a file (negative, or not a number) is
+/// refused, never clamped: a loop that began at the first frame when it was
+/// asked to begin before it is a loop nobody asked for (doc 025 §9, decision
+/// 22).
+fn loop_command(stream: StreamId, setting: LoopSetting) -> Result<StreamerCommand, LoopError> {
     match setting {
         LoopSetting::On {
             start,
             end,
             crossfade_frames,
-        } => StreamerCommand::SetStreamLoop {
-            stream,
-            range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
-            crossfade_frames,
-        },
-        LoopSetting::Off => StreamerCommand::ClearStreamLoop { stream },
+        } => {
+            let frame = |p: SamplePosition| {
+                let p = p.get();
+                // `!(p >= 0.0)` also refuses NaN.
+                if p >= 0.0 {
+                    Ok(p as u64)
+                } else {
+                    Err(LoopError::Position)
+                }
+            };
+            Ok(StreamerCommand::SetStreamLoop {
+                stream,
+                range: (frame(start)?, frame(end)?),
+                crossfade_frames,
+            })
+        }
+        LoopSetting::Off => Ok(StreamerCommand::ClearStreamLoop { stream }),
     }
 }
 
@@ -216,12 +229,15 @@ impl Stream {
     ///
     /// # Errors
     ///
-    /// [`StreamerGone`] means the streamer thread has exited and the command
-    /// was discarded. It is permanent: every later command fails the same
-    /// way, so a caller should stop rather than retry.
+    /// [`LoopError::Position`]: a point of the loop is negative or not a
+    /// number. Nothing was sent and the stream is as it was.
+    ///
+    /// [`LoopError::StreamerGone`] means the streamer thread has exited and
+    /// the command was discarded. It is permanent: every later command fails
+    /// the same way, so a caller should stop rather than retry.
     #[must_use = "a discarded loop is a loop that never plays"]
-    pub fn set_loop(&mut self, setting: LoopSetting) -> Result<(), StreamerGone> {
-        self.port.send(loop_command(self.id, setting))?;
+    pub fn set_loop(&mut self, setting: LoopSetting) -> Result<(), LoopError> {
+        self.port.send(loop_command(self.id, setting)?)?;
         // Recorded only once the streamer has the command: a failed send leaves
         // the stream as it was.
         self.loop_ = setting;
@@ -278,7 +294,10 @@ impl Stream {
                 None,
             )),
             Arc::new(ArcLend::new(RingControl::new(
-                super::loops::RingMap::plain(super::loops::Arrangement::plain(0), 0),
+                super::loops::RingMap::plain(
+                    super::loops::Arrangement::plain(tutti_types::Samples::new(0)),
+                    0,
+                ),
                 LoopSetting::Off,
             ))),
         )
@@ -288,7 +307,6 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::SamplePosition;
 
     fn on(start: f64, end: f64) -> LoopSetting {
         LoopSetting::On {
@@ -312,15 +330,42 @@ mod tests {
         let (tx, queue) = crossbeam_channel::bounded(8);
         let mut stream = Stream::detached(StreamId(0), StreamerPort::new(tx));
         drop(queue);
-        assert_eq!(stream.set_loop(LoopSetting::Off), Err(StreamerGone));
-        assert_eq!(stream.set_loop(on(0.0, 100.0)), Err(StreamerGone));
+        assert_eq!(
+            stream.set_loop(LoopSetting::Off),
+            Err(LoopError::StreamerGone)
+        );
+        assert_eq!(
+            stream.set_loop(on(0.0, 100.0)),
+            Err(LoopError::StreamerGone)
+        );
         drop(stream);
+    }
+
+    /// **A loop point that is not a file frame is refused, not clamped**: a
+    /// negative or NaN start or end answers `LoopError::Position`, sends
+    /// nothing, and leaves the stream's loop as it was; the first frame is a
+    /// valid point.
+    ///
+    /// Mutation (run): `loop_command`'s `frame` back to `p.max(0.0) as u64`
+    /// (the old clamp) -> the negative start is queued as 0 and the test fails
+    /// at the first `assert_eq!`.
+    #[test]
+    fn a_negative_loop_position_is_refused() {
+        let (tx, queue) = crossbeam_channel::bounded(8);
+        let mut stream = Stream::detached(StreamId(5), StreamerPort::new(tx));
+        for bad in [on(-5.0, 100.0), on(0.0, -1.0), on(f64::NAN, 100.0)] {
+            assert_eq!(stream.set_loop(bad), Err(LoopError::Position), "{bad:?}");
+        }
+        assert_eq!(stream.loop_(), LoopSetting::Off, "the stream is as it was");
+        assert!(queue.try_recv().is_err(), "nothing was sent");
+        stream
+            .set_loop(on(0.0, 100.0))
+            .expect("the first frame is a frame");
     }
 
     /// Every command a stream sends names that stream, and only it: two streams
     /// on one queue each send their own id, for a loop, a clear and the close
-    /// their drop sends (B4: a command meant for one cannot name another). A
-    /// negative position is clamped to the file's first frame.
+    /// their drop sends (B4: a command meant for one cannot name another).
     ///
     /// Mutation (run): `set_loop` sending `StreamId(0)` for every stream -> the
     /// second stream's loop names the first -> fails. Mutation (run): `Drop`
@@ -333,7 +378,7 @@ mod tests {
             Stream::detached(StreamId(1), port.clone()),
             Stream::detached(StreamId(2), port),
         );
-        a.set_loop(on(-5.0, 100.0)).unwrap();
+        a.set_loop(on(5.0, 100.0)).unwrap();
         b.set_loop(LoopSetting::Off).unwrap();
         drop(a);
         drop(b);
@@ -344,7 +389,7 @@ mod tests {
                 [
                     StreamerCommand::SetStreamLoop {
                         stream: StreamId(1),
-                        range: (0, 100),
+                        range: (5, 100),
                         crossfade_frames: 7,
                     },
                     StreamerCommand::ClearStreamLoop {
@@ -384,7 +429,10 @@ mod tests {
         assert_eq!(stream.direction(), Direction::Reverse);
 
         drop(queue);
-        assert_eq!(stream.set_loop(LoopSetting::Off), Err(StreamerGone));
+        assert_eq!(
+            stream.set_loop(LoopSetting::Off),
+            Err(LoopError::StreamerGone)
+        );
         assert_eq!(stream.set_direction(Direction::Forward), Err(StreamerGone));
         assert_eq!(
             stream.loop_(),

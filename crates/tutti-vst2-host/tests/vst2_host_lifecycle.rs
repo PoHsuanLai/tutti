@@ -24,9 +24,7 @@ use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{ContentScale, Control, Controller, EditorWindow, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_vst2_host::{
-    Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,
-};
+use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/active.rs"]
@@ -482,8 +480,8 @@ fn editor_idle_reaches_an_open_editor() {
     instance.loaded_mut().editor_idle(&main_thread());
     assert_eq!(idles(), 0, "no editor is open yet");
 
-    // SAFETY: the probe's editor never touches the parent.
-    let parent = unsafe { WindowHandle::from_raw(std::ptr::null_mut()) };
+    // The probe's editor never touches the parent.
+    let parent = tutti_fixtures::StandInWindow.handle();
     instance
         .loaded_mut()
         .open_editor(&main_thread(), parent, ContentScale::IDENTITY)

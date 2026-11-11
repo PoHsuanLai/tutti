@@ -489,7 +489,7 @@ mod attach_tests {
             None,
         );
         // SAFETY: the handle is never dereferenced by the stub view.
-        let parent = unsafe { WindowHandle::from_raw(std::ptr::NonNull::dangling().as_ptr()) };
+        let parent = unsafe { WindowHandle::from_u64(1) };
         let result = Editor::open(view, parent, ContentScale::default(), frame);
         assert!(matches!(result, Err(EditorError::Attach(_))));
         assert_eq!(*calls.lock().unwrap(), [Call::SetFrame, Call::ClearFrame]);

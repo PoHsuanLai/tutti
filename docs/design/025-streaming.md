@@ -916,7 +916,7 @@ Each stage is one PR that stays green. Line figures are estimates.
    | **4** | `Stream` handle, stream addressing, the streamer's `Record` and pure `step` (§2.5); B1 restated, B4 | the channel-keyed `DashMap`, `ChannelPlan`, `Link`, `stop_streaming`, the public `Command` enum and `Commands`, the second command mapping, `RegionMap`'s separate index (the `Record` is keyed by `StreamId`); the driver becomes a typestate (`Built`, stepped, running) and its runtime asserts and their `should_panic` test | `step` table tests with no thread: open to `Live`; `Close` frees the region **in that step** (the B1 test restated with a `Weak<Ring>`); a command for an unknown id is ignored and reaches no other stream (the B4 test: speed and loop for the old stream behind a re-open never touch the new one); a re-open is independent of the old stream. `Drop for Stream` frees the ring (a free-detecting test). Mutation: remove the `Close` send in `Drop`, remove the id check in `step` |
    | **5** | Status, faults, containment, fallible construction, decode lane (§2.5, §2.6) | the `expect` on the thread spawn, the log-only outcomes (they become status), whole-file decode in the command drain, `Metrics`' `Mutex` on thread-confined data | `StreamStatus` per outcome: a decode fault (a corrupt file mid-stream) is `Faulted(Decode)` and the voice reads silence; end is `Ended`; underruns are read from the status (the first reader of `take_underruns`); a dropped streamer publishes `Faulted(StreamerGone)` to a live stream. B5: a panicking decode (a test hook on `RegionOut`) faults only that stream, the others keep filling, on the hand-stepped and the threaded driver. `DiskStreamer::new` returns `Err` when the spawn fails (a test seam for the spawn). A non-seekable file opens while another stream keeps refilling (a throughput test with the decode held open). Mutations: remove the `catch_unwind`, decode on the shared thread, drop the status write |
    | **6** | `RingControl`, per-stream cells, `StreamFile`, `Stream::set_loop` (§2.7) | `RtState`, `StreamRecord`, `StreamOrigin`, `StreamFile`'s old shape, `forward_loop`, `roll_back`, the pool's `StreamTable` and `forwarding` mutex, `SetDirection` polling in `apply_directions` (a command now), `fade_frames` as a cell (an immutable field), `buffer_margin`; every voice-build call site in the sampler changes (`bevy-tutti` stays parked and is not touched) | Per knob, one writer: a test that two voices opened in sequence on one file share no cell (set gain, speed, direction, stretch on one, read the other: the S3 test); direction published once and read from the lent control; the fork reads the applied loop (a downgraded loop is the downgrade in the fork, not the request); `set_loop` leaves the stream unchanged when the send fails. A loom model only if a new lock-free structure appears: `RingControl` rides the existing `ArcLend`, which has its model, and a test that the cycle's reclaim frees a retired `RingControl` held across a replacement (as today's map test does) |
-   | **7** | `Block`; sentinels and units | the separate claim and lend in `LiveRead::render`, `Content.switch_at == 0` (an `Option`), `usize::MAX` for an unknown length, bare `u64`/`usize` frame counts on the streamer's fields (`Samples`), the per-cycle `Vec` in `apply_directions` | Settles §10 Q2 by porting `LiveRead::render` on the cut's own branch. `compile_fail`: a second `block` while the first is alive; a `Block` sent to another thread (`!Send`); a `Loan` held past its `Block`. Mutations: remove the borrow, the `PhantomData`, the `#[must_use]`. The existing differential and loop tests pass unchanged (the render is bit-identical) |
+   | **7** (done) | `Block`; sentinels and units | the separate claim and lend in `LiveRead::render`, `Content.switch_at == 0` (an `Option`), `usize::MAX` for an unknown length, bare `u64`/`usize` frame counts on the streamer's fields (`Samples`), the per-cycle `Vec` in `apply_directions` | Settles §10 Q2 by porting `LiveRead::render` on the cut's own branch. `compile_fail`: a second `block` while the first is alive; a `Block` sent to another thread (`!Send`); a `Loan` held past its `Block`. Mutations: remove the borrow, the `PhantomData`, the `#[must_use]`. The existing differential and loop tests pass unchanged (the render is bit-identical) |
 
    *As built, cut 1.* The free-running reader is gone, with the names the
    table lists: `Command::Seek` and `Command::SetSpeed` (and their
@@ -1013,7 +1013,7 @@ Each stage is one PR that stays green. Line figures are estimates.
      built on the streamer's thread after the probe, before any ring exists,
      so a refusal leaves nothing to free (it used to be a `take_disk_voice`
      error that left the reader in the plan).
-   - **`StreamReader` has no `block`** (cut 7's), and `DiskVoice` is built
+   - **`StreamReader` had no `block`** (cut 7 added it), and `DiskVoice` is built
      with `DiskVoice::from_reader`, an inherent function, not by a `Status`
      method; `Status` holds only the session rate.
    - **A re-open on a channel is not a thing.** With no channel number each
@@ -1376,6 +1376,91 @@ Each stage is one PR that stays green. Line figures are estimates.
    fill test, the pool's insert-time forward tests (`with_streamer` is gone), and
    the handle-seeding test.
 
+   *As built, cut 7.* A `StreamReader` lends a `Block`, and the sentinels the
+   row named are types. `StreamReader::block(play: Samples, reads:
+   [Range<Samples>; 2]) -> Block<'_>` claims the ring's ranges and lends the
+   stream's `RingControl` in one value (`streamer/block.rs`): `Block` holds the
+   `PosClaim` and the `Loan<RingControl>`, borrows the reader mutably, is
+   `!Send` and `#[must_use]`, and answers `holds`, `frame`, `direction` and
+   `applied_loop` (the control's map is `pub(crate)`). The voice's reader is
+   one `RingReader` (the position reader and the control's reader registered
+   together, `pub(crate)`), which `StreamReader` holds and `DiskVoice::from_reader`
+   moves into `LiveRead`; `LiveRead::render` has no separate claim and lend any
+   more, and `steady_lanes` and `read_ring` take the `&Block`. The render is
+   bit-identical: the sampler's differential, loop, tier and block-length suites
+   pass unchanged.
+
+   **Q2 (§10) is settled: yes, `Block` fits `LiveRead::render`.** The map was
+   lent after the claim and used while the claim was alive, and that is one
+   scope: the block is made once, after the jump's old range is known, and both
+   the continuation read and the steady-lanes path borrow it. Nothing in the
+   render needed the claim and the loan to end at different times.
+
+   Deleted: the claim and the lend in `LiveRead::render`; `LiveRead`'s
+   `reader`/`control` pair (one `Option<RingReader>`); `Content::switch_at`'s
+   `0` for "none" (`Option<u64>`); `usize::MAX` for an unknown length in
+   `Mapping`, `Arrangement`, `RegionBuffer::for_file` and `LoopSpan::new`
+   (`Option<Samples>` on the first three, `Mapping::unbounded` and
+   `Arrangement::unbounded` to build one, `LoopSpan::unbounded` beside `new`);
+   `loop_command`'s clamp (a refusal, below); `StreamReader`'s public-in-crate
+   `pos` and `control` fields. `apply_directions` and its per-cycle `Vec` were
+   already gone at cut 6 (a direction is a command), so the row's last item had
+   nothing left to delete. `Mapping::forward_loop` was renamed `active_loop` at
+   cut 6.
+
+   **`Stream::set_loop` returns `LoopError`** (`Position` or `StreamerGone`;
+   `From<StreamerGone>`): a loop point that is negative or NaN is refused, never
+   clamped, and nothing is sent. Frame counts that became `Samples`: the
+   streamer's `seek_crossfade_frames` (config), `Ring::fade_frames`,
+   `FadeRecord::fade_frames`, `Record::file_frames`, `apply_mapping`'s fade and
+   `RegionBuffer::for_file`'s length and fade.
+
+   Departures, each because the code made the sketch impossible or worse:
+   - **`Block::control` is `pub(crate)`.** `RingControl` is the crate's private
+     value, so the public `Block` offers the two things a caller outside reads of
+     it (`direction`, `applied_loop`), and the map stays inside. The "a `Loan`
+     held past its `Block`" doctest borrows through `applied_loop`.
+   - **`PhantomData<*const ()>` is belt and braces.** `Loan` is already `!Send`
+     (it carries its own `PhantomData<*const ()>`), so removing the `Block`'s
+     marker leaves the `!Send` doctest failing to compile: the mutation is not
+     observable. The marker stays because it is where the rule is read.
+   - **`play` and `reads` are `Samples`, `holds` and `frame` take `u64`
+     positions**: a position is the ring's own index (`Arrangement::taps`
+     yields `u64`), not a count of frames.
+   - **A refused loop is counted with a gone streamer.** The pool's undo and
+     `loops_streamer_gone` treat any `set_loop` error alike; a separate counter
+     for a refusal is not added until a caller can produce one (the pool's voices
+     take loop points from `LoopSetting`, which a host can build negative).
+   - **A reversed stream of an unknown length reads nothing** (`Mapping::end`
+     is `Some(0)`, its taps `None`): there is no length to mirror by, and only a
+     bare test ring has none.
+   - **Frame counts not converted:** the loop's `crossfade_frames` (a
+     `LoopSetting` field, public and shared with the memory tier), `RingMap::at`
+     and `FadeRecord::start` (ring positions, `u64` like the rest of the ring's
+     indices), the cache's byte counts and the chunk sizes. Each is a position
+     or a size the memory tier and the ring share, and converting one alone would
+     put a `.get()` at every use.
+
+   Tests, each with the mutation run and its result. The `Block` doctests
+   (`streamer/block.rs`), each with a compiling twin: a second `block` while the
+   first is alive (`StreamReader::block` returning an unbound lifetime, with
+   `unsafe` allowed for the mutation, makes it compile), a `Block` sent to
+   another thread, a `Block` dropped unread (`#![deny(unused_must_use)]`;
+   removing `#[must_use]` makes it compile), and a loan held past its block
+   (`applied_loop` returning by value makes it compile). The marker's mutation
+   is the departure above. `a_negative_loop_position_is_refused` (the clamp
+   restored: the negative start is queued and the test fails).
+   `a_block_that_ends_after_a_publish_frees_nothing` (`tests/rt_no_free.rs`, the
+   free-detecting test of Q4 for the reader's part): a block lent across the
+   streamer's publish frees nothing when it ends, and the streamer's next sweep
+   frees the retired control; the block holding an `Arc` instead of the loan
+   fails the first assertion, and the `reclaim_control` loop removed fails the
+   second. Ported without an assertion changed: the four `contained.rs` tests
+   that claimed through `reader.pos` now take a `Block`, and
+   `a_stream_names_itself_in_every_command` queues a loop at 5 where it queued
+   -5 (the clamp is the thing removed), with `Err(StreamerGone)` read as
+   `Err(LoopError::StreamerGone)`.
+
    Cuts 1 and 2 are independent of the rest and of each other and may land in
    either order, or after 3. Cut 3 is the smallest useful cut and is the first
    that changes the public surface (every voice-build call site in the sampler
@@ -1528,7 +1613,8 @@ push `Resample` and `Dither` together and accept the Ogg change.
    side sounds.
 2. **Does `Block` (the claim plus `Loan<RingMap>`) fit `LiveRead::render`?**
    Today the map is lent after the claim and used while the claim is alive.
-   Settle by porting `render` on a branch.
+   Settle by porting `render` on a branch. **Settled at stage 5, cut 7: yes.**
+   `render` makes one `Block`, and both reads borrow it (see "As built, cut 7").
 3. **Is the fault-flag ordering sound under real interleavings?** The rule is
    "read the flag, then the ring, `Failed` only if the ring was empty".
    Single-threaded tests cannot show it. **Settled at stage 3: yes.** A loom

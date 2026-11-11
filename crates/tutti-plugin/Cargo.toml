@@ -83,9 +83,8 @@ tempfile = "3"
 [dev-dependencies]
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
-# The tests' mock listeners and a window-handle stand-in.
+# The tests' mock listeners.
 parking_lot = "0.12"
-raw-window-handle = "0.6"
 # The node tests' mock plugin-server speaks the wire by hand.
 interprocess = { version = "2" }
 bincode = "1"

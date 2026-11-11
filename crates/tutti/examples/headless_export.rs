@@ -104,7 +104,7 @@ fn main() -> tutti::export::Result<()> {
     // 2. The same graph into memory, and a measurement of it.
     let rendered = render_to_buffers(tone(), &config(1.0, ChannelLayout::STEREO), &FrozenClock)?;
     let flat = rendered.interleaved();
-    let cfg = LoudnessConfig::new(rendered.sample_rate, ChannelLayout::STEREO);
+    let cfg = LoudnessConfig::new(rendered.sample_rate(), ChannelLayout::STEREO);
     let loudness = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
         .expect("stereo is meterable");
     println!(

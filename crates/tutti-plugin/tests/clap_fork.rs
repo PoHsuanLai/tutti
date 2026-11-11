@@ -669,7 +669,7 @@ fn an_export_through_a_failing_fork_fails_by_name() {
     let (live, _exec) = live_graph(probe.client);
 
     let healthy = export_through_a_fork(&live).expect("a healthy fork exports");
-    assert!(healthy.planes[0].iter().any(|&s| s != 0.0), "audible");
+    assert!(healthy.planes()[0].iter().any(|&s| s != 0.0), "audible");
 
     let failed = |kind: ForkFaultKind| {
         let started = Instant::now();
@@ -746,7 +746,7 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     };
     let rendered = tutti_export::render_to_buffers(graph, &config, timeline.as_ref())
         .expect("the fork exports");
-    let onset = rendered.planes[0].iter().position(|&s| s != 0.0);
+    let onset = rendered.planes()[0].iter().position(|&s| s != 0.0);
     assert_eq!(
         onset,
         Some(NOTE_FRAME + chunk.get()),
@@ -846,8 +846,8 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
         "{err:?}"
     );
     let rendered = render(tutti_export::EventLossPolicy::Allow).expect("allowed");
-    assert_eq!(rendered.dropped_events, 144);
-    let gate = &rendered.planes[0];
+    assert_eq!(rendered.dropped_events(), 144);
+    let gate = &rendered.planes()[0];
     let chunk = tutti_export::GRAPH_MAX_BLOCK.get();
     assert_eq!(gate.iter().position(|&s| s != 0.0), Some(5_200 + chunk));
     assert_eq!(
@@ -1282,7 +1282,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     };
     let rendered = tutti_export::render_to_buffers(graph, &config, &tutti_export::FrozenClock)
         .expect("a fork whose latency settled exports without a fault");
-    let plane = &rendered.planes[0];
+    let plane = &rendered.planes()[0];
     assert!(!plane.is_empty());
     let wrong = plane
         .iter()
@@ -1369,7 +1369,7 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
         let parallel = graph.is_parallel();
         let rendered = tutti_export::render_to_buffers(graph, &config, &tutti_export::FrozenClock)
             .expect("the fork exports");
-        (rendered.planes, parallel)
+        (rendered.into_planes(), parallel)
     };
     let (serial, was_parallel) = export(false);
     assert!(!was_parallel);

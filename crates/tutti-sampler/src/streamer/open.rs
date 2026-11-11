@@ -12,12 +12,14 @@
 //! `Opening` back), and cannot be another open's (the reply is this open's;
 //! doc 025 §1.3, B3).
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, TryRecvError};
-use tutti_rt::{ArcLend, PosReader, Reader};
-use tutti_types::{ChannelLayout, SamplePosition, SampleRate};
+use tutti_rt::{ArcLend, PosReader};
+use tutti_types::{ChannelLayout, SamplePosition, SampleRate, Samples};
 
+use super::block::{Block, RingReader};
 use super::cells::Cells;
 use super::command::StreamId;
 use super::control::StreamFile;
@@ -249,10 +251,9 @@ pub enum Open {
 pub struct StreamReader {
     id: StreamId,
     pub(crate) ring: SharedReader,
-    pub(crate) pos: PosReader,
-    /// Registered on the control side ([`Opening::poll`]): registering
-    /// allocates.
-    pub(crate) control: Reader<RingControl>,
+    /// The position reader and the control's reader, registered together on
+    /// the control side ([`Opening::poll`]): registering allocates.
+    pub(crate) reader: RingReader,
     pub(crate) cells: Arc<Cells>,
     /// What a fork of the voice plays, and whether its stream is still served.
     pub(crate) file: Arc<StreamFile>,
@@ -274,15 +275,22 @@ impl StreamReader {
     fn new(opened: Opened) -> Self {
         Self {
             id: opened.id,
-            control: opened.ring.control_reader(),
+            reader: RingReader::new(opened.pos, opened.ring.control_reader()),
             ring: opened.ring,
-            pos: opened.pos,
             cells: opened.cells,
             file: opened.file,
             status: opened.status,
             place: opened.place,
             width: opened.width,
         }
+    }
+
+    /// Claim `reads` (up to two ranges, empty for an unused one) of the ring
+    /// and lend its control, for one block that plays at `play`: the
+    /// [`Block`] reads the ring through both. Audio thread; wait-free.
+    #[inline]
+    pub fn block(&mut self, play: Samples, reads: [Range<Samples>; 2]) -> Block<'_> {
+        self.reader.block(play, reads)
     }
 
     /// The stream this reads: the ring of its own open, never another's.

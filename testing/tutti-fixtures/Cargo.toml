@@ -26,9 +26,10 @@ serde_json = "1"
 # test there passes its own types into the `plugin` items, so the copies never
 # meet.
 tutti-plugin-types = { path = "../../crates/tutti-plugin-types", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 
 [features]
-plugin = ["dep:tutti-plugin-types"]
+plugin = ["dep:tutti-plugin-types", "dep:raw-window-handle"]
 
 [dev-dependencies]
 # The lock test's private directory.

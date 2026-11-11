@@ -82,7 +82,7 @@ fn render(session: &mut Session, request: ExportRequest) -> Vec<Vec<f32>> {
         .expect("the export renders")
         .finished()
     {
-        Some(ExportOutput::Buffers(rendered)) => rendered.planes,
+        Some(ExportOutput::Buffers(rendered)) => rendered.into_planes(),
         other => panic!("expected rendered buffers, got {other:?}"),
     }
 }

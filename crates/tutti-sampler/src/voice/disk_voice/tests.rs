@@ -761,8 +761,14 @@ fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
 fn placed_clip(topology: tutti_types::ChannelTopology) -> DiskVoice {
     const AT: u64 = 22_000;
     let width = topology.positions().len();
-    let (mut writer, reader, pos) =
-        RegionBuffer::for_file(StreamId(1), PathBuf::new(), 4096, topology, usize::MAX, 0);
+    let (mut writer, reader, pos) = RegionBuffer::for_file(
+        StreamId(1),
+        PathBuf::new(),
+        4096,
+        topology,
+        None,
+        Samples::new(0),
+    );
     writer.reset(AT);
     writer.set_play(AT);
     let flat: Vec<f32> = (AT..AT + 2_000)
@@ -1457,7 +1463,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
     let (mut writer, reader, pos) =
-        RegionBuffer::with_fade(StreamId(1), PathBuf::new(), 4096, 1u16, 256);
+        RegionBuffer::with_fade(StreamId(1), PathBuf::new(), 4096, 1u16, Samples::new(256));
     RegionBuffer::place(&mut writer, AT);
     let from = writer.window().0;
     let flat: Vec<f32> = (from..from + 2_000).map(|k| k as f32).collect();

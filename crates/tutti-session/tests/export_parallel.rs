@@ -169,9 +169,9 @@ fn a_parallel_export_is_bit_identical_to_the_serial_one() {
     assert_eq!(serial.frames(), parallel.frames());
     assert_eq!(serial.frames().get(), 24_000);
     assert_eq!(serial.channels(), 2);
-    let silent = serial.planes[0].iter().all(|s| *s == 0.0);
+    let silent = serial.planes()[0].iter().all(|s| *s == 0.0);
     assert!(!silent, "the fan-out is audible");
-    for (c, (a, b)) in serial.planes.iter().zip(&parallel.planes).enumerate() {
+    for (c, (a, b)) in serial.planes().iter().zip(parallel.planes()).enumerate() {
         let (a, b): (Vec<u32>, Vec<u32>) = (
             a.iter().map(|s| s.to_bits()).collect(),
             b.iter().map(|s| s.to_bits()).collect(),

@@ -7,11 +7,9 @@
 //! cargo run -p vst3-host --example gui_test
 //! ```
 
-use std::ffi::c_void;
 use std::path::Path;
 use tutti_fixtures::main_thread;
 
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -109,33 +107,14 @@ impl ApplicationHandler for App {
                 if !self.editor_open
                     && let (Some(window), Some(plugin)) = (&self.window, &mut self.plugin)
                 {
-                    // Get the native window handle
-                    let handle = match window.window_handle() {
+                    let handle = match WindowHandle::from_window(window) {
                         Ok(h) => h,
                         Err(e) => {
-                            eprintln!("Failed to get window handle: {:?}", e);
+                            eprintln!("No embeddable window: {e}");
                             return;
                         }
                     };
-
-                    let raw_handle = handle.as_raw();
-
-                    // Extract the native view pointer
-                    let parent: *mut c_void = match raw_handle {
-                        #[cfg(target_os = "macos")]
-                        RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
-                        #[cfg(target_os = "windows")]
-                        RawWindowHandle::Win32(h) => h.hwnd.get() as *mut c_void,
-                        #[cfg(target_os = "linux")]
-                        RawWindowHandle::Xlib(h) => h.window as *mut c_void,
-                        _ => {
-                            eprintln!("Unsupported window handle type");
-                            return;
-                        }
-                    };
-
                     println!("Opening plugin editor...");
-                    let handle = unsafe { WindowHandle::from_raw(parent) };
                     let scale = ContentScale::new(window.scale_factor()).unwrap_or_default();
                     match plugin.open_editor(&main_thread(), handle, scale) {
                         Ok(size) => {

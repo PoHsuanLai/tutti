@@ -1814,9 +1814,6 @@ name = "midly"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "207d755f4cb882d20c4da58d707ca9130a0c9bc5061f657a4f299b8e36362b7a"
-dependencies = [
- "rayon",
-]
 
 [[package]]
 name = "minimal-lexical"
@@ -3411,7 +3408,6 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 name = "tutti"
 version = "0.0.1"
 dependencies = [
- "midly",
  "tempfile",
  "tutti-clap-test-plugin",
  "tutti-codec",
@@ -3512,6 +3508,7 @@ dependencies = [
  "bitflags 2.13.2",
  "clap-sys",
  "libloading 0.8.9",
+ "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-clap-ffi",
@@ -3647,6 +3644,7 @@ dependencies = [
 name = "tutti-fixtures"
 version = "0.0.1"
 dependencies = [
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
@@ -3712,9 +3710,9 @@ dependencies = [
  "midly",
  "tempfile",
  "thiserror 2.0.21",
- "tracing",
  "tutti-fixtures",
  "tutti-midi-protocol",
+ "tutti-tempo",
  "tutti-types",
  "tutti-ump",
 ]
@@ -3816,7 +3814,6 @@ dependencies = [
  "libc",
  "libloading 0.8.9",
  "parking_lot",
- "raw-window-handle",
  "tempfile",
  "tracing",
  "tutti-au-host",
@@ -3981,6 +3978,7 @@ dependencies = [
  "bincode",
  "bitflags 2.13.2",
  "proptest",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
@@ -4255,6 +4253,7 @@ dependencies = [
  "crossbeam-queue",
  "libloading 0.8.9",
  "parking_lot",
+ "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-fixtures",

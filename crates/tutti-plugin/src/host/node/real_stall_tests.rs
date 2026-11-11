@@ -76,33 +76,7 @@ const EXPECTED_LIVE: f32 = INPUT_DC + TAG_P0C0;
 ///
 /// The machine-wide lock directory ([`machine_lock`](super::machine_lock)),
 /// shared with `process_pipeline_tests` and the integration suites.
-use tutti_fixtures::machine_lock;
-
-/// Clears the probe's environment switches on drop, including on an unwind.
-pub(super) struct ProbeEnv(Vec<&'static str>);
-
-impl ProbeEnv {
-    pub(super) fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    pub(super) fn set(&mut self, key: &'static str, value: String) {
-        // SAFETY: the lock directory is held for the whole test, and every test
-        // that touches these variables takes it first — so no other thread in
-        // this process is reading or writing the environment concurrently.
-        unsafe { std::env::set_var(key, value) };
-        self.0.push(key);
-    }
-}
-
-impl Drop for ProbeEnv {
-    fn drop(&mut self) {
-        for key in &self.0 {
-            // SAFETY: as in `set`.
-            unsafe { std::env::remove_var(key) };
-        }
-    }
-}
+use tutti_fixtures::{ScopedEnv, machine_lock};
 
 /// The `plugin-server` binary these tests spawn.
 ///
@@ -143,8 +117,8 @@ fn release_path() -> std::path::PathBuf {
 }
 
 /// Load the probe into a real `plugin-server` subprocess.
-fn load_probe(env: &mut ProbeEnv, render_mode: u32) -> (PluginClient, PluginHandle) {
-    env.set("TUTTI_PLUGIN_SERVER", plugin_server_path().to_string());
+fn load_probe(env: &mut ScopedEnv, render_mode: u32) -> (PluginClient, PluginHandle) {
+    env.set("TUTTI_PLUGIN_SERVER", plugin_server_path());
     env.set("TUTTI_CLAP_PROBE_RENDER_MODE", render_mode.to_string());
     env.set(
         "TUTTI_CLAP_PROBE_RELEASE_FILE",
@@ -200,7 +174,7 @@ fn drive_block(unit: &mut Renderer, midi_out: &mut tutti_plugin_types::MidiEvent
 fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
     let _lock = machine_lock();
     let _ = std::fs::remove_file(release_path());
-    let mut env = ProbeEnv::new();
+    let mut env = ScopedEnv::new();
     env.set("TUTTI_CLAP_PROBE_BLOCK_FROM", PARK_FROM.to_string());
 
     // `RenderMode::TagPassthrough` (1): every output sample is input + tag, so a
@@ -327,7 +301,7 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
 fn a_plugin_that_never_parks_settles_nothing() {
     let _lock = machine_lock();
     let _ = std::fs::remove_file(release_path());
-    let mut env = ProbeEnv::new();
+    let mut env = ScopedEnv::new();
     // No `BLOCK_FROM`: the plugin answers every block on time.
 
     let (client, handle) = load_probe(&mut env, 1);
@@ -399,7 +373,7 @@ fn a_plugin_that_never_parks_settles_nothing() {
 #[test]
 fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminated() {
     let _lock = machine_lock();
-    let mut env = ProbeEnv::new();
+    let mut env = ScopedEnv::new();
     env.set("TUTTI_CLAP_PROBE_BLOCK_FROM", PARK_FROM.to_string());
     let (client, handle) = load_probe(&mut env, 1);
     let mut client = graph_of(client);
@@ -476,7 +450,7 @@ fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminat
 /// The park switch is armed only when asked for.
 ///
 /// A guard on the fixture rather than on the host: if `BLOCK_FROM` leaked
-/// between tests (the environment is process-global, and `ProbeEnv` clears it on
+/// between tests (the environment is process-global, and `ScopedEnv` clears it on
 /// drop — including on an unwind, which is the case worth pinning), the control
 /// test above would silently become a second stall test and stop being a
 /// control.
@@ -557,7 +531,7 @@ fn feed(
 #[test]
 fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let _lock = machine_lock();
-    let mut env = ProbeEnv::new();
+    let mut env = ScopedEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
     let (mut unit, controls) = half_chunk_rig(client);
     let (dump, note) = dump_and_note();
@@ -588,7 +562,7 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
 #[test]
 fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let _lock = machine_lock();
-    let mut env = ProbeEnv::new();
+    let mut env = ScopedEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
     let (mut unit, controls) = half_chunk_rig(client);
     let (dump, note) = dump_and_note();
@@ -622,7 +596,7 @@ fn the_controls_count_the_bridges_dropped_midi_too() {
     use std::sync::atomic::Ordering;
 
     let _lock = machine_lock();
-    let mut env = ProbeEnv::new();
+    let mut env = ScopedEnv::new();
     let (client, _handle) = load_probe(&mut env, 1);
     let bridge = client.bridge();
     let (mut unit, controls) = half_chunk_rig(client);

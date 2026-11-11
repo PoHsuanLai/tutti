@@ -21,15 +21,19 @@ pub(crate) fn resample_rendered(
     opts: crate::config::Resample,
 ) -> crate::Result<crate::Rendered> {
     let channels = rendered.channels();
-    let mut rs =
-        StreamingResampler::new(channels, rendered.sample_rate, opts.target_rate, opts.chunk)?;
+    let mut rs = StreamingResampler::new(
+        channels,
+        rendered.sample_rate(),
+        opts.target_rate,
+        opts.chunk,
+    )?;
     let mut out: Vec<Vec<f32>> = vec![Vec::new(); channels];
-    rs.push(&rendered.planes, &mut out)?;
+    rs.push(rendered.planes(), &mut out)?;
     rs.finish(&mut out)?;
 
-    Ok(crate::Rendered {
-        planes: out,
-        sample_rate: opts.target_rate,
-        dropped_events: rendered.dropped_events,
-    })
+    Ok(crate::Rendered::from_render(
+        out,
+        opts.target_rate,
+        rendered.dropped_events(),
+    ))
 }

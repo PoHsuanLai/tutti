@@ -17,11 +17,8 @@ const FRAMES: usize = 256;
 
 /// One constant per channel, so a channel that goes missing shows in the sum.
 fn rendered(values: &[f32]) -> Rendered {
-    Rendered {
-        planes: values.iter().map(|&v| vec![v; FRAMES]).collect(),
-        sample_rate: RATE,
-        dropped_events: 0,
-    }
+    Rendered::new(values.iter().map(|&v| vec![v; FRAMES]).collect(), RATE, 0)
+        .expect("equal planes at a valid rate")
 }
 
 fn config(channels: ChannelLayout, topology: Option<ChannelTopology>) -> ExportConfig {

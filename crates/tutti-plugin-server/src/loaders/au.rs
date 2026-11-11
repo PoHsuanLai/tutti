@@ -999,7 +999,6 @@ impl PluginEditorHost for AuInstance {
         parent: WindowHandle,
         _scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         // No size to offer: `PluginEditorHost::open_editor` carries a parent
         // handle and a scale but no size, so the host has not told this layer
         // how big the window is. 800×600 is the request; the plugin is free to
@@ -1011,7 +1010,7 @@ impl PluginEditorHost for AuInstance {
         };
         let size = self
             .inner
-            .open_editor(main, parent_handle, preferred)
+            .open_editor(main, parent, preferred)
             .map_err(|e| BridgeError::EditorError(e.to_string()))?;
         Ok(EditorSize {
             width: size.width,

@@ -28,7 +28,6 @@
 // the runner would have nothing left to call.
 
 use tutti_fixtures::main_thread;
-use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
 use tutti_plugin_types::EditorWindow;
@@ -224,17 +223,15 @@ impl TestWindow {
     /// The platform window handle to hand the plugin.
     fn handle(&self) -> Option<WindowHandle> {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let raw = self.window.window_handle().ok()?.as_raw();
-        let ptr = match raw {
-            RawWindowHandle::Xlib(h) => h.window as *mut c_void,
-            RawWindowHandle::Xcb(h) => h.window.get() as usize as *mut c_void,
-            #[cfg(target_os = "macos")]
-            RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
-            _ => return None,
-        };
-        // SAFETY: `ptr` is this window's live platform handle; the window is a
+        // The platforms a VST3 view embeds into here; the window is a
         // process-lifetime singleton, so it outlives every editor opened here.
-        Some(unsafe { WindowHandle::from_raw(ptr) })
+        match self.window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_) => {}
+            #[cfg(target_os = "macos")]
+            RawWindowHandle::AppKit(_) => {}
+            _ => return None,
+        }
+        WindowHandle::from_window(&self.window).ok()
     }
 }
 
@@ -407,9 +404,8 @@ gui_test! {
 /// rejection point: the host must report `EditorError` rather than
 /// dereferencing the null view.
 ///
-/// Uses a real window rather than a null handle: `WindowHandle::from_raw`
-/// requires a valid handle, and this path must not be the one place that
-/// quietly breaks the contract.
+/// Uses a real window rather than a stand-in: a host that wrongly reached
+/// `attached` must be handed a window it can embed into.
 fn editorless_plugin_is_refused_cleanly() {
     if !has_display() {
         eprintln!("no DISPLAY/WAYLAND_DISPLAY; run under `xvfb-run -a`. Skipping.");

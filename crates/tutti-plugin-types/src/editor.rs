@@ -1,5 +1,6 @@
 //! Editor (plugin GUI) primitives shared across host crates.
 
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
 
 /// Pixel dimensions of a plugin editor window.
@@ -145,89 +146,88 @@ impl From<ContentScale> for f64 {
 #[error("a content scale must be finite and positive, got {0}")]
 pub struct InvalidContentScale(pub f64);
 
-/// A native platform window handle that a plugin editor embeds into.
+/// A native platform window that a plugin editor embeds into.
 ///
 /// Platform mapping:
 /// - macOS: `NSView*`
 /// - Windows: `HWND`
-/// - Linux/X11: window ID cast to pointer
+/// - X11: the window ID
+/// - Wayland: `wl_surface*`
 ///
-/// Serializes as the underlying pointer's `u64` numeric value — host
-/// processes that ship a `WindowHandle` over IPC to the plugin subprocess
-/// rely on this representation.
-#[derive(Debug, Clone, Copy)]
-pub struct WindowHandle(*mut c_void);
-
-unsafe impl Send for WindowHandle {}
+/// Held as the handle's number (as `raw-window-handle` holds an `HWND`), so it
+/// is `Copy` and `Send` with no `unsafe impl`. Only a format's embed call, in
+/// its `-ffi` crate, turns it back into a pointer that is used, and that call
+/// relies on what the constructors promise: the number names a live window of
+/// this process. [`from_window`](Self::from_window) has it from
+/// `raw-window-handle` (a borrowed window handle cannot be made without that
+/// promise); [`from_u64`](Self::from_u64), for a number that crossed a process
+/// edge, is `unsafe` because it has it only from its caller.
+///
+/// No type here can check that the window outlives the editor opened on it: a
+/// host closes the editor before it destroys the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowHandle(u64);
 
 impl WindowHandle {
-    /// Wraps a raw platform window handle.
+    /// The native window behind `window` (a winit or Bevy window, a wgpu
+    /// surface's window, ...).
     ///
-    /// # Safety
+    /// # Errors
     ///
-    /// `ptr` must be a valid platform window handle for the current OS
-    /// (`NSView*` on macOS, `HWND` on Windows, X11 window ID on Linux) and
-    /// must outlive any editor opened against it.
-    pub unsafe fn from_raw(ptr: *mut c_void) -> Self {
-        Self(ptr)
+    /// [`EditorError::PluginError`] when `window` has no handle to give, and
+    /// [`EditorError::UnsupportedPlatform`] for a windowing system no plugin
+    /// format embeds into.
+    pub fn from_window(window: &impl HasWindowHandle) -> Result<Self, EditorError> {
+        let raw = window
+            .window_handle()
+            .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
+            .as_raw();
+        let number = match raw {
+            RawWindowHandle::AppKit(h) => h.ns_view.as_ptr() as u64,
+            RawWindowHandle::Win32(h) => h.hwnd.get() as u64,
+            #[allow(
+                clippy::useless_conversion,
+                reason = "an X11 `Window` is a `c_ulong`: `u64` here, `u32` on Windows"
+            )]
+            RawWindowHandle::Xlib(h) => u64::from(h.window),
+            RawWindowHandle::Xcb(h) => u64::from(h.window.get()),
+            RawWindowHandle::Wayland(h) => h.surface.as_ptr() as u64,
+            other => {
+                return Err(EditorError::UnsupportedPlatform {
+                    got: format!("{other:?}"),
+                });
+            }
+        };
+        Ok(Self(number))
     }
 
-    /// Alias for [`from_raw`](Self::from_raw), kept for callers spelling it
-    /// this way.
+    /// The window a number names, as it arrives over IPC.
     ///
     /// # Safety
     ///
-    /// Same requirements as [`from_raw`](Self::from_raw).
-    pub unsafe fn from_ptr(ptr: *mut c_void) -> Self {
-        Self(ptr)
-    }
-
-    /// Wraps a handle given as its numeric pointer value, as it travels over
-    /// IPC.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be a valid platform window handle for the current OS
-    /// when interpreted as a pointer, and must outlive any editor opened
-    /// against it.
+    /// `raw` must be [`as_u64`](Self::as_u64) of a window that is live in this
+    /// process (or the number of one a plugin is known never to embed into,
+    /// as a test's stand-in), and the window must outlive any editor opened on
+    /// it.
     #[must_use]
-    pub unsafe fn from_u64(ptr: u64) -> Self {
-        Self(ptr as *mut c_void)
+    #[allow(
+        unsafe_code,
+        reason = "the one constructor on its caller's word; see `# Safety`"
+    )]
+    pub const unsafe fn from_u64(raw: u64) -> Self {
+        Self(raw)
     }
 
-    /// Returns the raw platform handle, for passing to a native embedding call.
-    ///
-    /// Safe to obtain — the pointer is opaque here. Dereferencing it requires
-    /// the invariants [`from_raw`](Self::from_raw) documents, which this type
-    /// carries but does not verify.
+    /// The handle as the platform pointer a native embedding call takes.
     #[must_use]
-    pub fn as_ptr(&self) -> *mut c_void {
+    pub fn as_ptr(self) -> *mut c_void {
+        self.0 as *mut c_void
+    }
+
+    /// The handle's number, the form it takes over IPC.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
         self.0
-    }
-
-    /// Returns the pointer's numeric value, the form it takes over IPC.
-    #[must_use]
-    pub fn as_u64(&self) -> u64 {
-        self.0 as u64
-    }
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for WindowHandle {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u64(self.as_u64())
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for WindowHandle {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = u64::deserialize(deserializer)?;
-        // SAFETY: the pointer is opaque at this layer; consumers that
-        // dereference it must already hold the invariants documented on
-        // `from_u64`. Round-tripping through IPC is sound because the
-        // sending side built it from a valid `from_raw`.
-        Ok(unsafe { WindowHandle::from_u64(value) })
     }
 }
 

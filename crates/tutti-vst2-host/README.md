@@ -132,7 +132,7 @@ plugin.set_parameter(&main, first, Normalized::of(0.5));
 # use tutti_plugin_types::{Control, EditorWindow};
 # use tutti_plugin_types::ContentScale;
 # use tutti_vst2_host::{Vst2Loaded, WindowHandle};
-# fn ex(native_view_ptr: *mut std::ffi::c_void) -> Result<(), Box<dyn std::error::Error>> {
+# fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
 # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 # let mut plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
 // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
@@ -143,7 +143,7 @@ plugin.load_state(&main, &saved).expect("restores");
 
 // The editor is the same `AEffect` the audio path drives, hence in-process.
 // VST2 has no content scale: the argument is accepted and ignored.
-let size = plugin.open_editor(&main, unsafe { WindowHandle::from_raw(native_view_ptr) }, ContentScale::IDENTITY)?;
+let size = plugin.open_editor(&main, WindowHandle::from_window(window)?, ContentScale::IDENTITY)?;
 println!("editor is {}x{}", size.width, size.height);
 plugin.close_editor(&main);
 # Ok(()) }

@@ -2,7 +2,7 @@
 //! macOS only.
 //!
 //! Implements the shared [`Editor`](tutti_plugin_types::Editor) trait. Even
-//! though `AuInstance` (in `loaders/au.rs`) owns the *subprocess-side* editor
+//! though the server's AU loader (`loaders/au.rs`) owns the *subprocess-side* editor
 //! open/close/state paths, this host-process object is a separate dlopen: the
 //! two editor surfaces stay distinct by design, one per world.
 
@@ -23,7 +23,7 @@ use std::path::Path;
 use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};
 
 pub(crate) struct AuGuiInstance {
-    inner: tutti_au_host::AuInstance,
+    inner: tutti_au_host::AuLoaded,
     /// Declared plain-unit bounds per parameter id, sorted, captured at load.
     ///
     /// AU takes plain units where this host speaks normalized, so a mirrored
@@ -65,7 +65,7 @@ impl AuGuiInstance {
 
         // Create instance but do NOT initialize — GUI works without audio setup.
         let inner =
-            tutti_au_host::AuInstance::new(component_handle, 44100.0, 512).map_err(|e| {
+            tutti_au_host::AuLoaded::new(component_handle, 44100.0, 512).map_err(|e| {
                 BridgeError::LoadFailed {
                     path: path.to_path_buf(),
                     stage: LoadStage::Instantiation,
@@ -114,16 +114,16 @@ impl Editor for AuGuiInstance {
         let _ = self.inner.set_parameter(id.get(), plain);
     }
 
-    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
-        self.inner.set_state(main, data).map_err(|e| {
+    fn set_state(&mut self, _main: &MainThread, data: &[u8]) -> PluginResult<()> {
+        self.inner.set_class_info(data).map_err(|e| {
             PluginError::Editor(EditorError::PluginError(format!(
                 "AU set_state failed: {e}"
             )))
         })
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.inner.get_state(main).map_err(|e| {
+    fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {
+        self.inner.class_info().map_err(|e| {
             PluginError::Editor(EditorError::PluginError(format!(
                 "AU get_state failed: {e}"
             )))
@@ -138,46 +138,24 @@ impl Editor for AuGuiInstance {
 }
 
 impl EditorWindow for AuGuiInstance {
-    fn has_editor(&self, _main: &MainThread) -> bool {
-        // Asks the live (uninitialized) unit for its Cocoa view property; the
-        // AU host takes no token for it.
-        self.inner.has_editor()
+    fn has_editor(&self, main: &MainThread) -> bool {
+        // Asks the live (uninitialized) unit for its Cocoa view property.
+        EditorWindow::has_editor(&self.inner, main)
     }
 
-    /// `_scale` is unused: an AU view is an `NSView`, which lays out in
-    /// logical pixels and reads its backing scale itself.
+    /// The unit's own `EditorWindow`: an AU view is an `NSView`, which lays out
+    /// in logical pixels and reads its backing scale itself.
     fn open_editor(
         &mut self,
         main: &MainThread,
         parent: WindowHandle,
-        _scale: ContentScale,
+        scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        // No size to offer here either: this entry point receives a
-        // parent handle and a scale, no size. See the sibling in
-        // `tutti-plugin-server`.
-        let size = self
-            .inner
-            .open_editor(
-                main,
-                parent,
-                tutti_plugin_types::EditorSize {
-                    width: 800,
-                    height: 600,
-                },
-            )
-            .map_err(|e| {
-                PluginError::Editor(EditorError::PluginError(format!(
-                    "AU open_editor failed: {e}"
-                )))
-            })?;
-        Ok(EditorSize {
-            width: size.width,
-            height: size.height,
-        })
+        EditorWindow::open_editor(&mut self.inner, main, parent, scale)
     }
 
     fn close_editor(&mut self, main: &MainThread) {
-        self.inner.close_editor(main);
+        EditorWindow::close_editor(&mut self.inner, main);
     }
 
     fn editor_idle(&mut self, _main: &MainThread) {

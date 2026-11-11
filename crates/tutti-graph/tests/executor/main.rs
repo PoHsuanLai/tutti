@@ -1,6 +1,7 @@
 //! The executor, the worker pool, the sample-accuracy contract and the reader ends of taps and inlets.
 
 mod by_hand;
+mod chase;
 mod contract;
 mod executor;
 mod inlet_retire;

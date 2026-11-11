@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tutti_midi_protocol::narrow_value;
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Semitones};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, U7, Voice2};
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2};
 use tutti_voicing::{Mode, Order, Retrigger, Rules, Steal, Voicing};
 
 use crate::array_math::ArrayMath;
@@ -418,6 +418,26 @@ impl Player {
             self.block_read += rem;
             wrote += rem;
         }
+    }
+
+    /// The most messages [`chase`](Self::chase) writes.
+    pub(crate) const CHASE_MESSAGES: usize =
+        Voicing::CHASE_MESSAGES + MidiChannel::COUNT as usize * Channel::CHASE_MESSAGES;
+
+    /// Writes the state a successor starts from, as messages in this
+    /// player's Group: each channel's program, bank and sends, then the
+    /// core's controllers, pedals, wheels and registered controllers
+    /// (`Voicing::chase`). No voice, note or per-note state.
+    pub(crate) fn chase(&self, mut emit: impl FnMut(Ump)) {
+        let group = self.group();
+        for (i, info) in self.channels.iter().enumerate() {
+            let Some(channel) = MidiChannel::new(i as u8) else {
+                continue;
+            };
+            let address = Address { group, channel };
+            info.chase(&mut |v| emit(Message::Midi2(address, v).into()));
+        }
+        self.voicing.chase(group, &mut emit);
     }
 
     /// The planes written into since the last call: the others were exact

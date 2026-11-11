@@ -37,6 +37,8 @@ tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
+# The font-to-synth swap of the chase test (`tests/chase.rs`).
+tutti-polysynth = { path = "../tutti-polysynth" }
 # Finds the repo's `assets/` for the tests, and `assert_golden`: the
 # libm-recorded digest gate.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }

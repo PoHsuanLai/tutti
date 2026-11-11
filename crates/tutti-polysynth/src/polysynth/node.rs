@@ -12,8 +12,11 @@
 //! [`ParamNode`], inserted through [`tutti_graph::param_parts`], so a fork
 //! starts from the values last set through the set (see `src/fork.rs`).
 
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_graph::{
+    Chase, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+};
 use tutti_types::{BusTopology, UnitParam};
+use tutti_voicing::Voicing;
 
 use super::PolySynth;
 
@@ -75,6 +78,8 @@ impl Node for PolySynth {
             .with_tail(self.release_tail())
             .with_cost(self.cost())
             .with_params(&SYNTH_PARAMS[..ports])
+            // The channel state it hands the synth that replaces it (`chase`).
+            .with_chase(Voicing::CHASE_MESSAGES as u32)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -119,6 +124,19 @@ impl Node for PolySynth {
 
     fn reset(&mut self) {
         self.reset_voices();
+    }
+
+    /// Hands the instrument that replaces this one every channel's
+    /// controllers, pedals, pitch wheel, pressure and registered controllers,
+    /// as MIDI 2.0 messages in the synth's Group (`Voicing::chase`): what a
+    /// performer set survives a swap, whatever the successor is. The sounding
+    /// notes are not carried (nothing re-strikes a held key), nor the
+    /// per-note controllers or the key a portamento glides from. A synth has
+    /// no program or bank.
+    fn chase(&self, out: &mut Chase<'_>) {
+        self.allocator.chase(self.config.group, |ump| {
+            out.push(ump);
+        });
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {

@@ -2892,6 +2892,31 @@ the instrument as `Command`s.
   "Rhythm Channels shall not respond"); Soft Pedal (CC 67), which RP-015 resets, is not modelled, so
   there is nothing to reset.
 
+### L4d: state survives a swap of instrument (done)
+
+A crossfade, a replace or an insert at an existing key puts a new node where an instrument was,
+and what a performer set (programs, banks, controllers, wheels) lived only in the outgoing node on
+the audio thread. The graph's **chase** (doc 013, "The chase") carries it: `Node::chase` writes the
+state as UMPs, and the executor delivers them at offset 0 of the successor's first block, ahead of
+every other event there.
+
+- **What is chased**, as MIDI 2.0 Channel Voice messages in the instrument's own Group, only for
+  what differs from a fresh channel (a channel nobody touched writes nothing), in channel order.
+  `Voicing::chase` (once, for both instruments) writes each channel's `ChannelState`: the
+  14-bit controllers (Modulation, Volume, Pan, Expression, Portamento Time) as an MSB then, if
+  nonzero, an LSB; the Portamento switch and the Legato Footswitch; a pending Portamento Control;
+  Channel Pressure; the pitch wheel; RPN 0, 1, 2 and 5 as Registered Controllers with the data
+  words `Voicing::step` reads; and the sustain pedal. The SoundFont adds, per channel, its program
+  and bank as one Program Change with the bank riding along, a Bank Select held for the next
+  Program Change (CC 0 and 32), and the two effect sends (CC 91 and 93). A SoundFont swapped for a
+  polysynth (or back) keeps the controllers; a polysynth has no program.
+- **Not chased.** Sounding notes (a held key is not struck again), the sostenuto's captured keys,
+  the per-note controllers and the key a portamento glides from (`last_key`). A successor built
+  on another program keeps it when the old channel was at the default.
+- **The font's samples** are the unit's `Arc<SoundFont>`, set when the unit is built and never
+  replaced: nothing is published to the audio thread, so no `ArcLend` cell is needed (CLAUDE.md,
+  "Publishing to the audio thread"). A swap of font is a swap of unit, the chase's case.
+
 ### L1e: using a file and writing messages (done)
 
 Found writing the plugin example (`crates/tutti/examples/plugin_midi_export.rs`, doc

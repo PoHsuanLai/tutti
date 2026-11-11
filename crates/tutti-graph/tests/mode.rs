@@ -26,8 +26,8 @@ use common::{Kind, Pair, Ringer, SpecBehaviour, TestNode, bits, prepare};
 use tutti_graph::{
     Bus, BusRole, Buses, CrossfadeCurve, Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind,
     EventOut, Executor, ForkByClone, ForkMode, ForkTarget, GraphInvalid, GraphSpec, InPort, Io,
-    ModeError, Node, NodeKey, NodeMode, NodeSpec, Offset, OutPort, Prepare, Shape, Source, Status,
-    Topology, Transport, Unforkable, ValidGraph,
+    ModeError, Node, NodeKey, NodeMode, NodeSpec, Offset, OutPort, PassError, Prepare, Shape,
+    Source, Status, Topology, Transport, Unforkable, ValidGraph,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, ChannelTopology, FoldError, Latency, M3DB, Samples, Tail,
@@ -324,17 +324,20 @@ impl Rig {
     }
 }
 
-/// **The channel mapping, without declared buses: `Status::Bypass`'s rule.**
-/// Output `c` is input `c` below the narrower width; an output past the
-/// input's width is silence. (Every node here is built from widths, so its
-/// main buses are `Discrete` and name no placement to fold between; a node
-/// that names one is `a_bypass_is_the_fold_between_the_main_buses`.)
+/// **The channel mapping: by index at one width, by speaker across widths.**
+/// A node built from widths names no placement, so its bypass passes output
+/// `c` = input `c` only where the widths agree (a pair of different widths is
+/// refused, `a_bypass_with_no_pass_is_refused`). A mono centre under a stereo
+/// output is heard on both sides at gain 1, not on the left alone: the fold
+/// between the main buses (the general case is
+/// `a_bypass_is_the_fold_between_the_main_buses`).
 ///
-/// Mutation (run): the parked path fills a missing input's output from input
-/// 0 (`ain.get(c).unwrap_or(&ain[0])`) → the mono-to-stereo case's second
-/// output is the signal → fails.
+/// Mutation (each run, each failed): `Pass::of` passing a placed pair by index
+/// (`Self::by_index(src.width().min(dst.width()))` before the fold) → the
+/// second output is silence; the parked path filling a missing input's output
+/// from input 0 → the stereo case's second output is the first input.
 #[test]
-fn the_bypass_follows_the_width_rule() {
+fn a_bypass_is_by_index_at_one_width_and_by_speaker_across() {
     let spec = |ins, outs, latency| Kind::Spec {
         behaviour: SpecBehaviour::Fan,
         ins,
@@ -351,10 +354,10 @@ fn the_bypass_follows_the_width_rule() {
                     0.0
                 }
             };
-            // mono -> stereo: the second output is silence.
+            // A mono centre into a stereo pair: both sides, at gain 1.
             let mut rig = Rig::new(
                 workers,
-                &[spec(1, 2, latency)],
+                &[bused(1, 2, latency, smpte(1), smpte(2))],
                 1,
                 |t| {
                     t.connect(at(1, 0), Edge::Direct(Source::Global(0)));
@@ -364,35 +367,12 @@ fn the_bypass_follows_the_width_rule() {
             );
             let got = rig.frames(256, &wave);
             for n in 0..256 {
-                assert_eq!(
-                    got[0][n].to_bits(),
-                    delayed(n as u64).to_bits(),
-                    "mono, {n}"
-                );
-                assert_eq!(got[1][n].to_bits(), 0, "the output past the input, {n}");
+                let want = delayed(n as u64).to_bits();
+                assert_eq!(got[0][n].to_bits(), want, "left, {n}");
+                assert_eq!(got[1][n].to_bits(), want, "right, {n}");
             }
-            // stereo -> mono: the first input.
-            let mut rig = Rig::new(
-                workers,
-                &[spec(2, 1, latency)],
-                2,
-                |t| {
-                    t.connect(at(1, 0), Edge::Direct(Source::Global(0)));
-                    t.connect(at(1, 1), Edge::Direct(Source::Global(1)));
-                    t.set_outputs(vec![out(1, 0)]);
-                },
-                &[(1, NodeMode::Bypassed)],
-            );
-            let got = rig.frames(256, &wave);
-            for n in 0..256 {
-                assert_eq!(
-                    got[0][n].to_bits(),
-                    delayed(n as u64).to_bits(),
-                    "stereo to mono, {n}"
-                );
-            }
-            // stereo -> stereo: channel `c` is input `c` (global input `c` is
-            // the signal scaled by 2^-c).
+            // stereo -> stereo, from widths: channel `c` is input `c` (global
+            // input `c` is the signal scaled by 2^-c).
             let mut rig = Rig::new(
                 workers,
                 &[spec(2, 2, latency)],
@@ -456,8 +436,8 @@ fn discrete(n: u16) -> Bus {
 /// The same holds for a node that runs at `Mix::DRY` (all of the aligned
 /// input), which reads the fold through the blend and not the parked path.
 ///
-/// Mutation (each run, each failed): `Pass::of` taking the width rule for a
-/// named pair -> `L` is `FL` alone and `R` is `FR` alone; `park_folded`
+/// Mutation (each run, each failed): `Pass::of` passing a
+/// named pair by index -> `L` is `FL` alone and `R` is `FR` alone; `park_folded`
 /// skipping the rings' `align` -> the parked case is silence; `park_folded`
 /// writing a constant instead of `fold_aligned_into` -> the parked case
 /// fails; `moded_node_op` without `fold_aligned` -> the `Mix::DRY` case
@@ -510,47 +490,60 @@ fn a_bypass_is_the_fold_between_the_main_buses() {
     }
 }
 
-/// **A bypass whose main buses name channels and do not fold is refused**, with
-/// the fold's reason, and nothing changes: six discrete channels into a named
-/// stereo bus have no relabelling (`FoldError::Discrete`). Any other mode, and
-/// a bypass of a node built from widths, is not refused.
+/// **A bypass of a node with no pass is refused**, with the reason, and nothing
+/// changes: six discrete channels into a named stereo bus have no relabelling
+/// (`FoldError::Discrete`), and six channels into two built from widths name no
+/// placement (`PassError::Unplaced`: by index, the first two inputs would be a
+/// guess). Any other mode, and a bypass at one width, is not refused.
 ///
 /// Mutation (each run, each failed): `Editor::set_mode` not asking
-/// `Pass::of` -> the bypass is accepted; asking it for every mode -> the
-/// Muted assertion fails.
+/// `check_pass` → the bypasses are accepted; asking it for every mode → the
+/// Muted assertion fails; `Pass::of` passing discrete buses of different
+/// widths by index again → the six-into-two bypass is accepted.
 #[test]
-fn a_bypass_of_unfoldable_main_buses_is_refused() {
+fn a_bypass_with_no_pass_is_refused() {
     let (mut ed, _exec) = Editor::new(prepare(MAX_BLOCK));
+    let widths = |ins, outs| {
+        Unforkable(TestNode::new(Kind::Spec {
+            behaviour: SpecBehaviour::Fan,
+            ins,
+            outs,
+            latency: 0,
+            tail: Tail::None,
+        }))
+    };
     ed.insert(
         key(1),
         "named",
         Unforkable(TestNode::new(bused(6, 2, 0, discrete(6), smpte(2)))),
     );
-    ed.insert(
-        key(2),
-        "widths",
-        Unforkable(TestNode::new(Kind::Spec {
-            behaviour: SpecBehaviour::Fan,
-            ins: 6,
-            outs: 2,
-            latency: 0,
-            tail: Tail::None,
-        })),
-    );
+    ed.insert(key(2), "widths", widths(6, 2));
+    ed.insert(key(3), "one width", widths(2, 2));
     let refused = ed.set_mode(key(1), NodeMode::Bypassed);
     assert!(
         matches!(
             refused,
             Err(ModeError::Unplaced {
-                error: FoldError::Discrete { .. },
+                error: PassError::Fold(FoldError::Discrete { .. }),
                 ..
             })
         ),
         "{refused:?}"
     );
+    assert_eq!(
+        ed.set_mode(key(2), NodeMode::Bypassed),
+        Err(ModeError::Unplaced {
+            node: key(2),
+            error: PassError::Unplaced {
+                inputs: 6,
+                outputs: 2
+            },
+        })
+    );
     assert_eq!(ed.mode(key(1)), NodeMode::Active, "nothing changed");
+    assert_eq!(ed.mode(key(2)), NodeMode::Active, "nothing changed");
     assert_eq!(ed.set_mode(key(1), NodeMode::Muted), Ok(()));
-    assert_eq!(ed.set_mode(key(2), NodeMode::Bypassed), Ok(()));
+    assert_eq!(ed.set_mode(key(3), NodeMode::Bypassed), Ok(()));
 }
 
 /// **`Muted`: every output is `+0.0`** (the bit pattern of positive zero),

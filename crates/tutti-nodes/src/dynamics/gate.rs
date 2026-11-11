@@ -10,6 +10,7 @@ use super::utils::{apply_gain_lane, sidechain_levels};
 use tutti_dsp::{GateBlock, GateKernel};
 use tutti_types::{Db, Param, SampleRate, Seconds, Tail};
 
+use crate::buses::{keyed, main_bus};
 use crate::ramp::{LastGood, block_driven};
 
 /// Shared gate state used by the per-sample gain computation.
@@ -365,6 +366,8 @@ impl Node for GateNode {
     fn shape(&self) -> Shape {
         let n = self.channels.count();
         Shape::audio(ChannelLayout::from_count(2 * n), self.channels)
+            .with_buses_in(keyed(self.channels))
+            .with_buses_out(main_bus(self.channels))
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&GATE_PARAMS)

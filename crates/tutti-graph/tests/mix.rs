@@ -25,9 +25,9 @@ use std::sync::{Arc, Mutex};
 
 use common::{Kind, Pair, SpecBehaviour, TestNode, bits, prepare};
 use tutti_graph::{
-    CrossfadeCurve, Cx, Edge, Editor, ForkMode, ForkTarget, GraphInvalid, GraphSpec, InPort, Io,
-    MixError, Node, NodeKey, NodeMode, NodeSpec, OutPort, Prepare, Shape, Source, Status, Topology,
-    Transport, Unforkable,
+    CommitError, CrossfadeCurve, Cx, Edge, Editor, EventOut, ForkMode, ForkTarget, GraphInvalid,
+    GraphSpec, InPort, Io, MixError, Node, NodeKey, NodeMix, NodeMode, NodeSpec, OutPort, ParamIn,
+    PassError, Prepare, Shape, Source, Status, Topology, Transport, Unforkable,
 };
 use tutti_types::{ChannelLayout, Mix, Tail};
 
@@ -782,4 +782,87 @@ fn a_fork_copies_the_mix() {
             blend(3.0 * input[i], input[i], 0.5).to_bits()
         );
     }
+}
+
+/// **Nothing hears a pass a node does not have.** A mono node with a stereo
+/// output, built from widths, names no placement: by index its input would be
+/// heard on the left alone. It commits and runs while nothing reads its dry
+/// path; `set_mix` short of WET is refused, and so is a commit of a spec that
+/// mixes it, bypasses it or drives its mix from a lane, each with the reason.
+/// `Mix::WET` and a node at one width are accepted.
+///
+/// Mutation (each run, each failed): `set_mix` not asking `check_pass` → the
+/// half mix is accepted; `check_passes` not called in `commit` → the spec's
+/// mix commits; its `heard` dropping the mode, or the lane's source → that
+/// commit is accepted.
+#[test]
+fn a_mix_of_a_node_with_no_pass_is_refused() {
+    let (mut ed, _exec) = Editor::new(prepare(MAX_BLOCK));
+    ed.spec_mut().topology.inputs = ChannelLayout::MONO;
+    ed.insert(
+        key(1),
+        "split",
+        Unforkable(TestNode::new(Kind::Spec {
+            behaviour: SpecBehaviour::Fan,
+            ins: 1,
+            outs: 2,
+            latency: 0,
+            tail: Tail::None,
+        })),
+    );
+    ed.insert(
+        key(2),
+        "driver",
+        Unforkable(TestNode::new(Kind::MixDriver {
+            period: 64,
+            latency: 0,
+        })),
+    );
+    ed.spec_mut()
+        .topology
+        .connect(at(1, 0), Edge::Direct(Source::Global(0)));
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![out(1, 0), out(1, 1)]);
+    ed.commit().expect("nothing hears its pass yet");
+
+    let no_pass = PassError::Unplaced {
+        inputs: 1,
+        outputs: 2,
+    };
+    assert_eq!(
+        ed.set_mix(key(1), Mix::new(0.5)),
+        Err(MixError::Unplaced {
+            node: key(1),
+            error: no_pass
+        })
+    );
+    assert_eq!(ed.mix(key(1)), Mix::WET, "a refusal changes nothing");
+    assert_eq!(ed.set_mix(key(1), Mix::WET), Ok(()));
+
+    let refused = Err(CommitError::Unplaced {
+        node: key(1),
+        error: no_pass,
+    });
+    ed.spec_mut().set_mix(key(1), Mix::new(0.5));
+    assert_eq!(ed.commit(), refused, "a mix in the spec");
+    ed.spec_mut().set_mix(key(1), Mix::WET);
+
+    ed.spec_mut().set_mode(key(1), NodeMode::Bypassed);
+    assert_eq!(ed.commit(), refused, "a bypass in the spec");
+    ed.spec_mut().set_mode(key(1), NodeMode::Active);
+
+    let mix = ParamIn {
+        node: key(1),
+        param: NodeMix::ADDR,
+    };
+    let lane = EventOut {
+        node: key(2),
+        port: 0,
+    };
+    ed.spec_mut().connect_param(mix, lane);
+    assert_eq!(ed.commit(), refused, "a lane on the mix");
+    ed.spec_mut().disconnect_param(mix, lane);
+
+    ed.commit().expect("nothing hears its pass again");
 }

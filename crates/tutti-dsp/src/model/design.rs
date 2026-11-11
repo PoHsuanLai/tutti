@@ -18,7 +18,7 @@ pub struct Channels {
     pub output: ChannelLayout,
     /// Where the channels sit: what a node declares as its main buses, so the
     /// graph's dry path (mix, bypass) folds the input onto the outputs by
-    /// speaker, not by index.
+    /// speaker. The graph refuses a dry path it would have to guess.
     pub placement: Placement,
 }
 
@@ -35,13 +35,22 @@ impl Channels {
         }
     }
 
-    /// Channels by index, at no speaker: a crossover's bands.
+    /// The input's channels once per band, band-major (output
+    /// `band * input + channel`): a crossover's. Band 0 sits where the input
+    /// does, the main output; the further bands are not speaker feeds.
+    ///
+    /// # Panics
+    ///
+    /// If `input` times `bands` is wider than a layout holds.
     #[must_use]
-    pub const fn discrete(input: ChannelLayout, output: ChannelLayout) -> Self {
+    pub const fn bands(input: ChannelLayout, bands: u16) -> Self {
+        let Some(width) = input.count().checked_mul(bands) else {
+            panic!("bands wider than a layout holds");
+        };
         Self {
             input,
-            output,
-            placement: Placement::Discrete,
+            output: ChannelLayout::from_count(width),
+            placement: Placement::Bands,
         }
     }
 }
@@ -53,8 +62,9 @@ pub enum Placement {
     /// mono source is a centre, which the graph's fold sends to both sides of a
     /// stereo output (`Fold::between`).
     Speakers,
-    /// By index, at no speaker: an output that is not a speaker feed.
-    Discrete,
+    /// The output is the input's channels once per band ([`Channels::bands`]):
+    /// band 0 is the main output, at the input's speakers.
+    Bands,
 }
 
 /// The sizes a realization allocates for the worst case of a design: lines, taps,

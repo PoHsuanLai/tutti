@@ -1770,8 +1770,9 @@ impl Graph {
     /// # Errors
     ///
     /// [`ModeError::NoSuchNode`] when `node` is not in the graph;
-    /// [`ModeError::Unplaced`] to bypass a node whose `Main` buses name their
-    /// channels and do not fold; nothing changes.
+    /// [`ModeError::Unplaced`] to bypass a node with no pass
+    /// ([`PassError`](crate::PassError): its buses do not say where its input
+    /// goes, so a bypass would have to guess); nothing changes.
     pub fn set_mode(&mut self, node: NodeKey, mode: NodeMode) -> Result<(), ModeError> {
         self.editor.set_mode(node, mode)
     }
@@ -1803,7 +1804,9 @@ impl Graph {
     ///
     /// [`MixError::NoSuchNode`] when `node` is not in the graph,
     /// [`MixError::OutOfRange`] for a mix that is NaN or outside `0..=1` (make
-    /// one with [`Mix::new_clamped`]); nothing changes.
+    /// one with [`Mix::new_clamped`]), [`MixError::Unplaced`] for a mix short of
+    /// [`Mix::WET`] on a node with no pass ([`PassError`](crate::PassError));
+    /// nothing changes.
     pub fn set_mix(&mut self, node: NodeKey, mix: Mix) -> Result<(), MixError> {
         self.editor.set_mix(node, mix)
     }

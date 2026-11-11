@@ -20,12 +20,11 @@ use tutti_dsp::{
     MAX_CHANNELS, Placement, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
-    Buses, Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+    Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{
-    BusTopology, ChannelLayout, ChannelTopology, Db, Latency, MaxBlock, Mix, SampleRate, Samples,
-    Tail, UnitAddr, UnitParam,
-};
+use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam};
+
+use crate::buses::main_bus;
 
 use crate::params::{At, ControlSet, Params};
 
@@ -438,19 +437,6 @@ fn frames(tail: Ring, rate: SampleRate) -> u64 {
     }
 }
 
-/// The main bus of one side of a design: its speakers where the design places
-/// its channels and the width has an order (`ChannelTopology::assumed`), so the
-/// graph's mix and bypass fold a mono input onto both sides of a stereo output;
-/// a width with no order, or a design's discrete channels, by index as before.
-pub(crate) fn main_bus(width: ChannelLayout, placement: Placement) -> Buses {
-    match placement {
-        Placement::Speakers => ChannelTopology::assumed(width)
-            .and_then(|t| BusTopology::try_from(&t).ok())
-            .map_or(Buses::of_width(width), Buses::main),
-        Placement::Discrete => Buses::of_width(width),
-    }
-}
-
 fn tail_of(frames: u64) -> Tail {
     if frames == UNBOUNDED {
         Tail::Unbounded
@@ -474,8 +460,12 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             Mode::Fixed(_) => &[],
         };
         Shape::audio(self.channels.input, self.channels.output)
-            .with_buses_in(main_bus(self.channels.input, self.channels.placement))
-            .with_buses_out(main_bus(self.channels.output, self.channels.placement))
+            .with_buses_in(main_bus(self.channels.input))
+            .with_buses_out(main_bus(match self.channels.placement {
+                Placement::Speakers => self.channels.output,
+                // Band 0, the main output; the further bands are ports.
+                Placement::Bands => self.channels.input,
+            }))
             .with_cost(cost(self.realization.effort()))
             .with_latency(Latency::new(self.realization.latency()))
             .with_tail(if D::PARKS {

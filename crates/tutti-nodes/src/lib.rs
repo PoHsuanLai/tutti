@@ -54,6 +54,7 @@
 // the rest of this crate has no `Error` type.
 
 // Per-block control reads and the ramps that keep them from stepping.
+mod buses;
 mod params;
 mod ramp;
 

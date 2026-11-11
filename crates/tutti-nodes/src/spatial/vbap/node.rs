@@ -1,12 +1,12 @@
 use super::error::{Result, VbapError};
-use tutti_dsp::{Placement, SpeakerLayout, VbapGains};
+use tutti_dsp::{SpeakerLayout, VbapGains};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
 use tutti_types::{ChannelLayout, ChannelTopology, Fold, UnitParam};
 
 use super::panner::VbapPanner;
+use crate::buses::main_bus;
 use crate::ramp::{LastGood, block_driven};
-use crate::reverb::main_bus;
 
 /// The params a [`VbapPannerNode`] lets the graph modulate, in port order.
 pub const VBAP_PANNER_PARAMS: [UnitParam; 4] = [
@@ -306,8 +306,8 @@ impl Node for VbapPannerNode {
         // A stereo pair in and the bed's speakers out, so the graph's mix and
         // bypass fold the dry pair onto the bed by speaker.
         Shape::audio(ChannelLayout::STEREO, self.layout)
-            .with_buses_in(main_bus(ChannelLayout::STEREO, Placement::Speakers))
-            .with_buses_out(main_bus(self.layout, Placement::Speakers))
+            .with_buses_in(main_bus(ChannelLayout::STEREO))
+            .with_buses_out(main_bus(self.layout))
             .with_tail(Tail::Unknown)
             .with_params(&VBAP_PANNER_PARAMS)
             // A ramped gain pair per output channel and frame, and the

@@ -1239,7 +1239,12 @@ impl Wire {
 impl Node for Wire {
     fn shape(&self) -> Shape {
         let ch = |n| ChannelLayout::try_from(n).expect("a width");
+        // The first `outs` inputs are its main bus, which its bypass and mix
+        // pass by index; a wider input's rest are ports.
+        let main = ch(self.ins.min(self.outs));
         Shape::audio(ch(self.ins), ch(self.outs))
+            .with_buses_in(tutti_graph::Buses::of_width(main))
+            .with_buses_out(tutti_graph::Buses::of_width(main))
             .with_latency(Latency::new(Samples(self.latency)))
             .with_events(self.ein, self.eout)
             .with_tail(Tail::None)

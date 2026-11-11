@@ -10,6 +10,7 @@ use super::utils::{apply_gain_lane, sidechain_levels};
 use tutti_dsp::{CompressorBlock, CompressorKernel};
 use tutti_types::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
+use crate::buses::{keyed, main_bus};
 use crate::ramp::{LastGood, block_driven, clamp_finite};
 
 /// Shared compressor state used by the per-sample gain computation.
@@ -446,6 +447,8 @@ impl Node for CompressorNode {
     fn shape(&self) -> Shape {
         let n = self.channels.count();
         Shape::audio(ChannelLayout::from_count(2 * n), self.channels)
+            .with_buses_in(keyed(self.channels))
+            .with_buses_out(main_bus(self.channels))
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&COMPRESSOR_PARAMS)

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, EdgeGain, EdgeId, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone,
-    NodeMix, ParamIn, ParamRange, ParamRangeReader, ScheduleError, Sink,
+    NodeMix, ParamIn, ParamRange, ParamRangeReader, PassError, ScheduleError, Sink,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
@@ -158,6 +158,14 @@ pub enum ReconcileError {
     /// naming a node not in the graph is no feed: the follower is
     /// unresolved, the envelope gets none.)
     WrongFeed(SourceKey),
+    /// A mix target on a node with no pass ([`Editor::check_pass`]): the dry
+    /// side of the mix would be a guess.
+    Unplaced {
+        /// The target.
+        target: TargetKey,
+        /// What the node would need to declare.
+        error: PassError,
+    },
 }
 
 impl fmt::Display for ReconcileError {
@@ -180,6 +188,9 @@ impl fmt::Display for ReconcileError {
                 )
             }
             Self::WrongFeed(s) => write!(f, "source {}: a feed it cannot take", s.0),
+            Self::Unplaced { target, error } => {
+                write!(f, "target {target:?}: no mix without a pass: {error}")
+            }
         }
     }
 }
@@ -1220,6 +1231,9 @@ impl Modulation {
                 if !editor.spec().topology.nodes.contains_key(&node) {
                     return Ok(None);
                 }
+                editor
+                    .check_pass(node)
+                    .map_err(|error| ReconcileError::Unplaced { target, error })?;
                 let at = ParamIn {
                     node,
                     param: NodeMix::ADDR,

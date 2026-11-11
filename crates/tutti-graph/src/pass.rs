@@ -3,19 +3,56 @@
 //! coercion between declared layouts", B3).
 //!
 //! A node declares a `Main` bus on each side. When both say where their
-//! channels sit, the bypass is the [`Fold`] between them (a 5.1 bus into a
-//! stereo bus is the ITU downmix, not "the first two channels"). When neither
-//! says (every channel `Discrete`, which is what [`Shape::audio`] builds) there
-//! is no placement to fold between, and the mapping is the width rule that
-//! predates buses: output `c` is input `c` below the narrower width, silence
-//! past it. A pair that does name a placement and does not fold
-//! ([`FoldError`]) passes nothing, and [`Editor::set_mode`](crate::Editor::set_mode)
-//! refuses to bypass it ([`ModeError::Unplaced`](crate::ModeError::Unplaced)):
-//! reading a bare width as a placement is the guess CLAUDE.md forbids.
+//! channels sit, the pass is the [`Fold`] between them (a mono centre reaches
+//! both sides of a stereo pair; a 5.1 bus into a stereo bus is the ITU
+//! downmix, not "the first two channels"). When neither says (every channel
+//! `Discrete`, which is what [`Shape::audio`] builds) and the widths agree,
+//! output `c` is input `c`. **Nothing else is guessed**: main buses of
+//! different widths that name no placement, or placements that do not fold,
+//! have no pass ([`PassError`]), and the graph refuses whatever would hear one
+//! (a bypass, a mix short of [`Mix::WET`](tutti_types::Mix::WET), a lane on
+//! the mix: [`Editor::set_mode`](crate::Editor::set_mode),
+//! [`Editor::set_mix`](crate::Editor::set_mix), a commit). By index, a mono
+//! input under a stereo output was heard on the left alone. A node whose
+//! channels are not speaker feeds says what its other ports are: a key is a
+//! `Sidechain` bus after the main one, a crossover's further bands `Aux`.
 //!
 //! Built on the control side (a fold allocates); applied without allocating.
 
 use tutti_types::{ChannelTopology, Fold, FoldError, Speaker};
+
+/// Why a node has no pass: what it would need to declare to be bypassed or
+/// mixed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PassError {
+    /// The main input and output differ in width and name no placement, so
+    /// which input reaches which output is a guess. Declare the buses
+    /// ([`Shape::with_buses_in`], [`Shape::with_buses_out`]).
+    Unplaced {
+        /// The main input's width.
+        inputs: usize,
+        /// The main output's width.
+        outputs: usize,
+    },
+    /// The main buses name their channels and do not fold into each other.
+    Fold(FoldError),
+}
+
+impl std::fmt::Display for PassError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unplaced { inputs, outputs } => write!(
+                f,
+                "{inputs} channels in and {outputs} out name no placement, so the dry \
+                 path would be a guess: declare the node's buses"
+            ),
+            Self::Fold(e) => write!(f, "the main buses do not fold: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for PassError {}
 
 use crate::node::Shape;
 
@@ -43,9 +80,8 @@ impl Pass {
         }
     }
 
-    /// The width rule: output `c` is input `c` below the narrower width.
-    fn by_width(shape: &Shape) -> Self {
-        let n = shape.audio_in.count().min(shape.audio_out.count()) as usize;
+    /// Output `c` is input `c`, for `n` channels.
+    fn by_index(n: usize) -> Self {
         Self {
             inputs: n,
             outputs: n,
@@ -54,13 +90,22 @@ impl Pass {
         }
     }
 
-    /// The mapping of `shape`, or why its main buses do not fold. Control
-    /// side: allocates.
-    pub(crate) fn of(shape: &Shape) -> Result<Self, FoldError> {
+    /// The mapping of `shape`, or why it has none. Control side: allocates.
+    pub(crate) fn of(shape: &Shape) -> Result<Self, PassError> {
         let (Some((_, src)), Some((_, dst))) =
             (shape.buses_in.main_bus(), shape.buses_out.main_bus())
         else {
-            return Ok(Self::by_width(shape));
+            // No main bus on a side: no audio there (nothing passes), or more
+            // channels than a bus holds, reached by port.
+            let (inputs, outputs) = (
+                usize::from(shape.audio_in.count()),
+                usize::from(shape.audio_out.count()),
+            );
+            return match (inputs, outputs) {
+                (0, _) | (_, 0) => Ok(Self::nothing()),
+                (i, o) if i == o => Ok(Self::by_index(i)),
+                (inputs, outputs) => Err(PassError::Unplaced { inputs, outputs }),
+            };
         };
         let discrete = |b: &crate::Bus| {
             b.topology
@@ -69,12 +114,20 @@ impl Pass {
                 .all(|s| *s == Speaker::Discrete)
         };
         if discrete(src) && discrete(dst) {
-            return Ok(Self::by_width(shape));
+            return if src.width() == dst.width() {
+                Ok(Self::by_index(src.width()))
+            } else {
+                Err(PassError::Unplaced {
+                    inputs: src.width(),
+                    outputs: dst.width(),
+                })
+            };
         }
         let fold = Fold::between(
             &ChannelTopology::from(src.topology),
             &ChannelTopology::from(dst.topology),
-        )?;
+        )
+        .map_err(PassError::Fold)?;
         let (inputs, outputs) = (src.width(), dst.width());
         if fold.is_identity() {
             return Ok(Self {
@@ -98,7 +151,8 @@ impl Pass {
         })
     }
 
-    /// [`of`](Self::of), or nothing passing when the buses do not fold.
+    /// [`of`](Self::of), or nothing passing for a node with no pass: one the
+    /// graph never bypasses or mixes, since every door that would refuses it.
     pub(crate) fn of_or_nothing(shape: &Shape) -> Self {
         Self::of(shape).unwrap_or_else(|_| Self::nothing())
     }

@@ -309,6 +309,7 @@ pub use param::{
     MAX_PARAM_PORTS, PARAM_DECLICK, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError,
     ParamRange, ParamRangeReader,
 };
+pub use pass::PassError;
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, EMPTY_SLOT, EventSlotCapacity, FeedbackKey, FeedbackSpec,
     GainPortOp, Op, ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, ZERO_SLOT,

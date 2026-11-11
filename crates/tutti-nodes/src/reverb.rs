@@ -46,7 +46,8 @@ const UNBOUNDED: u64 = u64::MAX;
 pub struct At<C> {
     /// The frame of the block to read a driven port at.
     pub frame: usize,
-    /// The block's length: what a cell's glide ramps over.
+    /// The frames a cell's glide ramps over: the block, or up to its last solve
+    /// when a grid solves inside it.
     pub block: usize,
     /// The controls the model was designed from at the start of the block, where
     /// a cell's glide starts; `None` before the first design (after a prepare),
@@ -127,9 +128,11 @@ pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'st
 
     /// The grid on which the node reads its controls and designs: one design per
     /// block (the default), or every `n` frames when a control moves inside the
-    /// block. Separate from [`Design::CADENCE`], the grid the render is a function
-    /// of: a reverb whose render is a function of the stream is still designed
-    /// once per block.
+    /// block. A stream grid is counted from the last reset ([`Cadence::steps`]), so
+    /// what it designs does not depend on where the blocks fall.
+    /// Separate from [`Design::CADENCE`], the grid the render is a function of: a
+    /// reverb whose render is a function of the stream is still designed once per
+    /// block.
     const SAMPLING: Cadence = Cadence::BLOCK;
 
     /// Cells that hold `initial`. Control side; allocates.
@@ -298,6 +301,8 @@ pub struct DesignNode<D: NodeDesign> {
     since: u64,
     /// Whether the realization holds exactly silence (reset, nothing since).
     silent: bool,
+    /// Frames rendered since the last reset: where a stream grid's points fall.
+    position: u64,
 }
 
 impl<D: NodeDesign> std::fmt::Debug for DesignNode<D> {
@@ -352,6 +357,7 @@ impl<D: NodeDesign> DesignNode<D> {
             ring: 0,
             since: UNBOUNDED,
             silent: true,
+            position: 0,
         };
         node.retune(rate, MaxBlock::of(Samples(1)));
         node
@@ -393,6 +399,7 @@ impl<D: NodeDesign> DesignNode<D> {
         self.silent = true;
         self.ring = 0;
         self.since = UNBOUNDED;
+        self.position = 0;
     }
 
     /// Designs `controls` into the node's network and retargets the realization.
@@ -488,19 +495,31 @@ impl<D: NodeDesign> DesignNode<D> {
             .process(&input[..inputs], &mut output[..width]);
     }
 
-    /// Renders the block one step of the sampling grid at a time: each step reads
+    /// Renders the block one step of the sampling grid at a time, the block
+    /// beginning at stream frame `position`: each step that begins a segment reads
     /// the controls at its solve frame, and one that moved past the dead-band of
-    /// the last design designs and retargets before it renders. The steps that did not move
-    /// render together, in one call, with the model held.
-    fn render_steps(&mut self, io: &mut Io<'_>, first: usize) {
+    /// the last design designs and retargets before it renders. The steps that did
+    /// not move render together, in one call, with the model held; the rest of a
+    /// segment an earlier block began is rendered with the model that block set.
+    fn render_steps(&mut self, io: &mut Io<'_>, first: usize, position: u64) {
         let size = io.frames();
-        // A cell glides from where the block began, whatever the steps designed.
+        // A cell glides from where the block began, whatever the steps designed,
+        // and arrives at its value on the block's last solve.
         let applied = self.applied;
+        let span = D::SAMPLING
+            .steps(position, size, applied.is_none())
+            .filter(|step| step.grid_point)
+            .map(|step| step.solve_at + 1)
+            .last()
+            .unwrap_or(size);
         let mut held = 0;
-        for step in D::SAMPLING.steps(size, applied.is_none()) {
+        for step in D::SAMPLING.steps(position, size, applied.is_none()) {
+            if !step.grid_point {
+                continue;
+            }
             let at = At {
                 frame: step.solve_at,
-                block: size,
+                block: span,
                 applied,
             };
             let target = self.params.read(io, first, at);
@@ -595,6 +614,8 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             return Status::Modified;
         }
         let first = D::Blend::ADDRS.len();
+        let position = self.position;
+        self.position += size as u64;
 
         // The controls at the block's last frame, and whether the design moves
         // inside the block: a driven port, or a cell that moved past the dead-band
@@ -641,7 +662,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         self.blend.begin(&io);
 
         if stepped {
-            self.render_steps(&mut io, first);
+            self.render_steps(&mut io, first, position);
         } else {
             self.render(&mut io, 0..cut);
         }
@@ -695,6 +716,7 @@ impl<D: NodeDesign> Clone for DesignNode<D> {
             ring: 0,
             since: UNBOUNDED,
             silent: true,
+            position: 0,
         };
         copy.blend.clear();
         copy

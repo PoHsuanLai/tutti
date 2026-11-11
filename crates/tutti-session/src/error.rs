@@ -213,8 +213,7 @@ pub enum Error {
     #[error(transparent)]
     Schedule(#[from] tutti_transport::ScheduleFull),
 
-    /// A file could not be decoded ([`Wave::read`](tutti_codec::Wave::read)).
-    #[cfg(feature = "decode")]
+    /// A file could not be decoded (`Wave::read`, `FileIn`).
     #[error(transparent)]
     Decode(#[from] tutti_codec::DecodeError),
 

@@ -6,9 +6,9 @@ use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_graph::{IntoNode, NodeParts, ParamSet};
 use tutti_transport::TempoReader;
-use tutti_types::{Amplitude, Beat, BeatDuration, PlaybackRate};
+use tutti_types::{Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate};
 
-use crate::{LoopSetting, MemorySource, PlaceError, VoiceWindow};
+use crate::{LoopSetting, MemorySource, PlaceError, VoiceWindow, voice_width};
 
 /// A sample placed on the timeline: the resident wave, where it starts, how
 /// loud, and whether it loops. It is a graph node as it stands, so a user
@@ -22,8 +22,10 @@ use crate::{LoopSetting, MemorySource, PlaceError, VoiceWindow};
 /// ```
 ///
 /// It plays on the transport, from `at` (beat 0 until set) to the end of the
-/// wave or the [`lasting`](Self::lasting) length, and is stereo (a mono wave
-/// is placed on the front pair, as every [`MemorySource`] places it). A node
+/// wave or the [`lasting`](Self::lasting) length. Its width is the wave's own
+/// (placed by the wave's [`topology`](Wave::topology), as every
+/// [`MemorySource`] places it; at most the sampler's widest), until
+/// [`channels`](Self::channels) places it at another. A node
 /// over a clip reads the session's tempo map when the session's graph adds it
 /// (`tutti-session`'s `SessionNode`).
 ///
@@ -33,6 +35,7 @@ use crate::{LoopSetting, MemorySource, PlaceError, VoiceWindow};
 #[derive(Debug, Clone)]
 #[must_use = "a clip is a node: add it to a graph"]
 pub struct Clip {
+    wave: Arc<Wave>,
     source: MemorySource,
     window: VoiceWindow,
 }
@@ -46,10 +49,30 @@ impl Clip {
     /// LFE, a wide or high speaker): refused here, never played with a
     /// channel in the wrong place.
     pub fn new(wave: impl Into<Arc<Wave>>) -> Result<Self, PlaceError> {
+        let wave = wave.into();
+        let width = voice_width(ChannelLayout::clamped(wave.channels()));
         Ok(Self {
-            source: MemorySource::new(wave.into())?,
+            source: MemorySource::with_channels(Arc::clone(&wave), width)?,
+            wave,
             window: VoiceWindow::default(),
         })
+    }
+
+    /// Places the clip at `channels` wide, through the wave's topology (a mono
+    /// wave into stereo plays on the centre of both, a stereo wave into mono
+    /// folds). Gain, speed and loop set so far are kept.
+    ///
+    /// # Errors
+    ///
+    /// [`PlaceError`] when the wave has no place in that width (a channel no
+    /// speaker names).
+    pub fn channels(mut self, channels: impl Into<ChannelLayout>) -> Result<Self, PlaceError> {
+        let mut placed = MemorySource::with_channels(Arc::clone(&self.wave), channels)?;
+        placed.set_gain(self.source.gain());
+        placed.set_speed(self.source.speed());
+        placed.set_loop_setting(self.source.loop_setting());
+        self.source = placed;
+        Ok(self)
     }
 
     /// Starts the clip at `start` on the timeline.

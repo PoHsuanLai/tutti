@@ -16,8 +16,6 @@ mod placement;
 #[cfg(decode)]
 mod read;
 
-#[cfg(decode)]
-pub use error::DecodeError;
 pub use extensions::{can_decode, decodable_extensions};
 #[cfg(decode)]
 pub use file_in::FileIn;

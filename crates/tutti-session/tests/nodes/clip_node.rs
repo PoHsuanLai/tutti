@@ -54,6 +54,7 @@ fn a_clip_starts_on_its_beat_at_its_gain() {
     let mut s = offline();
     let (clip, _) = s.graph().add(
         Clip::new(level(0.5))
+            .and_then(|c| c.channels(ChannelLayout::STEREO))
             .expect("a placeable wave")
             .at(Beat(1.0))
             .gain(Amplitude::new(0.5)),
@@ -68,9 +69,12 @@ fn a_clip_starts_on_its_beat_at_its_gain() {
     assert_eq!(first, 24_000, "on the frame of beat 1");
     // The clip's gain is a scalar on the wave's level: half of the unscaled.
     let (mut full, _) = (offline(), ());
-    let (whole, _) = full
-        .graph()
-        .add(Clip::new(level(0.5)).unwrap().at(Beat(1.0)));
+    let (whole, _) = full.graph().add(
+        Clip::new(level(0.5))
+            .and_then(|c| c.channels(ChannelLayout::STEREO))
+            .unwrap()
+            .at(Beat(1.0)),
+    );
     wire(&mut full, whole);
     full.update();
     let unscaled = run(&full, 40_000)[2 * 24_000 + 2];
@@ -78,4 +82,22 @@ fn a_clip_starts_on_its_beat_at_its_gain() {
         (after - unscaled * 0.5).abs() < 1e-6,
         "{after} vs {unscaled}"
     );
+}
+
+/// **A clip is the wave's own width until told another**: a mono wave is a
+/// one-output node, a stereo wave a two-output one, and `channels` places it
+/// at another width.
+#[test]
+fn a_clip_is_as_wide_as_its_wave_unless_placed() {
+    let mut s = offline();
+    let outputs = |s: &mut Session, clip: Clip| {
+        let (node, _) = s.graph().add(clip);
+        s.graph().buses(node).expect("in the graph").1.width()
+    };
+    assert_eq!(outputs(&mut s, Clip::new(level(0.5)).unwrap()), 1);
+    let wide = Clip::new(level(0.5))
+        .unwrap()
+        .channels(ChannelLayout::STEREO)
+        .unwrap();
+    assert_eq!(outputs(&mut s, wide), 2);
 }

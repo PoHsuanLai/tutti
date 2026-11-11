@@ -16,8 +16,9 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-use super::error::{DecodeError, convert};
+use super::error::convert;
 use super::placement::{topology_of, unstated};
+use crate::DecodeError;
 use crate::Wave;
 use tutti_types::ChannelTopology;
 

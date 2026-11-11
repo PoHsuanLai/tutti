@@ -48,12 +48,20 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
     )?;
     s.set_tempo(Bpm::of(120.0));
 
-    // The sampler: the same wave on beats 0 and 4, each a node as it stands.
+    // The sampler: the same mono wave on beats 0 and 4, each a node as it
+    // stands, placed at stereo to join the stereo chain.
     let wave = std::sync::Arc::new(saw());
-    let (first, _) = s.graph().add(Clip::new(wave.clone())?.at(Beat(0.0)));
-    let (second, _) = s
-        .graph()
-        .add(Clip::new(wave)?.at(Beat(4.0)).gain(Amplitude::new(0.8)));
+    let (first, _) = s.graph().add(
+        Clip::new(wave.clone())?
+            .channels(ChannelLayout::STEREO)?
+            .at(Beat(0.0)),
+    );
+    let (second, _) = s.graph().add(
+        Clip::new(wave)?
+            .channels(ChannelLayout::STEREO)?
+            .at(Beat(4.0))
+            .gain(Amplitude::new(0.8)),
+    );
 
     // A stereo low-pass, then a reverb whose input is mono: that width change
     // is a bus edge, never a truncation (`connect` would refuse it).

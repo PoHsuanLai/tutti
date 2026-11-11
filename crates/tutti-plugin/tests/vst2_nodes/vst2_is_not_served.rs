@@ -17,8 +17,8 @@ use tutti_plugin_types::BridgeError;
 /// `ServerNotFound` (or, with a server, as a load failure of the server's).
 #[test]
 fn a_vst2_path_is_refused_with_a_typed_error_before_a_server_starts() {
-    // SAFETY: no other thread of this test binary reads the environment.
-    unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", "/nonexistent/plugin-server") };
+    let mut env = tutti_fixtures::ScopedEnv::new();
+    env.set("TUTTI_PLUGIN_SERVER", "/nonexistent/plugin-server");
     for name in ["Synth.vst", "Legacy.dll", "Old.so"] {
         let path = PathBuf::from(name);
         match PluginClient::new(BridgeConfig::default(), path.clone(), 48_000u32) {

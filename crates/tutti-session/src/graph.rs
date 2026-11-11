@@ -41,6 +41,7 @@ use std::sync::Arc;
 
 use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
+use tutti_graph::{BusError, BusRef, BusSource, Buses};
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, EventTapReader, Executor, Fade,
     GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, MixError, ModeError, NodeMode,
@@ -1673,6 +1674,56 @@ impl Graph {
         }
     }
 
+    // --- Bus edges (doc 013, "Buses and coercion between declared layouts") ---
+
+    /// The buses `node` declares, input and output, as its shape holds them
+    /// (`Shape::buses_in`, `buses_out`). `None` when `node` is not in the
+    /// graph.
+    pub fn buses(&self, node: NodeKey) -> Option<(Buses, Buses)> {
+        self.shape(node).map(|s| (s.buses_in, s.buses_out))
+    }
+
+    /// Feeds input bus `to` from `from`: a fold between the two declared
+    /// topologies, lowered at the commit to one weighted lane per
+    /// contribution (`Fold::contributions`), summed with any other source of
+    /// the sink's ports. The same topology on both sides is the plain
+    /// per-channel wiring. A source already connected is kept once.
+    ///
+    /// A bus edge's lanes carry the fold's weights and no gain of their own:
+    /// [`set_edge_gain`](Self::set_edge_gain) refuses them, and
+    /// [`sources`](Self::sources) lists the author's per-port sources only.
+    ///
+    /// # Errors
+    ///
+    /// [`BusError`], with nothing stored: a node or bus that does not exist
+    /// (`from` names an output bus, `to` an input bus), two topologies that
+    /// do not fold (`FoldError`, never a silent drop), or a lane that lands on
+    /// an edge the graph already has.
+    pub fn connect_bus(&mut self, from: BusSource, to: BusRef) -> Result<(), BusError> {
+        self.editor.connect_bus(from, to)?;
+        self.edited = true;
+        Ok(())
+    }
+
+    /// Removes the bus edge `from -> to`, its lanes and weights with it; the
+    /// edges and gains the author set stay. Returns whether it was
+    /// connected, and marks the graph edited when it was.
+    pub fn disconnect_bus(&mut self, from: BusSource, to: BusRef) -> bool {
+        let removed = self.editor.disconnect_bus(from, to);
+        self.edited |= removed;
+        removed
+    }
+
+    /// What feeds input bus `bus` of `node` by a bus edge, in source order.
+    pub fn bus_sources(&self, node: NodeKey, bus: u8) -> Vec<BusSource> {
+        self.editor
+            .spec()
+            .bus_edges
+            .get(&BusRef { node, bus })
+            .cloned()
+            .unwrap_or_default()
+    }
+
     // --- Edge gains (doc 013, "Edge gain") ---
 
     /// Sets `node`'s mode: [`NodeMode::Active`] renders it,
@@ -1767,13 +1818,15 @@ impl Graph {
     /// # Errors
     ///
     /// [`EdgeGainError::NoSuchEdge`] when `edge` is not in the graph
-    /// ([`GraphSource::Silence`] never is), and [`EdgeGainError::NotFinite`];
-    /// the graph is unchanged.
+    /// ([`GraphSource::Silence`] never is), [`EdgeGainError::BusLane`] when it
+    /// is a lane of a [bus edge](Self::connect_bus), and
+    /// [`EdgeGainError::NotFinite`]; the graph is unchanged.
     pub fn set_edge_gain(&mut self, edge: EdgeRef, gain: Amplitude) -> Result<(), EdgeGainError> {
         let id = edge.id();
         let had = self.editor.spec().gains.contains_key(&id);
         self.editor.set_edge_gain(id, gain).map_err(|e| match e {
             GraphInvalid::GainWithoutEdge { .. } => EdgeGainError::NoSuchEdge(edge),
+            GraphInvalid::GainOnBusLane { .. } => EdgeGainError::BusLane(edge),
             _ => EdgeGainError::NotFinite,
         })?;
         if !had {
@@ -2611,7 +2664,12 @@ impl Graph {
     /// (committed or not): audio edges plus each node's event and
     /// param-modulation sources. Mutates nothing.
     pub fn latency_plan(&self) -> Compensation {
-        tutti_graph::latency_plan(self.editor.spec())
+        // The bus edges as the lanes they commit to; a spec whose bus edges
+        // do not lower has none to fold (the commit will say why).
+        match self.editor.lowered() {
+            Ok(lowered) => tutti_graph::latency_plan(&lowered.spec),
+            Err(_) => tutti_graph::latency_plan(self.editor.spec()),
+        }
     }
 
     /// The compensation the next commit's plan carries: the spec compiled
@@ -2619,7 +2677,7 @@ impl Graph {
     /// inserted — PDC is the compiler's. `None` when the spec does not
     /// compile (the commit will say why).
     pub fn planned_compensation(&self) -> Option<Compensation> {
-        let valid = self.editor.spec().validate().ok()?;
+        let valid = self.editor.lowered().ok()?.spec.validate().ok()?;
         let (plan, _) = tutti_graph::compile(
             &valid,
             self.editor.shapes(),

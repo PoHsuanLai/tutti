@@ -7274,6 +7274,82 @@ yet, so no plan, op or render moves.
   hosts have to report a role (list in the hand-off) and `buses_of` then
   maps it to `BusRole::Sidechain`.
 
+**As built (B2).** Wiring is bus to bus, lowered to weighted lanes; no op,
+plan or render moves for a graph with no bus edge, and `DownmixNode` and the
+bypass rule are untouched (B3).
+
+- **API.** `tutti_graph::{BusRef { node, bus: u8 }, BusSource::{Node(BusRef),
+  Global}, BusError, BusSide, Lowering}`. `GraphSpec::bus_edges:
+  BTreeMap<BusRef, Vec<BusSource>>` (a set per sink bus, in source order),
+  `GraphSpec::{connect_bus, disconnect_bus, lowered}`. `Editor::{connect_bus(from:
+  BusSource, to: BusRef) -> Result<(), BusError>, disconnect_bus -> bool,
+  lowered() -> Result<Lowering, BusError>}`. Session: `Graph::{connect_bus,
+  disconnect_bus, bus_sources(node, bus), buses(node)}`. A `BusSource::Node`
+  names an **output** bus and a sink an **input** bus, so "a bus on the wrong
+  side" is `BusError::NoSuchBus { side }`. `BusError`: `NoSuchNode`,
+  `NoSuchBus`, `GlobalTooWide`, `Fold { from, to, error: FoldError }`,
+  `Overlaps`, `GainOnLane`.
+- **Where the lowering happens.** `GraphSpec::lowered(&Shapes) -> Lowering`
+  is a pure function of the spec and the declared buses: it clones the spec,
+  clears `bus_edges`, and adds each lane to the topology (and a static weight
+  to `gains`). The **editor** does it at every commit, re-prepare and resume
+  (`lower_and_validate`), and `validate` and `compile` take the lowered value, so
+  they and the reference interpreter never see a bus edge. The text above says
+  compile rebuilds the fold: it cannot, because `validate` (and so
+  `ValidGraph`, which the reference runs) sees no shapes. A spec that still holds
+  bus edges is refused by `validate` (`GraphInvalid::BusEdgesUnlowered`), never
+  silently ignored. The failure at a commit is
+  `CommitError::Compile(CompileError::Bus(BusError))`, the text's
+  `CompileError::Fold`, widened because the same commit also fails on a bus that
+  is gone or an overlap. A spec with no bus edge is validated as it stands (no
+  clone). A fork (`fork_gather`) forks the lowered spec, so its reachability and
+  its gains are the lanes'; the session's `latency_plan` and
+  `planned_compensation` fold the lowered spec.
+- **A lane's weight is not the author's.** A lane of gain exactly `1.0` is a
+  plain edge. Any other is an `EdgeGain` (the weight, the default range, no
+  source) in the **lowered** spec only; the editor sends its cell from the
+  lowering, a fresh `GainCell` nobody else holds. The author's spec never holds
+  it, and the choice for the author's own gain on such an edge is **refuse**:
+  `Editor::set_edge_gain` and `set_edge_gain_range` return
+  `GraphInvalid::GainOnBusLane` (the session: `EdgeGainError::BusLane`), a
+  hand-written `gains` entry at a lane's `EdgeId` fails the commit
+  (`BusError::GainOnLane`), and `edge_gain_cell` is `None` for a lane. A bus
+  edge carries no gain of its own in this change (a gain on the bus edge as a
+  whole is a later amendment, one entry per bus edge scaling each lane); composing a
+  user gain with the fold's weight would give one `EdgeId` two writers, which
+  the edge-gain cell's one-writer rule forbids.
+- **Overlap is `BusError::Overlaps`**, not `Invalid::BusEdgeOverlaps`: the
+  topology validator sees only the lowered value, where an overlap is a
+  duplicate edge it would collapse, so the lowering checks it (at the call, and
+  at the commit when the plain edge came second). Two bus edges whose lanes
+  coincide are caught the same way.
+- **The fold is checked at the call and again at the commit**, against the
+  shapes as they are then: a node replaced by one whose bus no longer folds
+  fails the commit and the plan sent last stays.
+- **A silent destination channel has no lane**: a fold row with no
+  contribution (a stereo source into a three-channel discrete bus, whose third
+  channel the fold zero-fills) adds nothing and reads silence.
+- **`Fold::between`'s refusals, as they are.** Discrete(3) into Discrete(2) is
+  `Unplaced`, as the text says; a discrete source into a *named* bus of
+  another width is `FoldError::Discrete`; a named source into a *wider*
+  discrete bus folds by index, zero-filling.
+- **The root is not a sink yet.** `BusRef` names a node's bus; the root's topology
+  lives in the engine's output control and the session's
+  `declare_root_topology`, which the editor does not see, so a bus edge into
+  the root (and "an undeclared root refuses a bus edge") is B3's, with the
+  bypass and `DownmixNode` migrations that need the same fold at the root. A
+  graph is wired to its outputs per channel, as now.
+- **Not in B2:** the no-alloc gate over a folded graph (the lowered lanes are
+  the weighted sums `rt_no_alloc` already runs) and the plugin-host contract
+  cases for a sidechain bus (the hosts do not report a role yet, B1's note).
+- **Tests** (`tutti-graph/tests/bus_edges.rs`, `tests/differential.rs`'s
+  `bus_edges_are_bit_identical_to_the_reference` with its own generator,
+  `tutti-session/tests/bus_edges.rs`): the analytic folds (stereo to mono,
+  5.1 to stereo, mono to stereo), the identity equal to the hand-wired plan,
+  a bus edge beside a plain source, every refusal, the lowering's determinism,
+  PDC per lane, a fork, the editor and session round trips, and executor,
+  parallel and reference agreeing on random graphs of folds.
+
 #### What else is, and is not, a graph primitive
 
 The test this document applies: a **primitive** says where a signal goes, how
@@ -7345,7 +7421,7 @@ itself.
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
 | 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (built; the static half, then **M4b**, the `ModTarget`, see "As built (M4)" and "As built (M4b)"): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
-| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
+| 4 | Buses and coercion | needs 1 and 2. **B1** (built, "As built (B1)"): `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses (generically, sidechain roles pending the hosts). **B2** (built, "As built (B2)"): `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests; the root as a sink bus waits for B3. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses
 B1's types; M1 ships the width rule (`Status::Bypass`'s) and B3 switches the

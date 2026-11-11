@@ -94,4 +94,9 @@ pub enum EdgeGainError {
     /// the sum can multiply by.
     #[error("an edge gain must be finite")]
     NotFinite,
+    /// The edge is a lane a bus edge lowers to
+    /// ([`Graph::connect_bus`](crate::Graph::connect_bus)): its weight is the
+    /// fold's, and a bus edge carries no gain of its own.
+    #[error("the edge is a lane of a bus edge: {0:?}")]
+    BusLane(EdgeRef),
 }

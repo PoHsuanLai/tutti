@@ -22,10 +22,11 @@ MIDI-CI codec.
 - `EndpointId`: the OS's own handle, opaque, valid while the device is present.
 - `CiMessage`: the MIDI-CI (M2-101) codec over SysEx payload bytes: the header, `Muid`
   (checked: the reserved range and the broadcast value are refused; broadcast is a
-  `Destination`), Discovery and its Reply, Invalidate MUID and NAK. `encode` returns
+  `Destination`), Discovery and its Reply, Invalidate MUID, ACK and NAK. `encode` returns
   the bytes between `F0` and `F7`; frame them with `tutti_ump::frame`, and decode the
-  bytes a `tutti_ump::SysexAssembler` completes. There is no state machine and no
-  inbound path yet (design 017 §5, "MIDI-CI").
+  bytes a `tutti_ump::SysexAssembler` completes. `decode` returns a `Decoded`: a message
+  it cannot read keeps its header, so the NAK the spec requires can be addressed
+  (`Unread::nak`). There is no state machine yet (design 017 §5, "MIDI-CI").
 
 - `Endpoint`: what one UMP endpoint declares (M2-104 §7.1): UMP version, protocols
   and JR timestamps supported and active, identity, name, Product Instance Id and up

@@ -32,6 +32,45 @@ fn a_nul_cannot_be_in_a_name_because_it_ends_one() {
     assert_eq!(EndpointName::new("Pièce 5").unwrap().as_str(), "Pièce 5");
 }
 
+// M2-104 §1.8: "MIDI messages only use normalized UTF-8 encoded Unicode
+// characters, following the NFC (Normalization Form C) standard", and "Unicode
+// text in MIDI messages shall not include a Byte Order Mark." A name is composed
+// to NFC (at the constructor and at the wire) and a leading BOM is refused.
+#[test]
+fn a_name_is_held_in_nfc() {
+    // "e" and a combining acute accent compose to the one character "é".
+    let decomposed = "Cafe\u{301}";
+    let composed = "Caf\u{e9}";
+    assert_eq!(EndpointName::new(decomposed).unwrap().as_str(), composed);
+    assert_eq!(
+        BlockName::new(decomposed).unwrap().as_bytes(),
+        composed.as_bytes()
+    );
+    // The wire's bytes are read the same way.
+    assert_eq!(
+        EndpointName::from_bytes(decomposed.as_bytes())
+            .unwrap()
+            .as_str(),
+        composed
+    );
+    // A name that is NFC already is kept as it is.
+    assert_eq!(EndpointName::new(composed).unwrap().as_str(), composed);
+    // The bound is on the composed bytes: 49 "e"+accent are 147 bytes as sent
+    // and 98 composed, which fits an Endpoint Name; a fiftieth does not.
+    assert!(EndpointName::new(&"e\u{301}".repeat(49)).is_some());
+    assert!(EndpointName::new(&"e\u{301}".repeat(50)).is_none());
+}
+
+#[test]
+fn a_leading_byte_order_mark_is_refused() {
+    let bom = "\u{FEFF}Piano";
+    assert!(EndpointName::new(bom).is_none());
+    assert!(BlockName::new(bom).is_none());
+    assert!(EndpointName::from_bytes(bom.as_bytes()).is_none());
+    assert!(BlockName::from_bytes(b"\xEF\xBB\xBFPiano").is_none());
+    assert!(EndpointName::new("Piano").is_some());
+}
+
 // §7.1.5: ASCII 32 to 126. Mutation record: `32..=126` as `33..=126` fails the
 // space, as `32..=127` fails DEL, as `0..=126` fails the control byte.
 #[test]

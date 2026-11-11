@@ -96,7 +96,7 @@ fn endpoint_name(object: &coremidi::Object, index: usize) -> String {
 ///
 /// An absent or unreadable `kMIDIPropertyProtocolID` means "the OS did not say",
 /// which resolves to MIDI 1.0 — claiming MIDI 2.0 on no evidence would feed
-/// per-note messages into a `to_midi1_bytes` drop.
+/// per-note messages to an endpoint that cannot carry them.
 fn endpoint_capability(object: &coremidi::Object) -> UmpCapability {
     let protocol_id: std::result::Result<i32, _> = Properties::protocol_id().value_from(object);
     match protocol_id {

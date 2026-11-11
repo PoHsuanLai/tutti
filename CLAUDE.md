@@ -413,9 +413,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  `DeviceTable`, the UMP `Endpoint` (what one endpoint declares, and its
                  `reply` to Discovery, Function Block Discovery and a Stream
                  Configuration Request) and `Connection` (the discoverer's steps, time
-                 as an `Instant` value), and the MIDI-CI codec (`CiMessage`: Discovery,
-                 Invalidate MUID, NAK, over SysEx payload bytes); no OS, no thread, and
-                 no dependency but `tutti-ump`, `bitflags` and optional `serde`
+                 as an `Instant` value), and the MIDI-CI codec (`CiMessage`: Discovery
+                 and its Reply, Invalidate MUID, ACK, NAK, over SysEx payload bytes);
+                 no OS, no thread, and no dependency but `tutti-ump`, `bitflags`,
+                 `unicode-normalization` (names are NFC) and optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits;
                  no FFT and no new algorithms but `Fold` (topology to
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
@@ -606,13 +607,19 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `decode` over the bytes between `F0` and `F7`, which the caller frames with
   `tutti_ump::frame` and reassembles with `tutti_ump::SysexAssembler`; `Muid::new`
   refuses the reserved range and broadcast, which is a `Destination`). The CI codec has
-  no state machine and no inbound path; design 017 §5, "MIDI-CI", is the rebuild.
+  no state machine; design 017 §5, "MIDI-CI", is the rebuild. `CiMessage::decode` returns
+  a `Decoded`, and a message it cannot read is an `Unread` that keeps its header so the
+  NAK can be addressed (`Unread::nak`); a message carries its own destination (Discovery
+  and Invalidate MUID are broadcast, the rest go to one `Muid`), and a value the spec
+  bounds is a checked type (`CiVersion`, `CiDeviceId`, `MaxSysexSize`, `MessageText`).
+  A name (`EndpointName`, `BlockName`) is held in NFC and has no leading BOM (M2-104
+  §1.8).
   Its `tutti-ump` edge is for the UMP Endpoint and Connection (doc 017 stage 4b):
   `Endpoint::reply` answers a received Stream message into a caller's
   `Extend<Ump>` and allocates nothing, `Connection` is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec needs no `tutti-ump` type. No backend feeds either yet. A consumer that persists a `DeviceInfo` depends on it with
+  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. No backend feeds either yet. A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with
@@ -841,7 +848,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   with integer ticks, read losslessly (SysEx, `Escape` and meta kept, a Clip File's
   unknown packet as its words) and written back from the model. Its `TempoMap`
   (`tutti-tempo`) is derived from the tracks' Set Tempo events, never set apart from
-  them, and `seconds_at` is its. Format 2 keeps its sequences apart (`events()` is
+  them, and `seconds_at` is its. The Clip File reader and `MidiFile::clip` hold M2-116's
+  "shall"s on the header (the DCS before the DCTPQ and the Set Time Signature at 0, none
+  before a Set Profile On), refuse Property Exchange, and keep the header's duration
+  (`Track::header_end`). Format 2 keeps its sequences apart (`events()` is
   `None`, `tempo_map_of(track)`); SMPTE division is refused
   (`Error::MidiUnsupportedTiming`); a cut-off file is `Error::Truncated`. The file layer
   does not translate (an SMF message is `Midi1` on group 0, a velocity-0 Note On stays

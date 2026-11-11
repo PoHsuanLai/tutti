@@ -2,8 +2,8 @@
 //!
 //! The safe `coremidi` wrapper only exposes a MIDI-1.0 virtual source
 //! (`MIDISourceCreate`), whose only send path is legacy packet bytes, which
-//! forces every event through `to_midi1_bytes`, dropping any MIDI-2-only message
-//! (per-note controllers, **and JR Timestamps**). Publishing a genuine UMP
+//! carries MIDI 1.0 messages only, so a MIDI-2-only message (per-note
+//! controllers, **and JR Timestamps**) cannot reach the wire through it. Publishing a genuine UMP
 //! stream, the one transport where a JR Timestamp actually reaches the wire,
 //! needs a MIDI-2.0-protocol endpoint, created via
 //! `MIDISourceCreateWithProtocol` and fed `MIDIReceivedEventList` with raw UMP

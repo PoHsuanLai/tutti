@@ -704,9 +704,9 @@ What was kept moved to `tutti-midi-device` (about 640 lines and 320 of tests, a 
 MUID and NAK, as `CiMessage::encode` and `decode` over SysEx payload bytes. `Muid`
 is checked (`Muid::new` refuses the reserved range and the broadcast value;
 broadcast is `Destination::Broadcast`) and `Muid::from_seed` is gone; a MUID is
-drawn from an OS random source when the rebuild lands. The codec needs no
-`tutti-ump` type, so `tutti-midi-device` takes no dependency on it; the caller
-frames the payload (`tutti_ump::frame`, or SysEx7 packets) and reassembles with
+drawn from an OS random source when the rebuild lands. The codec frames nothing
+itself (L1 gave it `tutti_ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its
+fields); the caller frames the payload (`tutti_ump::frame`, or SysEx7 packets) and reassembles with
 `tutti_ump::SysexAssembler` (`tutti-midi-hardware/tests/midi1_wire_ci.rs` runs the
 whole MIDI 1.0 wire path). The UMP Stream constructors (`endpoint_info` and the
 rest in `tutti-midi-types`' `ump/stream.rs`) were not part of that move; stage 4b
@@ -792,8 +792,8 @@ that sends SysEx7 bytes through the whole route.
    v1-format body still decoding with the channel count defaulted. The profile
    state also moves to `&mut self` so a Set On changes what the next Profile
    Inquiry lists.
-7. **ACK and NAK** (§5.10, §5.11). ACK (sub-ID#2 `0x7D`) is encoded and decoded
-   (`CiMessage::decode` returns `None` for it), with its status values for
+7. **ACK and NAK** (§5.10, §5.11). **Done in L1** (below). ACK (sub-ID#2 `0x7D`) is encoded and decoded
+   (`CiMessage::decode` returned `None` for it), with its status values for
    Timeout Wait and next-chunk flow control. NAK gains the statuses `Nak` has no
    constant for: `0x12` (resend the last chunk), `0x20` (terminate, with
    status data telling who terminates), `0x21` (chunks out of sequence) and
@@ -1841,6 +1841,35 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
   - Section 3.2.2: a gap past 1,048,575 ticks is written as a DCS of 1,048,575 and a
     Null message, once per restart, then the remainder's DCS (pinned by word in
     `a_long_gap_is_written_as_dcs_then_a_null`).
+  - **L1 (M2-116 conformance).** The reader and `MidiFile::clip` also hold: the DCS right
+    before the DCTPQ exists and is 0 (`DctpqDelta`; sections 3.2.1 and 6: "The DCTPQ shall
+    have a preceding Delta Clockstamp ... set to 0x00000"); a Set Profile On has no DCS
+    before it (`ProfileOnDelta`; section 6: "shall not have a prepended Delta Clockstamp
+    (DCS)"); the header's Set Time Signature is at delta 0 like the Set Tempo
+    (`MisplacedHeaderTimeSignature`; section 6.1.2: "shall use the Delta Clockstamp which
+    precedes the DCTPQ message or shall have a preceding Delta Clockstamp with Number of
+    Ticks Since Last Event set to 0x00000"); no Property Exchange message, a MIDI-CI
+    `7E dev 0D 30..3F` System Exclusive 7 (`PropertyExchange` in the reader,
+    `Error::InvalidConfig` from the constructor; sections 6.4 and 7.2). The DCS before Start
+    of Clip is kept as `Track::header_end` (a `Tick` on the header's clock, not before the
+    last header message; section 6.1: "the cumulative values of all Delta Clockstamp up to
+    and including the Delta Clockstamp for the Start of Clip Message determines the total
+    length of time allocated to the Clip Configuration Header"), read and written.
+  - **Ruling: one DCS for the parts of a Lyric or Ruby message.** M2-116 section 3: "A
+    Delta Clockstamp message precedes every UMP to define the timing of each message."
+    M2-104 sections 7.5.10 and 7.5.12: "When placed in a MIDI Clip File, all parts of the
+    Lyric Data Message shall be placed at the same time, sharing a single Delta Clock
+    Stamp" (Ruby the same). They agree through the Clip File's own definition of a DCS,
+    M2-116 section 3.2.2: "The Delta Clockstamp message declares the time of all following
+    messages which occur before the next Delta Clockstamp message ... Simultaneous events
+    may share a single Delta Clockstamp" (M2-104 section 7.2.3.2 likewise): a DCS "precedes"
+    a UMP by governing it. A zero DCS between the parts is not a way to satisfy both: it
+    is a second Delta Clock Stamp, and "a single" is what the shall says. So `write` puts
+    one DCS before the Start packet and none before that message's Continue and End
+    packets (same Group, address and kind, same tick); every other event keeps its own DCS
+    (the Language messages, other texts and SysEx are not covered by the rule). The reader
+    was already liberal: a DCS between the parts reads as before. The first reading in the
+    L1 brief, that a zero DCS between the parts would do, does not hold.
   A Delta Clockstamp, a Null and a JR message are not content and may come anywhere
   before the DCTPQ. The refused-event-before-Start-of-Clip rule of the first draft of
   this stage was wrong: such a message is a header message.
@@ -2308,6 +2337,42 @@ lanes. They change no stage above.
 - **M4, docs.** What a comment, a README or this document claims, brought to what the
   code is.
 - **M5, tests.**
+
+### L1: spec contradictions (done)
+
+The first step of "The one MIDI lane" of the audit plan: what the code does against a
+spec quote. Four parts.
+
+- **The CI codec** (`tutti-midi-device`, M2-101 v1.2.1). `CiMessage::decode` returns a
+  `Decoded`: `Message`, `Unread` or `NotCi`. An `Unread` keeps what the 13-byte preamble
+  said (Device ID, sub-ID#2, version, source and destination as read) and an
+  `UnreadReason`, and `Unread::nak(own)` addresses the NAK that sections 5.3 and 5.11
+  require (status `0x02` for reserved version bits or version 0, `0x01` for a message it
+  does not model, `0x41` otherwise; never a NAK to an ACK or NAK, tutti's rule). The
+  header is checked: `CiVersion` (`0x01..=0x1F`: section 5.3's reserved bits 7 to 5,
+  section 5.4's "Message Format Version 0x00 is deprecated and shall not be used") and
+  `CiDeviceId` (Channel, Group `0x7E`, Function Block `0x7F`; Table 5's `10-7D` reserved)
+  keep the range-checked shape and `check_range_contract` (under `--features serde`).
+  The destination is the message's: Discovery and Invalidate MUID are broadcast, Discovery
+  Reply, ACK and NAK go to one `Muid` (section 3.3.3's list), so `CiMessage` has no
+  destination field to get wrong and the wrong kind of destination decodes to
+  `UnreadReason::WrongDestination`. `DiscoveryData` holds `MaxSysexSize` (128 to 2^28 - 1,
+  section 5.5.3; the 512 floor of an initiator is the caller's, it needs the role) and
+  `Option<FunctionBlockId>` (0 to 31, or `0x7F` as `None`, section 5.6.2). ACK is built
+  (`Ack`, Table 13 and 14's codes) with the NAK codes `0x12`, `0x20`, `0x21` and `0x43`
+  added. `MessageText` writes section 5.10.4's text: `\` for the backslash, every
+  character outside `0x20..=0x7E` but the line feed as `\uXXXX` per UTF-16 unit, at most
+  103 escaped bytes; the reader unescapes and ignores a raw control character.
+- **Names** (`tutti-midi-device`, M2-104 §1.8). A `Name` is held in NFC and refuses a
+  leading BOM, at `new` and at the wire. A received name that is not NFC is composed, not
+  refused: section 1.8 says what MIDI messages "only use" and says nothing of a receiver, so a
+  receiver that composes shows and compares one spelling. `tutti-ump` stays
+  dependency-free; `unicode-normalization` is `tutti-midi-device`'s (and the file crate's).
+  The BOM rule is the leading one, the byte order mark's place.
+- **The Clip File** (`tutti-midi-file`, M2-116): the stage 6 notes above.
+- **Stale comments.** `BlockName`'s doc said section 7.1.9 gives 98 bytes (it says 91);
+  five comments in `tutti-midi-hardware` and `tutti-coremidi-ffi` named the deleted
+  `to_midi1_bytes`.
 
 ## 11. Testing
 

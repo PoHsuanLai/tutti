@@ -14,11 +14,19 @@
 //! messages (no DCS), the DCTPQ, and any UMP messages that configure a
 //! receiver (Bank Select, Program Change, volume, System Exclusive), each
 //! behind its own DCS. It holds at most one Set Tempo and one Set Time
-//! Signature (sections 6.1 to 6.1.2). The rest, from Start of Clip to End of
-//! Clip, is the Sequence Data (section 7).
+//! Signature (sections 6.1 to 6.1.2), both at delta 0. The DCS before Start
+//! of Clip is the header's last gap, and with the others "determines the total
+//! length of time allocated to the Clip Configuration Header" (section 6.1): it
+//! is kept ([`ParsedClip::header_end`]). The rest, from Start of Clip to End of
+//! Clip, is the Sequence Data (section 7). No Property Exchange message is in
+//! either (sections 6.4 and 7.2).
 //!
-//! Every UMP is preceded by a **Delta Clockstamp** (DCS) giving the ticks since
-//! the previous event; the tick unit is declared once by the **DCTPQ** (Delta
+//! Every UMP is governed by a **Delta Clockstamp** (DCS) giving the ticks since
+//! the previous event: "The Delta Clockstamp message declares the time of all
+//! following messages which occur before the next Delta Clockstamp message"
+//! (section 3.2.2), so simultaneous events may share one. The writer gives each
+//! event its own, except the parts of a Lyric or Ruby message, which share the
+//! first's (see [`write`](fn@write)). The tick unit is declared once by the **DCTPQ** (Delta
 //! Clockstamp Ticks Per Quarter Note). The stream is bracketed by Start of Clip
 //! and End of Clip UMP Stream messages, and the DCS before End of Clip is the
 //! clip's length.
@@ -30,8 +38,8 @@
 use std::vec::Vec;
 
 use tutti_ump::{
-    DeltaTicks, Flex, Message, Stream, Sysex7Packet, SysexStatus, Ump, Utility, decode,
-    split_stream,
+    DeltaTicks, Flex, FlexTextKind, Form, Message, Stream, Sysex7Packet, SysexStatus, Ump, Utility,
+    decode, split_stream,
 };
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 section 5).
@@ -54,6 +62,9 @@ pub(crate) struct ParsedClip {
     pub(crate) events: Vec<(u64, Ump)>,
     /// The tick of End of Clip: the clip's length.
     pub(crate) end: u64,
+    /// The tick, on the header's clock, of Start of Clip: the header's last
+    /// message's tick plus the Delta Clockstamp before Start of Clip.
+    pub(crate) header_end: u64,
 }
 
 /// Why a byte stream failed to parse as a MIDI Clip File (M2-116). Distinguishes
@@ -66,8 +77,11 @@ pub(crate) struct ParsedClip {
 /// [`MisplacedHeaderTempo`](Self::MisplacedHeaderTempo),
 /// [`DuplicateHeaderTimeSignature`](Self::DuplicateHeaderTimeSignature) and
 /// [`MisplacedHeaderTimeSignature`](Self::MisplacedHeaderTimeSignature)
-/// (sections 6.1 to 6.1.2), [`DuplicateStartOfClip`](Self::DuplicateStartOfClip)
-/// (section 7) and [`TrailingData`](Self::TrailingData) (section 7.3).
+/// (sections 6.1 to 6.1.2), [`DctpqDelta`](Self::DctpqDelta) and
+/// [`ProfileOnDelta`](Self::ProfileOnDelta) (sections 3.2.1 and 6),
+/// [`PropertyExchange`](Self::PropertyExchange) (sections 6.4 and 7.2),
+/// [`DuplicateStartOfClip`](Self::DuplicateStartOfClip) (section 7) and
+/// [`TrailingData`](Self::TrailingData) (section 7.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ClipFileError {
@@ -96,6 +110,24 @@ pub enum ClipFileError {
     /// header if there are none.
     #[error("clip file has a message before its DCTPQ")]
     DctpqNotFirst,
+    /// The DCTPQ has no Delta Clockstamp right before it, or one that is not 0.
+    /// Section 3.2.1 and section 6: "The DCTPQ shall have a preceding Delta
+    /// Clockstamp (see Section 3.2.2) with Number of Ticks Since Last Event set
+    /// to 0x00000."
+    #[error("clip file's DCTPQ has no Delta Clockstamp of 0 before it")]
+    DctpqDelta,
+    /// A Set Profile On message has a Delta Clockstamp before it. Section 6:
+    /// "Set Profile On messages shall not have a prepended Delta Clockstamp
+    /// (DCS)."
+    #[error("clip file's Set Profile On has a Delta Clockstamp before it")]
+    ProfileOnDelta,
+    /// A MIDI-CI Property Exchange message (Universal System Exclusive `7E`,
+    /// sub-ID#1 `0D`, sub-ID#2 `30` to `3F`). Section 6.4: "Property Data for PE
+    /// Resources shall not be included in a MIDI Clip File"; section 7.2: the
+    /// sequence data holds "any MIDI messages in UMP Format, except Property
+    /// Exchange messages".
+    #[error("clip file holds a Property Exchange message")]
+    PropertyExchange,
     /// A second DCTPQ. The tick unit is declared once.
     #[error("clip file declares its DCTPQ more than once")]
     DuplicateDctpq,
@@ -119,8 +151,11 @@ pub enum ClipFileError {
     #[error("clip header's Set Tempo is not first after the DCTPQ at delta 0")]
     MisplacedHeaderTempo,
     /// The header's Set Time Signature does not immediately follow the Set
-    /// Tempo (or the DCTPQ, in a header with no Set Tempo). Section 6.1.2.
-    #[error("clip header's Set Time Signature does not immediately follow the Set Tempo")]
+    /// Tempo (or the DCTPQ, in a header with no Set Tempo), or its Delta
+    /// Clockstamp is not 0. Section 6.1.2: it "shall use the Delta Clockstamp
+    /// which precedes the DCTPQ message or shall have a preceding Delta
+    /// Clockstamp with Number of Ticks Since Last Event set to 0x00000".
+    #[error("clip header's Set Time Signature is not first after the Set Tempo at delta 0")]
     MisplacedHeaderTimeSignature,
     /// No End of Clip message. Section 7: "A Clip Sequence Data shall include
     /// one End of Clip message as the last UMP message."
@@ -146,6 +181,11 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
     // NOOP restarts before it. See the DCS/NOOP arms below.
     let mut pending_delta: u32 = 0;
     let mut banked_delta: u32 = 0;
+    // The value of the DCS that came right before the message being read, and
+    // `None` once a message has come since: what sections 3.2.1 and 6 say of the
+    // DCS before the DCTPQ and before a Set Profile On.
+    let mut last_dcs: Option<u32> = None;
+    let mut header_end = 0;
     // Where the sequence is: the tick the last event (or the start) sits at.
     let mut tick: u64 = 0;
     // Structure order (M2-116 sections 6 and 7). `content` is whether any
@@ -177,13 +217,19 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
                     // it *replaces* the current count rather than adding to it
                     // (M2-116 section 3.2.2). Only `banked_delta`, closed off by
                     // a NOOP below, carries over from earlier restarts.
-                    Utility::DeltaClockstamp(ticks) => pending_delta = ticks.get(),
+                    Utility::DeltaClockstamp(ticks) => {
+                        pending_delta = ticks.get();
+                        last_dcs = Some(ticks.get());
+                    }
                     Utility::TicksPerQuarterNote(ticks) => {
                         if ticks_per_quarter.is_some() {
                             return Err(ClipFileError::DuplicateDctpq);
                         }
                         if content {
                             return Err(ClipFileError::DctpqNotFirst);
+                        }
+                        if last_dcs.take() != Some(0) || banked_delta != 0 {
+                            return Err(ClipFileError::DctpqDelta);
                         }
                         ticks_per_quarter = Some(ticks);
                         // The DCTPQ's DCS is 0 and starts the header's clock.
@@ -195,6 +241,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
                     // (M2-116 section 3.2.2). Bank what the preceding DCS
                     // declared; the next DCS counts from here.
                     Utility::Noop => {
+                        last_dcs = None;
                         banked_delta = banked_delta.saturating_add(pending_delta);
                         pending_delta = 0;
                     }
@@ -209,6 +256,9 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
                     return Err(ClipFileError::DuplicateStartOfClip);
                 }
                 header_rules(&header, pre)?;
+                // The DCS before Start of Clip is the header's last gap.
+                header_end = tick + u64::from(banked_delta) + u64::from(pending_delta);
+                last_dcs = None;
                 started = true;
                 content = true;
                 tick = 0;
@@ -233,12 +283,21 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
             }
             _ => {}
         }
+        // Sections 6.4 and 7.2: no Property Exchange, in the header or the
+        // sequence.
+        if decode(ev).is_ok_and(|m| property_exchange(&m)) {
+            return Err(ClipFileError::PropertyExchange);
+        }
+        let dcs_before = last_dcs.take();
         // Before the DCTPQ only Set Profile On messages are allowed (section
         // 6), with no DCS; anything else is content the DCTPQ must not follow (a
         // Set Profile On after such content is kept, and the DCTPQ's arrival
         // names the error).
         if ticks_per_quarter.is_none() {
             if decode(ev).is_ok_and(|m| profile.accepts(&m)) {
+                if dcs_before.is_some() {
+                    return Err(ClipFileError::ProfileOnDelta);
+                }
                 header.push((0, ev));
                 pre += 1;
             } else {
@@ -286,7 +345,21 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
         header,
         events,
         end,
+        header_end,
     })
+}
+
+/// Whether `message` starts a MIDI-CI Property Exchange message: a System
+/// Exclusive 7 packet, first of its message, that begins `7E <device> 0D` and a
+/// sub-ID#2 of `30` to `3F` (M2-101 Table 5: "Property Exchange Messages"). The
+/// packets after the first are not told apart, as they say nothing of what the
+/// message is; refusing the first refuses the message.
+pub(crate) fn property_exchange(message: &Message) -> bool {
+    let Message::Sysex7(_, packet) = message else {
+        return false;
+    };
+    matches!(packet.status(), SysexStatus::Complete | SysexStatus::Start)
+        && matches!(packet.data(), [0x7E, _, 0x0D, 0x30..=0x3F, ..])
 }
 
 /// Tracks whether the packets it is fed are a Set Profile On message (MIDI-CI
@@ -333,7 +406,8 @@ pub(crate) fn leading_profile_len(header: &[(u64, Ump)]) -> usize {
 /// The header's own rules (M2-116 sections 6.1 to 6.1.2) over `header`, whose
 /// first `pre` packets precede the DCTPQ: at most one Set Tempo and one Set
 /// Time Signature; the Set Tempo first after the DCTPQ at delta 0; the Set
-/// Time Signature right behind it (first, if there is no Set Tempo).
+/// Time Signature right behind it (first, if there is no Set Tempo) and also at
+/// delta 0 (section 6.1.2).
 ///
 /// # Errors
 ///
@@ -355,7 +429,7 @@ pub(crate) fn header_rules(header: &[(u64, Ump)], pre: usize) -> Result<(), Clip
                 if signature {
                     return Err(ClipFileError::DuplicateHeaderTimeSignature);
                 }
-                if i != usize::from(tempo) {
+                if i != usize::from(tempo) || *tick != 0 {
                     return Err(ClipFileError::MisplacedHeaderTimeSignature);
                 }
                 signature = true;
@@ -371,12 +445,28 @@ pub(crate) fn header_rules(header: &[(u64, Ump)], pre: usize) -> Result<(), Clip
 /// Clockstamp, and End of Clip behind the DCS that makes the clip `end` ticks
 /// long. `header` and `events` are absolute ticks in order (the header's on
 /// its own clock), `events` none past `end`, no two more than `u32::MAX` apart
-/// (the caller checks; [`MidiFile`] does).
+/// (the caller checks; [`MidiFile`] does), and the header ends at `header_end`,
+/// not before its last message: the Delta Clockstamp before Start of Clip is
+/// the gap that makes it so.
+///
+/// **One Delta Clockstamp for the parts of a Lyric or Ruby message.**
+/// M2-116 section 3 says "A Delta Clockstamp message precedes every UMP", and
+/// M2-104 sections 7.5.10 and 7.5.12 say that "When placed in a MIDI Clip File,
+/// all parts of the Lyric Data Message shall be placed at the same time, sharing
+/// a single Delta Clock Stamp" (the Ruby Data Message likewise). They agree
+/// once the Clip File's own definition of a DCS is read: "The Delta Clockstamp
+/// message declares the time of all following messages which occur before the
+/// next Delta Clockstamp message" (M2-116 section 3.2.2; M2-104 section 7.2.3.2:
+/// "Simultaneous events may share a single Delta Clockstamp"), so a DCS precedes
+/// every UMP in that it governs it. A zero DCS between the parts would be a
+/// second Delta Clock Stamp, not a shared one. So the parts after the first are
+/// written with none, and every other event keeps its own.
 ///
 /// [`MidiFile`]: crate::MidiFile
 pub(crate) fn write(
     ticks_per_quarter: u16,
     header: &[(u64, Ump)],
+    header_end: u64,
     events: &[(u64, Ump)],
     end: u64,
 ) -> Vec<u8> {
@@ -401,24 +491,62 @@ pub(crate) fn write(
         at = tick;
     }
 
-    // Start of Clip (preceded by a zero DCS: the sequence begins here).
-    push_words(&mut out, delta_clockstamp(0).words());
+    // Start of Clip, behind the DCS that ends the header's allotted time.
+    push_delta(&mut out, header_end.saturating_sub(at));
     push_words(&mut out, start_of_clip().words());
 
     // The timed event stream: each UMP preceded by its delta clockstamp(s).
     // A DCS field is only 20 bits, so a delta beyond `DCS_MAX` is expressed as
     // DCS*NOOP restarts (M2-116 section 3.2.2): see `push_delta`.
     let mut at = 0u64;
+    let mut previous: Option<Ump> = None;
     for &(tick, ump) in events {
-        push_delta(&mut out, tick.saturating_sub(at));
+        let shares = tick == at && previous.is_some_and(|p| continues_text(p, ump));
+        if !shares {
+            push_delta(&mut out, tick.saturating_sub(at));
+        }
         push_words(&mut out, ump.words());
         at = tick;
+        previous = Some(ump);
     }
 
     // End of Clip, behind the DCS that is the clip's length.
     push_delta(&mut out, end.saturating_sub(at));
     push_words(&mut out, end_of_clip().words());
     out
+}
+
+/// Whether `next` is a Lyric or Ruby packet that continues the message `previous`
+/// is a part of: the same kind, Group and address, `previous` a Start or a
+/// Continue and `next` a Continue or an End.
+fn continues_text(previous: Ump, next: Ump) -> bool {
+    let (
+        Ok(Message::Flex(
+            group_p,
+            Flex::Text {
+                address: addr_p,
+                kind: kind_p,
+                form: form_p,
+                ..
+            },
+        )),
+        Ok(Message::Flex(
+            group_n,
+            Flex::Text {
+                address: addr_n,
+                kind: kind_n,
+                form: form_n,
+                ..
+            },
+        )),
+    ) = (decode(previous), decode(next))
+    else {
+        return false;
+    };
+    matches!(kind_p, FlexTextKind::Lyrics | FlexTextKind::Ruby)
+        && (group_p, addr_p, kind_p) == (group_n, addr_n, kind_n)
+        && matches!(form_p, Form::Start | Form::Continue)
+        && matches!(form_n, Form::Continue | Form::End)
 }
 
 // --- helpers ---------------------------------------------------------------

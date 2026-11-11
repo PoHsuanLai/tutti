@@ -403,6 +403,7 @@ impl MidiFile {
             .unwrap_or_default();
         let sequence = Track {
             header: Vec::new(),
+            header_end: Tick(0),
             events: placed.into_iter().map(|(tick, _, e)| (tick, e)).collect(),
             end,
         };

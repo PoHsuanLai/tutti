@@ -265,6 +265,7 @@ pub(crate) fn scale(lane: &mut [f32], gain: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::MaxBlock;
 
     /// [`BlockScratch`]'s bytes a frame that do not depend on the width: a
     /// position, the gather's index, fraction, flag and four tap lanes.
@@ -371,7 +372,7 @@ mod tests {
         assert_eq!(node.scratch_size(), (UNPREPARED_FRAMES, 2));
         assert_eq!(memory.scratch_frames(), 0);
         for max in [512usize, 1024, 64] {
-            let p = Prepare::new(SampleRate(48_000.0), Samples(max));
+            let p = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(max)));
             pool.prepare(&p);
             node.prepare(&p);
             memory.prepare(&p);

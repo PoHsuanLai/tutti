@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_plugin_types::Load;
+use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin_host::PluginHandle;
@@ -130,7 +131,7 @@ fn load() -> Loaded {
 fn prepare_at(unit: &mut PluginNode<Vst2Loaded>, rate: SampleRate) {
     tutti_graph::Node::prepare(
         unit,
-        &tutti_graph::Prepare::new(rate, tutti_types::Samples(BLOCK)),
+        &tutti_graph::Prepare::new(rate, tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK))),
     );
 }
 
@@ -145,7 +146,10 @@ fn drive_block(unit: &mut PluginNode<Vst2Loaded>) {
 fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
     use tutti_graph::{Node, Prepare};
     let rate = SampleRate(SAMPLE_RATE);
-    Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
+    Node::prepare(
+        unit,
+        &Prepare::new(rate, tutti_types::MaxBlock::of(tutti_types::Samples(max))),
+    );
     process_block(unit, frames);
 }
 
@@ -415,7 +419,7 @@ fn the_output_is_what_the_plugin_wrote() {
     let rate = SampleRate(SAMPLE_RATE);
     Node::prepare(
         &mut loaded.unit,
-        &Prepare::new(rate, tutti_types::Samples(BLOCK)),
+        &Prepare::new(rate, tutti_types::MaxBlock::of(tutti_types::Samples(BLOCK))),
     );
     let channels = usize::from(Node::shape(&loaded.unit).audio_in().count());
     assert_eq!(channels, 2, "the probe's default layout is stereo");
@@ -537,7 +541,10 @@ fn outputs_past_the_tables_are_silent() {
     g.pipe(feed, key);
     g.pipe_output(key);
     let mut r = g
-        .renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .renderer(Prepare::new(
+            SampleRate(SAMPLE_RATE),
+            MaxBlock::of(Samples(BLOCK)),
+        ))
         .expect("the graph compiles");
 
     for block in 0..3usize {

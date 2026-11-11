@@ -9,7 +9,7 @@ use tutti_types::SampleRate;
 
 use tutti_graph::GraphTail;
 use tutti_graph::{Editor, Executor, Pool, Prepare};
-use tutti_types::{ChannelTopology, Samples};
+use tutti_types::{ChannelTopology, MaxBlock, Samples};
 
 use crate::{ConfigError, Result};
 
@@ -25,7 +25,7 @@ use crate::{ConfigError, Result};
 // block where their step would have put them, and the digests are unchanged
 // (tutti-sampler's `tests/block_length_invariance.rs` pins that a voice's
 // frames do not depend on its blocks).
-pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
+pub const GRAPH_MAX_BLOCK: MaxBlock = MaxBlock::of(Samples(1024));
 
 /// How a [`RenderGraph`] is assembled beyond its pair: the pool the render
 /// spreads its blocks over, and what the graph's output channels are.

@@ -4,6 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey, OutPort,
@@ -103,7 +104,10 @@ impl Rig {
     /// A rig over `inlets`, whose clock reads `origin` at frame 0.
     pub(crate) fn over(inlets: &Arc<DeviceInlets>, origin: Instant) -> Self {
         let slots = inlets.slots();
-        let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(Self::BLOCK)));
+        let (mut editor, exec) = Editor::new(Prepare::new(
+            SampleRate(RATE),
+            MaxBlock::of(Samples(Self::BLOCK)),
+        ));
         let seen = Seen::default();
         editor.insert(
             Self::SINK,

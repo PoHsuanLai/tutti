@@ -52,6 +52,7 @@ does exactly this around a real device; here the block is pulled by hand, so
 the whole thing runs headless.
 
 ```rust
+use tutti_types::MaxBlock;
 use tutti_graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples, Tail};
 use tutti_graph::NodeKey;
@@ -84,7 +85,7 @@ let transport = Transport::new(SampleRate(48_000.0));
 
 // The editor is the control thread's half of the graph; the executor goes to
 // the engine. Every edit reaches it through a `commit`.
-let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))));
 
 // Every insert says whether the node forks (for an export): `Beats` reads
 // only its block's `Env`, so a clone of it is a fork.

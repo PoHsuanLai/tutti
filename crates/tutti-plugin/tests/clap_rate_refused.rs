@@ -16,6 +16,7 @@
 mod clap_probe;
 use clap_probe::{ProbeEnv, Rig, load_probe, render};
 use tutti_fixtures::machine_lock;
+use tutti_types::MaxBlock;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -51,7 +52,7 @@ fn drive_block(unit: &mut Rig) -> Vec<f32> {
 fn reprepare(unit: &mut Rig, rate: f64) {
     unit.renderer()
         .editor_mut()
-        .reprepare(Prepare::new(SampleRate(rate), Samples(BLOCK)))
+        .reprepare(Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK))))
         .expect("the graph re-prepares");
 }
 

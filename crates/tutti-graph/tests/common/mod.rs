@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -39,7 +40,7 @@ pub fn driver_value(f: u64, period: u64) -> f32 {
 }
 
 pub fn prepare(max_block: usize) -> Prepare {
-    Prepare::new(RATE, Samples(max_block))
+    Prepare::new(RATE, MaxBlock::of(Samples(max_block)))
 }
 
 fn lat(frames: usize) -> Latency {

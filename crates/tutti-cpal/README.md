@@ -31,6 +31,7 @@ Play a graph: open a device, build the graph at the device's rate, and hand
 both to a [`TuttiDriver`] with [`TuttiDriver::new`]:
 
 ```rust,no_run
+use tutti_types::MaxBlock;
 use std::sync::Arc;
 use tutti_graph::{OutPort, Source};
 use tutti_engine::Engine;
@@ -49,7 +50,7 @@ let sample_rate = audio_engine.sample_rate();
 // The graph: an editor on the control thread, its executor for the audio
 // thread. Edits are `commit`ted across.
 let transport = Transport::new(sample_rate);
-let (mut editor, executor) = Editor::new(Prepare::new(sample_rate, Samples(512)));
+let (mut editor, executor) = Editor::new(Prepare::new(sample_rate, MaxBlock::of(Samples(512))));
 let tone = NodeKey(1);
 editor.insert(tone, "tone", Osc::sine(Hz(440.0)));
 editor.spec_mut().topology.set_outputs(vec![Source::Node(OutPort { node: tone, port: 0 }); 2]);

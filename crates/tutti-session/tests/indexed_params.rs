@@ -9,6 +9,7 @@ mod common;
 use tutti_modulation::Lfo;
 use tutti_session::{GraphSource, ParamRef, Session};
 use tutti_transport::MotionEvent;
+use tutti_types::MaxBlock;
 use tutti_types::{BeatDuration, Depth, ParamAddr, UnitAddr, UnitParam};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -22,7 +23,11 @@ const DECLICK: usize = 256;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

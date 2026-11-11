@@ -13,6 +13,7 @@
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
 use tutti_session::{GraphSource, ModeError, NodeMode, Session};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const A: f32 = 0.25;
@@ -49,7 +50,11 @@ struct Rig {
 /// `Const(A) -> Halve -> output 0`, committed once.
 fn rig() -> Rig {
     let mut s = Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     let g = s.graph();
     let (a, _) = g.insert(Const::mono(A));

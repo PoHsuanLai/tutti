@@ -8,6 +8,7 @@
 //! a cut shows as a step of the tone's amplitude.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_graph::{Env, Node, Offset, Prepare, Transport, TransportChanges, contract};
@@ -102,7 +103,10 @@ impl Rig {
         let host = match host {
             Host::Pool => {
                 let mut pool = VoicePool::with_channels(ChannelLayout::STEREO).expect("stereo");
-                pool.prepare(&Prepare::new(SampleRate(SR), Samples(max_block)));
+                pool.prepare(&Prepare::new(
+                    SampleRate(SR),
+                    MaxBlock::of(Samples(max_block)),
+                ));
                 Hosted::Pool(pool)
             }
             // Placed by `place`.
@@ -157,13 +161,19 @@ impl Rig {
                     source: VoiceSource::Memory(source),
                     play,
                 });
-                node.prepare(&Prepare::new(SampleRate(SR), Samples(self.max_block)));
+                node.prepare(&Prepare::new(
+                    SampleRate(SR),
+                    MaxBlock::of(Samples(self.max_block)),
+                ));
                 *slot = Some(node);
             }
             Hosted::Node(node) => {
                 source.set_gain(play.gain);
                 source.set_loop_setting(play.loop_);
-                source.prepare(&Prepare::new(SampleRate(SR), Samples(self.max_block)));
+                source.prepare(&Prepare::new(
+                    SampleRate(SR),
+                    MaxBlock::of(Samples(self.max_block)),
+                ));
                 *node = source;
             }
         }

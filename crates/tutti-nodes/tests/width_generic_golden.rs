@@ -26,6 +26,7 @@
 //! why this is looser than a feed-forward node would need.
 
 use std::sync::atomic::Ordering;
+use tutti_types::MaxBlock;
 
 use tutti_graph::contract::drive;
 use tutti_graph::{GraphBuilder, Node, ParamNode, Prepare, Unforkable};
@@ -125,7 +126,7 @@ fn render_node(
     params: &[Option<Vec<f32>>],
     automation: Option<&Automation>,
 ) -> Vec<Vec<f32>> {
-    node.prepare(&Prepare::new(SR, Samples(64)));
+    node.prepare(&Prepare::new(SR, MaxBlock::of(Samples(64))));
     let mut out: Vec<Vec<f32>> = Vec::new();
     let (mut pos, mut k) = (0, 0);
     while pos < LEN {
@@ -435,7 +436,7 @@ fn render_mixed(case: &mut Case, mix: Mix) -> Vec<Vec<f32>> {
     }
     g.spec_mut().set_mix(key, mix);
     let mut r = g
-        .renderer(Prepare::new(SR, Samples(64)))
+        .renderer(Prepare::new(SR, MaxBlock::of(Samples(64))))
         .expect("a one-node graph builds");
     let mut out: Vec<Vec<f32>> = Vec::new();
     let (mut pos, mut k) = (0, 0);

@@ -22,6 +22,7 @@
 mod clap_probe;
 use clap_probe::{ProbeEnv, Rig, load_probe, render};
 use tutti_fixtures::machine_lock;
+use tutti_types::MaxBlock;
 
 use std::time::Duration;
 
@@ -224,7 +225,7 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
     // A 64-frame device quantum in 128-frame blocks: two chunks a block.
-    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK))
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
         .with_quantum(Samples(CHUNK));
     let mut rig = Rig::prepared(fork, prepare);
 
@@ -302,7 +303,7 @@ fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() 
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
     const ARRIVAL: usize = 40;
-    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK))
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
         .with_quantum(Samples(CHUNK));
     let mut rig = Rig::behind(fork, prepare, Latency::new(Samples(ARRIVAL)));
 
@@ -366,7 +367,7 @@ fn the_plugin_is_told_the_maps_tempo_and_slope() {
         .client
         .fork_instance(ForkMode::Offline, ramp_tempo())
         .expect("the probe forks");
-    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK))
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)))
         .with_quantum(Samples(CHUNK));
     let mut rig = Rig::prepared(fork, prepare);
 
@@ -449,7 +450,7 @@ fn a_ramps_end_inside_a_chunk_is_a_transport_event_at_its_frame() {
         .client
         .fork_instance(ForkMode::Offline, two_ramps())
         .expect("the probe forks");
-    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK))
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)))
         .with_quantum(Samples(CHUNK));
     let mut rig = Rig::prepared(fork, prepare);
 

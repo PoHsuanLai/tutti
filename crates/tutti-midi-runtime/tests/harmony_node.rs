@@ -7,6 +7,7 @@
 //! event with its absolute frame. 120 BPM at 48 kHz: a beat is 24 000 frames.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -47,7 +48,7 @@ impl Node for Sink {
 }
 
 fn rig(node: HarmonyNode, max: usize) -> (Editor, Executor, HarmonyControls, Seen) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(max)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))));
     let controls = ed.insert(NodeKey(1), "harmony", node);
     let seen = Seen::default();
     ed.insert(

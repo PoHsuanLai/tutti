@@ -3331,7 +3331,7 @@ mod tests {
     /// land once the commit does.
     #[test]
     fn a_command_seen_before_its_commit_waits_for_it() {
-        let prepare = Prepare::new(SampleRate(48_000.0), Samples(64));
+        let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64)));
         let (mut ed, mut exec) = crate::Editor::new(prepare);
         let seen = Arc::new(AtomicUsize::new(0));
         ed.insert(NodeKey(1), "a", crate::Unforkable(Count(Arc::clone(&seen))));

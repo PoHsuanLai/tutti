@@ -217,7 +217,11 @@ fn add_stereo(s: &mut Session, to: tutti_graph::NodeKey, from: tutti_graph::Node
 fn scene(block: usize, workers: usize, variant: Variant) -> Session {
     let mut s = Session::builder()
         .render_workers(workers)
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(block))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(block)),
+        )
         .expect("builds");
 
     let mut strips = Vec::new();

@@ -5,6 +5,7 @@
 //! through an `App` (design 015 §9.4); the ECS halves stayed there.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::MAX_ROOT_CHANNELS;
@@ -576,7 +577,7 @@ fn pull(s: &Session, layout: ChannelLayout, frames: usize, block: usize) -> Vec<
 #[test]
 fn an_offline_session_renders_a_sines_analytic_rms() {
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::MONO, Samples(512))
+        .build_offline(RATE, ChannelLayout::MONO, MaxBlock::of(Samples(512)))
         .expect("builds");
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
     s.graph().set_outputs_from(osc);
@@ -606,7 +607,7 @@ fn an_offline_session_renders_a_sines_analytic_rms() {
 fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     const N: usize = 37;
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(256))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(256)))
         .expect("builds");
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(440.0))));
     let (late, _) = s.graph().add(ForkByClone(Late::<N>::new()));

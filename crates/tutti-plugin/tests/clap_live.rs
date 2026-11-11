@@ -21,6 +21,7 @@
 mod clap_probe;
 use clap_probe::{ProbeEnv, load_probe, render};
 use tutti_fixtures::machine_lock;
+use tutti_types::MaxBlock;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -151,7 +152,8 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     let probe = load_probe(rate);
     let _awake = KeepAwake::new();
     let inputs = probe.client.inputs();
-    let prepare = Prepare::new(SampleRate(rate), Samples(quantum)).with_quantum(Samples(quantum));
+    let prepare = Prepare::new(SampleRate(rate), MaxBlock::of(Samples(quantum)))
+        .with_quantum(Samples(quantum));
     let (mut ed, exec) = Editor::new(prepare);
     let (src, key) = (NodeKey(1), NodeKey(2));
     ed.insert(src, "ramp", Unforkable(RampSource));

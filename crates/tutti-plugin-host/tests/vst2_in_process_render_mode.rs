@@ -148,7 +148,10 @@ fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
 fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
     let rate = SampleRate(hz);
-    Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
+    Node::prepare(
+        unit,
+        &Prepare::new(rate, tutti_types::MaxBlock::of(tutti_types::Samples(max))),
+    );
     let silence = vec![0.0f32; frames];
     let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in().count())
         .map(|_| &silence[..])

@@ -1181,6 +1181,7 @@ mod tests {
     use tutti_transport::{MotionEvent, Transport};
     use tutti_types::Bpm;
     use tutti_types::ChannelTopology;
+    use tutti_types::MaxBlock;
 
     /// A graph walk's `Pieces` that stores a new tempo from "the control
     /// thread" while each piece runs: the store races the walk, staged
@@ -1210,7 +1211,10 @@ mod tests {
     #[test]
     fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         transport
             .motion
@@ -1254,7 +1258,10 @@ mod tests {
     fn a_block_refused_the_graph_is_silent_and_retries() {
         use tutti_types::ChannelLayout;
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
         let mut buf = vec![1.0f32; 64 * 2];
@@ -1279,7 +1286,10 @@ mod tests {
     fn a_refused_block_is_silence_in_the_heard_tap() {
         use tutti_types::ChannelLayout;
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let mut tap = engine
             .heard_taps()
@@ -1307,13 +1317,19 @@ mod tests {
         let transport = Transport::new(SampleRate::new(48_000.0));
         let mut buf = vec![0.0f32; 64 * 2];
         {
-            let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+            let (mut ed, exec) = Editor::new(Prepare::new(
+                SampleRate(48_000.0),
+                MaxBlock::of(Samples(512)),
+            ));
             let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
             let _ = transport.motion.try_send(MotionEvent::Play);
             engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
             assert!(transport.motion.is_playing());
         }
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("the first engine is gone");
         let _ = transport.motion.try_send(MotionEvent::stop_unfaded());
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
@@ -1331,9 +1347,15 @@ mod tests {
         let first = Transport::new(SampleRate::new(48_000.0));
         let mut second = Transport::new(SampleRate::new(48_000.0));
         second.motion = first.motion.clone();
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let _running = Engine::new(&first, &mut ed, exec).expect("empty graph");
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         assert!(matches!(
             Engine::new(&second, &mut ed, exec),
             Err(GraphEngineError::TransportHeld(_))
@@ -1348,7 +1370,10 @@ mod tests {
         use tutti_types::ChannelLayout;
         let run = |first_is_play: bool| {
             let transport = Transport::new(SampleRate::new(48_000.0));
-            let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+            let (mut ed, exec) = Editor::new(Prepare::new(
+                SampleRate(48_000.0),
+                MaxBlock::of(Samples(512)),
+            ));
             let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
             let stop = MotionEvent::stop_unfaded();
             if first_is_play {
@@ -1383,7 +1408,10 @@ mod tests {
         use tutti_transport::LoopEdit;
         use tutti_types::{Beat, ChannelLayout, LoopRange};
         let engine_for = |transport: &Transport| {
-            let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(2048)));
+            let (mut ed, exec) = Editor::new(Prepare::new(
+                SampleRate(48_000.0),
+                MaxBlock::of(Samples(2048)),
+            ));
             Engine::new(transport, &mut ed, exec).expect("empty graph")
         };
 
@@ -1428,7 +1456,10 @@ mod tests {
     #[test]
     fn a_quiet_block_plans_no_gain_event() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
         let mut render = engine.graph.borrow_mut();
@@ -1480,7 +1511,10 @@ mod tests {
     fn a_block_refused_the_graph_counts_as_silenced() {
         use tutti_types::ChannelLayout;
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let mut buf = vec![0.0f32; 64 * 2];
         {
@@ -1615,7 +1649,10 @@ mod tests {
     #[test]
     fn a_wider_device_is_added_and_an_unsupported_width_is_silent() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 2);
         let wide = ChannelLayout::from(20u16);
@@ -1648,7 +1685,10 @@ mod tests {
     #[test]
     fn a_root_the_device_cannot_take_is_silent_and_counted() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 5);
         let three = ChannelLayout::from(3u16);
@@ -1680,7 +1720,10 @@ mod tests {
     #[test]
     fn a_declared_unassigned_root_keeps_its_channels_by_index() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 4);
         let six = ChannelLayout::from(6u16);
@@ -1708,7 +1751,10 @@ mod tests {
     fn a_declared_surround_root_folds_by_its_speakers() {
         use tutti_types::Speaker::*;
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 6);
         let _ = first_frame(&engine, 2);
@@ -1747,7 +1793,10 @@ mod tests {
     #[test]
     fn declarations_at_other_widths_leave_the_plan_in_flight_its_fold() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 4);
         let eight = ChannelLayout::from(8u16);
@@ -1780,7 +1829,10 @@ mod tests {
     #[test]
     fn a_replaced_fold_set_is_reclaimed_after_the_block() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let control = engine.output_control();
         let loan_holder = &engine.folds;
@@ -1803,7 +1855,10 @@ mod tests {
     #[test]
     fn an_unplaceable_declaration_is_refused() {
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(64)),
+        ));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 4);
         let _ = first_frame(&engine, 2);
@@ -1840,7 +1895,10 @@ mod tests {
     fn a_commit_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         let ed = RefCell::new(ed);
         let engine = Engine::new(&transport, &mut ed.borrow_mut(), exec).expect("empty graph");
         let want = |w: usize| -> Vec<f32> {
@@ -1867,7 +1925,10 @@ mod tests {
     fn a_narrowing_commit_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         rewire(&mut ed, 4);
         let ed = RefCell::new(ed);
         let engine = Engine::new(&transport, &mut ed.borrow_mut(), exec).expect("within limits");
@@ -1886,12 +1947,18 @@ mod tests {
     fn a_resume_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;
         let transport = Transport::new(SampleRate::new(48_000.0));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(512)),
+        ));
         rewire(&mut ed, 2);
         let ed = RefCell::new(ed);
         let engine = Engine::new(&transport, &mut ed.borrow_mut(), exec).expect("within limits");
         ed.borrow_mut()
-            .reprepare(Prepare::new(SampleRate(48_000.0), Samples(256)))
+            .reprepare(Prepare::new(
+                SampleRate(48_000.0),
+                MaxBlock::of(Samples(256)),
+            ))
             .expect("shrinks");
         // The suspend commit lands in this block's `settle`; silent.
         let _ = block_of(&engine, 2, 512, || {});

@@ -8,7 +8,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::PrerollTable;
 use tutti_nodes::{ClickNode, ClickSettings};
 use tutti_transport::Transport;
-use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, MaxBlock, SampleRate, Samples};
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};
 use crate::{Result, Session};
@@ -16,13 +16,13 @@ use crate::{Result, Session};
 /// Builds a [`Session`].
 ///
 /// ```
-/// use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
 /// use tutti_session::Session;
 ///
 /// let session = Session::builder()
 ///     .outputs_floor(6) // a 5.1 project renders six, whatever the device
 ///     .render_workers(1)
-///     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))
+///     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))
 ///     .unwrap();
 /// assert_eq!(session.graph_ref().outputs(), 6);
 /// ```
@@ -269,7 +269,7 @@ impl SessionBuilder {
     fn parts(
         &mut self,
         rate: SampleRate,
-        max_block: Samples,
+        max_block: MaxBlock,
         quantum: Option<Samples>,
         outputs: usize,
     ) -> Result<Parts> {
@@ -284,7 +284,7 @@ impl SessionBuilder {
             let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
                 self.midi_devices,
                 crate::midi::MIDI_INPUT_INLET_CAPACITY,
-                crate::midi::input_lead(quantum.unwrap_or(max_block), rate),
+                crate::midi::input_lead(quantum.unwrap_or(max_block.samples()), rate),
             ));
             let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(inlets));
             let io = match backend {
@@ -461,7 +461,7 @@ impl SessionBuilder {
         mut self,
         rate: SampleRate,
         layout: ChannelLayout,
-        max_block: Samples,
+        max_block: MaxBlock,
     ) -> Result<Session> {
         let root = self.root_width(layout);
         self.check_placement(root, layout)?;

@@ -6,6 +6,7 @@
 use tutti_graph::{CrossfadeCurve, Editor, Fade, InletNode, Prepare, TapReader, Transport};
 use tutti_graph::{NodeKey, TapId};
 use tutti_graph::{OutPort, Source};
+use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
 const KEY: NodeKey = NodeKey(7);
@@ -34,7 +35,10 @@ fn outputs(ed: &mut Editor) {
 /// would panic in a debug build.
 #[test]
 fn replacing_and_removing_an_inlet_drops_it_on_the_control_side() {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
     let (first, mut w1) = inlet();
     ed.insert(KEY, "inlet", first);
     outputs(&mut ed);
@@ -103,7 +107,10 @@ impl tutti_graph::IntoNode for DropsInBlock {
 #[should_panic(expected = "tap reader")]
 fn a_reader_dropped_in_a_block_panics() {
     let (reader, _writer) = TapReader::pair(TapId(0), 2, Samples(8));
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
     ed.insert(KEY, "drops", DropsInBlock(Some(reader)));
     outputs(&mut ed);
     ed.commit().expect("compiles");

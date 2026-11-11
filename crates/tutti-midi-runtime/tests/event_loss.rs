@@ -5,6 +5,7 @@
 //! render. The clip plays at 120 BPM and 48 kHz, so a beat is 24,000 frames.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
@@ -84,7 +85,10 @@ struct Rig {
 
 /// A clip at key 1 into the sink at key 2, blocks of at most `max`.
 fn rig(events: impl IntoIterator<Item = TimedMidiEvent>, max: usize) -> Rig {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(max)),
+    ));
     ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
     let tally = Arc::new(Mutex::new(Tally::default()));
     ed.insert(NodeKey(2), "sink", Unforkable(Sink(Arc::clone(&tally))));
@@ -256,7 +260,10 @@ fn the_port_follows_the_block() {
         (1 << 20, 8_192),
     ] {
         let mut node = MidiClipNode::new([]);
-        node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
+        node.prepare(&Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(block)),
+        ));
         assert_eq!(
             node.shape().event_capacity.map(|n| n.get()),
             Some(want),
@@ -274,7 +281,10 @@ fn the_ingest_node_follows_the_block() {
 
     for (block, want) in [(64usize, 512u32), (4096, 512), (8192, 1024), (16_384, 2048)] {
         let mut node = MidiIngestNode::new(1);
-        node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
+        node.prepare(&Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(block)),
+        ));
         assert_eq!(
             node.shape().event_capacity.map(|n| n.get()),
             Some(want),
@@ -291,7 +301,10 @@ fn the_harmony_port_follows_the_block() {
     use tutti_midi_runtime::HarmonyNode;
     for (block, want) in [(64usize, 256u32), (1024, 2048), (16_384, 8_192)] {
         let mut node = HarmonyNode::new([]);
-        node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
+        node.prepare(&Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(block)),
+        ));
         assert_eq!(
             node.shape().event_capacity.map(|n| n.get()),
             Some(want),

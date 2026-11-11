@@ -593,6 +593,7 @@ impl Error for ForkError {
 /// offline: the fork's renderer hands it the render's transport.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{Editor, ForkByClone, ForkMode, ForkTarget, Prepare};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
 /// # use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -605,7 +606,7 @@ impl Error for ForkError {
 /// #     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
 /// #     fn reset(&mut self) {}
 /// # }
-/// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
+/// let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256)));
 /// let (mut editor, _exec) = Editor::new(prepare);
 /// editor.insert(NodeKey(1), "silence", ForkByClone(Silence));
 /// editor.spec_mut().topology.set_outputs([tutti_graph::Source::Node(
@@ -672,6 +673,7 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
 /// answer is [`ForkByClone`]. Also takes an already boxed `Box<dyn Node>`.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget, Prepare, Unforkable};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
 /// # use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -683,7 +685,7 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
 /// #     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
 /// #     fn reset(&mut self) {}
 /// # }
-/// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
+/// let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256)));
 /// let (mut editor, _exec) = Editor::new(prepare);
 /// editor.insert(NodeKey(1), "silence", Unforkable(Silence));
 /// editor.spec_mut().topology.set_outputs([tutti_graph::Source::Node(

@@ -343,6 +343,7 @@ impl MidiClipControls {
 /// audio. See the module docs.
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use tutti_types::{Beat, SampleRate, Samples};
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
@@ -350,7 +351,7 @@ impl MidiClipControls {
 /// use tutti_fixtures::midi::note_on;
 /// use tutti_ump::{MidiChannel, MidiGroup};
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 /// let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
 /// let clip = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on)]);
 /// let controls = editor.insert(NodeKey(1), "clip", clip);

@@ -22,6 +22,7 @@
 //! The allocation gate is in `rt_no_alloc_engine.rs`.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 mod support;
 
@@ -45,7 +46,7 @@ const SR: f64 = 48_000.0;
 const FPB: u64 = 24_000;
 
 fn prepare(max_block: usize) -> Prepare {
-    Prepare::new(SampleRate(SR), Samples(max_block))
+    Prepare::new(SampleRate(SR), MaxBlock::of(Samples(max_block)))
 }
 
 /// Wire global outputs `0..width` to `node`'s outputs.
@@ -572,7 +573,8 @@ fn a_declick_lasts_ten_milliseconds_at_any_rate() {
     for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
         let fade = (rate * 0.01) as usize;
         let transport = Transport::new(SampleRate::new(rate));
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(rate), Samples(256)));
+        let (mut ed, exec) =
+            Editor::new(Prepare::new(SampleRate(rate), MaxBlock::of(Samples(256))));
         let log = Arc::new(Mutex::new(Vec::new()));
         ed.insert(NodeKey(1), "node", Unforkable(DcLog(log)));
         outputs(&mut ed, NodeKey(1), 1);
@@ -1275,7 +1277,7 @@ const NEW_SR: f64 = 48_000.0;
 fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
     let transport = Transport::new(SampleRate::new(OLD_SR));
     let log = Arc::new(Mutex::new(Vec::new()));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(OLD_SR), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(OLD_SR), MaxBlock::of(Samples(512))));
     ed.insert(
         NodeKey(1),
         "node",
@@ -1293,7 +1295,7 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
         .expect("room");
 
     render(&engine, ChannelLayout::MONO, &[441; 50]);
-    ed.reprepare(Prepare::new(SampleRate(NEW_SR), Samples(512)))
+    ed.reprepare(Prepare::new(SampleRate(NEW_SR), MaxBlock::of(Samples(512))))
         .expect("re-prepares");
     // The suspended block: silence, and the rate moves here.
     render(&engine, ChannelLayout::MONO, &[480]);

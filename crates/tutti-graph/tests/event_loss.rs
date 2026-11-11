@@ -8,6 +8,7 @@
 mod common;
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use common::test_pool;
 use tutti_fixtures::midi::{m1_note_off, m1_note_on};
@@ -103,7 +104,7 @@ fn rig(
     cap: u32,
     writers: &[Vec<Script>],
 ) -> (Editor, Executor, Arc<Mutex<Vec<(u32, u32)>>>) {
-    let prep = Prepare::new(SampleRate(48_000.0), Samples(BLOCK));
+    let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(BLOCK)));
     let (mut ed, mut exec) = Editor::new(prep);
     if workers > 1 {
         exec.set_pool(Some(test_pool(workers)));

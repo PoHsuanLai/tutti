@@ -78,6 +78,7 @@ to insert the moment it is built.
 ## Quick start
 
 ```rust
+use tutti_types::MaxBlock;
 use tutti_types::{Hz, Q, UnitParam};
 use tutti_graph::{Prepare, Solo};
 use tutti_nodes::{SvfFilterNode, SvfType};
@@ -87,7 +88,7 @@ use tutti_types::{SampleRate, Samples};
 // graph node: inserted, it hands back its `ParamSet` — cutoff, Q and
 // gain by `UnitParam` — and the graph prepares it at the graph's rate.
 let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
-let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), Samples(64)));
+let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 let out = solo.render_input(&[&[1.0; 64]]);
 
 // Sweeping the cutoff on the *running* node: the set writes the `Param`

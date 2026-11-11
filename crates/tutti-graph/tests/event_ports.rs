@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeSpec;
 use tutti_graph::{
@@ -187,7 +188,7 @@ impl Rig {
         seen: &Seen,
     ) -> (Vec<(u64, u32, u16, u32)>, u64) {
         seen.lock().unwrap().clear();
-        let prep = Prepare::new(SampleRate(48_000.0), Samples(max));
+        let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(max)));
         let (valid, shapes) = self.spec();
         let transport = Transport::default();
         let dropped = if executor {
@@ -303,7 +304,7 @@ fn an_event_reaches_downstream_in_the_block_it_was_emitted() {
         events,
     };
     let (valid, shapes) = rig.spec();
-    let prep = Prepare::new(SampleRate(48_000.0), Samples(64));
+    let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64)));
     let (p, _) = compile(&valid, &shapes, &prep, None).expect("compiles");
     assert!(
         !p.ops().iter().any(|op| matches!(op, Op::EventDelay { .. })),
@@ -431,7 +432,7 @@ fn pdc_shifts_events_across_blocks_and_drops_none() {
         events,
     };
     let (valid, shapes) = rig.spec();
-    let prep = Prepare::new(SampleRate(48_000.0), Samples(128));
+    let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(128)));
     let (p, _) = compile(&valid, &shapes, &prep, None).expect("compiles");
     assert_eq!(
         p.unit(NodeKey(1)).expect("sink").arrival,
@@ -587,7 +588,7 @@ fn declared_capacities_size_merges_and_delays_so_nothing_is_lost() {
         events,
     };
     let (valid, shapes) = rig.spec();
-    let prep = Prepare::new(SampleRate(48_000.0), Samples(64));
+    let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64)));
     let (p, _) = compile(&valid, &shapes, &prep, None).expect("compiles");
     // The sink's merge: both chord sources, 8 declared each.
     let sink_merge = p
@@ -736,7 +737,7 @@ fn a_fifo_whose_bound_a_swap_lowered_delivers_its_backlog_on_time() {
         .flat_map(|b| (0..PER_BLOCK).map(move |i| b * 64 + i))
         .map(|f| (f, 0, f as u32))
         .collect();
-    let prep = Prepare::new(SampleRate(48_000.0), Samples(64));
+    let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64)));
     // A default of 1, so nothing is sized by accident from the default.
     let (mut ed, mut exec) = Editor::with_event_capacity(prep, 1);
     ed.insert(
@@ -792,7 +793,7 @@ fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
     let refused = Arc::new(AtomicUsize::new(0));
     // One event a frame for the first 640 frames.
     let plan: Vec<(u64, u16, u32)> = (0..LEN as u64).map(|f| (f, 0, f as u32)).collect();
-    let small = Prepare::new(SampleRate(48_000.0), Samples(16));
+    let small = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(16)));
     let (mut ed, mut exec) = Editor::with_event_capacity(small, 1);
     ed.insert(
         NodeKey(1),
@@ -815,8 +816,11 @@ fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
     }
     assert!(seen.lock().unwrap().is_empty(), "nothing is due before 640");
     // Bound 16 × (⌈640/512⌉ + 2) + 64/4 + 8 = 88, against 640 queued.
-    ed.reprepare(Prepare::new(SampleRate(48_000.0), Samples(512)))
-        .expect("reprepares");
+    ed.reprepare(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(512)),
+    ))
+    .expect("reprepares");
     exec.apply_pending();
     ed.collect();
     exec.apply_pending();
@@ -874,7 +878,7 @@ fn a_flush_into_a_port_a_lowered_bound_widened_drops_nothing() {
         .collect();
     // B: three events, still queued (due from 456) when it goes.
     let b_plan = [(200u64, 0u16, 9_001u32), (201, 0, 9_002), (202, 0, 9_003)];
-    let prep = Prepare::new(SampleRate(48_000.0), Samples(64));
+    let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64)));
     let (mut ed, mut exec) = Editor::with_event_capacity(prep, 1);
     ed.insert(
         NodeKey(1),

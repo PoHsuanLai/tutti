@@ -81,6 +81,7 @@
 
 use crate::NodeKey;
 use crate::OutPort;
+use tutti_types::MaxBlock;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail, UnitAddr,
 };
@@ -1002,7 +1003,7 @@ impl Row {
         }
         g.connect_output(n, self.output as usize, 0);
         let (ed, exec) = g
-            .build(Prepare::new(SAMPLE_RATE, Samples(MAX_BLOCK)))
+            .build(Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(MAX_BLOCK))))
             .unwrap_or_else(|e| panic!("{}: the contract graph does not build: {e}", self.name));
         let unit = exec
             .plan()
@@ -1055,7 +1056,7 @@ impl Row {
             .connect_param(ParamIn { node: n, param }, EventOut { node: src, port: 0 });
         g.connect_output(n, self.output as usize, 0);
         let (ed, exec) = g
-            .build(Prepare::new(SAMPLE_RATE, Samples(MAX_BLOCK)))
+            .build(Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(MAX_BLOCK))))
             .unwrap_or_else(|e| panic!("{}: the contract graph does not build: {e}", self.name));
         let unit = exec
             .plan()
@@ -1836,7 +1837,7 @@ pub fn drive_input(
         arrival: Latency::ZERO,
         history: TransportHistory::none(),
     };
-    let max = Prepare::new(env.sample_rate, Samples(frames)).max_block();
+    let max = Prepare::new(env.sample_rate, MaxBlock::of(Samples(frames))).max_block();
     let reported = std::cell::Cell::new(None);
     let main = shape.main_ports();
     let io = Io::new(
@@ -1939,7 +1940,7 @@ pub const MAX_CHECKED_TAIL: usize = 1 << 20;
 /// `node`, prepared at `rate` for blocks of up to `max_block` frames: the
 /// state a graph hands [`drive`] a node in.
 pub fn prepared<N: Node>(mut node: N, rate: SampleRate, max_block: usize) -> N {
-    node.prepare(&Prepare::new(rate, Samples(max_block)));
+    node.prepare(&Prepare::new(rate, MaxBlock::of(Samples(max_block))));
     node
 }
 
@@ -2032,7 +2033,7 @@ impl BlockRig {
     /// If the node is wider than [`RIG_MAX_CHANNELS`] either way, or the
     /// one-node graph does not commit.
     pub fn new<N: IntoNode>(node: N, rate: SampleRate, frames: usize) -> (Self, N::Controls) {
-        let (mut editor, mut exec) = Editor::new(Prepare::new(rate, Samples(frames)));
+        let (mut editor, mut exec) = Editor::new(Prepare::new(rate, MaxBlock::of(Samples(frames))));
         let key = NodeKey(1);
         let controls = editor.insert(key, N::kind(), node);
         let shape = editor
@@ -2171,7 +2172,7 @@ impl<N: Node + ?Sized> Direct<N> {
     ///
     /// As [`new`](Self::new).
     pub fn boxed(mut node: Box<N>, rate: SampleRate, frames: usize) -> Self {
-        node.prepare(&Prepare::new(rate, Samples(frames)));
+        node.prepare(&Prepare::new(rate, MaxBlock::of(Samples(frames))));
         let shape = node.shape();
         let (ins, outs) = (
             usize::from(shape.audio_in().count()),
@@ -2354,7 +2355,7 @@ impl<N: Node + ?Sized> Direct<N> {
             arrival: Latency::ZERO,
             history: TransportHistory::none(),
         };
-        let max = Prepare::new(self.rate, Samples(self.frames)).max_block();
+        let max = Prepare::new(self.rate, MaxBlock::of(Samples(self.frames))).max_block();
         let io = Io::new(
             max,
             len,

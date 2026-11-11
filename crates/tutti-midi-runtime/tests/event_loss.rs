@@ -5,7 +5,6 @@
 //! render. The clip plays at 120 BPM and 48 kHz, so a beat is 24,000 frames.
 
 use std::sync::{Arc, Mutex};
-use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
@@ -282,40 +281,24 @@ fn the_port_follows_the_block() {
     }
 }
 
-/// The hardware input is sized from the block it is prepared for: 512 events
-/// up to a 4,096-frame block, an eighth of the block's frames past that (1,024
-/// at 8,192, 2,048 at 16,384); and its wire is told (`MidiIn::reserve`), so
-/// the drain takes as many.
+/// The ingest node is sized from the block it is prepared for: 512 events up
+/// to a 4,096-frame block, an eighth of the block's frames past that (1,024 at
+/// 8,192, 2,048 at 16,384).
 ///
-/// Mutation: ignore `prepare` in `MidiInputNode::prepare` → 8,192 reads 512
-/// and the wire is told nothing → fails.
+/// Mutation: ignore `prepare` in `MidiIngestNode::prepare` → 8,192 reads 512
+/// → fails.
 #[test]
-fn the_hardware_input_follows_the_block() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use tutti_midi_runtime::MidiIn;
-    use tutti_midi_runtime::MidiInputNode;
-
-    struct Wire(Arc<AtomicUsize>);
-    impl MidiIn for Wire {
-        fn poll_block(&mut self, _: Samples, _: &mut [UmpAt]) -> usize {
-            0
-        }
-        fn reserve(&mut self, events: usize) {
-            self.0.store(events, Ordering::Relaxed);
-        }
-    }
+fn the_ingest_node_follows_the_block() {
+    use tutti_midi_runtime::MidiIngestNode;
 
     for (block, want) in [(64usize, 512u32), (4096, 512), (8192, 1024), (16_384, 2048)] {
-        let told = Arc::new(AtomicUsize::new(0));
-        let mut node = MidiInputNode::new(Some(Box::new(Wire(Arc::clone(&told)))));
+        let mut node = MidiIngestNode::new(1);
         node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
         assert_eq!(
             node.shape().event_capacity.map(|n| n.get()),
             Some(want),
             "block {block}"
         );
-        assert_eq!(told.load(Ordering::Relaxed), want as usize, "block {block}");
     }
 }
 

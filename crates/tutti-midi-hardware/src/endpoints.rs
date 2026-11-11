@@ -30,8 +30,8 @@
 //! Asymmetric on purpose. Output is a sink the caller pushes to, so an erased
 //! `MidiOut` is exactly right. Input arrives the other way — a driver callback
 //! pushes it on its own thread — and the engine already has a destination: the
-//! [`InputProducerHandle`] into a [`HardwareMidiInputs`] ring, which the audio
-//! thread drains through `MidiIn`. A backend therefore takes the handle and
+//! [`InputProducerHandle`] of a [`HardwareMidiInputs`] port, which stamps each
+//! arrival with its frame and pushes it into the device's event inlet. A backend therefore takes the handle and
 //! wires its callback to it, rather than handing back a source nobody would
 //! poll.
 //!

@@ -9,7 +9,7 @@
 //! - [`MpeIngest`] rewrites classic-MPE channel-spread into native MIDI-2
 //!   per-note messages.
 //!
-//! [`MpeIngest`] is an input-edge transform ([`MidiInputNode`](crate::MidiInputNode)
+//! [`MpeIngest`] is an input-edge transform ([`MidiIngestNode`](crate::MidiIngestNode)
 //! is its caller); it sits here with the crate's other transforms.
 
 pub mod clock_master;

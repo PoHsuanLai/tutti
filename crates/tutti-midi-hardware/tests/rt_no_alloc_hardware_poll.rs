@@ -1,76 +1,132 @@
-//! Regression gate for the **hardware** MIDI poll on the audio thread.
+//! Regression gate for the **hardware** MIDI input on the audio thread.
 //!
-//! `tutti-midi-runtime`'s own gate drives `MidiInputNode` through a fake wire,
-//! which copies from a pre-built batch and can never allocate — so it proves
-//! nothing about the production input. That is `HardwareMidiInputs`, and
-//! reaching it needs this crate, because `tutti-midi-runtime` cannot depend on
-//! `tutti-midi-hardware` (the dependency runs the other way).
+//! `tutti-midi-runtime`'s own gate drives `MidiIngestNode` through a scripted
+//! inlet, which cannot show what the production input does. That is a
+//! `HardwareMidiInputs` port: a driver thread stamps each arrival with the
+//! frame the engine's block clock puts it on and pushes it into an event
+//! inlet; the graph's inlet node holds it until its block and the ingest node
+//! translates it. Reaching it needs this crate, because `tutti-midi-runtime`
+//! cannot depend on `tutti-midi-hardware` (the dependency runs the other way).
 //!
-//! What the real path does that the fake does not: drain N port rings,
-//! converting arrival `Instant`s to per-block `Offset`s, into a
-//! fixed-capacity scratch buffer, then hand each event to the node. A buffer
-//! that grew there would `realloc` inside the callback, and a port set or ring
-//! released there would free inside it.
+//! Both halves run inside `assert_no_alloc`: the audio thread (the inlet node,
+//! the ingest node, the block clock's write) **and** the driver's `push`,
+//! which runs on a thread the OS owns and must not allocate either. A waiting
+//! list that grew, a stamp that boxed, or an event held and dropped on the
+//! wrong side would `realloc` or free inside a callback.
 //!
-//! Each gate runs the node in a graph, channel 0's port wired to a
-//! event tap whose ring the test drains, so what was polled is counted.
+//! Each gate runs the nodes in a graph, channel 0's port wired to an event tap
+//! whose ring the test drains, so what was carried is counted.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Editor, EventOut, EventTapId, EventTapReader, Executor, Prepare, TapAlign, TapEvent, Transport,
+    Editor, EventEdge, EventIn, EventOut, EventTapId, EventTapReader, Executor, Prepare, TapAlign,
+    TapEvent, Transport,
 };
-use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle};
-use tutti_midi_runtime::MidiInputNode;
-use tutti_types::{SampleRate, Samples};
+use tutti_midi_hardware::{HardwareMidiInputs, InputProducerHandle};
+use tutti_midi_runtime::{DeviceInlets, InletChange, MidiIngestNode};
+use tutti_types::{Frame, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
+
+/// A block clock a test writes by hand, as the engine does each render call.
+struct BlockClock(
+    std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, tutti_types::Moment)>>>,
+);
+
+impl BlockClock {
+    fn new() -> Self {
+        let cell = Self(Default::default());
+        // On macOS std's `Mutex` boxes its pthread mutex on the first `lock`,
+        // so the first read from the driver thread (before any `write`) would
+        // allocate there. The engine's own clock is lock-free; this stand-in
+        // takes its lock once here, on the control side, as a real one is
+        // built.
+        drop(cell.0.lock().unwrap());
+        cell
+    }
+
+    fn reader(&self) -> tutti_midi_runtime::ArrivalClock {
+        let cell = std::sync::Arc::clone(&self.0);
+        std::sync::Arc::new(move || *cell.lock().unwrap())
+    }
+
+    fn write(
+        &mut self,
+        os: std::time::Instant,
+        frame: tutti_types::Frame,
+        rate: tutti_types::SampleRate,
+    ) {
+        *self.0.lock().unwrap() = Some((os, tutti_types::Moment::new(frame, rate)));
+    }
+}
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// A graph holding an input node over `inputs`, its channel-0 port under an
-/// event tap.
+const RATE: f64 = 48_000.0;
+const INGEST: NodeKey = NodeKey(1);
+
+/// A graph holding an ingest node over the inlets of `inputs`, its channel-0
+/// port under an event tap, and the engine's part of the block clock.
 struct Rig {
     _editor: Editor,
     exec: Executor,
+    clock: BlockClock,
+    origin: Instant,
+    frames: u64,
     out: EventTapReader,
-    // The tap's events, each with its frame on the graph's clock.
     drain: Vec<TapEvent>,
     /// Events that reached the tap.
     carried: usize,
 }
 
 impl Rig {
-    fn new(inputs: Arc<HardwareMidiInputs>) -> Self {
-        let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(1024)));
-        editor.insert(
-            NodeKey(1),
-            "in",
-            MidiInputNode::new(Some(Box::new(HardwareMidiDrain::new(inputs)))),
-        );
+    /// `inputs`' ports must be opened first: their inlets are added here.
+    fn new(inputs: &HardwareMidiInputs) -> Self {
+        let inlets = inputs.inlets();
+        let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(1024)));
+        editor.insert(INGEST, "in", MidiIngestNode::new(inlets.slots()));
+        for change in inlets.take_changes() {
+            if let InletChange::Attach { slot, node } = change {
+                let key = NodeKey(100 + slot as u64);
+                editor.insert(key, "inlet", node);
+                editor.spec_mut().connect_events(
+                    EventIn {
+                        node: INGEST,
+                        port: slot as u16,
+                    },
+                    EventEdge::Direct(EventOut { node: key, port: 0 }),
+                );
+            }
+        }
         let out = editor
             .open_event_tap(
                 EventTapId(0),
                 EventOut {
-                    node: NodeKey(1),
+                    node: INGEST,
                     port: 0,
                 },
                 TapAlign::Raw,
                 1024,
             )
-            .expect("the input node is in the graph");
+            .expect("the ingest node is in the graph");
         editor.commit().expect("commits");
+        let clock = BlockClock::new();
+        inlets.set_clock(Some(clock.reader()));
         Self {
             _editor: editor,
             exec,
+            clock,
+            origin: Instant::now(),
+            frames: 0,
             out,
             drain: vec![
                 TapEvent {
-                    frame: tutti_types::Frame::ZERO,
+                    frame: Frame::ZERO,
                     ump: noop()
                 };
                 2048
@@ -79,12 +135,34 @@ impl Rig {
         }
     }
 
-    /// One block of `frames`, and drain what reached the tap.
+    /// When graph frame `frame` begins.
+    fn time_of(&self, frame: u64) -> Instant {
+        self.origin + Duration::from_secs_f64(frame as f64 / RATE)
+    }
+
+    /// Where the next block begins, in OS time.
+    fn next_block(&self) -> Instant {
+        self.time_of(self.frames)
+    }
+
+    /// One block of `frames`, preceded by the engine's clock reading, and
+    /// drain what reached the tap.
     fn run(&mut self, frames: usize) {
+        self.clock
+            .write(self.next_block(), Frame(self.frames), SampleRate(RATE));
         self.exec
             .process(frames, &Transport::default(), &[], &mut []);
+        self.frames += frames as u64;
         self.carried += self.out.pop_into(&mut self.drain);
     }
+}
+
+fn inputs(slots: usize, capacity: usize) -> Arc<HardwareMidiInputs> {
+    Arc::new(HardwareMidiInputs::new(Arc::new(DeviceInlets::new(
+        slots,
+        capacity,
+        Duration::ZERO,
+    ))))
 }
 
 fn note() -> Ump {
@@ -92,248 +170,125 @@ fn note() -> Ump {
 }
 
 /// Feed `count` events through a port's producer, as a driver callback
-/// thread would.
-fn feed(port: &mut InputProducerHandle, count: usize) {
+/// thread would, each arriving at `at`.
+fn feed(port: &mut InputProducerHandle, count: usize, at: Instant) {
     for _ in 0..count {
-        port.push(note(), Instant::now());
+        port.push(note(), at);
     }
 }
 
-/// The steady state: events arriving every block, well under the cap.
+/// The steady state: events arriving every block, well under the capacity,
+/// each placed inside the block that follows.
 #[test]
-fn hardware_poll_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
-    let mut port = inputs.open_input_port("Test Input");
+fn hardware_input_is_allocation_free() {
+    let inputs = inputs(1, 256);
+    let mut port = inputs.open_input_port("Test Input").unwrap();
+    let mut rig = Rig::new(&inputs);
 
-    let mut pre = Rig::new(inputs.clone());
-
-    // Warm up: the first poll primes the scratch, which is the engine's
-    // cost rather than the audio thread's.
-    feed(&mut port, 16);
-    pre.run(512);
+    // Warm up: the first block publishes the clock the stamp needs.
+    rig.run(512);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..500 {
-            feed(&mut port, 16);
-            pre.run(512);
+            let at = rig.time_of(rig.frames + 100);
+            feed(&mut port, 16, at);
+            rig.run(512);
         }
     });
 
     assert!(
-        pre.carried > 0,
-        "the poll must have carried events — an empty drain would prove nothing"
+        rig.carried > 0,
+        "the input must have carried events: an empty one would prove nothing"
     );
 }
 
-/// The overflow case: more events queued than one block may carry.
+/// The overflow case: more events pushed than an inlet holds.
 ///
-/// This is the path that could grow the scratch buffer. Four ports of 256
-/// events offer 1024 against a 256 cap, so the drain must stop at the cap and
-/// leave the rest — without reallocating to hold them.
+/// Four ports of 64 events take 256 a block against rings of 64: the driver's
+/// push must refuse the rest (counted), and the inlet's waiting list must
+/// never grow past its capacity.
 #[test]
-fn hardware_poll_over_capacity_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
+fn hardware_input_over_capacity_is_allocation_free() {
+    let inputs = inputs(4, 64);
     let mut ports: Vec<InputProducerHandle> = (0..4)
-        .map(|i| inputs.open_input_port(format!("Input {i}")))
+        .map(|i| inputs.open_input_port(format!("Input {i}")).unwrap())
         .collect();
-
-    let mut pre = Rig::new(inputs.clone());
-
-    // Warm with a *light* load — one event per port.
-    //
-    // Warming with the flood would defeat the test: a growable scratch would
-    // grow to the flood's size outside the gate and have nothing left to grow
-    // for inside it, so an unbounded drain would pass. The scratch must enter
-    // the gate holding only its reserved capacity, exactly as it does on a
-    // freshly started stream that then meets a burst.
-    for port in &mut ports {
-        feed(port, 1);
-    }
-    pre.run(512);
+    let mut rig = Rig::new(&inputs);
+    rig.run(512);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..200 {
-            // 4 ports x 256 events against a 256-event cap: the drain must stop
-            // at the cap and leave the backlog, rather than growing to hold it.
+            let at = rig.time_of(rig.frames + 100);
             for port in &mut ports {
-                feed(port, 256);
+                feed(port, 256, at);
             }
-            pre.run(512);
+            rig.run(512);
         }
     });
+    assert!(inputs.dropped_events() > 0, "the rings were full");
 }
 
-/// A block size sweep, since `Offset` conversion is driven by `nframes`.
+/// A block size sweep, since the inlet resolves each event against the block's
+/// length.
 #[test]
-fn hardware_poll_across_block_sizes_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
-    let mut port = inputs.open_input_port("Test Input");
-
-    let mut pre = Rig::new(inputs.clone());
+fn hardware_input_across_block_sizes_is_allocation_free() {
+    let inputs = inputs(1, 256);
+    let mut port = inputs.open_input_port("Test Input").unwrap();
+    let mut rig = Rig::new(&inputs);
 
     const SIZES: [usize; 5] = [64, 128, 256, 512, 1024];
+    rig.run(64);
     for frames in SIZES {
-        feed(&mut port, 8);
-        pre.run(frames);
+        feed(&mut port, 8, rig.time_of(rig.frames + 10));
+        rig.run(frames);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100 {
             for frames in SIZES {
-                feed(&mut port, 8);
-                pre.run(frames);
+                feed(&mut port, 8, rig.time_of(rig.frames + 10));
+                rig.run(frames);
             }
         }
     });
 }
 
-/// Events whose arrival predates the block must not allocate on the clamp path.
-///
-/// `read_inputs` converts an arrival `Instant` into a `Offset` and clamps
-/// anything that lands past the block. A stale timestamp drives that branch,
-/// which the steady-state test above never reaches.
+/// Events whose arrival predates the block take the late path: the inlet finds
+/// them already past and emits them at the block's first frame, counting them.
+/// The steady-state test above never reaches that branch.
 #[test]
-fn hardware_poll_with_stale_timestamps_is_allocation_free() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
-    let mut handle = inputs.open_input_port("Test Input");
+fn hardware_input_with_stale_timestamps_is_allocation_free() {
+    let inputs = inputs(1, 256);
+    let mut port = inputs.open_input_port("Test Input").unwrap();
+    let mut rig = Rig::new(&inputs);
+    rig.run(512);
 
-    let mut pre = Rig::new(inputs.clone());
-
-    // An arrival a full second ago converts to a `samples_ago` far past any
-    // block, so every event takes the clamp branch.
-    let stale = Instant::now() - std::time::Duration::from_secs(1);
-
-    for _ in 0..16 {
-        handle.push(note(), stale);
-    }
-    pre.run(512);
+    // An arrival at frame 0, long before every block that follows.
+    let stale = rig.time_of(0);
+    feed(&mut port, 16, stale);
+    rig.run(512);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..200 {
-            for _ in 0..16 {
-                handle.push(note(), stale);
-            }
-            pre.run(512);
+            feed(&mut port, 16, stale);
+            rig.run(512);
         }
     });
+    assert!(rig.carried > 0);
 }
 
-/// A hotplug landing while a block drains frees nothing on the audio thread.
-///
-/// The drain borrows the port set; a device connecting mid-drain publishes a
-/// new set on the control side. The old set must then be retired for the
-/// *control* side to free, never released by the drain's borrow when it drops
-/// inside the gate. The hotplug is run inside the drain's visitor, under
-/// `permit_alloc`, so it lands exactly while the drain holds its borrow, and
-/// only the drain's own code stays gated.
-///
-/// This pins the reader's code path, not the race: a single thread cannot
-/// exhaust the interleavings. The reclamation protocol itself is checked by
-/// `tutti-rt`' loom model.
-///
-/// Mutation: putting the port set back on `ArcSwap` (`load()` in the drain,
-/// `load` + clone + `store` in `open_input_port`) aborts this test on its
-/// first block: the store turns the drain's guard into the old set's last
-/// strong count, and the guard's drop frees that `Vec` inside the gate.
+/// Before the engine has published a reading there is nothing to place an
+/// arrival with: the event is pushed for the next block, and that path
+/// allocates nothing either.
 #[test]
-fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
-    // The audio side's drain, as the input node owns it.
-    let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
-    let mut first = inputs.open_input_port("Input 0");
-
-    // Warm the scratch outside the gate, as the other gates do.
-    feed(&mut first, 4);
-    drain.cycle_start_read_all_inputs(512, |_, _| {});
-
-    const BLOCKS: usize = 32;
-    let mut visited = 0usize;
+fn hardware_input_before_the_first_reading_is_allocation_free() {
+    let inputs = inputs(1, 256);
+    let mut port = inputs.open_input_port("Test Input").unwrap();
+    let mut rig = Rig::new(&inputs);
+    // Nothing has run, so the clock holds no reading.
     assert_no_alloc::assert_no_alloc(|| {
-        for block in 0..BLOCKS {
-            feed(&mut first, 4);
-            let mut plugged = false;
-            visited += drain.cycle_start_read_all_inputs(512, |_, _| {
-                if !plugged {
-                    plugged = true;
-                    assert_no_alloc::permit_alloc(|| {
-                        // The new port's producer is dropped at once: this
-                        // test is about the set it lands in, not its ring.
-                        let _ = inputs.open_input_port(format!("Hotplug {block}"));
-                    });
-                }
-            });
-        }
+        feed(&mut port, 16, Instant::now());
     });
-
-    assert_eq!(
-        visited,
-        BLOCKS * 4,
-        "every block drained its events, so every hotplug landed mid-drain"
-    );
-    assert_eq!(
-        inputs.list_input_ports().len(),
-        1 + BLOCKS,
-        "every hotplug's port landed"
-    );
-}
-
-/// A device unplugged while a block drains frees nothing on the audio thread.
-///
-/// The other half of hot-plug. Each block, a device is plugged in and fed on
-/// the control side, then its connection closes (its producer handle drops), so
-/// the port in the published set is the ring's last owner. The removal lands
-/// inside the drain's visitor, under `permit_alloc`, while the drain still
-/// borrows the set holding the port. The set is retired, so the port and its
-/// ring must be freed by the next publish (the next block's plug-in, outside
-/// the gate), never when the drain's borrow drops inside it.
-///
-/// Mutation: hold the port set in a `Mutex<Arc<_>>` that the drain reads as
-/// an `Arc` clone (an owning snapshot, as the old `ArcSwap` guard became) →
-/// the drain's snapshot is the old set's last owner, its drop frees the set,
-/// the port and its ring inside the gate, and `assert_no_alloc` aborts. (The
-/// same mutation aborts the plug-in gate above.)
-#[test]
-fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
-    let inputs = Arc::new(HardwareMidiInputs::new(256, SampleRate::new(48_000.0)));
-    // The audio side's drain, as the input node owns it.
-    let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
-
-    // Warm the scratch outside the gate, as the other gates do.
-    let mut warm = inputs.open_input_port("Warm");
-    feed(&mut warm, 4);
-    drain.cycle_start_read_all_inputs(512, |_, _| {});
-    assert!(inputs.remove_input_port(warm.port_id()));
-    drop(warm);
-
-    const BLOCKS: usize = 32;
-    let mut visited = 0usize;
-    for block in 0..BLOCKS {
-        let mut device = inputs.open_input_port(format!("Device {block}"));
-        feed(&mut device, 4);
-        let id = device.port_id();
-        // The connection closed: the published set now owns the ring alone.
-        drop(device);
-
-        assert_no_alloc::assert_no_alloc(|| {
-            let mut unplugged = false;
-            visited += drain.cycle_start_read_all_inputs(512, |_, _| {
-                if !unplugged {
-                    unplugged = true;
-                    assert_no_alloc::permit_alloc(|| {
-                        assert!(inputs.remove_input_port(id), "the port was there");
-                    });
-                }
-            });
-        });
-    }
-
-    assert_eq!(
-        visited,
-        BLOCKS * 4,
-        "every block drained its events, so every unplug landed mid-drain"
-    );
-    assert!(
-        inputs.list_input_ports().is_empty(),
-        "every unplugged port is gone"
-    );
+    rig.run(512);
+    assert_eq!(rig.carried, 16, "pushed for the next block, all of them");
 }

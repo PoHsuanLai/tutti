@@ -25,13 +25,12 @@
 //! route wired to port 0 rather than its channel's
 //! (`a_routed_hardware_note_sounds`).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
-use tutti_graph::{Offset, UmpAt};
-use tutti_midi_runtime::{MidiIn, MidiInputNode, TimedMidiEvent};
-use tutti_session::{MidiRouteRule, Session};
+use tutti_midi_runtime::{MidiIngestNode, TimedMidiEvent};
+use tutti_session::{EventSource, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::MotionEvent;
@@ -208,42 +207,29 @@ fn preview_still_sounds_under_an_installed_clip() {
     );
 }
 
-/// A wire that hands out what was pushed onto it, on the next poll. A clone
-/// is another handle on the same wire: the node owns one, the test pushes
-/// through another.
-#[derive(Default, Clone)]
-struct Wire(Arc<Mutex<Vec<UmpAt>>>);
-
-impl MidiIn for Wire {
-    fn poll_block(&mut self, _block_size: tutti_types::Samples, buffer: &mut [UmpAt]) -> usize {
-        let mut pending = self.0.lock().unwrap();
-        let n = pending.len().min(buffer.len());
-        buffer[..n].copy_from_slice(&pending[..n]);
-        pending.drain(..n);
-        n
-    }
-}
-
-/// How loud a note on channel 2 through a hardware-input wire comes out, with
-/// a rule routing `channel` to the synth: the input node's channel port is
-/// wired to the synth's event input (`Midi::set_routes` → the session's feeds
+/// How loud a note on channel 2 through a hardware device's inlet comes out,
+/// with a rule routing `channel` to the synth: the ingest node's channel port
+/// is wired to the synth's event input (`Midi::set_routes` → the session's feeds
 /// → an event edge), rendered through the graph.
 fn routed_level(channel: MidiChannel) -> f32 {
     let (mut s, synth) = rig();
-    let wire = Wire::default();
-    let (input, _) = s.graph().insert(MidiInputNode::new(Some(
-        Box::new(wire.clone()) as Box<dyn MidiIn>
-    )));
+    // The device's inlet, wired to the ingest node's one event input.
+    let (inlet, mut device) = s.graph().open_event_inlet(64);
+    let (input, _) = s.graph().insert(MidiIngestNode::new(1));
+    s.graph()
+        .set_event_sources(input, 0, &[EventSource::new(inlet, 0)]);
     let rule = MidiRouteRule::for_channel(channel).to(synth);
     s.midi()
         .set_routes(input, [&rule], None, Some)
         .expect("one declarer");
     s.update();
 
-    wire.0.lock().unwrap().push((
-        Offset::ZERO,
-        note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, u16::MAX),
-    ));
+    device
+        .push(
+            At::NextBlock,
+            note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, u16::MAX),
+        )
+        .expect("room");
     rms(&render(&s, 12_000))
 }
 

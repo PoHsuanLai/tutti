@@ -298,13 +298,12 @@ pub enum SessionEvent {
     /// [`PhaseCx::now`].
     #[cfg(feature = "midi")]
     MidiOutDropped(u64),
-    /// The hardware input's rings dropped events because they were full: the
-    /// total so far, reported when it rises, at most once per
+    /// The hardware devices' event inlets dropped events because they were
+    /// full: the total so far, reported when it rises, at most once per
     /// [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT) of
-    /// [`PhaseCx::now`]. The input drain takes a bounded number of events a
-    /// block and leaves the rest in the rings; a ring fills when blocks stop
-    /// coming (a stalled callback) or the device sends faster than they
-    /// drain.
+    /// [`PhaseCx::now`]. An inlet's ring is emptied each block; it fills when
+    /// blocks stop coming (a stalled callback) or the device sends faster than
+    /// they empty it.
     #[cfg(feature = "midi-hardware")]
     MidiInputDropped(u64),
     /// A MIDI device was added, removed or changed, in the order the OS
@@ -558,19 +557,23 @@ impl std::fmt::Debug for SessionEvent {
 }
 
 /// The engine's MIDI, as graph nodes the builder inserts: the hardware
-/// input and the clock (Beat Clock and MTC, off until a host enables it),
+/// input's ingest and the clock (Beat Clock and MTC, off until a host enables it),
 /// with their controls. The hardware out is not a node: the session reads an
 /// event tap on the clock's output ([`Midi::set_hardware_out`](crate::Midi::set_hardware_out)).
 #[cfg(feature = "midi")]
 #[derive(Clone, Debug)]
 pub struct MidiNodes {
-    /// The hardware input's node: its ports feed what a route rule names.
+    /// The hardware input's ingest node: its ports feed what a route rule names.
     pub input: NodeKey,
     /// Which of its event outputs carries which Group and channel
     /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
     pub input_ports: tutti_midi_runtime::MidiInputPorts,
+    /// How many hardware devices the input takes at once: it has that many
+    /// event inputs, one for each
+    /// ([`SessionBuilder::midi_devices`](crate::SessionBuilder::midi_devices)).
+    pub input_devices: usize,
     /// Its controls (the MPE mode).
-    pub input_controls: tutti_midi_runtime::MidiInputControls,
+    pub input_controls: tutti_midi_runtime::MidiIngestControls,
     /// The clock's node.
     pub clock: NodeKey,
     /// The clock master: enable it, pick MTC and its frame rate.
@@ -909,9 +912,18 @@ impl Session {
                 self.render_mode_phase()
             }
             Phase::Poll => {
+                // A device that connected is heard from the plan that holds
+                // its inlet: committed now, not an update later.
                 #[cfg(feature = "midi-hardware")]
-                self.midi_state
-                    .midi_input_phase(self.midi_io.as_ref(), cx.now, out);
+                if self.midi_state.midi_input_phase(
+                    self.midi_io.as_ref(),
+                    self.midi.as_ref(),
+                    &mut self.graph,
+                    cx.now,
+                    out,
+                ) {
+                    self.commit();
+                }
                 #[cfg(feature = "device")]
                 self.device_poll(cx.now, out)
             }
@@ -981,7 +993,7 @@ impl Session {
     /// and each hosted plugin's meter. Beside it, the cells the session
     /// publishes to itself: the project meter (and
     /// every slot following it), the transport's tempo map, the modulation lanes (inserted by the
-    /// reconciler, not through `add`), the hardware ports' table and an
+    /// reconciler, not through `add`), the hardware inlets' clock and an
     /// offline engine's output folds.
     pub(crate) fn reclaim(&self) -> usize {
         let mut pinned = self.graph.reclaim();
@@ -995,7 +1007,7 @@ impl Session {
         }
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = &self.midi_io {
-            pinned += io.ports().collect();
+            pinned += io.ports().inlets().reclaim();
         }
         pinned
     }

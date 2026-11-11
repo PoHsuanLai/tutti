@@ -46,15 +46,6 @@ const PARAMS: usize = 200;
 /// callbacks, so chunks are collected and the parameter buffers come back
 /// from the bridge thread as well as go out. Nothing allocates or frees on
 /// the audio thread, and no point is refused or merged for want of room.
-///
-/// Mutations (run), each fails: the node's staged list rebuilt per chunk
-/// (`self.staged = Vec::new()` for `clear()` in `ParamDelivery::settle`) →
-/// the next chunk's first point allocates → aborts; `open_queue` ignoring
-/// the reserved spares (always `ParameterQueue::new`) → each queue holds
-/// its ten inline points and merges the rest → `points_merged` is not 0;
-/// the bridge's buffers reserved without point room
-/// (`ParameterChanges::with_capacity(queues)` in `reserve_params`) → once
-/// the node is handed one of them, the same.
 #[test]
 fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
     let _lock = machine_lock();

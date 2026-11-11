@@ -249,10 +249,6 @@ mod tests {
     /// side frees the queue, the swap goes through and the old writer is sent
     /// back. Unreachable through the public calls (each drains the retire queue
     /// first), so the queues are filled by hand.
-    ///
-    /// Mutation (run, recorded here): drop the `retire.vacant_len() > 0` guard
-    /// in `swap` -> the full queue refuses the old writer, `swap` forgets it
-    /// and replaces it, and the first width assertion fails.
     #[test]
     fn a_full_retire_queue_holds_the_install_and_drops_nothing() {
         let (taps, mut h) = link();

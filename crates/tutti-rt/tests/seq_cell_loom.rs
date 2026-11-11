@@ -16,29 +16,6 @@
 //! - **no going back**: two reads in program order never return an older
 //!   write after a newer one, nor "never written" after a write;
 //! - **the last write is read**, on the first copy, once the writer is done.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/seq_cell.rs` and both models failed, at `LOOM_MAX_PREEMPTIONS=3` and
-//! unbounded (the pair runs in about four seconds):
-//!
-//! - the writer's `Release` fence deleted → "a mixed copy: [1, 1, 2]" (the
-//!   first word from one write, the second from the other);
-//! - the reader's `Acquire` fence deleted → the same;
-//! - the reader's re-check of the sequence deleted (the copy returned as
-//!   loaded) → the same;
-//! - the reader not refusing an odd sequence (copying mid-write) → "a mixed
-//!   copy: [0, 0, 0]" (bytes no write stored);
-//! - the writer's closing store weakened to `Relaxed` → the same;
-//! - the reader's first sequence load weakened to `Relaxed` → the same;
-//! - the reader returning "never written" for an odd sequence → "\"never
-//!   written\" after Write(1)".
-//!
-//! Not covered here: `Contended` reported as "never written" when the
-//! retries run out passes, because one remaining write cannot outlast the
-//! retries of a read that already saw the first. The unit test
-//! `a_read_tells_never_written_from_contended` pins that, on a cell held
-//! mid-write.
 
 #![cfg(loom)]
 
@@ -97,7 +74,7 @@ fn two_reads(reader: &SeqReader<Value>) {
 // that atomic drops out of the race check and loom never schedules the other
 // order. A spawned thread doing `load` then `store`, against a main thread
 // doing one `load`, runs one execution; with the roles swapped, six. With
-// that writer spawned, this model ran once and every mutation below passed.
+// that writer spawned, this model ran once and every weakened ordering passed.
 // The writer only stores (it keeps its own sequence), so either
 // placement explores; both run, so a writer that loads again cannot hide
 // behind one of them. (The same limit under-explores `job_gate`,

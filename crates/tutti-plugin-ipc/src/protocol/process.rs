@@ -226,10 +226,6 @@ mod change_tests {
     /// **The transport changes cross the wire, in order, each at its frame
     /// with its own tempo and slope**, up to the graph's bound; a list one
     /// longer is refused at decode (the server never grows one).
-    ///
-    /// Mutation: `#[serde(skip)]` on `ProcessAudioData::transport_changes` →
-    /// the list arrives empty → fails. Mutation: `ProcessAudioData`'s
-    /// list read back reversed (swap the two tuples expected below) → fails.
     #[test]
     fn the_transport_changes_cross_the_wire_in_order() {
         let mut block = ProcessAudioData::default();

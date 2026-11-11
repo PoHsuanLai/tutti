@@ -208,11 +208,6 @@ fn assert_direct_events_conserved(inbox: &Inbox, spans: &[std::ops::Range<u64>])
 /// A `MaxBlock`-only change keeps every ring and FIFO: the output is exactly
 /// what a graph prepared at the larger block from the start renders, and no
 /// event is lost or repeated.
-///
-/// Mutation: in `Executor::rebuild`, never carry state (`carry = false`) →
-/// the PDC ring restarts silent → the output dips → fails. Mutation: in
-/// `EventFifo::resize`, drop the queued events (`q.clear()`) → the events in
-/// the delay at the change are lost → fails.
 #[test]
 fn a_max_block_change_keeps_every_ring() {
     let mut rig = rig(prep(48_000.0, 64));
@@ -273,12 +268,6 @@ impl Solo {
 /// restarts silent (for its 20 frames the output is the `Lag` path alone —
 /// the node's own state is the node's business and carries), and the events
 /// pending in the 30-frame event delay are flushed, not lost.
-///
-/// Mutation: in `Executor::rebuild`, carry state across a rate change
-/// (`carry = true`) → the ring keeps its old-rate audio → the output stays
-/// at 2.0 → fails. Mutation: in `Executor::rebuild`'s flush, skip the
-/// vanished event delays (`gone` loop) → the events in flight at the change
-/// are lost → fails.
 #[test]
 fn a_rate_change_resets_rings_and_flushes_pending_events() {
     let mut rig = rig(prep(48_000.0, 64));
@@ -320,9 +309,6 @@ fn a_rate_change_resets_rings_and_flushes_pending_events() {
 
 /// Feedback whose delay is shorter than the new `MaxBlock` is refused by
 /// name, before anything is sent: the executor keeps running as it was.
-///
-/// Mutation: in `Editor::reprepare`, skip the pre-compile → the suspend is
-/// sent and the resume's compile panics in `collect` → fails.
 #[test]
 fn a_feedback_edge_shorter_than_the_new_block_is_refused_first() {
     let (mut ed, mut exec) = Editor::new(prep(48_000.0, 64));
@@ -379,11 +365,6 @@ impl Node for RateLatency {
 /// Latency is a time for some nodes. Every unit is re-prepared once, with
 /// the new `Prepare`, on the control thread — the running ones and one inserted but not yet committed — and
 /// the rate-dependent latency reaches the spec and the plan.
-///
-/// Mutation: in `Editor::resume`, skip `refresh` → the spec still says 48
-/// frames, the shape says 96, and the resume's compile panics → fails.
-/// Mutation: in `Editor::reprepare`, do not re-prepare the pending units →
-/// the uncommitted one keeps its 48-frame shape → fails.
 #[test]
 fn every_unit_is_re_prepared_and_its_new_latency_compiled() {
     let log = Arc::new(Mutex::new(Vec::new()));
@@ -443,16 +424,11 @@ fn every_unit_is_re_prepared_and_its_new_latency_compiled() {
 /// Between the two commits the executor renders silence for whatever block
 /// the device hands it — here one as long as the new, larger maximum —
 /// because its units are on the control thread.
-///
-/// Mutation: in `Executor::process`, check the block bound before the
-/// suspended branch → the 128-frame block panics against the old 64 →
-/// fails.
 #[test]
 fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
     let mut rig = rig(prep(48_000.0, 64));
     rig.render(&[64, 64]);
     rig.ed.reprepare(prep(48_000.0, 128)).expect("reprepares");
-    // Mutation: `is_repreparing` reading `self.poisoned.is_some()` → false here.
     assert!(rig.ed.is_repreparing(), "between the two commits");
     let input = vec![1.0f32; 128];
     let mut out = vec![9.0f32; 128];
@@ -483,10 +459,6 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
 /// Shrinking `MaxBlock`: while suspended, the device may still hand blocks
 /// sized for the old maximum. They render as silence rather than panic, and
 /// the new maximum is adopted only when the resume commit lands.
-///
-/// Mutation: adopt the new `Prepare` when the suspend lands (`self.prepare = prepare` in `Executor::apply`'s suspend branch) → the
-/// "not yet adopted" check fails, and with the bound checked before the
-/// suspended branch the 256-frame block panics against 64.
 #[test]
 fn shrinking_max_block_never_fails_the_callback() {
     let mut rig = rig(prep(48_000.0, 256));
@@ -587,9 +559,6 @@ fn assert_poisoned(mut ed: Editor, mut exec: Executor, cause: &str) {
 
 /// A node panicking in `prepare` after the units are out poisons the editor
 /// instead of unwinding out of `collect` and stranding the executor.
-///
-/// Mutation: drop the `catch_unwind` in `Editor::resume` (call
-/// `finish_reprepare` directly) → the panic escapes `collect` → fails.
 #[test]
 fn a_panic_in_prepare_poisons_the_editor() {
     let (mut ed, mut exec) = Editor::new(prep(48_000.0, 64));
@@ -608,10 +577,6 @@ fn a_panic_in_prepare_poisons_the_editor() {
 
 /// Re-prepared shapes that no longer compile — an event resolution that
 /// coarsens under a marked edge — poison the editor too, and say why.
-///
-/// Mutation: in `Editor::finish_reprepare`, `expect` the compile instead of
-/// returning its error → the cause reads "panicked", not "no longer
-/// compile" → fails.
 #[test]
 fn a_resolution_that_coarsens_on_prepare_poisons_the_editor() {
     let (mut ed, mut exec) = Editor::new(prep(48_000.0, 64));
@@ -659,12 +624,6 @@ fn a_resolution_that_coarsens_on_prepare_poisons_the_editor() {
 /// after it already speaks the new rate. Blocks rendered while suspended
 /// count on the clock. Checked in both interpreters, with a suspended block
 /// between the two halves.
-///
-/// Mutation: skip `CommandRx::rescale` in the suspend → the old-rate command
-/// lands at 1 030 instead of 2 030 → fails. Mutation: rescale every pending
-/// command, ignoring `before` → the new-rate one lands at 3 030 → fails.
-/// Mutation: stop the executor's clock while suspended → it lands 64 frames
-/// off against the reference, and the clock check fails.
 #[test]
 fn a_rate_change_keeps_pending_commands_at_their_wall_clock_time() {
     let mut rig = rig(prep(48_000.0, 64));
@@ -710,10 +669,6 @@ fn a_rate_change_keeps_pending_commands_at_their_wall_clock_time() {
 /// 1 000 at 96 kHz both land on 500 at 48 kHz (499.5 rounds half away from
 /// zero), and 999 still comes first — though it was scheduled second. Ties
 /// go by the unrounded timeline position, then scheduling order.
-///
-/// Mutation: drop `pos` from the executor's due sort key → scheduling order
-/// wins, 1 000 first → fails. Mutation: the same in the reference (sort by
-/// offset only) → fails on the reference.
 #[test]
 fn frames_a_rate_change_merges_keep_their_order() {
     let mut rig = rig(prep(96_000.0, 64));

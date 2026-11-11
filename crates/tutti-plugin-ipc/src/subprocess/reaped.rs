@@ -68,9 +68,6 @@ mod tests {
     /// between spawn and wait leaves no running process and no zombie (a
     /// zombie still answers `kill -0`). Moved here with the guard from
     /// `tutti-plugin`'s probe, which had its own copy.
-    ///
-    /// Mutations (run), each fails: `drop` doing nothing (the child runs on);
-    /// `drop` killing without `wait` (the zombie answers).
     #[test]
     fn a_child_is_killed_and_reaped_when_its_guard_unwinds() {
         let child = Command::new("sleep").arg("30").spawn().unwrap();

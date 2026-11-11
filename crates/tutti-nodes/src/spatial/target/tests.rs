@@ -113,10 +113,6 @@ fn angular_smoothing_stays_on_the_circle_over_a_long_sweep() {
 /// seam, within the bound `advance` documents; zero steps move nothing and an
 /// instant smoother lands on the target. (The height's own closed form is
 /// `tutti_dsp::Smoother::advance`'s, pinned there.)
-///
-/// Mutations (each run, each fails): the retention `1 - coeff`
-/// replaced by `coeff` in `gap_closed`; `advance` taking the arc as
-/// `target - current`.
 #[test]
 fn advance_is_the_closed_form_of_repeated_steps() {
     for steps in [1usize, 64, 1024, 48_000] {

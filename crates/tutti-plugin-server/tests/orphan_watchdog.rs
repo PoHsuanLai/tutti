@@ -189,10 +189,6 @@ fn wait_until(deadline: Duration, mut cond: impl FnMut() -> bool) -> bool {
 ///
 /// This is the defect the watchdog was written for: one orphaned subprocess
 /// per loaded plugin, every time a DAW crashes or is force-quit.
-///
-/// Mutation: delete the `parent_is_alive` call from `wait_for_connection`'s
-/// timeout arm and the server parks in `poll` forever — this fails on the
-/// deadline. Making the check always return `true` fails it the same way.
 #[test]
 fn an_orphaned_server_exits_without_a_host() {
     let server = spawn_orphaned_server("orphan");
@@ -221,9 +217,6 @@ fn an_orphaned_server_exits_without_a_host() {
 /// here is a server required to keep running, so only here does the suite
 /// prove that `plugin-server` reaches the parked `accept` at all. If this one
 /// fails, read the other three as vacuous rather than as passing.
-///
-/// Mutation: make `parent_is_alive_given` return `false` in the recorded-and-
-/// matching arm, and this fails within a couple of poll intervals.
 #[test]
 fn a_server_with_a_live_parent_keeps_waiting() {
     let exe = env!("CARGO_BIN_EXE_plugin-server");
@@ -284,14 +277,6 @@ fn a_server_with_a_live_parent_keeps_waiting() {
 /// forever. Invisible under plain init, because the recorded PID is then 1 and
 /// the `> 1` guard catches it anyway. The fix is that the host states its PID
 /// in `TUTTI_PLUGIN_HOST_PID` at spawn, which no race can disturb.
-///
-/// Mutations, each of which fails only this test in the file:
-/// - Replace the changed-parent arm with `current > 1` — the naive orphan
-///   test the module doc argues against.
-/// - Drop `TUTTI_PLUGIN_HOST_PID` from `record_parent_pid` and fall back to
-///   `getppid()` — this restores the original defect exactly.
-/// - Have the "reparented" arm assume alive instead of probing the recorded
-///   host, and the server never exits.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_subreaper_does_not_hide_the_hosts_death() {
@@ -352,12 +337,9 @@ fn ppid_of(pid: i32) -> Option<i32> {
 /// than by observation: an unrelated bystander process is left running for the
 /// whole of an orphaned server's exit, and must be untouched afterwards.
 ///
-/// Mutation: the mirror of "make the watchdog compare the wrong pid" is a
-/// watchdog that acts on a PID other than its own. Have the server `kill` the
-/// PID it compares against instead of exiting, and the bystander — whose PID
-/// is adjacent in the same range — is the thing at risk. The unit test
-/// `the_liveness_probe_names_the_recorded_host` covers the comparison itself;
-/// this covers the blast radius.
+/// A watchdog must act only on its own PID, and the bystander's PID is adjacent in the
+/// same range. The unit test `the_liveness_probe_names_the_recorded_host` covers the
+/// comparison itself; this covers the blast radius.
 #[test]
 fn the_watchdog_takes_down_only_its_own_process() {
     // A bystander with no relationship to the server: a long sleep, spawned by

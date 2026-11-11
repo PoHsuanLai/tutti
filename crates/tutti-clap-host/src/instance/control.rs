@@ -764,9 +764,6 @@ mod tests {
     /// Asserted on the guard, not through `load_preset`: a coerced id yields a
     /// nonexistent path the plugin refuses anyway, so the two refusals look
     /// identical from outside.
-    ///
-    /// Mutation (run): `preset_path` returning `Some` for `Number` → the first
-    /// assertion fails.
     #[test]
     fn only_a_location_is_a_clap_preset() {
         assert_eq!(

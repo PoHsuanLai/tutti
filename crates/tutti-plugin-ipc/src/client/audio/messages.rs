@@ -419,10 +419,6 @@ mod tests {
 
     /// **The inbox hands parameter events over in arrival order and
     /// empties.**
-    ///
-    /// Mutation (run): `param` uses `push_front` → the parameters come out
-    /// reversed → fails. `drain` leaves the latency slot set (`clone` for
-    /// `take`) → the second drain is not empty → fails.
     #[test]
     fn the_inbox_keeps_arrival_order_and_empties() {
         let mut inbox = Unsolicited::new();
@@ -441,14 +437,6 @@ mod tests {
     /// is still delivered, latest-wins, the oldest parameter events are the
     /// ones dropped, the drops are counted, a `ParamValues` resync stands in
     /// for them, and the inbox never reallocates.
-    ///
-    /// Mutations (run): the latency back in the bounded queue (`latency`
-    /// queuing itself as a parameter event, so the flood evicts it) → no
-    /// `latency` label → fails. `param` without the
-    /// `pop_front` → the inbox grows past its capacity (and reallocates) →
-    /// fails. `pop_back` for `pop_front` → the newest held event is lost
-    /// instead → fails. The drop not counted → `take_dropped` is 0 → fails.
-    /// The drop not raising `ParamValues` → that label is missing → fails.
     #[test]
     fn a_parameter_flood_drops_only_parameters() {
         let mut inbox = Unsolicited::new();
@@ -480,12 +468,6 @@ mod tests {
     /// the host must hear `Reloaded` and `Io` first; a `ParamValues` re-read
     /// must win over every queued value, so it comes last. Every kind is
     /// raised, in the reverse of the delivery order, around the parameters.
-    ///
-    /// Mutations (run): structural resyncs chained after the parameters
-    /// (`params.chain(structural…)`) → `p0` first → fails. `Io` before
-    /// `Reloaded` in `structural` → fails. `ParamValues` before
-    /// `ParamTitles` in `refresh` → fails. `refresh` chained before the
-    /// latency → fails.
     #[test]
     fn structural_resyncs_lead_and_refreshes_trail() {
         let mut inbox = Unsolicited::new();

@@ -20,23 +20,6 @@
 //! - **a raised latch is seen**: after the producer joined, the drain ends in
 //!   `Failed`, never `Empty`;
 //! - **an unraised latch is never a failure** (the second test).
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/fault_latch.rs`; the model failed as noted.
-//!
-//! - `drain` popping first and reading the latch after (the order doc 025
-//!   forbids) → "a failure hid a frame": the pop finds the ring empty, the
-//!   producer then pushes 2 and raises, and the load reads the raise;
-//! - `raise` as a `Relaxed` store → the same (the load reads the raise but is
-//!   not ordered after the pushes, so the pop can miss them);
-//! - `is_raised` as a `Relaxed` load → the same;
-//! - `drain` answering `Failed` on any empty pop, raised or not → "an empty
-//!   pop is not a failure" in the second test (and "a failure hid a frame" in
-//!   the first).
-//!
-//! The model runs 4,961 executions (the test prints the number of times the
-//! closure ran).
 
 #![cfg(loom)]
 

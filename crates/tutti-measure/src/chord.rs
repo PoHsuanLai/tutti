@@ -380,9 +380,6 @@ mod tests {
 
     /// Each of the 24 triads, as exact chroma, is its own chord, and the
     /// similarity of a frame to its own template is 1.
-    ///
-    /// Mutation checked: a minor third of 4 semitones names every minor chord
-    /// major and fails.
     #[test]
     fn every_triad_is_itself() {
         for minor in [false, true] {
@@ -407,9 +404,6 @@ mod tests {
 
     /// Silence is no chord, with similarity 1 for the "no chord" state only;
     /// a flat or noise-like chroma is no chord too.
-    ///
-    /// Mutation checked: scoring "no chord" 0 for silence reads silence as the
-    /// lowest-numbered chord, C major, and fails.
     #[test]
     fn silence_and_noise_are_no_chord() {
         let sims = similarities(&[0.0; CLASSES]);
@@ -433,9 +427,6 @@ mod tests {
     /// a single note matches each of its six triads at `1/sqrt(3) = 0.577` and
     /// a fifth matches two of them at `sqrt(2/3) = 0.816`, both under the 0.85
     /// of "no chord"; none names a root and mode.
-    ///
-    /// Mutation checked: a `TRIAD_FLOOR` of 0.5 reads the lone note as a chord
-    /// and fails; 0.7 reads the fifth as one and fails.
     #[test]
     fn a_lone_note_a_bass_line_and_a_fifth_are_no_chord() {
         let note = |class: usize| {
@@ -471,8 +462,6 @@ mod tests {
     /// Unremoved, a floor of 0.4 leaves the triad matching at 0.82, under the
     /// 0.85 of "no chord" (at a floor of 0.2 to 0.4 on average, 0.88 would
     /// still pass, so the constant 0.4 case is the one that pins it).
-    ///
-    /// Mutation checked: not subtracting the median fails.
     #[test]
     fn a_triad_over_a_realistic_floor_is_still_the_triad() {
         let mut rng = StdRng::seed_from_u64(5);
@@ -501,9 +490,6 @@ mod tests {
     /// Scaling the chroma by 1e30 or 1e-30 changes nothing: the squares are
     /// held in `f64`, and the scores are cosines. The sequence has noise,
     /// where an unscaled score would turn it into chords or a triad into none.
-    ///
-    /// Mutation checked: summing the squares in `f32` overflows at 1e30 and
-    /// underflows at 1e-30; dropping the norm from the cosine fails both.
     #[test]
     fn the_chords_do_not_depend_on_the_scale() {
         let mut rng = StdRng::seed_from_u64(9);
@@ -529,9 +515,6 @@ mod tests {
     /// 0.05, 0.4 of an emission) is best read as "no chord": it is worth
     /// `0.71` more to come into that state from C by a switch than into C by a
     /// stay, which a search that let C "switch" into itself would miss.
-    ///
-    /// Mutation checked: taking the best other state as the overall top, so
-    /// a state could switch into itself, reads both frames as C.
     #[test]
     fn a_state_cannot_switch_into_itself() {
         let mut second = [0.0; CLASSES];
@@ -550,11 +533,6 @@ mod tests {
     /// sharpness within 0.3 of that either side, 300000 frames of unshifted
     /// scores near 2e7 have no resolution left (one unit in the last place of
     /// an `f32` there is 2) and a margin of 0.3 vanishes.
-    ///
-    /// Mutation checked: `Score = f32` together with removing the per-frame
-    /// shift of the best score to 0 keeps the odd frame on both sides and
-    /// fails. Either change alone passes: `f64` holds 2e7 to 4e-9, and the
-    /// shift keeps an `f32` near 0.
     #[test]
     fn a_long_input_keeps_the_stay_prior() {
         let p = f32::from_bits(1.0f32.to_bits() - 1);
@@ -581,9 +559,6 @@ mod tests {
     /// A one-frame flicker is gone under the default prior, and kept when the
     /// self-transition is 1/25, the even share, where every frame takes its own
     /// best state. A change that lasts is kept either way.
-    ///
-    /// Mutation checked: giving a switch the same cost as a stay (`switch =
-    /// stay`) keeps the flicker under the default and fails.
     #[test]
     fn smoothing_removes_a_flicker_that_argmax_keeps() {
         let (c, f) = (triad(0, false), triad(5, false));
@@ -607,10 +582,6 @@ mod tests {
     /// The linear-time search finds the same best path as trying every path:
     /// all 25^4 over four random frames, at three self-transitions (one under
     /// the even share, where a state must not "switch" into itself).
-    ///
-    /// Mutation checked: taking the best other state as always the overall top
-    /// (ignoring the runner-up) fails at 0.02 for seed 11; that case does not
-    /// rest on the seed: see `a_state_cannot_switch_into_itself`.
     #[test]
     fn viterbi_is_the_best_path() {
         let mut rng = StdRng::seed_from_u64(11);
@@ -651,10 +622,6 @@ mod tests {
     /// frame `j` is half-way between centres `(j-1) hop + window/2` and
     /// `j hop + window/2`; the first span starts at 0 and the last ends at the
     /// end of the last window.
-    ///
-    /// Mutation checked: using the frame's start `j * hop` as the boundary
-    /// fails every geometry with a window other than the hop (where the two
-    /// coincide).
     #[test]
     fn spans_sit_between_frame_centres() {
         let (c, f) = (triad(0, false), triad(5, false));
@@ -682,8 +649,6 @@ mod tests {
     }
 
     /// A gap where nothing is detected: spans are separated by it.
-    ///
-    /// Mutation checked: extending each span to the next one's start fails.
     #[test]
     fn no_chord_leaves_a_gap() {
         let rows: Vec<_> = (0..24)
@@ -702,10 +667,6 @@ mod tests {
     }
 
     /// Settings, shape, values and sizes are validated.
-    ///
-    /// Mutation checked: a frame cap of `MAX_FRAMES + 1` fails the large grid;
-    /// `>= 1.0` for `<= 0.0`-style slips fail the probability cases; dropping
-    /// the sample-count check wraps `usize::MAX` hops and fails the last case.
     #[test]
     fn inputs_are_validated() {
         let bad = |r: Result<ChordConfig>| matches!(r, Err(Error::InvalidTonalParameter(_)));

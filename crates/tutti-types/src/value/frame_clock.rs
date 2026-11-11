@@ -431,9 +431,6 @@ mod tests {
 
     /// Only a move that crosses the end wraps; a playhead already at or past
     /// the end runs on, and one from before the start wraps at the end.
-    ///
-    /// Mutation: wrap regardless of `from` → the past-the-end case jumps to
-    /// 5.5 → fails.
     #[test]
     fn loop_range_advance_wraps_only_a_crossing() {
         let r = LoopRange::new(Beat::new(4.0), Beat::new(8.0)).unwrap();
@@ -461,9 +458,6 @@ mod tests {
     /// A wrap that rounds up to the loop's end is clamped inside it: `end`
     /// is not in the region, and a clock parked on it would take the loop
     /// for one armed behind the playhead and stop wrapping.
-    ///
-    /// Mutation (run): return `start + rem` unclamped → both searched
-    /// overshoots wrap to `end` exactly → fails.
     #[test]
     fn a_wrap_never_lands_on_the_end() {
         // Found by search: `end - start` rounds up, so `rem_euclid` of this
@@ -491,10 +485,6 @@ mod tests {
     /// At 90 BPM / 48 kHz, 1 500 chunks of 64 frames
     /// is beat 3 and 500 is beat 1, exactly, where an accumulated playhead
     /// reads 2.999999999999891 and 1.0000000000000007.
-    ///
-    /// Mutation (run): accumulate in `advance` (`origin_beat += frames *
-    /// beats_per_sample` and `restart` each call) → 2.999999999999891 →
-    /// fails.
     #[test]
     fn chunked_frames_land_on_the_beat_exactly() {
         let mut c = FrameClock::new(Beat(0.0), Bpm::of(90.0), SR);
@@ -511,11 +501,6 @@ mod tests {
     /// Frame by frame and a block at a time land on the same bits, through
     /// loop wraps (including a loop shorter than a block), a tempo change
     /// and a seek.
-    ///
-    /// Mutation (run): wrap once per call at the call's end (the old
-    /// offline rule, `region.advance(from, beat_at(target))`, with no new
-    /// segment on the wrap's frame) → the block-stepped clock parts from the
-    /// frame-stepped one at the first wrap → fails.
     #[test]
     fn a_frame_at_a_time_is_a_block_at_a_time() {
         let loops = [
@@ -556,9 +541,6 @@ mod tests {
     /// A loop wraps on the first frame that reaches its end, to the start
     /// exactly when the end is on a frame, and a loop armed behind the
     /// playhead does not wrap.
-    ///
-    /// Mutation (run): wrap regardless of where the playhead is (drop the
-    /// `beat() < end` guard) → the loop armed behind jumps → fails.
     #[test]
     fn a_loop_wraps_on_its_frame() {
         // 4 beats at 90 BPM is 128 000 frames.
@@ -581,10 +563,6 @@ mod tests {
     /// and rolls the rest when no wrap falls in them; its stops add up to
     /// `advance`, bit for bit. 4 beats at 90 BPM is 128 000 frames; a loop
     /// of a third of a frame wraps on every frame.
-    ///
-    /// Mutation (run): report the frames to the frame before the wrap
-    /// (`wrap - from - 1`) → 127 999 → fails. Mutation (run): roll on past
-    /// the wrap to `frames` → the clock is not on the loop's start → fails.
     #[test]
     fn advance_to_wrap_stops_on_each_wrap() {
         let four = LoopRange::new(Beat::new(0.0), Beat::new(4.0));
@@ -615,11 +593,6 @@ mod tests {
 
     /// A block with no wrap is one pass from the block's beat, an empty block
     /// has none, and a loop the block never reaches is no loop.
-    ///
-    /// Mutation (run): read the pass's beat after rolling it (`self.beat()`
-    /// moved below `advance_to_wrap`) → the beat is the block's end → fails.
-    /// Mutation (run): drop the last frame of the block (`left` less one) →
-    /// the pass is 511 long → fails.
     #[test]
     fn a_block_with_no_wrap_is_one_pass() {
         let mut c = FrameClock::new(Beat(1.0), Bpm::of(90.0), SR);
@@ -644,12 +617,6 @@ mod tests {
     /// frames end, at the loop's start beat, and the lengths add up to the
     /// block. 90 BPM at 48 kHz is 32 000 frames a beat; a loop of 0..0.1
     /// beat (3 200 frames) in a 10 000-frame block wraps three times.
-    ///
-    /// Mutation (run): read the pass's beat after rolling it → the entry
-    /// beat of the second case is the loop start → fails. Mutation (run):
-    /// a no-wrap pass one frame short (`unwrap_or(left - 1)`) → the last
-    /// pass is 399 long → fails. Mutation (run): drop the last frame of the
-    /// block → fails.
     #[test]
     fn several_wraps_in_a_block_are_several_passes() {
         let region = LoopRange::new(Beat::new(0.0), Beat::new(0.1));
@@ -674,9 +641,6 @@ mod tests {
     /// the block's last included: 4 beats at 90 BPM is 128 000 frames, so a
     /// block of exactly that ends on the wrap and the next has none of its
     /// own.
-    ///
-    /// Mutation (run): report `PassEnd::Block` for every pass → the wrap on
-    /// the block edge is not reported → fails.
     #[test]
     fn a_wrap_on_the_block_edge_ends_the_last_pass() {
         let four = LoopRange::new(Beat::new(0.0), Beat::new(4.0));
@@ -696,10 +660,6 @@ mod tests {
 
     /// Consuming the passes leaves the clock where `advance` leaves it, bit
     /// for bit, and no pass is empty.
-    ///
-    /// Mutation (run): a no-wrap pass one frame short (`unwrap_or(left - 1)`)
-    /// → the lengths sum to 40 000 → fails. Mutation (run): drop the last
-    /// frame of the block → fails.
     #[test]
     fn passes_leave_the_clock_where_advance_does() {
         let region = LoopRange::new(Beat::new(1.0 / 3.0), Beat::new(2.0 / 3.0));
@@ -715,9 +675,6 @@ mod tests {
     /// After N blocks at any tempo and rate, the beat equals the closed form
     /// `origin + frames × tempo / (60 × rate)` to the bit: correctly rounded
     /// `*`, `/` and `+`, no libm, so the same on every target.
-    ///
-    /// Mutation (run): accumulate (see the first test) → fails at the first
-    /// tempo whose step is not representable.
     #[test]
     fn a_long_run_is_the_closed_form() {
         // A small deterministic generator: no dependency, same on every run.
@@ -753,9 +710,6 @@ mod tests {
     /// The wrap frame is the first frame whose beat reaches the end, exactly:
     /// the frame before it is short of the end, whatever rounding the
     /// estimate `ceil((end - beat) × frames_per_beat)` suffers.
-    ///
-    /// Mutation (run): trust the estimate (drop the two walks in
-    /// `wrap_frame`) → some end lands a frame off → fails.
     #[test]
     fn the_wrap_frame_is_the_first_to_reach_the_end() {
         let mut seed = 0x1234_5678_9abc_def1u64;
@@ -793,10 +747,6 @@ mod tests {
     }
 
     /// A snapshot's origin rebuilds the clock it came from.
-    ///
-    /// Mutation (run): report the clock's own frame count as the origin's
-    /// (`frame: self.at`, not the frames since the origin) → the rebuilt
-    /// clock counts the frames before the tempo change twice → fails.
     #[test]
     fn a_snapshot_continues_the_clock() {
         let mut c = FrameClock::new(Beat(0.0), Bpm::of(97.0), SR);
@@ -814,11 +764,6 @@ mod tests {
     /// in the beat — a seek to the beat already there, a loop wrap that
     /// lands on the beat it left — and at each other kind, and never while
     /// the clock only rolls or is told what it already runs at.
-    ///
-    /// Mutations (run): `restart` not bumping → the seek to the same beat
-    /// keeps generation 0 → fails; `set_tempo` restarting on an unchanged
-    /// tempo → the "unchanged" arm moves it → fails; `mark_play_start` a
-    /// no-op → fails.
     #[test]
     fn every_discontinuity_and_nothing_else_moves_the_generation() {
         let mut c = FrameClock::new(Beat(2.0), Bpm::of(120.0), SR);

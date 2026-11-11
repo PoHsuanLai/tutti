@@ -297,11 +297,6 @@ mod tests {
 
     /// A refused `reconfigure` reports the refusal and leaves the activation
     /// as it was: the previous configuration, both halves live.
-    ///
-    /// Mutation: dropping the re-activation of the previous configuration on
-    /// refusal (`Ok(pair) => self.pair = Some(pair)` in the refusal arm of
-    /// `reconfigure` made a no-op) leaves no pair, so the `processor` read
-    /// below panics.
     #[test]
     fn a_refused_reconfigure_keeps_the_previous_activation() {
         let mut active = Active::<Fake>::activate(Plugin, at(48_000.0)).expect("activates");

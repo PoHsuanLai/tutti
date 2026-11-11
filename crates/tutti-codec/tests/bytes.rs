@@ -11,13 +11,6 @@
 //! is asserted through `assert_golden`, on the target the figures were recorded
 //! on, because its encoder calls libm (the window's cosine, the Rice parameter's
 //! logarithm).
-//!
-//! Mutations (each run, each fails the rows named, then reverted): writing the
-//! extensible header for `bits() >= 16` fails the stereo 16-bit WAV rows;
-//! `Pcm::quantize` truncating instead of rounding fails the integer WAV rows;
-//! a zero speaker mask fails the multichannel WAV rows; `FlacLevel::Fastest`
-//! given the side-stereo modes, or `Medium` the `Standard` LPC order, fails the
-//! FLAC rows of those levels.
 
 #![cfg(any(
     feature = "encode-wav",

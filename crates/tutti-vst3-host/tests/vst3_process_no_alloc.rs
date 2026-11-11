@@ -24,8 +24,7 @@
 //! neither reaches the automation path — they were measured passing with a
 //! deliberate `vec![]` inserted into `ParamValueQueueImpl::refill_from_queue`.
 //! [`process_with_automation_does_not_allocate`] is what covers that path, and
-//! it catches the same mutation. Any future RT assertion here should be
-//! mutation-tested the same way before it is trusted.
+//! it catches the same `vec![]`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -284,9 +283,6 @@ fn process_with_midi_does_not_allocate() {
 /// 73 events on the stack and heap-allocated for the 74th. Then a block past
 /// the expressions' budget: the rest is dropped and counted, still without
 /// allocating.
-///
-/// Mutation (run): the input list's sort back to std's
-/// `events.sort_by_key(|e| e.sample_offset())` aborts in the first gate.
 #[test]
 #[ignore]
 fn process_with_hundreds_of_events_does_not_allocate() {

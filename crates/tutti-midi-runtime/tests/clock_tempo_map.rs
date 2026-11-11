@@ -21,8 +21,6 @@
 //! so it is `ceil(x + e)` with `|e| <= E` for the exact frame position `x`:
 //! within one frame of `ceil(x)`, and equal to it unless `ceil(x) - x` is
 //! within `E` of 0 or of 1.
-//!
-//! Each test names the mutation that fails it.
 
 use std::sync::Arc;
 
@@ -218,11 +216,6 @@ fn frames_of(sent: &[Sent], kind: Kind) -> Vec<u64> {
 /// frame at or after `seconds(k / 24) x 48 000`, piecewise linear (a step is
 /// exact: the walker takes the segment's own tempo and re-seats on the map's
 /// beat at the step). All 24 ticks of every beat are there, none twice.
-///
-/// Mutation (run): `ClockNode::process` ticking the block's first segment only
-/// (`.take(1)` on `cx.env.segments()`) -> every tick after the first tempo
-/// change of a block is placed at the old tempo or lost -> fails. A tick at
-/// the block's first-segment tempo for the whole block is the same mutation.
 #[test]
 fn a_step_map_puts_every_tick_on_the_maps_frame() {
     let frames = 16 * 48_000; // 16 s: 24 + ... beats, past every step.
@@ -250,13 +243,6 @@ fn a_step_map_puts_every_tick_on_the_maps_frame() {
 /// exact. The ticks are not all exactly `ceil(x)` (the bound is reached), so
 /// the test cannot pass on a clock that is the curve by another route; and
 /// there are exactly 24 ticks to a beat across the ramp.
-///
-/// Mutation (run): `ClockNode::process` ticking only the first segment of a
-/// block (`.take(1)` on `cx.env.segments()`) -> the later cells of a block
-/// send nothing, ticks are lost -> fails (all five tests of this file fail).
-/// `ClockNode::process` handing `tick` the block's `block_len` instead of the
-/// segment's `seg.block_len` -> a segment's ticks run past it -> fails (all
-/// five).
 #[test]
 fn a_ramp_puts_every_tick_within_the_grid_bound_of_the_maps_frame() {
     let frames = 5 * 48_000;
@@ -304,11 +290,6 @@ fn a_ramp_puts_every_tick_within_the_grid_bound_of_the_maps_frame() {
 /// at 8 changes runs in the 4 096-frame block). From beat 2 the only Song
 /// Position is the one of the start: one, on frame 0, of 8 sixteenths, with
 /// its Continue. Ticks are counted exactly: `24 b + 1` ticks reach beat `b`.
-///
-/// Mutation (run): `SEEK_EPSILON_BEATS` = 0.0 (any difference between a
-/// segment's start and the previous end is a locate) -> a Song Position on
-/// ramp cell edges (the chord's end and the next start differ by an ulp) ->
-/// fails (this test, and the locate test, which counts its Song Positions).
 #[test]
 fn a_ramp_or_step_boundary_is_not_a_locate() {
     for (name, m, secs, beats) in [
@@ -347,11 +328,6 @@ fn a_ramp_or_step_boundary_is_not_a_locate() {
 /// map and the step map at blocks of 1, 64, 100, 512, 1 000 and 4 096 (the
 /// last two reach the graph with more than 8 cell changes, so the engine
 /// splits them): every event, Start and ticks, on the same absolute frame.
-///
-/// Mutation (run): `ClockNode::process` ticking only the first segment of a
-/// block (`.take(1)`) -> fails, and with `seg.block_len` replaced by the whole
-/// `block_len` -> fails (the 1-frame block is the reference's 512 only when
-/// each segment is ticked for its own length).
 #[test]
 fn the_ticks_do_not_depend_on_the_block_size() {
     for (name, m, frames) in [("ramp", ramp(), 4 * 48_000), ("steps", steps(), 8 * 48_000)] {
@@ -374,10 +350,6 @@ fn the_ticks_do_not_depend_on_the_block_size() {
 /// rendered here: it is the same seat on the wrap frame (the engine's
 /// `tempo_ramps` tests pin the walker's seat), and `clock_master`'s unit
 /// tests pin the wrap's Song Position at a constant tempo.
-///
-/// Mutation (run): `SEEK_EPSILON_BEATS` = 1e3 (no locate is ever seen) -> no
-/// Song Position at the seat -> fails (only this test); `SEEK_EPSILON_BEATS` =
-/// 0.0 -> Song Positions on cell edges -> fails.
 #[test]
 fn a_locate_inside_a_ramp_sends_one_song_position_then_the_maps_ticks() {
     let rig = rig(&ramp(), false);
@@ -418,9 +390,6 @@ fn a_locate_inside_a_ramp_sends_one_song_position_then_the_maps_ticks() {
 /// whatever the tempo does (the grid is in frames: `rate / (4 fps)`), the
 /// stream is the same at block sizes 64, 100 and 512 and a ramp sends no
 /// Song Position.
-///
-/// Mutation (run): `ClockNode::process` ticking only the first segment of a
-/// block (`.take(1)`) -> the quarter-frames of later cells are lost -> fails.
 #[test]
 fn mtc_keeps_wall_clock_time_across_a_ramp() {
     let frames = 4 * 48_000;

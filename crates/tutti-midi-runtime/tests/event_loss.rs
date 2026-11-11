@@ -127,10 +127,6 @@ impl Rig {
 /// the fixed 256. (A block past 8,192 gets 8,192: at 16,384 the clip's 10,923
 /// events a block overflow, and that is reported;
 /// `a_block_past_the_cap_overflows_and_says_so`.)
-///
-/// Mutation: size the port at a fixed 256 (`capacity: 256` regardless of
-/// `prepare`, in `MidiClipNode::prepare`) → the longer blocks lose events →
-/// fails.
 #[test]
 fn a_dense_clip_loses_nothing_whatever_the_block() {
     let events = || {
@@ -155,8 +151,6 @@ fn a_dense_clip_loses_nothing_whatever_the_block() {
 /// and all 200 end; none is left sounding.
 ///
 /// The same chord left 144 of the 200 sounding to the end of the file.
-///
-/// Mutation: as above (fixed 256) → the chord's note-offs are refused → fails.
 #[test]
 fn a_chord_ends_in_a_long_block() {
     let events = (0..200).flat_map(|i| [at(10, on(i)), at(500, off(i))]);
@@ -176,10 +170,6 @@ fn a_chord_ends_in_a_long_block() {
 ///
 /// The executor's counter used to read 44 here: the swallowed note-offs were
 /// never counted.
-///
-/// Mutation: drop `out.withhold()` for the off of a refused note-on in
-/// `Sending::off` → the count is 44 → fails. Mutation: write the note-off
-/// of a refused note-on anyway → 300 note-offs reach the sink → fails.
 #[test]
 fn a_loss_is_counted_exactly_and_leaves_no_orphan() {
     let events = (0..300).flat_map(|i| [at(10, on(i)), at(500, off(i))]);
@@ -211,9 +201,6 @@ fn a_loss_is_counted_exactly_and_leaves_no_orphan() {
 ///
 /// Before, a refused note-off was never retried while the transport
 /// rolled: 104 notes stayed on until it stopped.
-///
-/// Mutation: skip `pay` in `NoteLedger::block` → the 104 are never sent →
-/// fails. Mutation: skip `owe` on a refused note-off → the same.
 #[test]
 fn a_refused_note_off_goes_out_in_a_following_block() {
     let first = (0..200).flat_map(|i| [at(0, on(i)), at(70, off(i))]);
@@ -257,9 +244,6 @@ fn a_refused_note_off_goes_out_in_a_following_block() {
 /// The port is sized from the block the node was prepared for, and again
 /// after a re-prepare: 256 at 64 frames, one a frame after that, the cap at
 /// 1,048,576.
-///
-/// Mutation: ignore `prepare` in `MidiClipNode::prepare` (leave the
-/// capacity at its floor) → 1,024 reads 256 → fails.
 #[test]
 fn the_port_follows_the_block() {
     for (block, want) in [
@@ -284,9 +268,6 @@ fn the_port_follows_the_block() {
 /// The ingest node is sized from the block it is prepared for: 512 events up
 /// to a 4,096-frame block, an eighth of the block's frames past that (1,024 at
 /// 8,192, 2,048 at 16,384).
-///
-/// Mutation: ignore `prepare` in `MidiIngestNode::prepare` → 8,192 reads 512
-/// → fails.
 #[test]
 fn the_ingest_node_follows_the_block() {
     use tutti_midi_runtime::MidiIngestNode;
@@ -305,9 +286,6 @@ fn the_ingest_node_follows_the_block() {
 /// The harmony node's port is sized at two events a frame: a loop of 8 frames
 /// with a chord and a scale change in it, in a 1,024-frame block, is 128
 /// passes of two events each, 256 events. Its port, of 2,048, holds them.
-///
-/// Mutation: leave the capacity at its floor of 256 plus nothing (ignore
-/// `prepare`) → the port reads 256 at 1,024 frames → fails.
 #[test]
 fn the_harmony_port_follows_the_block() {
     use tutti_midi_runtime::HarmonyNode;
@@ -331,9 +309,6 @@ fn the_harmony_port_follows_the_block() {
 /// Refused or withheld: 44 + 360 + 1 repeat = 405 (the writer counts every
 /// attempt); the repeat and the 360 sent are taken back, so 44 are lost, the
 /// note-ons. All 400 note-offs arrive.
-///
-/// Mutation: drop `out.recovered()` in the failed branch of `Sending::pay` → lost is
-/// 45 → fails. Mutation: drop it after a sent note-off → lost is 404 → fails.
 #[test]
 fn a_note_off_refused_twice_and_sent_is_not_lost() {
     let held = (0..400).flat_map(|i| {
@@ -358,9 +333,6 @@ fn a_note_off_refused_twice_and_sent_is_not_lost() {
 /// clear A's mark. 256 other notes fill the port on frame 10 with A the
 /// 257th (refused); B starts the key on frame 70 (a later block) and A ends
 /// on frame 100, B on frame 200. Lost: A's note-on and A's note-off, 2.
-///
-/// Mutation: clear the refused mark when a note-on takes the key (the old
-/// line in `Sending::on`) → the count is 1 → fails.
 #[test]
 fn a_note_that_takes_a_refused_key_still_counts_the_old_notes_off() {
     let filler = (1..257).map(|i| at(10, on(i)));
@@ -377,14 +349,6 @@ fn a_note_that_takes_a_refused_key_still_counts_the_old_notes_off() {
 /// A mark left by a refused note-on does not survive a seek: playing on
 /// from beat 0 with the note-on refused, then seeking past it, its note-off
 /// is not a loss of this pass.
-///
-/// Mutations (run): `Visit::jump` not calling `release_all` → fails (with
-/// seven `clip_node` tests). `release_all` keeping the rows that hold only a
-/// mark and not clearing it → the note-off after the seek is counted → fails.
-/// Either half alone (keeping the rows but clearing the mark; clearing nothing
-/// but dropping the rows as now) passes: the held-and-marked row the clear is
-/// for is covered by `a_release_clears_the_mark_of_a_row_that_stays_owed` in
-/// `note_ledger.rs`.
 #[test]
 fn a_seek_forgets_what_the_port_refused() {
     let filler = (1..257).map(|i| at(10, on(i)));
@@ -408,9 +372,6 @@ fn a_seek_forgets_what_the_port_refused() {
 /// the first block's 10,922 events keep 8,192 and a note-off has room past
 /// that; what is lost is counted exactly (`lost_event_count` equals the
 /// events that did not arrive), never zero.
-///
-/// Mutation: lift the cap (`MAX_EVENT_PORT_CAPACITY` 16,384) → nothing is lost
-/// → fails.
 #[test]
 fn a_block_past_the_cap_overflows_and_says_so() {
     let events = (0..10_000u32).flat_map(|i| {
@@ -437,9 +398,6 @@ fn a_block_past_the_cap_overflows_and_says_so() {
 /// note-offs (the port's 256 and its note-off room); the other 104 are owed.
 /// The block ends there: 104 held notes have no note-off, and the figure says
 /// 104, not 1. Sent on the next block, they are taken back.
-///
-/// Mutation: stop counting at the first refused push in `release` (return
-/// there, as it did) → 1 → fails.
 #[test]
 fn a_release_the_port_cannot_hold_counts_every_note_left_on() {
     let events = (0..400).map(|i| at(if i < 200 { 10 } else { 70 }, on(i)));

@@ -42,9 +42,6 @@ mod tests {
 
     /// The whole host range is a bijection: every `(channel, note)` mints a
     /// distinct id and every id decodes back to the pair that made it.
-    ///
-    /// Mutation (run): `note_id_for` returning `note * 16 + channel` → the
-    /// pairs no longer decode → fails.
     #[test]
     fn round_trips_within_host_range() {
         for channel in 0..16u8 {
@@ -60,9 +57,6 @@ mod tests {
         );
     }
 
-    /// Mutation (run): `note_id_to_channel_note` decoding `id / 128` and
-    /// `id % 128` without the range check → the id past the range decodes →
-    /// fails.
     #[test]
     fn out_of_range_and_wildcard_decode_to_none() {
         assert_eq!(note_id_to_channel_note(-1), None);

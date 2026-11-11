@@ -59,14 +59,6 @@ use tutti_nodes::testing::{Const, bass_send, vbap_mix};
 /// does to the graph it exports (on `tutti_graph`, the topology's global
 /// outputs grown), and proves widening a stereo graph does NOT lose the
 /// surround channels.
-///
-/// Also carries the deleted quad-export test (run, each fails here): `vbap_mix`
-/// not wiring panner channel 2 (no rear energy); wiring only the front pair
-/// (`0..2`); every source placed at 45 degrees (the rear-left assertion).
-///
-/// Mutation (run): the widen left out → `connect_output` panics on the
-/// missing output 2; wiring only outputs 0 and 1 → the file is 4-wide with
-/// silent rears, and the rear-left assertion fails.
 #[test]
 fn stereo_net_widened_then_exports_four_channels() {
     // Build the surround producer inside a STEREO-output graph (like the live one).
@@ -132,9 +124,6 @@ fn stereo_net_widened_then_exports_four_channels() {
 /// file, not just the graph.
 ///
 /// 5.1 file order: FL(0), FR(1), C(2), LFE(3), SL(4), SR(5).
-///
-/// Mutation (run): [`bass_send`] skipping the low-pass→LFE edge → the LFE
-/// assertion fails.
 #[test]
 fn surround_5_1_export_places_center_and_feeds_lfe() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));

@@ -92,9 +92,6 @@ fn pair(r: LoopRange) -> (f64, f64) {
 ///
 /// The expectation is computed from the schedule alone: the last edit at or
 /// before the frame wins.
-///
-/// Mutation (run): `Control::apply` ignoring a `Loop` edit (the block's walk
-/// keeps the old region) → fails at the first edit.
 #[test]
 fn every_frame_sees_one_whole_region() {
     let a = range(0.0, 4.0);
@@ -147,9 +144,8 @@ fn every_frame_sees_one_whole_region() {
 /// region, the frame itself the new. `At::NextBlock` lands on the first
 /// frame of the next block.
 ///
-/// Mutation (run): `Control::apply` ignoring `Loop` → the named frame still
-/// sees the old region → fails. Not covered: a command applied one frame
-/// late; the cut machinery is pinned by `engine_graph`'s timed-command tests.
+/// Not covered: a command applied one frame late; the cut machinery is pinned by
+/// `engine_graph`'s timed-command tests.
 #[test]
 fn a_scheduled_edit_lands_on_its_frame() {
     let a = range(0.0, 4.0);
@@ -179,9 +175,6 @@ fn a_scheduled_edit_lands_on_its_frame() {
 
 /// Disarming keeps the bounds and arming restores them, on the audio side
 /// and in the snapshot; moving the bounds while disarmed does not arm.
-///
-/// Mutation (run): `LoopOwner::apply` resetting the bounds to the default
-/// when disarming → the snapshot's bounds are 0..16 after the disarm → fails.
 #[test]
 fn disarming_keeps_the_bounds() {
     let a = range(2.0, 6.0);
@@ -222,9 +215,6 @@ fn disarming_keeps_the_bounds() {
 
 /// The snapshot is the engine's: sending an edit does not change it, the
 /// block that applies the edit does. An edit due beyond the block waits.
-///
-/// Mutation (run): drop the publish in `LoopOwner::apply` → the snapshot never
-/// follows the engine → fails.
 #[test]
 fn the_snapshot_follows_the_engine() {
     let a = range(1.0, 3.0);
@@ -250,9 +240,7 @@ fn the_snapshot_follows_the_engine() {
 /// the other (which would be (0, 12), a valid range).
 ///
 /// Probabilistic: it needs the reader to land inside a write, so it runs many
-/// edits. Mutation (run): `LoopOwner::apply` first publishing the new start
-/// beside the old end, then the whole region → the reader sees mixed pairs
-/// → fails.
+/// edits.
 #[test]
 fn a_reader_thread_never_sees_a_torn_region() {
     let a = range(0.0, 4.0);

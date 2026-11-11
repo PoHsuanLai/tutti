@@ -141,11 +141,6 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
 /// sample is 1.5 times the undriven synth's at 0.5 (the volume is a plain
 /// gain on the voices' sum), and the cell still holds the knob (the lane
 /// sends to the port and never writes it).
-///
-/// Mutation (run): the synth reading its cell, not the driven port
-/// (`block_driven(&io, 0)` replaced by `None`) → every sample is 1.0 times
-/// → fails. Mutation (run): `SYNTH_PARAMS` not declared in the shape
-/// → `param_range_cell` is `None` → fails.
 #[test]
 fn a_lane_drives_the_master_volume_around_its_cell() {
     let plain = synth(false, 0.0);
@@ -182,10 +177,6 @@ fn a_lane_drives_the_master_volume_around_its_cell() {
 /// detune with no spread are all centred, so the two channels are equal;
 /// the knob at 0 plus the whole of a 0..1 range spreads them hard left and
 /// right, so the channels differ.
-///
-/// Mutation (run): the unison engine reading its spread cell, not
-/// the driven port (`block_driven(&io, 2)` replaced by `None`) → the
-/// channels stay equal → fails.
 #[test]
 fn a_lane_drives_the_unison_spread() {
     let [l, r] = render(synth(true, 10.0), None);
@@ -220,10 +211,6 @@ fn a_lane_drives_the_unison_spread() {
 /// cents are one saw three times over; the knob at 0 plus 20 cents (a fifth
 /// of a 0..100 range) beats, and sounds as the synth does with its own
 /// detune at 20 cents.
-///
-/// Mutation (run): the unison engine reading its detune cell, not
-/// the driven port (`block_driven(&io, 1)` replaced by `None`) → the
-/// driven synth stays at 0 cents → fails.
 #[test]
 fn a_lane_drives_the_unison_detune() {
     let s = synth(true, 0.0);

@@ -322,9 +322,6 @@ mod tests {
     /// Covering both variants, not one representative: they are separate
     /// sends, so one whose `Result` went unpropagated would accept a loop
     /// indefinitely and do nothing, indistinguishable from working playback.
-    ///
-    /// Mutation (run): `Stream::set_loop` answering `Ok(())` whatever the send
-    /// said -> fails.
     #[test]
     fn a_stream_on_a_gone_streamer_reports_it() {
         let (tx, queue) = crossbeam_channel::bounded(8);
@@ -345,10 +342,6 @@ mod tests {
     /// negative or NaN start or end answers `LoopError::Position`, sends
     /// nothing, and leaves the stream's loop as it was; the first frame is a
     /// valid point.
-    ///
-    /// Mutation (run): `loop_command`'s `frame` back to `p.max(0.0) as u64`
-    /// (the old clamp) -> the negative start is queued as 0 and the test fails
-    /// at the first `assert_eq!`.
     #[test]
     fn a_negative_loop_position_is_refused() {
         let (tx, queue) = crossbeam_channel::bounded(8);
@@ -366,10 +359,6 @@ mod tests {
     /// Every command a stream sends names that stream, and only it: two streams
     /// on one queue each send their own id, for a loop, a clear and the close
     /// their drop sends (B4: a command meant for one cannot name another).
-    ///
-    /// Mutation (run): `set_loop` sending `StreamId(0)` for every stream -> the
-    /// second stream's loop names the first -> fails. Mutation (run): `Drop`
-    /// sending the close without the stream's id (`StreamId(0)`) -> fails.
     #[test]
     fn a_stream_names_itself_in_every_command() {
         let (tx, queue) = crossbeam_channel::bounded(16);
@@ -411,10 +400,6 @@ mod tests {
     /// send fails**: a stream whose streamer is gone keeps the loop and the
     /// direction it was last given, and says so, rather than claim a
     /// setting nobody received.
-    ///
-    /// Mutation (run): `set_loop` recording `self.loop_` before the send ->
-    /// the failed loop is the stream's loop -> fails. Mutation (run):
-    /// `set_direction` recording before the send -> fails.
     #[test]
     fn a_failed_send_leaves_the_stream_as_it_was() {
         let (tx, queue) = crossbeam_channel::bounded(8);

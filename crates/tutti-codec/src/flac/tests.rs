@@ -14,10 +14,6 @@ fn configs(panic_at: Option<usize>) -> Configs {
 /// within bounded time, instead of leaving the producer waiting on a
 /// frame that never comes. 200 blocks keep the queue full, so the
 /// producer is blocked on `done` when the panic lands.
-///
-/// Mutation (run): drop the `catch_unwind` (encode directly, the hook's
-/// `panic!` unwinding the worker) → the export never returns and the
-/// 30 s guard below fails the test.
 #[test]
 #[cfg_attr(miri, ignore = "spawns encoder threads and waits on a clock")]
 fn a_panicking_worker_ends_the_export_with_an_error() {
@@ -43,9 +39,6 @@ fn a_panicking_worker_ends_the_export_with_an_error() {
 /// An empty export states valid block sizes (the stream's, 4 096 both)
 /// and "unknown" frame sizes, not flacenc's unset 65 535 / 0 and
 /// `u32::MAX` / 0.
-///
-/// Mutation (run): set the block sizes only when a frame was written
-/// (`if self.written > 0`) → min 65 535 → fails.
 #[test]
 #[cfg_attr(miri, ignore = "spawns encoder threads")]
 fn an_empty_stream_states_valid_sizes() {
@@ -68,9 +61,6 @@ fn an_empty_stream_states_valid_sizes() {
 /// After a frame is lost to a sink failure the writer neither waits for it nor
 /// queues more: `write` and `finish` return errors promptly. (It once waited for
 /// the lost frame forever once `2 x workers` blocks were in flight.)
-///
-/// Mutation (run): never setting the `failed` flag (`self.failed = false`)
-/// fails it.
 #[test]
 #[cfg_attr(miri, ignore = "spawns encoder threads and waits on a clock")]
 fn a_writer_that_lost_a_frame_fails_promptly() {

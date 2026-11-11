@@ -346,8 +346,6 @@ where
 ///     cutoff: Param64<Hz>, // `Param<Hz>`
 /// }
 /// ```
-// Mutation (run) for the `compile_fail` doctest: `Raw = f64` dropped from
-// `Param64`'s struct bound → it compiles → fails.
 pub struct Param64<U: Unit<Raw = f64>> {
     inner: AtomicU64,
     _unit: PhantomData<U>,
@@ -398,10 +396,6 @@ mod tests {
     /// Both `f64` units round-trip through the cell bit for bit: a value `f32`
     /// cannot hold, an hour's position at 48 kHz plus a fraction, and a `NaN`
     /// whose payload bits survive `to_bits`/`from_bits`.
-    ///
-    /// Mutation (run): `store` through `v.to_raw() as f32 as f64` → the
-    /// precision and position cases lose their low bits and the payload `NaN`
-    /// comes back with its payload truncated → fails.
     #[test]
     fn param64_round_trips_its_bits() {
         let nan = f64::from_bits(0x7ff8_0000_dead_beef);
@@ -428,10 +422,6 @@ mod tests {
 
     /// An `f64` unit's `Param` holds the full width, shares one cell across
     /// handles, and a `ParamCell` reads it as `f32` and writes it widened.
-    ///
-    /// Mutation (run): `ParamRaw for f64` stores `self as f32 as f64` → the
-    /// first assert loses the low bits and fails; `ParamCell::store` writing
-    /// into a fresh cell instead of the shared one → the last assert fails.
     #[test]
     fn an_f64_param_keeps_its_width_and_its_cell_is_shared() {
         use crate::value::units::Seconds;
@@ -449,10 +439,6 @@ mod tests {
     }
 
     /// `detach` keeps the value and cuts the cell both ways.
-    ///
-    /// Mutation: make `detach` a no-op → the live write reaches the detached
-    /// copy and the second `assert_eq!` fails; make it
-    /// `Self::new(U::default())` → the value is lost and the first fails.
     #[test]
     fn detach_keeps_the_value_and_severs_the_cell() {
         let live = Param::new(Hz(440.0));

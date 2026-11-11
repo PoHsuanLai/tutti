@@ -410,11 +410,6 @@ mod tests {
 
     /// An audio-ports rescan asks for a restart only when a flag that changes a
     /// buffer's shape is set; a cosmetic name change asks for nothing.
-    ///
-    /// Mutation (run): `needs_deactivate` replaced by `true` in the callback →
-    /// the names-only rescan raises `IoChanged` and the first assertion fails;
-    /// by `false` → the channel-count rescan raises nothing and the second
-    /// fails.
     #[test]
     fn a_ports_rescan_asks_for_a_restart_only_for_a_change_of_shape() {
         let state = HostState::new(
@@ -430,9 +425,6 @@ mod tests {
     }
 
     /// Two rescans between takes keep both requests, each once.
-    ///
-    /// Mutation (run): the params callback raising only the first scope it
-    /// finds set → the `Text` request is lost and the assertion fails.
     #[test]
     fn rescans_between_takes_accumulate_rather_than_overwrite() {
         let state = HostState::new(
@@ -452,9 +444,6 @@ mod tests {
     }
 
     /// A restart, a callback, a latency and a tail change each reach the word.
-    ///
-    /// Mutation (run): `tail_changed` raising `LatencyChanged` → the tail
-    /// request is missing and the assertion fails.
     #[test]
     fn the_plain_callbacks_raise_their_requests() {
         let state = HostState::new(
@@ -478,9 +467,6 @@ mod tests {
 
     /// Every CLAP severity has its tag, and one the host does not know is
     /// `UNKNOWN` rather than a wrong label.
-    ///
-    /// Mutation: map `CLAP_LOG_WARNING` to `"INFO"`: the first assertion
-    /// fails.
     #[test]
     fn each_severity_has_its_label() {
         assert_eq!(

@@ -592,12 +592,6 @@ mod tests {
     /// in frames, signed.** At 120 BPM and 48 kHz a clock is 1 000 frames;
     /// at 90 BPM and 44.1 kHz it is 1 225. A quarter of a clock past a clock
     /// is behind it (negative), three quarters is ahead of the next.
-    ///
-    /// Mutation: `clocks.ceil()` for `clocks.round()` (the *next* clock) →
-    /// the -250 case reads 750 → fails. Mutation: drop the `tempo <= 0.0`
-    /// gate → a zero tempo saturates to `Some(i32::MAX)` → fails. Mutation:
-    /// `/ clocks_per_quarter` dropped from `to_nearest` → 24 times too far →
-    /// fails.
     #[test]
     fn samples_to_nearest_clock_is_the_signed_distance_on_the_24_ppq_grid() {
         let at = |tempo: f64, rate: f64, quarters: f64| {
@@ -624,13 +618,6 @@ mod tests {
     /// **The next-beat offset is the distance to the next whole beat, in
     /// frames; on a beat and while stopped it is zero.** At 120 BPM and 48 kHz
     /// a beat is 24 000 frames; at 90 BPM and 44.1 kHz it is 29 400.
-    ///
-    /// Mutation: `beats.ceil()` for `beats.floor()` → the distance to the
-    /// previous beat (18 000 for 2.25) → fails. Mutation: drop the
-    /// `frames >= frames_per_beat.round()` fold → 3.0 + 1e-9 reads 24 000, not
-    /// 0 → fails. Mutation: drop the `!self.state.playing` early return → the
-    /// stopped case reads 6 000 → fails. Mutation: drop the `tempo <= 0.0`
-    /// gate → a zero tempo reads `Some(0)` or saturates → fails.
     #[test]
     fn samples_to_next_beat_is_the_distance_to_the_next_whole_beat() {
         let at = |tempo: f64, rate: f64, beats: f64, playing: bool| {
@@ -666,12 +653,6 @@ mod tests {
     /// **A playhead that advances as playing predicts is not a change; the
     /// first block, a start, a stop, a seek and a loop wrap are.** 512 frames
     /// at 120 BPM / 48 kHz is `512 / 24 000` beats.
-    ///
-    /// Mutation: drop `!self.seen ||` → the first block reads unchanged →
-    /// fails. Mutation: drop `playing != self.playing` → the start and stop
-    /// read unchanged → fails. Mutation: drop `|| jumped` → the seek and wrap
-    /// read unchanged → fails. Mutation: advance by `frames / rate` without
-    /// `* tempo / 60.0` → the steady blocks read as jumps → fails.
     #[test]
     fn a_playhead_watch_reports_starts_stops_and_jumps_only() {
         let step = 512.0 / 24_000.0;
@@ -696,10 +677,6 @@ mod tests {
 
     /// `reset` makes the next block a change, and a snapshot with no usable rate
     /// detects only start and stop, not jumps (it cannot predict one).
-    ///
-    /// Mutation: `reset` as a no-op → the post-reset block reads unchanged →
-    /// fails. Mutation: `None => true` for a missing prediction (a jump) → the
-    /// rate-0 steady block reads changed → fails.
     #[test]
     fn a_playhead_watch_resets_and_degrades_without_a_rate() {
         let mut w = PlayheadWatch::new();

@@ -288,8 +288,6 @@ mod tests {
     /// The plugin reads the snapshot's tempo unchanged (the project map's,
     /// which the engine's plugin node puts there); VST2 has no slope field,
     /// so the snapshot's `tempo_inc` reaches nothing.
-    ///
-    /// Mutation: `tempo: 120.0` in `build_vst2_time_info` -> fails.
     #[test]
     fn the_snapshots_tempo_is_what_the_plugin_reads() {
         let transport = TransportInfo::new().with_tempo(97.5).with_tempo_inc(0.001);
@@ -354,13 +352,6 @@ mod tests {
     ///
     /// The distance is at the snapshot's rate, as VST3's is: an instance
     /// prepared at another rate does not rescale it.
-    ///
-    /// Mutation: set `NANOSECONDS_VALID` unconditionally → the clockless
-    /// snapshot claims a host time → fails. Mutation: `samples_to_next_clock:
-    /// 0` → fails. Mutation: drop the `VST_CLOCK_VALID` gate (always set) →
-    /// the zero-tempo snapshot claims a clock → fails. Mutation: take the
-    /// clock at the instance's rate (`with_sample_rate(sample_rate)`) → the
-    /// 96 kHz instance reads -500 → fails.
     #[test]
     fn host_time_and_midi_clock_are_filled_and_flagged_when_known() {
         let transport = TransportInfo::new()

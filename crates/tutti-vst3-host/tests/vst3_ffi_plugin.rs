@@ -59,10 +59,6 @@ fn activate(plugin: &mut Plugin) {
 }
 
 /// No audio half until the plugin is set up and active; one at a time after.
-///
-/// Mutation: drop the `state.active && state.setup.is_some()` check in
-/// `Shared::take_audio_side` and the first assertion fails; drop the
-/// `audio_out` swap and the last one fails.
 #[test]
 fn the_audio_half_needs_a_set_up_active_plugin_and_comes_once() {
     let (_module, mut plugin) = plugin();
@@ -77,9 +73,6 @@ fn the_audio_half_needs_a_set_up_active_plugin_and_comes_once() {
 }
 
 /// While the audio half exists, the state changes are refused.
-///
-/// Mutation: make `lock_for_control` ignore `audio_out` and the first
-/// assertion fails.
 #[test]
 fn state_changes_are_refused_while_the_audio_half_is_out() {
     let (_module, mut plugin) = plugin();
@@ -105,10 +98,6 @@ fn state_changes_are_refused_while_the_audio_half_is_out() {
 
 /// A real block through the audio half; after the plugin is dropped the half
 /// answers `NotInitialized` and touches nothing.
-///
-/// Mutation: drop the `retired` flag in `Plugin::drop` and the post-drop call
-/// reaches a terminated processor (the probe then answers or crashes instead
-/// of `NotInitialized`).
 #[test]
 fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
     let (_module, mut plugin) = plugin();
@@ -176,10 +165,6 @@ const SETUP_FAILS: &str = "7";
 /// A setup the plugin answers `kResultFalse` to is tolerated (the host's
 /// activation proceeds, as `a_refused_setup_is_tolerated_by_design` pins), and
 /// the setup is recorded so the audio half is handed out and holds blocks to it.
-///
-/// Mutation: record the setup only for `Ok(true)` and the last assertion fails.
-/// (A setup call that *errors* clears the previous setup; no probe behaviour
-/// makes `setupProcessing` error, so that path is not exercised here.)
 #[test]
 fn a_setup_answered_false_is_tolerated_and_recorded() {
     // SAFETY: nextest runs each test in its own process, so nothing else reads
@@ -204,8 +189,6 @@ fn a_setup_answered_false_is_tolerated_and_recorded() {
 /// overflow panic in the host's COM release) and sometimes does not. Without
 /// the lock this test killed the process (abort or segfault) in 99 of 100
 /// runs on the machine it was written on; with it, none of 350 runs failed.
-///
-/// Mutation: remove the lock in `Module::open` and the process aborts.
 #[test]
 fn concurrent_opens_of_one_image_do_not_corrupt_the_plugins_globals() {
     const THREADS: usize = 8;
@@ -244,8 +227,6 @@ fn concurrent_opens_of_one_image_do_not_corrupt_the_plugins_globals() {
 /// the process died in 37 of 40 runs on the machine it was written on (an
 /// abort in `~CPluginFactory`); with it, none of 100 runs failed. Fewer loops
 /// detect less: 4 x 20,000 killed 19 of 60 runs, 8 x 100 only 2 of 200.
-///
-/// Mutation: remove the lock in `Module::drop` and the process aborts.
 #[test]
 fn concurrent_opens_and_drops_of_one_image_do_not_corrupt_the_plugins_globals() {
     const THREADS: usize = 3;
@@ -273,9 +254,6 @@ fn concurrent_opens_and_drops_of_one_image_do_not_corrupt_the_plugins_globals() 
 /// the lock. `open` builds a `Module` only as its last step; one dropped on
 /// that path would wait on the lock it holds. The check runs on a worker so a
 /// self-deadlock fails the test instead of hanging it.
-///
-/// Mutation (run): taking the lock a second time in `open` stops the worker
-/// from answering and the test fails after its 30 s wait.
 #[test]
 fn a_failed_open_does_not_deadlock_the_next() {
     #[cfg(target_os = "linux")]

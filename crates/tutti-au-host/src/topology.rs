@@ -153,9 +153,6 @@ mod tests {
     /// The tag's low 16 bits are its channel count, so this checks the table
     /// against Apple's own arithmetic rather than against itself — a
     /// transcription that dropped or doubled a speaker fails here.
-    ///
-    /// Mutation (run, on macOS): dropping `FrontCenter` from
-    /// the `Pentagonal` row fails this at that tag.
     #[test]
     fn every_topology_matches_the_tags_own_channel_count() {
         for tag in [

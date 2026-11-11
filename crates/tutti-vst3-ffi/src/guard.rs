@@ -78,8 +78,6 @@ mod tests {
 
     #[test]
     fn an_out_writes_through_a_pointer_and_skips_a_null_one() {
-        // Mutations (run, each fails): `set` without the null check -> SIGSEGV on
-        // the null case; `set` that drops the value -> the slot stays 0.
         let mut slot = 0;
         // SAFETY: `slot` outlives `out`.
         let out = unsafe { Out::new(&mut slot) };
@@ -93,8 +91,6 @@ mod tests {
 
     #[test]
     fn a_panicking_body_returns_the_fallback() {
-        // Mutation: replace `catch_unwind(..)` with `Ok(f())`: the panic
-        // propagates and the test fails.
         let r: tresult = guard(kInternalError, || panic!("method body"));
         assert_eq!(r, kInternalError);
         let p = guard(std::ptr::null::<u8>(), || -> *const u8 { panic!("again") });
@@ -103,7 +99,6 @@ mod tests {
 
     #[test]
     fn a_returning_body_keeps_its_value() {
-        // Mutation: return `fallback` unconditionally: fails here.
         assert_eq!(guard(0_i32, || 41 + 1), 42);
     }
 }

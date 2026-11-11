@@ -201,9 +201,6 @@ const TRANSPORT_CHANGED: i32 = 1;
 /// own test (`time_info.rs`) hands it the predecessor by hand; this pins that
 /// `process_f32` keeps it, through the writer's own copy, from one block to
 /// the next.
-///
-/// Mutation (run): `update_transport` handing the builder `None` instead of
-/// the writer's last snapshot → the start block reports no edge → fails.
 #[test]
 fn the_transport_changed_edge_spans_blocks() {
     let _guard = lock_probe();

@@ -37,9 +37,6 @@ mod tests {
     ///   during a bounce arrives when `mode_changed` is already `false`.
     /// - the two `mode_changed` rows are the ordinary case: a change reaches
     ///   every plugin, told or not.
-    ///
-    /// Mutations (each run, each failed): `mode_changed` alone (the
-    /// `(false, false)` row); `true` (the `(false, true)` row).
     #[test]
     fn needs_announcement_tells_everyone_on_a_change_and_the_untold_always() {
         let cases = [

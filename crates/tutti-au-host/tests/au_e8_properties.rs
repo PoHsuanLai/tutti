@@ -69,7 +69,7 @@ const ERR_INVALID_PROPERTY: i32 = -10879;
 
 /// The seconds the host writes arrive at the AU unchanged.
 ///
-/// Kills the mutation that matters most on this path: the value is a `Float64`
+/// The value that matters most on this path is a `Float64`
 /// count of *seconds*, and the host holds it as [`Seconds`]. A writer that
 /// converted to samples, or that wrote the `f32` bit pattern into an `f64`
 /// slot, would still return `noErr` — the probe refuses any width but 8 bytes,
@@ -283,8 +283,8 @@ fn the_dependents_query_carries_the_parameter_id_in_the_element_position() {
 /// buffer in 8-byte steps without requiring whole entries reads 4 bytes of the
 /// fragment plus 4 bytes past the end and reports them as a real dependent.
 ///
-/// This test exists because the mutation it kills — `chunks_exact` relaxed to
-/// `chunks` — **survived** against the corpus and against a well-behaved probe:
+/// This test exists because relaxing `chunks_exact` to
+/// `chunks` went unnoticed against the corpus and against a well-behaved probe:
 /// every honest answer is a whole multiple, so nothing in the suite could tell
 /// the two apart. Rather than assert something weaker, the ragged answer was
 /// added to the probe so the distinction has an input that witnesses it.

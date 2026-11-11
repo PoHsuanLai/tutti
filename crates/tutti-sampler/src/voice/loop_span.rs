@@ -287,11 +287,6 @@ mod tests {
     /// after the first wrap, in a file that ends at the loop or past it,
     /// every frame of the loop from 1 (frame 0's tap behind clamps to
     /// itself).
-    ///
-    /// Mutation (run): `idx + 2 <= end - fade` → the frame whose last tap is
-    /// the fade's first is plain → fails. Mutation (run): the
-    /// `looped && idx == resume` exclusion dropped → `resume`'s tap behind
-    /// wraps to `end - 1` → fails.
     #[test]
     fn plain_is_exactly_the_unwrapped_unfaded_taps() {
         let mut plain = 0;
@@ -325,10 +320,6 @@ mod tests {
     /// The fade leads into `start`. A 4-frame fade on `[10, 20)` blends
     /// frames 16..20 toward 6..10, weighted 1/5 … 4/5, and nothing else; the
     /// wrap lands on 10.
-    ///
-    /// Mutation (run): the lead-in `resume + k` (the head replayed) → frame
-    /// 16 blends toward 10 → fails. Mutation (run): the weight `k / fade` →
-    /// frame 16 weighs 0 → fails.
     #[test]
     fn the_fade_blends_the_tail_toward_what_leads_into_start() {
         let span = LoopSpan::unbounded(10, 20, 4).expect("a loop");
@@ -345,11 +336,6 @@ mod tests {
     /// frames before the start) blends frames 16..20 toward the head 2..6 and
     /// wraps to 6, so the last blended frame (almost all 5) is followed by 6.
     /// A loop from frame 0 fades too; the fade is at most half the loop there.
-    ///
-    /// Mutation (run): the head mode removed (the fade clamped to `start`) →
-    /// a 2-frame fade → fails. Mutation (run): `resume` left
-    /// at `start` in head mode → the wrap lands on 2, replaying the head →
-    /// fails.
     #[test]
     fn with_too_little_before_start_the_fade_goes_into_the_head() {
         let span = LoopSpan::unbounded(2, 20, 4).expect("a loop");
@@ -359,7 +345,6 @@ mod tests {
         assert_eq!(span.place(20.0), (6.0, true));
         assert_eq!(span.place(34.0), (6.0, true), "the loop repeats [6, 20)");
         // The whole-frame twin the streamer writes its ring by agrees.
-        // Mutation (run): `place_frame` wrapping to `start` → 2 → fails.
         for pos in [0, 5, 19, 20, 33, 34, 47, 1_000] {
             assert_eq!(span.place_frame(pos) as f64, span.place(pos as f64).0);
         }
@@ -370,9 +355,6 @@ mod tests {
     }
 
     /// A fade is clamped to the loop, and the loop to the file.
-    ///
-    /// Mutation (run): the `min(len)` clamp on `end` removed → a loop past a
-    /// 1 000-frame file keeps its end at 5 000 → fails.
     #[test]
     fn a_fade_is_clamped_to_its_loop_and_the_loop_to_its_file() {
         assert_eq!(
@@ -389,9 +371,6 @@ mod tests {
     /// cursor that has been round a loop — the cursor a loop change leaves
     /// behind the new loop's start. Every tap of 1 500.5 is the file's own
     /// 1 499..1 502 on a loop `[2000, 4000)`, looped or not.
-    ///
-    /// Mutation (run): the back wrap for every tap behind `resume` whenever
-    /// `looped` → 3 499.. → fails.
     #[test]
     fn a_position_before_the_loop_reads_the_file_behind_it() {
         let span = LoopSpan::unbounded(2_000, 4_000, 0).expect("a loop");
@@ -403,10 +382,6 @@ mod tests {
 
     /// Taps wrap through the loop: ahead of a position near `end` they read
     /// `start`, `start + 1`; behind one on `start`, after a wrap, `end - 1`.
-    ///
-    /// Mutation (run): the forward wrap removed (taps clamped to the file) →
-    /// `[18, 19, 20, 21]` → fails. Mutation (run): the `looped` back-tap
-    /// removed → `[9, 10, 11, 12]` after a wrap → fails.
     #[test]
     fn taps_wrap_through_the_loop() {
         let span = LoopSpan::unbounded(10, 20, 0).expect("a loop");

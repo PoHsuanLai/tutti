@@ -8,13 +8,6 @@ use tutti_types::{Azimuth, Elevation, Seconds};
 /// degrees at 48 kHz (scaled by the rate: the f32 rounding of the
 /// blocks contracts over `1 / coeff` frames). The sweeps cover blocks
 /// of 64 and 1024, a path across the seam and a 192 kHz rate.
-///
-/// Mutations (each run, each fails): `gap_closed` returning `coeff`
-/// whatever the step count (one step per block: the response falls
-/// 60 frames behind); `AngleSmoother::advance` taking the arc as `target -
-/// current` (the sweep goes the long way); `solve_block` solving the
-/// gains at the position it started from, before the advance (the gains
-/// are one block behind the position: the `gains` assertion fails).
 #[test]
 fn solve_block_follows_the_exact_one_pole_response() {
     for (rate, block, start, target) in [
@@ -75,9 +68,6 @@ fn solve_block_follows_the_exact_one_pole_response() {
 /// ramp settles, further blocks leave the gains and the smoother state
 /// unchanged, and the gains are the VBAP solution at the target (within
 /// the residual the f32 ramp leaves: under 0.001 degrees).
-///
-/// Mutation (run): `settled_at` set unconditionally after the first
-/// advance → fails (the source is frozen early, far from the target).
 #[test]
 fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
     let mut panner = VbapPanner::new(SpeakerLayout::stereo());
@@ -108,9 +98,6 @@ fn a_held_source_settles_on_the_vbap_solution_at_its_target() {
 }
 
 /// A settled source starts moving again when its target moves.
-///
-/// Mutation (run): `if self.settled_at.is_none()` for the key comparison
-/// (a settled source skips every later advance) → fails.
 #[test]
 fn a_settled_source_moves_again_when_its_target_does() {
     let mut panner = VbapPanner::new(SpeakerLayout::stereo());
@@ -175,14 +162,6 @@ fn settle(panner: &mut VbapPanner, target: Direction, frames: usize) {
 /// advance does**: a new sample rate, a reseed, a different block length.
 /// Each case settles, changes one thing, and checks the next block
 /// against an advance that is never skipped.
-///
-/// Mutations (each run, each fails its case): dropping `frames` from the
-/// `settled_at` key in `solve_block` (`frames` case: a settled 64-frame
-/// source skips the 1024-frame block that still moves); dropping
-/// `self.settled_at = None` from `set_sample_rate` (`rate` case: settled
-/// at 192 kHz, retuned to 8 kHz, the retuned advance is skipped);
-/// dropping it from `reset_state` (`reset` case: reseeded off the target,
-/// the first advance back is skipped).
 #[test]
 fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
     let target = Direction::new(Azimuth(40.0), Elevation(10.0));
@@ -208,9 +187,6 @@ fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
 
 /// A bearing across the seam takes the short way, in one big block
 /// too: from 170 to -170 the value passes 180, never near 0.
-///
-/// Mutation (run): `AngleSmoother::advance` using the plain difference
-/// `target - value` → fails (the value heads to 0).
 #[test]
 fn a_block_across_the_seam_takes_the_short_arc() {
     let mut panner = VbapPanner::new(SpeakerLayout::stereo());

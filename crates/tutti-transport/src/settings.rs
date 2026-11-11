@@ -255,11 +255,6 @@ mod tests {
     /// `set_tempo` is the constant map of that tempo, to the bit, and the
     /// beats fall where the definition puts them: a beat is `60 / bpm`
     /// seconds, so beat 4 at 48 kHz is `4 x 60 x 48 000 / bpm` frames.
-    ///
-    /// Mutation (run): `set_tempo` not publishing (the `publish` line
-    /// removed) -> the map is still the 120 BPM default -> fails; publishing
-    /// `bpm / 60 * 60` instead of `bpm` -> the odd tempo is not the same bits
-    /// -> fails.
     #[test]
     fn set_tempo_publishes_the_constant_map_of_that_tempo() {
         let rate = tutti_types::SampleRate(48_000.0);
@@ -279,9 +274,6 @@ mod tests {
 
     /// A constant map, a map of steps and a map with a ramp are each the
     /// taken whole.
-    ///
-    /// Mutation (run): `set_tempo_map` ignoring a map with a ramp (an early
-    /// return) -> the tempo stays 75.5 and the map stays constant -> fails.
     #[test]
     fn a_constant_a_step_and_a_ramp_map_are_each_taken() {
         use tutti_tempo::{Shape, TempoPoint};
@@ -322,9 +314,6 @@ mod tests {
 
     /// A map a block holds when it is replaced stays retired until the sweep
     /// after the block, then is freed: `reclaim_tempo` is that sweep.
-    ///
-    /// Mutation (run): `reclaim_tempo` returning 0 without scanning -> the
-    /// old map is still alive after the loan ends -> fails.
     #[test]
     fn the_tempo_map_is_swept_by_reclaim_tempo() {
         let s = TransportSettings::new();

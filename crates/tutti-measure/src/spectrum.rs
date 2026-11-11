@@ -846,11 +846,6 @@ mod tests {
     /// coherent gain is 1/2, so `|X| = a N / 4` and `4 |X|^2 / (N/2)^2 = a^2`;
     /// the window puts half the amplitude (6.0206 dB down) on each neighbour
     /// and nothing beyond them.
-    ///
-    /// Mutations (run):
-    /// - the scale `4.0 / (gain * gain)` -> `1.0 / (gain * gain)` -> fails by
-    ///   6 dB.
-    /// - the window as all ones -> fails the neighbour and leakage checks.
     #[test]
     fn a_bin_centred_sine_reads_its_amplitude() {
         let size = 1536; // 1 kHz is bin 32 at 48 kHz
@@ -882,11 +877,6 @@ mod tests {
     /// window's response at an offset of `d` bins, at most 1.4236 dB at half a
     /// bin. The tone's image at `-f` is 64 bins away, where the response is
     /// under -118 dB, so it adds under `1e-5` dB to the bound.
-    ///
-    /// Mutations (run):
-    /// - the window as all ones -> fails (the rectangular loss at half a bin is
-    ///   3.92 dB).
-    /// - the scale as in the test above -> fails.
     #[test]
     fn an_off_centre_sine_loses_the_scalloping_figure() {
         let size = 1536;
@@ -908,9 +898,6 @@ mod tests {
     }
 
     /// Two tones resolve to two peaks at their bins and levels.
-    ///
-    /// Mutation (run): the scale `4.0 / (gain * gain)` -> `1.0 / (gain * gain)`
-    /// -> fails both levels.
     ///
     /// A mis-unrolled ring is not caught here, and why: a tone of whole cycles per window is the same
     /// after a rotation of the ring, so a mis-unrolled ring leaves these levels
@@ -941,11 +928,6 @@ mod tests {
     /// block: a unit impulse at `p` reads `w[p - k hop]` flat across the bins of
     /// each frame that holds it (`10 log10(4 w^2 / (N/2)^2)`), and the floor
     /// in the rest, and a frame is ready exactly at `k hop + size` samples.
-    ///
-    /// Mutations (run):
-    /// - `next_due += hop` -> `next_due += size` -> fails the ready counts.
-    /// - unroll the ring with the two halves swapped, or without the second
-    ///   `copy_from_slice` -> fails the levels.
     #[test]
     fn frames_land_on_the_hop_grid_for_every_size_and_hop() {
         for (size, hop) in [
@@ -1000,9 +982,6 @@ mod tests {
 
     /// The same stream cut into blocks of 1, 7, a hop, a prime and the whole
     /// gives bit-identical levels, peaks, spectrogram and frame count.
-    ///
-    /// Mutation (run): drop the `until_due` bound on `take`, so a block runs
-    /// past a due frame -> fails the cuts that straddle one.
     #[test]
     fn blocks_of_any_size_give_identical_frames() {
         let cfg = config(256, 100)
@@ -1051,10 +1030,6 @@ mod tests {
     /// The time series of that mean has a spread near `sqrt(a / (2 - a) / B)`
     /// against `1 / sqrt(B)` unsmoothed; asserting it under half the latter
     /// is what an averaging that does not average fails.
-    ///
-    /// Mutations (run):
-    /// - `Smoothing::Average` -> `Ballistics::new(0, 0)` -> fails the spread.
-    /// - the step's `* coefficient` -> `* 1.0` -> fails the spread.
     ///
     /// Not covered: the first-frame seed, whose transient is under the
     /// tolerance after 600 frames.
@@ -1109,12 +1084,6 @@ mod tests {
     /// falls by `exp(-dt / tau)` per frame, so the level falls by
     /// `10 log10(e) dt / tau` dB per frame. A rise reads at once: a frame wholly
     /// inside the loud part reads the sine's level whatever came before.
-    ///
-    /// Mutations (run):
-    /// - `Release(tau)` -> `Ballistics::new(tau, tau)` -> fails the attack
-    ///   check.
-    /// - `Release(tau)` -> `Ballistics::new(0, 0)` -> fails the fall.
-    /// - the release time doubled in `ballistics()` -> fails the fall.
     #[test]
     fn release_follows_the_analytic_exponential_and_attack_is_instant() {
         let (size, hop) = (1536, 512);
@@ -1149,13 +1118,6 @@ mod tests {
     /// A tone then silence: the peak holds its level for the hold rounded up
     /// to whole frames, then falls by the decay per second, `decay * dt` a
     /// frame.
-    ///
-    /// Mutations (run):
-    /// - the decay doubled (`cfg.peak_decay.get() * 2.0 * dt.get()`) -> fails
-    ///   the fall.
-    /// - `age.saturating_sub(hold)` -> `age.saturating_sub(hold + 1)` -> fails
-    ///   the fall's start.
-    /// - ceil -> floor in `peak_hold_frames` -> fails the hold length.
     #[test]
     fn peaks_hold_then_decay_at_the_configured_rate() {
         let (size, hop) = (1536, 512);
@@ -1200,11 +1162,6 @@ mod tests {
 
     /// The first `n` frames' columns are all there, and then the newest
     /// `columns` in order: a ramp of amplitudes makes every frame differ.
-    ///
-    /// Mutations (run):
-    /// - `start = (self.head + columns - self.filled) % ..` -> `self.head % ..`
-    ///   -> fails before the ring is full.
-    /// - `filled` never capped -> fails the length.
     #[test]
     fn the_spectrogram_keeps_the_newest_columns_in_order() {
         let (size, hop, columns) = (1536, 512, 5);
@@ -1239,10 +1196,6 @@ mod tests {
     /// bins it holds (counted here from the edges): power sums over a band, it
     /// is not averaged. All bands together hold every bin from `min` to the top
     /// edge.
-    ///
-    /// Mutations (run):
-    /// - sum -> mean in `analyse` (`/ band.len() as f32`) -> fails every band
-    ///   with more than one bin.
     #[test]
     fn a_band_sums_the_power_of_its_bins() {
         let size = 4096;
@@ -1330,11 +1283,6 @@ mod tests {
     /// apart. The window named is for the narrowest band, the first, 5.198 Hz
     /// wide: `rate / width` = 9234 rounded up to a power of two, 16384, where
     /// the same banding is accepted.
-    ///
-    /// Mutations (run):
-    /// - the narrowest width taken as the widest (`f64::min` -> `f64::max`
-    ///   fold in `narrowest`) -> fails the window.
-    /// - `position(..)` reporting `band + 1` -> fails the band index.
     #[test]
     fn an_empty_band_names_itself_and_the_window_that_holds_it() {
         let banding = Banding::Octave {
@@ -1361,8 +1309,6 @@ mod tests {
     /// DC and an even window's Nyquist bin have no image, so a DC offset `A`
     /// reads `20 log10(A)` (the Hann window sums to `N/2`, `|X_0| = A N / 2`)
     /// and a Nyquist tone `A (-1)^n` does too.
-    ///
-    /// Mutation (run): drop the `lone` case from `power` -> both read 6 dB high.
     #[test]
     fn dc_and_nyquist_read_their_amplitude() {
         let size = 1024;
@@ -1384,9 +1330,6 @@ mod tests {
     /// A bin-centred sine inside one band reads its level plus `10 log10(1.5)`
     /// = 1.76 dB: Hann's main bin and two half-amplitude neighbours sum to
     /// `1 + 2 * (1/2)^2` = 1.5 of the sine's power.
-    ///
-    /// Mutation (run): sum -> maximum of the bins in a band -> reads the sine's
-    /// own level and fails.
     #[test]
     fn a_sine_inside_a_band_reads_the_noise_bandwidth_excess() {
         let size = 1536;
@@ -1411,9 +1354,6 @@ mod tests {
     /// exact multiple is not over-held by the `f32` frame interval: 1.0 s at a
     /// hop of 480 samples and 48 kHz is 100 frames, not 101, and 0.1 s (an `f32`
     /// a hair over a tenth) is 10.
-    ///
-    /// Mutation (run): the old `hold / frame_interval` in `f32` -> 101 for
-    /// 1.0 s.
     #[test]
     fn the_hold_is_a_whole_number_of_frames_without_over_holding() {
         let cfg = config(1920, 480);
@@ -1441,14 +1381,6 @@ mod tests {
 
     /// Settings are checked, NaN and infinity included, and sizes are capped
     /// before anything is allocated.
-    ///
-    /// Mutations (run):
-    /// - `MIN_WINDOW` 64 -> 1 -> fails the size cases.
-    /// - drop the `MAX_SPECTROGRAM_CELLS` check -> fails the cell case.
-    /// - drop `check_cells` from `with_banding` -> fails the return-to-bins
-    ///   case.
-    /// - drop the empty-band check (`w[0] >= w[1] + 1000` in `position`) -> fails the fine
-    ///   banding cases.
     #[test]
     fn bad_settings_are_errors() {
         let bad = |r: Result<SpectrumConfig>| matches!(r, Err(Error::InvalidSpectrumParameter(_)));
@@ -1553,11 +1485,6 @@ mod tests {
 
     /// A refused block leaves the state as it was; silence reads the floor;
     /// a huge finite block stays finite; `reset` returns to the first state.
-    ///
-    /// Mutations (run):
-    /// - drop the `is_finite` scan -> NaN reaches the levels.
-    /// - `clamp_power` returning `p` unclamped -> fails the huge-block case.
-    /// - `reset` without `self.peaks.fill` -> fails the reset case.
     #[test]
     fn input_is_checked_and_state_stays_finite() {
         let cfg = config(256, 64).with_spectrogram(FrameCount(4)).unwrap();

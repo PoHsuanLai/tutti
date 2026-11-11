@@ -16,11 +16,6 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, TransportInfo};
 /// **A block skipped for a busy input list is silence, and counted.** The
 /// shared plugin's default mode renders `input + tag`, so a processed block is
 /// never zero and a skipped one is.
-///
-/// Mutation (run, fails): have `process` ignore the `None` from
-/// `stage_input_events` (stage nothing, run the plugin anyway) -> the held
-/// block comes out `input + tag`, not silence, and `lists_busy` is still
-/// counted, so the silence assertion is the one that fails.
 #[test]
 fn a_block_is_skipped_while_the_plugin_holds_the_input_list() {
     let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
@@ -67,10 +62,6 @@ fn a_block_is_skipped_while_the_plugin_holds_the_input_list() {
 /// silence, and counted, never a panic.** A plugin whose worker is still
 /// reading a queue (`getPoint`) when the host stages the next block used to
 /// panic the audio thread in the host's `borrow_mut`.
-///
-/// Mutation (run, fails): `ParamValueQueueImpl::try_stage` on a panicking
-/// `borrow_mut` -> the held block panics ("concurrent borrow detected")
-/// instead of coming out silent.
 #[test]
 fn a_block_is_skipped_while_the_plugin_holds_a_parameter_queue() {
     let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
@@ -118,10 +109,6 @@ fn a_block_is_skipped_while_the_plugin_holds_a_parameter_queue() {
 /// Processing resumes lazily after a stop, and the refusal used to be dropped
 /// (`let _ =`), so the plugin rendered while the host believed it was
 /// processing.
-///
-/// Mutation (run, fails): discard the result of `set_processing(true)` in
-/// `Vst3Processor::process` again -> the block succeeds and the assertion on
-/// the error fails.
 #[test]
 fn a_refused_set_processing_fails_the_block() {
     let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");

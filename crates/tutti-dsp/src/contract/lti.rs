@@ -38,8 +38,6 @@ pub(super) mod design {
     use super::*;
 
     /// Every reachable (and hostile) control gives a stable model.
-    ///
-    /// Mutation (a `Mutant` test): a gain above 1 on every line.
     pub fn stable<D: LtiCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in every(d) {
@@ -57,9 +55,6 @@ pub(super) mod design {
 
     /// The spectral radius of every reachable (and hostile) design is under 1, and
     /// at most 1 where the controls ask for a marginal system (a freeze).
-    ///
-    /// Mutation (run, in `reverb_design.rs`): every comb gain scaled by 1.1, which
-    /// takes the loudest room over 1.
     pub fn radius<D: LtiCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in every(d) {
@@ -76,9 +71,6 @@ pub(super) mod design {
     /// The response at each of the family's [`anchors`](LtiCase::anchors) is the
     /// figure the family's own formula gives, within the anchor's tolerance. A
     /// design with none says so (`vacuity`).
-    ///
-    /// Mutation (run, in `reverb_design.rs`): the input gain scaled by 1.1 (the
-    /// `FIXED_GAIN` of Freeverb) moves the gain at DC.
     pub fn anchors<D: LtiCase>(d: &D) -> Result<(), String> {
         for a in d.anchors() {
             let model = d.design(&a.controls, a.rate);
@@ -105,9 +97,6 @@ pub(super) mod design {
     /// resolves the sharpest pole, and the soundness everywhere, on the first rate
     /// and every 23rd reachable design. Marginal designs, whose peak is a pole on the
     /// unit circle, are left out.
-    ///
-    /// Mutations (run, in `reverb_design.rs`, on a model that lies about its
-    /// `hinf_norm`): halved fails the second check, times 50 the third.
     pub fn norms<D: LtiCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
@@ -159,8 +148,6 @@ pub(super) mod design {
     }
 
     /// The model's `inputs` and `outputs` are the widths the design declares.
-    ///
-    /// Mutation (run, in `reverb_design.rs`): a model that counts one output more.
     pub fn ports<D: LtiCase>(d: &D) -> Result<(), String> {
         let channels = d.channels();
         let (i, o) = (channels.input_width(), channels.output_width());
@@ -192,9 +179,6 @@ pub(super) mod realization {
     /// yet filled the lines, so the level after the input stops can exceed the
     /// level at the stop) is within the network's `tail(floor)`: what the node
     /// reports to the graph covers what the realization rings.
-    ///
-    /// Mutation: the realization retargets every loop gain scaled by 1.03, which rings
-    /// 2.4 times as long at the largest room and so past the network's tail.
     pub fn tail_covers<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
@@ -251,11 +235,6 @@ pub(super) mod realization {
     /// Sixty seconds of noise at the extreme controls stays finite and under the
     /// l1 norm the model gives (the guarantee against overs: `|x| <= 1` gives
     /// `|y| <= l1_norm`), when the model is stable.
-    ///
-    /// Mutation: a gain that grows by 0.01% a frame, standing in for a loop gain
-    /// above unity (a `LoopGain` mutant would not do: Freeverb's `retarget`
-    /// refuses a loop gain of 1 or more, so scaling the network's cannot
-    /// destabilise it).
     pub fn stability<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let frames = (60.0 * rate.get()) as usize;
@@ -287,10 +266,6 @@ pub(super) mod realization {
     /// `f(3a) = 3 f(a)`, and the input delayed by 1000 frames gives the output
     /// delayed by as many. Each to 1e-4 of the largest output, so a flush of
     /// values under 1e-6 does not count and a nonlinearity does.
-    ///
-    /// Mutations (run, in `reverb_design.rs`): `Defect::Tanh` (a saturation on the
-    /// output) fails the first two; `Defect::PeriodicGain` (a gain that moves with
-    /// the frame) is linear and fails the shift.
     pub fn linear<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
         const SHIFT: usize = 1000;
         let rate = rate_of(d);
@@ -359,10 +334,6 @@ pub(super) mod realization {
     /// bins, the relative error over all of them (`L2`) under
     /// [`response_tolerance`](LtiCase::response_tolerance). Marginal probes and
     /// models with a tail that never ends are left out.
-    ///
-    /// Mutations (run, in `reverb_design.rs`): `Defect::UnslewedGain(1.1)` (the
-    /// output 10% high from the second retarget on) and `Defect::LoopGain(1.05)`
-    /// (every comb gain 5% high) fail.
     pub fn response<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
@@ -417,9 +388,6 @@ pub(super) mod realization {
     /// rate that is at least `1 - decay_tolerance` of the rate the radius says
     /// (a radius is a bound: the system may decay faster, never slower). A finite
     /// response (radius 0) has no decay to measure and passes.
-    ///
-    /// Mutation (run, in `reverb_design.rs`): `Defect::LoopGain(1.05)`, which
-    /// decays at 72% of the radius's rate.
     pub fn decay<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
         const W: usize = 4096;
         let rate = rate_of(d);
@@ -485,8 +453,6 @@ pub(super) mod realization {
     /// -90 dB of its loudest window, measured in windows of [`WINDOW`] frames, is not
     /// less than `1 / tail_slack` of the model's `tail` to that floor (the `tail_covers`
     /// case holds the other direction).
-    ///
-    /// Mutation (run, in `reverb_design.rs`, on a model whose `tail` is doubled).
     pub fn tail_tight<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;

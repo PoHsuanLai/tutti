@@ -1,8 +1,7 @@
 //! Chroma, key and chord detection end to end, on synthesized music.
 //!
 //! Every tone is a few harmonics at amplitudes `1/h`, written straight from
-//! `sin` in f64. Each test here was confirmed to fail against the mutation its
-//! comment names, then restored.
+//! `sin` in f64.
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tutti_dsp::{FftScratch, StftGeometry};
@@ -91,11 +90,6 @@ const A_MINOR_SCALE: [i32; 9] = [-3, -1, 0, 2, 4, 5, 8, 9, 9];
 /// subharmonic votes the only strays are the third subharmonics (A from E,
 /// F from C), each weighted `0.6^2` of its peak, under the 0.36 the largest
 /// column exceeds.
-///
-/// Mutation checked: folding every peak to `class + 1` fails the classes.
-/// (The subharmonic weights are pinned by `a_peak_votes_for_its_subharmonics_
-/// down_to_the_band_floor` in `chroma`: here the largest column's growth with
-/// the weights hides them from the 0.36 bound.)
 #[test]
 fn a_triad_of_sines_has_chroma_at_its_classes() {
     let mut x = vec![0.0; SR as usize * 2];
@@ -123,8 +117,6 @@ fn a_triad_of_sines_has_chroma_at_its_classes() {
 }
 
 /// The triad is C major, as a span covering the whole buffer.
-///
-/// Mutation checked: labelling the major templates `Minor` fails the quality.
 #[test]
 fn a_triad_of_sines_is_the_chord_c_major() {
     let mut x = vec![0.0; SR as usize * 2];
@@ -146,8 +138,6 @@ fn a_triad_of_sines_is_the_chord_c_major() {
 
 /// Moving every note up `k` semitones moves the chroma classes, the chord and
 /// the key up exactly `k`, for every `k`.
-///
-/// Mutation checked: adding 1 to every folded class fails at every `k`.
 #[test]
 fn everything_rotates_by_the_transposition() {
     let mut fft = FftScratch::new();
@@ -187,9 +177,6 @@ fn everything_rotates_by_the_transposition() {
 /// A C major scale up an octave is C major; the harmonic A minor scale, which
 /// holds the same white keys but for the leading tone and which dwells on A,
 /// is A minor and not C major. The runner-up of each is its relative.
-///
-/// Mutation checked: giving `KeyProfile::Krumhansl` the major ratings for
-/// minor reads the A minor scale as a major key and fails.
 #[test]
 fn scales_name_their_keys() {
     let cfg = config();
@@ -217,9 +204,8 @@ fn scales_name_their_keys() {
 /// grid (3/2 against 2^(7/12)), which bounds the pull of every partial of
 /// order 1 to 4 (the others are on the grid).
 ///
-/// Mutation checked: negating the estimate fails both bounds. Thirty cents
-/// rounds home either way, so the key does not depend on the estimate; that
-/// the tuning moves the fold is pinned by `a_fixed_tuning_moves_the_fold` in
+/// Thirty cents rounds home either way, so the key does not depend on the estimate;
+/// that the tuning moves the fold is pinned by `a_fixed_tuning_moves_the_fold` in
 /// `chroma`.
 #[test]
 fn a_detuned_scale_resolves_and_its_tuning_is_read() {
@@ -255,12 +241,6 @@ fn a_detuned_scale_resolves_and_its_tuning_is_read() {
 /// both land in `T +- (window + hop) / 2`. Frames that hold both may read
 /// neither, which is the gap between the spans. The first span starts at 0 and
 /// the last ends at the end of the last window.
-///
-/// Mutation checked: placing each boundary at the end of the frame's window,
-/// `j * hop + window`, which is `(window + hop) / 2` late and so past the
-/// tolerance once the real offset is added, fails. (The exact placement is
-/// pinned in `chord`'s `spans_sit_between_frame_centres`; this bound is the
-/// loose, derived one.)
 #[test]
 fn a_progression_has_its_boundaries_where_the_chords_change() {
     let secs = 1.5;
@@ -315,11 +295,6 @@ fn a_progression_has_its_boundaries_where_the_chords_change() {
 /// chroma but no chord (too flat to match a triad), and a key
 /// with far less confidence than a scale's. NaN, infinity and a buffer
 /// shorter than a window are errors.
-///
-/// Mutation checked: skipping the flat-chroma check in the key reads silence
-/// as a key and fails; scoring "no chord" 0 in a frame with pitch makes chords
-/// appear in the noise; a key confidence fixed at certain fails the noise
-/// comparison.
 #[test]
 fn silence_noise_and_bad_input() {
     let cfg = config();

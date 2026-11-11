@@ -18,25 +18,6 @@
 //!   next claimer (a missing `Acquire`/`Release` is a causality violation);
 //! - **a refused claim leaves the word as it found it** — after every thread
 //!   is done, each element can be claimed exclusively again.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/split.rs` and a model failed
-//! (`LOOM_MAX_PREEMPTIONS=3`):
-//!
-//! - `release_exclusive`'s `Release` weakened to `Relaxed` →
-//!   `a_write_is_seen_by_the_next_reader`, `two_writers_never_overlap`
-//!   (causality violations);
-//! - `claim_exclusive`'s success ordering weakened to `Relaxed` → the same
-//!   two;
-//! - `claim_shared`'s `fetch_add` weakened to `Relaxed` →
-//!   `a_write_is_seen_by_the_next_reader`;
-//! - `claim_shared` made not to undo its increment on a refusal →
-//!   `a_write_is_seen_by_the_next_reader` (the final exclusive claim is
-//!   refused);
-//! - `upgrade` made to succeed from any shared count (`compare_exchange(1,
-//!   ..)` replaced by a plain `fetch_or(WRITE)`) →
-//!   `an_upgrade_excludes_another_reader` (a write races a read).
 
 #![cfg(loom)]
 

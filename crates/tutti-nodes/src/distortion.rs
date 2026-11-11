@@ -262,9 +262,6 @@ mod tests {
 
     /// A fork starts from the drive last set through the node's `ParamSet`
     /// and shares no cell with it.
-    ///
-    /// Mutation (run): drop `fork.drive.detach()` in `fork_fresh` → "a live
-    /// write reached the fork" for `Drive` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
         assert_param_fork(DistortionNode::new(ShapeKind::Tanh, Drive::new(2.0)));
@@ -365,9 +362,6 @@ mod tests {
 
     /// Drive is reachable by address through the node's `ParamSet`, and an
     /// address it does not own is refused.
-    ///
-    /// Mutation (run): leave `Drive` out of `param_set` → the set refuses it
-    /// → fails.
     #[test]
     fn drive_settable_via_unit_param() {
         use std::sync::atomic::Ordering;
@@ -395,9 +389,6 @@ mod tests {
     // ── Modulated drive (the graph's param feed) ────────────────────────────
 
     /// The shape declares drive, and never changes the arity.
-    ///
-    /// Mutation (run): declare no params in `shape` → the first assertion
-    /// fails.
     #[test]
     fn distortion_declares_its_drive_param() {
         let d = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
@@ -437,11 +428,6 @@ mod tests {
     /// drive fed a step, each of six channels saturates harder from the
     /// step's frame on, and a block whose param reads its base reads the
     /// control again.
-    ///
-    /// Mutation (run): shape only channel 0 on the modulated path → the
-    /// other channels do not move at the step → fails. Keep the last
-    /// modulated shaper on a base block (skip `maybe_update`) → the last
-    /// block is still driven hard → fails.
     #[test]
     fn a_fed_drive_shapes_every_channel_of_a_wide_node() {
         let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, Drive::new(1.0));
@@ -476,9 +462,6 @@ mod tests {
     /// Every output sample of a block is the node's curve applied to that
     /// channel's own input at the node's drive: the per-kind loops pick the
     /// curve they name and read their own channel at their own frame.
-    ///
-    /// Mutation (run): map `Atan`'s arm in `ShapeKind::shape_block` to `Tanh` → the Atan
-    /// row fails; read `inputs.get(0)` for every channel → channel 1 fails.
     #[test]
     fn a_block_is_the_curve_of_each_sample() {
         use crate::test_support::noise;
@@ -499,10 +482,6 @@ mod tests {
     /// With a drive fed that moves every frame, every channel's sample is
     /// the curve at that frame's drive, channel 0 included (whose output
     /// holds the hardness until it is shaped last).
-    ///
-    /// Mutation (run): skip channel 0's final pass → channel 0 outputs the
-    /// hardness → fails; read frame `i - 1`'s hardness for the other
-    /// channels → fails.
     #[test]
     fn a_fed_drive_is_read_per_frame_on_every_channel() {
         use crate::test_support::noise;
@@ -524,9 +503,6 @@ mod tests {
     /// The two arithmetic-only curves declare themselves `Light`, the four
     /// that call a math routine (`tanh`, `atan`, `round`, `floor`)
     /// `Moderate`.
-    ///
-    /// Mutation (run): declare `Moderate` for every kind → the `HardClip`
-    /// row fails; add `Crush` to the light arm → its row fails.
     #[test]
     fn the_declared_cost_follows_the_curve() {
         use tutti_graph::Cost;

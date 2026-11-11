@@ -679,13 +679,6 @@ mod tests {
     /// One FSM per machine: the audio half is out while held, by this
     /// handle or a clone, and dropping it hands the same FSM back, state and
     /// all.
-    ///
-    /// Mutations (run): `audio` building a fresh `TransportFsm` instead of
-    /// popping `home` → a second half is handed out while one is held →
-    /// fails; `MotionAudio::drop` not pushing the FSM back → no half after
-    /// the drop → fails; pushing a fresh FSM back instead → the returned
-    /// machine is `Stopped`, so `Stop` is a no-op and the mirror stays
-    /// `Rolling` → fails.
     #[test]
     fn the_audio_half_is_one_and_comes_back_with_its_state() {
         let (m, mut a) = fsm();
@@ -706,10 +699,6 @@ mod tests {
     /// A completed fade settles the machine itself, not only the mirror: a
     /// declicked seek while rolling ends rolling, so the next scrub-bar seek
     /// (`Then::Keep`) keeps rolling too.
-    ///
-    /// Mutation (run): `TransportFsm::complete_declick` taking the outcome
-    /// without settling `motion` → the machine stays in `DeclickToLocate`,
-    /// the second seek resolves `Keep` to stopped → fails.
     #[test]
     fn a_seek_after_a_completed_declicked_seek_keeps_rolling() {
         let (m, mut a) = fsm();
@@ -742,10 +731,6 @@ mod tests {
 
     /// A cancel takes back what waits for a time, never an immediate command:
     /// a stop sent with `try_send` just before it still stops.
-    ///
-    /// Mutation (run): drop the `At::NextBlock` exemption in
-    /// `ScheduleAudio::gather` → the stop is cancelled and the transport
-    /// keeps rolling → fails.
     #[test]
     fn a_cancel_leaves_an_immediate_stop_standing() {
         let (m, mut a) = fsm();
@@ -765,11 +750,6 @@ mod tests {
     /// `try_send` has the immediate reserve past the timed limit, applies in
     /// send order after the waiting ones, and the reserve's own limit still
     /// hands the event back.
-    ///
-    /// Mutation (run): `Schedule::send` limiting every `At` to
-    /// `SCHEDULE_CAPACITY` → the stop is refused → fails; `try_send` turning
-    /// a refusal into `Ok` → the ninth immediate command is not reported →
-    /// fails.
     #[test]
     fn a_backlog_of_timed_commands_does_not_refuse_a_stop() {
         let (m, mut a) = fsm();
@@ -856,10 +836,6 @@ mod tests {
     /// fade is an audio-only concern and never delays the transport state a
     /// graph sees; the seek does not wait for the fade). Completing the fade
     /// settles the motion mirror and does **not** jump again.
-    ///
-    /// Mutation: leave `apply_outcome` out of the `DeclickStarted` arm → no
-    /// seek, playhead still 12 → fails. Call `locate_to` again in
-    /// `complete_declick` → a second seek is requested → fails.
     #[test]
     fn stop_and_return_moves_the_playhead_at_once_and_fades_the_audio() {
         let (m, mut a) = fsm();
@@ -882,10 +858,6 @@ mod tests {
 
     /// A declick stop pauses the playhead on its command; the motion mirror
     /// reads the fade until it completes.
-    ///
-    /// Mutation: store `paused` from the motion (`set_motion`) in the
-    /// `DeclickStarted` arm → `DeclickToStop` is not `Stopped`, so the
-    /// playhead keeps rolling → fails.
     #[test]
     fn a_declick_stop_pauses_the_playhead_at_once() {
         let (m, mut a) = fsm();

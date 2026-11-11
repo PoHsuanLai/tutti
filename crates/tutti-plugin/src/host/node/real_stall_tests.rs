@@ -328,10 +328,6 @@ fn a_plugin_that_never_parks_settles_nothing() {
     // Bounded by `abandoned`, not pinned to 0: on a loaded machine an ordinary
     // block can miss its budget, and the drain then rightly takes that reply
     // back (an exact `== 0` would read 1).
-    //
-    // Mutation: count a settle on every block (`note_settled(taken + 1)` in
-    // `Owed::settle`, which runs before each block's send) → `settled` grows
-    // with no abandonment (12 vs 0) → fails.
     assert!(
         settled <= abandoned,
         "{settled} replies were settled but only {abandoned} were ever \
@@ -346,9 +342,6 @@ fn a_plugin_that_never_parks_settles_nothing() {
     // and it stayed 0 of 12 in every run under bursty load pinned to one core.
     // A machine that keeps it off a core that long on more than 3 widely
     // spaced blocks cannot judge this control anyway.
-    //
-    // Mutation: `process_timeout` returns 1 us → every block's reply misses
-    // (abandoned 12, settled 11, which the bound above passes) → fails.
     const ORDINARY_MISSES: u64 = BLOCKS as u64 / 4;
     assert!(
         abandoned <= ORDINARY_MISSES,
@@ -365,11 +358,6 @@ fn a_plugin_that_never_parks_settles_nothing() {
 /// reply count stands still, the plugin stays `Alive` (nothing
 /// crashed), and `terminate` ends the server and latches the host's reason,
 /// so `status` reads `Dead` with it.
-///
-/// Mutations (each run, each failed): `note_abandoned` not counting (the run
-/// never climbs); `IpcController`'s `Health::terminate` not killing the server (the
-/// status stays `Alive`); not latching the cause (the status reads the
-/// bridge's own "crashed" text).
 #[test]
 fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminated() {
     let _lock = machine_lock();
@@ -525,9 +513,6 @@ fn feed(
 /// chunk in progress; the reset counts all four, and the dump's two tail packets
 /// in the next block are refused (counted, six in all) while a note after them
 /// is taken (not counted).
-///
-/// Mutation (run): the `intake.lost` and `drop_chunk` in the node's `reset`
-/// removed → nothing counted, and the tail is taken → fails.
 #[test]
 fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let _lock = machine_lock();
@@ -554,11 +539,6 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
 /// restart to another callback size) starts the pipeline over, and the next
 /// chunk's `begin` would overwrite what was taken; the server does nothing
 /// for a rate it already has, so its reassembler keeps the open message.
-///
-/// Mutation (run): the `drop_chunk` in the node's `prepare` removed → the
-/// four events are not counted → fails. Mutation (run): the `intake.lost` in
-/// the node's `reset` and `prepare` path removed → the tail is taken →
-/// fails.
 #[test]
 fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     let _lock = machine_lock();
@@ -587,10 +567,6 @@ fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
 /// `Plugin::open` attaches to the node's counters. The bridge's cell is bumped
 /// here directly: driving a stale skip through a real server is
 /// `two_stale_blocks`'s job.
-///
-/// Mutation (run): the `attach_bridge_midi` call removed from `over` → the
-/// controls read the node's 2 only → fails. Mutation (run): `+ bridge`
-/// dropped from `DeliveryCounters::dropped_midi_in` → the same → fails.
 #[test]
 fn the_controls_count_the_bridges_dropped_midi_too() {
     use std::sync::atomic::Ordering;

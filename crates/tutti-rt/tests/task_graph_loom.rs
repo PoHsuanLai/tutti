@@ -25,43 +25,6 @@
 //!   leaves on its third wait with nothing to take, whatever the
 //!   `BlockWaits`), and the caller still runs every task and sees every
 //!   write.
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/task_graph.rs` and a model failed
-//! (`LOOM_MAX_PREEMPTIONS=3`):
-//!
-//! - the successor decrement's `AcqRel` weakened to `Release` →
-//!   `diamond_two_participants` (the join task reads a predecessor's cell
-//!   unordered);
-//! - `push`'s `Release` store weakened to `Relaxed` →
-//!   `diamond_two_participants`;
-//! - `pop`'s `Acquire` load weakened to `Relaxed` → `diamond_two_participants`;
-//! - `pop`'s `EMPTY` check removed → `diamond_two_participants` (an index out
-//!   of bounds when the popped reservation is not yet stored);
-//! - the `remaining` decrement's `Release` weakened to `Relaxed` →
-//!   both models (the caller's final read of a cell);
-//! - one sink left uncounted (`remaining` starting at the sink count less
-//!   one, and the last task, a sink in both graphs, not decrementing it) →
-//!   both models (the caller returns before that sink's write);
-//! - the successor decrement's `AcqRel` weakened to `Release` also fails
-//!   `the_caller_sees_every_task_through_the_sinks`, which reads no
-//!   predecessor's cell: the termination proof rests on that chain;
-//! - `begin`'s counter re-arm removed → `diamond_two_participants` (the
-//!   second block's counters wrap and never reach zero, so the caller
-//!   spins; loom fails it with "Model exceeded maximum number of
-//!   branches"). The caller's wait is `SpinThenYield` with a budget of 2
-//!   under loom (`src/spin.rs`).
-//!
-//! The caller's spin-then-yield is a scheduling change, not an ordering
-//! one: its progress signal (the `remaining` load the exit test makes, and
-//! the helpers' `Relaxed` completion counters, loom's atomics here too)
-//! orders nothing, and loom's `spin_loop` and `yield_now` both just
-//! schedule another thread. So removing the yield, or the counters, is not a
-//! mutation this model can see; the unit tests
-//! `the_caller_yields_while_a_helper_holds_a_task`,
-//! `a_helpers_every_task_moves_its_completion_counter` and `rt::spin`'s
-//! catch those.
 
 #![cfg(loom)]
 

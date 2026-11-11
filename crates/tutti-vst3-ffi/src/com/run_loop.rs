@@ -503,10 +503,6 @@ mod tests {
 
     /// A handler may unregister itself from its callback without deadlocking,
     /// and is not called again.
-    ///
-    /// Mutation: hold the state lock across the handler calls in
-    /// `run_iteration` and the callback's `unregister_timer` locks
-    /// the same mutex on the same thread: the test hangs instead of passing.
     #[test]
     fn a_timer_may_unregister_itself_from_its_callback() {
         let run_loop = RunLoop::new();
@@ -554,11 +550,6 @@ mod tests {
     /// **A purge takes back one owner's registrations and no one else's.** A
     /// registration that names no owner takes the scope's, and one outside any
     /// scope stays unowned (the module's own, which nothing purges).
-    ///
-    /// Mutations (run, each fails): `purge` retaining everything -> the count is 0 and the loop
-    /// still holds the owner's timers; `purge` removing every entry -> the other
-    /// owner's timer is gone too; `register_timer` ignoring the scope -> the
-    /// scoped timer is unowned, survives the purge, and the count is short.
     #[test]
     fn a_purge_takes_back_one_owners_registrations() {
         let run_loop = RunLoop::new();
@@ -583,8 +574,6 @@ mod tests {
     }
 
     /// **A handler that leaks is not called once its owner is purged.**
-    ///
-    /// Mutation (run, fails): skip the purge -> the leaked timer fires and `calls` is 1.
     #[test]
     fn a_purged_timer_is_not_fired() {
         struct Counting(AtomicUsize);
@@ -611,10 +600,6 @@ mod tests {
 
     /// **A registration from a thread that is not the main thread is refused,
     /// and `clear_all` empties the table.** `IRunLoop` is UI-thread by spec.
-    ///
-    /// Mutations (run, each fails): drop the `on_main_thread` check in
-    /// `register_timer` -> the spawned thread's registration succeeds; make
-    /// `clear_all` a no-op -> the count and the table are not empty.
     #[test]
     fn registration_is_main_thread_only_and_clear_all_empties() {
         let run_loop = RunLoop::new();

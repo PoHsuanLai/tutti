@@ -4,9 +4,6 @@ use super::*;
 /// the preferred 512 when it fits, clamped to the range when not, and
 /// never past the callback's own buffers; a device reporting none gets
 /// its default buffer, and the spec says the size is unknown.
-///
-/// Mutation: return `None` for a range → the opened stream's size is
-/// unknown and no graph can keep in step with it → fails.
 #[test]
 fn a_device_range_gives_a_fixed_quantum() {
     use cpal::SupportedBufferSize::{Range, Unknown};

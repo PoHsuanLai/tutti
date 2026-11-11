@@ -9,10 +9,6 @@ use super::super::MIN_POINT_ROOM;
 /// parameter is full, or the list has no queue left for a parameter the
 /// block's automation does not name. One with room lands ahead of the
 /// automation.
-///
-/// Mutation (run): `prepend_point` not counting on a failed landing → the
-/// two counts stay 0 → fails; always counting → the landed write is
-/// counted too → fails.
 #[test]
 fn a_prepended_point_without_room_is_counted_not_grown_into() {
     // Two queues of two points: one is full of automation for 7, one is free.
@@ -74,9 +70,6 @@ fn input_list(queues: usize, room: usize) -> ComWrapper<ParameterChangesImpl> {
 }
 
 /// Plugin threads reading the list at once all get it.
-///
-/// Mutation (run): `AudioThreadCell::try_acquire_reader` exclusive → the
-/// COM reads answer 0 / null → fails.
 #[test]
 fn concurrent_reads_of_the_list_both_succeed() {
     use std::sync::Barrier;
@@ -106,10 +99,6 @@ fn concurrent_reads_of_the_list_both_succeed() {
 
 /// A read while the list is being added to answers with the method's
 /// failure value instead of panicking into the plugin.
-///
-/// Mutation (run): `getParameterData` back on a panicking `borrow` → the panic
-/// cannot unwind out of the COM thunk, and the test process aborts
-/// (SIGABRT): the plugin-server crash this guards against.
 #[test]
 fn a_read_during_a_write_fails_at_the_com_level() {
     let list = unpooled(2, 4);
@@ -170,11 +159,6 @@ fn refill_from_changes_steady_state_is_allocation_free() {
 /// queue count varies block to block, and a list sized for every
 /// parameter must ride that out without touching the allocator. The
 /// plugin sees exactly this block's queues.
-///
-/// Mutation (run): trimming the list to each block's count
-/// (`queues.truncate(changes.queues.len())` in the refill) → the block that
-/// has more queues finds them gone and has to grow them, inside the gate →
-/// fails.
 #[test]
 fn a_varying_queue_count_never_touches_the_allocator() {
     use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};
@@ -209,11 +193,6 @@ fn a_varying_queue_count_never_touches_the_allocator() {
 /// on first use**: every queue already has the room, so the first block
 /// that carries 140 points on each of 50 parameters reserves nothing
 /// (growing each queue past its 16 points would happen on the audio thread).
-///
-/// Mutation (run): `with_queues` ignoring `floor` (a room of
-/// `MIN_POINT_ROOM`) → each queue keeps its latest value past that
-/// room, not its 140 points → fails. (Reworded with `PointBuf`: the
-/// first refill grew each queue inside the gate before.)
 #[test]
 fn a_presized_list_takes_its_first_dense_block_without_allocating() {
     let wrapper = unpooled(50, 140);
@@ -228,9 +207,6 @@ fn a_presized_list_takes_its_first_dense_block_without_allocating() {
 /// The plugin's own `addParameterData` on the output list reuses the
 /// pooled queues block after block: each block's queues start empty and
 /// under the id the plugin asked for, and none is allocated.
-///
-/// Mutation (run): `addParameterData` without `reset` (a reused queue
-/// keeps last block's points and id) → the point count and id fail.
 #[test]
 fn add_parameter_data_reuses_pooled_queues() {
     use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait};
@@ -321,12 +297,6 @@ fn add_parameter_data_hands_the_plugin_a_live_queue_and_its_index() {
 /// emitting a third point with the pool spent): nothing grows, that
 /// parameter's third point takes its last point's place (it ends on its
 /// latest value), and one point is counted.
-///
-/// Mutation (run): `ParameterChanges::push_point` dropping the point
-/// past the room (`try_push` only, no `replace_latest`) → the point past
-/// the floor is lost and the parameter ends on an earlier one → fails.
-/// (Reworded with `PointBuf`: the unbounded path, which grew a floor
-/// inside the gate, is gone.)
 #[test]
 fn emitted_changes_drain_into_the_reserved_set_without_allocating() {
     use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChanges};
@@ -440,10 +410,6 @@ fn plugin_view(list: &ComWrapper<ParameterChangesImpl>) -> Vec<(u32, Vec<(i32, f
 /// (a chunk room of `chunk_room`, as activation builds it), a floor of
 /// `FLOOR_POINTS + 1` per queue and `POOLED_QUEUES` blocks of
 /// `room + 1`, under a third of a full room per queue.
-///
-/// Mutation (run): `with_queues` building every queue with the block's
-/// room (`room + 1` for `floor`) → `queues × (room + 1)` and the pool
-/// on top → fails.
 #[test]
 fn the_input_list_holds_the_pool_budget_not_params_times_room() {
     for params in [2_000usize, 16_384] {
@@ -471,11 +437,6 @@ fn the_input_list_holds_the_pool_budget_not_params_times_room() {
 /// its room and one more. The refill hands every point on, none counted:
 /// the floor queues fit their own room, so the blocks go to the moving
 /// ones however late in the list they are.
-///
-/// Mutation (run): the input list's floor without the carried value's
-/// point (`floor - 1`, as it first was) → the first floor queues borrow
-/// the blocks for their third point, and the moving parameters at the
-/// end find the pool spent → points counted → fails.
 #[test]
 fn a_chunk_with_carried_values_refills_whole() {
     const PARAMS: u32 = 2_000;
@@ -523,16 +484,8 @@ fn a_chunk_with_carried_values_refills_whole() {
 /// `FLOOR_POINTS + 1` with the list's pool spent: it keeps that floor,
 /// ending on its latest value, and one point is counted.
 ///
-/// Mutations (run), each fails: the refill not borrowing a block (no
-/// lend) → the moving parameters keep their floor, points counted;
-/// `return_blocks` skipped in the refill (or in the refill and
-/// `clear_in_place`) → the other 256 parameters find the pool spent,
-/// points counted; `refill_from_queue` dropping past the room
-/// (`try_push`) rather than keeping the latest value
-/// (`push_or_replace_last`) → the over-budget parameter ends on its
-/// earlier value. Not covered: `return_blocks` skipped in
-/// `clear_in_place` alone, since every refill gives the blocks back
-/// first, so a cleared list is never refilled without it.
+/// Not covered: `return_blocks` skipped in `clear_in_place` alone, since every refill
+/// gives the blocks back first, so a cleared list is never refilled without it.
 #[test]
 fn a_chunk_at_the_pool_budget_refills_per_parameter_without_allocating() {
     const PARAMS: u32 = 2_000;
@@ -594,10 +547,6 @@ fn a_chunk_at_the_pool_budget_refills_per_parameter_without_allocating() {
 /// from six of three points each, block after block inside the no-alloc
 /// gate: the plugin sees the first four, whole, and each refill counts
 /// the other two queues' six points.
-///
-/// Mutations (run), each fails: the refill growing the list past its
-/// queues (pushing a queue, as it did) → the gate trips; the dropped
-/// queues not counted → `points_dropped` is 0.
 #[test]
 fn a_refill_past_the_lists_queues_drops_them_counted() {
     let list = unpooled(4, MIN_POINT_ROOM);
@@ -624,11 +573,6 @@ fn a_refill_past_the_lists_queues_drops_them_counted() {
 /// (indices 0 and 1), the first id asked again gets its own queue back
 /// (index 0, as the SDK's `ParameterChanges` dedupes), and a third id
 /// gets null with `index` untouched, counted once.
-///
-/// Mutations (run), each fails: past the queues pushing a new one (as
-/// it did) → the gate trips; no lookup of a live queue for the id → the
-/// repeated id takes the null; the refusal not counted →
-/// `points_dropped` is 0.
 #[test]
 fn add_parameter_data_past_the_lists_queues_is_null_counted() {
     use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};

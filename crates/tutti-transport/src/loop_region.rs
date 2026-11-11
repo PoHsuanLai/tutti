@@ -205,9 +205,6 @@ mod tests {
 
     /// A region survives the wire, and a cell nobody wrote to (all zero:
     /// start equal to end) decodes to nothing rather than an invalid range.
-    ///
-    /// Mutation (run): `encode` storing the end bits in the start word → the
-    /// round trip fails.
     #[test]
     fn the_wire_round_trips_a_region() {
         let region = LoopRegion::new(

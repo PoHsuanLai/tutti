@@ -4,9 +4,6 @@
 use tutti_fixtures::{RangeContract, check_range_contract};
 use tutti_sf2::Bank;
 
-/// Mutation (run): `raw > 127` -> `raw > 128` in `Bank::new` accepts 128 as a
-/// melodic bank and 129 fails to be refused (the invalid row); `New` accepting
-/// everything fails every invalid row.
 #[test]
 fn a_bank_keeps_the_range_contract() {
     check_range_contract(&RangeContract {

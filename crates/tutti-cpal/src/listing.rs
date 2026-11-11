@@ -92,10 +92,6 @@ mod tests {
 
     /// A worker that is still enumerating leaves `poll` pending, and its
     /// answer arrives once it finishes.
-    ///
-    /// Mutation: `poll` using `recv()` for `try_recv()` blocks on the held
-    /// worker, so this test hangs (caught by the test timeout); returning
-    /// `Pending` for a received answer fails the final assertion.
     #[test]
     fn a_blocked_worker_leaves_poll_pending_until_it_answers() {
         let (release, held) = mpsc::channel::<()>();
@@ -121,7 +117,6 @@ mod tests {
     }
 
     /// A worker that panics is a failure, not a pending that never ends.
-    /// Mutation: mapping `Disconnected` to `Pending` fails this.
     #[test]
     fn a_worker_that_panics_is_a_failure() {
         let mut listing = DeviceListing::spawn_with(|| panic!("host exploded")).unwrap();
@@ -142,10 +137,6 @@ mod tests {
     /// and the process ends with that thread still stuck (the test process
     /// exits under nextest with the worker parked on a channel nobody will
     /// send on).
-    ///
-    /// Mutation, done: joining the worker in a `Drop` impl for
-    /// `DeviceListing` hangs this test (killed by a 100 s `timeout`; the
-    /// unmutated test takes milliseconds).
     #[test]
     fn dropping_a_listing_does_not_wait_for_a_stuck_worker() {
         let (stuck, held) = mpsc::channel::<()>();

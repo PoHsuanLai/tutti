@@ -3,42 +3,9 @@
 //! 1.0 section 3.3 for the meta events, M2-116 section 3.3, 7.1.1, 7.1.2 and
 //! Appendix B for what replaces them, M2-104 section 7.5 for the Flex fields).
 //!
-//! Mutations run (each planted in `src/file/to_clip.rs` unless a file is
-//! named, seen to fail, restored):
-//!
-//! | mutation | fails |
-//! |---|---|
-//! | `TEN_NS_PER_MICRO` = 10 | `a_set_tempo_is_ten_ns_units_per_quarter` |
-//! | `key_signature` `rem_euclid(7)` as `% 7` | `a_key_signature_is_the_sharps_and_the_tonic` (flat keys) |
-//! | `key_signature` ignores `minor` | `a_key_signature_is_the_sharps_and_the_tonic` |
-//! | `TextKind::Copyright` mapped to `Lyrics` | `copyright_and_lyrics_are_flex_text_over_several_packets` |
-//! | the text's packets cut to the first (`take(1)`) | `copyright_and_lyrics_are_flex_text_over_several_packets` |
-//! | the SysEx body's `0xF0` prefix left off | `a_complete_sysex_is_sysex7_packets` |
-//! | the merge sort ties by reversed track | `format_1_merges_by_tick_ties_in_track_order` |
-//! | a format 2 file let through | `format_2_is_refused` |
-//! | a clip returned as it is | `a_clip_is_not_converted_again` |
-//! | every event ranked `Other` (tick 0 not ordered) | `the_first_tempo_and_signature_lead_the_clip` |
-//! | the default tempo always added | `a_tempo_at_tick_zero_is_not_defaulted` |
-//! | the default signature never added | `a_file_with_no_tempo_or_signature_gets_the_smf_defaults` |
-//! | the end taken as the shortest track's (`min`) | `the_division_and_the_end_carry_over` |
-//! | the division passed as 96 | `a_file_with_no_tempo_or_signature_gets_the_smf_defaults`, `the_division_and_the_end_carry_over` |
-//! | `0x20` not a `ReplacedByAddressing` | `what_has_no_successor_is_reported_with_its_tick` |
-//! | the `track == 0` test of the name dropped | `the_first_track_names_the_sequence_and_the_others_are_reported` |
-//! | the UTF-8 check as `from_utf8_lossy` | `text_that_flex_cannot_carry_is_reported` |
-//! | the whole-note refusal removed | `what_has_no_successor_is_reported_with_its_tick` |
-//! | `flex_text_packets` without its NUL check (`tutti-ump`) | `a_nul_is_refused` (there) |
-//! | the metronome's `accent_1` as 0 | `a_time_signature_is_a_signature_and_a_metronome` |
-//! | `0x54` not a `SuccessorUndefined` | `what_has_no_successor_is_reported_with_its_tick` |
-//! | the zero-numerator refusal removed | `what_has_no_successor_is_reported_with_its_tick` |
-//! | the NFC composition removed (`.nfc()`) | `text_is_composed_to_nfc_without_a_byte_order_mark` |
-//! | the byte order mark kept (`strip_prefix` removed) | `text_is_composed_to_nfc_without_a_byte_order_mark` |
-//! | the Property Exchange refusal removed | `property_exchange_and_empty_text_are_reported` |
-//! | the PE sub-ID#2 range as `0x30..=0x3E` (Notify let through) | `property_exchange_and_empty_text_are_reported` |
-//! | the empty-text refusal removed | `property_exchange_and_empty_text_are_reported` |
-//!
 //! The round trip (`the_clip_round_trips_through_its_bytes`) is a property of
 //! the codec the conversion feeds; it is pinned by the clip codec's own
-//! mutations in `clip_model.rs`, and here it checks that the Flex and SysEx7
+//! tests in `clip_model.rs`, and here it checks that the Flex and SysEx7
 //! packets the conversion makes survive them.
 
 use tutti_midi_file::{

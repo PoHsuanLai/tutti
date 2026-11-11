@@ -56,9 +56,7 @@ fn allocations(f: impl FnOnce()) -> usize {
 /// sequence that splices a part frame every call, an empty chunk, and a reset.
 ///
 /// This is a measurement, not a guarantee of `ebur128`: it holds for the
-/// version in `Cargo.lock`. Mutation (run):
-/// `std::hint::black_box(Vec::<u8>::with_capacity(8));` as a statement in
-/// `step_windowed_loudness` before the feed -> every case counts allocations.
+/// version in `Cargo.lock`.
 #[test]
 fn a_windowed_loudness_step_does_not_allocate() {
     let cfg = WindowedLoudnessConfig::new(SampleRate(48_000.0), ChannelLayout::STEREO).unwrap();

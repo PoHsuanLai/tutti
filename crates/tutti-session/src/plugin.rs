@@ -1830,12 +1830,6 @@ mod tests {
     /// once; while that job is unlanded nothing more is asked, however late
     /// (the job is held, not run); landing it stores the bytes and
     /// restarts the cadence; a dropped job frees the plugin too.
-    ///
-    /// Mutations (each run, each failed): the due check without the token
-    /// (`strong_count == 1` taken away: the update at 5 s asks again while
-    /// the first job is held); the interval check removed (the update at
-    /// 0.5 s asks); `snapshot_at` not restarted on a job (the update at
-    /// 6 s asks); `land_snapshot` not storing (the bytes check).
     #[test]
     fn snapshots_are_taken_on_the_interval_one_at_a_time() {
         let mut rig = rig(Some(vec![1, 2, 3]));
@@ -1873,9 +1867,6 @@ mod tests {
     /// **A declined save keeps the previous snapshot.** A refusal (the
     /// plugin declines, or the bridge dropped mid-call) replacing a good
     /// recovery point with nothing is worse than a stale one.
-    ///
-    /// Mutation (run, failed): `land_snapshot` storing `None` on an error
-    /// (the snapshot reads `None`).
     #[test]
     fn a_declined_save_keeps_the_previous_snapshot() {
         let mut rig = rig(None);
@@ -1897,9 +1888,6 @@ mod tests {
 
     /// **A failing plugin is not asked for its state**: the call would
     /// block against a peer that is not answering, and return nothing.
-    ///
-    /// Mutation (run, failed): the due check without `healthy` (a job is
-    /// asked of the failing plugin at 1 s).
     #[test]
     fn a_failing_plugin_is_not_snapshotted() {
         let mut rig = rig(Some(vec![1]));
@@ -1917,10 +1905,6 @@ mod tests {
     /// goes, so a later death of the outgoing plugin removes nothing (the
     /// node is the native one's now) and reports nothing, and the record's
     /// handle no longer keeps the outgoing plugin alive.
-    ///
-    /// Mutation (run, failed): `Graph::replace` keeping the record (the
-    /// `plugins.remove` taken out) → the dead fake is declared dead, the
-    /// native node removed, and `PluginDied` names it.
     #[test]
     fn a_plugin_replaced_by_a_native_node_is_no_longer_hosted() {
         for crossfade in [false, true] {
@@ -1970,11 +1954,6 @@ mod tests {
     /// its own on the interval from the crossfade. Driven through
     /// `HostedPlugin::adopt`, `replace`'s handle half (a crossfade to
     /// another plugin needs a `PluginClient`, a real `plugin-server`).
-    ///
-    /// Mutations (each run, each failed): `adopt` keeping the old token
-    /// (the in-flight job lands, `[1, 2, 3]`); `land_snapshot` without the
-    /// `ptr_eq` check (the same); `adopt` keeping the old snapshot (it
-    /// reads `[1, 2, 3]` after the crossfade).
     #[test]
     fn a_crossfade_to_another_plugin_drops_the_old_snapshot() {
         let mut rig = rig(Some(vec![1, 2, 3]));
@@ -2020,13 +1999,6 @@ mod tests {
     /// handle, which `PluginParamValues::start` also gives the mirror's
     /// report callback; a fake's reports cannot be fired from outside
     /// `tutti-plugin`, so the callback is not asserted here.
-    ///
-    /// Mutations (each run, each failed): `adopt` keeping the old mirror
-    /// (the value reads the outgoing plugin's 0.25); `adopt` running the
-    /// read inline (`mirror.land(read.run())`: the mirror is ready before any
-    /// job ran); the phase not handing the read out (no
-    /// job); `land_params` without the `ptr_eq` check (the stale read
-    /// lands); `adopt` keeping the old token (the same).
     #[cfg(feature = "modulation")]
     #[test]
     fn a_crossfade_to_another_plugin_rebuilds_the_mirror() {
@@ -2095,11 +2067,6 @@ mod tests {
     /// mirror stays not ready), the next phase emits `PluginParamsDue` for the
     /// same plugin once more, and once the list answers the re-run read lands
     /// the values.
-    ///
-    /// Mutations (each run, each failed): `ParamRead::run` mapping an
-    /// unavailable list to `Ok(empty)` (`unwrap_or_default`: the first land
-    /// succeeds with nothing and the mirror is ready and empty); `land_params`
-    /// dropping the read it is given back on `Err` (no second job comes).
     #[cfg(feature = "modulation")]
     #[test]
     fn a_read_whose_parameter_list_is_unavailable_is_handed_out_again() {

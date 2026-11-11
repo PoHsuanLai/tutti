@@ -625,9 +625,6 @@ mod scratch_resolution_tests {
     /// The second bus is wider than a layout holds (the ffi layer never reports
     /// one), so `BusBuffers::new` refuses it; `resolve_scratch_from_counts` used
     /// to panic there and now keeps the layout the instance already has.
-    ///
-    /// Mutation (run, fails at the channel assertions): update
-    /// `num_output_channels` in the refusal branch before returning.
     #[test]
     fn a_bus_too_wide_for_a_layout_keeps_the_old_scratch() {
         let main = tutti_plugin_types::MainThread::claim().expect("one test, one process");

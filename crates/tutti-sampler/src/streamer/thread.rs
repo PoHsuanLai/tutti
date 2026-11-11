@@ -258,9 +258,6 @@ mod tests {
 
     /// Both drivers are `Sync` (a Bevy resource holds a `DiskStreamer`), with
     /// the hand-stepped cycle held plainly: a compile-time check.
-    ///
-    /// Mutation (run): a `std::cell::Cell<u8>` field in `StreamerCycle` →
-    /// does not compile.
     const _: () = {
         fn sync<T: Sync>() {}
         let _ = sync::<Running>;
@@ -307,11 +304,6 @@ mod tests {
     /// a loaded machine, and still six times shorter than a streamer that only
     /// ever wakes on its own. Each send is made once the thread is parked, so
     /// the doorbell, not a cycle already running, is what wakes it.
-    ///
-    /// Mutation (run): `StreamerSender::send` without its `self.bell.ring()` ->
-    /// the command sits for the 60 s -> fails at the 10 s bound. Mutation
-    /// (run): the loop's `Bell::sleep` replaced by a `thread::sleep` of the
-    /// backstop -> the same.
     #[test]
     fn a_send_wakes_a_sleeping_streamer() {
         let built = built(8).with_backstop(LONG_WAIT);
@@ -336,11 +328,6 @@ mod tests {
     ///
     /// The drop runs on a helper thread so a streamer that does not wake fails
     /// at the bound instead of hanging the test for the backstop's 60 s.
-    ///
-    /// Mutation (run): `Bell::shut` without its `self.door.ring()` -> the join
-    /// waits out the 60 s -> fails at the 10 s bound. Mutation (run):
-    /// `Running::stop` without `bell.shut()` -> the thread never ends -> the
-    /// same.
     #[test]
     fn dropping_a_sleeping_streamer_joins_promptly() {
         let built = built(8).with_backstop(LONG_WAIT);
@@ -367,11 +354,6 @@ mod tests {
     /// The window is the one place the test waits for nothing to happen: a
     /// spinning streamer runs thousands of cycles in it, so the bound (a few)
     /// is not a timing guess.
-    ///
-    /// Mutation (run): the loop sleeping 1 ms (`Duration::from_millis(1)` in
-    /// place of `backstop`, the old idle poll) -> about a hundred cycles in
-    /// the window -> fails. Mutation (run): `StepOutcome::Idle` returned as
-    /// `Busy` -> the loop yields forever -> fails.
     #[test]
     fn an_idle_streamer_does_not_spin() {
         let built = built(8).with_backstop(LONG_WAIT);
@@ -393,8 +375,6 @@ mod tests {
     ///
     /// A started streamer's thread drops its receiver on the way out; a
     /// built one drops it with itself.
-    /// Mutation (run): `Built::new` leaking a clone of the receiver
-    /// (`std::mem::forget(rx.clone())`) → the queue never disconnects → fails.
     #[test]
     fn a_stopped_streamer_reports_gone() {
         let unstarted = built(8);
@@ -429,9 +409,6 @@ mod tests {
 
     /// A send waiting on a full queue returns once the streamer is gone,
     /// reporting it gone, rather than waiting for good.
-    ///
-    /// Mutation (run): `Built::new` leaking a clone of the receiver → the
-    /// waiting send never returns → fails at the 10 s bound.
     #[test]
     fn a_waiting_send_is_released_when_the_streamer_stops() {
         let streamer = built(1);
@@ -469,9 +446,6 @@ mod tests {
     /// A streamer thread that exits on its own is gone to its senders,
     /// without its controller's `stop`: a shut bell ends the loop, and the
     /// thread's receiver goes with it.
-    ///
-    /// Mutation (run): `Built::new` leaking a clone of the receiver → the
-    /// queue never disconnects → fails at the bound.
     #[test]
     fn a_streamer_that_exits_is_gone_to_its_senders() {
         let built = built(8);

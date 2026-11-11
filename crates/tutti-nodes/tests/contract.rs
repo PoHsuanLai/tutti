@@ -3,8 +3,7 @@
 //! An impulse at frame `F` must leave at exactly
 //! `F + arrival + latency`, where `latency` is what the node *declares* — on
 //! every path the harness has (direct, behind PDC, across a recompile,
-//! across ragged blocks). See `tutti_graph::contract` for the paths and the
-//! mutation each was seen to fail under.
+//! across ragged blocks). See `tutti_graph::contract` for the paths.
 //!
 //! Each row is a class of latency defect:
 //!
@@ -21,17 +20,6 @@
 //!
 //! A failing row here is a real latency regression: fix the node, never
 //! the row.
-//!
-//! Mutations (run):
-//!
-//! - In `LimiterNode::shape`, declare one frame more than the ring's
-//!   `lookahead_samples` → both limiter rows fail every path.
-//! - Declare one frame more or less than the FFT block in
-//!   `ConvolverNode::shape` → `convolver` fails every path.
-//! - Declare the echo time as latency in `DelayLineNode::shape` →
-//!   `delay_line` fails every path.
-//! - Declare one frame of latency in `CrossoverNode::shape` or
-//!   `MultibandCompressorNode::shape` → their rows fail every path.
 //!
 //! Every row is a graph node (`Row::new`).
 

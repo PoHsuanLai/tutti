@@ -5,9 +5,6 @@ use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, U7};
 
 /// **A clip a block still held when `set_events` replaced it is freed by
 /// the next `reclaim`**, with no further publish.
-///
-/// Mutation (run): `MidiClipControls::reclaim` returning 0 without
-/// reclaiming → the first clip is still alive, fails.
 #[test]
 fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
     let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
@@ -27,8 +24,6 @@ fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
 }
 
 /// **A clip node's held-note table is 24 KiB**, allocated with the node.
-///
-/// Mutation (run): `LEDGER_CAPACITY` of 16,384 → 196 KB, fails.
 #[test]
 fn a_clip_nodes_table_is_24_kib() {
     let node = MidiClipNode::new([]);
@@ -41,10 +36,6 @@ fn a_clip_nodes_table_is_24_kib() {
 /// Controller at the CC 38's beat; a MIDI 1.0 Note On at velocity 0 becomes a
 /// Note Off (M2-104 D.3.1); and the events keep the list's order, which the
 /// note pairing reads, not the beats'.
-///
-/// Mutation: translate in list order instead of beat order → the CC 38 comes
-/// before any select and is dropped → fails. Mutation: return the events in
-/// beat order → the order assertion fails.
 #[test]
 fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
     let note = NoteNumber::of(60);

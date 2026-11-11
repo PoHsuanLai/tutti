@@ -698,11 +698,6 @@ mod tests {
     /// A phase-inverted pair is the worst case: folding the samples before
     /// blocking cancels it to a flat line, so the clip renders as silence and
     /// is not. Per channel, both channels are a full-scale ramp.
-    ///
-    /// Mutation check: folding before blocking fails every assertion below
-    /// except the block count — `summarize` returns one series whose `min` and
-    /// `max` are both 0.0. If this test ever passes against a
-    /// folding implementation it has stopped testing what it names.
     #[test]
     fn a_phase_inverted_pair_does_not_cancel() {
         // L ramps up, R is its exact negation.
@@ -842,9 +837,6 @@ mod tests {
     /// Before `ChannelLayout` lost its `Default`, both types derived one and
     /// reported `STEREO` over zero channel runs — so `channel(1)` on a summary
     /// of nothing answered "which channel?" with a width the data never had.
-    ///
-    /// Mutation: `layout: ChannelLayout::STEREO` in `PeakAccum::new` → the
-    /// finished summary is two channels wide → the second assertion fails.
     #[test]
     fn an_empty_summary_has_no_channels() {
         assert_eq!(PeakBlocks::default().layout(), ChannelLayout::EMPTY);
@@ -865,10 +857,6 @@ mod tests {
     /// with 3 000-frame blocks: chunks of 3 000 frames, so 7 calls, the last
     /// a partial block. Block `k` of the left channel spans exactly
     /// `[3000k, min(3000k + 2999, 19999)]`, the right its negation.
-    ///
-    /// Mutation (run): stop the chunk loop one chunk early (break on
-    /// `start + per_chunk >= frames`, before the last call) → the final
-    /// blocks are missing, fails on the block count.
     #[test]
     fn summarize_is_exact_across_its_chunks() {
         let frames = 20_000;
@@ -886,9 +874,6 @@ mod tests {
 
     /// An empty buffer still adopts the config's width: `summarize` makes at
     /// least one `step_peaks` call, which is where the width is adopted.
-    ///
-    /// Mutation (run): a `while start < frames` loop (no call for an empty
-    /// buffer) → the summary is `EMPTY`-wide, fails.
     #[test]
     fn summarizing_nothing_keeps_the_layout() {
         let cfg = PeakConfig::new(Samples(64), ChannelLayout::STEREO);

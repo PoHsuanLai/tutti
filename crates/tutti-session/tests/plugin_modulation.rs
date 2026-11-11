@@ -189,13 +189,6 @@ fn gain_value(s: &Session, node: NodeKey) -> Option<Normalized> {
 ///
 /// The reference plugin aborts on its 8th block in the first server only
 /// (`TUTTI_CLAP_PROBE_ONCE_FILE`); the second server is the replacement.
-///
-/// Mutation (run, failed): `install_reload` building the replacement without
-/// the old plugin's mirror (`hosted.mirror = None` for the new one): the lane
-/// has no knob to start from and never reaches the replacement. (Making the
-/// session's lane bookkeeping ignore the generation move, in
-/// `Modulation::apply`'s `taken_lanes`, does not fail this: the lane is also
-/// rebuilt through the changed bind, so that path is not pinned here.)
 #[test]
 fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
     let once = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("session-recovery-lane.once");
@@ -268,14 +261,6 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
 /// the node holds now, the incoming one (a crossfade keeps the key and its
 /// edges). When the node goes, the lane's target no longer resolves and the
 /// lane leaves the graph with it.
-///
-/// Mutations (each run, each failed): the host dropping the `PluginParamsDue`
-/// job instead of running and landing it (the arm in `Drive::update`): the
-/// mirror is never ready and the wait fails; `Graph::event_sources` listing no
-/// edges (`.filter(|_| false)`): the precondition fails; `Modulation::apply`
-/// keeping a lane whose target no longer resolves
-/// (`binds.get(t).is_none_or(..)` as `is_some_and`): the lane stays after the
-/// plugin goes and the last assertion fails.
 #[test]
 fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     let mut s = detached();
@@ -346,15 +331,6 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
 /// played unanswered (`missed_chunks`); the export forks the graph (the
 /// plugin by state transfer, the lane by clone) and renders the same span at
 /// its 1024-frame chunk. Equal bit for bit.
-///
-/// Mutations (each run, each failed): the knob seeded at the range's bottom
-/// (the session's `ModHostOver` answering `Some(Some(0.0))` for a plugin
-/// parameter: the knob check); a lane handing the editor no fork source
-/// (`fork: None` in `ControlLaneNode::into_parts`: the export is refused as
-/// not forkable); a lane's fork starting its knob at 0, not the live knob
-/// (`fork_fresh`: the export's gain differs from live); the wait for the
-/// answer removed (the blocks rendered back to back: "live block 1 late or
-/// missed", not a silent-vs-signal compare).
 #[test]
 fn an_export_is_the_live_render_on_a_clap_gain() {
     use std::sync::Arc;

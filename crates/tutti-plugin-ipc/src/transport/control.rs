@@ -738,11 +738,6 @@ mod tests {
     /// real socket pair, inside `assert_no_alloc`. A block with no parameter
     /// changes and no MIDI, the common one; a change list that is not empty
     /// is a `Vec` the decode builds.
-    ///
-    /// Mutations (run), each aborts the gate: `write_frame` serializing with
-    /// `postcard::to_allocvec` (a fresh `Vec`); `read_frame` reading into a fresh
-    /// `vec![0u8; len]`; the host's `PartialFrame` body made fresh per frame
-    /// (`vec![0u8; len]`); `ProcessAudio` boxed again.
     #[test]
     fn a_block_round_trip_allocates_nothing_once_warm() {
         use crate::protocol::ProcessAudioData;
@@ -781,9 +776,6 @@ mod tests {
     ///
     /// Unix only: Windows has no send timeout on a named pipe (`connect_within`
     /// says what ends a hung write there).
-    ///
-    /// Mutation (run): `connect_within` not arming the timeout → the sends
-    /// block, the helper thread never answers → fails on `recv_timeout`.
     #[cfg(unix)]
     #[test]
     fn a_send_to_a_peer_that_reads_nothing_is_bounded() {

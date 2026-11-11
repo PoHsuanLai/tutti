@@ -31,8 +31,6 @@ mod tests {
     /// Also pins `EventAddress::GLOBAL` against `ParamAddress::GLOBAL`: a
     /// listener registered on another scope than the writes go to would never
     /// fire, and AudioToolbox accepts any address without validating it.
-    ///
-    /// Mutation (run): change `ScheduleAddress::GLOBAL.element` to 1 -> fails.
     #[test]
     fn the_global_address_agrees_with_the_other_address_types() {
         assert_eq!(ScheduleAddress::GLOBAL.scope, ParamAddress::GLOBAL.scope);
@@ -76,8 +74,6 @@ mod tests {
     /// The dispatch counter rises by exactly the pre/post pair per render while
     /// the notify is installed, a fresh handle starts at zero, and rendering
     /// after a drop stays safe.
-    ///
-    /// Mutation (run): skip the `fetch_add` in the callback -> the count stays 0.
     #[test]
     fn the_dispatch_counter_stops_when_the_handle_is_dropped() {
         let (mut au, controller) = delay();
@@ -109,7 +105,7 @@ mod tests {
 
     /// An empty schedule is `Ok` without an AudioToolbox call.
     ///
-    /// No mutation fails this: AudioToolbox also answers `noErr` for a zero
+    /// The early return is not observable: AudioToolbox also answers `noErr` for a zero
     /// count, so the test pins the observable contract, not the early return.
     #[test]
     fn scheduling_nothing_is_a_no_op() {

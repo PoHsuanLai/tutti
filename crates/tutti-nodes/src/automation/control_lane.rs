@@ -1140,9 +1140,6 @@ mod tests {
 
     /// **A program a block still held when the lane was republished is freed
     /// by the next `reclaim`**, with no further publish.
-    ///
-    /// Mutation (run): `LaneControls::reclaim` returning 0 without
-    /// reclaiming → the first program is still alive, fails.
     #[test]
     fn reclaim_frees_a_program_a_block_held_across_its_replacement() {
         let mut node = ControlLaneNode::for_foreign(0, ControlProgram::default(), None, (0.0, 1.0));

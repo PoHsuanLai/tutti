@@ -926,13 +926,6 @@ mod tests {
     /// word, on each side of a word edge and at the end, each checked
     /// against a `Vec<bool>` after `first`. The marks past `len` must stay
     /// clear, which `first` relies on.
-    ///
-    /// Mutations (run), each fails: `remove` without the carry from the
-    /// next word (`carry` always 0) → a mark at a word's first bit is lost
-    /// on its way into the word below; `remove` keeping the bit at `k`
-    /// (`below` as `(1 << (k % 64 + 1)) - 1`) → the removed mark stays;
-    /// `first` without `trailing_zeros` (the word's index × 64 alone) → the
-    /// earliest mark is read at its word's start.
     #[test]
     fn grid_bits_find_and_remove_as_a_bit_list_does() {
         let room = ParameterQueue::chunk_room(4096);
@@ -1009,10 +1002,6 @@ mod tests {
 
     /// **Every parameter can move in one chunk**: 200 parameters, a queue
     /// each, none dropped, and nothing past the reserved room.
-    ///
-    /// Mutation (run): the chunk sized at 16 queues (the old cap,
-    /// `ParameterChanges::reserved_bridged(16, UNPREPARED_POINTS)` in `new`) → 184 points
-    /// refused → fails.
     #[test]
     fn two_hundred_parameters_fit_one_chunk() {
         let (mut d, counters) = delivery(200);
@@ -1029,10 +1018,6 @@ mod tests {
     /// **An unchanged value is not sent again.** A value sent with one chunk
     /// is skipped in the next; a new value goes; a repeat inside a chunk is
     /// skipped. Counted in `points_sent`.
-    ///
-    /// Mutation (run): drop the `sent == Some(value)` check → the second
-    /// chunk carries the unchanged value → fails. Mutation (run): drop the
-    /// in-chunk check → the repeat is a second point → fails.
     #[test]
     fn an_unchanged_value_is_not_sent_again() {
         let (mut d, counters) = delivery(4);
@@ -1055,10 +1040,6 @@ mod tests {
     /// **A value is delivered only when its chunk goes.** A chunk the bridge
     /// could not take owes each parameter's latest value to the next chunk's
     /// first frame, counted once; a value it did take is not owed.
-    ///
-    /// Mutation (run): commit `sent` whatever the hand-off says
-    /// (`settle(true)` in `handed_off`) → the owed value is never placed →
-    /// fails. Mutation (run): `begin` not placing owed values → fails.
     #[test]
     fn a_chunk_that_did_not_go_is_owed_to_the_next() {
         let (mut d, counters) = delivery(4);
@@ -1086,10 +1067,6 @@ mod tests {
     /// chunk that did not go owes it (between the hand-off and the next
     /// `begin`, which no event walk sees, but a reader there must not get
     /// the older delivered value), and it once handed over.
-    ///
-    /// Mutation (run): `current` without the `owed` case → `None` after the
-    /// refused hand-off → fails. Mutation (run): `current` reading only
-    /// `sent` → `None` while the chunk is filled → fails.
     #[test]
     fn current_is_the_latest_host_value_while_owed() {
         let (mut d, _) = delivery(4);
@@ -1109,11 +1086,6 @@ mod tests {
     /// reset and a re-prepare keep it, so a held value is not re-sent after
     /// either; it is published for a fork, and a fork seeded with it sends
     /// that value only once the host's value moves.
-    ///
-    /// Mutations (run), each fails: `abandon` clearing the record (every
-    /// slot's `sent = None`) → the held 0.5 is re-sent after the reset;
-    /// `settle` not mirroring the delivered value → `delivered()` is empty;
-    /// `seed` doing nothing → the fork re-sends 0.5.
     #[test]
     fn the_record_survives_reset_and_reprepare_and_seeds_a_fork() {
         let (mut d, counters) = delivery(4);
@@ -1146,10 +1118,6 @@ mod tests {
 
     /// **An address the list did not name is learned into a spare slot**;
     /// past the spares it is refused and counted, never grown into.
-    ///
-    /// Mutation (run): grow past the capacity (no `len < capacity` check in
-    /// `slot`) → the slots reallocate → fails. Mutation (run): not counting
-    /// the refusal → fails.
     #[test]
     fn unknown_addresses_take_spare_slots_then_are_counted() {
         let (mut d, counters) = delivery(2);
@@ -1172,14 +1140,8 @@ mod tests {
     /// Learning a slot below one already staged in the chunk keeps the
     /// staged slot's queue its own.
     ///
-    /// Mutation (run): not shifting `staged` in `slot` → the commit marks
-    /// the wrong slot sent, and 0.625 on id 50 is skipped as unchanged → fails.
-    /// **A closed list learns nothing**: an index the plugin did not
-    /// declare is refused and counted dropped, while a declared one goes.
-    ///
-    /// Mutation (run): `closed` built with `ParameterChanges::SPARE_QUEUES` spares, as `new`
-    /// is → the undeclared index is learned and staged, nothing dropped →
-    /// fails.
+    /// **A closed list learns nothing**: an index the plugin did not declare is refused and
+    /// counted dropped, while a declared one goes.
     #[test]
     fn a_closed_list_refuses_an_undeclared_index() {
         let counters = Arc::new(DeliveryCounters::default());
@@ -1216,11 +1178,6 @@ mod tests {
     /// chunk after chunk, inside the no-alloc gate. Past the budget the last
     /// point is replaced, so the queue never grows and the chunk ends on the
     /// latest value, and each replacement is counted.
-    ///
-    /// Mutations (run), each fails: `points_for` ignoring the chunk (the old
-    /// ten, the automation node's per-block budget) → 58 points a queue merged; pushing past the budget
-    /// (no `has_room` check in `place`) → the queue allocates inside the
-    /// gate → aborts; the replacement not counted → `points_merged` is 0.
     #[test]
     fn a_queue_carries_a_point_every_32_frames_of_its_chunk() {
         const CHUNK: usize = 2048;
@@ -1272,15 +1229,6 @@ mod tests {
     /// requirement 6): a full queue drops a grid point offered to it, and a
     /// corner evicts the queue's earliest grid point, each counted; only a
     /// queue of corners has its last point replaced (merged).
-    ///
-    /// Mutations (run), each fails: a grid point treated as a corner (the
-    /// `if grid` drop removed) → it evicts a grid point and ends the queue;
-    /// a corner never evicting (always the merge) → the first grid point
-    /// stays and the count is merged, not dropped; the evicted point the
-    /// last grid point rather than the first → the queue's first offset is
-    /// not 1; the grid bits not shifted down past an evicted point → the
-    /// bits no longer name the queue's grid points, and the next corner
-    /// evicts a corner.
     #[test]
     fn grid_points_are_dropped_before_corners() {
         let (mut d, counters) = delivery(1);
@@ -1336,10 +1284,6 @@ mod tests {
     /// value), under a third of a full carried room per slot. (Reworded with
     /// `PointBuf`: the chunk was `point_budget`, under a quarter of `room`,
     /// and the carried value grew a queue on the bridge thread.)
-    ///
-    /// Mutation (run): `prepare` reserving the old layout (every slot a
-    /// full room: `ParameterChanges::point_layout` always `(full, 0)`) →
-    /// the storage is `slots × (room + 1)` → fails.
     #[test]
     fn the_chunk_holds_the_pool_budget_not_params_times_room() {
         let (mut d, _) = delivery(2_000);
@@ -1364,13 +1308,6 @@ mod tests {
     /// merged. Then one more parameter needs a third point with the pool
     /// spent: it replaces that parameter's last point (the chunk ends on the
     /// latest value), counted once.
-    ///
-    /// Mutations (run), each fails: `push_point` without `make_room` (the
-    /// queue's own room only, `has_room`) → the moving parameters merge
-    /// past their floor; the merge not counted → `points_merged` is 0 after
-    /// the overflow; the host's chunk built without its carry slot
-    /// (`reserved`) → the floor queues take a third point, and the
-    /// moving parameters' per-chunk counts are off.
     #[test]
     fn up_to_the_pool_budget_nothing_merges_and_past_it_merges_counted() {
         const PARAMS: u32 = 1_000;
@@ -1478,16 +1415,6 @@ mod tests {
     /// place: 16 grid drops and 15 merges a lane, and the queue ends
     /// `[7, 511]`, a corner and the latest value. Chunk after chunk inside
     /// the no-alloc gate, each handed off as the bridge does.
-    ///
-    /// Mutations (run), each fails: `place` without `make_room` (the
-    /// queue's own storage only, `len + 1 < capacity`) → every lane is
-    /// held at its floor and the first 256 lose their points; a grid point
-    /// at a full queue handled like a corner (the `if grid` drop removed)
-    /// → it evicts a grid point or takes the latest point's place, and the
-    /// grid-drop count is not 16 a lane; a corner never evicting a
-    /// grid point (the `first` match always `None`) → the spent lanes end
-    /// `[0, 511]`, a grid point kept over a corner; the merge not counted
-    /// → `points_merged` is 0.
     #[test]
     fn more_lanes_than_the_pool_end_on_their_latest_values_counted() {
         const PARAMS: u32 = 600;
@@ -1551,10 +1478,6 @@ mod tests {
     /// 512-frame chunk, room 273): one parameter takes a grid point on
     /// frame 0, a corner, then corners to its room (borrowing a block on
     /// the way); a corner past the room evicts the frame-0 grid point.
-    ///
-    /// Mutation (run): `fits` moving to a cleared block without copying the
-    /// floor's marks → the frame-0 point reads as a corner, nothing is
-    /// evicted, the corner is merged → fails.
     #[test]
     fn a_queue_keeps_its_grid_marks_when_it_takes_a_block() {
         let (mut d, counters) = delivery(600);

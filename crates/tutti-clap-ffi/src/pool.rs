@@ -73,8 +73,6 @@ use clap_sys::plugin::clap_plugin;
 ///     }
 /// }
 /// ```
-// Mutation record (the `compile_fail` doctest above): declaring the trait
-// without `unsafe` makes the safe impl compile, and the doctest then fails.
 pub unsafe trait TaskPool: Send + Sync + 'static {
     /// Participants a job can have, the caller included. At least 1.
     fn participants(&self) -> usize;
@@ -127,8 +125,6 @@ impl GraphPool {
     ///
     /// let _ = tutti_clap_ffi::GraphPool::new(Arc::new(Early));
     /// ```
-    // Mutation record (the doctest above): taking `Arc<dyn tutti_graph::Pool>`
-    // in `new` makes it compile, so the doctest fails.
     #[must_use]
     pub fn new(pool: Arc<tutti_graph::WorkerPool>) -> Self {
         Self(pool)
@@ -394,9 +390,6 @@ mod tests {
     /// integration test `a_request_after_process_returns_is_refused` covers
     /// the call; a stale pointer there would be a dangling read it cannot
     /// observe reliably).
-    ///
-    /// Mutation: make `Swap::drop` restore nothing → the inner span leaves
-    /// null where the outer request should be back → fails.
     #[test]
     fn a_swap_restores_the_previous_request_on_return_and_unwind() {
         let fake = std::ptr::NonNull::<PoolRequest<'static>>::dangling().as_ptr()

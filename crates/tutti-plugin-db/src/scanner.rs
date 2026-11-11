@@ -784,8 +784,7 @@ mod tests {
 
     /// A spawned scan's findings reach the database through `wait`: the worker
     /// holds only a snapshot, so a scan whose deltas were never applied would
-    /// leave the caller with nothing. Mutation: have `wait` drop the delta
-    /// instead of applying it.
+    /// leave the caller with nothing.
     #[test]
     fn a_spawned_scan_applies_its_findings_to_the_db() {
         let dir = TempDir::new().unwrap();
@@ -946,11 +945,9 @@ mod tests {
         );
     }
 
-    // New tests. Mutation records: the edit that breaks each.
+    // New tests.
 
     /// A second scan of an unchanged file does not probe it again.
-    /// Mutation: make `needs_rescan` return `true`, or send the `UpToDate` arm
-    /// to `probe_one`.
     #[test]
     fn rescanning_an_unchanged_file_does_not_reprobe_it() {
         let dir = TempDir::new().unwrap();
@@ -968,7 +965,6 @@ mod tests {
     }
 
     /// A changed file is probed again and its row replaced, not added to.
-    /// Mutation: skip the `Delta` for a file that already has a row.
     #[test]
     fn a_changed_file_is_reprobed_and_its_row_replaced() {
         let dir = TempDir::new().unwrap();
@@ -991,7 +987,6 @@ mod tests {
 
     /// A file deleted between scans keeps its row until `prune_missing`: a scan
     /// that pruned would lose every row under an unmounted volume.
-    /// Mutation: drop the row when discovery does not find its file.
     #[test]
     fn a_file_deleted_between_scans_keeps_its_row_until_pruned() {
         let dir = TempDir::new().unwrap();
@@ -1020,8 +1015,7 @@ mod tests {
     }
 
     /// A probe that earns a blacklist leaves a row that later scans skip, and a
-    /// change to the file lifts it. Mutation: record nothing for a blacklistable
-    /// failure (the file is then probed on every scan).
+    /// change to the file lifts it.
     #[test]
     fn a_blacklisted_file_is_skipped_until_it_changes() {
         let dir = TempDir::new().unwrap();
@@ -1046,8 +1040,7 @@ mod tests {
     }
 
     /// A failure that says nothing about the plugin (a missing server) records
-    /// nothing, so the file is retried. Mutation: ignore `blacklistable` and
-    /// blacklist every failure.
+    /// nothing, so the file is retried.
     #[test]
     fn an_environmental_failure_records_nothing() {
         let dir = TempDir::new().unwrap();
@@ -1072,7 +1065,6 @@ mod tests {
     /// start. A probe that panics ends the worker with the pedal still armed,
     /// which is all a dead host leaves behind; a fresh scanner over a fresh
     /// database then recovers it through the table, saves, and skips the file.
-    /// Mutation: disarm the pedal before the probe in `probe_one`.
     #[test]
     fn a_host_dying_mid_scan_blacklists_the_file_on_the_next_start() {
         let dir = TempDir::new().unwrap();
@@ -1127,8 +1119,6 @@ mod tests {
     /// already there to apply, the second file still shows its old row, and the
     /// owner reads and edits throughout. Whatever the order of the two files,
     /// each shows its old row or its new one, never a mixture.
-    /// Mutation: have the worker hold its deltas until the end (the first file's
-    /// new row is not there at the park).
     #[test]
     fn the_db_is_usable_and_rows_are_whole_while_a_scan_is_parked_mid_probe() {
         let dir = TempDir::new().unwrap();
@@ -1212,8 +1202,7 @@ mod tests {
 
     /// An edit made while a scan runs (a blacklist the user set) is still there
     /// after the scan's deltas land: the scan replaces the rows it probed and
-    /// touches no other. Mutation: have `Scan::wait` clear `db` when it sees
-    /// `Done`.
+    /// touches no other.
     #[test]
     fn an_edit_made_during_a_scan_survives_it() {
         let dir = TempDir::new().unwrap();
@@ -1286,7 +1275,6 @@ mod tests {
     /// not a blocking scan, not a recovery. Each would delete the armed sentinel
     /// and blacklist a plugin that did not crash. The claim ends when the worker
     /// exits, so `Done` already allows the next scan.
-    /// Mutation: make `Claim::take` always succeed.
     #[test]
     fn nothing_else_may_use_the_pedal_while_a_scan_is_parked_mid_probe() {
         let dir = TempDir::new().unwrap();
@@ -1331,7 +1319,6 @@ mod tests {
     /// no file produces a delta (every failure environmental), and the pedal is
     /// disarmed. Without the stop flag the worker would probe every remaining
     /// file, each with a `plugin-server` child.
-    /// Mutation: drop the `stop` check in `Job::run`.
     #[test]
     fn dropping_the_scan_stops_the_worker_even_when_nothing_is_recorded() {
         let dir = TempDir::new().unwrap();
@@ -1358,7 +1345,7 @@ mod tests {
     }
 
     /// A worker that dies is reported by `poll` as `Died`, not as running
-    /// forever. Mutation: map `Disconnected` to `Running` in `Scan::poll`.
+    /// forever.
     #[test]
     fn poll_reports_a_dead_worker() {
         let dir = TempDir::new().unwrap();
@@ -1384,7 +1371,6 @@ mod tests {
 
     /// The same file reached through a link and through its real directory is
     /// one row, whichever order the roots come in, across scans.
-    /// Mutation: report the walked path from `Walk::plugin`.
     #[cfg(unix)]
     #[test]
     fn roots_that_alias_one_directory_never_duplicate_a_row() {
@@ -1408,8 +1394,6 @@ mod tests {
 
     /// A link named `.clap` to a file named anything is keyed by the target and
     /// keeps the link's format, even in a row that records only a failure.
-    /// Mutation: read the facts with `FileFacts::read(path)` in `Job::run` (the
-    /// blacklisted row then takes the default format).
     #[cfg(unix)]
     #[test]
     fn a_link_to_a_differently_named_file_keeps_its_format() {
@@ -1433,7 +1417,6 @@ mod tests {
     /// directory, or through a `..` path. Compared as raw strings, the second
     /// user got in, blacklisted a plugin that had not crashed and deleted the
     /// live sentinel.
-    /// Mutation: key the claim by `pedal.path()` instead of `canonical_path`.
     #[cfg(unix)]
     #[test]
     fn a_pedal_reached_by_another_name_is_still_claimed() {
@@ -1473,7 +1456,6 @@ mod tests {
     /// A sentinel whose blacklist could not be saved survives the scan that
     /// follows: the scan arms and disarms its own entry beside it. Overwritten,
     /// the crash record was lost.
-    /// Mutation: start `Pedal::arm` from an empty entry list.
     #[test]
     fn a_scan_after_a_failed_recovery_save_keeps_the_retained_sentinel() {
         let dir = TempDir::new().unwrap();
@@ -1494,7 +1476,6 @@ mod tests {
 
     /// The retained entry and the crash that follows are both blacklisted by
     /// the next start.
-    /// Mutation: as above.
     #[test]
     fn a_crash_after_a_failed_recovery_save_blacklists_both_files_next_start() {
         let dir = TempDir::new().unwrap();

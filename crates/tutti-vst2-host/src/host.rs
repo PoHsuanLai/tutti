@@ -484,10 +484,6 @@ mod tests {
     /// `TimeInfo` rate: right after a rate change the two differ until the
     /// next block, and a plugin querying from inside `effSetSampleRate`
     /// allocates for whatever it reads.
-    ///
-    /// Mutation (run): `get_sample_rate` reading the `time_info` snapshot
-    /// first (the previous behaviour) -> the 96 kHz snapshot wins over the
-    /// 44.1 kHz just set -> fails.
     #[test]
     fn get_sample_rate_is_the_rate_the_plugin_was_told() {
         let mut time_info = TransportWriter::new();
@@ -506,9 +502,6 @@ mod tests {
     }
 
     /// `audioMasterGetBlockSize` follows `effSetBlockSize`.
-    ///
-    /// Mutation (run): `set_block_size` not storing -> the load-time 512
-    /// stays -> fails.
     #[test]
     fn get_block_size_follows_the_announced_block() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -519,11 +512,6 @@ mod tests {
 
     /// `audioMasterIOChanged` is answered "handled" and raises the I/O,
     /// latency and tail requests, once each, for the main thread.
-    ///
-    /// Mutation (run): `io_changed` returning `false` (the previous answer)
-    /// -> fails the first assert. Mutation (run): not raising `TailChanged`
-    /// -> the taken set lacks it -> fails. Mutation (run): raising nothing ->
-    /// the taken set is empty -> fails.
     #[test]
     fn io_changed_is_handled_and_raises_its_requests_once() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -554,13 +542,6 @@ mod tests {
     ///
     /// A host nobody called asks for nothing, and the request is consumed by
     /// taking it, so one call is one re-read.
-    ///
-    /// Mutation (run): `update_display` raising only the `Values` scope -> the
-    /// `Info` request is missing and the names stay stale -> fails.
-    /// Mutation (run): `HostState::new` raising `IoChanged` -> the quiet host
-    /// reports a request -> fails.
-    /// Mutation (run): `RequestWord::take` loading the word instead of swapping
-    /// it to zero -> the second take sees the requests again -> fails.
     #[test]
     fn update_display_asks_for_a_reread_of_names_and_values() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -586,11 +567,6 @@ mod tests {
     }
 
     /// `audioMasterCanDo` claims what tutti does and declines what it does not.
-    ///
-    /// Mutation (run): the `Host::can_do` override removed (the default
-    /// answers `Maybe` to everything) -> `sendVstEvents` reads 0 -> fails.
-    /// Mutation (run): `sizeWindow` moved into the `Yes` arm -> a claim the
-    /// host does not keep -> fails.
     #[test]
     fn can_do_claims_what_the_host_supports() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -728,9 +704,6 @@ mod tests {
     /// **A SysEx the plugin emits reaches the host whole, at any length.**
     /// `process_events` used to look at `Midi` events only, so every SysEx a
     /// VST2 plugin emitted was ignored.
-    ///
-    /// Mutation (run): remove the `SysEx` arm of `process_events` → nothing
-    /// is queued → fails.
     #[test]
     fn a_sysex_from_the_plugin_reaches_the_host_whole() {
         for len in [1usize, 6, 7, 40, 200] {
@@ -757,9 +730,6 @@ mod tests {
 
     /// **An event whose `byte_size` is shorter than its struct is ignored**,
     /// not read past its declared end.
-    ///
-    /// Mutation (run): drop the `declared >=` conditions in `process_events` →
-    /// both events are queued → fails.
     #[test]
     fn an_event_shorter_than_its_struct_is_ignored() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -790,13 +760,6 @@ mod tests {
     /// iterations over the array), a null entry is skipped, and an event whose
     /// type word is no `EventType` variant is skipped without ever being read as
     /// the enum (reading one is undefined behaviour, which no test can show).
-    ///
-    /// Mutation (run): `usize::try_from(..).unwrap_or(0)` -> `as usize`: the
-    /// negative list reads the null second slot and dereferences it, and the test
-    /// dies on SIGSEGV. Mutation (run): drop the `is_null` check: the null entry
-    /// is dereferenced, same death. Mutation (run): drop the type-word comparison
-    /// away (treat every word as `Midi`): the valid note under the bogus word is
-    /// queued and `is_empty` fails.
     #[test]
     fn a_malformed_event_list_is_ignored() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -857,9 +820,6 @@ mod tests {
 
     /// A SysEx that does not fit the queue is dropped whole and counted once,
     /// never left as a `START` without its `END`.
-    ///
-    /// Mutation (run): drop the `packets > room` check → the queue is left
-    /// holding the head of the message → fails.
     #[test]
     fn a_sysex_past_the_queue_is_dropped_whole_and_counted() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -873,10 +833,6 @@ mod tests {
     /// **The SysEx path is allocation-free**, accepting and refusing: a
     /// 200-byte message is delivered and drained, then more are delivered
     /// until the queue refuses one, then it is drained again.
-    ///
-    /// Mutation (run): collect the packets into a `Vec` in `push_sysex_out`
-    /// (`let all: Vec<_> = sysex7_packets(..).collect();` before the
-    /// room check) → `assert_no_alloc` aborts on the first delivery.
     #[test]
     fn the_sysex_path_is_allocation_free() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -907,9 +863,6 @@ mod tests {
     /// undefined status and a data byte with its top bit set are what a plugin
     /// can get wrong; none reaches the queue or counts as a drop, a valid
     /// message beside them does, and nothing allocates.
-    ///
-    /// Mutation (run): `from_midi1_bytes` parsing with `midly`'s
-    /// `LiveEvent::parse` → the process aborts on `[0xF7, 1, 2]`.
     #[test]
     fn a_stray_status_from_a_plugin_allocates_nothing() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
@@ -960,8 +913,7 @@ mod tests {
     /// construction, outside the gate.
     ///
     /// `src/lib.rs` installs `AllocDisabler` for the unit-test binary, so this
-    /// observes something. Mutation check: swap either `ArrayQueue` back for a
-    /// `crossbeam_channel::unbounded` sender and this fails on the first push.
+    /// observes something.
     #[test]
     fn both_audio_thread_callbacks_are_allocation_free() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);

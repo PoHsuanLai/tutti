@@ -230,7 +230,7 @@ pub(crate) fn component_info(component: AuComponentRef) -> Option<AuComponentInf
 ///
 /// The major's width is NOT settled by anything installed here. Masking the top
 /// half to 8 bits and reading it as a full 16 give identical output for every AU
-/// on this machine, because no major exceeds 255 — a mutation to `& 0xffff`
+/// on this machine, because no major exceeds 255 — a `& 0xffff` mask
 /// passes the whole suite. Apple's header documents `0xMMMMmmDD`, i.e. a 16-bit
 /// major, so a unit numbered past 255 would print as `1.x.y` here and want the
 /// wider mask. Kept at 8 bits because that is the field width the other two
@@ -301,9 +301,6 @@ mod tests {
 
     /// Only Audio Units: the codecs AudioToolbox registers as components (an
     /// AAC decoder, ships with macOS) are not listed.
-    ///
-    /// Mutation (run): `enumerate_components` without its type filter -> the
-    /// decoders are listed -> fails.
     #[cfg(target_os = "macos")]
     #[test]
     fn enumeration_lists_no_codec() {

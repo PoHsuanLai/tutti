@@ -320,9 +320,6 @@ fn host_supplies_transport_when_present() {
 /// CLAP's `tempo_inc` ("tempo increment for each sample and until the next
 /// time info event", clap/events.h) is the slope the host measured, BPM per
 /// sample, as the plugin reads it from the transport event.
-///
-/// Mutation (run): `tempo_inc: 0.0` in `build_clap_transport` -> the plugin
-/// reads 0 -> fails.
 #[test]
 fn host_supplies_the_tempo_slope() {
     let mut inst = load_plugin();

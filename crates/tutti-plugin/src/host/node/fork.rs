@@ -473,10 +473,6 @@ mod tests {
     /// A fork's health reports a latency that moved after its graph was
     /// compiled — `Failed`, with `PluginRenderFault::LatencyChanged` naming
     /// both figures — and nothing before `plan` or while the figure holds.
-    ///
-    /// Mutation: have `latency_moved` return `None` → the moved figure is not
-    /// reported → fails. Mutation: compare the plugin's own latency (without
-    /// the pipeline chunk) → the unmoved plan reads as moved → fails.
     #[test]
     fn a_latency_moved_after_the_plan_is_a_fault() {
         let controls =

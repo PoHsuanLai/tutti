@@ -315,9 +315,6 @@ mod tests {
 
     /// One audio side per transport, through any clone, and it comes back
     /// with the machine when it drops.
-    ///
-    /// Mutation (run): `MotionAudio::hand_back` not pushing the home back →
-    /// the second take after the drop is refused → fails.
     #[test]
     fn the_audio_side_is_taken_once_and_comes_back() {
         let t = Transport::new(SampleRate::new(48_000.0));
@@ -334,10 +331,6 @@ mod tests {
     /// A command still waiting for its beat outlives the audio side that
     /// gathered it, credit and all: the next one (a device restart) finds it
     /// pending, fires it, and the credits return to zero.
-    ///
-    /// Mutation (run): `TransportAudio::drop` not handing the pending list
-    /// back → the new side has no pending command and the credit stays held
-    /// → fails.
     #[test]
     fn a_waiting_command_outlives_its_audio_side() {
         let t = Transport::new(SampleRate::new(48_000.0));
@@ -363,9 +356,6 @@ mod tests {
 
     /// Firing a command gives its credit back and counts it late exactly
     /// when it is; nothing else frees a credit.
-    ///
-    /// Mutation (run): `ScheduleAudio::take` skipping `release` → the
-    /// outstanding count stays 2 → fails; skipping `count_late` → 0 → fails.
     #[test]
     fn firing_a_command_frees_its_credit_and_counts_it_late() {
         let t = Transport::new(SampleRate::new(48_000.0));
@@ -390,9 +380,6 @@ mod tests {
 
     /// The block renders at the published map's tempo, from the first block
     /// after the publish, and stays there.
-    ///
-    /// Mutation (run): `tempo_for_block` returning `self.control.tempo`
-    /// without lending -> the block keeps 120 -> fails.
     #[test]
     fn a_published_constant_map_is_the_next_blocks_tempo() {
         let t = Transport::new(SampleRate::new(48_000.0));
@@ -435,10 +422,6 @@ mod tests {
     /// frames before beat 4 of 120 to 60 BPM at 48 kHz, a 512-frame block has
     /// one change at offset 100, on beat 4 exactly at 60 BPM. With no room the
     /// block ends there; a constant map has none.
-    ///
-    /// Mutation (run): `TempoWalk::ahead` pushing at `at + 1` -> offset 101 ->
-    /// fails; `limit` set only when `len > cap` -> the no-room block is not cut
-    /// -> fails.
     #[test]
     fn the_look_ahead_finds_a_step_and_cuts_a_block_that_cannot_hold_it() {
         let (_t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0)]);
@@ -473,11 +456,6 @@ mod tests {
     /// moving the playhead: the beat of that block is the beat the last one
     /// ended on (bit for bit), at the tempo the map has there, and the step
     /// that follows lands on its frame.
-    ///
-    /// Mutation (run): `TransportClock::follow` not calling `place` -> the
-    /// clock keeps 120 and the tempo assertion fails; seating at the map's
-    /// beat for the frame instead of the current beat -> the beat jumps ->
-    /// fails.
     #[test]
     fn a_swapped_in_step_map_re_seats_at_the_current_beat() {
         let t = Transport::new(SampleRate::new(48_000.0));
@@ -523,10 +501,6 @@ mod tests {
     /// new rate: beat 6 of a 60-to-240 step at beat 8 is 2 beats of 60 BPM, or
     /// 192 000 frames, from the step at 96 kHz (and the clock had counted 144 000
     /// at 48 kHz to get here).
-    ///
-    /// Mutation (run): `TransportClock::set_sample_rate` not calling `place`
-    /// -> the map frame stays on its 48 kHz count and the step lands 48 000
-    /// frames early -> fails.
     #[test]
     fn a_rate_change_re_seats_on_the_maps_timeline() {
         let (_t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0), (8.0, 240.0)]);
@@ -552,10 +526,6 @@ mod tests {
     /// after `s(beat) x 96 000` (`s = (sqrt(4 - 3 b / 4) - 2) / a`), the block's
     /// tempo is the chord of `B` over that frame's 128-frame cell, and at the
     /// cell's edge the playhead is on `B` exactly, at the next chord.
-    ///
-    /// Mutation (run): `TransportClock::set_sample_rate` not calling `place`
-    /// -> the map frame stays at its 48 kHz count, which at 96 kHz is a cell
-    /// twice as far along -> the chord is another one -> fails.
     #[test]
     fn a_rate_change_inside_a_ramp_takes_the_chord_at_the_new_rate() {
         use tutti_tempo::{Shape, TempoPoint};
@@ -601,10 +571,6 @@ mod tests {
 
     /// A map has no hysteresis: a step from 120 to 120.0005 BPM (inside the
     /// clock's 0.001 band for a scalar tempo) is taken on its frame.
-    ///
-    /// Mutation (run): `TempoWalk::sync` keeping the clock's tempo when
-    /// `tempo_in_effect` says the two are within the band -> the tempo stays 120
-    /// -> fails.
     #[test]
     fn a_map_is_followed_without_the_scalar_hysteresis() {
         let (_t, mut a) = rolling(48_000.0, &[(0.0, 120.0), (1.0, 120.0005)]);
@@ -615,10 +581,6 @@ mod tests {
     /// A map with steps published before the audio side is taken (an engine
     /// built after the project set its tempo, or rebuilt by a device restart)
     /// is followed from its first block: the step lands on its frame.
-    ///
-    /// Mutation (run): `TransportAudio::take` not reading the map it finds
-    /// (`stepped` left false) -> the clock runs at the scalar 120 and beat 5
-    /// is on frame 120 000 -> fails.
     #[test]
     fn a_map_published_before_the_audio_side_is_taken_is_followed() {
         let (t, a) = rolling(48_000.0, &[(0.0, 120.0), (4.0, 60.0)]);

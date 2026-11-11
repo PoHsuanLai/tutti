@@ -2,13 +2,6 @@
 //!
 //! The packets are written as words, from the table, not built through
 //! `Message`: the walker must not depend on the encoder it is read back with.
-//!
-//! Mutation record (each planted in `split_stream`, seen to fail, restored):
-//! - a reserved 96-bit type (0xB, 0xC) counted as 4 words ->
-//!   `a_reserved_type_does_not_desync_the_stream` and `every_type_has_its_table_4_size`;
-//! - a truncated tail yielded zero-padded instead of dropped ->
-//!   `a_truncated_tail_is_dropped`;
-//! - the cursor advanced by 1 instead of `n` -> `mixed_lengths_are_walked_by_type`.
 
 use tutti_ump::{Ump, split_stream};
 

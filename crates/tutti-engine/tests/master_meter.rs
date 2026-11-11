@@ -90,8 +90,6 @@ fn render(engine: &Engine, frames: usize, width: usize) -> Vec<f32> {
 /// from a `[..2]` truncation: under a uniform-DC graph the two agree exactly.
 /// (This was a stereo fold of the device buffer, `M3DB` on each side; the
 /// meter now reads the graph's outputs one by one and folds nothing.)
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_wide_device_meters_each_channel_not_the_first_two() {
     // 5.1 order: L, R, C, LFE, Ls, Rs. Channel 2 is the centre.
@@ -121,8 +119,6 @@ fn a_wide_device_meters_each_channel_not_the_first_two() {
 /// **The meter measures only while enabled.** A disabled meter reads nothing
 /// of a rendered block; once enabled it reads the next one. A stereo device
 /// and a wide one are both checked.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn an_enabled_meter_reads_the_block() {
     for width in [2usize, 6] {
@@ -145,8 +141,6 @@ fn an_enabled_meter_reads_the_block() {
 /// level**: a constant 0.5 reads 0.5 as both peak and RMS, on each channel.
 /// The engine runs it as sixteen graph blocks of 512, and the meter reads
 /// them as one.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_full_block_reads_its_analytic_level() {
     let (engine, mut meter) = engine(0.5, None, 2, Samples(8192));
@@ -163,8 +157,6 @@ fn a_full_block_reads_its_analytic_level() {
 /// **The pure render feeds the meter too**: `process_segment` has no declick
 /// but is a render a host pulls, and an offline session's handle must not
 /// read silence for it.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn the_pure_render_feeds_the_meter() {
     let (engine, mut meter) = engine(0.25, None, 2, Samples(512));
@@ -180,11 +172,7 @@ fn the_pure_render_feeds_the_meter() {
 /// silence.
 ///
 /// The RMS tells them apart (the peak does not: the fade rises back to the
-/// source's level within the block). Mutation: none runnable as code, since
-/// the op sits in the plan and the fader after it by construction; the test
-/// pins the difference by computing the faded buffer's own RMS, which a
-/// post-fader meter would have read, and requiring the meter to differ from
-/// it.
+/// source's level within the block).
 #[test]
 fn the_master_reads_before_the_declick() {
     use tutti_transport::MotionEvent;
@@ -255,8 +243,6 @@ impl tutti_graph::Node for Step {
 /// block, and what is asked for, so the block is longer than that. 100 frames
 /// at 1.0 then 1400 at 0.1 on the centre: the peak is 1.0, the RMS
 /// `sqrt((100 + 1400 * 0.01) / 1500)`, and the silent channels read zero.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_block_longer_than_the_capacity_is_measured_whole() {
     let transport = Transport::new(SampleRate::new(RATE));
@@ -314,17 +300,3 @@ fn a_stereo_root_folds_to_a_stereo_device_unchanged() {
         "a stereo root plays unchanged on a stereo device"
     );
 }
-
-// Mutations, each run, with the test that failed:
-// - `MeterSpec::Outputs` resolving to `outputs[..2]`:
-//   `a_wide_device_meters_each_channel_not_the_first_two` and
-//   `a_block_longer_than_the_capacity_is_measured_whole`.
-// - deleting the `enabled` early return in `meter_op`:
-//   `an_enabled_meter_reads_the_block`.
-// - `meter_op` returning at once (no pass at all): `a_full_block_reads_its_analytic_level`,
-//   `the_pure_render_feeds_the_meter` and every other reading.
-// - a block's energy stored instead of added (`pack(frames, ..)` for
-//   `pack(n, sum + ..)`): `a_full_block_reads_its_analytic_level` and
-//   `a_block_longer_than_the_capacity_is_measured_whole` read the last piece.
-// - `Vec::with_capacity(1)` in `meter_op`: `the_master_meter_is_allocation_free`
-//   (`rt_no_alloc_engine.rs`).

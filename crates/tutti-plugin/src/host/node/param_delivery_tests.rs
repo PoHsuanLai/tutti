@@ -63,10 +63,6 @@ fn lane_chunk(d: &mut ParamDelivery, latest: &mut [f32], phase: usize) {
 /// chunk's room) inside the no-alloc gate. Every point is handed on,
 /// in time order, and every lane's last event is its latest value on
 /// the chunk's last frame.
-///
-/// Mutation (run): the list reserved at the floor alone (`3 × params`,
-/// as if the pool's blocks were not counted) → the 256 full lanes'
-/// points past it are refused and counted → fails.
 #[cfg(feature = "clap")]
 #[test]
 fn a_pool_spent_chunk_reaches_a_clap_plugin_whole() {
@@ -118,14 +114,6 @@ fn a_pool_spent_chunk_reaches_a_clap_plugin_whole() {
 /// of 273). Every buffer the node fills must be of its own room: the
 /// grid marks (`GridBits`) are laid out for it, and the server's lists
 /// are reserved for it.
-///
-/// Mutation (run), fails: `return_params` comparing the queues only
-/// (`changes.point_room()` replaced by the reservation's own room,
-/// `(reserved & 0xFFFF_FFFF) as usize`) → the 4096-room buffer is
-/// recycled and reaches the node (the free-buffer assertion fails; past
-/// it, `GridBits::fits`' debug assertion would fire, and in release a
-/// queue would hold 385 points against the server's 273, with grid
-/// points past the 64th read as corners).
 #[test]
 fn a_buffer_of_the_room_before_a_re_prepare_is_dropped_not_reused() {
     let counters = Arc::new(DeliveryCounters::default());

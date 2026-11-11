@@ -480,9 +480,6 @@ mod tests {
     /// `advance` counts frames and starts a new segment on every crossing's
     /// frame (`FrameClock::advance`), as the live clock does frame by frame,
     /// so the two agree to the bit.
-    ///
-    /// Mutation (run): wrap once per call, at the call's end → the block of 50 000 frames (five crossings of a 0.33-beat loop)
-    /// lands off the frame-by-frame position → fails.
     #[test]
     fn a_block_longer_than_the_loop_lands_where_its_frames_do() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
@@ -587,9 +584,6 @@ mod tests {
     /// is beat 3 and 500 is beat 1, to the bit. An accumulated playhead
     /// (`beat += beats_per_sample × 64` per block) would read `2.999999999999891`
     /// and `1.0000000000000007`.
-    ///
-    /// Mutation (run): accumulate in `FrameClock::advance` → 1.0000000000000007
-    /// → fails.
     #[test]
     fn a_block_on_a_beat_is_that_beat_exactly() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
@@ -613,9 +607,6 @@ mod tests {
     /// and a `TransportClock`, stepped 64 frames a block — stand on the closed form `start + frames × tempo / (60 × rate)`, to
     /// the bit. Correctly rounded `*`, `/` and `+` only (no libm), so the
     /// comparison is portable.
-    ///
-    /// Mutation (run): accumulate in `FrameClock::advance` → the first
-    /// tempo whose per-frame step is not representable fails.
     #[test]
     fn a_long_render_stands_on_the_closed_form() {
         use crate::clock::TransportClock;
@@ -749,11 +740,6 @@ mod tests {
     /// linear in time, so `T = 2 x 4 / (97 + 120) x 60` s) the first cell's
     /// tempo is the chord of the curve over its 128 frames, written out here
     /// from the closed form `beats(s) = r0 s + a s^2 / 2`, `a = (r1 - r0) / T`.
-    ///
-    /// Mutation (run): `new` seating the clock on the config's first point
-    /// without the walk -> the first cell's tempo is 97, not the chord ->
-    /// fails; `advance` rolling with the closed form instead of the walk
-    /// (`stepped` false) -> the second cell's tempo is not higher -> fails.
     #[test]
     fn a_ramp_is_followed_cell_by_cell() {
         let ramp = OfflineTimeline::new(&OfflineTimelineConfig {
@@ -788,9 +774,6 @@ mod tests {
     /// 41 steps 24 frames apart: `block(512)` holds the first 8 and ends on the
     /// frame of the ninth, which is the first frame at or after its second
     /// (written out: beat 0.001 x 9 at its segments' tempos, 120 + i BPM).
-    ///
-    /// Mutation (run): `ahead` testing `>` for the cap -> a ninth change is
-    /// pushed (refused, lost) and the block is not cut -> fails.
     #[test]
     fn a_block_ends_where_the_ninth_change_would_begin() {
         let points: Vec<(f64, f64)> = (0..41)
@@ -818,9 +801,6 @@ mod tests {
     /// A seek on a timeline over a map lands on the exact beat in the step it
     /// is in: to 4.5 of a step to 60 BPM at beat 4, 48 000 frames on is beat
     /// 5.5; back to 3.5 at 120 BPM, 12 000 frames reach beat 4 and the 60 BPM.
-    ///
-    /// Mutation (run): `seek_to` seating the clock without the walk -> the
-    /// tempo of the first position holds -> fails.
     #[test]
     fn a_seek_on_a_step_map_takes_the_tempo_of_its_step() {
         let t = OfflineTimeline::new(&OfflineTimelineConfig {

@@ -160,11 +160,6 @@ fn run(ed: &mut Editor, exec: &mut Executor, blocks: usize) -> Vec<EventLoss> {
 /// it. Capacity 16 is room for 16 + 2 + 8 = 26 events. A script of 20
 /// note-ons and 20 note-offs writes the 16 first note-ons (4 refused), and
 /// then 10 of its note-offs (10 refused): 16 + 10 = 26 land.
-///
-/// Mutation: let every event use the room (drop the `is_note_off` test in
-/// `EventWriter::push`) → 26 note-ons land and no note-off does → fails.
-/// Mutation: refuse a note-off at the cap (`len >= self.cap` alone) → no
-/// note-off lands → fails.
 #[test]
 fn a_full_port_takes_note_offs_before_note_ons() {
     assert_eq!(note_off_room(16), 26);
@@ -199,10 +194,6 @@ fn a_node_within_its_room_loses_nothing() {
 /// and a block with none reports none. Port 1 of the first writer is 5 over
 /// (21 note-ons against 16) each of two blocks; its port 0 and the second
 /// writer lose nothing.
-///
-/// Mutation: charge every loss to port 0 (`dropped.at_port(rec.unit, 0, ..)`
-/// in `Call::run`) → the entries name port 0 → fails. Mutation: skip the
-/// flush at the end of the block → no entries → fails.
 #[test]
 fn a_loss_is_charged_to_its_port() {
     let ok = Script { ons: 4, offs: 4 };
@@ -227,9 +218,6 @@ fn a_loss_is_charged_to_its_port() {
 /// places than a log holds (not this one) would leave out different ones. The
 /// totals and the render are exact and identical; the order and truncation of
 /// entries are not promised to match.
-///
-/// Mutation: drop `Dropped::absorb` in `run_block` → a parallel render
-/// reports no loss → fails.
 #[test]
 fn the_parallel_losses_are_the_serial_ones() {
     let scripts = |n: u32| {

@@ -96,16 +96,12 @@ fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
     }
 }
 
-/// Mutation (each run, each fails): dropping the `LastGood` read on the SVF's
-/// cutoff (`read_controls`), on the ladder's resonance, on the delay's delay
-/// time, on the LFO rate (`LfoDrive::fill_block`), on the mod-mix depth
-/// (`TimeMod::load`), on the compressor's attack (`times`, caught only
-/// through the rate change: the follower's own change guard holds a NaN off
-/// otherwise), on the gate's attack and range, and on the shared mod
-/// feedback. The gate's hold is sanitised too but cannot go non-finite in the
-/// output (it becomes an integer frame count, where NaN saturates to 0), so
-/// dropping that read is not caught here — it would only turn an infinite hold
-/// into a gate held open for good.
+/// A NaN or infinite control never reaches the output of the SVF's cutoff, the ladder's
+/// resonance, the delay's delay time, the LFO rate, the mod-mix depth, the compressor's
+/// attack, the gate's attack and range, or the shared mod feedback: each read goes
+/// through `LastGood`. The gate's hold is sanitised too but cannot go non-finite in the
+/// output (it becomes an integer frame count, where NaN saturates to 0), so it is not
+/// observable here.
 #[test]
 fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls() {
     survives_node(
@@ -241,9 +237,6 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
 /// The convolver's gain is its only cell (the mix is the graph's, which refuses
 /// a non-finite one: `tutti-session/tests/node_mix.rs`); it does not feed
 /// recursive state, but the block's end starts the next block's ramp.
-///
-/// Mutation: dropping the `LastGood` read on the gain makes the `inf` case
-/// fail (∞ × a zero wet sample is NaN).
 #[cfg(feature = "convolution")]
 #[test]
 fn the_convolver_holds_off_non_finite_controls() {
@@ -258,10 +251,6 @@ fn the_convolver_holds_off_non_finite_controls() {
 
 /// The waveshaper's drive cell holds a non-finite write off: an infinite drive
 /// built an infinitely hard shaper and NaN output (0 * inf) before.
-///
-/// Mutation (run): in `maybe_update`, `self.drive.load().get()` without the
-/// `LastGood` read makes the `inf` case fail for every curve. (The NaN case
-/// passes either way: a NaN never exceeds the change threshold.)
 #[test]
 fn the_distortion_holds_off_non_finite_controls() {
     use tutti_nodes::{DistortionNode, ShapeKind};
@@ -283,7 +272,7 @@ fn the_distortion_holds_off_non_finite_controls() {
 
 /// A waveshaper built with a drive that is NaN or infinite renders finite.
 ///
-/// No mutation is claimed: the first block's `LastGood` read rebuilds the
+/// The first block's `LastGood` read rebuilds the
 /// shaper from 0 whatever the constructor built, so this pins the behaviour.
 #[test]
 fn a_distortion_built_with_a_non_finite_drive_renders_finite() {

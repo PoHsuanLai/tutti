@@ -70,10 +70,6 @@ fn sum(a: &[f32], b: &[f32]) -> Vec<f32> {
 /// the two channels' gains together). With the channel's CCs at 0 nothing else
 /// adds. The pan generator (-250: three quarters left) makes left and right
 /// differ, so a send that mixed the channels up fails.
-///
-/// Mutations (run): the chorus pair reading the right gain for both channels
-/// fails the left; the reverb send taking only the left gain fails the sum;
-/// generators 15 and 16 swapped fails both.
 #[test]
 fn the_generators_set_each_voices_sends() {
     let mut rig = rig(vec![(CHORUS_SEND, 500), (REVERB_SEND, 250), (PAN, -250)]);
@@ -94,10 +90,6 @@ fn the_generators_set_each_voices_sends() {
 /// percent, added to the generator sum. With no generator, CC 91 at 127 sends
 /// 0.2 * 127/128 of the voice's level to the reverb, and CC 93 at 64 sends 0.2 *
 /// 64/128 = 0.1 to the chorus.
-///
-/// Mutations (run): the divisor 128 -> 127 in `Channel::reverb_send` fails the
-/// reverb; the amount 0.2 -> 1.0 (the whole controller, as before this lane)
-/// fails both; swapping the two controllers fails both.
 #[test]
 fn the_controllers_are_the_spec_default_modulators() {
     let mut rig = rig(vec![]);
@@ -118,8 +110,6 @@ fn the_controllers_are_the_spec_default_modulators() {
 /// The modulator's output adds to the generator sum, and the total is limited
 /// to the generator's range, 0 to 1000 tenths (section 8.1.3): 250 and CC 91 at
 /// 127 is 0.25 + 0.2 * 127/128; 900 and CC 91 at 127 is 1.098, limited to 1.
-///
-/// Mutation (run): removing the upper limit in `Voice::process` gives 1.098.
 #[test]
 fn a_send_sums_the_generator_and_the_modulator_and_stops_at_full_level() {
     let mut rig = rig(vec![(REVERB_SEND, 250)]);
@@ -146,9 +136,6 @@ fn a_send_sums_the_generator_and_the_modulator_and_stops_at_full_level() {
 /// sample it follows. (At -400 the sum stays negative either side, and the
 /// audible floor hides it.) Steady with the controllers at 0, the sends are
 /// exact zeros.
-///
-/// Mutation (run): the lower limit in `Voice::process` replaced by -10 inverts
-/// the end of the ramp and fails the sign check.
 #[test]
 fn a_negative_send_sends_nothing() {
     let mut steady_rig = rig(vec![(CHORUS_SEND, -400), (REVERB_SEND, -400)]);
@@ -180,9 +167,6 @@ fn a_negative_send_sends_nothing() {
 /// controllers at 0 and no generator, only the dry pair is heard, and the
 /// status names the other three. With the reverb on only, the chorus pair is
 /// the silent one. With everything sending, nothing is claimed.
-///
-/// Mutations (run): returning `Status::Modified` always fails it; naming the
-/// planes that were heard rather than those that were not fails it.
 #[test]
 fn a_send_with_nothing_to_send_is_reported_silent() {
     let masked = |silent: &[usize]| {
@@ -217,10 +201,6 @@ fn a_send_with_nothing_to_send_is_reported_silent() {
 
 /// A unit that has not played, or whose voices have all ended and whose last
 /// chunk is read out, is idle; one with a note held or ringing is not.
-///
-/// Mutation (run): `Player::is_idle` always false fails the first and last
-/// lines. (Always true is caught by the next test, not this one: a sounding
-/// note has something written, which keeps the status from `Idle`.)
 #[test]
 fn the_unit_is_idle_once_its_voices_end() {
     let mut rig = rig(vec![]);
@@ -242,9 +222,6 @@ fn the_unit_is_idle_once_its_voices_end() {
 /// silent and not finished: the unit says `Masked`, never `Idle`, which is the
 /// status that lets the executor stop calling a node. After the delay the note
 /// sounds.
-///
-/// Mutation (run): `Player::is_idle` always true parks the unit in the delay
-/// and fails the first assertion.
 #[test]
 fn a_voice_in_its_delay_is_silent_but_the_unit_is_not_idle() {
     // 1200 timecents is 2 s.
@@ -265,9 +242,6 @@ fn a_voice_in_its_delay_is_silent_but_the_unit_is_not_idle() {
 }
 
 /// The unit has five outputs, and the main pair the host plays is the dry one.
-///
-/// Mutation (run): `main_outputs` returning `[2, 3]` fails the second line;
-/// four outputs fails the first.
 #[test]
 fn the_dry_pair_is_the_main_pair_of_five_outputs() {
     let rig = rig(vec![]);

@@ -1,7 +1,7 @@
 //! How the reader treats the RIFF framing (SF2 2.04 section 4, with the RIFF
 //! rules it builds on), on files made from the fixture font with crafted
 //! bytes: sub-chunks it does not know, odd sizes and their pad byte, the RIFF
-//! size, and sizes that lie. Mutations are written beside each test, as run.
+//! size, and sizes that lie.
 
 use std::io::Cursor;
 
@@ -62,8 +62,6 @@ fn insert_first(mut file: Vec<u8>, kind: &[u8; 4], chunk: &[u8]) -> Vec<u8> {
 
 /// Section 4: a reader ignores a sub-chunk it does not know, in each of the
 /// three lists, whatever its size.
-///
-/// Mutation (run): the `_ =>` arms of the three lists back to an `Err` fail it.
 #[test]
 fn an_unknown_sub_chunk_is_ignored_in_every_list() {
     for kind in [b"INFO", b"sdta", b"pdta"] {
@@ -78,9 +76,6 @@ fn an_unknown_sub_chunk_is_ignored_in_every_list() {
 /// chunk's size. An odd-sized chunk (an unknown one, and a known string one)
 /// before the rest leaves the rest where it was: the comment reads whole and
 /// the file still parses.
-///
-/// Mutation (run): `skip_pad` doing nothing misreads the chunk after the pad
-/// and fails every row.
 #[test]
 fn an_odd_sized_chunk_is_padded_to_even() {
     for kind in [b"INFO", b"sdta", b"pdta"] {
@@ -94,9 +89,6 @@ fn an_odd_sized_chunk_is_padded_to_even() {
 
 /// The RIFF size bounds the file: bytes after it are not read, and a list that
 /// reaches past it is a short read, an error and not a panic or an over-read.
-///
-/// Mutation (run): reading the RIFF size and not limiting the reader (`take`)
-/// fails the second assertion (the whole file parses).
 #[test]
 fn the_riff_size_is_honoured() {
     let mut trailing = base();
@@ -112,10 +104,6 @@ fn the_riff_size_is_honoured() {
 
 /// A size that reaches past its list is refused by name; one that claims
 /// gigabytes is too, without reading or allocating them.
-///
-/// Mutation (run): dropping the bound in `next_chunk` lets the first row read
-/// into the next list and fails the JUNK row. (`read_bytes` allocating `size`
-/// up front would make the later rows take gigabytes; not run, for that reason.)
 #[test]
 fn a_size_that_reaches_past_its_list_is_refused() {
     let mut file = base();
@@ -148,8 +136,6 @@ fn a_size_that_reaches_past_its_list_is_refused() {
 }
 
 /// `ifil` is four bytes. Another size is refused, not read as four.
-///
-/// Mutation (run): removing `expect_size` for `iver` fails it.
 #[test]
 fn a_version_chunk_of_the_wrong_size_is_refused() {
     let mut file = insert_first(base(), b"INFO", &chunk(b"iver", &[2, 0, 1, 0, 9, 9]));

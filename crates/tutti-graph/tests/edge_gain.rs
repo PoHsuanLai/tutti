@@ -7,8 +7,6 @@
 //! written out in the test. A render is compared with another only as the doc
 //! prescribes: the compiled executor against the reference interpreter
 //! (`Pair`), and the parallel executor against the serial one.
-//!
-//! Mutations are recorded on each test (each run, each failed, then restored).
 
 mod common;
 
@@ -234,10 +232,6 @@ fn fused_fold(values: &[f32], weights: &[f32]) -> f32 {
 ///
 /// The figures show the two roundings: the fold is not the fused one (asserted
 /// below, so the test can see a fused kernel), and not the pairwise one.
-///
-/// Mutations (each run, each failed): fuse the multiply-add in
-/// `gain::add` (`*o = w.mul_add(x, *o)`) and in `gain::first`; sum
-/// the addends in reverse; weight the first addend only.
 #[test]
 fn a_weighted_sum_is_the_documented_fold() {
     let values = [0.3f32, 0.2, 0.9];
@@ -266,10 +260,6 @@ fn a_weighted_sum_is_the_documented_fold() {
 /// weights of many kinds (unity, zero, negative, fractions), at both sinks,
 /// is the fold written out over all of them. Some lanes are plain (no entry),
 /// as the chain's own continuation addend is.
-///
-/// Mutations (each run, each failed): give a chain's continuation addend a
-/// lane (`lane: Some(..)` in `sum_chain`'s loop) -> `verify` or the render
-/// fails; start a later op from `+0.0` instead of the last result.
 #[test]
 fn a_wide_weighted_fan_in_is_one_flat_fold() {
     let n = 100usize;
@@ -319,11 +309,6 @@ fn a_wide_weighted_fan_in_is_one_flat_fold() {
 /// A weight of exactly `1.0` is the plain sum, bit for bit, for fan-ins of 2,
 /// 8 and 100 (the last a chain): the same values rendered with an entry of
 /// `1.0` on every edge and with none.
-///
-/// Mutations (each run, each failed): a lane's first block ramps from zero
-/// (`prev.unwrap_or(Amplitude::SILENT)` in `SumLane::weight`) -> the first
-/// block is `w[i]`-scaled; drop the `0.0 +` of `gain::first` for `Unit` ->
-/// the one-edge test below (and any `-0.0` sample here).
 #[test]
 fn unity_weights_equal_the_unweighted_sum() {
     for n in [2usize, 8, 100] {
@@ -350,12 +335,6 @@ fn unity_weights_equal_the_unweighted_sum() {
 /// `+0.0 + 1.0 * a`, which turns that `-0.0` into `+0.0`. Nothing audible
 /// differs, and this test pins the difference rather than hiding it (doc 013,
 /// "Edge gain", "Weight 1.0 is bit-identical to the plain sum").
-///
-/// Mutations (each run, each failed): drop the `0.0 +` of the fresh form of
-/// `gain::first` for `Weight::Unit` (`*o = x`) -> the weighted port keeps
-/// `-0.0`; drop the `*o += 0.0` of the in-place form -> the same on the
-/// in-place variant; alias a one-addend weighted sink in `sum_chain`
-/// (`1 =>` without the `lane.is_none()` guard) -> no `WeightedSum` op.
 #[test]
 fn a_unity_entry_on_a_one_edge_sink_turns_negative_zero_positive() {
     let neg = -0.0f32;
@@ -426,14 +405,6 @@ fn one_lane() -> (Fan, ValidGraph) {
 /// here); a block with no move is static; a move after a ramp starts from the
 /// weight the ramp was *given* (its target), not the last sample it computed.
 /// Serial, parallel and reference.
-///
-/// Mutations (each run, each failed): ramp from the new value
-/// (`from = to` in `SumLane::weight`) -> the ramp block is flat; a first block
-/// ramps from zero (`prev.unwrap_or(SILENT)`) -> block 1 fails; divide by the
-/// prepared maximum block rather than the block's length in `ramp_at` (the
-/// 40-frame block fails); carry the last computed sample instead of the target
-/// (`prev` kept from the ramp) -> block 3 ramps; evaluate `i` rather than
-/// `i + 1` in `ramp_at` -> the ramp never reaches its target.
 #[test]
 fn a_move_ramps_across_the_block_from_the_last_weight() {
     // 0.7 + (0.15 - 0.7) * 1.0 is not 0.15 in f32: the target and the last
@@ -485,9 +456,6 @@ fn a_move_ramps_across_the_block_from_the_last_weight() {
 /// a static lane then a ramping one, the second block moving the second weight
 /// across the block, equal to the per-sample fold written out here (and not to
 /// the fused one, which the figures separate on some samples).
-///
-/// Mutation (run, failed): fuse the ramp arm of `gain::add`
-/// (`ramp_at(..).mul_add(x, *o)`).
 #[test]
 fn a_ramping_lane_is_not_fused() {
     let (values, first, from, to) = ([0.3f32, 0.9], 0.7f32, 0.35f32, 1.3f32);
@@ -524,12 +492,6 @@ fn a_ramping_lane_is_not_fused() {
 /// the move that comes with the commit ramps from the weight the lane had.
 /// A commit that drops the entry forgets it, and one that adds it back starts
 /// at its value.
-///
-/// Mutations (each run, each failed): start every lane fresh in `Executor`'s
-/// rebuild (`old_weights` empty) -> the commit's block is static at the new
-/// weight and fails (the reference, which keeps `lane_prev`, ramps); keep the
-/// state when the entry goes (do not retain `lane_prev` in the reference or
-/// carry past the plan in the executor) -> the re-added lane ramps.
 #[test]
 fn a_lane_survives_a_commit_that_keeps_its_edge() {
     let values = [1.0f32, 0.5];
@@ -620,12 +582,6 @@ impl Rig {
 /// plan `Arc`, and a commit after it sends nothing), and its value lands at the
 /// next block, ramped. A change of the entry's `base` or `range` through the
 /// spec is the same; adding or removing an entry is a recompile.
-///
-/// Mutations (each run, each failed): make `same_but_ranges` compare the
-/// gains whole (`*gains == other.gains`) -> the commit after a move
-/// recompiles and the `Arc` differs; make `set_edge_gain` mark a commit
-/// (`self.committed = None`) -> likewise; drop the cell store in
-/// `set_edge_gain` -> the value never lands.
 #[test]
 fn set_edge_gain_leaves_the_plan_untouched_and_lands_next_block() {
     let mut rig = Rig::new(0.5);
@@ -681,9 +637,6 @@ fn set_edge_gain_leaves_the_plan_untouched_and_lands_next_block() {
 
 /// `Editor::set_edge_gain` refuses what the commit would, changing nothing: an
 /// edge that does not exist, and a base that is not finite.
-///
-/// Mutations (each run, each failed): drop the `has_edge` check -> the first
-/// case succeeds; drop the `is_sound` check -> the NaN case succeeds.
 #[test]
 fn set_edge_gain_refuses_what_a_commit_would() {
     let mut rig = Rig::new(0.5);
@@ -716,11 +669,6 @@ fn set_edge_gain_refuses_what_a_commit_would() {
 /// `validate` refuses an entry whose edge does not exist (a port and an output
 /// edge, a feedback edge's source gone) and one with a base that is not finite
 /// or a range with a NaN bound; an infinite bound is fine.
-///
-/// Mutations (each run, each failed): delete the `has_edge` check -> the
-/// first two cases validate; delete the `is_sound` check -> the NaN and
-/// infinite cases validate; make `is_sound` refuse an infinite range bound ->
-/// the last assertion fails.
 #[test]
 fn validate_refuses_a_malformed_entry() {
     let fan = Fan::new(&[1.0, 2.0], true);
@@ -779,10 +727,6 @@ fn validate_refuses_a_malformed_entry() {
 /// `GraphSpec::disconnect` and `disconnect_output` remove the edge's entry
 /// with the edge, and `Editor::remove` the entries of the edges that went
 /// with a node; a stale entry is what `validate` would refuse.
-///
-/// Mutations (each run, each failed): drop the `gains.remove` of
-/// `disconnect` (and of `disconnect_output`) -> the entry survives and
-/// validate refuses; drop the pruning in `Editor::remove` -> likewise.
 #[test]
 fn removing_an_edge_removes_its_entry() {
     let fan = Fan::new(&[1.0, 2.0], true);
@@ -934,11 +878,6 @@ fn constant(v: f32) -> Box<dyn FnOnce(&mut Editor, NodeKey)> {
 /// weights of `0.0`, `-3.0` and `1.0`, make a silent sum, and the probe (no
 /// tail) is called once and then parked; a live source among them is heard at
 /// once, weighted, and the silent ones add nothing.
-///
-/// Mutations (each run, each failed): flag the sum live when any lane has a
-/// weight other than `1.0` (`live` counted from `weights[k] != Unit`) -> the
-/// probe is never parked; skip a silent addend only when its weight is `1.0`
-/// -> the same.
 #[test]
 fn silent_addends_are_skipped_whatever_their_weight() {
     let (a, b, c) = (
@@ -964,10 +903,6 @@ fn silent_addends_are_skipped_whatever_their_weight() {
 /// A silent addend is skipped but its lane's weight still moves: a fader moved
 /// while its source is silent has arrived by the time the source is heard, so
 /// the first live block is static at the new weight, not a ramp from the old.
-///
-/// Mutation (run, failed): advance a lane's state only for a live addend
-/// (`if flags.get(list[k]) & SILENT == 0 { *w = lane.weight(); }` in
-/// `sum_op`) -> the first live block ramps from the stale weight.
 #[test]
 fn a_silent_lanes_weight_still_moves() {
     let heard = Arc::new(AtomicBool::new(true));
@@ -991,10 +926,6 @@ fn a_silent_lanes_weight_still_moves() {
 /// is constant), and a `NaN` source weighted `0.0` is `NaN` (`0.0 * NaN`),
 /// where a skip would make the render depend on whether a gain is zero.
 /// Executor and reference (which skips nothing) agree on both.
-///
-/// Mutations (each run, each failed): skip an addend whose weight is `0.0`
-/// (`continue` on `Weight::Static(0.0)` in `sum_op`) -> the probe is parked
-/// after one call and the `NaN` case renders zeros.
 #[test]
 fn a_zero_weight_is_not_skipped_by_value() {
     let mut m = Mixer::new(vec![constant(1.0)], &[0.0]);
@@ -1013,10 +944,6 @@ fn a_zero_weight_is_not_skipped_by_value() {
 /// A weighted sum is constant when its live addends are and none is ramping:
 /// a constant times a ramp is not constant. One block static (constant), one
 /// ramping (not), one static again (constant).
-///
-/// Mutation (run, failed): drop the `!matches!(.., Weight::Ramp { .. })` from
-/// the constant claim in `sum_op` -> the ramping block reports a constant
-/// input.
 #[test]
 fn a_ramping_sum_is_not_constant() {
     let mut m = Mixer::new(vec![constant(0.5)], &[0.5]);
@@ -1039,11 +966,6 @@ fn a_ramping_sum_is_not_constant() {
 /// blocks lands whole on the next. (The mid-block case, a store while ops
 /// run, is pinned on `SumLane` in `gain.rs`'s tests: an integration test
 /// cannot place a store between two ops without a thread race.)
-///
-/// Mutation (run, failed): see `gain::tests::a_store_after_the_snapshot_
-/// waits_for_the_next_block`; here, skip the block-start `lane.snapshot()`
-/// loop in `render_applied` -> a lane keeps the cell value it was built with
-/// and no move ever lands.
 #[test]
 fn every_block_reads_the_cell_at_its_start() {
     let mut rig = Rig::new(1.0);
@@ -1066,9 +988,6 @@ fn every_block_reads_the_cell_at_its_start() {
 /// A fork of the master sums as the live graph does: the entries of the edges
 /// it keeps ride along, each lane starting at its base (a ramp in flight is
 /// not forked).
-///
-/// Mutation (run, failed): drop the `spec.gains` assignment in `Editor::fork`
-/// -> the fork renders the plain sum.
 #[test]
 fn a_fork_carries_the_edge_gains() {
     #[derive(Clone)]
@@ -1109,10 +1028,6 @@ fn a_fork_carries_the_edge_gains() {
 /// The base a lane's knob wrote is the one a fork starts at: the knob is the
 /// gain's own cell (`Editor::edge_gain_cell`), the spec's copy is behind it,
 /// and `Editor::edge_gain` and the fork read the cell.
-///
-/// Mutation (run, failed): the fork copies `g` unchanged
-/// (`EdgeGain { base, ..*g }` without the cell's base) -> the fork renders
-/// the spec's stale `0.5`.
 #[test]
 fn a_fork_starts_at_the_base_the_knob_wrote() {
     #[derive(Clone)]
@@ -1146,8 +1061,6 @@ fn a_fork_starts_at_the_base_the_knob_wrote() {
 }
 
 /// The commit refuses a stale entry rather than weighting nothing.
-///
-/// Mutation (run, failed): drop the `GainWithoutEdge` push in `validate`.
 #[test]
 fn a_commit_refuses_an_entry_without_its_edge() {
     let mut rig = Rig::new(0.5);

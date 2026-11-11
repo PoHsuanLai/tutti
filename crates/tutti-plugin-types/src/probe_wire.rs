@@ -168,9 +168,6 @@ mod tests {
 
     /// A file already at the staging name is refused, never written through
     /// (the symlink a neighbour planted in a shared directory), and is left alone.
-    ///
-    /// Mutation (run): `create_new(true)` replaced by `create(true)` writes
-    /// through the planted file and fails both assertions.
     #[cfg(unix)]
     #[test]
     fn a_planted_staging_file_is_refused() {
@@ -185,9 +182,6 @@ mod tests {
     }
 
     /// Both outcomes survive the file.
-    ///
-    /// Mutation (run): `encode_result` serialising a fixed `Failed("")` instead
-    /// of its argument fails the round trip.
     #[test]
     fn an_outcome_round_trips_through_its_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -199,8 +193,6 @@ mod tests {
     }
 
     /// No file is `None`, and the staging file is not a result.
-    ///
-    /// Mutation (run): `read_result` reading `result_tmp_path(result)` fails it.
     #[test]
     fn only_the_final_path_is_a_result() {
         let dir = tempfile::tempdir().unwrap();
@@ -211,11 +203,6 @@ mod tests {
     }
 
     /// Every proper prefix of a result is refused, none decodes.
-    ///
-    /// Mutation (run): dropping the length comparison in `decode_result` makes
-    /// the prefixes that cut the payload decode as garbage instead of
-    /// `Truncated`, failing the loop; `read_result` turning a decode error into
-    /// `Ok(None)` (a missing file) fails the last assertion.
     #[test]
     fn a_cut_short_file_is_never_a_result() {
         let bytes = encode_result(&described());

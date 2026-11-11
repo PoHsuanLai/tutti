@@ -18,9 +18,6 @@ fn frame_at(reader: &mut PosReader, s: u64) -> Vec<f32> {
 
 /// **The window packs into one word and back**, up to its largest length
 /// and far along the line.
-///
-/// Mutation (run): the length mask one bit short → the longest window
-/// unpacks short → fails.
 #[test]
 fn a_window_packs_into_one_word_and_back() {
     let far = 1u64 << 39;
@@ -34,10 +31,6 @@ fn a_window_packs_into_one_word_and_back() {
 /// length up to [`MAX_POS_RING_FRAMES`] it agrees with `%` at the edges of
 /// each period, at the last position a window can hold (`2^40 - 1`) and at
 /// pseudo-random positions between.
-///
-/// Mutations (run), each failing at `1 mod 2`: the reciprocal one short
-/// (`u64::MAX / d`, no `+ 1`); the final shift 63 instead of 64; the
-/// product taken in `u64` (`c * s * d >> 40`) instead of `u128`.
 #[test]
 fn the_slot_map_is_the_position_mod_the_ring() {
     let last = (1u64 << 40) - 1;
@@ -90,9 +83,6 @@ fn the_slot_map_is_the_position_mod_the_ring() {
 /// **Frames land at the window's end and read back by position**, every
 /// channel in its place at six channels, a trailing partial frame
 /// dropped.
-///
-/// Mutation (run): the slot index taken in samples (`slot * ch` → `slot`)
-/// → channels rotate → fails.
 #[test]
 fn frames_land_at_the_windows_end_and_read_back_by_position() {
     let (mut writer, mut reader) = ring(64, 6, 4);
@@ -109,9 +99,6 @@ fn frames_land_at_the_windows_end_and_read_back_by_position() {
 /// **A write never goes round the ring onto the reader**: with the reader
 /// at 1 000, a ring of 4 096 that keeps 4 behind takes positions up to
 /// 1 000 - 4 + 4 096 and no further.
-///
-/// Mutation (run): the room check removed → the push wraps onto 996.. →
-/// fails.
 #[test]
 fn a_write_never_goes_round_the_ring_onto_the_reader() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
@@ -128,12 +115,6 @@ fn a_write_never_goes_round_the_ring_onto_the_reader() {
 /// while it writes the block's own positions freely. And the window still
 /// holds 100..: the write took out only what it overwrote, not the 204
 /// frames a raise for the full 300 asked for would have.
-///
-/// Mutation (run): the alias check removed → 4 196.. overwrite 100.. →
-/// fails. Mutation (run): a position *in* the range counted as its own
-/// alias → the writer stops at once → fails. Mutation (run): the final
-/// window's start the raise's, with no first cap from the ranges → the
-/// window no longer holds 150 → fails.
 #[test]
 fn a_write_never_reuses_a_slot_the_block_in_flight_reads() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
@@ -151,13 +132,6 @@ fn a_write_never_reuses_a_slot_the_block_in_flight_reads() {
 /// reset then counts 2..5 as stale, so the rewrite at 2 waits for the reader.
 /// Raising the start to 8 for the 8 asked for, and keeping it, would leave
 /// 2..5 uncounted and let the rewrite land under the claim.
-///
-/// Mutation (run): no first cap from the ranges, and the final window's start
-/// the raise's → the window is left at `[8, 18)` → fails (past that
-/// assertion, `sample(3)` is -9). (Single-threaded, the first cap from the
-/// ranges alone also keeps it: removing *only* the final start's fix is
-/// caught by the loom model
-/// `a_partly_capped_push_then_reset_keeps_the_claim`.)
 #[test]
 fn a_capped_write_keeps_what_it_did_not_overwrite() {
     for retract in [false, true] {
@@ -182,14 +156,9 @@ fn a_capped_write_keeps_what_it_did_not_overwrite() {
 /// touch 620.. until the reader claims again, after which it may. The
 /// same for a reset below the old end.
 ///
-/// Mutation (run): the generation check removed from `push` → frame 650
-/// changes under the claim → fails. And a reset that moves the window
-/// away from a claim frees the new place at once: what it removed is the
-/// old window, not everything below its end (otherwise a seek's refill would
-/// wait for the reader's next claim, and reset the window again every
-/// cycle). Mutation (run): `shrink` bumping the
-/// generation *before* storing the window → no single-threaded change
-/// (the loom model `retract_then_push` catches the order).
+/// A reset that moves the window away from a claim frees the new place at once: what it
+/// removed is the old window, not everything below its end (otherwise a seek's refill
+/// would wait for the reader's next claim, and reset the window again every cycle).
 #[test]
 fn a_shrink_does_not_free_what_a_block_in_flight_holds() {
     for reset in [false, true] {
@@ -231,9 +200,6 @@ fn a_shrink_does_not_free_what_a_block_in_flight_holds() {
 /// reader that jumps back there finds the window without them — and once
 /// the reader has claimed since, a reset there refills at once: what the
 /// raise removed is no longer counted as held.
-///
-/// Mutation (run): the stale span not cleared at a shrink the reader has
-/// seen → the reset's refill is held for a cycle → fails.
 #[test]
 fn raising_the_start_drops_what_lies_below() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
@@ -259,14 +225,12 @@ fn raising_the_start_drops_what_lies_below() {
 /// writer moves the window to where `97`'s slot comes round again and
 /// fills — at once, not after a claim that never comes.
 ///
-/// Mutation (run): `idle` leaving the ranges → the fill stops at the
-/// alias of 97 → fails. Not covered, and why: `idle` also echoes the
-/// generation, which only lets the writer forget stale spans at its next
-/// shrink rather than at the reader's next claim. With the ranges cleared,
-/// a stale span holds nothing back (it counts only where it meets a range),
-/// and the next claim echoes anyway, so no single-threaded order — and no
-/// loom model here — can tell the echo is missing; it is kept because the
-/// reader has, in fact, seen the generation.
+/// `idle` also echoes the generation, which only lets the writer forget stale spans at
+/// its next shrink rather than at the reader's next claim. With the ranges cleared, a
+/// stale span holds nothing back (it counts only where it meets a range), and the next
+/// claim echoes anyway, so no single-threaded order, and no loom model here, can tell
+/// the echo is missing; it is kept because the reader has, in fact, seen the
+/// generation.
 #[test]
 fn an_idle_reader_holds_nothing_back() {
     let (mut writer, mut reader) = ring(1_024, 1, 4);
@@ -282,10 +246,6 @@ fn an_idle_reader_holds_nothing_back() {
 /// `first_alias` against a brute-force search, over ranges before, around
 /// and after the write's start, near and across a lap of the ring — up to
 /// twice the ring's length.
-///
-/// Mutation (run): `a + n` returned as `a` for a range containing the
-/// start → fails. Mutation (run): the start inside a range longer than the
-/// ring answered `a + n` → fails.
 ///
 /// Under miri, every seventh `to` and `a` (still before, inside and past a
 /// lap): miri checks the arithmetic for UB, and the full sweep is the native
@@ -325,11 +285,8 @@ fn first_alias_is_the_first_slot_another_position_of_the_range_holds() {
 /// writer steps: those could end before the reader thread was ever
 /// scheduled (with six CPU hogs beside it, 1 run in 60 checked 0 frames).
 ///
-/// Mutation (run): the generation check removed from `push` → a torn or
-/// rewritten frame under a claim → fails 28 release runs of 30. It is a
-/// stress test, so this is a rate, not a certainty (200 000 steps caught it
-/// 9 times in 30, 1 000 000 steps 23); the loom model's
-/// `retract_then_push` and `reset_then_push` catch it every time.
+/// It is a stress test, so it is a rate, not a certainty; the loom model's
+/// `retract_then_push` and `reset_then_push` cover the same property every time.
 #[test]
 #[cfg_attr(
     miri,
@@ -455,12 +412,6 @@ fn a_writer_and_a_reader_thread_never_tear() {
 /// **A window never passes 2^40**: `push` stops at the limit and lands the
 /// short count, and `reset` saturates there, whatever the start or the play
 /// position (an unbounded one included).
-///
-/// Mutation (run, debug and release): `pack`'s `assert!` back to
-/// `debug_assert!` and the `.min(MAX_POS_RING_POSITION)` cap dropped from
-/// `push` -> the first push of 100 lands 100 (release wraps the window; debug
-/// trips the assertion) -> fails. Mutation (run): `reset` without its `.min`
-/// -> the `u64::MAX` start panics -> fails.
 #[test]
 fn a_window_never_passes_the_position_limit() {
     let near = MAX_POS_RING_POSITION - 10;

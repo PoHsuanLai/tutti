@@ -279,12 +279,6 @@ fn edges() -> Vec<(u64, Ump)> {
 /// reads the script back, frame for frame and packet for packet, at block
 /// sizes 1, 7, 64, 100 and 512, and at a mix (including events on a block's
 /// first and last frame and two on one frame).
-///
-/// Mutation (run, recorded here): stamp `Frame(event.offset.index() as u64)`
-/// (the offset as the frame) in `event_tap_op` -> every size but the one that
-/// covers the whole run fails. Mutation (run): stamp the block's start
-/// (`env.frame_at(Offset::ZERO)`) -> events inside a block collapse onto its
-/// first frame and the sizes above 1 fail.
 #[test]
 fn every_event_lands_at_its_frame_across_block_sizes() {
     let want: Vec<TapEvent> = edges()
@@ -319,13 +313,6 @@ fn every_event_lands_at_its_frame_across_block_sizes() {
 /// 8 note-ons are held, 12 refused; the note-offs fill the reserve
 /// (`note_off_room(8) = 17`, 9 of them held), 11 refused. 23 lost in all, and
 /// the read clears the count.
-///
-/// Mutation (run, recorded here): count each refusal twice (`lost += 2`) ->
-/// the count is 46. Drop the reserve (`held >= tap.capacity` refuses a
-/// note-off too) -> only 8 held and 32 lost. Let a note-on use the reserve
-/// (drop the `is_note_off` test) -> 17 note-ons are held and no note-off.
-/// (A block with no reader writes nothing and counts nothing: nobody can read
-/// that count, see the module docs.)
 #[test]
 fn a_slow_reader_loses_events_counted_and_a_note_off_is_kept() {
     assert_eq!(note_off_room(8), 17);
@@ -356,12 +343,6 @@ fn a_slow_reader_loses_events_counted_and_a_note_off_is_kept() {
 /// succeeds, the plan has no op for the tap, nothing is counted lost, the
 /// other tap plays on, and restoring the port resumes the stream (the writer
 /// stays in the plan's table).
-///
-/// Mutation (run, recorded here): make the compiler `?`/index the missing port
-/// (`event_out_val[&from]`) -> the narrowing commit panics. Count the missing
-/// port as a loss in the executor's `EventTap` arm -> `take_lost` is not 0.
-/// Drop an event tap from `plan.event_taps` when its port is missing -> the
-/// writer is not carried and the restored stream stays silent.
 #[test]
 fn a_narrowed_port_reads_nothing_and_the_stream_resumes() {
     let mut r = rig(1, false, 0);
@@ -401,10 +382,6 @@ fn a_narrowed_port_reads_nothing_and_the_stream_resumes() {
 
 /// Removing the tapped node reads nothing and commits; a node inserted again
 /// under the removed key is not read by the old tap.
-///
-/// Mutation (run, recorded here): delete the `event_taps` loop in
-/// `Editor::remove` -> the new node's event at frame 150 is read and the last
-/// assertion fails.
 #[test]
 fn a_removed_node_reads_nothing_and_a_reused_key_is_not_read() {
     let mut r = rig(1, false, 0);
@@ -434,11 +411,6 @@ fn a_removed_node_reads_nothing_and_a_reused_key_is_not_read() {
 /// the script's plus the compiler's gap (M - L = 25, an analytic figure); a
 /// source with no latency is M late when aligned. Aligned taps cost an event
 /// delay each, raw ones none.
-///
-/// Mutation (run, recorded here): skip the `DelayKey::EventTap` delay in
-/// `compile` (`if false && spec.align == ToOutput`) -> the aligned frames are
-/// the script's. Delay a raw tap too (drop the `align` test) -> the raw
-/// frames move.
 #[test]
 fn aligned_against_raw_on_a_latent_path() {
     for sizes in [&[64usize][..], &[100], &[1, 7, 64]] {
@@ -474,15 +446,6 @@ fn aligned_against_raw_on_a_latent_path() {
 /// A closed tap leaves no op (and no delay), nothing is written for it, a fork
 /// carries none, opening an id again replaces the tap, and a reader dropped
 /// first is reaped on the control side.
-///
-/// Mutation (run, recorded here): `Editor::close_event_tap` leaves the spec's
-/// entry -> the closed plan still has the op. Copy the live event taps into
-/// the fork's spec literal *and* into the editor `fork_gather` builds
-/// (`fork.topology.event_taps = ...`; copying into the literal alone passes,
-/// nothing reads it) -> the fork assertion fails. Skip
-/// `pending_event_taps.retain` in `open_event_tap` -> the replaced reader is
-/// fed and the new one is not. Drop the `strong_count` filter in `reap_event_taps` -> the live
-/// reader's tap is reaped as well.
 #[test]
 fn closed_fork_reopen_and_reap() {
     let mut r = rig(1, false, 0);
@@ -544,9 +507,6 @@ fn closed_fork_reopen_and_reap() {
 }
 
 /// A reader dropped on the audio thread is a bug the debug build reports.
-///
-/// Mutation (run, recorded here): delete the `check_outside` in
-/// `EventTapReader::drop` -> no panic, the test fails.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "an event tap reader dropped on the audio thread")]
@@ -562,9 +522,6 @@ fn a_reader_dropped_on_the_audio_thread_panics() {
 
 /// Only MIDI is copied: a port carrying a `Resync` every block beside its notes
 /// gives the notes alone, and the graph event is neither copied nor counted.
-///
-/// Mutation (run, recorded here): copy a non-MIDI event as the default packet
-/// (`_ => Ump::default()` in `event_tap_op`) -> one extra event a block.
 #[test]
 fn only_midi_is_copied() {
     let mut r = rig(1, false, 0);
@@ -588,11 +545,6 @@ fn only_midi_is_copied() {
 /// Opening refuses a node or a port that does not exist now, edits not yet
 /// committed included, and declares nothing. An audio output is not an event
 /// port.
-///
-/// Mutation (run, recorded here): check the port against the node's audio
-/// width (`node.outputs.count()`) instead of its event outputs -> the port
-/// past the event width is accepted (the script has no audio outputs, so it
-/// is the first assertion that fails).
 #[test]
 fn opening_refuses_a_port_that_does_not_exist_now() {
     let mut r = rig(1, false, 0);
@@ -666,11 +618,6 @@ fn run_busy(r: &mut Rig) -> Vec<Vec<TapEvent>> {
 /// The pooled render's taps equal the serial one's, event for event, at
 /// several worker counts with every participant inside `assert_no_alloc`; the
 /// serial run itself is checked against the script and the compensation.
-///
-/// Mutation (run, recorded here): make the `Op::EventTap` arm in `par.rs` a
-/// no-op -> the pooled taps are empty and the comparison fails. Make the
-/// `exec.rs` arm skip it -> the serial run is empty and the first assertion
-/// fails.
 #[test]
 fn the_parallel_event_taps_are_bit_identical_and_allocation_free() {
     let mut s = rig(1, false, 40);

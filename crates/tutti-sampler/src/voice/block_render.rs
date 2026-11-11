@@ -142,16 +142,10 @@ fn play(f: impl FnOnce(&mut Playback)) -> Playback {
 /// re-seat, a ring jump, a stretch flush) and a stop and restart, each on a
 /// frame inside a 256-frame block.
 ///
-/// Mutation (run): `Runs` ignoring `Env::changes` (one segment per block)
-/// → the long blocks play through the stop → fails.
-/// Mutation (run): the stretched disk arm of `PlaybackSlot::render_lanes`
-/// not clearing `raw` when the reader skips a silent block → the filter is
-/// fed stale lanes through the stop → fails.
-///
 /// Not caught here, because both sides share it (this is a consistency
 /// check): `render_into` not flushing at a jump — the voice pool's
 /// `a_transport_seek_flushes_stretch_state` and
-/// `a_transport_seek_flushes_a_standalone_voice_node` fail on it (run) —
+/// `a_transport_seek_flushes_a_standalone_voice_node` fail on it —
 /// and the clock reporting a jump on a restart where the playhead stood,
 /// which `clock`'s `a_stop_a_seek_while_stopped_and_a_restart_are_no_jump`
 /// pins.

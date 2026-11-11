@@ -80,13 +80,6 @@ fn mixer(s: &mut Session) -> EdgeRef {
 /// clamps it; and removing the route returns the edge to its base, which
 /// the knob left at `-0.25` (the knob is the edge's gain: one cell), once the
 /// lane's source goes (the declick).
-///
-/// Mutations (each run, each failed): resolve the edge target to another
-/// edge (`EdgeRef::id` with the channel off by one) -> the lane never reaches
-/// the sum and the first figure is the plain sum; leave `connect_edge_gain`
-/// out of the reconciler's lane build -> likewise; build the lane with no
-/// range reader (`Some(range.clone())` -> `None`) -> the clamp figure is the
-/// unclamped one; leave the lane's knob `None` -> the lane sends nothing.
 #[test]
 fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
     let mut s = offline();
@@ -143,15 +136,6 @@ fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
 /// With a range of `-2..=2` (span 4) the macro at 0.5 and depth 0.5 offsets
 /// by `0.5 * 0.5 * 4 = 1.0`: `w = base + 1.0`, so `1.5`, then `1.25` once the
 /// base moves to 0.25; gone, the base `0.25`.
-///
-/// Mutation (run, failed): the reconciler builds the edge lane's knob as its
-/// own cell starting at unity (`Some(Arc::new(AtomicF32::new(1.0)).into())`
-/// in `tutti-nodes`'s `Bind::Edge` build, the G2 shape) -> the routed figure
-/// is `1.0 + 1.0 = 2.0`, not `1.5`, the base moved while routed is ignored,
-/// and the route gone reads unity. Also (run, failed): `Editor::send` writes
-/// the spec's base into an existing cell at every commit (`carry_base`'s test
-/// always true) -> a knob written through `ModState::set_knob` is overwritten
-/// by the stale spec figure in the older test above.
 #[test]
 fn the_base_is_the_lanes_knob_and_a_route_returns_to_it() {
     let mut s = offline();
@@ -191,9 +175,6 @@ fn the_base_is_the_lanes_knob_and_a_route_returns_to_it() {
 }
 
 /// An edge target keys once per edge, apart from a param's, and is no param.
-///
-/// Mutation (run, failed): mint a fresh key at every `key_of` -> the two
-/// keys of one edge differ.
 #[test]
 fn an_edge_target_keys_apart_and_goes_with_its_node() {
     let mut s = offline();

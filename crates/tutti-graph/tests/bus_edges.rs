@@ -5,8 +5,7 @@
 //! From the spec: each figure is analytic (the fold's own table, written out
 //! here), never another render. A render is compared with another only as the
 //! doc prescribes: the executor against the reference interpreter, and the
-//! parallel executor against the serial one (`Pair`). Mutations are recorded
-//! on each test (each run, each failed, then restored).
+//! parallel executor against the serial one (`Pair`).
 
 mod common;
 
@@ -249,11 +248,6 @@ fn weighted_fold(terms: &[(f32, &[f32])], i: usize) -> f32 {
 
 /// Stereo into mono is `0.5 L + 0.5 R`, exactly: two weighted lanes of `0.5`
 /// into the one channel, summed in source order, serial and parallel alike.
-///
-/// Mutations (run), each failing this test: the lowering giving every lane
-/// double its weight (`weight * 2.0`); the lowering dropping the weighted
-/// entries (every lane plain, so `L + R`); the lowering taking only the
-/// first contribution of each destination channel.
 #[test]
 fn stereo_into_mono_is_half_left_plus_half_right() {
     let rig = fold_rig(2, 1);
@@ -277,11 +271,6 @@ fn stereo_into_mono_is_half_left_plus_half_right() {
 /// 5.1 into stereo is the fold's ITU table: each side takes its front, the
 /// centre at -3 dB and its surround at -3 dB, and the LFE is dropped. Each
 /// destination channel is the sum of its lanes in source-port order.
-///
-/// Mutations (run), each failing this test: the lowering swapping each
-/// contribution's source channel for its pair (`k ^ 1`); the lowering using the
-/// destination channel as the source channel (`k = c`); the lane's sink port
-/// always the first channel of the bus.
 #[test]
 fn five_one_into_stereo_follows_the_itu_rows() {
     let rig = fold_rig(6, 2);
@@ -323,9 +312,6 @@ fn five_one_into_stereo_follows_the_itu_rows() {
 
 /// Mono into stereo is a copy of the one channel to both sides at unity: two
 /// plain edges, no weighted lane anywhere in the plan.
-///
-/// Mutations (run), each failing this test: the lowering weighting the copy
-/// by `0.5`; the lowering writing only the first destination channel.
 #[test]
 fn mono_into_stereo_copies_to_both_sides() {
     let rig = fold_rig(1, 2);
@@ -352,10 +338,6 @@ fn mono_into_stereo_copies_to_both_sides() {
 /// a missing lane a zero. `Lo` takes FL and, at -3 dB, C, Ls and Lb; `Ro` the
 /// mirror; the LFE neither. (This is what `DownmixNode`'s unit-pulse test
 /// pinned, now through the bus edge it was deleted for.)
-///
-/// Mutations (run), each failing this test: the lowering reading destination
-/// channel 0 for every sink port; the lowering swapping each source for its
-/// pair (`k ^ 1`).
 #[test]
 fn seven_one_into_stereo_reads_out_the_matrix() {
     let m = M3DB;
@@ -379,9 +361,6 @@ fn seven_one_into_stereo_reads_out_the_matrix() {
 /// leaves the four new channels silent; nothing invents a centre (placement
 /// is a panner's, put there on purpose). A silent destination channel has no
 /// lane at all.
-///
-/// Mutations (run), each failing this test: the lowering feeding the centre
-/// from channel 0; the lowering dropping the pair's second channel.
 #[test]
 fn widening_zero_fills_the_new_channels() {
     let rig = fold_rig(2, 6);
@@ -410,10 +389,6 @@ fn bits_of(x: &[f32]) -> Vec<u32> {
 
 /// Equal topologies lower to plain per-channel edges, and the plan is the
 /// hand-wired graph's, op for op (the plans are compared, not renders).
-///
-/// Mutations (run), each failing this test: dropping the unity shortcut (every
-/// lane given an `EdgeGain` entry, so the plan holds weighted sums); a unity
-/// lane weighted by `0.5`.
 #[test]
 fn a_same_topology_bus_edge_is_the_hand_wired_plan() {
     let mut bus = Rig::new(2);
@@ -446,10 +421,6 @@ fn a_same_topology_bus_edge_is_the_hand_wired_plan() {
 
 /// A bus edge and an ordinary source on the same input channel sum both, in
 /// source order (the bus edge's source node sorts first here).
-///
-/// Mutation (run): the lowering replacing the sink port's sources instead of
-/// adding to them (`edges.insert`) -> the plain `0.25` is gone and the figure
-/// misses it.
 #[test]
 fn a_bus_edge_sums_with_a_plain_source_on_the_same_channel() {
     let mut rig = fold_rig(2, 1);
@@ -571,9 +542,6 @@ fn by_index_is_its_own_edge() {
 
 /// The global input is an unassigned bus: with no global input at all there is
 /// nothing to read (`Empty`), and one wider than a bus is refused by name.
-///
-/// Mutation (run): `BusSource::Global` taking the sink's width instead of the
-/// global input's -> the empty input folds.
 #[test]
 fn the_global_input_is_a_unassigned_bus() {
     let (mut ed, _exec) = editor(&[(1, sink(2, unassigned(2)))], 0);
@@ -605,9 +573,6 @@ fn the_global_input_is_a_unassigned_bus() {
 
 /// A node or a bus that does not exist, and a bus asked for on the wrong side,
 /// are named; a source names an **output** bus and a sink an **input** bus.
-///
-/// Mutations (run), each failing this test: reading the sink's bus from
-/// `buses_out`; reading the source's from `buses_in`.
 #[test]
 fn a_missing_node_a_missing_bus_and_a_wrong_side_are_named() {
     // Node 1: one input bus, two output buses. Node 2: two input buses, one
@@ -668,11 +633,6 @@ fn a_missing_node_a_missing_bus_and_a_wrong_side_are_named() {
 /// A lane that lands on an edge the spec already has is refused, whichever
 /// came first: at the call when the plain edge is there, at the commit when it
 /// came after (the commit says `CompileError::Bus`).
-///
-/// Mutations (run), each failing this test: dropping the `has_edge` check
-/// (`check_lane`, which the call and the lowering share: the duplicate
-/// collapses silently at the commit and the call accepts); `connect_bus`
-/// skipping the lane check alone (the call accepts).
 #[test]
 fn a_lane_on_a_plain_edge_is_refused() {
     let kinds = [(1, source(2, smpte(2))), (2, sink(2, smpte(2)))];
@@ -704,9 +664,6 @@ fn a_lane_on_a_plain_edge_is_refused() {
 
 /// A node replaced by one whose bus no longer folds fails the commit with the
 /// bus error, never a silent drop; the plan sent last stays.
-///
-/// Mutation (run): `lower_and_validate` ignoring a lowering failure (compiling
-/// the spec without its bus edges) -> the commit succeeds.
 #[test]
 fn a_replaced_node_whose_bus_no_longer_folds_fails_the_commit() {
     let (mut ed, mut exec) = editor(&[(1, source(2, smpte(2))), (2, sink(2, smpte(2)))], 2);
@@ -733,11 +690,6 @@ fn a_replaced_node_whose_bus_no_longer_folds_fails_the_commit() {
 /// A bus edge's lanes carry the fold's weights and no gain of the author's:
 /// `set_edge_gain` refuses a lane by name, a hand-written entry at a lane's
 /// edge fails the commit, and the lane's cell is nobody's knob.
-///
-/// Mutations (run), each failing this test: `check_gain_edge` answering
-/// `GainWithoutEdge` for a lane; the lowering overwriting an author's entry
-/// at a lane's edge; the bus lane's cell kept among the editor's own, with a
-/// knob (`edge_gain_cell` answers).
 #[test]
 fn a_bus_lane_takes_no_gain_of_the_authors() {
     let (mut ed, mut exec) = editor(&[(1, source(2, smpte(2))), (2, sink(1, smpte(1)))], 2);
@@ -779,9 +731,6 @@ fn a_bus_lane_takes_no_gain_of_the_authors() {
 
 /// The same inputs lower to the same edges and weights, however the bus edges
 /// were declared: sources listed in either order, and the lowering run twice.
-///
-/// Mutation (run): `connect_bus` appending instead of inserting in source
-/// order (declaration order decides).
 #[test]
 fn the_lowering_is_a_pure_function_of_the_spec() {
     let build = |order: &[u64]| {
@@ -823,10 +772,6 @@ fn render_block(
 /// The editor commits a bus edge as its lanes, and removing it removes the
 /// lanes and their weights, not the author's own edges: the render is the fold
 /// while it is connected and the author's lane alone after.
-///
-/// Mutations (run), each failing this test: the commit sending the lanes'
-/// cells at unity (the weights lost: the first figure is `L + R`);
-/// `disconnect_bus` clearing the spec's own gains too.
 #[test]
 fn connecting_and_removing_a_bus_edge_round_trips_through_the_editor() {
     let (mut ed, mut exec) = editor(
@@ -895,9 +840,6 @@ fn connecting_and_removing_a_bus_edge_round_trips_through_the_editor() {
 
 /// Removing a node removes the bus edges that touch it, as it removes its
 /// edges; a stale bus edge would fail every later commit.
-///
-/// Mutation (run): `Editor::remove` leaving the removed node among another
-/// bus edge's sources -> the stale source is still listed.
 #[test]
 fn removing_a_node_removes_its_bus_edges() {
     let (mut ed, mut exec) = editor(
@@ -947,10 +889,6 @@ fn delays(plan: &Plan) -> BTreeMap<DelayKey, Samples> {
 /// 4 frames of latency and a second of 9 into one mono bus, and an ordinary
 /// source of none, are all brought to 9: each lane of the first by 5 (a ring
 /// per `(sink port, source)`), the ordinary one by 9, the latest by none.
-///
-/// Mutations (run), each failing this test: the lowering connecting only its
-/// unity lanes (the weighted ones are out of the compiler's latency fold: no
-/// delay on them); the lane's source port taken from the destination channel.
 #[test]
 fn a_bus_edges_lanes_align_like_any_edges() {
     let mut rig = Rig::new(2);
@@ -996,10 +934,6 @@ fn a_bus_edges_lanes_align_like_any_edges() {
 /// A fork of a graph with a bus edge is the lowered graph: the bus edge's
 /// lanes are edges and its weights gains in the fork, and the fork renders the
 /// fold (the fork is reachability over the lanes, too: the source is forked).
-///
-/// Mutations (run), each failing this test: `fork_gather` reading the
-/// unlowered spec (`self.spec()`: the stereo source is not upstream of the
-/// output, the fork renders silence).
 #[test]
 fn a_fork_of_a_bus_edge_renders_the_fold() {
     use tutti_graph::{Cx, ForkByClone, ForkMode, ForkTarget, Io, Renderer, Shape, Status};
@@ -1078,11 +1012,6 @@ fn root_rig(src: usize, dst: usize) -> Rig {
 /// channels: each side takes its front, the centre at -3 dB and its
 /// surround at -3 dB, the LFE dropped, as lanes of the outputs' sums in
 /// source-port order; serial, parallel and the reference agree.
-///
-/// Mutations (run), each failing this test: the lowering writing every root
-/// lane at output channel 0; the lowering swapping each contribution's source
-/// channel for its pair (`k ^ 1`); the lowering dropping the weighted entries
-/// (every root lane plain).
 #[test]
 fn five_one_into_a_stereo_root_follows_the_itu_rows() {
     let rig = root_rig(6, 2);
@@ -1122,10 +1051,6 @@ fn five_one_into_a_stereo_root_follows_the_itu_rows() {
 
 /// A root edge between equal topologies lowers to plain output sources, and
 /// the plan is the hand-wired graph's (the plans are compared, not renders).
-///
-/// Mutations (run), each failing this test: dropping the unity shortcut for
-/// root lanes (an `EdgeGain` on each, so the plan holds weighted sums); a
-/// unity lane weighted by `0.5`.
 #[test]
 fn a_same_topology_root_edge_is_the_hand_wired_plan() {
     let bus = root_rig(2, 2);
@@ -1143,10 +1068,6 @@ fn a_same_topology_root_edge_is_the_hand_wired_plan() {
 /// A root edge with no declared root is refused at the call with
 /// [`BusError::RootUndeclared`], storing nothing and moving no revision; and
 /// a bus edge that cannot fold to the declared root is `RootFold`.
-///
-/// Mutations (run), each failing this test: `connect_bus_to_root` touching
-/// the revision or storing before the check; the lowering treating an
-/// undeclared root as an empty one (no error at the commit).
 #[test]
 fn an_undeclared_root_refuses_a_bus_edge_and_stores_nothing() {
     let (mut ed, _exec) = editor(&[(1, source(2, smpte(2)))], 2);
@@ -1178,10 +1099,6 @@ fn an_undeclared_root_refuses_a_bus_edge_and_stores_nothing() {
 /// A root lane on an output channel an ordinary source already feeds is
 /// refused, whichever came first: at the call when the ordinary source is
 /// there, at the commit when it came after.
-///
-/// Mutations (run), each failing this test: `check_lane` ignoring
-/// `Sink::Output` (`has_edge` answering false for outputs); `connect_bus_to_root`
-/// skipping the lane check.
 #[test]
 fn a_root_lane_on_an_ordinary_output_source_is_refused() {
     let (mut ed, _exec) = editor(&[(1, source(2, smpte(2)))], 2);
@@ -1211,10 +1128,6 @@ fn a_root_lane_on_an_ordinary_output_source_is_refused() {
 /// A root re-declared to a topology the edge no longer folds to fails the
 /// commit with the bus error, never a silent drop; declared back, it
 /// commits. The plan sent last stays in between.
-///
-/// Mutations (run), each failing this test: `lower_and_validate` taking the
-/// unlowered spec when only `root_sources` is set (it checks `bus_edges`
-/// alone); the lowering skipping a source that no longer folds.
 #[test]
 fn a_redeclared_root_that_no_longer_folds_fails_the_commit() {
     let (mut ed, mut exec) = editor(&[(1, source(2, smpte(2)))], 2);
@@ -1269,10 +1182,6 @@ fn a_redeclared_root_that_no_longer_folds_fails_the_commit() {
 /// disconnect reports whether it was there), and removing a node drops its
 /// root bus edges, as it drops its other bus edges; a stale one would fail
 /// every later commit.
-///
-/// Mutations (run), each failing this test: `Editor::remove` leaving the
-/// removed node among the root's sources; `disconnect_bus_from_root` always
-/// answering true.
 #[test]
 fn root_edges_connect_disconnect_and_go_with_their_node() {
     let (mut ed, mut exec) = editor(&[(1, source(2, smpte(2))), (3, source(2, smpte(2)))], 0);
@@ -1304,10 +1213,6 @@ fn root_edges_connect_disconnect_and_go_with_their_node() {
 /// A fork of a graph with a bus edge into the root is the lowered graph: the
 /// source is forked (reachability over the root lanes) and the fork renders
 /// the fold on the outputs, which is what an export of the master hears.
-///
-/// Mutations (run), each failing this test: `fork_gather` testing only
-/// `bus_edges` for the lowering (a root-only spec forks unlowered: the output
-/// is silent).
 #[test]
 fn a_fork_of_a_root_edge_renders_the_fold() {
     use tutti_graph::{Cx, ForkByClone, ForkMode, ForkTarget, Io, Renderer, Shape, Status};

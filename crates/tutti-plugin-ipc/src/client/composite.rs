@@ -760,10 +760,6 @@ mod gui_mirror_tests {
     /// Automation runs with the editor closed; the editor opens; the first idle
     /// applies nothing stale. A write made while it is open is applied; what is
     /// still queued when it closes, or when it opens again, is dropped.
-    ///
-    /// Mutations (run): `push_param` not checking `open` -> the first assert
-    /// fails (a write is queued with no editor); `closed` not discarding -> the
-    /// third fails; `opened` not discarding -> the fourth fails.
     #[test]
     fn automation_with_the_editor_closed_is_not_replayed_when_it_opens() {
         let mirror = GuiMirror::new();
@@ -897,9 +893,6 @@ mod state_back_tests {
     /// **A state the user changed in the editor reaches the audio instance.**
     /// (Was "a state only the editor holds", against the audio instance's
     /// state; the comparison is against the baseline now.)
-    ///
-    /// Mutation (run): return before `load` in `pull_editor_state` → nothing is
-    /// loaded → fails.
     #[test]
     fn a_state_only_the_editor_holds_reaches_the_audio_instance() {
         let (got, _) = pull(Some(b"mode=delay".to_vec()), Some(b"mode=gain".to_vec()));
@@ -910,9 +903,6 @@ mod state_back_tests {
     /// whatever the audio instance did meanwhile: its state is not consulted,
     /// so automation that moved it is not overwritten by the editor's stale
     /// one (doc 027).
-    ///
-    /// Mutation (run): drop the equality check → the same state is loaded →
-    /// fails.
     #[test]
     fn an_unchanged_editor_reloads_nothing() {
         assert_eq!(pull(Some(b"same".to_vec()), Some(b"same".to_vec())).0, None);
@@ -920,9 +910,6 @@ mod state_back_tests {
 
     /// **With no baseline the editor's state is taken.** No baseline is not
     /// evidence the editor changed nothing. (Was "an unreadable audio state".)
-    ///
-    /// Mutation (run): treat `None` as equal (`baseline.as_deref().map_or(true,
-    /// ..)`) → nothing is loaded → fails.
     #[test]
     fn an_unreadable_audio_state_still_takes_the_editors() {
         let (got, _) = pull(Some(b"editor".to_vec()), None);
@@ -931,9 +918,6 @@ mod state_back_tests {
 
     /// **An editor whose state cannot be read gives the audio instance
     /// nothing**, not an empty state.
-    ///
-    /// Mutation (run): `unwrap_or_default()` on the editor's state → an empty
-    /// state is loaded → fails.
     #[test]
     fn an_unreadable_editor_state_loads_nothing() {
         let (got, _) = pull(None, Some(b"audio".to_vec()));
@@ -942,9 +926,6 @@ mod state_back_tests {
 
     /// **A pull moves the baseline**, so the same edit is not loaded again at
     /// the next dirty tick or at close.
-    ///
-    /// Mutation (run): drop `*baseline = Some(editor)` → the second pull loads
-    /// again → fails.
     #[test]
     fn a_pulled_state_is_the_new_baseline() {
         let (got, baseline) = pull(Some(b"edited".to_vec()), Some(b"opened".to_vec()));

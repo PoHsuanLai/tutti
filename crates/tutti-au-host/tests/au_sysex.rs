@@ -19,13 +19,11 @@
 //! internal. So these assert that a real instrument **accepts** the call and
 //! that the surrounding stream is unaffected.
 //!
-//! **Mutation-checked, and the result is worth stating:** deleting the
-//! `send_sysex` call entirely leaves all four tests green. They cannot witness
-//! delivery, only that attempting it does not crash and does not disturb the
-//! notes around it — which is exactly what a real instrument lets a host
-//! observe. Anything stronger needs a fake AU that records what it was handed,
-//! which the probe component in `support/probe_au.rs` could grow but does not
-//! implement `MusicDeviceSysEx` today.
+//! The tests cannot witness delivery, only that attempting it does not crash and does
+//! not disturb the notes around it, which is exactly what a real instrument lets a host
+//! observe. Anything stronger needs a fake AU that records what it was handed, which
+//! the probe component in `support/probe_au.rs` could grow but does not implement
+//! `MusicDeviceSysEx` today.
 //!
 //! What *is* pinned by assertion is the packet arithmetic
 //! ([`the_test_packet_builder_matches_the_ump_layout`]) — the encoding a

@@ -3,14 +3,6 @@
 //! Each case writes the packet's fields into the figure's bit positions in a
 //! comment, then the words. Nothing here calls the codec to produce an
 //! expected value.
-//!
-//! Mutation record (each planted in `decode.rs` or `encode.rs`, seen to fail
-//! at the named test, restored):
-//! - the Pitch Bend LSB/MSB swapped in `voice1` -> `midi1_channel_voice`;
-//! - the SysEx8 `# of bytes` taken without the stream id -> `sysex8`;
-//! - the Program Change Bank Valid bit moved to bit 1 -> `midi2_program_change`;
-//! - a Flex status bank test dropped in `flex` -> `flex_text`;
-//! - the Endpoint Info `m2` bit moved to bit 8 -> `stream_endpoint_info`.
 
 use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,
@@ -408,10 +400,6 @@ fn midi2_per_note_and_controllers() {
 // 0x8, 0x9, 0xA and 0xF) carry it in byte 3 of the first word, here 60; the
 // channel-wide ones (statuses 0x2 to 0x5, 0xB to 0xE) have no note, whatever
 // their byte 3 holds.
-//
-// Mutation record: a note-addressed arm of `Voice2::note` moved to `None` (the
-// Per-Note Management one, the Per-Note Pitch Bend one) -> the packet at that
-// status fails; a channel-wide arm answering `Some` -> likewise.
 #[test]
 fn the_note_a_message_addresses() {
     let words = |status: u32| [0x4100_0000 | status << 20 | 0x2_0000 | 60 << 8, 0, 0, 0];
@@ -909,9 +897,6 @@ fn what_the_oracle_found() {
 // Appendix A, Table 22: every defined Registered Per-Note Controller number,
 // as the literal low byte of the first word of a MIDI 2.0 message, group 1,
 // channel 2, note 60: 0x4102_3C00 | number.
-//
-// Mutation record: the `Brightness` arm of `From<u8>` moved to 73 -> this
-// test; `Pitch` encoded as 2 -> this test and `midi2_per_note_and_controllers`.
 #[test]
 fn registered_per_note_controllers_have_their_appendix_a_numbers() {
     use RegisteredPerNoteController as C;

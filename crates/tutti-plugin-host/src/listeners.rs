@@ -113,9 +113,6 @@ mod tests {
         seen
     }
 
-    // Mutation (run): `set` keeping the first callback (install only when
-    // none) fails the second figure; `clear` doing nothing fails the third;
-    // a clone with a slot of its own fails the first.
     #[test]
     fn the_last_callback_set_hears_every_clone_until_cleared() {
         let listener = Listener::<u32>::new();

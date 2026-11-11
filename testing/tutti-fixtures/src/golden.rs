@@ -110,8 +110,6 @@ mod tests {
 
     const REC: Option<(u32, u32)> = Some(RECORDED_GLIBC);
 
-    /// Mutations (run): mapping `"require"` to `Mode::Assert`, and mapping
-    /// `"record"` to `Mode::Assert`, each fail this test.
     #[test]
     fn every_mode_value_parses() {
         assert_eq!(parse_mode(None, false), Mode::Assert);
@@ -121,8 +119,6 @@ mod tests {
         assert_eq!(parse_mode(Some("record"), false), Mode::Record);
     }
 
-    /// Mutation (run): mapping the unknown-value arm to `Mode::Assert`
-    /// instead of panicking fails all three.
     #[test]
     #[should_panic(expected = "valid values are")]
     fn a_typo_in_the_mode_panics() {
@@ -141,15 +137,12 @@ mod tests {
         parse_mode(Some("1"), false);
     }
 
-    /// Mutation (run): dropping the `!ci` assert fails it.
     #[test]
     #[should_panic(expected = "refused when CI is set")]
     fn record_is_refused_under_ci() {
         parse_mode(Some("record"), true);
     }
 
-    /// Mutation (run): `assert_ne!` for the `assert_eq!` in `decide` fails
-    /// this test and `the_recorded_target_passes_a_match`.
     #[test]
     #[should_panic(expected = "digest 0x0000000000000001, recorded 0x0000000000000002")]
     fn the_recorded_target_asserts() {
@@ -162,8 +155,6 @@ mod tests {
         decide("x", 7, 7, Mode::Require, RECORDED_ARCH, REC);
     }
 
-    /// Mutation (run): dropping the architecture from `decide`'s condition
-    /// fails this test and `require_fails_on_another_architecture`.
     #[test]
     fn another_target_skips_unless_required() {
         decide("x", 1, 2, Mode::Assert, RECORDED_ARCH, Some((2, 43)));
@@ -172,8 +163,6 @@ mod tests {
         decide("x", 1, 2, Mode::Record, RECORDED_ARCH, REC);
     }
 
-    /// Mutation (run): replacing the `Require` assert with `assert!(true)`
-    /// fails this test and the two after it.
     #[test]
     #[should_panic(expected = "TUTTI_GOLDEN=require")]
     fn require_fails_on_another_libm() {

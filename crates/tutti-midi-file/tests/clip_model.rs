@@ -1,34 +1,6 @@
 //! The MIDI 2.0 Clip File half of [`MidiFile`], against streams of UMP words
 //! laid out by hand from M2-116 (the structure rules are about *order*, which
 //! only a hand-built stream can get wrong on purpose).
-//!
-//! Mutations run (each planted, seen to fail, restored), against
-//! `clip_file.rs` unless a file is named:
-//!
-//! | mutation | fails |
-//! |---|---|
-//! | the `ticks_per_quarter.is_some()` check of the DCTPQ arm removed | `a_second_dctpq_is_refused` |
-//! | the `content` check of the DCTPQ arm removed | `a_dctpq_after_a_message_is_refused`, `a_message_before_the_dctpq_is_refused` |
-//! //! | the `started` check of the Start of Clip arm removed | `a_second_start_of_clip_is_refused` |
-//! | `ProfileScan::accepts` refuses every packet | `set_profile_on_before_the_dctpq_is_accepted` |
-//! | the header branch (`if !started`) drops the message instead of keeping it | `a_header_with_program_change_cc_and_sysex_round_trips` |
-//! | `write` puts the leading Set Profile On packets after the DCTPQ | `set_profile_on_before_the_dctpq_is_accepted` |
-//! | `header_rules` without the `tempo` duplicate check | `two_header_set_tempos_are_refused` |
-//! | `header_rules` without the `i != 0 \|\| *tick != 0` check | `a_header_set_tempo_not_first_or_not_at_delta_zero_is_misplaced` |
-//! | `header_rules` without the `signature` duplicate check | `two_header_time_signatures_are_refused` |
-//! | `header_rules` `i != usize::from(tempo)` replaced by `false` | `a_header_time_signature_must_follow_the_set_tempo_immediately` |
-//! | `tempo_map` ignores `track.header` | `the_header_set_tempo_is_the_tempo_from_the_start_of_the_sequence` |
-//! | `MidiFile::build` skips `header_rules` | `the_constructor_holds_a_header_to_the_same_rules` |
-//! | `push_delta` writes the restart's DCS as `DCS_MAX - 1`, or no NOOP | `a_long_gap_is_written_as_dcs_then_a_null` |
-//! | the `taken < words.len()` of the End of Clip arm removed | `data_after_end_of_clip_is_refused` |
-//! | `MissingStartOfClip` check removed | `a_clip_without_start_of_clip_is_refused` |
-//! | `end` taken as the last event's tick | `the_clip_length_is_the_delta_before_end_of_clip` |
-//! | `push_delta` writes no NOOP restarts (clamps to `DCS_MAX`) | `a_gap_past_the_dcs_field_round_trips` |
-//! | `write` skips `Unknown` events (`file.rs`, `to_bytes`) | `a_packet_no_definition_covers_survives` |
-//! | `tempo_map` reads the Flex tempo of a track as SMF meta only (`file.rs`) | `the_tempo_map_is_the_set_tempo_messages` |
-//! | `Track::notes` treats a MIDI 2.0 velocity-0 Note On as a start (`velocity >= 0`) | `a_midi2_note_on_at_velocity_zero_is_neither_start_nor_end` |
-//! | `Track::notes` drops the group from the pairing key | `a_note_off_only_closes_its_own_group` |
-//! | `build` accepts `Meta` in a clip (`refuses` arm removed) | `what_a_clip_cannot_hold_is_refused` |
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_midi_file::{

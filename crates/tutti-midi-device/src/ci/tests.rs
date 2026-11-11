@@ -334,13 +334,3 @@ fn the_device_id_and_version_are_range_checked_values() {
         invalid: &[0x00, 0x20, 0x80, 0xFF],
     });
 }
-
-// Mutations (run), each failing the named test:
-// - `Muid::new` accepting `raw <= RESERVED_START`:
-//   `muid_refuses_the_reserved_range_and_the_broadcast_value`.
-// - `wire_bytes` shifting by 8 instead of 7: `muid_round_trips_through_wire_bytes`.
-// - `from_wire_bytes` without the top-bit check: the same test (`0x80`).
-// - `CiHeader::decode` not checking `bytes[2] != CI_SUB_ID_1`:
-//   `non_ci_sysex_is_rejected`.
-// - `Destination::from_bytes` treating broadcast as a `Muid` destination:
-//   `invalidate_muid_round_trips`.

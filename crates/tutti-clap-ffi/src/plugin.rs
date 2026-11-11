@@ -1683,7 +1683,6 @@ mod param_text_tests {
 
     impl Plain for clap_plugin_params {}
 
-    /// Mutation: have `value_to_text` return `None` when `ok`: fails.
     #[test]
     fn value_to_text_decodes_plugin_string() {
         let params = stub_params(true);
@@ -1691,7 +1690,6 @@ mod param_text_tests {
         assert_eq!(out.as_deref(), Some("42.0 dB"));
     }
 
-    /// Mutation: return `Some(0.0)` regardless of `ok`: the rejection tests fail.
     #[test]
     fn text_to_value_parses_plugin_value() {
         let params = stub_params(true);
@@ -1700,9 +1698,6 @@ mod param_text_tests {
     }
 
     /// A NUL inside the string can't be a C string: `None`, not a panic.
-    ///
-    /// Mutation: replace `CString::new(text).ok()?` with
-    /// `CString::new(text).unwrap()`: panics here.
     #[test]
     fn text_to_value_rejects_interior_nul() {
         let params = stub_params(true);
@@ -1710,7 +1705,6 @@ mod param_text_tests {
         assert_eq!(out, None);
     }
 
-    /// Mutation: replace `params.value_to_text?` with `.unwrap()`: panics here.
     #[test]
     fn missing_vtable_fns_yield_none() {
         let params = stub_params(false);
@@ -1769,9 +1763,6 @@ mod extension_query_tests {
     /// so the query would return null and the host would conclude the plugin
     /// had no surround map at all, identical at every later call site to a
     /// plugin that genuinely lacks the extension.
-    ///
-    /// Mutation: skip every id longer than 16 bytes in `Exts::query` (the draft
-    /// spelling is the longer one): the pointer is null and the assertion fails.
     #[test]
     fn a_plugin_answering_only_the_draft_id_is_still_found() {
         let mut answers = Answers {
@@ -1793,9 +1784,6 @@ mod extension_query_tests {
     /// Order matters beyond tidiness: a plugin implementing *both* must be
     /// bound to its current interface, and a host that asked draft-first would
     /// silently prefer the older spelling for the rest of the session.
-    ///
-    /// Mutation: list the draft id before the stable one for surround in
-    /// `extensions!`: the draft id is asked and the second assertion fails.
     #[test]
     fn the_stable_id_is_asked_before_the_draft_id() {
         let mut answers = Answers {
@@ -1824,9 +1812,6 @@ mod extension_query_tests {
     /// The fallback must not manufacture a pointer: "declined both ids" has to
     /// stay distinguishable from "implements one of them", or every plugin
     /// would look like it supports every extension.
-    ///
-    /// Mutation: make `query_one` answer a non-null pointer whatever the plugin
-    /// said: the assertions fail.
     #[test]
     fn a_plugin_implementing_neither_id_reports_absence() {
         let mut answers = Answers {

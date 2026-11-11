@@ -1,5 +1,4 @@
 //! `compile`'s properties, against analytic figures.
-//! Each test carries the mutations it was seen to fail under.
 
 use super::*;
 use crate::LfoShape;
@@ -209,11 +208,6 @@ impl Rig {
 /// interleaved, every list; and the rig compiles to what it says (a program
 /// per routed or automated target, a node per signal source, an edge per
 /// signal route).
-///
-/// Mutation (run): new `SourceId`s assigned in declaration order
-/// (`compile` iterating `decl.sources`, reversed, rather than the sorted
-/// index) → reordered declarations swap the follower's and the note
-/// envelope's ids → fails.
 #[test]
 fn equal_declarations_in_any_order_compile_equal() {
     let rig = Rig::new();
@@ -261,12 +255,6 @@ fn equal_declarations_in_any_order_compile_equal() {
 /// maps 1 to 1), on a native target and a plugin parameter alike: the compiled
 /// program's `value_at` (the lane's evaluation) on knob 0 reads exactly
 /// that.
-///
-/// Mutations (run), each fails: `RouteDecl::amount` dropping the curve
-/// (`curve: Law::Linear`) → the exponential rows read the linear
-/// figure; dropping the polarity → the unipolar rows read the bipolar one;
-/// the depth route's amount used for the scaled layer → the scaled LFO
-/// reads the full depth.
 #[test]
 fn the_offset_at_raw_unit_is_shape_times_span_for_every_source_kind() {
     let curves = [
@@ -361,9 +349,6 @@ fn the_offset_at_raw_unit_is_shape_times_span_for_every_source_kind() {
 /// A depth edit changes only its target's program, and keeps every id: the
 /// edited route's layer differs in its amount alone; every other target's
 /// program, the nodes and the edges are equal.
-///
-/// Mutation (run): the layer id mixing in the depth (`layer_id` hashing
-/// `route.depth.to_bits()` too) → the edited layer's id changes → fails.
 #[test]
 fn a_depth_edit_changes_only_its_targets_program_and_keeps_its_ids() {
     let mut rig = Rig::new();
@@ -396,10 +381,6 @@ fn a_depth_edit_changes_only_its_targets_program_and_keeps_its_ids() {
 /// A macro move changes exactly the programs it reaches: macro 12 goes to
 /// target 2 directly and scales route 101 (to target 1); targets 3 and the
 /// plugin parameter are equal; and the moved macro reads at its new value.
-///
-/// Mutation (run): the depth-by wave taken from the scaled route's own
-/// source (`time_function(&sources[&route.source])`) → target 1 does not
-/// change with the macro → fails.
 #[test]
 fn a_macro_move_changes_exactly_the_programs_it_reaches() {
     let mut rig = Rig::new();
@@ -430,12 +411,6 @@ fn a_macro_move_changes_exactly_the_programs_it_reaches() {
 /// old one's exactly; before it the new program is the old one (within
 /// 1e-9 cycles), from it the phase moves at 5 Hz; and the value has no
 /// step at the anchor larger than one frame's slope at the new rate.
-///
-/// Mutations (run), each fails: the anchor's phase from the new rate
-/// (`c.cycles` on the edited clock) → the phases differ at the anchor; no
-/// anchor (`anchored` returning the clock as declared) → the value jumps
-/// at the edit; the anchor's `prev_rate` the new rate → before the anchor
-/// the phases part.
 #[test]
 fn a_rate_edit_anchors_continuously() {
     let mut rig = Rig::new();
@@ -493,14 +468,6 @@ fn a_rate_edit_anchors_continuously() {
 /// is `a_second_rate_edit_near_its_anchor_reanchors`); a play start (a new
 /// epoch) drops it; and a phase edit moves a carried anchor's phase by the
 /// edit.
-///
-/// Mutations (run), each fails: the same-rate path dropping the live
-/// anchor (`anchor: None`) → the depth edit's program has no anchor; the
-/// pending case re-anchoring at `now + margin` → the second edit's anchor
-/// moves, and so does the reuse bound raised to the full margin (the
-/// 10 288 frames left then re-anchor); carrying an anchor across epochs
-/// (`live = old_anchor`) → the new epoch keeps it; the phase jump not
-/// applied to a carried anchor → its phase is unmoved.
 #[test]
 fn an_anchor_is_carried_until_a_play_start() {
     let id = layer_id(RouteKey(100), None);
@@ -566,11 +533,6 @@ fn an_anchor_is_carried_until_a_play_start() {
 /// compile after the one that removed it (the last assertion read
 /// `SourceId(0)`, "freed last time"); a lane that skipped the program
 /// between could then read the stale segment. Ids are now never reused.
-///
-/// Mutations (run), each fails: `prev` ignored (`kept` always `None`) →
-/// the new follower takes id 0 and renumbers the others; the next id not
-/// carried (`next` starting at 0: the lowest id not held) → follower 2
-/// takes 13's id 0 in the compile that removes 13.
 #[test]
 fn a_signal_source_keeps_its_id() {
     let rig = Rig::new();
@@ -605,12 +567,6 @@ fn a_signal_source_keeps_its_id() {
 }
 
 /// Each refusal fires, by name.
-///
-/// Mutations (run), each fails on its row: the layer and input caps not
-/// mapped (`TooManyLayers` reported as `LayerIdCollision`); the NaN range
-/// check dropped; the frozen check dropped; the chain check dropped (the
-/// chain then compiles); the signal check dropped; the second depth route
-/// overwriting the first (`insert` without the `is_some` check).
 #[test]
 fn each_refusal_fires_by_name() {
     let t1 = [(target(1), ranged(0.0, 1.0))];
@@ -817,10 +773,8 @@ fn each_refusal_fires_by_name() {
 /// A custom `ModSourceKind` (an arbitrary `Modulator`) has no closed form;
 /// it declares one with `declare() -> Source`.
 ///
-/// Mutation: none applies (it pins that the declarations compile, which
-/// the type checker and the run assert; removing a source kind fails to
-/// build). The no-runtime half is `cargo check -p tutti-modulation` without
-/// features, run when the compiler landed.
+/// It pins that the declarations compile, which the type checker and the run assert.
+/// The no-runtime half is `cargo check -p tutti-modulation` without features.
 #[test]
 fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
     let mut sources = Vec::new();
@@ -916,11 +870,6 @@ fn anchor_of(clock: Clock) -> Option<RateAnchor> {
 /// One LFO is phase-coherent across its targets: a route
 /// added to an LFO after its rate edit reads the anchor the LFO's other
 /// layers read, so at any frame both targets are at one phase.
-///
-/// Mutation (run): anchors looked up by `(target, LayerId)` in the
-/// previous programs, not by source (the first `anchor` closure as written) →
-/// the new route's layer has no anchor, so its clock differs from route
-/// 100's → fails.
 #[test]
 fn a_route_added_after_a_rate_edit_reads_the_lfos_anchor() {
     let mut rig = Rig::new();
@@ -941,10 +890,6 @@ fn a_route_added_after_a_rate_edit_reads_the_lfos_anchor() {
 /// A route moved to another LFO takes that LFO's clock: it is not a rate
 /// edit of the route's layer, and does not continue the first LFO's phase
 /// at the second's rate.
-///
-/// Mutation (run): anchors looked up by `(target, LayerId)` → route 100's
-/// layer is taken for a rate edit (2 Hz to 3 Hz) and anchored at A's
-/// phase, so B's two layers part → fails.
 #[test]
 fn a_route_moved_to_another_lfo_takes_that_lfos_clock() {
     let mut rig = Rig::new();
@@ -961,10 +906,6 @@ fn a_route_moved_to_another_lfo_takes_that_lfos_clock() {
 
 /// Adding or removing a `depth_by` (which changes the layer's id) keeps the
 /// LFO's live anchor: the layer is the same LFO's, at the same phase.
-///
-/// Mutation (run): anchors looked up by `(target, LayerId)` → the scaled
-/// layer's new id finds no old layer, so its anchor is dropped (its phase
-/// jumps) → fails.
 #[test]
 fn a_depth_by_change_keeps_the_lfos_anchor() {
     let mut rig = Rig::new();
@@ -996,11 +937,6 @@ fn a_depth_by_change_keeps_the_lfos_anchor() {
 /// one from the old anchor on; before it, the step a lane switching at `s`
 /// takes is exactly the documented `(R1 − R0) · (a − s)`. (The far branch,
 /// reusing the anchor's frame, is `an_anchor_is_carried_until_a_play_start`.)
-///
-/// Mutations (run), each fails: the reuse bound dropped (`a.at >
-/// now.play`, the rule as first written) → the anchor stays at the old frame;
-/// `prev_rate` the old clock's `prev_rate` (R0) → the clocks part after
-/// the old anchor.
 #[test]
 fn a_second_rate_edit_near_its_anchor_reanchors() {
     let mut rig = Rig::new();
@@ -1041,13 +977,6 @@ fn a_second_rate_edit_near_its_anchor_reanchors() {
 /// program). An infinite phase after a rate edit would otherwise carry the
 /// live anchor with a jump of `inf − inf`, a NaN in `Compiled::clocks`
 /// that breaks `Compiled: Eq`.
-///
-/// Mutations (run), each fails: the depth check back to `is_nan` → the
-/// infinite depth compiles; the constant check back to `is_nan` → the
-/// infinite constant compiles; the seconds clock's check back to `is_nan`
-/// → the infinite rate and phase compile (and the anchored LFO's clock
-/// holds a NaN phase); the beat clock's check back to `is_nan` → the
-/// infinite period and phase compile.
 #[test]
 fn a_value_that_is_not_finite_is_refused() {
     let t1 = [(target(1), ranged(0.0, 1.0))];
@@ -1123,10 +1052,6 @@ fn a_value_that_is_not_finite_is_refused() {
 /// LFO's: with a seconds-LFO scaler at another rate than the scaled one,
 /// the layer's `DepthBy` clock is `clocks[scaler]`, before and after a
 /// rate edit of the scaler (which anchors it).
-///
-/// Mutation (run): the scaler's clock taken from the scaled route's source
-/// (`dated(route.source).0`, the wave still the scaler's) → the `DepthBy`
-/// clock is the 2 Hz LFO's → fails.
 #[test]
 fn a_depth_by_scaler_reads_its_own_lfos_clock() {
     let mut rig = Rig::new();
@@ -1164,10 +1089,6 @@ fn a_depth_by_scaler_reads_its_own_lfos_clock() {
 /// An edge's gain is a target like a node's param: a route to it compiles
 /// to its own program, keyed apart from a param target whose node bits are
 /// the same, and a range declared for it is its own.
-///
-/// Mutation (run, failed): make `TargetKey::edge` build
-/// `Param { node, param: Unit(Cutoff) }` -> the edge and the param share a
-/// key and the first assertion fails.
 #[test]
 fn an_edge_is_a_target_apart_from_a_param_of_the_same_bits() {
     let edge = TargetKey::edge(1);
@@ -1189,9 +1110,6 @@ fn an_edge_is_a_target_apart_from_a_param_of_the_same_bits() {
 /// A node's mix is a target like a param: keyed apart from an edge's gain and
 /// from a param of the node whose bits are the same, on the node it names, and
 /// a route to it compiles to its own program over its own range.
-///
-/// Mutation (run, failed): make `TargetKey::mix` build `Edge(node)` -> the
-/// mix and the edge share a key and the first assertion fails.
 #[test]
 fn a_mix_is_a_target_apart_from_an_edge_and_a_param_of_the_same_bits() {
     let mix = TargetKey::mix(1);

@@ -31,9 +31,6 @@ fn wanted(r: Option<DeviceRestart>) -> Option<DeviceSelector> {
 
 /// Nothing moves the stream with the policy at its defaults, whatever
 /// happens to the devices.
-///
-/// Mutation (run): `Default` made `follow_default: true` and the `Id` arm
-/// `reconnect: true` → this fails.
 #[test]
 fn every_automatic_behaviour_is_off_by_default() {
     let now = t0();
@@ -57,8 +54,6 @@ fn every_automatic_behaviour_is_off_by_default() {
 
 /// An explicit choice is never replaced by another device: when it goes
 /// the policy waits, and it reopens only that device, when it is back.
-///
-/// Mutation (run): the `Id` arm returning `DeviceSelector::Default` → fails.
 #[test]
 fn an_explicit_choice_is_never_overridden() {
     let now = t0();
@@ -146,9 +141,6 @@ fn the_default_is_followed_when_it_moves_or_its_device_goes() {
 
 /// A device that flaps is not retried on every change: the wait doubles to
 /// `max` and strikes clear only after `settle`.
-///
-/// Mutation (run): the `not_before` gate removed → a request on every
-/// change, and this fails at the first flap.
 #[test]
 fn a_flapping_device_is_held_by_the_backoff() {
     let policy = DevicePolicy {
@@ -199,9 +191,6 @@ fn a_flapping_device_is_held_by_the_backoff() {
 /// After `settle` of quiet the strikes clear: a loss after a long calm is
 /// answered at once, and the wait that follows is the base again, not the
 /// one the old strikes had grown.
-///
-/// Mutation (run): the reset of `strikes` removed → the second request after
-/// the calm is held for the grown wait, and this fails.
 #[test]
 fn the_backoff_clears_after_the_device_settles() {
     let now = t0();
@@ -341,8 +330,6 @@ fn restarts_are_never_closer_than_the_base_wait() {
 
 /// A stream on a device whose identity is unknown is not on a different
 /// one: a healthy stream is not restarted.
-///
-/// Mutation (run): `moved` made `running_on != Some(default)` → this fails.
 #[test]
 fn an_unknown_device_is_not_a_different_one() {
     let now = t0();
@@ -355,8 +342,6 @@ fn an_unknown_device_is_not_a_different_one() {
 
 /// Absence from the list is not a lost stream (ALSA's probe hides a device
 /// this process holds), whatever the ordinals do; only a fault is.
-///
-/// Mutation (run): a latch of `broken` on absence in `decide` → this fails.
 #[test]
 fn absence_from_the_list_does_not_end_a_stream() {
     let now = t0();
@@ -379,8 +364,6 @@ fn absence_from_the_list_does_not_end_a_stream() {
 }
 
 /// Held: nothing is asked for, and it resumes when released.
-///
-/// Mutation (run): the `held` check removed → this fails.
 #[test]
 fn a_held_policy_asks_for_nothing() {
     let now = t0();
@@ -392,20 +375,9 @@ fn a_held_policy_asks_for_nothing() {
     assert!(f.step(FollowEvent::Look, &v, at(now, 1)).is_some());
 }
 
-// Mutations (run, each restored): the `not_before` gate removed fails the
-// flapping, failed-restart and spacing tests; `Lost` ignored fails the
-// flapping and explicit-choice tests; `RestartFailed` always marking broken
-// fails the failed-restart test; the strike reset after `settle` removed
-// fails the settle test; `follow_default`/`reconnect` defaulting on fails the
-// off-by-default test.
-
 /// A listing that has not answered is silent until `LISTING_WARNING` of the
 /// phase's clock, then reports slow once, and goes on waiting; the answer
 /// ends it.
-///
-/// Mutation: `>=` to `>` fails the exact-boundary assertion; dropping
-/// `self.warned |= slow` makes the warning repeat and fails the "once"
-/// assertion; reporting `Pending` as finished fails the "still waiting" ones.
 #[test]
 fn a_listing_that_does_not_answer_is_reported_slow_once() {
     let (release, held) = std::sync::mpsc::channel::<()>();

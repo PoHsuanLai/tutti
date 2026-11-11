@@ -68,16 +68,6 @@ fn clock(
 /// The hardware out is the tap on that clock, and it follows the restart: its
 /// frames are on the new rate from the hook on, and what it carries is the
 /// ticks' spacing on the new grid.
-///
-/// Mutation (run, failed): the hook's `follow_rate` call removed (`if false &&
-/// ..`) → the tap is still on 44.1 kHz right after the restart.
-///
-/// Mutation (run, failed): `Session::rerate` not re-preparing the graph (the
-/// `reprepare` call removed): the clock keeps its 44.1 kHz grid. (Removing
-/// `ClockNode::prepare`'s `ClockMaster::set_sample_rate` does not fail this
-/// test, verified: the ticks are placed at the transport's rate, which the
-/// block carries, and the master's own rate is MTC's, which
-/// `clock_master`'s unit tests pin.)
 #[test]
 fn a_restart_re_rates_the_midi_clock() {
     let (driver, old) = ManualStreamDriver::new();

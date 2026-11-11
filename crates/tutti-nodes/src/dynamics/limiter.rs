@@ -723,16 +723,11 @@ mod tests {
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
-    ///
-    /// Mutation (run): drop `fork.release.detach()` in `fork_fresh` → "a
-    /// live write reached the fork" for `Release` → fails.
     #[test]
     fn a_limiter_fork_shares_no_cell() {
         assert_param_fork(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)));
     }
 
-    /// Mutation (run): drop `fork.ceiling_db.detach()` in `fork_fresh` → "a
-    /// live write reached the fork" for `Ceiling` → fails.
     #[test]
     fn a_brickwall_fork_shares_no_cell() {
         assert_param_fork(BrickwallLimiterNode::new(Db::new(-1.0)));
@@ -741,9 +736,6 @@ mod tests {
     /// A ceiling set through the brickwall's `ParamSet` reaches the clip on
     /// the next block, though `set_ceiling` is `&mut self`: the node
     /// re-derives its cached linear ceiling from the cell once per block.
-    ///
-    /// Mutation (run): drop the re-derive in `process` → the clip stays at
-    /// 0 dB → fails.
     #[test]
     fn a_brickwall_ceiling_set_by_address_reaches_the_clip() {
         let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(0.0)), RATE_44K);
@@ -775,8 +767,6 @@ mod tests {
     fn lookahead_frames_are_the_ceil_of_the_exact_product() {
         // 0.1 s at 48 kHz: `0.1 * 48000` is 4800 in f64, so ceil is 4800. The
         // f32 nearest 0.1 times 48000 is 4800.00007, which ceils to 4801.
-        // Mutation (run): a round trip through `f32` (`from_f32(x.to_f32())`) on the lookahead in
-        // `with_lookahead` or `prepare` makes the ring 4801 and fails.
         let device = tutti_types::SampleRate(48_000.0);
         let mut lim = LimiterNode::new(Db::new(-6.0), Db::new(-0.3)).with_lookahead(Seconds(0.1));
         lim.prepare(&Prepare::new(device, Samples(64)));
@@ -863,12 +853,6 @@ mod tests {
     /// tail. A tone over the threshold (so the release envelope is mid-swing
     /// when the input stops) leaves its last non-zero frame `lookahead`
     /// frames after the last input frame, and silence after that.
-    ///
-    /// Mutation (run): declaring the ring's `lookahead - 1` as the tail (the
-    /// old figure) → the tail assertion fails. Mutation (run): each channel's
-    /// ring one slot longer than the declared latency
-    /// (`FixedDelay::new(n + 1)`) → the last non-zero frame is one past
-    /// the latency and the second assertion fails.
     #[test]
     fn the_limiter_stops_at_its_latency_and_declares_no_tail() {
         let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
@@ -1016,10 +1000,6 @@ mod tests {
     /// its ceiling), and never change the arity: a modulatable limiter is as
     /// wide as it was built. (Doc 014 §12.6 widened the list: a route onto
     /// any of these was refused once the frame-rate driver went.)
-    ///
-    /// Mutation (run): swap `LIMITER_PARAMS`' order → the first assertion
-    /// fails. Mutation (run): `param_base(2)` answering the threshold
-    /// cell → fails.
     #[test]
     fn the_shapes_declare_ceiling_threshold_and_release() {
         let l = LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3));
@@ -1116,10 +1096,6 @@ mod tests {
     /// A NaN fed on the ceiling port clamps at the cell's ceiling rather
     /// than panicking in `f32::clamp`, and the next finite frame clamps at
     /// its own.
-    ///
-    /// Mutation (run): use the fed frame's linear ceiling unchecked (the old
-    /// `db_to_amplitude(Db(db)).get()`) → `f32::clamp` panics on the NaN
-    /// bound → fails.
     #[test]
     fn brickwall_a_fed_nan_ceiling_clamps_at_the_cell() {
         let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(-6.0)), RATE_44K);
@@ -1135,11 +1111,6 @@ mod tests {
     /// A NaN written to the ceiling cell keeps the ceiling the node last
     /// clamped at, and a later finite write takes effect; a NaN at
     /// construction starts at 0 dB.
-    ///
-    /// Mutations (run): re-derive the cell's ceiling unchecked
-    /// (`self.ceiling_linear = db_to_amplitude(..).get()`) → the clamp
-    /// panics → fails; build with `db_to_amplitude(ceiling_db).get()` in
-    /// `with_channels` → the NaN-built node panics → fails.
     #[test]
     fn brickwall_a_nan_cell_keeps_the_last_ceiling() {
         let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(-6.0)), RATE_44K);
@@ -1168,9 +1139,6 @@ mod tests {
     /// leaves the other silent: the graph hands an unconnected input
     /// silence, which the linked detector reads as such (a graph node is
     /// always handed every input it declares).
-    ///
-    /// Mutation (run): read `inputs.get(0)` for every channel in `process`
-    /// → ch1 carries ch0's signal → fails.
     #[test]
     fn limiter_leaves_an_unfed_channel_silent() {
         let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
@@ -1238,11 +1206,6 @@ mod tests {
     /// fed ceiling: frame `i` is fed `-i/4` dB and every channel holds
     /// `±2`, so each output is exactly that frame's linear ceiling, signed,
     /// and a quiet sample passes through.
-    ///
-    /// Mutation (run): skip channel 0's final clip → channel 0 outputs the
-    /// bare ceiling, unsigned → fails; read the ceiling of frame `i - 1` for
-    /// the other channels → fails; unfed, read `inputs.get(0)` for every
-    /// channel → channel 1's sign is wrong → fails.
     #[test]
     fn brickwall_clips_each_frame_at_its_own_ceiling() {
         use crate::test_support::RATE;
@@ -1334,11 +1297,6 @@ mod tests {
     /// is the lookahead-delayed input times the window-min gain, so the last
     /// frame's gain is `out / delayed input`, and the meter is that gain in
     /// dB.
-    ///
-    /// Mutation (run): report `gains.first()` in `process` -> the meter is the
-    /// first frame's reduction -> fails. Read each chunk's input from
-    /// `[..end - start]` -> a chunk past the first sees the block's start ->
-    /// fails with the lane at 100.
     #[test]
     fn the_meter_reports_the_blocks_last_frame_whatever_the_lane() {
         for lane in [None, Some(100)] {
@@ -1377,13 +1335,6 @@ mod tests {
     /// `compute_limiter_gain` of the frame's peak. The input is quiet, steps
     /// above the threshold at frame 300 and falls back at 700, so the gain
     /// changes at the step, along the window and through the release.
-    ///
-    /// Mutation (run): in `delay_scaled`, apply each frame's gain one frame
-    /// late (`gains.iter().cycle().skip(len - 1)`) -> the gain at the step and
-    /// along the release is the previous frame's -> fails, at lane 512 and 100.
-    /// Mutation (run): `MonotonicMinDeque::new(n)` in `LookaheadRing::new` (the
-    /// old window) -> the frame at the end of the step's release is scaled by
-    /// a gain one release step too high -> fails.
     #[test]
     fn each_frame_is_scaled_by_its_own_window_minimum_gain() {
         let release = 0.001;
@@ -1451,11 +1402,6 @@ mod tests {
     /// at most `ceiling / |x|`. The bound is exact, with no tolerance: this
     /// noise never rounds a product past the ceiling. Threshold at the
     /// ceiling, so the quiet gain is unity.
-    ///
-    /// Mutation (run): drop the `/ peak` in `LimiterCurve::gain` (return
-    /// `self.over`) -> a peak of 4 comes out at 4 x the ceiling -> fails.
-    /// Mutation (run): `MonotonicMinDeque::new(n)` in `LookaheadRing::new` (the
-    /// old window) -> the output reaches 1.0016 x the ceiling -> fails.
     #[test]
     fn loud_noise_stays_at_the_ceiling() {
         let ceiling = Db(-6.0);
@@ -1480,11 +1426,6 @@ mod tests {
 
     /// A steady signal under the threshold passes at unity once the lookahead
     /// has filled; one over it settles at `ceiling / peak`.
-    ///
-    /// Mutation (run): `over: ... * threshold_lin` -> `over: ... ` (drop the
-    /// threshold factor in `LimiterCurve::new`) -> the loud gain is off by
-    /// the threshold -> fails; return `self.over` for the quiet branch ->
-    /// the quiet signal is not unity -> fails.
     #[test]
     fn a_steady_signal_passes_under_and_settles_at_ceiling_over_peak() {
         let ceiling = Db(-6.0);
@@ -1512,9 +1453,6 @@ mod tests {
     /// With the ceiling under the threshold the reduction is still
     /// `ceiling / peak` over the threshold, and the constant
     /// `ceiling / threshold` under it.
-    ///
-    /// Mutation (run): in `LimiterCurve::new`, build `over` from a gap of
-    /// `0.0` -> the loud gain is `threshold / peak` -> fails.
     #[test]
     fn a_ceiling_under_the_threshold_scales_by_the_gap_under_it() {
         let (threshold, ceiling) = (Db(-3.0), Db(-9.0));
@@ -1578,12 +1516,6 @@ mod tests {
     /// well as below; it replaces a curve that boosted quiet signals by the
     /// drive but held loud ones at the threshold (a jump of the drive at the
     /// knee, and a louder input giving a quieter output).
-    ///
-    /// Mutation (run): `gap.min(0.0)` for `over` in `LimiterCurve::new` -> at
-    /// (-6, -0.3) the input -5.9 dB comes out at -6.0 -> fails the settle
-    /// assertion.
-    /// Mutation (run): `below: 1.0` -> a quiet input comes out unmoved ->
-    /// fails the drive assertion.
     #[test]
     fn the_threshold_drives_the_input_and_loud_signals_settle_at_the_ceiling() {
         for (t, c) in CURVES {
@@ -1604,12 +1536,6 @@ mod tests {
     /// The steady-state transfer curve never decreases and never jumps: a
     /// 1 dB step of input moves the output by between 0 and 1 dB (the
     /// slope is the drive's unity under the knee and zero over it).
-    ///
-    /// Mutation (run): as above, `.min(0.0)` back on the gap in
-    /// `LimiterCurve::new` -> at (-6, -0.3) the output falls 5.7 dB at the
-    /// knee -> fails the monotonic assertion.
-    /// Mutation (run): `below: 1.0` -> the step into the knee is not the
-    /// drive's -> fails.
     #[test]
     fn the_transfer_curve_is_monotonic_and_continuous() {
         for (t, c) in CURVES {
@@ -1634,17 +1560,8 @@ mod tests {
     ///
     /// Two layers keep a NaN out: the peak fold's `max` ignores it, and
     /// `LimiterCurve::gain` sends one to the quiet gain. Either alone is
-    /// absorbed (the envelope attacks straight back), so the mutation breaks
+    /// absorbed (the envelope attacks straight back), so only losing
     /// both.
-    ///
-    /// Mutation (run): in the peak fold, `*p = if x.is_nan() { x } else {
-    /// p.max(x.abs()) }`, and in `LimiterCurve::gain`, `if !(peak <=
-    /// self.threshold)` -> a NaN gain enters the envelope and the minimum, and
-    /// every later frame is NaN -> fails. The settled-output loop is also what
-    /// asserts the envelope stayed finite (the kernel's accessor is gone):
-    /// `if i == 10 { self.envelope = f32::NAN; }` at the top of
-    /// `LimiterKernel::gain` -> every later frame is NaN, the loop's
-    /// `(y - limit).abs() <= ..` is false -> fails (run).
     #[test]
     fn a_nan_input_does_not_poison_the_gain() {
         let ceiling = Db(-6.0);
@@ -1673,9 +1590,6 @@ mod tests {
 
     /// A NaN fed to the peak fold yields a non-NaN peak. Separate from the
     /// `LimiterCurve::gain` guard, which has its own test in `utils.rs`.
-    ///
-    /// Mutation (run): `if x.is_nan() { x } else { peak.max(x.abs()) }` in
-    /// `fold_peak` -> the peak is NaN -> fails.
     #[test]
     fn a_nan_fed_to_the_peak_fold_is_ignored() {
         assert_eq!(fold_peak(0.5, f32::NAN), 0.5);
@@ -1686,10 +1600,6 @@ mod tests {
     /// Silence, a burst, silence, at thresholds so low that `10^((ceiling -
     /// threshold)/20)` overflows `f32` without the clamp in
     /// `LimiterCurve::new`: `0 * inf` would put a NaN on every silent sample.
-    ///
-    /// Mutation (run): in `LimiterCurve::new`, `gap = ceiling - threshold`
-    /// (drop the `.min(MAX_GAP_DB)`) -> `below` is inf at -inf and -800 dB ->
-    /// NaN output -> fails.
     #[test]
     fn a_very_low_threshold_never_produces_a_nan() {
         for threshold in [f32::NEG_INFINITY, -800.0, -150.0] {

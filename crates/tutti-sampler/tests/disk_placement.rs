@@ -152,10 +152,6 @@ const WAV_5_1: u32 = 0x3F; // FL FR FC LFE BL BR
 /// A WAV-order 7.1 file plays in the engine's order: the sides before the
 /// rears. The expectation is derived from the speakers, not the placement:
 /// engine channel `i` plays the file channel that feeds the same speaker.
-///
-/// Mutation (run): `open_stream_region` building `Place::native` in place of
-/// `Place::for_topology` (the disk tier as it was) -> the voice plays the
-/// file's order and fails on channel 4.
 #[test]
 fn a_wav_order_seven_one_is_permuted_to_the_engines_order() {
     let (_dir, _streamer, reader) = stream(8, WAV_7_1);
@@ -187,11 +183,6 @@ fn a_wav_order_seven_one_is_permuted_to_the_engines_order() {
 /// A file with a channel no speaker names (bit 25 is a second LFE) is refused
 /// when the stream is opened, at any width: the open fails with the placement's
 /// refusal, where it used to open and fail at the voice.
-///
-/// Mutation (run): `open_stream_region` falling back to `Place::native` when
-/// `Place::for_topology` refuses (`unwrap_or_else`) -> the open succeeds and
-/// fails the first assertion. (The `Unknown` check in `for_topology` is also
-/// `Fold::to_width`'s, so removing it alone changes nothing for a wide file.)
 #[test]
 fn a_file_with_a_second_lfe_is_refused() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -222,10 +213,6 @@ fn a_file_with_a_second_lfe_is_refused() {
 /// A 5.1 file into a 5-wide voice has no order to narrow by: the open is
 /// refused, and a refusal leaves nothing behind, so the same file then opens at
 /// stereo (a fold by position) and at its own width.
-///
-/// Mutation (run): the width given to `Place::for_topology` replaced by the
-/// file's own in `open_stream_region` -> the 5-wide open succeeds and fails
-/// the first assertion. (Also the `unwrap_or_else` fallback above.)
 #[test]
 fn a_five_one_file_into_a_five_wide_voice_is_refused() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -255,9 +242,6 @@ fn a_five_one_file_into_a_five_wide_voice_is_refused() {
 
 /// A stereo file plays as it was: the voice is two wide and every sample is the
 /// file's, to the bit.
-///
-/// Mutation (run): `read_ring` reading channel `src - 1 - c` for `c` ->
-/// the channels are exchanged and it fails (and the 7.1 case with it).
 #[test]
 fn a_stereo_file_is_unchanged() {
     let (_dir, _streamer, reader) = stream(2, 0x3);
@@ -267,10 +251,6 @@ fn a_stereo_file_is_unchanged() {
 
 /// A fork for an offline render, which reads the file itself, places it as the
 /// live voice does.
-///
-/// Mutation (run): `offline_render` passing `&Place::FAN` in place of the
-/// voice's placement -> the fork plays the file's order and fails (the live
-/// cases, which do not fork, still pass).
 #[test]
 fn a_fork_places_the_file_as_the_live_voice_does() {
     use tutti_graph::{ForkMode, IntoNode, Prepare};
@@ -419,10 +399,6 @@ fn assert_near(block: &[Vec<f32>], want: &[f32; 8], what: &str) {
 /// A file wider than a frame folds into it by position (10 and 12 channels into
 /// 8, where the tier cut them to their first 8), to the figures `Fold`'s rules
 /// give, and a WAV-order 7.1 is permuted.
-///
-/// Mutation (run): `open_stream_region` building `Place::native(width)` ->
-/// the read has no fold (a `debug_assert` in `Place::frame`, a read of the
-/// first 8 in release) and the figures are the file's first eight channels.
 #[test]
 fn a_file_wider_than_a_frame_folds_into_it() {
     for f in fixtures() {
@@ -516,12 +492,6 @@ fn loop_1000_3000() -> LoopSetting {
 /// (the loop wrapping three times, its crossfade included), reversed, and the
 /// paged read of a file wider than a frame, to the same figures as the live
 /// voice.
-///
-/// Mutation (run): `Pages::read_looped_into` handed `&Place::FAN` -> the looped
-/// rows (and the looped no-alloc rows) fail, the forward and reversed ones not. Mutation (run): the reverse arm of `OfflineRead::read_into`
-/// handed `&Place::FAN` -> the reversed row alone fails. Mutation (run): the
-/// page's `MAX_WAVE_CHANNELS` back to `MAX_SAMPLER_CHANNELS` (the tier's old
-/// cut to 8) -> the 10- and 12-channel rows fail.
 #[test]
 fn a_fork_places_every_read_path() {
     for f in fixtures() {
@@ -555,9 +525,6 @@ fn a_fork_places_every_read_path() {
 
 /// A fork's placed read allocates nothing once its page is in (forward and
 /// looped, the permuting and the folding file).
-///
-/// Mutation (run): `Place::frame` collecting the fold's source into a `Vec`
-/// -> the folding rows abort in the guarded region.
 #[test]
 fn a_fork_placed_read_is_allocation_free() {
     for f in fixtures() {
@@ -592,10 +559,6 @@ fn a_fork_placed_read_is_allocation_free() {
 /// A live placed voice allocates nothing in a block that crosses a loop edit
 /// (the reader's crossfade from the old mapping, `cross_switch`) or a loop's
 /// wrap, and plays its figures throughout.
-///
-/// Mutation (run): `cross_switch`'s read passing `&Place::FAN` -> the 7.1 and
-/// the fold's blocks in the crossfade are in the file's order and fail.
-/// Mutation (run): `Place::frame` collecting into a `Vec` -> aborts.
 #[test]
 fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
     for f in fixtures() {

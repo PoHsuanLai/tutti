@@ -4,9 +4,6 @@ use Speaker::*;
 /// The samples come in ascending flag order, so the topology lists the
 /// speakers in that order whatever order the flags were written in; the
 /// layouts the three codecs state come out as the speakers their specs name.
-///
-/// Mutation (run): `REAR_LEFT => SideLeft` fails the quad and 5.1 rows;
-/// listing `ChannelTopology::new` over `iter().rev()` fails every row.
 #[test]
 fn flags_become_speakers_in_sample_order() {
     // Vorbis 6: FL FC FR RL RR LFE written, FL FR FC LFE RL RR read.
@@ -42,8 +39,6 @@ fn flags_become_speakers_in_sample_order() {
 }
 
 /// A lone channel is the engine's mono, however symphonia names it.
-///
-/// Mutation (run): removing the `count() == 1` arm gives `[FrontLeft]`.
 #[test]
 fn a_lone_channel_is_mono() {
     assert_eq!(topology_of(Channels::FRONT_LEFT).positions(), [FrontCenter]);
@@ -51,9 +46,6 @@ fn a_lone_channel_is_mono() {
 
 /// A flag with no speaker keeps its slot as `Unknown(bit index)`, never
 /// `Unassigned` and never dropped: the second LFE is bit 25.
-///
-/// Mutation (run): mapping `other` to `Unassigned` fails the equality; filtering
-/// it out of the iterator fails the width.
 #[test]
 fn a_flag_with_no_speaker_keeps_its_slot_as_unknown() {
     let t = topology_of(Channels::LFE1 | Channels::LFE2 | Channels::FRONT_LEFT);

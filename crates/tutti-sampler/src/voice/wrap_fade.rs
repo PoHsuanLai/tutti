@@ -289,11 +289,6 @@ fn the_fade_is_five_milliseconds() {
 /// A tone through a loop wrap has no step beyond the fade's, at any block
 /// length (the fade crosses block edges), in mono and stereo, and the render
 /// sounds nowhere else different from the tone itself.
-///
-/// Mutation (run): `Wrap::new` giving no fade (`len > 0` never true) → the
-/// wrap steps by 0.4 or more → fails. Mutation (run): `Wrap::after` always
-/// `None` (the fade dropped at the first block edge) → fails at the 64 and 100
-/// frame blocks, where the fade crosses edges → fails.
 fn a_tone_has_no_cut_at_the_wrap_at_any_block_length(host: Host) {
     for channels in [1, 2] {
         for block in [64, 100, 480, 1000] {
@@ -325,9 +320,6 @@ fn a_tone_has_no_cut_at_the_wrap_at_any_block_length(host: Host) {
 /// Before the wrap the voice is the source, bit for bit, and the crossfade
 /// starts on the wrap frame, not before: the first frame of the loop is the
 /// loop's start at the fade's first gain, the tail under it at its first.
-///
-/// Mutation (run): the blend starting a frame early (`first` one less in
-/// `crossfade_wraps`'s tail read) → the formula frames are off → fails.
 fn the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
@@ -356,9 +348,6 @@ fn the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it(host: Host) {
 /// the energy over the fade is the steady tone's, where a linear fade
 /// would dip a third. The tail is a 3 kHz tone and the loop's start a
 /// 1 kHz one, each a whole number of cycles over the fade.
-///
-/// Mutation (run): `CrossfadeCurve::EqualAmplitude` in `crossfade_wraps` →
-/// the energy is 0.67 of the steady tone's → fails.
 fn the_fade_holds_the_energy_of_unrelated_material(host: Host) {
     let w = wave(1, 4 * FPB, |_, i| {
         let f = if i < WRAP { 1_000.0 } else { 3_000.0 };
@@ -377,9 +366,6 @@ fn the_fade_holds_the_energy_of_unrelated_material(host: Host) {
 
 /// A voice with nothing past the loop's end has no tail: its loop start is
 /// the source from the wrap on, with no ramp, and it is silent before.
-///
-/// Mutation (run): `place_tail` not gating on the window (`e` taken as `a`) →
-/// the loop's start is crossfaded with a tone it was not playing → fails.
 fn a_voice_that_is_not_playing_across_the_wrap_is_untouched(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     // One beat of a loop of 1.3: it ends 0.3 beats before the wrap.
@@ -401,9 +387,6 @@ fn a_voice_that_is_not_playing_across_the_wrap_is_untouched(host: Host) {
 
 /// A voice that stops sounding at the loop's end fades out under a loop
 /// start it does not play: it does not cut either.
-///
-/// Mutation (run): the tail read gated out when the head is silent
-/// (`!sounds` returning `Silent` before the tail) → the voice cuts → fails.
 fn a_tail_with_no_loop_start_under_it_fades_out(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     // Placed at beat 1 for ever: the loop's start (beat 0) is before it.
@@ -418,9 +401,6 @@ fn a_tail_with_no_loop_start_under_it_fades_out(host: Host) {
 
 /// A voice that begins at or after the loop's end never played in the loop,
 /// so it has no tail: the crossfade does not play it.
-///
-/// Mutation (run): `place_tail` skipping the `reached` check → a ghost of the
-/// voice's first 120 frames under the loop's start → fails.
 fn a_voice_that_begins_after_the_loop_ends_leaves_no_ghost(host: Host) {
     for start in [LOOP_BEATS, LOOP_BEATS + 0.005] {
         let w = wave(1, 4 * FPB, tone);
@@ -434,9 +414,6 @@ fn a_voice_that_begins_after_the_loop_ends_leaves_no_ghost(host: Host) {
 /// A loop shorter than the fade fades over half a pass, several wraps to a
 /// block: the second half of each pass is the loop's start alone, and no
 /// step is beyond that fade's.
-///
-/// Mutation (run): `Wrap::new` not halving (`pass` for `pass / 2.0`) → the
-/// fade runs the whole pass and the second half is blended → fails.
 fn a_loop_shorter_than_the_fade_fades_over_half_a_pass(host: Host) {
     // 0.005 beats: 120 frames, from the middle of the source.
     let w = wave(1, FPB, tone);
@@ -462,11 +439,6 @@ fn a_loop_shorter_than_the_fade_fades_over_half_a_pass(host: Host) {
 
 /// A seek inside the fade ends it on the seek's frame, and a stop ends
 /// it: what sounds after is the source at the new playhead, untouched.
-///
-/// Mutation (run): the change arm of `Runs::next` keeping the crossfade
-/// across a seek (the `broke` reset removed) → the seek's target is blended
-/// with a tail → fails; across a stop (the `!rolls` reset removed) → the
-/// restart blends → fails.
 fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
@@ -510,10 +482,6 @@ fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
 /// A NaN or infinite gain is silence, never NaN, on every host, in frames
 /// inside and outside the voice's window (it starts 100 frames into the run
 /// and the run crosses a wrap).
-///
-/// Mutation (run): `audible` returning the gain unguarded -> the frames
-/// outside the window are inf * 0.0 = NaN and those inside are NaN -> fails
-/// on each host.
 fn a_non_finite_gain_renders_silence(host: Host) {
     for gain in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let w = wave(1, 4 * FPB, tone);
@@ -555,11 +523,6 @@ fn equal_power(k: usize) -> (f32, f32) {
 /// the tail past the loop's end (0.5) are `g_in * 0.25 + g_out * 0.5` on each
 /// of the 240 frames after the wrap, in mono and stereo, at any block length,
 /// and the loop's start alone from there.
-///
-/// Mutation (run): a linear `g_in = x` in `crossfade_wraps` → fails (the
-/// curves differ by up to 0.2 of the gap). Mutation (run): the gain index one
-/// frame late (`wrap.ago + at - run.start + 1`) → fails (a step of 1.6e-3
-/// against a tolerance of 1e-6).
 fn the_gains_are_the_equal_power_curve_frame_for_frame(host: Host) {
     for channels in [1, 2] {
         for block in [7, 64, 100, 480, 1000] {
@@ -589,10 +552,6 @@ fn the_gains_are_the_equal_power_curve_frame_for_frame(host: Host) {
 
 /// A tail that ends inside the fade (the voice is 100 frames longer than the
 /// loop) leaves the head to finish the ramp it began: no pop to unity.
-///
-/// Mutation (run): `crossfade_wraps` skipping the frames without a tail
-/// (`continue` on `positions[i].is_none()`) → the head is unscaled from frame
-/// 100 and steps from 0.59 times the head to the head → fails.
 fn a_tail_that_ends_inside_the_fade_leaves_the_head_to_finish_its_ramp(host: Host) {
     let w = steps(1, 0.25, 0.5);
     let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
@@ -614,11 +573,6 @@ fn a_tail_that_ends_inside_the_fade_leaves_the_head_to_finish_its_ramp(host: Hos
 /// a few frames into the fade): it keeps unity, so the render after the wrap
 /// is the first pass's attack plus the tail's fade-out, whose gain is the
 /// curve's `g_out`. Subtract the tail and what is left is the first pass.
-///
-/// Mutation (run): `begins_with_loop` always `false` → the head is ramped by
-/// `g_in` → fails. Mutation (run): `begins_with_loop` always `true` → the
-/// sustained-tone tests (`a_tone_has_no_cut…`, the energy and the gain
-/// tests) fail.
 fn a_clip_that_starts_with_the_loop_keeps_its_attack_at_unity(host: Host) {
     for lag in [0usize, 100] {
         let w = wave(1, 4 * FPB, tone);
@@ -655,10 +609,6 @@ fn a_clip_that_starts_with_the_loop_keeps_its_attack_at_unity(host: Host) {
 /// level of either. A head that is the clip's own start sums at unity: both
 /// near full level at the join, the peak is the two together, twice the
 /// tone's amplitude. Nothing clips or limits it.
-///
-/// Mutation (run): `EqualAmplitude` in `crossfade_wraps` → the gain sum is 1
-/// everywhere → fails. Mutation (run): unity applied to a mid-sound head →
-/// the sum at mid-fade is 1.5 rather than root 2 → fails.
 fn an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone(host: Host) {
     // 440 Hz is a whole number of cycles over the 30 000 frame loop, so the
     // tail and the loop's start are the same samples.
@@ -702,10 +652,6 @@ fn an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone(h
 /// change, for the rest of the fade); a loop edit does not move it. A
 /// sample-rate change mid-fade keeps the fade's length in frames, so it runs
 /// for that many frames at the new rate.
-///
-/// Mutation (run): `Wrap::left` returning `len` (the fade not shortened by
-/// `ago`) → the fade outlasts its frames and the tail read runs off its span
-/// → fails (a panic).
 fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     for (tempo, edit) in [
@@ -742,9 +688,6 @@ fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded(host: Host) 
 /// gap between the two curves, 1 - g_in, for the rest of the fade. It is
 /// accepted: the voice is already on the edge of the rule, and a tempo change
 /// inside a 5 ms window is a glitch of its own.
-///
-/// Mutation (run): `begins_with_loop` testing the loop's start frame itself
-/// (no `- 1 / fpb`) → the voice a frame before it reads as unity → fails.
 fn the_unity_rule_is_decided_to_the_frame_at_the_loop_start(host: Host) {
     for (lag, own) in [(-1i32, false), (0, true), (1, true)] {
         let w = steps_at(1, 0.25, 0.5, LS - 100);
@@ -775,9 +718,6 @@ fn the_unity_rule_is_decided_to_the_frame_at_the_loop_start(host: Host) {
 /// levels. The voice's loop ends 100 frames into the fade, so the tail
 /// crosses the voice's own wrap there; only the frames before its crossfade
 /// are pinned.
-///
-/// Mutation (run): `begins_with_loop` always `true` → the head is unity →
-/// fails.
 fn a_voice_with_its_own_loop_is_judged_by_its_window(host: Host) {
     let w = steps(1, 0.25, 0.5);
     let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);

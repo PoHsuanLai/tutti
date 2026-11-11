@@ -13,16 +13,6 @@
 //! is read-only, or frozen by its fork when it is not — its own unit test
 //! `a_fork_freezes_a_live_curve`; `set_curve` takes `&mut self` and so cannot
 //! reach a live node) and the `testing` stimulus nodes.
-//!
-//! Mutations (run): delete any one `detach` line from a node's `fork_fresh`
-//! (or, while they were units, from an `isolate`) → that
-//! row fails on exactly that control, with "a live move reached the fork"
-//! (run on the compressor's knee — `fork.core.threshold.detach()`
-//! — the gate's hold, `DelayLineNode`'s `cross_feedback`, `LfoNode`'s
-//! `phase_offset` and the convolver's `params`). Make `Param::detach`
-//! reset to `U::default()` instead of keeping the value → rows whose
-//! default differs fail. Make a control's write a no-op → that control
-//! fails with "moving it did not change a fresh fork's output".
 
 use tutti_graph::ParamNode;
 use tutti_graph::contract::IsolateRow;
@@ -193,7 +183,7 @@ fn ladder() {
 /// The SVF and the EQ band are graph nodes: their fork is
 /// `tutti_graph::param_parts`', from the values set through their
 /// `ParamSet`, and `assert_param_fork` is its snapshot check (their own
-/// unit tests run it, with its mutations).
+/// unit tests run it).
 #[test]
 fn svf() {
     tutti_graph::contract::assert_param_fork(SvfFilterNode::<f64>::with_controls(

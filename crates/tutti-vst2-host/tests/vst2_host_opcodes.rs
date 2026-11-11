@@ -124,9 +124,6 @@ fn requests(instance: &mut Active) -> Vec<Request> {
 /// The probe fires it from `resume`, which the activation dispatches, so a
 /// loaded instance has already seen one. Before the routing arm existed the
 /// opcode hit the `trace!` fall-through and nothing was asked.
-///
-/// Mutation (run): `HostState::update_display` raising nothing -> the plugin's
-/// request is lost -> fails.
 #[test]
 fn update_display_reaches_the_host() {
     let probe = Probe::acquire();
@@ -147,9 +144,6 @@ fn update_display_reaches_the_host() {
 ///
 /// A level that stayed raised would make every later pass re-read the whole
 /// parameter list for a change already handled.
-///
-/// Mutation (run): `take_requests` reading the word without taking it (a
-/// `peek`) -> the second call sees the request again -> fails.
 #[test]
 fn the_requests_are_consumed_by_taking_them() {
     let probe = Probe::acquire();

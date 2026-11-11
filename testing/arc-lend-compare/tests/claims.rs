@@ -27,10 +27,6 @@ static ALLOC: CountingAlloc = CountingAlloc;
 /// A crossbeam-epoch reader runs the writer's deferred frees: every 128th
 /// `pin()` on a thread collects (`src/internal.rs:450-453`), and collecting
 /// drops whatever garbage has expired, whoever retired it.
-///
-/// Mutation: read through `crossbeam_epoch::unprotected()` instead of
-/// `pin()` (sound here, since nothing frees while the reader runs alone). The
-/// reader then never collects, and `payload_drops` reads 0.
 #[test]
 #[cfg_attr(miri, ignore = "threads and spinning")]
 fn a_crossbeam_epoch_reader_frees_values_the_writer_retired() {
@@ -76,10 +72,6 @@ fn a_crossbeam_epoch_reader_frees_values_the_writer_retired() {
 
 /// A haphazard reader frees nothing: a value it protects survives the
 /// writer's reclaim, and is freed by the writer's next one.
-///
-/// Mutation: reset the reader's protection before it signals that it holds
-/// the value: the writer's retire then frees the old value, and
-/// `freed_while_held` reads 1.
 #[test]
 #[cfg_attr(miri, ignore = "threads and spinning")]
 fn a_haphazard_reader_frees_nothing_and_its_value_survives_reclaim() {
@@ -153,9 +145,6 @@ fn arc_swap_cache_reload(keep: bool) -> arc_lend_compare::Counts {
 
 /// A cache's reload frees the old value on the reader when the writer has
 /// dropped its own count: the design table's "reader frees" for `Cache`.
-///
-/// Mutation: keep the replaced `Arc` (`arc_swap_cache_reload(true)`):
-/// `payload_drops` then reads 0.
 #[test]
 #[cfg_attr(miri, ignore = "threads and spinning")]
 fn an_arc_swap_cache_reload_frees_on_the_reader() {
@@ -165,10 +154,6 @@ fn an_arc_swap_cache_reload_frees_on_the_reader() {
 
 /// With the benchmark's graveyard, the same reload frees nothing on the
 /// reader.
-///
-/// Mutation: drop the replaced `Arc` before `STORED`
-/// (`keep.then_some(old)` → `{ drop(old); None::<Arc<Payload>> }`): `counts`
-/// then reads `frees: 2, payload_drops: 1`.
 #[test]
 #[cfg_attr(miri, ignore = "threads and spinning")]
 fn an_arc_swap_cache_reload_behind_a_graveyard_frees_nothing() {
@@ -177,10 +162,6 @@ fn an_arc_swap_cache_reload_behind_a_graveyard_frees_nothing() {
 
 /// A triple_buffer reader frees nothing: its `read` swaps buffer indices,
 /// and the writer's `write` drops what the back buffer held.
-///
-/// Mutation: make the reader's last read replace its buffer's value and drop
-/// the old one (`drop(mem::replace(output.output_buffer_mut(), ..))`):
-/// `counts` then reads `allocs: 2, frees: 2, payload_drops: 1`.
 #[test]
 #[cfg_attr(miri, ignore = "threads and spinning")]
 fn a_triple_buffer_reader_frees_nothing() {
@@ -212,9 +193,6 @@ fn a_triple_buffer_reader_frees_nothing() {
 
 /// A left-right writer waits for a reader: a publish cannot finish while a
 /// read guard taken before the previous publish is held.
-///
-/// Mutation: drop the guard before the writer starts: the writer then
-/// finishes within the window, and `finished_while_held` reads true.
 #[test]
 #[cfg_attr(miri, ignore = "threads and sleeping")]
 fn a_left_right_publish_waits_for_a_held_read() {

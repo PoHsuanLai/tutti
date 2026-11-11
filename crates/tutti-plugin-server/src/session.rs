@@ -948,9 +948,6 @@ mod tests {
     /// host reads one `StateLoaded` per load; an answer at the refused chunk
     /// left every later chunk of the sequence to fail again and answer again,
     /// each read as the reply to a later request. A chunk 0 starts afresh.
-    ///
-    /// Mutation (run): answering at the refused chunk as before (dropping the
-    /// `if last` wait) → the out-of-order chunk 2 is answered → fails.
     #[test]
     fn a_refused_load_sequence_is_answered_once_at_its_end() {
         let mut s = Session::new();
@@ -1107,13 +1104,6 @@ mod tests {
     /// nothing while refused (the host reads silence), refuses again at the
     /// same rate, and a later rate it can take revives it, with audio at the
     /// right rate and no `deactivate` of the inactive instance.
-    ///
-    /// Mutations (run): drop the `rate_refused` early return in
-    /// `handle_process` → the refused block is published (or fails to be
-    /// silent) → fails. Never clear `rate_refused` on success → the revived
-    /// block is not published → fails. Move the clock assignment into the
-    /// `Ok` arm → the clock stays 48 kHz after the refusal → fails. (The
-    /// `deactivate` guard is pinned by `clap_ports_rescan`.)
     #[test]
     #[cfg(feature = "clap")]
     fn a_refused_rate_is_silent_and_a_later_rate_revives_the_plugin() {
@@ -1284,9 +1274,6 @@ mod tests {
     /// The probe counts its `reset` and `process` calls; after each message
     /// the counts must be the ones that message implies, so the reset is seen
     /// once and in order.
-    ///
-    /// Mutation (run): restore `M::Reset => Ok(Reaction::None)` → the probe's
-    /// `reset` count stays 0 → fails.
     #[test]
     #[cfg(feature = "clap")]
     fn a_reset_reaches_the_plugin_between_two_blocks() {
@@ -1351,10 +1338,6 @@ mod tests {
     /// plugin, or the scratch, sees them. Each is answered, published nothing
     /// (the host hears silence) and counted. A block within bounds still
     /// renders afterwards.
-    ///
-    /// Mutation (run): `block_fits` returning `true` → the 2^40-frame block
-    /// sizes the scratch to it (an allocation failure aborts the test), and
-    /// the 513-frame one reaches the plugin's `process` → fails.
     #[test]
     #[cfg(feature = "clap")]
     fn a_block_of_a_length_the_plugin_cannot_take_never_reaches_it() {
@@ -1406,9 +1389,6 @@ mod tests {
     /// **A rate no clock can run at is refused at the edge (doc 027 D13).** The
     /// wire does not range-check a `SampleRate`; a NaN or zero must not reach
     /// the plugin or the session's clock, and the host is told why.
-    ///
-    /// Mutation (run): delete the finite-and-positive check → the clock takes
-    /// NaN → fails.
     #[test]
     #[cfg(feature = "clap")]
     fn a_rate_that_is_not_a_rate_is_refused() {
@@ -1454,12 +1434,6 @@ mod tests {
 
     /// An f32 session (the default) runs a plugin whose every port can do
     /// 64-bit at f32, and its audio comes back.
-    ///
-    /// Mutation (run): activating `F64` whenever the plugin supports it (the
-    /// old `if supports_f64`, ignoring `prefer_f64`) → every block is refused
-    /// as a format mismatch and nothing is published; fails. Reporting
-    /// `F64_AUDIO` from the capability rather than the activation (the old
-    /// `features.set(F64_AUDIO, supports_f64)`) also fails.
     #[test]
     #[cfg(feature = "clap")]
     fn an_f32_session_processes_audio_through_a_64bit_capable_clap_plugin() {
@@ -1496,9 +1470,6 @@ mod tests {
     /// f64 sum is compared exactly against the same sum here; the same sum
     /// through f32 lands on a different value (asserted, so the check cannot
     /// pass on a path that rounds through f32).
-    ///
-    /// Mutation (run): `prefer_f64 && supports_f64` → `false` in
-    /// `ClapInstance::load` → the session negotiates f32; fails.
     #[test]
     #[cfg(feature = "clap")]
     fn an_f64_session_runs_a_64bit_capable_clap_plugin_in_f64() {
@@ -1532,11 +1503,6 @@ mod tests {
 
     /// A plugin whose outputs claim 64-bit but whose inputs do not runs at
     /// f32 even in an f64 session: the host hands one width for every buffer.
-    ///
-    /// Mutation (run): `check_f64_support` scanning the outputs only (the old
-    /// check) → the session negotiates f64; fails. The loader
-    /// using `requested` instead of `negotiate_format`'s answer → the
-    /// activation is refused; fails.
     #[test]
     #[cfg(feature = "clap")]
     fn an_f64_session_runs_a_clap_plugin_with_f32_inputs_in_f32() {
@@ -1568,14 +1534,6 @@ mod tests {
     /// shows up as `0.1 + tag` rather than `tag`. With the bus handed at f64
     /// its `data32` is null, which a plugin that reads `data32` for every
     /// counted input would dereference.
-    ///
-    /// Mutations (run): handing the plugin a stereo input port it did not
-    /// declare (`PortLayout::inputs` given one when empty, in
-    /// `read_audio_ports`) → the plugin is handed a stereo input bus carrying
-    /// the slab's `0.1`, and every output sample is `0.1 + tag`; fails.
-    /// Reporting a stereo input for a plugin with none (the totals read off a
-    /// stereo-defaulted copy, as before) → the input list is a stereo bus;
-    /// fails.
     #[test]
     #[cfg(feature = "clap")]
     fn an_f64_clap_instrument_is_handed_no_input_buffer() {
@@ -1828,9 +1786,6 @@ mod tests {
     /// plugin and `LoadPlugin` replaces it; when the second load fails, the
     /// first is gone too, not kept answering for a host that was told the load
     /// failed.
-    ///
-    /// Mutation (run): removing the `self.plugin = None` at the top of
-    /// `handle_load` leaves the first plugin loaded after the refusal.
     #[cfg(feature = "clap")]
     #[test]
     fn a_failed_second_load_unloads_the_first() {
@@ -1868,9 +1823,6 @@ mod tests {
     /// that disagrees are each refused, and each leaves nothing staged. A load that
     /// declares nothing and holds nothing goes on to load (here: to not find the
     /// plugin).
-    ///
-    /// Mutation (run): `handle_load` restoring whatever is staged, whatever the
-    /// load declares, fails the second and third assertions.
     #[test]
     fn a_load_restores_only_the_state_it_declares() {
         let mut s = Session::new();
@@ -1904,9 +1856,6 @@ mod tests {
 
     /// **A stage belongs to the load that declares it**: an unload that comes
     /// between discards it, and so does a half-received one.
-    ///
-    /// Mutation (run): `discard_staged` not called in the unload arm fails the
-    /// first and second assertions.
     #[test]
     fn a_stage_does_not_outlive_the_next_request() {
         let mut s = Session::new();
@@ -1925,9 +1874,6 @@ mod tests {
     /// reply carries no refusal; bytes it cannot parse are refused in the reply
     /// and the plugin loads at its defaults; and the next load has nothing
     /// staged.
-    ///
-    /// Mutation (run): `handle_load` passing `None` for the staged state leaves
-    /// `state_error` empty for the garbage and fails the second assertion.
     #[test]
     #[cfg(feature = "clap")]
     fn a_staged_state_is_restored_by_the_next_load() {
@@ -1969,9 +1915,6 @@ mod tests {
     /// **A stateful load says it is restoring before it does, and a stateless
     /// one never does**: the interim sink hears `RestoringState` once, ahead of the
     /// reply.
-    ///
-    /// Mutation (run): the loader not calling `before_restore` leaves the
-    /// stateful load silent and fails the first assertion.
     #[test]
     #[cfg(feature = "clap")]
     fn a_stateful_load_announces_the_restore() {
@@ -2017,9 +1960,6 @@ mod tests {
     }
 
     /// A staged sequence out of order is refused, and nothing is staged.
-    ///
-    /// Mutation (run): not clearing `staged` on the error leaves the earlier
-    /// state waiting.
     #[test]
     #[cfg(feature = "clap")]
     fn a_broken_staging_sequence_stages_nothing() {
@@ -2204,10 +2144,6 @@ mod tests {
     /// on.** The failure used to leave `handle` as an error, which ends the
     /// server loop, so one `kResultFalse` (a preset load, a licence hiccup)
     /// read as a plugin crash.
-    ///
-    /// Mutation (run): restoring the `?` on the plugin's `process` in
-    /// `AudioPipeline::process` (the failure returned) → the first `handle`
-    /// errors → fails.
     #[test]
     #[cfg(feature = "vst3")]
     fn a_vst3_block_the_plugin_fails_is_silence_and_the_server_goes_on() {
@@ -2244,9 +2180,6 @@ mod tests {
     /// refuses such a block before any plugin sees it (doc 027 D12,
     /// `a_block_of_a_length_the_plugin_cannot_take_never_reaches_it`), so the
     /// plugin fails here on its own account, through the probe's status.
-    ///
-    /// Mutation (run): drop `note_failed_block` in the pipeline → the count
-    /// stays 0 → fails.
     #[test]
     #[cfg(feature = "clap")]
     fn a_clap_block_the_plugin_fails_is_silence_and_the_server_goes_on() {
@@ -2269,12 +2202,6 @@ mod tests {
     /// **An idle dispatch allocates nothing**: the drain every message is
     /// followed by, with the plugin having asked for nothing. The lifecycle is
     /// not entered, so nothing is cloned or queued on the render thread.
-    ///
-    /// Mutation (run): the bridge cloning its `State` for each `drive` again
-    /// together with `serve` driving a tick on every pass aborts inside the
-    /// gate. Neither alone does: without the clone an idle tick allocates
-    /// nothing either, so the quiet check is the second line of defence, not
-    /// the first.
     #[test]
     #[cfg(feature = "vst3")]
     fn an_idle_drain_does_not_allocate_vst3() {
@@ -2306,13 +2233,6 @@ mod tests {
     /// As above, for VST2: the plugin asked for nothing and moved no parameter,
     /// so the drain (its request pass and the editor-knob queue) allocates
     /// nothing.
-    ///
-    /// Mutation (run): the staged probe named `.dylib` (the macOS cdylib
-    /// extension) -> `Plugin::open` refuses the format -> fails.
-    /// Mutation (run): the bridge cloning its `State` for each `drive` again
-    /// together with `serve` driving a tick on every pass aborts inside the
-    /// gate; and `poll` collecting the plugin's parameter moves into a
-    /// `Vec::with_capacity(1)` aborts it too.
     #[test]
     #[cfg(feature = "vst2")]
     fn an_idle_drain_does_not_allocate_vst2() {
@@ -2345,10 +2265,6 @@ mod tests {
     /// to one queue, standing in for a load-time count the plugin has since
     /// outgrown; the probe's `restartComponent(kParamTitlesChanged)` is raised
     /// through the host's own handler, as a plugin raises it.
-    ///
-    /// Mutations (run), each fails: deleting the `if events.iter().any(..)`
-    /// block in `drain_async_events` → 1 queue; matching only `Reloaded`
-    /// → 1 queue; refitting to a count of 0 → 1 queue.
     #[test]
     #[cfg(feature = "vst3")]
     fn a_param_titles_change_reserves_the_parameter_output_again() {
@@ -2411,9 +2327,6 @@ mod tests {
     /// The format's count query, which the load and the refit reserve by,
     /// counts the parameters the list carries (the probes describe every
     /// one, so the two agree exactly).
-    ///
-    /// Mutations (run), each fails: the CLAP override returning 0; the
-    /// VST3 override returning 0.
     #[test]
     #[cfg(all(feature = "clap", feature = "vst3"))]
     fn the_parameter_count_agrees_with_the_list() {

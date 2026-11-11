@@ -1,5 +1,5 @@
 //! `ControlProgram`'s evaluation, corners and refusals, against analytic
-//! figures. Each test carries the mutations it was seen to fail under.
+//! figures.
 
 use super::*;
 use tutti_curve::{Breakpoint, Trajectory};
@@ -72,10 +72,6 @@ fn ramp() -> Arc<dyn Curve> {
 /// Automation replaces the knob where it has a value, to the bit (no
 /// offsets: the sum starts at `-0.0`, so the base passes through); the knob
 /// holds where it has none; neither: no value.
-///
-/// Mutations (run), each fails: the base as `knob + automation` → 1500
-/// reads at beat 0; `.or(knob)` dropped → the empty curve gives `None` with
-/// a knob.
 #[test]
 fn automation_replaces_the_knob() {
     let p = ControlProgram::from_curve(ramp());
@@ -102,9 +98,6 @@ fn automation_replaces_the_knob() {
 /// A layer's offset is `shape(raw) × span`: a ±1 square at depth 0.25 on a
 /// span of 800 is ±200, on its edges' sides; a span that is not finite
 /// leaves the base alone.
-///
-/// Mutations (run), each fails: `Amount::offset` not multiplying by the
-/// span → ±0.25; the non-finite-span guard dropped → NaN.
 #[test]
 fn a_layer_offsets_by_depth_times_span() {
     let p = program(vec![layer(1, beats(4.0), LfoShape::Square, amount(0.25))]);
@@ -125,10 +118,6 @@ fn a_layer_offsets_by_depth_times_span() {
 /// An input's offset is exactly `depth × span × x` for IEEE-exact figures;
 /// an input that has not sent adds nothing, even unipolar (whose raw 0
 /// would be half its depth).
-///
-/// Mutations (run), each fails: every input layer reading the first slot
-/// (`inputs.first()` for `inputs.get(k)`) → the second input reads the
-/// first's value; a missing input read as raw 0 → the unipolar one adds 0.5 × depth.
 #[test]
 fn an_inputs_offset_is_depth_times_span_times_x() {
     let inputs = vec![
@@ -165,11 +154,6 @@ fn an_inputs_offset_is_depth_times_span_times_x() {
 /// 11 000 001, where any intermediate `f32` rounding lands on the tie
 /// 11 000 000.5 and rounds to even, 11 000 000. Insertion order does not
 /// matter: `new` sorts by id.
-///
-/// Mutations (run), each fails: summing in `f32` per layer
-/// (`acc = f64::from(acc as f32 + o as f32)`) → 11 000 000; the offsets
-/// summed in `f64` but rounded before the base is added
-/// (`base + acc as f32`) → 11 000 000.
 #[test]
 fn layers_sum_in_id_order_in_f64() {
     let l = |id, d| layer(id, beats(4.0), LfoShape::Square, amount(d));
@@ -190,8 +174,7 @@ fn layers_sum_in_id_order_in_f64() {
 ///
 /// A program has no age to offset phase by, so the property is the closed
 /// form itself; the lane test `an_lfos_phase_survives_a_depth_edit` pins it
-/// across a republish. Mutation (run): `Clock::cycles` ignoring `phase` for
-/// a seconds clock → the 0.125 offset is lost → fails.
+/// across a republish.
 #[test]
 fn phase_survives_a_depth_edit() {
     let clock = Clock::Seconds {
@@ -216,11 +199,6 @@ fn phase_survives_a_depth_edit() {
 /// change: at the anchor the phase is the anchor's, before it the old rate
 /// runs and after it the new one; the anchor's frame is a corner. An
 /// anchor from another epoch is ignored.
-///
-/// Mutations (run), each fails: the anchor applied whatever the epoch → the
-/// stale-epoch figure moves; the old rate used after the anchor → the slope
-/// after it is wrong; no corner at the anchor → `next_corner` reports the
-/// wave's corner past it.
 #[test]
 fn a_rate_anchor_continues_the_phase() {
     let anchor = RateAnchor {
@@ -262,12 +240,6 @@ fn a_rate_anchor_continues_the_phase() {
 /// edges, a triangle's peaks, a saw's wrap, a random's steps; a sine has
 /// none unless a curved bipolar amount kinks it at its zero crossings. The
 /// next corner is strictly after the time, even when the time is one.
-///
-/// Mutations (run), each fails: `next_corner` taking a corner at the time
-/// itself (`>=`) → the square's corner from beat 2 is 2; the kink set
-/// ignoring the curve (`kinks_at_zero` always false) → the curved sine has
-/// no corner; the triangle's peaks at 0 and 0.5 (its zero crossings) → 1.0
-/// is not a corner.
 #[test]
 fn each_wave_has_its_corners() {
     let corner = |shape, amount, beat| {
@@ -299,9 +271,6 @@ fn each_wave_has_its_corners() {
 
 /// Every curve but `Linear` bends a bipolar sine at its zero crossings,
 /// each kind of law included; `Linear` does not.
-///
-/// Mutation (run): `kinks_at_zero` matching only `Exponential`,
-/// `Logarithmic` and `SCurve` → `QuadIn`'s sine has no corner.
 #[test]
 fn every_non_linear_curve_kinks_a_bipolar_sine() {
     let corner = |curve| {
@@ -328,9 +297,6 @@ fn every_non_linear_curve_kinks_a_bipolar_sine() {
 
 /// The automation's next breakpoint is a corner, and a seconds layer's
 /// corner is on the play clock: `Corners` keeps the two apart.
-///
-/// Mutation (run): the automation's corner ignored (`next = None`) → no
-/// beat corner → fails.
 #[test]
 fn automation_and_seconds_corners_are_on_their_clocks() {
     let p = ControlProgram::new(
@@ -350,12 +316,6 @@ fn automation_and_seconds_corners_are_on_their_clocks() {
 ///
 /// The automation's left limit is the curve's just before the time: on a
 /// stepped breakpoint, the step's level.
-///
-/// Mutations (run), each fails: `value_before` evaluating at the time
-/// itself (`left` ignored in `raw_at`) → the edge reads the level after;
-/// the automation read at the time itself under `left` → the breakpoint's
-/// left limit reads 300; the piece's position not rounded down to `f32`
-/// → it rounds up to 1.0 and reads 300.
 #[test]
 fn the_left_limit_is_the_level_before_a_jump() {
     let p = program(vec![layer(1, beats(4.0), LfoShape::Square, amount(1.0))]);
@@ -385,9 +345,6 @@ fn the_left_limit_is_the_level_before_a_jump() {
 /// square on 8 is +1, then −1, then 0 while the depth wave is low; from
 /// beat 0.5 the next corner is the depth wave's (a square on 3: beat 1.5),
 /// before the layer's own (beat 2).
-///
-/// Mutations (run), each fails: the scale not applied (`off *= m` dropped)
-/// → beat 5 reads +1; the depth wave's corners ignored → the corner is 2.
 #[test]
 fn depth_by_scales_the_offset_and_adds_its_corners() {
     let scaled = |depth_clock| Layer {
@@ -425,9 +382,6 @@ impl Curve for Thawed {
 
 /// Both constructors take the curve's frozen copy, so a lane never reads a
 /// live cell through it.
-///
-/// Mutations (run), each fails: `new` keeping the curve as given → 1.0;
-/// `from_curve` keeping it → 1.0.
 #[test]
 fn a_program_holds_the_frozen_curve() {
     let p = ControlProgram::new(Some(Arc::new(Thawed)), vec![], vec![]).expect("valid");
@@ -439,9 +393,6 @@ fn a_program_holds_the_frozen_curve() {
 /// Random steps replay: the same cycle gives the same value whatever the
 /// program's history, a seed moves the sequence, and the smooth shape
 /// meets each step at the cycle's start.
-///
-/// Mutation (run): `RandomSmooth` interpolating `hash(n)` to `hash(n + 1)`
-/// → a cycle's start reads its own step, not the one before → fails.
 #[test]
 fn random_waves_replay_by_cycle() {
     let w = Wave::Shape {
@@ -472,10 +423,6 @@ fn random_waves_replay_by_cycle() {
 /// seeds and on both sides of cycle zero, every value is in range, both ends
 /// are reached to within 1%, and each eighth of the range holds at least
 /// three quarters of its fair share (512).
-///
-/// Mutation (run): the hash scaled to `[0, 1)` (`* 2.0 - 1.0` dropped) →
-/// nothing below zero → fails. Mutation (run): the index ignored (`n`
-/// replaced by 0 in `hash_cycle`) → one value → fails.
 #[test]
 fn random_steps_cover_the_range() {
     for seed in [0, 7] {
@@ -503,12 +450,6 @@ fn random_steps_cover_the_range() {
 /// A drawn period: its points' values on their positions, its pieces along
 /// their curves, the last piece wrapping to the next period's first point,
 /// and a curved bipolar layer's zero crossings as corners.
-///
-/// Mutations (run), each fails: the last piece running to 1.0 instead of
-/// the next period's first point (`1.0 + first.at`) → the value at 0.95
-/// reads halfway, not a quarter; the crossing solved as linear for every
-/// curve → the exponential piece's crossing is at 2/3 of the piece instead
-/// of √(2/3).
 #[test]
 fn a_drawn_wave_follows_its_points() {
     let points: Arc<[PeriodPoint]> = Arc::from(vec![
@@ -549,9 +490,6 @@ fn a_drawn_wave_follows_its_points() {
 
 /// `new` refuses past the lane's fixed state, duplicate ids and a bad
 /// drawing, by name.
-///
-/// Mutation (run): the drawn check dropped → the unsorted drawing is
-/// accepted → fails.
 #[test]
 fn new_refuses_what_a_lane_cannot_hold() {
     let l = |id| layer(id, beats(1.0), LfoShape::Sine, amount(0.1));
@@ -601,11 +539,6 @@ fn new_refuses_what_a_lane_cannot_hold() {
 /// sine's crossing), and none with the unit amount or a curved unipolar
 /// one; its value at beat 1 (sine +1) is `shape(1, 0.5, Bipolar,
 /// Exponential)` = 0.5, at beat 3 (sine −1) −0.5.
-///
-/// Mutations (run), each fails: the depth wave's corners taken without
-/// kinks (`next_corner(at, &d.wave, false)`, as before `DepthBy` had an
-/// amount) → no corner at beat 2; the scale ignoring the amount (always
-/// `(raw + 1) / 2`) → beat 1 reads 1.0 and beat 3 reads 0.0.
 #[test]
 fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
     let scaled = |by| Layer {
@@ -645,10 +578,6 @@ fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
 /// The unit depth-by amount is `(raw + 1) / 2` in `f64`, to the bit (the
 /// figure before `DepthBy` had an amount): the scale itself, and the
 /// scaled offset through a drawn depth wave holding each raw value.
-///
-/// Mutation (run): the unit path through `shape` (computed in `f32`) →
-/// raw 1e-7 rounds away in `f32`'s `raw + 1` (the scale reads 0.5 plus an
-/// `f32` ulp, not the `f64` figure) → fails.
 #[test]
 fn the_unit_depth_by_is_half_raw_plus_one_in_f64() {
     for raw in [-1.0f32, -0.7, 0.0, 1e-7, 0.3, 0.9, 1.0] {
@@ -684,11 +613,6 @@ fn the_unit_depth_by_is_half_raw_plus_one_in_f64() {
 /// gives no position (a beat span of 0, which silences a moving wave), and
 /// has no corner; `is_constant` holds only while its depth-by is constant
 /// too.
-///
-/// Mutations (run), each fails: `raw_on` asking the clock first for a
-/// constant → the dead clock silences it (reads the knob, 10.0);
-/// `is_constant` ignoring `depth_by` → the sine-scaled layer reads as
-/// constant.
 #[test]
 fn a_constant_wave_needs_no_clock() {
     let dead = Clock::Beats {
@@ -721,9 +645,6 @@ fn a_constant_wave_needs_no_clock() {
 
 /// `new` refuses a NaN anywhere in a layer, by name, so a program is `Eq`
 /// (it equals itself).
-///
-/// Mutation (run): `has_nan` not looking into `depth_by` → the NaN-phased
-/// depth clock is accepted → fails.
 #[test]
 fn new_refuses_a_nan() {
     let l = || layer(3, beats(1.0), LfoShape::Sine, amount(0.1));

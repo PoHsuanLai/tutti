@@ -42,7 +42,7 @@ fn an_unknown_id_does_not_open() {
 /// Enumerating real devices **cannot** catch that here: every endpoint on a
 /// modern Mac (the IAC buses included) genuinely reports MIDI 2.0, so
 /// `assert!(matches!(.., Midi1 | Midi2))` passes under a hardcoded `midi2()`
-/// too — verified by mutation. The fixture has to *supply* the distinction,
+/// too. The fixture has to *supply* the distinction,
 /// so this creates a MIDI-1.0 virtual source and requires the reader to say
 /// so.
 #[test]

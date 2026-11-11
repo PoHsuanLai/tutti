@@ -859,9 +859,6 @@ mod tests {
     /// `g = 0.5` and `(2 + g) / (1 + g)` where `D w = pi`; the lattice form is
     /// unit magnitude everywhere. The figures are the ones in the form's own
     /// documentation (`AllPassForm`), derived from the transfer function.
-    ///
-    /// Mutation (run): the Freeverb arm of `AllPass::response` written as the
-    /// lattice's `(z^-D - g) / den` fails the peak row.
     #[test]
     fn the_two_all_pass_forms_have_their_documented_gains() {
         let ap = |form| {
@@ -893,10 +890,6 @@ mod tests {
     /// The l1 norm of each all-pass form is the sum of its impulse response
     /// (`1 + 2|g|` for the lattice, `1 + 1 / (1 - |g|)` for Freeverb's), both
     /// signs of `g`.
-    ///
-    /// Mutations (run): `g + (1 - g^2)` -> `g + (1 - g)` in the lattice arm of
-    /// `AllPass::majorant` fails the lattice rows; dropping the `1.0 +` of the
-    /// Freeverb arm fails the others.
     #[test]
     fn an_all_pass_has_the_l1_norm_of_its_impulse_response() {
         for (form, g, want) in [
@@ -946,9 +939,6 @@ mod tests {
     /// place right: `A[i][j] = c[(j - i) mod n]`. With `c = (0, 1, 0)` line 0 feeds
     /// line 2, line 2 feeds line 1 and line 1 feeds line 0, so an input on line 0
     /// read on line 2 is `b c g z^-(m0 + m2) / (1 - g^3 z^-(m0 + m1 + m2))`.
-    ///
-    /// Mutation (run): the entry read as `c[(i + n - j) % n]` (the transpose) gives
-    /// the other cycle (line 0 to line 1) and fails every row.
     #[test]
     fn a_circulant_feeds_the_next_line_round_the_cycle() {
         let (m, g) = ([30.0f32, 41.0, 53.0], 0.6f32);
@@ -975,9 +965,6 @@ mod tests {
     /// A Hadamard matrix is the Sylvester one over `sqrt(n)`, solved by
     /// elimination: it agrees with the same matrix written out entry by entry
     /// as a dense one (the literal below is `H_4 / 2`).
-    ///
-    /// Mutation (run): `count_ones().is_multiple_of(2)` -> `true` (every sign
-    /// positive) fails.
     #[test]
     fn a_hadamard_is_the_sylvester_matrix() {
         let m = [31.0f32, 37.0, 43.0, 47.0];
@@ -1004,10 +991,6 @@ mod tests {
 
     /// The rank-one solve of a Householder or a reflection equals the
     /// elimination over the same matrix written as a dense one.
-    ///
-    /// Mutations (run): dropping the `qb` term of `rank_one` (so the update is
-    /// `D0^-1 b`) fails both rows; a Householder at `u = 1 / n` for `1 / sqrt(n)`
-    /// fails the first.
     #[test]
     fn the_rank_one_solve_equals_elimination() {
         let m = [101.0f32, 113.0, 127.0, 139.0, 149.0];
@@ -1054,9 +1037,6 @@ mod tests {
     ///
     /// The lines' gain is 3 (the algebra does not care), so the second row's pivot is
     /// the larger and the elimination swaps.
-    ///
-    /// Mutation (run): swapping the pivot rows without swapping `b` in `solve`
-    /// fails.
     #[test]
     fn elimination_is_cramers_rule_on_two_lines() {
         let m = [20.0f32, 33.0];
@@ -1082,9 +1062,6 @@ mod tests {
     /// The spectral radius of a diagonal network of pure gains is the exact
     /// `max g_i^(1/m_i)`, of a lossless one 1, of taps and a FIR 0, and of
     /// an all-pass `|g|^(1/D)`; of a loop the analysis cannot accept, infinity.
-    ///
-    /// Mutations (run): `max` -> `min` over the lines fails the first row;
-    /// returning the loop figure for a lossless loop fails the second.
     #[test]
     fn the_spectral_radius_is_the_slowest_decay_per_frame() {
         let (m, g) = ([1000.0f32, 2000.0], [0.9f32, 0.99]);
@@ -1170,10 +1147,6 @@ mod tests {
     /// response is `b c g^k` at `(k + 1) m`), a bound the measured sum meets, and
     /// the Householder bound is above the measured sum of the same lines' impulse
     /// response, which is run here from the difference equations.
-    ///
-    /// Mutations (run): the `exact` branch's `1.0 - a` -> `1.0 + a` fails the
-    /// first row; `RADII` of 0 (no shrunk circle) leaves the mixing bound
-    /// infinite and fails the second.
     #[test]
     fn the_l1_norm_is_exact_for_a_comb_and_a_bound_for_a_mixing_loop() {
         let comb = network(vec![Stage::Fdn(fdn(
@@ -1230,9 +1203,6 @@ mod tests {
 
     /// A loop the analysis cannot bound has an infinite l1 norm and a
     /// [`Stage::Fir`] has no response: NaN where asked, and radius 0.
-    ///
-    /// Mutation (run): the Fir arm of `series_gain` returning 0 fails the first
-    /// assertion.
     #[test]
     fn a_fir_has_no_response_and_no_l1_bound() {
         let n = network(vec![Stage::Fir(crate::network::FirSummary {
@@ -1250,9 +1220,6 @@ mod tests {
     /// Taps sum their gains at their delays: `H = sum g e^(-j w d)`, `l1 = sum |g|`;
     /// the channels are the taps' channels, and width and wet follow the kernel's
     /// mid and side: `(M + w S, M - w S) * wet`.
-    ///
-    /// Mutations (run): `0.5` -> `1.0` in the mid-side fold fails the width row;
-    /// dropping `wet` fails the last.
     #[test]
     fn taps_width_and_wet_follow_the_kernels_fold() {
         let taps = Taps {
@@ -1296,8 +1263,6 @@ mod tests {
     }
 
     /// Pre-delay is a delay of `P` frames in front of the stages: `e^(-j w P)`.
-    ///
-    /// Mutation (run): ignoring `pre_delay` in `channels_at` fails.
     #[test]
     fn the_pre_delay_is_a_delay() {
         let mut n = network(vec![Stage::Taps(Taps {

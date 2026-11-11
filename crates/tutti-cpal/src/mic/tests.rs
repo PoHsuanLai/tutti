@@ -29,8 +29,6 @@ fn fallback(rate: u32) -> cpal::SupportedStreamConfig {
 /// A mic defaulting to 44.1 kHz on a 48 kHz graph opened at 44.1 and
 /// drifted, because an inlet does not resample and nothing
 /// compared the two rates.
-///
-/// Mutation-checked: returning `fallback` unconditionally fails this.
 #[test]
 fn a_device_covering_the_graph_rate_is_opened_at_it() {
     let chosen = choose_input_config(
@@ -83,8 +81,6 @@ fn an_integer_only_device_is_accepted_at_the_graph_rate() {
 /// rates.**
 ///
 /// The whole point: silent drift becomes a refusal a host can show.
-///
-/// Mutation-checked: returning `Ok(fallback)` here fails this.
 #[test]
 fn a_device_that_cannot_reach_the_graph_rate_is_refused() {
     let err = choose_input_config(
@@ -145,8 +141,6 @@ fn mic_with_ring(width: u16, frames: usize) -> (MicIn, TapWriter) {
 /// A full ring drops the callback's frames and the source counts them; the
 /// count clears when read. (The stream that fills the ring needs a device; the
 /// writer's refusal is the same one `Capture::block` hits.)
-///
-/// Mutation (run, recorded here): `take_lost` returning `Samples(0)` fails.
 #[test]
 fn a_full_ring_counts_the_frames_the_callback_dropped() {
     let (mut mic, mut writer) = mic_with_ring(2, 2);
@@ -181,11 +175,6 @@ fn capture(device: u16, inputs: &[usize], frames: usize) -> (Capture, MicIn, Tap
 ///
 /// The device frames are `100 * frame + input`, so every sample says where it
 /// came from.
-///
-/// Mutation (run): `Fold::select(.., &[2, 3])` read as `&[0, 1]` in the test's
-/// setup (the old stereo rule) fails the figures; the callback reading
-/// `select.frame(&self.frame[..2], ..)` panics on the width assert; a chunk
-/// that skipped `self.mon` fails the monitor assertion.
 #[test]
 fn inputs_three_and_four_of_sixteen_are_the_recording() {
     let (mut cap, mut mic, ring) = capture(16, &[2, 3], 64);
@@ -225,10 +214,6 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
 /// longer folded as 5.1: the sixth input arrives untouched beside the first.
 /// One input may feed both sides (`&[0, 0]`), which is what `open` does for a
 /// mono device.
-///
-/// Mutation (run): routing the selection through `Fold::assuming_smpte` (the
-/// old width fold) puts the LFE-position input (3) at `0.0` and the centre at
-/// -3 dB on the sides, failing the figures.
 #[test]
 fn a_six_input_interface_is_six_inputs_not_five_point_one() {
     let (mut cap, mut mic, _ring) = capture(6, &[0, 1, 2, 3, 4, 5], 64);
@@ -249,11 +234,6 @@ fn a_six_input_interface_is_six_inputs_not_five_point_one() {
 ///
 /// 150 frames of `i16` input 1 (of 2) are 64 + 64 + 22: the frames come out
 /// whole and in order.
-///
-/// Mutation (run): the chunk loop resetting `frames` into the same slot
-/// (`chunks_exact_mut` zipped from the start per frame, not per chunk) is what
-/// this guards; dropping the `data.chunks` loop for one chunk loses all but
-/// the first 64 frames and fails the length.
 #[test]
 fn a_big_callback_runs_in_chunks_and_integers_convert() {
     let (mut cap, mut mic, _ring) = capture(2, &[1], 512);
@@ -269,11 +249,6 @@ fn a_big_callback_runs_in_chunks_and_integers_convert() {
 }
 
 /// The default selection is the first two inputs, or a lone input twice.
-///
-/// Mutation (run): `usize::from(width.count() > 1)` written as `1` selects
-/// input 1 of a mono device, which `Fold::select` then refuses, and a wide
-/// device gets `[0, 1]` either way; written as `0` gives a stereo device the
-/// left input twice: fails the second row.
 #[test]
 fn the_default_is_the_first_two_inputs_or_the_lone_one_twice() {
     assert_eq!(default_inputs(ChannelLayout::MONO), [0, 0]);
@@ -283,9 +258,6 @@ fn the_default_is_the_first_two_inputs_or_the_lone_one_twice() {
 
 /// An input the device does not have is an `Error::Inputs`, with `FoldError`'s
 /// reason; so is an empty selection.
-///
-/// Mutation (run): removing the `#[from]` conversion does not compile; the
-/// `NoSuchChannel` arm is `Fold::select`'s, pinned in `tutti-types`.
 #[test]
 fn an_input_past_the_devices_last_is_an_error() {
     let err = Error::from(Fold::select(ChannelLayout::from(4u16), &[2, 4]).unwrap_err());
@@ -306,10 +278,6 @@ fn an_input_past_the_devices_last_is_an_error() {
 /// `faults()` is that same record. Another backend error does not: it may be
 /// transient. cpal's error callback is `move |err| faults.record(&err)`; the
 /// registration itself needs a device and is not exercised here.
-///
-/// Mutation: `pull` answering `Starved` for a drained, disconnected ring, or
-/// reading `is_faulted()` instead of `is_disconnected()`, fails the last or the
-/// middle assertion respectively.
 #[test]
 fn a_disconnect_fails_the_mic_and_a_transient_error_does_not() {
     let mut mic = mic_without_a_device();
@@ -341,10 +309,6 @@ fn a_disconnect_fails_the_mic_and_a_transient_error_does_not() {
 /// `Failed` needs an empty ring; `tutti-session`'s `PumpLoop` is the pump that
 /// relies on it, and cannot be a dependency here) writes them and ends the take
 /// as failed.
-///
-/// Mutation: `MicIn::pull` answering `Failed` as soon as the disconnect is
-/// flagged, ring or not, fails the first assertion (the buffered frame is
-/// hidden); never answering `Failed` fails the second.
 #[test]
 fn a_disconnected_mic_hands_over_its_buffered_frames_then_reads_failed() {
     let (mut mic, mut prod) = mic_with_ring(2, 8);
@@ -377,9 +341,6 @@ fn a_disconnected_mic_hands_over_its_buffered_frames_then_reads_failed() {
 
 /// The ALSA shape of an unplugged mic, a backend error repeated with no audio,
 /// fails the source.
-///
-/// Mutation: dropping `delivering.delivered()` is not covered here (it needs the
-/// callback); dropping the promotion in `record_at` fails this.
 #[test]
 fn a_mic_whose_backend_keeps_failing_without_audio_is_failed() {
     let mut mic = mic_without_a_device();
@@ -405,9 +366,6 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 /// The capture callback does not allocate: blocks of `f32` and `i16`, wider than
 /// a chunk, with the recording ring and the monitor ring both filling and
 /// then refusing (the full-ring branch), run under a disabled allocator.
-///
-/// Mutation (run, recorded here): a `let _scratch = vec![0.0f32; 1];` at the top
-/// of `Capture::block` aborts the gate and fails this test.
 #[test]
 fn the_capture_callback_does_not_allocate() {
     let (mut cap, mut mic, _ring) = capture(8, &[2, 3], 256);

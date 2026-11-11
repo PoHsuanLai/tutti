@@ -205,9 +205,6 @@ mod tests {
 
     /// Each of the 24 profiles, rendered exactly, names its own key with
     /// confidence 1 (the correlation is 1 and the runner-up's is below it).
-    ///
-    /// Mutation checked: indexing the rotated profile with `i + tonic` names
-    /// the mirror tonic and fails for every tonic but 0 and 6.
     #[test]
     fn a_profile_names_its_own_key_with_full_confidence() {
         for profile in [KeyProfile::Krumhansl, KeyProfile::Temperley] {
@@ -231,8 +228,6 @@ mod tests {
     /// the confidence and the runner-up's mode; the sums run in the same order
     /// over rotated terms, so the scores agree to f64 rounding (1e-9 is
     /// millions of ulps of twelve terms of order one).
-    ///
-    /// Mutation checked: leaving the tonic out of the profile rotation fails.
     #[test]
     fn rotating_the_chroma_rotates_the_key() {
         let base: [f32; CLASSES] = [0.9, 0.1, 0.5, 0.0, 0.6, 0.4, 0.1, 0.8, 0.0, 0.3, 0.1, 0.4];
@@ -249,8 +244,6 @@ mod tests {
 
     /// The confidence is `(r1 - r2) / (1 - r2)` of the two best Pearson
     /// correlations, here recomputed independently in f64.
-    ///
-    /// Mutation checked: the bare margin `r1 - r2` fails by a factor `1 - r2`.
     #[test]
     fn the_confidence_is_the_documented_margin() {
         let x: [f32; CLASSES] = [0.9, 0.1, 0.5, 0.0, 0.6, 0.4, 0.1, 0.8, 0.0, 0.3, 0.1, 0.4];
@@ -284,8 +277,6 @@ mod tests {
 
     /// A diatonic scale is close to its relative minor, so its confidence is
     /// lower than a profile's exact one; mixing in a second key lowers it more.
-    ///
-    /// Mutation checked: returning `Confidence::CERTAIN` fails both.
     #[test]
     fn a_blurred_chroma_is_less_certain() {
         let pure = profile_chroma(0, Mode::Major, KeyProfile::Krumhansl);
@@ -303,8 +294,6 @@ mod tests {
 
     /// Silence, a flat chroma and no frames are `NoTonalContent`, never a key;
     /// a chroma barely off flat is a key.
-    ///
-    /// Mutation checked: a `FLAT` of 0 accepts the one-ulp chroma and fails.
     #[test]
     fn silence_and_flat_chroma_are_errors() {
         let bad =
@@ -327,9 +316,6 @@ mod tests {
     }
 
     /// NaN, infinity, a negative value and a wrong width are refused.
-    ///
-    /// Mutation checked: removing the finite scan lets NaN reach the sums and
-    /// fails the first two.
     #[test]
     fn bad_chroma_is_refused() {
         let mut x = [0.5f32; CLASSES];
@@ -349,8 +335,6 @@ mod tests {
 
     /// The grid form averages its frames: a loud frame of one key and a quiet
     /// one of another read as the mean, and the order of frames is irrelevant.
-    ///
-    /// Mutation checked: reading only the first row fails.
     #[test]
     fn a_grid_is_read_as_its_mean() {
         let a = profile_chroma(0, Mode::Major, KeyProfile::Krumhansl);

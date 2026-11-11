@@ -511,7 +511,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+        #![proptest_config(ProptestConfig { cases: tutti_fixtures::cases(512), ..ProptestConfig::default() })]
 
         /// On random DAGs of mixed costs the coarsened plan's critical path
         /// is never longer than chain fusion alone gives, and every task

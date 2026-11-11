@@ -48,3 +48,49 @@ impl Drop for ScopedEnv {
         }
     }
 }
+
+/// How many cases a randomized suite draws: `PROPTEST_CASES` when it is set,
+/// else `default`.
+///
+/// A suite's config goes through this (`ProptestConfig { cases: cases(256), .. }`)
+/// so the nightly tier can raise every budget with one variable. A value that
+/// is not a `u32` panics, never falls back, so a typo cannot quietly run the
+/// default.
+pub fn cases(default: u32) -> u32 {
+    match std::env::var("PROPTEST_CASES") {
+        Ok(v) => v
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("PROPTEST_CASES={v:?} is not a u32: {e}")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("PROPTEST_CASES is unreadable: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `cases` returns the default when `PROPTEST_CASES` is unset.
+    #[test]
+    fn unset_gives_the_default() {
+        assert_eq!(cases(256), 256);
+    }
+
+    /// `cases` returns `PROPTEST_CASES` when it is set.
+    #[test]
+    fn set_overrides_the_default() {
+        let mut env = ScopedEnv::new();
+        env.set("PROPTEST_CASES", "1024");
+        assert_eq!(cases(256), 1024);
+    }
+
+    /// An unparseable `PROPTEST_CASES` panics rather than using the default.
+    #[test]
+    #[should_panic(expected = "PROPTEST_CASES")]
+    fn garbage_panics() {
+        let mut env = ScopedEnv::new();
+        env.set("PROPTEST_CASES", "lots");
+        let _ = cases(256);
+    }
+}

@@ -118,3 +118,16 @@ pub fn shape(mut w: [u32; 4], sel: u8) -> [u32; 4] {
     }
     w
 }
+
+/// `PROPTEST_CASES` when set, else `default`; panics on a value that is not a
+/// `u32`. `tutti-fixtures::cases` is this, but `tutti-ump` may not depend on it.
+pub fn cases(default: u32) -> u32 {
+    match std::env::var("PROPTEST_CASES") {
+        Ok(v) => v
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("PROPTEST_CASES={v:?} is not a u32: {e}")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("PROPTEST_CASES is unreadable: {e}"),
+    }
+}

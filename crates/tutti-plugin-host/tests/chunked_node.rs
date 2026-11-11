@@ -569,3 +569,39 @@ fn the_chunked_audio_path_does_not_allocate() {
         }
     });
 }
+
+/// **What a chunked Processor reports lost reaches the graph's event losses**,
+/// the ones the session turns into `SessionEvent::EventsDropped`
+/// (`Editor::take_event_losses`, which `Session::report_event_losses` drains).
+/// The Processor reports three MIDI events lost when its chunk completes; the
+/// graph names three lost, charged to the plugin's node.
+///
+/// Mutation (run): `lost += reported;` deleted from the node's chunked path →
+/// no loss is reported for the node → fails.
+#[test]
+fn a_chunked_processors_lost_midi_reaches_the_graphs_event_losses() {
+    use tutti_graph::{Editor, NodeKey, Prepare};
+
+    let rig = Rig::new(Some(64), Features::TRANSPORT);
+    rig.lose.store(3, Ordering::Relaxed);
+    ROUTE.with(|r| *r.borrow_mut() = Some(rig.clone()));
+    let (client, _handle): (InProcClient<Rec>, _) =
+        load_client::<Rec>(&main_thread(), Path::new("rec"), &Load::new(), SR)
+            .expect("the recording plugin loads");
+    let (mut editor, mut exec) = Editor::new(Prepare::new(SR, Samples(100)));
+    let key = NodeKey(1);
+    editor.insert(key, "rec", client.bind(tempo(None)));
+    editor.commit().expect("commits");
+    exec.apply_pending();
+    editor.collect();
+
+    exec.process(100, &Transport::default(), &[], &mut []);
+    // One chunk completed in the block (64 of its 100 frames).
+    assert_eq!(rig.frames(), [64, 36]);
+    let lost: u32 = editor
+        .take_event_losses()
+        .filter(|l| l.node == key)
+        .map(|l| l.count)
+        .sum();
+    assert_eq!(lost, 3);
+}

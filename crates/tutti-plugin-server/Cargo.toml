@@ -116,3 +116,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 [target.'cfg(unix)'.dev-dependencies]
 # `orphan_watchdog`'s process control (`kill`, `waitpid`, `prctl`).
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The AU loader's transport test pulls the host-callback procs through
+# `TransportState::test_pull`, which `tutti-au-ffi` keeps behind `test-support`.
+tutti-au-host = { path = "../tutti-au-host", features = ["test-support"] }

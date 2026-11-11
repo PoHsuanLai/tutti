@@ -9,7 +9,7 @@ pub(crate) const SLIDE_CENTER: f32 = 0.5;
 /// One per-note expression value, as a message addresses it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum MpeControl {
-    /// Bend in semitones, clamped to the voice's range.
+    /// Bend in semitones.
     PitchBend(Semitones),
     /// Key pressure, `0..=1`.
     Pressure(f32),
@@ -19,13 +19,13 @@ pub(crate) enum MpeControl {
     Gain(f32),
 }
 
-/// A voice's MPE state: whether it is applied at render time, the bend range,
-/// and the expression received so far.
+/// A voice's MPE state: whether it is applied at render time and the
+/// expression received so far. Which messages reach a voice (Detach, the bend's
+/// sensitivity) is `tutti-voicing`'s decision; the values arrive resolved.
 #[derive(Debug, Clone, Copy)]
 pub struct MpeVoiceState {
     enabled: bool,
-    bend_range: Semitones,
-    /// Per-note pitch bend, within the bend range.
+    /// Per-note pitch bend.
     pub pitch_bend_semitones: Semitones,
     /// Per-note pressure, `0..=1`.
     pub pressure: f32,
@@ -33,22 +33,16 @@ pub struct MpeVoiceState {
     pub slide: f32,
     /// Per-note gain, `0..=1`.
     pub gain: Amplitude,
-    /// Per-Note Management Detach (M2-104 §7.4.5, D=1): the values freeze and
-    /// further controllers are ignored. Reset (S=1) instead returns the values
-    /// to their defaults and keeps responding.
-    pub detached: bool,
 }
 
 impl MpeVoiceState {
-    pub(crate) fn new(enabled: bool, bend_range: Semitones) -> Self {
+    pub(crate) fn new(enabled: bool) -> Self {
         Self {
             enabled,
-            bend_range,
             pitch_bend_semitones: Semitones(0.0),
             pressure: 0.0,
             slide: SLIDE_CENTER,
             gain: Amplitude::UNITY,
-            detached: false,
         }
     }
 
@@ -70,21 +64,10 @@ impl MpeVoiceState {
         }
     }
 
-    /// Sets the range a bend clamps to. Values already stored are kept.
-    pub(crate) fn set_bend_range(&mut self, range: Semitones) {
-        self.bend_range = range;
-    }
-
-    /// Stores one controller, unless the voice is detached.
+    /// Stores one controller.
     pub(crate) fn apply(&mut self, control: MpeControl) {
-        if self.detached {
-            return;
-        }
         match control {
-            MpeControl::PitchBend(bend) => {
-                let range = self.bend_range.get();
-                self.pitch_bend_semitones = Semitones(bend.get().clamp(-range, range));
-            }
+            MpeControl::PitchBend(bend) => self.pitch_bend_semitones = bend,
             MpeControl::Pressure(p) => self.pressure = p.clamp(0.0, 1.0),
             MpeControl::Slide(s) => self.slide = s.clamp(0.0, 1.0),
             // Per-note Volume's `0..1`, narrower than `Amplitude`'s own floor.
@@ -92,14 +75,9 @@ impl MpeVoiceState {
         }
     }
 
-    /// Returns the controllers to their defaults; the voice keeps responding.
+    /// Returns the controllers to their defaults.
     pub(crate) fn reset(&mut self) {
-        *self = Self::new(self.enabled, self.bend_range);
-    }
-
-    /// Freezes the current values (Per-Note Management Detach).
-    pub(crate) fn detach(&mut self) {
-        self.detached = true;
+        *self = Self::new(self.enabled);
     }
 
     /// The bend in effect: `None` when disabled or inaudibly small.

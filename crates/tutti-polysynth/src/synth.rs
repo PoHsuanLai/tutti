@@ -258,8 +258,9 @@ pub struct SynthConfig {
     pub mpe_enabled: bool,
     /// How far a full-scale *per-note* pitch bend sweeps, in [`Semitones`].
     /// Default 48.0, the MPE convention. Independent of
-    /// [`pitch_bend_range`](Self::pitch_bend_range), and overridden at runtime
-    /// by the per-note pitch-bend sensitivity RPN.
+    /// [`pitch_bend_range`](Self::pitch_bend_range). Every channel starts with
+    /// it, and a channel's own per-note pitch-bend sensitivity RPN (00/07,
+    /// M2-104 section 7.4.13) replaces it for that channel alone.
     pub mpe_pitch_bend_range: Semitones,
     /// The Group whose sixteen channels this synth plays; a message in
     /// another Group is not read. A Group is a channel space of its own (M2-104

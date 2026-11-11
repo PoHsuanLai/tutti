@@ -614,7 +614,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   sized in `new` and a `Clone` keeps their capacity; the instrument passes
   `VoiceView`s sorted by id, and only for a note-on (liveness is read there).
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
-  and nothing is pinned against another implementation. **An instrument plays one
+  and nothing is pinned against another implementation. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
   Group's sixteen channels** (`SynthConfig::group`, `Settings::with_group`; a message of
   another Group is not read, M2-104 section 2.1.2, Appendix B.1), so `step` never sees a
   Group; the input node routes by (Group, channel) (`MidiInputPorts`, doc 017 L3). Mono and legato follow

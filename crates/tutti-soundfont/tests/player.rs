@@ -614,3 +614,123 @@ fn the_first_of_two_presets_with_one_bank_and_program_is_active() {
         "the first preset is the active one"
     );
 }
+
+fn per_note_pitch(note: u8, hcu: u32) -> Voice2 {
+    Voice2::RegisteredPerNote {
+        note: tutti_ump::NoteNumber::of(note),
+        controller: tutti_ump::RegisteredPerNoteController::Pitch,
+        value: hcu << 25,
+    }
+}
+
+fn management(note: u8, detach: bool, reset: bool) -> Voice2 {
+    Voice2::PerNoteManagement {
+        note: tutti_ump::NoteNumber::of(note),
+        detach,
+        reset,
+    }
+}
+
+/// Zero crossings in one second of the violin note struck on Note Number 69
+/// after `after` has run on the sounding note.
+fn crossings_after(after: impl FnOnce(&mut Rig)) -> f64 {
+    let mut synthesizer = dry();
+    synthesizer.program(0, 40);
+    synthesizer.note_on(0, 69, 100);
+    energy(&mut synthesizer, 4096);
+    after(&mut synthesizer);
+    energy(&mut synthesizer, 44_100);
+    let (left, _) = synthesizer.render(44_100);
+    left.windows(2).filter(|w| w[0] * w[1] < 0.0).count() as f64
+}
+
+/// M2-104 Appendix C.3 and section 7.4.15.2: a Registered Per-Note Controller
+/// #3 (Pitch 7.25) sent before the Note On is the pitch the note sounds at,
+/// the Note Number being an index. Note Number 69 told 81.0 sounds an octave
+/// up: twice the zero crossings of the same note untouched.
+#[test]
+fn a_per_note_pitch_sent_before_the_note_on_is_the_pitch_it_sounds_at() {
+    let plain = crossings(|_| {}, 8192) as f64;
+    let told = crossings(|s| s.voice2(0, per_note_pitch(69, 81)), 8192) as f64;
+    let ratio = told / plain;
+    assert!((1.9..2.1).contains(&ratio), "an octave up, got {ratio}");
+}
+
+/// M2-104 section 7.4.5, Detach: a note that was detached "shall no longer
+/// respond to any Per-Note Controllers". The control half shows the Pitch
+/// reaches a sounding note (an octave up); with Detach before it, the note
+/// stays where it was.
+#[test]
+fn a_detached_note_no_longer_follows_its_per_note_pitch() {
+    let plain = crossings_after(|_| {});
+    let followed = crossings_after(|s| s.voice2(0, per_note_pitch(69, 81)));
+    assert!(
+        (1.9..2.1).contains(&(followed / plain)),
+        "{followed}/{plain}"
+    );
+    let detached = crossings_after(|s| {
+        s.voice2(0, management(69, true, false));
+        s.voice2(0, per_note_pitch(69, 81));
+    });
+    assert!(
+        (0.95..1.05).contains(&(detached / plain)),
+        "{detached}/{plain}"
+    );
+}
+
+/// M2-104 section 7.4.13: a Per-Note Pitch Bend is a position over the
+/// channel's sensitivity. Sensitivity 12 and the wheel fully up, sent before
+/// the Note On, is an octave.
+#[test]
+fn a_per_note_bend_spans_the_per_note_sensitivity() {
+    let plain = crossings(|_| {}, 8192) as f64;
+    let bent = crossings(
+        |s| {
+            s.voice2(
+                0,
+                Voice2::Registered {
+                    bank: U7::of(0),
+                    index: U7::of(7),
+                    value: 12 << 25,
+                },
+            );
+            s.voice2(
+                0,
+                Voice2::PerNotePitchBend {
+                    note: tutti_ump::NoteNumber::of(69),
+                    value: u32::MAX,
+                },
+            );
+        },
+        8192,
+    ) as f64;
+    let ratio = bent / plain;
+    assert!((1.9..2.1).contains(&ratio), "an octave up, got {ratio}");
+}
+
+/// M2-104 section 7.4.5, Reset: the Note Number's per-note controllers return
+/// to their defaults, so a Pitch sent and then reset is not what the next
+/// note, or the one sounding, sounds at.
+#[test]
+fn a_reset_per_note_pitch_is_forgotten_by_the_next_note() {
+    let plain = crossings(|_| {}, 8192) as f64;
+    let reset = crossings(
+        |s| {
+            s.voice2(0, per_note_pitch(69, 81));
+            s.voice2(0, management(69, false, true));
+        },
+        8192,
+    ) as f64;
+    assert!((0.95..1.05).contains(&(reset / plain)), "{reset}/{plain}");
+
+    // The note already sounding is reset too (no Detach): back to its key.
+    let plain = crossings_after(|_| {});
+    let playing = crossings_after(|s| {
+        s.voice2(0, per_note_pitch(69, 81));
+        s.voice2(0, management(69, false, true));
+    });
+    assert!(
+        (0.95..1.05).contains(&(playing / plain)),
+        "{playing}/{plain}"
+    );
+}

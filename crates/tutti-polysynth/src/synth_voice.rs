@@ -21,7 +21,7 @@ use crate::mpe::{MpeControl, SLIDE_CENTER};
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
-use tutti_types::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
+use tutti_types::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance};
 use tutti_ump::{MidiChannel, NoteNumber};
 
 /// A gate edge waiting for the next control step.
@@ -172,7 +172,7 @@ impl SynthVoice {
             lfo_phase: Phase::START,
             envelope_level: 0.0,
             active: false,
-            mpe: MpeVoiceState::new(config.mpe_enabled, config.mpe_pitch_bend_range),
+            mpe: MpeVoiceState::new(config.mpe_enabled),
             base_note_freq: Hz(440.0),
             sub_voices: unison_count.max(1),
         }
@@ -405,30 +405,17 @@ impl SynthVoice {
         self.cc_resonance_value = value;
     }
 
-    /// Stores one per-note controller (ignored once detached).
+    /// Stores one per-note controller.
     pub(crate) fn apply_mpe(&mut self, control: MpeControl) {
         self.mpe.apply(control);
     }
 
     /// Reset this voice's per-note expression (pitch bend, pressure, slide) to
     /// their defaults. Backs MIDI 2.0 Per-Note Management *Reset* (M2-104
-    /// §7.4.5, S=1): the voice keeps sounding *and* keeps responding, only its
-    /// accumulated per-note controllers snap back to the note-on baseline.
+    /// §7.4.5, S=1): the voice keeps sounding, only its accumulated per-note
+    /// controllers snap back to the note-on baseline.
     pub(crate) fn reset_mpe(&mut self) {
         self.mpe.reset();
-    }
-
-    /// Detach this voice's per-note controllers (M2-104 §7.4.5, D=1): it keeps
-    /// its current per-note values but stops responding to any further per-note
-    /// controllers, playing out frozen. The opposite intent from [`Self::reset_mpe`].
-    pub(crate) fn detach_mpe(&mut self) {
-        self.mpe.detach();
-    }
-
-    /// Update the per-note pitch-bend range (semitones) this voice clamps to.
-    /// Set by the per-note pitch-bend sensitivity RPN (M2-104 §7.4.13).
-    pub(crate) fn set_mpe_pitch_bend_range(&mut self, range: Semitones) {
-        self.mpe.set_bend_range(range);
     }
 
     /// Whether this voice applies its per-note (MPE) state at render time.

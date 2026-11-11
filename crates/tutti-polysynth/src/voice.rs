@@ -14,7 +14,8 @@ use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 use tutti_voicing::{
-    Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing,
+    Command, Mode, NoteControl, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView,
+    Voicing,
 };
 
 pub use tutti_voicing::VoiceId;
@@ -202,6 +203,9 @@ pub struct VoiceAllocatorConfig {
     pub mode: VoiceMode,
     /// What a full pitch bend spans on a channel until RPN 0 says otherwise.
     pub bend_range: Semitones,
+    /// What a full Per-Note Pitch Bend spans on a channel until RPN 0/7 says
+    /// otherwise.
+    pub per_note_bend_range: Semitones,
 }
 
 impl Default for VoiceAllocatorConfig {
@@ -211,6 +215,7 @@ impl Default for VoiceAllocatorConfig {
             strategy: AllocationStrategy::Oldest,
             mode: VoiceMode::Poly,
             bend_range: Semitones(2.0),
+            per_note_bend_range: Semitones(48.0),
         }
     }
 }
@@ -237,6 +242,7 @@ impl VoiceAllocatorConfig {
             exclusive_groups: false,
             sostenuto: true,
             bend_range: self.bend_range,
+            per_note_bend_range: self.per_note_bend_range,
         }
     }
 }
@@ -288,6 +294,10 @@ pub(crate) enum Gate {
     Cut(usize),
     /// The channel's pitch moved: its notes sound this far from their keys.
     Retune(MidiChannel, Semitones),
+    /// The voice at this slot takes a per-note controller's value.
+    Control(usize, NoteControl),
+    /// The voice at this slot returns its per-note controllers to defaults.
+    ResetControls(usize),
     /// Start (or, `legato`, move) the voice at this slot to this note.
     Start {
         slot: usize,
@@ -418,6 +428,16 @@ impl VoiceAllocator {
                 Command::Retune { channel, bend } => {
                     self.gates.push(Gate::Retune(channel, bend));
                 }
+                Command::Control { id, control } => {
+                    if let Some(slot_index) = self.slot_of_voice(id) {
+                        self.gates.push(Gate::Control(slot_index, control));
+                    }
+                }
+                Command::ResetControls(id) => {
+                    if let Some(slot_index) = self.slot_of_voice(id) {
+                        self.gates.push(Gate::ResetControls(slot_index));
+                    }
+                }
                 // `Damp` is an exclusive class's, which `PolySynth`'s rules
                 // never turn on; if it came, its own release is the answer.
                 Command::Release { id, .. } | Command::Damp(id) => {
@@ -494,13 +514,14 @@ impl VoiceAllocator {
         note: NoteNumber,
         channel: MidiChannel,
         velocity: f32,
+        attribute: tutti_ump::Attribute,
     ) -> AllocationResult {
         // 16 bits, never 0 (a zero velocity is a note-off).
         let v16 = unit_f32_to_u16(velocity).max(1);
         let on = Voice2::NoteOn {
             note,
             velocity: v16,
-            attribute: tutti_ump::Attribute::None,
+            attribute,
         };
         self.run(channel, &on, Some((id, velocity)))
     }
@@ -522,7 +543,11 @@ impl VoiceAllocator {
         self.run(channel, &off, None);
         self.gates[before..].iter().find_map(|g| match g {
             Gate::Off(i) => Some(*i),
-            Gate::Cut(_) | Gate::Retune(..) | Gate::Start { .. } => None,
+            Gate::Cut(_)
+            | Gate::Retune(..)
+            | Gate::Control(..)
+            | Gate::ResetControls(_)
+            | Gate::Start { .. } => None,
         })
     }
 
@@ -596,8 +621,8 @@ impl VoiceAllocator {
         self.core.holds(s.voice_id())
     }
 
-    /// Runs a message that starts and releases no note (a bend, a sensitivity)
-    /// through the core.
+    /// Runs a message that starts and releases no note (a bend, a sensitivity,
+    /// a per-note controller) through the core.
     pub fn message(&mut self, channel: MidiChannel, message: &Voice2) {
         self.run(channel, message, None);
     }

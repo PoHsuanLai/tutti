@@ -42,9 +42,10 @@
 
 use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value};
 use tutti_types::{Amplitude, Semitones};
-use tutti_ump::{MidiChannel, NoteNumber, Rpn, Voice2};
+use tutti_ump::{Address, Attribute, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, Voice2};
 
-use crate::{Controller, Effect, Holds, Phase, Stop};
+use crate::per_note::{MAX_EVENTS as NOTE_EVENTS, NOTE_CONTROLS};
+use crate::{Controller, Effect, Holds, NoteControl, NoteEvent, PerNoteState, Phase, Stop};
 
 const CHANNELS: usize = MidiChannel::COUNT as usize;
 
@@ -140,6 +141,9 @@ pub struct Rules {
     pub sostenuto: bool,
     /// What a full pitch bend spans on a channel until RPN 0 says otherwise.
     pub bend_range: Semitones,
+    /// What a full Per-Note Pitch Bend spans on a channel until RPN 0/7 says
+    /// otherwise (M2-104 section 7.4.13 gives no default).
+    pub per_note_bend_range: Semitones,
 }
 
 /// One voice a note becomes: what [`Patch::voices`] hands the core.
@@ -229,6 +233,19 @@ pub enum Command {
     /// exclusive group is ever damped, so an instrument without
     /// [`Rules::exclusive_groups`] never sees this command.
     Damp(VoiceId),
+    /// A per-note controller of a voice's Note Number took a value (M2-104
+    /// section 7.4): sent when the message arrives, for each voice of that note
+    /// that has not been detached, and when a voice starts, for each value the
+    /// note already holds (a controller is persistent state, section 7.4.15.2).
+    Control {
+        /// The voice.
+        id: VoiceId,
+        /// The controller and its value.
+        control: NoteControl,
+    },
+    /// A voice's per-note controllers return to their defaults (Per-Note
+    /// Management Reset, section 7.4.5), whatever it keeps sounding.
+    ResetControls(VoiceId),
     /// A channel's pitch moved: its notes sound `bend` away from their keys.
     /// Sent for each channel a bend, its sensitivity or a reset reaches.
     Retune {
@@ -243,6 +260,9 @@ pub enum Command {
 #[derive(Debug, Clone, Copy)]
 struct Note {
     id: VoiceId,
+    /// The per-note id of the strike that started it (or last moved it): what
+    /// [`PerNoteState`] addresses its controllers by.
+    note: NoteId,
     /// The strike that started it (or last moved it).
     strike: u64,
     channel: MidiChannel,
@@ -322,6 +342,14 @@ pub struct Voicing {
     next: u64,
     strike: u64,
     held: [Held; CHANNELS],
+    /// The per-note controllers (section 7.4), for this Group's channels.
+    per_note: PerNoteState,
+    /// What the per-note state said of the message being read.
+    events: Vec<NoteEvent>,
+    /// Per-note ids whose voices left the table in this step.
+    retired: Vec<NoteId>,
+    /// The id of the note being started, which the voices it starts take.
+    strike_note: NoteId,
     out: Vec<Command>,
 }
 
@@ -340,6 +368,10 @@ impl Clone for Voicing {
             next: self.next,
             strike: self.strike,
             held: self.held,
+            per_note: self.per_note.clone(),
+            events: Vec::with_capacity(self.events.capacity()),
+            retired: Vec::with_capacity(self.retired.capacity()),
+            strike_note: self.strike_note,
             out: Vec::with_capacity(self.out.capacity()),
         }
     }
@@ -351,7 +383,9 @@ impl Voicing {
     pub fn new(rules: Rules) -> Self {
         Self {
             notes: Vec::with_capacity(rules.polyphony + 1),
-            out: Vec::with_capacity(2 * rules.polyphony + CHANNELS + MAX_SPECS),
+            out: Vec::with_capacity(
+                2 * rules.polyphony + CHANNELS + MAX_SPECS * (2 + NOTE_CONTROLS),
+            ),
             rules,
             sustain: [false; CHANNELS],
             bends: [Bend {
@@ -362,6 +396,10 @@ impl Voicing {
             next: 1,
             strike: 0,
             held: [Held::NONE; CHANNELS],
+            per_note: PerNoteState::new(1, rules.per_note_bend_range),
+            events: Vec::with_capacity(NOTE_EVENTS),
+            retired: Vec::with_capacity(2 * rules.polyphony + MAX_SPECS + 2),
+            strike_note: NoteId::from_raw(0),
         }
     }
 
@@ -373,21 +411,26 @@ impl Voicing {
         self.zones = zones;
     }
 
-    /// Forgets every note, pedal, bend and held key: a fresh start. No command
-    /// is returned; the instrument returns its pitches to centre. Ids are not
-    /// reused.
+    /// Forgets every note, pedal, bend, held key and per-note controller: a
+    /// fresh start. No command is returned; the instrument returns its pitches
+    /// to centre. Ids are not reused.
     pub fn reset(&mut self) {
         self.forget_notes();
+        self.per_note.clear();
         self.bends = [Bend {
             position: 0.0,
             range: self.rules.bend_range,
         }; CHANNELS];
     }
 
-    /// Forgets every note, pedal and held key, and keeps the bends: a channel's
-    /// wheel and sensitivity are controller state, which outlives its notes.
+    /// Forgets every note, pedal and held key, and keeps the bends and the
+    /// per-note controllers: a channel's wheel and sensitivity, and what a
+    /// Note Number was told, are controller state, which outlives its notes.
     /// No command is returned; the instrument ends its voices.
     pub fn forget_notes(&mut self) {
+        for n in &self.notes {
+            self.per_note.end(n.note);
+        }
         self.notes.clear();
         self.sustain = [false; CHANNELS];
         self.held = [Held::NONE; CHANNELS];
@@ -443,11 +486,18 @@ impl Voicing {
         voices: &[VoiceView],
     ) -> &[Command] {
         self.out.clear();
+        self.events.clear();
+        self.retired.clear();
         match *message {
             // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 section
             // 7.4.2), played as quietly as there is. A MIDI 1.0 one is a Note
             // Off, and `widen` has already made it one.
-            Voice2::NoteOn { note, velocity, .. } => {
+            Voice2::NoteOn {
+                note,
+                velocity,
+                attribute,
+            } => {
+                self.begin(channel, note, attribute);
                 self.note_on(channel, note, velocity.max(1), patch, voices);
             }
             Voice2::NoteOff { note, velocity, .. } => {
@@ -468,9 +518,61 @@ impl Voicing {
                 let range = bend_sensitivity(value);
                 self.bend(channel, |b| b.range = range);
             }
+            // The per-note controllers, Per-Note Management and RPN 0/7 are
+            // `PerNoteState`'s; this core carries what it says to the voices.
+            Voice2::Registered { .. }
+            | Voice2::RegisteredPerNote { .. }
+            | Voice2::AssignablePerNote { .. }
+            | Voice2::PerNotePitchBend { .. }
+            | Voice2::PolyPressure { .. }
+            | Voice2::PerNoteManagement { .. } => {
+                let address = Self::address(channel);
+                self.events
+                    .extend_from_slice(self.per_note.step(address, message));
+            }
             _ => {}
         }
+        self.deliver();
+        self.settle();
         &self.out
+    }
+
+    fn address(channel: MidiChannel) -> Address {
+        Address {
+            group: MidiGroup::FIRST,
+            channel,
+        }
+    }
+
+    /// Starts a note in the per-note state: its id is the one the voices this
+    /// message starts take, and what it holds is delivered after them.
+    fn begin(&mut self, channel: MidiChannel, key: NoteNumber, attribute: Attribute) {
+        let events = self.per_note.start(Self::address(channel), key, attribute);
+        if let Some(NoteEvent::Started { id, .. }) = events.first() {
+            self.strike_note = *id;
+        }
+        self.events.extend_from_slice(events);
+    }
+
+    /// Turns what the per-note state said into commands for the voices of
+    /// each note it names.
+    fn deliver(&mut self) {
+        for e in 0..self.events.len() {
+            let (note, control) = match self.events[e] {
+                NoteEvent::Started { .. } => continue,
+                NoteEvent::Control { id, control } => (id, Some(control)),
+                NoteEvent::Reset { id } => (id, None),
+            };
+            for i in 0..self.notes.len() {
+                if self.notes[i].note == note {
+                    let id = self.notes[i].id;
+                    self.push(match control {
+                        Some(control) => Command::Control { id, control },
+                        None => Command::ResetControls(id),
+                    });
+                }
+            }
+        }
     }
 
     /// The voices `patch` makes of a strike.
@@ -523,8 +625,33 @@ impl Voicing {
     /// the table, so the polyphony, the steal and a return to a held key see
     /// what sounds.
     fn reconcile(&mut self, voices: &[VoiceView]) {
-        self.notes
-            .retain(|n| voices.binary_search_by_key(&n.id, |v| v.id).is_ok());
+        let retired = &mut self.retired;
+        self.notes.retain(|n| {
+            let alive = voices.binary_search_by_key(&n.id, |v| v.id).is_ok();
+            if !alive && retired.len() < retired.capacity() && !retired.contains(&n.note) {
+                retired.push(n.note);
+            }
+            alive
+        });
+    }
+
+    /// A voice left the table: its per-note id is ended once no voice of the
+    /// same strike remains ([`settle`](Self::settle)).
+    fn retire(&mut self, note: NoteId) {
+        if self.retired.len() < self.retired.capacity() && !self.retired.contains(&note) {
+            self.retired.push(note);
+        }
+    }
+
+    /// Ends in the per-note state every note whose voices have all left the
+    /// table, so its number stops moving it.
+    fn settle(&mut self) {
+        for i in 0..self.retired.len() {
+            let note = self.retired[i];
+            if !self.notes.iter().any(|n| n.note == note) {
+                self.per_note.end(note);
+            }
+        }
     }
 
     /// A voice of an exclusive class ends the sounding voices of that class in
@@ -616,6 +743,8 @@ impl Voicing {
                     let id = self.notes[i].id;
                     self.notes[i].key = key;
                     self.notes[i].strike = strike;
+                    let moved = std::mem::replace(&mut self.notes[i].note, self.strike_note);
+                    self.retire(moved);
                     self.push(Command::Retarget { id, key, velocity });
                 }
                 Some(i) => {
@@ -640,12 +769,14 @@ impl Voicing {
         if let Some(v) = steal
             && let Ok(i) = self.notes.binary_search_by_key(&v, |n| n.id)
         {
-            self.notes.remove(i);
+            let gone = self.notes.remove(i).note;
+            self.retire(gone);
         }
         let id = VoiceId(self.next);
         self.next += 1;
         self.notes.push(Note {
             id,
+            note: self.strike_note,
             strike: self.strike,
             channel,
             key,
@@ -724,6 +855,7 @@ impl Voicing {
                 }
                 if let Some((back, v)) = self.held[ch].top() {
                     self.strike += 1;
+                    self.begin(channel, back, Attribute::None);
                     self.play_mono(channel, back, v, patch, voices, true);
                     return;
                 }
@@ -773,7 +905,8 @@ impl Voicing {
                     if self.notes[i].channel == channel {
                         let id = self.notes[i].id;
                         self.push(Command::Cut(id));
-                        self.notes.remove(i);
+                        let gone = self.notes.remove(i).note;
+                        self.retire(gone);
                     } else {
                         i += 1;
                     }
@@ -846,9 +979,10 @@ impl Voicing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LIVE_NOTES;
     use tutti_midi_protocol::MpeZoneConfig;
     use tutti_midi_protocol::widen;
-    use tutti_ump::{Attribute, CCNumber, U7, Voice1};
+    use tutti_ump::{Attribute, CCNumber, Pitch, RegisteredPerNoteController, U7, Voice1};
 
     /// One voice per note, no group.
     struct One;
@@ -902,6 +1036,7 @@ mod tests {
         exclusive_groups: false,
         sostenuto: true,
         bend_range: Semitones(2.0),
+        per_note_bend_range: Semitones(48.0),
     };
     const MONO: Rules = Rules {
         mode: Mode::Mono,
@@ -2036,7 +2171,11 @@ mod tests {
     #[test]
     fn step_never_grows_its_tables() {
         let mut s = Sim::new(POLY);
-        let (n, o) = (s.core.notes.capacity(), s.core.out.capacity());
+        let (n, o, r) = (
+            s.core.notes.capacity(),
+            s.core.out.capacity(),
+            s.core.retired.capacity(),
+        );
         for i in 0..200u8 {
             s.on(i % 2, 40 + i % 30);
             if i % 3 == 0 {
@@ -2049,7 +2188,226 @@ mod tests {
                 s.cc(i % 2, 64, 127 * (i % 2));
             }
         }
-        assert_eq!((s.core.notes.capacity(), s.core.out.capacity()), (n, o));
+        assert_eq!(
+            (
+                s.core.notes.capacity(),
+                s.core.out.capacity(),
+                s.core.retired.capacity()
+            ),
+            (n, o, r)
+        );
+    }
+
+    // ---- per-note controllers (M2-104 section 7.4) ----------------------
+
+    /// 60.0 as a Registered Per-Note Controller #3 word (Q7.25).
+    const PITCH_60: u32 = 60 << 25;
+
+    fn pnc(s: &mut Sim, c: u8, k: u8, controller: RegisteredPerNoteController, value: u32) {
+        let cmds = s.send(
+            c,
+            Voice2::RegisteredPerNote {
+                note: NoteNumber::of(k),
+                controller,
+                value,
+            },
+            &One,
+        );
+        assert!(cmds.iter().all(|c| matches!(c, Command::Control { .. })));
+    }
+
+    fn per_note_bend(s: &mut Sim, c: u8, k: u8, value: u32) -> Vec<Command> {
+        s.send(
+            c,
+            Voice2::PerNotePitchBend {
+                note: NoteNumber::of(k),
+                value,
+            },
+            &One,
+        )
+    }
+
+    fn management(s: &mut Sim, c: u8, k: u8, detach: bool, reset: bool) -> Vec<Command> {
+        s.send(
+            c,
+            Voice2::PerNoteManagement {
+                note: NoteNumber::of(k),
+                detach,
+                reset,
+            },
+            &One,
+        )
+    }
+
+    /// M2-104 section 7.4.15.2 and Appendix C.3 (Method 1): "Per-Note
+    /// Management; PNCC#3 Set Pitch 60.0; Note On (Pitch sounds as 60.0)". A
+    /// Pitch 7.25 that arrives before its Note On, with no voice to address,
+    /// is the state the note starts with: the Note On is followed by the
+    /// controller, for the voice it started.
+    #[test]
+    fn a_pitch_sent_before_its_note_on_is_what_the_note_starts_with() {
+        let mut s = Sim::new(POLY);
+        management(&mut s, 0, 0, true, true);
+        pnc(&mut s, 0, 0, RegisteredPerNoteController::Pitch, PITCH_60);
+        let c = s.on(0, 0);
+        assert!(matches!(c[0], Command::Start { .. }), "{c:?}");
+        assert_eq!(
+            c[1..],
+            [Command::Control {
+                id: id(1),
+                control: NoteControl::Pitch(Pitch::from_q7_25(PITCH_60)),
+            }]
+        );
+    }
+
+    fn told(c: &[Command]) -> Vec<VoiceId> {
+        c.iter()
+            .filter_map(|c| match c {
+                Command::Control { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// M2-104 section 7.4.15.2: a value is for the note, and a note a patch
+    /// makes of several voices is one note: every voice of the strike takes it.
+    #[test]
+    fn every_voice_of_a_strike_takes_the_per_note_value() {
+        let mut s = Sim::new(POLY);
+        pnc(&mut s, 0, 5, RegisteredPerNoteController::Pitch, PITCH_60);
+        let c = s.on_with(0, 5, &Pair { group: 0, scope: 0 });
+        assert_eq!(told(&c), vec![id(1), id(2)], "{c:?}");
+    }
+
+    /// M2-104 section 7.4.5: only a Detach makes "previous notes on the
+    /// referenced Note Number" stop responding, so until then the tail of the
+    /// first strike (released by the second on the same key) follows a value
+    /// with the second; after the Detach neither does.
+    #[test]
+    fn a_tail_follows_a_per_note_value_until_a_detach() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 5);
+        s.on(0, 5);
+        assert!(s.core.phase(id(1)).is_some_and(|p| p == Phase::Releasing));
+        let c = per_note_bend(&mut s, 0, 5, 0xC000_0000);
+        assert_eq!(told(&c), vec![id(1), id(2)], "{c:?}");
+        management(&mut s, 0, 5, true, false);
+        let c = per_note_bend(&mut s, 0, 5, 0x4000_0000);
+        assert_eq!(told(&c), vec![], "{c:?}");
+    }
+
+    /// A voice the instrument freed has ended its note, and the number's room
+    /// for responding notes (`LIVE_NOTES`) is not spent on it: a tail still
+    /// sounding keeps following the number's values after more strikes than
+    /// the bound, as long as the strikes' voices were freed.
+    #[test]
+    fn freed_voices_leave_room_for_a_tail_that_still_sounds() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 5);
+        for n in 2..=(LIVE_NOTES as u64 + 2) {
+            s.on(0, 5);
+            s.end(id(n));
+        }
+        s.on(0, 5);
+        let c = per_note_bend(&mut s, 0, 5, 0xC000_0000);
+        let told = told(&c);
+        assert!(told.contains(&id(1)), "{told:?}");
+    }
+
+    /// `reset` is a fresh start, and what a Note Number was told goes with the
+    /// rest (it clears the per-note state in place); `forget_notes` keeps it,
+    /// as it keeps the bends.
+    #[test]
+    fn reset_forgets_the_per_note_values_and_forgetting_the_notes_keeps_them() {
+        let mut s = Sim::new(POLY);
+        pnc(&mut s, 0, 5, RegisteredPerNoteController::Pitch, PITCH_60);
+        s.core.forget_notes();
+        let c = s.on(0, 5);
+        assert!(matches!(c.last(), Some(Command::Control { .. })), "{c:?}");
+        s.core.reset();
+        s.voices.clear();
+        let c = s.on(0, 5);
+        assert!(
+            !c.iter().any(|c| matches!(c, Command::Control { .. })),
+            "{c:?}"
+        );
+    }
+
+    /// M2-104 section 7.4.5, Detach: "all currently playing notes and previous
+    /// notes on the referenced Note Number shall no longer respond to any
+    /// Per-Note Controllers", and later changes "apply to future notes only".
+    /// Detach, then Pitch, then Note On on the same number: the Pitch reaches
+    /// the new voice (2) and never the detached one (1).
+    #[test]
+    fn after_a_detach_the_next_pitch_is_for_the_next_note_alone() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 5);
+        assert_eq!(management(&mut s, 0, 5, true, false), vec![]);
+        // No voice responds: the value is only stored.
+        pnc(&mut s, 0, 5, RegisteredPerNoteController::Pitch, PITCH_60);
+        let c = s.on(0, 5);
+        let pitch = NoteControl::Pitch(Pitch::from_q7_25(PITCH_60));
+        assert_eq!(
+            c.last(),
+            Some(&Command::Control {
+                id: id(2),
+                control: pitch
+            })
+        );
+        // Later changes reach voice 2 and not voice 1.
+        let c = per_note_bend(&mut s, 0, 5, 0xC000_0000);
+        assert!(
+            matches!(c[..], [Command::Control { id: v, .. }] if v == id(2)),
+            "{c:?}"
+        );
+    }
+
+    /// M2-104 section 7.4.5: with D=1 and S=1 the device "first process the
+    /// Detach function, and then perform the Reset function": the playing note
+    /// keeps its values (it is told nothing), and the defaults apply to the
+    /// next note, which starts with no per-note controller.
+    #[test]
+    fn detach_and_reset_together_freeze_the_note_and_default_the_next() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 5);
+        per_note_bend(&mut s, 0, 5, 0xC000_0000);
+        assert_eq!(management(&mut s, 0, 5, true, true), vec![]);
+        let c = s.on(0, 5);
+        assert!(
+            c.iter().any(|c| matches!(c, Command::Start { .. }))
+                && !c.iter().any(|c| matches!(c, Command::Control { .. })),
+            "no controller follows the start: {c:?}"
+        );
+    }
+
+    /// M2-104 section 7.4.5, Reset: "all Per-Note Controllers on the referenced
+    /// Note Number should be reset to their default values". Without Detach the
+    /// playing note is reset too, and the next note starts at the defaults.
+    #[test]
+    fn a_reset_returns_the_playing_note_and_the_next_one_to_defaults() {
+        let mut s = Sim::new(POLY);
+        pnc(&mut s, 0, 5, RegisteredPerNoteController::Volume, 1 << 30);
+        s.on(0, 5);
+        assert_eq!(
+            management(&mut s, 0, 5, false, true),
+            vec![Command::ResetControls(id(1))]
+        );
+        let c = s.on(0, 5);
+        assert!(
+            !c.iter().any(|c| matches!(c, Command::Control { .. })),
+            "{c:?}"
+        );
+    }
+
+    /// M2-104 Appendix B.2: Reset All Controllers does not reset per-note
+    /// controllers.
+    #[test]
+    fn reset_all_controllers_leaves_per_note_controllers() {
+        let mut s = Sim::new(POLY);
+        pnc(&mut s, 0, 5, RegisteredPerNoteController::Pitch, PITCH_60);
+        s.cc(0, 121, 0);
+        let c = s.on(0, 5);
+        assert!(matches!(c.last(), Some(Command::Control { .. })), "{c:?}");
     }
 
     // ---- random streams ------------------------------------------------
@@ -2181,7 +2539,9 @@ mod tests {
                             Command::Release { id, .. }
                             | Command::Cut(id)
                             | Command::Damp(id)
-                            | Command::Retarget { id, .. } => Some(id),
+                            | Command::Retarget { id, .. }
+                            | Command::Control { id, .. }
+                            | Command::ResetControls(id) => Some(id),
                             Command::Start { steal, .. } => steal,
                             Command::Retune { .. } => None,
                         };

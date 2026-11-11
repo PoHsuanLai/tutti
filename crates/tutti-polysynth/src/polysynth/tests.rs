@@ -1520,6 +1520,139 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     );
 }
 
+/// A voice's sounding base frequency for a note number, plus whether it is the
+/// freshest voice on it (the last one started).
+fn hand_mpe() -> Hand {
+    synth(SynthConfig {
+        sample_rate: tutti_types::SampleRate::SR_44K1,
+        max_voices: 4,
+        voice_mode: VoiceMode::Poly,
+        oscillator: OscillatorType::Sine,
+        mpe_enabled: true,
+        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        ..Default::default()
+    })
+}
+
+fn note_freqs(synth: &PolySynth, note: u8) -> Vec<f32> {
+    synth
+        .voices
+        .iter()
+        .filter(|v| v.is_active() && v.note() == NoteNumber::of(note))
+        .map(|v| v.base_note_freq().get())
+        .collect()
+}
+
+fn pitch_60(channel: u8, note: u8) -> Ump {
+    pitch_of(channel, note, 60)
+}
+
+fn pitch_of(channel: u8, note: u8, hcu: u32) -> Ump {
+    midi::per_note_controller(
+        MidiGroup::FIRST,
+        MidiChannel::of(channel),
+        note,
+        3,
+        hcu << 25,
+        true,
+    )
+}
+
+/// M2-104 Appendix C.3, Method 1: "Per-Note Management; PNCC#3 Set Pitch 60.0;
+/// Note On #0 (Pitch sounds as 60.0)". The Pitch arrives while no voice holds
+/// Note Number 0, and the note that starts on it sounds at 60.0 (middle C,
+/// about 261.6 Hz), where Note Number 0 alone would be about 8.2 Hz.
+#[test]
+fn a_pitch_sent_before_the_note_on_is_the_pitch_it_sounds_at() {
+    let mut synth = hand_mpe();
+    queue_midi(
+        &mut synth,
+        &[ev_per_note_management(1, 0, true, true), pitch_60(1, 0)],
+    );
+    let mut out = [0.0f32; 2];
+    synth.tick(&[], &mut out);
+    queue_midi(&mut synth, &[ev_note_on(1, 0, 100)]);
+    synth.tick(&[], &mut out);
+    let freqs = note_freqs(&synth, 0);
+    assert_eq!(freqs.len(), 1);
+    assert!((freqs[0] - 261.63).abs() < 0.5, "{freqs:?}");
+}
+
+/// M2-104 section 7.4.5: after Detach, the old note "shall no longer respond
+/// to any Per-Note Controllers" and later changes "apply to future notes
+/// only". Note 0 sounds as 60.0; Detach, then Pitch 62.0, then a new Note On on
+/// the same Note Number: the new note sounds 62.0 and the detached one stays
+/// at 60.0.
+#[test]
+fn a_pitch_after_a_detach_reaches_the_next_note_and_not_the_old_one() {
+    let mut synth = hand_mpe();
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut synth, &[pitch_60(1, 0), ev_note_on(1, 0, 100)]);
+    synth.tick(&[], &mut out);
+    queue_midi(
+        &mut synth,
+        &[
+            ev_per_note_management(1, 0, true, false),
+            pitch_of(1, 0, 62),
+        ],
+    );
+    synth.tick(&[], &mut out);
+    assert!((note_freqs(&synth, 0)[0] - 261.63).abs() < 0.5);
+    queue_midi(&mut synth, &[ev_note_on(1, 0, 100)]);
+    synth.tick(&[], &mut out);
+    let mut freqs = note_freqs(&synth, 0);
+    freqs.sort_by(f32::total_cmp);
+    assert!(
+        (freqs[0] - 261.63).abs() < 0.5 && (freqs[1] - 293.66).abs() < 0.5,
+        "{freqs:?}"
+    );
+}
+
+/// M2-104 section 7.4.13: the Per-Note Pitch Bend sensitivity is common to the
+/// Note Numbers of one channel. Channel 1 set to 12 semitones leaves channel
+/// 2 at the default 48, so a full bend up reaches 12 on one and 48 on the
+/// other.
+#[test]
+fn the_per_note_bend_sensitivity_is_one_channels() {
+    let mut synth = hand_mpe();
+    let mut out = [0.0f32; 2];
+    let rpn = midi::registered_rpn(
+        MidiGroup::FIRST,
+        MidiChannel::of(1),
+        tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
+        tutti_midi_protocol::PitchBendSensitivity::of(12).to_rpn_bits(),
+    );
+    queue_midi(
+        &mut synth,
+        &[rpn, ev_note_on(1, 60, 100), ev_note_on(2, 60, 100)],
+    );
+    synth.tick(&[], &mut out);
+    for channel in [1, 2] {
+        queue_midi(
+            &mut synth,
+            &[midi::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::of(channel),
+                60,
+                0xFFFF_FFFF,
+            )],
+        );
+    }
+    synth.tick(&[], &mut out);
+    let bend = |channel: u8| {
+        synth
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.channel() == MidiChannel::of(channel))
+            .unwrap()
+            .mpe_state()
+            .pitch_bend_semitones
+            .get()
+    };
+    assert!((bend(1) - 12.0).abs() < 0.5, "{}", bend(1));
+    assert!((bend(2) - 48.0).abs() < 0.5, "{}", bend(2));
+}
+
 #[test]
 fn test_reset_all_controllers_spares_per_note() {
     // Reset All Controllers (CC121) resets channel controllers + global pitch
@@ -2737,8 +2870,7 @@ fn voice_of(synth: &PolySynth, note: u8) -> &SynthVoice {
 
 /// Per-Note Management read from literal words (M2-104 Figure 51: D is bit 1
 /// and S bit 0), so neither the encoder nor the decoder can be wrong in step
-/// with the other. Mutation: testing `reset` before `detach` in `voice2` made
-/// both halves fail (as did `if reset` for `if detach` in the handler).
+/// with the other.
 #[test]
 fn per_note_management_flags_are_read_from_the_spec_bits() {
     let on = ump(Message::Midi2(

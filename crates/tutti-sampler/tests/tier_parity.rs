@@ -27,8 +27,8 @@
 //! [`step_once`](DiskStreamer::step_once) — so there is no streamer thread, no
 //! sleep, no `Instant`, and no timeout anywhere in this file.
 //!
-//! That is not cosmetic. The threaded streamer parks 1 ms when idle and 3 ms when
-//! its rings are healthy, so polling it at 5–10 ms against a liveness ceiling
+//! That is not cosmetic. The threaded streamer sleeps until a source rings its bell,
+//! so polling it at 5–10 ms against a liveness ceiling
 //! races a producer the test cannot see, and the ceiling is really a guess
 //! about the machine. Worse, polling by *rendering* advances the clock, so a
 //! warm-up that needs several attempts walks the transport deep into the file
@@ -36,12 +36,12 @@
 //!
 //! Stepping removes both. [`prime`] runs cycles until the streamer stops making
 //! progress ([`StepOutcome`] other than `Busy`), which is exactly the point
-//! the threaded streamer would park — and it takes single-digit cycles. Where a
+//! the threaded streamer would sleep — and it takes single-digit cycles. Where a
 //! test still needs the streamer to keep up with a long render, [`render_streamed`]
 //! interleaves a step per block, which is the same relationship the thread has
 //! to the audio callback with the timing indeterminacy removed.
 //!
-//! The step is the shipped one: `streamer_loop_async` is written in terms of the
+//! The step is the shipped one: `streamer_loop` is written in terms of the
 //! same `StreamerCycle::step`, so what this file drives and what a host runs
 //! cannot diverge.
 

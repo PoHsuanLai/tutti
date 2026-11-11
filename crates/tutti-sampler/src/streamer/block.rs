@@ -8,10 +8,13 @@
 
 use std::marker::PhantomData;
 use std::ops::Range;
+use std::sync::Arc;
 
 use tutti_rt::{Loan, PosClaim, PosFrame, PosReader, Reader};
 use tutti_types::Samples;
 
+use super::bell::Bell;
+use super::io::refill::{Refill, needs_refill};
 use super::loops::RingControl;
 use crate::{Direction, LoopSetting};
 
@@ -23,11 +26,32 @@ pub(crate) struct RingReader {
     pos: PosReader,
     /// Registered on the control side (registering allocates).
     control: Reader<RingControl>,
+    /// Who to ring when the ring wants the streamer, and the ring's size in
+    /// frames; `None` for a ring no streamer feeds (a test's bare ring).
+    wake: Option<Wake>,
+}
+
+/// What a reader needs to ask the streamer for a refill.
+#[derive(Debug)]
+struct Wake {
+    bell: Arc<Bell>,
+    frames: usize,
 }
 
 impl RingReader {
     pub(crate) fn new(pos: PosReader, control: Reader<RingControl>) -> Self {
-        Self { pos, control }
+        Self {
+            pos,
+            control,
+            wake: None,
+        }
+    }
+
+    /// This reader, ringing `bell` when a block finds its ring of `frames`
+    /// slots wanting the streamer ([`needs_refill`]).
+    pub(crate) fn ringing(mut self, bell: Arc<Bell>, frames: usize) -> Self {
+        self.wake = Some(Wake { bell, frames });
+        self
     }
 
     /// Claim `reads` (up to two ranges, `0..0` for an unused one) and lend
@@ -42,9 +66,27 @@ impl RingReader {
                 (b.start.get() as u64, b.end.get() as u64),
             ],
         );
+        let control = self.control.lend();
+        // The streamer sleeps until something rings it: a ring below its
+        // refill threshold, or a reader that jumped outside the window, is the
+        // streamer's work (doc 025 §7). The same predicate its refill uses.
+        // Wait-free, allocation-free.
+        if let Some(wake) = &self.wake {
+            let window = claim.window();
+            let end = control.map.after.end();
+            let need = needs_refill(
+                play.get() as u64,
+                (window.from, window.to),
+                wake.frames,
+                end,
+            );
+            if !matches!(need, Refill::Satisfied { .. }) {
+                wake.bell.ring_refill();
+            }
+        }
         Block {
             claim,
-            control: self.control.lend(),
+            control,
             _not_send: PhantomData,
         }
     }

@@ -15,13 +15,13 @@
 //! Mutation (run): the fold's mono scale `M3DB` -> 0.5 (in `Fold`'s mono row), or
 //! a channel read at the wrong index, changes the digests and fails.
 
+#[cfg(feature = "convolution")]
+use tutti_fixtures::assert_golden;
 use tutti_fixtures::{Fnv, noise};
 #[cfg(feature = "convolution")]
 use tutti_graph::{GraphBuilder, Prepare};
 #[cfg(feature = "convolution")]
 use tutti_nodes::ConvolverNode;
-#[cfg(feature = "convolution")]
-use tutti_nodes::testing::assert_golden;
 #[cfg(feature = "convolution")]
 use tutti_types::SampleRate;
 use tutti_types::{ChannelLayout, ChannelTopology, Fold};

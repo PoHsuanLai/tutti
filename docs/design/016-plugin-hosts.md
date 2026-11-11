@@ -2312,7 +2312,7 @@ request that makes it.
 - **The client transition** is table-driven over `Msg` sequences; the hostile-peer
   suite stays as the socket-level check.
 - Golden digests, where a format test needs one, go through
-  `tutti_nodes::testing::assert_golden`.
+  `tutti_fixtures::assert_golden`.
 
 ### 6.1 Contract cases not yet built
 

@@ -91,6 +91,18 @@ impl U14 {
 }
 
 impl Voice1 {
+    /// How many data bytes follow a channel voice `status` byte: one for a
+    /// Program Change (`C0`..`CF`) or Channel Pressure (`D0`..`DF`), two for
+    /// the rest of `80`..`EF`. `None` for a data byte (top bit clear) and for
+    /// a system status (`F0`..`FF`), which is not a channel voice message.
+    #[must_use]
+    pub const fn data_len(status: u8) -> Option<u8> {
+        match status {
+            0x80..=0xEF => Some(data_bytes(status)),
+            _ => None,
+        }
+    }
+
     /// The message on `channel` as MIDI 1.0 bytes.
     #[must_use]
     pub fn bytes(self, channel: MidiChannel) -> Midi1Bytes {
@@ -332,17 +344,21 @@ impl Midi1Parser {
     /// status data.
     #[must_use]
     pub fn message(group: MidiGroup, bytes: &[u8]) -> Option<Message> {
-        let used = match *bytes.first()? {
-            0xC0..=0xDF | 0xF1 | 0xF3 => 2,
-            0x80..=0xEF | 0xF2 => 3,
-            0xF6 | 0xF8 | 0xFA..=0xFC | 0xFE | 0xFF => 1,
-            _ => return None,
-        };
-        let bytes = bytes.get(..used)?;
-        if bytes.iter().skip(1).any(|b| b & 0x80 != 0) {
-            return None;
+        let (&status, data) = bytes.split_first()?;
+        match status {
+            0x80..=0xF3 if status != 0xF0 => {
+                let data = data.get(..usize::from(data_bytes(status)))?;
+                let (d1, d2) = match *data {
+                    [d1] => (d1, 0),
+                    [d1, d2] => (d1, d2),
+                    _ => return None,
+                };
+                short(group, status, d1, d2)
+            }
+            0xF6 => Some(Message::System(group, System::TuneRequest)),
+            0xF8..=0xFF => Self::new(group).real_time(status),
+            _ => None,
         }
-        Self::new(group).feed_all(bytes).last()
     }
 
     /// Ends the message being read and the running status, but not a SysEx in

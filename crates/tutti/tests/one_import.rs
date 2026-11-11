@@ -88,8 +88,15 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
         },
         ..Default::default()
     };
-    let rendered = tutti::export::render_to_buffers(graph, &cfg, &tutti::transport::FrozenClock)
-        .expect("a DC graph renders");
+    let rendered = tutti::export::render_to_buffers(
+        graph,
+        &cfg,
+        &tutti::transport::FrozenClock,
+        &mut tutti::export::Control::none(),
+    )
+    .expect("a DC graph renders")
+    .finished()
+    .expect("nothing cancels a control with no token");
     assert!(!rendered.planes().is_empty());
     assert!(rendered.planes()[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));
 }

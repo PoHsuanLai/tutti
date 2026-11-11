@@ -14,14 +14,15 @@
 //! and the pitched voice call `sin` (and the vocoder's FFT), libm
 //! quality-of-implementation that differs in the last ulp between C runtimes,
 //! so the digests are asserted only where they were recorded
-//! (`tutti_nodes::testing::assert_golden`).
+//! (`tutti_fixtures::assert_golden`).
 
 use std::sync::Arc;
 
+use tutti_fixtures::assert_golden;
 use tutti_graph::Op;
 use tutti_graph::TapAlign;
 use tutti_nodes::MetronomeMode;
-use tutti_nodes::testing::{Const, assert_golden};
+use tutti_nodes::testing::Const;
 use tutti_session::{GraphSource, MissingSource, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};

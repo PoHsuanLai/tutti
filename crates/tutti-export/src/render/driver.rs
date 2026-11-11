@@ -16,7 +16,7 @@
 //! than the file is downmixed rather than truncated, and a narrower one is
 //! zero-filled rather than duplicated.
 
-use crate::control::{Control, Flow, Outcome};
+use crate::control::{Control, Outcome, Stage};
 use crate::render::BlockCursor;
 use crate::{ConfigError, RenderGraph};
 use tutti_transport::RenderClock;
@@ -435,12 +435,14 @@ impl FrameSource for PlaneSource<'_> {
 /// because it needs counters that span blocks. `consume` is called only with
 /// frames that survive it.
 ///
-/// After each block `control` is told how far the render is; if it answers
-/// [`Flow::Stop`] the render ends there as [`Outcome::Cancelled`].
+/// The token is checked before every block and after the progress a block
+/// delivered (a callback may cancel; the last block's too), and a cancelled
+/// render ends there as [`Outcome::Cancelled`]. `stage` is the stage the
+/// frames count in: `Rendering` for a graph, `Writing` for planes replayed.
 ///
 /// Under [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail) the render
-/// stops at the first block that has lost an event, after that block's tick
-/// (a render the tick cancelled is not judged), with
+/// stops at the first block that has lost an event, after that block's
+/// progress and cancel check (a render that was cancelled is not judged), with
 /// [`Error::EventsDropped`](crate::Error::EventsDropped) counting what had
 /// been lost by then: a render that is going to fail does not spend the rest
 /// of its length first.
@@ -448,6 +450,7 @@ pub(crate) fn drive<F>(
     src: &mut dyn FrameSource,
     layout: ChannelLayout,
     plan: &crate::render::RenderPlan,
+    stage: Stage,
     control: &mut Control<'_>,
     on_loss: crate::EventLossPolicy,
     mut consume: F,
@@ -465,7 +468,11 @@ where
     let mut block = vec![0.0f32; max_block * ch];
     let mut kept = Samples(0);
 
+    control.begin(stage, Some(plan.total));
     while src.produced() < plan.total {
+        if control.is_cancelled() {
+            return Ok(Outcome::Cancelled);
+        }
         // `Samples` has no `Sub` on purpose — an unsigned count that wraps is a
         // buffer size that reads off the end of the world. `remaining_after` is
         // the named, saturating form.
@@ -494,10 +501,11 @@ where
             consume(filled.window(window.clone()))?;
             kept = Samples(kept.get() + window.len());
         }
-        if control.report(src.produced(), plan.total) == Flow::Stop {
+        control.advance(stage, src.produced(), plan.total);
+        if control.is_cancelled() {
             return Ok(Outcome::Cancelled);
         }
-        // After the tick, so a render the caller cancelled is not judged.
+        // After the check, so a render the caller cancelled is not judged.
         check_loss(on_loss, src.lost_events())?;
     }
 

@@ -2,9 +2,12 @@
 //! pinned against figures worked out from the signal, not against another
 //! render.
 
+mod support;
+
+use crate::support::{render_normalized_to_file, render_to_file};
 use tutti_export::{
     Dither, EncodeConfig, ExportConfig, Format, FrozenClock, Normalize, Pcm, RenderConfig,
-    RenderGraph, render_normalized_to_file, render_to_file,
+    RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_measure::{LoudnessConfig, measure_loudness};
@@ -44,7 +47,7 @@ fn sine(frequency: Hz) -> RenderGraph {
 /// 0 dBTP, and the gain to -6 dBTP is -6 dB; a plain export reports neither.
 ///
 /// Mutation (run, each fails this test): `written.gain = None` in
-/// `render_normalized_to_file_with`; `written.gain = Some(Db(0.0))`;
+/// `render_normalized_to_file`; `written.gain = Some(Db(0.0))`;
 /// `written.measured = None`; `encode_to_file` reporting `gain: Some(Db(0.0))`
 /// for a plain export (the `None` assertions fail).
 #[test]

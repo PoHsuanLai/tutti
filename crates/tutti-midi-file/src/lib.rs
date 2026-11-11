@@ -23,9 +23,11 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// The bytes are not a well-formed SMF: `midly`'s own parse failures
-    /// (strict, so a malformed event or a track count that disagrees with the
-    /// header is one), a zero ticks-per-beat division.
+    /// The bytes are not a well-formed SMF: a malformed event (a data byte
+    /// with its top bit set, a running status with none active, a
+    /// variable-length quantity over four bytes, an event cut off inside its
+    /// chunk), a track count that disagrees with the header, a zero
+    /// ticks-per-beat division. The message says which.
     #[error("MIDI parse error: {0}")]
     MidiFileParse(String),
 

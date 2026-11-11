@@ -135,7 +135,7 @@ fn flac_bytes_are_pinned_at_every_level() {
         (Standard, Int24, 2, 0, 0x304f_3d17_993a_f031),
     ] {
         let (_, got) = written(Format::Flac { depth, level }, channels, frames);
-        tutti_nodes::testing::assert_golden(
+        tutti_fixtures::assert_golden(
             &format!("FLAC {level:?} {depth:?} {channels}ch {frames}"),
             got,
             digest,

@@ -9,8 +9,8 @@ they are described by one vocabulary that fits the first and not the second.
 This design gives each its own shape, removes the runtime rules a type can
 carry, and orders the work as PRs that each stay green.
 
-Status: design, stages 0 to 4 landed (§8); stage 5 is specified as seven cuts,
-cuts 1 to 6 built. The sections that describe a defect (§1) describe the tree
+Status: design, stages 0 to 6 landed (§8); stage 5 was specified as seven cuts,
+all built. The sections that describe a defect (§1) describe the tree
 before stage 3. The decisions of 2026-11-07 and the stage 5 decisions of
 2026-11-10, which fold in a read-only review of the disk streamer
 (`streamer/`), are the owner's, taken as recommended, and are recorded with
@@ -765,7 +765,8 @@ still needs:
   only if a load test shows it helps.
 - The ALSA MIDI backend blocks in `poll` on its fd (`backend/alsa/poll.rs`).
 
-**Not done, the disk stream's part.**
+**Done at stage 6 (see "As built, stage 6" in §8); what follows is what it
+set out to do.**
 
 - The streamer loop still waits on its command queue with `recv_timeout`, 1 ms
   idle and 3 ms healthy, and yields while a ring is below threshold
@@ -1473,7 +1474,79 @@ Each stage is one PR that stays green. Line figures are estimates.
    every wake source named and rung, `Commands::send` rings, one shared
    `needs_refill`, `Idle` redefined, one shutdown mechanism, a non-blocking
    send, the wake test, and the stale comments. After stage 5, because the
-   `Record` and the pure `step` are what a `Wake` is returned from.
+   `Record` and the pure `step` are what a `Wake` is returned from. Done,
+   except the non-blocking send, which is deferred with its reason (below).
+
+   *As built, stage 6.* The streamer thread sleeps on a `Bell`
+   (`streamer/bell.rs`): a `tutti_rt::Doorbell` with the two flags its
+   sleeper reads (a voice asked for a refill, shutdown), shared by every
+   sender, every voice's reader and the thread. `Doorbell::ring` is wait-free
+   and allocation-free (a fence and a load; with a sleeper parked, a swap and
+   `Thread::unpark`, a futex wake), so the audio thread rings it, and `tutti-rt`
+   needed no change and no new loom model. The wait is
+   `Doorbell::wait_timeout` over `!queue.is_empty() || shutdown || refill`,
+   timed to a **50 ms backstop** (`loop_body::BACKSTOP`).
+
+   The wake sources, each rung:
+
+   | Source | Rung by |
+   |---|---|
+   | a command (open, close, loop, direction, session rate) | `StreamerSender::send`, after the push (`StreamerSender` is the queue's sending end, a channel sender and the bell, in place of the bare channel sender) |
+   | the decode lane's answer to an open | the same `send` (the lane holds a `StreamerSender`) |
+   | a voice's ring below its refill threshold, or a jump outside the window | `RingReader::block`, on the audio thread, through `Bell::ring_refill` |
+   | shutdown | `Bell::shut` (a flag and a ring) |
+   | the reclaim backstop | the wait's timeout |
+
+   `needs_refill(play, window, frames, end) -> Refill` (`io/refill.rs`;
+   `Jumped`, `Satisfied { fill }`, `Below { fill, room }`) is the one predicate:
+   `refill_one` follows its verdict (moving the window on `Jumped`, writing up to
+   `room` frames on `Below`) and the voice rings on anything but `Satisfied`.
+   The end of the mapping both read is `Arrangement::end` (the published map's;
+   `Mapping::end` delegates to it). A window that holds all the mapping writes
+   is `Satisfied`, so a ring at the end of a clip neither spins the streamer
+   (the old `Stalled` insight, kept) nor rings it. The audio side reads the
+   window from the block's own claim.
+
+   `StepOutcome::Idle` is "no record is live" (an opening or faulted record is
+   not), and `Pacing` is gone: the loop sleeps the same wait for `Idle`,
+   `Healthy` and `Stalled`, and yields for `Busy`. Shutdown is one mechanism,
+   the bell's flag and a ring: the `Shutdown` command, the `Running`'s own flag
+   and the loop's break on a disconnected queue are gone. The queue's receiver
+   still drops when the thread exits, which is how a sender learns the streamer
+   is gone (`StreamerGone`), not a way to stop it. The stale comments are fixed
+   ("maximum priority", "the async loop" and `streamer_loop_async`, the
+   `streamer/mod.rs` SPSC sentence, `Cargo.toml`'s and `tier_parity.rs`'s 1 ms
+   and 3 ms).
+
+   Tests (each with its mutation in its doc comment): `streamer/wake.rs`
+   (an open, a ring below threshold, a jump, the decode lane's reply, and the
+   voice's ring under `assert_no_alloc`, each with a 60 s backstop and a 10 s
+   bound, the thread proved parked first), `thread.rs`
+   (`a_send_wakes_a_sleeping_streamer`, `dropping_a_sleeping_streamer_joins_promptly`,
+   `an_idle_streamer_does_not_spin`, counted in cycles), `step.rs`
+   (`a_cycle_is_idle_until_a_stream_is_live`) and `io/refill.rs`
+   (`needs_refill_follows_its_documented_rule`).
+
+   Departures, each because the code made the sketch impossible or worse:
+   - **The non-blocking send is deferred.** `StreamerPort::send` still waits
+     for room. Two existing tests pin the wait as a decision
+     (`a_handle_send_waits_for_the_streamer`, `an_add_waits_for_the_streamer`: a
+     loop sent while the queue is full must not be dropped), and a typed `Full`
+     would drop it, or push a retry onto every caller (`Stream`'s `Drop`, whose
+     `Close` cannot be lost, among them). The way out is a stream's level
+     commands coalescing into its record and a close that is a flag on its status
+     rather than a message; that is its own change, with those two tests
+     rewritten on purpose.
+   - **`StepOutcome` keeps its name and its `Stalled` variant** where the
+     sketch said `Wake`: it is public behind `test-support`, tests and docs name
+     it, and the rename would carry nothing. Its `Shutdown` variant is gone.
+   - **`SessionRate::set` does not ring**: `set_sample_rate` already sends the
+     `SessionRate` command after storing the rate, and that send rings.
+   - **The backstop is one 50 ms value**, not a wait timed to the earliest ring
+     deadline: with every wake source rung, the backstop only bounds a missed
+     ring and drives the `reclaim` sweep, and a deadline would be a second
+     source of truth about ring drain time.
+   - **The cycle count is test-only** (`Bell::cycles`, `cfg(test)`).
 7. **The `Dither` sink adapter** (decision A, §10): export and the recorder
    share it. `Resample` and the `Stage` marker wait for a pipeline that needs
    them.
@@ -1507,7 +1580,7 @@ Taken by the owner on 2026-11-07, all as recommended.
 11. **Rename `butler` to "disk streamer"**, matching the public `DiskStreamer`.
 12. **Waiting and priority**: a `Doorbell` for the wake, one priority call that
     reports what it got, disk streaming never real time at about nice -10.
-    Landed except the streamer's own part (§7).
+    Landed (§7; the streamer's own part at stage 6).
 
 **Stage 5 decisions.** Decided 2026-11-10, as recommended unless a line says it
 departs. The grounds were read from the code; the departures say what the code

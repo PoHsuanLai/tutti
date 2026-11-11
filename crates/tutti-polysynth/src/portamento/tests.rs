@@ -179,6 +179,6 @@ fn glide_render_digests() {
         ("quadratic", Law::PowerIn(2.0), 0xb127_e94e_c43e_399e),
         ("square-root", Law::PowerIn(0.5), 0x4a68_7e6b_1b1a_9839),
     ] {
-        tutti_nodes::testing::assert_golden(name, digest(curve), recorded);
+        tutti_fixtures::assert_golden(name, digest(curve), recorded);
     }
 }

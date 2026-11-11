@@ -33,9 +33,9 @@ serde = ["dep:serde"]
 #
 # Exposes `DiskStreamer::manual` + `step_once`, which run the *same*
 # `StreamerCycle::step` the streamer thread runs — the thread contributes only
-# pacing. A streamer-driven stream is otherwise observable to an out-of-crate test
-# only through wall clock (send, sleep, look), and the streamer parks 1 ms idle /
-# 3 ms healthy, so such a test is racing a producer it cannot see. Off by
+# sleeping on its bell. A streamer-driven stream is otherwise observable to an
+# out-of-crate test only through wall clock (send, sleep, look), so such a test
+# is racing a producer it cannot see. Off by
 # default: a host has no use for it, and the assertions it adds are about a
 # constraint only a hand driver can violate.
 #

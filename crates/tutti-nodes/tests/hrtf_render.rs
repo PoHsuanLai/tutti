@@ -964,7 +964,7 @@ fn the_position_dezipper_renders_what_it_always_did() {
     }
     let digest = digest.finish();
     eprintln!("DIGEST hrtf {digest:#018x}");
-    tutti_nodes::testing::assert_golden("hrtf position de-zipper", digest, 0x6ae5_3847_7723_708d);
+    tutti_fixtures::assert_golden("hrtf position de-zipper", digest, 0x6ae5_3847_7723_708d);
 }
 
 /// FNV-1a over the bits of every sample, left then right of each block, of a
@@ -1004,9 +1004,5 @@ fn the_panners_fold_renders_what_it_always_did() {
     }
     let h = h.finish();
     println!("DIGEST hrtf {h:#018x}");
-    tutti_nodes::testing::assert_golden(
-        "the HRTF panner's folded render",
-        h,
-        0xacdb_8337_a761_33f4,
-    );
+    tutti_fixtures::assert_golden("the HRTF panner's folded render", h, 0xacdb_8337_a761_33f4);
 }

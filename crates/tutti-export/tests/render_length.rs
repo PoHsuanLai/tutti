@@ -1,9 +1,11 @@
 //! What a render's length may be: a number of frames, held or streamed, never
 //! an empty file reported as success and never a process abort.
 
+mod support;
+
+use crate::support::{render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_export::{
     ConfigError, Error, ExportConfig, FrozenClock, Normalize, RenderConfig, RenderGraph,
-    render_normalized_to_file, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;

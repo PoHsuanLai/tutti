@@ -25,7 +25,7 @@
 //!   libm quality-of-implementation and differ in the last ulp between C
 //!   runtimes (the reason `render_is_bit_identical_to_the_audionode_era` is
 //!   gated off MSVC). So they are asserted only where they were recorded
-//!   (`tutti_nodes::testing::assert_golden`); CI's Linux jobs run them. The
+//!   (`tutti_fixtures::assert_golden`); CI's Linux jobs run them. The
 //!   one libm-free case (a dithered DC level) is asserted everywhere.
 //!
 //! Recompute a digest only with a deliberate, argued DSP change: a mismatch
@@ -46,18 +46,21 @@
 
 #![cfg(feature = "wav")]
 
+mod support;
+
 use std::sync::Arc;
 use tutti_types::Seconds;
 
+use crate::support::{render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_export::{
     ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
-    Normalize, Pcm, RenderConfig, RenderGraph, Rendered, Resample, render_normalized_to_file,
-    render_to_buffers, render_to_file, write_buffers,
+    Normalize, Pcm, RenderConfig, RenderGraph, Rendered, Resample, write_buffers,
 };
+use tutti_fixtures::assert_golden;
 use tutti_graph::{
     Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
 };
-use tutti_nodes::testing::{Const, Osc, assert_golden, vbap_mix};
+use tutti_nodes::testing::{Const, Osc, vbap_mix};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Amplitude, Azimuth, Beat, Bpm, Hz, SampleRate};
 use tutti_types::{Db, Samples};

@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 
 use tutti_export::{
     ChannelLayout, EncodeConfig, ExportConfig, Format, GRAPH_MAX_BLOCK, Normalize, Outcome, Pcm,
-    RenderConfig,
+    RenderConfig, Stage,
 };
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_session::{
@@ -104,9 +104,10 @@ const TOTAL: Samples = Samples(BLOCKS * 1024);
 /// A cancel from inside the render stops it at the end of that block, the
 /// outcome is `Cancelled`, the partial file is gone, the token is released
 /// (a following export starts and completes), and the reading froze where
-/// the render stopped.
+/// the render stopped (the render's entry: a reading comes every 4096 frames,
+/// and three blocks are fewer).
 ///
-/// Mutation (run): `ExportHandle::tick` ignoring the stop request -> all 20
+/// Mutation (run): `ExportHandle::cancel` not setting its token -> all 20
 /// blocks render and the outcome is `Finished`; fails.
 /// Mutation (run): `ExportRendered` kept in `finish_export` (token not
 /// dropped) -> the following export is refused; fails.
@@ -143,8 +144,8 @@ fn a_cancel_stops_the_render_and_frees_the_session() {
     assert!(!r.session.export_in_flight(), "the token is released");
     assert!(!path.exists(), "no partial file");
     let seen = handle.progress().unwrap();
-    assert_eq!(seen.produced, Samples(3 * 1024));
-    assert_eq!(seen.total, TOTAL);
+    assert_eq!(seen.stage(), Stage::Rendering);
+    assert_eq!(seen.frames(), Some((Samples(0), TOTAL)));
 
     // The next export is not refused, and runs to its end.
     let again = r
@@ -193,38 +194,31 @@ fn a_buffer_export_cancels() {
     assert_eq!(r.blocks.load(Ordering::SeqCst), 2);
 }
 
-/// A render nobody cancels reports each block and ends on its total; a
-/// normalized one ends on the second pass of two.
+/// A render nobody cancels reports its stage and ends on 1.0 in the
+/// finalizing stage, with and without normalize; the handle holds what the
+/// pipeline last delivered, the one reading the session does not weight
+/// itself.
 ///
-/// Mutation (run): `ExportHandle::tick` recording every reading as `Pass::ONLY`
-/// -> the pass assertion fails.
+/// Mutation (run): `ExportHandle::record` storing only the first reading ->
+/// the stage and fraction assertions fail.
 #[test]
-fn progress_ends_on_the_total_of_the_last_pass() {
+fn progress_ends_at_one_in_the_finalizing_stage() {
     let dir = tempfile::tempdir().unwrap();
     let mut r = rig(usize::MAX);
 
-    let job = r
-        .session
-        .export(file_request(&dir.path().join("p.wav"), None))
-        .unwrap();
-    let handle = job.handle();
-    let outcome = r.session.finish_export(job.run()).unwrap();
-    assert!(matches!(outcome, Outcome::Finished(_)));
-    let last = handle.progress().unwrap();
-    assert_eq!((last.pass.index(), last.pass.count()), (0, 1));
-    assert_eq!((last.produced, last.total), (TOTAL, TOTAL));
-
-    let job = r
-        .session
-        .export(file_request(
-            &dir.path().join("n.wav"),
-            Some(Normalize::peak(Db(-6.0))),
-        ))
-        .unwrap();
-    let handle = job.handle();
-    let outcome = r.session.finish_export(job.run()).unwrap();
-    assert!(matches!(outcome, Outcome::Finished(_)));
-    let last = handle.progress().unwrap();
-    assert_eq!((last.pass.index(), last.pass.count()), (1, 2));
-    assert_eq!((last.produced, last.total), (TOTAL, TOTAL));
+    for (name, normalize) in [("p.wav", None), ("n.wav", Some(Normalize::peak(Db(-6.0))))] {
+        let job = r
+            .session
+            .export(file_request(&dir.path().join(name), normalize))
+            .unwrap();
+        let handle = job.handle();
+        let outcome = r.session.finish_export(job.run()).unwrap();
+        assert!(matches!(outcome, Outcome::Finished(_)));
+        let last = handle.progress().unwrap();
+        assert_eq!(
+            (last.stage(), last.fraction()),
+            (Stage::Finalizing, 1.0),
+            "{name}"
+        );
+    }
 }

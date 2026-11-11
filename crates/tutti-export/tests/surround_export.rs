@@ -13,6 +13,8 @@
 
 #![cfg(feature = "wav")]
 
+mod support;
+
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph};
 use tutti_graph::GraphBuilder;
 use tutti_types::Azimuth;
@@ -27,7 +29,7 @@ const RATE: tutti_types::SampleRate = tutti_types::SampleRate(48_000.0);
 /// config is built once here rather than restated at every call site.
 fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    tutti_export::render_to_file(
+    crate::support::render_to_file(
         RenderGraph::new(editor, executor).expect("built together"),
         &ExportConfig {
             render: RenderConfig {

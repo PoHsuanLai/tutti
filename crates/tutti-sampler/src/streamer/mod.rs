@@ -1,13 +1,15 @@
 //! Asynchronous disk I/O for audio file streaming.
 //!
 //! A background "streamer" thread decodes from disk into one position-indexed
-//! ring per stream; the audio thread only ever reads them. Nothing here blocks
+//! ring per stream, which the stream's voice reads on the audio thread (it
+//! never pops: a position, not an order, is what it reads). Nothing here blocks
 //! or allocates on the audio thread — the split is what makes the streaming
 //! tier real-time safe.
 //!
 //! The streamer holds one [`record`] per open stream and changes the table by
 //! a pure step; the control side of a stream is [`Stream`], whose drop ends it.
 
+mod bell;
 mod block;
 mod cache;
 mod cells;
@@ -29,6 +31,8 @@ mod status;
 mod step;
 mod stream;
 mod thread;
+#[cfg(test)]
+mod wake;
 
 pub(crate) use cells::Cells;
 pub use command::StreamId;
@@ -45,11 +49,7 @@ pub(crate) use prefetch::SharedReader;
 pub use thread::ByHand;
 pub use thread::Running;
 
-/// The sending end of the streamer's command queue: a bounded
-/// `crossbeam_channel`, sent on by control threads only. A send waits while
-/// the queue is full and fails once the streamer has gone (every receiver
-/// dropped: the thread's on its exit, a built streamer's on its drop).
-pub(crate) type StreamerSender = crossbeam_channel::Sender<StreamerCommand>;
+pub(crate) use bell::StreamerSender;
 
 // The streamer's public face: the handle a host holds to drive disk streaming,
 // and the one failure every stream-control command can report.
@@ -196,7 +196,11 @@ impl DiskStreamer<Running> {
     /// [`new`](Self::new) with what a test replaces: how a thread starts, and
     /// the hooks where a file is read and decoded.
     fn build(sample_rate: SampleRate, config: DiskStreamerConfig, seams: Seams) -> Result<Self> {
-        let built = Built::new(256, sample_rate, config.buffer_config, seams);
+        Self::from_built(Built::new(256, sample_rate, config.buffer_config, seams))
+    }
+
+    /// The streamer over `built`, its thread started.
+    fn from_built(built: Built) -> Result<Self> {
         let (streamer_tx, shared) = (built.command_sender(), built.shared());
 
         Ok(DiskStreamer {
@@ -215,7 +219,7 @@ impl DiskStreamer<ByHand> {
     /// Requires the `test-support` feature.
     ///
     /// The step is the same one the thread runs, so this is the shipped path
-    /// with its pacing removed rather than a parallel implementation. What it
+    /// with its sleeping removed rather than a parallel implementation. What it
     /// buys is a streamer whose progress is *counted* instead of waited for: a
     /// test can say "after this many cycles the ring holds audio", where the
     /// threaded streamer only lets it say "after this long it probably does".

@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 use tutti_types::{SampleRate, Samples, SrcRatio};
 
 use super::StreamerSender;
+use super::bell::Bell;
 use super::cache::LruCache;
 use super::cells::Cells;
 use super::command::{Decoded, Reply, StreamId, StreamerCommand};
@@ -38,6 +39,8 @@ use tutti_types::ChannelLayout;
 pub(super) struct Handles {
     pub cache: Arc<LruCache>,
     pub metrics: Arc<Metrics>,
+    /// What wakes the streamer: every stream's reader rings it.
+    pub bell: Arc<Bell>,
     /// The session rate each stream's [`SrcRatio`] is derived against.
     pub session_rate: SessionRate,
     /// What a test replaces (production: none).
@@ -172,8 +175,6 @@ pub(super) fn handle_command(
             handle_direction(stream, direction, config, local);
         }
         StreamerCommand::SessionRate => local.streams.rerate(shared.session_rate.get()),
-
-        StreamerCommand::Shutdown => {}
     }
 }
 
@@ -464,6 +465,7 @@ fn build_stream(
             control,
             place,
             width,
+            bell: Arc::clone(&shared.bell),
         },
     ))
 }

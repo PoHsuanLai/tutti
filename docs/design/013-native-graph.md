@@ -3306,7 +3306,7 @@ samples that call libm and have no closed form, a **golden digest** (FNV-1a
 over the `f32` bits) recorded from the native render when the `Net` backend was removed, which
 rendered the `Net`'s samples bit for bit (asserted on main before it),
 asserted only on the recorded target, x86_64 with glibc 2.39
-(`tutti_nodes::testing::assert_golden`: skipped with a printed note on
+(`tutti_fixtures::assert_golden`: skipped with a printed note on
 another libm or architecture, a failure under `TUTTI_GOLDEN=require`, which CI
 sets on Linux; `TUTTI_GOLDEN=record` prints new figures, and is refused under
 `CI`), with the portable checks beside it. The one libm-free digest (a dithered

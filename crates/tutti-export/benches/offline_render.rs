@@ -29,7 +29,7 @@ use tutti_types::Seconds;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_export::{
-    Dither, EncodeConfig, ExportConfig, Format, Normalize, Pcm, RenderConfig, RenderGraph,
+    Control, Dither, EncodeConfig, ExportConfig, Format, Normalize, Pcm, RenderConfig, RenderGraph,
     Resample, render_normalized_to_file, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
@@ -105,7 +105,10 @@ fn bench_render(c: &mut Criterion) {
             |b, cfg| {
                 b.iter(|| {
                     black_box(
-                        render_to_buffers(tone_graph(SR), cfg, &FrozenClock).expect("renders"),
+                        render_to_buffers(tone_graph(SR), cfg, &FrozenClock, &mut Control::none())
+                            .expect("renders")
+                            .finished()
+                            .expect("nothing cancels a control with no token"),
                     )
                 })
             },
@@ -123,7 +126,12 @@ fn bench_render(c: &mut Criterion) {
         group.throughput(Throughput::Elements((0.25 * SR) as u64));
         group.bench_with_input(BenchmarkId::new("width", name), &cfg, |b, cfg| {
             b.iter(|| {
-                black_box(render_to_buffers(dc_graph(SR), cfg, &FrozenClock).expect("renders"))
+                black_box(
+                    render_to_buffers(dc_graph(SR), cfg, &FrozenClock, &mut Control::none())
+                        .expect("renders")
+                        .finished()
+                        .expect("nothing cancels a control with no token"),
+                )
             })
         });
     }
@@ -134,7 +142,12 @@ fn bench_render(c: &mut Criterion) {
         group.throughput(Throughput::Elements((0.25 * rate) as u64));
         group.bench_with_input(BenchmarkId::new("rate", rate as u64), &cfg, |b, cfg| {
             b.iter(|| {
-                black_box(render_to_buffers(tone_graph(rate), cfg, &FrozenClock).expect("renders"))
+                black_box(
+                    render_to_buffers(tone_graph(rate), cfg, &FrozenClock, &mut Control::none())
+                        .expect("renders")
+                        .finished()
+                        .expect("nothing cancels a control with no token"),
+                )
             })
         });
     }
@@ -176,7 +189,18 @@ fn bench_encode(c: &mut Criterion) {
         let path = dir.path().join(format!("bench.{name}"));
         group.bench_with_input(BenchmarkId::from_parameter(name), &cfg, |b, cfg| {
             b.iter(|| {
-                black_box(render_to_file(tone_graph(SR), cfg, &FrozenClock, &path).expect("writes"))
+                black_box(
+                    render_to_file(
+                        tone_graph(SR),
+                        cfg,
+                        &FrozenClock,
+                        &path,
+                        &mut Control::none(),
+                    )
+                    .expect("writes")
+                    .finished()
+                    .expect("nothing cancels a control with no token"),
+                )
             })
         });
     }
@@ -217,8 +241,11 @@ fn bench_resample(c: &mut Criterion) {
                             &FrozenClock,
                             Normalize::Peak { target: Db(-1.0) },
                             &path,
+                            &mut Control::none(),
                         )
-                        .expect("writes"),
+                        .expect("writes")
+                        .finished()
+                        .expect("nothing cancels a control with no token"),
                     )
                 })
             },

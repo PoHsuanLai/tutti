@@ -69,7 +69,7 @@ pub(super) struct Record {
     /// What the control side reads of this stream ([`Stream::status`](crate::Stream::status)).
     status: Arc<StatusCell>,
     /// How full the ring was at the last refill, as a fraction of its
-    /// capacity: what the pacing asks whether the stream is healthy by.
+    /// capacity: what the loop asks whether the stream is healthy by.
     fill: f32,
     /// Its work panicked: faulted, and removed at the end of the cycle
     /// ([`Streams::reap`]).
@@ -243,6 +243,7 @@ impl Streams {
         self.records.len()
     }
 
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.records.is_empty()
     }

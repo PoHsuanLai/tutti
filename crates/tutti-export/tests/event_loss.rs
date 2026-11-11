@@ -6,9 +6,12 @@
 //! 2,048 frames is two 1,024-frame blocks: 6 note-ons refused in each, 12 in
 //! all.
 
+mod support;
+
+use support::{render_to_buffers, render_to_file};
 use tutti_export::{
-    Error, EventLossPolicy, ExportConfig, Flow, FrozenClock, RenderConfig, RenderGraph,
-    render_to_buffers, render_to_buffers_with, render_to_file, write_buffers,
+    CancelToken, Control, Error, EventLossPolicy, ExportConfig, FrozenClock, Progress,
+    RenderConfig, RenderGraph, write_buffers,
 };
 use tutti_graph::{Cx, Event, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::Osc;
@@ -79,27 +82,32 @@ fn config(policy: EventLossPolicy) -> ExportConfig {
 
 /// By default the render is an error naming how many were dropped, and it
 /// stops at the first block that dropped any: the 6 refused in block one, not
-/// the 12 of the whole render, so the tick hears of one block and no more.
+/// the 12 of the whole render, so the progress callback never hears of the
+/// second block (its reading at 2,048 frames, the plan's total, is delivered
+/// whenever the block is rendered).
 ///
 /// Mutation: drop the per-block `check_loss` in `drive` → the render runs both
-/// blocks and reports 12 (and ticks twice) → fails. Mutation: compare the
+/// blocks and reports 12 (and delivers the second block's reading) → fails. Mutation: compare the
 /// executor's total, not its change over the render, where the graph was
 /// reused → covered by the reused-graph assertion below.
 #[test]
 fn a_render_that_dropped_events_stops_at_the_first_block_that_did() {
-    let mut ticks = 0;
-    let err = render_to_buffers_with(
+    let mut rendered_frames = Vec::new();
+    let token = CancelToken::new();
+    let mut record = |p: &Progress| rendered_frames.push(p.frames().map(|(done, _)| done.get()));
+    let err = tutti_export::render_to_buffers(
         graph(),
         &config(EventLossPolicy::Fail),
         &FrozenClock,
-        &mut |_| {
-            ticks += 1;
-            Flow::Continue
-        },
+        &mut Control::new(&token).on_progress(&mut record),
     )
     .expect_err("events were dropped");
     assert!(matches!(err, Error::EventsDropped { count: 6 }), "{err:?}");
-    assert_eq!(ticks, 1, "the second block was never rendered");
+    assert_eq!(
+        rendered_frames,
+        [Some(0)],
+        "only the render's start was reported: the second block was never rendered"
+    );
 }
 
 /// Allowed, it succeeds and carries the figure; a graph rendered a second
@@ -152,7 +160,7 @@ fn a_render_that_lost_events_replaces_nothing() {
     let normalize = tutti_export::Normalize::Peak {
         target: tutti_types::Db(-1.0),
     };
-    let err = tutti_export::render_normalized_to_file(
+    let err = support::render_normalized_to_file(
         graph(),
         &config(EventLossPolicy::Fail),
         &FrozenClock,
@@ -165,12 +173,14 @@ fn a_render_that_lost_events_replaces_nothing() {
     assert_eq!(leftovers(), vec!["out.wav".to_string()], "no temporary");
 
     // Cancelled before the first block: not an error, and still untouched.
-    let cancelled = tutti_export::render_to_file_with(
+    let token = CancelToken::new();
+    token.cancel();
+    let cancelled = tutti_export::render_to_file(
         graph(),
         &config(EventLossPolicy::Fail),
         &FrozenClock,
         &path,
-        &mut |_| tutti_export::Flow::Stop,
+        &mut Control::new(&token),
     )
     .expect("a cancelled render is not an error");
     assert_eq!(cancelled, tutti_export::Outcome::Cancelled);

@@ -20,17 +20,19 @@ fn a_prepended_point_without_room_is_counted_not_grown_into() {
     let mut changes = ParameterChanges::reserved(1, 2);
     changes.add_change(7u32.into(), 0, 0.1);
     changes.add_change(7u32.into(), 4, 0.2);
-    list.refill_from_changes(&changes);
+    let mut staging = list.begin();
+    staging.refill(&changes).unwrap();
 
-    list.prepend_point(7, Normalized::of(0.9));
+    staging.prepend(7, Normalized::of(0.9)).unwrap();
     assert_eq!(list.points_dropped(), 1, "the queue of 7 is full");
-    list.prepend_point(9, Normalized::of(0.4));
+    staging.prepend(9, Normalized::of(0.4)).unwrap();
     assert_eq!(list.points_dropped(), 1, "the free queue took 9");
-    list.prepend_point(11, Normalized::of(0.5));
+    staging.prepend(11, Normalized::of(0.5)).unwrap();
     assert_eq!(list.points_dropped(), 2, "no queue left for 11");
+    drop(staging);
 
     let mut out = ParameterChanges::reserved(4, 4);
-    list.fill_changes(&mut out);
+    assert!(list.try_fill_changes(&mut out));
     let points = |id: u32| -> Vec<(i32, f64)> {
         out.queues
             .iter()
@@ -73,14 +75,14 @@ fn input_list(queues: usize, room: usize) -> ComWrapper<ParameterChangesImpl> {
 fn concurrent_reads_of_the_list_both_succeed() {
     use std::sync::Barrier;
     let list = unpooled(2, 4);
-    list.refill_from_changes(&changes_with(2, 1));
+    list.begin().refill(&changes_with(2, 1)).unwrap();
     let (taken, done) = (Barrier::new(2), Barrier::new(2));
     std::thread::scope(|scope| {
         scope.spawn(|| {
             let read = list.inner.borrow();
             taken.wait();
             done.wait();
-            assert_eq!((read.queues.len(), read.live), (2, 2));
+            assert_eq!((list.queues.len(), read.live), (2, 2));
         });
         taken.wait();
         let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
@@ -105,7 +107,7 @@ fn concurrent_reads_of_the_list_both_succeed() {
 #[test]
 fn a_read_during_a_write_fails_at_the_com_level() {
     let list = unpooled(2, 4);
-    list.refill_from_changes(&changes_with(1, 1));
+    list.begin().refill(&changes_with(1, 1)).unwrap();
     let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
     {
         let _adding = list.inner.borrow_mut();
@@ -147,11 +149,11 @@ fn refill_from_changes_steady_state_is_allocation_free() {
     let changes = changes_with(8, 4);
 
     // Grow the pool once (off the hot path).
-    wrapper.refill_from_changes(&changes);
+    wrapper.begin().refill(&changes).unwrap();
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            wrapper.refill_from_changes(&changes);
+            wrapper.begin().refill(&changes).unwrap();
         }
     });
     assert_eq!(wrapper.len(), 8);
@@ -180,9 +182,9 @@ fn a_varying_queue_count_never_touches_the_allocator() {
         for _ in 0..100 {
             for (changes, &n) in blocks.iter().zip(&sizes) {
                 if changes.is_empty() {
-                    wrapper.clear_in_place();
+                    drop(wrapper.begin());
                 } else {
-                    wrapper.refill_from_changes(changes);
+                    wrapper.begin().refill(changes).unwrap();
                 }
                 // SAFETY: the test calls a COM method on a live object it owns, with arguments
                 // valid for the call.
@@ -211,10 +213,10 @@ fn a_presized_list_takes_its_first_dense_block_without_allocating() {
     let wrapper = unpooled(50, 140);
     let block = changes_with(50, 140);
     assert_no_alloc::assert_no_alloc(|| {
-        wrapper.refill_from_changes(&block);
+        wrapper.begin().refill(&block).unwrap();
     });
     assert_eq!(wrapper.len(), 50);
-    assert!(wrapper.inner.borrow().queues.iter().all(|q| q.len() == 140));
+    assert!(wrapper.queues.iter().all(|q| q.stage().len() == 140));
 }
 
 /// The plugin's own `addParameterData` on the output list reuses the
@@ -232,7 +234,7 @@ fn add_parameter_data_reuses_pooled_queues() {
     // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
     // the call.
     let block = |id: u32| unsafe {
-        changes.clear_in_place();
+        drop(changes.begin());
         let mut index = -1;
         let q = ptr.addParameterData(&id, &mut index);
         let q = vst3::ComRef::from_raw(q).unwrap();
@@ -250,7 +252,7 @@ fn add_parameter_data_reuses_pooled_queues() {
     });
     // Reserved: `fill_changes` fills within the set's room.
     let mut out = ParameterChanges::reserved(4, 1);
-    changes.fill_changes(&mut out);
+    assert!(changes.try_fill_changes(&mut out));
     assert_eq!(out.queues.len(), 1);
     assert_eq!(out.queues[0].points.len(), 1);
     assert_eq!(changes.pooled(), 4);
@@ -266,7 +268,7 @@ fn clear_in_place_on_empty_is_allocation_free() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..10_000 {
-            wrapper.clear_in_place();
+            drop(wrapper.begin());
         }
     });
     assert!(wrapper.is_empty());
@@ -337,7 +339,7 @@ fn emitted_changes_drain_into_the_reserved_set_without_allocating() {
     // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
     // the call.
     let emit = |moving: core::ops::Range<u32>, third: Option<u32>| unsafe {
-        list.clear_in_place();
+        drop(list.begin());
         for id in 0..PARAMS {
             let n = if moving.contains(&id) {
                 room
@@ -355,11 +357,11 @@ fn emitted_changes_drain_into_the_reserved_set_without_allocating() {
         }
     };
     emit(0..pooled, None);
-    list.fill_changes(&mut out);
+    assert!(list.try_fill_changes(&mut out));
     let storage = out.point_storage();
     assert_no_alloc::assert_no_alloc(|| {
         emit(pooled..2 * pooled, Some(2 * pooled));
-        list.fill_changes(&mut out);
+        assert!(list.try_fill_changes(&mut out));
     });
     assert_eq!(out.point_storage(), storage);
     assert_eq!(out.points_overflowed(), 1);
@@ -489,7 +491,7 @@ fn a_chunk_with_carried_values_refills_whole() {
             },
         ));
     }
-    assert_no_alloc::assert_no_alloc(|| list.refill_from_changes(&chunk));
+    assert_no_alloc::assert_no_alloc(|| list.begin().refill(&chunk).unwrap());
     assert_eq!(list.points_dropped(), 0);
     let view = plugin_view(&list);
     for (q, (id, points)) in chunk.queues.iter().zip(&view) {
@@ -533,16 +535,16 @@ fn a_chunk_at_the_pool_budget_refills_per_parameter_without_allocating() {
     let chunk = pooled_chunk(PARAMS, room, 0);
     let other = pooled_chunk(PARAMS, room, ParameterChanges::POOLED_QUEUES as u32);
     let empty = ParameterChanges::new();
-    list.refill_from_changes(&chunk);
+    list.begin().refill(&chunk).unwrap();
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..3 {
-            list.refill_from_changes(&other);
-            list.refill_from_changes(&chunk);
-            list.clear_in_place();
-            list.refill_from_changes(&empty);
-            list.refill_from_changes(&other);
-            list.refill_from_changes(&empty);
-            list.refill_from_changes(&chunk);
+            list.begin().refill(&other).unwrap();
+            list.begin().refill(&chunk).unwrap();
+            drop(list.begin());
+            list.begin().refill(&empty).unwrap();
+            list.begin().refill(&other).unwrap();
+            list.begin().refill(&empty).unwrap();
+            list.begin().refill(&chunk).unwrap();
         }
     });
     assert_eq!(list.points_dropped(), 0);
@@ -574,7 +576,7 @@ fn a_chunk_at_the_pool_budget_refills_per_parameter_without_allocating() {
     assert!(grown.add_point(200, 0.25));
     assert!(grown.add_point(300, 0.875));
     *last = grown;
-    assert_no_alloc::assert_no_alloc(|| list.refill_from_changes(&over));
+    assert_no_alloc::assert_no_alloc(|| list.begin().refill(&over).unwrap());
     assert_eq!(list.points_dropped(), 1);
     let (_, last) = plugin_view(&list).pop().expect("a queue");
     assert_eq!(last.len(), ParameterChanges::FLOOR_POINTS + 1);
@@ -596,7 +598,7 @@ fn a_refill_past_the_lists_queues_drops_them_counted() {
     let changes = changes_with(6, 3);
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..3 {
-            list.refill_from_changes(&changes);
+            list.begin().refill(&changes).unwrap();
         }
     });
     assert_eq!(list.len(), 4);
@@ -638,4 +640,69 @@ fn add_parameter_data_past_the_lists_queues_is_null_counted() {
     assert_eq!(list.len(), 2);
     assert_eq!(list.pooled(), 2);
     assert_eq!(list.points_dropped(), 1);
+}
+
+/// **A plugin thread still inside a parameter queue or the list when the host
+/// stages the next block is refused and counted, never a panic**: the host
+/// reached the queues with panicking borrows, so a plugin worker still reading
+/// a queue panicked the audio thread. Every staging call and the read of the
+/// plugin's output answer `Busy` / `false` / `None` and add to
+/// [`busy`](ParameterChangesImpl::busy).
+///
+/// Checked against the old code (the panicking borrows): the first refill
+/// while the queue is held panics with "already borrowed" instead of
+/// returning `Busy`.
+#[test]
+fn staging_while_a_plugin_holds_a_queue_or_the_list_is_refused_and_counted() {
+    let list = unpooled(2, 4);
+    list.begin().refill(&changes_with(2, 1)).unwrap();
+    assert_eq!(list.busy(), 0);
+
+    {
+        let _plugin_in_getpoint = list.hold_queue_as_plugin(0);
+        let mut staging = list.begin();
+        assert_eq!(staging.refill(&changes_with(2, 1)), Err(Busy));
+        assert_eq!(list.busy(), 1, "the refill is counted");
+        assert_eq!(staging.prepend(99, Normalized::of(0.5)), Err(Busy));
+        assert_eq!(list.busy(), 2, "so is the prepend");
+    }
+    // The plugin's output: a live queue the host reads while a plugin thread holds it.
+    list.begin().refill(&changes_with(2, 1)).unwrap();
+    {
+        let _plugin_in_getpoint = list.hold_queue_as_plugin(0);
+        let mut out = ParameterChanges::reserved(2, 4);
+        assert!(!list.try_fill_changes(&mut out), "the read is refused");
+        assert!(out.queues.is_empty(), "and leaves nothing half read");
+    }
+    assert_eq!(list.busy(), 3, "the refused read is counted");
+    // Released: the next block stages whole.
+    let mut staging = list.begin();
+    assert_eq!(staging.refill(&changes_with(2, 1)), Ok(()));
+    drop(staging);
+    assert_eq!(list.busy(), 3, "and counts nothing");
+
+    let _plugin_in_getparameterdata = list.inner.borrow();
+    assert!(list.try_begin().is_none(), "a held list is not staged");
+    assert_eq!(list.busy(), 4);
+}
+
+/// A queue that lent a block and is held by a plugin thread keeps the block
+/// lent: the list is not begun, and once released the block comes back.
+#[test]
+fn a_held_queue_keeps_its_lent_block_until_released() {
+    const PARAMS: u32 = 2_000;
+    let room = tutti_plugin_types::ParameterQueue::chunk_room(512);
+    let list = input_list(PARAMS as usize, room);
+    let storage = list.point_storage();
+    let chunk = pooled_chunk(PARAMS, room, 0);
+    list.begin().refill(&chunk).unwrap();
+    {
+        let _held = list.hold_queue_as_plugin(0);
+        assert!(list.try_begin().is_none());
+        assert_eq!(list.busy(), 1);
+    }
+    drop(list.begin());
+    assert_eq!(list.point_storage(), storage, "no block was lost");
+    list.begin().refill(&chunk).unwrap();
+    assert_eq!(list.points_dropped(), 0, "the block lends again");
 }

@@ -2,20 +2,25 @@
 //!
 //! # Real-time safety
 //!
-//! Inner storage uses [`AudioThreadCell`] rather than a `Mutex`. VST3
-//! queues are only touched during `IAudioProcessor::process`, which is
-//! single-threaded on the audio thread — the lock is unnecessary
-//! overhead.
+//! The queue is one object, `{ param_id, points }`, in one
+//! [`AudioThreadCell`] (see [`super::event_list`]), and its drop count is an
+//! atomic beside it. A plugin thread may be inside a COM entry point of the
+//! queue (it can keep the `IParamValueQueue*` and read it from a worker) when
+//! the host comes to stage the next block, so every borrow of the queue, the
+//! host's included, takes `try_`: the host reaches the storage only through
+//! [`try_stage`](ParamValueQueueImpl::try_stage), which is `None` while a
+//! plugin thread holds the queue, and the list that owns the queue skips the
+//! block, counted.
 //!
-//! [`refill_from_queue`](ParamValueQueueImpl::refill_from_queue) lets
-//! callers recycle a single `ComWrapper<ParamValueQueueImpl>` across
-//! buffers. Its point storage is a [`PointBuf`] sized at construction and
-//! never grown: past it the queue keeps its latest value
-//! ([`PointBuf::push_or_replace_last`]), counted. A pooled
+//! [`QueueState::refill`] lets callers recycle a single
+//! `ComWrapper<ParamValueQueueImpl>` across buffers. Its point storage is a
+//! [`PointBuf`] sized at construction and never grown: past it the queue keeps
+//! its latest value ([`PointBuf::push_or_replace_last`]), counted. A pooled
 //! list lends a queue a larger buffer for a block
-//! ([`lend_from`](ParamValueQueueImpl::lend_from)).
+//! ([`QueueState::lend_from`]).
 
 use crate::guard::{Out, guard};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use vst3::Steinberg::{
     Vst::{IParamValueQueue, IParamValueQueueTrait, kNoParamId},
     kInvalidArgument, kResultFalse, kResultOk, tresult,
@@ -24,54 +29,56 @@ use vst3::{Class, ComWrapper};
 
 use tutti_plugin_types::{Normalized, PointBuf, PointPool};
 use tutti_plugin_types::{ParameterPoint, ParameterQueue};
-use tutti_rt::AudioThreadCell;
+use tutti_rt::{AudioThreadCell, BorrowGuard};
 
 /// The least point room a queue is built with. Typical automation carries a
 /// handful of points per buffer; past a queue's room it keeps its latest
 /// value, counted.
 pub const MIN_POINT_ROOM: usize = 16;
 
+/// What a queue holds: its parameter and its points. Reached only through a
+/// borrow of the queue's cell, so the host cannot touch it without holding the
+/// boundary the plugin's COM calls respect.
+pub(crate) struct QueueState {
+    param_id: u32,
+    points: PointBuf,
+}
+
 pub struct ParamValueQueueImpl {
-    param_id: AudioThreadCell<u32>,
-    points: AudioThreadCell<PointBuf>,
+    state: AudioThreadCell<QueueState>,
     /// Points the plugin's `addPoint` could not add as new points (the
-    /// queue full; it kept the latest value).
-    dropped: AudioThreadCell<u64>,
+    /// queue full; it kept the latest value). Atomic, not in `state`, so a COM
+    /// entry that finds `state` borrowed still counts its refusal.
+    dropped: AtomicU64,
 }
 
 impl Class for ParamValueQueueImpl {
     type Interfaces = (IParamValueQueue,);
 }
 
-impl ParamValueQueueImpl {
-    /// An empty queue with room for exactly `points` points (a pooled list's
-    /// queue draws on the list's shared pool past them). Allocates; call it
-    /// off the audio thread.
-    pub fn with_room(param_id: u32, points: usize) -> ComWrapper<Self> {
-        ComWrapper::new(Self {
-            param_id: AudioThreadCell::new(param_id),
-            points: AudioThreadCell::new(PointBuf::with_capacity(points)),
-            dropped: AudioThreadCell::new(0),
-        })
-    }
-
+impl QueueState {
     /// The points this queue holds.
     pub(crate) fn capacity(&self) -> usize {
-        self.points.borrow().capacity()
+        self.points.capacity()
+    }
+
+    /// The parameter this queue is filed under.
+    pub(crate) fn param_id(&self) -> u32 {
+        self.param_id
     }
 
     /// Borrows a block from `pool` as queue `index` of its list
     /// ([`PointPool::lend`]): how a pooled list gives a queue more room for
     /// a block. Allocation-free.
-    pub(crate) fn lend_from(&self, pool: &mut PointPool, index: usize) -> bool {
-        pool.lend(index, &mut self.points.borrow_mut())
+    pub(crate) fn lend_from(&mut self, pool: &mut PointPool, index: usize) -> bool {
+        pool.lend(index, &mut self.points)
     }
 
     /// Swaps this queue's point storage with `other`, contents and all: how
     /// a pooled list takes a lent block back ([`PointPool::give_back`]).
     /// Allocation-free.
-    pub(crate) fn swap_points(&self, other: &mut PointBuf) {
-        core::mem::swap(&mut *self.points.borrow_mut(), other);
+    pub(crate) fn swap_points(&mut self, other: &mut PointBuf) {
+        core::mem::swap(&mut self.points, other);
     }
 
     /// Replaces this queue's contents with `queue`'s points in place, within
@@ -83,16 +90,16 @@ impl ParamValueQueueImpl {
     /// VST3 `IParamValueQueue` values are **normalized `0..1`** (the plugin
     /// reads them via `getPoint` and un-normalizes internally), which matches
     /// the host's authoring convention; `Normalized` carries that guard.
-    pub fn refill_from_queue(&self, queue: &ParameterQueue) -> u64 {
+    pub(crate) fn refill(&mut self, queue: &ParameterQueue) -> u64 {
         // Same boundary as `from_queue`: unwrap the opaque handle for the ABI.
-        *self.param_id.borrow_mut() = queue.param_id.get();
-        let mut points = self.points.borrow_mut();
+        self.param_id = queue.param_id.get();
+        let points = &mut self.points;
         points.clear();
         let mut left_out = 0;
         for p in &queue.points {
             // Copied verbatim: `Normalized` carries the unit-interval guard
             // at construction. A `clamp(0.0, 1.0)` here would be redundant,
-            // and unsafe besides — `f64::clamp` returns NaN for a NaN input.
+            // and unsafe besides: `f64::clamp` returns NaN for a NaN input.
             if !points.push_or_replace_last(*p) {
                 left_out += 1;
             }
@@ -118,61 +125,79 @@ impl ParamValueQueueImpl {
         left_out
     }
 
-    /// Empties this queue for `param_id`, keeping its point storage. For a
-    /// pooled queue handed to the plugin through `addParameterData`, so it
-    /// is a COM entry point's: `false`, touching nothing, if the plugin is
-    /// reading or writing this queue on another thread at the same moment.
-    pub(crate) fn try_reset(&self, param_id: u32) -> bool {
-        let (Some(mut id), Some(mut points)) =
-            (self.param_id.try_borrow_mut(), self.points.try_borrow_mut())
-        else {
-            return false;
-        };
-        *id = param_id;
-        points.clear();
-        true
+    /// Empties this queue for `param_id`, keeping its point storage.
+    pub(crate) fn reset(&mut self, param_id: u32) {
+        self.param_id = param_id;
+        self.points.clear();
     }
 
     /// Puts `point` before every point the queue holds, if it has room.
     /// Allocation-free; `false` (the queue unchanged) when it is full.
-    pub(crate) fn prepend_point(&self, point: ParameterPoint) -> bool {
-        self.points.borrow_mut().try_push_front(point).is_ok()
+    pub(crate) fn prepend(&mut self, point: ParameterPoint) -> bool {
+        self.points.try_push_front(point).is_ok()
     }
 
-    /// Counts one dropped point, from a COM entry point: skipped (the point
-    /// goes uncounted) if the host is reading the count at that moment.
-    fn count_dropped(&self) {
-        if let Some(mut dropped) = self.dropped.try_borrow_mut() {
-            *dropped += 1;
-        }
-    }
-
-    /// Points the plugin added past this queue's room, since it was built.
-    pub(crate) fn points_dropped(&self) -> u64 {
-        *self.dropped.borrow()
-    }
-
-    /// Iterates over each `ParameterPoint` in this queue without exposing
-    /// the underlying `AudioThreadCell`. RT-safe.
-    pub fn for_each_point(&self, mut f: impl FnMut(&ParameterPoint)) {
-        for point in self.points.borrow().iter() {
+    /// Iterates over each `ParameterPoint` in this queue. RT-safe.
+    pub(crate) fn for_each_point(&self, mut f: impl FnMut(&ParameterPoint)) {
+        for point in self.points.iter() {
             f(point);
         }
     }
 
-    pub fn param_id(&self) -> u32 {
-        *self.param_id.borrow()
-    }
-
-    /// [`param_id`](Self::param_id) for a COM entry point: `None` while
-    /// another thread is resetting this queue.
-    pub(crate) fn try_param_id(&self) -> Option<u32> {
-        self.param_id.try_borrow().map(|id| *id)
-    }
-
     #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.points.borrow().len()
+    pub(crate) fn len(&self) -> usize {
+        self.points.len()
+    }
+}
+
+impl ParamValueQueueImpl {
+    /// An empty queue with room for exactly `points` points (a pooled list's
+    /// queue draws on the list's shared pool past them). Allocates; call it
+    /// off the audio thread.
+    pub fn with_room(param_id: u32, points: usize) -> ComWrapper<Self> {
+        ComWrapper::new(Self {
+            state: AudioThreadCell::new(QueueState {
+                param_id,
+                points: PointBuf::with_capacity(points),
+            }),
+            dropped: AtomicU64::new(0),
+        })
+    }
+
+    /// The queue's storage for the host to stage, or `None` while a plugin
+    /// thread is inside one of the queue's calls: the host skips the block
+    /// rather than wait or panic.
+    pub(crate) fn try_stage(&self) -> Option<BorrowGuard<'_, QueueState>> {
+        self.state.try_borrow_mut()
+    }
+
+    /// [`try_stage`](Self::try_stage) for a test, which owns every reader.
+    #[cfg(test)]
+    pub(crate) fn stage(&self) -> BorrowGuard<'_, QueueState> {
+        self.state.borrow_mut()
+    }
+
+    /// The parameter this queue is filed under, or `None` while another
+    /// thread is resetting the queue.
+    pub(crate) fn try_param_id(&self) -> Option<u32> {
+        self.state.try_borrow().map(|s| s.param_id)
+    }
+
+    /// A hold on the queue as a plugin thread inside `getPoint` has one, for
+    /// a conformance test of what the host does while the plugin holds it.
+    #[cfg(any(test, feature = "conformance"))]
+    pub(crate) fn hold_as_plugin(&self) -> impl Sized + '_ {
+        self.state.borrow()
+    }
+
+    /// Points the plugin added past this queue's room, since it was built.
+    pub(crate) fn points_dropped(&self) -> u64 {
+        self.dropped.load(Relaxed)
+    }
+
+    /// Counts one dropped point.
+    fn count_dropped(&self) {
+        self.dropped.fetch_add(1, Relaxed);
     }
 }
 
@@ -189,7 +214,9 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
 
     /// Zero while another thread is writing the queue.
     unsafe fn getPointCount(&self) -> i32 {
-        guard(0, || self.points.try_borrow().map_or(0, |p| p.len() as i32))
+        guard(0, || {
+            self.state.try_borrow().map_or(0, |s| s.points.len() as i32)
+        })
     }
 
     /// `kResultFalse` while another thread is writing the queue.
@@ -197,9 +224,10 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
         // SAFETY: COM out-parameters: each null or valid for this call.
         let (offset_out, value_out) = unsafe { (Out::new(sample_offset), Out::new(value)) };
         guard(vst3::Steinberg::kInternalError, || {
-            let Some(points) = self.points.try_borrow() else {
+            let Some(state) = self.state.try_borrow() else {
                 return kResultFalse;
             };
+            let points = &state.points;
             if index < 0 || index >= points.len() as i32 {
                 return kInvalidArgument;
             }
@@ -220,15 +248,16 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
     /// Never allocates: the plugin calls this on the audio thread.
     ///
     /// While another thread reads or writes the queue the point is dropped,
-    /// `kResultFalse`, and counted when the count is free too.
+    /// `kResultFalse`, and counted too.
     unsafe fn addPoint(&self, sample_offset: i32, value: f64, index: *mut i32) -> tresult {
         // SAFETY: a COM out-parameter: null or valid for this call.
         let index = unsafe { Out::new(index) };
         guard(vst3::Steinberg::kInternalError, || {
-            let Some(mut points) = self.points.try_borrow_mut() else {
+            let Some(mut state) = self.state.try_borrow_mut() else {
                 self.count_dropped();
                 return kResultFalse;
             };
+            let points = &mut state.points;
             let point = ParameterPoint {
                 sample_offset,
                 // Inbound across the ABI: the *plugin* calls this, so the value is
@@ -264,11 +293,11 @@ mod tests {
     fn concurrent_reads_of_a_queue_both_succeed() {
         use std::sync::Barrier;
         let queue = ParamValueQueueImpl::with_room(9, MIN_POINT_ROOM);
-        queue.refill_from_queue(&queue_with_points(2));
+        queue.stage().refill(&queue_with_points(2));
         let (taken, done) = (Barrier::new(2), Barrier::new(2));
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                let read = queue.points.borrow();
+                let read = queue.state.borrow();
                 taken.wait();
                 done.wait();
                 assert_eq!(read.len(), 2);
@@ -297,12 +326,11 @@ mod tests {
     #[test]
     fn a_read_during_a_write_fails_at_the_com_level() {
         let queue = ParamValueQueueImpl::with_room(9, MIN_POINT_ROOM);
-        queue.refill_from_queue(&queue_with_points(2));
+        queue.stage().refill(&queue_with_points(2));
         let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
         let (mut offset, mut value) = (0, 0.0);
         {
-            let _writing = queue.points.borrow_mut();
-            let _renaming = queue.param_id.borrow_mut();
+            let _writing = queue.state.borrow_mut();
             // SAFETY: the test calls a COM method on a live object it owns, with arguments
             // valid for the call.
             assert_eq!(unsafe { ptr.getPointCount() }, 0);
@@ -349,10 +377,12 @@ mod tests {
         source.add_point(128, 0.5);
 
         let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
-        queue.refill_from_queue(&source);
+        queue.stage().refill(&source);
 
         let mut got = Vec::new();
-        queue.for_each_point(|p| got.push((p.sample_offset, p.value.get())));
+        queue
+            .stage()
+            .for_each_point(|p| got.push((p.sample_offset, p.value.get())));
         assert_eq!(
             got,
             vec![(0, 0.25), (128, 0.5), (384, 0.75)],
@@ -378,10 +408,10 @@ mod tests {
             source.add_point(2 * i + 1, 0.75);
         }
         let queue = ParamValueQueueImpl::with_room(0, 2 * RUN as usize);
-        let left_out = assert_no_alloc::assert_no_alloc(|| queue.refill_from_queue(&source));
+        let left_out = assert_no_alloc::assert_no_alloc(|| queue.stage().refill(&source));
         assert_eq!(left_out, 0);
         let mut got = Vec::new();
-        queue.for_each_point(|p| got.push(p.sample_offset));
+        queue.stage().for_each_point(|p| got.push(p.sample_offset));
         assert_eq!(got, (0..2 * RUN).collect::<Vec<_>>());
     }
 
@@ -395,10 +425,10 @@ mod tests {
         source.add_point(64, 0.9); // new value at the same instant
 
         let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
-        queue.refill_from_queue(&source);
+        queue.stage().refill(&source);
 
         let mut got = Vec::new();
-        queue.for_each_point(|p| got.push(p.value.get()));
+        queue.stage().for_each_point(|p| got.push(p.value.get()));
         assert_eq!(
             got,
             vec![0.1, 0.9],
@@ -417,14 +447,14 @@ mod tests {
         }
 
         let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
-        queue.refill_from_queue(&source); // warm up capacity
+        queue.stage().refill(&source); // warm up capacity
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..1_000 {
-                queue.refill_from_queue(&source);
+                queue.stage().refill(&source);
             }
         });
-        assert_eq!(queue.len(), 16);
+        assert_eq!(queue.stage().len(), 16);
     }
 
     /// RT regression: `refill_from_queue` must not allocate when the
@@ -436,14 +466,14 @@ mod tests {
         let source = queue_with_points(8);
 
         // Warm up.
-        queue.refill_from_queue(&source);
+        queue.stage().refill(&source);
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..10_000 {
-                queue.refill_from_queue(&source);
+                queue.stage().refill(&source);
             }
         });
-        assert_eq!(queue.len(), 8);
+        assert_eq!(queue.stage().len(), 8);
     }
 
     /// **A queue holds the room it was built with and never grows**: one
@@ -461,15 +491,17 @@ mod tests {
         let over = queue_with_points(33);
         let left_out = assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..1_000 {
-                assert_eq!(queue.refill_from_queue(&big), 0);
+                assert_eq!(queue.stage().refill(&big), 0);
             }
-            queue.refill_from_queue(&over)
+            queue.stage().refill(&over)
         });
         assert_eq!(left_out, 1);
-        assert_eq!(queue.len(), 32);
-        assert_eq!(queue.capacity(), 32);
+        assert_eq!(queue.stage().len(), 32);
+        assert_eq!(queue.stage().capacity(), 32);
         let mut last = None;
-        queue.for_each_point(|p| last = Some(p.sample_offset));
+        queue
+            .stage()
+            .for_each_point(|p| last = Some(p.sample_offset));
         assert_eq!(last, Some(32), "ends on its latest");
     }
 
@@ -506,9 +538,11 @@ mod tests {
         assert_eq!(replaced, (kResultOk, MIN_POINT_ROOM as i32 - 1));
         assert_eq!(dropped, (kResultFalse, -1));
         assert_eq!(queue.points_dropped(), 2);
-        assert_eq!(queue.len(), MIN_POINT_ROOM);
+        assert_eq!(queue.stage().len(), MIN_POINT_ROOM);
         let mut last = None;
-        queue.for_each_point(|p| last = Some((p.sample_offset, p.value.get())));
+        queue
+            .stage()
+            .for_each_point(|p| last = Some((p.sample_offset, p.value.get())));
         assert_eq!(last, Some((100, 0.75)));
     }
 }

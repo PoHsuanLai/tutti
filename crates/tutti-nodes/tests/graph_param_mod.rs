@@ -29,8 +29,8 @@ use tutti_fixtures::Noise;
 use tutti_curve::Law;
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Editor, EventOut, GraphBuilder, IntoNode, NodeParts, PARAM_DECLICK, ParamIn, ParamNode,
-    ParamRange, Prepare, Renderer,
+    Editor, EventOut, GraphBuilder, IntoNode, NodeMix, NodeParts, PARAM_DECLICK, ParamIn,
+    ParamNode, ParamRange, Prepare, Renderer,
 };
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
@@ -131,6 +131,52 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
     r.render_input(&refs)
 }
 
+/// How the graph's mix of the node under test is given.
+#[derive(Clone, Copy)]
+enum MixIs {
+    /// Set to `v` before the unit is placed (steady from the first block).
+    Set(f32),
+    /// Driven to `v` by a control lane on the mix's port.
+    Fed(f32),
+}
+
+/// [`render`] with the node's mix, the graph's: a mix is not a node's param,
+/// but a port at a reserved address (`NodeMix::ADDR`) a lane drives like any.
+fn render_mix(node: NodeParts<()>, mix: MixIs) -> Vec<Vec<f32>> {
+    let shape = node.node.shape();
+    let (ins, outs) = (
+        usize::from(shape.audio_in.count()),
+        usize::from(shape.audio_out.count()),
+    );
+    let mut g = GraphBuilder::new(
+        ChannelLayout::try_from(ins).expect("a test width is small"),
+        ChannelLayout::try_from(outs).expect("a test width is small"),
+    );
+    let n = g.add(node);
+    for c in 0..ins {
+        g.connect_input(c, n, c);
+    }
+    for c in 0..outs {
+        g.connect_output(n, c, c);
+    }
+    if let MixIs::Set(v) = mix {
+        g.spec_mut().set_mix(n, Mix::new(v));
+    }
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
+        .expect("builds");
+    if let MixIs::Fed(v) = mix {
+        let at = ParamIn {
+            node: n,
+            param: NodeMix::ADDR,
+        };
+        drive(r.editor_mut(), at, Arc::new(AtomicF32::new(v)), vec![]);
+    }
+    let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
+    let refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
+    r.render_input(&refs)
+}
+
 /// A node's parts, its controls dropped.
 fn parts_of<N: IntoNode>(node: N) -> NodeParts<()> {
     let NodeParts { node, fork, .. } = node.into_parts();
@@ -170,14 +216,12 @@ fn cases() -> Vec<Case> {
         )
     }
     fn delay(w: usize) -> DelayLineNode {
-        let d = DelayLineNode::with_channels(
+        DelayLineNode::with_channels(
             ChannelLayout::try_from(w).expect("a test width is small"),
             Seconds::new(0.01),
             Seconds::new(0.0003),
             Feedback::new(0.5),
-        );
-        d.set_mix(Mix::new(0.5));
-        d
+        )
     }
     fn comp(w: usize) -> CompressorNode {
         CompressorNode::with_channels(
@@ -454,22 +498,6 @@ fn block_rate_cases() -> Vec<Case> {
     #[allow(unused_mut)]
     let mut cases = vec![
         Case {
-            name: "delay mix",
-            param: UnitParam::Wet,
-            make: |w, v| {
-                let n = DelayLineNode::with_channels(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
-                    Seconds::new(0.01),
-                    Seconds::new(0.0003),
-                    Feedback::new(0.5),
-                );
-                n.set_mix(Mix::new(v.unwrap_or(0.5)));
-                parts_of(n)
-            },
-            lo: 0.1,
-            hi: 0.9,
-        },
-        Case {
             name: "svf gain",
             param: UnitParam::GainDb,
             make: |w, v| {
@@ -624,19 +652,6 @@ fn block_rate_cases() -> Vec<Case> {
             hi: 0.8,
         },
         Case {
-            name: "chorus mix",
-            param: UnitParam::Wet,
-            make: |w, v| {
-                let n = chorus(w);
-                if let Some(v) = v {
-                    n.set_mix(Mix::new(v));
-                }
-                parts_of(n)
-            },
-            lo: 0.1,
-            hi: 0.9,
-        },
-        Case {
             name: "flanger depth",
             param: UnitParam::Depth,
             make: |w, v| {
@@ -690,38 +705,7 @@ fn block_rate_cases() -> Vec<Case> {
             lo: 0.0,
             hi: 0.8,
         },
-        Case {
-            name: "phaser mix",
-            param: UnitParam::Wet,
-            make: |w, v| {
-                let n = phaser(w);
-                if let Some(v) = v {
-                    n.set_mix(Mix::new(v));
-                }
-                parts_of(n)
-            },
-            lo: 0.1,
-            hi: 0.9,
-        },
     ];
-    #[cfg(feature = "convolution")]
-    cases.push(Case {
-        name: "convolver mix",
-        param: UnitParam::Wet,
-        make: |w, v| {
-            let n = tutti_nodes::ConvolverNode::shared_ir(
-                ChannelLayout::try_from(w).expect("a test width is small"),
-                &[0.0, 0.0, 1.0, -0.5],
-                64,
-            );
-            if let Some(v) = v {
-                n.set_mix(Mix::new(v));
-            }
-            parts_of(n)
-        },
-        lo: 0.1,
-        hi: 0.9,
-    });
     cases
 }
 
@@ -752,10 +736,11 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// The block-rate cases (`block_rate_cases`, the params doc 014 §12.6 made
 /// ports) were each run with the node ignoring that driven port and reading
 /// its cell instead, and each failed: the LFO rate (chorus and phaser), the
-/// chorus depth and feedback, the phaser depth and mix, the compressor's
+/// chorus depth and feedback, the phaser depth, the compressor's
 /// ratio and makeup, its attack and release swapped, the gate's attack and
-/// release, the limiter's release, the delay's mix, the SVF's gain and the
-/// convolver's mix.
+/// release, the limiter's release and the SVF's gain. (The mixes of the delay,
+/// the chorus and flanger, the phaser and the convolver are the graph's:
+/// `each_fed_mix_is_the_one_the_graph_blends`.)
 #[test]
 fn each_fed_param_is_the_one_the_dsp_reads() {
     for w in [1usize, 2, 6] {
@@ -784,6 +769,109 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
                 moved,
                 "{} (width {w}): {} and {} sound the same",
                 case.name, case.lo, case.hi
+            );
+        }
+    }
+}
+
+/// One node type whose mix is driven: how to build it at a width.
+struct MixCase {
+    name: &'static str,
+    make: fn(usize) -> NodeParts<()>,
+}
+
+fn mix_cases() -> Vec<MixCase> {
+    let mut cases = vec![
+        MixCase {
+            name: "delay mix",
+            make: |w| {
+                parts_of(DelayLineNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    Seconds::new(0.01),
+                    Seconds::new(0.0003),
+                    Feedback::new(0.5),
+                ))
+            },
+        },
+        MixCase {
+            name: "chorus mix",
+            make: |w| {
+                parts_of(ModDelayNode::chorus(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                ))
+            },
+        },
+        MixCase {
+            name: "flanger mix",
+            make: |w| {
+                parts_of(ModDelayNode::flanger(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                ))
+            },
+        },
+        MixCase {
+            name: "phaser mix",
+            make: |w| {
+                parts_of(PhaserNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    4,
+                ))
+            },
+        },
+    ];
+    #[cfg(feature = "convolution")]
+    cases.push(MixCase {
+        name: "convolver mix",
+        make: |w| {
+            parts_of(tutti_nodes::ConvolverNode::shared_ir(
+                ChannelLayout::try_from(w).expect("a test width is small"),
+                &[0.0, 0.0, 1.0, -0.5],
+                64,
+            ))
+        },
+    });
+    cases
+}
+
+/// **A node's mix is the graph's, and a route onto it is the one a node's own
+/// mix param was**: driving the mix port (`ModTarget::Mix`'s lane) to `v`
+/// sounds like the graph's mix set to `v` (within the few ulps a per-frame
+/// path and a held one differ by), for two values that sound different from
+/// each other. These nodes had a `Wet` param of their own, whose port this
+/// replaces; the blend itself is `tutti-graph/tests/mix.rs`'s.
+///
+/// Mutations (run, each failed): the mix lane never driven (`MixIs::Fed` not
+/// calling `drive`), and the mix never set (`MixIs::Set` not calling
+/// `set_mix`): the fed and set renders no longer agree.
+#[test]
+fn each_fed_mix_is_the_one_the_graph_blends() {
+    for w in [1usize, 2, 6] {
+        for case in mix_cases() {
+            let at = |v: f32| {
+                (
+                    render_mix((case.make)(w), MixIs::Fed(v)),
+                    render_mix((case.make)(w), MixIs::Set(v)),
+                )
+            };
+            let (lo, hi) = (0.1, 0.9);
+            let (fed_lo, set_lo) = at(lo);
+            let (fed_hi, set_hi) = at(hi);
+            for (fed, set, v) in [(&fed_lo, &set_lo, lo), (&fed_hi, &set_hi, hi)] {
+                for (c, i, x) in settled(fed) {
+                    let want = set[c][i];
+                    assert!(
+                        (x - want).abs() <= 2e-3,
+                        "{} (width {w}) fed {v}: channel {c} frame {i} is {x}, the mix \
+                         set to {v} gives {want}",
+                        case.name
+                    );
+                }
+            }
+            let moved = settled(&fed_lo).any(|(c, i, x)| (x - fed_hi[c][i]).abs() > 1e-2);
+            assert!(
+                moved,
+                "{} (width {w}): {lo} and {hi} sound the same",
+                case.name
             );
         }
     }

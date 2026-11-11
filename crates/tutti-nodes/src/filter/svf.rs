@@ -7,13 +7,12 @@
 //! ([`SvfDesign`]); the node is a [`DesignNode`] over it, and this file holds the
 //! cells and how a block reads them.
 
-use tutti_dsp::{Cadence, Design, Ramp, Real, SvfControls, SvfDesign, SvfType};
-use tutti_graph::{Io, ParamSetBuilder};
-use tutti_types::{ChannelLayout, Db, Hz, Param, Q, UnitAddr, UnitParam};
+use tutti_dsp::{Cadence, Design, Real, SvfControls, SvfDesign, SvfType};
+use tutti_types::{ChannelLayout, Db, Hz, Q, UnitAddr, UnitParam};
 
 use crate::blend::NoBlend;
-use crate::ramp::LastGood;
-use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
+use crate::params::{ControlSet, Params};
+use crate::reverb::{DesignNode, NodeDesign};
 
 /// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
 /// coefficient set shared across the channels and one integrator pair per
@@ -41,7 +40,7 @@ use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 /// assert!(solo.controls().set(UnitParam::Cutoff, 2_000.0));
 /// ```
 ///
-/// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Param`]s shared across
+/// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Params`] shared across
 /// clones. A held value costs nothing: the model is designed again only when one
 /// moves past a small dead-band ([`SvfControls::moved_from`]). The filter is
 /// designed on a 16-frame grid counted from the last reset, at each segment's
@@ -130,20 +129,12 @@ impl<F: Real> SvfFilterNode<F> {
     }
 }
 
-/// The cells of an [`SvfFilterNode`]: cutoff, Q and gain, with the response they
-/// are for.
-#[derive(Clone, Debug)]
-pub struct SvfParams {
-    ty: SvfType,
-    freq: Param<Hz>,
-    q: Param<Q>,
-    gain: Param<Db>,
-    /// The last finite cutoff / Q / gain the cells held: a non-finite write
-    /// reads as unchanged, so it never reaches the design (see [`LastGood`]).
-    good: [LastGood; 3],
-}
+/// The controls of an [`SvfFilterNode`]: cutoff, Q and gain, with the response
+/// they are for.
+#[derive(Clone, Copy, Debug)]
+pub struct SvfSet(SvfType);
 
-impl ControlParams for SvfParams {
+impl ControlSet for SvfSet {
     type Controls = SvfControls;
 
     fn addrs(&self) -> &'static [UnitAddr] {
@@ -155,88 +146,34 @@ impl ControlParams for SvfParams {
         &ADDRS
     }
 
-    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
-        let addrs = self.addrs();
-        set.param(addrs[0], self.freq.as_atomic())
-            .param(addrs[1], self.q.as_atomic())
-            .param(addrs[2], self.gain.as_atomic())
+    fn defaults(&self) -> SvfControls {
+        SvfControls::DEFAULT
     }
 
-    fn base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.freq.load().get()),
-            1 => Some(self.q.load().get()),
-            2 => Some(self.gain.load().get()),
-            _ => None,
+    fn flatten(&self, c: &SvfControls, out: &mut [f32]) {
+        out.copy_from_slice(&[c.freq.get(), c.q.get(), c.gain.get()]);
+    }
+
+    fn assemble(&self, v: &[f32]) -> SvfControls {
+        SvfControls {
+            ty: self.0,
+            freq: Hz(v[0]),
+            q: Q(v[1]),
+            gain: Db(v[2]),
         }
-    }
-
-    /// With a lane on any of the three, each driven control is its lane at
-    /// `at.frame` (a cutoff floored at 1 Hz and a Q at 0.01, which also maps a NaN
-    /// to the floor) and the cells are taken as they are. With none, the cells
-    /// glide from the controls last designed to their values across the block,
-    /// sampled at `at.frame`.
-    fn read(&mut self, io: &Io<'_>, first: usize, at: At<SvfControls>) -> SvfControls {
-        let lanes = [first, first + 1, first + 2].map(|k| io.param(k).frames());
-        let freq = Hz(self.good[0].read(self.freq.load().get()));
-        let q = Q(self.good[1].read(self.q.load().get()));
-        let gain = Db(self.good[2].read(self.gain.load().get()));
-        match (lanes, at.applied) {
-            ([None, None, None], Some(from)) => {
-                let glide = |from: f32, to: f32| Ramp::new(from, to, at.block).at(at.frame);
-                SvfControls {
-                    ty: self.ty,
-                    freq: Hz(glide(from.freq.get(), freq.get())),
-                    q: Q(glide(from.q.get(), q.get())),
-                    gain: Db(glide(from.gain.get(), gain.get())),
-                }
-            }
-            ([None, None, None], None) => SvfControls {
-                ty: self.ty,
-                freq,
-                q,
-                gain,
-            },
-            ([cutoff, res, gain_lane], _) => SvfControls {
-                ty: self.ty,
-                freq: cutoff.map_or(freq, |s| Hz(s[at.frame].max(1.0))),
-                q: res.map_or(q, |s| Q(s[at.frame].max(0.01))),
-                gain: gain_lane.map_or(gain, |s| Db(self.good[2].read(s[at.frame]))),
-            },
-        }
-    }
-
-    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
-        (first..first + 3).any(|k| io.param(k).frames().is_some())
-    }
-
-    fn detach(&mut self) {
-        self.freq.detach();
-        self.q.detach();
-        self.gain.detach();
     }
 }
 
 impl<F: Real> NodeDesign for SvfDesign<F> {
-    type Params = SvfParams;
+    type Params = Params<SvfSet>;
     type Blend = NoBlend;
 
     /// A filter declares an unknown tail and never parks.
     const PARKS: bool = false;
     const SAMPLING: Cadence = <Self as Design>::CADENCE;
 
-    fn params(&self, initial: SvfControls) -> SvfParams {
-        SvfParams {
-            ty: initial.ty,
-            freq: Param::new(initial.freq),
-            q: Param::new(initial.q),
-            gain: Param::new(initial.gain),
-            good: [
-                LastGood::new(initial.freq.get(), 0.0),
-                LastGood::new(initial.q.get(), Q::BUTTERWORTH.get()),
-                LastGood::new(initial.gain.get(), 0.0),
-            ],
-        }
+    fn params(&self, initial: SvfControls) -> Self::Params {
+        Params::new(SvfSet(initial.ty), &initial)
     }
 
     fn moved(applied: &SvfControls, target: &SvfControls) -> bool {
@@ -731,7 +668,7 @@ mod tests {
     /// case a threshold comparison alone lets through. The filter keeps
     /// running at the last good cutoff, and picks up the next finite write.
     ///
-    /// Mutation: reading the cutoff cell raw in `SvfParams::read` (no
+    /// Mutation: reading the cutoff cell raw in `Params::read` (no
     /// `LastGood`) fails the second assertion — the NaN reaches the solve and
     /// the output goes NaN for good.
     #[test]

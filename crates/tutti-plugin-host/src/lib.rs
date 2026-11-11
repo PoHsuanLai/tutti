@@ -2,7 +2,8 @@
 //!
 //! What a loaded plugin's host side needs whatever process the plugin runs in,
 //! and whatever its format: the main-thread control surface
-//! ([`PluginHandle`], over the capability traits a backend implements), the
+//! ([`PluginHandle`], over a hosting's [`AnyThread`](tutti_plugin_types::AnyThread),
+//! [`Health`](tutti_plugin_types::Health) and [`MainThreadControl`]), the
 //! node's controls and meter, the transport it tells the plugin and the
 //! parameter changes it delivers, the host policy written once over a handle
 //! ([`Liveness`], [`PluginParamValues`], [`needs_announcement`]), and the
@@ -13,12 +14,11 @@
 //! `tutti-plugin-ipc`'s, and `tutti-plugin` puts a served plugin behind these
 //! types. Nothing here is a dependency of either.
 
-// One `unsafe` block, the window decode of `node`'s `HostEditor` (the raw
-// pointer `PluginHandle::open_editor` extracts): `deny` rather than `forbid` so
+// One `unsafe` block, the window decode of `PluginHandle::open_editor` (the raw
+// pointer it extracts): `deny` rather than `forbid` so
 // that one site can say so, with its `SAFETY` comment. Nothing else here is.
 #![deny(unsafe_code)]
 
-mod capabilities;
 mod control_handle;
 mod controls;
 mod listeners;
@@ -36,10 +36,7 @@ mod transport_walk;
 mod walk_tests;
 mod window;
 
-pub use capabilities::{
-    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
-};
-pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
+pub use control_handle::{MainThreadControl, PluginHandle, PluginStatus};
 pub use controls::{ForkedSources, NodeControls, PluginControls, lock_tail};
 pub use listeners::{InvalidateSink, Listener, ParameterChangeSink, RefreshSink};
 pub use liveness::{Liveness, Verdict};

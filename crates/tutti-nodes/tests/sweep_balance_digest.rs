@@ -14,7 +14,7 @@ use tutti_graph::Node;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::testing::assert_golden;
 use tutti_nodes::{BusStripNode, PhaserNode};
-use tutti_types::{Amplitude, ChannelLayout, Depth, Hz, Mix, Pan, SampleRate};
+use tutti_types::{Amplitude, ChannelLayout, Depth, Hz, Pan, SampleRate};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -51,7 +51,6 @@ fn the_phaser_renders_what_it_always_did() {
         SR,
         BLOCK,
     );
-    node.set_mix(Mix::new(1.0));
     node.set_rate(Hz(2.0));
     let got = digest(&mut node, |n, k| match k {
         50 => n.set_depth(Depth(0.9)),

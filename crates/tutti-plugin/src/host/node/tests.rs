@@ -5,7 +5,6 @@
 //! socket, then drives `PluginHandle` IPC round-trips through it. The
 //! `respond` callback lets each test script the server's replies.
 
-use crate::host::subprocess_backend::SubprocessBackend;
 use std::sync::Arc;
 use tutti_fixtures::main_thread;
 use tutti_plugin_host::PluginHandle;
@@ -22,17 +21,38 @@ use tutti_plugin_types::{
 use tutti_plugin_types::{EditorPresence, PluginClass, SampleFormat};
 use tutti_types::SampleRate;
 
-/// A handle over `bridge` as the subprocess backend serves it, with a guard that
-/// owns no subprocess.
+/// A handle over `bridge` as a served plugin's control serves it, with a guard
+/// that owns no subprocess.
 fn handle_over(
     bridge: Arc<PluginBridge>,
+    slab: tutti_plugin_ipc::SlabWriter,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
 ) -> PluginHandle {
     let guard = Arc::new(tutti_plugin_ipc::ProcessGuard::for_test(
         tutti_plugin_ipc::BridgeConfig::default(),
     ));
-    SubprocessBackend::new(bridge, guard).into_handle(descriptor, loaded, Default::default(), None)
+    let ipc = tutti_plugin_ipc::Ipc::new(tutti_plugin_ipc::IpcParts {
+        bridge,
+        guard,
+        descriptor: descriptor.clone(),
+        loaded: loaded.clone(),
+        format: SampleFormat::Float32,
+        ceiling: 512,
+        slab,
+        rate: SampleRate(48_000.0),
+        parameters: 0,
+        timeout: std::time::Duration::from_secs(5),
+        origin: None,
+    });
+    let served = Arc::new(ipc.controller());
+    PluginHandle::from_backend(
+        Arc::clone(&served),
+        Some(served),
+        descriptor,
+        loaded,
+        Default::default(),
+    )
 }
 
 fn unique_shm_name(label: &str) -> String {
@@ -81,21 +101,19 @@ fn handle_with_mock_server(
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
-    // The test writes no audio: only the shared, read-only slab is kept.
-    let buffer = Arc::clone(
-        AudioSlab::create(
-            unique_shm_name("handle"),
-            SlabLayout {
-                slots: tutti_plugin_ipc::RING_SLOTS as u32,
-                samples_per_channel: 512,
-                format: SampleFormat::Float32,
-                inputs: vec![ChannelLayout::STEREO],
-                outputs: vec![ChannelLayout::STEREO],
-            },
-        )
-        .unwrap()
-        .slab(),
-    );
+    // The test writes no audio: the slab is kept for the served plugin it builds.
+    let slab = AudioSlab::create(
+        unique_shm_name("handle"),
+        SlabLayout {
+            slots: tutti_plugin_ipc::RING_SLOTS as u32,
+            samples_per_channel: 512,
+            format: SampleFormat::Float32,
+            inputs: vec![ChannelLayout::STEREO],
+            outputs: vec![ChannelLayout::STEREO],
+        },
+    )
+    .unwrap();
+    let buffer = Arc::clone(slab.slab());
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         buffer,
@@ -163,7 +181,7 @@ fn handle_with_mock_server(
         probed: Features::EDITOR,
         ..Default::default()
     };
-    let plugin_handle = handle_over(bridge, descriptor, loaded);
+    let plugin_handle = handle_over(bridge, slab, descriptor, loaded);
 
     (plugin_handle, bridge_thread, server_thread)
 }
@@ -186,21 +204,19 @@ fn handle_with_multi_reply_server(
     let name = tutti_plugin_ipc::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
-    // The test writes no audio: only the shared, read-only slab is kept.
-    let buffer = Arc::clone(
-        AudioSlab::create(
-            unique_shm_name("handle-multi"),
-            SlabLayout {
-                slots: tutti_plugin_ipc::RING_SLOTS as u32,
-                samples_per_channel: 512,
-                format: SampleFormat::Float32,
-                inputs: vec![ChannelLayout::STEREO],
-                outputs: vec![ChannelLayout::STEREO],
-            },
-        )
-        .unwrap()
-        .slab(),
-    );
+    // The test writes no audio: the slab is kept for the served plugin it builds.
+    let slab = AudioSlab::create(
+        unique_shm_name("handle-multi"),
+        SlabLayout {
+            slots: tutti_plugin_ipc::RING_SLOTS as u32,
+            samples_per_channel: 512,
+            format: SampleFormat::Float32,
+            inputs: vec![ChannelLayout::STEREO],
+            outputs: vec![ChannelLayout::STEREO],
+        },
+    )
+    .unwrap();
+    let buffer = Arc::clone(slab.slab());
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         buffer,
@@ -269,7 +285,7 @@ fn handle_with_multi_reply_server(
         probed: Features::EDITOR,
         ..Default::default()
     };
-    let plugin_handle = handle_over(Arc::clone(&bridge), descriptor, loaded);
+    let plugin_handle = handle_over(Arc::clone(&bridge), slab, descriptor, loaded);
 
     (plugin_handle, bridge, bridge_thread, server_thread)
 }
@@ -335,14 +351,14 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
     // First request: receives `ParameterList`. Trailing events sit in
     // the socket buffer until the next `recv_reply` pulls them — which
     // happens on the next request.
-    let params = handle.params().parameter_descriptors().unwrap();
+    let params = handle.any_thread().parameter_descriptors().unwrap();
     assert_eq!(params.len(), 1);
     assert_eq!(params[0].name, "Vol");
 
     // Second request: the helper must peel the two trailing events off
     // before returning the real `ParameterValue` reply.
     assert_eq!(
-        handle.params().parameter_value(ParamId::new(0)),
+        handle.any_thread().parameter_value(ParamId::new(0)),
         Some(Normalized::of(0.5))
     );
 
@@ -398,9 +414,12 @@ fn a_tail_change_reaches_the_listener() {
 
     // First request takes the reply; the trailing event waits in the socket
     // buffer until the next `recv_reply` drains it.
-    assert_eq!(handle.params().parameter_descriptors().unwrap().len(), 1);
     assert_eq!(
-        handle.params().parameter_value(ParamId::new(0)),
+        handle.any_thread().parameter_descriptors().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        handle.any_thread().parameter_value(ParamId::new(0)),
         Some(Normalized::of(0.5))
     );
 
@@ -426,7 +445,7 @@ fn handle_save_state_roundtrip() {
         _ => None,
     });
 
-    let state = handle.state().save_state();
+    let state = handle.any_thread().save_state();
     assert_eq!(state.expect("mock answered"), vec![0xDE, 0xAD, 0xBE, 0xEF]);
 }
 
@@ -443,7 +462,7 @@ fn handle_get_parameter_list() {
         _ => None,
     });
 
-    let params = handle.params().parameter_descriptors().unwrap();
+    let params = handle.any_thread().parameter_descriptors().unwrap();
     assert_eq!(params.len(), 3);
     assert_eq!(params[0].name, "Volume");
     assert_eq!(params[1].name, "Pan");
@@ -463,7 +482,7 @@ fn handle_get_parameter_value() {
     });
 
     assert_eq!(
-        handle.params().parameter_value(ParamId::new(42)),
+        handle.any_thread().parameter_value(ParamId::new(42)),
         Some(Normalized::of(0.75))
     );
 }

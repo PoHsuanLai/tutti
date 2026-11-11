@@ -120,10 +120,11 @@ impl Design for CrossoverDesign {
         model
     }
 
-    /// Total: a frequency is held between 1 Hz and what the coefficients can be
-    /// solved at ([`SOLVE_CEILING`] of the rate), a NaN reading as the floor. A set
-    /// that is not increasing is solved as it stands (each split is stable alone);
-    /// [`CrossoverControls::new`] is what refuses one.
+    /// Total: a frequency is held between the split below it (1 Hz for the first)
+    /// and what the coefficients can be solved at ([`SOLVE_CEILING`] of the rate), a
+    /// NaN reading as the floor, so a set that is not increasing is solved with its
+    /// splits no lower than the one before. [`CrossoverControls::new`] is what
+    /// refuses one.
     fn design_into(
         &self,
         controls: &CrossoverControls,
@@ -133,8 +134,10 @@ impl Design for CrossoverDesign {
         out.rate = rate.get();
         out.bands = self.bands;
         let cap = SOLVE_CEILING * rate.get();
+        let mut floor = 1.0;
         for (f, hz) in out.freqs.iter_mut().zip(&controls.frequencies) {
-            *f = f64::from(hz.get()).max(1.0).min(cap);
+            floor = f64::from(hz.get()).max(floor).min(cap);
+            *f = floor;
         }
         out.solve();
     }
@@ -213,6 +216,26 @@ mod tests {
     /// Mono, three bands: output `b` is band `b`, the model's own outputs.
     fn design() -> CrossoverDesign {
         CrossoverDesign::new(ChannelLayout::MONO, 3).unwrap()
+    }
+
+    /// A set is solved with every split inside `1 Hz..=SOLVE_CEILING * rate` and none
+    /// below the one before, whatever the controls say.
+    ///
+    /// Mutation (run): the running `floor` replaced by `1.0` (clamp each alone) →
+    /// `[5000, 4000]` stays out of order → fails; drop the `.min(cap)` → `[30000,
+    /// 25000]` stays at 30000 → fails.
+    #[test]
+    fn design_into_orders_and_caps_the_splits() {
+        let rate = SampleRate(48_000.0);
+        let mut model = design().blank(rate);
+        for set in [[5_000.0, 4_000.0], [30_000.0, 25_000.0], [-1.0, f32::NAN]] {
+            design().design_into(&controls(set[0], set[1]), rate, &mut model);
+            let [a, b, ..] = model.freqs;
+            assert!(
+                1.0 <= a && a <= b && b <= SOLVE_CEILING * 48_000.0,
+                "{set:?}: {a} {b}"
+            );
+        }
     }
 
     fn controls(low: f32, high: f32) -> CrossoverControls {

@@ -165,7 +165,7 @@ fn the_ports_and_the_ceiling() {
 /// modulation depth and rate, the width and the wet gain.
 ///
 /// Mutation (run): swapping the room and damping addresses in
-/// `FreeverbParams::addrs` fails the first assertion; swapping the first two
+/// `FreeverbSet::addrs` fails the first assertion; swapping the first two
 /// decays in the FDN's `ADDRS` fails the second.
 #[test]
 fn the_port_order_is_the_mix_then_the_cells() {

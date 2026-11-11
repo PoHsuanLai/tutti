@@ -92,13 +92,16 @@ mod param_delivery_tests;
 mod fork_late_rate_tests;
 #[cfg(all(test, feature = "clap"))]
 mod real_stall_tests;
+// `IpcController`'s two surfaces against the real plugin, which answers every
+// call (`tutti-plugin-ipc`'s mock server answers a few).
+#[cfg(all(test, feature = "clap"))]
+mod served_control_tests;
 #[cfg(test)]
 mod tests;
 
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
 
-use crate::host::subprocess_backend::SubprocessBackend;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -108,7 +111,7 @@ use tutti_plugin_host::{
     RefreshSink, client_over,
 };
 use tutti_plugin_ipc::{
-    BridgeConfig, BridgeEvent, Ipc, IpcOrigin, Launched, PluginBridge, ProcessGuard,
+    BridgeConfig, BridgeEvent, Ipc, IpcController, IpcOrigin, Launched, PluginBridge,
 };
 use tutti_plugin_types::{
     BridgeError, BridgeResult, Features, LoadStage, LoadedPlugin, MaxBlock, Normalized, ParamId,
@@ -203,8 +206,9 @@ pub struct PluginClient<S = Unbound> {
     param_sink: ParameterChangeSink,
     refresh_sink: RefreshSink,
     invalidate_sink: InvalidateSink,
-    /// Subprocess lifetime, shared with `PluginClient::handle`.
-    process_guard: Arc<ProcessGuard>,
+    /// The served plugin's control side (its bridge and the server's lifetime
+    /// guard), shared with `PluginClient::handle`.
+    served: IpcController,
     /// Where this instance came from, so a fork can load another of it.
     origin: Option<IpcOrigin>,
     /// On a **fork** only: whether it has failed while rendering
@@ -366,7 +370,7 @@ impl PluginClient<Unbound> {
 
         let origin = ipc.origin().cloned();
         let format = ipc.format();
-        let process_guard = Arc::clone(ipc.guard());
+        let served = ipc.controller();
         // Report the FULL input width (main + sidechain/aux input buses) so a
         // graph edge into port 1 lands on a real sidechain port.
         let (inputs, outputs) = (loaded.total_inputs(), loaded.total_outputs());
@@ -394,7 +398,7 @@ impl PluginClient<Unbound> {
             param_sink,
             refresh_sink,
             invalidate_sink,
-            process_guard,
+            served,
             origin,
             fork_watch: None,
             state: Unbound {
@@ -431,7 +435,7 @@ impl PluginClient<Unbound> {
             param_sink,
             refresh_sink,
             invalidate_sink,
-            process_guard,
+            served,
             origin,
             fork_watch,
             state: Unbound { client },
@@ -447,7 +451,7 @@ impl PluginClient<Unbound> {
             param_sink,
             refresh_sink,
             invalidate_sink,
-            process_guard,
+            served,
             origin,
             fork_watch,
             state: Bound {
@@ -479,16 +483,18 @@ impl<S> PluginClient<S> {
     /// subprocess's lifetime with the client, and the subprocess backend
     /// honors every capability, including the editor.
     pub fn handle(&self) -> PluginHandle {
-        SubprocessBackend::new(self.bridge(), Arc::clone(self.process_guard())).into_handle(
+        let served = Arc::new(self.served.clone());
+        let pid = served.server_pid();
+        PluginHandle::from_backend(
+            Arc::clone(&served),
+            Some(served),
             self.descriptor().clone(),
             self.loaded().clone(),
-            (
-                self.param_sink().clone(),
-                self.refresh_sink().clone(),
-                self.invalidate_sink().clone(),
-            ),
-            self.process_guard().pid(),
+            self.param_sink().clone(),
         )
+        .with_refresh_sink(self.refresh_sink().clone())
+        .with_invalidate_sink(self.invalidate_sink().clone())
+        .with_server_pid(pid)
     }
 
     pub(crate) fn param_sink(&self) -> &ParameterChangeSink {
@@ -501,11 +507,6 @@ impl<S> PluginClient<S> {
 
     pub(crate) fn invalidate_sink(&self) -> &InvalidateSink {
         &self.invalidate_sink
-    }
-
-    /// The subprocess's lifetime guard, shared with [`handle`](Self::handle).
-    pub(crate) fn process_guard(&self) -> &Arc<ProcessGuard> {
-        &self.process_guard
     }
 
     /// Returns the plugin's reported latency in **frames**: its own figure, without
@@ -641,7 +642,8 @@ impl<S> PluginClient<S> {
         self.bridge.set_render_mode_rt(mode)
     }
 
-    /// Used by `PluginHandle`.
+    /// The bridge, for the tests that script or read the server.
+    #[cfg(all(test, feature = "clap"))]
     pub(crate) fn bridge(&self) -> Arc<PluginBridge> {
         Arc::clone(&self.bridge)
     }

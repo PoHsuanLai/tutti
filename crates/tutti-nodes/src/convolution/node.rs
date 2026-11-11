@@ -1,13 +1,14 @@
 //! [`ConvolverNode`]: [`Convolver`] as a graph node, at any channel
 //! width.
 //!
-//! One node for every width: each channel runs the same "convolve, gain,
-//! delay the dry, blend" step. The width is a property of the value (how many
+//! One node for every width: each channel runs the same "convolve, gain"
+//! step. The width is a property of the value (how many
 //! convolvers it was built with), and which IR each channel hears is an
 //! [`IrChannelConfig`].
 //!
 //! The node composes a [`Convolver`] per channel (the DSP engine) with one
-//! [`WetDry`] parameter group (the user-facing knobs), shared across channels.
+//! wet-path gain, shared across channels. It outputs its wet signal alone: the
+//! blend with the dry input is the graph's (`Editor::set_mix`).
 //!
 //! **An IR's FFT partitions are stored once**, in its
 //! [`IrSpectra`](tutti_dsp::IrSpectra) behind an `Arc`: under
@@ -21,12 +22,10 @@ use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::AtomicF32;
-use tutti_types::{Amplitude, ChannelLayout, Fold, Mix, SampleRate, Samples};
-use tutti_types::{Latency, Tail, UnitParam};
+use tutti_types::{Amplitude, ChannelLayout, Fold, Param, SampleRate, Samples};
+use tutti_types::{Latency, Tail};
 
-use super::params::WetDry;
-use crate::dry_align::DryAlign;
-use crate::ramp::{LastGood, block_driven};
+use crate::ramp::LastGood;
 use tutti_dsp::Convolver;
 use tutti_dsp::Ramp;
 
@@ -52,7 +51,7 @@ pub(super) fn ring_out(ir_length: usize) -> Tail {
 ///
 /// Mirrors Ardour's convolution-reverb wiring options, generalised from a
 /// stereo pair to any width. Every configuration has as many inputs as
-/// outputs, and every channel's dry path is that channel's own input.
+/// outputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IrChannelConfig {
     /// One IR applied independently to every channel — the same room heard
@@ -73,21 +72,21 @@ pub enum IrChannelConfig {
 /// Built at a fixed width with an [`IrChannelConfig`] saying which IR each
 /// channel hears; [`new`](Self::new) / [`with_ir`](Self::with_ir) build the
 /// 1-channel node. Latency is one FFT block, the same on every channel,
-/// declared in its [`Shape`] for the **whole** output: each channel's dry
-/// half is delayed by the same block inside the node, so wet and dry leave
-/// aligned. Its tail is the longest IR's ring-out.
+/// declared in its [`Shape`] for the **whole** output. Its tail is the longest
+/// IR's ring-out.
 ///
-/// The wet/dry [`Mix`] and wet-path [`Amplitude`] are one [`WetDry`] block
-/// shared by every channel, read once per block.
+/// The output is the wet signal alone, scaled by one wet-path [`Amplitude`]
+/// shared by every channel, read once per block. The blend with the dry input
+/// is the graph's: `Editor::set_mix` mixes the output with the input delayed by
+/// the latency declared here.
 ///
 /// # In a graph
 ///
-/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over the mix ([`UnitParam::Wet`]); the wet gain has no address and is
-/// set through [`gain`](Self::gain) / [`set_gain`](Self::set_gain). A fork
-/// starts from the mix last set through the set and the gain as it is when
-/// forked, shares no cell with the live node, and shares its IR spectra,
-/// which are read-only.
+/// A graph node ([`IntoNode`]): inserted, it offers no param to the graph (its
+/// [`ParamSet`] is empty); the wet gain has no address and is set through
+/// [`gain`](Self::gain) / [`set_gain`](Self::set_gain). A fork has the gain as
+/// it is when forked, shares no cell with the live node, and shares its IR
+/// spectra, which are read-only.
 ///
 /// # The sample rate is not this node's to fix
 ///
@@ -105,12 +104,9 @@ pub struct ConvolverNode {
     /// One convolver per channel; `convolvers.len()` is the width. Built at
     /// construction — never resized in `process` (RT no-alloc).
     convolvers: Vec<Convolver>,
-    /// Per-channel dry alignment. Each channel's *own* input is what gets
-    /// delayed — the dry half of a [`MonoToStereo`](IrChannelConfig::MonoToStereo)
-    /// blend is still channel `c`'s input, not the folded mono the IRs see.
-    dry: Vec<DryAlign>,
     config: IrChannelConfig,
-    params: WetDry,
+    /// The wet path's linear gain, floored at 0.
+    gain: Param<Amplitude>,
     /// The rate the graph last prepared the node at. Seeded at
     /// [`SampleRate::DEFAULT`] and updated by `prepare`, but **never read** — no coefficient here
     /// derives from it, because an FIR convolution's only time constant is the
@@ -128,23 +124,22 @@ pub struct ConvolverNode {
     /// The folded mono block, for [`MonoToStereo`](IrChannelConfig::MonoToStereo).
     /// Sized at `prepare` for the graph's maximum block.
     mono: Vec<f32>,
-    /// The `(mix, gain)` the previous block ended on — where this block's
-    /// ramp starts. `None` until the first block and after `reset`, which then
-    /// start on the current values instead of ramping in from nothing.
-    last: Option<(Mix, Amplitude)>,
-    /// Last finite mix and gain. Neither feeds recursive state here, but the
-    /// block's end is the next block's ramp start, so a NaN would carry into
-    /// the block after it (see [`LastGood`]).
-    good: [LastGood; 2],
+    /// The gain the previous block ended on — where this block's ramp starts.
+    /// `None` until the first block and after `reset`, which then starts on the
+    /// current value instead of ramping in from nothing.
+    last: Option<Amplitude>,
+    /// Last finite gain. It does not feed recursive state here, but the block's
+    /// end is the next block's ramp start, so a NaN would carry into the block
+    /// after it (see [`LastGood`]).
+    good: LastGood,
 }
 
 impl std::fmt::Debug for ConvolverNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConvolverNode")
             .field("convolvers", &self.convolvers)
-            .field("dry", &self.dry)
             .field("config", &self.config)
-            .field("params", &self.params)
+            .field("gain", &self.gain)
             .field("sample_rate", &self.sample_rate)
             .field("latency_samples", &self.latency_samples)
             .field("last", &self.last)
@@ -180,16 +175,15 @@ impl ConvolverNode {
             })
         });
         Self {
-            dry: (0..width).map(|_| DryAlign::new(latency_samples)).collect(),
             convolvers,
             config,
-            params: WetDry::default(),
+            gain: Param::new(Amplitude::UNITY),
             sample_rate: SampleRate::DEFAULT,
             latency_samples,
             fold,
             mono: Vec::new(),
             last: None,
-            good: [LastGood::fixed(0.5), LastGood::fixed(1.0)],
+            good: LastGood::fixed(1.0),
         }
     }
 
@@ -302,29 +296,19 @@ impl ConvolverNode {
         self.convolvers.len()
     }
 
-    /// The node's [`WetDry`] parameter block, shared across every channel.
-    pub fn params(&self) -> &WetDry {
-        &self.params
-    }
-
-    /// The shared wet/dry [`Mix`] cell: `0.0` dry, `1.0` fully wet.
-    pub fn mix(&self) -> Arc<AtomicF32> {
-        self.params.mix_handle()
-    }
-
-    /// The shared wet-path [`Amplitude`] cell, applied before the blend.
+    /// The shared wet-path [`Amplitude`] cell.
+    ///
+    /// Writing the raw cell bypasses [`set_gain`](Self::set_gain)'s floor at 0;
+    /// a negative gain inverts the wet signal's polarity.
     pub fn gain(&self) -> Arc<AtomicF32> {
-        self.params.gain_handle()
-    }
-
-    /// Sets the wet/dry [`Mix`] for every channel, clamped to `0.0..=1.0`.
-    pub fn set_mix(&self, mix: impl Into<Mix>) {
-        self.params.set_mix(mix);
+        self.gain.as_atomic()
     }
 
     /// Sets the wet-path [`Amplitude`] for every channel, floored at 0.
+    ///
+    /// `1.0` is unity. The floor keeps the wet path from inverting.
     pub fn set_gain(&self, gain: impl Into<Amplitude>) {
-        self.params.set_gain(gain);
+        self.gain.store(Amplitude(gain.into().get().max(0.0)));
     }
 
     /// The node's latency in [`Samples`] — one FFT block, the same on every
@@ -337,86 +321,56 @@ impl ConvolverNode {
         Samples(self.latency_samples)
     }
 
-    /// Blend channel `c`'s already-convolved block `out` against its delayed
-    /// dry input `x`, in place, with `mix` and `gain` ramped across the block
-    /// (see [`BlendRamp`]). The samples stay raw.
+    /// Scale channel `c`'s already-convolved block `out` by the wet gain, in
+    /// place, ramped across the block (see [`GainRamp`]).
     #[inline]
-    fn blend_channel(dry: &mut DryAlign, x: &[f32], out: &mut [f32], ramp: &BlendRamp) {
-        if let Some((mix, gain)) = ramp.held() {
-            // Nothing moved: constants in the loop, the pre-ramp arithmetic.
-            for (o, &s) in out.iter_mut().zip(x) {
-                let wet = *o * gain.get();
-                *o = mix.blend(dry.step(s), wet);
+    fn apply_gain(out: &mut [f32], ramp: &Ramp, held: Option<Amplitude>) {
+        if let Some(gain) = held {
+            // Nothing moved: a constant in the loop.
+            for o in out {
+                *o *= gain.get();
             }
             return;
         }
-        for (i, (o, &s)) in out.iter_mut().zip(x).enumerate() {
-            let wet = *o * ramp.gain.at(i);
-            *o = Mix(ramp.mix.at(i)).blend(dry.step(s), wet);
+        for (i, o) in out.iter_mut().enumerate() {
+            *o *= ramp.at(i);
         }
     }
 
-    /// Read `mix` and `gain` once, and ramp from where the previous block
-    /// ended. Both scale the output directly — a stepped wet gain or blend is a
-    /// click — so a change between blocks glides across the next one and lands
-    /// exactly on the new value (a block of one takes it at once).
-    ///
-    /// `driven` is the block's mix from the node's param port when a lane
-    /// drives it (`block_driven`), clamped as `set_mix` clamps; `None`
-    /// reads the cell.
-    fn begin_block(&mut self, size: usize, driven: Option<f32>) -> BlendRamp {
-        let (mix, gain) = self.params.load();
-        let mix = driven.map_or(mix, Mix::new_clamped);
-        let mix = Mix(self.good[0].read(mix.get()));
-        let gain = Amplitude(self.good[1].read(gain.get()));
-        let (from_mix, from_gain) = self.last.unwrap_or((mix, gain));
-        self.last = Some((mix, gain));
-        BlendRamp {
-            mix: Ramp::new(from_mix.get(), mix.get(), size),
-            gain: Ramp::new(from_gain.get(), gain.get(), size),
-            target: (mix, gain),
-        }
-    }
-}
-
-/// A block's `mix` and `gain` ramps.
-struct BlendRamp {
-    mix: Ramp,
-    gain: Ramp,
-    target: (Mix, Amplitude),
-}
-
-impl BlendRamp {
-    /// The held values when neither control moved this block.
-    #[inline]
-    fn held(&self) -> Option<(Mix, Amplitude)> {
-        (self.mix.is_flat() && self.gain.is_flat()).then_some(self.target)
+    /// Read the gain once, and ramp from where the previous block ended. It
+    /// scales the output directly — a stepped gain is a click — so a change
+    /// between blocks glides across the next one and lands exactly on the new
+    /// value (a block of one takes it at once).
+    fn begin_block(&mut self, size: usize) -> (Ramp, Option<Amplitude>) {
+        let gain = Amplitude(self.good.read(self.gain.load().get()));
+        let from = self.last.unwrap_or(gain);
+        self.last = Some(gain);
+        let ramp = Ramp::new(from.get(), gain.get(), size);
+        let held = ramp.is_flat().then_some(gain);
+        (ramp, held)
     }
 }
 
 impl ConvolverNode {
     /// Frames `at..at + size` of the block (`size` at most the `mono`
-    /// scratch's length): convolve each channel's run, then blend it against
-    /// the delayed dry input. `mix` and `gain` are read once, here, and
-    /// ramped if they moved.
+    /// scratch's length): convolve each channel's run, then scale it
+    /// by the wet gain. The gain is read once, here, and ramped if it moved.
     fn render(
         &mut self,
         at: usize,
         size: usize,
         inputs: &Inputs<'_>,
         outputs: &mut Outputs<'_, '_>,
-        driven: Option<f32>,
     ) {
         let input = |c: usize| &inputs.get(c)[at..at + size];
-        let ramp = self.begin_block(size, driven);
+        let (ramp, held) = self.begin_block(size);
         let n = self.width();
         match self.config {
             IrChannelConfig::Mono | IrChannelConfig::Stereo => {
                 for c in 0..n {
-                    let x = input(c);
                     let out = &mut outputs.get(c)[at..at + size];
-                    self.convolvers[c].process_block(x, out);
-                    Self::blend_channel(&mut self.dry[c], x, out, &ramp);
+                    self.convolvers[c].process_block(input(c), out);
+                    Self::apply_gain(out, &ramp, held);
                 }
             }
             IrChannelConfig::MonoToStereo => {
@@ -426,25 +380,17 @@ impl ConvolverNode {
                     .expect("a MonoToStereo node builds its fold")
                     .planar_channel(input, 0, &mut self.mono[..size]);
                 for c in 0..n {
-                    let x = input(c);
                     let out = &mut outputs.get(c)[at..at + size];
                     self.convolvers[c].process_block(&self.mono[..size], out);
-                    Self::blend_channel(&mut self.dry[c], x, out, &ramp);
+                    Self::apply_gain(out, &ramp, held);
                 }
             }
         }
     }
 }
 
-/// The param a [`ConvolverNode`] lets the graph modulate: its wet/dry mix.
-/// Block-rate in the node (read once per block and ramped across it), so a
-/// driven port is read the same way (`block_driven`). The IR is not a
-/// param (a new IR is a new node), and the wet gain has no `UnitParam`.
-pub const CONVOLVER_PARAMS: [UnitParam; 1] = [UnitParam::Wet];
-
 impl Node for ConvolverNode {
-    /// `N` in, `N` out; one FFT block of latency for the whole output (the
-    /// dry half is delayed by the same block inside the node), and the
+    /// `N` in, `N` out; one FFT block of latency for the whole output, and the
     /// longest IR's ring-out as its tail — exact rather than estimated, a
     /// convolution being linear and finite. The tail excludes the FFT block
     /// latency, which is declared on its own and compensated.
@@ -459,7 +405,6 @@ impl Node for ConvolverNode {
                     .max()
                     .unwrap_or(0),
             ))
-            .with_params(&CONVOLVER_PARAMS)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -471,7 +416,6 @@ impl Node for ConvolverNode {
     /// whole block in partition-sized runs, then the blend runs over the block.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let driven = block_driven(&io, 0);
         let (inputs, mut outputs) = io.split();
         // One piece in a graph, whose blocks fit the scratch; a longer block
         // driven by hand renders in scratch-sized pieces.
@@ -479,7 +423,7 @@ impl Node for ConvolverNode {
         let mut at = 0;
         while at < size {
             let n = step.min(size - at);
-            self.render(at, n, &inputs, &mut outputs, driven);
+            self.render(at, n, &inputs, &mut outputs);
             at += n;
         }
         Status::Modified
@@ -489,39 +433,27 @@ impl Node for ConvolverNode {
         for c in &mut self.convolvers {
             c.reset();
         }
-        for d in &mut self.dry {
-            d.clear();
-        }
         self.last = None;
-    }
-
-    fn param_base(&self, k: usize) -> Option<f32> {
-        (k == 0).then(|| self.params.load().0.get())
     }
 }
 
 impl ParamNode for ConvolverNode {
-    /// The mix. The wet gain is a linear trim with no `UnitParam` of its
-    /// own; it is set through the node's handle.
+    /// None: the wet gain is a linear trim with no `UnitParam`; it is set
+    /// through the node's handle.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Wet, self.params.mix_handle())
-            .build()
+        ParamSet::builder().build()
     }
 
     /// A node over the same IR spectra (shared: they are read-only) with
     /// fresh running state — nothing of this node's history is copied — and
-    /// the mix and gain cells detached at their values now.
+    /// the gain cell detached at its value now.
     fn fork_fresh(&self) -> Self {
-        let mut params = self.params.clone();
-        params.detach();
+        let mut gain = self.gain.clone();
+        gain.detach();
         Self {
             convolvers: self.convolvers.iter().map(Convolver::fresh).collect(),
-            dry: (0..self.width())
-                .map(|_| DryAlign::new(self.latency_samples))
-                .collect(),
             config: self.config,
-            params,
+            gain,
             sample_rate: self.sample_rate,
             latency_samples: self.latency_samples,
             fold: self.fold.clone(),
@@ -532,8 +464,8 @@ impl ParamNode for ConvolverNode {
     }
 }
 
-/// Inserted with its [`ParamSet`] as its controls and a fork that starts
-/// from the mix last set through it ([`tutti_graph::param_parts`]).
+/// Inserted with its (empty) [`ParamSet`] as its controls and a fork that
+/// detaches the gain ([`tutti_graph::param_parts`]).
 impl IntoNode for ConvolverNode {
     type Controls = ParamSet;
 
@@ -547,29 +479,23 @@ mod tests {
     use super::super::ir::{generate_room_ir, generate_test_ir};
     use super::*;
     use crate::test_support::{drive_block, drive_frames, prepared};
-    use tutti_graph::contract::assert_param_fork;
     use tutti_types::Seconds;
 
-    /// A fork starts from the mix last set through the node's `ParamSet`
-    /// and shares no cell with it (see
-    /// `tutti_graph::contract::assert_param_fork`).
+    /// The node offers no param to the graph (the mix is the graph's, the gain
+    /// has no address), and a fork keeps the gain as it was when forked and
+    /// follows no live write.
     ///
-    /// Mutation (run): drop `params.detach()` in `fork_fresh` → "a live
-    /// write reached the fork" for `Wet`.
+    /// Mutation (run): drop `gain.detach()` in `fork_fresh` → the fork reads
+    /// the live node's later write and fails the last assertion; a param
+    /// offered in `param_set` fails the first.
     #[test]
-    fn a_fork_starts_from_the_authored_mix_and_shares_no_cell() {
+    fn a_fork_keeps_the_gain_and_shares_no_cell() {
         let node = ConvolverNode::stereo(&[1.0, 0.5], &[0.25], 64);
-        assert_eq!(
-            node.param_set().params().collect::<Vec<_>>(),
-            [UnitParam::Wet]
-        );
-        assert_param_fork(node.clone());
-        // The gain has no address: the fork keeps it at its value when
-        // forked, and follows no live write.
+        assert_eq!(node.param_set().params().count(), 0);
         node.set_gain(Amplitude::new(0.3));
         let fork = node.fork_fresh();
         node.set_gain(Amplitude::new(2.0));
-        assert_eq!(fork.params.gain.load(), Amplitude(0.3));
+        assert_eq!(fork.gain.load(), Amplitude(0.3));
     }
 
     /// One IR is transformed once: every channel of a shared-IR node, and
@@ -610,11 +536,9 @@ mod tests {
         let ir = generate_test_ir(700, Seconds::new(0.3), SampleRate::new(48_000.0));
         let x = crate::test_support::noise(5, 512);
         let mut live = prepared(ConvolverNode::stereo(&ir, &ir, 64));
-        live.set_mix(Mix::new(1.0));
         drive_block(&mut live, &[&x, &x]);
         let mut fork = prepared(live.fork_fresh());
         let mut new = prepared(ConvolverNode::stereo(&ir, &ir, 64));
-        new.set_mix(Mix::new(1.0));
         let silent = [0.0f32; 512];
         assert_eq!(
             drive_block(&mut fork, &[&silent, &silent]),
@@ -653,7 +577,6 @@ mod tests {
         let mut renders = Vec::new();
         for lens in [&[1usize][..], &[7, 61, 64, 127], &[1000, 3]] {
             let mut node = prepared(ConvolverNode::new(&ir, 32));
-            node.set_mix(Mix::new(1.0));
             let (mut at, mut k) = (0, 0);
             let mut out = Vec::new();
             while at < x.len() {
@@ -680,37 +603,18 @@ mod tests {
         }
     }
 
+    /// The wet gain is floored at 0 by its setter: a negative gain would
+    /// invert the wet path's polarity.
+    ///
+    /// Mutation (run): dropping the `.max(0.0)` in `set_gain` fails the
+    /// second assertion.
     #[test]
-    fn mix_is_clamped() {
-        let ir = vec![1.0; 64];
-        let node = ConvolverNode::new(&ir, 64);
-        node.set_mix(Mix::new(1.5));
-        assert_eq!(node.mix().load(core::sync::atomic::Ordering::Acquire), 1.0);
-        node.set_mix(Mix::new(-0.5));
-        assert_eq!(node.mix().load(core::sync::atomic::Ordering::Acquire), 0.0);
-    }
-
-    /// Fully dry is the input unchanged *and* `latency_samples` late, because
-    /// the node reports that latency for its whole output and PDC compensates
-    /// the whole output by it. A dry half that led the reported latency would
-    /// arrive early.
-    #[test]
-    fn dry_mix_is_passthrough() {
-        let ir = vec![1.0; 64];
-        let mut node = prepared(ConvolverNode::new(&ir, 64));
-        node.set_mix(Mix::new(0.0));
-        let latency = node.latency_samples().0;
-
-        let x: Vec<f32> = (0..latency * 2).map(|i| 0.5 + i as f32 * 1e-3).collect();
-        let got = drive_frames(&mut node, &[&x]).remove(0);
-        for (i, &s) in got.iter().enumerate() {
-            let want = if i < latency {
-                0.0
-            } else {
-                0.5 + (i - latency) as f32 * 1e-3
-            };
-            assert!((s - want).abs() < 1e-6, "frame {i}: {s}, expected {want}");
-        }
+    fn the_gain_is_floored_at_zero() {
+        let node = ConvolverNode::new(&[1.0; 64], 64);
+        node.set_gain(Amplitude::new(1.5));
+        assert_eq!(node.gain().load(core::sync::atomic::Ordering::Acquire), 1.5);
+        node.set_gain(Amplitude::new(-0.5));
+        assert_eq!(node.gain().load(core::sync::atomic::Ordering::Acquire), 0.0);
     }
 
     #[test]
@@ -719,7 +623,6 @@ mod tests {
         let mut node = prepared(ConvolverNode::new(&ir, 64));
         drive_frames(&mut node, &[&[1.0; 100]]);
         Node::reset(&mut node);
-        node.set_mix(Mix::new(1.0));
         let out = drive_frames(&mut node, &[&[0.0]]);
         assert!(out[0][0].abs() < 1e-6);
     }
@@ -729,7 +632,6 @@ mod tests {
         let ir_l = generate_test_ir(512, Seconds::new(0.3), SampleRate::new(48_000.0));
         let ir_r = generate_test_ir(512, Seconds::new(0.4), SampleRate::new(48_000.0));
         let mut node = prepared(ConvolverNode::stereo(&ir_l, &ir_r, 64));
-        node.set_mix(Mix::new(0.5));
         let out = drive_frames(&mut node, &[&[1.0], &[0.5]]);
         assert!(out[0][0].is_finite() && out[1][0].is_finite());
     }
@@ -747,8 +649,9 @@ mod tests {
 mod golden {
     use super::super::ir::generate_test_ir;
     use super::*;
+    use tutti_graph::Solo;
     use tutti_graph::contract::{drive, prepared};
-    use tutti_types::Seconds;
+    use tutti_types::{Mix, Seconds};
 
     const BLOCK: usize = 64;
     const FRAMES: usize = 1500;
@@ -785,6 +688,18 @@ mod golden {
             at += n;
         }
         out
+    }
+
+    /// `render`, in a graph whose mix of `node` is `mix`.
+    fn render_mixed(node: ConvolverNode, x: &[Vec<f32>], mix: Mix) -> Vec<Vec<f32>> {
+        let mut solo = Solo::new(node, Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+        let key = solo.key();
+        solo.renderer_mut()
+            .editor_mut()
+            .set_mix(key, mix)
+            .expect("the node is in the graph");
+        let ins: Vec<&[f32]> = x.iter().map(Vec::as_slice).collect();
+        solo.render_input(&ins)
     }
 
     fn cases() -> Vec<(&'static str, ConvolverNode)> {
@@ -923,7 +838,12 @@ mod golden {
     ];
 
     /// The node renders the pinned reference output at
-    /// width 1 and in all three stereo configurations, through `process`.
+    /// width 1 and in all three stereo configurations, in a graph, at a mix of
+    /// 0.4 (the graph's blend of the node's output with its input delayed by the
+    /// declared latency) and a wet gain of 0.7. The pinned figures were
+    /// rendered when the node blended internally; the graph's blend is the same
+    /// two products and sum, and the one block that ramps in from the unit's
+    /// full-wet start holds frame 0 only, where the output is 0.
     ///
     /// The tolerance is relative (`1e-5` of the value, floored at `1e-5`) and
     /// not bit-exact on purpose: the FFT's twiddle factors come from the
@@ -932,17 +852,15 @@ mod golden {
     /// hundreds of products. Every mutation below moves samples by orders of
     /// magnitude more.
     ///
-    /// Mutation: dropping `* gain.get()`, blending the undelayed input instead
-    /// of `dry.step(s)`, convolving every channel with `convolvers[0]`, or
-    /// blending every channel against channel 0's input each fail this.
+    /// Mutation (each run, each fails): dropping `* gain.get()`, convolving every channel with
+    /// `convolvers[0]`, or the graph's mix set to 1 (no dry) each fail this.
     #[test]
     fn output_matches_the_pinned_pre_merge_render() {
         for ((name, node), (gname, want)) in cases().into_iter().zip(GOLDEN) {
             assert_eq!(name, gname);
-            node.set_mix(Mix::new(0.4));
             node.set_gain(Amplitude::new(0.7));
             let x = signal(node.width(), FRAMES);
-            let out = render(node, &x);
+            let out = render_mixed(node, &x, Mix::new(0.4));
             assert_eq!(out.len(), want.len(), "{name}: width");
             for (c, (oc, wc)) in out.iter().zip(want).enumerate() {
                 let got: Vec<f32> = oc.iter().step_by(STRIDE).copied().collect();
@@ -966,8 +884,7 @@ mod golden {
     /// Distinct inputs per channel are what make "no bleed" follow from the
     /// equality: a channel that read any other channel's input would diverge.
     ///
-    /// Mutation: convolving every channel with `self.convolvers[0]`, or blending
-    /// channel `c` against `self.dry[0]`/channel 0's input, fails this.
+    /// Mutation (run): convolving every channel with `self.convolvers[0]` fails this.
     #[test]
     fn six_channels_convolve_independently() {
         let irs: Vec<Vec<f32>> = (0..6)
@@ -984,12 +901,10 @@ mod golden {
         let shape = wide.shape();
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (6, 6));
         assert_eq!(wide.layout(), ChannelLayout::from(6u16));
-        wide.set_mix(Mix::new(0.3));
         let x = signal(6, 900);
         let got = render(wide, &x);
         for c in 0..6 {
             let solo = ConvolverNode::new(&irs[c], 64);
-            solo.set_mix(Mix::new(0.3));
             let want = render(solo, &x[c..=c]);
             for (i, (g, w)) in got[c].iter().zip(&want[0]).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "ch{c} frame {i}: {g} vs {w}");
@@ -998,16 +913,14 @@ mod golden {
     }
 
     /// A shared IR at width 6: an impulse on channel 3 comes out of channel 3
-    /// alone, dry and wet both exactly `latency_samples` late.
+    /// alone, exactly `latency_samples` late (the graph's dry half is
+    /// `node_mix.rs`'s).
     ///
-    /// Mutation: blending the undelayed input instead of `dry.step(s)` puts
-    /// channel 3's dry impulse at frame 0; blending every channel against
-    /// channel 0's input, or convolving every channel with `convolvers[0]`,
-    /// leaks the impulse into the other channels. Both fail this.
+    /// Mutation (run): convolving every channel with `convolvers[0]` leaks the
+    /// impulse into the other channels and fails this.
     #[test]
     fn a_six_channel_shared_ir_keeps_each_channel_to_itself_and_aligned() {
         let node = ConvolverNode::shared_ir(6u16, &[1.0], 64);
-        node.set_mix(Mix::new(0.5));
         let latency = node.latency_samples().0;
         assert_eq!(node.shape().latency, Latency::new(Samples(latency)));
         let mut x = vec![vec![0.0f32; 4 * latency]; 6];
@@ -1025,7 +938,7 @@ mod golden {
     }
 
     /// Folded at width 6: every output is the engine's 6-to-1 fold of the frame
-    /// convolved with that output's IR (fully wet, so only the IR path shows).
+    /// convolved with that output's IR (the node is wet only, so the IR path shows alone).
     ///
     /// Mutation: folding with a plain average instead of the fold,
     /// or convolving the channel's own input instead of the fold, fails this.
@@ -1036,7 +949,6 @@ mod golden {
             .collect();
         let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
         let node = ConvolverNode::folded(&refs, 32);
-        node.set_mix(Mix::new(1.0));
         let x = signal(6, 700);
         let got = render(node, &x);
         let to_mono = Fold::widths(ChannelLayout::from(6u16), ChannelLayout::MONO).unwrap();
@@ -1050,7 +962,6 @@ mod golden {
             .collect();
         for c in 0..6 {
             let solo = ConvolverNode::new(&irs[c], 32);
-            solo.set_mix(Mix::new(1.0));
             let want = render(solo, std::slice::from_ref(&mono));
             for (i, (g, w)) in got[c].iter().zip(&want[0]).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "ch{c} frame {i}: {g} vs {w}");
@@ -1058,36 +969,34 @@ mod golden {
         }
     }
 
-    /// A mix or wet-gain change made between blocks is read by the next block
-    /// and ramped across it (both scale the output directly, so a step
-    /// clicks), ending exactly on the new value.
+    /// A wet-gain change made between blocks is read by the next block
+    /// and ramped across it (it scales the output directly, so a step
+    /// clicks), ending exactly on the new value. (A mix change is the graph's:
+    /// `tutti-graph/tests/mix.rs`.)
     ///
     /// Mutation (each run, each fails): ignoring `self.last` in `begin_block`
-    /// (both ramps start on the target); starting only the gain ramp on the
-    /// target; reading the gain ramp one sample late (the block no longer ends
-    /// on the new value).
+    /// (the ramp starts on the target); reading the ramp one sample late (the
+    /// block no longer ends on the new value).
     #[test]
-    fn a_mix_or_gain_change_is_read_next_block_and_ramped_across_it() {
+    fn a_gain_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};
         let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::new(48_000.0));
         let x = noise(21, 64 * 8);
         let (hist, block) = (&x[..64 * 7], &x[64 * 7..]);
         let make = || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64);
-        type Change = fn(&ConvolverNode);
-        let changes: [(&str, Change); 2] = [
-            ("mix", |n| n.set_mix(Mix::new(1.0))),
-            ("gain", |n| n.set_gain(Amplitude::new(4.0))),
-        ];
-        for (what, change) in changes {
-            let run = change_between_node_blocks(make, change, &[hist, hist], &[block, block]);
-            run.assert_ramps_in(what);
-            for c in 0..2 {
-                assert_eq!(
-                    run.r[c][63].to_bits(),
-                    run.j[c][63].to_bits(),
-                    "{what}: ch{c}: the block must end exactly on the new value"
-                );
-            }
+        let run = change_between_node_blocks(
+            make,
+            |n| n.set_gain(Amplitude::new(4.0)),
+            &[hist, hist],
+            &[block, block],
+        );
+        run.assert_ramps_in("gain");
+        for c in 0..2 {
+            assert_eq!(
+                run.r[c][63].to_bits(),
+                run.j[c][63].to_bits(),
+                "gain: ch{c}: the block must end exactly on the new value"
+            );
         }
     }
 }

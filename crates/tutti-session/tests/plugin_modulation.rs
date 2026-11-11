@@ -174,7 +174,7 @@ fn gain_value(s: &Session, node: NodeKey) -> Option<Normalized> {
     s.plugin(node)
         .expect("hosted")
         .handle()
-        .params()
+        .any_thread()
         .parameter_value(ParamId::new(GAIN))
 }
 

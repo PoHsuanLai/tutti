@@ -9,13 +9,12 @@
 //! ([`LadderDesign`]); the node is a [`DesignNode`] over it, and this file holds
 //! the cells and how a block reads them.
 
-use tutti_dsp::{Cadence, Design, LadderControls, LadderDesign, LadderType, Ramp, Real};
-use tutti_graph::{Io, ParamSetBuilder};
-use tutti_types::{ChannelLayout, Drive, Hz, Param, Resonance, UnitAddr, UnitParam};
+use tutti_dsp::{Cadence, Design, LadderControls, LadderDesign, LadderType, Real};
+use tutti_types::{ChannelLayout, Drive, Hz, Resonance, UnitAddr, UnitParam};
 
 use crate::blend::NoBlend;
-use crate::ramp::{LastGood, finite_or};
-use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
+use crate::params::{ControlSet, Params};
+use crate::reverb::{DesignNode, NodeDesign};
 
 /// A Moog-style four-stage ladder filter with resonance and drive, of any
 /// width: `N` audio inputs, `N` outputs.
@@ -23,7 +22,7 @@ use crate::reverb::{At, ControlParams, DesignNode, NodeDesign};
 /// The coefficients are solved once for every channel, and the channels'
 /// four-stage chains run side by side.
 ///
-/// Cutoff ([`Hz`]), [`Resonance`] and [`Drive`] are live [`Param`]s shared
+/// Cutoff ([`Hz`]), [`Resonance`] and [`Drive`] are live [`Params`] shared
 /// across clones. A held value costs nothing: the model is designed again only
 /// when the cutoff or resonance moves past a small dead-band or the drive moves
 /// at all ([`LadderControls::moved_from`]). The filter is designed on a 16-frame
@@ -111,21 +110,12 @@ impl<F: Real> LadderFilterNode<F> {
     }
 }
 
-/// The cells of a [`LadderFilterNode`]: cutoff, resonance and drive, with the
+/// The controls of a [`LadderFilterNode`]: cutoff, resonance and drive, with the
 /// type they are for.
-#[derive(Clone, Debug)]
-pub struct LadderParams {
-    ty: LadderType,
-    freq: Param<Hz>,
-    res: Param<Resonance>,
-    drive: Param<Drive>,
-    /// The last finite cutoff / resonance / drive the cells held: a non-finite
-    /// write reads as unchanged, so it never reaches the design (see
-    /// [`LastGood`]).
-    good: [LastGood; 3],
-}
+#[derive(Clone, Copy, Debug)]
+pub struct LadderSet(LadderType);
 
-impl ControlParams for LadderParams {
+impl ControlSet for LadderSet {
     type Controls = LadderControls;
 
     fn addrs(&self) -> &'static [UnitAddr] {
@@ -137,91 +127,34 @@ impl ControlParams for LadderParams {
         &ADDRS
     }
 
-    fn bind(&self, set: ParamSetBuilder) -> ParamSetBuilder {
-        let addrs = self.addrs();
-        set.param(addrs[0], self.freq.as_atomic())
-            .param(addrs[1], self.res.as_atomic())
-            .param(addrs[2], self.drive.as_atomic())
+    fn defaults(&self) -> LadderControls {
+        LadderControls::DEFAULT
     }
 
-    fn base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.freq.load().get()),
-            1 => Some(self.res.load().get()),
-            2 => Some(self.drive.load().get()),
-            _ => None,
-        }
+    fn flatten(&self, c: &LadderControls, out: &mut [f32]) {
+        out.copy_from_slice(&[c.freq.get(), c.res.get(), c.drive.get()]);
     }
 
-    /// Each driven control is its lane at `at.frame` (a cutoff floored at 1 Hz, a
-    /// resonance clamped to `0..=1` with a non-finite one read as the cell, a drive
-    /// floored at 0.1 with a non-finite one read as the cell) and the cell is taken
-    /// as it is. A control with no lane glides from the controls last designed to
-    /// its cell across the block, sampled at `at.frame`: the cutoff and resonance
-    /// only when neither has a lane (a lane on one stops the other gliding), the
-    /// drive whatever the other two do.
-    fn read(&mut self, io: &Io<'_>, first: usize, at: At<LadderControls>) -> LadderControls {
-        let [cutoff, res, drive] = [first, first + 1, first + 2].map(|k| io.param(k).frames());
-        let freq = Hz(self.good[0].read(self.freq.load().get()));
-        let resonance = Resonance(self.good[1].read(self.res.load().get()));
-        let cell_drive = Drive(self.good[2].read(self.drive.load().get()));
-        let glide = |from: f32, to: f32| Ramp::new(from, to, at.block).at(at.frame);
-        let (freq, resonance) = match (cutoff, res, at.applied) {
-            (None, None, Some(from)) => (
-                Hz(glide(from.freq.get(), freq.get())),
-                Resonance(glide(from.res.get(), resonance.get())),
-            ),
-            _ => (
-                cutoff.map_or(freq, |s| Hz(s[at.frame].max(1.0))),
-                res.map_or(resonance, |s| {
-                    Resonance(finite_or(s[at.frame], resonance.get()).clamp(0.0, 1.0))
-                }),
-            ),
-        };
-        let drive = match (drive, at.applied) {
-            (Some(s), _) => Drive(finite_or(s[at.frame], cell_drive.get()).max(0.1)),
-            (None, Some(from)) => Drive(glide(from.drive.get(), cell_drive.get())),
-            (None, None) => cell_drive,
-        };
+    fn assemble(&self, v: &[f32]) -> LadderControls {
         LadderControls {
-            ty: self.ty,
-            freq,
-            res: resonance,
-            drive,
+            ty: self.0,
+            freq: Hz(v[0]),
+            res: Resonance(v[1]),
+            drive: Drive(v[2]),
         }
-    }
-
-    fn driven(&self, io: &Io<'_>, first: usize) -> bool {
-        (first..first + 3).any(|k| io.param(k).frames().is_some())
-    }
-
-    fn detach(&mut self) {
-        self.freq.detach();
-        self.res.detach();
-        self.drive.detach();
     }
 }
 
 impl<F: Real> NodeDesign for LadderDesign<F> {
-    type Params = LadderParams;
+    type Params = Params<LadderSet>;
     type Blend = NoBlend;
 
     /// A filter declares an unknown tail and never parks.
     const PARKS: bool = false;
     const SAMPLING: Cadence = <Self as Design>::CADENCE;
 
-    fn params(&self, initial: LadderControls) -> LadderParams {
-        LadderParams {
-            ty: initial.ty,
-            freq: Param::new(initial.freq),
-            res: Param::new(initial.res),
-            drive: Param::new(initial.drive),
-            good: [
-                LastGood::new(initial.freq.get(), 0.0),
-                LastGood::new(initial.res.get(), 0.0),
-                LastGood::fixed(Drive::UNITY.get()),
-            ],
-        }
+    fn params(&self, initial: LadderControls) -> Self::Params {
+        Params::new(LadderSet(initial.ty), &initial)
     }
 
     fn moved(applied: &LadderControls, target: &LadderControls) -> bool {

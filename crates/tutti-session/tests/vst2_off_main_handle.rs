@@ -2,7 +2,7 @@
 //! `Session::update`.**
 //!
 //! The snapshot and parameter-read jobs the session hands out run on a pool
-//! thread and call `HostState::save_state` and `HostParams::parameter_value` on
+//! thread and call `AnyThread::save_state` and `AnyThread::parameter_value` on
 //! the handle; the backend posts them to the main thread, and the update's
 //! `Phase::Collect` runs them (`run_deferred`). `Session::update` is a
 //! main-thread call (it debug-asserts that it is not off a claimed main
@@ -47,17 +47,17 @@ fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
     let handle = session.plugin(node).expect("hosted").handle().clone();
     let id = ParamId::new(1);
     handle
-        .params()
+        .any_thread()
         .set_parameter_value(id, Normalized::of(0.75));
     let expected = handle
-        .state()
+        .any_thread()
         .save_state()
         .expect("saved on the main thread");
 
     let pool = std::thread::spawn(move || {
         (
-            handle.state().save_state(),
-            handle.params().parameter_value(id),
+            handle.any_thread().save_state(),
+            handle.any_thread().parameter_value(id),
         )
     });
     while !pool.is_finished() {

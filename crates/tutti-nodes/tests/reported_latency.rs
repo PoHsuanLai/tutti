@@ -10,7 +10,7 @@
 //! whose DSP drifted away from it.
 
 use tutti_graph::contract::{drive, prepared};
-use tutti_graph::{GraphBuilder, Node, Prepare};
+use tutti_graph::{GraphBuilder, IntoNode, Node, Prepare};
 use tutti_nodes::testing::Through;
 use tutti_nodes::{CrossoverNode, DelayLineNode, ModDelayNode, MultibandCompressorNode};
 use tutti_types::Latency;
@@ -43,6 +43,33 @@ fn impulse_response<N: Node>(node: N, frames: usize) -> Vec<Vec<f32>> {
         done += n;
     }
     out
+}
+
+/// `node` alone in a graph, blended with its aligned input at `mix` (the graph's
+/// `set_mix`, set before the unit is placed so no block ramps in from wet), and
+/// run over `frames` frames of a unit impulse at frame 0 on every input. One
+/// `Vec` per output.
+fn mixed_impulse_response<N: IntoNode>(node: N, frames: usize, mix: Mix) -> Vec<Vec<f32>> {
+    let (node, _) = node.into_node();
+    let shape = node.shape();
+    let mut g = GraphBuilder::new(shape.audio_in, shape.audio_out);
+    let key = g.add(tutti_graph::Unforkable(node));
+    for c in 0..usize::from(shape.audio_in.count()) {
+        g.connect_input(c, key, c);
+    }
+    for c in 0..usize::from(shape.audio_out.count()) {
+        g.connect_output(key, c, c);
+    }
+    g.spec_mut().set_mix(key, mix);
+    let mut r = g
+        .renderer(Prepare::new(SR, Samples(BLOCK)))
+        .expect("a one-node graph builds");
+    let mut chunk = vec![0.0f32; frames];
+    chunk[0] = 1.0;
+    let ins: Vec<&[f32]> = (0..usize::from(shape.audio_in.count()))
+        .map(|_| &chunk[..])
+        .collect();
+    r.render_input(&ins)
 }
 
 /// The latency a node declares: one figure for its whole output (a graph
@@ -94,13 +121,13 @@ fn crossover_and_multiband_report_zero_latency_and_respond_at_frame_0() {
 // ---------------------------------------------------------------------------
 
 /// A 500 ms echo is the effect, not processing latency: it must declare 0,
-/// and the dry half of the blend must leave at frame 0 to prove that 0 is
-/// true.
+/// and the dry half of the graph's mix at 0.5 must leave at frame 0 to prove
+/// that 0 is true.
 ///
 /// Mutation (run): declaring `with_latency(Latency::new(Samples(24_000)))` in
-/// `DelayLineNode::shape` fails the declared-latency assertion. Blending
-/// `Mix(mix).blend(wet, wet)` in `delay_step` (a node whose whole output
-/// really *is* late) fails the frame-0 assertion.
+/// `DelayLineNode::shape` fails the declared-latency assertion; so does
+/// declaring a latency of one frame (it also delays the graph's dry half, which
+/// `node_mix.rs` pins).
 #[test]
 fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
     let node = DelayLineNode::new(
@@ -108,7 +135,6 @@ fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
         Seconds::new(0.5_f64),
         Feedback::new(0.0_f32),
     );
-    node.set_mix(Mix::new(0.5_f32));
 
     assert_eq!(
         declared(&node),
@@ -117,7 +143,7 @@ fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
     );
 
     let echo = 24_000; // 0.5 s at 48 kHz
-    let out = impulse_response(node, echo + 16);
+    let out = mixed_impulse_response(node, echo + 16, Mix::new(0.5_f32));
     assert_eq!(
         onsets(&out[0]),
         vec![0, echo],
@@ -139,7 +165,6 @@ fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
         Seconds::new(0.5_f64),
         Feedback::new(0.0_f32),
     );
-    node.set_mix(Mix::new(0.5_f32));
 
     assert_eq!(
         declared(&node),
@@ -147,7 +172,7 @@ fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
         "a musical delay is not latency"
     );
 
-    let out = impulse_response(node, 24_016);
+    let out = mixed_impulse_response(node, 24_016, Mix::new(0.5_f32));
     assert_eq!(
         onsets(&out[0]),
         vec![0, 12_000],
@@ -164,21 +189,20 @@ fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 ///
 /// Mutation (run): declaring the base delay as latency in
 /// `ModDelayNode::shape` fails the declared-latency assertion (about 480
-/// samples for the chorus's 10 ms). Blending the delayed signal as the dry
-/// half in `SweptLines::run` fails the frame-0 assertion.
+/// samples for the chorus's 10 ms), and so does it the frame-0 one (the
+/// graph's dry half is delayed by it).
 #[test]
 fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
     for (name, node) in [
         ("chorus", ModDelayNode::chorus(ChannelLayout::STEREO)),
         ("flanger", ModDelayNode::flanger(ChannelLayout::STEREO)),
     ] {
-        node.set_mix(Mix::new(0.5_f32));
         assert_eq!(
             declared(&node),
             Latency::ZERO,
             "{name}: base delay is not latency"
         );
-        let out = impulse_response(node, 256);
+        let out = mixed_impulse_response(node, 256, Mix::new(0.5_f32));
         for (c, ch) in out.iter().enumerate() {
             assert!(
                 (ch[0] - 0.5).abs() < 1e-6,
@@ -210,8 +234,8 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
         Seconds::new(0.5_f64),
         Feedback::new(0.3_f32),
     );
-    echo.set_mix(Mix::new(0.5_f32));
     let (echo, _) = g.add_with_controls(echo);
+    g.spec_mut().set_mix(echo, Mix::new(0.5_f32));
     let (chorus, _) = g.add_with_controls(ModDelayNode::chorus(ChannelLayout::STEREO));
     let dry = g.add(Through::mono());
     g.connect_input(0, echo, 0)
@@ -293,24 +317,23 @@ mod convolver {
     use tutti_nodes::ConvolverNode;
 
     /// With a unit-impulse IR the wet path is a pure delay of the reported latency.
-    /// So at *every* mix the output must be one impulse, at exactly that latency,
-    /// with amplitude `dry_share + wet_share` = 1 — dry and wet land on the same
-    /// frame. Before the fix, `mix < 1` put the dry share at frame 0.
+    /// So at *every* graph mix the output must be one impulse, at exactly that
+    /// latency, with amplitude `dry_share + wet_share` = 1 — dry (the input
+    /// delayed by the declared latency) and wet land on the same frame.
     ///
-    /// Mutation: blending `mix.blend(input, wet)` (the undelayed input) again fails
-    /// at mix 0.5 (two onsets) and mix 0.0 (onset at 0, not the latency).
-    /// Mutation: sizing `DryAlign` at `latency + 1` fails every mix below 1.
+    /// Mutation (run): the convolver declaring no latency, or one frame more than
+    /// its block, fails this (and the stereo test below, and
+    /// `a_delay_after_a_convolver_adds_nothing_to_its_compensation`).
     #[test]
     fn convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         for mix in [0.0_f32, 0.5, 1.0] {
             let node = ConvolverNode::new(&[1.0], 256);
-            node.set_mix(Mix::new(mix));
 
             let latency = node.latency_samples().0;
             assert_eq!(latency, 256);
             assert_eq!(declared(&node), Latency::new(Samples(latency)), "mix {mix}");
 
-            let out = impulse_response(node, latency * 3);
+            let out = mixed_impulse_response(node, latency * 3, Mix::new(mix));
             assert_eq!(
                 onsets(&out[0]),
                 vec![latency],
@@ -325,12 +348,11 @@ mod convolver {
     }
 
     /// The wide node in all three channel configs, at width 2 and width 6:
-    /// each channel's dry input is delayed by the same latency as its wet
-    /// path.
+    /// each channel's dry input (the graph's aligned input) is delayed by the
+    /// same latency as its wet path.
     ///
-    /// Mutation: blending the undelayed input instead of `dry.step(s)` in
-    /// `ConvolverNode::blend_channel` fails every channel (two onsets at mix
-    /// 0.5), which the per-channel loop names.
+    /// Mutation (run): the convolver declaring no latency, or one frame more
+    /// than its block, fails this.
     #[test]
     fn stereo_convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         type Build = fn() -> ConvolverNode;
@@ -351,7 +373,6 @@ mod convolver {
         for (name, build) in builds {
             for mix in [0.0_f32, 0.5, 1.0] {
                 let node = build();
-                node.set_mix(Mix::new(mix));
                 let latency = node.latency_samples().0;
                 assert_eq!(
                     declared(&node),
@@ -359,7 +380,7 @@ mod convolver {
                     "{name} mix {mix}"
                 );
 
-                let out = impulse_response(node, latency * 3);
+                let out = mixed_impulse_response(node, latency * 3, Mix::new(mix));
                 for (c, ch) in out.iter().enumerate() {
                     assert_eq!(
                         onsets(ch),
@@ -371,16 +392,16 @@ mod convolver {
         }
     }
 
-    /// `reset` must clear the dry ring along with the convolver, or the last take's
-    /// dry input replays for one latency after a discontinuity.
+    /// `reset` must clear the convolver's buffered input, or the last take replays
+    /// for one latency after a discontinuity. (The dry half is the graph's: its
+    /// aligned input is cleared by the graph's own reset.)
     ///
-    /// Mutation: removing `self.dry.clear()` from `ConvolverNode::reset` fails.
+    /// Mutation (run): removing the `c.reset()` loop from `ConvolverNode::reset` fails.
     #[test]
-    fn convolver_reset_clears_the_dry_alignment_ring() {
+    fn convolver_reset_clears_the_buffered_take() {
         let mut node = prepared(ConvolverNode::new(&[1.0], 64), SR, 256);
-        node.set_mix(Mix::new(0.0_f32));
 
-        // Load the dry ring with a take, then reset mid-ring.
+        // Load the convolver with a take, then reset mid-block.
         drive(&mut node, SR, &[&[1.0; 32]], &[]);
         Node::reset(&mut node);
 
@@ -388,7 +409,7 @@ mod convolver {
         let peak = out[0].iter().fold(0.0f32, |p, s| p.max(s.abs()));
         assert!(
             peak < 1e-6,
-            "reset left {peak} of the previous dry take in the ring"
+            "reset left {peak} of the previous take in the convolver"
         );
     }
 

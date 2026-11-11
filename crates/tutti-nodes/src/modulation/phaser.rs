@@ -9,10 +9,10 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use tutti_types::AtomicF32;
 use tutti_types::{Tail, UnitParam};
 
-use super::shared::{LfoDrive, LinearModMix};
+use super::shared::{LfoDrive, LinearMod};
 use crate::ramp::block_driven;
 use tutti_dsp::{COEFF_CADENCE, Ramp, allpass_chain, allpass_coeff, sweep_hz};
-use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
+use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;
 
@@ -44,20 +44,22 @@ impl FrequencyRange {
     }
 }
 
-/// The block's depth / feedback / mix — where the next block's ramps start.
+/// The block's depth / feedback — where the next block's ramps start.
 #[derive(Clone, Copy, Debug)]
 struct PhaserControls {
     depth: f32,
     fb: f32,
-    mix: f32,
 }
 
 /// Phaser of any width: `N` audio inputs, `N` outputs.
 ///
 /// A chain of all-pass stages whose centre frequency an internal LFO sweeps
 /// across a configured frequency range. Each stage passes every frequency at
-/// unity and shifts only phase; blending that against the dry signal turns the
-/// shift into cancellation notches, and sweeping the centre moves them.
+/// unity and shifts only phase; blending that against the dry signal (the
+/// graph's mix, `Editor::set_mix`: the node outputs the wet signal alone) turns
+/// the shift into cancellation notches, and sweeping the centre moves them. An
+/// all-pass chain alone barely changes the magnitude, so a phaser wants a mix
+/// below one, deepest at one half.
 ///
 /// **This is not a delay effect.** Unlike chorus and flanger it holds no delay
 /// line, so its notches are unevenly spaced and fewer — the reason a phaser
@@ -70,16 +72,15 @@ struct PhaserControls {
 /// Every channel sweeps in step by default, which widens nothing by itself.
 /// [`with_phase_offsets`](Self::with_phase_offsets) staggers them.
 ///
-/// Rate, [`Depth`], [`Feedback`] and [`Mix`] are live params read **once per
-/// block**; depth, feedback and mix ramp across the block when they moved.
+/// Rate, [`Depth`] and [`Feedback`] are live params read **once per
+/// block**; depth and feedback ramp across the block when they moved.
 /// A block of one takes a change whole.
 ///
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]), `N` in and `N` out, with no latency.
 /// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`]),
-/// depth ([`UnitParam::Depth`]), feedback ([`UnitParam::Feedback`]) and mix
-/// ([`UnitParam::Wet`]); a fork starts from the values last set through it.
+/// depth ([`UnitParam::Depth`]) and feedback ([`UnitParam::Feedback`]); a fork starts from the values last set through it.
 /// The graph prepares it at the device rate before its first block. Its tail
 /// is [`Tail::Unknown`] (the feedback recirculates), so it is never skipped.
 pub struct PhaserNode {
@@ -107,7 +108,7 @@ pub struct PhaserNode {
     /// The running signal through the chain, one lane per channel. Scratch.
     lane: Vec<f32>,
     lfo: LfoDrive,
-    mix: LinearModMix,
+    controls: LinearMod,
     sample_rate: SampleRate,
     /// The sweep range in effect: `authored_max_hz` clamped to this rate's
     /// ceiling.
@@ -128,7 +129,7 @@ impl std::fmt::Debug for PhaserNode {
             .field("phase_offsets", &self.phase_offsets)
             .field("phases", &self.phases)
             .field("lfo", &self.lfo)
-            .field("mix", &self.mix)
+            .field("controls", &self.controls)
             .field("sample_rate", &self.sample_rate)
             .field("range", &self.range)
             .field("authored_max_hz", &self.authored_max_hz)
@@ -143,7 +144,7 @@ impl PhaserNode {
     ///
     /// Stages come in pairs — each pair produces one notch — so 4 gives the
     /// classic two-notch phaser and higher counts thicken the effect. Defaults:
-    /// 0.3 Hz rate, half depth, 0.5 feedback, 50/50 [`Mix`], sweeping
+    /// 0.3 Hz rate, half depth, 0.5 feedback, sweeping
     /// 200–4000 Hz.
     ///
     /// The all-pass corner frequencies and the LFO's per-sample phase
@@ -172,7 +173,7 @@ impl PhaserNode {
             phases: Vec::new(),
             lane: vec![0.0; width],
             lfo: LfoDrive::new(Hz::new(0.3)),
-            mix: LinearModMix::new(Depth::new(0.5), Feedback::new(0.5), Mix::new(0.5)),
+            controls: LinearMod::new(Depth::new(0.5), Feedback::new(0.5)),
             sample_rate: SampleRate::DEFAULT,
             range: FrequencyRange::new(Hz::new(200.0), Hz::new(4000.0)),
             authored_max_hz: Hz(4000.0),
@@ -211,7 +212,7 @@ impl PhaserNode {
     /// seconds of delay. `1.0` sweeps the full configured range; `0.0` parks the
     /// notches at the range floor.
     pub fn depth(&self) -> Arc<AtomicF32> {
-        self.mix.depth.as_atomic()
+        self.controls.depth.as_atomic()
     }
 
     /// The shared [`Feedback`] cell — how much of the all-pass output
@@ -220,16 +221,7 @@ impl PhaserNode {
     /// Deepens and sharpens the notches. Writing the raw cell bypasses
     /// [`set_feedback`](Self::set_feedback)'s stability clamp.
     pub fn feedback(&self) -> Arc<AtomicF32> {
-        self.mix.feedback.as_atomic()
-    }
-
-    /// The shared wet/dry [`Mix`] cell: `0.0` dry, `1.0` fully wet.
-    ///
-    /// A phaser needs both halves — the notches come from the phase-shifted and
-    /// dry signals cancelling, so 50/50 is deepest and fully wet is nearly
-    /// inaudible, since an all-pass chain alone barely changes the magnitude.
-    pub fn mix(&self) -> Arc<AtomicF32> {
-        self.mix.mix.as_atomic()
+        self.controls.feedback.as_atomic()
     }
 
     /// Sets the LFO rate in [`Hz`], floored at 0.01 Hz.
@@ -241,19 +233,16 @@ impl PhaserNode {
 
     /// Sets the sweep [`Depth`], clamped to the unit range.
     pub fn set_depth(&self, d: impl Into<Depth>) {
-        self.mix.depth.store(Depth::new_clamped(d.into().get()));
+        self.controls
+            .depth
+            .store(Depth::new_clamped(d.into().get()));
     }
 
     /// Sets the [`Feedback`], clamped to the stable range.
     pub fn set_feedback(&self, fb: impl Into<Feedback>) {
-        self.mix
+        self.controls
             .feedback
             .store(Feedback::new_clamped(fb.into().get()));
-    }
-
-    /// Sets the wet/dry [`Mix`], clamped to `0.0..=1.0`.
-    pub fn set_mix(&self, mix: impl Into<Mix>) {
-        self.mix.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
     /// Sets the band the notches sweep across, in [`Hz`].
@@ -282,31 +271,26 @@ impl PhaserNode {
     /// The render kernel behind `process`, over `size` frames. `size` is at
     /// most the scratch's length (the prepared maximum block).
     ///
-    /// `driven` is the block's rate, depth, feedback and mix from the
+    /// `driven` is the block's rate, depth and feedback from the
     /// node's param ports ([`PHASER_PARAMS`] order), each `None` where
     /// nothing drives it.
     fn render(
         &mut self,
         size: usize,
-        driven: [Option<f32>; 4],
+        driven: [Option<f32>; 3],
         x: impl Fn(usize, usize) -> f32,
         mut y: impl FnMut(usize, usize, f32),
     ) {
         debug_assert!(size <= self.phases.len());
         let w = self.width;
         // Every control is read here, once, for the whole block.
-        let [rate, depth, fb, mix] = driven;
-        let (depth, fb, mix) = self.mix.load([depth, fb, mix]);
-        let target = PhaserControls {
-            depth,
-            fb,
-            mix: mix.get(),
-        };
+        let [rate, depth, fb] = driven;
+        let (depth, fb) = self.controls.load([depth, fb]);
+        let target = PhaserControls { depth, fb };
         let primed = self.last.is_some();
         let from = self.last.unwrap_or(target);
         let depth_r = Ramp::new(from.depth, target.depth, size);
         let fb_r = Ramp::new(from.fb, target.fb, size);
-        let mix_r = Ramp::new(from.mix, target.mix, size);
 
         self.lfo
             .fill_block(self.sample_rate, &mut self.phases[..size], rate);
@@ -352,7 +336,6 @@ impl PhaserNode {
         // Sample-outer; each stage runs across every channel in one inner loop.
         for i in 0..size {
             let fb = fb_r.at(i);
-            let mix = Mix(mix_r.at(i));
             let coeffs = &self.coeffs[i * w..(i + 1) * w];
             for c in 0..w {
                 self.lane[c] = x(c, i) + self.feedback_sample[c] * fb;
@@ -366,7 +349,7 @@ impl PhaserNode {
             );
             for c in 0..w {
                 self.feedback_sample[c] = self.lane[c];
-                y(c, i, mix.blend(x(c, i), self.lane[c]));
+                y(c, i, self.lane[c]);
             }
         }
         self.last = Some(target);
@@ -374,15 +357,10 @@ impl PhaserNode {
 }
 
 /// The params a [`PhaserNode`] lets the graph modulate, in port order: all
-/// four of its controls. Each is block-rate in the node (read once per
+/// three of its controls. Each is block-rate in the node (read once per
 /// block and ramped across it), so a driven port is read the same way
 /// (`block_driven`).
-pub const PHASER_PARAMS: [UnitParam; 4] = [
-    UnitParam::Rate,
-    UnitParam::Depth,
-    UnitParam::Feedback,
-    UnitParam::Wet,
-];
+pub const PHASER_PARAMS: [UnitParam; 3] = [UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback];
 
 impl Node for PhaserNode {
     fn shape(&self) -> Shape {
@@ -407,7 +385,7 @@ impl Node for PhaserNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let driven = [0, 1, 2, 3].map(|k| block_driven(&io, k));
+        let driven = [0, 1, 2].map(|k| block_driven(&io, k));
         let (inputs, mut outputs) = io.split();
         // One call in a graph, whose blocks fit the scratch; a longer block
         // driven by hand renders in scratch-sized pieces.
@@ -437,9 +415,8 @@ impl Node for PhaserNode {
     fn param_base(&self, k: usize) -> Option<f32> {
         match k {
             0 => Some(self.lfo.rate.load().get()),
-            1 => Some(self.mix.depth.load().get()),
-            2 => Some(self.mix.feedback.load().get()),
-            3 => Some(self.mix.mix.load().get()),
+            1 => Some(self.controls.depth.load().get()),
+            2 => Some(self.controls.feedback.load().get()),
             _ => None,
         }
     }
@@ -449,9 +426,8 @@ impl ParamNode for PhaserNode {
     fn param_set(&self) -> ParamSet {
         ParamSet::builder()
             .param(UnitParam::Rate, self.lfo.rate.as_atomic())
-            .param(UnitParam::Depth, self.mix.depth.as_atomic())
-            .param(UnitParam::Feedback, self.mix.feedback.as_atomic())
-            .param(UnitParam::Wet, self.mix.mix.as_atomic())
+            .param(UnitParam::Depth, self.controls.depth.as_atomic())
+            .param(UnitParam::Feedback, self.controls.feedback.as_atomic())
             .build()
     }
 
@@ -460,7 +436,7 @@ impl ParamNode for PhaserNode {
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
         fork.lfo.detach();
-        fork.mix.detach();
+        fork.controls.detach();
         Node::reset(&mut fork);
         fork
     }
@@ -490,7 +466,7 @@ impl Clone for PhaserNode {
             phases: self.phases.clone(),
             lane: self.lane.clone(),
             lfo: self.lfo.clone(),
-            mix: self.mix.clone(),
+            controls: self.controls.clone(),
             sample_rate: self.sample_rate,
             range: self.range,
             authored_max_hz: self.authored_max_hz,
@@ -514,7 +490,7 @@ mod tests {
     /// `ParamSet` and shares no cell with it (see
     /// `tutti_graph::contract::assert_param_fork`).
     ///
-    /// Mutation (run): drop `fork.mix.detach()` in `fork_fresh` → "a live
+    /// Mutation (run): drop `fork.controls.detach()` in `fork_fresh` → "a live
     /// write reached the fork" for `Depth`. Leave `Rate` out of `param_set`
     /// → the address list below fails.
     #[test]
@@ -522,32 +498,17 @@ mod tests {
         let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
         assert_eq!(
             node.param_set().params().collect::<Vec<_>>(),
-            [
-                UnitParam::Rate,
-                UnitParam::Depth,
-                UnitParam::Feedback,
-                UnitParam::Wet
-            ]
+            [UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback]
         );
         assert_param_fork(node);
-    }
-
-    #[test]
-    fn test_phaser_passthrough_dry() {
-        let mut phaser = at(PhaserNode::new(6), 44_100.0);
-        phaser.set_mix(Mix::new(0.0));
-        let out = drive_frames(&mut phaser, &[&[0.5]]);
-        assert!((out[0][0] - 0.5).abs() < 0.001);
     }
 
     #[test]
     fn test_phaser_stages_affect_sound() {
         let sr = 44100.0;
         let mut phaser_4 = at(PhaserNode::new(4), sr);
-        phaser_4.set_mix(Mix::new(1.0));
 
         let mut phaser_12 = at(PhaserNode::new(12), sr);
-        phaser_12.set_mix(Mix::new(1.0));
 
         let input: Vec<f32> = (0..4410)
             .map(|i| (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin())
@@ -578,7 +539,6 @@ mod tests {
     fn test_phaser_feedback_resonance() {
         let mut phaser = at(PhaserNode::new(6), 44_100.0);
         phaser.set_feedback(Feedback::new(0.9));
-        phaser.set_mix(Mix::new(1.0));
 
         let mut x = [0.0f32; 501];
         x[0] = 1.0;
@@ -609,22 +569,6 @@ mod tests {
             ),
             48_000.0,
         )
-    }
-
-    /// A mix change made between blocks fades across the next block.
-    ///
-    /// Mutation: `Ramp::new(target.mix, target.mix, size)` (a jump) fails.
-    #[test]
-    fn a_mix_change_fades_across_the_next_block() {
-        use crate::test_support::{change_between_node_blocks, noise};
-        let x = noise(13, 128);
-        let run = change_between_node_blocks(
-            || PhaserNode::with_channels(2u16, 6),
-            |n| n.set_mix(Mix::new(1.0)),
-            &[&x[..64], &x[..64]],
-            &[&x[64..], &x[64..]],
-        );
-        run.assert_ramps_in("phaser mix");
     }
 
     /// Six channels with the default (zero) offsets: each is the mono phaser on

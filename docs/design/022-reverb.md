@@ -31,7 +31,7 @@ names; the "as built" logs keep the names they were written with):
 | `kernel_contract!`, `KernelCase` | `realization_contract!`, `RealizationCase` |
 | `ReverbNode<D>` | `DesignNode<D>` (`FreeverbNode`, `FdnNode` unchanged) |
 | `ReverbDesign` | `NodeDesign` |
-| `ReverbParams` | `ControlParams` (`FreeverbParams`, `FdnParams` unchanged) |
+| `ReverbParams` | `ControlParams` (now the one generic `Params<S: ControlSet>`) |
 | `network/kernel.rs`, `network/contract.rs`, `network/kernel_contract.rs` | `network/realization.rs`, `contract/design.rs`, `contract/realization.rs` |
 
 **Step 1b** then moved the general parts out of `network/` into doc 024's neutral

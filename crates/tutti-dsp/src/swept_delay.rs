@@ -2,7 +2,7 @@
 //! moves, the LFO sine solved at control points and interpolated between.
 
 use crate::{COEFF_INTERVAL, DelayLine, InterpolationMode};
-use tutti_types::{Mix, Phase, PhaseIncrement};
+use tutti_types::{Phase, PhaseIncrement};
 
 /// The delay lines and the block's LFO phases, borrowed apart from the node so
 /// the per-block control closures can be chosen outside the loop.
@@ -53,7 +53,7 @@ impl SweptLines<'_> {
 
     /// Renders the block, channel-outer over the lines.
     ///
-    /// `depth_at` / `fb_at` / `mix_at` give the
+    /// `depth_at` / `fb_at` give the
     /// controls at sample `i`; constant closures compile to constants.
     ///
     /// The LFO's sine is evaluated only at control points, every
@@ -82,7 +82,6 @@ impl SweptLines<'_> {
         mut y: impl FnMut(usize, usize, f32),
         depth_at: impl Fn(usize) -> f32,
         fb_at: impl Fn(usize) -> f32,
-        mix_at: impl Fn(usize) -> f32,
     ) {
         const STEP: f32 = 1.0 / COEFF_INTERVAL as f32;
         let sr = self.sr;
@@ -121,8 +120,7 @@ impl SweptLines<'_> {
                     let input = x(c, k);
                     let fb_tap = line.read_sample(delay, InterpolationMode::Linear);
                     line.push_sample(input + fb_tap * fb_at(k));
-                    let wet = line.read_sample(delay, InterpolationMode::Linear);
-                    y(c, k, Mix(mix_at(k)).blend(input, wet));
+                    y(c, k, line.read_sample(delay, InterpolationMode::Linear));
                 }
                 if pos == COEFF_INTERVAL {
                     pos = 0;

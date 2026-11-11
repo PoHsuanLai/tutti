@@ -204,7 +204,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
         s.plugin(node)
             .expect("the handle")
             .handle()
-            .params()
+            .any_thread()
             .parameter_value(ParamId::new(0))
             .expect("a value")
     };
@@ -280,7 +280,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
             "round {round}: the knob"
         );
         assert_eq!(
-            handle.params().parameter_value(ParamId::new(0)),
+            handle.any_thread().parameter_value(ParamId::new(0)),
             Some(Normalized::of(0.25)),
             "round {round}: the plugin reads the knob plus the offset"
         );

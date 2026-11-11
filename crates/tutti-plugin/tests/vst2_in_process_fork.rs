@@ -218,7 +218,6 @@ fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
     let _env = ProbeEnv::new(true);
     let (client, handle) = load();
     handle
-        .state()
         .load_state(&main_thread(), &chunk_state(&[7, 1, 2]))
         .expect("the probe takes a chunk");
 
@@ -261,16 +260,16 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     reset_probe();
     let _env = ProbeEnv::new(false);
     let (client, handle) = load();
-    let presets = handle.presets().expect("the VST2 path carries presets");
-    let program_1 = presets
+    let program_1 = handle
         .presets(&main_thread())
+        .expect("the VST2 path carries presets")
         .into_iter()
         .map(|p| p.id)
         .find(|id| *id == PresetId::Number(1))
         .expect("the probe declares two programs");
-    assert!(presets.load_preset(&main_thread(), &program_1));
+    assert_eq!(handle.load_preset(&main_thread(), &program_1), Some(true));
     handle
-        .params()
+        .any_thread()
         .set_parameter_value(ParamId::new(0), Normalized::of(0.75));
 
     let fork = client
@@ -288,10 +287,10 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     assert_renders(&renderer.render(BLOCK * 2), 10_750.0, "the fork");
 
     handle
-        .params()
+        .any_thread()
         .set_parameter_value(ParamId::new(0), Normalized::of(0.25));
     assert_eq!(
-        handle.params().parameter_value(ParamId::new(0)),
+        handle.any_thread().parameter_value(ParamId::new(0)),
         Some(Normalized::of(0.25)),
         "the live write landed"
     );
@@ -357,7 +356,6 @@ fn a_state_the_second_instance_refuses_is_a_named_fork_error() {
     let _env = ProbeEnv::new(true);
     let (client, handle) = load();
     handle
-        .state()
         .load_state(&main_thread(), &chunk_state(&[9]))
         .expect("the probe takes a chunk");
     refuse_chunk_load(true);
@@ -447,7 +445,6 @@ fn a_plugin_handed_back_by_into_client_forks() {
     .expect("the probe opens");
     let handle = plugin.handle().clone();
     handle
-        .state()
         .load_state(&main_thread(), &chunk_state(&[5]))
         .expect("the probe takes a chunk");
     let Err(plugin) = plugin.into_client() else {
@@ -624,8 +621,10 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     reset_probe();
     let mut env = ProbeEnv::new(true);
     let (client, handle) = load();
-    let presets = handle.presets().expect("the VST2 path carries presets");
-    assert!(presets.load_preset(&main_thread(), &PresetId::Number(1)));
+    assert_eq!(
+        handle.load_preset(&main_thread(), &PresetId::Number(1)),
+        Some(true)
+    );
     env.set("TUTTI_VST2_PROBE_PROGRAMS", "1");
     let err = client
         .fork_instance(&main_thread(), ForkMode::Live)

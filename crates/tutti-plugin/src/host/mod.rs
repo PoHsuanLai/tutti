@@ -6,8 +6,6 @@
 //! *being a plugin host*:
 //!
 //! - [`db_probe`] — the subprocess probe that `tutti-plugin-db` scans with.
-//! - `subprocess_backend` — a served plugin's bridge behind the handles'
-//!   capability traits (until the traits go, design 021 step 4b PR 4).
 //! - [`node`] — the [`PluginClient`](node::PluginClient): the generic plugin
 //!   node over the served hosting, and what the host keeps beside it.
 //! - [`handles`] — the client's typestates ([`PluginClient`](node::PluginClient)
@@ -23,4 +21,3 @@ pub mod node;
 pub mod plugin;
 pub mod plugins;
 pub(crate) mod probe;
-pub(crate) mod subprocess_backend;

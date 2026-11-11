@@ -192,43 +192,6 @@ impl Editor for ClapEditor {
         // something the plugin saves.
         self.inner.take_state_dirty()
     }
-
-    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
-        // Pass-through from the host crate — the shared `EditorCapabilities`
-        // is already the union of vst3/clap fields, and `appkit_autoresize_friendly`
-        // defaults to `false` which matches CLAP's pinned-NSView behavior.
-        self.inner.editor_capabilities(main)
-    }
-
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
-        let snapped = self
-            .inner
-            .resize_editor(
-                main,
-                EditorSize {
-                    width: requested.width,
-                    height: requested.height,
-                },
-            )
-            .map_err(|e| editor_error(format!("CLAP resize_editor failed: {e}")))?;
-        Ok(EditorSize {
-            width: snapped.width,
-            height: snapped.height,
-        })
-    }
-
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
-        self.inner
-            .take_editor_resize_request()
-            .map(|sz| EditorSize {
-                width: sz.width,
-                height: sz.height,
-            })
-    }
 }
 
 impl EditorWindow for ClapEditor {
@@ -293,6 +256,43 @@ impl EditorWindow for ClapEditor {
         if self.inner.take_params_flush_requested() {
             let _ = self.inner.flush_params(main, vec![]);
         }
+    }
+
+    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
+        // Pass-through from the host crate — the shared `EditorCapabilities`
+        // is already the union of vst3/clap fields, and `appkit_autoresize_friendly`
+        // defaults to `false` which matches CLAP's pinned-NSView behavior.
+        self.inner.editor_capabilities(main)
+    }
+
+    fn set_editor_size(
+        &mut self,
+        main: &MainThread,
+        requested: EditorSize,
+    ) -> PluginResult<EditorSize> {
+        let snapped = self
+            .inner
+            .resize_editor(
+                main,
+                EditorSize {
+                    width: requested.width,
+                    height: requested.height,
+                },
+            )
+            .map_err(|e| editor_error(format!("CLAP resize_editor failed: {e}")))?;
+        Ok(EditorSize {
+            width: snapped.width,
+            height: snapped.height,
+        })
+    }
+
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
+        self.inner
+            .take_editor_resize_request()
+            .map(|sz| EditorSize {
+                width: sz.width,
+                height: sz.height,
+            })
     }
 }
 

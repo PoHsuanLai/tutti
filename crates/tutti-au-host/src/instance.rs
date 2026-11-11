@@ -27,8 +27,7 @@ use std::sync::Arc;
 use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
 use tutti_au_ffi::{AuEditor, Element, HostCallbacks, Scope, TransportState, Unit};
 use tutti_plugin_types::{
-    AuComponentType, ChannelLayout, Control, EditorPresence, MainThread, PluginClass,
-    PluginDescriptor, RequestWord, TransportInfo,
+    ChannelLayout, MainThread, PluginDescriptor, RequestWord, TransportInfo,
 };
 use tutti_types::Samples;
 use tutti_types::value::units::Seconds;
@@ -46,7 +45,9 @@ use crate::preset::AuPreset;
 use crate::ranges::RangeTable;
 use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport;
-use crate::types::*;
+#[cfg(feature = "test-support")]
+use crate::types::AudioUnit;
+use crate::control::describe;
 use crate::watch::PropertyWatch;
 
 /// An AU that has been instantiated but not yet initialized.
@@ -318,16 +319,21 @@ impl AuLoaded {
         // allocation would leave that pointer dangling until the property write
         // landed: a window on the render thread, not merely a leak.
         let unit = self.handle.unit();
-        let callbacks = self
+        let installed = self
             .transport
-            .get_or_insert_with(|| HostCallbacks::new(unit));
-        if let Err(e) = callbacks.install() {
+            .get_or_insert_with(|| HostCallbacks::new(unit))
+            .install();
+        if let Err(e) = installed {
             // Nothing was installed, so nothing is kept: a re-install after a
             // refusal starts from a fresh state.
             self.transport = None;
             return Err(e.into());
         }
-        Ok(callbacks.state())
+        Ok(self
+            .transport
+            .as_ref()
+            .map(HostCallbacks::state)
+            .expect("just installed"))
     }
 
     /// The state the host transport callbacks read, shared with the render

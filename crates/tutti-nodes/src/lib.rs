@@ -42,7 +42,7 @@
 //! - Mixing: [`DownmixNode`], [`BusStripNode`]. Summing is the graph's
 //!   (a port or an output channel sums its sources), not a node's.
 //! - Param ports: each node's `*_PARAMS` port list (for example
-//!   [`SVF_PARAMS`]), which a control lane drives
+//!   [`LADDER_PARAMS`]), which a control lane drives
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
 //! - Modules: [`automation`] (lanes and recording).
 //!
@@ -99,8 +99,7 @@ pub use tutti_dsp::ShapeKind;
 
 mod filter;
 pub use filter::{
-    BandState, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderFilterNode, SVF_PARAMS,
-    SvfFilterNode,
+    BandState, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderFilterNode, SvfFilterNode, SvfParams,
 };
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
@@ -133,14 +132,14 @@ pub use blend::{Blend, DryWet, NoBlend};
 // The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
-pub use reverb::{ControlParams, DesignNode, FreeverbNode, FreeverbParams, NodeDesign};
+pub use reverb::{At, ControlParams, DesignNode, FreeverbNode, FreeverbParams, NodeDesign};
 
 // The feedback delay network as a `DesignNode`, and the choice between the two.
 mod reverb_fdn;
 pub use reverb_fdn::{FdnNode, FdnParams, ReverbKind, SpawnedReverb};
 
 // The designs and controls that sit in a `DesignNode<D>`'s signature.
-pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
+pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign, SvfDesign};
 
 // The spatial panners: VBAP speaker panning and binaural HRTF rendering.
 mod spatial;

@@ -37,7 +37,7 @@ fn controls(room: f32, damp: f32) -> FreeverbControls {
 
 /// A live (modulatable) Freeverb node at `c`, prepared at 48 kHz.
 fn live(c: FreeverbControls) -> FreeverbNode {
-    prepared(DesignNode::new(FreeverbDesign, c), SR, BLOCK)
+    prepared(DesignNode::live(FreeverbDesign, c), SR, BLOCK)
 }
 
 /// A node driven block by block, at its own running frame.
@@ -192,7 +192,7 @@ fn the_port_order_is_the_mix_then_the_cells() {
         ]
     );
     let fdn: FdnNode = prepared(
-        DesignNode::new(FdnDesign::default(), FdnControls::DEFAULT),
+        DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT),
         SR,
         BLOCK,
     );
@@ -482,7 +482,7 @@ fn the_mix_blends_the_dry_input() {
 /// not detaching the mix fails `assert_param_fork`.
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
-    assert_param_fork(DesignNode::new(FreeverbDesign, gm()));
+    assert_param_fork(DesignNode::live(FreeverbDesign, gm()));
 
     let mut rig = Rig::new(live(controls(0.9, 0.5)));
     rig.block(&noise(5, BLOCK), &[]);
@@ -518,7 +518,7 @@ fn a_fork_starts_silent_with_the_values_set() {
 #[test]
 fn a_lane_driving_the_room_changes_how_long_it_rings() {
     let ring = |room: f32| -> f64 {
-        let node = DesignNode::new(FreeverbDesign, gm());
+        let node = DesignNode::live(FreeverbDesign, gm());
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
         let (n, _) = g.add_with_controls(node);
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -567,7 +567,7 @@ fn a_lane_driving_the_room_changes_how_long_it_rings() {
 /// `ParamSet`, so the session can address the mix and the room by `UnitParam`.
 #[test]
 fn it_is_inserted_with_a_param_set() {
-    let (_, set) = DesignNode::new(FreeverbDesign, gm()).into_node();
+    let (_, set) = DesignNode::live(FreeverbDesign, gm()).into_node();
     assert!(set.set(UnitParam::RoomSize, 0.7));
     assert_eq!(set.get(UnitParam::RoomSize), Some(0.7));
     assert!(set.set(UnitParam::Wet, 0.25));

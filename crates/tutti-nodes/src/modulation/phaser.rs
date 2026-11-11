@@ -11,7 +11,7 @@ use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
 use crate::ramp::block_driven;
-use tutti_dsp::{Ramp, allpass_chain, allpass_coeff, segments, sweep_hz};
+use tutti_dsp::{COEFF_CADENCE, Ramp, allpass_chain, allpass_coeff, sweep_hz};
 use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;
@@ -337,7 +337,8 @@ impl PhaserNode {
             } else {
                 coeff_at(0, offset)
             };
-            for (start, end) in segments(size, !primed) {
+            for step in COEFF_CADENCE.steps(size, !primed) {
+                let (start, end) = (step.frames.start, step.frames.end);
                 let next = coeff_at(end - 1, offset);
                 let seg = Ramp::new(prev, next, end - start);
                 for i in start..end {

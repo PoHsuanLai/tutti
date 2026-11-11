@@ -1873,9 +1873,15 @@ controls unless they moved by more than the tolerance), so far only partly: `Con
 becomes "moved by more than a tolerance", a small extension of an existing trait. 6 is blocker 2's
 mechanism with two laws on two grids: a block-long piece in frequency (in `theta`-space) with the
 solve on `every(16)`, on a `Controlled` whose model is the multi-output `CrossoverModel`. **Left for
-2b itself:** 4 (the tail and park rule: park only on a finite ceiling, and `Unbounded` never
-parks, is the proposed rule, since the SVF design's ceiling is `Unbounded` and `DesignNode` parks),
-5 (the public API, Q9) and 7 (no `DryWet`; each node is `NoBlend`).
+2b itself:** 4, 5 and 7. **4 is decided and built for the SVF (2b PR2):** a filter does not park
+and does not narrow, and declares `Tail::Unknown`, not `Unbounded` (which would turn every export of a
+graph holding a filter into a render to the cap, and a finite ceiling would park a ringing filter at
+-60 dB): `NodeDesign::PARKS` is false for it and the node skips the whole tail section. `NodeDesign`
+also carries the sampling grid (`SAMPLING`, separate from `Design::CADENCE`, the grid the render is a
+function of) and the dead-band (`moved`); `ControlParams::read` takes an `At { frame, block, applied }`
+and `Cadence::steps` replaces `segments`. 5 (the public API, Q9) is the `ParamSet` as the one route, the
+type in `SvfControls`, `SvfFilterNode` an alias of `DesignNode<SvfDesign<F>>` and `EqBandNode` its
+wrapper; 7 is `NoBlend`, whose first production user is the SVF.
 
 **G8 is not delivered in 2a, on purpose.** `Describe` and `Curve` need a home that nothing has: the trait is
 implemented by a node (`tutti-nodes`, layer 4) and read by `tutti-session` (layer 7), so it must sit below both

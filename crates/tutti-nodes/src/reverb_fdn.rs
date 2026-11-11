@@ -11,7 +11,7 @@ use tutti_types::{
 
 use crate::blend::DryWet;
 use crate::ramp::{LastGood, block_driven};
-use crate::reverb::{ControlParams, DesignNode, FreeverbNode, NodeDesign};
+use crate::reverb::{At, ControlParams, DesignNode, FreeverbNode, NodeDesign};
 
 /// One cell, read through [`LastGood`]: a block's value is the port's last frame
 /// when the graph modulates it and the cell otherwise, and a non-finite write
@@ -152,7 +152,7 @@ impl ControlParams for FdnParams {
         })
     }
 
-    fn read(&mut self, io: &Io<'_>, first: usize) -> FdnControls {
+    fn read(&mut self, io: &Io<'_>, first: usize, _: At<FdnControls>) -> FdnControls {
         let at = |k: usize| first + k;
         FdnControls {
             decay: [0, 1, 2].map(|k| self.decay[k].read(io, at(k))),
@@ -271,12 +271,12 @@ impl ReverbKind {
     #[must_use]
     pub fn spawn(self) -> SpawnedReverb {
         match self {
-            ReverbKind::Freeverb => SpawnedReverb::Freeverb(DesignNode::new(
+            ReverbKind::Freeverb => SpawnedReverb::Freeverb(DesignNode::live(
                 FreeverbDesign,
                 FreeverbControls::GENERAL_MIDI,
             )),
             ReverbKind::Fdn(design) => {
-                SpawnedReverb::Fdn(DesignNode::new(design, FdnControls::DEFAULT))
+                SpawnedReverb::Fdn(DesignNode::live(design, FdnControls::DEFAULT))
             }
         }
     }

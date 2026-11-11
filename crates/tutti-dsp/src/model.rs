@@ -13,7 +13,7 @@ mod lti;
 mod realization;
 mod system;
 
-pub use cadence::{Anchor, Cadence, Period};
+pub use cadence::{Anchor, Cadence, Period, Step};
 pub use ceiling::{Ceiling, MaxDecay, MaxDecayError, Range};
 pub use design::{Channels, Design, Sizes};
 pub use lti::Lti;

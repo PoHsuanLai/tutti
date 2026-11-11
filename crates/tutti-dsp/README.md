@@ -11,8 +11,8 @@ built on this crate's FFT, windows and `StftGeometry` (whose refusals are `Error
 `tutti-nodes` wraps each of these in a graph node that owns the params, the
 ramps and the graph shape. Here they take plain typed values per call.
 
-- **Filters** — `SvfCoeffs` and `SvfCoefficients<F>` with `svf_step`
-  (Simper's trapezoidal state-variable filter, eight responses by `SvfType`);
+- **Filters** — `SvfCoeffs` and `SvfDesign<F>` (Simper's trapezoidal
+  state-variable filter, eight responses by `SvfType`);
   `LadderCoeffs` and `LadderCoefficients<F>` with `ladder_step` (the Moog
   ladder, `tanh` feedback); `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order
   split with ramped frequency changes. `Real` is the `f32` or `f64` the state

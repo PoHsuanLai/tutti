@@ -44,7 +44,7 @@ node without a lock.
   controls and a de-zippered `SpatialTarget`. A mix of several panned sources
   is plain fan-in: wire each panner's outputs to the same graph ports.
 - **Param ports** — each modulatable node declares its params (its
-  `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) as param ports, filled per
+  `*_PARAMS` list: `LADDER_PARAMS`, `DELAY_PARAMS`, …) as param ports, filled per
   frame from one event source each (read through `Io::param`).
 - **Modulation** — the `automation` module's `ControlLaneNode`, which
   evaluates a `tutti_modulation::ControlProgram` into a param port (design doc 014),

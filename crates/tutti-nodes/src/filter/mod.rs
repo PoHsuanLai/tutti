@@ -10,7 +10,7 @@ pub use crossover::CrossoverNode;
 pub(crate) use crossover::Splits;
 pub use eq_band::{BandState, EqBandNode};
 pub use ladder::{LADDER_PARAMS, LadderFilterNode};
-pub use svf::{SVF_PARAMS, SvfFilterNode};
+pub use svf::{SvfFilterNode, SvfParams};
 
 #[cfg(test)]
 pub(super) mod test_utils {

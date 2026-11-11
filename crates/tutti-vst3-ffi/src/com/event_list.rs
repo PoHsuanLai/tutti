@@ -8,8 +8,8 @@
 //! dropped and counted ([`EventList::dropped`]), and the stable sort by frame
 //! offset uses a scratch reserved with the list ([`StableOrder`]).
 //!
-//! What goes in is the host's to decide. [`EventList::begin`] opens a block
-//! for staging ([`Staging`]); [`EventList::with_events`] reads what the plugin
+//! What goes in is the host's to decide. [`EventList::try_begin`] opens a block
+//! for staging ([`Staging`]); [`EventList::try_with_events`] reads what the plugin
 //! wrote. The input list reassembles multi-packet SysEx ([`SysexAssembler`])
 //! and a message may span blocks; one past [`SYSEX_MESSAGE_CAPACITY`] is
 //! dropped whole and counted ([`EventList::sysex_dropped`]).

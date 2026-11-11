@@ -2935,7 +2935,9 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
 }
 
 /// MIDI 1.0 controller and pressure values are widened by translation's
-/// scaler, to exact figures: 64 is the centre, 127 is full.
+/// scaler, to exact figures: 64 is the centre, 127 is full. A Control Change 1
+/// is the MSB of a 14-bit controller (M1 p.12: its LSB is 0 until a CC 33
+/// says), so the wheel reads the MSB's 14-bit position: `value * 128 / 16383`.
 #[test]
 fn midi1_values_scale_to_exact_figures() {
     let mut synth = mpe_synth();
@@ -2955,7 +2957,14 @@ fn midi1_values_scale_to_exact_figures() {
                 value: U7::of(value),
             },
         )));
-        assert_eq!(synth.voices[0].mod_wheel(), expected, "CC1 = {value}");
+        assert_eq!(
+            synth
+                .allocator
+                .channel_state(MidiChannel::of(1))
+                .modulation(),
+            f32::from(value) * 128.0 / 16383.0,
+            "CC1 = {value}"
+        );
         synth.apply_midi(ump(Message::Midi1(
             address(1),
             Voice1::PolyPressure {
@@ -2973,7 +2982,7 @@ fn midi1_values_scale_to_exact_figures() {
 
 /// Reset All Controllers (RP-015) returns the modulation wheel to 0 and does
 /// not reset the sound controllers (CC 70-79), so CC 71 and CC 74 keep their
-/// positions. The wheel is the synth's global one, so every voice's resets.
+/// positions.
 #[test]
 fn reset_all_controllers_keeps_the_sound_controllers() {
     let mut s = synth(SynthConfig {
@@ -2993,12 +3002,13 @@ fn reset_all_controllers_keeps_the_sound_controllers() {
     s.tick(&[], &mut out);
     let (cutoff, resonance) = s.voices[0].sound_controllers();
     assert_eq!((cutoff, resonance), (0.0, 1.0), "the controllers were set");
-    assert!(s.voices[0].mod_wheel() > 0.5);
+    let wheel = |s: &PolySynth| s.allocator.channel_state(MidiChannel::of(0)).modulation();
+    assert!(wheel(&s) > 0.5);
 
     queue_midi(&mut s, &[ev_cc(0, CCNumber::RESET_ALL, 0)]);
     s.tick(&[], &mut out);
     assert_eq!(s.voices[0].sound_controllers(), (cutoff, resonance));
-    assert_eq!(s.voices[0].mod_wheel(), 0.0);
+    assert_eq!(wheel(&s), 0.0);
 }
 
 /// The MPE switch is live: turning it on after construction makes the master
@@ -3103,4 +3113,396 @@ fn a_synth_plays_its_own_groups_channels_only() {
     assert_eq!(second.active_voice_count(), 0, "Group 1 is not Group 2's");
     second.apply_midi(note(group2));
     assert_eq!(second.active_voice_count(), 1);
+}
+
+// ---- channel controllers, glide and Reset All Controllers (MIDI L4c) ----
+
+/// A steady sine voice per note, no filter, so the level of a note is its own.
+fn steady(extra: impl FnOnce(&mut SynthConfig)) -> Hand {
+    let mut config = SynthConfig {
+        sample_rate: tutti_types::SampleRate::SR_44K1,
+        max_voices: 4,
+        voice_mode: VoiceMode::Poly,
+        oscillator: OscillatorType::Sine,
+        filter: FilterType::None,
+        envelope: Adsr {
+            attack: Seconds(0.001),
+            decay: Seconds(0.0),
+            sustain: Amplitude(1.0),
+            release: Seconds(0.1),
+        },
+        ..Default::default()
+    };
+    extra(&mut config);
+    synth(config)
+}
+
+fn registered(channel: u8, index: u8, value: u32) -> Ump {
+    ump(Message::Midi2(
+        address(channel),
+        Voice2::Registered {
+            bank: U7::of(0),
+            index: U7::of(index),
+            value,
+        },
+    ))
+}
+
+/// The peak of each output channel over four blocks of 512 frames after `events`,
+/// read on the last block (the note has long reached its sustain).
+fn peaks(synth: &mut Hand, events: &[Ump]) -> (f32, f32) {
+    queue_midi(synth, events);
+    let (mut left, mut right) = (vec![0.0; 512], vec![0.0; 512]);
+    for _ in 0..4 {
+        synth.render_planar(&mut left, &mut right);
+    }
+    let peak = |p: &[f32]| p.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+    (peak(&left), peak(&right))
+}
+
+fn key_freq(key: u8) -> f32 {
+    440.0 * 2.0_f32.powf((f32::from(key) - 69.0) / 12.0)
+}
+
+/// RP-015: "Set Modulation (#1) to 0" is a channel's own: the wheels are per
+/// channel, and a reset on one leaves every other (this synth's wheel was one
+/// global value, which a reset on any channel cleared for all).
+#[test]
+fn a_reset_on_one_channel_leaves_the_other_channels_wheel() {
+    let mut s = steady(|_| {});
+    queue_midi(
+        &mut s,
+        &[
+            ev_cc(0, CCNumber::MOD_WHEEL, 100),
+            ev_cc(1, CCNumber::MOD_WHEEL, 50),
+            ev_cc(1, CCNumber::RESET_ALL, 0),
+        ],
+    );
+    let mut out = [0.0f32; 2];
+    s.tick(&[], &mut out);
+    let wheel = |s: &PolySynth, c: u8| s.allocator.channel_state(MidiChannel::of(c)).modulation();
+    assert_eq!(wheel(&s, 1), 0.0);
+    assert_eq!(wheel(&s, 0), 100.0 * 128.0 / 16383.0);
+}
+
+/// RP-022: RPN 01 is Channel Fine Tuning and RPN 02 Channel Coarse Tuning: the
+/// channel's notes sound that far from their keys (the MSB of 02 is semitones
+/// centred at 64; 01 is 14 bits centred at 2000H over 100 cents), and no other
+/// channel's do.
+#[test]
+fn channel_tuning_moves_the_channels_notes() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(
+        &mut s,
+        &[
+            ev_note_on(0, 69, 100),
+            ev_note_on(1, 69, 100),
+            registered(0, 2, 76 << 25),
+        ],
+    );
+    s.tick(&[], &mut out);
+    let freq = |s: &PolySynth, c: u8| {
+        s.voices
+            .iter()
+            .find(|v| v.is_active() && v.channel() == MidiChannel::of(c))
+            .unwrap()
+            .sounding_freq()
+            .get()
+    };
+    assert!((freq(&s, 0) / 880.0 - 1.0).abs() < 1e-4, "{}", freq(&s, 0));
+    assert!((freq(&s, 1) / 440.0 - 1.0).abs() < 1e-4);
+    // Fine: 0x3000 is 50 cents up, on top.
+    queue_midi(&mut s, &[registered(0, 1, 0x3000 << 18)]);
+    s.tick(&[], &mut out);
+    let expected = 880.0 * 2.0_f32.powf(0.5 / 12.0);
+    assert!(
+        (freq(&s, 0) / expected - 1.0).abs() < 1e-4,
+        "{}",
+        freq(&s, 0)
+    );
+}
+
+/// GM2 section 3.3.4: Channel Volume's gain follows `40 * log10(cc7/127)` dB, the
+/// square of the value: CC 7 at half the default 100 is 12 dB down, a quarter of
+/// the amplitude. It is the channel's own.
+#[test]
+fn channel_volume_is_a_square_law_per_channel() {
+    let mut s = steady(|_| {});
+    let (base, _) = peaks(&mut s, &[ev_note_on(0, 69, 100)]);
+    let mut half = steady(|_| {});
+    let (quarter, _) = peaks(
+        &mut half,
+        &[ev_cc(0, CCNumber::VOLUME, 50), ev_note_on(0, 69, 100)],
+    );
+    assert!(
+        (quarter / base - 0.25).abs() < 0.02,
+        "{quarter} against {base}"
+    );
+    let mut silent = steady(|_| {});
+    let (none, _) = peaks(
+        &mut silent,
+        &[ev_cc(0, CCNumber::VOLUME, 0), ev_note_on(0, 69, 100)],
+    );
+    assert_eq!(none, 0.0);
+    // Expression is the same law, and a channel apart.
+    let mut expr = steady(|_| {});
+    let (quarter, _) = peaks(
+        &mut expr,
+        &[ev_cc(1, CCNumber::EXPRESSION, 64), ev_note_on(0, 69, 100)],
+    );
+    assert!(
+        (quarter / base - 1.0).abs() < 0.02,
+        "channel 1's expression"
+    );
+}
+
+/// RP-036: Left gain `cos (Pi/2 * max(0,CC#10 - 1)/126)`, Right `sin` of it:
+/// 64 is true centre, 0 and 1 hard left, 127 hard right. A mono voice at the
+/// channel's centre keeps its own level (the sine's `sqrt(0.5)` each side).
+#[test]
+fn channel_pan_follows_rp_036() {
+    let level = |pan: Option<u8>| {
+        let mut s = steady(|_| {});
+        let mut events = vec![ev_note_on(0, 69, 100)];
+        if let Some(pan) = pan {
+            events.insert(0, ev_cc(0, CCNumber::PAN, pan));
+        }
+        peaks(&mut s, &events)
+    };
+    let (default_l, default_r) = level(None);
+    let (centre_l, centre_r) = level(Some(64));
+    assert!((default_l - default_r).abs() < 1e-3 * default_l, "default");
+    assert_eq!(
+        (default_l, default_r),
+        (centre_l, centre_r),
+        "64 is the default"
+    );
+    for hard_left in [0, 1] {
+        let (l, r) = level(Some(hard_left));
+        assert!(r < 1e-4 * l, "{hard_left}: {l} {r}");
+        // RP-036's left gain is 1 at hard left against cos(Pi/4) at centre.
+        assert!(
+            (l / default_l - std::f32::consts::SQRT_2).abs() < 0.01,
+            "{l}"
+        );
+    }
+    let (l, r) = level(Some(127));
+    assert!(l < 1e-4 * r, "{l} {r}");
+    // CC 32: tan (Pi/2 * 31/126) is the right over the left.
+    let (l, r) = level(Some(32));
+    let expected = (std::f32::consts::FRAC_PI_2 * 31.0 / 126.0).tan();
+    assert!((r / l / expected - 1.0).abs() < 0.01, "{}", r / l);
+}
+
+/// Channel Pressure (a MIDI 1.0 message of its own) is a channel's: at full it
+/// raises that channel's notes by the factor the synth gives pressure (`1 + p /
+/// 2`, 1.5), leaves another channel's, and Reset All Controllers sets it back to
+/// 0 (RP-015: "Reset channel pressure to 0").
+#[test]
+fn channel_pressure_is_per_channel_and_reset_returns_it() {
+    let lone = |events: &[Ump]| peaks(&mut steady(|_| {}), events).0;
+    let base = lone(&[ev_note_on(0, 69, 100)]);
+    let pressed = lone(&[ev_aftertouch(0, 127), ev_note_on(0, 69, 100)]);
+    let elsewhere = lone(&[ev_aftertouch(0, 127), ev_note_on(1, 69, 100)]);
+    let reset = lone(&[
+        ev_aftertouch(0, 127),
+        ev_cc(0, CCNumber::RESET_ALL, 0),
+        ev_note_on(0, 69, 100),
+    ]);
+    assert!(
+        (pressed / base - 1.5).abs() < 0.02,
+        "{pressed} against {base}"
+    );
+    assert_eq!(elsewhere, base, "channel 1 heard none of it");
+    assert_eq!(reset, base, "the reset returned it to 0");
+}
+
+/// M1 p.16, Example 2 through the synth: `B0 54 3C`, `90 40 40` is "#64 with
+/// glide from #60", at the rate of Portamento Time: at CC 5 = 0, the figure's
+/// fastest (1,000 cent/msec), the glide is over in 4 ms; at 127 (0.01
+/// cent/msec), after a second the pitch has left its source by 10 cents. The
+/// next note has none.
+#[test]
+fn a_portamento_control_glides_one_voice_at_the_rate_of_cc_5() {
+    let after = |time: u8, frames: usize| {
+        let mut s = steady(|_| {});
+        let mut out = [0.0f32; 2];
+        queue_midi(
+            &mut s,
+            &[
+                ev_cc(0, CCNumber::PORTAMENTO_TIME, time),
+                ev_cc(0, CCNumber::PORTAMENTO_CONTROL, 60),
+                ev_note_on(0, 64, 100),
+            ],
+        );
+        for _ in 0..frames {
+            s.tick(&[], &mut out);
+        }
+        s.voices
+            .iter()
+            .find(|v| v.is_active())
+            .unwrap()
+            .sounding_freq()
+            .get()
+    };
+    assert!((after(0, 1000) / key_freq(64) - 1.0).abs() < 1e-3);
+    let slow = after(127, 44_100);
+    // The 400 cents up from 60 take 40,000 ms: 10 cents in the first second.
+    let expected = key_freq(60) * 2.0_f32.powf(10.0 / 1200.0);
+    assert!(
+        (slow / expected - 1.0).abs() < 5e-4,
+        "{slow} against {expected}"
+    );
+
+    // A voice that sounds is moved, and no other is: 60 and 67 sound, the
+    // Portamento Control names 60, and 72 sounds as the same voice.
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &[ev_note_on(0, 60, 100), ev_note_on(0, 67, 100)]);
+    s.tick(&[], &mut out);
+    queue_midi(
+        &mut s,
+        &[
+            ev_cc(0, CCNumber::PORTAMENTO_CONTROL, 60),
+            ev_note_on(0, 72, 100),
+        ],
+    );
+    for _ in 0..1000 {
+        s.tick(&[], &mut out);
+    }
+    let mut freqs: Vec<f32> = s
+        .voices
+        .iter()
+        .filter(|v| v.is_active())
+        .map(|v| v.sounding_freq().get())
+        .collect();
+    freqs.sort_by(f32::total_cmp);
+    assert_eq!(freqs.len(), 2, "no new voice");
+    assert!((freqs[0] / key_freq(67) - 1.0).abs() < 1e-3, "{freqs:?}");
+    assert!((freqs[1] / key_freq(72) - 1.0).abs() < 1e-3, "{freqs:?}");
+}
+
+/// GM2 section 3.3.8: Portamento On "between 64 and 127": a note glides from
+/// the key struck before it, in a straight line in cents (the rate is in cents a
+/// millisecond), and with Portamento Time at its slowest the voice has barely
+/// left the old pitch after a second.
+#[test]
+fn portamento_on_glides_from_the_previous_key() {
+    let mut s = steady(|c| c.voice_mode = VoiceMode::Legato);
+    let mut out = [0.0f32; 2];
+    queue_midi(
+        &mut s,
+        &[
+            ev_cc(0, CCNumber::PORTAMENTO_SWITCH, 127),
+            ev_cc(0, CCNumber::PORTAMENTO_TIME, 127),
+            ev_note_on(0, 60, 100),
+        ],
+    );
+    s.tick(&[], &mut out);
+    queue_midi(&mut s, &[ev_note_on(0, 72, 100)]);
+    for _ in 0..44_100 {
+        s.tick(&[], &mut out);
+    }
+    let f = s
+        .voices
+        .iter()
+        .find(|v| v.is_active())
+        .unwrap()
+        .sounding_freq()
+        .get();
+    let expected = key_freq(60) * 2.0_f32.powf(10.0 / 1200.0);
+    assert!((f / expected - 1.0).abs() < 5e-4, "{f} against {expected}");
+}
+
+/// A per-note sounding pitch survives a glide: the voice's pitch is its note's
+/// own (here told by Registered Per-Note Controller #3) under the glide's factor
+/// and the channel's bend, and when the glide ends it is exactly the note's pitch
+/// with the bend. (Before, `control_step` overwrote the pitch each step with the
+/// glide's key frequency, and the told pitch was lost for as long as it ran.)
+#[test]
+fn a_per_note_pitch_survives_a_glide() {
+    let mut s = steady(|c| {
+        c.mpe_enabled = true;
+        c.portamento = Some(PortamentoConfig {
+            mode: PortamentoMode::Always,
+            curve: Law::Linear,
+            time: Seconds(0.05),
+            constant_time: true,
+        });
+    });
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &[ev_note_on(1, 60, 100)]);
+    for _ in 0..2000 {
+        s.tick(&[], &mut out);
+    }
+    queue_midi(&mut s, &[ev_note_on(2, 72, 100)]);
+    s.tick(&[], &mut out);
+    // Mid-glide the second note is told its pitch, 74.
+    let pitch = midi::per_note_controller(
+        MidiGroup::FIRST,
+        MidiChannel::of(2),
+        72,
+        3,
+        74u32 << 25,
+        true,
+    );
+    queue_midi(&mut s, &[pitch]);
+    for _ in 0..4000 {
+        s.tick(&[], &mut out);
+    }
+    let f = s
+        .voices
+        .iter()
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(2))
+        .unwrap()
+        .sounding_freq()
+        .get();
+    assert!(
+        (f / key_freq(74) - 1.0).abs() < 1e-4,
+        "{f} against {}",
+        key_freq(74)
+    );
+}
+
+/// M1 p.14, Legato Footswitch: the second note moves the voice "without
+/// re-attacking", and the pitch it moves to is the new key's: the pitch a
+/// per-note controller told the first note is that note's, not the new one's.
+#[test]
+fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
+    let mut s = steady(|c| c.mpe_enabled = true);
+    let mut out = [0.0f32; 2];
+    queue_midi(
+        &mut s,
+        &[ev_cc(1, CCNumber::LEGATO, 127), ev_note_on(1, 60, 100)],
+    );
+    s.tick(&[], &mut out);
+    let pitch = midi::per_note_controller(
+        MidiGroup::FIRST,
+        MidiChannel::of(1),
+        60,
+        3,
+        70u32 << 25,
+        true,
+    );
+    queue_midi(&mut s, &[pitch]);
+    s.tick(&[], &mut out);
+    let freq = |s: &PolySynth| {
+        s.voices
+            .iter()
+            .find(|v| v.is_active())
+            .unwrap()
+            .sounding_freq()
+            .get()
+    };
+    assert!((freq(&s) / key_freq(70) - 1.0).abs() < 1e-4);
+    queue_midi(&mut s, &[ev_note_on(1, 64, 100)]);
+    s.tick(&[], &mut out);
+    assert_eq!(s.active_voice_count(), 1, "one voice moved");
+    assert!((freq(&s) / key_freq(64) - 1.0).abs() < 1e-4, "{}", freq(&s));
+    // A bend recomputes the pitch from the voice's note: the new key's, a
+    // whole tone (the default range) up.
+    queue_midi(&mut s, &[ev_bend(1, 16383)]);
+    s.tick(&[], &mut out);
+    assert!((freq(&s) / key_freq(66) - 1.0).abs() < 1e-3, "{}", freq(&s));
 }

@@ -36,13 +36,12 @@ mod watch;
 use crate::InputProducerHandle;
 use crate::capability::EndpointInfo;
 use crate::devices::{ChangeSink, os_devices};
-use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
+use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::Result;
 use enumerate::Direction;
 use std::sync::{Mutex, PoisonError};
 use tutti_alsa_ffi::Client;
 use tutti_midi_device::{EndpointId, OsDevice};
-use tutti_midi_runtime::MidiOut;
 
 /// The Linux [`MidiEndpoints`] implementation.
 ///
@@ -116,7 +115,7 @@ impl MidiEndpoints for AlsaEndpoints {
         input::open(id, producer)
     }
 
-    fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>> {
+    fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         output::open(id)
     }
 }

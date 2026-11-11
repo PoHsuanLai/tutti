@@ -221,7 +221,8 @@ fn cc_11_and_43_set_the_expression() {
     assert!(level(127) > level(0), "the fine byte raises the expression");
 }
 
-// Arm 0x0A (pan coarse) and 0x2A (fine).
+// Arm 0x0A (pan coarse) and 0x2A (fine), by RP-036: "values 0 and 1 both pan
+// hard left", 64 is "true center".
 #[test]
 fn cc_10_and_42_pan_the_channel() {
     let mut left = violin(|s| cc(s, CCNumber::PAN, 0));
@@ -231,16 +232,55 @@ fn cc_10_and_42_pan_the_channel() {
         "hard left leaves the right silent: {l} {r}"
     );
 
+    let mut one = violin(|s| cc(s, CCNumber::PAN, 1));
+    let (l, r) = energy_lr(&mut one, 2048);
+    assert!(l > 1.0 && r == 0.0, "1 is hard left too: {l} {r}");
+
     let mut right = violin(|s| cc(s, CCNumber::PAN, 127));
     let (l, r) = energy_lr(&mut right, 2048);
     assert!(r > 1.0 && l < r * 0.05, "hard right: {l} {r}");
 
+    // The fine byte moves the pan past the wall: CC 10 = 1 is hard left, and
+    // the next 127 steps of the 14-bit value are the first of the pan (RP-036
+    // subtracts 1, a step of 128, before the formula). Before this lane the test
+    // used CC 10 = 0 and a fine byte of 127, which the RP puts under that 1:
+    // still hard left.
     let mut fine = violin(|s| {
-        cc(s, CCNumber::PAN, 0);
+        cc(s, CCNumber::PAN, 1);
         cc(s, CCNumber::of(42), 127);
     });
     let (_, r) = energy_lr(&mut fine, 2048);
     assert!(r > 0.0, "the fine byte moves the pan off the wall");
+}
+
+/// RP-036: "64 (40H) is Center", "an equal power distribution", "true center":
+/// the same level in both channels, to the 14-bit step. On a synthetic font
+/// whose one zone has no pan of its own (the reference font's presets are
+/// panned zones, which the SF2 pan generator adds to this).
+#[test]
+fn cc_10_at_64_is_true_centre() {
+    let mut centre = Rig::dry(&two_bank_soundfont());
+    cc(&mut centre, CCNumber::PAN, 64);
+    centre.note_on(0, 69, 30);
+    let (l, r) = energy_lr(&mut centre, 2048);
+    assert!(l > 0.0 && (l - r).abs() <= 1e-4 * l, "{l} {r}");
+}
+
+/// RP-036: "if a currently sounding note is panned, the panning shall be done
+/// without audible artifacts, clicks or zipper noise". A pan change from hard
+/// left to hard right on a sounding note is not a step: the left channel, which
+/// the new pan silences, still sounds in the first chunk after the change and
+/// is silent by the end of the next one.
+#[test]
+fn a_pan_change_on_a_sounding_note_ramps() {
+    let mut synthesizer = violin(|s| cc(s, CCNumber::PAN, 0));
+    synthesizer.render(4096);
+    cc(&mut synthesizer, CCNumber::PAN, 127);
+    let (left, _) = synthesizer.render(256);
+    let first: f32 = left[..8].iter().map(|x| x * x).sum();
+    assert!(first > 0.0, "a step would have silenced the left at once");
+    let last: f32 = left[248..].iter().map(|x| x * x).sum();
+    assert_eq!(last, 0.0, "and the ramp ends silent");
 }
 
 // Arm 0x40 (hold pedal): 64 and above holds, below does not.
@@ -300,6 +340,131 @@ fn registered_controller_2_sets_the_coarse_tuning() {
     let octave = crossings(|s| s.voice2(0, registered(2, 76, 0)), 8192) as f64;
     let ratio = octave / base;
     assert!((1.9..2.1).contains(&ratio), "an octave up, got {ratio}");
+}
+
+// RPN 1, Channel Fine Tuning (RP-022), 14 bits centred at 2000H over 100 cents:
+// 0x4000 is a semitone up.
+#[test]
+fn registered_controller_1_sets_the_fine_tuning() {
+    let base = crossings(|_| {}, 8192) as f64;
+    let up = crossings(|s| s.voice2(0, registered(1, 127, 127)), 8192) as f64;
+    let ratio = up / base;
+    // 2^(1/12) = 1.059, less one step of the 14 bits.
+    assert!((1.05..1.07).contains(&ratio), "a semitone up, got {ratio}");
+}
+
+// CA-026: RPN 5 scales the Modulation Wheel. A range of 0 leaves the note as
+// it is with the wheel at 0 (the depth is the position times the range), and
+// the default (GM2 section 3.4.4: +/-50 cents) does not.
+#[test]
+fn registered_controller_5_scales_the_modulation_wheel() {
+    let render = |setup: fn(&mut Rig)| {
+        let mut synthesizer = violin(setup);
+        synthesizer.render(8192).0
+    };
+    let none = render(|_| {});
+    let zero_range = render(|s| {
+        s.voice2(0, registered(5, 0, 0));
+        cc(s, CCNumber::MOD_WHEEL, 127);
+    });
+    let default_range = render(|s| cc(s, CCNumber::MOD_WHEEL, 127));
+    assert_eq!(zero_range, none, "a range of 0 is no vibrato");
+    assert_ne!(default_range, none);
+}
+
+// RP-015: Reset All Controllers does "NOT reset Volume (#7)" nor Pan (#10), and
+// sets Expression to 127 and Modulation to 0.
+#[test]
+fn cc_121_keeps_the_volume_and_the_pan() {
+    let mut silent = dry();
+    cc(&mut silent, CCNumber::VOLUME, 0);
+    cc(&mut silent, CCNumber::RESET_ALL, 0);
+    silent.note_on(0, 69, 100);
+    assert_eq!(energy(&mut silent, 2048), 0.0, "the volume stays 0");
+
+    let mut left = dry();
+    cc(&mut left, CCNumber::PAN, 0);
+    cc(&mut left, CCNumber::RESET_ALL, 0);
+    left.note_on(0, 69, 100);
+    let (_, r) = energy_lr(&mut left, 2048);
+    assert_eq!(r, 0.0, "the pan stays hard left");
+}
+
+// M1 p.14, Legato Footswitch: the note struck while another sounds moves the
+// sounding voice "without re-attacking"; M1 p.16, Portamento Control: "If there
+// is a currently sounding voice whose note number is coincident with the source
+// note number, the voice's pitch will glide to the new Note-On's pitch [...]
+// Then, no new voice should be assigned."
+#[test]
+fn a_portamento_control_retunes_the_sounding_voice() {
+    let cents = |portamento_time: u8| {
+        let mut s = dry();
+        s.program(0, 40);
+        cc(&mut s, CCNumber::PORTAMENTO_TIME, portamento_time);
+        s.note_on(0, 60, 100);
+        energy(&mut s, 4096);
+        cc(&mut s, CCNumber::PORTAMENTO_CONTROL, 60);
+        s.note_on(0, 72, 100);
+        energy(&mut s, 4096);
+        let (left, _) = s.render(44_100);
+        left.windows(2).filter(|w| w[0] * w[1] < 0.0).count() as f64
+    };
+    let plain = |key: u8| {
+        let mut s = dry();
+        s.program(0, 40);
+        s.note_on(0, key, 100);
+        energy(&mut s, 8192);
+        let (left, _) = s.render(44_100);
+        left.windows(2).filter(|w| w[0] * w[1] < 0.0).count() as f64
+    };
+    // At Portamento Time 0 (1,000 cent/msec) the glide is over in a
+    // millisecond: the voice sounds the new key, alone.
+    let fast = cents(0) / plain(72);
+    assert!((0.97..1.03).contains(&fast), "{fast}");
+    // At 127 (0.01 cent/msec) it has moved 150 cents in the 15 s of this test.
+    // The voice is still near its source key.
+    let slow = cents(127) / plain(60);
+    assert!((0.98..1.2).contains(&slow), "{slow}");
+}
+
+// M1 p.14: with the Legato Footswitch down a second note does not start a
+// voice: "pitch is changed without re-attacking". One voice sounds the new key
+// (its zero crossings are the new key's, which a lower voice left sounding would
+// not leave) and no second adds to its energy.
+#[test]
+fn the_legato_footswitch_moves_the_voice() {
+    let measure = |footswitch: bool, first: Option<u8>| {
+        let mut s = dry();
+        s.program(0, 40);
+        if footswitch {
+            cc(&mut s, CCNumber::LEGATO, 127);
+        }
+        if let Some(first) = first {
+            s.note_on(0, first, 100);
+            energy(&mut s, 4096);
+        }
+        s.note_on(0, 72, 100);
+        energy(&mut s, 8192);
+        let (left, _) = s.render(44_100);
+        let crossings = left.windows(2).filter(|w| w[0] * w[1] < 0.0).count() as f64;
+        let energy: f32 = left.iter().map(|x| x * x).sum();
+        (crossings, energy)
+    };
+    let (moved, moved_energy) = measure(true, Some(60));
+    let (plain, plain_energy) = measure(false, None);
+    let (layered, layered_energy) = measure(false, Some(60));
+    assert!(
+        (moved / plain - 1.0).abs() < 0.03,
+        "{moved} against {plain}"
+    );
+    assert!(
+        (moved_energy / plain_energy - 1.0).abs() < 0.3,
+        "one voice: {moved_energy} against {plain_energy}"
+    );
+    // Control: without the footswitch the first note keeps sounding under the
+    // second, and the energy shows it.
+    assert!(layered_energy > 1.5 * plain_energy, "{layered_energy}");
+    assert!(layered > 0.0);
 }
 
 // An Assignable Controller (NRPN), or a Registered Controller outside bank 0,

@@ -610,5 +610,5 @@ fn a_preset_units_first_note_on_renders_that_preset() {
     let got = digest(&out);
     // The voice calls `sin`, `exp` and `pow`, so the digest is libm's. It pins the
     // unit's dry pair (outputs 0 and 1) alone: the effects are not in the unit.
-    assert_golden("the soundfont voice", got, 0x9bbb_c7d3_8add_15d0);
+    assert_golden("the soundfont voice", got, 0x5c2f_0b4b_6293_6239);
 }

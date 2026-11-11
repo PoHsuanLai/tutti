@@ -111,8 +111,15 @@ impl CCNumber {
     pub const SOSTENUTO: CCNumber = CCNumber(66);
     /// CC 67.
     pub const SOFT_PEDAL: CCNumber = CCNumber(67);
-    /// CC 68.
+    /// CC 68 — Legato Footswitch.
     pub const LEGATO: CCNumber = CCNumber(68);
+
+    /// CC 84 — Portamento Control: the source key of the next note's glide.
+    pub const PORTAMENTO_CONTROL: CCNumber = CCNumber(84);
+
+    /// CC 88 — High Resolution Velocity Prefix (CA-031): the low 7 bits of the
+    /// next Note On or Off's 14-bit velocity.
+    pub const VELOCITY_PREFIX: CCNumber = CCNumber(88);
 
     // Channel mode.
     /// CC 120.
@@ -307,6 +314,8 @@ mod tests {
         assert_eq!(CCNumber::SOSTENUTO.get(), 66);
         assert_eq!(CCNumber::SOFT_PEDAL.get(), 67);
         assert_eq!(CCNumber::LEGATO.get(), 68);
+        assert_eq!(CCNumber::PORTAMENTO_CONTROL.get(), 84);
+        assert_eq!(CCNumber::VELOCITY_PREFIX.get(), 88);
 
         assert_eq!(CCNumber::RESONANCE.get(), 71);
         assert_eq!(CCNumber::RELEASE_TIME.get(), 72);

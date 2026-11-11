@@ -418,11 +418,31 @@ fn soundfont_note_logic_is_allocation_free() {
         unit.queue_midi(&[
             cc(0, CCNumber::SUSTAIN, 127),
             cc(0, CCNumber::SOSTENUTO, 127),
+            // The channel's controllers the voices read (modulation, volume,
+            // pan, expression), Portamento On and its time, and a Portamento
+            // Control: the next strike glides from the key it names, and moves
+            // the sounding voice of that key.
+            cc(0, CCNumber::MOD_WHEEL, 90),
+            cc(0, CCNumber::VOLUME, 90),
+            cc(0, CCNumber::PAN, 30),
+            cc(0, CCNumber::EXPRESSION, 110),
+            cc(0, CCNumber::PORTAMENTO_SWITCH, 127),
+            cc(0, CCNumber::PORTAMENTO_TIME, 20),
+            cc(0, CCNumber::PORTAMENTO_CONTROL, 40),
         ]);
+        unit.queue_midi_at(&[note_on(40, 16), note_on(52, 30)]);
         unit.block(64);
         unit.queue_midi_at(&offs);
         unit.block(64);
-        unit.queue_midi(&[cc(0, CCNumber::SUSTAIN, 0), cc(0, CCNumber::SOSTENUTO, 0)]);
+        unit.queue_midi(&[
+            cc(0, CCNumber::SUSTAIN, 0),
+            cc(0, CCNumber::SOSTENUTO, 0),
+            cc(0, CCNumber::PORTAMENTO_SWITCH, 0),
+            cc(0, CCNumber::LEGATO, 127),
+        ]);
+        unit.queue_midi_at(&[note_on(41, 8), note_on(43, 16)]);
+        unit.block(64);
+        unit.queue_midi(&[cc(0, CCNumber::LEGATO, 0)]);
         unit.block(64);
         // An exclusive class: the second drum ends the first.
         unit.queue_midi_at(&[drum(open, 0), drum(closed, 8)]);

@@ -13,7 +13,9 @@ mod common;
 
 use tutti_graph::ForkByClone;
 use tutti_session::{EdgeRef, GraphSource, ModTarget, ParamRef, Session};
-use tutti_types::{ChannelLayout, Depth, InterleavedMut, SampleRate, Samples, UnitParam};
+use tutti_types::{
+    Amplitude, ChannelLayout, Depth, InterleavedMut, SampleRate, Samples, UnitParam,
+};
 
 use common::probe::Pulse;
 
@@ -75,8 +77,9 @@ fn mixer(s: &mut Session) -> EdgeRef {
 /// is `(0.0 + 1.5 * A) + B`. Then the macro moves (`w = 1.0 - 0.5 = 0.5`),
 /// the knob moves (`ModState::set_knob`: `w = -0.25 - 0.5`, polarity), a
 /// narrower range changes the span, and one whose floor the value is below
-/// clamps it; and removing the route returns the edge
-/// to its base, unity, once the lane's source goes (the declick).
+/// clamps it; and removing the route returns the edge to its base, which
+/// the knob left at `-0.25` (the knob is the edge's gain: one cell), once the
+/// lane's source goes (the declick).
 ///
 /// Mutations (each run, each failed): resolve the edge target to another
 /// edge (`EdgeRef::id` with the channel off by one) -> the lane never reaches
@@ -128,7 +131,63 @@ fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
 
     s.mods().remove_route(route);
     settle(&mut s);
-    figure(&mut s, 1.0, "the route gone: the base");
+    figure(&mut s, -0.25, "the route gone: the base the knob left");
+}
+
+/// The gain has one writer. `Graph::set_edge_gain` is the knob whether or not
+/// the edge is routed: a base of 0.5 stays the base when a route arrives (the
+/// lane modulates around it, it does not snap to unity), a base moved while
+/// routed moves the modulated figure, and removing the route returns to the
+/// base, not unity.
+///
+/// With a range of `-2..=2` (span 4) the macro at 0.5 and depth 0.5 offsets
+/// by `0.5 * 0.5 * 4 = 1.0`: `w = base + 1.0`, so `1.5`, then `1.25` once the
+/// base moves to 0.25; gone, the base `0.25`.
+///
+/// Mutation (run, failed): the reconciler builds the edge lane's knob as its
+/// own cell starting at unity (`Some(Arc::new(AtomicF32::new(1.0)).into())`
+/// in `tutti-nodes`'s `Bind::Edge` build, the G2 shape) -> the routed figure
+/// is `1.0 + 1.0 = 2.0`, not `1.5`, the base moved while routed is ignored,
+/// and the route gone reads unity. Also (run, failed): `Editor::send` writes
+/// the spec's base into an existing cell at every commit (`carry_base`'s test
+/// always true) -> a knob written through `ModState::set_knob` is overwritten
+/// by the stale spec figure in the older test above.
+#[test]
+fn the_base_is_the_lanes_knob_and_a_route_returns_to_it() {
+    let mut s = offline();
+    let edge = mixer(&mut s);
+    settle(&mut s);
+    s.graph()
+        .set_edge_gain(edge, Amplitude::new(0.5))
+        .expect("an edge");
+    settle(&mut s);
+
+    let figure = |s: &mut Session, w: f32, what: &str| {
+        let got = render(s, 12);
+        let want = (0.0 + w * A) + B;
+        for (f, &x) in got.iter().enumerate().skip(512) {
+            assert_eq!(x.to_bits(), want.to_bits(), "{what}, frame {f}");
+        }
+    };
+    figure(&mut s, 0.5, "the base, before any route");
+
+    let mut m = s.mods();
+    m.range(edge, -2.0, 2.0);
+    let source = m.macro_(0.5);
+    let route = m.route(source, edge, Depth(0.5));
+    settle(&mut s);
+    figure(&mut s, 1.5, "the base plus the route's offset");
+
+    s.graph()
+        .set_edge_gain(edge, Amplitude::new(0.25))
+        .expect("an edge");
+    settle(&mut s);
+    figure(&mut s, 1.25, "the base moved while routed");
+    assert_eq!(s.graph_ref().edge_gain(edge), Some(Amplitude::new(0.25)));
+
+    s.mods().remove_route(route);
+    settle(&mut s);
+    figure(&mut s, 0.25, "the route gone: the base, not unity");
 }
 
 /// An edge target keys once per edge, apart from a param's, and is no param.

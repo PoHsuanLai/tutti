@@ -52,6 +52,7 @@ pub(crate) fn main_thread() {
 mod builder;
 #[cfg(feature = "device")]
 mod device;
+mod edge;
 mod error;
 #[cfg(feature = "export")]
 mod export;
@@ -78,6 +79,7 @@ mod watch;
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted};
+pub use edge::{EdgeGainError, EdgeRef, EdgeSink};
 pub use error::{Error, HeardTapError, InletError, Result};
 #[cfg(feature = "export")]
 pub use export::{
@@ -102,8 +104,7 @@ pub use midi::{
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    EdgeRef, EdgeSink, ModRefusal, ModState, ModTarget, Mods, ParamRef, Take, UNRESOLVED_WARNING,
-    declare_targets,
+    ModRefusal, ModState, ModTarget, Mods, ParamRef, Take, UNRESOLVED_WARNING, declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
 #[cfg(feature = "plugin")]

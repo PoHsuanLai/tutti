@@ -6488,17 +6488,17 @@ and `edge_gain_range_cell`, the session's `EdgeRef` / `ModTarget`, and
   `ModHost::target` resolves it to `Target::Edge { id, knob }`. The reconciler
   makes the edge's entry (with the target's range) when the target first
   resolves, then builds the lane once the commit that sends it has landed
-  (the host's re-apply, as for a node placed late). The lane's knob is its own
-  cell, starting at unity and written through `ModState::set_knob`, since an
-  edge's base is a `GainCell`, not a node's `Param`; the lane's value is then
+  (the host's re-apply, as for a node placed late). The lane's knob was, in G2, its
+  own cell starting at unity, written through `ModState::set_knob`, since an
+  edge's base was a `GainCell` and not a node's `Param`; the lane's value is
   `knob + route offsets`, clamped. `EdgeRef { sink: EdgeSink, from:
   GraphSource }` is the session's key form of `EdgeId` (direct edges);
   `Mods::{route, range, automate, ..}` take `impl Into<ModTarget>`, and
   `Mods::key` gives the key a lane is read under. The session mints that key
-  per edge and forgets it with a node the edge touches. Not here (G3): the
-  session's public weight methods (`set_edge_gain`, `add_source_weighted`),
-  so a base written through the editor and the lane's knob are two writers
-  until then.
+  per edge and forgets it with a node the edge touches. **G2's caveat, closed
+  in G3 (below):** with the session's weight methods absent, a base written
+  through the editor and the lane's own-cell knob were two writers (set a base
+  of 0.5, route a modulator, and the gain snapped to unity).
 - **Tests.** `tests/edge_gain_driven.rs` (the analytic weight at a port and an
   output, the clamp, the declick of a source that goes, the carry, the PDC of
   a late and an early lane and of a late lane at the output, the refusals,
@@ -6508,6 +6508,54 @@ and `edge_gain_range_cell`, the session's `EdgeRef` / `ModTarget`, and
   own RNG, so no other property's seeds moved), `rt_no_alloc.rs`'s driven
   64- and 100-lane fan-in on both executors, `tutti-modulation`'s edge key
   test and `tutti-session`'s `edge_modulation`.
+
+**As built (G3).** The session API, and the one writer of an edge's gain.
+Where the build chose:
+
+- **API** (`tutti-session`, all without a feature). `EdgeRef` and `EdgeSink`
+  moved out of `modulation.rs` into `edge.rs` (a weight is not a modulation
+  feature); `Graph::set_edge_gain(EdgeRef, Amplitude) -> Result<(),
+  EdgeGainError>`, `edge_gain(EdgeRef) -> Option<Amplitude>`,
+  `clear_edge_gain(EdgeRef) -> bool`, `add_source_weighted(node, port, source,
+  Amplitude) -> Result<(), EdgeGainError>` and its twin
+  `add_output_source_weighted(channel, source, Amplitude)`. The doc named
+  `(sink, from)`; an `EdgeRef` is that pair already and is what `Mods` takes, so
+  one value names an edge for a weight and a route alike. `EdgeGainError` is
+  `NoSuchEdge(EdgeRef)` and `NotFinite`; a refusal changes nothing. The
+  weighted adds check the number first, so a refusal adds no source.
+- **`GraphSource::Silence` is never an edge.** `set_edge_gain` on it is
+  `NoSuchEdge`; `add_source_weighted` of it is a no-op, as `add_source`'s is.
+- **`edge_gain` is `None` for a plain edge**, not unity: an entry is the
+  structural fact (the plan sums it as a lane, a plain edge aliases), and
+  `Some(1.0)` means a unity lane. It also reads `None` for an edge that is not
+  there.
+- **Structural or control, as the editor's.** A first weight on an edge and
+  `clear_edge_gain` mark the graph edited; moving the weight of an edge that has
+  one does not (`is_edited` stays false, the sent plan is the same `Arc`).
+- **A source that goes takes its weight.** `remove_source` and
+  `remove_output_source` use the spec's own `disconnect`, and the whole-set
+  writes (`set_sources`, `set_output_sources`, `set_outputs_from*`, the root's
+  resize) drop the entries whose edge they removed (`drop_stale_gains`): a stale
+  entry would fail every later commit.
+- **One writer: the gain's cell is the lane's knob.** As a native param's lane
+  knob is the node's own `Param` cell, an edge lane's knob is the edge's
+  `GainCell` (now an `AtomicF32`, a `ParamCell`'s width-erased cell), reached
+  through `Editor::edge_gain_cell` as `edge_gain_range_cell` reaches the range;
+  `Target::Edge` carries the id alone and the reconciler takes the cell from the
+  editor. `Graph::set_edge_gain` and `ModState::set_knob` store into that one
+  cell, routed or not. A route modulates around the base (`base + offsets`,
+  clamped) and removing it returns to the base, not unity. The spec's copy of
+  the base can fall behind a cell the knob wrote, so the cell is the truth once
+  a commit has sent one: `Editor::edge_gain` and a fork read it, a commit
+  writes the spec's base into an existing cell only when the spec's base
+  *moved* since the last commit (a direct spec edit), and the cell is written
+  from the spec when it is made.
+- **Tests.** `tutti-session`'s `tests/edge_gain.rs` (set, read, clear; the
+  refusals; the weighted adds and their output twin; a removed source's weight;
+  a control marks nothing edited) and `tests/edge_modulation.rs`'s
+  `the_base_is_the_lanes_knob_and_a_route_returns_to_it` (base 0.5, route,
+  analytic figure around it, base moved while routed, route gone, base).
+  `bevy-tutti` (parked) would carry the weight in `PortSources` entries.
 
 #### Bypass and mute are graph state
 

@@ -1106,6 +1106,45 @@ fn a_fork_carries_the_edge_gains() {
     drop((ed, exec));
 }
 
+/// The base a lane's knob wrote is the one a fork starts at: the knob is the
+/// gain's own cell (`Editor::edge_gain_cell`), the spec's copy is behind it,
+/// and `Editor::edge_gain` and the fork read the cell.
+///
+/// Mutation (run, failed): the fork copies `g` unchanged
+/// (`EdgeGain { base, ..*g }` without the cell's base) -> the fork renders
+/// the spec's stale `0.5`.
+#[test]
+fn a_fork_starts_at_the_base_the_knob_wrote() {
+    #[derive(Clone)]
+    struct Level(f32);
+    impl Node for Level {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            io.output(0).fill(self.0);
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+    let (mut ed, exec) = Editor::new(prepare(BLOCK));
+    ed.insert(key(1), "a", ForkByClone(Level(1.0)));
+    ed.spec_mut().topology.outputs = vec![vec![out(1)]];
+    ed.spec_mut()
+        .set_edge_gain(output_edge(1), EdgeGain::new(amp(0.5)));
+    ed.commit().expect("commits");
+    let knob = ed.edge_gain_cell(output_edge(1)).expect("a cell once sent");
+    knob.store(0.25, std::sync::atomic::Ordering::Release);
+    assert_eq!(ed.edge_gain(output_edge(1)), Some(amp(0.25)), "the cell's");
+    let (fork_ed, fork_exec) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, prepare(BLOCK))
+        .expect("forkable");
+    let got = Renderer::new(fork_ed, fork_exec).render(2 * BLOCK);
+    assert!(got[0].iter().all(|&x| x == 0.0 + 0.25 * 1.0));
+    drop((ed, exec));
+}
+
 /// The commit refuses a stale entry rather than weighting nothing.
 ///
 /// Mutation (run, failed): drop the `GainWithoutEdge` push in `validate`.

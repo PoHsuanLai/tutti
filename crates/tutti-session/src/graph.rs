@@ -52,10 +52,10 @@ use tutti_graph::{
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Samples, Tail};
 
-use crate::{InletError, SessionNode};
+use crate::{EdgeGainError, EdgeRef, InletError, SessionNode};
 
 /// The largest block a device's graph is prepared for.
 ///
@@ -1636,6 +1636,7 @@ impl Graph {
         } else {
             edges.insert(at, want);
         }
+        self.drop_stale_gains();
         self.edited = true;
     }
 
@@ -1672,8 +1673,119 @@ impl Graph {
             port: port as u16,
         };
         let edge = Edge::Direct(Self::lower(source));
-        if self.editor.spec_mut().topology.disconnect(at, edge) {
+        // The spec's own removal: an edge's gain entry goes with it.
+        if self.editor.spec_mut().disconnect(at, edge) {
             self.edited = true;
+        }
+    }
+
+    // --- Edge gains (doc 013, "Edge gain") ---
+
+    /// Edge `edge`'s gain, if it has one: `Some` for a weighted edge, `None`
+    /// for a plain one (a unity weight is an entry, so it is `Some(1.0)`; an
+    /// edge with no entry is aliased, not weighted, and is not reported as
+    /// unity) and for an edge that is not in the graph.
+    ///
+    /// Once the graph has committed the edge's weight this reads its live
+    /// cell, which is also the knob of a modulation route onto the edge
+    /// (`Mods::route` (feature `modulation`) with an [`EdgeRef`]).
+    pub fn edge_gain(&self, edge: EdgeRef) -> Option<Amplitude> {
+        self.editor.edge_gain(edge.id())
+    }
+
+    /// Sets the gain of `edge`: a multiplier on what `edge.from` adds to
+    /// `edge.sink`'s sum. `1.0` is the plain sum (bit for bit, but for a
+    /// `-0.0` sample into a one-edge sink), `0.0` mutes the edge, a negative
+    /// gain inverts polarity. A move of the gain is ramped over one block.
+    ///
+    /// **This is the knob, routed or not.** A modulation route onto the edge
+    /// (`Mods::route` (feature `modulation`)) moves the gain around this value
+    /// and removing the route returns to it: the one writer of the gain is
+    /// the edge's cell.
+    ///
+    /// Giving a plain edge its first gain is structural (the next
+    /// [`update`](crate::Session::update) commits a weighted sum, as adding a
+    /// source does); changing the gain of a weighted edge is a control and
+    /// marks nothing edited.
+    ///
+    /// # Errors
+    ///
+    /// [`EdgeGainError::NoSuchEdge`] when `edge` is not in the graph
+    /// ([`GraphSource::Silence`] never is), and [`EdgeGainError::NotFinite`];
+    /// the graph is unchanged.
+    pub fn set_edge_gain(&mut self, edge: EdgeRef, gain: Amplitude) -> Result<(), EdgeGainError> {
+        let id = edge.id();
+        let had = self.editor.spec().gains.contains_key(&id);
+        self.editor.set_edge_gain(id, gain).map_err(|e| match e {
+            GraphInvalid::GainWithoutEdge { .. } => EdgeGainError::NoSuchEdge(edge),
+            _ => EdgeGainError::NotFinite,
+        })?;
+        if !had {
+            self.edited = true;
+        }
+        Ok(())
+    }
+
+    /// Makes `edge` plain again: no gain, aliased when it is its sink's only
+    /// source. Returns whether it had one. Structural, so it marks the graph
+    /// edited when it did. A modulation route onto the edge makes the gain
+    /// again (at unity) the next time the declarations apply: remove the route
+    /// first.
+    pub fn clear_edge_gain(&mut self, edge: EdgeRef) -> bool {
+        let cleared = self.editor.spec_mut().clear_edge_gain(edge.id()).is_some();
+        self.edited |= cleared;
+        cleared
+    }
+
+    /// [`add_source`](Self::add_source) with a gain: adds `source` to what
+    /// feeds `node`'s input `port` and weights it by `gain`, in one edit. A
+    /// source the port already holds only has its gain set. Adding
+    /// [`GraphSource::Silence`] does nothing (silence is never an edge, so it
+    /// has no gain to carry).
+    ///
+    /// # Errors
+    ///
+    /// [`EdgeGainError::NotFinite`]; nothing is added.
+    ///
+    /// # Panics
+    ///
+    /// If `source` is `node` itself: a node cannot feed its own input.
+    pub fn add_source_weighted(
+        &mut self,
+        node: NodeKey,
+        port: usize,
+        source: GraphSource,
+        gain: Amplitude,
+    ) -> Result<(), EdgeGainError> {
+        if !gain.get().is_finite() {
+            return Err(EdgeGainError::NotFinite);
+        }
+        self.add_source(node, port, source);
+        self.weigh(EdgeRef::port(node, port, source), gain)
+    }
+
+    /// The edge `edge`, which a fan-in method just added, takes `gain`:
+    /// nothing for silence, which is no edge.
+    fn weigh(&mut self, edge: EdgeRef, gain: Amplitude) -> Result<(), EdgeGainError> {
+        if edge.from == GraphSource::Silence {
+            return Ok(());
+        }
+        self.set_edge_gain(edge, gain)
+    }
+
+    /// Removes the gain entries of edges the topology no longer has: an edge
+    /// a whole-set write dropped takes its weight with it (a stale entry
+    /// would fail every later commit).
+    fn drop_stale_gains(&mut self) {
+        let spec = self.editor.spec_mut();
+        let stale: Vec<_> = spec
+            .gains
+            .keys()
+            .filter(|id| !spec.has_edge(**id))
+            .copied()
+            .collect();
+        for id in stale {
+            spec.clear_edge_gain(id);
         }
     }
 
@@ -1816,6 +1928,7 @@ impl Graph {
         let held = &mut self.editor.spec_mut().topology.outputs[channel];
         if *held != want {
             *held = want;
+            self.drop_stale_gains();
             self.edited = true;
         }
     }
@@ -1846,14 +1959,39 @@ impl Graph {
     ///
     /// If `channel` is past the global outputs.
     pub fn remove_output_source(&mut self, channel: usize, source: GraphSource) {
+        // The spec's own removal: an edge's gain entry goes with it.
         if self
             .editor
             .spec_mut()
-            .topology
             .disconnect_output(channel, Self::lower(source))
         {
             self.edited = true;
         }
+    }
+
+    /// [`add_output_source`](Self::add_output_source) with a gain: adds
+    /// `source` to what feeds global output `channel` and weights it by
+    /// `gain`, in one edit. The twin of
+    /// [`add_source_weighted`](Self::add_source_weighted).
+    ///
+    /// # Errors
+    ///
+    /// [`EdgeGainError::NotFinite`]; nothing is added.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` is past the global outputs.
+    pub fn add_output_source_weighted(
+        &mut self,
+        channel: usize,
+        source: GraphSource,
+        gain: Amplitude,
+    ) -> Result<(), EdgeGainError> {
+        if !gain.get().is_finite() {
+            return Err(EdgeGainError::NotFinite);
+        }
+        self.add_output_source(channel, source);
+        self.weigh(EdgeRef::output(channel, source), gain)
     }
 
     /// Feeds **every** global output from `node`: channel `c` from its port
@@ -1899,6 +2037,7 @@ impl Graph {
                 })]
             };
         }
+        self.drop_stale_gains();
         self.edited = true;
     }
 
@@ -2404,6 +2543,7 @@ impl Graph {
         let outputs = &mut self.editor.spec_mut().topology.outputs;
         if outputs.len() != width {
             outputs.resize(width, Vec::new());
+            self.drop_stale_gains();
             self.edited = true;
         }
         Ok(())
@@ -2631,11 +2771,10 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
             let tutti_modulation::TargetKey::Edge(key) = target else {
                 return None;
             };
-            // The gain's knob starts at unity, the base of a new entry; the
-            // lane's own cell holds it from then on (`ModState::set_knob`).
+            // The gain's knob is the edge's own cell, which the reconciler
+            // takes from the editor: `Graph::set_edge_gain` is the one writer.
             return Some(tutti_nodes::Target::Edge {
                 id: self.keys.edge(key)?.id(),
-                knob: Some(1.0),
             });
         };
         let node = self.keys.node(bits)?;

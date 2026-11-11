@@ -15,6 +15,7 @@ use crate::{Edge, FeedbackFrom, InPort, OutPort, Sink, Source, Topology};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
+use crate::gain::EdgeGain;
 use crate::node::{IntoNode, Node, NodeParts, Prepare};
 use crate::spec::{EventIn, GraphSpec};
 
@@ -1025,7 +1026,11 @@ impl Editor {
             .gains
             .iter()
             .filter(|(id, _)| spec.has_edge(**id))
-            .map(|(id, g)| (*id, *g))
+            .map(|(id, g)| {
+                // The live base is the cell's (a lane's knob writes it).
+                let base = self.edge_gain(*id).unwrap_or(g.base);
+                (*id, EdgeGain { base, ..*g })
+            })
             .collect();
 
         let mut units = Vec::with_capacity(sources.len());

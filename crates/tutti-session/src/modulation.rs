@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tutti_graph::{Edge, EdgeId, EventOut, NodeKey, Sink};
+use tutti_graph::{EdgeId, EventOut, NodeKey};
 use tutti_modulation::{
     Curve, Declarations, Follower, Lfo, Macro, NoteEnvelope, RouteDecl, RouteKey, RouteTarget,
     Source, SourceKey, TargetDecl, TargetKey,
@@ -42,7 +42,8 @@ use tutti_nodes::{Feed, ReconcileError};
 use tutti_types::{Depth, ParamAddr, UnitAddr, UnitParam};
 
 use crate::ModKeys;
-use crate::graph::{Graph, GraphSource};
+use crate::edge::EdgeRef;
+use crate::graph::Graph;
 
 /// How long a modulation target may stay unresolved before it is logged:
 /// today's 240 frames at 60 Hz (design 015 §4.4). A target waits an update
@@ -114,78 +115,6 @@ impl ParamRef {
             }),
             TargetKey::Edge(_) => None,
         }
-    }
-}
-
-/// Where an edge goes: input `port` of `node`, or global output `channel`.
-/// The session's key form of [`Sink`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EdgeSink {
-    /// Audio input `port` of `node`.
-    Port {
-        /// The node.
-        node: NodeKey,
-        /// Its input port.
-        port: usize,
-    },
-    /// Global output `channel`.
-    Output(usize),
-}
-
-/// One edge of the session's graph, named as the session's fan-in methods
-/// name it ([`Graph::add_source`](crate::Graph::add_source),
-/// [`Graph::add_output_source`](crate::Graph::add_output_source)): what feeds
-/// which sink. The session's key form of `tutti_graph::EdgeId`, as
-/// [`ParamRef`] is of a param port. A modulation route onto it
-/// ([`ModTarget`]) drives the **gain** of that edge, a weight of the sum
-/// its sink holds (doc 013, "Edge gain"); the edge must exist, and a target
-/// whose edge is not in the graph yet is unresolved until it is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EdgeRef {
-    /// Where the edge goes.
-    pub sink: EdgeSink,
-    /// What feeds it.
-    pub from: GraphSource,
-}
-
-impl EdgeRef {
-    /// The edge from `from` into input `port` of `node`.
-    #[must_use]
-    pub const fn port(node: NodeKey, port: usize, from: GraphSource) -> Self {
-        Self {
-            sink: EdgeSink::Port { node, port },
-            from,
-        }
-    }
-
-    /// The edge from `from` into global output `channel`.
-    #[must_use]
-    pub const fn output(channel: usize, from: GraphSource) -> Self {
-        Self {
-            sink: EdgeSink::Output(channel),
-            from,
-        }
-    }
-
-    /// The graph's name for the edge (a direct one: a feedback edge has no
-    /// session name yet).
-    pub(crate) fn id(self) -> EdgeId {
-        EdgeId {
-            sink: match self.sink {
-                EdgeSink::Port { node, port } => Sink::Port(tutti_graph::InPort {
-                    node,
-                    port: port as u16,
-                }),
-                EdgeSink::Output(channel) => Sink::Output(channel as u16),
-            },
-            from: Edge::Direct(Graph::lower(self.from)),
-        }
-    }
-
-    /// Whether the edge touches `node` (as its sink or its source).
-    fn touches(self, node: NodeKey) -> bool {
-        matches!(self.sink, EdgeSink::Port { node: n, .. } if n == node)
-            || matches!(self.from, GraphSource::Node(n, _) if n == node)
     }
 }
 

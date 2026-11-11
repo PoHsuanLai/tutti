@@ -1,5 +1,6 @@
 //! Weighted edges, mix, mode, param ports and audio fan-in.
 
+mod edge_fade;
 mod edge_gain;
 mod edge_gain_driven;
 mod fan_in;

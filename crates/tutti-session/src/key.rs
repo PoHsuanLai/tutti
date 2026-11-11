@@ -322,7 +322,9 @@ pub trait Wire: Sealed {
         to: Self::In,
     ) -> Result<Vec<(Edge, bool)>, ConnectError>;
     #[doc(hidden)]
-    fn disconnect(graph: &mut Graph, from: Self::Out, to: Self::In) -> bool;
+    fn disconnect(graph: &mut Graph, from: Self::Out, to: Self::In, hard: bool) -> bool;
+    #[doc(hidden)]
+    fn harden(graph: &mut Graph, from: Self::Out, to: Self::In, edges: &[(Edge, bool)]);
 }
 
 /// One channel to one channel: an [`OutPort`] into an [`InPort`], and an edge
@@ -403,8 +405,13 @@ impl Wire for Channel {
         let added = graph.add_edge(from, to)?;
         Ok(vec![(Edge::new(from, to), added)])
     }
-    fn disconnect(graph: &mut Graph, from: OutPort, to: InPort) -> bool {
-        graph.remove_edge(from, to)
+    fn disconnect(graph: &mut Graph, from: OutPort, to: InPort, hard: bool) -> bool {
+        graph.remove_edge(from, to, hard)
+    }
+    fn harden(graph: &mut Graph, _: OutPort, _: InPort, edges: &[(Edge, bool)]) {
+        for (edge, _) in edges {
+            graph.harden_edge(*edge);
+        }
     }
 }
 
@@ -424,15 +431,20 @@ impl Wire for MainBus {
         }
         Ok(edges)
     }
-    fn disconnect(graph: &mut Graph, from: NodeKey, to: MainSink) -> bool {
+    fn disconnect(graph: &mut Graph, from: NodeKey, to: MainSink, hard: bool) -> bool {
         let Ok(wires) = graph.main_wires(from, to) else {
             return false;
         };
         let mut removed = false;
         for (out, input) in wires {
-            removed |= graph.remove_edge(out, input);
+            removed |= graph.remove_edge(out, input, hard);
         }
         removed
+    }
+    fn harden(graph: &mut Graph, _: NodeKey, _: MainSink, edges: &[(Edge, bool)]) {
+        for (edge, _) in edges {
+            graph.harden_edge(*edge);
+        }
     }
 }
 
@@ -447,8 +459,11 @@ impl Wire for Bus {
         graph.add_bus_edge(from, to, false)?;
         Ok(Vec::new())
     }
-    fn disconnect(graph: &mut Graph, from: BusSource, to: BusSink) -> bool {
-        graph.remove_bus_edge(from, to)
+    fn disconnect(graph: &mut Graph, from: BusSource, to: BusSink, hard: bool) -> bool {
+        graph.remove_bus_edge(from, to, hard)
+    }
+    fn harden(graph: &mut Graph, from: BusSource, to: BusSink, _: &[(Edge, bool)]) {
+        graph.harden_bus_edge(from, to);
     }
 }
 
@@ -518,16 +533,31 @@ impl Inlet<Bus> for Root {
 pub struct Connection<'g, W: Wire> {
     graph: &'g mut Graph,
     edges: Vec<(Edge, bool)>,
-    wire: PhantomData<fn() -> W>,
+    ends: (W::Out, W::In),
 }
 
 impl<'g, W: Wire> Connection<'g, W> {
-    pub(crate) fn new(graph: &'g mut Graph, edges: Vec<(Edge, bool)>) -> Self {
+    pub(crate) fn new(
+        graph: &'g mut Graph,
+        edges: Vec<(Edge, bool)>,
+        from: W::Out,
+        to: W::In,
+    ) -> Self {
         Self {
             graph,
             edges,
-            wire: PhantomData,
+            ends: (from, to),
         }
+    }
+
+    /// Connects at full weight at once: no fade in. The default is a fade in
+    /// over [`EDGE_DECLICK`](tutti_graph::EDGE_DECLICK) frames (256), so a new
+    /// wire never steps into a running sum; `hard` is for a test, an analysis
+    /// graph or a wire made before anything is listening. It also stops a
+    /// fade-out of an edge this call brought back.
+    pub fn hard(self) -> Self {
+        W::harden(self.graph, self.ends.0, self.ends.1, &self.edges);
+        self
     }
 
     /// The edges the call connected: one for a [`Channel`], one per channel
@@ -552,7 +582,7 @@ impl<W: Weighted> Connection<'_, W> {
         if !gain.get().is_finite() {
             for (edge, added) in &self.edges {
                 if *added {
-                    self.graph.remove_edge(edge.from, edge.to);
+                    self.graph.remove_edge(edge.from, edge.to, true);
                 }
             }
             return Err(EdgeGainError::NotFinite);

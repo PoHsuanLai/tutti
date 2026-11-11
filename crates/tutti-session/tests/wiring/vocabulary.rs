@@ -34,12 +34,12 @@ fn first_frame(s: &mut Session) -> [f32; 2] {
 fn a_main_bus_feeds_the_roots_channels_in_order() {
     let mut s = offline();
     let (stereo, _) = s.graph().insert(Const::frame(&[0.25, 0.5]));
-    s.graph().connect(stereo, Root).unwrap();
+    s.graph().connect(stereo, Root).unwrap().hard();
     assert_eq!(first_frame(&mut s), [0.25, 0.5]);
 
     let mut s = offline();
     let (mono, _) = s.graph().insert(Const::mono(0.5));
-    s.graph().connect(mono, Root).unwrap();
+    s.graph().connect(mono, Root).unwrap().hard();
     assert_eq!(first_frame(&mut s), [0.5, 0.0]);
 }
 
@@ -100,6 +100,7 @@ fn a_connections_gain_weights_the_edge_it_added() {
     s.graph()
         .connect(src.out(0), Root::output(0))
         .unwrap()
+        .hard()
         .gain(Amplitude::new(0.5))
         .unwrap();
     assert_eq!(first_frame(&mut s), [0.25, 0.0]);
@@ -114,6 +115,7 @@ fn a_connections_gain_weights_the_edge_it_added() {
         s.graph()
             .connect(other.out(0), Root::output(1))
             .unwrap()
+            .hard()
             .gain(Amplitude::new(f32::NAN))
             .err(),
         Some(EdgeGainError::NotFinite)
@@ -132,16 +134,22 @@ fn disconnect_removes_one_edge_and_disconnect_all_the_rest() {
     let (a, _) = s.graph().insert(Const::mono(0.5));
     let (b, _) = s.graph().insert(Const::mono(0.25));
     let sink = Root::output(0);
-    s.graph().connect(a.out(0), sink).unwrap();
-    s.graph().connect(b.out(0), sink).unwrap();
+    s.graph().connect(a.out(0), sink).unwrap().hard();
+    s.graph().connect(b.out(0), sink).unwrap().hard();
     assert_eq!(first_frame(&mut s), [0.75, 0.0]);
 
-    assert!(s.graph().disconnect(a.out(0), sink));
-    assert!(!s.graph().disconnect(a.out(0), sink), "already gone");
+    assert!(s.graph().disconnect_hard(a.out(0), sink));
+    assert!(!s.graph().disconnect_hard(a.out(0), sink), "already gone");
     assert_eq!(s.graph_ref().sources(sink), [b.out(0)]);
     assert_eq!(first_frame(&mut s), [0.25, 0.0]);
 
     assert!(s.graph().disconnect_all(sink));
+    assert!(s.graph_ref().sources(sink).is_empty());
+    // The edge fades out over 256 frames: the fifth 64-frame block starts
+    // past it.
+    for _ in 0..4 {
+        first_frame(&mut s);
+    }
     assert_eq!(first_frame(&mut s), [0.0, 0.0]);
 }
 
@@ -152,17 +160,17 @@ fn a_main_bus_disconnects_what_it_connected() {
     let mut s = offline();
     let (src, _) = s.graph().insert(Const::frame(&[0.25, 0.5]));
     let (through, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    s.graph().connect(src, through).unwrap();
+    s.graph().connect(src, through).unwrap().hard();
     assert_eq!(
         s.graph_ref().sources(through.input(1)),
         [src.out(1)],
         "channel by channel"
     );
-    assert!(s.graph().disconnect(src, through));
+    assert!(s.graph().disconnect_hard(src, through));
     assert!(s.graph_ref().sources(through.input(0)).is_empty());
     assert!(s.graph_ref().sources(through.input(1)).is_empty());
     assert!(
-        !s.graph().disconnect(src, through),
+        !s.graph().disconnect_hard(src, through),
         "nothing left to take out"
     );
 }
@@ -173,12 +181,13 @@ fn a_main_bus_disconnects_what_it_connected() {
 fn a_key_and_its_erasure_are_one_node() {
     let mut s = offline();
     let (src, _) = s.graph().insert(Const::mono(0.5));
-    s.graph().connect(src, Root).unwrap();
+    s.graph().connect(src, Root).unwrap().hard();
     let _ = s.update();
-    s.graph().connect(src.erase(), Root).unwrap();
+    s.graph().connect(src.erase(), Root).unwrap().hard();
     s.graph()
         .connect(OutPort::new(src.erase(), 0), Root::output(0))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert!(!s.graph_ref().is_edited(), "the same edge, three spellings");
     assert_eq!(s.graph_ref().sources(Root::output(0)), [src.out(0)]);
 }

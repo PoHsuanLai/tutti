@@ -1477,3 +1477,89 @@ fn driven_mixes_are_allocation_free() {
 fn parallel_driven_mixes_are_allocation_free() {
     driven_mixes_are_allocation_free_on(4);
 }
+
+/// Edge fades (doc 030 section 4) inside `assert_no_alloc`, on `workers`
+/// participants: eight constants summed at the output, each edge fading in or
+/// out over several blocks of different lengths, the ended fades reported on
+/// the ring (a push of a plain value), then a block rendered after the editor
+/// settled them (outside the gate: settling edits the spec) and recommitted.
+fn fading_edges_are_allocation_free_on(workers: usize) {
+    use tutti_graph::{EdgeFade, EdgeGain, EdgeId, Sink};
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    use_pool(&mut exec, workers);
+    for k in 1..=8u64 {
+        ed.insert(
+            NodeKey(k),
+            "const",
+            Unforkable(TestNode::new(Kind::Const {
+                value: k as f32,
+                width: 1,
+            })),
+        );
+    }
+    let edge = |k: u64| EdgeId {
+        sink: Sink::Output(0),
+        from: from(k, 0),
+    };
+    ed.spec_mut().topology.outputs = vec![
+        (1..=8u64)
+            .map(|k| {
+                Source::Node(OutPort {
+                    node: NodeKey(k),
+                    port: 0,
+                })
+            })
+            .collect(),
+    ];
+    for k in 1..=8u64 {
+        ed.spec_mut()
+            .set_edge_gain(edge(k), EdgeGain::new(tutti_types::Amplitude::new(0.5)));
+    }
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    for k in 1..=8u64 {
+        let fade = if k % 2 == 0 {
+            EdgeFade::In
+        } else {
+            EdgeFade::Out
+        };
+        ed.set_edge_fade(edge(k), fade).expect("edge");
+    }
+    // Weights that move under the fades, set between blocks.
+    let lens = [64usize, 17, 64, 5, 33];
+    let mut out = vec![0.0f32; 64];
+    let mut heard = false;
+    for block in 0..14 {
+        if block % 3 == 0 {
+            for k in 1..=8u64 {
+                let w = 0.25 * ((block + k as usize) % 5) as f32;
+                ed.set_edge_gain(edge(k), tutti_types::Amplitude::new(w))
+                    .expect("edge");
+            }
+        }
+        let n = lens[block % lens.len()];
+        assert_no_alloc::assert_no_alloc(|| {
+            exec.process(n, &Transport::default(), &[], &mut [&mut out[..n]]);
+        });
+        heard |= out[..n].iter().any(|&x| x != 0.0);
+    }
+    assert!(heard);
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
+    ed.collect();
+    assert!(ed.settle_fades(), "the ended fades were reported");
+}
+
+#[test]
+fn fading_edges_are_allocation_free() {
+    fading_edges_are_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_fading_edges_are_allocation_free() {
+    fading_edges_are_allocation_free_on(4);
+}

@@ -90,22 +90,22 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     let g = session.graph();
     let (osc, _) = g.add(saw());
     let (filter, _) = g.add(low_pass(1_200.0));
-    g.set_sources(InPort::new(filter, 0), [OutPort::new(osc, 0)])
+    g.set_sources_hard(InPort::new(filter, 0), [OutPort::new(osc, 0)])
         .unwrap();
     let (drive, _) = g.add(shaper(drive));
-    g.set_sources(InPort::new(drive, 0), [OutPort::new(filter, 0)])
+    g.set_sources_hard(InPort::new(drive, 0), [OutPort::new(filter, 0)])
         .unwrap();
     let right = if with_limiter {
         let (lim, _) = g.add(limiter());
-        g.set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
+        g.set_sources_hard(InPort::new(lim, 0), [OutPort::new(osc, 0)])
             .unwrap();
         lim.erase()
     } else {
         osc.erase()
     };
-    g.set_sources(Root::output(0), [OutPort::new(drive, 0)])
+    g.set_sources_hard(Root::output(0), [OutPort::new(drive, 0)])
         .unwrap();
-    g.set_sources(Root::output(1), [OutPort::new(right, 0)])
+    g.set_sources_hard(Root::output(1), [OutPort::new(right, 0)])
         .unwrap();
     let _ = session.update();
     Scene {

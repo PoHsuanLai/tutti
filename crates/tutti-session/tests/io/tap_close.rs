@@ -20,7 +20,7 @@ fn session() -> Session {
         .expect("builds");
     let (dc, _) = s.graph().insert(Const::mono(0.25));
     s.graph()
-        .set_sources(Root::output(0), [OutPort::new(dc, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
         .unwrap();
     s
 }

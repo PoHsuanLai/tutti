@@ -193,7 +193,11 @@ fn key_signature(sharps: i8, minor: bool) -> Option<KeySignature> {
 /// composed to NFC, which changes how the text is spelled, never what it says.
 fn text(kind: FlexTextKind, bytes: &[u8]) -> std::result::Result<Vec<FileEvent>, DropReason> {
     let text = std::str::from_utf8(bytes).map_err(|_| DropReason::TextNotUtf8)?;
-    let text: String = text.strip_prefix('\u{FEFF}').unwrap_or(text).nfc().collect();
+    let text: String = text
+        .strip_prefix('\u{FEFF}')
+        .unwrap_or(text)
+        .nfc()
+        .collect();
     let packets = flex_text_packets(MidiGroup::FIRST, FlexAddress::Group, kind, &text)
         .ok_or(DropReason::TextHasNul)?;
     Ok(packets.map(event).collect())

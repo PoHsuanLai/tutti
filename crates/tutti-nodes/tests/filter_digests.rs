@@ -239,8 +239,7 @@ fn the_crossover_renders_what_it_always_did() {
 // node renders its construction-time coefficients (the held path). These digests
 // never move through the DesignNode migration and the stream grid (Q27); only the
 // moving paths above do. Same FNV-1a over every output sample, and the solves
-// reach `libm`, so each goes through `assert_golden`. The goldens are 0 until
-// recorded on glibc 2.39.
+// reach `libm`, so each goes through `assert_golden`, recorded on glibc 2.39.
 //
 // Mutations (run): `SvfCoefficients::solve`'s `a1` times 1.001 changes the SVF and
 // EQ digests, `LadderCoefficients::solve`'s `g1` times 1.001 the ladder's, and the
@@ -259,7 +258,7 @@ fn the_svf_holds_what_it_always_did() {
         SampleRate(48_000.0),
     );
     println!("DIGEST svf_held_mono_f64 {mono:#018x}");
-    assert_golden("svf_held_mono_f64", mono, 0);
+    assert_golden("svf_held_mono_f64", mono, 0x81f9_2d97_4e8c_af85);
     let stereo = held(
         SvfFilterNode::<f32>::with_controls(
             ChannelLayout::STEREO,
@@ -273,7 +272,7 @@ fn the_svf_holds_what_it_always_did() {
         SampleRate(44_100.0),
     );
     println!("DIGEST svf_held_stereo_f32 {stereo:#018x}");
-    assert_golden("svf_held_stereo_f32", stereo, 0);
+    assert_golden("svf_held_stereo_f32", stereo, 0xc2a9_a98d_4f7d_9dab);
 }
 
 /// A mono f64 high shelf and a mono f32 low shelf, nothing moving.
@@ -284,13 +283,13 @@ fn the_eq_band_holds_what_it_always_did() {
         SampleRate(48_000.0),
     );
     println!("DIGEST eq_band_held_mono_f64 {mono:#018x}");
-    assert_golden("eq_band_held_mono_f64", mono, 0);
+    assert_golden("eq_band_held_mono_f64", mono, 0x0a95_1de6_e8d4_df31);
     let f32_band = held(
         EqBandNode::<f32>::new(SvfType::LowShelf, Hz(250.0), Q(0.7), Db(-5.0)),
         SampleRate(44_100.0),
     );
     println!("DIGEST eq_band_held_mono_f32 {f32_band:#018x}");
-    assert_golden("eq_band_held_mono_f32", f32_band, 0);
+    assert_golden("eq_band_held_mono_f32", f32_band, 0x43e2_01b7_7401_78c7);
 }
 
 /// A mono f64 and a stereo f32 24 dB ladder, nothing moving.
@@ -301,7 +300,7 @@ fn the_ladder_holds_what_it_always_did() {
         SampleRate(48_000.0),
     );
     println!("DIGEST ladder_held_mono_f64 {mono:#018x}");
-    assert_golden("ladder_held_mono_f64", mono, 0);
+    assert_golden("ladder_held_mono_f64", mono, 0x072a_a58a_c64f_3030);
     let stereo = held(
         LadderFilterNode::<f32>::with_channels(
             ChannelLayout::STEREO,
@@ -312,15 +311,23 @@ fn the_ladder_holds_what_it_always_did() {
         SampleRate(44_100.0),
     );
     println!("DIGEST ladder_held_stereo_f32 {stereo:#018x}");
-    assert_golden("ladder_held_stereo_f32", stereo, 0);
+    assert_golden("ladder_held_stereo_f32", stereo, 0x1ba6_f3e3_5398_f6aa);
 }
 
 /// A mono and a stereo three-band crossover, nothing moving.
 #[test]
 fn the_crossover_holds_what_it_always_did() {
-    for (name, layout) in [
-        ("crossover_held_mono", ChannelLayout::MONO),
-        ("crossover_held_stereo", ChannelLayout::STEREO),
+    for (name, layout, recorded) in [
+        (
+            "crossover_held_mono",
+            ChannelLayout::MONO,
+            0xaa35_6d00_f659_5b22,
+        ),
+        (
+            "crossover_held_stereo",
+            ChannelLayout::STEREO,
+            0x2477_426b_8c07_c764,
+        ),
     ] {
         let digest = run(
             CrossoverNode::new(layout, &[Hz(300.0), Hz(3_000.0)]).unwrap(),
@@ -328,7 +335,6 @@ fn the_crossover_holds_what_it_always_did() {
             |_, _| {},
             |_| vec![None, None],
         );
-        println!("DIGEST {name} {digest:#018x}");
-        assert_golden(name, digest, 0);
+        assert_golden(name, digest, recorded);
     }
 }

@@ -430,6 +430,11 @@ struct Step {
     /// Whether the step gave up its core of its own accord: slept, or
     /// blocked in the kernel. Always `false` off Linux, where it is not read.
     blocked: bool,
+    /// Whether the thread took a page fault in the step (`ru_minflt` or
+    /// `ru_majflt` rose). A fault can sleep (on I/O, or on the process's
+    /// `mmap_lock` while another thread maps), which is the kernel's wait, not
+    /// the step's. Always `false` off Linux.
+    faulted: bool,
     /// On Linux, wall time less on-CPU time less runqueue time: how long the
     /// step was off a core of its own accord. Zero elsewhere. See
     /// [`StepClock`].
@@ -559,7 +564,7 @@ impl StepClock {
             // Both read once here, so an unreadable one fails before any
             // timing rather than inside it.
             clock.sched();
-            Self::voluntary_switches();
+            Self::counters();
             clock
         }
         #[cfg(not(target_os = "linux"))]
@@ -588,8 +593,9 @@ impl StepClock {
         (field(0, "on-CPU"), field(1, "run_delay"))
     }
 
+    /// The thread's voluntary switches, and its minor plus major faults.
     #[cfg(target_os = "linux")]
-    fn voluntary_switches() -> i64 {
+    fn counters() -> (i64, i64) {
         let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
         // SAFETY: `getrusage` writes the whole struct it is handed, which is
         // live and exclusively borrowed for the call.
@@ -600,23 +606,26 @@ impl StepClock {
             std::io::Error::last_os_error()
         );
         // SAFETY: it returned 0, so it initialised the struct.
-        unsafe { usage.assume_init() }.ru_nvcsw
+        let usage = unsafe { usage.assume_init() };
+        (usage.ru_nvcsw, usage.ru_minflt + usage.ru_majflt)
     }
 
     /// Run `f` and measure it.
     fn time(&self, f: impl FnOnce()) -> Step {
         #[cfg(target_os = "linux")]
         {
-            let switches = Self::voluntary_switches();
+            let (switches, faults) = Self::counters();
             let start = Instant::now();
             let (cpu_before, delay_before) = self.sched();
             f();
             let (cpu_after, delay_after) = self.sched();
             let wall = start.elapsed();
             let delayed = delay_after.saturating_sub(delay_before);
+            let (switches_after, faults_after) = Self::counters();
             Step {
                 took: wall.saturating_sub(delayed),
-                blocked: Self::voluntary_switches() > switches,
+                blocked: switches_after > switches,
+                faulted: faults_after > faults,
                 slept: wall
                     .saturating_sub(cpu_after.saturating_sub(cpu_before))
                     .saturating_sub(delayed),
@@ -629,6 +638,7 @@ impl StepClock {
             Step {
                 took: start.elapsed(),
                 blocked: false,
+                faulted: false,
                 slept: Duration::ZERO,
             }
         }
@@ -768,8 +778,8 @@ fn report(label: &str, run: &Run) {
     );
     for (i, s) in run.steps.iter().enumerate().filter(|(_, s)| s.blocked) {
         eprintln!(
-            "{label}: blocked step {i}: took {:?}  slept {:?}",
-            s.took, s.slept
+            "{label}: blocked step {i}: took {:?}  slept {:?}  faulted {}",
+            s.took, s.slept, s.faulted
         );
     }
 }
@@ -783,8 +793,9 @@ const SYNC_WAIT_BUDGET: Duration = Duration::from_micros(667);
 /// `max(2, steps / 200)`.
 ///
 /// Correct code blocked on 0 steps in every run measured, idle and under the
-/// bursty load below, so this is slack for the odd page fault that waits on
-/// I/O, not for a wait. A wait on one stalled plugin in every 32nd collect
+/// bursty load below, so this is slack for a rare kernel wait, not for a wait
+/// of ours. A blocked step that also took a page fault is not counted against
+/// it (see [`assert_no_waiting`]). A wait on one stalled plugin in every 32nd collect
 /// blocks on 6 of 200 steps at one plugin, and 125 of 4000 at eight: both
 /// over it.
 #[cfg(feature = "clap")]
@@ -803,6 +814,14 @@ fn most_blocked(steps: usize) -> usize {
 /// steps in every run, idle and under bursty load (four busy-sleep spinners,
 /// 2 ms on and 0.3 ms off, pinned to the test's core, the test at nice 19).
 /// So a bound this tight catches a wait on a small minority of steps too.
+/// A blocked step that took a page fault ([`Step::faulted`]) is not counted:
+/// a fault can sleep on I/O or on the process's `mmap_lock` while another
+/// thread (a bridge starting, a sibling subprocess being spawned) maps
+/// memory, which is the kernel's wait, not the step's. A CI runner showed two
+/// such ~350 us sleeps in 400 steps; a wait of ours takes no fault.
+/// Mutation (run): a 100 us sleep in every 32nd `Batcher::collect` → "6 of
+/// 200 steps blocked without a page fault (0 more with one)" at one plugin →
+/// fails.
 ///
 /// **Steps that look like a wait: fewer than half**, of each of three
 /// populations, where a step looks like a wait if it blocked or took at
@@ -850,15 +869,18 @@ fn assert_no_waiting(label: &str, run: &Run) {
         .iter()
         .map(|s| s.blocked || s.took >= SYNC_WAIT_BUDGET)
         .collect();
-    let blocked = run.steps.iter().filter(|s| s.blocked).count();
+    let blocked = run.steps.iter().filter(|s| s.blocked && !s.faulted).count();
+    let faulted = run.steps.iter().filter(|s| s.blocked && s.faulted).count();
     let slow = run
         .steps
         .iter()
         .filter(|s| s.took >= SYNC_WAIT_BUDGET)
         .count();
     let steps = run.steps.len();
-    let shape =
-        format!("{blocked} of {steps} steps blocked, {slow} took {SYNC_WAIT_BUDGET:?} or more");
+    let shape = format!(
+        "{blocked} of {steps} steps blocked without a page fault ({faulted} more with \
+             one), {slow} took {SYNC_WAIT_BUDGET:?} or more"
+    );
     let regressed = "A step that waits for a stalled plugin's reply blocks, or \
                      spends at least the synchronous design's budget, so this \
                      looks like the audio thread is waiting for replies again.";
@@ -867,7 +889,7 @@ fn assert_no_waiting(label: &str, run: &Run) {
         let most = most_blocked(steps);
         assert!(
             blocked <= most,
-            "{label}: {blocked} of {steps} steps blocked, more than {most} \
+            "{label}: {blocked} of {steps} steps blocked without a page fault, more than {most} \
              ({shape}). Correct steps never block. {regressed}"
         );
     }

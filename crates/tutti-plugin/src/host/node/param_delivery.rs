@@ -3,11 +3,10 @@
 //!
 //! Both plugin nodes deliver through it: the out-of-process node, whose
 //! chunk is the pipeline's and is handed to the bridge, and the in-process
-//! VST2 node (`format::vst2_in_process`), whose chunk is the block and is
-//! handed off by setting each queue's last point on the plugin before it
-//! processes the block. What follows says "the bridge"; for the VST2 node
-//! read "the plugin instance", and "no free buffer" as "the instance was
-//! locked".
+//! node (`format::in_process`), whose chunk is the block and is
+//! handed to the plugin's Processor as the block's parameter changes. What
+//! follows says "the bridge"; for the in-process node read "the plugin
+//! instance", and "no free buffer" as "no Processor in hand".
 //!
 //! # Capacity
 //!
@@ -54,10 +53,10 @@
 //! An address past every slot is the one bound left. Its points are refused
 //! and counted ([`ParamDeliveryStats::points_dropped`]), never silently.
 //!
-//! **A closed list** (`ParamDelivery::closed`, the VST2 node's)
-//! has no spare slots: a VST2 plugin's parameters are the indices below the
-//! count it declared at load, and the host refuses any other index, so a
-//! spare slot learning one would only stage a point the plugin never takes.
+//! **A closed list** (`ParamDelivery::closed`, the in-process node's)
+//! has no spare slots: an in-process plugin's parameters are the ones it
+//! declared at load, and its Processor refuses any other, so a spare slot
+//! learning one would only stage a point the plugin never takes.
 //! Such a point is refused here and counted dropped instead.
 //!
 //! # Changes only
@@ -95,7 +94,7 @@
 //! - **a fork** starts from it: the live node's record is read just before
 //!   the live state is saved, and the fork's delivery is seeded with it
 //!   ([`seed`](ParamDelivery::seed), `fork.rs` and
-//!   `vst2_in_process/fork.rs`), so a fork loaded with that state sends
+//!   `in_process/fork.rs`), so a fork loaded with that state sends
 //!   what the live one would, and an export renders what live playback
 //!   plays (as a DAW's does). A value delivered between the read and the
 //!   save is in the state and is sent to the fork once more, harmlessly.
@@ -155,7 +154,7 @@ pub struct ParamDeliveryStats {
     pub chunks_deferred: u64,
     /// Points for a parameter the node has no slot for (an address the
     /// plugin's list did not name, once the spare slots are taken; on an
-    /// in-process VST2 node, any index past the count it declared): dropped.
+    /// in-process node, any parameter it did not declare): dropped.
     pub points_dropped: u64,
     /// Points that replaced the last point of a parameter's queue because
     /// the queue was full of corners: a chunk carries a point per 32 frames
@@ -498,7 +497,6 @@ impl ParamDelivery {
     /// Slots for `params` only: an address the list does not name is
     /// refused and counted dropped, never learned (module docs, "A closed
     /// list"). Control thread: allocates.
-    #[cfg(feature = "vst2")]
     pub(crate) fn closed(
         params: impl IntoIterator<Item = ParamId>,
         counters: Arc<DeliveryCounters>,
@@ -584,7 +582,6 @@ impl ParamDelivery {
 
     /// The counters and record this delivery writes, for the node's
     /// controls.
-    #[cfg(feature = "vst2")]
     pub(crate) fn counters(&self) -> Arc<DeliveryCounters> {
         Arc::clone(&self.counters)
     }
@@ -601,16 +598,14 @@ impl ParamDelivery {
         self.room
     }
 
-    /// The chunk being filled, to read: the VST2 node sets it on the plugin
-    /// itself.
-    #[cfg(feature = "vst2")]
+    /// The chunk being filled, to read: the in-process node hands it to the
+    /// plugin's Processor as the block's parameter changes.
     pub(crate) fn chunk(&self) -> &ParameterChanges {
         &self.changes
     }
 
     /// `n` points of a chunk already handed off that the plugin refused:
     /// counted dropped. Allocation-free.
-    #[cfg(feature = "vst2")]
     pub(crate) fn refused(&self, n: u64) {
         if n > 0 {
             self.counters.dropped.fetch_add(n, Ordering::Relaxed);
@@ -1177,13 +1172,12 @@ mod tests {
     ///
     /// Mutation (run): not shifting `staged` in `slot` → the commit marks
     /// the wrong slot sent, and 0.625 on id 50 is skipped as unchanged → fails.
-    /// **A closed list learns nothing**: an index the VST2 plugin did not
+    /// **A closed list learns nothing**: an index the plugin did not
     /// declare is refused and counted dropped, while a declared one goes.
     ///
     /// Mutation (run): `closed` built with `ParameterChanges::SPARE_QUEUES` spares, as `new`
     /// is → the undeclared index is learned and staged, nothing dropped →
     /// fails.
-    #[cfg(feature = "vst2")]
     #[test]
     fn a_closed_list_refuses_an_undeclared_index() {
         let counters = Arc::new(DeliveryCounters::default());

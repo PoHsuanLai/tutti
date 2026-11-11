@@ -27,9 +27,11 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{BoundInProcessVst2Client, in_process_vst2_client};
+use tutti_plugin::{PluginNode, load_client};
 use tutti_types::SampleRate;
 use tutti_vst2_test_plugin::ProcessCapture;
 
@@ -104,7 +106,7 @@ fn read_capture(path: &PathBuf) -> ProcessCapture {
 /// The graph node plus the handle that keeps it alive, loaded against the
 /// reference probe with its capture zeroed.
 struct Loaded {
-    unit: BoundInProcessVst2Client,
+    unit: PluginNode<Vst2Loaded>,
     handle: PluginHandle,
     path: PathBuf,
 }
@@ -112,9 +114,13 @@ struct Loaded {
 fn load() -> Loaded {
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
-    let (unit, handle) =
-        in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE))
-            .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
+    let (unit, handle) = load_client::<Vst2Loaded>(
+        &main_thread(),
+        &path,
+        &Load::new(),
+        SampleRate::new(SAMPLE_RATE),
+    )
+    .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded {
         unit: unit.bind(tempo()),
         handle,
@@ -123,7 +129,7 @@ fn load() -> Loaded {
 }
 
 /// `unit` prepared at `rate`, for blocks of up to [`BLOCK`].
-fn prepare_at(unit: &mut BoundInProcessVst2Client, rate: SampleRate) {
+fn prepare_at(unit: &mut PluginNode<Vst2Loaded>, rate: SampleRate) {
     tutti_graph::Node::prepare(
         unit,
         &tutti_graph::Prepare::new(rate, tutti_types::Samples(BLOCK)),
@@ -133,12 +139,12 @@ fn prepare_at(unit: &mut BoundInProcessVst2Client, rate: SampleRate) {
 /// Render one block through the node, prepared as a graph prepares it
 /// (`Node::prepare`, which sizes its scratch and parks its rate), then
 /// `Node::process` by hand (`tutti_graph::contract::drive_input`).
-fn drive_block(unit: &mut BoundInProcessVst2Client) {
+fn drive_block(unit: &mut PluginNode<Vst2Loaded>) {
     drive_blocks(unit, BLOCK, BLOCK);
 }
 
 /// One block of `frames` through `unit` prepared for blocks of up to `max`.
-fn drive_blocks(unit: &mut BoundInProcessVst2Client, max: usize, frames: usize) {
+fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
     use tutti_graph::{Node, Prepare};
     let rate = SampleRate(SAMPLE_RATE);
     Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
@@ -146,7 +152,7 @@ fn drive_blocks(unit: &mut BoundInProcessVst2Client, max: usize, frames: usize) 
 }
 
 /// One block of `frames` through `unit` as it is prepared now: no prepare.
-fn process_block(unit: &mut BoundInProcessVst2Client, frames: usize) {
+fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
     use tutti_graph::{Env, Node, Transport, TransportChanges};
     let rate = SampleRate(SAMPLE_RATE);
     let silence = vec![0.0f32; frames];
@@ -240,7 +246,7 @@ fn blocks_past_64_frames_reach_the_plugin_after_a_prepare() {
 
 /// [`prepare_at`], on a thread that is not the main thread: where a graph's
 /// `prepare` runs when its commit is off the main thread.
-fn prepare_off_main_thread(unit: &mut BoundInProcessVst2Client, rate: SampleRate) {
+fn prepare_off_main_thread(unit: &mut PluginNode<Vst2Loaded>, rate: SampleRate) {
     std::thread::scope(|s| {
         s.spawn(|| prepare_at(unit, rate))
             .join()
@@ -524,7 +530,12 @@ fn outputs_past_the_tables_are_silent() {
         std::env::set_var("TUTTI_VST2_PROBE_INPUTS", WIDE.to_string());
         std::env::set_var("TUTTI_VST2_PROBE_OUTPUTS", WIDE.to_string());
     }
-    let loaded = in_process_vst2_client(&main_thread(), &path, SampleRate::new(SAMPLE_RATE));
+    let loaded = load_client::<Vst2Loaded>(
+        &main_thread(),
+        &path,
+        &Load::new(),
+        SampleRate::new(SAMPLE_RATE),
+    );
     unsafe {
         std::env::remove_var("TUTTI_VST2_PROBE_INPUTS");
         std::env::remove_var("TUTTI_VST2_PROBE_OUTPUTS");

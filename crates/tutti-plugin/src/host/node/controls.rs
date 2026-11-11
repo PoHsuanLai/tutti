@@ -83,8 +83,8 @@ pub struct PluginControls {
 }
 
 /// What every plugin node's controls hold, whichever hosting runs it: the
-/// node's meter cell and its delivery counters. The in-process VST2 node's
-/// controls are this (`InProcessVst2Controls`, an alias);
+/// node's meter cell and its delivery counters. The in-process node's
+/// controls are this;
 /// the out-of-process node's [`PluginControls`] hold one and deref to it.
 /// A clone is another handle on the same cells.
 #[derive(Clone, Debug)]

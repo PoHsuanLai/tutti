@@ -1,7 +1,7 @@
 //! Forking an in-process VST2 plugin **by state transfer**, against the
 //! reference probe (`tutti-vst2-test-plugin`).
 //!
-//! What a fork promises (`format::vst2_in_process`'s `fork` module docs): a
+//! What a fork promises (`format::in_process`'s `fork` module docs): a
 //! second instance of the plugin from the same library, carrying the live
 //! instance's saved state (its program, and its chunk or its parameter
 //! values), rendering on the fork's own transport and rate, sharing nothing
@@ -22,6 +22,8 @@
 
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -29,9 +31,7 @@ use tutti_graph::{
 };
 use tutti_graph::{OutPort, Source};
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{
-    BoundInProcessVst2Client, PluginForkError, PresetId, RenderMode, in_process_vst2_client,
-};
+use tutti_plugin::{PluginForkError, PluginNode, PresetId, RenderMode, load_client};
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::{
     Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,
@@ -145,16 +145,17 @@ impl Drop for ProbeEnv {
     }
 }
 
-fn load() -> (BoundInProcessVst2Client, PluginHandle) {
+fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
     load_with(tutti_transport::TempoReader::constant(Bpm::of(120.0)).expect("a tempo"))
 }
 
 /// The probe loaded in process and bound to `tempo`, the project's tempo map.
-fn load_with(tempo: tutti_transport::TempoReader) -> (BoundInProcessVst2Client, PluginHandle) {
+fn load_with(tempo: tutti_transport::TempoReader) -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
-    let (client, handle) = in_process_vst2_client(
+    let (client, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
         path,
+        &Load::new(),
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"));
@@ -207,7 +208,7 @@ fn chunk_state(payload: &[u8]) -> Vec<u8> {
 /// default chunk, `tag + 116` → fails. Mutation (run): drop
 /// `set_offline_render` → the process level reads realtime → fails.
 /// Mutation (run): hand no fork source from `IntoNode for
-/// InProcessVst2Client` → `ForkError::NotForkable` → fails.
+/// PluginNode` → `ForkError::NotForkable` → fails.
 #[test]
 fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
     let _lock = lock_probe();
@@ -428,7 +429,7 @@ fn a_fork_of_a_dropped_plugin_is_live_gone() {
 /// does not read as VST2 (a macOS VST2 is a `.vst` bundle).
 ///
 /// Mutation (run): hand no fork source from `IntoNode for
-/// InProcessVst2Client`, which `Plugin`'s VST2 arm passes on →
+/// PluginNode`, which `Plugin`'s VST2 arm passes on →
 /// `ForkError::NotForkable` → fails.
 #[cfg(not(target_os = "macos"))]
 #[test]

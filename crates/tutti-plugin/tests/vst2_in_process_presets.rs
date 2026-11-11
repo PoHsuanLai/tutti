@@ -22,9 +22,11 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
+use tutti_plugin_types::Load;
+use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{FeatureReport, Features, PresetId, in_process_vst2_client};
+use tutti_plugin::{FeatureReport, Features, PresetId, load_client};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -59,9 +61,10 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_client, handle) = in_process_vst2_client(
+    let (_client, handle) = load_client::<Vst2Loaded>(
         &main_thread(),
         &path,
+        &Load::new(),
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));

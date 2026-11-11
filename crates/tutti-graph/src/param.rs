@@ -36,7 +36,7 @@ use tutti_types::{ParamAddr, Samples, UnitAddr, UnitParam};
 
 use crate::event::{Event, EventKind, segment_progress};
 use crate::spec::EventOut;
-use tutti_curve::Law;
+use tutti_curve::{Law, Piece};
 
 /// Most params one node can declare modulatable: 32 addresses.
 ///
@@ -331,7 +331,6 @@ pub(crate) struct Curve {
     pub(crate) position: f32,
     /// Its length, in frames.
     pub(crate) length: f32,
-    pub(crate) shape: Law,
 }
 
 /// One event source's ramp: its value, and the move it is on — a
@@ -375,14 +374,21 @@ impl Ramp {
     /// Start a curve segment from this frame on: its own endpoints, so the
     /// value it interrupts is not read. A second event on the same frame
     /// replaces it.
-    fn start_segment(&mut self, from: f32, to: f32, curve: Curve) {
-        self.from = from;
-        self.target = to;
+    fn start_segment(&mut self, piece: Piece, curve: Curve) {
+        self.from = piece.from;
+        self.target = piece.to;
+        self.shape = piece.law;
         self.len = 0;
         self.done = 0;
         self.active = true;
         self.curve = Some(curve);
         self.started = true;
+    }
+
+    /// The move's endpoints and law: a ramp's or a segment's.
+    #[inline]
+    fn piece(&self) -> Piece {
+        Piece::new(self.from, self.target, self.shape)
     }
 
     /// The value at this frame, after any move started on it. A ramp: its
@@ -397,7 +403,7 @@ impl Ramp {
                 // the target as a finished ramp does.
                 match segment_progress(c.position, c.length, self.done) {
                     Some(t) => {
-                        self.value = self.from + (self.target - self.from) * c.shape.eval(t);
+                        self.value = self.piece().value(t);
                     }
                     None => {
                         self.value = self.target;
@@ -414,7 +420,7 @@ impl Ramp {
                     // `done < len`, so `t` is in `(0, 1)`, where
                     // `Linear` evaluates to `t` itself.
                     let t = self.done as f32 / self.len as f32;
-                    self.from + (self.target - self.from) * self.shape.eval(t)
+                    self.piece().value(t)
                 };
             }
         }
@@ -452,17 +458,8 @@ pub(crate) fn render_ramps(
                     if !ramp.started {
                         ramp.value = base(i);
                     }
-                    let (from, to, position, length) = s.raw();
-                    let shape = s.shape();
-                    ramp.start_segment(
-                        from,
-                        to,
-                        Curve {
-                            position,
-                            length,
-                            shape,
-                        },
-                    );
+                    let (position, length) = s.timing();
+                    ramp.start_segment(s.piece(), Curve { position, length });
                 }
                 // Another param's, MIDI, a chord, or a resync: a port re-sends
                 // nothing.
@@ -815,7 +812,7 @@ fn base_at(from: f32, to: f32, i: usize, frames: usize, n: f32) -> f32 {
     if i + 1 == frames {
         to
     } else {
-        from + (to - from) * ((i + 1) as f32 / n)
+        Piece::new(from, to, Law::Linear).value((i + 1) as f32 / n)
     }
 }
 

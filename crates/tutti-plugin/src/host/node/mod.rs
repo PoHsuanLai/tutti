@@ -72,13 +72,13 @@ mod fork;
 mod graph_node;
 mod meter;
 mod param_delivery;
-// `pub(crate)` for the in-process VST2 node, which reads its event input's
+// `pub(crate)` for the in-process node, which reads its event input's
 // parameter events through the same walk (see `param_delivery` below).
 pub(crate) mod param_input;
 mod process;
 mod segment_points;
-// `pub(crate)` rather than private: the in-process VST2 node
-// (`crate::format::vst2_in_process`) is a peer host, not a subprocess client,
+// `pub(crate)` rather than private: the in-process node
+// (`crate::format::in_process`) is a peer host, not a subprocess client,
 // and reads its transport through the same mapping rather than a second copy.
 pub(crate) mod transport_source;
 mod transport_walk;
@@ -108,13 +108,11 @@ pub use controls::{NodeControls, PluginControls};
 pub use meter::PluginMeter;
 pub use param_delivery::ParamDeliveryStats;
 pub(crate) use tutti_plugin_ipc::MidiIntake;
-// The in-process VST2 node (`crate::format::vst2_in_process`) delivers its
-// parameters through the same slots, segments and event walk as this node:
-// one copy of each.
-#[cfg(feature = "vst2")]
+// The in-process node (`crate::format::in_process`) delivers its parameters
+// through the same slots, segments and event walk as this node: one copy of
+// each.
 pub(crate) use param_delivery::{DeliveryCounters, ParamDelivery};
 pub(crate) use process::ProcessGuard;
-#[cfg(feature = "vst2")]
 pub(crate) use segment_points::SegmentPoints;
 // The largest chunk that can cross the process edge: `tutti-plugin-ipc`'s,
 // which sizes the shared-memory slab from it, so the slab and the batcher

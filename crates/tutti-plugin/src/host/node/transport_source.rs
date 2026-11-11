@@ -418,13 +418,6 @@ impl Snapshot {
     /// frames from there ([`slope`]). What a reader that sends one transport
     /// per chunk (the in-process VST2 node) is told; the plugin node walks the
     /// chunk's stretches itself (`transport_walk`).
-    #[cfg_attr(
-        not(any(feature = "vst2", test)),
-        allow(
-            dead_code,
-            reason = "only the in-process VST2 node reads one transport per chunk"
-        )
-    )]
     pub(crate) fn follow(&mut self, map: &TempoMap, cursor: &mut Cursor, chunk: usize) {
         let beat = self.settle(map, cursor);
         self.tempo_inc = slope(
@@ -473,13 +466,6 @@ impl Snapshot {
 /// signature and bar) and the tempo map (the tempo and its slope), each lent
 /// once for the block, with the node's cursor into the map. Built per block
 /// from the node's two readers; nothing here allocates.
-#[cfg_attr(
-    not(any(feature = "vst2", test)),
-    allow(
-        dead_code,
-        reason = "only the in-process VST2 node reads one transport per chunk"
-    )
-)]
 pub(crate) struct ProjectMaps<'a> {
     pub(crate) meter: &'a MeterMap,
     pub(crate) tempo: &'a TempoMap,
@@ -489,13 +475,6 @@ pub(crate) struct ProjectMaps<'a> {
 /// [`Snapshot::at`] for a chunk of `chunk` frames, as the plugin ABIs carry
 /// it: the tempo and slope from `maps`' tempo map ([`Snapshot::follow`]) and
 /// the signature and bar from its meter at the playhead.
-#[cfg_attr(
-    not(any(feature = "vst2", test)),
-    allow(
-        dead_code,
-        reason = "only the in-process VST2 node reads one transport per chunk"
-    )
-)]
 pub(crate) fn from_cx(
     cx: &Cx<'_>,
     offset: Offset,
@@ -652,13 +631,6 @@ impl BlockTransport<'_> {
     /// The transport at `offset` for a chunk of `chunk` frames, as the plugin
     /// ABIs carry it ([`from_cx`]): the tempo and slope from `tempo`, through
     /// the node's `cursor`.
-    #[cfg_attr(
-        not(feature = "vst2"),
-        allow(
-            dead_code,
-            reason = "only the in-process VST2 node reads one transport per chunk"
-        )
-    )]
     pub(crate) fn at(
         &mut self,
         cx: &Cx<'_>,

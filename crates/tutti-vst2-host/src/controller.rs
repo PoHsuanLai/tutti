@@ -153,6 +153,10 @@ impl Control for Vst2Controller {
     fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
         Control::take_reported_edits(self.loaded_mut(), main, out);
     }
+
+    fn dropped_reported_edits(&self) -> u64 {
+        Control::dropped_reported_edits(self.loaded())
+    }
 }
 
 impl EditorWindow for Vst2Controller {

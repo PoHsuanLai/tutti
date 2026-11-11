@@ -1,4 +1,4 @@
-//! The in-process VST2 plugin's control side: its [`Lifecycle`], with the
+//! The in-process plugin's control side: its [`Lifecycle`], with the
 //! Processor lent to the node's realtime end through a threaded [`Hand`]
 //! (doc 016 §2.6; doc 021 step 4a-3).
 //!
@@ -11,43 +11,43 @@
 //! parked for the main thread is run by the pump, and the Processor comes
 //! back at the audio thread's next poll.
 
-use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
-    Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Processor, RenderMode, SampleRate,
-    Samples, State, standing,
+    Event, Hand, HostOp, InProcess, Lifecycle, Load, MaxBlock, Notice, Origin, PluginError,
+    Prepare, Processor, RenderMode, SampleRate, Samples, State, standing,
 };
 use tutti_rt::Rt;
-use tutti_vst2_host::{ChannelLayout, Vst2Loaded, Vst2Processor};
 
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::PluginTail;
-use tutti_plugin_types::{Control, Normalized, ParamId};
+use tutti_plugin_types::{Normalized, ParamId};
 
 /// What the plugin changed about itself since the last
-/// [`Instance::pump`]. VST2 has no notification for any of it except
-/// `audioMasterIOChanged`, so every field is a re-read the host did.
+/// [`Instance::pump`]: each field is a re-read the core did after the
+/// plugin's own request.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Changes {
     /// The new latency, when it moved.
     pub(super) latency: Option<Samples>,
     /// The new tail, when it moved.
     pub(super) tail: Option<PluginTail>,
-    /// The plugin reported `audioMasterIOChanged`: its pin counts or latency
+    /// The plugin raised [`Request::IoChanged`](tutti_plugin_types::Request::IoChanged): its pin counts or latency
     /// may differ.
     pub(super) io: bool,
 }
 
-/// A VST2 plugin and where it is in its life.
-pub(super) struct Instance {
-    lifecycle: Lifecycle<Vst2Loaded>,
+/// A plugin of format `F` and where it is in its life.
+pub(super) struct Instance<F: InProcess> {
+    lifecycle: Lifecycle<F>,
     state: State,
     /// The Processor's way to the node's realtime end.
-    hand: Hand<Vst2Processor>,
+    hand: Hand<F::Processor>,
+    /// Where the plugin came from: what a fork loads again.
+    origin: Origin,
     /// What the plugin runs at, or was last asked to. Its `mode` follows the
-    /// live render mode ([`set_offline_render`](Self::set_offline_render)), so
+    /// live render mode ([`set_render_mode`](Self::set_render_mode)), so
     /// a rate change activates in the mode the plugin was told.
     prepare: Prepare,
     /// What the pump has not yet reported.
@@ -60,10 +60,7 @@ pub(super) struct Instance {
     rate_refused: bool,
 }
 
-/// What is done to a plugin that is open and not yet activated.
-pub(super) type Restore<'a> = &'a mut dyn FnMut(&mut Vst2Loaded) -> Result<(), String>;
-
-impl Instance {
+impl<F: InProcess> Instance<F> {
     /// Loads and activates the plugin at `sample_rate` and blocks of up to
     /// `block_size`, 32-bit, in realtime mode, and lends its Processor to the
     /// realtime end this returns. Main thread.
@@ -79,12 +76,16 @@ impl Instance {
     pub(super) fn load(
         main: &MainThread,
         path: &Path,
+        load: &Load,
         sample_rate: f64,
         block_size: usize,
-        restore: Option<Restore<'_>>,
-    ) -> Result<(Self, Rt<Vst2Processor>, Option<Result<(), String>>), (LoadStage, String)> {
-        let mut loaded = Vst2Loaded::load(main, path)
-            .map_err(|e| (LoadStage::Opening, format!("vst2-host load failed: {e}")))?;
+        restore: Option<&mut dyn FnMut(&mut F) -> Result<(), String>>,
+    ) -> Result<(Self, Rt<F::Processor>, Option<Result<(), String>>), (LoadStage, String)> {
+        let mut loaded = F::load_in_process(main, path, load).map_err(|e| match e {
+            PluginError::Load { stage, reason } => (stage, reason),
+            other => (LoadStage::Opening, other.to_string()),
+        })?;
+        let origin = loaded.origin().clone();
         let restored = restore.map(|restore| restore(&mut loaded));
         let prepare = MaxBlock::new(Samples(block_size))
             .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
@@ -92,15 +93,16 @@ impl Instance {
                 (
                     LoadStage::Activation,
                     format!(
-                        "vst2-host activation failed: the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
+                        "the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
                     ),
                 )
             })?;
         let (hand, rt) = Hand::threaded();
         let mut this = Self {
             lifecycle: Lifecycle::new(loaded),
-            state: Lifecycle::<Vst2Loaded>::initial_state(),
+            state: Lifecycle::<F>::initial_state(),
             hand,
+            origin,
             prepare,
             changes: Changes::default(),
             rate_report: None,
@@ -110,7 +112,7 @@ impl Instance {
         if let Some(reason) = refused {
             return Err((
                 LoadStage::Activation,
-                format!("vst2-host activation failed: {reason}"),
+                format!("activation failed: {reason}"),
             ));
         }
         // What the activation read is the baseline, not a change.
@@ -141,23 +143,6 @@ impl Instance {
         refused
     }
 
-    /// The plugin, wherever it is in its life; `None` once it is lost.
-    fn plugin(&self) -> Option<&Vst2Loaded> {
-        match &self.lifecycle {
-            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(controller.loaded()),
-            Lifecycle::Poisoned => None,
-        }
-    }
-
-    fn plugin_mut(&mut self) -> Option<&mut Vst2Loaded> {
-        match &mut self.lifecycle {
-            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
-            Lifecycle::Active { controller, .. } => Some(controller.loaded_mut()),
-            Lifecycle::Poisoned => None,
-        }
-    }
-
     /// The plugin's `Control` surface (parameters, state, presets), wherever
     /// it is in its life. `None` once it is lost.
     pub(super) fn control(&mut self) -> Option<&mut dyn tutti_plugin_types::Control> {
@@ -166,6 +151,7 @@ impl Instance {
 
     /// Whether the plugin is gone (a call into it panicked): it renders
     /// silence and the pump skips it.
+    #[cfg(all(test, feature = "vst2"))]
     #[must_use]
     pub(super) fn is_lost(&self) -> bool {
         self.lifecycle.is_poisoned()
@@ -180,18 +166,39 @@ impl Instance {
         )
     }
 
-    /// Tells the plugin whether it renders offline, and keeps the mode a rate
-    /// change activates it in.
-    pub(super) fn set_offline_render(&mut self, offline: bool) {
-        let mode = if offline {
-            RenderMode::Offline
-        } else {
-            RenderMode::Realtime
-        };
+    /// The render mode the plugin runs in, or was last told.
+    pub(super) fn render_mode(&self) -> RenderMode {
+        self.prepare.mode()
+    }
+
+    /// Tells the plugin its render mode, and keeps the mode a rate change
+    /// activates it in. Main thread.
+    ///
+    /// A format that takes it live (VST2: a callback answer; CLAP's
+    /// `render.set`) is told through [`Control::set_render_mode`](tutti_plugin_types::Control::set_render_mode). One that
+    /// cannot (`false`) is reconfigured through the lifecycle: the activation
+    /// carries the mode, and the Processor changes at the pump, as a rate
+    /// change's does. Returns whether the plugin now runs in `mode` (or is
+    /// on its way to it).
+    pub(super) fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
         self.prepare = self.prepare.with_mode(mode);
         self.state.set_mode(mode);
-        if let Some(plugin) = self.plugin() {
-            plugin.set_offline_render(offline);
+        let live = self
+            .lifecycle
+            .control()
+            .is_some_and(|control| control.set_render_mode(main, mode));
+        if live {
+            return true;
+        }
+        if self.lifecycle.is_poisoned() {
+            return false;
+        }
+        match self.drive(main, Event::Op(HostOp::Reconfigure(self.prepare))) {
+            None => true,
+            Some(why) => {
+                self.note_refusal(why);
+                false
+            }
         }
     }
 
@@ -218,7 +225,7 @@ impl Instance {
         &mut self,
         main: &MainThread,
         rate: f64,
-        rt: Option<&mut Rt<Vst2Processor>>,
+        rt: Option<&mut Rt<F::Processor>>,
     ) -> Result<(), String> {
         let refused = |this: &Self, why: &str| {
             format!(
@@ -279,8 +286,8 @@ impl Instance {
     /// read. Main thread: a re-read dispatches `effGetTailSize`.
     pub(super) fn pump(&mut self, main: &MainThread) -> Changes {
         let mut asked = Vec::new();
-        if let Some(plugin) = self.plugin_mut() {
-            Control::take_requests(plugin, main, &mut asked);
+        if let Some(control) = self.lifecycle.control() {
+            control.take_requests(main, &mut asked);
         }
         // The plugin's own signal, reported as it was raised: its pin counts or
         // latency may have moved, and the handle's `Io` says so even when the
@@ -307,67 +314,37 @@ impl Instance {
         self.rate_report = Some(Some((self.prepare.rate(), why)));
     }
 
-    /// The pin counts the plugin declares now.
-    pub(super) fn pins(&self) -> (ChannelLayout, ChannelLayout) {
-        self.plugin().map_or(
-            (ChannelLayout::EMPTY, ChannelLayout::EMPTY),
-            Vst2Loaded::pins,
-        )
-    }
-
     /// The plugin's parameter edits since the last call.
     pub(super) fn drain_param_changes(&mut self, main: &MainThread) -> Vec<(ParamId, Normalized)> {
         let mut edits = Vec::new();
-        if let Some(plugin) = self.plugin_mut() {
-            Control::take_reported_edits(plugin, main, &mut edits);
+        if let Some(control) = self.lifecycle.control() {
+            control.take_reported_edits(main, &mut edits);
         }
         edits
     }
 
     /// Whether the plugin is split and rendering.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "vst2"))]
     pub(super) fn renders(&self) -> bool {
         self.state.renders()
     }
 
     /// The rate the plugin runs at, or was last asked to.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "vst2"))]
     pub(super) fn rate(&self) -> SampleRate {
         self.prepare.rate()
     }
 
-    /// The format's own surface (the editor, programs, display text). Panics
-    /// on a lost plugin: the control side asks [`is_lost`](Self::is_lost)
-    /// first.
-    pub(super) fn loaded(&self) -> &Vst2Loaded {
-        self.plugin().expect("the plugin is not lost")
-    }
-
-    /// [`loaded`](Self::loaded), mutably.
-    pub(super) fn loaded_mut(&mut self) -> &mut Vst2Loaded {
-        self.plugin_mut().expect("the plugin is not lost")
+    /// Where the plugin came from: what a fork loads again.
+    pub(super) fn origin(&self) -> &Origin {
+        &self.origin
     }
 }
 
-/// The loaded plugin, for the format's own surface.
-impl Deref for Instance {
-    type Target = Vst2Loaded;
-
-    fn deref(&self) -> &Vst2Loaded {
-        self.loaded()
-    }
-}
-
-impl DerefMut for Instance {
-    fn deref_mut(&mut self) -> &mut Vst2Loaded {
-        self.loaded_mut()
-    }
-}
-
-#[cfg(test)]
-#[cfg(test)]
+#[cfg(all(test, feature = "vst2"))]
 mod tests {
     use tutti_fixtures::main_thread;
+    use tutti_vst2_host::Vst2Loaded;
 
     use super::*;
 
@@ -387,9 +364,10 @@ mod tests {
             (f64::NEG_INFINITY, 64),
             (48_000.0, 0),
         ] {
-            match Instance::load(
+            match Instance::<Vst2Loaded>::load(
                 &main_thread(),
                 tutti_fixtures::vst2_probe(),
+                &Load::new(),
                 rate,
                 block,
                 None,
@@ -419,9 +397,10 @@ mod tests {
     /// restored assertion fails.
     #[test]
     fn a_rate_that_is_no_rate_leaves_the_instance_alone_and_is_reported() {
-        let (mut instance, _rt, _) = Instance::load(
+        let (mut instance, _rt, _) = Instance::<Vst2Loaded>::load(
             &main_thread(),
             tutti_fixtures::vst2_probe(),
+            &Load::new(),
             48_000.0,
             64,
             None,
@@ -480,8 +459,15 @@ mod tests {
     #[test]
     fn a_parked_rate_change_completes_at_the_pump() {
         let main = main_thread();
-        let (mut instance, mut rt, _) =
-            Instance::load(&main, tutti_fixtures::vst2_probe(), 48_000.0, 64, None).expect("loads");
+        let (mut instance, mut rt, _) = Instance::<Vst2Loaded>::load(
+            &main,
+            tutti_fixtures::vst2_probe(),
+            &Load::new(),
+            48_000.0,
+            64,
+            None,
+        )
+        .expect("loads");
         assert!(rt.poll(Processor::stop).is_some(), "lent at the load");
         instance
             .set_sample_rate(&main, 96_000.0, None)

@@ -400,10 +400,8 @@ impl Vst2Processor {
     }
 
     /// The automation of a block that carries any.
-    fn apply_automation(&mut self, changes: Option<&ParameterChanges>) {
-        if let Some(changes) = changes {
-            let _ = self.write_automation(changes);
-        }
+    fn apply_automation(&mut self, changes: Option<&ParameterChanges>) -> u32 {
+        changes.map_or(0, |changes| self.write_automation(changes))
     }
 
     /// One block from the shared vocabulary: applies the automation, renders at
@@ -421,6 +419,7 @@ impl Vst2Processor {
         out: &mut ProcessOutput,
     ) -> PluginResult<()> {
         let transport = ctx.transport;
+        let refused;
         let emitted = match buffer {
             AudioBufferMut::F32(buf) => {
                 if self.double_precision {
@@ -433,7 +432,7 @@ impl Vst2Processor {
                 {
                     return Err(PluginError::Block("a channel is shorter than the block"));
                 }
-                self.apply_automation(ctx.param_changes);
+                refused = self.apply_automation(ctx.param_changes);
                 let host_ctx = Vst2ProcessContext {
                     midi: ctx.midi_events,
                     transport,
@@ -447,7 +446,7 @@ impl Vst2Processor {
                 {
                     return Err(PluginError::Block("a channel is shorter than the block"));
                 }
-                self.apply_automation(ctx.param_changes);
+                refused = self.apply_automation(ctx.param_changes);
                 let host_ctx = Vst2ProcessContext {
                     midi: ctx.midi_events,
                     transport,
@@ -461,6 +460,7 @@ impl Vst2Processor {
         // `audioMasterAutomate`, not a per-block list, so there is nothing for
         // `out`'s parameter points.
         out.emit_midi(emitted.iter().copied());
+        out.count_params_refused(refused as usize);
         Ok(())
     }
 }

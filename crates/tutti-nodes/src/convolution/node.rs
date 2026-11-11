@@ -852,7 +852,7 @@ mod golden {
     /// hundreds of products. Every mutation below moves samples by orders of
     /// magnitude more.
     ///
-    /// Mutation: dropping `* gain.get()`, convolving every channel with
+    /// Mutation (each run, each fails): dropping `* gain.get()`, convolving every channel with
     /// `convolvers[0]`, or the graph's mix set to 1 (no dry) each fail this.
     #[test]
     fn output_matches_the_pinned_pre_merge_render() {
@@ -884,7 +884,7 @@ mod golden {
     /// Distinct inputs per channel are what make "no bleed" follow from the
     /// equality: a channel that read any other channel's input would diverge.
     ///
-    /// Mutation: convolving every channel with `self.convolvers[0]` fails this.
+    /// Mutation (run): convolving every channel with `self.convolvers[0]` fails this.
     #[test]
     fn six_channels_convolve_independently() {
         let irs: Vec<Vec<f32>> = (0..6)
@@ -916,7 +916,7 @@ mod golden {
     /// alone, exactly `latency_samples` late (the graph's dry half is
     /// `node_mix.rs`'s).
     ///
-    /// Mutation: convolving every channel with `convolvers[0]` leaks the
+    /// Mutation (run): convolving every channel with `convolvers[0]` leaks the
     /// impulse into the other channels and fails this.
     #[test]
     fn a_six_channel_shared_ir_keeps_each_channel_to_itself_and_aligned() {

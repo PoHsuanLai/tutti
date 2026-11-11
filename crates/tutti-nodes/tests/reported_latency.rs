@@ -125,9 +125,9 @@ fn crossover_and_multiband_report_zero_latency_and_respond_at_frame_0() {
 /// that 0 is true.
 ///
 /// Mutation (run): declaring `with_latency(Latency::new(Samples(24_000)))` in
-/// `DelayLineNode::shape` fails the declared-latency assertion; declaring a
-/// latency of one frame (the dry half delayed by it) fails the frame-0
-/// assertion.
+/// `DelayLineNode::shape` fails the declared-latency assertion; so does
+/// declaring a latency of one frame (it also delays the graph's dry half, which
+/// `node_mix.rs` pins).
 #[test]
 fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
     let node = DelayLineNode::new(
@@ -321,9 +321,9 @@ mod convolver {
     /// latency, with amplitude `dry_share + wet_share` = 1 — dry (the input
     /// delayed by the declared latency) and wet land on the same frame.
     ///
-    /// Mutation: the convolver declaring no latency (the dry half undelayed) fails
-    /// at mix 0.5 (two onsets) and mix 0.0 (onset at 0, not the latency); one
-    /// declared a frame short fails every mix below 1.
+    /// Mutation (run): the convolver declaring no latency, or one frame more than
+    /// its block, fails this (and the stereo test below, and
+    /// `a_delay_after_a_convolver_adds_nothing_to_its_compensation`).
     #[test]
     fn convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         for mix in [0.0_f32, 0.5, 1.0] {
@@ -351,8 +351,8 @@ mod convolver {
     /// each channel's dry input (the graph's aligned input) is delayed by the
     /// same latency as its wet path.
     ///
-    /// Mutation: the node declaring no latency (the dry half undelayed) fails
-    /// every channel (two onsets at mix 0.5), which the per-channel loop names.
+    /// Mutation (run): the convolver declaring no latency, or one frame more
+    /// than its block, fails this.
     #[test]
     fn stereo_convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         type Build = fn() -> ConvolverNode;
@@ -396,7 +396,7 @@ mod convolver {
     /// for one latency after a discontinuity. (The dry half is the graph's: its
     /// aligned input is cleared by the graph's own reset.)
     ///
-    /// Mutation: removing the `c.reset()` loop from `ConvolverNode::reset` fails.
+    /// Mutation (run): removing the `c.reset()` loop from `ConvolverNode::reset` fails.
     #[test]
     fn convolver_reset_clears_the_buffered_take() {
         let mut node = prepared(ConvolverNode::new(&[1.0], 64), SR, 256);

@@ -131,9 +131,12 @@ fn check<N: IntoNode>(name: &str, make: &dyn Fn() -> N, width: usize, latency: u
     }
 }
 
-/// Mutation (run): `DelayLineNode::shape` declaring a latency of one frame it
-/// does not have (the graph's aligned input one frame late) fails the delay's
-/// DRY comparison, its formula and its ramp test.
+/// Mutations (run, each failed): `DelayLineNode::shape` declaring a latency of
+/// one frame it does not have (the graph's aligned input one frame late) fails
+/// the delay's DRY comparison, its formula and its ramp test; the chorus
+/// declaring 480 frames fails the chorus and flanger check; the phaser declaring
+/// one frame fails the phaser check; the convolver declaring its block plus one
+/// or none fails its checks.
 #[cfg(feature = "convolution")]
 #[test]
 fn the_convolver_is_blended_by_the_graph() {

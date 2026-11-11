@@ -840,9 +840,9 @@ fn mix_cases() -> Vec<MixCase> {
 /// each other. These nodes had a `Wet` param of their own, whose port this
 /// replaces; the blend itself is `tutti-graph/tests/mix.rs`'s.
 ///
-/// Mutation (run): `set_mix` replaced by a WET render (no blend) fails the
-/// "sound the same" assertion; the lane's value ignored (the mix left at its
-/// base) fails the fed-against-set comparison.
+/// Mutations (run, each failed): the mix lane never driven (`MixIs::Fed` not
+/// calling `drive`), and the mix never set (`MixIs::Set` not calling
+/// `set_mix`): the fed and set renders no longer agree.
 #[test]
 fn each_fed_mix_is_the_one_the_graph_blends() {
     for w in [1usize, 2, 6] {

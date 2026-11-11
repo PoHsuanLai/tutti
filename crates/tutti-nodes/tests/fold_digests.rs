@@ -87,7 +87,9 @@ fn the_downmix_node_renders_what_the_width_folds_did() {
 /// The convolver's mono-to-stereo fold at the widths the tree uses (2, 6), in a
 /// graph at a mix of 0.5 moved to 0.8 mid-render.
 ///
-/// Mutation (run): the graph's mix set to 0.6 instead of 0.5 fails.
+/// Mutation (run): the graph's mix set to 0.6 instead of 0.5 moves the digest
+/// (0x0e6c5f37688777c1 in record mode, for 0x16de0f440e66cf81), and so fails
+/// where `assert_golden` asserts (glibc 2.39; it only prints elsewhere).
 #[test]
 fn the_convolver_fold_renders_what_it_always_did() {
     let ir_a = noise(1, 200);

@@ -496,6 +496,9 @@ fn print_goldens() {
 
 /// Every case, against its pinned frames.
 ///
+/// Mutation (run): the graph mix of `delay_mono_cubic` set to 0.41 instead of
+/// 0.4 fails its first pin.
+///
 /// Mutation (each run, each fails): updating the SVF's second integrator from
 /// `v1`; taking the ladder's LP12 output from the fourth stage; reading the
 /// delay's feedback tap at `d` instead of `d - 1`; dropping the chorus's

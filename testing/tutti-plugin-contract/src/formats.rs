@@ -99,3 +99,29 @@ impl Format for Vst3Cpp {
         vst3(plugin::vst3_cpp_module())
     }
 }
+
+/// AU, from Apple's AUDelay in `CoreAudio.component`. There is no AU build of
+/// the shared plugin, so this runs every case against a unit that has none of
+/// its mode word, transcript or spec figures: a case that needs them is a gap.
+#[cfg(target_os = "macos")]
+pub struct Au;
+
+#[cfg(target_os = "macos")]
+impl Format for Au {
+    const NAME: &'static str = "au";
+    const SURFACE: spec::Surface = spec::AU;
+    type L = tutti_au_host::AuLoaded;
+    /// The host writes the last point of each parameter's queue at the block
+    /// head (`AudioUnitSetParameter` with no ramp offset).
+    const PARAM_TIMING: ParamTiming = ParamTiming::BlockHead;
+    const GAPS: &'static [(&'static str, Gap)] = &[];
+
+    fn load() -> Self::L {
+        tutti_au_host::AuLoaded::load(
+            &main_thread(),
+            std::path::Path::new("/System/Library/Components/CoreAudio.component"),
+            &tutti_plugin_types::Load::new().plugin("au.aufx.dely.appl"),
+        )
+        .expect("AUDelay loads")
+    }
+}

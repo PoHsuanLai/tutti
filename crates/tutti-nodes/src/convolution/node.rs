@@ -396,7 +396,7 @@ impl Node for ConvolverNode {
     /// latency, which is declared on its own and compensated.
     fn shape(&self) -> Shape {
         let width = self.shape_width();
-        Shape::through_discrete(width)
+        Shape::through_unassigned(width)
             .with_latency(Latency::new(Samples(self.latency_samples)))
             .with_tail(ring_out(
                 self.convolvers

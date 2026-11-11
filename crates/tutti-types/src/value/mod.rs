@@ -12,7 +12,7 @@
 //! - [`timeline`] — [`TimelineSegment`], the one frame↔beat conversion, and
 //!   [`first_frame_at_or_after`], the one rule for the frame a beat lands on.
 //! - [`play`] — [`PlayReading`], the graph's play clock at one frame.
-//! - [`samples`] — [`Samples`], an integer frame count. A discrete quantity,
+//! - [`samples`] — [`Samples`], an integer frame count. An unassigned quantity,
 //!   deliberately *not* a `Unit` (it is compared and added, not interpolated
 //!   or automated).
 

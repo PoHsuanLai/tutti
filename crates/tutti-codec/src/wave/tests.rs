@@ -31,14 +31,14 @@ fn zero_rounds_the_duration_to_the_nearest_frame() {
 }
 
 /// A wave built from a count assumes the engine's order where it has one and
-/// says "discrete" where it does not (4 is quad or B-format; 3 and 5 have no
+/// says "unassigned" where it does not (4 is quad or B-format; 3 and 5 have no
 /// order), and one built from a topology keeps it, one channel per speaker.
 ///
 /// Mutation (run): `assumed` returning `smpte(..).unwrap_or(quad)` for 4 fails
-/// the discrete row; `with_topology` building `topology.layout()` channels from
+/// the unassigned row; `with_topology` building `topology.layout()` channels from
 /// `positions().len() + 1` fails the width.
 #[test]
-fn a_count_assumes_smpte_or_discrete_and_a_topology_is_kept() {
+fn a_count_assumes_smpte_or_unassigned_and_a_topology_is_kept() {
     use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
     for n in [1u16, 2, 6, 8, 12] {
         let w = Wave::new(usize::from(n), SampleRate::new(48_000.0));
@@ -53,7 +53,7 @@ fn a_count_assumes_smpte_or_discrete_and_a_topology_is_kept() {
             Wave::new(n, SampleRate::new(48_000.0))
                 .topology()
                 .positions(),
-            vec![Speaker::Discrete; n],
+            vec![Speaker::Unassigned; n],
             "{n}"
         );
     }

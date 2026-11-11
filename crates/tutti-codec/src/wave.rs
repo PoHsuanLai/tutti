@@ -45,7 +45,7 @@ pub struct Wave {
 /// has one, else channels that feed no speaker.
 fn assumed(channels: usize) -> ChannelTopology {
     let layout = ChannelLayout::try_from(channels).expect("a wave has at most u16::MAX channels");
-    ChannelTopology::smpte(layout).unwrap_or_else(|| ChannelTopology::discrete(layout))
+    ChannelTopology::smpte(layout).unwrap_or_else(|| ChannelTopology::unassigned(layout))
 }
 
 impl std::fmt::Debug for Wave {
@@ -94,7 +94,7 @@ impl Wave {
     /// [`new`](Self::new) takes a bare count, and a count is not a placement:
     /// it assumes the engine's own order ([`ChannelTopology::smpte`]) for the
     /// widths that have one (1, 2, 6, 8 and 12) and channels that feed no
-    /// speaker ([`ChannelTopology::discrete`]) for the rest. Use this when the
+    /// speaker ([`ChannelTopology::unassigned`]) for the rest. Use this when the
     /// source says more.
     pub fn with_topology(
         topology: ChannelTopology,

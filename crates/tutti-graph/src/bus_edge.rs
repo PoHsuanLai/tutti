@@ -57,7 +57,7 @@ pub enum BusSource {
     /// An output bus of a node.
     Node(BusRef),
     /// The graph's own global input, as one
-    /// [`Discrete`](tutti_types::Speaker::Discrete) bus of its width: it folds
+    /// [`Unassigned`](tutti_types::Speaker::Unassigned) bus of its width: it folds
     /// only to a bus of the same width and kind.
     Global,
 }
@@ -376,7 +376,7 @@ impl GraphSpec {
             }
             BusSource::Global => {
                 let width = self.topology.inputs;
-                let topology = BusTopology::discrete(width).ok_or(BusError::GlobalTooWide {
+                let topology = BusTopology::unassigned(width).ok_or(BusError::GlobalTooWide {
                     width: usize::from(width.count()),
                 })?;
                 (topology, 0, None)

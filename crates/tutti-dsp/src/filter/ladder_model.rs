@@ -486,7 +486,7 @@ mod tests {
     }
 
     /// A resonance near 1 has a pole outside the unit circle in the linearisation
-    /// (the loop gain `4 res` passes what the discrete loop supports): the model says
+    /// (the loop gain `4 res` passes what the unassigned loop supports): the model says
     /// so, and `is_stable` is false: the real filter is held by the saturator.
     ///
     /// Mutation (run): the feedback `k` halved in `poles` gives a radius under 1 at

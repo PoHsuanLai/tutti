@@ -1327,7 +1327,7 @@ struct NoteExpressionValueDescription
     NoteExpressionValue defaultValue;  // normalized [0,1]
     NoteExpressionValue minimum;
     NoteExpressionValue maximum;
-    int32               stepCount;     // 0: continuous, 1: toggle, else discrete
+    int32               stepCount;     // 0: continuous, 1: toggle, else unassigned
 };
 
 struct NoteExpressionValueEvent
@@ -1410,8 +1410,8 @@ struct ParameterInfo
     String128 title;                    // e.g. "Volume"
     String128 shortTitle;               // e.g. "Vol"
     String128 units;                    // e.g. "dB"
-    int32     stepCount;                // 0: continuous, 1: toggle, else discrete (= max - min)
-    ParamValue defaultNormalizedValue;  // [0,1]; discrete: defDiscreteValue / stepCount
+    int32     stepCount;                // 0: continuous, 1: toggle, else unassigned (= max - min)
+    ParamValue defaultNormalizedValue;  // [0,1]; unassigned: defUnassignedValue / stepCount
     UnitID    unitId;
     int32     flags;                    // ParameterFlags
 

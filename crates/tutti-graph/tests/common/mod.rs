@@ -202,41 +202,41 @@ impl TestNode {
     fn kind_shape(&self) -> Shape {
         match self.kind {
             Kind::Bused { .. } => unreachable!("`counted` unwraps the buses"),
-            Kind::Const { width, .. } => Shape::source_discrete(ch(width)),
-            Kind::Gain { width, .. } => Shape::through_discrete(ch(width)).with_in_place(),
+            Kind::Const { width, .. } => Shape::source_unassigned(ch(width)),
+            Kind::Gain { width, .. } => Shape::through_unassigned(ch(width)).with_in_place(),
             // Any number of inputs, which are not a bus: ports.
             Kind::Sum { inputs } => Shape::EMPTY.with_ports(ch(inputs), ch(1)),
-            Kind::Smooth => Shape::through_discrete(ch(1))
+            Kind::Smooth => Shape::through_unassigned(ch(1))
                 .with_tail(Tail::Finite(Samples(1)))
                 .with_in_place(),
             // A pure delay declared as latency: its tail, which excludes
             // latency, is none.
-            Kind::Lag { latency } => Shape::through_discrete(ch(1))
+            Kind::Lag { latency } => Shape::through_unassigned(ch(1))
                 .with_latency(lat(latency))
                 .with_tail(Tail::None),
-            Kind::Emitter { .. } => Shape::source_discrete(ch(1)).with_events(0, 1),
+            Kind::Emitter { .. } => Shape::source_unassigned(ch(1)).with_events(0, 1),
             Kind::GainDriver { latency, .. } | Kind::MixDriver { latency, .. } => Shape::EMPTY
                 .with_events(0, 1)
                 .with_latency(lat(latency))
                 .with_tail(Tail::None),
-            Kind::Burst { cap, .. } => Shape::source_discrete(ch(1))
+            Kind::Burst { cap, .. } => Shape::source_unassigned(ch(1))
                 .with_events(0, 1)
                 .with_event_capacity(cap),
-            Kind::Consumer { inputs } => Shape::source_discrete(ch(1))
+            Kind::Consumer { inputs } => Shape::source_unassigned(ch(1))
                 .with_events(inputs, 0)
                 .with_tail(Tail::Unbounded),
             Kind::EventLag { latency } => Shape::EMPTY
                 .with_events(1, 1)
                 .with_latency(lat(latency))
                 .with_tail(Tail::None),
-            Kind::EnvProbe => Shape::source_discrete(ch(1)),
-            Kind::Thru { width } => Shape::through_discrete(ch(width)),
-            Kind::ThruInPlace { width } => Shape::through_discrete(ch(width)).with_in_place(),
+            Kind::EnvProbe => Shape::source_unassigned(ch(1)),
+            Kind::Thru { width } => Shape::through_unassigned(ch(width)),
+            Kind::ThruInPlace { width } => Shape::through_unassigned(ch(width)).with_in_place(),
             Kind::Mixed {
                 width,
                 events_in,
                 events_out,
-            } => Shape::through_discrete(ch(width))
+            } => Shape::through_unassigned(ch(width))
                 .with_events(events_in, events_out)
                 .with_tail(Tail::Unbounded)
                 .with_in_place(),
@@ -247,8 +247,8 @@ impl TestNode {
                 tail,
                 ..
             } => Shape::buses(
-                tutti_graph::Buses::discrete(ch(ins)),
-                tutti_graph::Buses::discrete(ch(outs)),
+                tutti_graph::Buses::unassigned(ch(ins)),
+                tutti_graph::Buses::unassigned(ch(outs)),
             )
             .with_latency(lat(latency))
             .with_tail(tail),
@@ -1033,7 +1033,7 @@ impl Pulse {
 
 impl Node for Pulse {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1122,7 +1122,7 @@ impl Ringer {
 impl Node for Ringer {
     fn shape(&self) -> Shape {
         let ch = ChannelLayout::try_from(self.width).expect("a width");
-        let shape = Shape::through_discrete(ch)
+        let shape = Shape::through_unassigned(ch)
             .with_latency(Latency::new(self.latency))
             .with_tail(self.ceiling);
         if self.event_out {

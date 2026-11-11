@@ -335,7 +335,7 @@ impl Node for LimiterNode {
     /// The release envelope adds nothing after them: it shapes gain, and gain
     /// applied to silence is silence.
     fn shape(&self) -> Shape {
-        Shape::through_discrete(self.layout)
+        Shape::through_unassigned(self.layout)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_latency(Latency::new(Samples(self.ring.lookahead_samples())))
             .with_tail(Tail::None)
@@ -606,7 +606,7 @@ impl Node for BrickwallLimiterNode {
     /// ([`BRICKWALL_PARAMS`]). The clip is stateless, so it has no latency
     /// and stops with its input.
     fn shape(&self) -> Shape {
-        Shape::through_discrete(self.layout)
+        Shape::through_unassigned(self.layout)
             .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
             .with_params(&BRICKWALL_PARAMS)

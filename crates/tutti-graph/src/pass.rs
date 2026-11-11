@@ -6,7 +6,7 @@
 //! channels sit, the pass is the [`Fold`] between them (a mono centre reaches
 //! both sides of a stereo pair; a 5.1 bus into a stereo bus is the ITU
 //! downmix, not "the first two channels"). When neither says (every channel
-//! `Discrete`, which is what [`Shape::through_discrete`] builds) and the widths agree,
+//! `Unassigned`, which is what [`Shape::through_unassigned`] builds) and the widths agree,
 //! output `c` is input `c`. **Nothing else is guessed**: main buses of
 //! different widths that name no placement, or placements that do not fold,
 //! have no pass ([`PassError`]), and the graph refuses whatever would hear one
@@ -110,25 +110,25 @@ impl Pass {
                 (inputs, outputs) => Err(PassError::Unplaced { inputs, outputs }),
             };
         };
-        let discrete = |b: &crate::Bus| {
+        let unassigned = |b: &crate::Bus| {
             b.topology
                 .positions()
                 .iter()
-                .all(|s| *s == Speaker::Discrete)
+                .all(|s| *s == Speaker::Unassigned)
         };
         // A side that names no speaker says nothing about where a channel of
         // the other goes, except by its index at one width. (`Fold::between`
-        // takes a named source onto a discrete destination by index, zero
+        // takes a named source onto an unassigned destination by index, zero
         // filling, which suits an edge that knows only a width; for a dry path
         // it is the guess: a centre on the left alone.)
-        if discrete(src) || discrete(dst) {
+        if unassigned(src) || unassigned(dst) {
             if src.width() != dst.width() {
                 return Err(PassError::Unplaced {
                     inputs: src.width(),
                     outputs: dst.width(),
                 });
             }
-            if discrete(src) && discrete(dst) {
+            if unassigned(src) && unassigned(dst) {
                 return Ok(Self::by_index(src.width()));
             }
         }

@@ -373,7 +373,7 @@ impl Drop for DropWitness {
 
 impl tutti_graph::Node for DropWitness {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::source_discrete(ChannelLayout::STEREO)
+        tutti_graph::Shape::source_unassigned(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(&mut self, _: &tutti_graph::Cx<'_>, _: tutti_graph::Io<'_>) -> tutti_graph::Status {
@@ -1227,7 +1227,7 @@ struct CancelOnSecondBlock {
 
 impl tutti_graph::Node for CancelOnSecondBlock {
     fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::through_discrete(ChannelLayout::STEREO)
+        tutti_graph::Shape::through_unassigned(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(

@@ -74,7 +74,7 @@ struct Lag;
 
 impl Node for Lag {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
             .with_latency(tutti_types::Latency::new(Samples(LAG_FRAMES)))
             .with_tail(tutti_types::Tail::Unknown)
     }
@@ -93,7 +93,7 @@ impl Node for Sink {
         } else {
             ChannelLayout::EMPTY
         };
-        Shape::sink_discrete(a).with_events(1, 0)
+        Shape::sink_unassigned(a).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
@@ -1592,7 +1592,7 @@ impl Node for Once {
 struct Hear(Log, u64);
 impl Node for Hear {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO).with_events(1, 0)
+        Shape::source_unassigned(ChannelLayout::MONO).with_events(1, 0)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

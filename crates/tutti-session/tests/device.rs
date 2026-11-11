@@ -804,7 +804,9 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
     };
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
-        .root_topology(tutti_types::ChannelTopology::discrete(ChannelLayout::QUAD))
+        .root_topology(tutti_types::ChannelTopology::unassigned(
+            ChannelLayout::QUAD,
+        ))
         .build_device_on(wide(48_000.0), driver)
         .expect("four buses place on six channels");
     assert_eq!(session.graph_ref().outputs(), 4);
@@ -836,7 +838,7 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
 #[test]
 fn a_refused_declaration_is_retried_on_a_restart() {
     use tutti_session::RootTopologyStatus;
-    let buses = tutti_types::ChannelTopology::discrete(ChannelLayout::QUAD);
+    let buses = tutti_types::ChannelTopology::unassigned(ChannelLayout::QUAD);
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)

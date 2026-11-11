@@ -1,6 +1,6 @@
 //! [`Samples`] — a count of audio frames.
 //!
-//! A discrete count, distinct from the float-backed *measure* units (`Hz`,
+//! An unassigned count, distinct from the float-backed *measure* units (`Hz`,
 //! `Seconds`, `Beat`, `SamplePosition`, …) in [`super::units`]. Those are
 //! continuous quantities you interpolate and feed to [`Param`](super::Param);
 //! this is an integer you compare and add.
@@ -148,7 +148,7 @@ impl Samples {
     /// [`Seconds::to_samples`](super::units::Seconds::to_samples).
     ///
     /// No rounding variants, unlike the forward direction: that one lands on a
-    /// discrete count, so it has to say whether it is allocating, measuring or
+    /// unassigned count, so it has to say whether it is allocating, measuring or
     /// counting. This lands on a continuous quantity, where there is one answer.
     ///
     /// A non-positive rate gives `Seconds(0.0)` rather than an infinity — the

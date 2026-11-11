@@ -168,7 +168,7 @@ pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR_ON: u32 = 1 << 5;
 // Parameter unit kinds.
 /// `kAudioUnitParameterUnit_Generic`: parameter unit kind (`AudioUnitParameterInfo::unit`).
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_GENERIC: u32 = sys::kAudioUnitParameterUnit_Generic;
-/// A discrete choice list: the value is an index into named options, and
+/// An unassigned choice list: the value is an index into named options, and
 /// `[min, max]` are the first and last index rather than a continuous span.
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_INDEXED: u32 = sys::kAudioUnitParameterUnit_Indexed;
 /// `kAudioUnitParameterUnit_Boolean`: parameter unit kind (`AudioUnitParameterInfo::unit`).

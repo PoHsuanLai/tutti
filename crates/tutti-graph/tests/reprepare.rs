@@ -362,7 +362,7 @@ struct RateLatency {
 
 impl Node for RateLatency {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_latency(Latency::new(Samples(self.latency)))
     }
     fn prepare(&mut self, p: &Prepare) {
@@ -515,7 +515,7 @@ struct FragileAt96k;
 
 impl Node for FragileAt96k {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, p: &Prepare) {
         assert!(p.sample_rate().get() < 90_000.0, "cannot run this fast");

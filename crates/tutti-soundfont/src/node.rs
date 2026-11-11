@@ -20,7 +20,7 @@ impl Node for SoundFontUnit {
     /// reverb send), one MIDI event input, placed to the 8-frame chunk the
     /// voices render in, and the tail of the longest release.
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::from_count(Plane::COUNT as u16))
+        Shape::source_unassigned(ChannelLayout::from_count(Plane::COUNT as u16))
             .with_events(1, 0)
             .with_event_resolution(Resolution::Frames(crate::SYNTH_BLOCK_FRAMES as u32))
             // Sample playback and filters per voice: measured 76 ns

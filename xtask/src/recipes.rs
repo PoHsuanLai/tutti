@@ -346,7 +346,7 @@ impl Planner<'_> {
             ]),
             "test-doc" => {
                 self.run(Cmd::sh("cargo test --locked --doc --workspace").args(args));
-                self.run(Cmd::sh("cargo test --locked --doc -p tutti-session --features device").args(args));
+                self.run(Cmd::sh("cargo test --locked --doc -p tutti-session --all-features").args(args));
             }
             "test-release" => self.lines(&[
                 "cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph",

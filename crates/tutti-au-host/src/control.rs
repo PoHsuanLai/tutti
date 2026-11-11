@@ -540,7 +540,11 @@ impl Control for AuController {
         }
     }
 
+    /// Also the range table's reclaim: this is the control-side tick the host
+    /// already polls, so a retired table is let go here even when the
+    /// parameters go quiet and nothing republishes.
     fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+        self.ranges.reclaim();
         Control::take_requests(&mut **self, main, out);
     }
 

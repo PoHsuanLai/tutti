@@ -2,17 +2,15 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod clip;
 mod clip_file;
 mod file;
 mod flex;
+mod kind;
 mod smf;
 
-pub use clip::{MidiFileKind, read_clip, write_clip};
-pub use file::{MidiFile, SmfFile};
-pub use smf::{
-    MidiWriteConfig, ParsedMidiFile, SmfNote, SmfTimedEvent, SmfTrack, smf_to_bytes, write_smf,
-};
+pub use clip_file::ClipFileError;
+pub use file::{FileEvent, Meta, MidiFile, PairedNote, SmfFormat, TextKind, Tick, Track};
+pub use kind::MidiFileKind;
 
 use thiserror::Error;
 
@@ -25,22 +23,34 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// The bytes are not a well-formed file of the expected format. Covers
-    /// `midly`'s own parse failures, a zero ticks-per-beat division, and a
-    /// clip-file parse error forwarded with its path.
+    /// The bytes are not a well-formed SMF: `midly`'s own parse failures
+    /// (strict, so a malformed event or a track count that disagrees with the
+    /// header is one), a zero ticks-per-beat division.
     #[error("MIDI parse error: {0}")]
     MidiFileParse(String),
 
-    /// SMPTE/timecode division. The codec reads metrical timing only — beats
+    /// The file is cut off: a chunk header short of its eight bytes, a chunk
+    /// whose declared length runs past the end of the file, or fewer track
+    /// chunks than the header declares. What was read is not returned: a
+    /// shorter file is not the file.
+    #[error("the MIDI file is truncated")]
+    Truncated,
+
+    /// SMPTE/timecode division. The codec reads metrical timing only: beats
     /// come from the file's division, and a timecode file has no beat grid to
-    /// read them from.
+    /// read them from or put a tempo map on.
     #[error("Unsupported MIDI timing format")]
     MidiUnsupportedTiming,
 
-    /// The write options or track set cannot produce a file — an empty track
-    /// list, a zero ticks-per-beat.
+    /// The tracks cannot make a file of the container asked for: an empty
+    /// track list, a zero division, events out of order, an event the
+    /// container cannot hold. The message says which.
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
+
+    /// The file's tempo events do not make a tempo map.
+    #[error("the file's tempo events: {0}")]
+    Tempo(#[from] tutti_tempo::TempoError),
 
     /// A Clip File that did not parse, read from bytes by
     /// [`MidiFile::from_bytes`].
@@ -59,20 +69,5 @@ pub enum Error {
     UnknownFormat,
 }
 
-impl From<midly::Error> for Error {
-    fn from(e: midly::Error) -> Self {
-        Self::MidiFileParse(e.to_string())
-    }
-}
-
 /// `Result` with this crate's [`enum@Error`] as the failure type.
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// The MIDI 2.0 Clip File byte codec.
-///
-/// [`read_clip`] and [`write_clip`] are the *file-level* (path) half; these are the byte-level types it
-/// reads and writes.
-pub use clip_file::{
-    CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
-    write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
-};

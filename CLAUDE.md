@@ -803,11 +803,21 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti-vst2-host`, so they run in the workspace with no feature. Consumers
   name its items from it, not through `tutti-plugin`.
 - `tutti-midi-file` is OS-free and keeps every module private
-  (`tutti_midi_file::smf_to_bytes`; the per-module path gate is not in CI because the
-  parked `bevy-tutti` still names `tutti_midi_file::smf::`). It holds
-  the MIDI 2.0 Clip File codec (`ParsedClipFile`, `write_clip_file*`, `ClipFileError`)
-  beside SMF. An SMF event is a `tutti_ump::Voice1` (`SmfTimedEvent::msg`), a note's
-  key and velocity are `NoteNumber` and `U7`, and no public signature names `midly`.
+  (`tutti_midi_file::MidiFile`; the per-module path gate is not in CI because the
+  parked `bevy-tutti` still names `tutti_midi_file::smf::`). It is **one file model for
+  both containers** (doc 017, "Files"): a `MidiFile` of `Track`s of `(Tick, FileEvent)`
+  with integer ticks, read losslessly (SysEx, `Escape` and meta kept, a Clip File's
+  unknown packet as its words) and written back from the model. Its `TempoMap`
+  (`tutti-tempo`) is derived from the tracks' Set Tempo events, never set apart from
+  them, and `seconds_at` is its. Format 2 keeps its sequences apart (`events()` is
+  `None`, `tempo_map_of(track)`); SMPTE division is refused
+  (`Error::MidiUnsupportedTiming`); a cut-off file is `Error::Truncated`. The file layer
+  does not translate (an SMF message is `Midi1` on group 0, a velocity-0 Note On stays
+  one). The Clip File codec under it (`clip_file.rs`) is private; its structure rules
+  (DCTPQ first and once, Start of Clip before any event, End of Clip last) are one
+  `ClipFileError` variant each. No public signature names `midly`; its `strict`
+  feature is on and `parallel` is off (measured, doc 017). A test builds files from
+  `tests/support`'s encoder written from the spec, not from the crate's own writer.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
   types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.

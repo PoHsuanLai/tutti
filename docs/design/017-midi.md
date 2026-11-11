@@ -1644,7 +1644,7 @@ Each is its own lane after its dependency stage.
    than one output.
 5. **Clock, MTC and MMC slave** with tempo follow, and a `ClockMaster` that handles
    a loop wrap inside a block.
-6. **Files** (below).
+6. **Files**, done (below).
 
 Smaller items that no stage owns:
 
@@ -1663,60 +1663,132 @@ Smaller items that no stage owns:
 
 ### Files
 
-`tutti-midi-file` adds real work on top of `midly`: musical time, note
-pairing, and one reader for SMF and Clip File. The rest is thin or awkward. There
-are two read models from one parse. (`pub use midly` and `SmfMessage` exposed
+**Stage 6, done.** `tutti-midi-file` is one file model over both containers, read
+losslessly. Before it, the crate added real work on top of `midly` (musical time, note
+pairing, one reader for SMF and Clip File) but had two read models from one parse
+(`SmfFile`'s tracks and `ParsedMidiFile`'s merged stream, and a third for a Clip
+File), dropped SysEx, time and key signatures and markers, merged Format 2 as if
+parallel, rejected SMPTE division, and returned `Ok` on a truncated file. Writing
+had no tempo map, track names or SysEx. (`pub use midly` and `SmfMessage` had exposed
 `midly`'s types and `iter()` wrote each parsed message to wire bytes to parse it
-again; the M3 lane below fixed both: `SmfTimedEvent::msg` is a `tutti_ump::Voice1`.) Reading drops SysEx, time and key signatures and markers, merges
-Format 2 as if parallel, rejects SMPTE division, and returns `Ok` on a truncated
-file. Writing has no tempo map, track names or SysEx.
+again; the M3 lane below fixed both.)
+
+What is built, and where it differs from the sketch this section started from:
 
 ```rust
-pub struct MidiFile { kind: MidiFileKind, tracks: Vec<Track>, tempo_map: TempoMap }  // tutti_tempo
-pub struct Track { name: Option<String>, events: Vec<(Tick, FileEvent)> }
+pub struct MidiFile { /* private */ }          // container, division, tracks, tempo maps
+pub struct Track { pub events: Vec<(Tick, FileEvent)>, pub end: Tick }  // name() is derived
 
 pub enum FileEvent {
     Message(Message),      // SMF: Midi1 on group 0. Clip File: as stored.
-    SysEx(Box<[u8]>),      // any length, unlike a packet
-    Meta(Meta),            // text, markers, key signature, Other with raw bytes
+    Unknown(Unknown),      // a Clip File packet no definition covers, as its words
+    SysEx(Box<[u8]>),      // F0, any length, unlike a packet
+    Escape(Box<[u8]>),     // F7: a continuation or an escape
+    Meta(Meta),            // Text { kind, bytes }, Tempo, TimeSignature, KeySignature, Other { kind, data }
 }
 
 impl MidiFile {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error>;  // reports truncation
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Error>;
-    pub fn events(&self) -> impl Iterator<Item = (Beat, &FileEvent)>;  // merged
+    pub fn smf(format: SmfFormat, ticks_per_quarter: u16, tracks: Vec<Track>) -> Result<Self>;
+    pub fn clip(ticks_per_quarter: u16, track: Track) -> Result<Self>;
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self>;   // truncation is Error::Truncated
+    pub fn to_bytes(&self) -> Result<Vec<u8>>;
+    pub fn tempo_map(&self) -> &TempoMap;               // tutti_tempo
+    pub fn tempo_map_of(&self, track: usize) -> Option<&TempoMap>;
+    pub fn seconds_at(&self, at: Beat) -> Seconds;      // tempo_map().seconds_at
+    pub fn events(&self) -> Option<impl Iterator<Item = (Beat, &FileEvent)>>;  // merged, None for Format 2
 }
-impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote> + '_; }
+impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
 ```
+
+- **The tempo map is derived, not a field to set.** Set Tempo stays an event of its
+  track (`Meta::Tempo { micros_per_quarter }`, a Clip File's Flex Data Set Tempo), so a
+  write gives back the exact event, a zero ("no valid tempo") and two on one tick
+  included; the file builds its `TempoMap` from them in its constructors, steps at the
+  tick each lands on, 120 BPM until the first when none is at tick 0, the later of two
+  on one tick governing. The two cannot disagree. `seconds_at` is `TempoMap::seconds_at`
+  (doc 020's "point `MidiFile::seconds_at` at `TempoMap`" is done here); the old
+  step-only integration and `tempo()` are gone, and a Clip File with no tempo now has
+  the 120 BPM default in its map where `tempo()` was `None`: adopting a tempo is
+  `tempo_map().tempo_at(Beat(0.0))`.
+- **Format 2 is kept apart.** Its tracks are independent sequences: `events()` is `None`
+  (there is no one timeline to merge on), `tempo_map_of(i)` is each sequence's own map
+  and `tempo_map()` is the first's. Formats 0 and 1 and a Clip File merge their tracks
+  by tick, ties in track order.
+- **SMPTE division is refused** (`Error::MidiUnsupportedTiming`), not supported. A
+  timecode file has no beat grid, so no `Beat`, no `TempoMap` and no `events()`;
+  supporting it means a second timing model through every accessor, and importing one
+  means choosing a tempo, which is the caller's to say. It is the one SMF this
+  crate does not read, and it is refused with its own error rather than guessed.
+- **`Track` has `end`, and a name that is derived.** The End of Track (a Clip File's
+  End of Clip, whose Delta Clockstamp is the clip's length) is where the track ends,
+  which a read must give back and an event list cannot say; `name()` is the first Track
+  Name event rather than a field beside it, so the two never disagree.
+- **`FileEvent` adds `Unknown` and `Escape`** to the sketch: a Clip File's packet that
+  no definition covers must write back as its words, and an SMF distinguishes `F0` from
+  `F7`. Text is bytes (the specification names no encoding); the registered meta events
+  `Meta` does not type (sequence number, channel prefix, port, SMPTE offset, sequencer
+  specific) are `Other { kind, data }`.
+- **A `PairedNote`** is `(group, channel, note, 16-bit velocity, start, end)` in ticks,
+  for both containers (a MIDI 1.0 velocity widened by the specification's scaling, a
+  MIDI 2.0 Note On at velocity 0 neither a start nor an end); `SmfNote`, `ClipNote` and
+  `SmfTrack` are gone.
+- **The Clip File codec is private** under the model (`ParsedClipFile`, `ClipEvent`,
+  `ClipHeader` and the `write_clip_file*` functions, `read_clip` and `write_clip` are
+  deleted; `MidiFile::read` and `write` are the path calls). A tempo or a time
+  signature is an event of the track like any other.
+- **A constructor checks what the container can hold** (`Error::InvalidConfig`): events
+  in order, a gap that fits the wire (28 bits in an SMF, 32 in a Clip File), group 0
+  MIDI 1.0 messages in an SMF, packets only in a Clip File and not its own structure,
+  a Set Tempo of 24 bits, a format 0 file of one track. A write cannot then drop or
+  clamp an event.
+- **A read is a write's inverse on the model**, not on the bytes: running status and the
+  spelling of a Delta Clockstamp (NOOP restarts) may differ, and a Clip File's reserved
+  bits are written as zero. Message, Note On at velocity 0 and all, the file layer does
+  not translate: `Translator` runs when a clip is loaded for playback.
 
 - **Our types in the API, `midly` private.** Its events borrow the input bytes, and
   exposing them would make it a public dependency. It stays as the SMF byte parser,
-  and swapping it would touch one file.
-- **The file layer does not translate.** An SMF reads as `Midi1`, and a MIDI 1.0 Note
-  On at velocity 0 stays one. `Translator` runs when a clip is loaded for playback.
-- **`FileEvent` is not a mirror of `Message`.** It adds what a packet cannot hold.
-  It allocates, and files do not reach the audio thread: the clip node holds a
-  compiled form.
+  and swapping it would touch one file (`smf.rs`); not even a `From<midly::Error>` is
+  public.
 - **`TempoMap` is not a MIDI type.** It maps beats to samples and lives in
   `tutti-tempo`, a small pure crate above `tutti-types` with
   `#![forbid(unsafe_code)]`, because the transport, the export plan, plugin
   transport info and SMF import all want it. The file layer builds one from tempo
-  meta events. Adopting it in the transport is separate work: [020](020-tempo-map-transport.md)
-  is that design, and it points `MidiFile::seconds_at` at the same `TempoMap`.
-- **Integer ticks.** Events keep their tick and the track its division, so a write is
+  events; [020](020-tempo-map-transport.md) is the design that adopts it in the
+  transport.
+- **Integer ticks.** Events keep their tick and the file its division, so a write is
   exact with no rounding, and `events()` gives callers `Beat`.
-- **The Clip File reader checks structure order.** `parse_clip` in
-  `tutti-midi-types` records that a Start of Clip and an End of Clip were seen
-  but not where: a file whose DCTPQ is missing from the front or repeated, whose
-  events precede Start of Clip, or whose End of Clip is not last (data after it is
-  already refused) still reads. M2-116 requires the DCTPQ first and once, Start
-  of Clip before any event, and End of Clip last. One error variant per rule, with
-  a test for each.
-- **A lossless round trip** is the test: a file read and written holds the same
-  events, including SysEx and meta. Running status and event spelling may differ.
+- **The Clip File reader checks structure order** (M2-116: DCTPQ first and once,
+  Start of Clip before any event, End of Clip last), one error variant and one test per
+  rule: `ClipFileError::DctpqNotFirst`, `DuplicateDctpq`, `EventBeforeStartOfClip`,
+  `DuplicateStartOfClip` and (the existing) `TrailingData`, beside the missing and zero
+  cases. A Delta Clockstamp, a Null and a JR message are not content and may come
+  before the DCTPQ. Every message other than Start and End of Clip and the DCTPQ is an
+  event, so a Stream message (an endpoint name, say) before Start of Clip is refused
+  with the rest; if a registered header message turns up that the format allows
+  there, it is a case to add.
+- **A lossless round trip** is the test (`tests/smf_model.rs`, `tests/clip_model.rs`):
+  a file read and written holds the same events, including SysEx and meta, over hand-built
+  files with every event kind in formats 0, 1 and 2, checked also by a decoder written
+  from the specification that shares no code with `midly`, and every strict prefix of a
+  file is refused.
 - **Clip File moves here** from `tutti-midi-types`, its only production consumer.
-- Measure `midly`'s `parallel` feature, which pulls in `rayon`, and check its `strict`
-  feature for truncated files.
+
+**Measured (2026-11).** `midly`'s `parallel` feature pulls `rayon`: this crate's normal
+dependency tree goes from 21 crates to 27 (`rayon` is in the lock for others, so the
+workspace gains nothing). A 16 track, 1.6 million event, 16 MB file, release build:
+read 58 ms with `parallel`, 100 ms without; write 35 ms against 47 ms. A 16 KB file:
+write 743 us with it (the first call starts the pool) against 60 us, read 162 us against
+107 us. It pays only past a few megabytes, which a file here is not, and is off.
+`strict` is on. Without it `midly` keeps what it could read of a cut file: a chunk
+longer than the file is read to the end of the file, a track that ends mid-event stops
+silently, a track count that disagrees with the header is ignored. With it each of
+those is an error (`Error::MidiFileParse`), and it also refuses a duplicate header and an
+invalid chunk. `strict` alone refuses every strict prefix of a valid file (the sweep
+passes with `smf::scan` removed), but as a string, so a cut file is told apart by the
+crate's own `scan` (a chunk header short of 8 bytes, a chunk running past the end, fewer
+`MTrk` chunks than the header's count: `Error::Truncated`); `strict` is what catches
+the one `scan` cannot, a chunk whose length is right and whose last event is not.
 
 ## 10. Stages
 

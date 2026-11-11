@@ -28,12 +28,8 @@ impl TimedMidiEvent {
 }
 
 impl From<(f64, Ump)> for TimedMidiEvent {
-    /// `(beat, event)` — matches the tuples `tutti_midi_file::ParsedClipFile::iter`
-    /// yields, so a parsed clip file drops straight into the player/snapshot.
-    ///
-    /// The bare `f64` is the SMF edge: `ParsedClipFile` divides absolute ticks by
-    /// ticks-per-quarter and has no beat vocabulary of its own. Converted here,
-    /// once, on the way in.
+    /// `(beat, event)`, for a caller that divides ticks itself and has no
+    /// `Beat` yet. Converted here, once, on the way in.
     #[inline]
     fn from((beat, event): (f64, Ump)) -> Self {
         Self {

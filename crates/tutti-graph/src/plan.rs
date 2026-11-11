@@ -696,6 +696,9 @@ pub(crate) struct NodeRec {
     pub(crate) event_capacity: Option<NonZeroU32>,
     /// Channels aliased in place.
     pub(crate) in_place: InPlaceMask,
+    /// The ports its [`Io`](crate::Io)'s main views cover
+    /// ([`Shape::main_ports`](crate::Shape)).
+    pub(crate) main: crate::node::MainPorts,
     /// Start of this op's slots in [`NodeTables::slots`]: audio inputs,
     /// audio outputs, event inputs, event outputs, back to back.
     pub(crate) ports: u32,
@@ -840,6 +843,7 @@ impl NodeTables {
                 latency: pu.shape.latency.samples(),
                 tail: pu.shape.tail,
                 event_capacity: pu.shape.event_capacity,
+                main: pu.shape.main_ports(),
                 in_place,
                 ports,
                 ain: ain.len() as u16,
@@ -869,6 +873,7 @@ impl NodeTables {
                     latency: units[u].shape.latency.samples(),
                     tail: units[u].shape.tail,
                     event_capacity: units[u].shape.event_capacity,
+                    main: units[u].shape.main_ports(),
                     in_place: InPlaceMask::NONE,
                     ports: 0,
                     ain: 0,

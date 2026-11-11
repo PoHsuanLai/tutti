@@ -1488,6 +1488,7 @@ impl Reference {
                         &none,
                         &mut writers,
                     )
+                    .with_main(shape.main_ports())
                     .with_params(&param_table);
                     f.old.process(&cx, io)
                 };
@@ -1551,6 +1552,7 @@ impl Reference {
                 &ev_refs,
                 &mut writers,
             )
+            .with_main(shape.main_ports())
             .with_params(&param_table);
             let status = self
                 .units

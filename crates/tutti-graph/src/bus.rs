@@ -27,6 +27,61 @@ pub enum BusRole {
     Aux,
 }
 
+/// A run of ports on one side of a node: a bus's, the ports past the buses, or
+/// the main bus that [`Io::input`](crate::Io::input) and its kin cover.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct PortSpan {
+    /// The first port.
+    pub(crate) first: u16,
+    /// How many ports.
+    pub(crate) width: u16,
+}
+
+impl PortSpan {
+    /// Ports `first..first + width`.
+    pub(crate) const fn new(first: usize, width: usize) -> Self {
+        Self {
+            first: first as u16,
+            width: width as u16,
+        }
+    }
+
+    /// The ports, as a range.
+    pub(crate) const fn range(self) -> core::ops::Range<usize> {
+        self.first as usize..(self.first + self.width) as usize
+    }
+}
+
+/// An input bus of a node, from its [`Shape`](crate::Shape)
+/// ([`input_bus`](crate::Shape::input_bus), [`spare_in`](crate::Shape::spare_in)):
+/// the ports a node reads past its main bus through
+/// [`Io::bus_in`](crate::Io::bus_in) or [`Inputs::bus`](crate::Inputs::bus), each a
+/// view bounded to the bus. A node takes its handles once, from the shape it
+/// declares, and keeps them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InBus(pub(crate) PortSpan);
+
+/// An output bus of a node: as [`InBus`], written through
+/// [`Io::bus_out`](crate::Io::bus_out) or [`Outputs::bus`](crate::Outputs::bus).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OutBus(pub(crate) PortSpan);
+
+impl InBus {
+    /// The bus's channels.
+    #[must_use]
+    pub const fn width(self) -> usize {
+        self.0.width as usize
+    }
+}
+
+impl OutBus {
+    /// The bus's channels.
+    #[must_use]
+    pub const fn width(self) -> usize {
+        self.0.width as usize
+    }
+}
+
 /// One bus: where its channels sit, and what it is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Bus {

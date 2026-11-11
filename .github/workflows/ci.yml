@@ -276,6 +276,10 @@ jobs:
       # `tutti-coremidi-ffi`'s, the rest of the backend is `tutti-midi-hardware`'s.
       - run: cargo clippy --locked -p tutti-coremidi-ffi -p tutti-midi-hardware --all-targets -- -D warnings
       - run: cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
+      # The editor loader's AU arm (`format/gui`) is compiled here only; the AU
+      # contract suite (`tutti-plugin-contract`'s `tests/au.rs`, AUDelay) runs in
+      # the macOS `test` job.
+      - run: cargo clippy --locked -p tutti-plugin --features au --lib -- -D warnings
       # The server with AU alone: the one-format loop in `clippy` runs on Linux,
       # where the AU loader compiles to nothing, so a helper only the other
       # formats use (`loaders/common`'s `standing`) is dead only here. `--lib`,

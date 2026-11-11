@@ -1,7 +1,9 @@
 //! Noise gate with external sidechain: attenuates below a threshold.
 
 use std::sync::Arc;
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_graph::{
+    Cx, InBus, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+};
 use tutti_types::{AtomicF32, AtomicF64};
 use tutti_types::{ChannelLayout, UnitParam};
 
@@ -10,7 +12,7 @@ use super::utils::{apply_gain_lane, sidechain_levels};
 use tutti_dsp::{GateBlock, GateKernel};
 use tutti_types::{Db, Param, SampleRate, Seconds, Tail};
 
-use crate::buses::Keyed;
+use crate::buses::keyed;
 use crate::ramp::{LastGood, block_driven};
 
 /// Shared gate state used by the per-sample gain computation.
@@ -167,7 +169,10 @@ impl GateCore {
 /// rate before its first block.
 pub struct GateNode {
     core: GateCore,
-    ports: Keyed,
+    /// Audio, then the key as a `Sidechain` bus; the output is the audio's.
+    ports: Shape,
+    /// The key's handle.
+    key: InBus,
     /// The per-frame gain lane, sized to the prepared `MaxBlock`.
     gains: Vec<f32>,
 }
@@ -176,7 +181,7 @@ impl std::fmt::Debug for GateNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GateNode")
             .field("core", &self.core)
-            .field("channels", &self.ports.width())
+            .field("channels", &self.ports.audio_out())
             .finish_non_exhaustive()
     }
 }
@@ -226,6 +231,10 @@ impl GateNode {
     /// `N` audio inputs, then `N` sidechain inputs, then `N` outputs, with one
     /// **linked** gate decision from the loudest sidechain channel. Parameters
     /// are as [`mono`](Self::mono).
+    ///
+    /// # Panics
+    ///
+    /// If `channels` is past 16: a key that wide fits no bus.
     pub fn with_channels(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
@@ -233,9 +242,11 @@ impl GateNode {
         release: impl Into<Seconds>,
         channels: u8,
     ) -> Self {
+        let (ports, key) = keyed(ChannelLayout::from(channels.max(1)));
         Self {
             core: GateCore::new(threshold_db, attack, hold, release),
-            ports: Keyed::new(ChannelLayout::from(channels.max(1))),
+            ports,
+            key,
             gains: Vec::new(),
         }
     }
@@ -258,14 +269,14 @@ impl GateNode {
     /// It has `2 * channels` inputs (audio then sidechain) and `channels`
     /// outputs, plus a threshold port if one was requested.
     pub fn channels(&self) -> u8 {
-        self.ports.width().count() as u8
+        self.ports.audio_out().count() as u8
     }
 
     /// The width this gate was built for, as the engine's channel vocabulary.
     /// [`channels`](Self::channels) is the same number as a bare count, kept
     /// for callers doing port arithmetic.
     pub fn layout(&self) -> ChannelLayout {
-        self.ports.width()
+        self.ports.audio_out()
     }
 
     /// The shared threshold cell in [`Db`] — the sidechain level at or above
@@ -364,9 +375,7 @@ impl Node for GateNode {
     /// but it only scales (`output = input * gain`), so a silent input is a
     /// silent output whatever the envelope is doing.
     fn shape(&self) -> Shape {
-        let width = self.ports.width();
-        Shape::buses(self.ports.inputs(), self.ports.outputs())
-            .with_ports(ChannelLayout::from_count(2 * width.count()), width)
+        self.ports
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&GATE_PARAMS)
@@ -390,13 +399,13 @@ impl Node for GateNode {
         // Detector sample-outer (a recursive envelope with a hold counter),
         // apply channel-outer over planar slices — see `CompressorNode::process`.
         let gains = &mut self.gains[..size];
-        sidechain_levels(&inputs, &self.ports, gains);
+        sidechain_levels(&inputs.bus(self.key), gains);
         for (i, g) in gains.iter_mut().enumerate() {
             let sc = *g;
             let threshold = threshold_fed.map(|v| Db(v[i]));
             *g = self.core.gain(&block, i, size, sc, threshold);
         }
-        apply_gain_lane(gains, &self.ports, &inputs, &mut outputs);
+        apply_gain_lane(gains, &inputs, &mut outputs);
         Status::Modified
     }
 
@@ -455,6 +464,7 @@ impl Clone for GateNode {
         Self {
             core: self.core.clone(),
             ports: self.ports,
+            key: self.key,
             gains: self.gains.clone(),
         }
     }

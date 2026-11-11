@@ -29,11 +29,11 @@ use std::num::NonZeroUsize;
 
 use arrayvec::ArrayVec;
 use tutti_graph::{
-    Cx, Event, EventKind, Harmony, HarmonyKind, IntoNode, Io, Node, NodeParts, Offset, Prepare,
-    Shape, SortedEvents, Status,
+    BusOut, Cx, Event, EventKind, Harmony, HarmonyKind, InBus, IntoNode, Io, MAX_BUSES, Node,
+    NodeParts, Offset, OutBus, Prepare, Shape, SortedEvents, Status,
 };
 use tutti_types::Latency;
-use tutti_types::{ChannelLayout, Samples};
+use tutti_types::Samples;
 
 use super::client::{InProcClient, Inputs, PluginNode, Rendered, render_with};
 use crate::{Call, NodeControls, Snapshot, param_input, transport_info};
@@ -41,6 +41,17 @@ use tutti_plugin_types::{
     ChordChanges, ChordValue, ExpressiveContext, Features, InProcess, Loaded, MAX_BLOCK_CHANNELS,
     Processor, ScaleChanges, ScaleValue, TransportInfo, WireMidi,
 };
+
+/// A side's handles: one per bus and one for the ports past them.
+type Handles<H> = ArrayVec<H, { MAX_BUSES + 1 }>;
+
+/// Every input channel, a bus at a time in port order.
+fn channels_in<'s>(
+    inputs: &tutti_graph::Inputs<'s>,
+    buses: &[InBus],
+) -> impl Iterator<Item = &'s [f32]> {
+    buses.iter().flat_map(|&bus| inputs.bus(bus).channels())
+}
 
 impl<F: Loaded + 'static> Node for PluginNode<F>
 where
@@ -67,11 +78,8 @@ where
         // The plugin's own latency, and what the Processor adds to it (the
         // served pipeline's chunk).
         let latency = Latency::new(Samples(latency.get() + this.pipeline.get()));
-        Shape::buses(this.declared.buses_in, this.declared.buses_out)
-            .with_ports(
-                ChannelLayout::from_count(this.declared.inputs.count()),
-                ChannelLayout::from_count(this.declared.outputs.count()),
-            )
+        this.declared
+            .ports
             .with_events(1, midi_out)
             .with_latency(latency)
             .with_tail(tail)
@@ -129,8 +137,15 @@ where
             // not audio at another rate.
             return Status::Silent;
         }
-        let n_in = (this.declared.inputs.count() as usize).min(MAX_BLOCK_CHANNELS);
-        let n_out = (this.declared.outputs.count() as usize).min(MAX_BLOCK_CHANNELS);
+        let ports = this.declared.ports;
+        let n_in = (ports.audio_in().count() as usize).min(MAX_BLOCK_CHANNELS);
+        let n_out = (ports.audio_out().count() as usize).min(MAX_BLOCK_CHANNELS);
+        // The plugin's channels are a list in its bus order: the graph's
+        // buffers are reached a bus at a time, in that order.
+        let (ins_by_bus, outs_by_bus): (Handles<InBus>, Handles<OutBus>) = (
+            ports.input_handles().collect(),
+            ports.output_handles().collect(),
+        );
         let features = this.features;
         // Between blocks: take a Processor on offer, or hand this one back
         // (stopped) when the control side recalled it. Taken once, here, so
@@ -168,7 +183,11 @@ where
             this.out_events.clear();
             let mut block = this.transport.lend(features);
             let (inputs, mut outputs) = io.split();
-            for out in outputs.iter_mut().skip(n_out) {
+            for out in outputs
+                .buses(&outs_by_bus)
+                .flat_map(BusOut::into_channels)
+                .skip(n_out)
+            {
                 out[..size].fill(0.0);
             }
             let mut at = 0;
@@ -265,10 +284,13 @@ where
                 }
 
                 let piece_midi = this.midi.len();
-                let ins: ArrayVec<&[f32], MAX_BLOCK_CHANNELS> =
-                    (0..n_in).map(|ch| &inputs.get(ch)[at..at + n]).collect();
+                let ins: ArrayVec<&[f32], MAX_BLOCK_CHANNELS> = channels_in(&inputs, &ins_by_bus)
+                    .take(n_in)
+                    .map(|ch| &ch[at..at + n])
+                    .collect();
                 let mut outs: ArrayVec<&mut [f32], MAX_BLOCK_CHANNELS> = outputs
-                    .iter_mut()
+                    .buses(&outs_by_bus)
+                    .flat_map(BusOut::into_channels)
                     .take(n_out)
                     .map(|out| &mut out[at..at + n])
                     .collect();
@@ -399,13 +421,20 @@ where
             // A plugin wider than the tables is handed their first
             // `MAX_BLOCK_CHANNELS` channels; the graph's outputs past them would
             // keep whatever their buffers last held, so they are silenced.
-            for out in outputs.iter_mut().skip(n_out) {
+            for out in outputs
+                .buses(&outs_by_bus)
+                .flat_map(BusOut::into_channels)
+                .skip(n_out)
+            {
                 out[..size].fill(0.0);
             }
-            let ins: ArrayVec<&[f32], MAX_BLOCK_CHANNELS> =
-                (0..n_in).map(|ch| &inputs.get(ch)[..size]).collect();
+            let ins: ArrayVec<&[f32], MAX_BLOCK_CHANNELS> = channels_in(&inputs, &ins_by_bus)
+                .take(n_in)
+                .map(|ch| &ch[..size])
+                .collect();
             let mut outs: ArrayVec<&mut [f32], MAX_BLOCK_CHANNELS> = outputs
-                .iter_mut()
+                .buses(&outs_by_bus)
+                .flat_map(BusOut::into_channels)
                 .take(n_out)
                 .map(|out| &mut out[..size])
                 .collect();

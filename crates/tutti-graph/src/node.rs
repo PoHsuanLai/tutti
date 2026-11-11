@@ -24,7 +24,7 @@ use tutti_types::{
     Samples, SegmentOrigin, Tail, UnitAddr, UnitParam,
 };
 
-use crate::bus::Buses;
+use crate::bus::{Buses, PortSpan};
 use crate::cost::Cost;
 use crate::fork::ForkSource;
 use crate::history::TransportHistory;
@@ -158,6 +158,26 @@ pub struct Shape {
     /// [`with_no_note_events`](Self::with_no_note_events)). `true` unless set
     /// otherwise: a node that declares nothing is assumed to carry them.
     pub note_events: bool,
+}
+
+/// The ports [`Io::input`](crate::Io::input) and its kin cover, per side
+/// ([`Shape::main_ports`]): compiled into each node call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MainPorts {
+    pub(crate) inputs: PortSpan,
+    pub(crate) outputs: PortSpan,
+}
+
+/// The ports of bus `index` of `buses`.
+fn span_of(buses: &Buses, index: usize) -> Option<PortSpan> {
+    let bus = buses.get(index)?;
+    Some(PortSpan::new(buses.first_port(index)?, bus.width()))
+}
+
+/// The ports past `buses` on a side of `width` ports, if any.
+fn spare(buses: &Buses, width: ChannelLayout) -> Option<PortSpan> {
+    let (first, all) = (buses.width(), usize::from(width.count()));
+    (all > first).then(|| PortSpan::new(first, all - first))
 }
 
 /// How finely a node honours event offsets: the timing it promises for what
@@ -327,6 +347,66 @@ impl Shape {
     #[must_use]
     pub const fn buses_out(&self) -> &Buses {
         &self.buses_out
+    }
+
+    /// Input bus `index`, in port order: the handle a node reads it through
+    /// ([`Io::bus_in`](crate::Io::bus_in)). `None` past the declared buses.
+    #[must_use]
+    pub fn input_bus(&self, index: usize) -> Option<crate::InBus> {
+        span_of(&self.buses_in, index).map(crate::InBus)
+    }
+
+    /// Output bus `index`, in port order ([`Io::bus_out`](crate::Io::bus_out)).
+    #[must_use]
+    pub fn output_bus(&self, index: usize) -> Option<crate::OutBus> {
+        span_of(&self.buses_out, index).map(crate::OutBus)
+    }
+
+    /// The input ports past the declared buses
+    /// ([`with_ports`](Self::with_ports)): a plugin's channels a bus cannot
+    /// describe. `None` when the buses cover every port.
+    #[must_use]
+    pub fn spare_in(&self) -> Option<crate::InBus> {
+        spare(&self.buses_in, self.audio_in).map(crate::InBus)
+    }
+
+    /// The output ports past the declared buses.
+    #[must_use]
+    pub fn spare_out(&self) -> Option<crate::OutBus> {
+        spare(&self.buses_out, self.audio_out).map(crate::OutBus)
+    }
+
+    /// Every input port as handles, in port order: one per declared bus, then
+    /// one for the ports past them. A node whose ports are a list it was handed
+    /// (a plugin's channels) reads them all through these.
+    pub fn input_handles(&self) -> impl Iterator<Item = crate::InBus> + use<'_> {
+        (0..self.buses_in.len())
+            .filter_map(|i| self.input_bus(i))
+            .chain(self.spare_in())
+    }
+
+    /// Every output port as handles, in port order (see
+    /// [`input_handles`](Self::input_handles)).
+    pub fn output_handles(&self) -> impl Iterator<Item = crate::OutBus> + use<'_> {
+        (0..self.buses_out.len())
+            .filter_map(|i| self.output_bus(i))
+            .chain(self.spare_out())
+    }
+
+    /// The ports [`Io::input`](crate::Io::input) and
+    /// [`Io::output`](crate::Io::output) cover: each side's
+    /// [`Main`](crate::BusRole::Main) bus, every port of a side that declares
+    /// no bus, and none of a side whose buses name no main one.
+    pub(crate) fn main_ports(&self) -> MainPorts {
+        let side = |buses: &Buses, width: ChannelLayout| match buses.main_bus() {
+            Some((index, _)) => span_of(buses, index).unwrap_or_default(),
+            None if buses.is_empty() => PortSpan::new(0, usize::from(width.count())),
+            None => PortSpan::default(),
+        };
+        MainPorts {
+            inputs: side(&self.buses_in, self.audio_in),
+            outputs: side(&self.buses_out, self.audio_out),
+        }
     }
 
     /// The dry path: where each input channel goes when the node does not run

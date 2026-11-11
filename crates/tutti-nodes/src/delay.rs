@@ -3,10 +3,8 @@
 //! [`DelayLine`] is the bare fractional-read ring; [`DelayLineNode`] wraps it
 //! into a width-generic graph node with feedback, an explicit cross-feedback
 //! routing matrix, and feedback and delay time the graph can
-//! modulate per frame. The fractional read is the
-//! reason this is not just a [`CircularBuffer`](tutti_dsp::CircularBuffer):
-//! a delay whose time is modulated must interpolate between taps or it steps
-//! audibly.
+//! modulate per frame. The read is fractional: a delay whose time is
+//! modulated must interpolate between taps or it steps audibly.
 
 use std::sync::Arc;
 use tutti_types::{AtomicF32, AtomicF64};

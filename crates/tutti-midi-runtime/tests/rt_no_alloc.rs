@@ -189,7 +189,10 @@ fn gesture(device: &mut EventInletWriter, block: u64) {
 /// without allocating, block after block.
 #[test]
 fn the_mpe_expression_paths_process_without_allocating() {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(512)),
+    ));
     ed.insert(
         NodeKey(1),
         "in",

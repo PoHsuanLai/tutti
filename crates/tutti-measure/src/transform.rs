@@ -633,9 +633,12 @@ mod tests {
     use super::*;
 
     fn tone(len: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
-        (0..len)
-            .map(|i| (2.0 * core::f32::consts::PI * freq * i as f32 / sample_rate).sin() * 0.5)
-            .collect()
+        tutti_fixtures::signal::sine(
+            tutti_types::Hz(freq),
+            tutti_types::Amplitude(0.5),
+            tutti_types::SampleRate(f64::from(sample_rate)),
+            tutti_types::Samples(len),
+        )
     }
 
     #[test]

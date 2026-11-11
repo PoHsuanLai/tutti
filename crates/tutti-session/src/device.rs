@@ -571,7 +571,8 @@ impl Session {
         if let Some(io) = &self.midi_io {
             io.ports().inlets().set_lead(crate::midi::input_lead(
                 spec.quantum
-                    .unwrap_or(self.graph.prepared().max_block().samples()),
+                    .unwrap_or(self.graph.prepared().max_block())
+                    .samples(),
                 rate,
             ));
         }

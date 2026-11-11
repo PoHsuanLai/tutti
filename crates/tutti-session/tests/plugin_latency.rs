@@ -211,7 +211,7 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
             ChannelLayout::STEREO,
             tutti_cpal::cpal::SampleFormat::F32,
         )
-        .with_quantum(Samples(quantum))
+        .with_quantum(MaxBlock::of(Samples(quantum)))
     }
     set_server();
     let (driver, stream) = ManualStreamDriver::new();

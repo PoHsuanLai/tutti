@@ -444,6 +444,16 @@ impl Vst3Loaded {
         main: &MainThread,
         prepare: Prepare,
     ) -> std::result::Result<(Vst3Processor<T>, Vst3Controller), Refused<Self>> {
+        // `maxSamplesPerBlock` is an `i32`, narrower than a `MaxBlock`'s `u32`.
+        if i32::try_from(prepare.max_block().get_u32()).is_err() {
+            return Err(Refused {
+                plugin: Some(self),
+                reason: PluginError::Other(format!(
+                    "a block of {} frames exceeds VST3's maxSamplesPerBlock (i32)",
+                    prepare.max_block().get()
+                )),
+            });
+        }
         super::shell::warm_retirement();
         super::shell::reap();
         let mode = if prepare.mode().is_offline() {

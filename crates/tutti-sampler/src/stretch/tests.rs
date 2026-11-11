@@ -7,7 +7,10 @@ use super::fft::{Complex32, Fft};
 use super::unit::*;
 use super::vocoder::*;
 use super::*;
-use tutti_types::{Cents, ChannelLayout, Radians, ReadRate, Samples, StretchFactor};
+use tutti_fixtures::signal::rms;
+use tutti_types::{
+    Amplitude, Cents, ChannelLayout, Hz, Radians, ReadRate, SampleRate, Samples, StretchFactor,
+};
 
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -21,9 +24,12 @@ fn planar(u: &mut Unit, size: usize, input: &[Vec<f32>], output: &mut [Vec<f32>]
 }
 
 fn sine(freq: f32, sample_rate: f32, len: usize) -> Vec<f32> {
-    (0..len)
-        .map(|i| (Radians::TAU.get() * freq * i as f32 / sample_rate).sin() * 0.5)
-        .collect()
+    tutti_fixtures::signal::sine(
+        Hz(freq),
+        Amplitude(0.5),
+        SampleRate(f64::from(sample_rate)),
+        Samples(len),
+    )
 }
 
 #[test]
@@ -760,10 +766,6 @@ fn dominant_hz(x: &[f32], sample_rate: f32) -> f32 {
 }
 
 #[cfg(test)]
-fn rms(x: &[f32]) -> f32 {
-    (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt()
-}
-
 /// Render a 440 Hz source through a unit, observing the crate's feed
 /// contract: one source sample in per output sample out, with the unit
 /// pacing its own intake.

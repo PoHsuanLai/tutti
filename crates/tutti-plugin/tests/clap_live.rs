@@ -153,7 +153,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     let _awake = KeepAwake::new();
     let inputs = probe.client.inputs();
     let prepare = Prepare::new(SampleRate(rate), MaxBlock::of(Samples(quantum)))
-        .with_quantum(Samples(quantum));
+        .with_quantum(MaxBlock::of(Samples(quantum)));
     let (mut ed, exec) = Editor::new(prepare);
     let (src, key) = (NodeKey(1), NodeKey(2));
     ed.insert(src, "ramp", Unforkable(RampSource));

@@ -4,9 +4,6 @@
 use tutti_types::Drive;
 
 /// Selects which waveshaping curve the distortion node applies.
-///
-/// Discriminants are stable — they persist in saved projects via
-/// `EffectKind::Distortion`. Append new kinds at the end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum ShapeKind {

@@ -10,7 +10,7 @@
 //! since each interpreter draws its own from the process-wide counter; each
 //! is checked against the restarts it must mark.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 

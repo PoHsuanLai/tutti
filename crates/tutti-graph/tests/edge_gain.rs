@@ -8,7 +8,8 @@
 //! prescribes: the compiled executor against the reference interpreter
 //! (`Pair`), and the parallel executor against the serial one.
 
-mod common;
+use common::spec_of;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,8 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use common::{Kind, Pair, TestNode, bits, input_signal, prepare};
 use tutti_graph::{
     CommitError, Cx, Edge, EdgeGain, EdgeId, Editor, Executor, ForkByClone, ForkMode, ForkTarget,
-    GraphInvalid, GraphSpec, InPort, Io, Node, NodeKey, NodeSpec, Op, OutPort, Plan, Prepare,
-    Renderer, Shape, Sink, Source, Status, Topology, Transport, Unforkable, ValidGraph, compile,
+    GraphInvalid, GraphSpec, InPort, Io, Node, NodeKey, Op, OutPort, Plan, Prepare, Renderer,
+    Shape, Sink, Source, Status, Topology, Transport, Unforkable, ValidGraph, compile,
 };
 use tutti_types::{Amplitude, ChannelLayout};
 
@@ -68,13 +69,6 @@ fn output_edge(from: u64) -> EdgeId {
         sink: Sink::Output(0),
         from: direct(from),
     }
-}
-
-fn spec_of(kind: &Kind) -> NodeSpec {
-    let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in(), s.audio_out())
-        .with_latency(s.latency.samples())
-        .with_tail(s.tail)
 }
 
 fn nodes(kinds: &[Kind]) -> (Topology, BTreeMap<NodeKey, Kind>) {

@@ -3,7 +3,7 @@
 //! the parallel executor, and allocation-free on every participant. A closed
 //! tap compiles to no op, and a render is the same with a tap open or closed.
 
-mod common;
+use tutti_graph::testing as common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};

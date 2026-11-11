@@ -22,7 +22,7 @@ use std::thread::ThreadId;
 use std::time::Duration;
 
 use tutti_export::Produced;
-use tutti_fixtures::assert_golden;
+use tutti_fixtures::{assert_golden, digest_planes};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, ForkBuild, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
@@ -143,15 +143,6 @@ fn chain(session: &mut Session) -> NodeKey {
     filter
 }
 
-/// FNV-1a over the planes' little-endian `f32` bits, plane after plane.
-fn digest(planes: &[Vec<f32>]) -> u64 {
-    let mut h = tutti_fixtures::Fnv::new();
-    for plane in planes {
-        h.f32s(plane);
-    }
-    h.finish()
-}
-
 /// [`chain`]'s units wired fresh, with `GraphBuilder`, and rendered in the
 /// export's own blocks for `seconds`: the master (the filter on channel 0,
 /// the saw on channel 1) and the filter alone (the graph's own two channels
@@ -245,7 +236,7 @@ fn exports_render_their_graph_as_wired_fresh() {
     }
     assert_golden(
         "the master export",
-        digest(&forked_master),
+        digest_planes(&forked_master),
         0xccbc_b417_89a0_36e4,
     );
     // And the stem is the node: the filter, which is the master's channel 0

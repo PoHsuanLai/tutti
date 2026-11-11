@@ -9,7 +9,7 @@
 //! kinds. Block sizes include 1, non-powers of two, and a schedule that varies
 //! every block.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use tutti_types::MaxBlock;

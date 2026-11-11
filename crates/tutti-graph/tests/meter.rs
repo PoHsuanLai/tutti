@@ -8,7 +8,7 @@
 //! nothing, so there is nothing for it to compare. The properties here are
 //! analytic figures and the serial render against the parallel one.
 
-mod common;
+use tutti_graph::testing as common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};

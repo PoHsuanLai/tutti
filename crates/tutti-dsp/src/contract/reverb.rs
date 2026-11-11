@@ -3,7 +3,7 @@
 
 use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds};
 
-use super::basic::{check_vacuity, every};
+use super::core::{check_vacuity, every};
 use super::harness::{Burst, WINDOW, built, burst, energy, noise, rate_of, render, rms, widths};
 use super::{Hook, RealizationCase, ReverbCase};
 use crate::{Absorption, Band, Bounds, Lti, Network, Realization, Ring, Stage, System};
@@ -565,7 +565,7 @@ pub(super) mod realization {
     /// length, not only the shortest that `arrival` finds. Vacuous (an error) for
     /// a network of another shape.
     pub fn line_lengths<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
-        use crate::network::Stage;
+        use crate::reverb::network::Stage;
         let rate = rate_of(d);
         let mut checked = 0;
         for c in d.static_probes() {

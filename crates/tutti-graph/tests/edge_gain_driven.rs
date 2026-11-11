@@ -8,15 +8,16 @@
 //! and reference are compared at every block (`Pair`), and the parallel
 //! executor against the serial one, bit for bit.
 
-mod common;
+use common::spec_of;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 
 use common::{Kind, Pair, SpecBehaviour, bits, driver_value, input_signal, prepare};
 use tutti_graph::{
     CompileError, Edge, EdgeId, Editor, EventOut, ForkCause, ForkMode, ForkSource, Forked,
-    GraphInvalid, GraphSpec, InPort, IntoNode, Node, NodeKey, NodeParts, NodeSpec, OutPort,
-    PARAM_DECLICK, ParamRange, Sink, Source, Topology, Unforkable, ValidGraph, compile,
+    GraphInvalid, GraphSpec, InPort, IntoNode, Node, NodeKey, NodeParts, OutPort, PARAM_DECLICK,
+    ParamRange, Sink, Source, Topology, Unforkable, ValidGraph, compile,
 };
 use tutti_types::{Amplitude, Samples, Tail};
 
@@ -73,13 +74,6 @@ fn driver(latency: usize) -> Kind {
         period: PERIOD,
         latency,
     }
-}
-
-fn spec_of(kind: &Kind) -> NodeSpec {
-    let s = Node::shape(&common::TestNode::new(kind.clone()));
-    NodeSpec::new("test", s.audio_in(), s.audio_out())
-        .with_latency(s.latency.samples())
-        .with_tail(s.tail)
 }
 
 /// Where the summed edge is: at a pass-through's port (node `sink`), or at

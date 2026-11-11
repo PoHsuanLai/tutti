@@ -308,19 +308,8 @@ fn a_memory_source_node_renders_the_same_frames_at_any_block_length() {
 
 /// A stereo float WAV of [`frame_at`], `frames` long.
 fn write_wav(path: &Path, frames: usize) {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: SR as u32,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut w = hound::WavWriter::create(path, spec).expect("create wav");
-    for i in 0..frames {
-        for s in frame_at(i) {
-            w.write_sample(s).expect("write wav");
-        }
-    }
-    w.finalize().expect("finalize wav");
+    let interleaved: Vec<f32> = (0..frames).flat_map(frame_at).collect();
+    tutti_fixtures::signal::write_wav_f32(path, SampleRate(SR), 2, &interleaved);
 }
 
 /// A live disk voice streaming `path` from its start, on its own

@@ -205,13 +205,16 @@
 //!   latency and resolution promise, on every path the graph can put it on.
 //!   Test support: enable it from a dev-dependency.
 //! - `testing` (off by default): `Reference`, the naive interpreter this
-//!   crate's differential suites check the executor against. Test support:
-//!   this crate's own tests turn it on through a self dev-dependency.
+//!   crate's differential suites check the executor against, and the `testing`
+//!   module: the small test nodes (`TestNode`, `Kind`), the executor-versus-
+//!   reference harness (`Pair`) and a worker pool for tests (`TestPool`).
+//!   Test support: this crate's own tests turn it on through a self
+//!   dev-dependency, and a node crate's tests may do the same.
 //!
 //! # Import paths
 //!
 //! Every public item is re-exported at the crate root; import from there
-//! (`tutti_graph::Plan`). The only public module is `contract`.
+//! (`tutti_graph::Plan`). The only public modules are `contract` and `testing`, both test support.
 
 #![deny(missing_docs)]
 // No `unsafe` anywhere in the crate: the arena's disjoint borrows are proven
@@ -262,6 +265,8 @@ mod slots;
 mod spec;
 mod tail;
 mod tap;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod time;
 
 pub use builder::{GraphBuilder, Renderer, Solo};

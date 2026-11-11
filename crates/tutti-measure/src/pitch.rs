@@ -293,12 +293,12 @@ mod tests {
     const N: usize = 4096;
 
     fn sine(freq: Hz, amp: f32) -> Vec<f32> {
-        let f = f64::from(freq.get());
-        (0..N)
-            .map(|i| {
-                (f64::from(amp) * (std::f64::consts::TAU * f * i as f64 / SR.get()).sin()) as f32
-            })
-            .collect()
+        tutti_fixtures::signal::sine(
+            freq,
+            tutti_types::Amplitude(amp),
+            SR,
+            tutti_types::Samples(N),
+        )
     }
 
     fn saw(freq: Hz, amp: f32) -> Vec<f32> {

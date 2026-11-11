@@ -210,30 +210,6 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     set_ports_64bit(0);
 }
 
-/// **A block past CLAP's `max_frames_count` (a `u32`) is refused, not
-/// saturated to `u32::MAX`** (which would size the scratch for four billion
-/// frames in every channel). The plugin comes back inactive and activates at a
-/// block it can take.
-#[cfg(target_pointer_width = "64")]
-#[test]
-fn a_block_past_u32_is_refused_not_saturated() {
-    let probe = Probe::acquire();
-    let loaded = probe.load();
-    let huge = Prepare::new(
-        SampleRate(48_000.0),
-        MaxBlock::of(Samples(u32::MAX as usize + 1)),
-    )
-    .expect("a real rate");
-    let refused = loaded
-        .activate(&main_thread(), huge)
-        .expect_err("a block past u32 is refused");
-    let loaded = refused.plugin.expect("the plugin comes back");
-    let (processor, controller) = loaded
-        .activate(&main_thread(), prepare())
-        .expect("a block it can take activates");
-    ClapLoaded::deactivate(&main_thread(), processor, controller).expect("a pair");
-}
-
 /// **A 64-bit request negotiates down to 32-bit when the plugin lacks
 /// 64-bit ports, and stays 64-bit when it has them.** The fallback is
 /// `tutti_plugin_types::negotiate` fed this plugin's capability; the

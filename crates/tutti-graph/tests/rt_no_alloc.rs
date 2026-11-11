@@ -17,7 +17,7 @@
 //! that allocates is the node's bug, which this test catches only for the
 //! nodes it runs.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -9,7 +9,7 @@
 //! and a sum is the left fold `((+0.0 + a_0) + a_1) + ..` over the sources in
 //! `Edge` order.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 
@@ -303,9 +303,7 @@ fn the_sum_starts_from_positive_zero_and_one_source_is_an_alias() {
 /// An impulse into a latent path and straight into the sum: it arrives
 /// **once**, aligned, `LAG_FRAMES` late, including across a block boundary.
 fn impulse_input(frame: usize, blocks: usize) -> Vec<f32> {
-    let mut x = vec![0.0f32; BLOCK * blocks];
-    x[frame] = 1.0;
-    x
+    tutti_fixtures::signal::impulse_at(Samples(BLOCK * blocks), Samples(frame))
 }
 
 fn lag_into_pass() -> (Topology, BTreeMap<NodeKey, Kind>) {

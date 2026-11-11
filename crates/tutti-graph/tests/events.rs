@@ -14,7 +14,7 @@
 //!   its frame (or, when already past, at the start of the next block),
 //!   through the same recompiles.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};

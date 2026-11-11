@@ -3,7 +3,8 @@
 //! rules are written out independently below ([`net_rule`]) and each render
 //! is pinned to the figure they give in closed form.
 
-mod common;
+use tutti_fixtures::signal::bits;
+use tutti_graph::testing as common;
 
 use std::sync::{Arc, Mutex};
 
@@ -20,10 +21,6 @@ fn signal(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| ((i * 7919 % 97) as f32 - 48.0) / 48.0)
         .collect()
-}
-
-fn bits(v: &[f32]) -> Vec<u32> {
-    v.iter().map(|x| x.to_bits()).collect()
 }
 
 /// `ins` inputs, `outs` outputs; output `c` is `c + 1` plus the sum of the

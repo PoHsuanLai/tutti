@@ -17,6 +17,7 @@
 //! on its beat and not before).
 
 use std::sync::Arc;
+use tutti_fixtures::signal::rms;
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{note_off, note_on};
@@ -74,14 +75,6 @@ fn rig() -> (Session, NodeKey) {
     s.graph().set_outputs_from(synth);
     s.update();
     (s, synth)
-}
-
-/// RMS of interleaved stereo frames.
-fn rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 /// `frames` frames from the session, in 128-frame blocks.

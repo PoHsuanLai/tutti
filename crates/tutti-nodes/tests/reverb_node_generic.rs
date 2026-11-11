@@ -167,9 +167,7 @@ impl Rig {
 }
 
 fn impulse_block() -> Vec<f32> {
-    let mut x = vec![0.0; BLOCK];
-    x[0] = 1.0;
-    x
+    tutti_fixtures::signal::impulse(tutti_types::Samples(BLOCK))
 }
 
 /// The realization's latency and the network's tail are declared apart (a tail

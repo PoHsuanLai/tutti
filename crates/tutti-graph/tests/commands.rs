@@ -3,7 +3,7 @@
 //! across a block boundary — in the executor and the reference alike; late is
 //! counted and never dropped; the queue back-pressures instead of growing.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::sync::{Arc, Mutex};
 

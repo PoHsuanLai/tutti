@@ -47,6 +47,10 @@ pub struct Au {
     prepare: Prepare,
 }
 
+fn refusal(error: PluginError) -> AuError {
+    AuError::InvalidBuffer(error.to_string())
+}
+
 fn prepare_of(rate: f64, block: u32) -> Prepare {
     Prepare::new(
         SampleRate(rate),
@@ -147,67 +151,60 @@ impl Au {
         }
     }
 
-    /// Runs `change` with the unit deactivated, then activates it again if it
-    /// was active (the unit comes back at whatever `prepare` is by then).
-    fn while_loaded(&mut self, change: impl FnOnce(&mut Self) -> PluginResult<()>) -> PluginResult<()> {
+    /// Rejoins the halves, applies the stream configuration (the host's own
+    /// step of an activation, whose refusal rolls itself back), and activates
+    /// again if the unit was active. A refusal is reported as the host's error.
+    fn restream(&mut self, rate: f64, block: u32) -> tutti_au_host::Result<()> {
         let was_active = self.is_initialized();
         if was_active {
-            self.uninitialize()?;
+            self.uninitialize().map_err(refusal)?;
         }
-        let result = change(self);
+        let result = self.reconfigure_stream(rate, block);
+        if result.is_ok() {
+            self.prepare = Prepare::new(SampleRate(rate), MaxBlock::of(Samples(block as usize)))
+                .expect("a usable rate")
+                .with_mode(self.prepare.mode());
+        }
         if was_active {
-            self.initialize()?;
+            self.initialize().map_err(refusal)?;
         }
         result
     }
 
     /// A new sample rate: a rejected one leaves the unit on the rate it was on.
-    pub fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
-        let wanted = self
-            .prepare
-            .with_rate(SampleRate(rate))
-            .ok_or_else(|| PluginError::Other(format!("{rate} is not a rate")))?;
-        let before = self.prepare;
-        self.prepare = wanted;
-        let result = self.while_loaded(|_| Ok(()));
-        if result.is_err() {
-            // The activation refused: the unit is back on the old
-            // configuration, and the next one carries it.
-            self.prepare = before;
-            let _ = self.initialize();
-        }
-        result
+    pub fn set_sample_rate(&mut self, rate: f64) -> tutti_au_host::Result<()> {
+        let block = self.block_size();
+        self.restream(rate, block)
     }
 
     /// A new block ceiling. Zero is refused.
-    pub fn set_block_size(&mut self, frames: u32) -> PluginResult<()> {
-        let Some(block) = MaxBlock::new(Samples(frames as usize)) else {
-            return Err(PluginError::Other("block_size must be non-zero".into()));
-        };
-        if frames == self.block_size() {
-            return Ok(());
+    pub fn set_block_size(&mut self, frames: u32) -> tutti_au_host::Result<()> {
+        if frames == 0 {
+            return Err(AuError::InvalidBuffer(
+                "block_size must be non-zero".to_string(),
+            ));
         }
-        let before = self.prepare;
-        self.prepare = Prepare::new(self.prepare.rate(), block)
-            .expect("the rate was usable")
-            .with_mode(self.prepare.mode());
-        let result = self.while_loaded(|_| Ok(()));
-        if result.is_err() {
-            self.prepare = before;
-            let _ = self.initialize();
-        }
-        result
+        let rate = self.sample_rate();
+        self.restream(rate, frames)
     }
 
     /// Writes the render mode the way the host does: the next activation carries
     /// it. Returns whether *this unit* accepted the property.
-    pub fn set_offline_render_bracketed(&mut self, offline: bool) -> PluginResult<bool> {
+    pub fn set_offline_render_bracketed(&mut self, offline: bool) -> tutti_au_host::Result<bool> {
         self.prepare = self.prepare.with_mode(if offline {
             RenderMode::Offline
         } else {
             RenderMode::Realtime
         });
-        self.while_loaded(|_| Ok(()))?;
+        if self.is_initialized() {
+            self.uninitialize().map_err(refusal)?;
+            self.initialize().map_err(refusal)?;
+        } else {
+            // Not active: the unit takes the mode now, as the host's
+            // `Control::set_render_mode` does on a loaded one.
+            let mode = self.prepare.mode();
+            Control::set_render_mode(&mut **self, &main_thread(), mode);
+        }
         Ok(self.render_mode_accepted())
     }
 

@@ -73,7 +73,7 @@ impl Loaded for AuLoaded {
             let error = AuError::InvalidBuffer("block_size must be non-zero".to_string());
             return Err(refuse(self, error));
         }
-        if let Err(e) = self.reconfigure(prepare.rate().0, block_size) {
+        if let Err(e) = self.apply_stream(prepare.rate().0, block_size) {
             return Err(refuse(self, e));
         }
 

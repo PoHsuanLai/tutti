@@ -258,7 +258,7 @@ impl AuLoaded {
     /// # Errors
     /// The stream-configuration errors of `apply`, or
     /// [`AuError::BlockSizeRejected`](crate::AuError::BlockSizeRejected).
-    pub(crate) fn reconfigure(&mut self, sample_rate: f64, block_size: u32) -> Result<()> {
+    pub(crate) fn apply_stream(&mut self, sample_rate: f64, block_size: u32) -> Result<()> {
         if sample_rate == self.config.sample_rate && block_size == self.config.block_size {
             return Ok(());
         }
@@ -287,6 +287,20 @@ impl AuLoaded {
                 Err(e)
             }
         }
+    }
+
+    /// [`activate`](tutti_plugin_types::Loaded::activate)'s stream configuration
+    /// on its own, for a test that needs the refusal as the host's own
+    /// [`AuError`](crate::AuError) rather than the shared vocabulary's. Only on a
+    /// unit that is not initialized: an initialized one was sized for the
+    /// configuration it has.
+    ///
+    /// # Errors
+    /// As the activation's: the stream-configuration errors, or
+    /// [`AuError::BlockSizeRejected`](crate::AuError::BlockSizeRejected).
+    #[cfg(feature = "test-support")]
+    pub fn reconfigure_stream(&mut self, sample_rate: f64, block_size: u32) -> Result<()> {
+        self.apply_stream(sample_rate, block_size)
     }
 
     /// The instance, for the safe AudioToolbox calls on it: the free functions of

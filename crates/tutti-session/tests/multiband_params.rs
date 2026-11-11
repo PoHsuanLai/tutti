@@ -11,6 +11,7 @@
 //! (`hp` is 1e-4 of it) and the right tone band 1's (`lp` is 6e-4).
 
 use std::f64::consts::{PI, TAU};
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 #[cfg(feature = "modulation")]
@@ -60,7 +61,11 @@ fn expected(hz: f64, g0: f64, g1: f64) -> f64 {
 /// node's controls.
 fn rig() -> (Session, NodeKey, MultibandControls) {
     let mut s = Session::builder()
-        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(RATE),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds");
     let g = s.graph();
     let (low, _) = g.insert(Osc::sine(Hz(LOW as f32)).with_amplitude(Amplitude(A as f32)));

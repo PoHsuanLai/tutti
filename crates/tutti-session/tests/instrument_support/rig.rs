@@ -2,6 +2,7 @@
 
 use tutti_graph::NodeKey;
 use tutti_session::{InstrumentHandle, Session};
+use tutti_types::MaxBlock;
 use tutti_types::Moment;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::Ump;
@@ -27,7 +28,7 @@ pub struct Rig {
 
 pub fn offline_session() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, Samples(BLOCK))
+        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
         .expect("an offline session builds")
 }
 

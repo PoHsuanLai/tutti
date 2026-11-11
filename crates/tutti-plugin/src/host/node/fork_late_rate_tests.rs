@@ -10,6 +10,7 @@
 //! of that command's reply. This pins it.
 
 use std::time::Duration;
+use tutti_types::MaxBlock;
 
 use tutti_graph::{ForkMode, GraphBuilder, Prepare, Renderer};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -73,7 +74,10 @@ fn a_late_rate_answer_does_not_silence_an_offline_fork() {
     let (key, _controls) = g.add_with_controls(fork);
     g.pipe_input(key).pipe_output(key);
     let mut renderer: Renderer = g
-        .renderer(Prepare::new(SampleRate(SLOW_RATE), Samples(BLOCK)))
+        .renderer(Prepare::new(
+            SampleRate(SLOW_RATE),
+            MaxBlock::of(Samples(BLOCK)),
+        ))
         .expect("a one-plugin graph compiles");
 
     // The bridge gives up on the rate change, then the render starts.

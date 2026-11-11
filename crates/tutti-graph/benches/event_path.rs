@@ -12,6 +12,7 @@
 //! ```
 
 use std::hint::black_box;
+use tutti_types::MaxBlock;
 use tutti_ump::Ump;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -67,7 +68,10 @@ impl Node for Sink {
 }
 
 fn rig(source: Source) -> Executor {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(BLOCK)),
+    ));
     ed.insert(NodeKey(1), "source", Unforkable(source));
     ed.insert(NodeKey(2), "sink", Unforkable(Sink));
     ed.spec_mut().connect_events(
@@ -107,7 +111,10 @@ fn bench(c: &mut Criterion) {
     // The per-call cost of an event-output node: `k` sources of 16 events
     // each into a port of 64 (nothing refused), no consumer.
     for k in [1u64, 8, 32] {
-        let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+        let (mut ed, mut exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(Samples(BLOCK)),
+        ));
         for i in 0..k {
             ed.insert(
                 NodeKey(i + 1),

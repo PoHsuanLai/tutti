@@ -23,6 +23,7 @@ use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
+use tutti_types::MaxBlock;
 use tutti_types::{Bpm, ChannelLayout, Hz, Q, SampleRate, Samples};
 
 pub const SAMPLE_RATE: f64 = 48_000.0;
@@ -32,7 +33,10 @@ pub const SAMPLE_RATE: f64 = 48_000.0;
 /// editor is leaked: a test process is the whole lifetime, and nothing here
 /// commits again.
 pub fn graph_engine(transport: &Transport, build: impl FnOnce(&mut Editor)) -> Engine {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(SAMPLE_RATE),
+        MaxBlock::of(Samples(512)),
+    ));
     build(&mut ed);
     ed.commit().expect("commits");
     let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");

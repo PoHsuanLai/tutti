@@ -73,6 +73,7 @@ impl SoundFontUnit {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use tutti_types::MaxBlock;
 
     use tutti_fixtures::midi;
     use tutti_graph::contract::drive_input;
@@ -113,7 +114,7 @@ mod tests {
     /// graph prepares a fork at its render's), in 64-frame blocks, a note-on
     /// at frame 0.
     fn render(mut node: Box<dyn Node>, rate: SampleRate, frames: usize) -> Vec<f32> {
-        node.prepare(&Prepare::new(rate, Samples(64)));
+        node.prepare(&Prepare::new(rate, MaxBlock::of(Samples(64))));
         let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
         let at = Offset::new(0, Samples(64)).expect("inside");
         let first = [Event::midi(at, note)];
@@ -198,7 +199,7 @@ mod tests {
 
     /// `render` with no events at all.
     fn render_quiet(mut node: Box<dyn Node>, rate: SampleRate, frames: usize) -> Vec<f32> {
-        node.prepare(&Prepare::new(rate, Samples(64)));
+        node.prepare(&Prepare::new(rate, MaxBlock::of(Samples(64))));
         let mut out = Vec::with_capacity(frames);
         let mut frame = 0u64;
         while out.len() < frames {

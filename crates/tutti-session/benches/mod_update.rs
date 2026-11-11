@@ -18,6 +18,7 @@
 //! `cargo bench -p tutti-session --features modulation --bench mod_update`.
 
 use std::time::{Duration, Instant};
+use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_modulation::{Follower, Lfo};
@@ -30,7 +31,11 @@ const UPDATES: usize = 2_000;
 
 fn scene(n: usize, modulated: bool) -> (Session, Vec<NodeKey>) {
     let mut s = Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(512)),
+        )
         .expect("builds");
     let mut filters = Vec::with_capacity(n);
     for _ in 0..n {

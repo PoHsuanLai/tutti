@@ -24,6 +24,7 @@ use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, LimiterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Db, Hz, InterleavedMut, Q, SampleRate, Samples};
 
 #[global_allocator]
@@ -35,7 +36,10 @@ static A: AllocDisabler = AllocDisabler;
 fn build_engine_with_chain() -> Engine {
     let sample_rate = 48_000.0;
     let transport = Transport::new(SampleRate::new(sample_rate));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(sample_rate), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(sample_rate),
+        MaxBlock::of(Samples(512)),
+    ));
     let [osc, eq, strip, limiter] = [1, 2, 3, 4].map(NodeKey);
     ed.insert(osc, "osc", Osc::sine(Hz(440.0)));
     ed.insert(

@@ -39,6 +39,7 @@
 
 use std::hint::black_box;
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::NodeKey;
@@ -77,7 +78,8 @@ fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey) {
 /// `lanes` chains of `depth` filters (depth 0: a lone oscillator per lane),
 /// summed; on a pool of `workers` participants when more than one.
 fn wide(lanes: usize, depth: usize, workers: usize) -> Executor {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(FRAMES)));
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(FRAMES))));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
             WorkerPool::builder()
@@ -163,7 +165,8 @@ fn gain(ed: &mut Editor, k: NodeKey, i: usize, light: bool) {
 
 /// `lanes` single gains off one input, summed.
 fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(FRAMES)));
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(FRAMES))));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
             WorkerPool::builder()
@@ -200,7 +203,8 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
 /// siblings hanging off them. Declared light, the cost model packs each
 /// lane's gains; undeclared, each gain is a task.
 fn mixed(lanes: usize, depth: usize, fan: usize, light: bool, workers: usize) -> Executor {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(FRAMES)));
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(FRAMES))));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
             WorkerPool::builder()

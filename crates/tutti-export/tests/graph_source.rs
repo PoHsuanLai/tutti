@@ -47,6 +47,7 @@
 
 mod support;
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig, write_buffers};
+use tutti_types::MaxBlock;
 
 use std::sync::Arc;
 use tutti_types::Seconds;
@@ -115,7 +116,9 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// `VbapPannerNode` starts on its commanded bearing where a fresh one glides
 /// there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
-    let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
+    let (live, _exec) = g
+        .build(Prepare::new(RATE, MaxBlock::of(Samples(256))))
+        .expect("builds");
     support::fork_offline(&live, RATE)
 }
 
@@ -881,7 +884,9 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
         MemorySource::placed(tone(), Beat(0.0), None).expect("a placeable wave"),
     );
     g.pipe_output(k);
-    let (live, mut exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
+    let (live, mut exec) = g
+        .build(Prepare::new(RATE, MaxBlock::of(Samples(256))))
+        .expect("builds");
     exec.apply_pending();
     let elsewhere = tutti_graph::Transport::new(true, Bpm::of(120.0), Beat(0.25), None);
     let mut sink = vec![0.0f32; 256];

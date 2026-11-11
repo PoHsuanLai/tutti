@@ -44,6 +44,7 @@
 //! Baselines are per-machine and do not travel; see `cargo xtask bench-save`.
 
 use std::hint::black_box;
+use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_engine::Engine;
@@ -77,7 +78,7 @@ fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey, out: u16) {
 /// repeated).
 fn chain_engine(outputs: usize) -> Engine {
     let transport = Transport::new(SampleRate::new(SR));
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
     let [osc, eq, strip] = [1, 2, 3].map(NodeKey);
     ed.insert(osc, "osc", Osc::sine(Hz(440.0)));
     ed.insert(
@@ -322,7 +323,7 @@ fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
     use tutti_graph::{Edge, InPort, OutPort, Source};
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
         SampleRate(SR),
-        tutti_types::Samples(512),
+        tutti_types::MaxBlock::of(tutti_types::Samples(512)),
     ));
     let src: Box<dyn tutti_graph::Node> = if ours {
         tutti_graph::IntoNode::into_node(Osc::sine(Hz(440.0))).0

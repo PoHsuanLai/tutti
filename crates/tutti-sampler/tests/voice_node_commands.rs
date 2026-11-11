@@ -33,6 +33,7 @@
 //!    second; [`the_latest_placement_wins`] pins it.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_graph::NodeKey;
@@ -79,7 +80,7 @@ fn peak(node: &mut dyn tutti_graph::Node, beat: f64) -> f32 {
 
 /// A graph holding `node` at key 1 on output 0, committed; its controls.
 fn graph_with(node: VoiceNode) -> (Editor, Executor, tutti_sampler::VoiceNodeHandle) {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(RATE, Samples(256)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(RATE, MaxBlock::of(Samples(256))));
     let handle = ed.insert(NodeKey(1), "voice", node);
     ed.spec_mut()
         .topology
@@ -167,8 +168,11 @@ fn a_command_reaches_a_node_across_a_commit() {
     exec.apply_pending();
     ed.collect();
     // A re-prepare at another rate: the units go out and come back.
-    ed.reprepare(Prepare::new(SampleRate(44_100.0), Samples(256)))
-        .expect("reprepares");
+    ed.reprepare(Prepare::new(
+        SampleRate(44_100.0),
+        MaxBlock::of(Samples(256)),
+    ))
+    .expect("reprepares");
     exec.apply_pending();
     ed.collect();
     exec.apply_pending();
@@ -209,7 +213,7 @@ fn a_fork_steals_no_commands() {
         .fork(
             ForkTarget::Master,
             ForkMode::Live,
-            Prepare::new(RATE, Samples(256)),
+            Prepare::new(RATE, MaxBlock::of(Samples(256))),
         )
         .expect("a memory voice forks");
     fork.apply_pending();
@@ -251,7 +255,7 @@ fn a_node_with_no_handle_renders_normally() {
 #[test]
 fn a_placement_sent_after_the_insert_reaches_a_fork() {
     let (ed, _exec, handle) = graph_with(node_at(0.0));
-    let prepare = Prepare::new(RATE, Samples(256));
+    let prepare = Prepare::new(RATE, MaxBlock::of(Samples(256)));
     // A fork taken before the move: not vacuous, it is still at beat 0.
     let (_before_ed, mut before) = ed
         .fork(ForkTarget::Master, ForkMode::Live, prepare)

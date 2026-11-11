@@ -26,6 +26,7 @@
 //! comparison.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use std::sync::atomic::Ordering;
 
@@ -76,7 +77,7 @@ fn solo_voice() -> Solo<VoiceNodeHandle> {
     };
     let mut solo = Solo::new(
         VoiceNode::with_channels(voice, ChannelLayout::MONO),
-        Prepare::new(RATE, Samples(BLOCK)),
+        Prepare::new(RATE, MaxBlock::of(Samples(BLOCK))),
     );
     solo.renderer_mut().set_transport_fn(rolling);
     solo
@@ -175,7 +176,7 @@ fn a_fork_starts_from_the_gain_last_set_and_shares_nothing() {
         .fork(
             ForkTarget::Master,
             ForkMode::Live,
-            Prepare::new(RATE, Samples(BLOCK)),
+            Prepare::new(RATE, MaxBlock::of(Samples(BLOCK))),
         )
         .expect("a memory voice forks");
     s.controls().params().set(UnitParam::Volume, 0.75);
@@ -296,7 +297,7 @@ fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
     let mut s = Solo::new(
         MemorySource::with_channels(flat_wave(48_000), ChannelLayout::MONO)
             .expect("a placeable wave"),
-        Prepare::new(RATE, Samples(BLOCK)),
+        Prepare::new(RATE, MaxBlock::of(Samples(BLOCK))),
     );
     s.renderer_mut().set_transport_fn(rolling);
     assert!(s.controls().set(UnitParam::Volume, 0.25));

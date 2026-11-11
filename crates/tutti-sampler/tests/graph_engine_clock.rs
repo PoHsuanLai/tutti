@@ -16,6 +16,7 @@
 //! frames is the same pieces, and must render the same bits.
 
 use std::sync::Arc;
+use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_engine::Engine;
@@ -73,7 +74,7 @@ fn routes(units: usize) -> Vec<(usize, usize)> {
 /// (the export's `GRAPH_MAX_BLOCK`), with `units` at keys 1, 2, … routed by
 /// [`routes`].
 fn graph_engine(transport: &Transport, units: Vec<VoicePool>) -> (Engine, Editor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(1024))));
     let n = units.len();
     for (i, u) in units.into_iter().enumerate() {
         ed.insert(NodeKey(i as u64 + 1), "voice", u);

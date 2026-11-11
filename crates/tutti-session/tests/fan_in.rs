@@ -8,6 +8,7 @@
 
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{GraphSource, Session};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const A: f32 = 0.25;
@@ -16,7 +17,11 @@ const C: f32 = 0.125;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

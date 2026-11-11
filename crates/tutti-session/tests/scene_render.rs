@@ -40,6 +40,7 @@ use tutti_graph::{
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
 use tutti_session::{AudioSide, GraphSource, Session};
+use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds, UnitParam};
 
 const RATE: f64 = 48_000.0;
@@ -120,7 +121,7 @@ fn render(side: &mut AudioSide, frames: usize, block: usize) -> Vec<Vec<f32>> {
 /// `frames` of a hand-wired graph (`GraphBuilder`), in 256-frame blocks.
 fn render_builder(g: GraphBuilder, frames: usize) -> Vec<Vec<f32>> {
     let mut r = g
-        .renderer(Prepare::new(SampleRate(RATE), Samples(256)))
+        .renderer(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(256))))
         .expect("builds");
     r.render(frames)
 }

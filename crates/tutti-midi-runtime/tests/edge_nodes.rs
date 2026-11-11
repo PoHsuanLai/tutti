@@ -6,6 +6,7 @@
 //! included.
 
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 mod common;
 use tutti_graph::UmpAt;
@@ -86,7 +87,7 @@ fn rig_with<N: tutti_graph::IntoNode>(
     max: usize,
     extra: impl FnOnce(&mut Editor),
 ) -> (Editor, Executor, N::Controls, Seen) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(max)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))));
     let controls = ed.insert(NodeKey(1), "source", source);
     extra(&mut ed);
     let seen = Seen::default();
@@ -674,7 +675,8 @@ fn an_input_nodes_fork_is_silent() {
 /// (frame 1 536 plus offset 8).
 #[test]
 fn an_event_tap_hands_midi_back_and_counts_drops() {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
     let (inlet, mut keys) = EventInletNode::pair(256);
     ed.insert(NodeKey(1), "keys", inlet);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);

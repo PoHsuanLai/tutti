@@ -35,6 +35,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tutti_types::MaxBlock;
 
 mod support;
 
@@ -115,7 +116,10 @@ fn measure<T>(f: impl FnOnce() -> T) -> (usize, usize, T) {
 /// executor its commit is queued for. The budgets are on the graph `Engine`
 /// renders.
 fn graph(nodes: usize) -> (Editor, Executor) {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(256)),
+    ));
     ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
     for i in 1..=nodes as u64 {
         // Which node is chained does not matter to a budget on the graph
@@ -261,7 +265,10 @@ fn rendering_blocks_allocates_nothing() {
 /// four-participant [`WorkerPool`](tutti_graph::WorkerPool) when `pooled`:
 /// one task per gain, so the plan spreads.
 fn fan(nodes: usize, pooled: bool) -> (Editor, Executor) {
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        MaxBlock::of(Samples(256)),
+    ));
     if pooled {
         exec.set_pool(Some(std::sync::Arc::new(
             tutti_graph::WorkerPool::builder()

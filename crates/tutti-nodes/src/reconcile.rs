@@ -429,6 +429,7 @@ struct SourcePlan {
 /// on a filter's cutoff:
 ///
 /// ```
+/// use tutti_types::MaxBlock;
 /// use std::sync::Arc;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_modulation::{
@@ -441,7 +442,7 @@ struct SourcePlan {
 ///     Depth, Hz, ParamAddr, ParamCell, PhaseIncrement, SampleRate, Samples, UnitParam, Q,
 /// };
 ///
-/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 /// let filter = NodeKey(1);
 /// let params = editor.insert(
 ///     filter,

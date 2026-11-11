@@ -3,6 +3,7 @@ use crate::testing::aim;
 use tutti_dsp::HRTF_STEP;
 use tutti_graph::contract::{drive, prepared};
 use tutti_types::ChannelLayout;
+use tutti_types::MaxBlock;
 
 const RATE: SampleRate = SampleRate(44_100.0);
 const BLOCK: usize = 64;
@@ -263,7 +264,7 @@ fn pdc_compensates_the_other_path_by_the_binaural_latency() {
     g.connect_output(hrtf, 1, 1);
     g.connect_output(dry, 0, 2);
     let mut r = g
-        .renderer(Prepare::new(RATE, Samples(BLOCK)))
+        .renderer(Prepare::new(RATE, MaxBlock::of(Samples(BLOCK))))
         .expect("builds");
     let mut impulse = vec![0.0f32; 2 * LATENCY];
     impulse[0] = 1.0;
@@ -397,7 +398,10 @@ fn a_prepare_above_the_ceiling_retunes_the_glide() {
     let mut node =
         HrtfBinauralNode::new(&synthetic_hrir_sphere(48_000, 4), SampleRate(1_536_000.0))
             .expect("parses");
-    node.prepare(&Prepare::new(SampleRate(1_024_000.0), Samples(64)));
+    node.prepare(&Prepare::new(
+        SampleRate(1_024_000.0),
+        MaxBlock::of(Samples(64)),
+    ));
 
     let e_inv = (-1.0f32).exp();
     let left = remaining_after(&mut node.aim, 400);

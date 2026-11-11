@@ -18,6 +18,7 @@ mod common;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
+use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::cc;
 use tutti_graph::contract::{
@@ -372,7 +373,7 @@ fn a_fan_in_tie_goes_by_source_order() {
         }
         g.connect_output(sink, 0, 0);
         let mut r = g
-            .renderer(Prepare::new(SAMPLE_RATE, Samples(MAX_BLOCK)))
+            .renderer(Prepare::new(SAMPLE_RATE, MaxBlock::of(Samples(MAX_BLOCK))))
             .expect("builds");
         r.render(1_024);
         assert_eq!(

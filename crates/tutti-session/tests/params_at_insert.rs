@@ -16,6 +16,7 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tutti_types::MaxBlock;
 
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::NodeKey;
@@ -30,7 +31,11 @@ const BASE: f32 = 5.0;
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, Samples(1_024))
+        .build_offline(
+            SampleRate(48_000.0),
+            ChannelLayout::MONO,
+            MaxBlock::of(Samples(1_024)),
+        )
         .expect("builds")
 }
 

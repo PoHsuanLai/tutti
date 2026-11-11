@@ -20,6 +20,7 @@
 //! ```
 
 use std::hint::black_box;
+use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::Node;
@@ -88,7 +89,7 @@ fn channel_sum(c: &mut Criterion) {
     let mut g = c.benchmark_group("channel_sum");
     for (case, sources, width) in [("8x2", 8u16, 2u16), ("16x1", 16, 1), ("2x6", 2, 6)] {
         for block in BLOCKS {
-            let (mut ed, mut exec) = Editor::new(Prepare::new(SR, Samples(block)));
+            let (mut ed, mut exec) = Editor::new(Prepare::new(SR, MaxBlock::of(Samples(block))));
             ed.spec_mut().topology.inputs = ChannelLayout::from(sources * width);
             ed.spec_mut()
                 .topology

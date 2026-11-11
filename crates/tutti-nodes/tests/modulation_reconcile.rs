@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tutti_fixtures::midi::m1_note_on;
+use tutti_types::MaxBlock;
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 use tutti_graph::NodeKey;
@@ -368,7 +369,7 @@ fn envelope() -> ModSource {
 // ---------------------------------------------------------------- rigs ---
 
 fn editor(max: usize) -> (Editor, Executor) {
-    Editor::new(Prepare::new(SampleRate(RATE), Samples(max)))
+    Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(max))))
 }
 
 /// A probe at `key(id)` with knob `knob`, its output appended to the
@@ -1418,7 +1419,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
         .fork(
             ForkTarget::Master,
             ForkMode::Offline,
-            Prepare::new(SampleRate(RATE), Samples(1024)),
+            Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(1024))),
         )
         .expect("forks");
     let total = 48_000;
@@ -1900,8 +1901,11 @@ fn a_rate_change_after_a_steady_state_is_not_skipped() {
     steady(&mut r);
     let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
     let skipped = r.m.skipped();
-    r.ed.reprepare(Prepare::new(SampleRate(RATE * 2.0), Samples(128)))
-        .expect("reprepares");
+    r.ed.reprepare(Prepare::new(
+        SampleRate(RATE * 2.0),
+        MaxBlock::of(Samples(128)),
+    ))
+    .expect("reprepares");
     let applied = reapply(&mut r);
     assert_eq!(r.m.skipped(), skipped, "the apply ran");
     assert!(applied.republished.is_empty() && !applied.commit);

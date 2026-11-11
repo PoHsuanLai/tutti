@@ -2039,9 +2039,9 @@ impl Editor {
         // A bus edge that touches the node goes with it, as its edges do.
         self.spec
             .root_sources
-            .retain(|(s, _)| !matches!(s, BusSource::Node(b) if b.node == key));
+            .retain(|f| !matches!(f.source, BusSource::Node(b) if b.node == key));
         self.spec.bus_edges.retain(|to, sources| {
-            sources.retain(|(s, _)| !matches!(s, BusSource::Node(b) if b.node == key));
+            sources.retain(|f| !matches!(f.source, BusSource::Node(b) if b.node == key));
             to.node != key && !sources.is_empty()
         });
         let t = &mut self.spec.topology;

@@ -1773,7 +1773,7 @@ impl Graph {
             .spec()
             .root_sources
             .iter()
-            .map(|&(s, _)| s)
+            .map(|f| f.source)
             .collect()
     }
 
@@ -1783,7 +1783,7 @@ impl Graph {
             .spec()
             .bus_edges
             .get(&BusRef { node, bus })
-            .map(|feeds| feeds.iter().map(|&(s, _)| s).collect())
+            .map(|feeds| feeds.iter().map(|f| f.source).collect())
             .unwrap_or_default()
     }
 

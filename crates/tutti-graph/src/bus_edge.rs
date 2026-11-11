@@ -75,6 +75,17 @@ pub enum BusFold {
     ByIndex,
 }
 
+/// One source of a sink bus and how it folds: an entry of
+/// [`GraphSpec::bus_edges`] or [`GraphSpec::root_sources`], kept in `source`
+/// order, once per source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BusFeed {
+    /// What feeds the bus.
+    pub source: BusSource,
+    /// How its channels map onto the bus's.
+    pub fold: BusFold,
+}
+
 /// Which side of a node a bus was asked for on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusSide {
@@ -237,7 +248,7 @@ impl GraphSpec {
         let Some(sources) = self.bus_edges.get_mut(&to) else {
             return false;
         };
-        let Some(i) = sources.iter().position(|(s, _)| *s == from) else {
+        let Some(i) = sources.iter().position(|f| f.source == from) else {
             return false;
         };
         sources.remove(i);
@@ -264,7 +275,7 @@ impl GraphSpec {
     /// Removes `from` from the bus edges into the root. Returns whether it
     /// was there.
     pub fn disconnect_bus_from_root(&mut self, from: BusSource) -> bool {
-        match self.root_sources.iter().position(|(s, _)| *s == from) {
+        match self.root_sources.iter().position(|f| f.source == from) {
             Some(i) => {
                 self.root_sources.remove(i);
                 true
@@ -486,13 +497,13 @@ impl GraphSpec {
             Ok(())
         };
         for (&to, sources) in &self.bus_edges {
-            for &(from, fold) in sources {
+            for &BusFeed { source: from, fold } in sources {
                 for (id, weight) in self.bus_lanes(shapes, from, to, fold)? {
                     place(&mut spec, id, weight)?;
                 }
             }
         }
-        for &(from, fold) in &self.root_sources {
+        for &BusFeed { source: from, fold } in &self.root_sources {
             for (id, weight) in self.root_lanes(shapes, from, fold)? {
                 place(&mut spec, id, weight)?;
             }
@@ -503,11 +514,11 @@ impl GraphSpec {
 
 /// Adds `from` with `fold` to a source list kept in source order, once per
 /// source. Returns whether it was new.
-fn insert_feed(sources: &mut Vec<(BusSource, BusFold)>, from: BusSource, fold: BusFold) -> bool {
-    match sources.binary_search_by_key(&from, |&(s, _)| s) {
+fn insert_feed(sources: &mut Vec<BusFeed>, from: BusSource, fold: BusFold) -> bool {
+    match sources.binary_search_by_key(&from, |f| f.source) {
         Ok(_) => false,
         Err(i) => {
-            sources.insert(i, (from, fold));
+            sources.insert(i, BusFeed { source: from, fold });
             true
         }
     }

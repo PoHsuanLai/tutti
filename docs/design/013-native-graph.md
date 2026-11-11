@@ -7552,7 +7552,7 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
 - `Shape::pass()` returns the public `Pass` (`inputs`, `outputs`, `contributions(c)`) or the `PassError`.
 - `Fold::between` refuses a discrete side at any other width, a discrete destination included (`FoldError::Discrete`);
   `discrete_channels_map_one_to_one` asserts the refusals. A bus edge is `BusFold::Speakers` or `BusFold::ByIndex`,
-  stored with its source (`GraphSpec::bus_edges`, `root_sources`), and `connect_bus_by_index` /
+  stored with its source as a `BusFeed { source, fold }` (`GraphSpec::bus_edges`, `root_sources`), and `connect_bus_by_index` /
   `connect_bus_to_root_by_index` (editor and session) are the by-index edge.
 - Export: a file whose topology is discrete takes the graph's channels with `Fold::by_index`, which is what
   `between` did for it before; nothing else in the driver changes.

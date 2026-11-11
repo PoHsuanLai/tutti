@@ -15,9 +15,10 @@ use std::collections::BTreeMap;
 use common::{Kind, Pair, TestNode, bits, input_signal, prepare, shapes_of};
 use tutti_graph::Node;
 use tutti_graph::{
-    Bus, BusError, BusFold, BusRef, BusRole, BusSide, BusSource, Buses, CommitError, CompileError,
-    DelayKey, Edge, EdgeGain, EdgeId, Editor, GraphInvalid, GraphSpec, InPort, Lowering, NodeKey,
-    NodeSpec, Op, OutPort, Plan, Sink, Source, Transport, Unforkable, ValidGraph, compile,
+    Bus, BusError, BusFeed, BusFold, BusRef, BusRole, BusSide, BusSource, Buses, CommitError,
+    CompileError, DelayKey, Edge, EdgeGain, EdgeId, Editor, GraphInvalid, GraphSpec, InPort,
+    Lowering, NodeKey, NodeSpec, Op, OutPort, Plan, Sink, Source, Transport, Unforkable,
+    ValidGraph, compile,
 };
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, ChannelTopology, FoldError, M3DB, Samples, Tail,
@@ -113,6 +114,10 @@ fn bus_ref(node: u64, bus: u8) -> BusRef {
         node: key(node),
         bus,
     }
+}
+
+fn feed(source: BusSource, fold: BusFold) -> BusFeed {
+    BusFeed { source, fold }
 }
 
 fn from(node: u64, bus: u8) -> BusSource {
@@ -554,7 +559,7 @@ fn by_index_is_its_own_edge() {
         .expect("by index widens");
     assert_eq!(
         ed.spec().bus_edges[&bus_ref(2, 0)],
-        [(from(1, 0), BusFold::ByIndex)]
+        [feed(from(1, 0), BusFold::ByIndex)]
     );
     let lanes: Vec<_> = ed.lowered().expect("lowers").lanes.into_iter().collect();
     assert_eq!(
@@ -914,7 +919,7 @@ fn removing_a_node_removes_its_bus_edges() {
     ed.remove(key(1));
     assert_eq!(
         ed.spec().bus_edges[&bus_ref(2, 0)],
-        [(from(3, 0), BusFold::Speakers)]
+        [feed(from(3, 0), BusFold::Speakers)]
     );
     ed.remove(key(2));
     assert!(ed.spec().bus_edges.is_empty());
@@ -1285,8 +1290,8 @@ fn root_edges_connect_disconnect_and_go_with_their_node() {
     assert_eq!(
         ed.spec().root_sources,
         [
-            (from(1, 0), BusFold::Speakers),
-            (from(3, 0), BusFold::Speakers)
+            feed(from(1, 0), BusFold::Speakers),
+            feed(from(3, 0), BusFold::Speakers)
         ],
         "source order, once"
     );
@@ -1294,7 +1299,10 @@ fn root_edges_connect_disconnect_and_go_with_their_node() {
     assert!(!ed.disconnect_bus_from_root(from(3, 0)));
     ed.connect_bus_to_root(from(3, 0)).unwrap();
     ed.remove(key(1));
-    assert_eq!(ed.spec().root_sources, [(from(3, 0), BusFold::Speakers)]);
+    assert_eq!(
+        ed.spec().root_sources,
+        [feed(from(3, 0), BusFold::Speakers)]
+    );
     ed.commit().expect("commits");
     exec.apply_pending();
 }

@@ -15,13 +15,12 @@ members = [
     # Re-exporting was never the problem; owning logic was. See
     # `crates/tutti/src/lib.rs` and `crates/tutti/tests/no_logic.rs`.
     # The development commands (`cargo xtask help`): std only, no workspace
-    # dependency, outside the layering (`scripts/check-layout.sh`).
+    # dependency, outside the layering (`cargo xtask check-layout`).
     "xtask",
     "crates/tutti",
     # The Bevy-free API layer both umbrellas use (design 015): the
     # cross-crate composition, not an umbrella. It re-exports no crate whole
-    # (`scripts/check-adapter.sh`) and never reaches Bevy
-    # (`scripts/check-bevy-free.sh`).
+    # and never reaches Bevy (`cargo xtask check-session`).
     "crates/tutti-session",
     # The publish cell the engine hands non-scalar state to its audio thread
     # through. A general-purpose crate that names nothing of tutti's (and
@@ -189,7 +188,7 @@ thiserror = "2"
 criterion = "0.8"
 
 # `tutti-midi-file`'s SMF reader alone (a parser combinator library, named in
-# `src/smf/read.rs` only: `scripts/check-layout.sh`): `binary` is `be_u16` and
+# `src/smf/read.rs` only: `cargo xtask check-layout`): `binary` is `be_u16` and
 # kin, `alloc` the `Vec` a `repeat` collects.
 winnow = { version = "1", default-features = false, features = ["alloc", "binary"] }
 # NFC composition for text written into UMP messages (M2-104 section 1.8).

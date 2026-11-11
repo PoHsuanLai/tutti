@@ -1,7 +1,7 @@
 # tutti-vst2-ffi
 
 The host half of Tutti's fork of [`vst-rs`](https://github.com/RustAudio/vst-rs) 0.3.0, and
-the one crate that holds every VST2 `unsafe` (`scripts/check-plugin-ffi.sh`).
+the one crate that holds every VST2 `unsafe` (`cargo xtask check-ffi`).
 
 It holds the `AEffect` and the ABI types, `PluginLoader` and `PluginInstance`, the
 `audioMaster` callback, `HostBuffer`, `RenderHandle`, the MIDI event buffers and the render

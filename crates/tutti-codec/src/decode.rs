@@ -3,7 +3,7 @@
 //! Decoding is plain functions and types of our own (`Wave::read`,
 //! `Wave::read_metadata`, `FileIn`, `DecodeError`); no `symphonia` type
 //! appears in a signature or an error, so the library behind them can be
-//! swapped by editing this module alone. `scripts/check-layout.sh`
+//! swapped by editing this module alone. `cargo xtask check-layout`
 //! holds that line.
 
 #[cfg(decode)]

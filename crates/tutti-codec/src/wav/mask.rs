@@ -16,33 +16,8 @@
 //! Quad's `0x33` (`KSAUDIO_SPEAKER_QUAD`) needs the caller to pass
 //! [`ChannelTopology::quad`].
 
-use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
-
-/// The `SPEAKER_*` bit of `speaker` in `ksmedia.h`, or `None` for a speaker
-/// WAVE has no bit for.
-const fn speaker_bit(speaker: Speaker) -> Option<u32> {
-    Some(match speaker {
-        Speaker::FrontLeft => 0x1,
-        Speaker::FrontRight => 0x2,
-        Speaker::FrontCenter => 0x4,
-        Speaker::LowFrequency => 0x8,
-        Speaker::BackLeft => 0x10,
-        Speaker::BackRight => 0x20,
-        Speaker::FrontLeftOfCenter => 0x40,
-        Speaker::FrontRightOfCenter => 0x80,
-        Speaker::BackCenter => 0x100,
-        Speaker::SideLeft => 0x200,
-        Speaker::SideRight => 0x400,
-        Speaker::TopCenter => 0x800,
-        Speaker::TopFrontLeft => 0x1000,
-        Speaker::TopFrontCenter => 0x2000,
-        Speaker::TopFrontRight => 0x4000,
-        Speaker::TopBackLeft => 0x8000,
-        Speaker::TopBackCenter => 0x10000,
-        Speaker::TopBackRight => 0x20000,
-        _ => return None,
-    })
-}
+use crate::wave_mask::bit_of;
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 /// The speaker mask a WAV file declares for `topology`, or `0` (unassigned)
 /// when a speaker has no WAVE bit or the speakers are not in ascending bit
@@ -50,7 +25,7 @@ const fn speaker_bit(speaker: Speaker) -> Option<u32> {
 pub(crate) fn channel_mask(topology: &ChannelTopology) -> u32 {
     let mut mask = 0u32;
     for &speaker in topology.positions() {
-        match speaker_bit(speaker) {
+        match bit_of(speaker) {
             Some(bit) if bit > mask => mask |= bit,
             _ => return 0,
         }
@@ -68,6 +43,7 @@ pub(crate) fn default_channel_mask(layout: ChannelLayout) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::Speaker;
 
     /// The masks are the `ksmedia.h` constants. Quad comes only from a quad
     /// topology; a bare width of 4, 7.1 and unnamed widths are unassigned, and

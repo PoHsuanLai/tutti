@@ -30,9 +30,9 @@
 //! cell glide at each step and changes the cell digests. (Locally `assert_golden`
 //! only prints on another libm: compare the `DIGEST` lines.)
 
+use tutti_fixtures::assert_golden;
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
-use tutti_nodes::testing::assert_golden;
 use tutti_nodes::{
     CrossoverNode, EqBandNode, LadderFilterNode, LadderType, SvfControls, SvfFilterNode, SvfType,
 };

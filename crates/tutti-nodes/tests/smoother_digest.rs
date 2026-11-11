@@ -10,9 +10,9 @@
 //! Mutation (run): `Smoother`'s step as `current * (1 - coeff) + target * coeff`
 //! changes the envelope's last bits and fails every case.
 
+use tutti_fixtures::assert_golden;
 use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::contract::{drive, prepared};
-use tutti_nodes::testing::assert_golden;
 use tutti_nodes::{CompressorNode, GateNode, LimiterNode};
 use tutti_types::{CompressionRatio, Db, SampleRate, Seconds};
 

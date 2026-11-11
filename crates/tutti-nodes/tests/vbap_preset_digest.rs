@@ -32,11 +32,11 @@
 //! as `* 0.6` (the crossfade out of and into the mono branch) moves all five.
 
 use tutti_fixtures::Fnv;
+use tutti_fixtures::assert_golden;
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::VbapPannerNode;
 use tutti_nodes::testing::aim;
-use tutti_nodes::testing::assert_golden;
 use tutti_types::{Azimuth, Elevation, SampleRate, StereoWidth, UnitParam};
 
 const RATE: SampleRate = SampleRate(48_000.0);

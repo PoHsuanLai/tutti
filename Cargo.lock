@@ -3546,7 +3546,6 @@ dependencies = [
  "tracing",
  "tutti-codec",
  "tutti-fixtures",
- "tutti-nodes",
  "tutti-types",
  "vorbis_rs",
 ]
@@ -4144,7 +4143,6 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-runtime",
- "tutti-nodes",
  "tutti-sf2",
  "tutti-types",
  "tutti-ump",

@@ -10,12 +10,12 @@
 use std::sync::Arc;
 
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
+use tutti_fixtures::assert_golden;
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
 use tutti_midi_runtime::TimedMidiEvent;
-use tutti_nodes::testing::assert_golden;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 use tutti_session::{
     ExportClock, ExportOutput, ExportRequest, ExportSource, ExportTarget, Session,

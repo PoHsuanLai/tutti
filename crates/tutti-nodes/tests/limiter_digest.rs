@@ -1,11 +1,11 @@
 //! The lookahead limiter's render, pinned by a digest across the move of its
 //! recursion into `tutti_dsp::LimiterKernel` (doc 024 step 0b, consolidation 9).
 
+use tutti_fixtures::assert_golden;
 use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
 use tutti_nodes::LimiterNode;
-use tutti_nodes::testing::assert_golden;
 use tutti_types::{Db, Frame, SampleRate, Samples, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);

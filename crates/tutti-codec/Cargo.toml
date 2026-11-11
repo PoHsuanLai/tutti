@@ -63,9 +63,8 @@ symphonia = { version = "0.5.5", optional = true, default-features = false }
 aifc = { version = "0.7", optional = true }
 
 [dev-dependencies]
-# `assert_golden`, for the files whose encoders do float math.
-tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
-# `check_range_contract` for `Quality`.
+# `check_range_contract` for `Quality`, and `assert_golden` for the files whose
+# encoders do float math.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # `serde` and every decoder on, so `Quality`'s contract test and the decode
 # suites run on every plain run: a dev-dependency on self is how a feature

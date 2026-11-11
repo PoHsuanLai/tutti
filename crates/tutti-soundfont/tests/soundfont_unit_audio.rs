@@ -11,9 +11,9 @@ use tutti_graph::UmpAt;
 mod support;
 
 use support::Hand;
+use tutti_fixtures::assert_golden;
 use tutti_fixtures::midi::{self, wide_velocity};
 use tutti_graph::Offset;
-use tutti_nodes::testing::assert_golden;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{SampleRate, Samples};

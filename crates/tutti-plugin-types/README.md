@@ -13,20 +13,15 @@ harmony changes, [`AudioBuffer`] in its f32/f64 forms, editor vocabulary
 ([`WindowHandle`], [`EditorSize`], [`EditorCapabilities`]), presets, and the
 [`Features`] capability bitset.
 
-It also carries the fine-grained capability traits ([`PluginMeta`],
-[`PluginAudio`], [`PluginParams`], [`PluginState`], [`PluginPresets`])
-that each format loader implements, reassembled by the
-blanket-impl [`PluginInstance`], and the [`bundle`] helpers that find the
-loadable module inside a `.vst3` / `.vst` bundle.
+It also carries the [`bundle`] helpers that find the loadable module inside a
+`.vst3` / `.vst` bundle.
 
 ## What it does not own
 
-**Any lifecycle.** These traits describe a plugin as a set of *capabilities* and
-deliberately say nothing about what state it is in: by the time a plugin is
-reachable through them it is loaded and activated, and configure-time calls such
-as [`set_sample_rate`] handle whatever deactivate/reactivate bracket their format
-needs. That is what lets each format crate model its own lifecycle as tightly as
-its own contract allows; the comparative account is in `tutti-plugin`'s crate
+**Any format's lifecycle.** The traits that carry a plugin's transitions and
+control surface (`Loaded`, `Processor`, `Controller`, `Control`) are the
+vocabulary; each format crate decides what its own lifecycle is as tightly as its
+own contract allows, and the comparative account is in `tutti-plugin`'s crate
 docs under *The plugin state machine*.
 
 **Any FFI.** Nothing here links a plugin SDK. The format host crates
@@ -158,14 +153,7 @@ MIT OR Apache-2.0
 [`EditorSize`]: crate::EditorSize
 [`EditorCapabilities`]: crate::EditorCapabilities
 [`Features`]: crate::Features
-[`PluginMeta`]: crate::PluginMeta
-[`PluginAudio`]: crate::PluginAudio
-[`PluginParams`]: crate::PluginParams
-[`PluginState`]: crate::PluginState
-[`PluginPresets`]: crate::PluginPresets
-[`PluginInstance`]: crate::PluginInstance
 [`bundle`]: crate::bundle
-[`set_sample_rate`]: crate::PluginAudio::set_sample_rate
 [`Samples`]: crate::Samples
 [`ChannelLayout`]: crate::ChannelLayout
 [`ChannelTopology`]: crate::ChannelTopology

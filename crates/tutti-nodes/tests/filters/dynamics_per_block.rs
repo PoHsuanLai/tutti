@@ -1,16 +1,14 @@
-//! Compressor and gate: pinned renders, and the per-block param read.
+//! Compressor and gate: the per-block param read.
 //!
-//! The goldens were captured from the implementation that loaded threshold,
-//! knee, ratio and makeup (compressor) / threshold and range (gate) **per
-//! sample**, before those reads moved to once per block. With every param held
-//! constant the two must agree, so the pinned values are what proves the move
-//! changed cost and not sound. Captured with `cargo nextest run -p tutti-nodes
-//! -E 'test(print_goldens)' --run-ignored only --no-capture`.
+//! Threshold, knee, ratio and makeup (compressor) and threshold and range
+//! (gate) are read once per block. A block of one frame is where a per-block
+//! read and a per-sample read coincide, so with the params held the two block
+//! lengths must render the same, and a param changed between blocks must land
+//! on the next block. The static curve itself is `tutti-dsp`'s (its
+//! compressor and gate kernel tests).
 //!
-//! The tolerance is 1e-6 absolute rather than bit equality only so a libm
-//! `exp`/`log10`/`powf` differing in the last ulp on another C runtime does not
-//! fail a render the refactor did not touch (see CLAUDE.md, "One live platform
-//! difference remains").
+//! The tolerance is 1e-6 absolute rather than bit equality: the 64-frame and
+//! one-frame renders take different paths through the envelope's `exp`.
 
 use tutti_graph::Node;
 use tutti_graph::contract::{drive, prepared};
@@ -25,9 +23,6 @@ const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
 const BLOCKS: usize = 8;
 const FRAMES: usize = BLOCK * BLOCKS;
-/// Pin every `STRIDE`th frame: dense enough that a changed envelope anywhere in
-/// the render lands on a pinned frame, sparse enough to paste.
-const STRIDE: usize = 23;
 const TOL: f32 = 1e-6;
 
 /// Audio on every channel: a slightly different tone per channel so a
@@ -95,27 +90,6 @@ fn render_tick(node: &mut dyn Node, case: &Case) -> Vec<Vec<f32>> {
     render_blocks(node, case, 1)
 }
 
-/// First and last channel, every `STRIDE`th frame.
-fn pins(out: &[Vec<f32>]) -> Vec<f32> {
-    let last = out.len() - 1;
-    let mut v: Vec<f32> = out[0].iter().step_by(STRIDE).copied().collect();
-    if last > 0 {
-        v.extend(out[last].iter().step_by(STRIDE));
-    }
-    v
-}
-
-fn assert_pinned(name: &str, got: &[f32], want: &[f32]) {
-    assert_eq!(got.len(), want.len(), "{name}: pin count");
-    for (k, (g, w)) in got.iter().zip(want).enumerate() {
-        assert!(
-            (g - w).abs() <= TOL,
-            "{name}: pin {k} is {g}, pinned {w} (diff {})",
-            (g - w).abs()
-        );
-    }
-}
-
 // `_port`: whether the case feeds the threshold — a node's feed is always
 // there, so building it does not depend on it.
 fn compressor(ch: usize, _port: bool) -> CompressorNode {
@@ -160,32 +134,26 @@ fn cases() -> Vec<(&'static str, Build, Case)> {
     ]
 }
 
-/// Prints the goldens. Ignored: it asserts nothing and exists only to
-/// regenerate the table below.
+/// **With its params held, a node renders the same in 64-frame blocks as one
+/// frame at a time**, on every channel and every frame: the per-block read
+/// changes cost, not sound.
 #[test]
-#[ignore]
-fn print_goldens() {
+fn held_params_render_the_same_in_blocks_and_one_frame_at_a_time() {
     for (name, build, case) in cases() {
-        let p = pins(&render_process(build(case.ch, case.port).as_mut(), &case));
-        println!("(\"{name}\", &{p:?}),");
-    }
-}
-
-/// Every pinned render, in 64-frame blocks and one frame at a time.
-///
-/// A frame at a time is held to the same table: a block of one is where the
-/// per-block read and the per-sample read coincide, and the table was
-/// captured from 64-frame blocks, so agreement also shows block rendering
-/// and frame-at-a-time rendering match.
-#[test]
-fn renders_match_the_per_sample_goldens() {
-    let goldens: &[(&str, &[f32])] = GOLDENS;
-    for ((name, build, case), (gname, want)) in cases().into_iter().zip(goldens) {
-        assert_eq!(name, *gname);
-        let p = pins(&render_process(build(case.ch, case.port).as_mut(), &case));
-        assert_pinned(&format!("{name} (process)"), &p, want);
-        let t = pins(&render_tick(build(case.ch, case.port).as_mut(), &case));
-        assert_pinned(&format!("{name} (tick)"), &t, want);
+        let blocks = render_process(build(case.ch, case.port).as_mut(), &case);
+        let frames = render_tick(build(case.ch, case.port).as_mut(), &case);
+        assert!(
+            blocks.iter().flatten().any(|x| x.abs() > 0.05),
+            "{name}: silent"
+        );
+        for (c, (b, f)) in blocks.iter().zip(&frames).enumerate() {
+            for (n, (x, y)) in b.iter().zip(f).enumerate() {
+                assert!(
+                    (x - y).abs() <= TOL,
+                    "{name}: channel {c} frame {n}: {x} in blocks, {y} a frame at a time"
+                );
+            }
+        }
     }
 }
 
@@ -302,15 +270,3 @@ fn a_gate_range_change_ramps_across_the_next_block() {
         after[BLOCK - 1]
     );
 }
-
-#[rustfmt::skip]
-const GOLDENS: &[(&str, &[f32])] = &[
-    ("comp_mono", &[0.0, 0.35863826, 0.42181125, 0.28820556, 0.08227583, -0.10323944, -0.20616908, -0.2108936, -0.12008735, 0.029512826, 0.16756937, 0.22612481, 0.17441511, 0.03559251, -0.118713245, -0.20301493, -0.17867184, -0.0776532, 0.044910748, 0.1343377, 0.15749523, 0.106903374, 0.0035308856]),
-    ("comp_stereo", &[0.0, 0.35863826, 0.42181125, 0.28820556, 0.08227583, -0.10323944, -0.20616908, -0.2108936, -0.12008735, 0.029512826, 0.16756937, 0.22612481, 0.17441511, 0.03559251, -0.118713245, -0.20301493, -0.17867184, -0.0776532, 0.044910748, 0.1343377, 0.15749523, 0.106903374, 0.0035308856, 0.0, 0.42048302, 0.41959682, 0.16977933, -0.099987246, -0.2366858, -0.19591077, -0.036069192, 0.14281549, 0.22119386, 0.14147285, -0.042535342, -0.19963044, -0.21417956, -0.07282078, 0.10993738, 0.1927412, 0.13541877, -0.004081658, -0.1264565, -0.15548842, -0.0758094, 0.059402242]),
-    ("comp_6ch", &[0.0, 0.35863826, 0.42181125, 0.28820556, 0.08227583, -0.10323944, -0.20616908, -0.2108936, -0.12008735, 0.029512826, 0.16756937, 0.22612481, 0.17441511, 0.03559251, -0.118713245, -0.20301493, -0.17867184, -0.0776532, 0.044910748, 0.1343377, 0.15749523, 0.106903374, 0.0035308856, 0.0, 0.5475238, 0.04492759, -0.3376539, -0.06039524, 0.2425664, 0.07079827, -0.2045418, -0.08993763, 0.19670339, 0.11268031, -0.18906216, -0.13523355, 0.17746224, 0.15122472, -0.14930424, -0.14583911, 0.11239651, 0.13817523, -0.08693369, -0.13811766, 0.07107205, 0.14749658]),
-    ("comp_stereo_port", &[0.0, 0.36026707, 0.46140546, 0.2908114, 0.064028054, -0.06463509, -0.12921055, -0.13810794, -0.079384714, 0.01945189, 0.11041676, 0.14959472, 0.11591211, 0.023833973, -0.07835314, -0.113908045, -0.08700306, -0.03962002, 0.024551805, 0.077633716, 0.08515306, 0.05225004, 0.0017118498, 0.0, 0.42239273, 0.45898315, 0.1713144, -0.07781129, -0.14818181, -0.12278143, -0.02362064, 0.09440933, 0.14578877, 0.093220934, -0.028139608, -0.13266961, -0.14342204, -0.048063185, 0.061683897, 0.09385404, 0.069093026, -0.0022313609, -0.073079176, -0.08406804, -0.03705256, 0.028799491]),
-    ("gate_mono", &[0.0, 0.14247543, 0.31448328, 0.32433093, 0.12154013, -0.18610953, -0.42658415, -0.46186835, -0.26629534, 0.06530758, 0.3667247, 0.48947558, 0.3745497, 0.07658672, -0.26214913, -0.474941, -0.45647302, -0.21491998, 0.13203396, 0.41504076, 0.49593732, 0.3351485, 0.010977792]),
-    ("gate_stereo", &[0.0, 0.14247543, 0.31448328, 0.32433093, 0.12154013, -0.18610953, -0.42658415, -0.46186835, -0.26629534, 0.06530758, 0.3667247, 0.48947558, 0.3745497, 0.07658672, -0.26214913, -0.474941, -0.45647302, -0.21491998, 0.13203396, 0.41504076, 0.49593732, 0.3351485, 0.010977792, 0.0, 0.16704437, 0.31283233, 0.19106045, -0.14770393, -0.42667302, -0.40535867, -0.07899348, 0.3166953, 0.48946974, 0.3096126, -0.0920731, -0.4286986, -0.46086413, -0.16080686, 0.25719175, 0.49241757, 0.3747972, -0.011999744, -0.39069155, -0.4896181, -0.23766701, 0.18468608]),
-    ("gate_6ch", &[0.0, 0.14247543, 0.31448328, 0.32433093, 0.12154013, -0.18610953, -0.42658415, -0.46186835, -0.26629534, 0.06530758, 0.3667247, 0.48947558, 0.3745497, 0.07658672, -0.26214913, -0.474941, -0.45647302, -0.21491998, 0.13203396, 0.41504076, 0.49593732, 0.3351485, 0.010977792, 0.0, 0.21751356, 0.03349597, -0.3799774, -0.08921752, 0.43727398, 0.14648859, -0.44795758, -0.19943793, 0.43527588, 0.24660029, -0.40924883, -0.2904088, 0.38185707, 0.33394274, -0.34928814, -0.37259153, 0.3110787, 0.40622398, -0.26858452, -0.4349192, 0.22281516, 0.45857808]),
-    ("gate_stereo_port", &[0.0, 0.14628102, 0.31820038, 0.32829383, 0.12323845, -0.1880213, -0.42975432, -0.4640834, -0.26716202, 0.06570449, 0.37029013, 0.49423444, 0.3775695, 0.07694983, -0.2630407, -0.47604603, -0.45716253, -0.2151306, 0.1321152, 0.41520563, 0.49607125, 0.33521253, 0.010979416, 0.0, 0.1715062, 0.3165299, 0.19339496, -0.14976785, -0.4310559, -0.4083711, -0.07937232, 0.31772602, 0.49244452, 0.31262276, -0.09296827, -0.43215498, -0.46304914, -0.16135377, 0.25779018, 0.4931614, 0.37516445, -0.0120071275, -0.39084676, -0.4897503, -0.23771243, 0.18471341]),
-];

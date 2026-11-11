@@ -25,11 +25,9 @@ pub struct ParameterPoint {
     ///
     /// The formats disagree about what a parameter value *is*: VST2 and VST3
     /// take normalized values, CLAP and AU take plain ones in the parameter's
-    /// declared range (see [`PluginParams::get_parameter`]). A loader for
+    /// declared range (see [`Control::parameter`](crate::Control::parameter)). A loader for
     /// either of the latter denormalizes before the value reaches the plugin —
     /// AU against the range it cached at load, CLAP against its `ranges` map.
-    ///
-    /// [`PluginParams::get_parameter`]: crate::PluginParams::get_parameter
     pub value: Normalized,
 }
 

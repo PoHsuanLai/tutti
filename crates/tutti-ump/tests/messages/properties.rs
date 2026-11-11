@@ -13,7 +13,7 @@
 use crate::common;
 
 use proptest::prelude::*;
-use tutti_ump::{Message, Ump, Unknown, Voice1, Voice2, decode};
+use tutti_ump::{Message, Ump, Unknown, Voice1, Voice2};
 
 fn any_words() -> impl Strategy<Value = [u32; 4]> {
     any::<[u32; 4]>()
@@ -166,25 +166,25 @@ proptest! {
 
     #[test]
     fn decode_never_panics_and_an_encode_never_panics(w in either()) {
-        if let Ok(m) = decode(Ump(w)) {
+        if let Ok(m) = Ump(w).decode() {
             let _ = Ump::from(m);
         }
     }
 
     #[test]
     fn unknown_keeps_the_words(w in either()) {
-        if let Err(Unknown(u)) = decode(Ump(w)) {
+        if let Err(Unknown(u)) = Ump(w).decode() {
             prop_assert_eq!(u, Ump(w));
         }
     }
 
     #[test]
     fn decoded_messages_round_trip(w in either()) {
-        if let Ok(m) = decode(Ump(w)) {
+        if let Ok(m) = Ump(w).decode() {
             let canonical = Ump::from(m);
-            prop_assert_eq!(decode(canonical), Ok(m));
+            prop_assert_eq!(canonical.decode(), Ok(m));
             // Re-encoding a canonical packet changes nothing.
-            prop_assert_eq!(Ump::from(decode(canonical).unwrap()), canonical);
+            prop_assert_eq!(Ump::from(canonical.decode().unwrap()), canonical);
             // The packet's size is the message type's.
             prop_assert_eq!(canonical.0[0] >> 28, w[0] >> 28);
             // Nothing past the message's own words.
@@ -199,14 +199,14 @@ proptest! {
     /// already zero is its own canonical form.
     #[test]
     fn ignored_bits_are_ignored(w in either()) {
-        if let Ok(m) = decode(Ump(w)) {
+        if let Ok(m) = Ump(w).decode() {
             let canonical = Ump::from(m);
             for i in 0..4 {
                 let diff = w[i] ^ canonical.0[i];
                 for bit in (0..32).filter(|b| diff >> b & 1 == 1) {
                     let mut flipped = w;
                     flipped[i] ^= 1 << bit;
-                    prop_assert_eq!(decode(Ump(flipped)), Ok(m), "word {} bit {}", i, bit);
+                    prop_assert_eq!(Ump(flipped).decode(), Ok(m), "word {} bit {}", i, bit);
                 }
             }
         }
@@ -223,7 +223,7 @@ proptest! {
     /// every undefined bit zero is its own canonical form.
     #[test]
     fn only_undefined_bits_are_cleared(w in either()) {
-        if let Ok(m) = decode(Ump(w)) {
+        if let Ok(m) = Ump(w).decode() {
             let canonical = Ump::from(m).0;
             let defined = defined(w);
             for i in 0..4 {
@@ -242,7 +242,7 @@ proptest! {
         let chord_with_bass_tonic = clean[0] >> 28 == 0xD
             && clean[0] & 0xFFFF == 0x0006
             && (clean[3] >> 24) & 0xF == 0;
-        if let (Ok(m), false) = (decode(Ump(clean)), chord_with_bass_tonic) {
+        if let (Ok(m), false) = (Ump(clean).decode(), chord_with_bass_tonic) {
             prop_assert_eq!(Ump::from(m), Ump(clean));
         }
     }
@@ -263,7 +263,7 @@ proptest! {
             1 => w[0] = 0x4000_0000 | (w[0] & 0x0FFF_FFFF),
             _ => {}
         }
-        let by_decode = match decode(Ump(w)) {
+        let by_decode = match Ump(w).decode() {
             Ok(Message::Midi1(_, Voice1::NoteOff { .. })) => true,
             Ok(Message::Midi1(_, Voice1::NoteOn { velocity, .. })) => velocity.get() == 0,
             Ok(Message::Midi2(_, Voice2::NoteOff { .. })) => true,
@@ -286,7 +286,7 @@ fn the_shaped_generator_reaches_the_messages() {
     let mut ok = 0;
     for _ in 0..20_000 {
         let w = strategy.new_tree(&mut runner).unwrap().current();
-        if decode(Ump(w)).is_ok() {
+        if Ump(w).decode().is_ok() {
             ok += 1;
             by_type[(w[0] >> 28) as usize] += 1;
         }
@@ -314,7 +314,7 @@ fn the_shaped_generator_reaches_every_flex_text_kind() {
     let mut kinds = HashSet::new();
     for _ in 0..20_000 {
         let w = strategy.new_tree(&mut runner).unwrap().current();
-        if let Ok(Message::Flex(_, Flex::Text { kind, .. })) = decode(Ump(w)) {
+        if let Ok(Message::Flex(_, Flex::Text { kind, .. })) = Ump(w).decode() {
             kinds.insert(format!("{kind:?}"));
         }
     }

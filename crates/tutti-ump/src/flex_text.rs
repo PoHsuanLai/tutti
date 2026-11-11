@@ -21,14 +21,14 @@ const BYTES_PER_PACKET: usize = 12;
 ///
 /// ```
 /// use tutti_ump::{
-///     Flex, FlexAddress, FlexTextKind, Form, Message, MidiGroup, decode, flex_text_packets,
+///     Flex, FlexAddress, FlexTextKind, Form, Message, MidiGroup, flex_text_packets,
 /// };
 ///
 /// let mut packets =
 ///     flex_text_packets(MidiGroup::of(0), FlexAddress::Group, FlexTextKind::Lyrics, "thirteen byte")
 ///         .unwrap();
 /// assert_eq!(packets.len(), 2);
-/// let Ok(Message::Flex(_, Flex::Text { form, .. })) = decode(packets.next().unwrap()) else {
+/// let Ok(Message::Flex(_, Flex::Text { form, .. })) = packets.next().unwrap().decode() else {
 ///     unreachable!()
 /// };
 /// assert_eq!(form, Form::Start);

@@ -32,7 +32,7 @@ use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_graph::{Edge, InPort, OutPort, Source};
-use tutti_plugin::server::RING_SLOTS;
+use tutti_plugin_ipc::RING_SLOTS;
 use tutti_transport::Transport;
 use tutti_types::{ChannelLayout, InterleavedMut};
 use tutti_types::{SampleRate, Samples, Tail};

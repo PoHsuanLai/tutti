@@ -11,7 +11,7 @@ A [`MidiFile`] is its container (an SMF's format 0, 1 or 2, or a Clip File),
 its division, its [`Track`]s and the `TempoMap` its tempo events declare. A
 track is `(Tick, FileEvent)` in order and where it ends. Ticks are integers,
 so a write is exact; [`MidiFile::events`] gives the merged timeline as
-[`Beat`](tutti_types::Beat)s, and [`Track::notes`] pairs Note Ons with Note
+[`Beat`](tutti_types::Beat)s, [`MidiFile::timeline`] the same as packets for a clip, and [`Track::notes`] pairs Note Ons with Note
 Offs.
 
 - **A [`FileEvent`]** is a `Message` (an SMF's channel message is MIDI 1.0 on
@@ -42,35 +42,29 @@ extension. Nothing here touches an OS MIDI API; ports are in
 Build a file, write it, read it back; the tempo map answers in seconds:
 
 ```rust
-use tutti_midi_file::{FileEvent, Meta, MidiFile, SmfFormat, Tick, Track};
+use tutti_midi_file::{MidiFile, SmfFormat, Tick, Track};
 use tutti_types::{Beat, Bpm, Seconds};
-use tutti_ump::{Address, Message, MidiChannel, NoteNumber, U7, Voice1};
+use tutti_ump::{MidiChannel, NoteNumber, U7};
 
-let note = |tick, on| {
-    let (note, velocity) = (NoteNumber::of(60), U7::of(100));
-    let voice = if on {
-        Voice1::NoteOn { note, velocity }
-    } else {
-        Voice1::NoteOff { note, velocity }
-    };
-    (Tick(tick), FileEvent::Message(Message::Midi1(Address::first(MidiChannel::FIRST), voice)))
-};
 // 120 BPM, then 60 from beat 4, at 480 ticks per quarter.
-let track = Track::new(vec![
-    (Tick(0), FileEvent::Meta(Meta::tempo(Bpm::of(120.0)))),
-    note(0, true),
-    note(1_440, false),
-    (Tick(4 * 480), FileEvent::Meta(Meta::tempo(Bpm::of(60.0)))),
-]);
+let track = Track::new()
+    .tempo(Tick(0), Bpm::of(120.0))
+    .note(Tick(0), 1_440, MidiChannel::FIRST, NoteNumber::of(60), U7::of(100))
+    .tempo(Tick::quarters(4, 480), Bpm::of(60.0));
 let file = MidiFile::smf(SmfFormat::SingleTrack, 480, vec![track])?;
 
 let read = MidiFile::from_bytes(&file.to_bytes()?)?;
 assert_eq!(read, file);
 assert_eq!(read.seconds_at(Beat(8.0)), Seconds(6.0));
-let notes: Vec<_> = read.tracks()[0].notes().collect();
+let notes = read.tracks()[0].notes();
 assert_eq!((notes[0].start, notes[0].end), (Tick(0), Tick(1_440)));
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+A clip plays a file's messages as they are: `file.timeline()` is `(Beat, Ump)`
+pairs (channel messages as their packets, SysEx as SysEx7 packets, meta events
+dropped: the tempo is [`MidiFile::tempo_map`]), which `play_clip` takes
+directly.
 
 ### Tempo is the wire's
 
@@ -87,7 +81,7 @@ use tutti_midi_file::{MidiFile, MidiFileKind};
 if MidiFileKind::detect_path("song.mid")?.is_some() {
     let file = MidiFile::read("song.mid")?;
     for track in file.tracks() {
-        println!("{:?}: {} notes", track.name(), track.notes().count());
+        println!("{:?}: {} notes", track.name(), track.notes().len());
     }
 }
 # Ok::<(), Box<dyn std::error::Error>>(())

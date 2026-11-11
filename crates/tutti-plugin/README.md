@@ -63,8 +63,12 @@ top.
 ## Architecture
 
 Every out-of-process plugin runs in its own `plugin-server` subprocess (the
-[`tutti-plugin-server`](https://docs.rs/tutti-plugin-server) crate). The host
-talks to it over two channels:
+[`tutti-plugin-server`](https://docs.rs/tutti-plugin-server) crate: one generic
+shell over each served format's `Loaded`, CLAP, VST3 and AU; VST2 is not served,
+its editor and audio instance being one object, so it runs in the host's
+process and a VST2 path refuses out-of-process hosting with
+[`BridgeError::NotOutOfProcess`](tutti_plugin_types::BridgeError::NotOutOfProcess)).
+The host talks to it over two channels:
 
 - **Control** (Unix socket / named pipe) — editor open/close, parameter reads,
   state save/restore. Main-thread, blocking.
@@ -94,7 +98,7 @@ lifetime — it dies only when the last of either drops:
 Per-block inputs (MIDI, chord/scale context, parameter automation) are gated
 on what the plugin reported at load: an accessor answers `None` or `false`
 when the plugin declined the input. Capabilities are data — a [`Features`]
-bitset on [`LoadedPlugin`](server::LoadedPlugin) — never a check of the
+bitset on [`LoadedPlugin`](tutti_plugin_types::LoadedPlugin) — never a check of the
 plugin's format.
 
 ## Main types
@@ -117,8 +121,6 @@ plugin's format.
   `tutti-plugin-host`'s.
 - [`BridgeConfig`] — low-level bridge tuning (buffer size, timeouts).
 - [`BridgeError`](tutti_plugin_types::BridgeError) — the error most calls return.
-- [`server`] — the wire contract shared with `tutti-plugin-server`; not for
-  application code.
 
 ## Features
 
@@ -226,8 +228,7 @@ reads the pair — `Some(false)` for a refusal, `None` for silence. The per-bloc
 send-gate deliberately keeps reading `features` directly: it has no way to act on
 "unknown" and must stay one mask-and-compare.
 
-The masks are constants in [`server::probed`], one per format. VST2 has two
-loaders (in and out of process) that read the same constant.
+The masks are constants in [`tutti_plugin_types::features::probed`], one per format.
 
 `probed` does **not** distinguish `○` from `✕` — both are absent from it, because
 both mean no plugin spoke. Which one applies is the table above: it describes this
@@ -238,10 +239,12 @@ grows the missing path. So the AU row's `○`s and `✕`s are all simply unset i
 ## The plugin state machine
 
 This section is for readers of the format host crates. The shared vocabulary
-describes a plugin as a set of *capabilities* — [`server::PluginMeta`],
-[`server::PluginAudio`], [`server::PluginParams`] and their siblings — and
-deliberately says nothing about what state a plugin is in, so a lifecycle never
-reaches this crate. A probe never activates at all.
+(`tutti-plugin-types`) describes what a plugin does through
+[`Control`](tutti_plugin_types::Control) (parameters, state, presets, in any
+state that has a plugin), [`Processor`](tutti_plugin_types::Processor) (blocks,
+on the realtime thread) and [`Loaded`](tutti_plugin_types::Loaded) (the
+transitions), so a lifecycle reaches this crate only as the served and in-process
+hostings that drive it. A probe never activates at all.
 
 What that buys is room. No format crate has to meet another in the middle, so each
 one models its own lifecycle as tightly as its own contract allows — and left to
@@ -315,14 +318,15 @@ check it replaced.
 ## Related crates
 
 - [`tutti-plugin-types`](https://docs.rs/tutti-plugin-types) — the shared value
-  vocabulary ([`ParameterInfo`](server::ParameterInfo),
-  [`TransportInfo`](server::TransportInfo), [`Features`], [`Preset`], …). The
+  vocabulary ([`ParameterInfo`](tutti_plugin_types::ParameterInfo),
+  [`TransportInfo`](tutti_plugin_types::TransportInfo), [`Features`], [`Preset`], …). The
   types a caller cannot avoid naming are re-exported at this crate's root.
 - [`tutti-plugin-server`](https://docs.rs/tutti-plugin-server) — the
   subprocess side of the bridge.
 - `tutti-vst3-host`, `tutti-clap-host`, `tutti-au-host`, `tutti-vst2-host` —
-  the format loaders. This crate never sees one directly: a plugin arrives
-  already loaded and activated inside the subprocess.
+  the format hosts. A served plugin arrives already loaded and activated inside
+  the subprocess, which names the served three (`tutti-vst2-host` runs in this
+  process).
 - [`tutti_graph`] — the audio graph a plugin node is inserted into.
 
 ## License

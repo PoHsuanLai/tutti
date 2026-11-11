@@ -37,9 +37,7 @@
 
 use std::vec::Vec;
 
-use tutti_ump::{
-    DeltaTicks, Flex, FlexTextKind, Form, Message, Stream, SysexStatus, Ump, Utility, decode,
-};
+use tutti_ump::{DeltaTicks, Flex, FlexTextKind, Form, Message, Stream, SysexStatus, Ump, Utility};
 
 mod read;
 
@@ -284,7 +282,7 @@ fn continues_text(previous: Ump, next: Ump) -> bool {
                 ..
             },
         )),
-    ) = (decode(previous), decode(next))
+    ) = (previous.decode(), next.decode())
     else {
         return false;
     };

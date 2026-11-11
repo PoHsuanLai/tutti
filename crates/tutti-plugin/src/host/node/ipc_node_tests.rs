@@ -345,6 +345,7 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
     let first = Ipc::launch(
         BridgeConfig::default(),
         tutti_fixtures::clap_probe().to_path_buf(),
+        tutti_plugin_types::Load::new(),
         SR,
         None,
         crate::format::gui::load_gui_instance,
@@ -372,6 +373,40 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
     );
     assert_ne!(first_pid, None);
     assert_eq!(second.ipc.info().id, first.info().id, "the same plugin");
+}
+
+/// **The plugin a launch chose is the plugin a reopen loads** (a fork of the
+/// graph, an offline render): the choice rides the origin, so the second server
+/// loads the factory's second plugin and not its first.
+#[cfg(feature = "clap")]
+#[test]
+fn a_chosen_plugin_is_the_one_a_reopen_loads() {
+    use tutti_plugin_ipc::{BridgeConfig, Ipc};
+    use tutti_plugin_types::{Control, Load};
+    let _machine = machine_lock();
+    let mut env = tutti_fixtures::ScopedEnv::new();
+    env.set("TUTTI_PLUGIN_SERVER", tutti_fixtures::plugin_server());
+    let second = tutti_clap_test_plugin::SECOND_PLUGIN_ID
+        .to_str()
+        .expect("utf-8");
+    let first = Ipc::launch(
+        BridgeConfig::default(),
+        tutti_fixtures::clap_probe().to_path_buf(),
+        Load::new().plugin(second),
+        SR,
+        None,
+        crate::format::gui::load_gui_instance,
+    )
+    .expect("the factory's second plugin loads in a real server")
+    .ipc;
+    assert_eq!(first.info().id, second, "the chosen plugin loaded");
+
+    let reopened = first.reopen_restoring(None).expect("the reopen launches");
+    assert_eq!(
+        reopened.ipc.info().id,
+        second,
+        "the reopen loads the chosen plugin, not the file's first"
+    );
 }
 
 /// The block at stream frame `frame` with its own transport state.

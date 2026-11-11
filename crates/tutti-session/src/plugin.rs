@@ -1662,8 +1662,7 @@ mod tests {
 
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tutti_plugin::server::ParameterInfo;
-    use tutti_plugin_types::{Normalized, ParamId};
+    use tutti_plugin_types::{Normalized, ParamId, ParameterInfo};
 
     /// A backend that answers `state` (or declines), counts its saves, and
     /// is dead while `dead` is set.

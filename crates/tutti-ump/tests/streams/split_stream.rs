@@ -67,3 +67,79 @@ fn a_reserved_type_does_not_desync_the_stream() {
     assert_eq!(split.len(), 2);
     assert_eq!(split[1], Ump([NOTE[0], NOTE[1], 0, 0]));
 }
+
+/// M2-104 Table 4: a packet's size is a function of its message type, and
+/// `Ump::from_words` reads one packet from the front of a slice by it, the
+/// rest of the packet zero and anything past it unread; a slice that ends
+/// inside the packet has none.
+#[test]
+fn from_words_reads_one_packet_of_the_size_its_type_gives() {
+    // Message type and its size in words, the table.
+    let sizes: [(u32, usize); 16] = [
+        (0x0, 1),
+        (0x1, 1),
+        (0x2, 1),
+        (0x3, 2),
+        (0x4, 2),
+        (0x5, 4),
+        (0x6, 1),
+        (0x7, 1),
+        (0x8, 2),
+        (0x9, 2),
+        (0xA, 2),
+        (0xB, 3),
+        (0xC, 3),
+        (0xD, 4),
+        (0xE, 4),
+        (0xF, 4),
+    ];
+    for (ty, size) in sizes {
+        // The first word has the type; the others are the payload (any).
+        let stream = [
+            ty << 28 | 0x00AB_CDEF,
+            0x1111_1111,
+            0x2222_2222,
+            0x3333_3333,
+            0x4444_4444,
+        ];
+        let packet = Ump::from_words(&stream).unwrap();
+        let mut want = [0u32; 4];
+        want[..size].copy_from_slice(&stream[..size]);
+        assert_eq!(packet, Ump(want), "type {ty:#x}");
+        // One word short of the packet is no packet.
+        assert_eq!(Ump::from_words(&stream[..size - 1]), None, "type {ty:#x}");
+        assert_eq!(
+            Ump::from_words(&stream[..size]),
+            Some(packet),
+            "type {ty:#x}"
+        );
+    }
+    assert_eq!(Ump::from_words(&[]), None);
+}
+
+/// A stream is its packets read one after another: `split_stream` is
+/// `from_words` applied to what is left.
+#[test]
+fn split_stream_is_from_words_walked_along_the_slice() {
+    let words = [JR, NOTE[0], NOTE[1], CLOCK];
+    let mut rest = &words[..];
+    let mut walked = Vec::new();
+    while let Some(packet) = Ump::from_words(rest) {
+        rest = &rest[packet.words().len()..];
+        walked.push(packet);
+    }
+    assert_eq!(walked, split_stream(&words).collect::<Vec<_>>());
+}
+
+/// The packet's words in hexadecimal, as the specification writes them: eight
+/// digits a word, the meaningful words only, a space between.
+#[test]
+fn a_packet_displays_its_meaningful_words_in_hex() {
+    let one = Ump([JR, 0xFFFF_FFFF, 0, 0]);
+    assert_eq!(one.to_string(), "00201234");
+    let two = Ump([NOTE[0], NOTE[1], 0, 0]);
+    assert_eq!(format!("{two}"), "40933C00 80000000");
+    assert_eq!(format!("{two:x}"), "40933c00 80000000");
+    assert_eq!(format!("{two:#x}"), "0x40933c00 0x80000000");
+    assert_eq!(format!("{two:X}"), "40933C00 80000000");
+}

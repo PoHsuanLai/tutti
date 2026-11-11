@@ -111,9 +111,9 @@ use tutti_plugin_ipc::{
     BridgeConfig, BridgeEvent, Ipc, IpcController, IpcOrigin, Launched, PluginBridge,
 };
 use tutti_plugin_types::{
-    BridgeError, BridgeResult, Features, LoadStage, LoadedPlugin, MaxBlock, Normalized, ParamId,
-    ParameterChanges, PluginDescriptor, PluginInvalidation, PluginTail, Prepare, ResyncClass,
-    SampleFormat,
+    BridgeError, BridgeResult, Features, Load, LoadStage, LoadedPlugin, MaxBlock, Normalized,
+    ParamId, ParameterChanges, PluginDescriptor, PluginInvalidation, PluginTail, Prepare,
+    ResyncClass, SampleFormat,
 };
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
@@ -235,8 +235,9 @@ impl PluginClient<Unbound> {
     ///
     /// # Errors
     ///
-    /// Returns a [`BridgeError`] if the plugin-server
-    /// cannot be found or spawned, the handshake fails or times out, the
+    /// Returns [`BridgeError::NotOutOfProcess`] for a VST2 file (it runs in the
+    /// host's process: see `Plugin::open`), and a [`BridgeError`] if the
+    /// plugin-server cannot be found or spawned, the handshake fails or times out, the
     /// plugin fails to load, or the IPC bridge cannot be set up.
     pub fn new(
         config: BridgeConfig,
@@ -261,9 +262,40 @@ impl PluginClient<Unbound> {
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
     ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
+        Self::open(config, plugin_path, Load::new(), sample_rate, state)
+    }
+
+    /// [`new_with_state`](Self::new_with_state) for the plugin `load` chooses in
+    /// a file that exports several (a CLAP plugin id, a VST3 class name, an AU
+    /// descriptor id); the other constructors load the file's first. The
+    /// choice is kept for a fork, which loads the same plugin again.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new); a `load` that names no plugin of the file is the
+    /// format's own load failure.
+    pub fn open(
+        config: BridgeConfig,
+        plugin_path: PathBuf,
+        load: Load,
+        sample_rate: impl Into<SampleRate>,
+        state: Option<&[u8]>,
+    ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
+        // A VST2 plugin is not served (its editor and audio are one object):
+        // refused here, typed, before a server is started for it.
+        if matches!(
+            tutti_plugin_db::format_from_path(&plugin_path),
+            Some(tutti_plugin_db::PluginFormat::Vst2)
+        ) {
+            return Err(BridgeError::NotOutOfProcess {
+                path: plugin_path,
+                format: "VST2",
+            });
+        }
         let Launched { ipc, restored } = Ipc::launch(
             config,
             plugin_path,
+            load,
             sample_rate.into(),
             state,
             crate::format::gui::load_gui_instance,

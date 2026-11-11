@@ -9,9 +9,9 @@
 use super::*;
 use crate::fake::{Call, FakeLoaded, FakePlugin};
 use crate::{
-    AudioBuffer, AudioBufferMut, HostOp, MaxBlock, PluginError, PluginIo, PluginTail,
-    ProcessContext, ProcessOutput, RenderMode, Request, RequestWord, SampleFormat, Samples, Stage,
-    taken,
+    AudioBuffer, AudioBufferMut, HostOp, MaxBlock, Normalized, ParamId, PluginError, PluginIo,
+    PluginResult, PluginTail, ProcessContext, ProcessOutput, Processor, RenderMode, Request,
+    RequestWord, SampleFormat, Samples, Stage, taken,
 };
 
 /// The test process's main thread: nextest runs each test in its own process,
@@ -178,8 +178,7 @@ fn a_lost_plugin_poisons_and_the_refusal_is_still_told() {
         [Notice::Refused { .. }]
     ));
     assert!(rig.lifecycle.control().is_none());
-    assert!(Hosted::info(&rig.lifecycle).is_none());
-    assert!(Hosted::save_state(&mut rig.lifecycle, &main()).is_err());
+    assert!(rig.lifecycle.control_ref().is_none());
 }
 
 /// **A panic in `activate` poisons the same way.**
@@ -350,13 +349,22 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
 
     rig.op(HostOp::Activate(prepare(48_000.0)));
     assert_eq!(
-        Hosted::parameter(&rig.lifecycle, &main(), a).map(Normalized::get),
+        rig.lifecycle
+            .control_ref()
+            .and_then(|c| c.parameter(&main(), a))
+            .map(Normalized::get),
         Some(0.5),
         "values survive the split"
     );
     rig.plugin.clear_calls();
-    Hosted::set_parameter(&mut rig.lifecycle, &main(), a, Normalized::of(0.25));
-    Hosted::set_parameter(&mut rig.lifecycle, &main(), b, Normalized::of(0.75));
+    rig.lifecycle
+        .control()
+        .expect("the plugin is there")
+        .set_parameter(&main(), a, Normalized::of(0.25));
+    rig.lifecycle
+        .control()
+        .expect("the plugin is there")
+        .set_parameter(&main(), b, Normalized::of(0.75));
     rig.render(64).unwrap();
     rig.render(64).unwrap();
     assert_eq!(
@@ -398,7 +406,12 @@ fn control_is_reachable_loaded_active_and_refused() {
     assert!(rig.lifecycle.control().is_some());
     rig.op(HostOp::Activate(prepare(48_000.0)));
     assert!(rig.lifecycle.control().is_some());
-    assert!(Hosted::wiring(&rig.lifecycle, &main()).is_some());
+    assert!(
+        rig.lifecycle
+            .control_ref()
+            .map(|c| c.wiring(&main()))
+            .is_some()
+    );
     rig.plugin.refuse_rate(Some(SampleRate(1_000.0)));
     rig.op(HostOp::Reconfigure(prepare(1_000.0)));
     assert!(matches!(rig.lifecycle, Lifecycle::Refused { .. }));
@@ -407,12 +420,20 @@ fn control_is_reachable_loaded_active_and_refused() {
 
 /// **State round-trips through the control surface, loaded and active.**
 #[test]
-fn state_round_trips_through_hosted() {
+fn state_round_trips_through_the_lifecycle() {
     let mut rig = Rig::new();
-    Hosted::load_state(&mut rig.lifecycle, &main(), b"abc").unwrap();
+    rig.lifecycle
+        .control()
+        .expect("the plugin is there")
+        .load_state(&main(), b"abc")
+        .unwrap();
     rig.op(HostOp::Activate(prepare(48_000.0)));
     assert_eq!(
-        Hosted::save_state(&mut rig.lifecycle, &main()).unwrap(),
+        rig.lifecycle
+            .control()
+            .expect("the plugin is there")
+            .save_state(&main())
+            .unwrap(),
         b"abc"
     );
 }
@@ -563,10 +584,19 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
     rig.plugin.edit_capacity(1);
     rig.op(HostOp::Activate(prepare(48_000.0)));
     let (a, b) = (ParamId::new(1), ParamId::new(2));
-    Hosted::set_parameter(&mut rig.lifecycle, &main(), a, Normalized::of(0.1));
+    rig.lifecycle
+        .control()
+        .expect("the plugin is there")
+        .set_parameter(&main(), a, Normalized::of(0.1));
     // The ring holds one: these are refused, `b` twice.
-    Hosted::set_parameter(&mut rig.lifecycle, &main(), b, Normalized::of(0.2));
-    Hosted::set_parameter(&mut rig.lifecycle, &main(), b, Normalized::of(0.9));
+    rig.lifecycle
+        .control()
+        .expect("the plugin is there")
+        .set_parameter(&main(), b, Normalized::of(0.2));
+    rig.lifecycle
+        .control()
+        .expect("the plugin is there")
+        .set_parameter(&main(), b, Normalized::of(0.9));
     rig.plugin.clear_calls();
     rig.render(64).unwrap();
     assert_eq!(
@@ -582,7 +612,10 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
         [Call::Edit(b, Normalized::of(0.9)), Call::Process(64)]
     );
     assert_eq!(
-        Hosted::parameter(&rig.lifecycle, &main(), b).map(Normalized::get),
+        rig.lifecycle
+            .control_ref()
+            .and_then(|c| c.parameter(&main(), b))
+            .map(Normalized::get),
         Some(0.9)
     );
     rig.tick();

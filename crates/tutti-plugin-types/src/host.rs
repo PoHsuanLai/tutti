@@ -45,6 +45,15 @@ pub trait Control: EditorWindow {
     /// Every parameter the plugin declares.
     fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo>;
 
+    /// How many parameters the plugin declares: at least `parameters().len()`
+    /// (a format whose list skips a parameter it declines to describe still
+    /// counts it). The default builds the list; a format with a count query
+    /// overrides it, for a caller between blocks that sizes storage by it and
+    /// should not build every descriptor to do so.
+    fn parameter_count(&self, main: &MainThread) -> usize {
+        self.parameters(main).len()
+    }
+
     /// The parameter's current value, or `None` if the plugin has no such
     /// parameter.
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized>;

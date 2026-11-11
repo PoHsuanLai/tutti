@@ -18,8 +18,8 @@ use tutti_plugin_types::Load;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_plugin::error::StateError;
-use tutti_plugin::server::EditorPresence;
 use tutti_plugin_host::PluginHandle;
+use tutti_plugin_types::EditorPresence;
 use tutti_plugin_types::{Normalized, ParamId};
 
 const SAMPLE_RATE: f64 = 48_000.0;

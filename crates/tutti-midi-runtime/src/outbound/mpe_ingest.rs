@@ -79,9 +79,7 @@
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, PitchBendSensitivity};
-use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, Rpn, Ump, Voice2, decode,
-};
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, Rpn, Ump, Voice2};
 
 /// The Registered Controller `rpn` carrying `data` on each channel of `channels`, on `group`
 /// at `offset`.
@@ -492,7 +490,7 @@ impl MpeIngest {
         // `from_mcm` requires the master channel be Ch1 or Ch16 per RP-053, so
         // RPN 0x00/0x06 on any other channel is ordinary parameter traffic and
         // passes through rather than being swallowed as configuration.
-        let decoded = decode(event.1).ok();
+        let decoded = event.1.decode().ok();
         if let (Some((zone, members)), Some(Message::Midi2(address, _))) =
             (MpeZoneConfig::from_mcm(&event.1), decoded)
         {

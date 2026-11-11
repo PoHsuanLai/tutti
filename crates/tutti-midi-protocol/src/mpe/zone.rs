@@ -6,7 +6,7 @@
 //! place the distinction bites is the two zone anchors: the lower zone's master
 //! is `0` and the upper zone's is `15`.
 
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, Rpn, Ump, Voice2, decode};
+use tutti_ump::{Address, Message, MidiChannel, MidiGroup, Rpn, Ump, Voice2};
 
 use crate::PitchBendSensitivity;
 
@@ -285,7 +285,8 @@ impl MpeZoneConfig {
     /// keep the zone it had.
     #[must_use]
     pub fn from_mcm(ump: &Ump) -> Option<(MpeZone, u8)> {
-        let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) = decode(*ump)
+        let Ok(Message::Midi2(address, Voice2::Registered { bank, index, value })) =
+            (*ump).decode()
         else {
             return None;
         };

@@ -589,7 +589,7 @@ fn a_track_that_ends_mid_event_is_a_parse_error() {
 // ---- notes ---------------------------------------------------------------
 
 fn notes_of(tracks: &[Vec<RawEvent>]) -> Vec<PairedNote> {
-    read(&smf(0, tracks)).tracks()[0].notes().collect()
+    read(&smf(0, tracks)).tracks()[0].notes()
 }
 
 #[test]
@@ -662,7 +662,7 @@ fn a_velocity_zero_note_on_stays_a_note_on_in_the_file() {
 // ---- building a file -----------------------------------------------------
 
 fn track(events: Vec<(u64, FileEvent)>) -> Track {
-    Track::new(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
+    unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect())
 }
 
 /// The writer's own framing is read by the independent decoder: chunk
@@ -700,7 +700,7 @@ fn a_format_0_file_has_one_track() {
     let two = vec![Track::default(), Track::default()];
     assert!(matches!(
         MidiFile::smf(SmfFormat::SingleTrack, TPQ, two),
-        Err(Error::InvalidConfig(_))
+        Err(Error::Config(_))
     ));
 }
 
@@ -708,12 +708,12 @@ fn a_format_0_file_has_one_track() {
 fn an_empty_track_list_and_a_bad_division_are_refused() {
     assert!(matches!(
         MidiFile::smf(SmfFormat::Parallel, TPQ, vec![]),
-        Err(Error::InvalidConfig(_))
+        Err(Error::Config(_))
     ));
     for tpq in [0u16, 0x8000] {
         assert!(matches!(
             MidiFile::smf(SmfFormat::Parallel, tpq, vec![Track::default()]),
-            Err(Error::InvalidConfig(_))
+            Err(Error::Config(_))
         ));
     }
 }
@@ -727,7 +727,7 @@ fn events_out_of_order_are_refused() {
     };
     assert!(matches!(
         MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![out_of_order]),
-        Err(Error::InvalidConfig(_))
+        Err(Error::Config(_))
     ));
     // An end before the last event.
     let early_end = Track {
@@ -737,7 +737,7 @@ fn events_out_of_order_are_refused() {
     };
     assert!(matches!(
         MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![early_end]),
-        Err(Error::InvalidConfig(_))
+        Err(Error::Config(_))
     ));
 }
 
@@ -753,23 +753,23 @@ fn what_an_smf_cannot_hold_is_refused() {
         },
         Voice1::ProgramChange(U7::of(1)),
     ));
-    assert!(matches!(one(group_1), Err(Error::InvalidConfig(_))));
+    assert!(matches!(one(group_1), Err(Error::Config(_))));
     let midi2 = FileEvent::Message(Message::Midi2(
         Address::first(MidiChannel::FIRST),
         tutti_ump::Voice2::ChannelPressure(0),
     ));
-    assert!(matches!(one(midi2), Err(Error::InvalidConfig(_))));
+    assert!(matches!(one(midi2), Err(Error::Config(_))));
     let slow = FileEvent::Meta(Meta::Tempo {
         micros_per_quarter: 0x100_0000,
         extra: Box::default(),
     });
-    assert!(matches!(one(slow), Err(Error::InvalidConfig(_))));
+    assert!(matches!(one(slow), Err(Error::Config(_))));
     let gap = MidiFile::smf(
         SmfFormat::SingleTrack,
         TPQ,
         vec![track(vec![(0x1000_0000, on(0, 60, 1))])],
     );
-    assert!(matches!(gap, Err(Error::InvalidConfig(_))));
+    assert!(matches!(gap, Err(Error::Config(_))));
 }
 
 /// The longest gap the wire holds, 28 bits, round-trips.
@@ -814,4 +814,14 @@ fn bytes_of_neither_container_are_named_as_such() {
         MidiFile::from_bytes(b""),
         Err(Error::UnknownFormat)
     ));
+}
+
+/// A track of `events` exactly as given: not sorted, so a test can hand the
+/// constructor events out of order.
+fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
+    Track {
+        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
+        events,
+        ..Track::new()
+    }
 }

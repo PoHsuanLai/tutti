@@ -861,7 +861,10 @@ impl Midi<'_> {
     /// sounding), or a new `MidiClipNode` fed into its event input. Returns
     /// the clip's node.
     ///
-    /// The events are absolute-beat positioned, in any order; the clip
+    /// The events are anything that is `Into<TimedMidiEvent>`: a
+    /// [`TimedMidiEvent`] or a `(Beat, Ump)` pair, so a file's
+    /// `MidiFile::timeline()` plays as it is. They are absolute-beat
+    /// positioned, in any order; the clip
     /// reads its block's `Env`, so a note lands on its frame through seeks
     /// and loop wraps, and an export forks it with the target.
     ///
@@ -872,9 +875,10 @@ impl Midi<'_> {
     pub fn play_clip(
         &mut self,
         target: NodeKey,
-        events: impl IntoIterator<Item = TimedMidiEvent>,
+        events: impl IntoIterator<Item = impl Into<TimedMidiEvent>>,
     ) -> Result<NodeKey> {
         self.takes_midi(target)?;
+        let events = events.into_iter().map(Into::into);
         let clip = match self.clip(target) {
             Some(clip) => {
                 self.state.clips[&clip].controls.set_events(events);

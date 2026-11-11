@@ -103,12 +103,6 @@ impl RangeTable {
             .ok()
             .map(|i| self.ranges[i].1)
     }
-
-    /// How many parameters the table holds.
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.ranges.len()
-    }
 }
 
 #[cfg(test)]

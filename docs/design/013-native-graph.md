@@ -6967,9 +6967,11 @@ state beside the mode. The static half is built here; the driven half (a
   outputs its wet signal alone (`UnitParam::Wet` is no longer one of their
   ports, `ModDelayConfig::mix`, `WetDry`, `set_mix`/`mix()` and the dsp kernels'
   mix arguments are gone) and the graph's mix blends it with the input
-  delayed by the declared latency. `DryWet` (reverbs: `FreeverbNode`,
-  `FdnNode`) and the HRTF node keep theirs: the reverbs' are another lane's, and
-  the HRTF's dry is the mono centre fold of the input, not the input through the
+  delayed by the declared latency. The reverbs (`FreeverbNode`, `FdnNode`) went
+  wet-only the same way (doc 024 step 2b PR9: `DryWet`, `Blend` and `DryAlign` are
+  deleted; a mono-in reverb's right channel has no `x̂`, so it is `y * m`, where the
+  old blend added the dry to both). The HRTF node keeps its own: the
+  HRTF's dry is the mono centre fold of the input, not the input through the
   bypass mapping, so `Mix` cannot replace it.
 - **Tests.** `tutti-graph/tests/mix.rs` (WET and DRY bit for bit including
   special values, the formula on a latent node, the first block, the ramp, the

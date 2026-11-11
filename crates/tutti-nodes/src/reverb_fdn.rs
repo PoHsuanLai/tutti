@@ -4,7 +4,6 @@
 use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 use tutti_types::{Db, Depth, Hz, Mix, Seconds, StereoWidth, UnitAddr, UnitParam};
 
-use crate::blend::DryWet;
 use crate::params::ControlSet;
 use crate::reverb::{DesignNode, FreeverbNode, NodeDesign};
 
@@ -79,7 +78,6 @@ impl ControlSet for FdnSet {
 
 impl NodeDesign for FdnDesign {
     type Set = FdnSet;
-    type Blend = DryWet;
 
     fn set(&self, _: &FdnControls) -> FdnSet {
         FdnSet {

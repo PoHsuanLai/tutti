@@ -134,12 +134,12 @@ param_session_node!(
     tutti_nodes::LfoNode,
 );
 
-// The two reverbs: the mix by address, and the room and damping (Freeverb) or the
+// The two reverbs (wet only: their blend is the graph's mix): the room and damping (Freeverb) or the
 // decays, size, diffusion, pre-delay, modulation, width, wet gain and (if the
 // design can freeze) freeze (the FDN), unless it is the fixed General MIDI send.
 param_session_node!(tutti_nodes::FreeverbNode, tutti_nodes::FdnNode);
 
-// The convolution reverb: its mix by address.
+// The convolution reverb: wet only; its blend is the graph's mix.
 #[cfg(feature = "convolution")]
 param_session_node!(tutti_nodes::ConvolverNode);
 

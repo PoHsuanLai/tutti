@@ -3909,8 +3909,6 @@ dependencies = [
  "crossbeam-channel",
  "getrandom 0.3.4",
  "interprocess",
- "libc",
- "memmap2",
  "parking_lot",
  "serde",
  "tempfile",
@@ -3918,11 +3916,22 @@ dependencies = [
  "tracing",
  "tutti-clap-test-plugin",
  "tutti-fixtures",
+ "tutti-plugin-ipc-ffi",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
  "tutti-ump",
- "windows 0.52.0",
+]
+
+[[package]]
+name = "tutti-plugin-ipc-ffi"
+version = "0.0.1"
+dependencies = [
+ "crossbeam-utils",
+ "libc",
+ "memmap2",
+ "thiserror 2.0.21",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3960,13 +3969,13 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-plugin",
+ "tutti-plugin-ipc-ffi",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-ump",
  "tutti-vst2-host",
  "tutti-vst2-test-plugin",
  "tutti-vst3-host",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

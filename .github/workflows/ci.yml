@@ -119,9 +119,11 @@ jobs:
       # And `tutti-plugin-ipc`, whose modules are private but `state_chunk`, the
       # namespace both ends of the wire chunk a state with.
       - run: cargo xtask check-paths tutti_plugin_ipc batcher client config error ipc offline_wait process_guard protocol subprocess transport
+      # And `tutti-plugin-ipc-ffi`, the process edge's `unsafe` behind safe calls.
+      - run: cargo xtask check-paths tutti_plugin_ipc_ffi header mapping os
       # And `tutti-plugin-host`, the format-generic half of plugin hosting: its
       # modules are private, the root names every item.
-      - run: cargo xtask check-paths tutti_plugin_host control_handle controls listeners liveness meter node param_delivery param_input param_values render_mode segment_points transport_source transport_walk window
+      - run: cargo xtask check-paths tutti_plugin_host control_handle controls listeners liveness meter node param_delivery param_input param_values render_mode segment_points transport_source transport_walk
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: cargo xtask check-paths tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp model network reverb reverb_design swept_delay waveshape window resample
       # And `tutti-measure`, which keeps its modules private too.

@@ -11,11 +11,11 @@
 //! So the evidence goes *in the shared region*, beside the data it describes: a
 //! per-slot sequence number the writer stamps after the last sample and the
 //! reader checks before the first. This is the shape JACK and PipeWire ship, and
-//! it is what finally justifies [`MmapCell`]'s `unsafe impl Sync` — the
+//! it is what finally justifies [`SharedMapping`]'s `unsafe impl Sync` — the
 //! justification can cite a Release/Acquire pair rather than a handshake in a
 //! layer the type system cannot see.
 //!
-//! [`MmapCell`]: super::mmap::MmapCell
+//! [`SharedMapping`]: crate::SharedMapping
 //!
 //! # The ordering, and why it is not decorative
 //!
@@ -45,14 +45,14 @@
 //! Sequences start at **1**: a fresh slab is zeroed, so 0 must mean "nothing was
 //! ever published here".
 
-use crossbeam::utils::CachePadded;
+use crate::SlabError;
+use crossbeam_utils::CachePadded;
 use std::mem::{align_of, offset_of, size_of};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use tutti_plugin_types::BridgeError;
 
 /// Identifies a tutti audio slab. Checked by the opening side before it trusts
 /// a single byte of the mapping.
-pub(super) const SLAB_MAGIC: u64 = u64::from_le_bytes(*b"TTI_SLAB");
+pub(crate) const SLAB_MAGIC: u64 = u64::from_le_bytes(*b"TTI_SLAB");
 
 /// Bumped when this header's *layout* changes. Distinct from the wire
 /// `PROTOCOL_VERSION`: that one gates the control-socket message shapes, this
@@ -60,7 +60,7 @@ pub(super) const SLAB_MAGIC: u64 = u64::from_le_bytes(*b"TTI_SLAB");
 /// binary in practice, so a mismatch means something is badly wrong — but the
 /// check is nearly free and the failure it prevents (mapping a wrong-shaped
 /// region and reading it as audio) is not.
-pub(super) const HEADER_VERSION: u32 = 1;
+pub(crate) const HEADER_VERSION: u32 = 1;
 
 /// The number of blocks the shared-memory ring holds.
 ///
@@ -77,6 +77,7 @@ pub const RING_SLOTS: usize = 2;
 /// Setup-time identification. Separated from the sequence arrays so it shares no
 /// cache line with them: it is written once and then read never on the hot path,
 /// whereas the arrays are stored to every block by both processes.
+#[derive(Debug)]
 #[repr(C)]
 struct Control {
     magic: AtomicU64,
@@ -92,8 +93,9 @@ struct Control {
 /// reorder fields, which would silently point one process's `output_seq` at the
 /// other's `input_seq`. The `const` assertions below pin the properties that
 /// matter; `repr(C)` is what makes them meaningful across builds.
+#[derive(Debug)]
 #[repr(C)]
-pub(super) struct SlabHeader {
+pub struct SlabHeader {
     control: CachePadded<Control>,
     /// Written by the host, read by the server.
     input_seq: CachePadded<[AtomicU64; RING_SLOTS]>,
@@ -140,7 +142,7 @@ const _: () = assert!(
 
 /// Bytes reserved for the header at the start of every slab. The audio regions
 /// begin here.
-pub(super) const SLAB_HEADER_BYTES: usize = size_of::<SlabHeader>();
+pub const SLAB_HEADER_BYTES: usize = size_of::<SlabHeader>();
 
 // The four orderings of the two documented protocols, named once and used at
 // exactly one site each.
@@ -157,22 +159,22 @@ pub(super) const SLAB_HEADER_BYTES: usize = size_of::<SlabHeader>();
 // the prose and the code into a failing test.
 
 /// The publication point of a block's samples. See [`SlabHeader::publish`].
-pub(super) const PUBLISH_ORDERING: Ordering = Ordering::Release;
+pub(crate) const PUBLISH_ORDERING: Ordering = Ordering::Release;
 
 /// The pairing acquire. See [`SlabHeader::sequence`].
-pub(super) const SEQUENCE_ORDERING: Ordering = Ordering::Acquire;
+pub(crate) const SEQUENCE_ORDERING: Ordering = Ordering::Acquire;
 
 /// The publication point of the whole header. See [`SlabHeader::initialize`].
-pub(super) const INITIALIZE_ORDERING: Ordering = Ordering::Release;
+pub(crate) const INITIALIZE_ORDERING: Ordering = Ordering::Release;
 
 /// The pairing acquire. See [`SlabHeader::validate`].
-pub(super) const VALIDATE_ORDERING: Ordering = Ordering::Acquire;
+pub(crate) const VALIDATE_ORDERING: Ordering = Ordering::Acquire;
 
 /// Which direction a sequence belongs to. The two arrays are structurally
 /// identical, so an untyped index would make "host writes the server's array" a
 /// silent bug rather than a compile error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Direction {
+pub enum Direction {
     /// Host → server. The host publishes, the server checks.
     Input,
     /// Server → host. The server publishes, the host checks.
@@ -187,7 +189,7 @@ impl SlabHeader {
     /// publication point for the rest of the header: a peer that observes the
     /// magic with `Acquire` (see [`validate`](Self::validate)) is guaranteed to
     /// see the version and slot count that were written before it.
-    pub(super) fn initialize(&self) {
+    pub(crate) fn initialize(&self) {
         self.control
             .header_version
             .store(HEADER_VERSION, Ordering::Relaxed);
@@ -207,22 +209,22 @@ impl SlabHeader {
     /// correct precisely *because* of that pairing — the acquire already
     /// establishes happens-before with everything the creator wrote first, so
     /// re-synchronizing on each field would be redundant.
-    pub(super) fn validate(&self) -> Result<(), BridgeError> {
+    pub(crate) fn validate(&self) -> Result<(), SlabError> {
         let magic = self.control.magic.load(VALIDATE_ORDERING);
         if magic != SLAB_MAGIC {
-            return Err(BridgeError::SharedMemoryError(format!(
+            return Err(SlabError::Header(format!(
                 "not a tutti audio slab: magic {magic:#x}, expected {SLAB_MAGIC:#x}"
             )));
         }
         let version = self.control.header_version.load(Ordering::Relaxed);
         if version != HEADER_VERSION {
-            return Err(BridgeError::SharedMemoryError(format!(
+            return Err(SlabError::Header(format!(
                 "slab header version {version}, this build speaks {HEADER_VERSION}"
             )));
         }
         let slots = self.control.slots.load(Ordering::Relaxed);
         if slots as usize != RING_SLOTS {
-            return Err(BridgeError::SharedMemoryError(format!(
+            return Err(SlabError::Header(format!(
                 "slab has {slots} ring slots, this build expects {RING_SLOTS}"
             )));
         }
@@ -248,7 +250,7 @@ impl SlabHeader {
     /// that acquires this same location. It is the entire safety argument for
     /// the region below; see the module docs.
     #[inline]
-    pub(super) fn publish(&self, direction: Direction, slot: usize, seq: u64) {
+    pub fn publish(&self, direction: Direction, slot: usize, seq: u64) {
         self.array(direction)[slot].store(seq, PUBLISH_ORDERING);
     }
 
@@ -259,7 +261,7 @@ impl SlabHeader {
     /// publish is visible to this thread. Reading the samples before this load,
     /// or loading `Relaxed`, would defeat the ordering entirely.
     #[inline]
-    pub(super) fn sequence(&self, direction: Direction, slot: usize) -> u64 {
+    pub fn sequence(&self, direction: Direction, slot: usize) -> u64 {
         self.array(direction)[slot].load(SEQUENCE_ORDERING)
     }
 }
@@ -271,7 +273,7 @@ impl SlabHeader {
 /// making it a method on the header would invite one side to derive it from
 /// something else.
 #[inline]
-pub(super) fn slot_for(seq: u64) -> usize {
+pub fn slot_for(seq: u64) -> usize {
     (seq % RING_SLOTS as u64) as usize
 }
 
@@ -477,9 +479,6 @@ mod tests {
             header: Box<SlabHeader>,
             data: [StdAtomicU64; RING_SLOTS],
         }
-        // SAFETY: every field is atomic; the whole point is cross-thread use.
-        unsafe impl Sync for Region {}
-        unsafe impl Send for Region {}
 
         const BLOCKS: u64 = 1_000_000;
 

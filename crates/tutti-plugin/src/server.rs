@@ -28,7 +28,6 @@ pub use tutti_plugin_ipc::socket_name;
 pub use tutti_plugin_ipc::resolve_bundle;
 pub use tutti_plugin_types::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
 
-pub use crate::util::window::{ContentScale, EditorSize, WindowHandle};
 pub use tutti_plugin_ipc::BridgeConfig;
 pub use tutti_plugin_ipc::{AudioSlab, RING_SLOTS, SlabWriter};
 pub use tutti_plugin_ipc::{
@@ -46,6 +45,7 @@ pub use tutti_plugin_types::{
     PointBuf, Preset, PresetId, SampleFormat, Samples, ScaleChanges, ScaleValue, TimeSignature,
     TransportChange, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories, WireMidi,
 };
+pub use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};
 // Per-format `probed` masks, shared by every loader in this crate and in
 // `tutti-plugin-server`.
 pub use tutti_plugin_types::features::probed;

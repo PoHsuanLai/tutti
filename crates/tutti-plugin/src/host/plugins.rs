@@ -54,9 +54,9 @@ use tutti_plugin_db::{
     Scanner,
 };
 use tutti_plugin_ipc::{AudioConfig, CatalogConfig};
-use tutti_plugin_ipc::{BridgeError, Result};
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::PluginDescriptor;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_types::SampleRate;
 
 /// Identifies a plugin in a [`Plugins`] catalog by its file path.
@@ -456,7 +456,7 @@ impl Plugins {
         main: Option<&MainThread>,
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
-    ) -> Result<Plugin> {
+    ) -> BridgeResult<Plugin> {
         let path = path.as_ref();
         if self.is_blacklisted(path) {
             let reason = self
@@ -537,7 +537,7 @@ impl Plugins {
     ///
     /// Returns any error of [`probe_record`], for example when the file
     /// extension is not a plugin format or the probe fails.
-    pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> Result<PluginId> {
+    pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> BridgeResult<PluginId> {
         let delta = probe_record(plugin_path)?;
         let id = PluginId(delta.path().to_path_buf());
         self.apply(delta);

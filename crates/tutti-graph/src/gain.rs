@@ -355,7 +355,7 @@ pub(crate) struct Carried {
 
 /// `w[i]` of a ramp across `frames`: a linear [`Piece`] at `t = (i + 1) / frames`.
 #[inline(always)]
-fn ramp_at(from: f32, to: f32, i: usize, frames: f32) -> f32 {
+pub(crate) fn ramp_at(from: f32, to: f32, i: usize, frames: f32) -> f32 {
     Piece::new(from, to, Law::Linear).value((i + 1) as f32 / frames)
 }
 

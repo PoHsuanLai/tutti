@@ -43,6 +43,7 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false,
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 tutti-plugin = { path = "../tutti-plugin", optional = true }
+tutti-plugin-host = { path = "../tutti-plugin-host", optional = true }
 # The API layer (design 015): a graph, its engine and its device behind one
 # `Session`. `default-features = false` (its default is empty anyway): each
 # feature below turns on the session's feature of the same name with `?`, so
@@ -170,7 +171,7 @@ dsp = ["dep:tutti-dsp", "dep:tutti-measure"]
 # cycle one edit away — the cycle `tutti-plugin`'s build script and the CI
 # workflow both warn about. Build it with
 # `cargo build -p tutti-plugin-server`.
-plugin = ["dep:tutti-plugin", "midi", "tutti-session?/plugin"]
+plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "midi", "tutti-session?/plugin"]
 vst2 = ["plugin", "tutti-plugin/vst2", "tutti-session?/vst2"]
 vst3 = ["plugin", "tutti-plugin/vst3", "tutti-session?/vst3"]
 clap = ["plugin", "tutti-plugin/clap", "tutti-session?/clap"]

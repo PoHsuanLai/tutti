@@ -5,9 +5,10 @@
 //! socket, then drives `PluginHandle` IPC round-trips through it. The
 //! `respond` callback lets each test script the server's replies.
 
-use crate::host::handles::control_handle::PluginHandle;
+use crate::host::subprocess_backend::SubprocessBackend;
 use std::sync::Arc;
 use tutti_fixtures::main_thread;
+use tutti_plugin_host::PluginHandle;
 use tutti_plugin_ipc::AudioSlab;
 use tutti_plugin_ipc::PluginBridge;
 use tutti_plugin_ipc::SlabLayout;
@@ -20,6 +21,19 @@ use tutti_plugin_types::{
 };
 use tutti_plugin_types::{EditorPresence, PluginClass, SampleFormat};
 use tutti_types::SampleRate;
+
+/// A handle over `bridge` as the subprocess backend serves it, with a guard that
+/// owns no subprocess.
+fn handle_over(
+    bridge: Arc<PluginBridge>,
+    descriptor: PluginDescriptor,
+    loaded: LoadedPlugin,
+) -> PluginHandle {
+    let guard = Arc::new(tutti_plugin_ipc::ProcessGuard::for_test(
+        tutti_plugin_ipc::BridgeConfig::default(),
+    ));
+    SubprocessBackend::new(bridge, guard).into_handle(descriptor, loaded, Default::default(), None)
+}
 
 fn unique_shm_name(label: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -149,7 +163,7 @@ fn handle_with_mock_server(
         probed: Features::EDITOR,
         ..Default::default()
     };
-    let plugin_handle = PluginHandle::from_bridge_and_metadata(bridge, descriptor, loaded);
+    let plugin_handle = handle_over(bridge, descriptor, loaded);
 
     (plugin_handle, bridge_thread, server_thread)
 }
@@ -255,8 +269,7 @@ fn handle_with_multi_reply_server(
         probed: Features::EDITOR,
         ..Default::default()
     };
-    let plugin_handle =
-        PluginHandle::from_bridge_and_metadata(Arc::clone(&bridge), descriptor, loaded);
+    let plugin_handle = handle_over(Arc::clone(&bridge), descriptor, loaded);
 
     (plugin_handle, bridge, bridge_thread, server_thread)
 }
@@ -481,7 +494,7 @@ fn handle_open_editor_errors_for_missing_plugin() {
             .open_editor(
                 &main_thread(),
                 FakeWindow,
-                crate::handles::ContentScale::IDENTITY
+                tutti_plugin_types::ContentScale::IDENTITY
             )
             .is_err()
     );

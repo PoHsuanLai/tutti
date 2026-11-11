@@ -50,7 +50,7 @@ println!("reported latency: {:?}", handle.loaded().latency());
 let tempo = TempoReader::constant(Bpm::of(120.0)).expect("a tempo");
 let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::new(48_000.0), Samples(512)));
 let _controls = editor.insert(NodeKey(1), "plugin", plugin.bind(tempo));
-# Ok::<(), tutti_plugin::BridgeError>(())
+# Ok::<(), tutti_plugin_types::BridgeError>(())
 ```
 
 A host that does not already know the path discovers one first — see
@@ -82,8 +82,10 @@ lifetime — it dies only when the last of either drops:
 - [`handles::PluginClient`] — the audio-graph node. Loaded `Unbound`;
   `bind()` makes it a `PluginClient<Bound>`, which owns the audio path and is
   what a graph inserts. `Plugin` does this for you when inserted directly.
-- [`handles::PluginHandle`] — the main-thread control surface: editor,
-  parameters, state, presets. Cheap to clone (`Arc`-shared).
+- [`PluginHandle`](tutti_plugin_host::PluginHandle) (`tutti-plugin-host`'s;
+  [`PluginClient::handle`](handles::PluginClient::handle) makes one) — the
+  main-thread control surface: editor, parameters, state, presets. Cheap to
+  clone (`Arc`-shared).
 
 Per-block inputs (MIDI, chord/scale context, parameter automation) are gated
 on what the plugin reported at load: an accessor answers `None` or `false`
@@ -99,18 +101,18 @@ plugin's format.
   recovery), [`probe_record`](catalog::probe_record) (the stateless probe),
   and the [`PluginDescriptor`](catalog::PluginDescriptor) identity type. The
   scanner, the catalog traits and their records are `tutti-plugin-db`'s.
-- [`handles`] — [`PluginClient`](handles::PluginClient) (the graph node),
-  [`PluginHandle`](handles::PluginHandle) (the control surface),
-  [`PluginControls`](handles::PluginControls) and parameter automation.
-- Host policy over a handle, written once for every host:
-  [`PluginParamValues`] (a parameter mirror, filled by the `Send`
-  [`ParamRead`] job a host runs where it likes), [`Liveness`] (the death
-  debounce: 3 unhealthy observations spanning 50 ms) and
-  [`needs_announcement`] (when a plugin must be told the render mode).
+- [`handles`] — [`PluginClient`](handles::PluginClient), the graph node of a
+  served plugin. The control surface over it, [`PluginHandle`](tutti_plugin_host::PluginHandle),
+  the node's [`PluginControls`](tutti_plugin_host::PluginControls), the in-process
+  node and the host policy written once for every host
+  ([`PluginParamValues`](tutti_plugin_host::PluginParamValues) and its
+  [`ParamRead`](tutti_plugin_host::ParamRead) job,
+  [`Liveness`](tutti_plugin_host::Liveness), the death debounce: 3 unhealthy
+  observations spanning 50 ms, and
+  [`needs_announcement`](tutti_plugin_host::needs_announcement)) are
+  `tutti-plugin-host`'s.
 - [`BridgeConfig`] — low-level bridge tuning (buffer size, timeouts).
-- [`BridgeError`] — the error most calls return.
-- [`backend`] — traits for plugging an out-of-crate loader into
-  [`PluginHandle`](handles::PluginHandle).
+- [`BridgeError`](tutti_plugin_types::BridgeError) — the error most calls return.
 - [`server`] — the wire contract shared with `tutti-plugin-server`; not for
   application code.
 
@@ -204,11 +206,11 @@ number, `AEffect::numPrograms`. Like `AUTOMATION_STATE` and `RENDER_MODE`, the
 preset bits are edge-triggered host→plugin actions, so none of them joins
 `Features::CONSUMES`.
 
-[`PluginHandle::presets`](handles::PluginHandle::presets) is the cross-format
+[`PluginHandle::presets`](tutti_plugin_host::PluginHandle::presets) is the cross-format
 surface, over an opaque [`PresetId`] that carries each format's own identifier
 (an AU selector, a VST3 `(list, index)` pair, a CLAP path, a VST2 index) — a
 single index would silently corrupt AU's sparse numbering.
-[`PluginHandle::preset_support`](handles::PluginHandle::preset_support)
+[`PluginHandle::preset_support`](tutti_plugin_host::PluginHandle::preset_support)
 collapses the two bits into what a preset UI can offer.
 
 ### `probed` — which capabilities a loader actually asked

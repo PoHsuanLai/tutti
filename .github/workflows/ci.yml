@@ -118,7 +118,10 @@ jobs:
       - run: cargo xtask check-paths tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-plugin-ipc`, whose modules are private but `state_chunk`, the
       # namespace both ends of the wire chunk a state with.
-      - run: cargo xtask check-paths tutti_plugin_ipc client config error midi_intake protocol subprocess transport
+      - run: cargo xtask check-paths tutti_plugin_ipc batcher client config error ipc offline_wait process_guard protocol subprocess transport
+      # And `tutti-plugin-host`, the format-generic half of plugin hosting: its
+      # modules are private, the root names every item.
+      - run: cargo xtask check-paths tutti_plugin_host capabilities control_handle controls listeners liveness meter node param_delivery param_input param_values render_mode segment_points transport_source transport_walk window
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: cargo xtask check-paths tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp model network reverb reverb_design swept_delay waveshape window resample
       # And `tutti-measure`, which keeps its modules private too.
@@ -372,11 +375,17 @@ jobs:
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
       #                         and the extension code they cover
       #   tutti-plugin-db/json — `save`, `load` and their tests
-      #   tutti-plugin/clap,vst2 — 33 CLAP and 49 in-process VST2 tests (the
-      #                         `clap_*`, `plugin_param_delivery*` and
-      #                         `vst2_in_process*` suites): no other job turns
-      #                         the features on, so none of them ran. Only
-      #                         `real_plugin_pressure` did, by name.
+      #   tutti-plugin/clap,vst2 — the CLAP tests (the `clap_*` and
+      #                         `plugin_param_delivery*` suites, and the
+      #                         delivery tests that need a CLAP input list) and
+      #                         the in-process VST2 tests that go through the
+      #                         catalog's `Plugin` (`vst2_in_process`, `_fork`,
+      #                         `_transport`): no other job turns the features
+      #                         on, so none of them ran. Only
+      #                         `real_plugin_pressure` did, by name. The other
+      #                         in-process VST2 suites are `tutti-plugin-host`'s
+      #                         and run ungated in the workspace test job (its
+      #                         dev-dependencies build the reference plugin).
       #   tutti-plugin-contract/server — tests/server.rs: the shared plugin's
       #                         mode and transcript through a real plugin-server,
       #                         in all of CLAP, VST2 and VST3 (and the C++ plugin);
@@ -539,7 +548,7 @@ jobs:
           cargo bench --locked -p tutti-ump       --bench codec          -- --test
           cargo bench --locked -p tutti-midi-runtime --bench clip_node -- --test
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
-          cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process -- --test
+          cargo bench --locked -p tutti-plugin-host --bench vst2_in_process -- --test
           cargo bench --locked -p arc-lend --bench lend -- --test
           # `cargo xtask bench-compare --test`: the comparison harness at tiny
           # counts. Never the full run here: it takes minutes, and a shared

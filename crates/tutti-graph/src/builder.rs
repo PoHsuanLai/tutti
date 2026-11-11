@@ -666,6 +666,8 @@ impl GraphBuilder {
             required_resolution,
             params,
             gains,
+            modes,
+            mixes,
         } = self.spec;
         let live = editor.spec_mut();
         live.topology.edges = topology.edges;
@@ -675,6 +677,8 @@ impl GraphBuilder {
         live.required_resolution = required_resolution;
         live.params = params;
         live.gains = gains;
+        live.modes = modes;
+        live.mixes = mixes;
         // Parameter values set through `spec_mut` ride along too. `insert`
         // keeps params already recorded for a key, but these were recorded
         // on the builder's copy, not the editor's.

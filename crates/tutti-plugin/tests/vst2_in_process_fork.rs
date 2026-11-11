@@ -30,8 +30,10 @@ use tutti_graph::{
     Editor, ForkError, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport,
 };
 use tutti_graph::{OutPort, Source};
-use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{PluginForkError, PluginNode, PresetId, RenderMode, load_client};
+use tutti_plugin::{PresetId, RenderMode};
+use tutti_plugin_host::PluginHandle;
+use tutti_plugin_host::{PluginNode, load_client};
+use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::{
     Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,

@@ -112,6 +112,16 @@ impl Held {
     /// those: the rest stays held for the next call. Allocates nothing.
     pub(crate) fn close_ahead(&mut self, events: &mut Vec<Event>) {
         let start = events.len();
+        let added = self.drain_into(events);
+        debug_assert_eq!(events.len() - start, added);
+        events.rotate_right(added);
+    }
+
+    /// Append the close of what is held to `events`, pedals up then note
+    /// offs, as many as its capacity takes, and forget those. Returns how
+    /// many. Allocates nothing.
+    pub(crate) fn drain_into(&mut self, events: &mut Vec<Event>) -> usize {
+        let start = events.len();
         let room = |e: &Vec<Event>| e.len() < e.capacity();
         for i in 0..PEDALS {
             let (w, b) = (i >> 6, 1u64 << (i & 63));
@@ -136,8 +146,7 @@ impl Held {
                 ))));
             }
         }
-        let added = events.len() - start;
-        events.rotate_right(added);
+        events.len() - start
     }
 
     fn event(ump: Ump) -> Event {
@@ -241,9 +250,11 @@ impl Keys {
             }
         };
         fill(&mut self.held);
+        // `owed` for every unit that carries notes: a bypass owes what the
+        // unit held when it parks (`owe_held`).
+        fill(&mut self.owed);
         if waiting {
             fill(&mut self.staged);
-            fill(&mut self.owed);
         }
     }
 
@@ -283,6 +294,13 @@ impl Keys {
     /// After a block's closes: whether any are still owed.
     pub(crate) fn settle(&mut self) {
         self.closing = self.owed.iter().flatten().any(|h| !h.is_empty());
+    }
+
+    /// The unit stops writing (a bypass parks it): what it holds is owed,
+    /// and the next blocks write the closes ahead of the port's events.
+    pub(crate) fn owe_held(&mut self) {
+        absorb(&mut self.owed, &mut self.held);
+        self.settle();
     }
 
     /// The waiting unit takes over; the unit that stopped leaves its keys owed.

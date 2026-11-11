@@ -6,9 +6,10 @@
 //! down and not the DAW.
 
 use std::env;
-use tutti_plugin_server::{BridgeConfig, PluginServer, Result};
+use tutti_plugin_server::{BridgeConfig, PluginServer};
+use tutti_plugin_types::BridgeResult;
 
-fn main() -> Result<()> {
+fn main() -> BridgeResult<()> {
     tracing_subscriber::fmt::init();
 
     let socket_path = env::args()

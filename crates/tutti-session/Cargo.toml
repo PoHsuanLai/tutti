@@ -50,6 +50,9 @@ tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-plugin = { path = "../tutti-plugin", optional = true }
+# The control handle, the node's controls and the host policy over a handle
+# (`Liveness`, `PluginParamValues`): what a hosted plugin is, whatever serves it.
+tutti-plugin-host = { path = "../tutti-plugin-host", optional = true }
 # `assert_main_thread`, the debug-only guard on the calls whose frees are
 # main-thread-only (design 015 §4.2).
 tutti-plugin-types = { path = "../tutti-plugin-types", optional = true }
@@ -84,7 +87,7 @@ export-wav = ["export"]
 export-flac = ["export", "tutti-export/flac"]
 export-aiff = ["export", "tutti-export/aiff"]
 export-ogg = ["export", "tutti-export/ogg"]
-plugin = ["dep:tutti-plugin", "dep:tutti-plugin-types", "midi"]
+plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "dep:tutti-plugin-types", "midi"]
 vst2 = ["plugin", "tutti-plugin/vst2"]
 vst3 = ["plugin", "tutti-plugin/vst3"]
 clap = ["plugin", "tutti-plugin/clap"]
@@ -278,6 +281,12 @@ required-features = ["clap", "export"]
 [[test]]
 name = "plugin_latency"
 required-features = ["clap", "device"]
+
+# A hosted plugin's bypass is the graph's `NodeMode` (doc 013 M2's host half):
+# the reference CLAP plugin in a real `plugin-server`.
+[[test]]
+name = "plugin_bypass"
+required-features = ["clap"]
 
 # What `Phase::Plugins` does with a hosted plugin's health, over a fake
 # backend (no `plugin-server`): the session half of `bevy-tutti`'s

@@ -578,14 +578,14 @@ separates it from the IPC code).
 |---|---|---|---|---|
 | `tutti-plugin-types` (exists) | adds `InProcess`, `OutOfProcess`, `Editor`, `Load`, `Reopen` (~300 new) | none | 3 | yes (today) |
 | **`tutti-plugin-ipc`** (new) | `protocol/` (2,125), `util/transport/` (3,260), `host/ipc_client/` (6,332), `host/subprocess/` (1,655), `host/node/batcher.rs` (761), `error.rs` (476), `util/config/` (317); `Ipc`, `IpcProcessor`, `IpcController`, the server-side halves of the slab and framing | `tutti-plugin-types`, `tutti-types`, `tutti-rt`, `tutti-ump`, `tutti-midi-types` (+ serde, bincode, memmap2, interprocess) | 4 | **no**: shm, mmap and process launch (`slab.rs`, `header.rs`, `launch.rs`, `control.rs`). The only crate with such `unsafe`, each block with a `// SAFETY:` |
-| **`tutti-plugin-host`** (new) | `host/node/` less the batcher (about 7,500 + tests), `host/handles/` (1,416) reworked over `Control`, the reusable parts of `vst2_in_process` (node, client, fork, about 1,450 merged into the above), `host/param_values.rs`, `liveness.rs`, `render_mode.rs`, `util/node`, `util/window`; `PluginNode<H>`, `InProc<F>` (~300) | `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-midi-runtime`, `tutti-midi-types`, `tutti-types`, `tutti-rt`, `tutti-ump` | 5 | yes, once `os_monotonic_ns` (`transport_source.rs:430-465`, a `clock_gettime` / `QueryPerformanceCounter` call, 35 lines) moves to `tutti-rt` |
+| **`tutti-plugin-host`** (new) | `host/node/` less the batcher (about 7,500 + tests), `host/handles/` (1,416) reworked over `Control`, the reusable parts of `vst2_in_process` (node, client, fork, about 1,450 merged into the above), `host/param_values.rs`, `liveness.rs`, `render_mode.rs`, `util/node`, `util/window`; `PluginNode<H>`, `InProc<F>` (~300) | `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` (no `tutti-plugin-ipc`: what the node code shares with it, `MidiIntake`, the invalidation vocabulary, `BlockCounts`, `MAX_CHUNK`, `BridgeError` and `PluginForkError`, lives in `tutti-plugin-types`, as built in 4a-4a) | 5 | yes, once `os_monotonic_ns` (`transport_source.rs:430-465`, a `clock_gettime` / `QueryPerformanceCounter` call, 35 lines) moves to `tutti-rt` |
 | **`tutti-plugin`** (shrinks) | the facade: `plugin.rs` (472, becomes the `hosts!` table), `plugins.rs` (1,026), `db_probe.rs` (279), `lib.rs`; `AnyHost`, `Hosting`, `open` | `-host`, `-ipc`, `tutti-plugin-db`, and the four format hosts behind features | 6 | yes |
 | **`tutti-plugin-probe`** (new, bin) | `main.rs` (~150) and the descriptor read per format, which `Vst2Instance::probe`, `ClapInstance::probe`, `Vst3Instance::probe` and `AuInstance::probe` (inside `loaders/`) do today | `tutti-plugin-types`, the four format hosts behind features (not `-ipc`, not `-host`, not `tutti-plugin`) | 6 (above the layer-5 format hosts; nothing depends on it) | yes: every host it calls forbids `unsafe` and the binary adds none |
 | `tutti-plugin-server` (shrinks) | `session.rs` (2,111), `audio_pipeline.rs` (1,406), `transport.rs` (649), `server.rs`, `lib.rs`; the `served!` table; probe mode removed; `loaders/` (7,689) gone | `-ipc`, `tutti-plugin-types`, the CLAP, VST3 and AU hosts behind features (not VST2, not `-host`, not `tutti-plugin`) | 7 (could be 6; leave) | yes, once the loaders' `unsafe impl Send` and `WindowHandle::from_u64` go and the `libloading` tests move to the contract |
 | `tutti-{clap,vst3,vst2,au}-host` | gain `impl InProcess`, `impl OutOfProcess` (not VST2), and `OutOfProcess::Editor` | `tutti-plugin-types` only (unchanged) | 5, 5, 4, 5 (`tutti-au-host` moves from 4 to 5 over the new `tutti-au-ffi`, layer 4; PRs #350 and #353) | yes (unchanged); the `-ffi` crates keep the `unsafe` |
 
 The ordering is lower-to-higher with no new upward edge: `-ipc` (4) is above
-`tutti-plugin-types` (3); `-host` (5) is above `tutti-midi-runtime` (4);
+`tutti-plugin-types` (3); `-host` (5) is above `tutti-transport` (3);
 `tutti-plugin` (6) is above both; `tutti-plugin-server` and `tutti-session` stay
 at 7; `tutti` and `bevy-tutti` at 8. **`tutti-plugin` stays at layer 6, so
 `tutti-session` and the umbrellas need no change**, and no new crate depends on
@@ -705,7 +705,7 @@ a `Loaded`.
 | 2 | Move `format/gui/{clap,vst3}` into the host crates as `OutOfProcess::Editor`; the state-back direction on close (Q8) | No (AU's `gui/au.rs` waits for step 7) | -250 lines in `tutti-plugin` |
 | 3 | Extract `tutti-plugin-ipc`: protocol, transport, client, subprocess, batcher, `BridgeError`. Mechanical: no logic change; `check-layout.sh` rows, `check-plugin-ffi.sh` paths, CLAUDE.md | After #350 and #353 merge (they edit `tutti-plugin`'s features and `gui/au.rs`, and `check-layout.sh`'s layer rows move `tutti-au-host`); no AU dependency otherwise | moves about 13k lines |
 | 4a | Extract `tutti-plugin-host`; `PluginNode<H>` and `InProc<F>`; `Vst2` in-process runs through them; **delete** `vst2_in_process` (2,274) and its `Arc<Mutex>` / `try_lock` | No | -2.3k, +~0.9k |
-| 4b | `Ipc<F>: Loaded` over the existing bridge; `PluginNode<Ipc<F>>` replaces `PluginClient`'s node; **delete** `graph_node.rs`, the IPC `fork.rs` and `composite.rs` duplicates and the `Host*` capability traits where `Control` replaces them | No (CLAP and VST3 rows) | -1.5k |
+| 4b | `Ipc: Loaded` over the existing bridge (no format parameter until AU has a `Loaded`, §10.4); `PluginNode<Ipc>` replaces `PluginClient`'s node; **delete** `graph_node.rs`, the IPC `fork.rs` and `composite.rs` duplicates and the `Host*` capability traits where `Control` replaces them. Four PRs, §10.4 | No new AU work, but the served client carries AU today, so AU stays on `Ipc` through it (§10.4 (c)) | -1.5k |
 | 4c (built) | **The probe binary.** Build `tutti-plugin-probe` (CLAP, VST3, VST2; AU's probe row joins when AU's `Loaded` lands), the file wire, `ProbeLocator` and `tutti-fixtures::plugin_probe`; switch `probe_plugin` (`db_probe.rs`) to it; then delete probe mode (`TUTTI_PROBE_MODE`, `ProbePlugin`, `Plugin::probe`) from the server. `check-layout.sh` row, CLAUDE.md "build first" note. Independent of 4a and 4b | No (AU row later) | -300 in server, +~300 new |
 | 5 | Generic server: `Served<F: OutOfProcess>` and `served!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` (the whole VST2 loader), `plugin.rs`, `format_host.rs`'s capability traits. Supersedes 016 step 4's `AnyPlugin` | AU row waits; the macro takes it later | -5.5k |
 | 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs` | No | `Backend` gone |
@@ -749,8 +749,11 @@ a `Loaded`.
 
 `tutti-plugin-ipc` (layer 4) holds `protocol/`, `transport/` (was
 `util/transport/`), `config/` (was `util/config/`), `subprocess/`, `client/`
-(was `host/ipc_client/`; `subprocess/` is the server's launch alone), `error.rs`, the `MidiIntake`, the slab's chunk ceiling `MAX_CHUNK` and the
-client's `BlockCounts`. Its modules are private but
+(was `host/ipc_client/`; `subprocess/` is the server's launch alone), `error.rs` (`PluginRenderFault`; `BridgeError` and `PluginForkError` moved to
+`tutti-plugin-types` in 4a-4a, with `MidiIntake`, the slab's chunk ceiling `MAX_CHUNK`, the
+client's `BlockCounts` and the `PluginInvalidation`, `PluginRefresh`, `ResyncKind` and
+`ResyncClass` vocabulary, so the node code that moves to `tutti-plugin-host` does not
+need `-ipc`). Its modules are private but
 `state_chunk`; `tutti-plugin` re-exports what its public API named
 (`tutti_plugin::error`, `server`, `catalog`) from it, so no consumer moved. Six
 departures from the plan, each because a piece named something above layer 4
@@ -766,9 +769,10 @@ or did not belong to the process edge:
   `exists`, and skips an empty `PATH` entry rather than reading it as the
   working directory.
 
-- **The batcher stays in `tutti-plugin`.** It reads the fork's `ForkWatch` and
-  the node's `BlockPayload`, which are `-host` material. It moves when it
-  becomes `IpcProcessor` (step 4b), which is where the plan's `Ipc<F>` needs it.
+- **The batcher stayed in `tutti-plugin` at first.** It read the fork's
+  `ForkWatch` and the node's `BlockPayload`, which were `-host` material. It
+  moved into `tutti-plugin-ipc` in step 4b, PR 1 (§10.4), with its
+  `process_pipeline_tests` and `ProcessGuard`, once those reads were cut.
 - **The editor loader is a function the host passes.** `PluginBridge` opened
   its editor through `tutti-plugin`'s `load_gui_instance`, which names the format
   hosts. `PluginBridge::new` now takes an `EditorLoader` (`fn(&MainThread,
@@ -792,9 +796,282 @@ or did not belong to the process edge:
   launch tests lost their `clap` feature gate (this crate has no format
   features) and need the plugin-server like the other suites that spawn it.
 
+### 10.3 Step 4a-4b (the extraction) as built
+
+`tutti-plugin-host` (layer 5, `publish = false`) holds the format-generic code
+that did not need the wire: `PluginHandle` and the `Host*` capability traits
+(`capabilities.rs`, `control_handle.rs`), the node's pieces (`controls`,
+`meter`, `param_delivery`, `param_input`, `segment_points`, `transport_source`,
+`transport_walk`), the sinks (`listeners.rs`), the host policy (`liveness`,
+`param_values`, `render_mode`) and `in_process/` (`PluginNode`, `InProcClient`,
+`load_client`). Its modules are private and the root names every item; its
+normal dependencies are those of §6.1 and no more. Departures from the plan:
+
+- **`capability_view.rs` stays.** It is the `impl PluginClient` of the
+  `sends_midi`, `takes_midi`, `takes_harmony` and `transport` accessors, and
+  `is_declined`, which only it and `Plugin` call.
+- **`transport_walk` moved with its `BlockPayload` cut.** `scan` and `finish`
+  take the chunk's `TransportInfo` and `TransportChanges` rather than the
+  batcher's payload, which stays with `-ipc`'s consumers. The pieces the node
+  drives (`TransportSource`, `TransportWalk`, `ParamDelivery`, `SegmentPoints`,
+  `ForkedSources`, `take_param_input`) are `pub` for the
+  served node in `tutti-plugin` and marked so; they go private again if
+  step 4b moves that node here.
+- **`PluginHandle::from_client` is `PluginClient::handle`.** The handle
+  gained the parts the served client sets (`OptionalCapabilities::automation_state`,
+  `with_refresh_sink`, `with_invalidate_sink`, `with_server_pid`);
+  `SubprocessBackend::into_handle` builds it, and the mock-server tests build
+  theirs through the same function.
+- **The crate is `deny(unsafe_code)`, not `forbid`.** `HostEditor::open_editor`
+  takes the raw window pointer, and the in-process backend decodes it with one
+  `WindowHandle::from_ptr` (the same decode `SubprocessBackend` makes). The
+  crate can forbid `unsafe_code` once the trait takes a `WindowHandle` and the
+  decode is `PluginHandle`'s alone.
+- **`window.rs` is `extract_platform_ptr` alone.** Its re-exports of
+  `ContentScale`, `EditorSize` and `WindowHandle` were facades over
+  `tutti-plugin-types`; `tutti_plugin::server` re-exports them from there.
+- **No facade in `tutti-plugin`.** `tutti_plugin::handles` keeps `PluginClient`,
+  `Bound`, `Unbound` and `TransportView`; `backend`, `Liveness`, `PluginNode`
+  and the rest are named from `tutti_plugin_host`. The umbrella adds
+  `tutti::plugin_host`.
+- **The in-process suites run in the workspace.** `tutti-plugin-host`
+  dev-depends on `tutti-vst2-host` and the VST2 test plugin, so its in-module
+  and integration tests need no feature. The suites that go through
+  `catalog::Plugin` (`vst2_in_process`, `_fork`, `_transport`) stay in
+  `tutti-plugin` under `vst2`, and so do the two delivery tests that name
+  `PayloadPool` and a CLAP input list (`param_delivery_tests.rs`).
+
 Steps 1, 2, 4a, 4b, 4c, 5 and 6 (without the AU rows) can start before AU is ready;
 3 should wait only for the AU lane's merge to avoid conflicts; 7 is the only
 step blocked on AU's `Loaded`.
+
+### 10.4 Step 4b plan
+
+Step 4b is four PRs. Row 4b's "No AU" overlooked that the served client
+(`PluginClient`, the batcher, `SubprocessBackend`) carries AU today, as it
+carries CLAP and VST3: a plugin is served by format-blind code, and the
+`plugin-server` loads whichever format the path names. So `Ipc` must keep
+serving AU until AU has its own `Loaded` (step 7).
+
+| PR | What | Behaviour |
+|---|---|---|
+| 1 | **Move only.** The IPC-only pieces go down into `tutti-plugin-ipc`: `Batcher` (with `BlockPayload`, `Chunks` and its tests), `process_pipeline_tests`, `ProcessGuard`, a new `OfflineWait` (the offline fork's latches, split out of `ForkWatch`), and `ChunkCounters` goes to `tutti-plugin-types`. | none |
+| 2 | **Lift the served behaviours into the generic `PluginNode`.** `Processor::chunk() -> Option<NonZeroUsize>`, defaulted `None`, so the node cuts sub-blocks at chunk edges and keeps frame-exact transport; `Processor::reset` called from the node's `reset`; harmony and note expression; `TransportWalk`; the loss-accounting fields in `ProcessOutput`; a token-free fork path for the served hosting. | in-process render unchanged (`chunk() == None`) |
+| 3 | **`Ipc: Loaded`** with `IpcProcessor` (today's `Batcher`) and `IpcController`; `ControlBackend<H: Loaded>`; `PluginNode<Ipc>` replaces `PluginClient`. **Delete** `graph_node.rs`, the served `fork.rs`, `node/mod.rs` and `subprocess_backend.rs`. A differential test, old against new, on a mock server. | none, pinned by the differential test |
+| 4 | **Delete the `Host*` traits.** `PluginHandle` over `Control` plus a small `Health` trait (crash, cause, terminate, rate refusal, block counts); the served control answers from any thread, as today. | none |
+
+Decisions, with their reasons:
+
+- **(a) `Ipc` stays in `tutti-plugin-ipc`, and `tutti-plugin-host` still does
+  not depend on it.** Moving `Ipc` up into `-host` would not close the gap that
+  makes the served node differ: both hostings are still driven through
+  `Processor::process`, and what differs (a chunk that spans calls) is a
+  `Processor` property, not a crate placement. It would also put the wire
+  (`protocol`, `transport`) into `-host`, which §6.1 keeps out. So the pieces
+  `Ipc` needs go down, which is PR 1.
+- **(b) `Processor::chunk`, a hook, and no change to `ProcessContext`.** A served
+  chunk spans calls and starts in the middle of a block, and `ProcessContext`
+  carries the block's transport only. The node, which owns the transport
+  source and the walk, has to know where chunks begin to cut the block there
+  and read the transport at each chunk's first frame; the in-process
+  hosting answers `None` and is cut nowhere.
+- **(c) No `<F>` on `Ipc` until AU has a `Loaded`.** `Ipc<F: OutOfProcess>` of
+  §2.2 would exclude AU, which the same client serves today. One `Ipc` serves
+  every format by path, as `PluginClient` does, and gains the parameter when
+  step 7 gives AU an `OutOfProcess` impl and the editor loader becomes
+  `F::load_editor`.
+- **(d) The served handle stays thread-agnostic.** It does not go through
+  `defer_to_main` as the in-process handle does (§2.2, "What VST2 changed"): a
+  host that blocks its main thread on a snapshot or parameter-read job would
+  otherwise be told "unavailable" when the 2 s deadline passes, for a call the
+  served control can answer from any thread. The `Health` trait of PR 4 keeps
+  that a property of the served hosting.
+
+**PR 1 as built.** `batcher.rs` (786 lines with its tests), `process_pipeline_tests.rs`
+(1,805) and `process_guard.rs` (the old `process.rs`, 102) moved with `git mv` into
+`tutti-plugin-ipc`, as private modules with their items at the crate root
+(`Batcher`, `BlockPayload`, `Chunks`, `OfflineWait`, `ProcessGuard`); nothing
+is re-exported from `tutti-plugin`. The four upward edges were cut as follows.
+`Batcher::prepare` takes the two values it read from `Prepare`, `(max_block:
+Samples, quantum: Option<Samples>)`, and the node unpacks them, so `-ipc` gains
+no `tutti-graph` edge. `BlockPayload` held only `-ipc` and `tutti-plugin-types`
+types, so it moved whole. `ForkWatch` is split: the budget and the latches
+the batcher used (`give_up`, `latch_crash`, `latch_refusal`, `server_died`,
+`stopped_waiting`, `budget`) are `OfflineWait`, which `ForkWatch` holds in an
+`Arc` and hands to the batcher (`set_offline_wait`); `ForkWatch` keeps the
+latency plan and its `ForkHealth` impl, and reads the latches through
+`gave_up`, `death` and `refusal`. `ChunkCounters` is in `tutti-plugin-types`
+beside `BlockCounts` (the batcher in `-ipc` writes it, `-host`'s controls read
+it, and neither may depend on the other). `process_pipeline_tests` needed no
+format host: it passed `load_gui_instance` only as the bridge's `EditorLoader`,
+and its peers never open an editor, so the suite has a refusing stub, as
+`hostile_peer_tests` does. `ProcessGuard::for_test` is behind `test-support`,
+which `tutti-plugin`'s `tests.rs` needs. No `check-layout.sh` rule changed.
+
+**PR 2 as built.** The generic `PluginNode` (`tutti-plugin-host`'s `in_process/`)
+gains what `graph_node.rs` does; the in-process Processors answer the defaults,
+so their render is unchanged (`tutti-plugin-host`'s 116 tests and the
+`vst2_in_process_*` suites pass untouched).
+
+1. **`Processor::chunk() -> Option<NonZeroUsize>`**, default `None`
+   (*the transport rule below was amended in 3a, item 7 of "PR 3a as built":
+   the transport is the chunk's, not the piece's*). With
+   `Some(n)` the node polls the Processor once, cuts the block at the chunk
+   edges (frames counted from `prepare` and every `reset`, in `InProcClient`'s
+   `phase`) and calls `process` once per piece. Each piece reads its transport
+   at **its own first frame** (`Snapshot::at`, the steady counter at that
+   frame) and walks the changes inside it (`TransportWalk` `begin`, `scan`,
+   `finish`, with the piece as the chunk), which land in
+   `ProcessContext::transport_changes` on the piece's frames. MIDI and harmony
+   are the piece's, on its frames; the parameter changes are the **chunk's so
+   far, on chunk frames** (the delivery's `begin` runs at a chunk's first frame
+   and `handed_off` at its last, as the served node's do), so a chunk that
+   spans calls delivers or owes its values whole. The piece, not the chunk, is
+   what `ProcessContext` carries: a continued chunk's first piece has the
+   transport at the piece's frame, not at the chunk's first, and the
+   Processor (the served `IpcProcessor`, in PR 3) keeps the chunk's own.
+2. **`Processor::reset`** already existed (doc 016); the node's `reset` now
+   calls it, on the Processor it holds, after zeroing the chunk phase. For VST2
+   it drops the host's open SysEx (counted at the reset, where it was counted at
+   the next `START`; the totals the existing tests pin are the same).
+3. **Harmony.** `ProcessContext` already had `expressive`; the node fills its
+   `chords` and `scales` from `Harmony` events, for a plugin that declared
+   `SEQUENCER_CONTEXT`, on the frames of the call (the block's, or the piece's).
+   Note expression is not a rail: the served node leaves it empty (it rides the
+   MIDI as MIDI 2 per-note messages), and so does this one.
+4. **Loss accounting.** `ProcessOutput::count_midi_lost(n)` (MIDI a chunked
+   Processor took in earlier calls and lost when it shipped their chunk: not
+   staged, or refused) and `set_params_unsent()` (the chunk this call completed
+   went without its parameter changes). The node folds the first into its
+   dropped-MIDI count, the executor's lost count and the SysEx skip
+   (`MidiIntake::lost`), and ends the chunk's delivery with
+   `handed_off(!params_unsent)`. `params_refused` is read as before. A piece the
+   Processor did not run ends its chunk as undelivered, its MIDI lost, counted.
+5. **Fork: deferred to PR 3.** The token-free fork path is not in this PR.
+   Every `Control` call on the new instance (`load_state`, `load_preset`,
+   `set_render_mode`) and `Reopen::reopen` itself take a `&MainThread`, which
+   cannot be made off the main thread, so a deferred build cannot be written
+   against the generic traits. It has to be the hosting's own reopen-and-restore
+   (a call that takes the origin, the preset and the state and needs no token),
+   and PR 3 adds it with `Ipc`. The in-process fork stays `pinned`, unchanged.
+
+What the generic node still lacks for PR 3: the served node's `Features`-gated
+`SEQUENCER_CONTEXT` is the same, but its **MIDI-out is pushed per call from the
+batcher's `emit`** (here each piece's `ProcessOutput::midi_events` is shifted to
+the block's frames and written after the last piece, capped at the inline list);
+`PluginControls`' pipeline latency (`declared_latency` plus the chunk) and
+`set_pipeline` in `prepare`; `reserve_param_changes` on the bridge's buffers;
+`ForkWatch`, `settle` and the offline wait in `prepare`; the rate told through
+the bridge rather than a deactivate and activate; and the node's `segments`
+chunk length, which the in-process path has never set (`SegmentPoints::begin`
+is called only for a chunked Processor).
+
+**PR 3a as built.** The served hosting is added **beside** the served node;
+nothing that ships changes (`PluginClient`, `graph_node.rs`, the served
+`fork.rs`, `subprocess_backend.rs` are as they were).
+
+1. **`Ipc: Loaded`** (`tutti-plugin-ipc`, module `ipc/`, no format parameter,
+   no `tutti-graph` or `tutti-plugin-host` edge). `Ipc::new(IpcParts)` wraps a
+   running server (bridge, `ProcessGuard`, `LoadedPlugin`, the slab writer);
+   `Ipc::launch(config, path, rate, state, EditorLoader)` starts one.
+   `activate` gives an `IpcProcessor` (the `Batcher` behind `process`: one
+   call is one piece inside one chunk; the chunk's payload is the first piece's
+   transport, and the pieces' MIDI, harmony and transport changes shifted to
+   chunk frames; the parameter changes are the node's chunk so far, copied
+   into the buffer the bridge swaps; `midi_lost`, `params_unsent` and the
+   MIDI-out are reported in `ProcessOutput`) and an `IpcController` (`Control`
+   over the bridge, `Controller::latency` the plugin's own). `RESTARTS` is
+   `NONE`. `chunk()` is the configured chunk (required test, mutation "override
+   deleted" run).
+2. **Two defaulted `Processor` methods**, because the served pipeline's rate,
+   block and quantum are not an activation: `retune(rate, max_block, quantum)
+   -> bool` (taken live, no restart, no token; `false` default sends the node
+   down the lifecycle's reconfiguration, so in-process hostings are
+   unchanged) and `latency()` (what the Processor adds to the plugin's own: the
+   chunk; the node declares the sum).
+3. **Where `Control`/`Loaded` did not fit.** (a) *Tokens.* `Control` takes a
+   `&MainThread` for every call; `Ipc` ignores it and the bridge answers from
+   any thread, so the served control stays thread-agnostic with no hop added
+   (the in-process `ControlBackend`, which hops through `defer_to_main`, is not
+   generalised: 3b/4 give the served handle a backend over `IpcController`'s
+   inherent bridge access). (b) *Rate.* `Loaded::activate` and the lifecycle
+   take a token and restart; a served rate is a queued command, hence `retune`.
+   (c) *Latency* is read by the lifecycle through the controller with a token;
+   hence the split above, so a `retune` off the main thread needs no re-read.
+   (d) *Events.* The bridge's listener events become `Request::LatencyChanged`
+   / `TailChanged` for the lifecycle; the others (parameter edits, resyncs, a
+   refused rate, a crash) are forwarded through `Ipc::forward_events` and wired
+   to the handle's sinks in 3b. (e) *`Health`* (`is_crashed`, `crash_cause`,
+   `terminate`, `rate_refusal`, `block_counts`) is not needed by 3a and is left
+   to PR 4: nothing here moves a handle.
+4. **Reopen without a token.** `Reopen::reopen` takes one and gives a stateless
+   instance, so `Ipc` implements it and adds `Ipc::reopen_restoring(state) ->
+   Launched` (a new server of its own socket, the state restored before
+   activation, no `MainThread`), tested on a worker thread against a real
+   server. `Ipc::wait_offline()` gives the `OfflineWait` of an export's fork.
+   Not wired into the generic fork.
+5. **The node is generic over `Loaded`.** `tutti-plugin-host`'s `in_process/`
+   is `node/` (`git mv`; its `node.rs` is `graph.rs`). `Instance`,
+   `InProcClient` and `PluginNode` are over `H: Loaded`; the parts that load
+   (`Instance::load`, `load_client`) and fork (`Fork`, `IntoNode`) stay
+   `InProcess`, and a client has an `Option<Origin>` (none: no fork).
+   `client_over(main, loaded, rate, block, spares)` builds one for any
+   hosting (`PluginNode<Ipc>` is built in `tutti-plugin`); its delivery learns
+   `spares` unlisted addresses as the served node's does. `InProcClient::go_offline`
+   drops the host clock. The type keeps the name `InProcClient`; renaming it is
+   3b's. A chunked Processor's parameter room is its chunk (it was the larger of
+   chunk and block).
+6. **Tests.** `ipc_node_tests` pins `PluginNode<Ipc>` analytically against the
+   mock server (a click comes out one declared latency later; per chunk the
+   transport at its first frame, a tempo step on its frame in the chunk that
+   holds it, notes, a chord and parameter points on their chunk frames, the
+   MIDI-out one chunk late, `reset` restarting the chunk phase, sequence
+   numbers across it). `migration_old_and_new_served_nodes_agree` is a
+   **migration aid, deleted with the old served node in 3b** (it compares one
+   render against another, which a lasting test may not): the same schedule
+   through the old node and the new one, audio and every audio-path frame the
+   server receives equal bit for bit. What only the aid checks: the byte
+   identity of the wire frames, and a parameter ramp with a duration (its
+   grid points are `ParamDelivery`'s, pinned in `tutti-plugin-host`).
+7. **Amended in 3a: the chunk's transport is chunk-level (PR 2's contract
+   changed).** PR 2 handed each piece the transport at the piece's first frame
+   and the changes inside the piece. Reading the code against the served
+   node showed that loses what the served walk reported: a stop or seek on a
+   block boundary inside a chunk (a break between pieces, never scanned) and
+   the slope (`tempo_inc`) to the chunk's end. So for a chunked Processor the
+   context's `transport` is the transport at the **chunk's** first frame and
+   `transport_changes` are the chunk's so far, on chunk frames, from one
+   `TransportWalk` across the pieces (`begin` at the chunk's first frame,
+   `scan` each piece at its chunk frame, `finish` at the completing piece, as
+   `graph_node.rs` does); both are final in the completing piece, which is the
+   call `IpcProcessor` reads them in (`-ipc` walks nothing). MIDI and harmony
+   stay per piece, on piece frames; the parameters are the chunk's, as before.
+   PR 2's two per-piece transport tests in `chunked_node.rs` encoded the old
+   rule and were rewritten to the new one (a step at frame 80 in the chunk
+   from 64 is a change at chunk frame 16, in the piece that holds it and the
+   rest of the chunk; every piece reads its chunk's first-frame transport),
+   with fresh mutations. New pins: a stop and a seek on a block boundary, a
+   tempo ramp's `tempo_inc`, at the node (`chunked_node`) and at the server
+   (`ipc_node_tests`); the migration aid is extended with all three and agrees
+   with the old node.
+8. **Counted losses.** The MIDI the Processor holds for the chunk in flight
+   when the node resets (or is re-prepared) is dropped with it and counted:
+   at once in the delivery's dropped MIDI, and in the executor's lost count
+   with the next block (a reset has no `Io`; `Direct::lost` exposes it to
+   tests). Transport changes past the inline bound
+   (`MAX_TRANSPORT_CHANGES`) go to `dropped_transport_changes`, the counter the
+   served node used (the node's walk is where they overflow; `IpcProcessor`
+   receives the same bounded list). A chunk's MIDI past the Processor's cap is
+   counted lost through `ProcessOutput::count_midi_lost`.
+
+**3b must still:** switch `PluginClient`/`Plugin::open` to `PluginNode<Ipc>`
+(the handle over a served backend, the sinks on `forward_events`, `PluginControls`
+counters and `attach_bridge_midi`, the `ChunkCounters`); build the fork from
+`Ipc::reopen_restoring` with `wait_offline`, `settle` in `prepare` and
+`ForkWatch` over the generic node; move
+`mock_server.rs` out of the migration aid's neighbourhood (the pins use it) and
+delete `differential_tests.rs`, `graph_node.rs`, the served `fork.rs`,
+`node/mod.rs` and `subprocess_backend.rs`.
 
 ## 11. Open questions
 

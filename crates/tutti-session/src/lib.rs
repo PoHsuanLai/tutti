@@ -124,6 +124,7 @@ pub use session::MidiNodes;
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
 pub use tutti_graph::MissingSource;
+pub use tutti_graph::{MixError, ModeError, NodeMode};
 #[cfg(feature = "midi")]
 pub use tutti_ump::MidiChannel;
 #[cfg(feature = "device")]

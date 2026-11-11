@@ -114,6 +114,29 @@ impl AuRef {
 /// a subtype code can never satisfy the corpus.
 const APPLE: u32 = u32::from_be_bytes(*b"appl");
 
+/// Apple's voice isolation effect, the one unit a corpus sweep never initializes
+/// (see [`may_initialize_in_a_sweep`]).
+pub const SOUND_ISOLATION: AuRef = AuRef::effect("AUSoundIsolation", b"vois");
+
+/// Whether a corpus sweep may `initialize` this unit: every unit but
+/// [`SOUND_ISOLATION`].
+///
+/// On a GitHub macOS runner AUSoundIsolation's `AudioUnitInitialize` sometimes
+/// fails at 48 kHz with `kAudioUnitErr_FormatNotSupported` (-10868), a rate it
+/// accepts on a real Mac, and the test process then dies of SIGTRAP about half a
+/// second later: a trap in Apple's code, which no `catch_unwind` reaches. Seen in
+/// `au_identity` (run 42947180447) and in `au_midi_map`'s two sweeps, the three
+/// that initialized every unit; never in `au_midi_out`'s, which only
+/// instantiates. A refused rate on a Mac (8 kHz to 384 kHz, measured on macOS
+/// 26.6) fails the same call with the same code and does not trap, so the trap
+/// follows the runner's failure, not a refused init as such, and cannot be
+/// reproduced here. The unit is still instantiated and probed loaded; only its
+/// initialized phase is left out.
+pub fn may_initialize_in_a_sweep(info: &AuComponentInfo) -> bool {
+    !(info.sub_type == u32::from_be_bytes(*SOUND_ISOLATION.sub_type)
+        && info.manufacturer_code == APPLE)
+}
+
 /// A delay: many parameters, several units, no reported latency.
 pub const DELAY: AuRef = AuRef::effect("AUDelay", b"dely");
 /// A 41-parameter EQ — the widest parameter surface in the corpus.

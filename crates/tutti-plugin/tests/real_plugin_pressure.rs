@@ -295,7 +295,7 @@ fn available_effects() -> Vec<&'static str> {
 #[cfg(feature = "clap")]
 fn load_n_from_probe(
     count: usize,
-) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>)> {
+) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>)> {
     eprintln!(
         "no third-party effect plugins installed — driving {count} instance(s) \
          of the reference CLAP probe instead"
@@ -338,7 +338,7 @@ fn load_n_from_probe(
 #[cfg(all(not(feature = "clap"), feature = "vst3"))]
 fn load_n_from_probe(
     _count: usize,
-) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>)> {
+) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>)> {
     eprintln!("no effect plugins installed and no `clap` feature to fall back on — skipping");
     None
 }
@@ -353,7 +353,7 @@ fn load_n_from_probe(
 /// from. The delay-compensation tests do not go through here — they load one named
 /// plugin via [`load_passthrough`], which is why `au` alone is a valid build.
 #[cfg(any(feature = "clap", feature = "vst3"))]
-fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>)> {
+fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>)> {
     let paths = available_effects();
     if paths.is_empty() {
         return load_n_from_probe(count);
@@ -1016,7 +1016,7 @@ const STALL: Duration = Duration::from_millis(500);
 /// Probes rather than installed plugins even where those exist: a third-party
 /// plugin cannot be told to stall.
 #[cfg(feature = "clap")]
-fn load_stalled(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>) {
+fn load_stalled(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>) {
     let _env = clap_probe::ProbeEnv::new()
         .render_mode(clap_probe::render::TAG_PASSTHROUGH)
         .stall_every_block(STALL);
@@ -1041,7 +1041,7 @@ fn load_stalled(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin::handles::Plu
 /// `pairs` stalled probes ([`load_stalled`]) and `pairs` answering plugins
 /// ([`load_n`]), alternating: stalled at even positions, answering at odd.
 #[cfg(feature = "clap")]
-fn load_half_stalled(pairs: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>) {
+fn load_half_stalled(pairs: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin_host::PluginHandle>) {
     let (stalled, mut handles) = load_stalled(pairs);
     let Some((answering, answering_handles)) = load_n(pairs) else {
         unreachable!("with `clap` on, `load_n` falls back to the probe");
@@ -1409,7 +1409,7 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 ///   the same flake.
 ///
 /// Now the test records the pid of every server *it* launched
-/// ([`PluginHandle::server_pid`](tutti_plugin::handles::PluginHandle::server_pid))
+/// ([`PluginHandle::server_pid`](tutti_plugin_host::PluginHandle::server_pid))
 /// and asks the OS about exactly those. No scan is involved, so no other
 /// process's server can be miscounted.
 ///
@@ -1549,7 +1549,7 @@ fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
 /// `Plugin::open` picks the host from the path itself, so this does not
 /// dispatch on the extension.
 #[cfg(any(feature = "vst3", feature = "au"))]
-fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin::handles::PluginHandle)> {
+fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin_host::PluginHandle)> {
     if !std::path::Path::new(path).exists() {
         eprintln!("{path} not installed — skipping");
         return None;

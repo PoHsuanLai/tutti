@@ -34,8 +34,10 @@ use tutti_graph::{
     Editor, ForkError, ForkFaultKind, ForkMode, ForkTarget, IntoNode, Prepare, Renderer,
 };
 use tutti_graph::{OutPort, Source};
-use tutti_plugin::handles::{PluginClient, PluginHandle};
-use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
+use tutti_plugin::handles::PluginClient;
+use tutti_plugin::{BridgeConfig, PluginRenderFault};
+use tutti_plugin_host::PluginHandle;
+use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{SampleRate, Samples};
@@ -559,7 +561,7 @@ fn a_dropped_forks_server_is_reaped() {
             tutti_transport::TempoReader::constant(tutti_types::Bpm::of(120.0)).expect("a tempo"),
         )
         .expect("the probe forks");
-    let handle = PluginHandle::from_client(&fork);
+    let handle = fork.handle();
     let pid = handle.server_pid().expect("the fork has its own server");
     assert_ne!(pid, live_pid, "a process of its own");
     assert!(clap_probe::is_alive(pid), "the fork's server runs");

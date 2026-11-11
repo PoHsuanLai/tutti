@@ -11,7 +11,8 @@
 //!
 //! ```no_run
 //! use tutti_graph::Editor;
-//! use tutti_plugin::handles::{PluginClient, PluginControls};
+//! use tutti_plugin::handles::PluginClient;
+//! use tutti_plugin_host::PluginControls;
 //! use tutti_graph::NodeKey;
 //! use tutti_transport::TempoReader;
 //! fn insert(client: PluginClient, tempo: TempoReader, editor: &mut Editor) -> PluginControls {
@@ -61,32 +62,24 @@
 //!   still polled out of band (see the `shape` docs in `graph_node`).
 //!
 //! Subprocess lifetime is [`ProcessGuard`], held behind `Arc` here and in
-//! [`crate::host::handles::PluginHandle`], so the subprocess dies when the
+//! [`PluginHandle`], so the subprocess dies when the
 //! LAST Arc drops. Main-thread editor / state / parameter access is on
-//! [`crate::host::handles::PluginHandle`].
+//! [`PluginHandle`].
 
-mod batcher;
 mod capability_view;
-mod controls;
 mod fork;
 mod graph_node;
-mod meter;
-mod param_delivery;
-// `pub(crate)` for the in-process node, which reads its event input's
-// parameter events through the same walk (see `param_delivery` below).
-pub(crate) mod param_input;
-mod process;
-mod segment_points;
-// `pub(crate)` rather than private: the in-process node
-// (`crate::format::in_process`) is a peer host, not a subprocess client,
-// and reads its transport through the same mapping rather than a second copy.
-pub(crate) mod transport_source;
-mod transport_walk;
 
 #[cfg(test)]
-mod process_pipeline_tests;
+mod differential_tests;
+#[cfg(test)]
+mod ipc_node_tests;
+#[cfg(test)]
+mod mock_server;
+#[cfg(test)]
+mod param_delivery_tests;
 // The block-budget suite driven by a REAL plugin subprocess, as opposed to
-// `process_pipeline_tests`' mock servers. A unit test rather than an
+// `tutti-plugin-ipc`'s `process_pipeline_tests` mock servers. A unit test rather than an
 // integration one because it asserts on `PluginBridge::settled_replies`, which
 // is `#[cfg(test)]` — deliberately, since nothing in the shipping host reads it
 // and an always-compiled accessor with no caller reads as API someone may
@@ -98,40 +91,28 @@ mod real_stall_tests;
 #[cfg(test)]
 mod tests;
 
-// The shared node primitives (change sinks) live in `crate::util::node`;
-// re-exported here so `crate::host::node::...` paths resolve.
-pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
-pub use crate::util::node::{Listener, ParameterChangeSink};
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
-pub use controls::{NodeControls, PluginControls};
-pub use meter::PluginMeter;
-pub use param_delivery::ParamDeliveryStats;
-pub(crate) use tutti_plugin_ipc::MidiIntake;
-// The in-process node (`crate::format::in_process`) delivers its parameters
-// through the same slots, segments and event walk as this node: one copy of
-// each.
-pub(crate) use param_delivery::{DeliveryCounters, ParamDelivery};
-pub(crate) use process::ProcessGuard;
-pub(crate) use segment_points::SegmentPoints;
-// The largest chunk that can cross the process edge: `tutti-plugin-ipc`'s,
-// which sizes the shared-memory slab from it, so the slab and the batcher
-// agree on the per-chunk ceiling.
-pub(crate) use batcher::MAX_CHUNK;
 
-use batcher::Batcher;
+use crate::host::subprocess_backend::SubprocessBackend;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tutti_plugin_ipc::BridgeConfig;
-use tutti_plugin_ipc::HarmonyInputs;
-use tutti_plugin_ipc::PluginBridge;
-use tutti_plugin_ipc::Result;
-use tutti_plugin_ipc::{BridgeEvent, PluginInvalidation, ResyncClass};
-use tutti_plugin_types::PluginTail;
-use tutti_plugin_types::{
-    LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat, TransportInfo,
+use tutti_plugin_host::{
+    InvalidateSink, ParamDelivery, ParameterChangeSink, PluginControls, PluginHandle, RefreshSink,
+    SegmentPoints, TransportSource, TransportWalk,
 };
+use tutti_plugin_ipc::BridgeConfig;
+use tutti_plugin_ipc::BridgeEvent;
+use tutti_plugin_ipc::PluginBridge;
+use tutti_plugin_ipc::{Batcher, BlockPayload, ProcessGuard};
+use tutti_plugin_types::MidiIntake;
+use tutti_plugin_types::PluginTail;
+use tutti_plugin_types::{BridgeResult, MAX_CHUNK};
+use tutti_plugin_types::{
+    LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat,
+};
+use tutti_plugin_types::{PluginInvalidation, ResyncClass};
 use tutti_types::{SampleRate, Samples};
 
 /// The typestate of a [`PluginClient`] that is loaded but not yet a graph node.
@@ -164,11 +145,11 @@ pub struct Bound {
     out_events: MidiEventVec,
     /// The transport changes inside the chunk being filled: where the walk
     /// is, between calls (`transport_walk`).
-    walk: transport_walk::TransportWalk,
+    walk: TransportWalk,
     /// The meter cell and the clocks the plugin's transport carries
     /// (`TransportSource`): the steady counter, project time and the host
     /// clock, `None` on an offline fork.
-    transport: transport_source::TransportSource,
+    transport: TransportSource,
     /// The project's tempo map, read through the reader `bind` was given and
     /// lent once per block: the tempo and slope every chunk's transport
     /// reports. A fork clones it on the control side (its own registration on
@@ -180,10 +161,10 @@ pub struct Bound {
     /// The curve segments in flight on the event input, sent as parameter
     /// points until each lands. Its slots are allocated by `prepare`;
     /// nothing is allocated on the audio thread.
-    segments: segment_points::SegmentPoints,
+    segments: SegmentPoints,
     /// The chunk's parameter changes: a slot per parameter of the plugin,
     /// sized at bind, sending changes only (`param_delivery`).
-    params: param_delivery::ParamDelivery,
+    params: ParamDelivery,
     /// Takes the event input's MIDI into each chunk's capped list, carrying
     /// across chunks which SysEx lost a packet there (`midi_intake`).
     intake: MidiIntake,
@@ -214,7 +195,7 @@ impl std::fmt::Debug for Bound {
 /// parameter automation, harmony and note expression come in through the
 /// node's inputs and [`PluginControls`]; the transport is read from each
 /// block. Editor, state and main-thread parameter access are on
-/// [`PluginHandle`](crate::host::handles::PluginHandle). The subprocess
+/// [`PluginHandle`]. The subprocess
 /// exits when the node and every handle built from it have been dropped.
 ///
 /// Not `Clone`: a node exists once, in the graph that owns it.
@@ -223,7 +204,8 @@ impl std::fmt::Debug for Bound {
 ///
 /// ```no_run
 /// use tutti_graph::Editor;
-/// use tutti_plugin::handles::{PluginClient, PluginControls};
+/// use tutti_plugin::handles::PluginClient;
+/// use tutti_plugin_host::PluginControls;
 /// use tutti_graph::NodeKey;
 /// use tutti_transport::TempoReader;
 /// fn insert(client: PluginClient, tempo: TempoReader, editor: &mut Editor) -> PluginControls {
@@ -252,7 +234,7 @@ pub struct PluginClient<S = Unbound> {
     param_sink: ParameterChangeSink,
     refresh_sink: RefreshSink,
     invalidate_sink: InvalidateSink,
-    /// Subprocess lifetime, shared with `PluginHandle::from_client`.
+    /// Subprocess lifetime, shared with `PluginClient::handle`.
     process_guard: Arc<ProcessGuard>,
     /// Where this instance came from, so a fork can load another of it
     /// ([`fork_instance`](Self::fork_instance)). Never written.
@@ -278,44 +260,25 @@ impl<S> std::fmt::Debug for PluginClient<S> {
     }
 }
 
-/// Everything the host produces for one chunk, aggregated for the bridge
-/// call. Host-side only — the batcher unpacks it into the (unchanged)
-/// positional `bridge.submit` arguments, so the IPC wire shape is untouched.
-///
-/// The chunk's parameter changes are not here: they stay in the node's
-/// `ParamDelivery`, whose buffer the bridge swaps rather than moves
-/// (`Chunks::params`), so nothing is allocated or freed per chunk.
-#[derive(Default)]
-pub(super) struct BlockPayload {
-    pub midi: tutti_plugin_types::MidiEventVec,
-    pub note_expression: tutti_plugin_types::NoteExpressionChanges,
-    pub harmony: HarmonyInputs,
-    /// The transport at the chunk's first frame.
-    pub transport: TransportInfo,
-    /// The transport changes after it, each at its chunk frame (doc 020
-    /// stage 5b; `transport_walk`). Inline: nothing allocates.
-    pub changes: tutti_plugin_types::TransportChanges,
-}
-
 impl PluginClient<Unbound> {
     /// Spawns the plugin-server, loads `plugin_path` and returns the loaded
     /// plugin, [`Unbound`].
     ///
     /// Blocks while the subprocess launches and completes its handshake. The
     /// subprocess exits when the graph has dropped the node and every
-    /// [`PluginHandle`](crate::host::handles::PluginHandle) built from this
+    /// [`PluginHandle`] built from this
     /// client has been dropped.
     ///
     /// # Errors
     ///
-    /// Returns a [`BridgeError`](crate::BridgeError) if the plugin-server
+    /// Returns a [`BridgeError`](tutti_plugin_types::BridgeError) if the plugin-server
     /// cannot be found or spawned, the handshake fails or times out, the
     /// plugin fails to load, or the IPC bridge cannot be set up.
     pub fn new(
         config: BridgeConfig,
         plugin_path: PathBuf,
         sample_rate: impl Into<SampleRate>,
-    ) -> Result<Self> {
+    ) -> BridgeResult<Self> {
         Self::new_with_state(config, plugin_path, sample_rate, None).map(|(client, _)| client)
     }
 
@@ -333,7 +296,7 @@ impl PluginClient<Unbound> {
         plugin_path: PathBuf,
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
-    ) -> Result<(Self, Option<std::result::Result<(), String>>)> {
+    ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
         let sample_rate = sample_rate.into();
         let server = tutti_plugin_ipc::launch(&config, &plugin_path, sample_rate, state)?;
         let state_restore = server.state_restore.clone();
@@ -399,7 +362,7 @@ impl PluginClient<Unbound> {
                 listener_invalidate_sink.fire(PluginInvalidation::Latency { samples });
             }
             BridgeEvent::TailChanged { tail } => {
-                *controls::lock_tail(&listener_tail) = tail;
+                *tutti_plugin_host::lock_tail(&listener_tail) = tail;
                 listener_invalidate_sink.fire(PluginInvalidation::Tail { tail });
             }
             BridgeEvent::ParameterChanged { index, value } => {
@@ -479,7 +442,8 @@ impl PluginClient<Unbound> {
     #[must_use]
     pub fn bind(self, tempo: tutti_transport::TempoReader) -> PluginClient<Bound> {
         let chunks = self.controls.chunk_counters();
-        chunks.attach(self.bridge.audio_buffer());
+        let slab = Arc::clone(self.bridge.audio_buffer());
+        chunks.attach(move |seq| slab.has_output(seq));
         self.controls
             .delivery_counters()
             .attach_bridge_midi(self.bridge.dropped_midi_cell());
@@ -489,7 +453,7 @@ impl PluginClient<Unbound> {
         // A slot per parameter: every parameter can move in one chunk. The
         // chunk's point room, here and in the bridge's buffers, is sized in
         // `prepare`, once the chunk length is known.
-        let params = param_delivery::ParamDelivery::new(
+        let params = ParamDelivery::new(
             self.params.iter().copied(),
             self.controls.delivery_counters(),
         );
@@ -532,11 +496,11 @@ impl PluginClient<Unbound> {
                 io,
                 pending: BlockPayload::default(),
                 out_events: MidiEventVec::new(),
-                walk: transport_walk::TransportWalk::default(),
-                transport: transport_source::TransportSource::new(meter),
+                walk: TransportWalk::default(),
+                transport: TransportSource::new(meter),
                 tempo,
                 tempo_cursor: tutti_tempo::Cursor::default(),
-                segments: segment_points::SegmentPoints::default(),
+                segments: SegmentPoints::default(),
                 params,
                 intake: MidiIntake::default(),
             },
@@ -545,6 +509,25 @@ impl PluginClient<Unbound> {
 }
 
 impl<S> PluginClient<S> {
+    /// The main-thread control handle for this plugin: editor, parameters,
+    /// state.
+    ///
+    /// Call this before moving the client into a graph. The handle shares the
+    /// subprocess's lifetime with the client, and the subprocess backend
+    /// honors every capability, including the editor.
+    pub fn handle(&self) -> PluginHandle {
+        SubprocessBackend::new(self.bridge(), Arc::clone(self.process_guard())).into_handle(
+            self.descriptor().clone(),
+            self.loaded().clone(),
+            (
+                self.param_sink().clone(),
+                self.refresh_sink().clone(),
+                self.invalidate_sink().clone(),
+            ),
+            self.process_guard().pid(),
+        )
+    }
+
     pub(crate) fn param_sink(&self) -> &ParameterChangeSink {
         &self.param_sink
     }
@@ -557,7 +540,7 @@ impl<S> PluginClient<S> {
         &self.invalidate_sink
     }
 
-    /// Accessor for `PluginHandle::from_client` — not for end users.
+    /// The subprocess's lifetime guard, shared with [`handle`](Self::handle).
     pub(crate) fn process_guard(&self) -> &Arc<ProcessGuard> {
         &self.process_guard
     }
@@ -655,7 +638,7 @@ impl<S> PluginClient<S> {
     /// dropped, over the client's life: more arrived during one command (a
     /// preset or state load) than the bridge holds between two listener
     /// calls, and the oldest went. Each drop also delivers a
-    /// [`PluginRefresh::ParamValues`](crate::host::handles::PluginRefresh::ParamValues), so a
+    /// [`PluginRefresh::ParamValues`](tutti_plugin_types::PluginRefresh::ParamValues), so a
     /// host that re-reads on it loses nothing; latency, tail and resync events
     /// are never dropped.
     pub fn dropped_parameter_events(&self) -> u64 {
@@ -665,7 +648,7 @@ impl<S> PluginClient<S> {
     /// Queues a parameter change for the plugin. RT-safe, fire-and-forget.
     ///
     /// Main-thread parameter reads and writes are on
-    /// [`PluginHandle`](crate::host::handles::PluginHandle); this lets a
+    /// [`PluginHandle`]; this lets a
     /// builder set initial values before any handle exists.
     pub fn set_parameter(&self, param_id: ParamId, value: Normalized) {
         let _ = self.bridge.set_parameter_rt(param_id, value);

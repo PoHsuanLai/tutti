@@ -17,8 +17,14 @@ use super::*;
 // multiplied onto a signal at all.
 
 unit! {
-    /// A blend position between two signals, `0..1`. 0 is fully dry, 1 fully
-    /// wet.
+    /// A blend position between two signals, `0..1`: `0` is all of the first
+    /// signal (the input, as it was before the node: the "dry" end), `1` all of
+    /// the second (the node's output: the "wet" end). In between is
+    /// `first * (1 - mix) + second * mix`, [`blend`](Mix::blend).
+    ///
+    /// What the graph holds per node is this blend of the node's output with
+    /// its own input delayed by the node's declared latency
+    /// (`Editor::set_mix` of `tutti-graph`, doc 013).
     ///
     /// A *position on a scale*, not a magnitude — which is why it does not
     /// scale: half of a 50% blend is not a meaningful quantity, and
@@ -34,9 +40,13 @@ unit! {
 // summing to 1.4 is off the end of the crossfade.
 
 impl Mix {
-    /// Fully dry — none of the processed signal.
+    /// All of the first signal and none of the second: the input as it was
+    /// before the node (a graph node at `DRY` writes its aligned input, what a
+    /// bypass writes) and none of the node's output. The studio's "dry".
     pub const DRY: Mix = Mix(0.0);
-    /// Fully wet — none of the original signal.
+    /// All of the second signal and none of the first: the node's output and
+    /// none of the input (a graph node at `WET` is the node as it is, with
+    /// nothing blended). The studio's "wet".
     pub const WET: Mix = Mix(1.0);
 
     /// Constrain into `0..=1`.

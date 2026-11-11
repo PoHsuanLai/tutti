@@ -452,8 +452,18 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-plugin-ipc (the process edge: the wire, the shared-memory slab and
                  control socket, the plugin-server's launch, and the
-                 client of a served plugin, `PluginBridge`; no plugin format,
+                 client of a served plugin, `PluginBridge`, with the pipeline
+                 that feeds it (`Batcher`, `OfflineWait`), the server's
+                 process (`ProcessGuard`) and the served plugin as a `Loaded`
+                 (`Ipc`, `IpcProcessor`, `IpcController`); no plugin format,
                  design 021 §6.1),
+  tutti-plugin-host (the format-generic half of hosting, not a format host: the
+                 `PluginHandle` control surface and its `Host*` capability traits,
+                 the node's controls, meter, transport and parameter delivery, the
+                 host policy (`Liveness`, `PluginParamValues`) and the plugin node
+                 over any `Loaded` hosting (`PluginNode`: in-process through
+                 `load_client`, served through `client_over`); no wire, design
+                 021 §6.1),
   tutti-plugin-probe (the `plugin-probe` binary: reads a plugin's descriptor
                  into a result file, `tutti-plugin-types`' `probe_wire`; the format
                  hosts and no hosting; nothing depends on it, design 021 §2.5),
@@ -486,7 +496,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
    `tutti-plugin-db`, `tutti-plugin-ipc`
 5. `tutti-cpal`, `tutti-export`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
-   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`
+   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`, `tutti-vst2-host`,
+   `tutti-plugin-host`
 6. `tutti-plugin`, `tutti-plugin-probe`
 7. `tutti-plugin-server`, `tutti-session`
 8. `tutti` (and `bevy-tutti`, when it is unparked)
@@ -753,10 +764,16 @@ list (normal and build edges; dev-dependencies may go anywhere).
   changes a row. Consumers
   name its types from it, not through `tutti-plugin`.
 - `tutti-plugin-ipc` depends on `tutti-types`, `tutti-rt`, `tutti-ump` and
-  `tutti-plugin-types` alone among workspace crates,
+  `tutti-plugin-types` alone among workspace crates (no `tutti-graph`: the
+  `Batcher` takes the plain values it reads from a `Prepare`; `Ipc` is a
+  `tutti_plugin_types::Loaded`, one for every format by path until AU has its own),
   keeps every module private but `state_chunk` (the namespace both ends chunk
   a state with; CI runs the per-module path gate on the rest) and has no
-  `bevy` feature. Its `unsafe` is the process edge's own (shared memory and
+  `bevy` feature. **The served control is thread-agnostic:** `Ipc`'s and
+  `IpcController`'s `Control` methods take a `MainThread` and ignore it, and
+  nothing in `-ipc` hops to the main thread; a rate, block and quantum are
+  taken through `Processor::retune`, a reopen with `Ipc::reopen_restoring`.
+  Its `unsafe` is the process edge's own (shared memory and
   its mapping, the Windows control-socket deadline, the launch), each block
   under a `// SAFETY:`. It knows no format:
   the editor-only instance a `PluginBridge` opens is loaded by the host's
@@ -764,6 +781,19 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`scripts/check-layout.sh`). Its test-only knobs (`set_rate_timeout`,
   `settled_replies`) are behind `test-support`, which `tutti-plugin`'s
   dev-dependency turns on.
+- `tutti-plugin-host` depends on `tutti-plugin-types`, `tutti-graph`,
+  `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt` and `tutti-ump`
+  alone among workspace crates (`scripts/check-layout.sh`): no `tutti-plugin-ipc`,
+  no format host as a normal dependency, and not `tutti-plugin`. It keeps every
+  module private (`tutti_plugin_host::PluginHandle`; CI runs the per-module path
+  gate on it), is `publish = false` and has no `bevy` feature. It is
+  `#![deny(unsafe_code)]` rather than forbid: the in-process `HostEditor`'s one
+  `WindowHandle` decode is its only `unsafe` (see design 021 §10.3). What it
+  exports for the served node in `tutti-plugin` (`ParamDelivery`,
+  `TransportSource`, `TransportWalk`, ...) says who it is for. Its in-process
+  tests load the reference VST2 plugin through a dev-dependency on
+  `tutti-vst2-host`, so they run in the workspace with no feature. Consumers
+  name its items from it, not through `tutti-plugin`.
 - `tutti-midi-file` is OS-free and keeps every module private
   (`tutti_midi_file::smf_to_bytes`; the per-module path gate is not in CI because the
   parked `bevy-tutti` still names `tutti_midi_file::smf::`). It holds
@@ -1120,9 +1150,13 @@ read the `Cargo.toml`, grep for the type, run the probe.
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
-  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  `tutti-nodes`'), `BusStripNode`'s mute (`set_muted`, `is_muted`, `UnitParam::Mute`, `GeneralMidi::set_muted`) and `EqBandNode`'s `BandState`, `set_enabled` and `set_state` → `NodeMode` (`Graph::set_mode`; a General MIDI setup's mute is `set_mode(gm.out(), NodeMode::Muted)`), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), `audio-automation` (an external git dependency until Q25 of doc 024) → `tutti-curve` (`CurveType` → `tutti_curve::Law`, `Trajectory` and `Breakpoint` copied in minimal; `AutomationClip`, `AutomationState` and `ParameterRange` were not), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
-  a `ControlLaneNode` per param). A comment or doc that disagrees with the
+  a `ControlLaneNode` per param), `tutti_plugin::{handles, host::node, format::in_process}`'s
+  format-generic items (`PluginHandle`, `NodeControls`, `PluginMeter`, `TransportSource`,
+  `ParamDelivery`, `Liveness`, `PluginParamValues`, `PluginNode`, `InProcClient`, `load_client`)
+  → `tutti_plugin_host::` (doc 021 step 4a-4b; `PluginHandle::from_client` →
+  `tutti_plugin::PluginClient::handle`). A comment or doc that disagrees with the
   code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
   gated off MSVC, because `sin` differs in the last ulp between CRTs.

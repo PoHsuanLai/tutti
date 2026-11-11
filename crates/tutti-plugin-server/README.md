@@ -49,8 +49,8 @@ Always set `socket_path` to the path the host chose: `BridgeConfig::default`
 derives a unique path per call, which could never meet the host that spawned
 this process.
 
-[`BridgeConfig`], [`BridgeError`] and [`Result`] are re-exported from
-`tutti-plugin`; the wire protocol and its version are defined there too.
+[`BridgeConfig`] is re-exported from
+`tutti-plugin`, and `BridgeError` is `tutti-plugin-types`'; the wire protocol and its version are defined there too.
 
 ## How a session runs
 
@@ -99,6 +99,4 @@ MIT OR Apache-2.0
 [`PluginServer`]: crate::PluginServer
 [`PluginServer::run`]: crate::PluginServer::run
 [`BridgeConfig`]: crate::BridgeConfig
-[`BridgeError`]: crate::BridgeError
-[`Result`]: crate::Result
 [`tutti_plugin::server`]: tutti_plugin::server

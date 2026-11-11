@@ -1,0 +1,70 @@
+[package]
+name = "tutti-plugin-host"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The format-generic half of plugin hosting for Tutti: the control handle, the node's controls, transport and parameter delivery, and the in-process node"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-plugin-host"
+# Not published, like `tutti-plugin-ipc` and `tutti-plugin-db`: whether and when
+# the split goes to crates.io is the maintainer's call.
+publish = false
+keywords = ["audio", "plugin", "host"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Design 021 section 6.1: the vocabulary, the graph, the transport and the
+# value types. No `tutti-plugin-ipc`, no format host, no `tutti-plugin`.
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-graph = { path = "../tutti-graph" }
+tutti-transport = { path = "../tutti-transport" }
+tutti-tempo = { path = "../tutti-tempo" }
+tutti-types = { path = "../tutti-types" }
+tutti-rt = { path = "../tutti-rt" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
+
+# Lock-free f64 cursor for the node's controls.
+atomic_float = "1.1"
+# The in-process node's stack channel tables.
+arrayvec = "0.7"
+parking_lot = "0.12"
+tracing = "0.1"
+# Typed parent-window handle for editor embedding: the handle's `open_editor`
+# takes anything that impls `HasWindowHandle` and extracts the platform pointer.
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+# The in-process node's tests and the integration suites load the reference
+# VST2 plugin through the format host: the first `InProcess` format, and the one
+# whose test plugin the workspace test run always builds.
+tutti-vst2-host = { path = "../tutti-vst2-host" }
+# `contract::{drive_input, Direct}`: the in-process node driven by hand, as a
+# graph drives it, in its tests, allocation gate and bench.
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
+# `ControlLaneNode::for_foreign` and its `ControlProgram`: the control lane that
+# drives the in-process plugin's parameters through its event input.
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
+tutti-modulation = { path = "../tutti-modulation", default-features = false }
+criterion.workspace = true
+# Finds the reference plugin beside the test binary.
+tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
+assert_no_alloc = { version = "1", default-features = false }
+# The reference VST2 plugin the in-process lifecycle tests load, plus
+# `libloading` to re-open the image the host loaded and read its capture: the
+# linked rlib is a separate image with separate statics, so only the cdylib's
+# globals see the host's calls. The same pair, for the same reasons, as
+# `tutti-vst2-host`'s dev-dependencies.
+libloading = "0.8"
+tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
+
+[[bench]]
+name = "vst2_in_process"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

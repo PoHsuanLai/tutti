@@ -77,6 +77,9 @@ members = [
     "crates/tutti-dsp",
     "crates/tutti-measure",
     "crates/tutti-plugin-ipc",
+    # The format-generic half of plugin hosting (design 021 step 4a): the control
+    # handle and the node pieces, over `tutti-plugin-types`. No ipc, no format host.
+    "crates/tutti-plugin-host",
     "crates/tutti-plugin",
     "crates/tutti-plugin-server",
     # The probe binary (design 021 section 2.5): reads a plugin's descriptor into a

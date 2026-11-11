@@ -64,13 +64,13 @@
 //! means "these are block `seq`'s samples", and torn audio cannot leak out.
 //!
 
-use crate::error::{BridgeError, Result};
 use crate::protocol::SlabLayout;
 use bytemuck::Pod;
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 use tutti_plugin_types::Sample;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 use super::header::{Direction, RING_SLOTS, SLAB_HEADER_BYTES, slot_for};
 use super::mmap::MmapCell;
@@ -115,7 +115,7 @@ impl AudioSlab {
     /// Returns an error if `layout` names no bus in a direction or a ring depth
     /// other than [`RING_SLOTS`], or if the backing file exists or cannot be
     /// created, sized or mapped.
-    pub fn create(name: impl Into<String>, layout: SlabLayout) -> Result<SlabWriter> {
+    pub fn create(name: impl Into<String>, layout: SlabLayout) -> BridgeResult<SlabWriter> {
         check_layout(&layout)?;
         let name = name.into();
         let mmap = open_mmap(&name, byte_size(&layout)?, Open::Create)?;
@@ -146,7 +146,7 @@ impl AudioSlab {
     /// [`create`](Self::create)), the file cannot be opened or mapped, or it is
     /// too short, is not a tutti slab, or was written with a different header
     /// version.
-    pub fn open(name: impl Into<String>, layout: SlabLayout) -> Result<SlabWriter> {
+    pub fn open(name: impl Into<String>, layout: SlabLayout) -> BridgeResult<SlabWriter> {
         check_layout(&layout)?;
         let name = name.into();
         let expected = byte_size(&layout)?;
@@ -210,7 +210,7 @@ impl AudioSlab {
         seq: u64,
         channel: usize,
         output: &mut [T],
-    ) -> Result<usize> {
+    ) -> BridgeResult<usize> {
         self.read_region(Direction::Input, seq, channel, output)
     }
 
@@ -229,7 +229,7 @@ impl AudioSlab {
         seq: u64,
         channel: usize,
         output: &mut [T],
-    ) -> Result<usize> {
+    ) -> BridgeResult<usize> {
         self.read_region(Direction::Output, seq, channel, output)
     }
 
@@ -274,7 +274,7 @@ impl AudioSlab {
         seq: u64,
         channel: usize,
         data: &[T],
-    ) -> Result<()> {
+    ) -> BridgeResult<()> {
         self.check_width::<T>()?;
         let offset = self.offset_of(direction, seq, channel)?;
         if data.len() > self.layout.samples_per_channel {
@@ -290,7 +290,7 @@ impl AudioSlab {
         seq: u64,
         channel: usize,
         output: &mut [T],
-    ) -> Result<usize> {
+    ) -> BridgeResult<usize> {
         self.read_region_then(direction, seq, channel, output, || {})
     }
 
@@ -305,7 +305,7 @@ impl AudioSlab {
         channel: usize,
         output: &mut [T],
         between: impl FnOnce(),
-    ) -> Result<usize> {
+    ) -> BridgeResult<usize> {
         self.check_width::<T>()?;
         let offset = self.offset_of(direction, seq, channel)?;
         let copy_samples = self.layout.samples_per_channel.min(output.len());
@@ -334,7 +334,7 @@ impl AudioSlab {
     /// at: the layout's stride is in `sample_size()` bytes, so a wider type
     /// would write past its channel and a narrower one would read the wrong
     /// samples.
-    fn check_width<T: Sample>(&self) -> Result<()> {
+    fn check_width<T: Sample>(&self) -> BridgeResult<()> {
         if std::mem::size_of::<T>() != self.layout.sample_size() {
             return Err(oob("sample type does not match the slab's sample format"));
         }
@@ -350,7 +350,7 @@ impl AudioSlab {
     /// Cannot overflow: the layout's whole size was computed with checked
     /// arithmetic when the slab was mapped (`byte_size`), and this offset is
     /// below it.
-    fn offset_of(&self, direction: Direction, seq: u64, channel: usize) -> Result<usize> {
+    fn offset_of(&self, direction: Direction, seq: u64, channel: usize) -> BridgeResult<usize> {
         let channels = match direction {
             Direction::Input => self.layout.input_channels(),
             Direction::Output => self.layout.output_channels(),
@@ -420,7 +420,12 @@ impl SlabWriter {
     ///
     /// Returns an error if `channel` is out of range, `data` is longer than the
     /// channel's capacity, or `T` is not the slab's sample width.
-    pub fn write<T: Sample + Pod>(&mut self, seq: u64, channel: usize, data: &[T]) -> Result<()> {
+    pub fn write<T: Sample + Pod>(
+        &mut self,
+        seq: u64,
+        channel: usize,
+        data: &[T],
+    ) -> BridgeResult<()> {
         self.slab.write_region(self.direction, seq, channel, data)
     }
 
@@ -450,7 +455,7 @@ impl std::ops::Deref for SlabWriter {
 /// does not fit in `usize`. The layout comes over the wire on the server's
 /// side, so a peer can name any shape; every later offset is below this
 /// figure, which is why only it is checked.
-fn byte_size(layout: &SlabLayout) -> Result<usize> {
+fn byte_size(layout: &SlabLayout) -> BridgeResult<usize> {
     layout
         .checked_byte_size_with_header(SLAB_HEADER_BYTES)
         .ok_or_else(|| oob("slab layout's size overflows usize"))
@@ -462,7 +467,7 @@ fn byte_size(layout: &SlabLayout) -> Result<usize> {
 /// wrong audio rather than an error: an empty bus list reads as "single flat
 /// range shared in place" (the aliasing bypass), and a mismatched slot count
 /// indexes the wrong ring slot.
-fn check_layout(layout: &SlabLayout) -> Result<()> {
+fn check_layout(layout: &SlabLayout) -> BridgeResult<()> {
     if layout.inputs.is_empty() || layout.outputs.is_empty() {
         return Err(oob(
             "slab layout must name at least one bus per direction; \
@@ -501,7 +506,7 @@ enum Open {
     Existing,
 }
 
-fn open_mmap(name: &str, size: usize, mode: Open) -> Result<MmapMut> {
+fn open_mmap(name: &str, size: usize, mode: Open) -> BridgeResult<MmapMut> {
     let path = shm_path(name);
     let mut opts = OpenOptions::new();
     opts.read(true).write(true);

@@ -151,6 +151,7 @@ pub use tutti_midi_hardware as midi_hardware;
 
 /// Plugin hosting (`tutti-plugin`): VST2, VST3, CLAP and AU plugins as graph
 /// nodes, in-process or sandboxed. Feature `plugin` plus a format feature.
+/// The control handle and the in-process node are [`plugin_host`].
 ///
 /// The sandbox's server, `tutti-plugin-server`, is a separate binary the host
 /// spawns; build it with `cargo build -p tutti-plugin-server`.
@@ -158,6 +159,13 @@ pub use tutti_midi_hardware as midi_hardware;
 // `tutti-plugin → tutti-plugin-server → tutti-plugin` cycle one edit away.
 #[cfg(feature = "plugin")]
 pub use tutti_plugin as plugin;
+
+/// The format-generic half of plugin hosting (`tutti-plugin-host`): the
+/// `PluginHandle` control surface, the node's controls, the host policy over a
+/// handle (`Liveness`, `PluginParamValues`) and the in-process node. Feature
+/// `plugin`.
+#[cfg(feature = "plugin")]
+pub use tutti_plugin_host as plugin_host;
 
 /// Everything a headless host names, in one import.
 ///
@@ -178,7 +186,9 @@ pub use tutti_plugin as plugin;
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
     pub use tutti_engine::prelude::*;
-    pub use tutti_graph::{CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, TapReader};
+    pub use tutti_graph::{
+        CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, NodeMode, TapReader,
+    };
     pub use tutti_graph::{EventInletNode, EventInletWriter, Refused};
     pub use tutti_graph::{EventTapId, EventTapReader, TapAlign, TapEvent, TapId};
     pub use tutti_metering::{LoadMeter, LoadReading};

@@ -16,17 +16,16 @@ use tutti_graph::{
 use tutti_tempo::{Cursor, TempoMap};
 use tutti_types::{ChannelLayout, Samples};
 
-use super::MidiIntake;
-use super::batcher::Chunks;
-use super::param_delivery::ParamDelivery;
-use super::param_input;
-use super::segment_points::SegmentPoints;
+use super::{Bound, PluginClient};
 #[cfg(test)]
-use super::transport_source::TransportSource;
-use super::transport_source::{self, BlockTransport, Snapshot};
-use super::transport_walk::{self, TransportWalk};
-use super::{BlockPayload, Bound, PluginClient};
+use tutti_plugin_host::TransportSource;
+use tutti_plugin_host::{
+    BlockTransport, Call, ParamDelivery, SegmentPoints, Snapshot, TransportWalk, take_param_input,
+    transport_info,
+};
 use tutti_plugin_ipc::HarmonyInputs;
+use tutti_plugin_ipc::{BlockPayload, Chunks};
+use tutti_plugin_types::MidiIntake;
 use tutti_plugin_types::{
     ChordValue, Features, MidiEventVec, ParameterChanges, ScaleValue, TransportInfo, WireMidi,
 };
@@ -97,7 +96,9 @@ impl Node for PluginClient<Bound> {
     /// starts the node over.
     fn prepare(&mut self, p: &Prepare) {
         let c = &mut *self;
-        c.state.io.prepare(p);
+        c.state
+            .io
+            .prepare(Samples(p.max_block().get()), p.quantum());
         // The MIDI taken towards the next chunk goes with the batcher's
         // frames, counted, and the SysEx open in it is cut: a same-rate
         // re-prepare is a no-op on the server, whose reassembler keeps its
@@ -300,7 +301,7 @@ impl Chunks for PluginChunks<'_> {
                 let mut s = Snapshot::at(&self.cx, offset, steady.at(at), project, block_ns);
                 let settled = s.settle(self.tempo, self.tempo_cursor);
                 self.walk.begin(&s, settled);
-                transport_source::transport_info(&s, meter)
+                transport_info(&s, meter)
             }
             _ => {
                 self.walk.clear();
@@ -354,7 +355,7 @@ impl Chunks for PluginChunks<'_> {
         } = self;
         let features = *features;
         let mut midi_dropped = 0;
-        param_input::take(
+        take_param_input(
             events.as_slice(),
             from,
             n,
@@ -383,7 +384,7 @@ impl Chunks for PluginChunks<'_> {
         // The transport changes among these frames: a map point, a loop wrap,
         // a seek, a start or a stop, each an entry at its chunk frame.
         let (meter, steady, project, block_ns) = transport.parts();
-        let call = transport_walk::Call {
+        let call = Call {
             cx,
             frames: *frames,
             steady,
@@ -391,7 +392,16 @@ impl Chunks for PluginChunks<'_> {
             meter,
             tempo,
         };
-        let over = walk.scan(&call, tempo_cursor, project, pending, from, n, at);
+        let over = walk.scan(
+            &call,
+            tempo_cursor,
+            project,
+            &mut pending.transport,
+            &mut pending.changes,
+            from,
+            n,
+            at,
+        );
         params.count_transport_dropped(over);
     }
 
@@ -405,7 +415,8 @@ impl Chunks for PluginChunks<'_> {
             self.tempo_cursor,
             self.cx.env.sample_rate,
             frames,
-            self.pending,
+            &mut self.pending.transport,
+            &mut self.pending.changes,
         );
         tutti_plugin_types::insertion_sort_by_key(&mut self.pending.midi, |e| e.offset);
         std::mem::take(self.pending)
@@ -492,7 +503,7 @@ fn push_harmony(harmony: &mut HarmonyInputs, features: Features, h: Harmony, fra
 /// test rigs read it.
 #[cfg(test)]
 fn offline_source() -> TransportSource {
-    let mut source = TransportSource::new(super::PluginMeter::default().reader());
+    let mut source = TransportSource::new(tutti_plugin_host::PluginMeter::default().reader());
     source.go_offline();
     source
 }
@@ -546,9 +557,9 @@ mod harmony_tests {
 #[cfg(test)]
 mod loss_tests {
     use super::*;
-    use crate::host::node::param_delivery::DeliveryCounters;
     use std::sync::Arc;
     use tutti_graph::{Env, PlayClock, Transport, TransportChanges, TransportHistory};
+    use tutti_plugin_host::DeliveryCounters;
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate};
     use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -658,12 +669,12 @@ mod walk_tests {
     //! node's own `begin` / `take` / `payload`: what the plugin is told for a
     //! chunk, and what is counted when it does not fit.
     use super::*;
-    use crate::host::node::param_delivery::DeliveryCounters;
     use std::sync::Arc;
     use tutti_graph::{
         Env, LoopRange, MAX_TRANSPORT_CHANGES, PlayClock, Transport, TransportChanges,
         TransportHistory,
     };
+    use tutti_plugin_host::DeliveryCounters;
     use tutti_tempo::{Shape, TempoPoint};
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate};
 

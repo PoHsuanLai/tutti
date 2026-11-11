@@ -1871,7 +1871,7 @@ to `DesignNode` or `ControlParams`, not to a filter:
 5. **The public API** (Q9): `frequency()`, `q()`, `gain_db()` return the shared `Arc<AtomicF32>` cells,
    `set_filter_type(&mut self)` re-types a node in place (a design with the type in its controls, changed on the
    control side), `F: Real` is a type parameter of the node and `with_gain_db` a builder; `EqBandNode` is an `SvfFilterNode`
-   plus a `BandState` bypass, a wrapper that is not a design.
+   at one channel (its bypass, once a `BandState`, is now `NodeMode`), a wrapper that is not a design.
 6. **The crossover** is neither `every(16)` nor `Block` as `DesignNode` has them: `split_block` ramps the frequencies
    linearly over the **block** and re-solves every 16 samples from the interpolated frequency, with `bands * channels`
    outputs and a `Crossover` per channel.

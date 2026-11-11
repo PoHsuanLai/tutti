@@ -43,8 +43,8 @@ use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, EventTapReader, Executor, Fade,
-    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, ParamIn, ParamMod, ParamRange,
-    ParamSet, Prepare, TapReader, TapWriter, Transport,
+    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, MixError, ModeError, NodeMode,
+    ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, TapWriter, Transport,
 };
 use tutti_graph::{Edge, InPort, NodeKey, OutPort, Source};
 use tutti_graph::{
@@ -52,7 +52,7 @@ use tutti_graph::{
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::{Amplitude, ChannelLayout, SampleRate, Seconds, UnitAddr};
+use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Samples, Tail};
 
 use crate::{EdgeGainError, EdgeRef, InletError, SessionNode};
@@ -836,9 +836,7 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> NodeKey {
         let node = NodeKey::fresh();
-        let hosted =
-            crate::HostedPlugin::new(tutti_plugin::handles::PluginHandle::from_client(&client))
-                .with_controls(client.controls());
+        let hosted = crate::HostedPlugin::new(client.handle()).with_controls(client.controls());
         let tempo = self.tempo.clone();
         let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind(tempo));
         self.nodes.insert(
@@ -866,11 +864,7 @@ impl Graph {
     /// .tempo_reader()`, so the plugin is told the project's tempo; this
     /// method binds nothing.
     #[cfg(feature = "plugin")]
-    pub fn host_plugin(
-        &mut self,
-        node: NodeKey,
-        handle: tutti_plugin::handles::PluginHandle,
-    ) -> bool {
+    pub fn host_plugin(&mut self, node: NodeKey, handle: tutti_plugin_host::PluginHandle) -> bool {
         if !self.nodes.contains_key(&node) {
             return false;
         }
@@ -906,7 +900,7 @@ impl Graph {
         if self.editor.is_repreparing() {
             return Err(ReplaceRefused::Busy(client));
         }
-        let handle = tutti_plugin::handles::PluginHandle::from_client(&client);
+        let handle = client.handle();
         let controls = client.controls();
         let tempo = self.tempo.clone();
         match self.swap_unit(node, client.bind(tempo), fade, curve) {
@@ -1004,7 +998,7 @@ impl Graph {
                 .plugins
                 .values()
                 .filter_map(crate::HostedPlugin::meter)
-                .map(tutti_plugin::handles::PluginMeter::reclaim)
+                .map(tutti_plugin_host::PluginMeter::reclaim)
                 .sum::<usize>();
         pinned
     }
@@ -1680,6 +1674,58 @@ impl Graph {
     }
 
     // --- Edge gains (doc 013, "Edge gain") ---
+
+    /// Sets `node`'s mode: [`NodeMode::Active`] renders it,
+    /// [`NodeMode::Bypassed`] passes its input through, delayed by its declared
+    /// latency so it stays in time with the rest of the graph, and
+    /// [`NodeMode::Muted`] silences its outputs while it keeps running. A change
+    /// fades over 256 frames, and a node coming back from a bypass is reset
+    /// first (doc 013, "Bypass and mute are graph state").
+    ///
+    /// A control, not an edit: the graph is not recompiled, the mode lands at
+    /// the next block, and the graph is not marked edited.
+    ///
+    /// # Errors
+    ///
+    /// [`ModeError::NoSuchNode`] when `node` is not in the graph; nothing
+    /// changes.
+    pub fn set_mode(&mut self, node: NodeKey, mode: NodeMode) -> Result<(), ModeError> {
+        self.editor.set_mode(node, mode)
+    }
+
+    /// `node`'s mode, [`NodeMode::Active`] for a node never given one (and for
+    /// a key not in the graph).
+    pub fn mode(&self, node: NodeKey) -> NodeMode {
+        self.editor.mode(node)
+    }
+
+    /// Sets `node`'s blend with its own aligned input (doc 013, "Bypass and mute
+    /// are graph state"): `out = y * m + x̂ * (1 - m)` per channel, `y` being what
+    /// the node writes and `x̂` its input, delayed by its declared latency so the
+    /// two line up. [`Mix::WET`] is all of the node's output (the node as it
+    /// is, and the default), [`Mix::DRY`] all of the aligned input (what a
+    /// bypass passes, though the node keeps running). It gives any node, a
+    /// plugin included, a parallel-processing knob.
+    ///
+    /// A control, not an edit: the graph is not recompiled, the mix lands at the
+    /// next block and ramps across it, and the graph is not marked edited. A
+    /// node that is [`Bypassed`](NodeMode::Bypassed) or
+    /// [`Muted`](NodeMode::Muted) ignores the mix: the mode wins.
+    ///
+    /// # Errors
+    ///
+    /// [`MixError::NoSuchNode`] when `node` is not in the graph,
+    /// [`MixError::OutOfRange`] for a mix that is NaN or outside `0..=1` (make
+    /// one with [`Mix::new_clamped`]); nothing changes.
+    pub fn set_mix(&mut self, node: NodeKey, mix: Mix) -> Result<(), MixError> {
+        self.editor.set_mix(node, mix)
+    }
+
+    /// `node`'s mix, [`Mix::WET`] for a node never given one (and for a key not
+    /// in the graph).
+    pub fn mix(&self, node: NodeKey) -> Mix {
+        self.editor.mix(node)
+    }
 
     /// Edge `edge`'s gain, if it has one: `Some` for a weighted edge, `None`
     /// for a plain one (a unity weight is an entry, so it is `Some(1.0)`; an

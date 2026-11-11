@@ -12,13 +12,13 @@
 
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
-use tutti_plugin::Result;
 use tutti_plugin::server::{
     AudioBufferMut, ChordChanges, ExpressiveContext, Features, MIDI_STACK_CAPACITY, MidiEventVec,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
     PluginInstance, ProcessContext, ProcessOutput, SampleFormat, Samples, ScaleChanges, SlabWriter,
     TransportChange, TransportInfo, WireMidi,
 };
+use tutti_plugin_types::BridgeResult;
 use tutti_plugin_types::MAX_BLOCK_CHANNELS;
 use tutti_ump::Ump;
 
@@ -346,7 +346,7 @@ impl AudioPipeline {
         shm: &mut SlabWriter,
         clock: &Clock,
         block: AudioBlock<'_>,
-    ) -> Result<AudioOutput> {
+    ) -> BridgeResult<AudioOutput> {
         let num_samples = block.num_samples;
         let seq = block.seq;
         // Per-direction widths. Each direction has its own slab region, so there

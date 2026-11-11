@@ -1,7 +1,6 @@
 //! Plugin bridge — composites out-of-process audio with in-process GUI.
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs, Submitted};
-use crate::error::{Delivered, EditorError, Result, StateError};
 use crate::protocol::{
     MidiEventVec, Normalized, NoteExpressionChanges, ParamId, ParameterChanges, ParameterInfo,
     Preset, PresetId, TransportChanges, TransportInfo,
@@ -11,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tutti_plugin_types::Editor;
+use tutti_plugin_types::{BridgeResult, Delivered, EditorError, StateError};
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
 use tutti_types::SampleRate;
@@ -83,7 +83,7 @@ impl std::fmt::Debug for PluginBridge {
 /// Loads the editor-only instance of the plugin at a path, in this process
 /// (`OutOfProcess::load_editor` for the path's format). The host passes its
 /// own: which formats it was built with is the host's, not the bridge's.
-pub type EditorLoader = fn(&MainThread, &Path) -> Result<Box<dyn Editor>>;
+pub type EditorLoader = fn(&MainThread, &Path) -> BridgeResult<Box<dyn Editor>>;
 
 /// How many parameter writes wait for the next editor idle. A full ring drops
 /// the newest: the mirror is cosmetic, and the audio command is authoritative.
@@ -183,7 +183,7 @@ impl PluginBridge {
         plugin_path: PathBuf,
         load_editor: EditorLoader,
         sample_rate: SampleRate,
-    ) -> Result<(Arc<Self>, BridgeThread)> {
+    ) -> BridgeResult<(Arc<Self>, BridgeThread)> {
         let (audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
         let bridge = Arc::new(Self {
             audio,
@@ -209,7 +209,7 @@ impl PluginBridge {
         load_editor: EditorLoader,
         sample_rate: SampleRate,
         state_progress_timeout: std::time::Duration,
-    ) -> Result<(Arc<Self>, BridgeThread)> {
+    ) -> BridgeResult<(Arc<Self>, BridgeThread)> {
         let (mut audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
         audio.set_state_progress_timeout(state_progress_timeout);
         let bridge = Arc::new(Self {
@@ -359,7 +359,7 @@ impl PluginBridge {
     }
 
     /// See [`AudioBridge::block_counts`](super::audio::AudioBridge::block_counts).
-    pub fn block_counts(&self) -> crate::BlockCounts {
+    pub fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
         self.audio.block_counts()
     }
 
@@ -595,7 +595,7 @@ impl PluginBridge {
     /// # Errors
     ///
     /// As [`AudioBridge::save_state`].
-    pub fn save_state(&self) -> std::result::Result<Vec<u8>, crate::error::StateError> {
+    pub fn save_state(&self) -> std::result::Result<Vec<u8>, tutti_plugin_types::StateError> {
         self.audio.save_state()
     }
 

@@ -73,12 +73,13 @@ use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::gain::{EdgeGain, GainCell};
 use crate::meter::{MeterReader, MeterWriter};
+use crate::mode::{MixError, ModeCell, ModeError, ModeState, NodeMix, NodeMode};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec};
 use crate::tap::{TapReader, TapWriter};
-use tutti_types::{Amplitude, ParamCell};
+use tutti_types::{Amplitude, Mix, ParamCell};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -503,6 +504,10 @@ pub struct Editor {
     /// Written from the spec by every commit, and by
     /// [`set_edge_gain`](Self::set_edge_gain) at once.
     edge_gains: BTreeMap<EdgeId, GainCell>,
+    /// The live mode of each key the plan sent last places
+    /// (`src/mode.rs`), shared with the running unit. Written from the spec
+    /// by every commit, and by [`set_mode`](Self::set_mode) at once.
+    mode_cells: BTreeMap<NodeKey, ModeCell>,
     /// [`revision`](Self::revision): moved by every call that can change
     /// what a reader of the editor sees.
     revision: u64,
@@ -962,6 +967,7 @@ impl Editor {
             fork_health: Vec::new(),
             param_ranges: BTreeMap::new(),
             edge_gains: BTreeMap::new(),
+            mode_cells: BTreeMap::new(),
             revision: 0,
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
@@ -1634,6 +1640,92 @@ impl Editor {
         self.edge_gains.get(&id).map(GainCell::knob)
     }
 
+    /// Sets `key`'s [`NodeMode`] **without a commit**: the spec records it
+    /// and the running unit reads it once per block, from the next block on
+    /// (a store while the audio thread is inside a block lands on that block
+    /// or the next, and every op of a block sees one mode). Nothing is
+    /// compiled or sent, so the plan is the same `Arc` and a host may call
+    /// this for every click.
+    ///
+    /// A change of mode is a crossfade of [`MODE_DECLICK`](crate::MODE_DECLICK)
+    /// frames, counted from the first frame of the block it lands on; see
+    /// [`NodeMode`] and `src/mode.rs` for what each mode does. A fork starts
+    /// every unit steady in the mode the spec holds, with no fade.
+    ///
+    /// Before the unit is committed the spec holds the mode, and the unit
+    /// starts in it.
+    ///
+    /// # Errors
+    ///
+    /// [`ModeError::NoSuchNode`] when the spec has no node at `key`; nothing
+    /// changes.
+    pub fn set_mode(&mut self, key: NodeKey, mode: NodeMode) -> Result<(), ModeError> {
+        if !self.spec.topology.nodes.contains_key(&key) {
+            return Err(ModeError::NoSuchNode { node: key });
+        }
+        self.touch();
+        self.spec.set_mode(key, mode);
+        if let Some(cell) = self.mode_cells.get(&key) {
+            cell.store(mode);
+        }
+        // As for a range: the cell holds it, so the spec last committed holds
+        // it too, and a later commit with nothing else to send is the plain
+        // comparison.
+        if let Some((committed, _)) = &mut self.committed {
+            committed.set_mode(key, mode);
+        }
+        Ok(())
+    }
+
+    /// `key`'s mode: [`NodeMode::Active`] unless [`set_mode`](Self::set_mode)
+    /// (or an edit of [`GraphSpec::modes`]) set another.
+    pub fn mode(&self, key: NodeKey) -> NodeMode {
+        self.spec.mode(key)
+    }
+
+    /// Sets `key`'s [`Mix`] **without a commit**: the blend of the node's output
+    /// with its aligned input, `out = y * m + x̂ * (1 - m)` per channel (doc 013,
+    /// "Bypass and mute are graph state", M4). The spec records it and the
+    /// running unit reads it once per block, from the next block on; the plan
+    /// is the same `Arc` and a host may call this for every move of a knob.
+    ///
+    /// A move ramps across the block it lands on, as an edge's gain does (see
+    /// `src/mode.rs`). [`Mix::WET`] (all of the node's output) is the plain,
+    /// unblended node; [`Mix::DRY`] (all of the aligned input) is what Bypassed
+    /// writes in steady state, but the node keeps running. A node that is
+    /// [`Bypassed`](NodeMode::Bypassed) or [`Muted`](NodeMode::Muted) ignores
+    /// the mix: the mode wins. A fork starts every unit at the mix the spec
+    /// holds.
+    ///
+    /// # Errors
+    ///
+    /// [`MixError::NoSuchNode`] when the spec has no node at `key`,
+    /// [`MixError::OutOfRange`] for a mix that is NaN or outside `0..=1`
+    /// (make one with [`Mix::new_clamped`]); nothing changes.
+    pub fn set_mix(&mut self, key: NodeKey, mix: Mix) -> Result<(), MixError> {
+        if !self.spec.topology.nodes.contains_key(&key) {
+            return Err(MixError::NoSuchNode { node: key });
+        }
+        if !NodeMix::is_sound(mix) {
+            return Err(MixError::OutOfRange);
+        }
+        self.touch();
+        self.spec.set_mix(key, mix);
+        if let Some(cell) = self.mode_cells.get(&key) {
+            cell.store_mix(mix);
+        }
+        if let Some((committed, _)) = &mut self.committed {
+            committed.set_mix(key, mix);
+        }
+        Ok(())
+    }
+
+    /// `key`'s mix: [`Mix::WET`] unless [`set_mix`](Self::set_mix) (or an edit
+    /// of [`GraphSpec::mixes`]) set another.
+    pub fn mix(&self, key: NodeKey) -> Mix {
+        self.spec.mix(key)
+    }
+
     /// Edge `id`'s base, if the edge has an entry: the live cell's once a
     /// commit has sent one (the one writer's, whether it is
     /// [`set_edge_gain`](Self::set_edge_gain) or a lane's knob), the spec's
@@ -1664,8 +1756,12 @@ impl Editor {
     }
 
     /// Write every live range cell, and every edge gain's range, from the spec,
-    /// and a base the spec moved.
+    /// and a base the spec moved; and every live mode.
     fn sync_ranges(&self) {
+        for (&node, cell) in &self.mode_cells {
+            cell.store(self.spec.mode(node));
+            cell.store_mix(self.spec.mix(node));
+        }
         for (id, cell) in &self.edge_gains {
             if let Some(g) = self.spec.gains.get(id) {
                 Self::carry_base(&self.committed, *id, cell, g.base);
@@ -1763,6 +1859,8 @@ impl Editor {
         for id in stale {
             self.spec.gains.remove(&id);
         }
+        self.spec.modes.remove(&key);
+        self.spec.mixes.remove(&key);
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);
@@ -2391,6 +2489,22 @@ impl Editor {
                 (id, cell.clone())
             })
             .collect();
+        // A unit's mode cell, kept for a key that stays and written from the
+        // spec: a unit placed now starts steady in the spec's mode.
+        let (mode_cells, spec, max_block) = (
+            &mut self.mode_cells,
+            &self.spec,
+            plan.prepare.max_block().get(),
+        );
+        let modes = |key: NodeKey| {
+            let cell = mode_cells
+                .entry(key)
+                .or_insert_with(|| ModeCell::new(NodeMode::Active, Mix::WET));
+            cell.store(spec.mode(key));
+            cell.store_mix(spec.mix(key));
+            let shape = &plan.unit(key).expect("a placed unit is in its plan").shape;
+            ModeState::new(cell.clone(), shape, max_block)
+        };
         let taps = std::mem::take(&mut self.pending_taps);
         let event_taps = std::mem::take(&mut self.pending_event_taps);
         let meters = std::mem::take(&mut self.pending_meters);
@@ -2400,6 +2514,7 @@ impl Editor {
             delta,
             units,
             params,
+            modes,
             Opened {
                 gains,
                 taps,
@@ -2408,6 +2523,7 @@ impl Editor {
             },
         );
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
+        self.mode_cells.retain(|k, _| plan.unit(*k).is_some());
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");
         }

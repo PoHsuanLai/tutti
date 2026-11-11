@@ -11,7 +11,6 @@ mod transport;
 
 pub use server::PluginServer;
 pub use tutti_plugin::server::BridgeConfig;
-pub use tutti_plugin::{BridgeError, Result};
 
 // Test-only global allocator for the audio-pipeline RT-safety regression
 // test (`audio_pipeline::tests::process_is_alloc_free`). Active only in the

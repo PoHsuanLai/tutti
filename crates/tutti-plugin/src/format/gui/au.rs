@@ -6,9 +6,9 @@
 //! open/close/state paths, this host-process object is a separate dlopen: the
 //! two editor surfaces stay distinct by design, one per world.
 
-use tutti_plugin_ipc::{BridgeError, Result};
 use tutti_plugin_types::LoadStage;
 use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_plugin_types::{Editor, EditorError, EditorWindow, PluginError, PluginResult};
 use tutti_plugin_types::{Normalized, ParamId, ParamRange};
 
@@ -19,8 +19,8 @@ fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
         .ok()
         .map(|i| table[i].1)
 }
-use crate::util::window::{ContentScale, EditorSize, WindowHandle};
 use std::path::Path;
+use tutti_plugin_types::{ContentScale, EditorSize, WindowHandle};
 
 pub(crate) struct AuGuiInstance {
     inner: tutti_au_host::AuInstance,
@@ -39,7 +39,7 @@ pub(crate) struct AuGuiInstance {
 }
 
 impl AuGuiInstance {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(path: &Path) -> BridgeResult<Self> {
         // AU plugins are system-registered; find matching component by bundle name.
         let bundle_name = path
             .file_stem()

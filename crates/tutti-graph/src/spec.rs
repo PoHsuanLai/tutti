@@ -16,11 +16,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::gain::EdgeGain;
+use crate::mode::{NodeMix, NodeMode};
 use crate::{ChannelFeed, LatencyGraph, PortFeed};
 use crate::{Edge, EdgeId, InPort, Sink, Source};
 use crate::{Invalid, Valid};
 use crate::{NodeKey, Topology};
-use tutti_types::Samples;
+use tutti_types::{Mix, Samples};
 
 use crate::node::Resolution;
 use crate::param::{ParamIn, ParamMod, ParamRange};
@@ -150,6 +151,21 @@ pub struct GraphSpec {
     /// whose edge does not exist is refused by [`validate`](Self::validate);
     /// [`disconnect`](Self::disconnect) removes the edge's entry with it.
     pub gains: BTreeMap<EdgeId, EdgeGain>,
+    /// What the graph does with each node (doc 013, "Bypass and mute are
+    /// graph state"); absent is [`NodeMode::Active`]. A control, not a
+    /// rewire: [`Editor::set_mode`](crate::Editor::set_mode) changes it
+    /// without a new plan, and a commit that differs only in modes sends
+    /// nothing. An entry for a node that is not in the topology is refused by
+    /// [`validate`](Self::validate).
+    pub modes: BTreeMap<NodeKey, NodeMode>,
+    /// How much of each node's output a node's output is blended with its aligned
+    /// input (doc 013, "Bypass and mute are graph state", M4): the node's
+    /// [`Mix`]; absent is [`Mix::WET`],
+    /// all of the node's output. A control, as a mode is
+    /// ([`Editor::set_mix`](crate::Editor::set_mix) sends no commit), and an
+    /// entry for a node that is not in the topology, or one outside `0..=1`,
+    /// is refused by [`validate`](Self::validate).
+    pub mixes: BTreeMap<NodeKey, NodeMix>,
 }
 
 impl GraphSpec {
@@ -429,8 +445,40 @@ impl GraphSpec {
         self.params.entry(at).or_default().range = range;
     }
 
+    /// The mode of `node`: [`NodeMode::Active`] unless one was set.
+    pub fn mode(&self, node: NodeKey) -> NodeMode {
+        self.modes.get(&node).copied().unwrap_or_default()
+    }
+
+    /// Sets `node`'s mode in the spec (the canonical form has no entry for
+    /// `Active`). [`Editor::set_mode`](crate::Editor::set_mode) does the same
+    /// without waiting for a commit.
+    pub fn set_mode(&mut self, node: NodeKey, mode: NodeMode) {
+        if mode == NodeMode::Active {
+            self.modes.remove(&node);
+        } else {
+            self.modes.insert(node, mode);
+        }
+    }
+
+    /// The mix of `node`: [`Mix::WET`] unless one was set.
+    pub fn mix(&self, node: NodeKey) -> Mix {
+        self.mixes.get(&node).map_or(Mix::WET, |m| m.mix)
+    }
+
+    /// Sets `node`'s mix in the spec (the canonical form has no entry for
+    /// `Mix::WET`). [`Editor::set_mix`](crate::Editor::set_mix) does the same
+    /// without waiting for a commit, and checks the number.
+    pub fn set_mix(&mut self, node: NodeKey, mix: Mix) {
+        if mix.get().to_bits() == Mix::WET.get().to_bits() {
+            self.mixes.remove(&node);
+        } else {
+            self.mixes.insert(node, NodeMix { mix });
+        }
+    }
+
     /// Whether `self` and `other` compile to the same plan, by value: equal
-    /// but for param ranges (a control, see
+    /// but for param ranges and modes (controls, see
     /// [`set_param_range`](Self::set_param_range)), with a param entry that
     /// has no source the same as none (as [`validate`](Self::validate)
     /// treats it).
@@ -443,6 +491,9 @@ impl GraphSpec {
             required_resolution,
             params,
             gains,
+            // A control: the plan does not read it.
+            modes: _,
+            mixes: _,
         } = self;
         fn wired(p: &BTreeMap<ParamIn, ParamMod>) -> impl Iterator<Item = (&ParamIn, EventOut)> {
             p.iter().filter_map(|(at, m)| Some((at, m.source?)))
@@ -539,6 +590,18 @@ impl GraphSpec {
                 });
             }
         }
+        for &node in self.modes.keys() {
+            if !nodes.contains_key(&node) {
+                errs.push(GraphInvalid::ModeWithoutNode { node });
+            }
+        }
+        for (&node, m) in &self.mixes {
+            if !nodes.contains_key(&node) {
+                errs.push(GraphInvalid::MixWithoutNode { node });
+            } else if !NodeMix::is_sound(m.mix) {
+                errs.push(GraphInvalid::BadMix { node, mix: *m });
+            }
+        }
         for &(at, from) in self.required_resolution.keys() {
             let wired = self
                 .events
@@ -562,6 +625,8 @@ impl GraphSpec {
                     .map(|(&at, &m)| (at, m))
                     .collect(),
                 gains: self.gains.clone(),
+                modes: self.modes.clone(),
+                mixes: self.mixes.clone(),
             }),
             _ => Err(errs),
         }
@@ -647,6 +712,23 @@ pub enum GraphInvalid {
         /// The key that is not there.
         missing: NodeKey,
     },
+    /// A mode is set for a node that is not in the topology.
+    ModeWithoutNode {
+        /// The key that is not there.
+        node: NodeKey,
+    },
+    /// A mix is set for a node that is not in the topology.
+    MixWithoutNode {
+        /// The key that is not there.
+        node: NodeKey,
+    },
+    /// A mix is NaN or outside `0..=1`.
+    BadMix {
+        /// The node.
+        node: NodeKey,
+        /// The mix.
+        mix: NodeMix,
+    },
 }
 
 /// A [`GraphSpec`] that passed [`validate`](GraphSpec::validate).
@@ -658,6 +740,8 @@ pub struct ValidGraph {
     required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
     params: BTreeMap<ParamIn, ParamMod>,
     gains: BTreeMap<EdgeId, EdgeGain>,
+    modes: BTreeMap<NodeKey, NodeMode>,
+    mixes: BTreeMap<NodeKey, NodeMix>,
 }
 
 impl ValidGraph {
@@ -689,6 +773,16 @@ impl ValidGraph {
     /// The checked edge gains: each names an edge of the topology.
     pub fn gains(&self) -> &BTreeMap<EdgeId, EdgeGain> {
         &self.gains
+    }
+
+    /// The checked modes: each names a node of the topology.
+    pub fn modes(&self) -> &BTreeMap<NodeKey, NodeMode> {
+        &self.modes
+    }
+
+    /// The checked mixes: each names a node of the topology and is in `0..=1`.
+    pub fn mixes(&self) -> &BTreeMap<NodeKey, NodeMix> {
+        &self.mixes
     }
 }
 

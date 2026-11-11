@@ -9,11 +9,11 @@
 use std::path::Path;
 use tutti_plugin_types::MainThread;
 
-use crate::host::handles::PluginHandle;
 use crate::host::node::PluginClient;
 use tutti_plugin_db::{PluginFormat, format_from_path};
+use tutti_plugin_host::PluginHandle;
 use tutti_plugin_ipc::AudioConfig;
-use tutti_plugin_ipc::Result;
+use tutti_plugin_types::BridgeResult;
 use tutti_plugin_types::PluginRole;
 use tutti_plugin_types::{Features, LoadedPlugin, PluginDescriptor};
 use tutti_types::SampleRate;
@@ -26,10 +26,10 @@ enum Backend {
     /// Both arms are boxed. An enum is as large as its largest variant, and
     /// these differ by ~9 KiB (a subprocess client is ~15 KiB, an in-process
     /// one ~6 KiB), so an unboxed enum would make every `Plugin` — and every
-    /// `Result` carrying one — pay the larger figure.
+    /// `BridgeResult` carrying one — pay the larger figure.
     Subprocess(Box<PluginClient>),
     #[cfg(feature = "vst2")]
-    InProcess(Box<crate::format::in_process::InProcClient<tutti_vst2_host::Vst2Loaded>>),
+    InProcess(Box<tutti_plugin_host::InProcClient<tutti_vst2_host::Vst2Loaded>>),
 }
 
 /// A loaded plugin: its audio node, its control surface, and the per-block
@@ -57,7 +57,7 @@ enum Backend {
 /// if plugin.takes_midi() {
 ///     // wire a MIDI source to the node's event input
 /// }
-/// # Ok::<(), tutti_plugin::BridgeError>(())
+/// # Ok::<(), tutti_plugin_types::BridgeError>(())
 /// ```
 pub struct Plugin {
     backend: Backend,
@@ -88,7 +88,7 @@ impl Plugin {
     ///
     /// No catalog is needed: discovery through [`Plugins`] is optional.
     /// ```no_run
-    /// # fn ex() -> tutti_plugin::Result<()> {
+    /// # fn ex() -> tutti_plugin_types::BridgeResult<()> {
     /// use tutti_plugin::catalog::Plugin;
     /// let plugin = Plugin::open(None, "/Library/Audio/Plug-Ins/VST3/Foo.vst3", tutti_types::SampleRate::new(48_000.0))?;
     /// # Ok(()) }
@@ -115,10 +115,10 @@ impl Plugin {
     ///
     /// # Errors
     ///
-    /// Returns [`BridgeError::ServerNotFound`](crate::BridgeError::ServerNotFound)
+    /// Returns [`BridgeError::ServerNotFound`](tutti_plugin_types::BridgeError::ServerNotFound)
     /// when the `plugin-server` binary cannot be located,
-    /// [`BridgeError::LoadFailed`](crate::BridgeError::LoadFailed) or
-    /// [`BridgeError::BundleResolutionFailed`](crate::BridgeError::BundleResolutionFailed)
+    /// [`BridgeError::LoadFailed`](tutti_plugin_types::BridgeError::LoadFailed) or
+    /// [`BridgeError::BundleResolutionFailed`](tutti_plugin_types::BridgeError::BundleResolutionFailed)
     /// when the plugin does not load, and a connection, protocol or timeout
     /// variant when the subprocess cannot be reached.
     ///
@@ -129,7 +129,7 @@ impl Plugin {
         main: Option<&MainThread>,
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
-    ) -> Result<Self> {
+    ) -> BridgeResult<Self> {
         Self::open_with(main, &AudioConfig::default(), path.as_ref(), sample_rate)
     }
 
@@ -145,7 +145,7 @@ impl Plugin {
         audio: &AudioConfig,
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
-    ) -> Result<Self> {
+    ) -> BridgeResult<Self> {
         Self::open_with_state(main, audio, path, sample_rate, None).map(|(plugin, _)| plugin)
     }
 
@@ -165,7 +165,7 @@ impl Plugin {
         path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
-    ) -> Result<(Self, Option<std::result::Result<(), String>>)> {
+    ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
         let path = path.as_ref();
         let sample_rate = sample_rate.into();
         #[cfg(not(feature = "vst2"))]
@@ -176,7 +176,7 @@ impl Plugin {
             // A VST2 plugin loads in this process, on the main thread: the
             // caller says it is there by passing the token.
             let Some(main) = main else {
-                return Err(tutti_plugin_ipc::BridgeError::LoadFailed {
+                return Err(tutti_plugin_types::BridgeError::LoadFailed {
                     path: path.to_path_buf(),
                     stage: tutti_plugin_types::LoadStage::Opening,
                     reason: "a VST2 plugin loads in the host process and needs the main \
@@ -190,7 +190,7 @@ impl Plugin {
                         .map_err(|e| e.to_string())
                 }
             });
-            let (client, handle, restored) = crate::format::in_process::load_client_restoring(
+            let (client, handle, restored) = tutti_plugin_host::load_client_restoring(
                 main,
                 path,
                 &tutti_plugin_types::Load::new(),
@@ -207,7 +207,7 @@ impl Plugin {
             state,
         )
         .map(|(client, restored)| {
-            let handle = PluginHandle::from_client(&client);
+            let handle = client.handle();
             ((client, restored), handle)
         })?;
         Ok((Self::from_subprocess(client, handle), restored))
@@ -233,7 +233,7 @@ impl Plugin {
     /// Wrap an in-process VST2 client.
     #[cfg(feature = "vst2")]
     fn from_in_process(
-        client: crate::format::in_process::InProcClient<tutti_vst2_host::Vst2Loaded>,
+        client: tutti_plugin_host::InProcClient<tutti_vst2_host::Vst2Loaded>,
         handle: PluginHandle,
     ) -> Self {
         Self {
@@ -347,7 +347,7 @@ impl Plugin {
     /// The node's meter cell, as a handle of its own, for either backend:
     /// what a host keeps to install the meter after the plugin has moved
     /// into a graph (the same cell [`set_meter`](Self::set_meter) writes).
-    pub fn meter(&self) -> crate::host::node::PluginMeter {
+    pub fn meter(&self) -> tutti_plugin_host::PluginMeter {
         match &self.backend {
             Backend::Subprocess(c) => c.controls().meter(),
             #[cfg(feature = "vst2")]
@@ -433,7 +433,7 @@ impl Plugin {
 /// `plugin-server` for a subprocess plugin, and a second instance in this
 /// process for an in-process VST2 one.
 ///
-/// [`PluginControls`]: crate::host::node::PluginControls
+/// [`PluginControls`]: tutti_plugin_host::PluginControls
 pub struct BoundPlugin {
     backend: BoundBackend,
 }
@@ -441,7 +441,7 @@ pub struct BoundPlugin {
 enum BoundBackend {
     Subprocess(Box<PluginClient<crate::host::node::Bound>>),
     #[cfg(feature = "vst2")]
-    InProcess(Box<crate::format::in_process::PluginNode<tutti_vst2_host::Vst2Loaded>>),
+    InProcess(Box<tutti_plugin_host::PluginNode<tutti_vst2_host::Vst2Loaded>>),
 }
 
 impl std::fmt::Debug for BoundPlugin {
@@ -451,7 +451,7 @@ impl std::fmt::Debug for BoundPlugin {
 }
 
 impl tutti_graph::IntoNode for BoundPlugin {
-    type Controls = Option<crate::host::node::PluginControls>;
+    type Controls = Option<tutti_plugin_host::PluginControls>;
 
     fn into_node(self) -> (Box<dyn tutti_graph::Node>, Self::Controls) {
         let tutti_graph::NodeParts { node, controls, .. } = self.into_parts();

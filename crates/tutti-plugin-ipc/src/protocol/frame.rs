@@ -18,15 +18,16 @@
 //! and trimmed back to [`KEEP_BYTES`] after a larger one ([`keep`]). A message
 //! with no heap fields (a block's reply) then decodes without allocating too.
 
+use crate::error::codec;
 use std::cell::RefCell;
 use std::io::{Read, Write};
+use tutti_plugin_types::{BridgeError, BridgeResult};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 use super::MAX_FRAME_BYTES;
-use crate::error::{BridgeError, Result};
 
 /// A frame whose length is over [`MAX_FRAME_BYTES`].
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,8 +75,8 @@ pub fn decode_prefix(prefix: [u8; 4]) -> std::result::Result<usize, FrameTooLarg
 /// # Errors
 ///
 /// A bincode error, which is a protocol-version skew the handshake missed.
-pub fn decode_body<T: DeserializeOwned>(body: &[u8]) -> Result<T> {
-    Ok(bincode::deserialize(body)?)
+pub fn decode_body<T: DeserializeOwned>(body: &[u8]) -> BridgeResult<T> {
+    bincode::deserialize(body).map_err(codec)
 }
 
 /// How much capacity a frame buffer keeps between frames. A block's frames
@@ -108,12 +109,12 @@ thread_local! {
 ///
 /// [`FrameTooLarge`] (as [`BridgeError::ConnectionFailed`]) when the body is
 /// over the cap, with nothing written; a serialization or I/O error otherwise.
-pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> Result<()> {
+pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> BridgeResult<()> {
     OUT.with_borrow_mut(|frame| {
         frame.clear();
         frame.extend_from_slice(&[0; 4]);
         let written = bincode::serialize_into(&mut *frame, msg)
-            .map_err(BridgeError::from)
+            .map_err(codec)
             .and_then(|()| Ok(encode_prefix(frame.len() - 4)?))
             .and_then(|prefix| {
                 frame[..4].copy_from_slice(&prefix);
@@ -132,7 +133,7 @@ pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> Result<()> {
 /// An I/O error on EOF or a short read; [`FrameTooLarge`] (as
 /// [`BridgeError::ConnectionFailed`]) for an advertised length over the cap,
 /// before any allocation; a bincode error for a body that does not decode.
-pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<T> {
+pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> BridgeResult<T> {
     let mut prefix = [0u8; 4];
     r.read_exact(&mut prefix)?;
     let len = decode_prefix(prefix)?;

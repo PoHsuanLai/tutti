@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use tutti_graph::NodeKey;
-use tutti_session::{GeneralMidi, GraphSource, Session};
+use tutti_session::{GeneralMidi, GraphSource, NodeMode, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{ChannelLayout, SampleRate, Samples, Tail};
@@ -284,12 +284,13 @@ fn peak_of_block(session: &mut Session) -> f32 {
 
 /// The fader after the sum takes the effects with it: after the dry note has
 /// ended and only the reverb rings (heard, before the mute), muting the setup
-/// makes the mix exact silence from the second block on; unmuting brings it
-/// back. The instrument's own gain is the dry level and does not touch the
+/// makes the mix exact silence from the second block on (`NodeMode::Muted` on
+/// `out()`). The instrument's own gain is the dry level and does not touch the
 /// effects.
 ///
 /// Mutations (run): `out()` returning the instrument's strip (the fader bypassed) fails the
-/// silence; the mute written to the volume param instead fails it too.
+/// silence; the mode set on the instrument's strip instead of `out()` fails it
+/// too (the reverb is still heard).
 #[test]
 fn muting_the_setup_silences_the_wet_path_too() {
     use tutti_ump::{
@@ -341,7 +342,10 @@ fn muting_the_setup_silences_the_wet_path_too() {
         "the dry strip is not the fader"
     );
 
-    gm.set_muted(true);
+    session
+        .graph()
+        .set_mode(gm.out(), NodeMode::Muted)
+        .expect("the fader is in the graph");
     for _ in 0..2 {
         peak_of_block(&mut session);
     }

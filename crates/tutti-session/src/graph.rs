@@ -43,8 +43,8 @@ use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, EventTapReader, Executor, Fade,
-    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, ModeError, NodeMode, ParamIn,
-    ParamMod, ParamRange, ParamSet, Prepare, TapReader, TapWriter, Transport,
+    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, MixError, ModeError, NodeMode,
+    ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, TapWriter, Transport,
 };
 use tutti_graph::{Edge, InPort, NodeKey, OutPort, Source};
 use tutti_graph::{
@@ -52,7 +52,7 @@ use tutti_graph::{
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::{Amplitude, ChannelLayout, SampleRate, Seconds, UnitAddr};
+use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Samples, Tail};
 
 use crate::{EdgeGainError, EdgeRef, InletError, SessionNode};
@@ -1697,6 +1697,34 @@ impl Graph {
     /// a key not in the graph).
     pub fn mode(&self, node: NodeKey) -> NodeMode {
         self.editor.mode(node)
+    }
+
+    /// Sets `node`'s blend with its own aligned input (doc 013, "Bypass and mute
+    /// are graph state"): `out = y * m + x̂ * (1 - m)` per channel, `y` being what
+    /// the node writes and `x̂` its input, delayed by its declared latency so the
+    /// two line up. [`Mix::WET`] is all of the node's output (the node as it
+    /// is, and the default), [`Mix::DRY`] all of the aligned input (what a
+    /// bypass passes, though the node keeps running). It gives any node, a
+    /// plugin included, a parallel-processing knob.
+    ///
+    /// A control, not an edit: the graph is not recompiled, the mix lands at the
+    /// next block and ramps across it, and the graph is not marked edited. A
+    /// node that is [`Bypassed`](NodeMode::Bypassed) or
+    /// [`Muted`](NodeMode::Muted) ignores the mix: the mode wins.
+    ///
+    /// # Errors
+    ///
+    /// [`MixError::NoSuchNode`] when `node` is not in the graph,
+    /// [`MixError::OutOfRange`] for a mix that is NaN or outside `0..=1` (make
+    /// one with [`Mix::new_clamped`]); nothing changes.
+    pub fn set_mix(&mut self, node: NodeKey, mix: Mix) -> Result<(), MixError> {
+        self.editor.set_mix(node, mix)
+    }
+
+    /// `node`'s mix, [`Mix::WET`] for a node never given one (and for a key not
+    /// in the graph).
+    pub fn mix(&self, node: NodeKey) -> Mix {
+        self.editor.mix(node)
     }
 
     /// Edge `edge`'s gain, if it has one: `Some` for a weighted edge, `None`

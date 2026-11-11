@@ -2727,6 +2727,123 @@ proptest! {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mix (doc 013, "Bypass and mute are graph state", M4): mixes drawn on the
+// generated graphs, beside modes.
+// ---------------------------------------------------------------------------
+
+/// A node and a mix for it, from `rng`: a stream of its own, so the graphs and
+/// the modes the other properties draw (and the seeds they replay) are
+/// untouched. Half the draws are an end (steady WET or DRY, the cases that
+/// copy or leave), the rest are between.
+fn pick_mix(desc: &Desc, rng: &mut Rng) -> Option<(NodeKey, tutti_types::Mix)> {
+    let key = rng.pick(&desc.order)?;
+    let mix = match rng.below(8) {
+        0 | 1 => 1.0,
+        2 | 3 => 0.0,
+        4 => 0.5,
+        5 => 0.25,
+        6 => 0.875,
+        _ => rng.below(1000) as f32 / 999.0,
+    };
+    Some((key, tutti_types::Mix::new(mix)))
+}
+
+/// Drops the mixes of nodes `mutate` removed.
+fn prune_mixes(desc: &mut Desc) {
+    let nodes = &desc.spec.topology.nodes;
+    desc.spec.mixes.retain(|k, _| nodes.contains_key(k));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+    /// Mixes on the random graphs, serial and parallel, are the reference's bit
+    /// for bit: about one block in four a node (any: latent ones, event ones,
+    /// sources, sinks, in-place ones, sums, nodes behind PDC) gets a random mix,
+    /// and one in eight of those blocks also a random mode, so a mix meets a
+    /// steady Active node, a ramp, a fade, the warm-up and a parked node, in
+    /// blocks of every length in the schedule; an edit halfway rewires, removes
+    /// and regenerates nodes (a kept node's mix carries, a regenerated one
+    /// starts at the spec's).
+    ///
+    /// Mutations (each run, each failed): the reference ramping from `0.0`
+    /// rather than the previous block's mix; the reference's mix at a fade's
+    /// target taken at the block's end rather than per frame; the executor's
+    /// steady blend with its weights swapped (`o * (1 - m) + x * m`); the
+    /// `is_wet` test of the plain op comparing only `to`.
+    #[test]
+    fn mixes_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
+        for workers in modes(seed) {
+            let mut rng = Rng::new(seed ^ 0xED17);
+            let mut draws = Rng::new(seed ^ 0x31D5_0F17);
+            let mut desc = random_graph(seed);
+            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+            pair.switch(&desc.spec.validate().expect("generated graphs are valid"), &desc.kinds);
+            let blocks = schedule(which, seed, 1400);
+            let half = blocks.len() / 2;
+            let mut frame = 0u64;
+            for (i, &n) in blocks.iter().enumerate() {
+                if i == half {
+                    let mut edited = mutate(&desc, &mut rng);
+                    prune_modes(&mut edited);
+                    prune_mixes(&mut edited);
+                    pair.switch(&edited.spec.validate().expect("valid"), &edited.kinds);
+                    desc = edited;
+                }
+                if draws.chance(25)
+                    && let Some((key, mix)) = pick_mix(&desc, &mut draws)
+                {
+                    pair.set_mix(key, mix);
+                    desc.spec.set_mix(key, mix);
+                    if draws.chance(8)
+                        && let Some((key, mode)) = pick_mode(&desc, &mut draws)
+                    {
+                        pair.set_mode(key, mode);
+                        note_mode(&mut desc, key, mode);
+                    }
+                }
+                let input = input_signal(frame, n);
+                let (a, b) = pair.block(n, &input);
+                prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {} ({} frames)", frame, n);
+                frame += n as u64;
+            }
+        }
+    }
+}
+
+/// The mix property is not vacuous: over the seeds the draws put a mix between
+/// the ends on latent nodes, on nodes behind PDC-free chains, and on nodes
+/// that a mode draw also reaches.
+#[test]
+fn the_generator_draws_mixes_on_latent_and_plain_nodes() {
+    let (mut latent_between, mut plain_between, mut dry, mut wet) = (0, 0, 0, 0);
+    for seed in 0..300u64 {
+        let mut draws = Rng::new(seed ^ 0x31D5_0F17);
+        let desc = random_graph(seed);
+        for _ in 0..80 {
+            if !draws.chance(25) {
+                continue;
+            }
+            let Some((key, mix)) = pick_mix(&desc, &mut draws) else {
+                continue;
+            };
+            let latent = shape(&desc.kinds[&key]).latency.samples().get() > 0;
+            match mix.get() {
+                0.0 => dry += 1,
+                1.0 => wet += 1,
+                _ => {
+                    latent_between += usize::from(latent);
+                    plain_between += usize::from(!latent);
+                }
+            }
+        }
+    }
+    eprintln!("latent {latent_between}, plain {plain_between}, dry {dry}, wet {wet}");
+    assert!(latent_between > 100 && plain_between > 100);
+    assert!(dry > 100 && wet > 100);
+}
+
 /// The modes property is not vacuous: over the seeds the draws put every mode
 /// on latent nodes, on event nodes, on nodes with no audio input and on wide
 /// ones, and toggle a node away and back.

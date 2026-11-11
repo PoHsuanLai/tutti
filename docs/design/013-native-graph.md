@@ -6888,6 +6888,97 @@ the reference CLAP plugin in a real `plugin-server` (`clap` feature):
   plugin session's), `Status::Bypass`, a multiband's per-band `Bypass`, and
   `bevy-tutti` (parked).
 
+**As built (M4).** A node's blend with its aligned input, `Mix`, as graph
+state beside the mode. The static half is built; the driven half (a
+`ModTarget` onto the mix) is **not** (below).
+
+- **API.** `tutti_graph::Editor::set_mix(key, Mix) -> Result<(), MixError>` and
+  `mix(key) -> Mix`; `GraphSpec::mixes: BTreeMap<NodeKey, NodeMix>` (absent is
+  `Mix::WET`, the canonical form drops an entry at WET), `GraphSpec::{mix,
+  set_mix}`, `ValidGraph::mixes`, `GraphInvalid::{MixWithoutNode, BadMix}`.
+  `NodeMix { mix }` is the entry (a named struct so a range and a source can join
+  it, compared and hashed by bits as `ParamRange` is). `MixError` is
+  `NoSuchNode` and `OutOfRange`: **a mix off `0..=1`, or NaN, is refused**, not
+  clamped (an extrapolating blend is not a blend; `Mix::new_clamped` is the
+  caller's). Session: `Graph::set_mix` / `mix`, and `MixError` exported. Like a
+  mode, a mix is a control: it marks nothing edited, sends no commit
+  (`same_but_ranges` ignores it) and the plan is the same `Arc`. A fork copies
+  the mixes and starts every unit at them, steady.
+- **One cell, one snapshot.** The mix is a second field of the unit's
+  `ModeCell` (the raw `f32`: `Mix` is not `Pod`), read once per block by
+  `ModeState::snapshot` before the first op with the mode. It is the weight pair
+  of an Active node: **`(y, x) = (m, 1 - m)`**, so WET *is* Active's `(1, 0)` and
+  DRY *is* Bypassed's `(0, 1)`; the rest of M1's machinery (the aligned input,
+  the line, the scratch, the fade's weights) is reused unchanged.
+- **Mode and mix compose: the mode wins.** Bypassed and Muted ignore the mix.
+  A toggle to Active fades (256 frames, `EqualAmplitude`, as before) from the
+  weights it has to **the mix's weights** `(m, 1 - m)`, and the fade's target
+  is taken **at each frame's mix**, so a mix that moves during a fade does not
+  jump. Bypassed to Active still warms up for `L` frames of `x̂` alone.
+- **WET pays nothing.** Steady Active at WET is the plain op: a node with no
+  latency and no event inputs takes the one extra comparison in `snapshot`
+  and nothing else; a latent node feeds its line as it does at any mix (M1's
+  cost, not a new one) and does not keep `x̂` beside its output
+  (`needs_input` is false), and no blend runs. Its output is the node's own bit
+  for bit (`-0.0`, NaN payloads and infinities included: a multiply by one and
+  add of `x̂ * 0` would change them).
+- **DRY runs the node and writes `x̂`.** Steady DRY copies `x̂` (bit for bit
+  what steady Bypassed writes, including `-0.0` and NaN; for `L > 0` the input
+  `L` frames late) but **does not park the node**: its state stays warm, and a
+  move off DRY needs no reset and no warm-up. Only Bypassed parks and resets.
+  A node that wants DRY's cost savings is Bypassed.
+- **The ramp.** A move ramps across the block it lands on, as an edge gain
+  does and with its function (`gain::ramp_at`, `tutti_curve::Piece` with
+  `Law::Linear`): `m[i] = m_prev + (m_new - m_prev) * ((i + 1) / frames)`,
+  `m_prev` being what the previous block was given (a unit placed, a fork,
+  starts steady at its mix: the first block has no ramp). The state advances
+  **every block, parked or not**, so a move made while the node was out has
+  arrived when it is heard. The steady blend is `y * m + x * (1 - m)`, a
+  multiply and an add (never fused; the order of the two products is
+  immaterial, the sum being commutative), and a channel with no `x̂` (past the
+  input width: `Status::Bypass`'s rule) is `y * m`. Between the ends the
+  output's flags are silent only where both terms are, and moving is never
+  flagged.
+- **The reference** keeps its own state (`RefMode` gains the mix pair and walks
+  `from + (to - from) * ((i + 1) / frames)` itself, sharing nothing with
+  `ModeState`); `Reference::set_mix`; `Pair::set_mix`. One catch the
+  differential suite found: the weights a fade starts from are the last
+  *sample* of a ramp, which `from + (to - from) * 1.0` need not make exactly
+  `to`; both sides take the last sample.
+- **Not built: the `ModTarget`.** The doc asks for a mix that a route can
+  drive, as an edge gain can (G2, G3). It is not in M4. A driven mix needs the
+  mix to be a *port of the unit's op* that the compiler knows (an event source
+  read by the node op, aligned by the PDC, counted by the cycle check and the
+  claims, verified), which is G2's whole plumbing again (a lane per mix, a
+  `MixPortOp`, `DelayKey`, the reference's lane), and a session target
+  (`ModTarget::Mix`, `TargetKey::Mix`, the reconciler) whose knob is this
+  cell, so `set_mix` and a route are one writer (G3's rule). The cheap
+  alternatives were rejected: a hidden driver node writing the cell would be two
+  nodes sharing state outside the graph (the executor rule above), and
+  appending the mix to every node's declared params would change every shape
+  and every `shape.params` comparison. The design for the follow-up (**M4b**):
+  `spec.params` keyed by `ParamIn { node, NodeMix::ADDR }` (a reserved
+  `UnitAddr`, so `connect_param` and `set_param_range` serve), a sentinel port
+  in the node op's `params` span, a one-port `ParamState::lane` in
+  `ModeState` allocated at apply as a driven edge lane's is, its frames
+  replacing the block ramp, and the base (the knob) the cell's value.
+- **Nodes' own dry/wet stay.** `DryWet` (reverbs: `FreeverbNode`, `FdnNode`),
+  the convolution node, `DelayNode`, the chorus/flanger and phaser, and the
+  HRTF node each hold an internal blend; deleting them is the tutti-dsp
+  session's follow-up and is not in M4. Their dry paths are the same
+  aligned-input idea (`DryAlign`: the input delayed by the realization's
+  latency, never the musical pre-delay), except the HRTF node's (its dry is
+  the mono centre fold of the input, not the input through the bypass
+  mapping, so `Mix` cannot replace it).
+- **Tests.** `tutti-graph/tests/mix.rs` (WET and DRY bit for bit including
+  special values, the formula on a latent node, the first block, the ramp, the
+  mode winning, a fade against the mix's weights and a mix moving during one, a
+  store mid-block, the plan untouched, refusals, the fork), the unit tests in
+  `mode.rs` (the plain op and `needs_input` at WET, the advance), the
+  differential suite's `mixes_are_bit_identical_to_the_reference` (own RNG;
+  mixes and modes together), `rt_no_alloc.rs`'s moving-mix gate on both
+  executors and `tutti-session/tests/node_mix.rs`.
+
 #### Buses and coercion between declared layouts
 
 Decided by the owner. When two ports' declared channel layouts disagree, the
@@ -7114,7 +7205,7 @@ itself.
 |---|---|---|
 | 1 | Fan-in | the six PRs of "Audio fan-in sums", point 10 |
 | 2 | Edge gain | **G1**: `EdgeGain`, `Sink`, `EdgeId`, validate, the weighted kernel and ramp, cell and `set_edge_gain`, reference, tests (static and ramped weights). **G2**: the driven lane: `connect_edge_gain`, `DelayKey::EdgeGain`, `GainPort`, the session's `ModTarget` and `EdgeRef`, tests. **G3**: session API. The audit is done here: no shipped node exists only to scale one source (the `Gain` nodes are test doubles), and `BusStripNode` keeps its volume and pan (below), so G3 deletes nothing. |
-| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (after M1): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
+| 3 | Bypass, mute and mix | independent of 1 and 2, in any order after the design merges. **M4** (static half built; the `ModTarget` is M4b, see "As built (M4)"): the blend above, `Editor::set_mix`, its `ModTarget`, the reference, tests (`Mix` 1.0 bit-identical to `Active`, 0.0 bit-identical to `Bypassed` in steady state); `Mix`'s docs, and `DRY`'s and `WET`'s, say what the ends are (all of the aligned input, all of the node's output) instead of the studio words alone. **M1** (built): `NodeMode`, the cell, the executor's steady states, the bypass line, the declick and un-bypass sequence, the reference, tests. **M2** (session half built): `Editor::set_mode`, the session API, hosts (plugins, AU property). **M3** (built): delete `EqBandNode`'s flag, `BusStripNode`'s mute (and `add_general_midi`'s binding of it through `UnitParam::Mute`, which becomes `NodeMode::Muted` on the channel's strip), per-node bypass; bit-exact tests replace the tolerance one; CLAUDE.md's dead-names list gains the strip mute and `EqBandNode`'s flag. |
 | 4 | Buses and coercion | needs 1 and 2. **B1**: `BusTopology`, `Buses` and `Shape`'s buses with one `Main` bus built from widths; `Fold::contributions`; hosts fill their buses. **B2**: `BusRef`, `bus_edges`, validate, lowering to weighted lanes, `connect_bus`, session API, tests. **B3**: delete `DownmixNode` and migrate its users; bypass uses the main buses' fold. |
 
 Bypass's channel mapping for buses with different declared topologies uses

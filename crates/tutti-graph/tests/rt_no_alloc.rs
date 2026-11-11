@@ -1283,21 +1283,10 @@ impl Node for Wire {
     }
 }
 
-/// Toggling modes and rendering inside `assert_no_alloc`, on `workers`
-/// participants (doc 013, "Bypass and mute are graph state"): every node of a
-/// graph with latent nodes (lines to feed and to run), event nodes (held-key
-/// tables to observe and to close), a node with no audio input, and sums, has
-/// its mode moved every few blocks, so every block runs some node in a fade,
-/// parked, un-bypassing (reset, warm-up) or muted. Blocks of four lengths.
-///
-/// Mutation (each run, each failed): build the bypass line lazily in
-/// `ModeState::align` (`Vec::new()` then `resize`) → aborts on the first
-/// latent block; collect a block's closes into a `Vec` in `node_op_with` →
-/// aborts at the first bypass of a node holding input; allocate the scratch
-/// when a fade needs it (`Arena::new` in `moded_node_op`) → aborts at the
-/// first fade.
-fn toggling_modes_are_allocation_free_on(workers: usize) {
-    use tutti_graph::NodeMode;
+/// The graph the mode and mix gates run: latent nodes (lines to feed and to
+/// run), event nodes (held-key tables to observe and to close), a node with
+/// no audio input, and sums, committed and running on `workers` participants.
+fn mode_graph(workers: usize) -> (Editor, tutti_graph::Executor) {
     let (mut ed, mut exec) = Editor::new(prepare(256));
     use_pool(&mut exec, workers);
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
@@ -1349,6 +1338,25 @@ fn toggling_modes_are_allocation_free_on(workers: usize) {
     exec.apply_pending();
     ed.collect();
     assert_eq!(exec.is_parallel(), workers > 1);
+    (ed, exec)
+}
+
+/// Toggling modes and rendering inside `assert_no_alloc`, on `workers`
+/// participants (doc 013, "Bypass and mute are graph state"): every node of a
+/// graph with latent nodes (lines to feed and to run), event nodes (held-key
+/// tables to observe and to close), a node with no audio input, and sums, has
+/// its mode moved every few blocks, so every block runs some node in a fade,
+/// parked, un-bypassing (reset, warm-up) or muted. Blocks of four lengths.
+///
+/// Mutation (each run, each failed): build the bypass line lazily in
+/// `ModeState::align` (`Vec::new()` then `resize`) → aborts on the first
+/// latent block; collect a block's closes into a `Vec` in `node_op_with` →
+/// aborts at the first bypass of a node holding input; allocate the scratch
+/// when a fade needs it (`Arena::new` in `moded_node_op`) → aborts at the
+/// first fade.
+fn toggling_modes_are_allocation_free_on(workers: usize) {
+    use tutti_graph::NodeMode;
+    let (mut ed, mut exec) = mode_graph(workers);
     let input: Vec<f32> = (0..256).map(|i| ((i % 19) as f32 - 9.0) * 0.1).collect();
     let mut out = vec![0.0f32; 256];
     let lens = [64usize, 100, 256, 7];
@@ -1385,4 +1393,62 @@ fn toggling_modes_are_allocation_free() {
 #[test]
 fn parallel_toggling_modes_are_allocation_free() {
     toggling_modes_are_allocation_free_on(4);
+}
+
+/// Moving mixes and rendering inside `assert_no_alloc`, on `workers`
+/// participants (doc 013, "Bypass and mute are graph state", M4): the graph of
+/// the mode gate with every node's mix moved every few blocks (the ends and
+/// between, so a node runs steady WET, steady DRY, a steady blend and a ramp)
+/// and a third of the nodes' modes moved with them, so a mix also meets a
+/// fade, a warm-up and a parked node. Blocks of four lengths.
+///
+/// Mutation (run, aborted): an allocation in `moded_node_op` when the block
+/// needs the aligned input (`vec![0.0f32; 8]`, standing for a scratch built
+/// when a blend needs it rather than with the unit) -> aborts at the first mix
+/// off WET.
+fn moving_mixes_are_allocation_free_on(workers: usize) {
+    use tutti_graph::NodeMode;
+    use tutti_types::Mix;
+    let (mut ed, mut exec) = mode_graph(workers);
+    let input: Vec<f32> = (0..256).map(|i| ((i % 19) as f32 - 9.0) * 0.1).collect();
+    let mut out = vec![0.0f32; 256];
+    let lens = [64usize, 100, 256, 7];
+    let mixes = [1.0f32, 0.0, 0.5, 0.25, 1.0, 0.75, 0.0, 1.0];
+    let mut heard = false;
+    for block in 0..120usize {
+        for k in 1..=9u64 {
+            let at = block / (1 + k as usize % 3) + k as usize;
+            ed.set_mix(NodeKey(k), Mix::new(mixes[at % mixes.len()]))
+                .expect("a node");
+            if k % 3 == 0 {
+                let mode = match (block / 7 + k as usize) % 3 {
+                    0 => NodeMode::Active,
+                    1 => NodeMode::Bypassed,
+                    _ => NodeMode::Muted,
+                };
+                ed.set_mode(NodeKey(k), mode).expect("a node");
+            }
+        }
+        let n = lens[block % lens.len()];
+        assert_no_alloc::assert_no_alloc(|| {
+            exec.process(
+                n,
+                &Transport::default(),
+                &[&input[..n]],
+                &mut [&mut out[..n]],
+            );
+        });
+        heard |= out[..n].iter().any(|&x| x != 0.0);
+    }
+    assert!(heard);
+}
+
+#[test]
+fn moving_mixes_are_allocation_free() {
+    moving_mixes_are_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_moving_mixes_are_allocation_free() {
+    moving_mixes_are_allocation_free_on(4);
 }

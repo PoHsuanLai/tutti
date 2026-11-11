@@ -265,7 +265,7 @@ impl Plugins {
     /// ```no_run
     /// # use tutti_plugin::catalog::Plugins;
     /// # use tutti_plugin_db::ScanPoll;
-    /// # fn ex(mut plugins: Plugins) -> BridgeResult<(), tutti_plugin_db::ScanBusy> {
+    /// # fn ex(mut plugins: Plugins) -> Result<(), tutti_plugin_db::ScanBusy> {
     /// let scan = plugins.spawn_rescan()?;
     /// loop {
     ///     while let Ok(progress) = scan.progress_rx.try_recv() {

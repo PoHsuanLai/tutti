@@ -32,7 +32,7 @@ fn freezable() -> FdnDesign {
 }
 
 fn node(design: FdnDesign, c: FdnControls) -> FdnNode {
-    prepared(DesignNode::new(design, c), SR, BLOCK)
+    prepared(DesignNode::live(design, c), SR, BLOCK)
 }
 
 struct Rig {
@@ -287,7 +287,7 @@ fn a_modulated_decay_is_read_at_the_end_and_its_peak_sets_the_tail() {
 #[test]
 fn a_lane_driving_the_decay_changes_how_long_it_rings() {
     let ring = |decay: f32| -> f64 {
-        let node = DesignNode::new(plain(), FdnControls::DEFAULT);
+        let node = DesignNode::live(plain(), FdnControls::DEFAULT);
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
         let (n, _) = g.add_with_controls(node);
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -339,8 +339,8 @@ fn a_lane_driving_the_decay_changes_how_long_it_rings() {
 /// `FdnParams::detach` fails `assert_param_fork`.
 #[test]
 fn a_fork_shares_no_cell() {
-    assert_param_fork(DesignNode::new(plain(), FdnControls::DEFAULT));
-    assert_param_fork(DesignNode::new(freezable(), FdnControls::DEFAULT));
+    assert_param_fork(DesignNode::live(plain(), FdnControls::DEFAULT));
+    assert_param_fork(DesignNode::live(freezable(), FdnControls::DEFAULT));
 }
 
 /// A non-finite write to any cell reads as unchanged: the render equals one that

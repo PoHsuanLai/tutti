@@ -44,6 +44,25 @@ impl SvfControls {
         gain: Db(0.0),
     };
 
+    /// Whether these controls are past the dead-band of `applied`, the controls a
+    /// model was last designed from: a response change, or a cutoff, resonance or
+    /// gain past `FREQ_EPS`, `Q_EPS` or `GAIN_EPS`. Below them a change does not
+    /// warrant a new design, so a held value costs nothing.
+    ///
+    /// The bands alone would not keep a NaN out (`|NaN - last| > eps` is false, so a
+    /// NaN is held off only until another control moves); a node reads its cells
+    /// through `LastGood`, which does.
+    #[must_use]
+    pub fn moved_from(&self, applied: &Self) -> bool {
+        const FREQ_EPS: f32 = 0.01;
+        const Q_EPS: f32 = 0.0001;
+        const GAIN_EPS: f32 = 0.01;
+        self.ty != applied.ty
+            || (self.freq.get() - applied.freq.get()).abs() > FREQ_EPS
+            || (self.q.get() - applied.q.get()).abs() > Q_EPS
+            || (self.gain.get() - applied.gain.get()).abs() > GAIN_EPS
+    }
+
     /// These controls with every non-finite figure replaced by the default's and
     /// `q` held in `0.01..=MAX_Q`. A cutoff and a gain out of range are
     /// [`SvfCoeffs::new`]'s to clamp.

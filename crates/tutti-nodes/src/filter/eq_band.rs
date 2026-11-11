@@ -49,8 +49,8 @@ impl From<bool> for BandState {
 /// output.
 ///
 /// The band adds nothing to the filter but [`BandState`] — cutoff, [`Q`] and
-/// gain are the inner SVF's live params, reached through the accessors here and
-/// by [`UnitParam`](tutti_types::UnitParam) through the [`ParamSet`] it is
+/// gain are the inner SVF's live params, reached by
+/// [`UnitParam`](tutti_types::UnitParam) through the [`ParamSet`] it is
 /// inserted with. Stack several to build a parametric EQ, one band
 /// per [`SvfType`].
 ///
@@ -58,7 +58,7 @@ impl From<bool> for BandState {
 /// `match` per block and passes samples through bit-exactly.
 ///
 /// `F` is the internal state precision; defaults to `f64`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EqBandNode<F: Real = f64> {
     svf: SvfFilterNode<F>,
     state: BandState,
@@ -168,15 +168,6 @@ impl<F: Real + 'static> IntoNode for EqBandNode<F> {
 
     fn into_parts(self) -> NodeParts<ParamSet> {
         tutti_graph::param_parts(self)
-    }
-}
-
-impl<F: Real> Clone for EqBandNode<F> {
-    fn clone(&self) -> Self {
-        Self {
-            svf: self.svf.clone(),
-            state: self.state,
-        }
     }
 }
 

@@ -7,16 +7,6 @@
 use super::Real;
 use tutti_types::{Db, Hz, Q, SampleRate};
 
-/// Below these deltas a freq/Q/gain change doesn't warrant recomputing the
-/// coefficients — the change guard shared by the atomic and modulation paths.
-///
-/// The thresholds alone would not keep a NaN out (`|NaN - last| > eps` is
-/// false, so a NaN is held off only until another control moves); the cells
-/// are read through `LastGood`, which does.
-const FREQ_EPS: f32 = 0.01;
-const Q_EPS: f32 = 0.0001;
-const GAIN_EPS: f32 = 0.01;
-
 /// Which response the state-variable filter presents.
 ///
 /// All eight share one coefficient computation and differ only in the output
@@ -163,38 +153,23 @@ impl SvfCoeffs {
     }
 }
 
-/// Parameter-derived filter coefficients, plus the parameter values they were
-/// solved at — which is what gates recomputation and where a block ramp starts.
+/// The coefficients of one set of controls, in the filter's state precision `F`.
 ///
-/// One set serves every channel: the params are one linked control surface, so
+/// One set serves every channel: the controls are one linked surface, so
 /// widening replicates only the integrator state.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SvfCoefficients<F: Real> {
+pub(crate) struct SvfCoefficients<F: Real> {
     a1: F,
     a2: F,
     a3: F,
     m0: F,
     m1: F,
     m2: F,
-    /// The cutoff this set was solved at.
-    pub last_freq: Hz,
-    /// The resonance this set was solved at.
-    pub last_q: Q,
-    /// The gain this set was solved at.
-    pub last_gain_db: Db,
 }
 
-impl<F: Real> SvfCoefficients<F> {
-    /// The set solved at `freq`, `q` and `gain_db` for `sample_rate`.
-    #[must_use]
-    pub fn solve(
-        filter_type: SvfType,
-        freq: Hz,
-        q: Q,
-        gain_db: Db,
-        sample_rate: SampleRate,
-    ) -> Self {
-        let c = SvfCoeffs::new(filter_type, freq, q, gain_db, sample_rate);
+impl<F: Real> From<&SvfCoeffs> for SvfCoefficients<F> {
+    /// The solve's `f64` set narrowed once to `F`.
+    fn from(c: &SvfCoeffs) -> Self {
         Self {
             a1: F::from_f64(c.a1),
             a2: F::from_f64(c.a2),
@@ -202,42 +177,16 @@ impl<F: Real> SvfCoefficients<F> {
             m0: F::from_f64(c.m0),
             m1: F::from_f64(c.m1),
             m2: F::from_f64(c.m2),
-            last_freq: freq,
-            last_q: q,
-            last_gain_db: gain_db,
         }
     }
+}
 
-    /// Marks the set stale, so the next read solves at its target outright
-    /// rather than ramping from parameters that no longer mean anything (a new
-    /// sample rate, a new response type).
-    pub fn invalidate(&mut self) {
-        self.last_freq = Hz(-1.0);
-    }
-
-    /// Whether the set was marked stale by [`invalidate`](Self::invalidate).
-    #[must_use]
-    #[inline]
-    pub fn is_invalid(&self) -> bool {
-        self.last_freq.get() < 0.0
-    }
-
-    /// Whether `(freq, q, gain_db)` moved past the epsilons since this set was
-    /// solved. A held value costs nothing.
+impl<F: Real> SvfCoefficients<F> {
+    /// Linear blend toward `to` by `t` in `0..=1`: an interpolated set is only
+    /// ever used for one sample and never stored.
     #[inline]
     #[must_use]
-    pub fn moved(&self, freq: Hz, q: Q, gain_db: Db) -> bool {
-        (freq.get() - self.last_freq.get()).abs() > FREQ_EPS
-            || (q.get() - self.last_q.get()).abs() > Q_EPS
-            || (gain_db.get() - self.last_gain_db.get()).abs() > GAIN_EPS
-    }
-
-    /// Linear blend toward `to` by `t` in `0..=1`. The parameters it was solved
-    /// at are not blended — an interpolated set is only ever used for one
-    /// sample and never stored.
-    #[inline]
-    #[must_use]
-    pub fn lerp(&self, to: &Self, t: F) -> Self {
+    pub(crate) fn lerp(&self, to: &Self, t: F) -> Self {
         Self {
             a1: self.a1 + (to.a1 - self.a1) * t,
             a2: self.a2 + (to.a2 - self.a2) * t,
@@ -245,7 +194,6 @@ impl<F: Real> SvfCoefficients<F> {
             m0: self.m0 + (to.m0 - self.m0) * t,
             m1: self.m1 + (to.m1 - self.m1) * t,
             m2: self.m2 + (to.m2 - self.m2) * t,
-            ..*to
         }
     }
 }
@@ -259,7 +207,7 @@ impl<F: Real> SvfCoefficients<F> {
 /// across-channel layout only pays once a channel-inner loop is explicitly
 /// vectorised, which this one is not.
 #[inline(always)]
-pub fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
+pub(crate) fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
     let two = F::from_f64(2.0);
     let [ic1eq, ic2eq] = *s;
     let v3 = v0 - ic2eq;
@@ -351,13 +299,13 @@ mod tests {
     /// Steady-state gain (dB) of a unit sine at `f` through the filter's own
     /// recurrence, projected on the last whole second.
     fn measured_db(ty: SvfType, fc: f64, q: f64, gain_db: f64, rate: f64, f: f64) -> f64 {
-        let c = SvfCoefficients::<f64>::solve(
+        let c = SvfCoefficients::<f64>::from(&SvfCoeffs::new(
             ty,
             Hz(fc as f32),
             Q(q as f32),
             Db(gain_db as f32),
             SampleRate::new(rate),
-        );
+        ));
         let mut st = [0.0f64; 2];
         let n = rate as usize;
         let (mut re, mut im) = (0.0, 0.0);

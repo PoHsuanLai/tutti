@@ -21,7 +21,7 @@ fn session() -> Session {
 #[test]
 fn set_param_reaches_the_decay_it_names() {
     let mut s = session();
-    let (node, cells) = s.graph().add::<FdnNode>(DesignNode::new(
+    let (node, cells) = s.graph().add::<FdnNode>(DesignNode::live(
         FdnDesign::new(8, Seconds(8.0), true).unwrap(),
         FdnControls::DEFAULT,
     ));
@@ -35,7 +35,7 @@ fn set_param_reaches_the_decay_it_names() {
 
     let (plain, cells) = s
         .graph()
-        .add::<FdnNode>(DesignNode::new(FdnDesign::default(), FdnControls::DEFAULT));
+        .add::<FdnNode>(DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT));
     s.graph().set_param(plain, UnitParam::Freeze, 1.0);
     assert_eq!(cells.get(UnitParam::Freeze), None, "no freeze to write");
 }
@@ -50,8 +50,8 @@ fn the_graph_sees_each_reverbs_ceiling() {
     let mut s = session();
     let (plain, _) = s
         .graph()
-        .add::<FdnNode>(DesignNode::new(FdnDesign::default(), FdnControls::DEFAULT));
-    let (frozen, _) = s.graph().add::<FdnNode>(DesignNode::new(
+        .add::<FdnNode>(DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT));
+    let (frozen, _) = s.graph().add::<FdnNode>(DesignNode::live(
         FdnDesign::new(8, Seconds(8.0), true).unwrap(),
         FdnControls::DEFAULT,
     ));

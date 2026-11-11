@@ -17,6 +17,12 @@
 //! the lane digests; `Ramp::at` taking `step * i` changes the cell digests; the
 //! crossover's `end as f64 / n as f64` -> `(end - 1) as f64 / n as f64` changes
 //! the crossover digest.
+//! `Cadence::steps` solving at `frames.start` instead of `frames.end - 1` changes the
+//! lane digests and the cell ones; `DesignNode::render_steps` reading with the
+//! controls of the step before (`applied: self.applied` in its `At`) instead of
+//! the block's start restarts the cell glide at each step and changes the cell
+//! digests. (Locally `assert_golden` only prints on another libm: compare the
+//! `DIGEST` lines.)
 
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};

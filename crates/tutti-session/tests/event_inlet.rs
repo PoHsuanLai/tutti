@@ -8,13 +8,6 @@
 //! event tap on its port), several inlets are independent, a prebuilt node is
 //! added the same way, and, unlike the audio inlet, there is no rate to refuse
 //! and an export fork is accepted.
-//!
-//! Mutations (run, recorded here): `Graph::open_event_inlet` returning the
-//! writer without inserting the node (`pushed_events_come_out_at_their_frames`:
-//! the tap cannot open, the `expect` fails); `add_event_inlet` not inserting
-//! through `insert` (the same test, through `add_event_inlet`); an
-//! `IntoNode` with `fork: None` (`an_export_fork_is_accepted`: the fork is
-//! refused naming the inlet).
 
 use tutti_fixtures::midi::{key_of, m1_note_on};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
@@ -115,10 +108,6 @@ impl Node for Hear {
 /// An export fork of a graph whose output is fed by an event inlet is
 /// accepted, where the audio inlet's is refused naming its key, and the fork
 /// is silent: it hears none of what the live graph is pushed.
-///
-/// Mutation (run, recorded here): an `IntoNode` with `fork: None` makes
-/// `fork_live` fail with the inlet's key; a fork sharing the ring would hear
-/// the push.
 #[test]
 fn an_export_fork_is_accepted_and_silent() {
     let mut s = session();

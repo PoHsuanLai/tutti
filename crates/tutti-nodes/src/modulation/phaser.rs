@@ -489,10 +489,6 @@ mod tests {
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it (see
     /// `tutti_graph::contract::assert_param_fork`).
-    ///
-    /// Mutation (run): drop `fork.controls.detach()` in `fork_fresh` → "a live
-    /// write reached the fork" for `Depth`. Leave `Rate` out of `param_set`
-    /// → the address list below fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
         let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
@@ -574,9 +570,6 @@ mod tests {
     /// Six channels with the default (zero) offsets: each is the mono phaser on
     /// its own input, bit for bit — one LFO and one coefficient table serve all
     /// six, and the stage-major state keeps them apart.
-    ///
-    /// Mutation: reading lane 0's input history (`x1[0]`) for every channel
-    /// fails.
     #[test]
     fn six_channels_are_six_mono_phasers() {
         use crate::test_support::{drive_block, noise};
@@ -599,8 +592,6 @@ mod tests {
 
     /// Per-channel phase offsets stagger the sweep: a quarter-cycle offset
     /// changes the channel, a full-cycle one is no offset at all.
-    ///
-    /// Mutation: ignoring the offset in `coeff_at` fails the first assertion.
     #[test]
     fn phase_offsets_stagger_the_channels() {
         use crate::test_support::{drive_block, noise};
@@ -624,9 +615,6 @@ mod tests {
 
     /// A low rate clamps the sweep top to its ceiling; a higher rate after it
     /// restores what was asked for.
-    ///
-    /// Mutation: re-clamping from `self.range.max_hz` (an in-place clamp)
-    /// leaves the top at 3600 Hz after the rate rises and fails.
     #[test]
     fn a_rising_rate_restores_the_authored_sweep_top() {
         let prep = |sr: f64| {

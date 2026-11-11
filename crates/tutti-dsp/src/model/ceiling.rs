@@ -161,10 +161,6 @@ mod tests {
 
     /// `MaxDecay` keeps the range-checked shape of CLAUDE.md: `new` refuses and
     /// never clamps, `TryFrom` agrees and carries the refused raw.
-    ///
-    /// Mutations (run): dropping the `s > 0.0` test accepts 0 and -1; `<= CAP`
-    /// -> `<= 61.0` accepts 60.001; dropping `is_finite` accepts infinity (the
-    /// cap test alone would refuse it, so the NaN row fails instead).
     #[test]
     fn a_max_decay_keeps_the_range_checked_shape() {
         check_range_contract(&RangeContract {
@@ -184,11 +180,6 @@ mod tests {
     }
 
     /// A ceiling refuses what it cannot hold and never clamps.
-    ///
-    /// Mutations (run): dropping the `floor.get() < 0.0` test accepts a 0 dB
-    /// floor and fails the last row; dropping `range.valid()` accepts a range
-    /// that is not valid (`()` always is, so the row of a hand-built bad range
-    /// fails).
     #[test]
     fn a_ceiling_refuses_what_it_cannot_hold() {
         #[derive(Clone, Copy)]

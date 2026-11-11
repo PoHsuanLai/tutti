@@ -8,14 +8,6 @@
 //! spec, the fault sink and the stop are the shipped ones, and a driver
 //! decides only *where* the callback runs. An engine over a manual driver is
 //! the same engine.
-//!
-//! Mutations run, and which test each broke:
-//!
-//! | mutation | fails |
-//! |---|---|
-//! | `is_running` → `self.running.is_some()` | `a_disconnect_stops_the_engine_reporting_healthy` |
-//! | restore `\|_err\| {}` (drop `faults.record`) | `a_backend_fault_reaches_the_handle_taken_before_it` |
-//! | drop `faults.clear()` from `start_with` | `a_restart_clears_the_fault_state` |
 
 mod support;
 
@@ -73,9 +65,6 @@ fn an_engine_over_a_manual_driver_starts_renders_and_stops() {
 }
 
 /// **A second start is refused, and `stop` can be called twice.**
-///
-/// Mutation (run): `start_with` returning `Ok(())` for a running engine fails
-/// the `AlreadyRunning` match.
 #[test]
 fn a_second_start_is_refused_and_stop_is_repeatable() {
     let (mut engine, state) = engine_and_state();
@@ -128,7 +117,7 @@ fn the_engine_reports_the_spec_it_was_opened_at() {
 ///
 /// There is nothing to reset between the two threads: the engine's cells
 /// check for a *concurrent* borrow, not a foreign thread, so the old
-/// `reset_owners` call (a no-op a mutation could delete with no effect) is
+/// `reset_owners` call (a no-op) is
 /// gone.
 #[test]
 fn a_restarted_stream_renders_from_a_different_thread() {
@@ -276,9 +265,6 @@ fn the_fault_handle_survives_a_restart() {
 /// **A restart hands its hook the new device's config while no stream runs,
 /// and starts only after the hook** — so a host re-rates the graph before
 /// the first block at the new rate, never after it.
-///
-/// Mutation (run): open the new stream before running the hook in
-/// `TuttiDriver::restart_on` → the hook sees the new stream open → fails.
 #[test]
 fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
     let (_t, state) = rolling_state(2);
@@ -311,9 +297,6 @@ fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
 /// **A hook that fails leaves the stream stopped**, and its error is the
 /// restart's: a host that could not re-rate its graph gets no audio at the
 /// wrong rate.
-///
-/// Mutation (run): start the stream before propagating the hook's error →
-/// the new stream is open → fails.
 #[test]
 fn a_restart_whose_hook_fails_stays_stopped() {
     let (_t, state) = rolling_state(2);

@@ -1047,12 +1047,6 @@ mod tests {
     /// not keep the aligned input beside its output. Off WET (DRY included) a
     /// block needs it, and so does the block a mix arrives back at WET on (its
     /// ramp), after which the node is plain again.
-    ///
-    /// Mutation (each run, each failed): `snapshot` leaving `plain` without the
-    /// `mix_run(0).is_wet()` term -> the plain node is plain off WET;
-    /// `needs_input` without its mix term -> a blend has no `x̂`; `is_wet`
-    /// comparing only `to` -> the ramp block back at WET is plain and the last
-    /// assertion fails.
     #[test]
     fn a_node_at_wet_takes_the_plain_op_and_keeps_no_aligned_input() {
         let (_, plain) = at(&shape(0), 1.0);
@@ -1088,9 +1082,6 @@ mod tests {
     /// let go is not plain until the lane has finished fading to the base
     /// (`PARAM_DECLICK` frames), and is plain again after (an idle lane left
     /// behind costs nothing).
-    ///
-    /// Mutation (run, failed): `snapshot` leaving `plain` without its
-    /// `drive ... busy` term -> the driven node is plain, and so is the fade.
     #[test]
     fn a_node_whose_mix_is_not_driven_keeps_the_plain_op() {
         let from = EventOut {
@@ -1124,9 +1115,6 @@ mod tests {
     /// given, and every block advances it, whether or not the node was called
     /// (`step`): a move made while the node was parked has arrived when it is
     /// heard.
-    ///
-    /// Mutation: advancing `mix_from` in `step` rather than `snapshot` -> the
-    /// parked blocks never advance and the block after them ramps.
     #[test]
     fn the_mix_advances_every_block_called_or_not() {
         let (cell, mut state) = at(&shape(0), 1.0);

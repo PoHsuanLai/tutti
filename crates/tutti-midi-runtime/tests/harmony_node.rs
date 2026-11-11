@@ -114,10 +114,6 @@ fn lanes() -> Vec<TimedHarmony> {
 /// **Changes land on their frames, and a continuous run sends each once.**
 /// From frame 0 in 512-frame blocks through frame 32 768: the chord and scale
 /// at 0, G at 10 000, F/A at 24 000, A minor at 30 000; nothing re-stated.
-///
-/// Mutation: treat every segment as a jump (the walk never continuous) → the
-/// context is re-stated each block → fails. Mutation: place changes at
-/// offset 0 of their block → fails.
 #[test]
 fn changes_land_on_their_frames_and_are_sent_once() {
     let (_ed, mut exec, _c, seen) = rig(HarmonyNode::new(lanes()), 512);
@@ -139,8 +135,6 @@ fn changes_land_on_their_frames_and_are_sent_once() {
 /// **A start mid-lane re-states the context in force**, on the start's
 /// frame: rolling from frame 20 000 (between G and F/A), the first block
 /// sends G and C major at 0, then F/A on its frame.
-///
-/// Mutation: no re-statement at a jump → only F/A arrives → fails.
 #[test]
 fn a_start_mid_lane_restates_the_context() {
     let (_ed, mut exec, _c, seen) = rig(HarmonyNode::new(lanes()), 512);
@@ -155,8 +149,6 @@ fn a_start_mid_lane_restates_the_context() {
 /// **A seek re-states the context there; a stop sends nothing.** Rolling
 /// from 0, stopped for a block, then a seek to frame 31 000: A minor and F/A
 /// in force at the seek, sent on its frame (the executor's 1 536).
-///
-/// Mutation: send something when stopped (`Sending::stop`) → fails.
 #[test]
 fn a_seek_restates_the_context_and_a_stop_sends_nothing() {
     let (_ed, mut exec, _c, seen) = rig(HarmonyNode::new(lanes()), 512);
@@ -175,8 +167,6 @@ fn a_seek_restates_the_context_and_a_stop_sends_nothing() {
 /// **A loop wrap inside a block re-states the context at the wrap.** Loop
 /// [0.5, 1.5) beats (frames 12 000–36 000); a block from 35 800 wraps 200
 /// frames in: at the wrap (loop start, beat 0.5) G and C major are in force.
-///
-/// Mutation: no jump at a wrap → nothing at the wrap → fails.
 #[test]
 fn a_loop_wrap_restates_the_context_at_the_wrap() {
     let (_ed, mut exec, _c, seen) = rig(HarmonyNode::new(lanes()), 512);
@@ -205,9 +195,6 @@ fn a_loop_wrap_restates_the_context_at_the_wrap() {
 /// frames), from its start: C and C major at the start, G at 375, and at
 /// each wrap (750, 1 500) the chord in force at the loop's start, C, which
 /// differs from the G sent; C major, unchanged, is not re-sent.
-///
-/// Mutation (run): a wrap re-stating like any jump (`changed_only`
-/// ignored) → G and C major at every wrap of the first loop → fails.
 #[test]
 fn a_loop_pass_restates_only_what_changed() {
     const SIXTY_FOURTH: u64 = 375;
@@ -251,12 +238,6 @@ fn a_loop_pass_restates_only_what_changed() {
 /// frame, C on it included), and G follows 200 frames into each pass. F/A,
 /// in force only before the loop, never goes out, and C is not sent twice
 /// on one frame.
-///
-/// Mutation (run): the context taken strictly before the beat (`<` for
-/// `lands_on_first_frame` in `Sending::in_force`) → F/A at the start and
-/// every wrap, where C belongs → fails. Mutation (run): the walk's own visit of a
-/// change on the re-stated frame not skipped (`Sending::event` sending
-/// whatever the frame) → C twice at the start and at each wrap → fails.
 #[test]
 fn a_change_on_the_loops_start_is_each_passs_context() {
     let lanes = vec![at(0, F_OVER_A), at(12_000, C), at(12_200, G)];
@@ -278,12 +259,6 @@ fn a_change_on_the_loops_start_is_each_passs_context() {
 }
 
 /// **New lanes re-state from the next block; the same lanes cut nothing.**
-///
-/// Mutation: `set` publishing whatever the lanes → the same lanes re-state
-/// the context → fails. Mutation: a new generation not forgetting the walk →
-/// the new lanes' context is not re-stated → fails. Mutation (run): `set`
-/// publishing without updating the controls' own record of the lanes
-/// (`Shared::current`, what `set` compares against and `len` reads) → fails.
 #[test]
 fn replaced_lanes_restate_and_the_same_lanes_do_not() {
     let (_ed, mut exec, controls, seen) = rig(HarmonyNode::new(lanes()), 512);
@@ -300,8 +275,6 @@ fn replaced_lanes_restate_and_the_same_lanes_do_not() {
 
 /// **A fork sends the lanes as they stood.** A fork taken, then the live
 /// lanes replaced: the fork re-states C and C major on its first block.
-///
-/// Mutation: the fork sharing the live cell → it sends G → fails.
 #[test]
 fn a_fork_sends_the_lanes_as_they_stood() {
     let (live, _exec, controls, seen) = rig(HarmonyNode::new(lanes()), 512);

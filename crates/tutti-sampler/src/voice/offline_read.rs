@@ -573,9 +573,6 @@ mod tests {
     /// pages, not one every few frames (a page laid out ahead of a forward
     /// read leaves a backward one below its start almost at once). Counted,
     /// not timed. Both directions read the right frames.
-    ///
-    /// Mutation (run): `Pages::frame` never treating a miss as backward →
-    /// ~25 000 loads reversed → fails.
     #[test]
     fn a_reversed_read_decodes_a_page_per_page_of_frames() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -606,9 +603,6 @@ mod tests {
     /// ring holds there — not 20, 21 from past it; half a frame into a later
     /// pass the frame behind is 19; the first pass reaches 10 from 9. Paged,
     /// through the loop's own tap layout, as the memory tier reads it.
-    ///
-    /// Mutation (run): `LoopSpan::taps` clamping to the file rather than
-    /// wrapping → `value` 20, 21 in the taps at 19.5 → fails.
     #[test]
     fn a_loops_taps_wrap_through_its_seam() {
         use tutti_dsp::cubic_hermite;
@@ -646,9 +640,6 @@ mod tests {
     /// A forward read past the end of an unlooped file closes it: there
     /// is nothing more to read, so the render stops holding the file, and a
     /// later read past the end does not open it again.
-    ///
-    /// Mutation (run): the close removed from `OfflineRead::read_into` → the
-    /// file stays open → fails.
     #[test]
     fn a_read_past_the_end_closes_the_file() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -682,9 +673,6 @@ mod tests {
     /// fixture cut to 90% ends short of its frame count; a read before the
     /// cut returns frames, and the `FaultLatch` holds the decode failure.
     /// Called on the reader directly, not through a voice render.
-    ///
-    /// Mutation (run): not checking `decoder.error()` after the fill leaves
-    /// the latch empty and fails.
     #[test]
     fn a_damaged_file_latches_a_fault_and_keeps_its_frames() {
         let source = tutti_fixtures::asset("audio/stereo.flac");
@@ -717,9 +705,6 @@ mod tests {
     /// A position that is NaN or infinite reads silence, in both directions
     /// and on a loop: it was NaN (the fraction of a NaN position) or, on a
     /// loop, a wrapped read of garbage frames.
-    ///
-    /// Mutation (run): removing the `is_finite` return at the top of
-    /// `OfflineRead::read_into` makes the NaN cases write NaN.
     #[test]
     fn a_non_finite_position_reads_silence() {
         let dir = tempfile::tempdir().expect("a temp dir");

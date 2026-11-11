@@ -102,9 +102,6 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
 
 /// A timed transport program is spelled from the prelude alone: `At`,
 /// `TransportCommand`, and the time-signature trait with its `BarNumber`.
-///
-/// Mutation (run): dropping `At`, `TransportCommand`, `Meter` or `BarNumber`
-/// from `tutti::prelude` stops this file compiling.
 #[test]
 fn a_timed_transport_program_needs_only_the_prelude() {
     let transport = Transport::new(SampleRate::new(48_000.0));

@@ -183,8 +183,6 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 
 /// Every arm of the decode, MIDI 1.0 and 2.0, a reserved attribute, a packet
 /// `decode` refuses and a message the synth has no use for, inside the gate.
-/// Mutation: an `Vec::new()` + `push` in the `Voice1::PolyPressure` arm
-/// aborts inside the gate.
 #[test]
 fn polysynth_every_decoded_message_is_allocation_free() {
     let mut synth = Hand::new(
@@ -341,10 +339,6 @@ fn polysynth_every_decoded_message_is_allocation_free() {
 ///
 /// Constructing at all is half the assertion: the `.unwrap()` below shows
 /// `max_voices` has no upper bound.
-///
-/// *Mutation:* `Vec::with_capacity(config.max_voices)` -> `Vec::new()` in
-/// `PolySynth::new` aborts inside the gate on the first block that finishes
-/// a voice.
 #[test]
 fn polysynth_all_voices_finishing_together_is_allocation_free() {
     // Large enough that the buffer under test is certainly on the heap.
@@ -403,19 +397,12 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
 /// This is the test that pins `Vec::with_capacity(max_voices)` in
 /// `PolySynth::new`. The neighbouring steady-state test cannot: it warms the
 /// *instance* before opening the gate, so a bare `Vec::new()` simply grows to
-/// capacity during the warm-up and the mutation passes. Verified, not
-/// assumed.
+/// capacity during the warm-up and it passes.
 ///
 /// Warming the **thread** and gating a **fresh instance** separates the two
-/// costs. It matters beyond the mutation: a never-processed `PolySynth` (a
+/// costs. It matters beyond the test: a never-processed `PolySynth` (a
 /// fresh insert, a fork) goes straight into a callback that is already
 /// running, which is exactly this shape.
-///
-/// *Mutations, both run:* `Vec::with_capacity(..)` -> `Vec::new()` in
-/// `PolySynth::new` aborts on the `new` half; the same substitution in the
-/// `Clone` impl aborts on the `clone` half. They are separate construction
-/// sites and an earlier draft of this test covered only the first — the
-/// `Clone` mutation passed against it.
 #[test]
 fn polysynth_allocates_nothing_on_a_fresh_instance() {
     const MAX_VOICES: usize = 64;
@@ -486,9 +473,6 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 ///
 /// The rest of the suite is blind to this: every other test warms the
 /// instance, and so the thread, before opening the gate.
-///
-/// Mutation (run): a lazily initialised `thread_local!` `Vec` touched in the
-/// synth's `render_events` → the gate aborts on the cold thread.
 #[test]
 fn a_first_block_on_a_cold_thread_is_allocation_free() {
     let mut synth = Hand::new(
@@ -510,10 +494,6 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
 /// clip into a synth, through the executor, rolling, then across a
 /// stop (the clip ends its held notes) and a restart. Nothing is published
 /// inside the gate: publishing is the control thread's.
-///
-/// Mutation: a `Vec` built in `MidiClipNode::process` → the gate aborts.
-/// Mutation (run): the synth's `render_events` collecting the block's chunks
-/// into a `Vec` → the gate aborts.
 #[test]
 fn a_clip_into_a_synth_is_allocation_free() {
     use tutti_graph::NodeKey;

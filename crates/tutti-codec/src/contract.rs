@@ -52,12 +52,6 @@ macro_rules! contract {
             /// A take cut into blocks of any size, empty ones included, is the
             /// file the whole take is (Ogg: still a finished, non-empty stream,
             /// the empty block not ending it).
-            ///
-            /// Mutation: a writer that encodes only the first block of a cut
-            /// take, or that drops a block's tail, changes its bytes and fails
-            /// the equality (Ogg: a vorbis writer that forwards the empty block
-            /// ends the stream early and shrinks the file below the whole
-            /// take's).
             #[test]
             fn blocks_of_any_size_make_the_same_file() {
                 let all = input(10_000);
@@ -74,11 +68,6 @@ macro_rules! contract {
 
             /// A take of no frames is a file: a header that opens with its
             /// format's magic (`RIFF`, `FORM`, `fLaC`, `OggS`).
-            ///
-            /// Mutation: a writer whose `create` writes no header leaves zeros
-            /// where the magic is (WAV's `finish` patches the sizes over a hole)
-            /// and fails the letters check; one whose `finish` skips the final
-            /// flush hands back a short sink and fails the length check.
             #[test]
             fn zero_frames_is_a_file() {
                 let sink = make(Cursor::new(Vec::new())).unwrap().finish().unwrap();
@@ -93,10 +82,6 @@ macro_rules! contract {
 
             /// Every frame written reaches the file: a longer take is a
             /// longer file, down to the last partial block.
-            ///
-            /// Mutation: a FLAC writer whose `finish` drops the unfilled last
-            /// block writes the same file for 4196 frames as for 4096 and
-            /// fails this.
             #[test]
             fn a_longer_take_is_a_longer_file() {
                 if !$deterministic {
@@ -108,10 +93,6 @@ macro_rules! contract {
 
             /// `finish` hands the sink back positioned at the end of the file,
             /// after the header it patched at the start.
-            ///
-            /// Mutation: removing the `seek(End(0))` from the WAV writer's
-            /// `finish` (the header patch leaves the position at 44) or the
-            /// FLAC writer's fails this.
             #[test]
             fn finish_hands_the_sink_back_at_the_end() {
                 let mut w = make(Cursor::new(Vec::new())).unwrap();
@@ -123,9 +104,6 @@ macro_rules! contract {
 
             /// A sink that fills up never lets a take report success: a write,
             /// or at the latest `finish`, fails.
-            ///
-            /// Mutation: swallowing a sink error in the writer's `write` and
-            /// in its `finish` lets the take finish `Ok` and fails this.
             #[test]
             fn a_full_sink_fails_the_take() {
                 let mut w = make(Full::holding(6_000)).unwrap();
@@ -146,10 +124,6 @@ macro_rules! contract {
             /// A buffered sink reports its failed write only when flushed, so a
             /// writer that leaves the flush to the sink's `Drop` loses it and
             /// reports success. Whatever is written, the take fails.
-            ///
-            /// Mutation (run): removing the `sink.flush()?` from the Vorbis
-            /// thread's `run`, which `vorbis_rs` does not do itself, makes its
-            /// `finish` return `Ok` over a sink that would have refused.
             #[test]
             fn a_buffered_full_sink_fails_the_take() {
                 let mut w = make(BufWriter::new(Full::holding(100))).unwrap();
@@ -162,10 +136,6 @@ macro_rules! contract {
             /// After a `write` failed that the sink recovers from, `finish`
             /// closes what was written and hands the sink back (FLAC reports the
             /// lost frame instead, and must return rather than hang).
-            ///
-            /// Mutation (run): a Vorbis thread that stops at its first failure
-            /// (returns the error from `run`) loses the sink and fails the
-            /// `expect`.
             #[test]
             fn finish_after_a_failed_write_hands_the_sink_back() {
                 let mut w = make(Flaky::failing_write(12)).unwrap();
@@ -192,10 +162,6 @@ macro_rules! contract {
             ///
             /// `finish` takes the writer by value, so closing a file twice, or
             /// writing after it, does not compile.
-            ///
-            /// Mutation: a FLAC or Vorbis writer whose drop waits on a worker
-            /// that waits on the queue the drop still holds open never returns
-            /// and fails the bound.
             #[test]
             fn a_dropped_writer_stops() {
                 let (done, finished) = std::sync::mpsc::channel();

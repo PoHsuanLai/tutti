@@ -18,14 +18,6 @@ fn spec_at(rate: f64) -> OutputSpec {
 /// stream stopped** — its hook, run through the device-free restart
 /// (`restart` itself needs a device to resolve). At the same rate it
 /// starts.
-///
-/// Mutations (run): `refuse_rate_change` answering `Ok` regardless → the
-/// 48 kHz restart starts the stream over the 44.1 kHz graph → fails;
-/// `rerate_or_restore` adopting the rate (or keeping the new spec) on
-/// failure → the second attempt compares 48 kHz with 48 kHz and starts
-/// → fails. (Checking against `spec().sample_rate` instead of
-/// `graph_rate` is equivalent while a failure restores the spec; it
-/// fails here only together with the restore removed.)
 #[test]
 fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
     let transport = Transport::new(SampleRate::new(44_100.0));

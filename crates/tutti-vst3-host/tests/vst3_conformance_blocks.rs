@@ -152,7 +152,6 @@ fn every_audio_class_survives_a_block() {
                     // for. Without this the sweep counts *attempts*: a
                     // `load_class` that ignored its argument would load the
                     // first class 55 times and still report "drove 55".
-                    // Measured — that mutation passed until this assert existed.
                     if info.name != name {
                         failures.push(format!(
                             "{bundle}: asked for {name:?}, got {:?} — load_class \

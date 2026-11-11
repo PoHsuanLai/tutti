@@ -157,11 +157,6 @@ mod tests {
 
     /// **Both sorts are stable, and sort.** Every key repeats several
     /// times, out of order.
-    ///
-    /// Mutations (run): the insertion sort's `partition_point` with `<` for
-    /// `<=` (an equal key moves ahead of the one before it), and `StableOrder`'s key word
-    /// without the index (`key << 32` alone, so equal words leave the
-    /// unstable sort free and every index masks to 0): each fails here.
     #[test]
     fn both_sorts_keep_equal_keys_in_arrival_order() {
         let mut a = interleaved(300);
@@ -177,11 +172,6 @@ mod tests {
     /// **Neither sort allocates**, at a length std's stable sort allocates
     /// for (300 items of 56 bytes, past its 73 on the stack), nor past
     /// `StableOrder`'s reserved room.
-    ///
-    /// Mutations (run): `insertion_sort_by_key` calling
-    /// `items.sort_by_key(key)` first aborts inside the gate, and so does
-    /// `StableOrder::sort_by_key` without its capacity check (the scratch
-    /// grows for the list past its room).
     #[test]
     fn neither_sort_allocates() {
         let mut a = interleaved(300);

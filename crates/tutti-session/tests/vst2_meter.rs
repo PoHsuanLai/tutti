@@ -49,12 +49,6 @@ fn read_capture() -> ProcessCapture {
 /// is in 7/8 from beat 0; one frame is rendered at beat 3.5 (bar 2 of 7/8
 /// starts there) and the plugin's time info says 7/8, with the bar starting at
 /// beat 3.5.
-///
-/// Mutations (each run, each failed): `Session::add_plugin`'s in-process arm
-/// not installing the project meter (`plugin_meter.set_meter(meter)` removed)
-/// -> the plugin reads 4/4; the arm handing the project meter to a fresh
-/// `PluginMeter` rather than the node's (`Plugin::meter`) -> installed, but
-/// into a cell the node does not read: 4/4.
 #[test]
 fn an_in_process_vst2_plugin_is_given_the_project_meter() {
     let mut s = Session::builder()

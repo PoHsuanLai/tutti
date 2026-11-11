@@ -179,8 +179,6 @@ fn sent(outs: &mut [common::Sink], seen: &[Seen]) -> Vec<Vec<(u64, [u32; 4])>> {
 }
 
 /// Every MIDI node is `Light`.
-///
-/// Mutation (run): the clip node's `with_cost` removed → its assert fails.
 #[test]
 fn every_midi_node_is_light() {
     assert_eq!(clip(0).shape().cost, Cost::Light);
@@ -194,9 +192,6 @@ fn every_midi_node_is_light() {
 /// pack into fewer tasks than the same lanes declaring nothing, the plan
 /// spreads from a one-frame block, and on a pool of two and of four every
 /// event is sent on the absolute frame the serial walk sends it on.
-///
-/// Mutation (run): the clip node's `with_cost(Cost::Light)` removed → each
-/// lane is a heavy task again → the task-count assert fails.
 #[test]
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn light_lanes_pack_and_send_on_the_serial_frames() {

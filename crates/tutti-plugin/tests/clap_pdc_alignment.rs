@@ -214,11 +214,6 @@ fn two_paths(plugin: PluginClient<Bound>) -> Rig {
     // (`connect_output` adds), and the compiler aligns each. Two aligned
     // arrivals of `IMPULSE` must come out as `2 · IMPULSE`, which one arrival
     // alone cannot produce.
-    //
-    // Mutation (run): in `compile`'s summed-output branch `dep.gap_to(total)` →
-    // `dep.gap_to(dep)` (no source of a sum aligned) fails
-    // `with_compensation_both_paths_land_on_the_same_sample` (two arrivals) and
-    // `a_latency_change_reaches_pdc_at_the_next_commit`.
 
     for port in 0..plugin_inputs {
         g.set_source(key, port, Source::Global(0));
@@ -284,10 +279,6 @@ impl Rig {
 /// figure moves, and must be the same sum. A test that checked only the first
 /// would pass while the planner compensated by the wrong amount — which is
 /// precisely the bug this suite exists to make visible.
-///
-/// Mutation: declare `Latency::new(self.latency())` in the node's `Shape`
-/// (drop the pipeline) → the graph's figure is 137 → fails. Mutation: the
-/// same in `PluginControls::declared_latency` → fails the third.
 #[test]
 fn the_probe_declares_the_latency_this_suite_expects() {
     let _lock = machine_lock();
@@ -430,10 +421,6 @@ fn with_compensation_both_paths_land_on_the_same_sample() {
 /// the difference until something re-plans. This is the case a static rig
 /// cannot reach, and the one where a stale compensation is most damaging — the
 /// graph was aligned, so nothing looks broken until you measure it.
-///
-/// Mutation: skip the `set_latency` call → the total stays 201 and the paths
-/// stay aligned → fails. Mutation: `declared_latency` without the pipeline
-/// chunk → the total is 201 + 64 − 64 → fails.
 #[test]
 fn a_latency_change_reaches_pdc_at_the_next_commit() {
     const EXTRA: usize = 64;

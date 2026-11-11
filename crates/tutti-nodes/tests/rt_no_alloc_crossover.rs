@@ -6,11 +6,6 @@
 //! release and make-up, every crossover and both toggles through the node's
 //! `ParamSet` before each block, so they take the ramped path (a coefficient
 //! solve every few samples), a solo's mute ramp and a bypass.
-//!
-//! Mutation (run): size the multiband node's `split` scratch in `process`
-//! rather than `prepare` (`self.split = vec![0.0; ..]` at its top) → every
-//! gate on it fails on the first measured block; build the crossover's
-//! `scratch` in `process` → the crossover gates fail.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_graph::contract::BlockRig;

@@ -16,9 +16,6 @@ impl Read for Broken {
 
 /// `Io` does not echo its source as its message: the message says what was
 /// being done, and the cause is the `source`.
-///
-/// Mutation (run): the message back to `{0}` makes `to_string` the cause's and
-/// fails the first assertion.
 #[test]
 fn an_io_failure_names_the_task_and_keeps_the_cause_as_its_source() {
     let error = SoundFont::new(&mut Broken).unwrap_err();
@@ -38,9 +35,6 @@ fn a_truncated_file_is_an_io_error() {
 /// A chunk code in a message is the four ASCII bytes the file has, a byte
 /// that is not printable shown as `?`, and the four-character code is not a
 /// public type: the variants carry the bytes.
-///
-/// Mutation (run): dropping the printable test in `FourCC::from_bytes` shows
-/// the control byte and fails the second assertion.
 #[test]
 fn a_wrong_form_type_names_what_it_found() {
     // The RIFF size is honoured, so it is true: the form type and 16 more bytes.

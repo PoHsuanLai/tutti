@@ -2,12 +2,6 @@ use super::*;
 
 /// A load returns the value of the last store, bit for bit, signed
 /// zeros and infinities included.
-///
-/// Mutation (run): `pack` placing the bytes at the back of the word
-/// (`bytes[WORD - size..]`) while `unpack` reads the front → an
-/// `[f32; 2]` survives (it fills the word) but the `u16` below reads 0
-/// → fails. Mutation (run): `unpack` reading `[f32; 2]` halves swapped
-/// (reversing the word's two 4-byte halves) → `[5000, 100]` → fails.
 #[test]
 fn a_load_returns_what_was_stored() {
     let c = PackedAtomic::new([20.0f32, 20_000.0]);
@@ -27,9 +21,6 @@ fn a_load_returns_what_was_stored() {
 
 /// Every size up to the word packs and comes back, the odd ones
 /// included; the bytes past `T` stay zero.
-///
-/// Mutation (run): `pack` copying into `bytes[1..=size]` → every value
-/// reads back shifted → fails.
 #[test]
 fn every_size_up_to_a_word_round_trips() {
     let one = PackedAtomic::new(0xA5u8);

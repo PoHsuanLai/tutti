@@ -576,10 +576,6 @@ mod tests {
     /// One 1 s line (48 000 frames) set for an RT60 of 2 s, after a 0.1 s
     /// pre-delay: the tail to -60 dB is `0.1 + 1 + 2` = 3.1 s, to -30 dB
     /// `0.1 + 1 + 1` = 2.1 s, and to -90 dB 4.1 s.
-    ///
-    /// Mutations (run): the pre-delay initial `f64::from(self.pre_delay)`
-    /// replaced by 0 fails the first (3.0); `/ 60.0` -> `/ 30.0` fails the
-    /// second; `transit` replaced by 0 fails all.
     #[test]
     fn the_tail_is_pre_delay_transit_and_the_decay_to_the_floor() {
         let g = loop_gain(48_000.0, Seconds(2.0), RATE);
@@ -598,9 +594,6 @@ mod tests {
     /// A series all-pass rings for its delay times the trips its train needs to
     /// fall to the floor: at `g = 0.5` to -60 dB that is `ceil(ln 1e-3 /
     /// ln 0.5)` = 10 trips after the first, so 11 delays. It adds no RT60.
-    ///
-    /// Mutation (run): dropping the `1.0 +` in `all_pass_ring` gives 1000
-    /// frames and fails.
     #[test]
     fn a_series_all_pass_rings_for_its_geometric_train() {
         let ap = AllPass {
@@ -620,9 +613,6 @@ mod tests {
     /// loop is all the lines at once, `-3 Σm / (fs Σ log10 g)`, which for lines
     /// each set from RT60 `T` is `T`, and for lines set for different RT60s is
     /// between them.
-    ///
-    /// Mutations (run): `f64::max` -> `f64::min` in the diagonal fold gives
-    /// 0 and fails; averaging the logs in the mixing arm fails the second pair.
     #[test]
     fn rt60_is_the_slowest_line_for_a_diagonal_and_the_length_weighted_loop_for_a_mixing() {
         let slow = line(
@@ -653,8 +643,6 @@ mod tests {
     /// The bands of a one-pole at pole 0.5 and gain 0.8: DC `0.8`, a quarter of
     /// the rate `0.8 * 0.5 / sqrt(1.25)`, Nyquist `0.8 * 0.5 / 1.5`; explicit
     /// bands read straight.
-    ///
-    /// Mutation (run): `1.0 + d * d` -> `1.0 - d * d` in the mid response fails.
     #[test]
     fn a_one_pole_has_its_gain_at_dc_a_quarter_rate_and_nyquist() {
         let a = Absorption::OnePole {
@@ -684,9 +672,6 @@ mod tests {
     /// A nested all-pass adds its group delay at DC, `D (1 + g) / (1 - g)`, to
     /// the line's length: 100 frames at 0.5 add 300, and the RT60 follows the
     /// longer loop.
-    ///
-    /// Mutation (run): `1.0 + self.gain` -> `1.0 - self.gain` gives 100/3 and
-    /// fails.
     #[test]
     fn a_nested_all_pass_lengthens_the_loop_by_its_low_frequency_delay() {
         let ap = AllPass {
@@ -720,10 +705,6 @@ mod tests {
     /// unbounded; a Hadamard of 3 lines, a dense matrix of the wrong size, a
     /// non-orthogonal circulant with `g ||A||_F >= 1`, and a negative or NaN
     /// gain are not; all-pass gains of 1 or more are not.
-    ///
-    /// Mutations (run): `g < 1.0` -> `g <= 1.0` in `is_stable` makes the
-    /// one-band-at-1 network stable and fails; dropping `matrix_fits` fails
-    /// the Hadamard of 3.
     #[test]
     fn stability_follows_the_gains_and_the_matrix() {
         let stable = |lines: &[Line], m| network(&[Stage::Fdn(fdn(lines, m))]).is_stable();
@@ -791,9 +772,6 @@ mod tests {
 
     /// Every gain 1 under an orthogonal matrix is lossless and marginally
     /// stable, with an unbounded tail; one band at 0.999 is not.
-    ///
-    /// Mutation (run): the tolerance `1e-6` -> `1e-2` calls 0.999 lossless and
-    /// fails the last assertion.
     #[test]
     fn a_lossless_loop_is_marginally_stable_with_an_unbounded_tail() {
         let one = Absorption::Gain(Amplitude(1.0));
@@ -825,9 +803,6 @@ mod tests {
     /// lengths, so a delay never ties the probe); a Hadamard of the same lines multiplies
     /// each trip (mean 15 ms): `2^1 / 0.015` at 10 ms, `2^3 / 0.015` at 45 ms,
     /// capped at the rate.
-    ///
-    /// Mutations (run): dropping the `tau <= t` filter fails the first assert;
-    /// `libm::pow(n, trips)` -> `n * trips` fails the 45 ms figure.
     #[test]
     fn the_densities_are_the_modes_per_hertz_and_the_echoes_per_second() {
         let slow = SampleRate(1_000.0);
@@ -881,9 +856,6 @@ mod tests {
 
     /// A FIR reports its summary for `rt60` and its latency; the time-domain
     /// stages have none; its length is its tail.
-    ///
-    /// Mutation (run): `Stage::Fir(s) => frames += length` replaced by `0.0`
-    /// fails the tail.
     #[test]
     fn a_fir_reports_its_summary() {
         let fir = FirSummary {
@@ -903,10 +875,6 @@ mod tests {
 
     /// The shortest path: a series all-pass has a direct term, a tap or a line
     /// its delay, the pre-delay adds; a network with no path has none to find.
-    ///
-    /// Mutations (run): treating every all-pass as direct (`has_direct_term`
-    /// true) fails the lattice-at-zero row; treating none as direct (`a.delay`)
-    /// fails the all-pass-only case.
     #[test]
     fn the_shortest_path_decides_the_direct_path() {
         let ap = Stage::AllPass(
@@ -965,9 +933,6 @@ mod tests {
     }
 
     /// `Bounds::dominates` needs every figure, and `of` measures them.
-    ///
-    /// Mutation (run): dropping any one `>=` from `dominates` fails the
-    /// matching row of the loop.
     #[test]
     fn a_bound_dominates_only_when_every_figure_does() {
         let g = Absorption::Gain(Amplitude(0.5));
@@ -1029,12 +994,6 @@ mod tests {
     /// has no response and is not stable, whatever its DC gain: the three-point
     /// read of `|H|` alone would call `damp = 2.0` fine. A pole in
     /// `(-1, 0)` is valid but peaks above its gain at Nyquist, which counts.
-    ///
-    /// Mutations (run): the whole `|damp| < 1` guard in `Absorption::gain`
-    /// replaced by `false` makes `damp = 2.0` read as a filter and fails here
-    /// and in the contract's hostile case; `.abs()` dropped from it fails the
-    /// `-2.0` row; `(1.0 + d)` read as `(1.0 - d)` in the High response fails
-    /// the `-0.5` row.
     #[test]
     fn a_one_pole_outside_the_unit_circle_is_not_stable() {
         let stable = |a| {
@@ -1074,10 +1033,6 @@ mod tests {
     /// A line must have a finite, positive length: a delay-free loop (length 0),
     /// a negative or non-finite one, or a non-finite modulation depth is not
     /// stable and not lossless, even at a gain of 1 under an orthogonal matrix.
-    ///
-    /// Mutation (run): dropping `l.length > 0.0` from `lines_hold` makes the 0
-    /// row stable and fails; `is_finite` replaced by `true` fails the infinity
-    /// row; dropping the depth test fails the first row.
     #[test]
     fn a_line_without_a_finite_positive_length_is_not_stable() {
         let mut modulated = line(100.0, Absorption::Gain(Amplitude(0.5)));
@@ -1114,10 +1069,6 @@ mod tests {
     /// refused. The bound folded into the test is a bound: for a nearly
     /// orthogonal matrix it is at least the true norm, and exactly 1 for an
     /// exactly orthogonal one.
-    ///
-    /// Mutations (run): `ORTHOGONAL_TOLERANCE` 1e-6 -> 1e-5 fails the first
-    /// assertion; `norm_bound` returning 1.0 for an orthogonal matrix fails the
-    /// bound assertion; dropping `n * e` from the `sqrt` fails the same.
     #[test]
     fn the_orthogonality_tolerance_cannot_let_a_growing_loop_through() {
         let scaled = |c0: f32, n: usize| {
@@ -1166,10 +1117,6 @@ mod tests {
     /// bound 3 s, and the state of the equations (simulated here, in `f64`)
     /// last exceeds 1e-3 of its start at about 1.9 s: after the estimate, inside
     /// the tail. For a diagonal matrix the bound equals the exact RT60.
-    ///
-    /// Mutations (run): `tail` reading `Fdn::rt60` for `rt60_bound` gives a tail
-    /// of 1.39 s and fails the coverage assertion; `f64::max` -> `f64::min` in
-    /// `slowest` takes the faster line (1 s) and fails the bound figure.
     #[test]
     fn the_tail_covers_a_mixing_network_whose_lines_decay_differently() {
         let rate = SampleRate(1_000.0);
@@ -1236,8 +1183,6 @@ mod tests {
     /// A measured-orthogonal matrix has a norm bound just above 1, and the
     /// lag of the proof grows by `(m-1) log σ / -log(σρ)` frames; a structured
     /// one has none.
-    ///
-    /// Mutation (run): `lag_extra_frames` returning 0 fails the circulant row.
     #[test]
     fn a_nearly_orthogonal_matrix_adds_a_lag_a_structured_one_does_not() {
         let g = Absorption::Gain(Amplitude(0.9));
@@ -1257,9 +1202,6 @@ mod tests {
     /// a Freeverb-form one (not unit magnitude) or `|g| >= 1` makes the line
     /// unstable and not lossless, and a lattice adds its group delay without
     /// loss.
-    ///
-    /// Mutation (run): dropping `d.form == AllPassForm::Lattice` from
-    /// `lines_hold` makes the Freeverb row stable and fails.
     #[test]
     fn only_a_lattice_diffuser_is_inside_the_analysis() {
         let nested = |form, gain| Line {
@@ -1292,11 +1234,6 @@ mod tests {
     /// gain), and of a longer one a gain `2|v|^2 - 1` the stability test refuses
     /// at a loop gain of 1; a `v` of the wrong length fits no line count. The
     /// norm is exact, not the generic bound.
-    ///
-    /// Mutations (run): taking the norm bound from the generic orthogonal branch
-    /// (`sqrt(1 + n e)`) fails the exact figure; dropping the length test in
-    /// `matrix_fits` fails the last row; reading `|v|^2` as `|v|` fails the long
-    /// reflection.
     #[test]
     fn a_reflection_is_orthogonal_when_its_vector_is_a_unit() {
         let lines = [100.0, 130.0, 170.0, 190.0].map(|m| line(m, Absorption::Gain(Amplitude(1.0))));

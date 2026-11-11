@@ -25,7 +25,7 @@ use vst3::Steinberg::Vst::{
 };
 
 use tutti_midi_protocol::channel_voice;
-use tutti_ump::{Address, MidiChannel, Ump, Voice2};
+use tutti_ump::{Address, MidiChannel, MidiGroup, Ump, Voice2};
 
 use crate::events::{InputEvents, Stager};
 use crate::types::ParameterChanges;
@@ -146,8 +146,11 @@ impl MidiCcMapping {
 /// mappable controller (CC / channel pressure / pitch bend).
 ///
 /// The packet is read through [`channel_voice`]; a MIDI 1.0 message is widened
-/// so MIDI-2 controllers keep their full width here. The group is
-/// ignored: `IMidiMapping` is addressed by bus and channel only. Values are
+/// so MIDI-2 controllers keep their full width here. `IMidiMapping` is
+/// addressed by bus and channel, and the table is the plugin's answer for
+/// event bus 0 ([`MidiCcMapping::query`]), so only Group 0 maps: a controller
+/// of another Group names another bus's channels, is no mapped controller and
+/// stays a MIDI event for its own bus. Values are
 /// normalized to the VST3 host contract at this edge:
 /// - CC / channel pressure: 32-bit → unit `0.0..=1.0`.
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
@@ -157,7 +160,10 @@ pub(crate) fn midi_to_mapped_controller(ump: &Ump) -> Option<(MidiChannel, usize
 
     // Not channel voice, or a packet `decode` cannot frame: there is no
     // controller in it, and the caller keeps the event as MIDI.
-    let (Address { channel, .. }, voice) = channel_voice(*ump)?;
+    let (Address { group, channel }, voice) = channel_voice(*ump)?;
+    if group != MidiGroup::FIRST {
+        return None;
+    }
     match voice {
         Voice2::ControlChange { controller, value } => Some((
             channel,

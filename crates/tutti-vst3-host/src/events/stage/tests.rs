@@ -28,9 +28,6 @@ fn len(list: &EventList) -> usize {
 
 /// A per-note bend sensitivity staged in one block sets the range a
 /// later block's per-note bends are read at: the list keeps it.
-///
-/// Mutation (run): `Stager::stage` encoding with a fresh `MidiEncoder` →
-/// the second block's quarter bend reads 12 semitones (0.55), not 6 → fails.
 #[test]
 fn a_per_note_bend_range_outlives_its_block() {
     use tutti_midi_protocol::PitchBendSensitivity;
@@ -38,15 +35,22 @@ fn a_per_note_bend_range_outlives_its_block() {
 
     let list = EventList::input();
     let mut stager = Stager::default();
-    let sensitivity = [(
-        Offset::ZERO,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::of(24).to_rpn_bits(),
+    // A note sounds on the channel: a bend with no note is held, not sent.
+    let sensitivity = [
+        (
+            Offset::ZERO,
+            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
         ),
-    )];
+        (
+            Offset::ZERO,
+            midi::registered_rpn(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
+                PitchBendSensitivity::of(24).to_rpn_bits(),
+            ),
+        ),
+    ];
     assert!(stager.stage(
         &list,
         &InputEvents {
@@ -54,7 +58,7 @@ fn a_per_note_bend_range_outlives_its_block() {
             ..Default::default()
         },
     ));
-    assert_eq!(len(&list), 0, "the sensitivity stages nothing");
+    assert_eq!(len(&list), 1, "the Note On stages, the sensitivity nothing");
 
     let bend = [(
         Offset::ZERO,
@@ -92,11 +96,6 @@ fn a_per_note_bend_range_outlives_its_block() {
 /// tell their plugin 6 semitones on channel 1 (in either block) and 12
 /// on channel 2 (the ±48 default). VST3 carries semitones as
 /// `0.5 + st / 240`, CLAP as semitones.
-///
-/// Mutation (run): CLAP back to the fixed ±48 (`from_midi` reading
-/// `emitted_bend_range_semitones()`) → CLAP says 12 on channel 1 → fails.
-/// Mutation (run): `InputEventList`'s `clear` resets its ranges → CLAP's
-/// second block says 12 → fails.
 #[test]
 fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     use tutti_clap_host::{ClapEvent, EventList as _, InputEventList};
@@ -132,6 +131,22 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     let vst3 = EventList::input();
     let mut stager = Stager::default();
     let mut clap = InputEventList::new();
+    // A note sounds on each channel: a bend with no note is held, not sent.
+    let notes: Vec<UmpAt> = (0..2)
+        .map(|channel| {
+            (
+                Offset::ZERO,
+                midi::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::of(channel),
+                    60,
+                    midi::MID_VELOCITY,
+                ),
+            )
+        })
+        .collect();
+    assert!(stager.stage(&vst3, &midi_only(&notes)));
+    clap.add_midi_events(&notes);
     for (block, want) in [(&first[..], &[6.0, 12.0][..]), (&second[..], &[6.0][..])] {
         assert!(stager.stage(&vst3, &midi_only(block)));
         clap.clear();
@@ -357,12 +372,6 @@ fn chord(offset: i32, root: i16) -> Utf16Chord {
 /// running backwards), every source in its own order and the sources
 /// interleaved, so the sort moves events across the whole list. Std's
 /// stable sort allocates past 73 of these.
-///
-/// Mutations (run): `Inner::sort` back to
-/// `self.events.sort_by_key(|e| e.sample_offset())` aborts in the gate,
-/// as does `Inner::push` pushing past the room
-/// (`self.events.push(event); return true;` first) when the block is
-/// staged twice its room.
 #[test]
 fn a_full_block_from_every_source_stages_without_allocating() {
     use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
@@ -448,9 +457,6 @@ fn a_full_block_from_every_source_stages_without_allocating() {
 /// each source's own (a note-off before the note-on that reuses its key).
 /// 330 events on ten frames, the expressions arriving on frames running
 /// backwards, so the sort has many equal keys to move past each other.
-///
-/// Mutation (run): `Inner::sort` as `self.events.sort_unstable_by_key(..)`
-/// fails here (equal frames transposed).
 #[test]
 fn events_on_one_frame_keep_their_source_order() {
     // 12 MIDI events a frame, alternating off/on, the pitch their arrival.
@@ -521,11 +527,6 @@ fn events_on_one_frame_keep_their_source_order() {
 /// `EVENT_CAPACITY` note-ons and then ten note-offs keeps all ten
 /// note-offs, in place of the last ten note-ons. A chord past the room
 /// is dropped without spending the text arena.
-///
-/// Mutations (run): `Inner::push` returning `false` for every event past
-/// the room (no eviction) fails the note-off assertion; the
-/// `self.dropped += 1` removed fails the count; `stage_with_text`
-/// interning before its room check fails the arena assertion.
 #[test]
 fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
     let ons = EVENT_CAPACITY;
@@ -592,10 +593,6 @@ fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
 /// and four chords and scales: every chord and scale is staged, and the
 /// 44 expressions past `NOTE_EXPRESSION_ROOM` are what is dropped,
 /// counted.
-///
-/// Mutation (run): the budget removed (every expression `push`ed) fails
-/// here: the expressions fill the room and the chords and scales are
-/// dropped instead.
 #[test]
 fn note_expressions_past_their_budget_leave_the_harmony_room() {
     use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
@@ -659,10 +656,6 @@ fn note_expressions_past_their_budget_leave_the_harmony_room() {
 /// **A negative offset sorts before zero.** A per-note expression's
 /// `sample_offset` is a wire `i32` nothing clamps, so a negative one
 /// reaches the sort.
-///
-/// Mutation (run): the sort key without the sign flip
-/// (`e.sample_offset().cast_unsigned()`) puts -1 after every
-/// non-negative offset and fails here.
 #[test]
 fn a_negative_offset_sorts_before_zero() {
     let midi = [(
@@ -692,10 +685,6 @@ fn a_negative_offset_sorts_before_zero() {
 /// with a byte whose top bit is set is malformed: it is dropped (a `Data` event
 /// that does not convert is not counted, like one too long for a packet), and
 /// nothing is read from it with the bit dropped.
-///
-/// Mutation (run): `Sysex7Packets::next` built through midi2's
-/// `Sysex7::<Vec<u32>>` again → `assert_no_alloc` aborts on the first
-/// `Data` event.
 #[test]
 fn draining_a_plugins_sysex_allocates_nothing() {
     use tutti_vst3_ffi::{Data, Payload};

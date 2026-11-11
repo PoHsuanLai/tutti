@@ -109,18 +109,6 @@ fn figure(s: &mut Session, m: f32, what: &str) {
 /// macro back to `0.5` is `1.125`, clamped to `1.0`), and with the route
 /// removed the mix returns to the base the knob left, `0.875`, once the lane's
 /// source goes (the declick), not to WET.
-///
-/// Mutations (each run, each failed): the lane's knob its own cell starting at
-/// the unity mix (`Some(Arc::new(AtomicF32::new(1.0)).into())` for the
-/// `Bind::Mix` build's knob in `tutti-nodes`) -> the routed figure is
-/// `1.0 + 0.25`, clamped to `1.0` (WET), the base moved while routed is
-/// ignored and the route gone reads WET; `Editor::mix_cell` answering a cell
-/// the unit does not read (`ModeCell::knob` giving a fresh `Arc`) -> the knob's
-/// writes reach nothing and the first figure is the plain `0.25` blend with no
-/// offset; `carry_mix` storing unconditionally -> the commit after
-/// `set_knob` puts the stale `0.25` back; leaving `connect_param` out of the
-/// reconciler's `Bind::Mix` lane build -> the lane never reaches the node and
-/// every figure is the base's.
 #[test]
 fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
     let mut s = offline();
@@ -169,9 +157,6 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
 
 /// A mix target keys once per node, apart from a param's of the same node and
 /// from an edge's, and is no param.
-///
-/// Mutation (run, failed): `ModTarget::Mix` keyed as a param (`ParamRef::key`
-/// of `Volume`) -> the first assertion fails.
 #[test]
 fn a_mix_target_keys_apart_from_a_param_of_its_node() {
     let mut s = offline();
@@ -184,9 +169,6 @@ fn a_mix_target_keys_apart_from_a_param_of_its_node() {
 
 /// A removed node takes the routes onto its mix with it: nothing is left
 /// declared on it, so the target is not left unresolved.
-///
-/// Mutation (run, failed): `forget_node` not matching `TargetKey::Mix` -> the
-/// route outlives its node and its target stays unresolved.
 #[test]
 fn a_removed_node_takes_its_mix_route_with_it() {
     let mut s = offline();
@@ -229,10 +211,6 @@ impl Node for Spread {
 /// target and what the node would need to declare, as `Graph::set_mix` refuses
 /// the same mix: the lane would blend in a dry signal the graph would have to
 /// guess. The node itself runs.
-///
-/// Mutation (run): the reconciler's `Target::Mix` arm not asking
-/// `Editor::check_pass` → the lane is built and the declarations apply → the
-/// refusal is `None` and the assertion fails.
 #[test]
 fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
     let mut s = offline();

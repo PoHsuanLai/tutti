@@ -9,19 +9,6 @@
 //! The probe reports through its output (1.0 flushed, 0.0 not), so the
 //! check travels over an edge, with no state shared between threads.
 //!
-//! Mutations (each applied, seen to fail, reverted):
-//! - `render_applied`'s `with_no_denormals` removed → the `RenderApplied`
-//!   case fails at the serial executor (the live engine's path, which does
-//!   not go through `process_with_changes`); the `Process` case still passes,
-//!   as its outer call covers the same code.
-//! - `render_applied`'s and `process_with_changes`'s both removed → the
-//!   serial `Process` case fails too.
-//! - `Shared::participate` (`src/par.rs`) without its `with_no_denormals`
-//!   → the first pool case fails (a helper's probe); the caller is still
-//!   covered by the executor's call.
-//! - `Restore::set` without `| 0x8040` (`tutti-rt`) → fails at the serial
-//!   case.
-//!
 //! Not covered: a pool whose helpers never take a probe (the run is
 //! timing-dependent, so a skipped helper can go unseen on a quiet machine
 //! with few cores; the `PROBES` x `BLOCKS` volume makes that unlikely, not

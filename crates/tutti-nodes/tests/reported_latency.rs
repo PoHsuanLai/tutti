@@ -97,11 +97,6 @@ fn onsets(ch: &[f32]) -> Vec<usize> {
 /// own frame. A low band's first sample is tiny (a 300 Hz low-pass has
 /// `b0^4` of order 1e-14) but never zero, so the check is on exactly that;
 /// the summed output answers well above zero.
-///
-/// Mutation (run): `with_latency(Latency::new(Samples(1)))` in
-/// `CrossoverNode::shape` or `MultibandCompressorNode::shape` fails the
-/// declared-latency assertion; delaying a band by a frame in `process` fails
-/// the frame-0 ones.
 #[test]
 fn crossover_and_multiband_report_zero_latency_and_respond_at_frame_0() {
     let xo = CrossoverNode::new(ChannelLayout::MONO, &[Hz(300.0), Hz(3_000.0)]).unwrap();
@@ -124,11 +119,6 @@ fn crossover_and_multiband_report_zero_latency_and_respond_at_frame_0() {
 /// A 500 ms echo is the effect, not processing latency: it must declare 0,
 /// and the dry half of the graph's mix at 0.5 must leave at frame 0 to prove
 /// that 0 is true.
-///
-/// Mutation (run): declaring `with_latency(Latency::new(Samples(24_000)))` in
-/// `DelayLineNode::shape` fails the declared-latency assertion; so does
-/// declaring a latency of one frame (it also delays the graph's dry half, which
-/// `node_mix.rs` pins).
 #[test]
 fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
     let node = DelayLineNode::new(
@@ -155,9 +145,6 @@ fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 
 /// The stereo delay: each channel's dry half leaves at frame 0 and its echo
 /// at its own time.
-///
-/// Mutation (run): a width-2 `DelayLineNode::shape` declaring the right
-/// channel's delay as latency fails the declared-latency assertion.
 #[test]
 fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
     let node = DelayLineNode::stereo(
@@ -187,11 +174,6 @@ fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 }
 
 /// Chorus and flanger are one `ModDelayNode`; their base delay is the sound.
-///
-/// Mutation (run): declaring the base delay as latency in
-/// `ModDelayNode::shape` fails the declared-latency assertion (about 480
-/// samples for the chorus's 10 ms), and so does it the frame-0 one (the
-/// graph's dry half is delayed by it).
 #[test]
 fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
     for (name, node) in [
@@ -223,10 +205,6 @@ fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
 /// time, the compiler would delay the dry output by 24 000 samples and the
 /// chorus one by 24 000, i.e. PDC would drag the whole rest of the mix half a
 /// second late to line up with an echo.
-///
-/// Mutation (run): declaring `with_latency(Latency::new(Samples(24_000)))` in
-/// `DelayLineNode::shape` makes the compensation `[0, 24000, 24000]` and adds
-/// delay ops.
 #[test]
 fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
@@ -263,11 +241,6 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
 /// each source of the sum: the graph reports the limiter's lookahead, and the
 /// dry source is delayed to meet it, so the impulse leaves **once**, at
 /// exactly that frame.
-///
-/// Mutations (run): declare no latency in `LimiterNode::shape` → the total
-/// reads 0 and the dry impulse leaves at frame 0 → fails; in `compile`'s
-/// summed-output branch, `dep.gap_to(total)` → `dep.gap_to(dep)` (no source of a
-/// sum aligned) → the impulse leaves at frame 0, not at the lookahead → fails.
 #[test]
 fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
     use tutti_graph::Source;
@@ -321,10 +294,6 @@ mod convolver {
     /// So at *every* graph mix the output must be one impulse, at exactly that
     /// latency, with amplitude `dry_share + wet_share` = 1 — dry (the input
     /// delayed by the declared latency) and wet land on the same frame.
-    ///
-    /// Mutation (run): the convolver declaring no latency, or one frame more than
-    /// its block, fails this (and the stereo test below, and
-    /// `a_delay_after_a_convolver_adds_nothing_to_its_compensation`).
     #[test]
     fn convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         for mix in [0.0_f32, 0.5, 1.0] {
@@ -351,9 +320,6 @@ mod convolver {
     /// The wide node in all three channel configs, at width 2 and width 6:
     /// each channel's dry input (the graph's aligned input) is delayed by the
     /// same latency as its wet path.
-    ///
-    /// Mutation (run): the convolver declaring no latency, or one frame more
-    /// than its block, fails this.
     #[test]
     fn stereo_convolver_dry_and_wet_leave_together_at_the_reported_latency() {
         type Build = fn() -> ConvolverNode;
@@ -396,8 +362,6 @@ mod convolver {
     /// `reset` must clear the convolver's buffered input, or the last take replays
     /// for one latency after a discontinuity. (The dry half is the graph's: its
     /// aligned input is cleared by the graph's own reset.)
-    ///
-    /// Mutation (run): removing the `c.reset()` loop from `ConvolverNode::reset` fails.
     #[test]
     fn convolver_reset_clears_the_buffered_take() {
         let mut node = prepared(ConvolverNode::new(&[1.0], 64), SR, 256);
@@ -421,11 +385,6 @@ mod convolver {
     ///
     /// This is the half of the property the zero-latency test above cannot
     /// show — that the fix did not just switch PDC off.
-    ///
-    /// Mutation (run): declaring the echo's time as latency in
-    /// `DelayLineNode::shape` fails (`[0, 256, 24256]`-shaped compensation).
-    /// Mutation (run): the convolver declaring no latency fails (no
-    /// compensation at all).
     #[test]
     fn a_delay_after_a_convolver_adds_nothing_to_its_compensation() {
         let conv = ConvolverNode::new(&[1.0], 256);

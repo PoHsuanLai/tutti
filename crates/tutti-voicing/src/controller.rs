@@ -61,8 +61,6 @@ mod tests {
 
     /// The mode messages (124 to 127) also do All Notes Off (MIDI 1.0 Detailed
     /// Specification, Channel Mode Messages; Est, the text is not in the repo).
-    ///
-    /// Mutation (run): removing the 124..=127 arm fails every row.
     #[test]
     fn the_mode_messages_release_like_all_notes_off() {
         for n in 123..=127 {
@@ -74,7 +72,6 @@ mod tests {
         }
     }
 
-    /// Mutation (run): `>= 64` to `> 64` fails the 64 row.
     #[test]
     fn the_pedal_is_down_at_64() {
         assert_eq!(
@@ -91,7 +88,6 @@ mod tests {
         );
     }
 
-    /// Mutation (run): swapping 120 and 123 fails both rows.
     #[test]
     fn the_panics_differ_in_what_they_cut() {
         assert_eq!(

@@ -11,9 +11,6 @@ const BIG: usize = 32_769;
 
 /// A zone naming sample 32768, a 16-bit word of 0x8000, which a signed read
 /// makes negative and a sign-extending cast turns into a huge index.
-///
-/// Mutation (run): `usize::from(.. as u16)` -> `.. as usize` for the sample id
-/// in `InstrumentRegion::new` makes the load fail with `InvalidSampleId`.
 #[test]
 fn a_sample_id_of_32768_or_more_loads_and_reads_back() {
     let zone = vec![(generator::SAMPLE_ID, 0x8000_u16 as i16)];
@@ -62,8 +59,6 @@ fn a_sample_id_past_the_list_is_refused_with_its_value() {
 }
 
 /// The same for the instrument a preset zone names.
-///
-/// Mutation (run): the same cast in `PresetRegion::new` fails it.
 #[test]
 fn an_instrument_id_of_32768_or_more_loads_and_reads_back() {
     let insts: Vec<Inst> = (0..BIG)

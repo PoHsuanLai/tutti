@@ -179,12 +179,6 @@ fn offset(i: usize, block: usize) -> Offset {
 /// `b - 1` is in block `b`, and wherever the pipeline collected it, it is
 /// exactly what that block's `Env` said at its first frame. Every kind of
 /// scene is collected at least once.
-///
-/// Mutation: build the snapshot from a default `Transport` in `Snapshot::at`
-/// (the node's old "no source installed" answer) → every echo is beat 0,
-/// stopped → fails. Mutation: `recording: false` in `Snapshot::at` → the
-/// recording scene fails. (Reading `env.transport` instead of `transport_at`
-/// is invisible at offset 0; the offline test below catches it.)
 #[test]
 fn the_transport_a_live_plugin_sees_is_env_at_every_block() {
     let _lock = machine_lock();
@@ -220,11 +214,6 @@ fn the_transport_a_live_plugin_sees_is_env_at_every_block() {
 /// every echo is there) rendered in blocks of two chunks. Each chunk is sent
 /// the transport at **its own** first frame — the second chunk after the
 /// block's tempo change, and after its loop wrap — not the block's.
-///
-/// Mutation: send every chunk `Offset::ZERO`'s transport (the block's) → the
-/// second chunk of the loop scene reports the unwrapped beat, and of the
-/// tempo scene the old tempo → fails. Mutation: ignore `env.changes` in the
-/// snapshot → the tempo scene's second chunk reports 120 → fails.
 #[test]
 fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
     let _lock = machine_lock();
@@ -303,11 +292,6 @@ fn said_at(seen: &[(Env, Vec<f32>)], f: Option<u64>) -> Transport {
 /// seek, tempo change, loop wrap, stop and record toggle the scenes cycle
 /// through. For the second chunk it is 24 frames into its own block.
 /// Offline, so every chunk is collected.
-///
-/// Mutation: build `Snapshot::at` from `cx.env.transport_at(offset)` (the
-/// chunk's own frame, as before) → the first chunk of every block reports
-/// its own block's scene → fails. Mutation: hand the plugin node a `Cx`
-/// with `arrival: Latency::ZERO` in the node's chunk `begin` → fails.
 #[test]
 fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() {
     let _lock = machine_lock();
@@ -374,11 +358,6 @@ fn ramp_tempo() -> tutti_transport::TempoReader {
 /// a real `plugin-server`: playing at beat 1.8 of a ramp, its transport event
 /// carries the curve's tempo there (150, not the engine's chord 120) and the
 /// ramp's own slope in `tempo_inc`; stopped, the slope is zero.
-///
-/// Mutation: drop `.with_tempo_inc(..)` in the CLAP host's `convert_transport`
-/// (the server's copy of the wire's snapshot) -> the echoed slope is 0 ->
-/// fails. Mutation: leave `Snapshot::follow` out of `from_cx` -> tempo 120 ->
-/// fails.
 #[test]
 fn the_plugin_is_told_the_maps_tempo_and_slope() {
     let _lock = machine_lock();
@@ -462,12 +441,6 @@ fn two_ramps() -> tutti_transport::TempoReader {
 /// (-120 / 96 000). Beat 3.999 is `s` into the first ramp with
 /// `0.3125 s^2 + 2 s = 3.999`, a third of a millisecond short of its end:
 /// frame 17 (16.0x rounds up).
-///
-/// Mutation: stop the CLAP host adding the list's events (`add_transport`
-/// loop in `process_impl`) -> no event is echoed -> fails. Mutation: drop
-/// `.transport_changes(..)` in the server's `AudioPipeline::process` -> the
-/// same -> fails. Mutation: have the node's `payload` not take the walk's
-/// changes (`changes: Default::default()`) -> the same -> fails.
 #[test]
 fn a_ramps_end_inside_a_chunk_is_a_transport_event_at_its_frame() {
     let _lock = machine_lock();

@@ -802,11 +802,6 @@ mod tests {
     /// extension's absence read as the `0` of "no tail", so a bounce sized
     /// from it cut off every such plugin's decay. A plugin that does answer
     /// keeps its figure.
-    ///
-    /// Mutation (run): in `ClapLoaded::tail_figure`, change
-    /// `.map_or(PluginTail::Unknown, PluginTail::from_clap_samples)` to
-    /// `.map_or(PluginTail::None, PluginTail::from_clap_samples)` → the first
-    /// assertion sees `None` → fails.
     #[test]
     fn a_plugin_without_the_tail_extension_has_an_unknown_tail() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -829,11 +824,6 @@ mod tests {
     /// **The metadata follows the plugin's ports at activation, not at open.**
     /// The buses were read before `activate` and never refreshed, so a plugin
     /// that changed its layout in between was described by the old one.
-    ///
-    /// Mutation (run): delete `instance.refresh_meta()` after the activation in
-    /// `ClapInstance::activate` → the metadata is the default, not the
-    /// activated plugin's → the assertions fail. (No open-time copy of the
-    /// buses exists any more to go stale: the wiring is read from the plugin.)
     #[test]
     fn the_buses_are_those_the_plugin_has_at_activation() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -858,10 +848,6 @@ mod tests {
     /// flagged port is `Main` and the unflagged aux `Aux`, on both sides; and
     /// an instrument (no input port) has no input bus, not one of no
     /// channels.
-    ///
-    /// Mutations (run): `ClapLoaded::buses` giving every port `Main` → the aux
-    /// roles fail; its fallback answering a zero total with a main bus of no
-    /// channels → the instrument's input list is not empty → fails.
     #[test]
     fn a_ports_role_is_its_main_flag_and_an_instrument_has_no_input_bus() {
         use tutti_plugin::server::BusRole;
@@ -892,11 +878,6 @@ mod tests {
     /// **A plugin that withdraws its 64-bit flags after it was opened loads as
     /// 32-bit.** The session asked for 64-bit on the answer the plugin gave at
     /// open; activation asks again, and the refusal is not a failed load.
-    ///
-    /// Mutation (run): in `ClapInstance::activate`, delete the
-    /// `rescan_audio_ports()` call → the format is chosen from the flags read at
-    /// open, the 64-bit activation is refused and the load fails → the `expect`
-    /// fails.
     #[test]
     fn a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -918,11 +899,6 @@ mod tests {
     /// and refreshes the metadata.** Only VST3 raised `IoChanged`; a CLAP
     /// plugin that re-declared its ports across a re-activation left the host
     /// with the layout it was loaded with.
-    ///
-    /// Mutations (run): delete `self.refresh_meta();` in the
-    /// `Notice::IoChanged` arm of `ClapInstance::absorb` → the metadata stays at
-    /// one bus → the first assertion fails. Delete the `AsyncEvent::IoChanged`
-    /// push in that arm → the polled-event assertion fails.
     #[test]
     fn a_rate_change_that_changes_the_layout_raises_io_changed() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -963,10 +939,6 @@ mod tests {
     /// The early return is what keeps a per-frame caller from tearing the plugin
     /// down sixty times a second: the core plans a restart for every
     /// `Reconfigure`, so the equality check is the bridge's.
-    ///
-    /// Mutation (run): delete the same-rate early return in
-    /// `ClapInstance::set_sample_rate` → the plugin is activated again and the
-    /// count assertion fails.
     #[test]
     fn setting_the_current_sample_rate_does_not_cycle_the_plugin() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -994,13 +966,9 @@ mod tests {
 
     /// **A rate change that changes nothing about the layout is silent.**
     ///
-    /// Whether the layout differs is the core's decision (`step`, mutation-tested
+    /// Whether the layout differs is the core's decision (`step`, tested
     /// in `tutti-plugin-types`); this pins that the bridge adds no notice of its
     /// own.
-    ///
-    /// Mutation (run): push `AsyncEvent::IoChanged` after every
-    /// `HostOp::Reconfigure` in `ClapInstance::set_sample_rate` → the assertion
-    /// fails.
     #[test]
     fn a_rate_change_that_keeps_the_layout_does_not_raise_io_changed() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1017,12 +985,6 @@ mod tests {
     /// reaching the plugin, reports the failure, and tells the host.** The
     /// plugin drops its 64-bit flags; the rate change fails and leaves it
     /// deactivated, and the session kept calling `process` on it.
-    ///
-    /// Mutations (run): make the `None` arm of `ClapInstance::process` (no
-    /// Processor held) return an error → `expect("silence")` fails. Delete the
-    /// `AsyncEvent::IoChanged` push in the `Notice::Refused` arm of `absorb` →
-    /// the `take_io_changed` assertion fails (the layout alone is unchanged in
-    /// this fixture).
     #[test]
     fn a_deactivated_instance_renders_silence_and_tells_the_host() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1079,12 +1041,6 @@ mod tests {
     /// request was recorded by the host and nothing acted on it, so a plugin
     /// that changed its ports left the host with the layout it was loaded
     /// with.
-    ///
-    /// Mutations (run): make `host_audio_ports_rescan` raise nothing → a request
-    /// is never made and nothing happens → the activation count stays 0 → the
-    /// second assertion fails. Delete `self.refresh_meta();` in the
-    /// `Notice::IoChanged` arm of `ClapInstance::absorb` → the host copy stays
-    /// stale and the layout assertion fails.
     #[test]
     fn a_ports_rescan_the_plugin_asks_for_is_served() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1129,9 +1085,6 @@ mod tests {
 
     /// **The request reaches the host as `IoChanged` through the server's
     /// between-blocks poll.**
-    ///
-    /// Mutation (run): delete the `AsyncEvent::IoChanged` push in the
-    /// `Notice::IoChanged` arm of `ClapInstance::absorb` → no event → fails.
     #[test]
     fn a_served_ports_rescan_is_polled_as_io_changed() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1161,9 +1114,6 @@ mod tests {
     /// **A rescan that re-activates but leaves the layout as it was is
     /// silent**, and a `NAMES`-only rescan, which the host's description does
     /// not carry, does not re-activate at all.
-    ///
-    /// Mutation (run): make `host_audio_ports_rescan` raise `IoChanged` for
-    /// every rescan, `NAMES` included → the names-only count assertion fails.
     #[test]
     fn a_rescan_that_changes_nothing_is_silent() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1196,9 +1146,6 @@ mod tests {
 
     /// **A `request_restart` is served the same way**: the plugin is
     /// deactivated and activated again, between blocks, and keeps running.
-    ///
-    /// Mutation (run): make `host_request_restart` raise nothing → the count
-    /// stays 0 → fails.
     #[test]
     fn a_restart_the_plugin_asks_for_is_served() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1228,10 +1175,6 @@ mod tests {
     /// **A 64-bit instance whose plugin drops its flags and asks for a rescan
     /// is left deactivated, and the host is told** even though the layout it
     /// holds did not change.
-    ///
-    /// Mutation (run): delete the `AsyncEvent::IoChanged` push in the
-    /// `Notice::Refused` arm of `ClapInstance::absorb` → `take_io_changed` is
-    /// false → fails.
     #[test]
     fn a_rescan_that_leaves_the_instance_unable_to_run_tells_the_host() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1276,9 +1219,6 @@ mod tests {
     /// the server's service pass, and not before.** The flag was recorded and
     /// nothing called back, so work a plugin deferred to the main thread (a
     /// sample load finishing, a timer being registered) never ran.
-    ///
-    /// Mutation (run): delete the `take_requests` call from
-    /// `ClapInstance::serve` → the latched timer is never registered → fails.
     #[test]
     fn a_callback_the_plugin_asks_for_is_served() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1309,9 +1249,6 @@ mod tests {
 
     /// **A timer the plugin registers ticks on the service pass.** The host
     /// answered `register_timer` with `true` and never called `on_timer`.
-    ///
-    /// Mutation (run): delete the `Request::Timer` push from
-    /// `ClapLoaded::take_requests_with` → no tick → fails.
     #[test]
     fn a_timer_the_plugin_registers_is_ticked() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1342,10 +1279,6 @@ mod tests {
     /// **A latency the plugin settles on at activation is reported after a
     /// sample-rate change**, with no `changed()` from the plugin: the figure
     /// the host holds is from the old rate.
-    ///
-    /// Mutation (run): delete the `AsyncEvent::LatencyChanged` push in the
-    /// `Notice::LatencyChanged` arm of `ClapInstance::absorb` → no change is
-    /// reported → fails.
     #[test]
     fn a_latency_that_depends_on_the_rate_is_reread_after_a_rate_change() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1372,9 +1305,6 @@ mod tests {
     }
 
     /// **A `request_restart` reports the latency the plugin has after it.**
-    ///
-    /// Mutation (run): make `host_request_restart` raise nothing → no
-    /// re-activation, so the figure is never re-read → fails.
     #[test]
     fn a_restart_reports_the_latency_after_it() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1399,10 +1329,6 @@ mod tests {
     /// **`latency.changed` on an active plugin is served by a re-activation,
     /// and the latency is read after it**, not from the active plugin
     /// (`clap.latency`: it may change only across an activation).
-    ///
-    /// Mutation (run): make `ClapController::latency` answer `Samples(0)` → the
-    /// figure read after the re-activation is not the plugin's → the latency
-    /// assertion fails.
     #[test]
     fn latency_changed_on_an_active_plugin_restarts_it() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1428,12 +1354,6 @@ mod tests {
     /// **A `latency.changed()` a plugin raises from inside `activate` is
     /// answered by that activation**: one request is one activation, not a
     /// second restart, and not a loop when the plugin does it every time.
-    ///
-    /// Mutation (run): keep every request raised inside `activate` (the filter
-    /// in `ClapLoaded::activate_plugin` always true) → the load-time
-    /// announcement is still raised, so the first `service_requests`
-    /// re-activates for it (the first count assertion reads 1), and each
-    /// activation raises it again (no loop guard).
     #[test]
     fn a_latency_changed_inside_activate_is_not_restarted_for() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1471,9 +1391,6 @@ mod tests {
 
     /// **A `params.rescan` of values is reported as changed values and does not
     /// restart the plugin.** The flags were latched and nothing read them.
-    ///
-    /// Mutation (run): delete the `Notice::ParamValuesChanged` push in
-    /// `ClapInstance::absorb` → nothing is reported → fails.
     #[test]
     fn a_values_rescan_is_reported_without_a_restart() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1494,12 +1411,8 @@ mod tests {
     /// **A `params.rescan(ALL)` restarts the plugin and is reported as changed
     /// parameters**, so the host re-pulls the list.
     ///
-    /// Mutations (run): make `host_params_rescan` raise nothing for `ALL` → no
-    /// re-activation → the count assertion fails. Delete the
-    /// `Notice::ParamTitlesChanged` push in `ClapInstance::absorb` → the report
-    /// assertion fails. What the re-read changes (the ranges automation is
-    /// denormalized against) is not observable with a plugin whose parameters
-    /// are fixed.
+    /// What the re-read changes (the ranges automation is denormalized against) is not
+    /// observable with a plugin whose parameters are fixed.
     #[test]
     fn an_all_rescan_restarts_the_plugin_and_reports_the_list() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1661,11 +1574,6 @@ mod tests {
 
     /// A plugin that implements `clap.thread-pool` has its requests served
     /// by the server's own pool: the host's pool is in another process.
-    ///
-    /// Mutation: drop the `set_thread_pool` call in `ClapInstance::load` →
-    /// every request is refused → `accepted` is 0 → fails (on 4 cores or
-    /// more; below that the server builds no pool and the test checks the
-    /// refusal).
     #[test]
     fn a_thread_pool_plugin_has_its_requests_served_here() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1696,11 +1604,7 @@ mod tests {
     /// each test in its own process: under `cargo test`, a thread-pool test
     /// that ran first in the same process would have built it.
     ///
-    /// Mutation: build the pool unconditionally in `ClapInstance::load` →
-    /// it exists after this load → fails.
     /// Half the cores, at most 4, and below 2 no pool.
-    ///
-    /// Mutation: drop the `.min(4)` → 64 cores give 32 → fails.
     #[test]
     fn the_server_pool_takes_half_the_cores_up_to_four() {
         let sizes: Vec<usize> = [1, 2, 3, 4, 6, 8, 64].map(pool_participants).to_vec();
@@ -2123,9 +2027,6 @@ mod tests {
     }
 
     /// A request raised from a callback is handed over once.
-    ///
-    /// Mutation (run): `take_requests_with` reading the word without clearing
-    /// it → the second take repeats the request.
     #[test]
     fn test_clap_requests_are_taken_once() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -2190,11 +2091,6 @@ mod tests {
     /// without waiting for a block.** The server serves requests on the thread
     /// that renders, so a save or a fork right after a write must see it; the
     /// pending write is flushed when the state is asked for, not at every write.
-    ///
-    /// Mutation (run): delete the `self.settle_edits()` call in
-    /// `ClapInstance::get_state` → the readback is still the original and the
-    /// last assertion fails; flush at every write instead (the old behaviour)
-    /// → the "queued, not applied" assertion fails.
     #[test]
     fn test_clap_param_write_is_settled_for_a_state_save() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -2227,9 +2123,6 @@ mod tests {
 
     /// A parameter that requires `process` is never flushed out of band while
     /// the plugin is processing; any other is.
-    ///
-    /// Mutation (run): `flush_out_of_band` returning `true` → the first
-    /// assertion fails; returning `false` → the others fail.
     #[test]
     fn a_requires_process_parameter_is_not_flushed_while_processing() {
         assert!(!flush_out_of_band(true, true));
@@ -2241,10 +2134,6 @@ mod tests {
     /// **A rate that is no rate is refused before the plugin is touched**: the
     /// instance runs on at the configuration it has, the plugin is not activated
     /// again, and the error says where it runs.
-    ///
-    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
-    /// -> the zero rate reaches the reconfigure -> the `expect_err` fails (or the
-    /// activation count moves).
     #[test]
     fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -2276,9 +2165,6 @@ mod tests {
     /// **A load at no rate or no block is refused** at the activation stage:
     /// zero, negative and non-finite rates, and a block of no frames. The plugin
     /// is never activated.
-    ///
-    /// Mutation (run): `valid_rate` accepting every rate, and `MaxBlock::new`
-    /// accepting zero, each -> the matching case loads -> fails.
     #[test]
     fn a_load_at_no_rate_or_no_block_is_refused() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -2308,10 +2194,6 @@ mod tests {
     /// configuration it already accepted, stays active there, renders, and the
     /// error says where it is running. The core tells the host the instance was
     /// revived (`IoChanged`), as it does for any revival.
-    ///
-    /// Mutation (run): delete the `HostOp::Activate(previous)` drive in
-    /// `ClapInstance::set_sample_rate` → the plugin stays loaded and silent:
-    /// `is_active` fails.
     #[test]
     fn a_refused_rate_is_rolled_back_and_the_plugin_keeps_running() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -2347,11 +2229,6 @@ mod tests {
 
     /// **A render-mode toggle does not cycle the plugin**, and the mode is kept
     /// for the activation a later restart makes.
-    ///
-    /// Mutation (run): drive `HostOp::Reconfigure` from `set_render_mode`
-    /// instead of `State::set_mode` → the plugin is activated again and the
-    /// count assertion fails; delete the `set_mode` call → the recorded mode
-    /// stays `Realtime` and the mode assertion fails.
     #[test]
     fn a_render_mode_toggle_does_not_cycle_the_plugin() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -2380,9 +2257,6 @@ mod tests {
 
     /// **A parameter written to an active plugin also reaches the next block**
     /// as a `PARAM_VALUE` at its head, in the plugin's plain range.
-    ///
-    /// Mutation (run): `process` not draining the edit ring → the block carries
-    /// no event for the id and the `expect` fails.
     #[test]
     fn test_clap_param_set_reaches_the_next_block() {
         let _lock = crate::test_utils::plugin_load_lock();

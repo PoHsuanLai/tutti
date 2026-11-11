@@ -25,9 +25,9 @@
 //! block they are in. What the type removes is the *kind* confusion, which no
 //! runtime check can see because both are just numbers.
 //!
-//! The `compile_fail` example on [`Offset`] is mutation-checked: giving
-//! `Event::midi` an `impl Into<Offset>` parameter and adding
-//! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
+//! The `compile_fail` example on [`Offset`] holds the line: it fails to compile
+//! only while `Event::midi` takes no `impl Into<Offset>` parameter and there is
+//! no `impl From<Frame> for Offset`.
 
 use tutti_types::Bpm;
 use tutti_types::{
@@ -637,20 +637,10 @@ mod tests {
     /// rolling from a start inside the block, and agreeing with
     /// `transport_at` frame for frame (no loop, so the two agree closely).
     ///
-    /// Mutation (run): drop the `clock.advance` → the rolling half holds its
-    /// start beat → fails. Walk the block's first transport only (the
-    /// block as one piece with no changes, in place of `segments`) → the
-    /// frames after the start stay held → fails.
-    /// `transport_at` and `for_each_beat` are the same walk: the host's
-    /// clock, advanced `k` frames at once or one at a time, lands on the same
-    /// bits, through loop wraps (a 7-frame loop wraps nine times here, at a
-    /// tempo whose frame is not a short binary fraction) and a change
-    /// inside the block.
-    ///
-    /// Mutation (run): in `history::roll`, compute the beat in closed form
-    /// from the block start, folded into the loop (`LoopRange::wrap` of
-    /// `beat + k / frames_per_beat`) → past the first wrap the two differ in
-    /// the last bits → fails.
+    /// `transport_at` and `for_each_beat` are the same walk: the host's clock, advanced `k`
+    /// frames at once or one at a time, lands on the same bits, through loop wraps (a
+    /// 7-frame loop wraps nine times here, at a tempo whose frame is not a short binary
+    /// fraction) and a change inside the block.
     #[test]
     fn transport_at_is_for_each_beat_to_the_bit() {
         let looping = Some(LoopRange {
@@ -712,9 +702,6 @@ mod tests {
     /// **A tempo too slow to count frames at does not move the transport**: the
     /// smallest `Bpm` has no frames per beat, rolling or not, as in
     /// `tutti_types::frames_per_beat`.
-    ///
-    /// Mutation (run): `frames_per_beat_at` computing `rate * 60 / tempo`
-    /// unfiltered → `Some(inf)` → fails.
     #[test]
     fn the_slowest_tempo_has_no_frames_per_beat() {
         let slow = env(
@@ -728,9 +715,6 @@ mod tests {
     }
 
     /// An offset exists only inside its block.
-    ///
-    /// Mutation: `index <= block_len` in `Offset::new` → the one-past-the-end
-    /// offset is accepted → fails.
     #[test]
     fn offsets_are_checked_against_the_block() {
         assert_eq!(Offset::new(0, Samples(1)), Some(Offset::ZERO));
@@ -742,10 +726,6 @@ mod tests {
 
     /// `offset_of` and `frame_at` are inverses inside the block, and a frame
     /// on either side of it has no offset.
-    ///
-    /// Mutation: in `offset_of`, drop the block-length check (build the
-    /// offset from the distance alone) → the frame at the block's end gets
-    /// an offset → fails.
     #[test]
     fn frames_and_offsets_convert_only_through_the_block() {
         let e = env(1000, 64, Transport::default());
@@ -761,8 +741,6 @@ mod tests {
     }
 
     /// Frame times: inside, before and after the block.
-    ///
-    /// Mutation: map a past frame to `NotYet` instead of `Late` → fails.
     #[test]
     fn a_frame_is_due_exactly_late_or_not_yet() {
         let e = env(1000, 64, Transport::default());
@@ -774,10 +752,6 @@ mod tests {
 
     /// Beats resolve against the transport: at 120 BPM and 48 kHz a beat is
     /// 24 000 frames, so beat 1.5 is 36 000 frames after beat 0.
-    ///
-    /// Mutation: round down (`floor`) instead of up → the beat a quarter
-    /// frame in lands one frame early → fails. Mutation: ignore `playing`
-    /// → the stopped case resolves → fails.
     #[test]
     fn a_beat_is_resolved_against_the_transport() {
         let rolling = |beat: f64| Transport::new(true, Bpm::of(120.0), Beat(beat), None);
@@ -803,9 +777,6 @@ mod tests {
     /// its timeline frame in the block it falls in, rewritten to that frame,
     /// and lands `arrival` later — here in the next block. `NextBlock` is not
     /// shifted.
-    ///
-    /// Mutation: in `due_at_arrival`, return the beat's own offset without
-    /// the shift → lands in this block at 10 → fails.
     #[test]
     fn a_command_lands_its_arrival_after_its_timeline_time() {
         let a = Latency::new(Samples(60));
@@ -838,9 +809,6 @@ mod tests {
     /// Looping: a passed beat inside the loop comes round again after the
     /// wrap; one past the loop end waits; one before loop and playhead waits
     /// too (only the `Playhead` can call it late).
-    ///
-    /// Mutation: drop the wrap branch (treat every beat behind the playhead
-    /// as not yet) → the wrapped beat is `NotYet` → fails.
     #[test]
     fn a_looping_transport_reaches_a_passed_beat_after_the_wrap() {
         // 120 BPM at 48 kHz: 24 000 frames a beat, so a 64-frame block
@@ -868,10 +836,6 @@ mod tests {
 
     /// A far-future frame is not late, even where the distance does not fit
     /// a `Samples`.
-    ///
-    /// Mutation: resolve frames through `Frame::since` (`None` → `Late`)
-    /// → on a 32-bit target the far frame reads as late. On a 64-bit host
-    /// the distance fits, so this checks the before/after split directly.
     #[test]
     fn a_far_frame_is_not_late() {
         let e = env(1000, 64, Transport::default());
@@ -890,11 +854,6 @@ mod tests {
 
     /// The playhead's crossed set: continuous playback crosses, a seek
     /// starts over, a stop keeps the run, and a wrap crosses the loop.
-    ///
-    /// Mutation: in `Playhead::observe`, never extend a run (always reset)
-    /// → nothing is ever crossed → fails. Mutation: ignore `wrapped` in
-    /// `crossed` → the beat inside the loop behind the anchor is not
-    /// crossed after the wrap → fails.
     #[test]
     fn the_playhead_crosses_only_by_continuous_playback() {
         let mut ph = Playhead::new();
@@ -935,12 +894,6 @@ mod tests {
     /// to `f32` (a step of ~8e-6 beat at beat 100), and a tempo ramped
     /// inside each block (the block-start tempo then misses the next start
     /// by frames, the ramp estimate does not).
-    ///
-    /// Mutation: continuity within 1e-6 beat (the old rule) → the `f32`
-    /// positions break the run and nothing is crossed → fails. Mutation:
-    /// accept only the steady advance at the block's own tempo (drop the
-    /// next tempo from `arrives_at`'s range) → the ramp and the step break
-    /// the run → fails.
     #[test]
     fn continuity_survives_f32_beats_and_tempo_ramps() {
         let at = |beat: f64, tempo: f64| {
@@ -993,11 +946,6 @@ mod tests {
     /// reads: a tempo step between them rolls, a loop wrap wraps, a seek, a
     /// loop edit and a jump inside the loop jump. 256 frames at 48 kHz:
     /// 0.010 666 beat at 120 BPM, 0.013 333 at 150.
-    ///
-    /// Mutation: drop the loop comparison in `continuity` → the loop edit
-    /// (a beat the old loop wraps to, a new loop) reads as wrapped → fails.
-    /// Mutation: map `Some(true)` to `Rolled` → the wrap reads as rolled →
-    /// fails.
     #[test]
     fn continuity_tells_a_tempo_change_and_a_wrap_from_a_seek() {
         let rate = SampleRate(48_000.0);
@@ -1047,9 +995,6 @@ mod tests {
     /// stopped or started where it stood, and anywhere else (a seek while
     /// stopped, a start elsewhere) a jump. A playing one that stops at the
     /// read rolled there.
-    ///
-    /// Mutation: drop the `!self.playing` arm in `continuity` → the stopped
-    /// reads are `Rolled` → fails.
     #[test]
     fn a_stopped_transport_is_held() {
         let rate = SampleRate(48_000.0);
@@ -1079,10 +1024,6 @@ mod tests {
     /// (0.05 beat) from 4.45; the next block starts at 3.0, which two whole
     /// loops plus the block's advance would also "explain" arithmetically —
     /// but a wrap leaves the playhead inside the loop, and 3.0 is not.
-    ///
-    /// Mutation: drop the "inside the loop" guard in `arrives_at` → the seek
-    /// reads as continuous (wrapped), the run keeps its old anchor, and the
-    /// beat just crossed from 3.0 is not → fails.
     #[test]
     fn a_seek_out_of_a_loop_is_not_a_wrap() {
         let l = Some(LoopRange {
@@ -1104,10 +1045,6 @@ mod tests {
     /// continues the run. A one-ulp loop at beat 4 (`4.0.next_up()`, the
     /// shortest a host can send there) and one of 1e-300 beat at 0 (so
     /// short that `x + period == x`).
-    ///
-    /// Mutation (run): unwrap the next block's start by stepping one period
-    /// at a time (`x += period` until it fits) → the one-ulp loop takes
-    /// ~1e13 steps and misses the deadline → fails.
     #[cfg_attr(miri, ignore = "a wall-clock deadline")]
     #[test]
     fn a_loop_shorter_than_a_frame_is_unwrapped_at_once() {
@@ -1137,9 +1074,6 @@ mod tests {
 
     /// Resolution with history: a beat crossed by continuous playback before
     /// the command is seen is late; one jumped over by a seek waits.
-    ///
-    /// Mutation: in `due_at_arrival`, make every beat behind the playhead
-    /// late (ignore `crossed`) → the jumped-over beat is late → fails.
     #[test]
     fn a_beat_is_late_only_when_playback_crossed_it() {
         let mut ph = Playhead::new();
@@ -1166,10 +1100,6 @@ mod tests {
 
     /// A change list is ordered and distinct; one at the block start or past
     /// the bound is refused; the same offset twice keeps the later transport.
-    ///
-    /// Mutation: drop the `at < last.at` check → the out-of-order push is
-    /// accepted → fails. Push a second entry instead of replacing on an
-    /// equal offset → `len` is 2 → fails.
     #[test]
     fn transport_changes_are_ordered_distinct_and_bounded() {
         let playing = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
@@ -1205,9 +1135,6 @@ mod tests {
     /// it makes, at the block's own transport and at a change: it is session
     /// state, and a frame later in a rolling block is recording as much as
     /// the first.
-    ///
-    /// Mutation: drop `.with_recording(t.recording())` in `transport_at` → the
-    /// rolling frame reads not recording → fails.
     #[test]
     fn transport_at_keeps_recording() {
         let mut e = env(
@@ -1231,11 +1158,6 @@ mod tests {
     /// `segments` cuts at each change; `transport_at` reads the change in
     /// force and advances it; `due` resolves a beat in the piece that reaches
     /// it.
-    ///
-    /// Mutation: take the block's own transport in `transport_at` (ignore
-    /// changes) → the frame after the start reads stopped → fails. Give a
-    /// piece the block's `frame` in `segments` → the frame assertion fails.
-    /// Return `k` without adding the piece's start in `due` → fails.
     #[test]
     fn a_start_inside_the_block_is_seen_from_its_frame() {
         // Stopped at beat 2 until frame 100, then rolling from there.
@@ -1272,9 +1194,6 @@ mod tests {
 
     /// A beat a rounding error behind the playhead is its first frame, not a
     /// crossed beat; one a whole frame behind is not due.
-    ///
-    /// Mutation: drop the behind-side tolerance in `beat_due` → the first
-    /// assertion reads `NotYet` → fails.
     #[test]
     fn a_beat_a_rounding_error_behind_is_the_first_frame() {
         let e = block(1.0 + 1e-12, 64, true, None);
@@ -1287,12 +1206,6 @@ mod tests {
     /// for bit: far into a segment, at a tempo whose frame step is not
     /// representable, and through several wraps of a loop shorter than the
     /// block.
-    ///
-    /// Mutations (run): walk from the block's beat alone, dropping the
-    /// origin (`Transport::new(.., t.beat(), ..).clock(..)`) → parts from the
-    /// host in the last bits → fails; wrap the unwrapped position with
-    /// `rem_euclid` (the old closed form) instead of restarting the segment
-    /// on each wrap's frame → parts after a wrap → fails.
     #[test]
     fn transport_at_is_the_host_clock() {
         let rate = SampleRate(48_000.0);
@@ -1342,9 +1255,6 @@ mod tests {
 
     /// A seek inside a rolling block starts a new run: a beat the new run
     /// passed is crossed, one before the seek or jumped over is not.
-    ///
-    /// Mutation: observe only the block's first piece in `Playhead::observe`
-    /// → beat 8.05 (after the seek) is not crossed → fails.
     #[test]
     fn a_seek_inside_the_block_starts_a_new_run() {
         let roll = |beat: f64| Transport::new(true, Bpm::of(120.0), Beat(beat), None);

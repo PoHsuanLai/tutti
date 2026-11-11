@@ -48,10 +48,6 @@ fn run(s: &Session, frames: usize, block: usize) -> Vec<f32> {
 /// every frame the output is source frame `f` (the map's definition: a clip
 /// from frame 0 is at frame `f`), where a clip re-seated at the step would
 /// jump from source frame 23 999 to 48 000.
-///
-/// Mutation (run): `Graph::add` inserting the node unbound (`insert(node)`
-/// for `insert(node.bind_tempo(..))`) -> the step re-seats the clip at 48 000
-/// -> fails.
 #[test]
 fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
     use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};

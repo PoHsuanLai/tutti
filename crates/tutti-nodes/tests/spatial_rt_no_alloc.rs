@@ -22,7 +22,7 @@ static A: AllocDisabler = AllocDisabler;
 /// DC pair: `warm` blocks, then 1 000 under `assert_no_alloc`.
 ///
 /// The inputs carry signal, and the gate checks it came out, so a gate over a node that renders nothing cannot pass
-/// having walked no DSP. Mutation (run): `fill(0.0)` → "rendered silence".
+/// having walked no DSP.
 fn gate<N: IntoNode>(node: N, warm: usize) {
     let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
     for c in rig.inputs_mut() {
@@ -63,9 +63,6 @@ fn vbap_panner_stereo_process_is_allocation_free() {
 /// The fold itself is scalar arithmetic on an `Azimuth` and cannot allocate;
 /// what this pins is that it does not push the solve onto a different path
 /// inside the solve that does.
-///
-/// Mutation: have `SpeakerLayout::gains_into` build its own `Vec` for the gains instead of
-/// writing into the caller's scratch -> fails here and in both siblings.
 #[test]
 fn vbap_folded_rear_arc_is_allocation_free() {
     let mut node = VbapPannerNode::stereo();
@@ -91,10 +88,6 @@ fn vbap_folded_rear_arc_is_allocation_free() {
 /// `MAX_ELEVATION_RETREATS`, so what this pins is that *iterating* it allocates
 /// nothing: the same caller-owned scratch is rewritten in place each round, and
 /// nothing per-round reaches the heap.
-///
-/// Mutation: have the retreat allocate a fresh gains buffer per round -> fails
-/// here and nowhere else, since this is the only test that reaches the loop
-/// body twice.
 #[test]
 fn vbap_elevation_retreat_is_allocation_free() {
     let mut node = VbapPannerNode::quad();
@@ -165,9 +158,6 @@ fn hrtf_binaural_process_is_allocation_free() {
 /// so every step renders through two filters and crossfades, and the face
 /// lookup misses its hint and scans. Allocation-free from the first block
 /// after insertion.
-///
-/// Mutation (run): collecting the crossfade's old-filter product into a
-/// fresh `Vec` in `render_step` → fails on the first moving step.
 #[test]
 fn hrtf_binaural_moving_source_is_allocation_free() {
     use tutti_nodes::HrtfBinauralNode;
@@ -200,10 +190,6 @@ fn hrtf_binaural_moving_source_is_allocation_free() {
 /// The nearest-vertex fallback: one face covering only a patch in front, so
 /// a source behind the listener misses the hint and every face, and each
 /// step scans the vertices for the nearest.
-///
-/// Mutation (run): collecting the vertices' dot products into a `Vec` and
-/// taking its maximum in `HrtfSet::weights`'s fallback → fails on the first
-/// step.
 #[test]
 fn hrtf_binaural_nearest_vertex_fallback_is_allocation_free() {
     use tutti_nodes::HrtfBinauralNode;
@@ -222,9 +208,6 @@ fn hrtf_binaural_nearest_vertex_fallback_is_allocation_free() {
 
 /// A re-prepare at the rate the node already has (a new block size) keeps
 /// the prepared sphere, so it allocates nothing.
-///
-/// Mutation (run): removing the same-rate early return in
-/// `HrtfBinaural::set_sample_rate` → the rebuild allocates and fails.
 #[test]
 fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
     use tutti_graph::Prepare;
@@ -244,9 +227,6 @@ fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
 /// allocation-free in 100-frame blocks, which do not divide the 128-frame
 /// step: most blocks finish one step and start the next, so the render runs
 /// with frames of the block still to copy on both sides of it.
-///
-/// Mutation (run): allocating in `HrtfBinaural::process` when a step
-/// completes with frames of the block left → fails on the second block.
 #[test]
 fn hrtf_binaural_resampled_set_in_split_blocks_is_allocation_free() {
     use tutti_graph::Prepare;

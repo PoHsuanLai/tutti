@@ -3,8 +3,7 @@
 //!
 //! These pin what the wrappers promise that no host test sees from outside:
 //! which half of an instance can do what, that a retired audio half calls
-//! nothing, and that the callbacks reach the embedder. Each test's mutation is
-//! in its comment; every one was run and failed as stated.
+//! nothing, and that the callbacks reach the embedder.
 //!
 //! The plugin's switches (render mode, rescan requests) are process-globals of
 //! its cdylib, so every test holds [`PLUGIN_LOCK`] across configure, load,
@@ -194,10 +193,6 @@ fn render(
 
 /// The bundle lists the plugin it holds, selects it by id, and refuses an id
 /// it does not hold rather than loading another plugin.
-///
-/// Mutation: make `select` ignore its argument and return 0: the unknown-id
-/// assertion fails (the known one passes, the reference bundle's first plugin
-/// being the probe).
 #[test]
 fn a_bundle_selects_by_id_and_refuses_an_unknown_one() {
     let _g = lock();
@@ -215,9 +210,6 @@ fn a_bundle_selects_by_id_and_refuses_an_unknown_one() {
 
 /// The main-thread half answers extension reads, and a `Plugin` is not
 /// `Sync`.
-///
-/// Mutation: have `latency` return 0 without calling the plugin: the figure
-/// assertion fails.
 #[test]
 fn the_main_thread_half_reads_the_plugins_extensions() {
     let _g = lock();
@@ -236,10 +228,6 @@ fn the_main_thread_half_reads_the_plugins_extensions() {
 
 /// Activation hands out one audio half; while it lives the plugin cannot be
 /// activated again, and the half belongs to the plugin that made it.
-///
-/// Mutation: drop the `audio_sides() != 0` refusal in `activate`: the second
-/// `activate` succeeds and the assertion fails; return `Refused` for it: the
-/// error assertion fails.
 #[test]
 fn activation_hands_out_one_audio_half_and_refuses_a_second_activation() {
     let _g = lock();
@@ -265,9 +253,6 @@ fn activation_hands_out_one_audio_half_and_refuses_a_second_activation() {
 
 /// A block runs the plugin, which writes its tagged output through the
 /// channel tables the wrapper bound, and starts processing on the first block.
-///
-/// Mutation: bind the output table one channel off (`wrapping_add(1)`): the
-/// slot-0 tag is missing from channel 0 and the assertion fails.
 #[test]
 fn a_block_runs_the_plugin_through_the_bound_channels() {
     let _g = lock();
@@ -292,9 +277,6 @@ fn a_block_runs_the_plugin_through_the_bound_channels() {
 
 /// A channel shorter than the block is refused before the plugin is called:
 /// it would write past the end.
-///
-/// Mutation: drop the length check in `PortScratch::bind`: the plugin runs
-/// (`is_processing` flips) and the error assertion fails.
 #[test]
 fn a_short_channel_is_refused_without_calling_the_plugin() {
     let _g = lock();
@@ -318,9 +300,6 @@ fn a_short_channel_is_refused_without_calling_the_plugin() {
 
 /// A parameter value the host sends in a block's events is applied by the
 /// plugin, and `params.flush` on an inactive plugin reaches it too.
-///
-/// Mutation: pass an empty event list to `flush` in `params_flush`: the value
-/// stays at its default and the assertion fails.
 #[test]
 fn an_event_list_reaches_the_plugin_through_flush() {
     let _g = lock();
@@ -338,9 +317,6 @@ fn an_event_list_reaches_the_plugin_through_flush() {
 
 /// What `state.save` writes, `state.load` reads back: the streams carry the
 /// plugin's bytes both ways.
-///
-/// Mutation: make `OutputStream`'s write callback ignore its input: the saved
-/// state is empty and the first assertion fails.
 #[test]
 fn state_round_trips_through_the_streams() {
     let _g = lock();
@@ -358,9 +334,6 @@ fn state_round_trips_through_the_streams() {
 
 /// An extension the plugin does not implement is reported as missing, not as a
 /// refusal.
-///
-/// Mutation: map `None` of the extension to `CallError::Failed`: the assertion
-/// fails.
 #[test]
 fn a_missing_extension_is_not_a_refusal() {
     let _g = lock();
@@ -375,9 +348,6 @@ fn a_missing_extension_is_not_a_refusal() {
 
 /// The plugin's calls into the host reach the embedder: an `audio-ports`
 /// rescan the plugin makes from `on_main_thread` arrives with its flags.
-///
-/// Mutation: drop the `cb.audio_ports_rescan(flags)` forward in `host.rs`: the
-/// recorded flags stay 0 and the assertion fails.
 #[test]
 fn a_plugin_callback_reaches_the_embedder() {
     let _g = lock();
@@ -397,10 +367,6 @@ fn a_plugin_callback_reaches_the_embedder() {
 /// Once the `Plugin` is gone its audio half calls nothing: a block is refused
 /// as retired, `reset` and `stop` are no-ops, and nothing is read through a
 /// freed instance.
-///
-/// Mutation: drop the `retired` check in `AudioSide::process`: the block
-/// calls into the destroyed instance (a crash) instead of returning the
-/// error.
 #[test]
 fn a_retired_audio_half_calls_nothing() {
     let _g = lock();
@@ -430,9 +396,6 @@ fn a_retired_audio_half_calls_nothing() {
 /// A block of the wrong width is refused as a format mismatch even on a
 /// retired instance: the width is checked before the claim and the retired
 /// check, so the answer does not depend on the instance's state.
-///
-/// Mutation (run): move the width comparison in `AudioSide::process` after the
-/// `is_retired` check: the block answers `Retired` and the assertion fails.
 #[test]
 fn a_mismatched_block_is_refused_before_the_retired_check() {
     let _g = lock();
@@ -471,9 +434,6 @@ fn a_mismatched_block_is_refused_before_the_retired_check() {
 
 /// A deactivated plugin's audio half is retired too: a block after a rejoin
 /// must not start processing on an inactive plugin.
-///
-/// Mutation: make `AudioSide::is_retired` read only `retired`: the block
-/// starts processing on the deactivated plugin and the assertion fails.
 #[test]
 fn a_deactivated_plugins_audio_half_is_retired() {
     let _g = lock();
@@ -497,10 +457,6 @@ fn a_deactivated_plugins_audio_half_is_retired() {
 
 /// Deactivating a processing plugin stops processing first, and dropping one
 /// that is processing tears it down: the library loads again afterwards.
-///
-/// Mutation: skip the `stop_processing` branch in `stop_and_deactivate_claimed`
-/// (`if false`): the audio half still reads as processing after `deactivate`
-/// and the first assertion fails.
 #[test]
 fn deactivating_a_processing_plugin_stops_it_and_a_drop_tears_it_down() {
     let _g = lock();
@@ -603,9 +559,6 @@ fn render_with_pool(
 /// A pool handle serves only the instance whose vtable its `exec` came from.
 /// Handed to another instance's `process` it is ignored, so `exec` is never
 /// called with a `clap_plugin` it does not belong to.
-///
-/// Mutation: drop the `handle.is_for(&self.core)` filter in `process`: the
-/// foreign handle is served, the pool runs, and the second assertion fails.
 #[test]
 fn a_pool_handle_serves_only_its_own_instance() {
     let _g = lock();
@@ -632,9 +585,6 @@ fn a_pool_handle_serves_only_its_own_instance() {
 
 /// A block longer than the plugin was activated for is refused before any
 /// call, whoever the caller is.
-///
-/// Mutation: drop the `max_frames` check in `process`: the block runs
-/// (`is_processing` flips) and the error assertion fails.
 #[test]
 fn a_block_past_the_activated_size_is_refused() {
     let _g = lock();
@@ -653,9 +603,6 @@ fn a_block_past_the_activated_size_is_refused() {
 
 /// The entries CLAP gives to `[!active]` are refused while the plugin is
 /// active (nothing is called), and reach the plugin when it is not.
-///
-/// Mutation: drop `require_inactive()` from any one of them: that entry
-/// returns `Ok` while active and its assertion fails.
 #[test]
 fn state_gated_entries_are_refused_while_active() {
     let _g = lock();
@@ -712,10 +659,6 @@ fn state_gated_entries_are_refused_while_active() {
 
 /// `audio-ports-activation.set_active` on a processing plugin is refused
 /// unless the plugin said it can activate a port while processing.
-///
-/// Mutation: drop the processing check in `set_audio_port_active`: the call
-/// reaches the (absent) extension and answers `Ok(false)`, and the assertion
-/// fails.
 #[test]
 fn a_port_cannot_be_activated_while_processing_unless_the_plugin_allows() {
     let _g = lock();
@@ -765,11 +708,6 @@ fn gui_reset() {
 /// `clap.gui` entries follow `create` and precede `destroy`: before `create`
 /// a resize or a close reaches nothing, a second `create` is refused, and
 /// `destroy` runs once however often the editor is closed.
-///
-/// Mutation: drop the `gui_created` test from `close_gui`: the second close
-/// destroys again and the balance reads -1; drop it from `resize_gui`: the
-/// early resize reaches the plugin and `NotCreated` is not returned; drop the
-/// `AlreadyCreated` test: the balance reads 2.
 #[test]
 fn the_editor_is_created_once_and_destroyed_once() {
     let _g = lock();
@@ -813,12 +751,6 @@ fn the_editor_is_created_once_and_destroyed_once() {
 /// A 64-bit block through the same call and type as a 32-bit one: the scratch
 /// carries its format as a value, one `process` runs either kernel, and a
 /// block of the other width is refused before the plugin is called.
-///
-/// Mutations (run): bind the 64-bit table as `data32` in `Sample for f64`: the
-/// 64-bit block never reaches `data64` and the tag assertion fails; make the
-/// catch-all arm of `process` answer `Ok`: the mismatch assertions fail; match
-/// only `(Pool::F64, Planar::F32)` and let `(Pool::F32, Planar::F64)` fall to
-/// a kernel: the reverse-direction assertion fails.
 #[test]
 fn one_process_call_runs_either_width_and_refuses_a_mismatch() {
     let _g = lock();
@@ -911,9 +843,6 @@ fn one_process_call_runs_either_width_and_refuses_a_mismatch() {
 /// An active plugin is not activated again, whether or not its audio half was
 /// ever taken (the half's count says nothing then): the plugin would be
 /// re-entered while active.
-///
-/// Mutation: drop the `is_active` refusal in `activate`: the second call
-/// reaches the plugin, which answers, and the error assertion fails.
 #[test]
 fn an_active_plugin_is_not_activated_again_even_with_no_audio_half() {
     let _g = lock();
@@ -935,10 +864,6 @@ fn an_active_plugin_is_not_activated_again_even_with_no_audio_half() {
 /// The numbers `activate` hands the plugin are the ones CLAP allows: a rate
 /// that is finite and positive, at least one frame, and a minimum no larger
 /// than the maximum. Anything else is refused with the plugin uncalled.
-///
-/// Mutation: drop any one clause of the check in `activate` (finite, positive,
-/// `min_frames >= 1`, `min <= max`): its row below activates and the
-/// assertion fails.
 #[test]
 fn activation_refuses_numbers_clap_forbids() {
     let _g = lock();
@@ -967,10 +892,6 @@ fn activation_refuses_numbers_clap_forbids() {
 /// `[min_frames, max_frames]` and for port channel counts that are not the
 /// plugin's own audio ports: the plugin indexes its buffers by what it
 /// declared.
-///
-/// Mutation: drop the `min_frames` comparison in `process`: the zero-frame
-/// block runs and its assertion fails; drop the layout comparison: the wrong
-/// layouts run (padded by the scratch) and their assertions fail.
 #[test]
 fn a_block_outside_the_activation_is_refused_before_the_plugin_is_called() {
     let _g = lock();
@@ -1020,9 +941,6 @@ fn a_block_outside_the_activation_is_refused_before_the_plugin_is_called() {
 /// Dropping a `Plugin` with an open editor destroys the editor first: CLAP
 /// requires `gui.destroy` before `plugin.destroy`, and a caller that never
 /// closed it has no other chance.
-///
-/// Mutation: drop the `destroy_gui` call in `Plugin`'s drop: the balance stays
-/// 1 and the assertion fails.
 #[test]
 fn dropping_a_plugin_destroys_its_open_editor() {
     let _g = lock();
@@ -1046,11 +964,6 @@ fn dropping_a_plugin_destroys_its_open_editor() {
 /// destruction: `gui.destroy` and `destroy` are main-thread entries, so the whole `Plugin` is
 /// handed to the main thread (`defer_to_main`) and destroyed at its next `run_deferred`, once,
 /// and the drop is counted.
-///
-/// Mutation (run): drop the thread comparison at the top of `Plugin`'s drop: the other thread
-/// destroys the editor and the first balance reads 0. Mutation (run): drop the
-/// `defer_to_main` call: the tick runs nothing and the balance stays 1 (the instance leaks).
-/// Mutation (run): drop the counter increment: `off_thread_drops` stays 0.
 #[test]
 fn a_drop_off_the_main_thread_is_destroyed_on_the_main_threads_next_tick() {
     let _g = lock();

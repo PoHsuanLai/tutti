@@ -5,8 +5,6 @@ use super::*;
 /// constants, `1 / (1 + k1/n + k2/n^2 + k3/n^3)` at n = 128 is
 /// `1 / (1 + 0.10738 + 0.00743 + 0.00284) = 0.8947`, so a slip in any of the
 /// three coefficients moves it off the documented figure.
-///
-/// Mutation (run): `k1` 13.745_203 -> 12.0 → 128 taps gives 0.9058.
 #[test]
 fn the_cutoff_fit_matches_its_documented_values() {
     assert!((cutoff(128) - 0.894).abs() < 0.001, "{}", cutoff(128));
@@ -20,9 +18,6 @@ fn the_cutoff_fit_matches_its_documented_values() {
 /// `(a - b + c - d)^2 = 0.00006^2 = 3.6e-9`; a quarter of the way in, the
 /// cosines at 2 pi x/n = pi/2 give `(a - c)^2 = 0.21747^2 = 0.047293`; and it is
 /// symmetric about the peak.
-///
-/// Mutations (run): `w * w` -> `w` gives 0.21747 at the quarter point and
-/// 6e-5 at the start; zeroing `d` gives a peak of 0.98832^2 = 0.9768.
 #[test]
 fn the_window_is_the_squared_blackman_harris() {
     let n = 64;
@@ -53,9 +48,6 @@ fn the_window_is_the_squared_blackman_harris() {
 /// unsquared one is already at -105 dB there) and below -130 dB from 0.96
 /// to Nyquist (the four-term window's sidelobes; a three-term one is at
 /// -113 dB). Read as the magnitude of the taps' DFT in f64.
-///
-/// Mutations (run): `w * w` -> `w` reads -105 dB at 0.93 and fails the
-/// first bound; `d` -> 0 reads -113 dB at 0.96 and fails the second.
 #[test]
 fn the_filter_has_the_squared_windows_transition_and_stopband() {
     let n = 256;
@@ -79,8 +71,6 @@ fn the_filter_has_the_squared_windows_transition_and_stopband() {
 
 /// The filter sums to 1 (DC gain 1), is symmetric about tap `n / 2`, and
 /// peaks there.
-///
-/// Mutation (run): drop the `/= sum` normalisation → the sum is ~1/cutoff.
 #[test]
 fn the_sinc_has_unity_dc_gain_and_peaks_at_its_centre() {
     let taps = sinc_filter(441, 0.9);
@@ -98,8 +88,6 @@ fn the_sinc_has_unity_dc_gain_and_peaks_at_its_centre() {
 /// The block sizes are the rate pair's repeating unit times a count, so the
 /// ratio is exact: 44.1 -> 48 k is 147 -> 160 per unit, and 1024 in 2
 /// sub-chunks asks for 512 -> 4 units = 588 -> 640.
-///
-/// Mutation (run): derive `fft_size_out` from `source_hz` → 588 -> 588.
 #[test]
 fn block_sizes_are_whole_units_of_the_rate_pair() {
     let r = FftResampler::new(44_100, 48_000, 1024, 2, 1).unwrap();
@@ -115,11 +103,6 @@ fn block_sizes_are_whole_units_of_the_rate_pair() {
 /// block (8000 -> 192000 at a 32768-frame chunk in one piece, 786432
 /// frames); 1 -> 192000 would plan an FFT of about 98 M points and is an
 /// error, not an 800 MB allocation.
-///
-/// Mutations (run): `MAX_BLOCK` 1 << 20 -> 1 << 17 refuses the
-/// large-chunk pairs (8000 -> 44100 at 32768 in one piece first); dropping
-/// the `.filter` on the block size lets 1 -> 192000 through, which plans the
-/// 98 M-point FFT (about 40 s) and fails the last assertion.
 #[test]
 fn the_block_cap_admits_real_pairs_and_refuses_a_runaway_one() {
     let rates = [
@@ -146,9 +129,6 @@ fn the_block_cap_admits_real_pairs_and_refuses_a_runaway_one() {
 /// The block size is computed with checked arithmetic. A product that wraps
 /// to 0 (`2^20` units of `2^44` frames is `2^64`) would slip under the cap if
 /// it were wrapping.
-///
-/// Mutation (run): `checked_mul` -> `wrapping_mul` builds a zero-length
-/// block, which panics in `RealFft` instead of returning the error.
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn an_overflowing_block_size_is_an_error() {

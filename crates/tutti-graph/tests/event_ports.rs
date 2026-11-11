@@ -286,12 +286,6 @@ fn ragged(total: u64, max: usize) -> Vec<usize> {
 /// hop further. Keys run against the data flow (sink 1, relay 2, source 3),
 /// so an order taken from the keys rather than the event edges cannot pass.
 /// The plan has no event delay: nothing on the path is latent.
-///
-/// Mutation (run): in `compile`, leave event edges out of the ordering
-/// dependencies (`preds`) → the key order runs the sink first and the
-/// compile of a read before its write panics → fails. Mutation (run): in
-/// the reference, leave event edges out of `direct_preds` → it runs the
-/// sink before its source and panics on the missing output → fails.
 #[test]
 fn an_event_reaches_downstream_in_the_block_it_was_emitted() {
     let seen: Seen = Arc::default();
@@ -337,12 +331,6 @@ fn an_event_reaches_downstream_in_the_block_it_was_emitted() {
 /// then its port 1, then node 9 — although the spec lists them 9, 5:1, 5:0.
 /// An earlier offset still comes first whatever its source. Every offset of
 /// a 64-frame block is tried for the tie, so block-edge offsets are covered.
-///
-/// Mutation (run): drop the `sort_by_key(|e| e.from())` in `compile` → the
-/// listed order (9 first) → fails on the executor. Mutation (run): in the
-/// reference, iterate the listed edges instead of re-keying them by source
-/// → fails on the reference. Mutation (run): in `merge_into`, `<` → `<=`
-/// (ties to the later source) → fails.
 #[test]
 fn fan_in_ties_go_by_source_key_then_port() {
     for k in [0u64, 1, 31, 62, 63] {
@@ -415,12 +403,6 @@ fn fan_in_ties_go_by_source_key_then_port() {
 /// 141 frames gets the direct source's events exactly 141 frames later —
 /// across one or two block boundaries, under whole and ragged blocks —
 /// every one of them, in order, and nothing dropped.
-///
-/// Mutation (run): in `compile`, emit no `EventDelay` for an event gap
-/// (treat it as zero) → every event arrives 141 frames early → fails.
-/// Mutation (run): in `EventFifo::pop_due`, deliver at `due - start + 1` →
-/// one frame late → fails (and the one on a block's last frame lands
-/// outside it, which `SortedEvents::trusted` catches in debug).
 #[test]
 fn pdc_shifts_events_across_blocks_and_drops_none() {
     const LATE: usize = 141;
@@ -481,11 +463,6 @@ fn pdc_shifts_events_across_blocks_and_drops_none() {
 /// same source into two ports of one sink, directly and through a 100-frame
 /// feedback edge (at `MaxBlock` 64, so the delay crosses one or two block
 /// boundaries), under whole and ragged blocks.
-///
-/// Mutation (run): in `Executor::rebuild`, size a new event feedback FIFO's
-/// delay from `MaxBlock` rather than the edge (`EventFifo::sized(Samples(
-/// max_block), ..)`) → the feedback copies arrive 64 frames after the direct
-/// ones instead of 100 → fails.
 #[test]
 fn an_event_feedback_edge_delays_by_its_declared_delay() {
     const DELAY: usize = 100;
@@ -534,11 +511,6 @@ fn an_event_feedback_edge_delays_by_its_declared_delay() {
 /// that is handed 5 in one block keeps the first 3 — the newest two are
 /// refused at the push (the node is told) and counted by the interpreter.
 /// A port that declares nothing takes the executor's default, and all 5 fit.
-///
-/// Mutation (run): in `node_op`, give every writer the executor's default
-/// (`cap: h.cap`) → the declared port keeps all 5 → fails. Mutation (run):
-/// in the reference, keep writers unbounded → the reference keeps 5 →
-/// fails.
 #[test]
 fn a_port_past_its_declared_capacity_drops_the_newest_and_counts_them() {
     let seen: Seen = Arc::default();
@@ -576,13 +548,6 @@ fn a_port_past_its_declared_capacity_drops_the_newest_and_counts_them() {
 /// (a chord on one frame) into one port — a merge, with one of them behind a
 /// 141-frame PDC delay on a `MaxBlock` of 64 — and all of them arrive, on
 /// their frames. The plan prices the merge at 16 declared events.
-///
-/// Mutation (run): size event slots from the default alone
-/// (`Vec::with_capacity(cap)` in `rebuild`) → the merge, sized for one
-/// event per source, drops → the drop count fails. Mutation (run): size the
-/// PDC FIFO from the default (`rate(from)` → `cap`) → its limit is 5
-/// events, the chords overflow it → fails. Mutation (run): make `EventSlotCapacity::plus` a max
-/// → the merge holds 8 and drops the other 8 → fails.
 #[test]
 fn declared_capacities_size_merges_and_delays_so_nothing_is_lost() {
     const LATE: usize = 141;
@@ -683,12 +648,6 @@ impl Node for CappedRelay {
 /// output slot is priced at everything its FIFO can hold, not at the
 /// source's one block. (Found by the crossfade proptest in CI: a
 /// replacement emitting soon after its predecessor, behind a retuned delay.)
-///
-/// Mutation (run): make `EventSlotCapacity::fifo` return the source's port
-/// capacity (`Self::port(cap)`: the pricing before this fix, in `compile`
-/// and the verifier alike) → the second event on each path waits a block →
-/// fails; the CI regression in `differential.proptest-regressions` fails
-/// too.
 #[test]
 fn a_delay_delivers_what_came_due_across_its_sources_blocks() {
     const LATE: usize = 13;
@@ -767,13 +726,6 @@ fn burst_unit(cap: u32, plan: &[(u64, u16, u32)], refused: &Arc<AtomicUsize>) ->
 /// block: the executor widens the delay's output slot by what the FIFO
 /// holds past the new bound, and the sink port's merge (the source and a
 /// latent sibling) with it, so nothing goes out late or is dropped.
-///
-/// Mutation (run): make `EventFifo::excess` return 0 → the delay's slot
-/// holds only the new bound (16), so of the 20 events due in the first block
-/// after the swap 4 wait a block, and later ones fall further behind →
-/// fails. Mutation (run): leave `Op::EventMerge` out of the widening pass in
-/// `Executor::rebuild` → the merge's slot holds 17, and it drops the rest →
-/// fails.
 #[test]
 fn a_fifo_whose_bound_a_swap_lowered_delivers_its_backlog_on_time() {
     const LATE: usize = 300;
@@ -834,14 +786,6 @@ fn a_fifo_whose_bound_a_swap_lowered_delivers_its_backlog_on_time() {
 /// block, a bound of 88 at 512, and 512 of them due in the first 512-frame
 /// block after it. Both arrive on their frames, and so does a command
 /// scheduled onto the sink inside that block.
-///
-/// Mutation (run): make `EventFifo::excess` return 0 → 88 a block go out on
-/// each path, the rest late → fails. Mutation (run): skip the feedback
-/// FIFOs in the widening pass in `Executor::rebuild` → the feedback port
-/// alone falls behind → fails. Mutation (run): size the overlay without
-/// the widening (`+ extra_total` dropped from `overlay_capacity`'s
-/// argument) → the overlay holds 433, the command's port merges 513 into
-/// it, and 80 are dropped → fails.
 #[test]
 fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
     const LEN: usize = 640;
@@ -922,10 +866,6 @@ fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
 /// the sink merges the flush with the port's 32 due events: the merge
 /// buffer is sized from the widened slots, so all 35 land — A's on their
 /// frames, B's from offset 0 keeping their spacing.
-///
-/// Mutation (run): size `Inject::merged` from the planned slots (`widest`
-/// without `extra`) → it holds 3 + 16, and 16 of the 35 are dropped →
-/// fails.
 #[test]
 fn a_flush_into_a_port_a_lowered_bound_widened_drops_nothing() {
     const LATE: usize = 256;

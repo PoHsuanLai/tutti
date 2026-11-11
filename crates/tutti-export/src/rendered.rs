@@ -27,8 +27,8 @@ use tutti_types::{SampleRate, Samples};
 /// ```
 ///
 /// A struct literal and a write to a field are refused outside this crate
-/// (the mutation: making the fields `pub` makes both doctests compile, and
-/// so fail; each has a compiling twin through [`new`](Self::new) and the
+/// (each has a compiling twin through
+/// [`new`](Self::new) and the
 /// getters above):
 ///
 /// ```compile_fail,E0451

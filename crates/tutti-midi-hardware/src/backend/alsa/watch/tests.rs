@@ -1,7 +1,6 @@
 use super::*;
 
-/// Errors only end a drain when they come in a row. Mutation: `read` not
-/// resetting the count ends it after eight errors in total.
+/// Errors only end a drain when they come in a row.
 #[test]
 fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
     let mut errors = ErrorRun::default();
@@ -14,45 +13,6 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
     }
     assert!(errors.failed(), "the {MAX_DRAIN_ERRORS}th in a row ends it");
 }
-
-// Mutation record for the tests below, each seen to fail, then restored:
-// - `settle`'s loop bound `0..0` (the old order, one look and no second read):
-//   `a_read_that_finds_events_looks_again`, `events_read_after_a_look_are_kept`,
-//   `a_sequencer_that_never_quiets_ends_the_settle`,
-//   `an_exit_read_after_the_look_that_shows_its_successor_is_not_held_against_it`
-//   and `a_look_that_sees_a_new_client_before_its_start_is_read_reports_it`;
-// - `settle` dropping `more.events`: `events_read_after_a_look_are_kept`;
-// - `settle` calling `drain` while the look failed:
-//   `a_look_that_fails_is_retried_and_is_not_a_look`;
-// - `Tracker::replaced` treating `ClientExit`, `ClientChange`, `PortExit` or
-//   `PortChange` as a start: `late_exits_and_changes_of_an_old_owner_are_nothing`;
-// - `replaced` ignoring `ClientStart`: `an_identical_replug_is_removed_then_added_each_time`
-//   and `a_rename_lost_in_an_overrun_does_not_hide_a_later_replug`;
-// - `replaced` not touching a `PortStart` with no `ClientStart` before it:
-//   `a_port_made_again_on_a_live_client_is_a_new_occupant`;
-// - `step` not marking the handles listed first unconfirmed after a settle that
-//   did not quiet: `a_start_read_late_for_an_unconfirmed_handle_is_its_own`;
-// - `unconfirmed_after` leaving out the handles listed under another identity:
-//   `a_new_occupant_listed_by_a_look_that_did_not_quiet_has_its_start_still_to_come`;
-// - `unconfirmed_after` marking every present handle:
-//   `a_settle_that_does_not_quiet_does_not_hide_a_replug`;
-// - `step` treating a failed look as an empty one:
-//   `a_look_that_never_succeeds_reports_nothing_and_keeps_the_starts`;
-// - `step` not keeping `pending`: the same test, in its second round;
-// - `seed` taking one look and no read: `a_seeded_devices_queued_start_is_its_own`;
-// - `Drained::failed` not setting `any`: `a_failed_read_is_not_quiet`;
-// - `retry_after` always `None`, or `keep` not counting the failure:
-//   `a_removal_read_while_every_look_fails_is_reported_by_the_retry`;
-// - `seed` not counting a failed first look:
-//   `a_first_look_that_fails_is_retried`;
-// - `keep` not dropping past `MAX_PENDING`: `pending_announcements_are_bounded`;
-// - `Drained::full` with `>` for `>=`: `a_read_stops_at_its_cap`;
-// - `port_pending_after` listing no handle first (a new port's start is taken for
-//   a port made again): `a_new_port_listed_before_its_start_is_posted_is_not_made_again`;
-// - `step` clearing `port_pending` each wake:
-//   `a_port_start_still_to_come_survives_other_wakes`;
-// - `replaced` not marking the handles of a `ClientStart` pending
-//   (`fold.port_pending.insert(h)`): `a_replug_listed_before_its_port_start_is_not_made_again`.
 
 use crate::devices::os_devices;
 use crate::test_support::endpoint;
@@ -164,8 +124,7 @@ fn a_look_that_never_succeeds_gives_none() {
     assert!(settled.seen.is_none() && !settled.quiet);
 }
 
-/// A failed read is not a quiet one. Mutation: `failed` not setting `any` lets a
-/// settle stop on an overrun.
+/// A failed read is not a quiet one.
 #[test]
 fn a_failed_read_is_not_quiet() {
     let mut found = Drained::default();
@@ -357,9 +316,6 @@ fn an_exit_read_after_the_look_that_shows_its_successor_is_not_held_against_it()
 /// The old owner's `CLIENT_EXIT` is posted after the lock drops, so it can be
 /// read after the new owner's start. Nor does the old owner's late change
 /// matter. Neither is a start.
-///
-/// Mutation: `replaced` treating `ClientExit`, `ClientChange`, `PortExit` or
-/// `PortChange` as a start reports `Removed Two`, `Added Two`.
 #[test]
 fn late_exits_and_changes_of_an_old_owner_are_nothing() {
     let mut world = World::with("One", &[]);
@@ -379,8 +335,6 @@ fn late_exits_and_changes_of_an_old_owner_are_nothing() {
 }
 
 /// An identical device that takes the number is a new device each time.
-///
-/// Mutation: `replaced` ignoring `ClientStart` reports nothing.
 #[test]
 fn an_identical_replug_is_removed_then_added_each_time() {
     let mut world = World::with("One", &[]);
@@ -437,9 +391,6 @@ fn a_number_taken_twice_between_looks_is_one_replacement() {
 
 /// A port made again on a client that lives is a new occupant of its handle:
 /// removed and added, which closes a port held on the old one.
-///
-/// Mutation: `replaced` not touching a `PortStart` with no `ClientStart` before
-/// it reports nothing.
 #[test]
 fn a_port_made_again_on_a_live_client_is_a_new_occupant() {
     let mut world = World::with("One", &[]);
@@ -455,8 +406,6 @@ fn a_port_made_again_on_a_live_client_is_a_new_occupant() {
 /// The look shows a new, identical client whose start is queued but not yet
 /// read when the look is taken: the read that follows the look finds it, and the
 /// replacement is reported by that wake.
-///
-/// Mutation: `settle` with no second read reports it a wake late.
 #[test]
 fn a_look_that_sees_a_new_client_before_its_start_is_read_reports_it() {
     let mut world = World::with("One", &[]);
@@ -468,9 +417,6 @@ fn a_look_that_sees_a_new_client_before_its_start_is_read_reports_it() {
 
 /// A device whose start is still in the port when the first look is taken is
 /// the device that look lists: its start is not a new occupant.
-///
-/// Mutation: `seed` with one look and no read leaves the start for the next
-/// wake, which reports "One" removed and added.
 #[test]
 fn a_seeded_devices_queued_start_is_its_own() {
     let mut world = World::with("One", &START);
@@ -483,9 +429,6 @@ fn a_seeded_devices_queued_start_is_its_own() {
 /// When a settle does not quiet, the own start of a handle it lists first may
 /// not be read yet. The handle is unconfirmed: the first start read for it is its
 /// own, and the port start that follows its client's start is the same owner's.
-///
-/// Mutation: `step` not marking the handles unconfirmed reports the first start
-/// as a replacement.
 #[test]
 fn a_start_read_late_for_an_unconfirmed_handle_is_its_own() {
     let mut world = World::with("One", &[]);
@@ -515,10 +458,6 @@ fn a_start_read_late_for_an_unconfirmed_handle_is_its_own() {
 /// A settle that does not quiet (other clients keep announcing) says nothing
 /// about a handle already reported: its start was read, so a start read next is
 /// a new occupant and is reported.
-///
-/// Mutation: `unconfirmed_after` marking every present handle, not those listed
-/// first, swallows the replug's start (seen in the stress as the swap test timing
-/// out).
 #[test]
 fn a_settle_that_does_not_quiet_does_not_hide_a_replug() {
     let mut world = World::with("One", &[]);
@@ -542,9 +481,6 @@ fn after_an_overrun_the_next_replug_is_reported() {
 
 /// A look cut short is not reported: the devices it omits are not removed. The
 /// announcements read meanwhile are kept for the next look.
-///
-/// Mutations: `step` treating a failed look as an empty one removes "One"
-/// at once; `step` not keeping `pending` loses the replug in the second round.
 #[test]
 fn a_look_that_never_succeeds_reports_nothing_and_keeps_the_starts() {
     let mut world = World::with("One", &[]);
@@ -569,9 +505,6 @@ fn a_look_that_fails_once_costs_nothing() {
 /// A new port is visible (`snd_seq_insert_port`) before its `PORT_START` is
 /// posted, so a look lists a device whose own port start is read by a later
 /// wake. That start is the port's own, not a port made again.
-///
-/// Mutation: `port_pending_after` listing no handle first reports "Two" removed
-/// and added again by the later wake.
 #[test]
 fn a_new_port_listed_before_its_start_is_posted_is_not_made_again() {
     let mut world = World::with("One", &[]);
@@ -590,9 +523,6 @@ fn a_new_port_listed_before_its_start_is_posted_is_not_made_again() {
 }
 
 /// The own start can come several wakes after the port is listed.
-///
-/// Mutation: `step` clearing `port_pending` each wake reports the late start as
-/// a port made again.
 #[test]
 fn a_port_start_still_to_come_survives_other_wakes() {
     let mut world = World::with("One", &[]);
@@ -610,9 +540,6 @@ fn a_port_start_still_to_come_survives_other_wakes() {
 /// An identical client takes the number and its port is listed before its
 /// `PORT_START` is posted: the client's start already replaced the handle, and
 /// the port start after it is that owner's own.
-///
-/// Mutation: `replaced` not marking the handles of a `ClientStart` pending
-/// reports the replug twice.
 #[test]
 fn a_replug_listed_before_its_port_start_is_not_made_again() {
     let mut world = World::with("One", &[]);
@@ -632,9 +559,6 @@ fn a_replug_listed_before_its_port_start_is_not_made_again() {
 /// The announcements of an unplug are read, then every look fails: the watch
 /// has nothing to wait on, so it asks to be woken again, and the removal is
 /// reported by that wake and not by some other announcement.
-///
-/// Mutations: `retry_after` always `None`, or `keep` not counting the failure,
-/// leaves `retry_after` empty here.
 #[test]
 fn a_removal_read_while_every_look_fails_is_reported_by_the_retry() {
     let mut world = World::with("One", &[]);
@@ -663,9 +587,6 @@ fn the_retry_backs_off_to_a_second() {
 }
 
 /// A first look that fails is retried; until one is whole nothing is listed.
-///
-/// Mutation: `seed` not counting the failure leaves no retry, and the device is
-/// not reported until some announcement comes.
 #[test]
 fn a_first_look_that_fails_is_retried() {
     let mut world = World::build("One", &[], 1000);
@@ -679,8 +600,6 @@ fn a_first_look_that_fails_is_retried() {
 
 /// Announcements held while no look succeeds are bounded; past the bound they are
 /// dropped as an overrun drops them, and the next look is the truth.
-///
-/// Mutation: `keep` not dropping lets `pending` grow past `MAX_PENDING`.
 #[test]
 fn pending_announcements_are_bounded() {
     let mut world = World::with("One", &[]);
@@ -712,9 +631,6 @@ fn a_read_stops_at_its_cap() {
 /// A look that did not quiet can list a new occupant on a reported handle whose
 /// client start is still unread; the wake that reads it is not a second
 /// replacement.
-///
-/// Mutation: `unconfirmed_after` leaving out the handles listed under another
-/// identity reports "Two" removed and added again.
 #[test]
 fn a_new_occupant_listed_by_a_look_that_did_not_quiet_has_its_start_still_to_come() {
     let mut world = World::with("One", &[]);

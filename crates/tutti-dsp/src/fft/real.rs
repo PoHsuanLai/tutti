@@ -381,11 +381,6 @@ mod tests {
     /// against an analytic figure and not against another FFT. Every size up
     /// to 64, even and odd: the even ones include those that are not a
     /// multiple of four (an odd bin count, a lone centre bin).
-    ///
-    /// Mutation (run): drop the `bins[bins_len / 2].im = -...` line in
-    /// `forward_even` -> the size-6 case fails; swap `w * 0.5` for `w` in
-    /// `EvenPass::new` -> every even size fails; in the odd inverse, write
-    /// `work[self.size - k] = bin` (no conjugate) -> every odd size fails.
     #[test]
     fn the_transform_is_the_dft_for_every_size() {
         for n in 1..=64usize {
@@ -419,9 +414,6 @@ mod tests {
 
     /// Odd sizes the analysis kernels run (7, 255, 301) and a prime large
     /// enough to leave the small butterflies, against the DFT.
-    ///
-    /// Mutation (run): take `bins.len() - 1` bins from the odd forward (copy
-    /// `work[1..=bins.len()]`) -> fails at every size.
     #[test]
     fn larger_odd_sizes_match_the_dft() {
         for n in [127usize, 255, 301] {
@@ -443,12 +435,6 @@ mod tests {
     /// A non-zero imaginary DC or Nyquist is not part of a real signal: the
     /// inverse must neither panic nor let those parts reach the signal. Any
     /// non-zero value does this; NaN is the worst of them. Even and odd.
-    ///
-    /// Mutation (run): delete the `bins[..].im = 0.0` lines in `inverse_even`
-    /// -> the `0.25`/`-0.75` frame no longer equals the clean one (and the NaN
-    /// frame's output is not finite) and this test fails. The odd arm's equivalent is not mutation-covered:
-    /// DC is added to every output point untwiddled, so its imaginary part
-    /// only ever reaches the discarded imaginary output.
     #[test]
     fn the_inverse_ignores_dc_and_nyquist_imaginary_parts() {
         for n in [64usize, 63] {
@@ -477,7 +463,7 @@ mod tests {
     /// The scratch is shared by both directions, so it must cover the larger
     /// of the two plans' needs, at every size.
     ///
-    /// Not mutation-covered: rustfft 6.4's scalar out-of-place scratch length
+    /// Not covered: rustfft 6.4's scalar out-of-place scratch length
     /// is 0 at every size, so sizing it from one direction alone still passes.
     /// This is a cheap guard for a future rustfft whose scratch is nonzero or
     /// differs by direction; it cannot fail today.
@@ -508,10 +494,6 @@ mod tests {
     /// Only the x86_64 Linux/glibc golden exists: aarch64 and the other
     /// platforms are covered by the analytic DFT tests alone, which pin
     /// correctness but not the scalar choice.
-    ///
-    /// Mutation (run): build the plans on `rustfft::FftPlanner` instead of
-    /// `FftPlannerScalar` in `RealFft::new` -> the digest moves on an AVX
-    /// machine.
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     #[test]
     fn the_fft_is_scalar_so_results_match_across_cpus() {
@@ -547,8 +529,6 @@ mod tests {
     ///
     /// Like the even one, it exists only on x86_64 Linux/glibc; aarch64 and the
     /// other platforms are covered by the analytic DFT tests alone.
-    ///
-    /// Mutation (run): as above, in the odd arm of `RealFft::new`.
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     #[test]
     fn the_odd_fft_is_scalar_too() {

@@ -146,11 +146,6 @@ mod tests {
     /// not the default piano), forked for a render at 48 and at 96 kHz: a
     /// note renders sample for sample what a fresh unit built at the render's
     /// rate on that preset renders.
-    ///
-    /// Mutation (run): the node's `prepare` not re-rating → at 96 kHz the
-    /// fork renders the 48 kHz unit's note, not the reference. Mutation
-    /// (run): `Synthesizer::with_sample_rate` not copying `channels` → the
-    /// 96 kHz fork plays the piano.
     #[test]
     fn a_fork_plays_at_the_render_rate_on_the_live_preset() {
         let font = soundfont();
@@ -178,9 +173,6 @@ mod tests {
     /// is released in the fork, and dies away there, while the live unit
     /// holds it. An organ preset (16), which sustains while its key is down,
     /// tells the two apart.
-    ///
-    /// Mutation (run): `fork_instance` not calling `release_all` → the fork
-    /// sustains the held organ note → fails.
     #[test]
     fn a_fork_releases_every_held_key() {
         let font = soundfont();

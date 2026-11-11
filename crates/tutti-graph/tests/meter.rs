@@ -137,8 +137,6 @@ fn level(m: &mut MeterReader) -> Vec<(f32, f32, usize)> {
 /// A constant reads its peak and RMS exactly, on the outputs and on a node
 /// port, per channel: six outputs hold 2^-1 .. 2^-6 and each reads its own.
 /// The master reads what the outputs carry, and the outputs are untouched.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_constant_reads_exactly_per_channel() {
     let mut r = rig(1, false);
@@ -172,9 +170,6 @@ fn a_constant_reads_exactly_per_channel() {
 /// The meter op on the audio thread allocates nothing, with the meter enabled,
 /// over many blocks, and the meter really read (a gate around a meter that
 /// measured nothing would pass). Serial; the parallel gate is below.
-///
-/// Mutation (run, recorded here): `Vec::with_capacity(1)` in `meter_op` -> the
-/// gate panics.
 #[test]
 fn measuring_is_allocation_free_with_the_meter_enabled() {
     let mut r = rig(1, true);
@@ -217,8 +212,6 @@ impl Node for Spike {
 
 /// One spike in a long block is held until it is read, whatever the blocks
 /// after it, and read once; the RMS covers every frame since the last read.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_spike_is_held_until_read_and_read_once() {
     let mut r = rig(1, false);
@@ -261,8 +254,6 @@ fn a_spike_is_held_until_read_and_read_once() {
 /// A meter measures only while enabled: a disabled one reads nothing of a
 /// rendered block, and an enabled one reads the next. What was held stays
 /// readable after a disable.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn an_enabled_meter_reads_the_block() {
     let mut r = rig(1, false);
@@ -288,8 +279,6 @@ fn an_enabled_meter_reads_the_block() {
 
 /// The master meter follows the outputs: rewiring a channel to silence reads
 /// zero, and a wider output set widens the meter.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn the_master_follows_the_outputs() {
     let mut r = rig(1, false);
@@ -315,8 +304,6 @@ fn the_master_follows_the_outputs() {
 
 /// `read_into` fills what fits and reports it; a short buffer takes only the
 /// lanes it writes, leaving the rest held.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn read_into_takes_only_what_it_writes() {
     let mut r = rig(1, false);
@@ -339,8 +326,6 @@ fn read_into_takes_only_what_it_writes() {
 
 /// The plan's meter ops: one per meter whatever its width, none once closed,
 /// and a closed plan has the ops of a graph that never had a meter.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_closed_meter_leaves_no_op() {
     let mut r = rig(1, false);
@@ -372,8 +357,6 @@ fn a_closed_meter_leaves_no_op() {
 /// commit, and its cells are freed on the control side (a writer dropped in a
 /// block is a debug panic). Rendering with nobody reading writes nothing
 /// anyone sees and allocates nothing.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_reader_dropped_is_reaped_and_its_cells_freed_off_the_audio_thread() {
     let mut r = rig(1, true);
@@ -396,8 +379,6 @@ fn a_reader_dropped_is_reaped_and_its_cells_freed_off_the_audio_thread() {
 
 /// The reader is control-side state: dropping it inside a block is a debug
 /// panic, as for a unit.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "a meter reader dropped on the audio thread")]
@@ -412,8 +393,6 @@ fn a_reader_dropped_on_the_audio_thread_panics() {
 
 /// Removing a metered node leaves its lane on silence, the other lanes play
 /// on, and the graph still commits.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn removing_a_metered_node_silences_its_lane() {
     let mut r = rig(1, false);
@@ -434,8 +413,6 @@ fn removing_a_metered_node_silences_its_lane() {
 
 /// A key is the author's and can be inserted again after a removal: a meter
 /// left naming the removed node must not start reading the new one.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_reused_key_is_not_read_by_the_old_meter() {
     let mut r = rig(1, false);
@@ -553,8 +530,6 @@ fn output_bits(workers: usize, master: bool, track: bool) -> Vec<u32> {
 /// paths, ragged blocks, stopped blocks and a seek, the outputs are identical
 /// with no meter, a master meter, an aligned track meter and both, serial and
 /// on a pool of three inside `assert_no_alloc`.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_meter_changes_no_output_bit() {
     let bare = output_bits(1, false, false);
@@ -573,8 +548,6 @@ fn a_meter_changes_no_output_bit() {
 /// A node replaced by one with fewer outputs leaves the meter's lanes past the
 /// new width on silence, and the commit succeeds: a display must not wedge the
 /// graph. (A tap does the same: `tests/tap.rs`.)
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_narrowed_node_silences_the_lanes_past_its_width_and_commits() {
     let mut r = rig(1, false);
@@ -647,8 +620,6 @@ impl Node for Pulse {
 ///
 /// 40-frame block, 50-frame pulse, 30 frames of latency: the aligned lane has
 /// 10 ones in the first block (RMS 0.5), the raw one 40 (RMS 1.0).
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn the_master_reads_at_the_outputs_time() {
     let mut r = rig(1, false);
@@ -713,8 +684,6 @@ fn the_master_reads_at_the_outputs_time() {
 /// Closing, then declaring the same id again, makes a fresh meter: the new
 /// reader is fed from the next commit, and the old one gets nothing more. An
 /// id opened over a live one replaces it the same way.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_meter_can_be_redeclared() {
     let mut r = rig(1, false);
@@ -754,8 +723,6 @@ fn a_meter_can_be_redeclared() {
 /// A meter's lanes are fixed by how it was opened: editing a `Ports` list to
 /// another length, or growing the outputs a master follows past the cells, is
 /// refused at the commit.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_meter_cannot_change_its_width_under_its_cells() {
     let mut r = rig(1, false);
@@ -800,8 +767,6 @@ fn a_meter_cannot_change_its_width_under_its_cells() {
 ///
 /// The fork carries no meter by construction: `fork_gather` builds the fork's
 /// topology piecewise from inputs, outputs and edges.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn a_fork_meters_its_own_render_and_leaves_the_live_meter_alone() {
     let mut r = rig(1, false);
@@ -880,8 +845,6 @@ fn run(r: &mut Rig, blocks: usize) -> Vec<Vec<Level>> {
 
 /// The parallel render's readings are bit-identical to the serial one at
 /// several worker counts, with every participant inside `assert_no_alloc`.
-///
-/// Mutation (run, recorded here): see the list at the end of this file.
 #[test]
 fn the_parallel_meters_are_bit_identical_and_allocation_free() {
     let mut s = rig(1, false);
@@ -896,40 +859,3 @@ fn the_parallel_meters_are_bit_identical_and_allocation_free() {
         assert_eq!(serial, par, "{workers} workers");
     }
 }
-
-// Mutations, each run, with the test that failed (and the others noted):
-// - `block_stats` summing `s` for `s * s`: `a_constant_reads_exactly_per_channel`,
-//   `a_spike_is_held_until_read_and_read_once` (RMS).
-// - `Lane::take` loading the peak instead of swapping it:
-//   `a_spike_is_held_until_read_and_read_once` (the second read still shows 1.0).
-// - deleting the `enabled` early return in `meter_op`:
-//   `an_enabled_meter_reads_the_block` (the off meter reads 0.5).
-// - `Executor::rebuild` not calling `set_width` (width stays 0 for `Outputs`):
-//   `the_master_follows_the_outputs` and every master reading.
-// - `read_into` taking every lane, not those it writes:
-//   `read_into_takes_only_what_it_writes`.
-// - `Editor::close_meter` leaving the spec's `MeterSpec` in place:
-//   `a_closed_meter_leaves_no_op`.
-// - `Editor::reap_meters` returning 0 always: the reaped-reader test.
-// - deleting `check_outside` from `MeterReader::drop`:
-//   `a_reader_dropped_on_the_audio_thread_panics`.
-// - `compile` indexing `audio_out_val[&p]` for a meter lane instead of
-//   `.get`: `removing_a_metered_node_silences_its_lane` and
-//   `a_narrowed_node_silences_the_lanes_past_its_width_and_commits` panic.
-// - letting the carried writer win over the one just opened in `rebuild`:
-//   `a_meter_can_be_redeclared`.
-// - `check_meter_widths` returning `Ok(())` at once:
-//   `a_meter_cannot_change_its_width_under_its_cells`.
-// - copying the live meters into the fork's editor in `fork_gather`:
-//   `a_fork_meters_its_own_render_and_leaves_the_live_meter_alone`.
-// - making the `Op::Meter` arm of `par.rs` a no-op: the parallel test.
-// - deleting the meters loop in `Editor::remove`: `a_reused_key_is_not_read_by_the_old_meter`
-//   (the meter reads the new node, 0.125).
-// - the master's `Output` reading the undelayed source when a meter is
-//   declared (`src` left at the pre-delay slot, `delay` dropped):
-//   `a_meter_changes_no_output_bit`.
-// - the master's lanes taken from the pre-delay sources (`output_refs.push`
-//   the undelayed `src`, no `Delay` op for the master): `the_master_reads_at_the_outputs_time`
-//   (the master reads 40 ones, RMS 1.0).
-// - an aligned `Ports` lane without its `Delay` (`align` treated as `Raw`):
-//   `the_master_reads_at_the_outputs_time` (the aligned meter reads RMS 1.0).

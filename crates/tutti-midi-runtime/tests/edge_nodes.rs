@@ -244,9 +244,6 @@ fn cc_at(offset: u32, channel: u8, control: CCNumber, value: u8) -> UmpAt {
 /// channel 9 before one on channel 0 in arrival order but after it in time,
 /// and a Timing Clock (no channel): channel 0's on port 0 at 10, channel
 /// 9's on port 9 at 40, the clock on the channelless port at 20.
-///
-/// Mutation: send everything out of port 0 → fails. (The sort is pinned by
-/// `the_queue_sends_in_offset_order`: here each port holds one event.)
 #[test]
 fn each_event_leaves_on_its_channels_port() {
     let clock = at(20, timing_clock(MidiGroup::FIRST));
@@ -262,10 +259,6 @@ fn each_event_leaves_on_its_channels_port() {
 /// different ports, so a synth wired to one hears the other never; a Group
 /// the node was not built to hear is not delivered; the fork of such a node
 /// has the same ports.
-///
-/// Mutation: `port_of` ignoring the Group -> both notes arrive on port 1
-/// and the first assertion fails; the fork built with the first Group's ports
-/// -> `fork` is refused for the shape's width and the last assertion fails.
 #[test]
 fn a_groups_channels_leave_on_their_own_ports() {
     let group = |g: u8, channel: u8, n: u8| {
@@ -306,9 +299,6 @@ fn a_groups_channels_leave_on_their_own_ports() {
 /// The parameter select arrives in one block, its Data Entry (CC 6, then the
 /// CC 38 that sends it, M2-104 D.3.3) in the next: one Registered Controller
 /// arrives, on channel 3's port.
-///
-/// Mutation: a fresh translator each block → the Data Entry passes as a
-/// plain CC → fails.
 #[test]
 fn an_rpn_run_split_across_blocks_is_assembled() {
     let wire = Script::new(vec![
@@ -457,11 +447,6 @@ fn two_devices_notes_merge_on_the_channels_port() {
 /// request latches, so it is read every block. Adopting it sends the zone's
 /// default bend ranges once, in the first block (master and six members:
 /// seven registered controllers).
-///
-/// Mutation: adopt without comparing against the mode in force (`set_mode`
-/// every block) → the voice map resets → the bends resolve to nothing and
-/// are absorbed, and the ranges go out every block → fails. Mutation
-/// (run): adopt without sending the ranges → none go out → fails.
 #[test]
 fn a_requested_mpe_mode_is_adopted_once() {
     let member = MidiChannel::of(1);
@@ -507,13 +492,10 @@ fn a_requested_mpe_mode_is_adopted_once() {
 /// reset (±48 per member) and the wire's range (±12 per member) land on
 /// frame 0; a receiver reading each member's port in order must end at the
 /// wire's ±12, which came after the mode it was sent in.
-///
-/// Mutation (run): stage the reset after the poll loop → every member ends
-/// at the reset's ±48 → fails.
 #[test]
 fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
+    use tutti_fixtures::midi::BendRanges;
     use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_plugin_types::PerNoteBendRanges;
     use tutti_ump::Rpn;
     let range = at(
         0,
@@ -529,7 +511,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
     controls.set_mpe_mode(tutti_fixtures::midi::lower_zone(6));
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     let mut per_member = 0;
     for (_, frame, ev) in seen.iter() {
         if ranges.observe(ev) {
@@ -555,13 +537,9 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
 /// seven members, a MIDI 1.0 RPN 0 run (12 semitones) on member 2 and then a
 /// note on member 1: ports 1 to 7 each receive RPN #00/07 at 12 semitones,
 /// and port 1 the note too.
-///
-/// Mutation (run): the node writes translated events back into its poll
-/// buffer, as it did when each event made at most one → the seven-event
-/// fan-out overwrites the unread note → fails.
 #[test]
 fn a_member_bend_range_fans_out_over_the_zones_ports() {
-    use tutti_plugin_types::PerNoteBendRanges;
+    use tutti_fixtures::midi::BendRanges;
     let wire = Script::new(vec![vec![
         cc_ev(2, CCNumber::RPN_MSB, 0),
         cc_ev(2, CCNumber::RPN_LSB, 0),
@@ -573,7 +551,7 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
     let (_ed, mut exec, _c, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     let mut range_ports = Vec::new();
     for (port, _, ev) in seen.iter() {
         if ranges.observe(ev) {
@@ -604,13 +582,9 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
 /// not fit after the 507 notes (512 slots), so all seven are dropped and
 /// counted, and the note after them still goes out: 508 events, no per-note
 /// range.
-///
-/// Mutation (run): stage each translated event while a slot is free (the
-/// fan-out cut partway, as before) → four ranges go out and the note is
-/// dropped → fails. Mutation (run): leave the counter out → 0 → fails.
 #[test]
 fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
-    use tutti_plugin_types::PerNoteBendRanges;
+    use tutti_fixtures::midi::BendRanges;
     // The run is sent after the notes: an inlet delivers in time order.
     let mut batch: Vec<UmpAt> = (0..507).map(|i| note(0, 60, i)).collect();
     batch.extend([
@@ -625,7 +599,7 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     let (_ed, mut exec, controls, seen) = ingest(node, MIDI_INPUT_PORTS as u16, 512);
     block(&mut exec, 512);
     let seen = seen.lock().unwrap();
-    let mut ranges = PerNoteBendRanges::default();
+    let mut ranges = BendRanges::default();
     assert!(
         !seen.iter().any(|s| ranges.observe(&s.2)),
         "no range went out"
@@ -641,9 +615,6 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
 /// may use) and four note-offs on
 /// member 1: all four go out, in the room past the capacity, and nothing is
 /// dropped or counted. A note-on in their place would be dropped.
-///
-/// Mutation (run): limit a note-off to the capacity like the others (`limit`
-/// in `Staging::whole`) → the four note-offs are dropped and counted → fails.
 #[test]
 fn a_note_off_has_room_past_the_capacity() {
     let mut batch: Vec<UmpAt> = (0..504).map(|i| note(0, 60, i)).collect();
@@ -671,8 +642,6 @@ fn a_note_off_has_room_past_the_capacity() {
 }
 
 /// **An input node's fork reads no wire.**
-///
-/// Mutation: the fork polling the live wire → it takes the batch → fails.
 #[test]
 fn an_input_nodes_fork_is_silent() {
     let wire = Script::new(vec![vec![note(0, 60, 0)]]);
@@ -690,10 +659,6 @@ fn an_input_nodes_fork_is_silent() {
 /// nobody drains: 256 dropped; what is drained is the first 1 024, the
 /// first on its frame (block 0, offset 7) and the last of them on block 3's
 /// (frame 1 536 plus offset 8).
-///
-/// Mutation (run): not counting a refused push → `dropped` stays 0 →
-/// fails. Mutation (run): stamping the offset in the block alone → the last
-/// reads 8 → fails.
 #[test]
 fn an_event_tap_hands_midi_back_and_counts_drops() {
     let (mut ed, mut exec) =
@@ -722,10 +687,6 @@ fn an_event_tap_hands_midi_back_and_counts_drops() {
 /// 100 frames, then rolling at 120 BPM: Start and the first tick at frame
 /// 100, the next tick 1 000 frames on (a 24-PPQN tick at 48 kHz, the rate
 /// `prepare` gave the master).
-///
-/// Mutation: tick once per block with the block's first transport (not per
-/// segment) → stopped all block, nothing sent → fails. Mutation: `prepare`
-/// not setting the rate → the master has rate 0 and sends nothing → fails.
 #[test]
 fn a_start_inside_a_block_clocks_from_its_frame() {
     let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, 2048);
@@ -750,9 +711,6 @@ fn a_start_inside_a_block_clocks_from_its_frame() {
 }
 
 /// **A clock's fork sends nothing.**
-///
-/// Mutation (run): the fork a node over the live master → it sends Start →
-/// fails.
 #[test]
 fn a_clocks_fork_sends_nothing() {
     let (live, _exec, clock, seen) = rig(ClockNode::new(), 1, 512);
@@ -780,9 +738,6 @@ fn a_clocks_fork_sends_nothing() {
 /// port's 256. The same span in four quarter-length blocks fits every event,
 /// so it is the reference total: what one long block sent plus what it
 /// counted must equal it, exactly.
-///
-/// Mutation (run): drop the `count_dropped` call (the old silent drop) → the
-/// count stays 0 and the sum falls short → fails.
 #[test]
 fn a_clock_flood_past_the_port_capacity_is_counted() {
     use tutti_midi_runtime::CLOCK_EVENT_CAPACITY;
@@ -829,9 +784,6 @@ fn a_clock_flood_past_the_port_capacity_is_counted() {
 /// has no wrap of its own. Block start: Song Position, Continue (beat 1.0 is
 /// no Start) and the tick; ticks every 1 000 frames; then on 2 400 the
 /// wrap's Song Position and the tick on the loop's start.
-///
-/// Mutation (run): forget that a piece ended on a wrap (store `false` for
-/// `prev.wrapped`) → no Song Position on frame 2 400 → fails.
 #[test]
 fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
     use tutti_graph::LoopRange;
@@ -874,9 +826,6 @@ fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
 /// rest, without panicking; the same span in blocks of 1 024 (each under the
 /// cap) loses none, and what the one block sent plus what it counted is what
 /// the blocks sent, exactly.
-///
-/// Mutation (run): drop the `count_dropped` call → the count stays 0 and the
-/// sum falls short → fails.
 #[test]
 fn a_short_loop_in_a_long_block_is_counted_past_the_cap() {
     use tutti_graph::LoopRange;

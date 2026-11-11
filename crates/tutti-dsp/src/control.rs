@@ -103,10 +103,6 @@ mod tests {
     use super::*;
 
     /// The last sample is the target bit-for-bit, whatever the arithmetic.
-    ///
-    /// Mutation: computing the last sample as `from + step * n` like the rest
-    /// fails this for `0.7 -> 0.2`, where that sum lands on `0.19999999` in
-    /// f32.
     #[test]
     fn a_ramp_ends_exactly_on_its_target() {
         for (from, to, n) in [(0.7f32, 0.2f32, 64usize), (3.3, 1.1, 17), (5.0, 5.0, 3)] {
@@ -128,9 +124,6 @@ mod tests {
 
     /// The ramp starts one step in, not on `from`: `from` was already the
     /// previous block's last sample.
-    ///
-    /// Mutation: `step * i` instead of `step * (i + 1)` makes the first sample
-    /// equal `from` and fails.
     #[test]
     fn the_first_sample_has_already_moved_one_step() {
         let r = Ramp::new(0.0, 1.0, 4);

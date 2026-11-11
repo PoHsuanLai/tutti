@@ -137,9 +137,6 @@ const PROBES: [f32; 5] = [100.0, 500.0, 1_000.0, 2_000.0, 10_000.0];
 /// If a future `biquad` release fixes its omega, this test fails and says so —
 /// which is the point. The three response tests would otherwise start
 /// comparing against a filter two octaves away with no visible cause.
-///
-/// Mutation: `BIQUAD_OMEGA_BUG` 4.0 → 1.0 (i.e. "the oracle is fine") → fails,
-/// biquad reporting -1.953721 against the cookbook's -1.815318.
 #[test]
 fn the_compensated_oracle_matches_the_rbj_cookbook() {
     let coeffs = Coefficients::<f32>::from_params(
@@ -169,9 +166,6 @@ fn the_compensated_oracle_matches_the_rbj_cookbook() {
 }
 
 /// Low-pass: the two topologies must agree on the response.
-///
-/// Mutation: SVF cutoff x1.01 (a 1% error) -> fails, 0.1734 dB against the
-/// 0.01 dB bound.
 #[test]
 fn svf_lowpass_tracks_an_rbj_biquad() {
     let mut worst = 0.0f64;
@@ -195,9 +189,6 @@ fn svf_lowpass_tracks_an_rbj_biquad() {
 }
 
 /// High-pass: same claim, and it catches an inverted response.
-///
-/// Mutation: SVF cutoff x1.01 -> fails at 0.1734 dB, the same sensitivity as
-/// the low-pass.
 #[test]
 fn svf_highpass_tracks_an_rbj_biquad() {
     let mut worst = 0.0f64;
@@ -216,11 +207,6 @@ fn svf_highpass_tracks_an_rbj_biquad() {
 
 /// Band-pass. `biquad`'s `BandPass` is the unity-peak (constant-0-dB) form,
 /// which is the same normalization the SVF's `m1 = 1/q` mix produces.
-///
-/// Mutation: SVF cutoff x1.01 -> fails at 0.0867 dB. Half the low-pass figure:
-/// a band-pass is symmetric about the corner, so shifting it moves the two
-/// skirts in opposite directions and the RMS sees partial cancellation. Still
-/// 8x the bound.
 #[test]
 fn svf_bandpass_tracks_an_rbj_biquad() {
     let mut worst = 0.0f64;

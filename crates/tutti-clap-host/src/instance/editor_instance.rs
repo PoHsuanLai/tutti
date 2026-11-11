@@ -307,7 +307,7 @@ mod tests {
     //! That gap is stated rather than left to be inferred from the test names,
     //! because it is exactly the kind a reader would assume closed: **reverting
     //! `poll_edits` to its original `Vec::new()` leaves every test
-    //! below green.** Verified by mutation. The bug this change exists to fix
+    //! below green.** The bug this change exists to fix
     //! is pinned at the conversion, not at the wiring, so a refactor that stops
     //! calling the helper would not be caught here. Closing it needs an
     //! integration test against a real plugin, beside `tests/clap_*.rs`.

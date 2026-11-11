@@ -66,12 +66,6 @@ impl Counts {
 /// Start counting this thread's allocations, frees and payload drops, from
 /// zero.
 pub fn begin_counting() {
-    // Mutation (recorded in `tests/instruments.rs`): delete this line, so no
-    // thread is ever counted. Every reader row then reads 0 allocations and 0
-    // frees, including arc-swap's naive store, and
-    // `a_free_on_a_counting_thread_is_counted`,
-    // `a_payload_counts_itself_and_its_drop` and
-    // `a_promoted_arc_swap_guard_frees_on_the_reader` fail.
     COUNTING.with(|c| c.set(true));
     ALLOCS.with(|c| c.set(0));
     FREES.with(|c| c.set(0));

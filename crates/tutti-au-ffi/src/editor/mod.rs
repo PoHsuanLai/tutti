@@ -206,9 +206,6 @@ mod tests {
     }
 
     /// `open` off the main thread is refused, whatever thread was "marked".
-    ///
-    /// Mutation (run): drop the `on_main_thread` check in `open` -> the call
-    /// proceeds and fails with a different error, so this fails.
     #[test]
     fn open_off_the_main_thread_is_refused() {
         let desc = coreaudio_sys::AudioComponentDescription {

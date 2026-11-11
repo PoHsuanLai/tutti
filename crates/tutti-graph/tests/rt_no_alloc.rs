@@ -42,12 +42,6 @@ static A: AllocDisabler = AllocDisabler;
 /// parallel path, helpers included (`1`: serial, no pool). Set before the
 /// first commit is applied, so the parallel state is built with the plan,
 /// outside the gate, as applying is.
-///
-/// Mutation (each applied to `src/par.rs`, seen to fail, reverted): allocate
-/// one byte per op in `Shared::run_op` → every parallel gate aborts (the
-/// serial ones pass); build the workers' overlay buffers with `Vec::new()` →
-/// `parallel_process_is_allocation_free_in_steady_state` aborts when the
-/// first scheduled command merges on a helper.
 fn use_pool(exec: &mut tutti_graph::Executor, workers: usize) {
     if workers > 1 {
         exec.set_pool(Some(common::TestPool::no_alloc(workers)));
@@ -68,15 +62,6 @@ fn from(node: u64, port: u16) -> Edge {
     }))
 }
 
-/// Mutation: in `Executor::apply`, create the event slots with `Vec::new()`
-/// instead of `Vec::with_capacity(cap)` → the first event a writer accepts
-/// inside the gate grows its slot → aborts. Mutation: size the command
-/// overlay with `Vec::new()` in `rebuild` → the first scheduled command to
-/// land inside the gate grows it → aborts. Mutation: build the command
-/// channel's pending list with `Vec::new()` → aborts. (The transport
-/// history `process` feeds every block is a fixed array, with nothing to
-/// allocate; that `process` feeds it at all is pinned by
-/// `arrival_transport.rs`'s "drop `history.observe`" mutation.)
 fn process_is_allocation_free_in_steady_state_on(workers: usize) {
     let (mut ed, mut exec) = Editor::new(prepare(256));
     use_pool(&mut exec, workers);
@@ -296,12 +281,6 @@ fn parallel_process_is_allocation_free_in_steady_state() {
 /// on an in-place stereo gain and on an event consumer (the general form).
 /// The commits are applied before the gate, since applying allocates by
 /// design; everything a fade does after that runs inside it.
-///
-/// Mutation: build the fade-return ring with room for one crossfade
-/// (`FADE_CAPACITY` 1 in `channels`) → the second ending fade finds it full
-/// inside the gate → the push's assert fires → fails. Mutation: allocate
-/// the blend's gains per block (collect them into a `Vec` in
-/// `fading_node_op`) → aborts.
 fn crossfades_are_allocation_free_on(workers: usize) {
     let (mut ed, mut exec) = Editor::new(prepare(256));
     use_pool(&mut exec, workers);
@@ -492,13 +471,6 @@ impl Node for Tally {
 /// the executor's default capacity at **1** — so every buffer on the way
 /// must have been sized from the declarations. Nothing but the writers
 /// refuses: the executor's drop count is exactly what the nodes were told.
-///
-/// Mutation: size event slots from the default alone
-/// (`Vec::with_capacity(cap)` in `Executor::rebuild`) → the writers grow
-/// their slots on the first bar (in the warm-up, outside the gate) and the
-/// merges, sized for one per source, drop what the writers accepted →
-/// fails. Mutation: size the PDC FIFOs from the default (`rate(from)` →
-/// `cap`) → they overflow and drop more than the writers refused → fails.
 fn declared_event_capacities_are_allocation_free_on(workers: usize) {
     let (mut ed, mut exec) = Editor::with_event_capacity(prepare(256), 1);
     use_pool(&mut exec, workers);
@@ -583,10 +555,6 @@ fn parallel_declared_event_capacities_are_allocation_free() {
 /// and nothing allocates on any participant, serial or parallel. What no entry
 /// names is counted instead, so entries plus the unreported count are exactly
 /// the total.
-///
-/// Mutation (run): push into the log without the capacity test in
-/// `Dropped::note` → the 65th entry reallocates inside the gate → aborts;
-/// the same in `Dropped::absorb` → the parallel gate aborts.
 fn losses_past_the_log_and_the_ring_are_allocation_free_on(workers: usize) {
     let (mut ed, mut exec) = Editor::new(prepare(256));
     use_pool(&mut exec, workers);
@@ -723,14 +691,6 @@ impl Node for RampEvery {
 /// blocks without a commit. The commits are applied before the gate
 /// (applying allocates by design); the declicks they start, and every block
 /// that reads a moved range, run inside it.
-///
-/// Mutation (run): in `ParamState::port`, copy the source's events into
-/// a `Vec` per block → aborts. Rebuild the ramp buffer per block
-/// (`self.ramp_buf = vec![0.0; frames]`) → aborts. Box the live range as it
-/// is read (`*Box::new(r.load(k))`) → aborts (in the first phase already:
-/// the range is read every block a port is modulated, moved or not).
-/// Allocate where `render_ramps` starts a segment (a `Vec` per segment
-/// event) → aborts.
 fn modulated_params_are_allocation_free_on(workers: usize) {
     use tutti_graph::ParamIn;
     let (mut ed, mut exec) = Editor::new(prepare(256));
@@ -846,9 +806,6 @@ fn parallel_modulated_params_are_allocation_free() {
 /// block of events into a node's event input, and while it collects a
 /// node's event output (both lists are reserved at `new`), under a rolling
 /// transport.
-///
-/// Mutation (run): `Direct::new` reserving no capacity (`Vec::new()` for
-/// the event lists) → the first `events` inside the gate allocates → fails.
 #[test]
 fn direct_driving_events_does_not_allocate() {
     use tutti_graph::contract::{Direct, Emitter, Pulse};
@@ -890,10 +847,6 @@ fn direct_driving_events_does_not_allocate() {
 /// Reporting a tail and parking on it never allocates: pulses into ringers
 /// that narrow their ceiling every block, through the serial executor and a
 /// pool whose every participant runs inside the gate.
-///
-/// Mutation: not run, and stated as such: the report path has no allocation
-/// to break (a stack `Cell`, a plain store). This pins that it stays so: a
-/// `Vec` or `Box` in the write-back in `node_op_with` would abort the gate.
 fn reporting_nodes_are_allocation_free_on(workers: usize) {
     use common::{Pulse, Ringer};
     let (mut ed, mut exec) = Editor::new(prepare(64));
@@ -950,10 +903,6 @@ fn parallel_reporting_nodes_are_allocation_free() {
 /// that fall silent one by one (a pulse each), so the silent-addend skip, the
 /// all-silent fill and the in-place form all run inside the gate, on the
 /// parallel executor's helpers too.
-///
-/// Mutation (each run, each failed): collect the live addends into a `Vec` in
-/// `sum_op` -> aborts on the first block; build the request table on the heap
-/// (`Vec`) in `sum_op` -> aborts.
 fn fan_in_is_allocation_free_on(workers: usize) {
     use common::Pulse;
     for n in [8u64, 64, 100] {
@@ -1057,13 +1006,6 @@ fn parallel_fan_in_is_allocation_free() {
 /// With `driven`, every lane is also driven by one of four lane nodes (two of
 /// them declaring latency, so the lanes behind them get event rings): each
 /// lane runs the param port's step, with its clamp and its values, per block.
-///
-/// Mutation (each run, each failed): build the per-lane ramp in a `Vec` in
-/// `gain::add` -> aborts on the first ramping block; collect the lanes' weights
-/// into a `Vec` in `sum_op` -> aborts; allocate in `SumLane::snapshot` -> aborts;
-/// (driven) size a lane's `ParamState` on first use (`ParamState::lane`
-/// called from `SumLane::weight`) -> aborts; collect a lane's events in a
-/// `Vec` in `sum_op` -> aborts.
 fn weighted_fan_in_is_allocation_free_on(workers: usize, driven: bool) {
     use common::Pulse;
     use tutti_graph::{EdgeGain, EdgeId, Sink};
@@ -1347,13 +1289,6 @@ fn mode_graph(workers: usize) -> (Editor, tutti_graph::Executor) {
 /// tables to observe and to close), a node with no audio input, and sums, has
 /// its mode moved every few blocks, so every block runs some node in a fade,
 /// parked, un-bypassing (reset, warm-up) or muted. Blocks of four lengths.
-///
-/// Mutation (each run, each failed): build the bypass line lazily in
-/// `ModeState::align` (`Vec::new()` then `resize`) → aborts on the first
-/// latent block; collect a block's closes into a `Vec` in `node_op_with` →
-/// aborts at the first bypass of a node holding input; allocate the scratch
-/// when a fade needs it (`Arena::new` in `moded_node_op`) → aborts at the
-/// first fade.
 fn toggling_modes_are_allocation_free_on(workers: usize) {
     use tutti_graph::NodeMode;
     let (mut ed, mut exec) = mode_graph(workers);
@@ -1401,11 +1336,6 @@ fn parallel_toggling_modes_are_allocation_free() {
 /// between, so a node runs steady WET, steady DRY, a steady blend and a ramp)
 /// and a third of the nodes' modes moved with them, so a mix also meets a
 /// fade, a warm-up and a parked node. Blocks of four lengths.
-///
-/// Mutation (run, aborted): an allocation in `moded_node_op` when the block
-/// needs the aligned input (`vec![0.0f32; 8]`, standing for a scratch built
-/// when a blend needs it rather than with the unit) -> aborts at the first mix
-/// off WET.
 fn moving_mixes_are_allocation_free_on(workers: usize) {
     use tutti_graph::NodeMode;
     use tutti_types::Mix;
@@ -1461,10 +1391,6 @@ fn parallel_moving_mixes_are_allocation_free() {
 /// modes moved every few blocks, so a lane meets a steady blend, a fade, a
 /// warm-up, a parked node and a lane that has just been let go (a source
 /// disconnected halfway, its fade running out). Blocks of four lengths.
-///
-/// Mutation (run, aborted): an allocation in `ModeState::drive_step`
-/// (`vec![0.0f32; 8]`, standing for a lane's scratch built when a block needs
-/// it rather than at apply) -> aborts at the first driven block.
 fn driven_mixes_are_allocation_free_on(workers: usize) {
     use tutti_graph::{NodeMix, NodeMode, ParamIn, ParamRange};
     use tutti_types::Mix;

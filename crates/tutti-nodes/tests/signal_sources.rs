@@ -3,7 +3,7 @@
 //! analytic figures and invariants of the render (never another reference
 //! render).
 //!
-//! Each test names the mutations it was seen to fail under. The serial ==
+//! The serial ==
 //! parallel and no-allocation gates are in `rt_no_alloc_modulation.rs`,
 //! beside the gated pool they share.
 
@@ -516,12 +516,6 @@ fn piece(tap: &[Vec<f32>], f: usize) -> (f32, f32) {
 /// 1e-5). Before 128 it sends nothing (silent), and the first piece, at
 /// 128, starts at exactly 0. The same input in blocks of 1, 7, 32, 100,
 /// 128 and a ragged schedule sends the same events, bit for bit.
-///
-/// Mutations (run), each fails: the frame's level taken before its grid
-/// point is sent (`follow` moved above the grid check) → `env(g)` counts
-/// frame `g` and is off by one frame (c^61 for c^60); the grid counted
-/// from the block (`i % 32` for the play count) → other block sizes send
-/// on other frames; the silent skip dropped → a piece at frame 0.
 #[test]
 fn a_follower_lags_one_step_at_any_block_size() {
     let render = |sizes: &[usize]| {
@@ -597,11 +591,6 @@ fn a_follower_lags_one_step_at_any_block_size() {
 /// climbs again from 0, `1 − c^32` at s + 32 (analytic, within 1e-6), and
 /// the note envelope stays at 0: its note was forgotten, so its note-off at
 /// s + 100 sends nothing.
-///
-/// Mutations (run), each fails: the follower's reset dropped (`idle` not
-/// called on an epoch change) → its piece at s ends near 1, not 0; the
-/// note envelope's dropped (`starts` never answering) → no segment on
-/// the start's frame.
 #[test]
 fn a_follower_and_a_note_envelope_reset_at_play_start() {
     let (mut ed, mut exec) = editor(128);
@@ -703,14 +692,6 @@ fn a_follower_and_a_note_envelope_reset_at_play_start() {
 /// The segments are sent on exactly 1000, 1480, 5000, 10 000, 10 120,
 /// 20 000, 20 480, 22 000, 22 480 and 25 000, in blocks of 1, 37 and a
 /// ragged schedule alike.
-///
-/// Mutations (run), each fails: the attack's length a frame short
-/// (`attack - 1`) → the decay's segment at 1479, not 1480; a release from
-/// 1.0 rather than the level it starts at → the release at 5000 starts at
-/// 1, not the sustain; a note-off releasing while another note is held
-/// (`holding == 0` dropped) → a segment at A's note-off, 23 000; a
-/// retrigger from 0 rather than the current level → B's attack starts at
-/// 0 on 22 000.
 #[test]
 fn a_note_envelopes_stages_land_on_their_frames() {
     let (a, b) = (60, 62);
@@ -798,9 +779,6 @@ fn a_note_envelopes_stages_land_on_their_frames() {
 }
 
 /// **`from_decl` builds the kind it is given, and refuses the other.**
-///
-/// Mutation (run): `EnvelopeFollowerNode::from_decl` answering every kind
-/// (the `NoteEnvelope` arm `Some`) → fails.
 #[test]
 fn from_decl_builds_its_own_kind() {
     let f = SourceNode {
@@ -837,12 +815,6 @@ fn from_decl_builds_its_own_kind() {
 /// (1 − c_a^(g − 4800))` during the burst, `env(7200) · c_r^(g − 7200)`
 /// after). It dips below 0.33 during the burst and is back within 1e-3 of
 /// 0.8 half a second after it.
-///
-/// Mutations (run), each fails: the level read from the first channel
-/// only (0.4); the mean over channels (0.6); the sum (1.2, clamped to 1);
-/// attack and release swapped (`level < env` choosing the attack) → the
-/// burst's rise lags; the frame's level read before its grid point is sent
-/// → the first piece at 4 800 already moves.
 #[test]
 fn a_kick_ducks_the_pad_through_a_lane() {
     let (mut ed, mut exec) = editor(128);
@@ -915,13 +887,6 @@ fn a_kick_ducks_the_pad_through_a_lane() {
 /// inside a block on frame 421 (not a grid multiple of the executor's
 /// frame count) and renders ragged blocks. The export is an offline fork
 /// taken before the start, in 1024-frame blocks.
-///
-/// Mutations (run), each fails: the follower's play-start reset dropped →
-/// live's follower starts from the bleed's level; the note envelope's
-/// dropped → live's envelope starts in its sustain, holding the key; the
-/// follower's grid on the executor's frame rather than the play clock
-/// (`env.frame + i` for `r.play`) → live's grid is 421 frames off the
-/// export's.
 #[test]
 fn an_export_is_the_live_render_for_signal_sources() {
     let (mut ed, mut exec) = editor(128);
@@ -1017,10 +982,6 @@ fn an_export_is_the_live_render_for_signal_sources() {
 /// block: there it sends a 0 and reads 0 to the end of the render (its
 /// note is forgotten). Only a start on a fresh node's very first frame is
 /// none (it is idle already).
-///
-/// Mutation (run): the old first-block skip (no starts read while the
-/// node is fresh: `walk.starts` given a length of 0 then) → no segment at
-/// 50, and it attacks on (0.083 at 50) → fails.
 #[test]
 fn a_fresh_note_envelope_resets_at_a_start_in_its_first_block() {
     let (mut ed, mut exec) =
@@ -1054,10 +1015,6 @@ fn a_fresh_note_envelope_resets_at_a_start_in_its_first_block() {
 /// 1.0 note-on at velocity 0 is a note-off, and the same group, channel
 /// and key across the two protocols is one note: at 4000 it releases
 /// from the sustain.
-///
-/// Mutations (run), each fails: the MIDI 2.0 note-off not read (`(0x2,
-/// 0x8)` only) → no release at 1000; MIDI 2.0 note-on not read → nothing
-/// at 100; a MIDI 1.0 velocity 0 read as a note-on → an attack at 4000.
 #[test]
 fn a_note_envelope_reads_midi_2_and_velocity_0() {
     let plan = vec![
@@ -1092,10 +1049,6 @@ fn a_note_envelope_reads_midi_2_and_velocity_0() {
 ///   on that frame; the note-off at 1000 releases from 0, so it reads 0.
 /// - S = 1.5 reads as 1: the decay holds at 1 and the level never passes
 ///   it.
-///
-/// Mutations (run), each fails: the zero-length skip dropped (a stage of
-/// length 0 sent as a segment) → the first rig sends other segments
-/// from 100; the clamp dropped (`s.min(1.0)` → `s`) → the third rises to 1.5.
 #[test]
 fn zero_length_stages_and_the_sustain_clamp() {
     let plan = vec![(100, note_on(60)), (500, note_off(60))];
@@ -1134,9 +1087,6 @@ fn zero_length_stages_and_the_sustain_clamp() {
 /// (512) it re-sends where it stands, the release that began at 399
 /// resumed 113 frames in, so from 512 on it reads bit for bit what the
 /// same input reads in 1-frame blocks (where nothing is refused).
-///
-/// Mutation (run): the re-send dropped (`owed` never read) → no segment
-/// at 512, and the tap holds frame 255's segment, not the release → fails.
 #[test]
 fn a_refused_segment_is_resent_resumed() {
     let plan: Vec<(u64, [u32; 4])> = (0..400u64)
@@ -1174,9 +1124,6 @@ fn a_refused_segment_is_resent_resumed() {
 /// 1000 s: 48 000 frames later the envelope is `exp(−48 000 / 48e6) =
 /// exp(−0.001)`, within 1e-6. In `f32` the retention `1 − c =
 /// exp(−1/48e6)` rounds to 1, and the envelope would never decay.
-///
-/// Mutation (run): the retention `1 − c` computed in `f32` → still 1.0
-/// there → fails.
 #[test]
 fn a_long_release_decays_at_its_own_rate() {
     let (mut ed, mut exec) = editor(128);
@@ -1207,11 +1154,6 @@ fn a_long_release_decays_at_its_own_rate() {
 /// **A zero attack and release follow the level exactly.** 0.6 for 500
 /// frames, 0.25 to frame 1000, then silence: every grid piece ends on the
 /// level of the frame before it, with no lag either way.
-///
-/// Mutations (run): `follow` with the retention form
-/// `c · env + (1 − c) · level` (under which `c = 1` holds) → the envelope
-/// never leaves 0 → fails; `Seconds::one_pole_coeff` returning 0 for a
-/// non-positive time (a freeze) → fails.
 #[test]
 fn a_zero_attack_and_release_follow_exactly() {
     let (mut ed, mut exec) = editor(128);
@@ -1250,10 +1192,6 @@ fn a_zero_attack_and_release_follow_exactly() {
 /// followed exactly), then silence into a release of `∞`: every grid piece
 /// after the burst ends at 0.6, and so does the value a lane reads at the
 /// end.
-///
-/// Mutation (run): `Seconds::one_pole` treating an infinite decay length
-/// as instant (its guard `n > 0.0 && n.is_finite()`) → the envelope drops
-/// to 0 with the burst → fails.
 #[test]
 fn an_infinite_release_holds_the_peak() {
     let (mut ed, mut exec) = editor(128);

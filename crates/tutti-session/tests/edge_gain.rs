@@ -82,11 +82,6 @@ impl Rig {
 /// aliased, not weighted at unity); giving it one is structural and moves the
 /// sum; clearing returns the plain sum and is structural too, and a second
 /// clear finds nothing.
-///
-/// Mutations (each run, each failed): `clear_edge_gain` returns without
-/// removing the entry -> the cleared read is still `Some` and the sum stays
-/// weighted; `set_edge_gain` leaves `edited` unset for a new entry -> the
-/// `is_edited` assertion fails.
 #[test]
 fn an_edge_gain_sets_reads_and_clears() {
     let mut r = rig();
@@ -116,10 +111,6 @@ fn an_edge_gain_sets_reads_and_clears() {
 /// A gain on an edge that is not there is refused, and so is one that is not
 /// a number; the graph is unchanged (nothing edited, no entry). Silence is
 /// never an edge.
-///
-/// Mutations (each run, each failed): map the editor's `GainWithoutEdge` to
-/// `Ok(())` -> the missing-edge assertions fail; map every other refusal to
-/// `NoSuchEdge` -> the non-finite one reads the wrong error.
 #[test]
 fn a_gain_on_a_missing_edge_or_a_bad_number_is_refused() {
     let mut r = rig();
@@ -153,10 +144,6 @@ fn a_gain_on_a_missing_edge_or_a_bad_number_is_refused() {
 /// render is the weighted fold; a source the port already holds only has its
 /// weight set; silence adds nothing (it is no edge); a gain that is not a
 /// number adds nothing.
-///
-/// Mutations (each run, each failed): add the source without calling `weigh`
-/// -> the weighted figure is the plain sum; check finiteness after
-/// `add_source` -> the refused call leaves the source in.
 #[test]
 fn add_source_weighted_adds_the_edge_and_its_weight() {
     let mut r = rig();
@@ -195,10 +182,6 @@ fn add_source_weighted_adds_the_edge_and_its_weight() {
 
 /// The output-channel twin: weights on what feeds global output 1, read on
 /// the right channel.
-///
-/// Mutation (run, failed): `add_output_source_weighted` builds the edge as
-/// `EdgeRef::output(0, ..)` -> the weight lands on a missing edge and the call
-/// is refused (the figure is never reached).
 #[test]
 fn add_output_source_weighted_weights_the_channel() {
     let mut r = rig();
@@ -228,12 +211,6 @@ fn add_output_source_weighted_weights_the_channel() {
 /// (`remove_source`, `set_sources`, `remove_output_source`,
 /// `set_output_sources`): the next commit is valid (a stale entry would fail
 /// it), and the source added back is plain, not weighted again.
-///
-/// Mutations (each run, each failed): `remove_source` through
-/// `topology.disconnect` (the entry stays) -> the commit is refused and the
-/// render stays the old figure; `set_sources` without `drop_stale_gains` ->
-/// the same; `set_output_sources` without it -> likewise on the right
-/// channel.
 #[test]
 fn removing_a_source_drops_its_weight() {
     let mut r = rig();
@@ -281,9 +258,6 @@ fn removing_a_source_drops_its_weight() {
 /// Moving the weight of an edge that already has one is a control: nothing is
 /// edited, no plan is sent (the sent plan is the same `Arc`, the commit count
 /// the same), and the render still follows.
-///
-/// Mutation (run, failed): `Graph::set_edge_gain` sets `edited` always -> the
-/// first assertion fails.
 #[test]
 fn moving_a_weight_marks_no_recompile() {
     let mut r = rig();

@@ -8,32 +8,6 @@
 //! order-sensitive event consumers with fan-in — and feedback edges of both
 //! kinds. Block sizes include 1, non-powers of two, and a schedule that varies
 //! every block.
-//!
-//! Mutation notes for the suite as a whole (each was applied and seen to
-//! fail, then reverted):
-//!
-//! - `kernels::AudioRing::run`: write before read (ring passes through) → the
-//!   first graph with a PDC ring diverges.
-//! - `event::merge_into`: `<` → `<=` (ties go to the later source) → a
-//!   `Consumer` fed by two emitters on one tick diverges.
-//! - `compile::colour::colour`: drop the `reach.before(u.writer, w)` half of
-//!   `finished_before` → the verifier panics inside `compile` (debug) on the
-//!   first graph with an unread output.
-//! - `exec`: skip test `tail_elapsed` returning `true` for `Tail::Unbounded` →
-//!   `Consumer` stops being called during silence and freezes → diverges.
-//! - `exec::Executor::apply`: always build fresh rings (no carry) → the
-//!   recompile property diverges on the first case with a surviving PDC ring.
-//! - `compile`: drop the sort of an event input's sources by `(NodeKey,
-//!   port)` → the listed order (random here) decides ties → every property
-//!   diverges. The same in the reference (merge in listed order) → diverges
-//!   from the other side.
-//! - `exec::node_op`: give every writer the executor's default capacity,
-//!   ignoring `Shape::event_capacity` → a wired `Kind::Burst` past its
-//!   declaration keeps events the reference refuses → every property fails
-//!   (outputs, and the drop counts `Pair` compares).
-//! - `Reference`: hand a fading-out unit accepting event writers instead of
-//!   detached ones → a `Burst`'s fade counts pushes the executor refused →
-//!   `crossfades_are_bit_identical` diverges.
 
 mod common;
 
@@ -533,16 +507,6 @@ fn schedule(which: usize, seed: u64, frames: usize) -> Vec<usize> {
 /// count the seed picks from `common::WORKERS` — so every generated graph is
 /// held to the reference on both, and the parallel render is held to the
 /// serial one through it, sample for sample (doc 013, "The parallel executor").
-///
-/// Mutation (each applied to `src/par.rs` and seen to fail, then
-/// reverted): run a task's ops in reverse → `executor_is_bit_identical`
-/// diverges; drop the workers' dropped-event counts from the block's sum →
-/// `scheduled_commands` and `crossfades` fail on the drop counts; ignore a
-/// worker's `fade_ended` → `crossfades` fails. (Decrementing only a task's
-/// first successor in `TaskGraph::work` makes the first fan-out block never
-/// finish: the test hangs rather than failing, which is what a broken
-/// dispatch does on the audio thread too — `TaskGraph::new` refuses the
-/// plans that could cause it, see its docs.)
 fn modes(seed: u64) -> [usize; 2] {
     [1, common::workers_for(seed)]
 }
@@ -587,17 +551,6 @@ proptest! {
     /// compared on those. The reference knows no taps; this holds the tap ops
     /// to the output they must copy, on random graphs with feedback, PDC,
     /// fan-in and events.
-    ///
-    /// Mutation (run, recorded here): skip the tap's aligning delay in
-    /// `compile` (`if false && align == ToOutput ...`) -> a graph whose
-    /// outputs differ in latency has a lane ahead of its output and the
-    /// comparison fails. Mutation (run): make the `Op::Tap` arm in `exec.rs`
-    /// write the block twice -> the tap's lanes run ahead of the outputs.
-    /// Mutation (run): stop `compile` forcing the alignment delay into its own
-    /// op for an outputs tap (`master_meter` ignores `TapSpec::Outputs`) -> a
-    /// delayed channel's `output_refs` entry is the undelayed source and the
-    /// outputs comparison fails. Mutation (run): make the outputs tap's lane 0
-    /// silence -> that comparison fails.
     #[test]
     fn an_aligned_tap_of_the_outputs_is_the_output(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -668,17 +621,6 @@ proptest! {
     /// their node. The reference resolves beats with its own interval-based
     /// playhead, sharing no code with the executor's `Playhead` and
     /// `Env::due_at_arrival`, so a time-logic bug in either diverges here.
-    ///
-    /// Mutation: after a wrap, call the whole loop crossed (`beat < loop end`
-    /// in `Playhead::crossed`) → a beat ahead of the
-    /// playhead fires late in the executor only → diverges. Mutation: in
-    /// `CommandRx::overlay`, merge the scheduled events *before* the port's
-    /// own → ties flip → diverges. Mutation: never feed the executor's
-    /// playhead → diverges. Mutation: accept only the steady advance at the
-    /// block's own tempo in the executor → a tempo ramp or step breaks its
-    /// run but not the reference's → diverges. (The
-    /// frame-sized slack itself is pinned by `time::tests`: the script's
-    /// positions are exact, so a 1e-6-beat slack would pass here.)
     #[test]
     fn scheduled_commands_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -755,14 +697,6 @@ proptest! {
     /// both interpreters see the same changes, resolve a beat against the
     /// transport in force where playback reaches it (a beat just after a
     /// mid-block start or seek lands in that block), and agree on late.
-    ///
-    /// Mutation: make `Env::due` resolve beats against the block-start
-    /// transport only (drop the segment walk) → a beat reached after a
-    /// mid-block start or seek lands in the executor a block later or never
-    /// → diverges. Make `Playhead::observe` observe only the block's first
-    /// segment → late counts diverge after a mid-block seek. Drop `changes`
-    /// from the `Env` the executor builds → the probe's per-frame transport
-    /// differs → diverges.
     #[test]
     fn transport_changes_inside_blocks_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
         transport_case(seed, which)?;
@@ -906,9 +840,6 @@ fn recompile_case(seed: u64, which: usize) {
 /// a frame ahead, so it lands in the next block). The executor counts it
 /// pending; the reference once counted it late because its history still
 /// held the interval past the playhead.
-///
-/// Mutation: drop the `beat >= t.beat()` guard in `RefPlayhead::crossed` →
-/// the reference counts one late command the executor does not → fails.
 #[test]
 fn transport_regression_11926813388736633892() {
     transport_case(11_926_813_388_736_633_892, 0).expect("agrees");
@@ -921,9 +852,6 @@ fn recompile_regression_3280887136571273968() {
 
 /// The generator is not vacuous: over a fixed range of seeds it produces the
 /// features the suite claims to cover.
-///
-/// Mutation: make `random_kind` never return `Lag` → the PDC count is zero →
-/// fails. Make `wire_node` never pick feedback → fails.
 #[test]
 fn the_generator_covers_what_the_suite_claims() {
     let (mut delays, mut event_delays, mut feedback, mut event_fb, mut merges, mut in_place) =
@@ -1040,12 +968,6 @@ proptest! {
     /// every graph exactly as the reference does. `compile` runs the
     /// verifier on every packed plan (debug), and `Pair::switch` runs it
     /// again.
-    ///
-    /// Mutations (each applied to `src/compile/coarsen.rs`, seen to fail,
-    /// reverted): in `finish`, skip the task edges out of any task of
-    /// more than one op (a dependency dropped when merging) → the verifier
-    /// refuses the plan ("crosses task"). (Packing tasks that are not
-    /// siblings is pinned in `coarsen::tests`, by the critical path.)
     #[test]
     fn coarsened_plans_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -1066,11 +988,6 @@ proptest! {
 /// several sources. (A chain past `MAX_PORTS` needs more nodes than a generated
 /// graph has; `tests/fan_in.rs` renders it against the reference and the
 /// parallel executor.)
-///
-/// Mutations: make the fan-in choice in `wire_node` never fire (`chance(0)`)
-/// -> no plan has a sum; drop the output half in `wire_outputs` -> no output
-/// sum; make `sum_chain` return the first source only -> a sum op is missing
-/// where a sink has several.
 #[test]
 fn the_fan_in_generator_covers_the_sum_op() {
     let (mut ports, mut outputs, mut feedback) = (0, 0, 0);
@@ -1115,10 +1032,6 @@ fn the_fan_in_generator_covers_the_sum_op() {
 /// seeds, declared costs pack plans further than the same graphs
 /// undeclared, and many of those packed plans still spread on a pool of
 /// four (so packed tasks run in parallel), while others go serial.
-///
-/// Mutations: make `random_costs` declare nothing → no plan packs further
-/// → fails; make it declare every node `Light` → too few packed plans
-/// spread → fails.
 #[test]
 fn the_cost_generator_packs_and_spreads() {
     let (mut packed, mut packed_parallel, mut serial) = (0, 0, 0);
@@ -1260,10 +1173,6 @@ proptest! {
     /// A cycle no feedback edge breaks is rejected — by `validate` when it is
     /// all audio, by `compile` (naming its edges) when it runs through an
     /// event edge — and never reaches an executor.
-    ///
-    /// Mutation: in `compile`, skip the SCC error (`if !cycle.is_empty()`) →
-    /// a graph with an event back edge compiles (and `kahn` asserts in debug)
-    /// → fails.
     #[test]
     fn unbroken_cycles_are_rejected(seed in any::<u64>()) {
         let mut desc = random_graph(seed);
@@ -1352,11 +1261,6 @@ proptest! {
 
     /// Colouring is correct under any parallel schedule: the verifier accepts
     /// every plan, and an independent brute-force check agrees.
-    ///
-    /// Mutation: in `colour::colour`, check only the occupant's *readers*
-    /// against the new writer (drop the writer term of `finished_before`) →
-    /// an unread output shares a slot with a concurrent value → the verifier
-    /// panics inside `compile` (debug) and the brute force fails (release).
     #[test]
     fn colouring_is_safe_under_any_schedule(seed in any::<u64>()) {
         let desc = random_graph(seed);
@@ -1372,10 +1276,6 @@ proptest! {
 /// unrelated node renders exactly what never recompiling renders. The PDC
 /// ring, the feedback slot, and the `Smooth`/`Lag` unit state all have to
 /// carry for this to hold.
-///
-/// Mutation: in `Executor::apply`, build every ring fresh instead of taking
-/// the old one → the PDC ring on `mix` restarts from silence → fails.
-/// Mutation: in `apply`, do not copy old feedback slots → fails.
 #[test]
 fn an_unrelated_edit_does_not_disturb_the_running_graph() {
     let (a, b, c, mix, orphan) = (NodeKey(1), NodeKey(2), NodeKey(3), NodeKey(4), NodeKey(9));
@@ -1460,20 +1360,6 @@ fn an_unrelated_edit_does_not_disturb_the_running_graph() {
 ///
 /// The random generator keeps nodes narrow, so the wide buckets are covered
 /// here and nowhere else.
-///
-/// Mutation: in `NodeTables::lower`, map the `(&[input], &[out], true)` shape
-/// to `Form::InPlace { slot: out }` → the verifier refuses the plan inside
-/// `compile` (and the one-input `Sum` would otherwise get no input buffer) →
-/// fails. Mutation: in the `Form::Audio` arm, send every width above 16 to
-/// `run_audio::<16>` → the 20- and 64-wide nodes overrun the table → panics.
-/// Mutation: in the `Form::General` arm, always call `run::<4, 4>` → the
-/// wider general nodes overrun the tables → panics (so does sending only the
-/// `<16, 4>` arm there). Mutation: build the general call's `Io` with
-/// `InPlaceMask::NONE` → the in-place mixers are handed no input → fails.
-/// Mutation: in `Arena::direct`, hand output `c` to channel `O - 1 - c` →
-/// the stereo nodes swap channels → diverges. Mutation: make every direct
-/// input read `reads[0]` → the stereo-to-mono sum reads one slot twice →
-/// diverges.
 #[test]
 fn every_borrow_form_matches_the_reference() {
     let key = NodeKey;
@@ -1965,15 +1851,6 @@ proptest! {
     /// both sides of the change — with zero to two blocks rendered while
     /// suspended, and frame-timed commands pending across it (rescaled to
     /// their wall-clock time on a rate change).
-    ///
-    /// Mutation: in `Executor::rebuild`, carry state across a rate change
-    /// (`carry = true`) → the first graph with a PDC ring or feedback
-    /// diverges after a rate change. Mutation: in `Reference::set_graph`,
-    /// keep the audio lines on a reset → diverges the same way from the
-    /// other side. Mutation: in `Executor::apply`, drop the `reset_time`
-    /// flag on suspend → diverges. Mutation: stop the executor's clock while
-    /// suspended, or skip rescaling it (or its pending commands) on a rate
-    /// change → diverges.
     #[test]
     fn reprepare_matches_the_reference(seed in any::<u64>(), which in 0usize..5, to in 0usize..6) {
         for workers in modes(seed) {
@@ -2169,16 +2046,6 @@ proptest! {
     /// declared latency, no new generation) of their key — under every
     /// block schedule, ragged ones included. Afterwards every crossfade has
     /// come back on the fade-return ring.
-    ///
-    /// Mutation: in `Executor::apply`, supersede nothing (keep the first
-    /// waiting fade) → diverges on the first case where two replaces queue.
-    /// The same in `Reference::set_graph_with_fades` → diverges from the
-    /// other side. Mutation: in the reference, blend with the fade's position
-    /// at the block start for every sample (`gains(done, len)`) → diverges.
-    /// Mutation: hand the outgoing unit the node's slot events in the
-    /// executor → an event node's fade diverges. Mutation: drop the
-    /// latency-change cut from `Reference::set_graph_with_fades` → diverges.
-    /// Mutation: skip `Delta::cuts` in `Executor::apply` → diverges.
     #[test]
     fn crossfades_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -2214,13 +2081,6 @@ proptest! {
 /// run before the incoming one overwrites the shared slot). Counted by
 /// replaying the generator's schedule against the fade rules, the way the
 /// proptest drives it (without the credit waits, which only add frames).
-///
-/// Mutation: make `random_fade` 1–2 frames long → no replace lands on a
-/// running fade → fails. Mutation: never swap the kind → fails. Mutation:
-/// never call `mutate` in `mutate_with_fades` → no cuts → fails. Mutation:
-/// never pick an in-place kind in `mutate_with_fades` → fails. Mutation:
-/// drop the `set_latency` edits from `mutate_with_fades` → the three
-/// latency counts are zero → fails.
 #[test]
 fn the_fade_generator_covers_what_the_suite_claims() {
     let (mut queued, mut superseded, mut cut) = (0, 0, 0);
@@ -2406,12 +2266,6 @@ proptest! {
     /// removes and regenerates nodes (lane state carried by edge, entries of
     /// vanished edges dropped, new ones added). The parallel render is held to
     /// the serial one through the reference.
-    ///
-    /// Mutations (each run, each failed): fuse the multiply-add in
-    /// `gain::add`/`gain::first`; ramp from the new value (`from = to`);
-    /// read the cell per op rather than per block is not visible here (no
-    /// store races a block) and is pinned in `gain.rs`; skip an addend whose
-    /// weight is `0.0`; do not carry lane state across the commit.
     #[test]
     fn weighted_graphs_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -2555,12 +2409,6 @@ proptest! {
     /// driven lane, and an edit halfway that rewires, removes and
     /// regenerates nodes and re-draws every source (a source that changes
     /// or goes is declicked, state carried by edge).
-    ///
-    /// Mutations (each run, each failed): carry no driven state across the
-    /// commit (`Carried::default()` in `rebuild`); read the lane's events
-    /// from the empty slot in `sum_op`; align a lane's event to the sink's
-    /// arrival with `by = 0` in `compile`; leave `output_sources` out of the
-    /// output time.
     #[test]
     fn driven_gains_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -2690,13 +2538,6 @@ proptest! {
     /// kept node's mode carries, a regenerated one starts steady in the
     /// spec's mode). The parallel render is held to the serial one through
     /// the reference.
-    ///
-    /// Mutations (each run, each failed): call the node while parked; skip
-    /// the reset on un-bypass; skip the warm-up; fade with `EqualPower`; read
-    /// the cell per op rather than per block is pinned in `tests/mode.rs`
-    /// (nothing here stores mid-block); a bypass line one frame short; a
-    /// mode state not carried across a commit (`Unit` rebuilt on every
-    /// apply).
     #[test]
     fn modes_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -2769,12 +2610,6 @@ proptest! {
     /// blocks of every length in the schedule; an edit halfway rewires, removes
     /// and regenerates nodes (a kept node's mix carries, a regenerated one
     /// starts at the spec's).
-    ///
-    /// Mutations (each run, each failed): the reference ramping from `0.0`
-    /// rather than the previous block's mix; the reference's mix at a fade's
-    /// target taken at the block's end rather than per frame; the executor's
-    /// steady blend with its weights swapped (`o * (1 - m) + x * m`); the
-    /// `is_wet` test of the plain op comparing only `to`.
     #[test]
     fn mixes_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -2889,13 +2724,6 @@ proptest! {
     /// halfway rewires, removes and regenerates nodes and re-draws every source
     /// (a source that changes or goes is declicked, a regenerated node's lane
     /// starts at its value). Own RNGs, so no other property's seeds moved.
-    ///
-    /// Mutations (each run, each failed): the reference's lane dropped while
-    /// the node is bypassed; the executor carrying no lane state across a
-    /// commit (`set_driven` rebuilding it); aligning the mix's source with
-    /// `by = 0` in `compile`; the reference taking `fresh` as `true` always;
-    /// `MixRun::is_static` without its `!self.driven` term (the case that
-    /// found it: a block whose ends agree).
     #[test]
     fn driven_mixes_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -3190,11 +3018,6 @@ proptest! {
     /// bit for bit, at every block schedule, over random graphs of folds
     /// (weighted lanes of every width and unity copies) beside ordinary
     /// edges, with PDC rings where a latent node sits on a lane.
-    ///
-    /// Mutation (run, recorded here): fuse the weighted lane's multiply and
-    /// add in the executor's kernel (`acc.mul_add`) -> the executor's figure
-    /// for a fold with a `-3 dB` lane differs from the reference's in the
-    /// last bit and this fails.
     #[test]
     fn bus_edges_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -3282,11 +3105,6 @@ proptest! {
     /// the interpreters know: the lowered spec renders the same on the
     /// executor, serial and parallel, as on the reference, bit for bit, with
     /// PDC aligning each lane to the outputs' time.
-    ///
-    /// Mutation (run, recorded here): fuse the weighted lane's multiply and
-    /// add in `gain::add`'s static arm (`w.mul_add(x, *o)`) -> a root fold
-    /// with a `-3 dB` lane differs from the reference in the last bit and
-    /// this fails.
     #[test]
     fn root_bus_edges_are_bit_identical_to_the_reference(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -3307,9 +3125,6 @@ proptest! {
 /// The root generator is not vacuous: over a fixed range of seeds it makes
 /// root edges, weighted root lanes, unity root lanes, and a root lane beside
 /// an ordinary output source on one channel.
-///
-/// Mutation (run): the `for _ in 0..1 + rng.below(3)` loop of
-/// `root_bus_graph` made empty (`0..0`) -> no root edge, the first count is 0.
 #[test]
 fn the_root_generator_reaches_folds_copies_and_mixes() {
     let (mut with_edges, mut weighted, mut unity, mut mixed) = (0, 0, 0, 0);

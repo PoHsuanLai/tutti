@@ -61,10 +61,6 @@ fn node(k: tutti_graph::NodeKey) -> GraphSource {
 }
 
 /// A second source on a port is a second addend, in source order.
-///
-/// Mutation (run, recorded here): `Graph::add_source` writes
-/// `edges.insert(at, vec![edge])` (replace) instead of `Topology::connect`
-/// -> the render is `B` and `sources` holds one.
 #[test]
 fn add_source_adds_an_addend() {
     let mut r = rig();
@@ -76,9 +72,6 @@ fn add_source_adds_an_addend() {
 
 /// Removing a source leaves the others, down to one (aliased) and none
 /// (silence).
-///
-/// Mutation (run, recorded here): `remove_source` returns before the
-/// `disconnect` -> the render stays `A + B`.
 #[test]
 fn remove_source_goes_back_to_one() {
     let mut r = rig();
@@ -95,9 +88,6 @@ fn remove_source_goes_back_to_one() {
 
 /// `set_sources` means exactly these, whatever order they are listed in, and
 /// `set_source` means exactly one.
-///
-/// Mutation (run, recorded here): `set_sources` adds each source without
-/// clearing the port -> the replaced `a` and `b` still sound (`A + B + C`).
 #[test]
 fn set_sources_replaces_the_set() {
     let mut r = rig();
@@ -122,10 +112,6 @@ fn set_sources_replaces_the_set() {
 
 /// A source listed twice is one source (not a weight of 2), and adding one
 /// the port holds changes nothing.
-///
-/// Mutation (run, recorded here): drop the `dedup` in `Graph::edge_set` ->
-/// the topology holds the edge twice and the update refuses it
-/// (`DuplicateEdge`), so the render is not `A`.
 #[test]
 fn a_source_twice_is_one_source() {
     let mut r = rig();
@@ -138,10 +124,6 @@ fn a_source_twice_is_one_source() {
 
 /// A change to nothing marks nothing edited, so nothing recompiles; a real
 /// change does.
-///
-/// Mutations (each run, each fails this test): `set_sources` sets `edited`
-/// on its unchanged path; `add_source` always sets it; `remove_source` always
-/// sets it.
 #[test]
 fn an_unchanged_set_marks_nothing_edited() {
     let mut r = rig();
@@ -162,10 +144,6 @@ fn an_unchanged_set_marks_nothing_edited() {
 
 /// Silence is the empty set: a lone `Silence` clears the port, and
 /// `add_source` of it adds nothing.
-///
-/// Mutation (run): `edge_set` stops filtering `Source::Zero` -> the port
-/// stores it and `planned_compensation` is `None` (the spec no longer
-/// validates).
 #[test]
 fn silence_is_the_empty_set() {
     let mut r = rig();
@@ -183,9 +161,6 @@ fn silence_is_the_empty_set() {
 
 /// Silence is the sum's zero: listed beside a source it is dropped, so the
 /// set is that source and the render is its figure.
-///
-/// Mutation (run): `edge_set` keeps `Source::Zero` in a set of several ->
-/// the port holds two entries and the spec no longer validates.
 #[test]
 fn silence_beside_a_source_adds_nothing() {
     let mut r = rig();
@@ -204,10 +179,6 @@ fn a_node_cannot_be_its_own_source() {
 }
 
 /// A global output channel is a sink too: its sources sum.
-///
-/// Mutation (run, recorded here): `add_output_source` replaces the channel's
-/// set (`vec![source]`) -> the render is `B`; `remove_output_source` removes
-/// nothing -> the figure after it stays `A + B`.
 #[test]
 fn an_output_channel_sums_its_sources() {
     let mut r = rig();
@@ -228,9 +199,6 @@ fn an_output_channel_sums_its_sources() {
 }
 
 /// The set-setters of an output mark nothing edited when nothing changes.
-///
-/// Mutation (run, recorded here): `set_output_sources` sets `edited`
-/// unconditionally -> the first assert fails.
 #[test]
 fn an_unchanged_output_set_marks_nothing_edited() {
     let mut r = rig();
@@ -244,10 +212,6 @@ fn an_unchanged_output_set_marks_nothing_edited() {
 
 /// The output tap hears a fan-in channel whole, before and after the fan-in
 /// is wired, and follows it as it changes.
-///
-/// Mutation (run, recorded here): `Graph::open_output_tap` opens a ports tap
-/// on the first source of each channel (the old snapshot) -> lane 0 reads `A`,
-/// not `A + B`, from the first block on.
 #[test]
 fn the_output_tap_hears_the_sum() {
     let mut r = rig();

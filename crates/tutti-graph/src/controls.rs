@@ -272,9 +272,6 @@ mod tests {
     }
 
     /// `set` reaches the node's own cell, and `get` reads it back.
-    ///
-    /// Mutation (run): `set` returns `true` without storing → the cell
-    /// reads 1000 → fails.
     #[test]
     fn set_writes_the_cell_the_node_reads() {
         let (cutoff, _q, set) = set();

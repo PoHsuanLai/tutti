@@ -484,10 +484,6 @@ mod tests {
     /// The node offers no param to the graph (the mix is the graph's, the gain
     /// has no address), and a fork keeps the gain as it was when forked and
     /// follows no live write.
-    ///
-    /// Mutation (run): drop `gain.detach()` in `fork_fresh` → the fork reads
-    /// the live node's later write and fails the last assertion; a param
-    /// offered in `param_set` fails the first.
     #[test]
     fn a_fork_keeps_the_gain_and_shares_no_cell() {
         let node = ConvolverNode::stereo(&[1.0, 0.5], &[0.25], 64);
@@ -500,11 +496,6 @@ mod tests {
 
     /// One IR is transformed once: every channel of a shared-IR node, and
     /// every channel of a fork, reads the same spectra.
-    ///
-    /// Mutation (run): build each `shared_ir` channel with
-    /// `Convolver::new(ir, block_size)` → the channels hold spectra of their
-    /// own → the first assertion fails. (A fork cannot transform the IR
-    /// again: the node keeps no IR samples, only their spectra.)
     #[test]
     fn the_spectra_are_stored_once_and_a_fork_shares_them() {
         let ir = generate_test_ir(4_096, Seconds::new(0.3), SampleRate::new(48_000.0));
@@ -528,9 +519,6 @@ mod tests {
 
     /// A fork starts from a fresh node's state, not the live node's: after
     /// the live node has run, the fork renders what a new node does.
-    ///
-    /// Mutation (run): `fork_fresh` returning `self.clone()` (the running
-    /// state copied) → the fork rings with the live node's tail → fails.
     #[test]
     fn a_fork_carries_none_of_the_live_state() {
         let ir = generate_test_ir(700, Seconds::new(0.3), SampleRate::new(48_000.0));
@@ -553,9 +541,6 @@ mod tests {
     ///
     /// The tolerance is 2 eps log2(n) |h|_2 |x|_2 (see the convolver's
     /// `tolerance`), about 3e-4 here, and that is the bound used.
-    ///
-    /// Mutation (run): `shape()` declaring `2 * latency_samples` fails the
-    /// alignment check; `Convolver::latency` returning 0 does too.
     #[test]
     fn a_long_ir_cut_into_levels_convolves_at_any_block_size() {
         let ir: Vec<f32> = crate::test_support::noise(1, 6000)
@@ -605,9 +590,6 @@ mod tests {
 
     /// The wet gain is floored at 0 by its setter: a negative gain would
     /// invert the wet path's polarity.
-    ///
-    /// Mutation (run): dropping the `.max(0.0)` in `set_gain` fails the
-    /// second assertion.
     #[test]
     fn the_gain_is_floored_at_zero() {
         let node = ConvolverNode::new(&[1.0; 64], 64);
@@ -853,11 +835,8 @@ mod golden {
     /// not bit-exact on purpose: the FFT's twiddle factors come from the
     /// platform's `sin`/`cos`, which differ in the last ulp between C runtimes,
     /// and a convolution sums
-    /// hundreds of products. Every mutation below moves samples by orders of
+    /// hundreds of products. A real fault moves samples by orders of
     /// magnitude more.
-    ///
-    /// Mutation (each run, each fails): dropping `* gain.get()`, convolving every channel with
-    /// `convolvers[0]`, or the graph's mix set to 1 (no dry) each fail this.
     #[test]
     fn output_matches_the_pinned_pre_merge_render() {
         for ((name, node), (gname, want)) in cases().into_iter().zip(GOLDEN) {
@@ -887,8 +866,6 @@ mod golden {
     ///
     /// Distinct inputs per channel are what make "no bleed" follow from the
     /// equality: a channel that read any other channel's input would diverge.
-    ///
-    /// Mutation (run): convolving every channel with `self.convolvers[0]` fails this.
     #[test]
     fn six_channels_convolve_independently() {
         let irs: Vec<Vec<f32>> = (0..6)
@@ -922,9 +899,6 @@ mod golden {
     /// A shared IR at width 6: an impulse on channel 3 comes out of channel 3
     /// alone, exactly `latency_samples` late (the graph's dry half is
     /// `node_mix.rs`'s).
-    ///
-    /// Mutation (run): convolving every channel with `convolvers[0]` leaks the
-    /// impulse into the other channels and fails this.
     #[test]
     fn a_six_channel_shared_ir_keeps_each_channel_to_itself_and_aligned() {
         let node = ConvolverNode::shared_ir(6u16, &[1.0], 64);
@@ -946,9 +920,6 @@ mod golden {
 
     /// Folded at width 6: every output is the engine's 6-to-1 fold of the frame
     /// convolved with that output's IR (the node is wet only, so the IR path shows alone).
-    ///
-    /// Mutation: folding with a plain average instead of the fold,
-    /// or convolving the channel's own input instead of the fold, fails this.
     #[test]
     fn a_six_channel_fold_convolves_the_engine_fold() {
         let irs: Vec<Vec<f32>> = (0..6)
@@ -980,10 +951,6 @@ mod golden {
     /// and ramped across it (it scales the output directly, so a step
     /// clicks), ending exactly on the new value. (A mix change is the graph's:
     /// `tutti-graph/tests/mix.rs`.)
-    ///
-    /// Mutation (each run, each fails): ignoring `self.last` in `begin_block`
-    /// (the ramp starts on the target); reading the ramp one sample late (the
-    /// block no longer ends on the new value).
     #[test]
     fn a_gain_change_is_read_next_block_and_ramped_across_it() {
         use crate::test_support::{change_between_node_blocks, noise};

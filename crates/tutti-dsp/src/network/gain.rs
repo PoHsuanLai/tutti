@@ -58,8 +58,6 @@ mod tests {
 
     /// A 1 s loop (48 000 frames) at RT60 1 s loses 60 dB per trip: the gain is
     /// 10^-3 exactly. At RT60 2 s it loses 30 dB: 10^-1.5.
-    ///
-    /// Mutation (run): the `3.0` replaced by `6.0` in `loop_gain` fails both.
     #[test]
     fn a_loop_that_decays_sixty_decibels_per_trip_has_a_thousandth_gain() {
         assert!((loop_gain(48_000.0, Seconds(1.0), RATE).get() - 1e-3).abs() < 1e-9);
@@ -68,9 +66,6 @@ mod tests {
     }
 
     /// The two functions are inverses, over delays, decays and rates.
-    ///
-    /// Mutation (run): a `+` for the `-` in `decay_seconds` fails the round
-    /// trip (negative RT60).
     #[test]
     fn rt60_from_gain_inverts_loop_gain() {
         for rate in [44_100.0, 48_000.0, 96_000.0] {
@@ -90,9 +85,6 @@ mod tests {
     /// The RT60 is the formula in `f64`, returned exact: delay 100 at gain 0.5
     /// and 48 kHz is `-3 * 100 / (48000 * log10 0.5)` = 0.020763936...  s, to the
     /// bit. An `f32` rounding of the result differs.
-    ///
-    /// Mutation (run): `Seconds::from_f32(... as f32)` around `decay_seconds`
-    /// fails.
     #[test]
     fn rt60_from_gain_is_exact() {
         let want = -3.0 * 100.0 / (48_000.0 * libm::log10(0.5));
@@ -105,8 +97,6 @@ mod tests {
     /// The edges: no memory is gain 0, never decaying is gain 1 and the inverse
     /// reads those back, a gain above 1 or NaN is unbounded, a zero delay at
     /// gain below 1 decays at once.
-    ///
-    /// Mutation (run): returning 1 for `trips <= 0.0` fails the first assert.
     #[test]
     fn the_edges_of_the_formula() {
         assert_eq!(loop_gain(100.0, Seconds(0.0), RATE), Amplitude::SILENT);

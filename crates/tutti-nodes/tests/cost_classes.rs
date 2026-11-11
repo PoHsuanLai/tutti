@@ -162,9 +162,6 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 /// pack into fewer tasks than the same clicks declaring nothing, the plan
 /// still spreads, and on a pool of two and of four the render is bit for
 /// bit the serial one.
-///
-/// Mutation (run): the click's `with_cost(Cost::Moderate)` removed → the
-/// clicks pack no further than undeclared → the task-count assert fails.
 #[test]
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn moderate_clicks_pack_and_render_bit_identically() {

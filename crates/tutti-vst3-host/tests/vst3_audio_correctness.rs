@@ -452,11 +452,6 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
 /// outputs cleared. A block within the promise still renders. The refusal is
 /// `tutti-vst3-ffi`'s `Processor::process` (the setup's `max_block` and the
 /// bound channels' capacity); this pins it through the host.
-///
-/// Mutation (run): make that length gate in `tutti-vst3-ffi/src/audio.rs`
-/// `if false` → the 65-frame block reaches the plugin and succeeds → fails.
-/// (Removing only the `max_block` term passes: the bound buffers' capacity is
-/// the activated block too, so either term refuses it.)
 #[test]
 fn a_block_past_the_activated_length_is_refused() {
     if !harness_ready() {
@@ -1281,9 +1276,6 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 /// event list transcodes it from the MIDI. A quarter bend is 12 semitones at
 /// the default ±48 range (VST3 tuning 0.5 + 12/240), and 6 once the stream
 /// sets the channel's per-note bend sensitivity to 24 (RPN #00/07).
-///
-/// Mutations (run): the old `(bend + 1) / 2` tuning map → 0.625 at sample
-/// 64, fails; the sensitivity not stored → 0.55 at sample 192, fails.
 #[test]
 fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     use tutti_midi_protocol::PitchBendSensitivity;
@@ -1490,11 +1482,6 @@ fn context_requirements_are_read_after_the_component_initializes() {
 ///
 /// Driven through the real `IComponentHandler` the probe was handed, with the
 /// `conformance` seam playing the plugin's part (the probe never edits).
-///
-/// Mutations: dropping the `notifications_overflowed = take_overflowed()`
-/// line in `poll_plugin_notifications` fails the first assertion; taking the
-/// flag before the drain instead still passes here (the drops precede the
-/// poll) — that ordering is argued in the code, not pinned.
 #[test]
 fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     use tutti_vst3_host::host::conformance::plugin_perform_edit;
@@ -1545,11 +1532,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
 ///
 /// A re-activation builds a new Processor and with it a new input list, so
 /// nothing is open across one: that half of the property is structural, and no
-/// mutation of this code makes it fail.
-///
-/// Mutation (run): the `reset_sysex` call removed from `Vst3Processor::stop` →
-/// the tail completes the message across the stop → nothing is counted →
-/// fails.
+/// change to this code makes it fail.
 #[test]
 fn a_sysex_open_across_a_stop_is_dropped() {
     let _guard = plugin_guard();
@@ -1586,13 +1569,6 @@ fn a_sysex_open_across_a_stop_is_dropped() {
 ///
 /// This covers what the `#[ignore]`d `test_set_parameter` (which needs an
 /// installed third-party plugin) also checks, on the repo's own probe.
-///
-/// Mutation (run): making `parameter_info` return the first descriptor whatever
-/// the id fails the descriptor assertion; routing the write to the first listed
-/// parameter fails the final comparison; dropping the `parameter_info` check in
-/// `Control::parameter` fails the two `None` assertions; dropping the
-/// `parameter_info` check from the `carried` push in `Control::set_parameter`
-/// fails the saved-state comparison.
 #[test]
 fn an_unlisted_parameter_id_is_reported_not_written() {
     use tutti_plugin_types::{Control, Normalized};
@@ -1684,9 +1660,6 @@ mod loaded_writes {
     ///
     /// Without the write in `carried` the probe stays in tag-passthrough mode
     /// and the block is the constant 1.0.
-    ///
-    /// Mutation (run): `Control::set_parameter` never pushing to `carried`
-    /// fails this (and every other test here that writes a loaded plugin).
     #[test]
     fn a_write_to_a_loaded_plugin_reaches_its_first_block() {
         let _guard = plugin_guard();
@@ -1700,11 +1673,6 @@ mod loaded_writes {
 
     /// The write survives a save into a fresh instance, in the value read back
     /// and in the audio.
-    ///
-    /// Mutation (run): `read_state` packing with an empty pending slice fails
-    /// the value assertion; `write_state` returning no overlay fails the value
-    /// assertion; `Control::load_state` not assigning `carried` fails the audio
-    /// assertion only.
     #[test]
     fn a_write_to_a_loaded_plugin_survives_a_save_and_restore() {
         let _guard = plugin_guard();
@@ -1727,13 +1695,6 @@ mod loaded_writes {
     /// A blob is the version 1 container unless a write is pending: nothing
     /// re-saves a project for having been opened, and a write a block has taken
     /// is in the component's stream and not stored again.
-    ///
-    /// Mutation (run): dropping the `!self.active.is_active()` guard in
-    /// `Control::set_parameter` leaves the active write in `carried` for good,
-    /// so the blob after the blocks is version 2 (the last assertion);
-    /// `read_state` packing no pending writes fails the middle one;
-    /// `Shell::begin_drain` never counting leaves the Controller's record in
-    /// place forever (the last assertion).
     #[test]
     fn a_blob_is_version_1_unless_a_write_is_pending() {
         const VERSION_AT: usize = 8;
@@ -1772,9 +1733,6 @@ mod loaded_writes {
     /// A save between activation and the first block keeps the loaded writes:
     /// the Processor has them, no block has run, and the component's stream
     /// does not hold them.
-    ///
-    /// Mutation (run): `Handed::is_drained` true at once, or the Controller
-    /// starting with no record of the carried writes, fails the audio assertion.
     #[test]
     fn a_save_between_activation_and_the_first_block_keeps_the_loaded_writes() {
         let _guard = plugin_guard();
@@ -1794,9 +1752,6 @@ mod loaded_writes {
 
     /// A write to an active plugin that its Processor has not taken yet is in a
     /// save, until two blocks have run.
-    ///
-    /// Mutation (run): `queue_edit` not recording the write fails the audio
-    /// assertion.
     #[test]
     fn a_save_before_a_queued_write_drains_keeps_it() {
         let _guard = plugin_guard();
@@ -1828,9 +1783,6 @@ mod loaded_writes {
     /// A version 2 blob loaded into an active plugin reaches its next block: the
     /// component's own stream does not hold the writes, so the Controller queues
     /// them.
-    ///
-    /// Mutation (run): `Vst3Controller::load_state` not queueing the returned
-    /// writes leaves the block at the constant 1.0.
     #[test]
     fn a_blob_with_pending_writes_loaded_into_an_active_plugin_reaches_its_next_block() {
         let _guard = plugin_guard();
@@ -1852,10 +1804,6 @@ mod loaded_writes {
 
     /// A pending write to an id the plugin does not list is dropped on load, so
     /// it is not stored again.
-    ///
-    /// Mutation (run): dropping the listed-id filter in `latest_listed` stores
-    /// the unlisted entry again and the re-saved blob differs (the unit test on
-    /// `latest_listed` fails too).
     #[test]
     fn a_pending_write_to_an_unlisted_id_is_dropped_on_load() {
         const TABLE_AT: usize = 8 + 1;
@@ -1941,9 +1889,6 @@ mod loaded_writes {
 
     /// A plugin whose component has no state still gets the writes the blob
     /// carries for its controller's parameters.
-    ///
-    /// Mutation (run): returning early when the component stream is empty
-    /// (the old `write_state`) leaves the parameter at its default.
     #[test]
     fn a_blob_with_no_component_stream_still_restores_its_writes() {
         let _guard = plugin_guard();
@@ -1957,10 +1902,6 @@ mod loaded_writes {
     /// The same blob reaches the plugin's audio: the writes it carries for the
     /// separate controller's parameters are delivered in the first block even
     /// though the component has no state to restore.
-    ///
-    /// Mutation (run): returning early when the component stream is empty
-    /// leaves the block at the constant 1.0; `Control::load_state` not
-    /// assigning `carried` does too.
     #[test]
     fn a_blob_with_no_component_stream_delivers_its_writes_to_the_plugin() {
         let _guard = plugin_guard();
@@ -1982,9 +1923,6 @@ mod loaded_writes {
     /// A NaN or infinite value in a blob's table reaches the plugin as a value
     /// in `0..=1` (`Normalized::clamped` maps NaN to 0 and saturates), never as a
     /// non-finite number.
-    ///
-    /// Mutation (run): reading the table value as `Normalized::of(1.0)`
-    /// regardless of the bytes fails both assertions.
     #[test]
     fn a_non_finite_write_in_a_blob_reaches_the_plugin_in_range() {
         let _guard = plugin_guard();

@@ -90,10 +90,6 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
 /// The tap keeps one ring a lane and `Source` speaks a flat interleaved
 /// slice; this is the conversion, so a transposition here would silently
 /// swap every recording's channels.
-///
-/// Mutation (run, recorded here): swap the two lanes in `TapReader::pop_into`
-/// (`skip(width - 1 - channel)`) -> the channels come back swapped and the
-/// first assertion fails.
 #[test]
 fn rendered_frames_come_back_in_order_and_channel_side() {
     let frames: Vec<(f32, f32)> = (0..4).map(|i| (i as f32, -(i as f32))).collect();
@@ -135,10 +131,6 @@ fn a_poll_never_writes_past_the_output_slice() {
 /// The `Starved` verdict is the load-bearing half: a `Starved` source makes a
 /// pump park and retry, and the recording survives the gap between audio
 /// callbacks. `Ended` here would end every take immediately.
-///
-/// Mutation (run, recorded here): `TapReader::pull` answering `Pull::Ended` for
-/// an empty tap fails this, and `tutti-session`'s `tap_to_wav_roundtrip`
-/// (its pump reads `Ended` as the take's end).
 #[test]
 fn an_empty_tap_starves_rather_than_ending() {
     let mut tap = tap_with(&[]);
@@ -166,10 +158,6 @@ fn a_tap_is_accepted_where_a_live_source_is_required() {
 
 /// Its layout is the tap's width, not a fixed stereo: a six-lane tap is a
 /// six-channel source.
-///
-/// Mutation (run, recorded here): `impl Source for TapReader`'s `layout` returning
-/// `ChannelLayout::STEREO` -> a one-lane and a six-lane tap read as stereo
-/// and this fails.
 #[test]
 fn the_layout_follows_the_taps_width() {
     let (mut ed, _exec): (Editor, Executor) = Editor::new(Prepare::new(
@@ -193,9 +181,6 @@ fn the_layout_follows_the_taps_width() {
 }
 
 /// The frames a tap's rings refused are the source's `take_lost`, once.
-///
-/// Mutation (run, recorded here): the impl's `take_lost` returning the trait's
-/// zero -> this fails.
 #[test]
 fn a_tap_reports_the_frames_it_lost() {
     let mut tap = tap_with_ring(&[(1.0, 1.0); 8], 5);

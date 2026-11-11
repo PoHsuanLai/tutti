@@ -438,9 +438,6 @@ mod tests {
 
     /// A window the node held across the next `set_placement` is freed by
     /// the next `reclaim`, with no further publish.
-    ///
-    /// Mutation (run): `VoiceNodeHandle::reclaim` returning 0 without
-    /// reclaiming → one window is still retired, fails.
     #[test]
     fn reclaim_frees_a_window_a_block_held_across_the_next() {
         let wave = Arc::new(tutti_codec::Wave::from_samples(

@@ -41,10 +41,6 @@ fn run_to_the_end(path: &std::path::Path) -> PumpPass {
 }
 
 /// A pump over a cut file finishes as `Failed`, over a whole one as `Ended`.
-///
-/// Mutation (run): answering `Ended` instead of `Failed` for a fault in `impl
-/// Source for FileIn` makes the cut file finish as `Ended` and fails the first
-/// assertion.
 #[test]
 fn a_pump_over_a_cut_file_finishes_failed_and_over_a_whole_one_ended() {
     let dir = tempfile::tempdir().expect("temp dir");

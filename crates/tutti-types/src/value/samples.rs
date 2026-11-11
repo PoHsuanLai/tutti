@@ -284,9 +284,6 @@ mod tests {
     /// `2^24 + 1` frames is past `f32`'s exact-integer range, and an hour
     /// plus one frame is past where an `f32` second could tell neighbouring
     /// frames apart; both come back as the same count.
-    ///
-    /// Mutation (run): `to_seconds` dividing in `f32` (`(self.0 as f32 / rate as
-    /// f32) as f64`) -> the `2^24 + 1` count comes back off by a frame -> fails.
     #[test]
     fn a_long_frame_count_round_trips_through_seconds() {
         use super::super::units::SampleRate;
@@ -357,10 +354,6 @@ mod tests {
     /// Frames ↔ interleaved length, checked at six channels, where confusing
     /// the two is a 6× error rather than a 2× one that can hide in a round
     /// number.
-    ///
-    /// Mutation: `interleaved_len` returning `self.0` (frames as the slice
-    /// length) → the first assertion fails; `from_interleaved_len` returning
-    /// `Samples(len)` (samples as the frame count) → the second fails.
     #[test]
     fn interleaved_len_is_frames_times_width() {
         use crate::ChannelLayout;
@@ -382,8 +375,6 @@ mod tests {
 
     /// A zero-width buffer holds no frames — and says so rather than dividing
     /// by zero.
-    ///
-    /// Mutation: drop the `0 =>` arm → the division panics → this fails.
     #[test]
     fn an_empty_layout_holds_no_frames() {
         use crate::ChannelLayout;

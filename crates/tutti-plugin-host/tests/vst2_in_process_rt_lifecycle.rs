@@ -218,10 +218,6 @@ fn reset_dispatches_no_opcode_to_the_plugin() {
 /// The render scratch is the Processor's, sized at the activation to the block
 /// the plugin was told, so a prepare has nothing to resize and never grows
 /// anything on the audio thread.
-///
-/// Mutation (run): the node's `prepare` dispatching a rate to the plugin
-/// (`self.inner.lock().set_sample_rate(..)`) → the re-prepare suspends and
-/// resumes it → fails.
 #[test]
 fn blocks_past_64_frames_reach_the_plugin_after_a_prepare() {
     let _guard = lock_probe();
@@ -308,11 +304,6 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
 /// The drain recalls the Processor, which is on the audio thread; the next
 /// block hands it back (and renders silence), and the next drain runs the
 /// change (doc 016 §2.6).
-///
-/// Mutation (run): the node's block reading its realtime end without polling
-/// it (`rt.held()` in place of `rt.poll`) → no Processor is taken or handed
-/// back, and the rate never reaches the plugin → fails (with every test here
-/// that renders).
 #[test]
 fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let _guard = lock_probe();
@@ -360,9 +351,6 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
 /// the call: the node is out of any executor while it is prepared, so its
 /// realtime end hands the Processor back and takes the new one there, with no
 /// block of silence and no pump.
-///
-/// Mutation (run): `set_rate` always parking → the plugin is still at 48 kHz
-/// after the prepare → fails.
 #[test]
 fn a_prepare_on_the_main_thread_tells_the_plugin_at_once() {
     let _guard = lock_probe();
@@ -421,13 +409,6 @@ fn a_drain_with_nothing_parked_dispatches_nothing() {
 /// a channel table left pointing at an earlier block's staging, an offset
 /// slice, or a swapped channel each shows as a wrong sample. Every value is
 /// a small integer, so the comparison is exact on every platform.
-///
-/// Mutations (run): the input table built from channel 0 for every channel
-/// (`inputs.get(0)`) → channel 1 reads channel 0's ramp → fails; the input
-/// slice offset by one frame (`&inputs.get(ch)[1..size]`) → fails; no
-/// output table handed to the plugin (`outs.clear()` before `drive_f32`) →
-/// the outputs stay silent → fails; the output table reversed
-/// (`outs.reverse()`) → channel 0 holds channel 1's tag → fails.
 #[test]
 fn the_output_is_what_the_plugin_wrote() {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
@@ -510,9 +491,6 @@ impl tutti_graph::Node for Fill {
 /// the plugin's outputs are placed, and an output the node leaves unwritten
 /// shows what the first one left there. Channels within the tables are the
 /// plugin's (`in + tag(ch)`); the two past them are zero.
-///
-/// Mutation (run): the silencing loop deleted → channels 16 and 17 hold
-/// the stale value → fails.
 #[test]
 fn outputs_past_the_tables_are_silent() {
     use tutti_graph::{GraphBuilder, Prepare, Transport, Unforkable};
@@ -601,10 +579,6 @@ fn outputs_past_the_tables_are_silent() {
 ///
 /// The second block's count is the first's plus the whole burst, so the
 /// assertion does not depend on the queue's capacity.
-///
-/// Mutations (run): the in-process backend answering `0` → "a burst past
-/// the queue dropped nothing" → fails; `PluginHandle::dropped_parameter_events`
-/// answering `0` → the same.
 #[test]
 fn the_handle_counts_lost_parameter_reports() {
     const BURST: u32 = 600;
@@ -642,9 +616,6 @@ fn the_handle_counts_lost_parameter_reports() {
 /// 8192 (`DEFAULT_BLOCK_CAPACITY`, more with `Engine::with_capacity`). An
 /// 8192-frame block is rendered as two calls of 4096, and the largest call
 /// the plugin saw is the announced maximum.
-///
-/// Mutation (run): `Vst2Processor::process_f32` rendering the block in one call
-/// -> the plugin is entered with 8192 against an announced 4096 -> fails.
 #[test]
 fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
     let _guard = lock_probe();
@@ -668,10 +639,6 @@ fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
 /// `PluginHandle::on_invalidate` as its new latency and an I/O change, on the
 /// next editor pump (the main-thread tick an in-process plugin has), and the
 /// node's shape declares the new latency.
-///
-/// Mutation (run): the pump not calling `Instance::poll_changes` -> no
-/// invalidation -> fails. Mutation (run): `shape` reading the load-time
-/// `metadata.latency_samples` -> the shape still declares 0 -> fails.
 #[test]
 fn an_io_change_reaches_on_invalidate_and_the_shape() {
     use std::sync::{Arc, Mutex};
@@ -710,8 +677,7 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
 /// placement, so each bus is `Unassigned`, the first is `Main`, and together the
 /// buses cover every port the shape has.
 ///
-/// Mutation (run): the bus role of the first bus `Aux` fails it. Whether
-/// `shape` fills the buses at all is `chunked_node`'s test (this plugin states
+/// Whether `shape` fills the buses at all is `chunked_node`'s test (this plugin states
 /// no placement, so the default buses are what it declares as well).
 #[test]
 fn the_shape_declares_the_plugins_buses() {

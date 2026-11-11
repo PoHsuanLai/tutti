@@ -9,11 +9,6 @@
 //! Random words alone seldom reach a deep message (a chord name needs six
 //! valid nibbles), so a second generator shapes words into each family's valid
 //! range. The shaping only biases the search; no expected value comes from it.
-//!
-//! Mutation record (each planted, seen to fail, restored):
-//! - drop one arm's mask in `decode` (the `& 0x7f` of `u7`) -> `ignored_bits_are_ignored`;
-//! - make `encode` write the SysEx 7 count as `len + 1` -> `decoded_messages_round_trip`;
-//! - make `decode` return `Unknown(Ump::default())` -> `unknown_keeps_the_words`.
 
 mod common;
 
@@ -261,9 +256,6 @@ proptest! {
     /// velocity 0, or a MIDI 2.0 Note Off, and a MIDI 2.0 Note On at velocity 0
     /// is not one (M2-104 §7.4.2). The packets are random, with the message
     /// type forced to the two channel voice types half the time.
-    ///
-    /// Mutation (seen to fail, restored): `is_note_off` reading status `0x9` for
-    /// type `0x4` too -> the second disagreement below.
     #[test]
     fn is_note_off_agrees_with_decode(mut w in any::<[u32; 4]>(), force in 0u8..4) {
         match force {
@@ -311,10 +303,6 @@ fn the_shaped_generator_reaches_the_messages() {
 
 /// The round-trip properties only see a status the generator reaches: all 18
 /// Flex text kinds must turn up.
-///
-/// Mutation: restoring `(w[0] >> 4) % 5` for the status in `common::shape`
-/// fails this test (13 of the 18 kinds are never drawn), and with it a swap of
-/// statuses 0x0A and 0x0B in `decode` alone survives every property again.
 #[test]
 fn the_shaped_generator_reaches_every_flex_text_kind() {
     use proptest::strategy::ValueTree;

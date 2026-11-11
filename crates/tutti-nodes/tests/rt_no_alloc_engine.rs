@@ -99,8 +99,6 @@ fn engine_process_real_chain_is_allocation_free() {
     }
     // The chain must actually sound, or the gate below walks no DSP. A +6 dB
     // bell off-centre and a -0.3 dB ceiling leave a 440 Hz sine well audible.
-    // Mutation: a silent oscillator (`with_amplitude(Amplitude(0.0))`) fails
-    // here rather than passing the gate over a graph that did no work.
     assert!(
         output.iter().any(|s| s.abs() > 0.1),
         "the chain rendered silence; the gate would prove nothing"

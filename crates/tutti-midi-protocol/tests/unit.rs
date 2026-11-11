@@ -1,12 +1,4 @@
 //! The float scaling: native UMP integers as unit floats.
-//!
-//! Mutation (run once each, restored): `unit_f32_to_u16` truncating instead of
-//! rounding fails `unit_f32_inverses_are_exact_enough`; dropping the
-//! `0x8000_0000 +` centre in `signed_f32_to_bend_u32` fails
-//! `signed_bend_inverse_centers`; doubling its span fails
-//! `signed_bend_span_is_half_the_range`. Its two clamps are redundant for the
-//! out-of-range assertions (the cast saturates), so removing one alone is not
-//! detectable here.
 
 use tutti_midi_protocol::{
     signed_f32_to_bend_u32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,

@@ -147,9 +147,6 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 
 /// The classes as declared: a read and a plain voice `Moderate`, a
 /// stretched voice and a pool `Heavy`.
-///
-/// Mutation (run): `VoiceNode::cost` always `Moderate` → the stretched
-/// voice's assert fails.
 #[test]
 fn each_node_declares_its_class() {
     let wave = tone(0.1);
@@ -176,12 +173,6 @@ fn each_node_declares_its_class() {
 /// than the same reads declaring nothing, each stretched voice keeps a
 /// task of its own, the plan spreads from a one-frame block, and on a pool
 /// of two and of four the render is bit for bit the serial one.
-///
-/// Mutation (run): `MemorySource`'s `with_cost(Cost::Moderate)` removed →
-/// the reads pack no further than undeclared (15 tasks each, with the bus)
-/// → the task-count assert fails. Mutation (run): one round of packing in
-/// `tutti-graph`'s `coarsen` (no fixed point) → without the bus, 20 tasks
-/// against 14 → fails.
 #[test]
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn moderate_reads_pack_and_render_bit_identically() {

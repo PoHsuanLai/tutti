@@ -36,6 +36,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-types = { path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-voicing = { path = "../tutti-voicing" }
 # `Pool`, the worker-pool contract `clap.thread-pool` requests are served on
 # (`ClapLoaded::set_thread_pool`). No cycle: `tutti-graph` names only
 # `tutti-types`.

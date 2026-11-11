@@ -58,12 +58,6 @@ fn envelope_trace(bank: &mut VoiceBank, lane: usize, frames: usize) -> Vec<f32> 
 ///
 /// At 48 kHz: a 10 ms attack is 480 samples to 1.0, a 20 ms decay 960 more
 /// to the 0.5 sustain, and a 30 ms release 1440 samples to silence.
-///
-/// *Mutations, each run:* halving the attack slope fails the attack
-/// timing. Deriving the release slope from `sustain` rather than the level
-/// the release starts at *passes* here — this release starts at sustain —
-/// which is why `a_release_starts_from_the_current_level` exists; it fails
-/// there.
 #[test]
 fn adsr_stages_take_their_authored_times() {
     let env = Adsr::new(Seconds(0.01), Seconds(0.02), Amplitude(0.5), Seconds(0.03));
@@ -116,10 +110,6 @@ fn adsr_stages_take_their_authored_times() {
 /// Both are what make a fast re-strike click-free. (`adsr_live` did the
 /// first with a multiplier on the still-rising attack curve and restarted
 /// the second from zero.)
-///
-/// *Mutations, each run:* entering attack at level 0 in `EnvShape::enter`
-/// fails the retrigger half; deriving the release slope from `sustain`
-/// fails the release half.
 #[test]
 fn a_release_starts_from_the_current_level() {
     let env = Adsr::new(Seconds(0.01), Seconds(0.02), Amplitude(0.5), Seconds(0.03));
@@ -168,9 +158,6 @@ fn a_release_starts_from_the_current_level() {
 ///
 /// Run on the nonlinear ladder with a saw, the chain with the most per-lane
 /// state, so a coefficient, state or gain written to the wrong lane shows.
-///
-/// *Mutations, each run:* writing `set_gains`, or `set_filter`'s
-/// `coef_target`, to lane `k ^ 1` (the neighbour) fails.
 #[test]
 fn a_voice_renders_the_same_in_any_lane_and_lanes_sum() {
     let filter = FilterType::Moog {
@@ -228,9 +215,6 @@ fn filter_vs_dry(filter: FilterType, cutoff: Hz, res: Resonance) -> (Vec<f32>, V
 
 /// The lane SVF is `SvfFilterNode`'s filter: same coefficients (from the
 /// shared `SvfCoeffs::new`), same recurrence, same taps.
-///
-/// *Mutations, each run:* `c[2] * v3` for `c[1] * v3` in the `v1` line of
-/// the recurrence fails; swapping the `m[1]`/`m[2]` output weights fails.
 #[test]
 fn the_lane_svf_matches_svf_filter_node() {
     for (mode, ty) in [
@@ -259,9 +243,6 @@ fn the_lane_svf_matches_svf_filter_node() {
 
 /// The lane ladder is `LadderFilterNode`'s LP24 ladder, up to the `tanh`
 /// approximation (worst case 2e-4, at the saturator's clamp).
-///
-/// *Mutations, each run:* dropping the `tanh` from the feedback path
-/// fails; reading the second stage (`lp2`, the LP12 tap) fails.
 #[test]
 fn the_lane_ladder_matches_ladder_filter_node() {
     let (cutoff, res) = (Hz(1_200.0), Resonance(0.7));
@@ -286,9 +267,6 @@ fn the_lane_ladder_matches_ladder_filter_node() {
 ///
 /// Read off a saw well away from its wrap, where the output is the naive
 /// ramp `2p - 1` exactly, so each sample's phase step is recoverable.
-///
-/// *Mutation:* zeroing `inc_step` and loading `inc_target` at the top of
-/// the step (a per-step stair) fails the strictly-increasing check.
 #[test]
 fn a_pitch_change_ramps_every_sample_across_the_step() {
     let mut b = bank(OscillatorType::Saw, FilterType::None, flat());
@@ -326,10 +304,6 @@ fn a_pitch_change_ramps_every_sample_across_the_step() {
 /// sounding. Voice 1's sub-voice moves from lane 1 to lane 2 carrying its
 /// untouched seed, and voice 0's new sub-voice lands on lane 1 — which,
 /// seeded by lane index, got that same seed. Two lanes, one noise.
-///
-/// *Mutations, each run:* restarting the seed counter at every allocation
-/// (`(1..).map(seed_from)`, i.e. seeding by lane index) fails this; so does
-/// letting an added lane keep the stream it was copied from.
 #[test]
 fn unison_resizes_never_duplicate_a_noise_stream() {
     let mut b = VoiceBank::new(
@@ -357,9 +331,6 @@ fn unison_resizes_never_duplicate_a_noise_stream() {
 /// A sustain above unity is clamped, so a retrigger at sustain never drops
 /// the level: the attack peaks at 1.0 and would otherwise hand decay a
 /// level below where the note was held.
-///
-/// *Mutation:* removing the `clamp(0.0, 1.0)` on `sustain` in
-/// `EnvShape::new` fails this (the retrigger falls from 1.5 to 1.0).
 #[test]
 fn a_retrigger_at_a_boosted_sustain_does_not_drop() {
     let env = Adsr::new(Seconds(0.001), Seconds(0.001), Amplitude(1.5), Seconds(0.1));
@@ -381,10 +352,6 @@ fn a_retrigger_at_a_boosted_sustain_does_not_drop() {
 }
 
 /// A pulse width of 0 still renders a pulse, not DC.
-///
-/// *Mutation:* clamping the width to `0.0..=1.0` instead of
-/// `MIN_PULSE_WIDTH..` fails this: both edges coincide, their corrections
-/// cancel, and the output is a constant −1.
 #[test]
 fn a_zero_pulse_width_still_oscillates() {
     let mut b = bank(

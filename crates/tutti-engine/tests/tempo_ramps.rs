@@ -13,8 +13,6 @@
 //! `tutti-tempo`. Nothing is compared against another render except where the
 //! property *is* an equality of two renders (block-size independence; live
 //! equals offline), and those are also held to the arithmetic.
-//!
-//! Each test names the mutation that fails it.
 
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
@@ -195,13 +193,6 @@ fn integral_seconds(b: f64) -> f64 {
 /// (`delta / (chord / (60 x 48 000))`, with the chord `delta x 60 x 48 000 /
 /// 128`, 128 each). The playhead stands on beat 4 on that frame, and on the
 /// cells' lines before it.
-///
-/// Mutation (run): `TempoWalk::sync` taking the instantaneous tempo at the
-/// cell's start (`map.tempo_at_frame`) instead of the chord -> every cell
-/// covers too many beats and beat 4 is reached early -> fails; a ramp the walk
-/// never follows (`stepped` left false in `tempo_for_block`) -> the clock stays
-/// at 120 and beat 4 is on frame 96 000 -> fails; `TransportSettings::
-/// set_tempo_map` ignoring a map with a ramp -> fails.
 #[test]
 fn a_ramp_from_120_to_60_over_4_beats_reaches_beat_4_on_frame_128000() {
     let seen = live(&down(), 0.0, &[512], 140_000);
@@ -243,14 +234,6 @@ fn a_ramp_from_120_to_60_over_4_beats_reaches_beat_4_on_frame_128000() {
 /// here (the doc's figure for 60 to 240 BPM over 8 beats is 0.04). The bound
 /// is reached (the error is not zero), so the test cannot pass on a render
 /// that is the curve by another route.
-///
-/// Mutation (run): `CELL_GRID` = 512 -> the playhead is 16 times farther from
-/// the curve (error ~ `grid^2`) -> the bound fails; `TempoWalk::sync` taking
-/// the instantaneous tempo at the cell's start instead of the chord -> every
-/// cell ends off the map's beat -> the cell-start equality fails. (Dropping
-/// the re-seat on the map's beat does not fail it: a chord ends on the map's
-/// beat by definition, so the re-seat only removes ulps; the seek test sees
-/// it.)
 #[test]
 fn the_ramp_stays_within_the_grid_bound_of_the_exact_integral() {
     let seen = live(&down(), 0.0, &[512], 130_000);
@@ -286,10 +269,6 @@ fn the_ramp_stays_within_the_grid_bound_of_the_exact_integral() {
 /// `bpm(b) = 120 - 15 b` and `t(b) = 4 ln(120 / (120 - 15 b))`, which is
 /// `T = 4 ln 2` s = 133 084.26 frames): at every cell start the playhead's
 /// time is the exact one, and inside a cell it is within a frame's hundredth.
-///
-/// Mutation (run): `chord_cell` returning the segment's `bpm0` for a
-/// `RampBeats` segment (a step) -> the playhead runs at 120 and is
-/// 20 000 frames early at beat 4 -> fails; a ramp the walk never follows -> fails.
 #[test]
 fn a_ramp_linear_in_beats_is_on_the_integral_at_every_cell_start() {
     let map = tempo_map(&[
@@ -314,12 +293,6 @@ fn a_ramp_linear_in_beats_is_on_the_integral_at_every_cell_start() {
 /// 64, 100, 512, 1 000 (two cells' worth of changes more than one block holds
 /// at 4 096) and a ragged pattern: the same to the bit, and the first ramp is
 /// on the cells' lines.
-///
-/// Mutation (run): `TempoWalk::roll` rolling a whole `advance` as one chunk
-/// (`chunk = frames - rolled`, no cell edge) -> a ramp cell is taken at the end
-/// of the call it falls in, so the beats depend on the block size -> fails;
-/// `chord_cell` starting the cell at `frame` instead of the grid multiple (in
-/// `tutti-tempo`) -> cells depend on where a block began -> fails.
 #[test]
 fn the_beats_do_not_depend_on_the_block_size() {
     let map = tempo_map(&[
@@ -354,9 +327,6 @@ fn the_beats_do_not_depend_on_the_block_size() {
 /// graph whole and needs 31, so the engine cuts it: no block carries more than
 /// 8 changes, the cut blocks are full, every frame is rendered once, and the
 /// beats are the ones a block of 1 gives (no change inside it).
-///
-/// Mutation (run): `limit` never set in `TempoWalk::ahead` (the changes past
-/// the 8th dropped) -> the beats after the 8th cell stay at its tempo -> fails.
 #[test]
 fn a_ramp_block_with_more_than_8_cells_is_split_and_exact() {
     let map = down();
@@ -409,9 +379,6 @@ fn a_ramp_block_with_more_than_8_cells_is_split_and_exact() {
 /// An offline render over the same ramp is the live render, frame for frame,
 /// to the bit: both are the one walker, and the offline timeline cuts its own
 /// blocks where more than 8 changes fall.
-///
-/// Mutation (run): the offline `advance` rolling with the closed form instead
-/// of the walk -> the playhead ignores the ramp -> fails.
 #[test]
 fn an_offline_render_is_the_live_render_with_a_ramp() {
     let map = tempo_map(&[
@@ -474,12 +441,6 @@ fn an_offline_render_is_the_live_render_with_a_ramp() {
 /// 2) - r0) / a`, the first frame at or after it) the beat on the seat frame is
 /// 2.0 to the bit, the first frames run at the chord of the cell holding that
 /// frame, and the first cell edge after the seat is on the map's own beat.
-///
-/// Mutation (run): `apply_pending_seek` seating the clock at the beat of the
-/// map frame (`frame_at_or_after`) instead of the exact beat -> the first beat
-/// is not 2.0 -> fails; the walk not placed after the seat (`self.walk.seat`
-/// replaced by `clock.seat`) -> the clock keeps the tempo of the old position
-/// -> fails.
 #[test]
 fn a_seek_into_the_middle_of_a_ramp_seats_on_the_exact_beat() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -540,10 +501,6 @@ fn a_seek_into_the_middle_of_a_ramp_seats_on_the_exact_beat() {
 /// from 1.5 has `F(3) - F(1.5)` frames and every later one `F(3) - F(1)`, each
 /// within 2), at beat 1.0 to the bit and at the cell's tempo there (1.80
 /// beats/s, not the 1.32 of beat 3), and every pass after is the same.
-///
-/// Mutation (run): `TempoWalk::roll` skipping `place` after a wrap -> the
-/// playhead goes on at the loop end's tempo and the slope after the wrap is
-/// 1.32 -> fails.
 #[test]
 fn a_loop_wrap_inside_a_ramp_takes_the_cell_where_it_lands() {
     let transport = Transport::new(SampleRate::new(SR));

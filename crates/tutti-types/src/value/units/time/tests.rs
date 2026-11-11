@@ -128,10 +128,6 @@ fn sample_rate_orders_and_bounds_but_does_not_compose() {
 /// **A one-pole smoother built from `one_pole_coeff` reaches `1 − e⁻¹`
 /// of a unit step after `τ` seconds**, stepped per sample at `rate` and
 /// per block through `one_pole_coeff_over`.
-///
-/// Mutations (run): `exp(-n)` for `exp(-1 / n)` → fails; returning the
-/// retention `exp(−1/n)` instead of `1 − exp(−1/n)` → fails; the
-/// step form dividing `step / τ` instead of `τ / step` → fails.
 #[test]
 fn one_pole_step_response_reaches_one_minus_inverse_e_after_tau() {
     let want = 1.0 - (-1.0f64).exp();
@@ -158,14 +154,7 @@ fn one_pole_step_response_reaches_one_minus_inverse_e_after_tau() {
 /// time constant keeps a coefficient above zero.
 ///
 /// Also carries the deleted `tutti-nodes` `a_zero_smoothing_time_is_instant`
-/// (run: `one_pole`'s `else` returning 0, the freeze, fails this test).
-///
-/// Mutations (run): `one_pole` without its `n > 0.0` guard → zero
-/// gives `1 − exp(−inf)` = 1 still, but a negative τ gives
-/// `1 − exp(+…)` < 0 and NaN gives NaN → fails; its `else` returning 0
-/// (freeze) → fails; `one_pole_coeff_over` without its step guard →
-/// a zero step goes through `τ / 0` = inf, a negative one through a
-/// negative decay length (instant) → fails.
+/// (a zero smoothing time is instant, never frozen).
 #[test]
 fn one_pole_zero_time_is_instant_and_bad_input_is_defined() {
     let sr = SampleRate::SR_48K;
@@ -231,10 +220,6 @@ fn nyquist_scaled_refuses_to_exceed_nyquist() {
 /// A `Seconds` names every frame: a frame count round-trips exactly through
 /// seconds and back, well past the 256 s where an `f32` second (spacing 2^-15 s
 /// at that point) stopped being able to, and out to a day at 192 kHz.
-///
-/// Mutation (run): round-trip through `f32` seconds in `Samples::to_seconds`
-/// (`as f32 as f64`) -> the frames past 256 s at 48 kHz no longer come back ->
-/// fails.
 #[test]
 fn a_seconds_round_trip_is_exact_for_every_frame_a_project_holds() {
     for rate in [

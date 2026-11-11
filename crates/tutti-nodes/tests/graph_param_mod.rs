@@ -729,8 +729,8 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// reads at every width".
 ///
 /// The block-rate cases (`block_rate_cases`, the params doc 014 §12.6 made
-/// ports) were each run with the node ignoring that driven port and reading
-/// its cell instead, and each failed: the LFO rate (chorus and phaser), the
+/// ports) each read the driven port, never the node's own cell:
+/// the LFO rate (chorus and phaser), the
 /// chorus depth and feedback, the phaser depth, the compressor's
 /// ratio and makeup, its attack and release swapped, the gate's attack and
 /// release, the limiter's release and the SVF's gain. (The mixes of the delay,
@@ -839,10 +839,6 @@ fn mix_cases() -> Vec<MixCase> {
 /// path and a held one differ by), for two values that sound different from
 /// each other. These nodes had a `Wet` param of their own, whose port this
 /// replaces; the blend itself is `tutti-graph/tests/mix.rs`'s.
-///
-/// Mutations (run, each failed): the mix lane never driven (`MixIs::Fed` not
-/// calling `drive`), and the mix never set (`MixIs::Set` not calling
-/// `set_mix`): the fed and set renders no longer agree.
 #[test]
 fn each_fed_mix_is_the_one_the_graph_blends() {
     for w in [1usize, 2, 6] {

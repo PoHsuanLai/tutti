@@ -115,11 +115,6 @@ fn a_voice_at_unity_renders_its_wave() {
 /// and survives a commit. Addressed as a host addresses any node's param —
 /// `UnitParam::Volume` through its `ParamSet` — with no knowledge that it is
 /// a sampler voice; and through the typed door, `set_gain`.
-///
-/// Mutation (run): `VoiceNode::drain_commands` not reading the gain cell
-/// (the `if gain != play.gain` block removed) → the block stays at 1.0 →
-/// fails. Mutation (run): `VoiceNode::param_set` built over a detached copy
-/// of the cell (`Param::new(self.gain.load()).as_atomic()`) → fails.
 #[test]
 fn a_gain_set_through_the_controls_reaches_the_running_voice() {
     let mut s = solo_voice();
@@ -147,9 +142,6 @@ fn a_gain_set_through_the_controls_reaches_the_running_voice() {
 /// A gain cell a host wrote a NaN or an infinity into leaves the voice at the
 /// gain it had: the output stays finite and unchanged, and a finite write
 /// after it lands.
-///
-/// Mutation (run): `drain_commands` applying `self.gain.load()` unguarded
-/// makes the NaN case render NaN (and the infinite ones, infinity).
 #[test]
 fn a_non_finite_gain_write_leaves_the_voice_at_its_gain() {
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -174,12 +166,6 @@ fn a_non_finite_gain_write_leaves_the_voice_at_its_gain() {
 /// sends its composite to the param port and never writes the cell, so the
 /// cell is the gain last set, and that half of the test (a store of 0.9
 /// into the cell standing in for the driver) went with its subject.
-///
-/// Mutation (run): `VoiceNodeFork::fork` leaving the copy's `play.gain` as
-/// inserted (the `voice.play.gain = gain` write removed) → the fork renders
-/// at unity → fails. Mutation (run): the forked node's gain `Param`
-/// set to a handle of the live node's (`node.gain = live_gain.handle()`)
-/// → the live move to 0.75 reaches the fork → fails.
 #[test]
 fn a_fork_starts_from_the_gain_last_set_and_shares_nothing() {
     let mut s = solo_voice();
@@ -209,9 +195,6 @@ fn a_fork_starts_from_the_gain_last_set_and_shares_nothing() {
 /// The convention that lets a host push a param without dispatching on node
 /// type: `ParamSet::set` answers `false` and writes nothing, and the voice
 /// renders as before.
-///
-/// Mutation (run): `VoiceNode::param_set` also addressing `Pan`, at the gain
-/// cell → the write lands on the gain → fails.
 #[test]
 fn an_unowned_param_is_ignored() {
     let mut s = solo_voice();
@@ -228,11 +211,6 @@ fn an_unowned_param_is_ignored() {
 /// lane sends to the port and never writes it), and a knob write rides
 /// under the lane's offset (0.5 + 0.5 = 1.0). The gain is a port
 /// ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)).
-///
-/// Mutation (run): `VoiceNode::process` passing `None` to
-/// `drain_commands` (the port ignored) → the block renders at 0.25 →
-/// fails. Mutation (run): `VOICE_PARAMS` not declared in the shape →
-/// `param_range_cell` is `None` → fails.
 #[test]
 fn a_lane_drives_the_voice_gain_around_its_cell() {
     let mut s = solo_voice();
@@ -314,11 +292,6 @@ fn drive_volume(
 /// and declares it as a port, so the knob at 0.25 plus a
 /// constant half of a 0..1 range renders the flat wave at 0.75, and the
 /// cell still holds 0.25.
-///
-/// Mutation (run): `MemorySource::process` leaving `driven_gain` at
-/// `None` (the port ignored) → 0.25 → fails. Mutation (run): its
-/// shape not declaring `VOICE_PARAMS` → `param_range_cell` is `None` →
-/// fails.
 #[test]
 fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
     let mut s = Solo::new(
@@ -350,8 +323,6 @@ fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
 /// A voice's gain is a port, its base the cell
 /// ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)): the value a driven port
 /// starts its connect crossfade from.
-///
-/// Mutation (run): `VoiceNode::param_base` answering unity → fails.
 #[test]
 fn a_voices_gain_port_reads_its_cell_as_its_base() {
     use tutti_graph::Node;

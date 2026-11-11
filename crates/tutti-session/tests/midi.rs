@@ -136,9 +136,6 @@ fn plan_nodes(s: &Session) -> usize {
 
 /// **A clip lands its note on its frame**: a third of a beat in at 120 BPM
 /// / 48 kHz is frame 8 000, inside a block.
-///
-/// Mutation (run): `Midi::play_clip` not feeding the target (`set_feed`
-/// dropped) → nothing arrives → fails.
 #[test]
 fn a_clip_plays_its_note_on_its_frame() {
     let mut s = offline();
@@ -154,9 +151,6 @@ fn a_clip_plays_its_note_on_its_frame() {
 /// **A clip edit updates in place**: a second `play_clip` on one target
 /// replaces its clip's events, and the graph's node count stays the same.
 /// `stop_clip` empties it and keeps it.
-///
-/// Mutation (run): `play_clip` inserting a new clip every call (ignoring
-/// the one the target has) → one more node in the plan → fails.
 #[test]
 fn a_clip_edit_updates_in_place() {
     let mut s = offline();
@@ -186,9 +180,6 @@ fn a_clip_edit_updates_in_place() {
 
 /// **A target that takes no MIDI is refused**: a node with no event input,
 /// and one not in the graph.
-///
-/// Mutation (run): `Midi::takes_midi` checking only that the node is in
-/// the graph → the `Const` takes a clip → fails.
 #[test]
 fn a_target_without_an_event_input_takes_no_clip() {
     let mut s = offline();
@@ -212,12 +203,6 @@ fn a_target_without_an_event_input_takes_no_clip() {
 /// regression, at the session): the target is removed, a new node takes
 /// its place, and the host re-aims both at it. The same clip and queue
 /// nodes play the new node, and the removed one hears nothing.
-///
-/// Mutations (run), each fails:
-/// - `Session::remove` removing the clip and queue feeding the removed
-///   node → `retarget` refuses them (`NotSessionMidi`);
-/// - `Midi::retarget` not feeding the new target (its `set_feed` dropped)
-///   → the new tap hears nothing.
 #[test]
 fn a_clip_and_a_live_input_survive_a_re_bind() {
     let mut s = offline();
@@ -265,12 +250,6 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
 /// **A live input's clones share one writer and send in order**: the key
 /// helpers build group-1 MIDI 2.0 notes, a frame is held until its block, a
 /// beat is refused and a full ring says so.
-///
-/// Mutations (run), each fails: `live_input` opening a second inlet for the
-/// clone (the clone's note never reaches the target, or arrives on another
-/// node) fails the order; `SharedKeys::note_on` pushing `At::NextBlock`
-/// whatever `at` is lands the frame-stamped note in the first block and
-/// fails the frame; mapping `Refused::Beat` to `Full` fails the error.
 #[test]
 fn a_live_inputs_clones_send_in_order_through_one_writer() {
     let mut s = offline();
@@ -321,10 +300,6 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
 /// any-channel rule all of them, a channel rule its channel's and the
 /// channelless one; the fallback the ports no rule covers; unrouting
 /// unwires.
-///
-/// Mutation (run): the route compile (`Midi::compile_routes`, which
-/// `set_routes` and the session's own rules share) not unwiring a sink no
-/// rule names any more → the unrouted tap keeps its ports → fails.
 #[test]
 fn route_rules_wire_the_hardware_input() {
     let mut s = offline();
@@ -371,12 +346,6 @@ fn route_rules_wire_the_hardware_input() {
 /// builder asks for** (M2-104 Appendix B.1): channel 2 of Group 2 reaches its
 /// own listener through Group 2's ports, not Group 1's channel 2, and a rule
 /// for a Group the input does not hear wires nothing.
-///
-/// Mutation: `compile_routes` given the first Group's layout whatever the
-/// builder chose (`input_ports` fixed to `FIRST_GROUP`) -> Group 2's rule
-/// wires nothing and the first assertion fails; `MidiRouteRule::for_channel`
-/// leaving its Group out of the rule handed to the compile -> the second
-/// target takes Group 1's ports and the second assertion fails.
 #[test]
 fn a_route_rule_names_a_group() {
     let mut s = Session::builder()
@@ -436,14 +405,6 @@ fn a_route_rule_names_a_group() {
 /// they are unrouted it applies, and then the session's own `route` and
 /// `set_route_fallback` are refused, until a `set_routes` with no rule and
 /// no fallback hands the routes back.
-///
-/// Mutations (run), each fails:
-/// - `set_routes` not refusing while own rules exist → the host's rule
-///   replaces the session's (`a` loses its ports);
-/// - `own_may_declare` always `Ok` → the session's `route` is accepted
-///   while the host declares;
-/// - `host_routes` not cleared by an empty `set_routes` → `route` is
-///   still refused after the hand-back.
 #[test]
 fn the_routes_have_one_declarer() {
     let mut s = offline();
@@ -506,12 +467,6 @@ fn clocked() -> Session {
 /// it JR-stamps (stamping gates timestamps, not delivery), and with no
 /// output it counts them as dropped and says so when the count rises
 /// (rate-limited: `dropped_ticks_are_reported_at_most_once_a_second`).
-///
-/// Mutations (run), each fails:
-/// - `MidiState::midi_out_phase` routing to no output while stamping is
-///   off (`self.out.as_mut().filter(|o| o.is_stamping())`) → nothing
-///   reaches the sink;
-/// - the `MidiOutDropped` report dropped → no event.
 #[test]
 fn the_hardware_out_drains_with_stamping_off() {
     let mut s = clocked();
@@ -554,12 +509,6 @@ fn the_hardware_out_drains_with_stamping_off() {
 /// reports the total; later updates within the second drop more and report
 /// nothing; the first update a second after the report reports the new
 /// total.
-///
-/// Mutations (run), each fails:
-/// - the rate limit dropped (`due` always true) → the second update
-///   reports again;
-/// - `reported_at` never set → the same;
-/// - `>=` as `>` on the interval → nothing at exactly one second.
 #[test]
 fn dropped_ticks_are_reported_at_most_once_a_second() {
     let mut s = clocked();
@@ -608,11 +557,6 @@ fn dropped_ticks_are_reported_at_most_once_a_second() {
 /// and the builder's live input (its MPE mode). What each reclaimer frees is
 /// pinned in `tutti-midi-runtime` with a held loan, and the sweep of the
 /// graph's reclaimers in `tests/graph.rs`.
-///
-/// Mutations (run): `Midi::play_clip` inserting its clip with
-/// `Graph::insert` → no reclaimer kept, fails; the builder inserting the
-/// live input with `Graph::insert` → fails; `MidiClipNode`'s `SessionNode`
-/// impl returning `None` from `reclaimer` → fails.
 #[test]
 fn the_sessions_midi_nodes_keep_their_reclaimers() {
     let mut s = offline();
@@ -672,14 +616,6 @@ fn plug(
 ) {
     fake.plug(tutti_midi_hardware::test_support::endpoint(raw, name), d);
 }
-
-// Mutation record for the hot-plug tests, each seen to fail, then restored:
-// - `midi_input_phase` not polling the devices: all four fail;
-// - `midi_input_phase` not closing a held input on `Removed`: the held-input
-//   test fails (the port and the connection stay, the audit's defect);
-// - `midi_input_phase` closing the output on any `Removed`:
-//   `another_devices_removal_leaves_a_held_input_open` fails;
-// - `midi_input_phase` leaving the output open: the output test fails.
 
 /// **A device that comes and goes reaches `Session::update` as an event**,
 /// in the order the OS reported, on a session with no hardware and a fake OS.
@@ -803,9 +739,6 @@ fn a_connected_devices_note_reaches_the_synth_through_its_inlet() {
 
 /// **Two devices are two inlets, merged at the synth**: each device's note is
 /// heard, and one device going leaves the other's inlet in the graph.
-///
-/// Mutation (run): `wire_inlets` ignoring `Detach` → the closed device's inlet
-/// stays in the plan and the node count does not fall back.
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
@@ -841,10 +774,6 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
 /// second ahead of now sounds a second of frames on, not at the next block.
 /// An event pushed for the next block (the path of a session with no clock)
 /// sounds within one.
-///
-/// Mutation (run): the builder not giving the inlets the engine's block clock
-/// (`clock_midi`) → every arrival is for the next block and the note sounds
-/// within the first blocks, fails.
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_devices_arrival_is_placed_on_the_engines_clock() {
@@ -868,9 +797,6 @@ fn a_devices_arrival_is_placed_on_the_engines_clock() {
 /// **A device whose inlet overflows is reported**: 3,000 events pushed before
 /// any block reads them against an inlet of 2,048 lose 952, and the next update
 /// reports `MidiInputDropped` with that total, once.
-///
-/// Mutation (run): `HardwareMidiInputs::dropped_events` leaving out the live
-/// ports → 0 and no event, fails.
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_device_whose_inlet_overflows_is_reported() {
@@ -940,9 +866,7 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
 }
 
 /// **A watch that dies is reported once**, with its reason: the list is frozen
-/// and the host is told so instead of seeing a quiet table. Mutation:
-/// `midi_input_phase` not asking `watch_failure` → no event; not remembering
-/// that it reported → the event repeats every update.
+/// and the host is told so instead of seeing a quiet table.
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_dead_device_watch_is_reported_once() {
@@ -967,8 +891,7 @@ fn a_dead_device_watch_is_reported_once() {
 
 /// **An app holding a session restores a remembered device through it.** The
 /// fake OS names devices as ALSA does, so the saved device comes back as a
-/// same-name match, and as `Missing` once it is gone. Mutation: `Devices::resolve`
-/// answering `Missing` fails the first assertion.
+/// same-name match, and as `Missing` once it is gone.
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_remembered_device_resolves_through_the_session() {
@@ -1016,13 +939,6 @@ fn another_devices_removal_leaves_a_held_input_open() {
 /// too, and both notes play. A host's later `set_event_sources` on that
 /// input sets its own edges beside the sequencer's; the sequencer's clip
 /// re-aimed elsewhere leaves the host's edges where they are.
-///
-/// Mutations (run), each fails:
-/// - `Graph::write_feeds` writing the feeds' union over the whole input
-///   (the host's edges not kept) → the hand clip is unwired by `play_clip`
-///   and its note never plays;
-/// - `Graph::set_event_sources` on a fed input not keeping the feeds'
-///   sources → the sequencer's clip is unwired by the host's call.
 #[test]
 fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     use tutti_midi_runtime::MidiClipNode;
@@ -1076,9 +992,6 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
 /// 76 note-ons refused. The next update reports `EventsDropped` once, for the
 /// clip's port 0, with count 76; a second update with no further loss reports
 /// nothing.
-///
-/// Mutation (run): drop `report_event_losses` from the `Collect` phase → no
-/// event → fails. Mutation: report the port as `None` → fails.
 #[test]
 fn a_port_that_loses_events_is_reported() {
     let mut s = offline();

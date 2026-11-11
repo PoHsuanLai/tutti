@@ -324,8 +324,6 @@ mod tests {
     /// Bell and both shelves follow the RBJ cookbook response at fc/2, fc and
     /// 2fc, for +-12 dB and Q 0.7, 1, 4; the shelf gain at fc is half the dB
     /// gain.
-    ///
-    /// Mutations (run): Bell `k = 1/q`, shelf `g = g0`; each fails here.
     #[test]
     fn bell_and_shelves_match_the_rbj_cookbook() {
         let (rate, fc) = (48000.0, 1000.0);
@@ -352,9 +350,6 @@ mod tests {
     /// A gain far outside any audible range, or not a number, still solves to
     /// a finite set (it was NaN at -1e30 dB: `10^(dB / 40)` underflows to 0
     /// and `k = 1 / (Q * A)` is infinite), and a gain past the cap is the cap's.
-    ///
-    /// Mutation (run): dropping the clamp makes the `-1e30` and `1e30` cases
-    /// non-finite; dropping the NaN arm makes the NaN case NaN.
     #[test]
     fn an_absurd_gain_solves_finite_and_saturates() {
         for ty in [SvfType::Bell, SvfType::LowShelf, SvfType::HighShelf] {

@@ -97,9 +97,6 @@ mod tests {
     /// A fixed reader reads the map it was made with, and so does each clone,
     /// with the cell it built kept alive by the readers alone (the `Arc` the
     /// constructor made is gone).
-    ///
-    /// Mutation: `fixed` building the cell from `TempoMap::constant(120)`
-    /// instead of `map` -> the reads are 120 -> fails.
     #[test]
     fn a_fixed_reader_and_its_clones_read_the_map_it_was_made_with() {
         let mut a = TempoReader::fixed(constant(100.0));
@@ -113,9 +110,6 @@ mod tests {
     }
 
     /// A session's reader follows the publisher; a fixed one never moves.
-    ///
-    /// Mutation: `tempo_reader` returning `TempoReader::fixed(self.tempo_map
-    /// .current())` -> the reader still reads 120 after the publish -> fails.
     #[test]
     fn a_settings_reader_follows_a_publish_and_a_fixed_reader_does_not() {
         let settings = TransportSettings::new();

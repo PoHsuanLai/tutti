@@ -278,9 +278,6 @@ mod tests {
     }
 
     /// A block buffer holds the same phases as stepping sample by sample.
-    ///
-    /// Mutation: stepping the phase *before* writing it in `fill_block` (so
-    /// `out[0]` is already one step in) fails the first assertion.
     #[test]
     fn a_block_buffer_is_the_per_sample_walk() {
         let sr = SampleRate::SR_48K;

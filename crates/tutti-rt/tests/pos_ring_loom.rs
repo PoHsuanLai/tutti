@@ -46,42 +46,6 @@
 //!   the second range's alias, then a reset and a rewrite there;
 //! - `a_partly_capped_push_then_reset_keeps_the_claim` — the same with a push
 //!   that lands one frame of three.
-//!
-//! # Mutations (run)
-//!
-//! - The generation check removed from `push` → `retract_then_push`,
-//!   `reset_then_push` fail.
-//! - The start raise before the range load removed →
-//!   `a_write_round_the_ring_never_lands_under_a_claim` fails.
-//! - The reader loading the window before storing its ranges → the same
-//!   fails.
-//! - `shrink` bumping the generation before storing the window →
-//!   `retract_then_push`, `reset_then_push` fail.
-//! - Every fence removed → `a_write_round_the_ring_never_lands_under_a_claim`
-//!   and `retract_then_push` fail.
-//! - A `push` with no first cap from the ranges, keeping the raise when the
-//!   write is cut short → `a_capped_push_then_reset_keeps_the_claim` fails.
-//! - Only the restore of a write cut to nothing removed → the same fails.
-//! - Only the final window's start the raise's (the first cap kept) →
-//!   `a_partly_capped_push_then_reset_keeps_the_claim` fails: the ranges
-//!   the first cap reads before the fence can be older than the ones the
-//!   check reads after it.
-//! - The second range never published (`reads[2..4]` left stale) →
-//!   `a_second_range_is_kept` and `a_capped_push_then_reset_keeps_the_claim`
-//!   fail.
-//! - `raise_from` recording nothing stale → `raise_then_reset_then_push`
-//!   fails.
-//! - The stale span cleared at every shrink (not only once the reader has
-//!   seen it) → `raise_then_reset_then_push` fails.
-//!
-//! **Survivor, documented (M6):** the echo `claimed` stored `Relaxed`
-//! instead of `Release`. What the `Release` orders is the reader's earlier
-//! *loads* (the block before) before the echo: without it, a load of that
-//! block could read a write the writer made after seeing the echo — load
-//! buffering. Loom does not model load buffering (a load never reads a store
-//! that has not happened yet in its interleaving), so no model here can fail
-//! on it; C++ allows it, and the `Release` is what rules it out, as in
-//! `arc-lend`'s `tests/loom.rs`.
 #![cfg(loom)]
 
 use loom::thread;

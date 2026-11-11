@@ -74,12 +74,6 @@ fn frame_into(unit: &mut MemorySource, t: Option<&MockTransport>, out: &mut [f32
 /// same position, both paths emit the same constant, and the assertion holds
 /// no matter what the code does. So does a render that is silent (a
 /// playhead past the wave's end), which is why the frames must vary.
-///
-/// Mutation (run): `render_range` reading every placed frame at the
-/// piece's first position (`positions[0]`) → the `n`-frame block is DC
-/// → "placed @0.5x" fails. (Until the render had to vary, that case
-/// stood at beat 1 — 22 050 frames into a 4 096-frame wave — and passed
-/// on silence under this mutation.)
 fn assert_blocks_match_frames(
     mut a: MemorySource,
     mut b: MemorySource,
@@ -293,9 +287,6 @@ fn placed_clip_block_step_follows_playback_rate() {
 /// Stepping by the gate's rate (`window_rate`, varispeed alone) read one
 /// file frame per output frame within a block and re-seated half a block
 /// back at the next (frames 60…63, then 32).
-///
-/// Mutation (run): `placed_positions`' step `read_rate` → `window_rate`
-/// → output frame 1 reads file frame 1 → fails (64-frame blocks).
 #[test]
 fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
     let wave = ramp_wave(4_096, 24_000.0);
@@ -329,11 +320,6 @@ fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
 /// within each block and re-seated at the next still measures 440 Hz), so
 /// a pitch test cannot see this. Whether the slot passes the filter's rate
 /// here at all is `a_stretched_placed_voice_holds_its_pitch_across_blocks`'s.
-///
-/// Mutation (run): the step `read_rate` → `window_rate` → half a frame per
-/// frame → fails. Mutation (run): the seat by `window_position` (no
-/// stretch: `gate` without `stretch_rate`) → each block seats at 32 →
-/// fails.
 #[test]
 fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
     let wave = ramp_wave(4_096, 24_000.0);
@@ -365,11 +351,6 @@ fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
 /// 10, 11 — what the loop plays next — not 20, 21 from past it; and after
 /// the wrap, half a frame into the loop, the frame behind is 19, the one
 /// the loop just played. The ramp's value is its frame + 1.
-///
-/// Mutation (run): `LoopSpan::taps` clamping to the file rather than
-/// wrapping → reads 20.5 at 19.5 → fails. Mutation (run): the `looped`
-/// back tap removed → frame 9 behind 10.5 → fails. Mutation (run): the
-/// wrap not marking the cursor `looped` → the same → fails.
 #[test]
 fn a_loop_reads_through_its_seam_at_a_fractional_rate() {
     use tutti_dsp::cubic_hermite;
@@ -400,9 +381,6 @@ fn a_loop_reads_through_its_seam_at_a_fractional_rate() {
 /// the new speed — what a varispeed change on a placed voice means) and
 /// steps 2 from there. A block reads its rates once, so there is no moment between two frames
 /// of one block at which a rate can change.
-///
-/// Mutation (run): `placed_positions` stepping by `read_rate` without
-/// the speed (`SrcRatio` alone) → the second block steps 1 → fails.
 #[test]
 fn a_rate_change_lands_on_the_next_block() {
     let wave = ramp_wave(16_384, 44_100.0);
@@ -438,10 +416,6 @@ fn a_rate_change_lands_on_the_next_block() {
 /// - `[2, 30)`, the same fade with only 2 frames before the start: frame
 ///   `26 + k` blends toward the loop's head `2 + k`, and the wrap lands on
 ///   6, after the head.
-///
-/// Mutation (run): the weight `k / fade` in `LoopSpan::fade_at` → frame 26
-/// reads the pure tail → fails. Mutation (run): the head mode's `resume`
-/// left at `start` → the second loop wraps to 2 → fails.
 #[test]
 fn a_crossfaded_loop_plays_the_hand_computed_frames() {
     for (start, resume, lead) in [(10usize, 10usize, 6usize), (2, 6, 2)] {
@@ -476,9 +450,6 @@ fn a_crossfaded_loop_plays_the_hand_computed_frames() {
 /// block and in one-frame ones: the clock stops where it stands (its
 /// beat does not move), and the read must not run on as if it still
 /// rolled.
-///
-/// Mutation (run): `place` ignoring `run.rolling()` → the read plays on
-/// through the stop → fails.
 #[test]
 fn a_stopped_clock_silences_a_placed_read() {
     let wave = ramp_wave(16_384, 44_100.0);
@@ -506,9 +477,6 @@ fn a_stopped_clock_silences_a_placed_read() {
 
 /// A stop inside a block silences the read on its frame: the block's `Env` carries the stop as a change at frame 40, and
 /// the clip plays frames 0..40 and not one more.
-///
-/// Mutation (run): `place` reading the block's first transport for every
-/// frame (ignoring `Env::changes`) → frames 40.. play on → fails.
 #[test]
 fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     use tutti_graph::{Offset, TransportChanges};
@@ -542,11 +510,6 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
 /// what `VoiceCommand::UpdateLoop` does while a loop point is dragged — the
 /// next frames are the file's 1500, 1501, …, not 3500, …. The same after
 /// the loop is switched off and on again. The ramp's value is its frame + 1.
-///
-/// Mutation (run): both guards removed — `LoopSpan::taps` wrapping back
-/// every tap behind `resume` when `looped`, and the loop setters leaving
-/// `looped` set → 3501 → fails. (Either guard alone holds it;
-/// `loop_span`'s own test pins the first.)
 #[test]
 fn a_loop_moved_under_a_looped_cursor_reads_where_the_cursor_is() {
     for toggle in [false, true] {
@@ -772,9 +735,6 @@ fn placement_gate_applies_src_ratio_exactly_once() {
 
 /// A window set on a free-running source places it, and placing it
 /// afterwards at that window leaves it as it was.
-///
-/// Mutation (run): `set_window` storing the window only when already placed
-/// → `window()` stays `None` after the set → fails.
 #[test]
 fn setting_a_window_places_the_source() {
     let wave = ramp_wave(100, 44_100.0);
@@ -1187,9 +1147,6 @@ fn with_channels_declares_the_width() {
 
 /// The node's shape is its declared width, a generator's: no inputs, no
 /// latency, never skipped (its tail is unbounded).
-///
-/// Mutation (run): `shape` declaring stereo whatever the node was built
-/// at → fails at width 1.
 #[test]
 fn the_shape_is_the_declared_width() {
     for w in [1usize, 2, 6, 8] {
@@ -1274,10 +1231,6 @@ fn six_channel_loop_crossfade_covers_every_channel() {
 /// the executor owns and nothing else can reach. Asserted through the
 /// graph: the node inserted with `param_parts`, its gain set through the
 /// controls `IntoNode` handed back.
-///
-/// Mutation (run): `param_set` building its `ParamSet` over a detached
-/// copy of the gain (`Param::new(self.gain.load())`) → the render stays
-/// at unity → fails.
 #[test]
 fn a_gain_change_reaches_the_rendering_node() {
     use tutti_graph::Solo;
@@ -1300,9 +1253,6 @@ fn a_gain_change_reaches_the_rendering_node() {
 /// A fork of the node shares nothing with it, and starts from the gain
 /// last set — the graph's fork check (`assert_param_fork`): gain is
 /// this node's one cell.
-///
-/// Mutation (run): `fork_fresh` without `detach_gain` → "a live write
-/// reached the fork" → fails.
 #[test]
 fn the_fork_shares_no_gain() {
     tutti_graph::contract::assert_param_fork(
@@ -1312,8 +1262,6 @@ fn the_fork_shares_no_gain() {
 
 /// Its gain is a port, its base the cell
 /// ([`VOICE_PARAMS`](super::super::VOICE_PARAMS)).
-///
-/// Mutation (run): `param_base` answering unity → fails.
 #[test]
 fn the_shape_declares_its_gain() {
     let s = MemorySource::new(ramp_wave(64, 48_000.0)).expect("a placeable wave");
@@ -1329,9 +1277,6 @@ fn the_shape_declares_its_gain() {
 /// A fork plays from the render's transport:
 /// a placed source forked out of a live graph reads its window of the
 /// fork's own blocks' `Env`.
-///
-/// Mutation (run): `fork_fresh` leaving `placed` false → the fork plays
-/// its free-running cursor (stopped by the reset: silence) → fails.
 #[test]
 fn a_placed_fork_reads_the_renders_transport() {
     let wave = ramp_wave(44_100, 44_100.0);
@@ -1353,14 +1298,6 @@ fn a_placed_fork_reads_the_renders_transport() {
 /// The wave is `1, 2, 3, ...`, and an unlooped read at unity rate away from
 /// the ends is the sample itself, so frame `i` of a lane that carries it is
 /// `i + 1`.
-///
-/// Mutation (run): `MonoSpread::to` returning `FAN` for every width (the old
-/// fan-out) fails the 6, 8 and 12 rows on the silent lanes; the lane path
-/// leaving lane 0 as the mono block (skipping the rewrite in
-/// `MonoSpread::lanes`) fails the centre-only rows of "placed lanes", the one
-/// read that reaches it (the others read a frame at a time); `lanes` with the
-/// scratch copy taken after lane 0 is rewritten reads zeros for the centre and
-/// fails them.
 #[test]
 fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));

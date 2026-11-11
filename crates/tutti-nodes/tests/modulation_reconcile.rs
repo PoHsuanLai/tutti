@@ -2,7 +2,7 @@
 //! §8.2, §12.5): declarations applied to a plain `Editor`, rendered by its
 //! executor, against analytic figures and invariants of the render.
 //!
-//! Each test names the mutations it was seen to fail under. The no-allocation
+//! The no-allocation
 //! gate across an `apply` that republishes is in `rt_no_alloc_modulation.rs`,
 //! beside the allocator it needs.
 
@@ -543,12 +543,6 @@ fn ducked(f: usize) -> f64 {
 /// **Doc 014 §8.1, headless.** An LFO on a native cutoff renders the
 /// analytic sine within §5.3's bound (past the connect's declick), and the
 /// pad (probe 2) dips with the kick through a follower, analytically.
-///
-/// Mutations (run), each fails: the lane built with `for_unit(Q, …)` in
-/// place of the target's param (the cutoff reads its knob); the route's
-/// range not stored (`set_param_range` skipped in `apply`: the port's span
-/// is unbounded, so the lane sends the base alone); the follower's feed not
-/// wired (`wire_feed` a no-op: the pad never dips).
 #[test]
 fn the_8_1_example_renders_its_analytic_values() {
     let mut r = rig(128);
@@ -578,10 +572,6 @@ fn the_8_1_example_renders_its_analytic_values() {
 /// plan sent last is the same `Arc`), and from one grid step after the
 /// block it lands in the cutoff is the same sine at the new depth, its
 /// phase unbroken.
-///
-/// Mutations (run), each fails: the republish dropped (`publish` skipped:
-/// the old depth renders on); a program change rebuilding the lane rather
-/// than republishing (`Bind::same` false: a commit, and a new plan).
 #[test]
 fn a_depth_edit_keeps_phase_and_sends_no_plan() {
     let mut r = rig(128);
@@ -620,11 +610,6 @@ fn a_depth_edit_keeps_phase_and_sends_no_plan() {
 /// (read back through `param_range_cell`), and the render follows it; the
 /// follower route (a new source and its edge) is one commit, one plan in
 /// flight; applying the same declarations again changes nothing.
-///
-/// Mutations (run), each fails: the range edit stored nowhere (the cell
-/// still reads `0..=1000`); every `apply` asking for a commit; the
-/// follower's node and edge committed in two commits (a second `commit` in
-/// `apply`'s source loop: two in flight).
 #[test]
 fn range_and_depth_edits_need_no_commit_and_a_follower_route_one() {
     let (mut ed, mut exec) = editor(128);
@@ -694,10 +679,6 @@ fn range_and_depth_edits_need_no_commit_and_a_follower_route_one() {
 /// an LFO on one cutoff; the follower's source and route go. Its node
 /// leaves the spec with its edges, the lane's program reads no input and
 /// keeps its LFO layer, and the reconciler holds no node for it.
-///
-/// Mutations (run), each fails: a gone source's node kept (its
-/// `editor.remove` skipped: the node stays in the spec); the republish
-/// dropped (the lane still reads the input).
 #[test]
 fn a_removed_source_leaves_no_node_and_no_layer() {
     let mut r = rig(128);
@@ -737,11 +718,6 @@ fn a_removed_source_leaves_no_node_and_no_layer() {
 /// node's own cell, which the lane reads each block; a route edit
 /// republishes the program and writes no knob, so a knob written before or
 /// after it is the base the offsets ride on.
-///
-/// Mutations (run), each fails: `apply` storing the decl's range bottom
-/// into the knob on a republish (`set_knob(min)`: the old driver's
-/// reseed); the lane given a knob cell of its own (`for_unit` with a copy
-/// of the cell: the write never reaches it).
 #[test]
 fn a_knob_written_after_a_route_edit_is_the_knob() {
     let mut r = rig(128);
@@ -819,10 +795,6 @@ fn resync_rig() -> (Rig, SourceKey) {
 /// lands in (the lane glides one control step from where it stood, as on
 /// any input change), probe 2 reads `0.1 + 0.5 · 0.4` on every frame, not
 /// its knob until the next note.
-///
-/// Mutations (run), each fails: `commit` without `send_resyncs` (probe 2
-/// reads 0.1); the note envelope's `Resync` arm dropped (the same);
-/// `Applied::resync` never set.
 #[test]
 fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     let (mut r, env) = resync_rig();
@@ -854,9 +826,6 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
 /// lane's published program in the same `apply`, so "newly read" and "a
 /// new edge in the reconciler's set" are the same event. The spec's edge
 /// is not: here it never left the plan the executor runs.
-///
-/// Mutation (run): `owe_resyncs` diffing the new program against itself
-/// (no source newly read) → probe 2 reads its knob, 0.1 → fails.
 #[test]
 fn a_route_dropped_and_readded_without_a_commit_resyncs() {
     let (mut r, env) = resync_rig();
@@ -897,10 +866,6 @@ fn a_route_dropped_and_readded_without_a_commit_resyncs() {
 /// **A follower has no event input, so a resync cannot reach it**: the
 /// editor refuses one scheduled there by port, and the reconciler owes
 /// none for a follower (it sends on every grid point while not silent).
-///
-/// Mutation (run): `owe_resyncs` owing every source kind, and `apply`'s
-/// final filter keeping every source with a node → the rig's follower
-/// owes one → fails.
 #[test]
 fn a_follower_takes_no_resync() {
     let mut r = rig(128);
@@ -922,9 +887,6 @@ fn a_follower_takes_no_resync() {
 /// nextest test is a fresh process): a probe at 0, a pulse at 1. The lane
 /// and the follower the reconciler builds land on other keys, the host's
 /// nodes keep their kinds, and the pad still dips with the pulse.
-///
-/// Mutation (run): `unused_key` returning `NodeKey::fresh()` unchecked →
-/// the lane replaces the probe at 0 → fails.
 #[test]
 fn a_host_key_is_never_taken() {
     let (mut ed, mut exec) = editor(128);
@@ -976,10 +938,6 @@ fn a_host_key_is_never_taken() {
 /// segments are addressed `Id(7)` and land on `0.5 + 0.25 · 1`. A range
 /// edit to `0..=0.7` is a store into the lane's own range, no commit, and
 /// the segments land on `0.5 + 0.25 · 0.7`.
-///
-/// Mutations (run), each fails: the foreign lane's `connect_events`
-/// skipped (no segment reaches the capture); `store_range`'s foreign arm a
-/// no-op (the segments stay at 0.75).
 #[test]
 fn a_foreign_target_takes_a_lane_on_its_event_input() {
     let (mut ed, mut exec) = editor(128);
@@ -1025,13 +983,6 @@ fn a_foreign_target_takes_a_lane_on_its_event_input() {
 /// the target is unresolved and its lane goes; the host re-applies after
 /// the commit, and the lane is rebuilt on the new cell. A range edit to
 /// `0..=2000` is then a store the lane reads: 500.
-///
-/// Mutation (run): `resolve_target` without the committed param-list check
-/// (any unit in the plan at the node will do) → the target resolves
-/// before the commit → fails on
-/// `unresolved_targets`; with the asserts on the gap removed as well, the
-/// lane is rebuilt on the old cell and the range edit reaches nothing (the
-/// review's repro): 250 → fails on the last assert.
 #[test]
 fn a_rebind_to_another_param_list_waits_for_its_commit() {
     let (mut ed, mut exec) = editor(128);
@@ -1081,9 +1032,6 @@ fn a_rebind_to_another_param_list_waits_for_its_commit() {
 /// LFO's depth is edited: the apply succeeds, the follower is unresolved
 /// and its node goes, and the commit is accepted. A note envelope whose
 /// MIDI node is removed keeps its node, fed nothing.
-///
-/// Mutation (run): `resolve_source` without the filter on the feed's node
-/// (a missing node back to `WrongFeed`) → both applies refused → fails.
 #[test]
 fn a_removed_feed_node_leaves_its_source_unresolved() {
     let mut r = rig(128);
@@ -1113,9 +1061,6 @@ fn a_removed_feed_node_leaves_its_source_unresolved() {
 /// changes.** The host drives probe 3's cutoff from an event node of its
 /// own; a route to that cutoff is `PortTaken`, with the editor and the
 /// reconciler as before, and the editor still commits.
-///
-/// Mutation (run): the `PortTaken` check removed → the apply succeeds,
-/// wiring a second event source into the port → fails.
 #[test]
 fn a_port_with_another_event_source_is_refused() {
     let mut r = rig(128);
@@ -1153,9 +1098,6 @@ fn a_port_with_another_event_source_is_refused() {
 /// the next apply undoes the wiring around both, leaves the host's nodes
 /// and builds a new lane and follower at fresh keys. The render is the
 /// §8.1 figures again (the LFO past the new lane's declick).
-///
-/// Mutation (run): `taken` always false → the apply sees nothing to do
-/// (no commit, the records still name the host's nodes) → fails.
 #[test]
 fn a_key_the_host_takes_is_followed() {
     let mut r = rig(128);
@@ -1208,10 +1150,6 @@ fn a_key_the_host_takes_is_followed() {
 /// one apply: one lane each would be two event sources on the port, and
 /// the graph would refuse every later commit. The apply is `SharedPort`,
 /// nothing changes, and the editor commits.
-///
-/// Mutation (run): the claimed-port check removed → the apply succeeds
-/// (wiring two lanes into the port, which the commit would refuse) →
-/// fails.
 #[test]
 fn two_targets_on_one_port_are_refused() {
     let (mut ed, mut exec) = editor(128);
@@ -1245,10 +1183,6 @@ fn two_targets_on_one_port_are_refused() {
 /// LFO route moves from target id 1 to id 7, which names the same cutoff.
 /// The old lane goes, the new one connects, and probe 1 renders the sine
 /// again past the new lane's declick.
-///
-/// Mutation (run): a port's own sources counted as this target's lane
-/// only → `PortTaken(7)` (the old lane is still on the port when 7 is
-/// checked) → fails.
 #[test]
 fn a_target_moved_to_another_key_on_its_port_takes_it() {
     let mut r = rig(128);
@@ -1280,10 +1214,6 @@ fn a_target_moved_to_another_key_on_its_port_takes_it() {
 /// keeps the port's range cell, so the target resolves before it, the lane
 /// is rebuilt at once, and every frame after that commit reads 250. A
 /// range edit then reads 500.
-///
-/// Mutation (run): `resolve_target` requiring the plan's unit generation
-/// to be the spec's (the check of 877174d3) → the target is unresolved
-/// (its lane goes, the port reads its knob) → fails.
 #[test]
 fn a_replace_with_the_same_params_keeps_modulating() {
     let (mut ed, mut exec) = editor(128);
@@ -1326,10 +1256,6 @@ fn a_replace_with_the_same_params_keeps_modulating() {
 /// lane's key is taken by a host's MIDI node, which the host wires into the
 /// plugin's event input through a feedback edge. The apply removes the
 /// direct edge the lane wired and keeps the host's feedback edge.
-///
-/// Mutation (run): the taken foreign lane unwired with
-/// `disconnect_events` (every edge from the key) → the feedback edge goes
-/// → fails.
 #[test]
 fn a_taken_lanes_unwiring_keeps_the_hosts_edges() {
     let (mut ed, mut exec) = editor(128);
@@ -1398,11 +1324,6 @@ fn state(ed: &Editor, m: &Modulation, targets: &[TargetKey], sources: &[SourceKe
 /// error names the route, and the editor's spec, the compile, the lanes
 /// and the source nodes are exactly as before. A follower of something
 /// upstream (the kick) on the same target is fine.
-///
-/// Mutations (run), each fails: `check_cycles` not called (both apply,
-/// and the graph's commit would refuse later); the walk not following
-/// audio edges (the bus case passes); the walk not seeded with the feeds
-/// (both pass).
 #[test]
 fn a_follower_downstream_of_its_target_is_refused_by_route() {
     let mut r = rig(128);
@@ -1470,10 +1391,6 @@ impl Playhead {
 ///
 /// The reference CLAP plugin's gain at a pinned chunk size is
 /// `bevy-tutti`'s `mod_plugin.rs`: a plugin is `tutti-plugin`'s, which `tutti-nodes` cannot name.
-///
-/// Mutations (run), each fails: the lane's fork dropping the knob it
-/// gathers (`fork_fresh`'s knob `None`: the export's cutoff has no base);
-/// the follower inserted `Unforkable` (the fork refuses).
 #[test]
 fn an_export_is_the_live_render_on_a_native_param() {
     let (mut ed, mut exec) = editor(128);
@@ -1540,11 +1457,6 @@ fn an_export_is_the_live_render_on_a_native_param() {
 /// **`for_param::<Hz>` and `for_unit(Cutoff)` send the same segments**, bit
 /// for bit: the typed constructor is a spelling of the erased one. And a
 /// lane on a param with no typed key (`Pan`) reaches its port.
-///
-/// Mutations (run), each fails: `ParamSegment::unit` marking its segment
-/// foreign (the pan port reads its knob); `for_param` passing another
-/// param than its key's (`for_unit(UnitParam::Q, …)`: the addresses
-/// differ).
 #[test]
 fn for_param_and_for_unit_send_the_same_segments() {
     let (mut ed, mut exec) = editor(128);
@@ -1623,8 +1535,8 @@ fn for_param_and_for_unit_send_the_same_segments() {
 // `Modulation::apply` skips an apply whose inputs equal the last one's
 // (its `Memo`). Each test below settles the §8.1 rig until applies are
 // skipped, changes one input alone, and asserts the next apply follows it.
-// The mutation each names is that input taken out of `Memo::holds`: the
-// apply is then skipped and the edit lost.
+// The input each test changes is one `Memo::holds` reads: were it not, the
+// apply would be skipped and the edit lost.
 
 /// Applies until one is skipped: the inputs are steady.
 fn steady(r: &mut Rig) {
@@ -1655,9 +1567,6 @@ impl tutti_modulation::Curve for Flat {
 /// **A steady apply is skipped and the render is the one it was.** The
 /// §8.1 rig, applied every block, renders its analytic LFO and follower,
 /// and every apply after the first two is skipped.
-///
-/// Mutation (run): `Memo::holds` returning `false` → nothing is skipped →
-/// fails ("skipped").
 #[test]
 fn a_steady_apply_is_skipped_and_renders_the_same() {
     let mut r = rig(128);
@@ -1697,8 +1606,6 @@ fn a_steady_apply_is_skipped_and_renders_the_same() {
 }
 
 /// A source edit (an LFO's rate) is republished.
-///
-/// Mutation (run): `sources` out of `Memo::holds` → fails.
 #[test]
 fn a_source_edit_after_a_steady_state_is_republished() {
     let mut r = rig(128);
@@ -1708,8 +1615,6 @@ fn a_source_edit_after_a_steady_state_is_republished() {
 }
 
 /// A route edit (its depth) is republished.
-///
-/// Mutation (run): `routes` out of `Memo::holds` → fails.
 #[test]
 fn a_route_edit_after_a_steady_state_is_republished() {
     let mut r = rig(128);
@@ -1719,8 +1624,6 @@ fn a_route_edit_after_a_steady_state_is_republished() {
 }
 
 /// A range edit is stored into the port's range.
-///
-/// Mutation (run): `targets` out of `Memo::holds` → fails.
 #[test]
 fn a_range_edit_after_a_steady_state_is_stored() {
     let mut r = rig(128);
@@ -1736,8 +1639,6 @@ fn a_range_edit_after_a_steady_state_is_stored() {
 
 /// An automation curve, compared by identity, is republished: a new curve
 /// object is a new program even where it reads the same.
-///
-/// Mutation (run): `same_target` ignoring the automation → fails.
 #[test]
 fn an_automation_edit_after_a_steady_state_is_republished() {
     let mut r = rig(128);
@@ -1749,8 +1650,6 @@ fn an_automation_edit_after_a_steady_state_is_republished() {
 }
 
 /// A target key the host rebinds to another node moves its lane there.
-///
-/// Mutation (run): `resolved` out of `Memo::holds` → fails.
 #[test]
 fn a_rebind_after_a_steady_state_moves_the_lane() {
     let mut r = rig(128);
@@ -1776,8 +1675,6 @@ fn a_rebind_after_a_steady_state_moves_the_lane() {
 
 /// A native target's knob cell the host hands anew (its node's params
 /// replaced) rebuilds the lane on it.
-///
-/// Mutation (run): `Resolved::same` ignoring the knob → fails.
 #[test]
 fn a_new_knob_cell_after_a_steady_state_rebuilds_the_lane() {
     let mut r = rig(128);
@@ -1792,8 +1689,6 @@ fn a_new_knob_cell_after_a_steady_state_rebuilds_the_lane() {
 
 /// A target the host stops resolving (a plugin whose list lost the
 /// parameter, a key unbound) loses its lane.
-///
-/// Mutation (run): `resolved` out of `Memo::holds` → fails.
 #[test]
 fn a_target_no_longer_resolved_after_a_steady_state_loses_its_lane() {
     let mut r = rig(128);
@@ -1806,8 +1701,6 @@ fn a_target_no_longer_resolved_after_a_steady_state_loses_its_lane() {
 }
 
 /// A follower whose feed the host moves to another node is rewired.
-///
-/// Mutation (run): `feeds` out of `Memo::holds` → fails.
 #[test]
 fn a_feed_moved_after_a_steady_state_is_rewired() {
     let mut r = rig(128);
@@ -1841,8 +1734,6 @@ fn a_feed_moved_after_a_steady_state_is_rewired() {
 
 /// A graph edit the host makes (its target's node removed) is followed:
 /// the target is unresolved and its lane goes.
-///
-/// Mutation (run): `revision` out of `Memo::holds` → fails.
 #[test]
 fn a_graph_edit_after_a_steady_state_is_followed() {
     let mut r = rig(128);
@@ -1856,8 +1747,6 @@ fn a_graph_edit_after_a_steady_state_is_followed() {
 
 /// A play start (a new epoch of the play clock) drops a rate edit's
 /// anchor from the program: it is republished without it.
-///
-/// Mutation (run): `epoch` out of `Memo::holds` → fails.
 #[test]
 fn a_play_start_after_a_steady_state_republishes_an_anchored_program() {
     let mut r = rig(128);
@@ -1914,9 +1803,6 @@ fn drives(ed: &Editor, lane: NodeKey, to: EventIn) -> bool {
 
 /// A foreign target the host resolves to another node, with nothing in the
 /// editor edited, moves its lane there.
-///
-/// Mutation (run): the `Foreign` arm of `Resolved::same` returning `true` →
-/// the apply is skipped → fails on the commit.
 #[test]
 fn a_foreign_target_on_another_node_after_a_steady_state_moves_the_lane() {
     let (mut ed, mut host, decl, mut m, param) = foreign_rig();
@@ -1944,9 +1830,6 @@ fn a_foreign_target_on_another_node_after_a_steady_state_moves_the_lane() {
 
 /// A foreign target the host resolves to another event input of the same
 /// node moves its lane there.
-///
-/// Mutation (run): the `Foreign` arm of `Resolved::same` comparing the node
-/// only → the apply is skipped → fails on the commit.
 #[test]
 fn a_foreign_target_on_another_port_after_a_steady_state_moves_the_lane() {
     let (mut ed, mut host, decl, mut m, param) = foreign_rig();
@@ -1984,9 +1867,6 @@ fn a_foreign_target_on_another_port_after_a_steady_state_moves_the_lane() {
 
 /// A native target resolved with no knob cell, to another node, moves its
 /// lane: the node alone differs.
-///
-/// Mutation (run): `node == n2` in the `Native` arm of `Resolved::same`
-/// made `true` → the apply is skipped → fails on the commit.
 #[test]
 fn a_native_target_on_another_node_without_a_knob_moves_the_lane() {
     let mut r = rig(128);
@@ -2014,9 +1894,6 @@ fn a_native_target_on_another_node_without_a_knob_moves_the_lane() {
 /// runs and recompiles. Its programs come out equal (a rate enters a
 /// program only through a rate edit's anchor), so nothing is republished;
 /// what the test pins is that the apply ran, and the lane keeps its node.
-///
-/// Mutation (run): `Editor::reprepare` not touching the revision → the
-/// apply is skipped → fails on `skipped`.
 #[test]
 fn a_rate_change_after_a_steady_state_is_not_skipped() {
     let mut r = rig(128);

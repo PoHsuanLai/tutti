@@ -6,49 +6,6 @@
 //! the run (nothing sounds after a stop, every note-on has its note-off); no
 //! test compares against another render. The clip plays at 120 BPM and
 //! 48 kHz, so a beat is 24,000 frames.
-//!
-//! Mutations (each run, then restored):
-//! - `NoteLedger::block` without `pay`: the refused offs are not sent at the
-//!   next block's first frame. `a_refused_off_is_paid_at_the_first_frame_of_the_next_block`
-//!   and `a_ledger_relay_strands_no_note_under_random_refusal` fail. The clip
-//!   property does not: a stopped clip ends what is held on every block, which
-//!   pays as well.
-//! - `Sending::finish` leaving a refused off un-owed: the same two fail.
-//! - `Sending::on` without `withhold` when the table is full, or writing the
-//!   on anyway: `a_full_table_withholds_what_it_cannot_keep` and
-//!   `a_small_table_withholds_the_on_it_cannot_keep` fail.
-//! - `Sending::on` not ending a sounding note that a new note takes the key
-//!   from, or `Sending::off` writing the off of a note whose on the port
-//!   refused: `a_clip_leaves_nothing_sounding_after_a_stop` fails.
-//! - `Sending::off` writing a tagged off that has no row: the fork test, the
-//!   full-table test and the clip property fail.
-//! - Counting (each run, the tests that fail):
-//!   - `forget_if_idle` ignoring the mark: the first counting test, the
-//!     overlapping-refusals test and the exact-loss property.
-//!   - `owe` without `recovered()`: `an_off_refused_twice_is_one_loss` and the
-//!     property.
-//!   - `pay` without `recovered()`: the first counting test,
-//!     `an_off_refused_twice_is_one_loss`,
-//!     `a_refused_off_is_paid_at_the_first_frame_of_the_next_block`, the
-//!     property, and three existing tests in `event_loss.rs`.
-//!   - `pay` dropping a row that is still marked, and `Sending::on` not
-//!     marking the key: the first counting test, `an_off_refused_twice_is_one_loss`
-//!     and the property.
-//!   - A tagged off of a marked row not withheld: eight tests, the property
-//!     among them.
-//!   - The mark a flag, not a count: the overlapping-refusals test and the
-//!     property.
-//! - `release_all` not clearing the mark of a row that stays owed:
-//!   `a_release_clears_the_mark_of_a_row_that_stays_owed`. The untagged off
-//!   not settling a refused row, or leaving the mark of a held one:
-//!   `an_untagged_off_settles_the_row_of_a_refused_on` and
-//!   `an_untagged_off_of_a_held_key_settles_a_refused_on_too`.
-//! - Equivalent, so no test: `release_all` not setting `full` (a later push is
-//!   refused too and counts as the withheld one would, and an owed off's
-//!   refusal is given back either way) and `pay` not clearing `owner` (a row
-//!   with no held note never has its owner read, and `on` overwrites it).
-//! - `MidiClipNode::reset` without `forget`:
-//!   `a_reset_node_forgets_the_notes_it_held` fails.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -654,9 +611,6 @@ fn rewire(ed: &mut Editor, exec: &mut Executor, from: u64) {
 /// Re-aiming a clip that holds a note ends it on A, which the clip can no
 /// longer reach; B hears the clip's own off at frame 100,000 for a note it
 /// never started.
-///
-/// Mutation (run): `Held::observe` in `tutti-graph` doing nothing -> A is left
-/// holding the note -> fails.
 #[test]
 fn a_rewire_ends_the_held_note_at_the_old_sink() {
     let (mut ed, mut exec, _controls, a, b) = holding_clip();
@@ -892,11 +846,6 @@ fn send(n: u32, on: bool, owner: u32) -> Act {
 /// (withheld, counted, 2). In block 2 the off is paid (given back) and note 3
 /// starts and ends on the key, which note 2's off then finds still marked, so
 /// it is withheld and counted (3). Two events are lost: note 2's on and off.
-///
-/// Mutation (run): `pay` dropping a row that is still marked refused
-/// (`!taken` for `!taken || e.refused`), `forget_if_idle` ignoring `refused`,
-/// and `Sending::on` not marking the key when the old note's off is refused
-/// each make note 2's off go uncounted → 2 dropped, 1 lost → fails.
 #[test]
 fn a_refused_mark_outlives_the_off_that_was_paid_and_the_note_that_used_the_key() {
     let (tally, dropped, lost) = probe(
@@ -916,8 +865,6 @@ fn a_refused_mark_outlives_the_off_that_was_paid_and_the_note_that_used_the_key(
 /// As above, but note 1's own off arrives in the same full block: refused
 /// again (3), and the same loss as the one owed, so it is given back at
 /// once. Paid in block 2 (given back), note 2's off withheld (4). Lost: 2.
-///
-/// Mutation (run): `owe` without its `recovered()` → lost is 3 → fails.
 #[test]
 fn an_off_refused_twice_is_one_loss() {
     let (tally, dropped, lost) = probe(
@@ -934,9 +881,6 @@ fn an_off_refused_twice_is_one_loss() {
 
 /// Two notes on one key are both refused by a full port, and both offs come:
 /// each on is a loss and each off is withheld and counted: 4, none given back.
-///
-/// Mutation (run): the key's refused mark a flag, not a count → the second
-/// off finds no mark and goes uncounted, 3 lost → fails.
 #[test]
 fn overlapping_refused_ons_on_one_key_are_each_counted_with_their_offs() {
     let (tally, dropped, lost) = probe(
@@ -957,9 +901,6 @@ fn overlapping_refused_ons_on_one_key_are_each_counted_with_their_offs() {
 /// row stays for the owed off but loses its mark. Once the off is paid the
 /// row is gone, so a note on another key starts. A row that kept its mark
 /// would fill the table for good.
-///
-/// Mutation (run): `release_all` without `e.refused = false` → note 61 is
-/// withheld, the sink hears 1 note-on → fails.
 #[test]
 fn a_release_clears_the_mark_of_a_row_that_stays_owed() {
     let (tally, ..) = probe(
@@ -982,9 +923,6 @@ fn a_release_clears_the_mark_of_a_row_that_stays_owed() {
 ///
 /// Counted: 32 controllers refused, 8 note-ons (6 refused by the port, 2
 /// withheld), 6 offs withheld: 46, none given back.
-///
-/// Mutation (run): the untagged off leaving the refused row (as before) → the
-/// new keys are withheld → fails.
 #[test]
 fn an_untagged_off_settles_the_row_of_a_refused_on() {
     let script = vec![
@@ -1009,9 +947,6 @@ fn an_untagged_off_settles_the_row_of_a_refused_on() {
 /// same full block: it is refused too, and ends the sender's note on the key,
 /// so the mark goes. Paid in the next block, the row is gone, and a table of
 /// one key has room for another note.
-///
-/// Mutation (run): the untagged off of a held key leaving the mark → the row
-/// outlives its owed off, note 61 is withheld → fails.
 #[test]
 fn an_untagged_off_of_a_held_key_settles_a_refused_on_too() {
     let script = vec![
@@ -1107,11 +1042,6 @@ fn play(exec: &mut Executor, events: &[TimedMidiEvent], passes: u64) {
 /// once), and every controller it did not hear is one. Offs the port refused
 /// are given back when they go out. After the stop nothing sounds, every
 /// note-on has its note-off, and no off is orphaned.
-///
-/// Mutation (run): `pay` or `owe` without `recovered()`, `pay` dropping a
-/// marked row, `Sending::on` not marking the key, the mark a flag instead of a
-/// count (overlapping notes), `forget_if_idle` ignoring the mark, and a tagged
-/// off of a marked row not withheld each change the total → fails.
 #[test]
 fn the_loss_count_is_exact_through_loops_and_replacements() {
     let (mut refused, mut recovered) = (0, 0);

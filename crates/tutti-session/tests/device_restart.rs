@@ -108,14 +108,7 @@ fn period(x: &[f32]) -> f64 {
 ///   latency in samples moved, and a disk source seeking in that block
 ///   pre-rolls by the new figure.
 ///
-/// Mutations (each run, each failed): `Session::rerate` not re-preparing the
-/// graph (the `reprepare` call removed); `rerate` not setting the transport's
-/// rate (`transport.set_sample_rate` removed: the transport's-rate
-/// assertion); `rerate` not settling the engine and collecting
-/// (`apply_pending` and `collect` removed, leaving the second half to the next
-/// update) -> the re-prepare is refused or the first block silent.
-///
-/// Not pinned (the mutation survives, verified): `Schedule::rescale`
+/// Not pinned: `Schedule::rescale`
 /// ignoring the `mark_rate_change` boundary, which `bevy-tutti`'s version of
 /// this test named. The engine adopts the rate (`follow_rate`, rescaling the
 /// commands in flight) inside the restart's hook, before the host's thread can
@@ -213,10 +206,6 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
 /// the old device plays on, at the old configuration, and the host gets the
 /// graph's reason. The capacity is the engine's (`DEFAULT_BLOCK_CAPACITY`,
 /// 8 192 frames). Within it, the same restart goes through.
-///
-/// Mutation (run, failed): `Session::check_restart` not calling
-/// `check_reprepare` -> the stream stops first and the refusal comes from the
-/// re-prepare in the hook, with the old device stopped.
 #[test]
 fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
     let (mut s, mut device, old, _, _) = engine();
@@ -267,9 +256,6 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
 /// compensation table, which the committed graph's figures fill, has an entry
 /// per root channel. Then back onto a stereo device: the root keeps its six
 /// and the engine folds.
-///
-/// Mutation (run, failed): `Session::rerate` not widening (the widening
-/// branch skipped) -> the root stays two.
 #[test]
 fn a_restart_onto_a_wider_device_widens_the_root() {
     let (mut s, mut device, _old, _, _) = engine();
@@ -313,10 +299,6 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
 /// compiles and its re-prepare refuses); the device keeps the old spec and
 /// graph rate. Then the wiring is put back, and a restart at 44.1 kHz moves
 /// nothing and renders the 1 kHz sine at 44.1 frames a cycle.
-///
-/// Mutation (run, failed): the driver's `rerate_or_restore` not putting the
-/// old spec back on failure (`set_spec(old)` removed) -> the device claims
-/// 48 kHz.
 #[test]
 fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     let (mut s, mut device, old, osc, lim) = engine();
@@ -354,11 +336,6 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
 ///
 /// The waiting case (a crossfade while a graph re-prepares) is pinned by
 /// `graph.rs`'s `a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update`.
-///
-/// Mutation (run, failed): `Session::rerate` not settling the engine and
-/// collecting (`apply_pending` and `collect` removed) -> the re-prepare is not
-/// resumed when the crossfade is asked for, and it waits (or the restart is
-/// refused).
 #[test]
 fn a_crossfade_after_the_restart_lands_at_once() {
     let (mut s, mut device, _old, osc, _) = engine();

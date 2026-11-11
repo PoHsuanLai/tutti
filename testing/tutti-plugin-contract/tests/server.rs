@@ -47,7 +47,6 @@ fn through_server<F: Format>(path: PathBuf) {
     assert_eq!(level, Some(0.5), "a parameter read across the boundary");
 }
 
-// Mutation (run): the plugin saving a mode word of 0 fails all four.
 #[test]
 fn clap_mode_and_transcript_cross_the_process_boundary() {
     through_server::<Clap>(clap_path());

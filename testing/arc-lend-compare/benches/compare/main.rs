@@ -51,34 +51,6 @@
 //! 8. **Concurrent lends** on one cell at 1, 2 and 4 threads (arc-lend), with
 //!    the readers adjacent in one `Vec` and each on a line of its own. They
 //!    should agree: a lend writes only its slot.
-//!
-//! # Mutation record
-//!
-//! The measuring parts were broken on purpose, one at a time, and the smoke
-//! run's output checked (`tests/instruments.rs` records the mutations its
-//! tests catch):
-//!
-//! - **The reader flag** (`begin_counting` never sets it): arc-swap naive's
-//!   row in section 4 read 0 frees and 0 values freed on the reader (5 and 5
-//!   before), and its section 1 "grows: allocs" read 0: the tables then
-//!   claim the misuse never frees or allocates on a reader.
-//! - **arc-lend's reader allocates** (`ArcLendCell::read` makes a
-//!   `Box::new(0u64)` before the lend): arc-lend's section 2 "allocs" and
-//!   "frees" equalled its block counts (95110 and 95110 for one reader), and
-//!   section 4 read 5 and 5. The table catches a reader that allocates.
-//! - **The payload's drop counter** (`Payload::drop` skips the bump):
-//!   arc-swap naive's section 4 row read 10 frees but 0 values freed on the
-//!   reader, so the two columns cross-check each other.
-//! - **Timing** (`t0` taken after the read instead of before): every reader
-//!   p50 fell to about the timer-overhead row's (29-33 ns against 29 ns),
-//!   which is what that row is for: a figure at the timer floor measured
-//!   nothing.
-//! - **The lend counter** (section 8; `Reader` given a `generation: Cell<usize>`
-//!   field that `next_claim` bumps, instead of the slot's counter): the
-//!   *adjacent* column rose well above *apart* (2 threads: 42.05 ns against
-//!   15.77 ns; 4 threads: 52.23 ns against 28.32 ns, on a loaded 4-vCPU
-//!   container; `Reader` was 24 bytes, not 16). With the counter on the slot
-//!   the two columns agree to within the run's noise.
 
 mod contenders;
 

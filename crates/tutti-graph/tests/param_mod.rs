@@ -4,7 +4,7 @@
 //! the source's ramps and segments, the base and the clamp into one step of
 //! the node's op.
 //!
-//! What is pinned here, each with the mutation it was seen to fail under:
+//! What is pinned here:
 //!
 //! - an unconnected param reads its base, never 0;
 //! - an event source's value is clamped to the port's range, frame by frame;
@@ -2403,16 +2403,9 @@ proptest! {
     /// growing, shrinking), regenerated probes and ranges moved without a
     /// commit — and on every param source's PDC delay.
     ///
-    /// Mutations (run after the collapse to one event
-    /// source per port), each diverges: in the executor, reset the ramp of
-    /// a port whose source did not change; in the reference, keep a
-    /// regenerated probe's param state; in the reference, declick a port's
-    /// first block; in the executor, ignore the live range (clamp to the
-    /// unbounded range); in the reference, read the base before an event
-    /// source's first event as 0; in the reference, evaluate every ramp as
-    /// `Linear`. Leaving a param source out of the node's
-    /// arrival does not diverge (the reference reads the compiler's
-    /// arrival); `a_param_source_counts_toward_arrival_in_both_solves` pins it.
+    /// A param source left out of the node's arrival does not diverge (the reference reads
+    /// the compiler's arrival); `a_param_source_counts_toward_arrival_in_both_solves` pins
+    /// it.
     #[test]
     fn modulated_graphs_match_the_reference(g in generator()) {
         run_differential(&g);

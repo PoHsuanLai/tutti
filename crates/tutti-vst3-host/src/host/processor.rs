@@ -266,6 +266,8 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             // The plugin forgets its input across the stop: a SysEx open in the
             // input list must not complete on the far side of it.
             self.audio.input.events.reset_sysex();
+            // ... and its notes and MIDI 1.0 selections.
+            self.audio.input.stager.reset();
         }
     }
 
@@ -534,6 +536,15 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// [`events_dropped`](Self::events_dropped).
     pub fn sysex_dropped(&self) -> u64 {
         self.audio.input.events.sysex_dropped()
+    }
+
+    /// MIDI messages not handed to the plugin since this Processor was built
+    /// because they were of a Group it has no event input bus for (Group `n` is
+    /// event bus `n`): each is dropped whole and counted, never heard on another
+    /// Group's channels. Read on this instance only, like
+    /// [`sysex_dropped`](Self::sysex_dropped).
+    pub fn groups_dropped(&self) -> u64 {
+        self.audio.input.stager.groups_dropped()
     }
 
     /// Events the plugin emitted through `addEvent` that its output list

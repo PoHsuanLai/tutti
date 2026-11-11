@@ -233,9 +233,6 @@ fn assert_live_untouched(session: &mut Session) {
 /// and at the render's rate: a master export at 48 and 96 kHz is silent
 /// until beat 1 and then, sample for sample, what the synth renders for
 /// the note re-rated to the render's rate. The live synth keeps its clip.
-///
-/// Mutation (run, failed): `Midi::play_clip` not feeding the clip into the
-/// synth's event input (`set_feed` left off) → the export is silent.
 #[test]
 fn an_exported_polysynth_plays_its_clip() {
     for rate in [RATE, 2.0 * RATE] {
@@ -256,10 +253,6 @@ fn an_exported_polysynth_plays_its_clip() {
 /// peaks at a quarter of the note at unity. (The Bevy `AudioParam` that
 /// carried the write is the adapter's; the session's write is
 /// `Graph::set_param`.)
-///
-/// Mutation (run, failed): the synth registered with no params (the session's
-/// `param_session_node!(PolySynth)` replaced by `impl SessionNode for
-/// PolySynth {}`) → the live cell stays at 1 and the export at full volume.
 #[test]
 fn a_param_on_a_synth_reaches_it_and_its_fork() {
     let peak = |volume: Option<f32>| {
@@ -299,9 +292,6 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
 /// 48 kHz unit exported at 96 kHz renders what a unit built at 96 kHz
 /// does, not the 48 kHz note an octave down at half its frame. The live
 /// unit keeps its clip.
-///
-/// Mutation (run, failed): `SoundFontUnit`'s `Node::prepare` not re-rating
-/// it → at 96 kHz the 48 kHz unit renders the note an octave down.
 #[test]
 fn an_exported_soundfont_plays_its_clip() {
     let font = font();
@@ -323,12 +313,6 @@ fn an_exported_soundfont_plays_its_clip() {
 /// graph was this one (the synth inserted, routed to the outputs, its clip
 /// played through `Midi::play_clip`, which is the call the adapter made),
 /// exported by the same session call.
-///
-/// Mutation (run, failed): the clip edge missing (`Midi::play_clip` leaving
-/// off its `set_feed`) → silent ("the note enters on beat 1" fails). The
-/// synth's fork not reset (`PolySynth::fork_instance` skipping
-/// `reset_voices`) changes nothing here: a fork from the template never
-/// sounded.
 #[test]
 fn a_synth_node_export_plays_its_clip() {
     let (mut session, synth) = session_with(poly());

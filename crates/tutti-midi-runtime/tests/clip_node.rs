@@ -104,11 +104,6 @@ fn roll(exec: &mut Executor, frames: u64, block: usize) {
 /// **Notes land on their frames, whatever the blocks.** Onsets inside a
 /// block, on a block's first and last frames, and a note-off, each at its
 /// absolute frame, rendered in 256- and 100-frame blocks.
-///
-/// Mutation: write every event at offset 0 (ignore `due`'s offset) → the
-/// frames collapse onto block starts → fails. Mutation: read only the
-/// block's own transport, not its segments (`segment` over `cx.env` whole) →
-/// no change here (no changes in these blocks), covered by the seek test.
 #[test]
 fn notes_land_on_their_frames_whatever_the_blocks() {
     let frames = [100u64, 255, 256, 999, 1_000, 5_000];
@@ -130,10 +125,6 @@ fn notes_land_on_their_frames_whatever_the_blocks() {
 /// what was sounding there.** Block 0 rolls from beat 0 and seeks at frame
 /// 200 to frame 48 000. The note-on at frame 24 plays; the one at 48 100
 /// plays at block frame 300; the held note 60 ends at 200, before it.
-///
-/// Mutation: place by the block's own transport, not per segment → the
-/// post-seek note is not found (it is two beats ahead) → fails. Mutation:
-/// skip the release on a jump → no note-off at 200 → fails.
 #[test]
 fn a_seek_inside_a_block_plays_from_the_seek() {
     let clip = MidiClipNode::new([at(24, on(60)), at(48_100, on(62))]);
@@ -156,9 +147,6 @@ fn a_seek_inside_a_block_plays_from_the_seek() {
 /// wraps at its frame 100, ends both there, and plays the note at loop frame
 /// 48 at its frame 148. (The sink logs the executor's frames, which start at
 /// 0: timeline frame 23 800 is executor frame 0.)
-///
-/// Mutation: drop the post-wrap range → the note at 148 is missing → fails.
-/// Mutation: skip the release at the wrap → no note-off at 100 → fails.
 #[test]
 fn a_loop_that_wraps_inside_a_block_plays_its_start() {
     let clip = MidiClipNode::new([at(48, on(62)), at(23_850, on(60)), at(23_950, on(64))]);
@@ -185,8 +173,6 @@ fn a_loop_that_wraps_inside_a_block_plays_its_start() {
 /// **Stopping ends every held note, once.** A note-on at frame 10, then a
 /// stopped block: its note-off is on the stopped block's first frame, and a
 /// second stopped block sends nothing.
-///
-/// Mutation: skip the release while stopped → no note-off → fails.
 #[test]
 fn stopping_ends_the_held_notes_once() {
     let clip = MidiClipNode::new([at(10, on(60))]);
@@ -202,8 +188,6 @@ fn stopping_ends_the_held_notes_once() {
 /// is.** Note 60 sounds from frame 10; the clip is replaced before the
 /// second block, whose first frame gets the note-off, and the new clip's note
 /// at frame 100 plays.
-///
-/// Mutation: ignore the generation change → note 60 is never ended → fails.
 #[test]
 fn a_new_clip_ends_the_old_clips_notes() {
     let clip = MidiClipNode::new([at(10, on(60)), at(1_000, off(60))]);
@@ -221,9 +205,6 @@ fn a_new_clip_ends_the_old_clips_notes() {
 /// **A fork plays the clip as it was when forked.** The live clip is
 /// replaced after the fork; the forked node still plays the original's note,
 /// at its frame, on the `Env` it is rendered with.
-///
-/// Mutation: fork over the live cell rather than a snapshot of the clip →
-/// the fork plays the replacement → fails.
 #[test]
 fn a_fork_plays_the_clip_as_it_was_at_the_fork() {
     use tutti_graph::{ForkMode, NodeParts};
@@ -242,9 +223,6 @@ fn a_fork_plays_the_clip_as_it_was_at_the_fork() {
 /// it**, at the next block's first frame. Loop [0, 1); 100-frame blocks from
 /// timeline frames 23 800 and 23 900 (which ends on the loop's end), then
 /// from 0. Note 60, on at 23 850, is ended at executor frame 200.
-///
-/// Mutation: keep `expected` after an edge wrap → the next block reads as
-/// continuous and the note is never ended → fails.
 #[test]
 fn a_loop_that_wraps_at_a_block_edge_ends_its_held_notes() {
     let clip = MidiClipNode::new([at(23_850, on(60))]);
@@ -263,9 +241,6 @@ fn a_loop_that_wraps_at_a_block_edge_ends_its_held_notes() {
 /// **A beat that is not finite is dropped, not the clip.** A NaN made at run
 /// time (negative on x86, which `total_cmp` sorts first) beside a note at
 /// frame 100: the note plays.
-///
-/// Mutation: keep non-finite beats in `sorted` → the NaN sorts first, the
-/// walk stops on it, nothing plays → fails.
 #[test]
 fn a_nan_beat_does_not_silence_the_clip() {
     let nan = Beat(0.0 / std::hint::black_box(0.0));
@@ -281,8 +256,6 @@ fn a_nan_beat_does_not_silence_the_clip() {
 /// first frame (the port's 256 and its note-off room, `note_off_room`), the
 /// other 104 on the next block's, which rolls on from the seek (continuous:
 /// nothing but the debt would release them).
-///
-/// Mutation: never retry an owed release → 144 notes hang → fails.
 #[test]
 fn refused_note_offs_are_retried_until_none_is_held() {
     let note = |i: u16| {
@@ -315,9 +288,6 @@ fn refused_note_offs_are_retried_until_none_is_held() {
 
 /// **Setting the events the clip already holds cuts nothing.** Note 60 is
 /// sounding; the same events (in another order) are set again; no note-off.
-///
-/// Mutation: publish a new generation whatever the events → note 60 is ended
-/// at 64 → fails.
 #[test]
 fn setting_the_same_events_cuts_nothing() {
     let events = [at(10, on(60)), at(1_000, off(60))];
@@ -336,9 +306,6 @@ fn setting_the_same_events_cuts_nothing() {
 ///
 /// Carried over from the retired clip-source test, which caught a clip
 /// flooring a beat's offset onto the frame before it.
-///
-/// Mutation (run): place by `((beat - now) * fpb) as usize` in the walk
-/// instead of `Env::due` → beat 3 lands on 95 999 → fails.
 #[test]
 fn a_note_lands_on_its_frame_at_ninety_bpm() {
     let clip = MidiClipNode::new([
@@ -363,12 +330,6 @@ fn a_note_lands_on_its_frame_at_ninety_bpm() {
 /// 10 and off at 60. Two 512-frame blocks, the second from where the first
 /// left the playhead (loop frame 12): the note plays on every pass, eleven
 /// times, and is ended within each.
-///
-/// Mutation (run): walk only the first wrap of a segment (the pass loop
-/// broken after one iteration) → the first block plays passes 0 and 1 only →
-/// fails. Mutation (run): the continuity check's `next` wrapped once rather
-/// than modulo the loop → the second block reads as a jump and the note held
-/// across the block edge is ended at its first frame → fails.
 #[test]
 fn a_loop_shorter_than_a_block_plays_every_pass() {
     let clip = MidiClipNode::new([at(10, on(60)), at(60, off(60))]);
@@ -394,10 +355,6 @@ fn a_loop_shorter_than_a_block_plays_every_pass() {
 /// note-on still has one. The one note-off (frame 30) is the first note's,
 /// already ended, and is swallowed: the second note sounds on until the seek
 /// at frame 64 ends it.
-///
-/// Mutation (run): the clip's event visit writing each event as it is (no
-/// `Sending::send`) → the stream is on, on, off: a stacking receiver keeps
-/// a voice the clip no longer holds, and the seek ends nothing → fails.
 #[test]
 fn a_note_started_twice_and_ended_once_leaves_nothing_sounding() {
     let clip = MidiClipNode::new([at(10, on(60)), at(20, on(60)), at(30, off(60))]);
@@ -423,12 +380,6 @@ fn a_note_started_twice_and_ended_once_leaves_nothing_sounding() {
 /// and B on at 50, and B's note-off at 150: nothing at 100 (A's own
 /// note-off, swallowed), so B is not cut there and no stray note-off
 /// follows it.
-///
-/// Mutation (run): a note-off pairs with the latest-listed note-on of its
-/// key (the pairing scan in `sorted` reversed) → the note-off at 100 is B's
-/// and cuts it → fails.
-/// Mutation (run): no note-off before the restart → B's note-on stacks on A
-/// → fails.
 #[test]
 fn overlapping_notes_of_one_key_keep_the_newer_whole() {
     let clip = MidiClipNode::new([
@@ -449,12 +400,6 @@ fn overlapping_notes_of_one_key_keep_the_newer_whole() {
 /// end.** A is on 0..100, B on 20..50, each listed with its note-off. B's
 /// note-on ends A on its frame; B's note-off at 50 ends the key; A's own
 /// note-off at 100 is swallowed, so nothing follows.
-///
-/// Mutation (run): the pairing dropped (every note-off of no note, written
-/// as it comes) → a stray note-off at 100 → fails. Mutation (run): the
-/// pairing scan in `sorted` reversed (latest-listed note-on first) → A's
-/// note-off is paired to B and B's to A: B's note-off at 50 is swallowed and
-/// B sounds to 100 → fails.
 #[test]
 fn a_note_nested_in_another_of_its_key_ends_at_its_own_end() {
     let clip = MidiClipNode::new([
@@ -475,12 +420,6 @@ fn a_note_nested_in_another_of_its_key_ends_at_its_own_end() {
 /// no stray note-off follows.** A on 0..30, B on 10..40, C on 20..50. Each
 /// note-on ends the one sounding; A's and B's note-offs (30, 40) are
 /// swallowed, C's ends the key at 50.
-///
-/// Mutation (run): a note-off ends its key whoever owns it (the
-/// `e.owner == owner` check dropped) → A's note-off cuts C at 30 → fails.
-/// Mutation (run): a restart not taking the key (`owner` stored in the entry dropped
-/// from the held branch of `Sending::on`) → A still owns the key, and
-/// its note-off cuts C at 30 → fails.
 #[test]
 fn three_overlapping_notes_of_one_key_leave_the_newest_whole() {
     let clip = MidiClipNode::new([
@@ -511,12 +450,6 @@ fn three_overlapping_notes_of_one_key_leave_the_newest_whole() {
 /// 10..30, B on 50 and off past the loop's end, so B holds the key at every
 /// wrap and the wrap ends it. Each pass then plays A whole: A's note-on owns
 /// the key again, and its note-off at 30 ends it.
-///
-/// Mutation (run): a note-on of an unheld key not taking it → A's note-off
-/// is swallowed, and A sounds to 50 → fails. Mutation (run): that note-on
-/// taking the key only when it has no owner, with `release` leaving the
-/// owner set → the first pass is right, but after the wrap the owner is
-/// still B and A sounds on to B's note-on → fails.
 #[test]
 fn a_keys_owner_starts_over_at_a_loop_wrap() {
     let clip = MidiClipNode::new([
@@ -562,9 +495,6 @@ fn looping_at(tempo: f64, beat: Beat, start: Beat, end: Beat) -> Transport {
 /// the first block falls on its end (frame 500); the next block starts on
 /// the loop's start, which reads as continuous, and still ends the note on
 /// its first frame.
-///
-/// Mutation (run): `wraps_at_end` left false for a pass after the first →
-/// the note held across frame 500 is not ended there → fails.
 #[test]
 fn a_pass_ending_on_a_block_edge_ends_what_it_held() {
     let clip = MidiClipNode::new([at(95, on(60))]);
@@ -597,10 +527,6 @@ fn a_pass_ending_on_a_block_edge_ends_what_it_held() {
 /// pass is 50 frames: the note-off still owed in that pass lands 5 frames
 /// on (255), the loop wraps at 275, and each 50-frame pass after plays the
 /// note 5 frames in and ends it 30 frames in.
-///
-/// Mutation (run): every segment walked with the block's first transport
-/// (`block.transport` for `seg.transport` in `Walk::segment`) → the passes
-/// after the change keep the old tempo's length → fails.
 #[test]
 fn a_tempo_change_inside_a_block_re_times_the_passes() {
     let clip = MidiClipNode::new([at(10, on(60)), at(60, off(60))]);
@@ -637,10 +563,6 @@ fn a_tempo_change_inside_a_block_re_times_the_passes() {
 /// frame (an analytic walk, not a render): a note fires on the first frame
 /// whose beat reaches it, and on a wrap's frame for a beat the wrap
 /// crossed.
-///
-/// Mutation (run): pass events placed from the loop's start rather than the
-/// beat the clock wrapped to (`from` = `l.start()`) → notes land a frame
-/// early where a wrap overshoots → fails.
 #[test]
 fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     use tutti_types::{FRAME_TOLERANCE, FrameClock, LoopRange as Region};
@@ -739,13 +661,6 @@ fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, Ump)>> {
 /// beat at 0: each frame wraps once, so the note at the loop's start plays
 /// on every frame (ended on the next), and four 64-frame blocks finish at
 /// once.
-///
-/// Mutation (run): the passes found by arithmetic on the loop's span (the
-/// walk before it followed the clock, which counted passes from an
-/// estimate that saturated near beat 0) → the 1e-300 loop never finishes
-/// (deadline) → fails. Mutation (run): the executor's `Playhead`
-/// unwrapping the next block's start one loop period at a time → the
-/// one-ulp loop never finishes → fails.
 #[cfg_attr(miri, ignore = "a wall-clock deadline")]
 #[test]
 fn a_loop_shorter_than_a_frame_costs_one_pass_a_frame() {
@@ -819,10 +734,6 @@ fn bend(channel: u8, value: u32) -> Ump {
 /// released", so the offs come first and the pedals are lifted after them.
 /// Sustain, sostenuto, soft and hold 2 are down and the bend is off centre;
 /// a second stopped block sends nothing.
-///
-/// Mutation: `release_all` without `lift_all` (the controllers table) → no
-/// pedal-up and no centred bend → fails. Mutation: `lift_all` before the
-/// notes are ended → the pedal-ups precede the note-off → fails.
 #[test]
 fn stopping_lifts_the_pedals_and_centres_the_bend_after_the_note_offs() {
     let sustain = CCNumber::SUSTAIN;
@@ -863,11 +774,6 @@ fn stopping_lifts_the_pedals_and_centres_the_bend_after_the_note_offs() {
 /// back; channel 1's sustain stays down. A stop sends one pedal-up, for
 /// channel 1, and nothing else (M1 p. 31 asks only for controllers "not in
 /// their initialized position").
-///
-/// Mutation: a pedal-up for a lane whose state bit is clear (skip the
-/// `held` test in `lift_all`) → channel 0's pedal and bend are resent →
-/// fails. Mutation: `observe` ignoring a value that returns to rest → the
-/// same.
 #[test]
 fn a_controller_at_rest_is_not_resent_at_a_stop() {
     let s = CCNumber::SUSTAIN;
@@ -900,9 +806,6 @@ fn a_controller_at_rest_is_not_resent_at_a_stop() {
 /// is beat [0, 1): note 60 and the sustain pedal go down at timeline frame
 /// 23 850; the block that wraps at its frame 100 (executor frame 200) ends the
 /// note, then lifts the pedal, on that frame (M1 p. 31; A-5 for the order).
-///
-/// Mutation: skip the controllers in the wrap's release → the pedal stays
-/// down across the loop → fails.
 #[test]
 fn a_loop_wrap_lifts_the_pedal_after_the_note_off() {
     let clip = MidiClipNode::new([
@@ -928,9 +831,6 @@ fn a_loop_wrap_lifts_the_pedal_after_the_note_off() {
 /// Playback seeks to beat 2 at frame 200 of a 512-frame block, with the
 /// pedal down and the bend off centre: both are returned at frame 200, after
 /// the note-off, and not again by the next block.
-///
-/// Mutation: `Playing::jump` ending the notes without the controllers (an
-/// older `release_all`) → the pedal stays down across the seek → fails.
 #[test]
 fn a_seek_returns_the_controllers_where_the_jump_happens() {
     let clip = MidiClipNode::new([
@@ -964,9 +864,6 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
 /// after, and the pedal-up, refused behind them, goes out only after the last
 /// of them (A-5: a pedal still down takes priority over a note-off), exactly
 /// once.
-///
-/// Mutation: a refused pedal-up dropped instead of owed (do not set the owed
-/// bit in `lift_all`) → no pedal-up ever → fails.
 #[test]
 fn a_refused_pedal_up_is_owed_and_follows_the_last_note_off() {
     let note = |i: u16| {
@@ -1037,9 +934,6 @@ impl Node for SendThenRelease {
 /// a MIDI 2.0 packet (M1 p. 31, Stop; the 14-bit centre is 0x2000, M1 table
 /// of Pitch Bend). A pedal value below 64 is up (M1 CC 64 "0-63 off"), so a
 /// pedal sent at 63 is not lifted again.
-///
-/// Mutation: build every reset as a MIDI 2.0 packet (`m2` always true in
-/// `Controllers::reset`) → the packets differ → fails.
 #[test]
 fn a_midi_1_pedal_and_bend_are_returned_in_midi_1() {
     let ch = MidiChannel::of(2);

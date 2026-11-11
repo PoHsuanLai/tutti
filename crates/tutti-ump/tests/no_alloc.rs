@@ -1,10 +1,5 @@
 //! `decode` and `From<Message> for Ump` allocate nothing, on every message
 //! family and on a packet that is `Unknown`.
-//!
-//! Mutation (planted in `decode`, seen to abort the test binary with
-//! `assert_no_alloc`'s message, restored): `let _ = vec![0u8; 1];` at the top
-//! of `decode` -> `decoding_allocates_nothing`; the same in `From<Message>` ->
-//! `encoding_allocates_nothing`.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_ump::{Message, Ump, decode};

@@ -520,12 +520,7 @@ fn peak(x: &[f32]) -> f32 {
 ///
 /// Two things keep it releasing: `clamp_release` floors the driven value at
 /// 1 ms, and `Seconds::one_pole_coeff` makes a time that is not above zero
-/// instant rather than a freeze. Mutations (run): `clamp_release`
-/// returning `secs` unfloored → the release is instant, the first
-/// millisecond of the quiet tone passes at 0.99 of its input → fails;
-/// that and `one_pole_coeff` returning 0 (a hold) for a non-positive time
-/// → the envelope freezes at the burst's reduction and the tone stays
-/// silent → fails.
+/// instant rather than a freeze.
 #[test]
 fn a_limiter_driven_below_its_release_floor_still_releases() {
     const SR: f32 = 48_000.0;

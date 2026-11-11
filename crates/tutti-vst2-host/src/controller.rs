@@ -32,8 +32,8 @@ use crate::scratch::RenderScratch;
 /// `Send` so a server can build it on one thread and run it on another, not
 /// `Sync`, and never used from two threads at once.
 ///
-/// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
-/// type makes it compile, and the test fails):
+/// The doc test below is the guard: an `unsafe impl Sync` for the
+/// type makes it compile, and the test fails:
 ///
 /// ```compile_fail
 /// // No `Deref`: a `&Vst2Controller` is not a `&Vst2Loaded`.

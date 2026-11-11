@@ -140,8 +140,6 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 }
 
 /// A panner of any width is `Moderate`.
-///
-/// Mutation (run): the panner's `with_cost` removed → fails.
 #[test]
 fn a_panner_is_moderate() {
     for node in [
@@ -157,9 +155,6 @@ fn a_panner_is_moderate() {
 /// pack into fewer tasks than the same panners declaring nothing, the plan
 /// still spreads, and on a pool of two and of four the render is bit for
 /// bit the serial one.
-///
-/// Mutation (run): the panner's `with_cost(Cost::Moderate)` removed → the
-/// panners pack no further than undeclared → the task-count assert fails.
 #[test]
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn moderate_panners_pack_and_render_bit_identically() {

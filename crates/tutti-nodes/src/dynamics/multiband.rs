@@ -696,9 +696,6 @@ mod tests {
 
     /// Unity-ratio, zero-makeup bands reproduce the crossover's sum, which is
     /// allpass: unit magnitude at every frequency, for 2, 3 and 4 bands.
-    ///
-    /// Mutation (run): `*y += x * g` as `*y = x * g` in `process` (the last
-    /// band overwrites the sum) → fails.
     #[test]
     fn unity_ratio_reproduces_the_allpass_sum() {
         for bands in 2..=4 {
@@ -744,11 +741,6 @@ mod tests {
     /// each round the 0.5 background to a grid of half-ulp `3e-8`, and
     /// that rounding repeats at the tone's 16-sample period, so the tone's
     /// bin is good to six half-ulps, `2e-7`.
-    ///
-    /// Mutation (run): the loop applying one gain to every band (band 0's
-    /// `g` kept for the others) → the tone comes out near 0.003 → fails;
-    /// ignoring `makeup` (`begin_block`'s `makeup_to` taken as 0) → the DC is
-    /// 2 dB low → fails.
     #[test]
     fn a_loud_low_band_follows_the_static_curve_and_a_quiet_band_is_left_alone() {
         let (n, c) = node(4);
@@ -794,9 +786,6 @@ mod tests {
     /// Two bands split at 1 kHz: DC is all band 0, and 10 kHz is
     /// `x^4 / (1 + x^4)` band 1 with `x` the warped ratio, the rest
     /// (`1e-4`) band 0. Band 0 -3 dB and band 1 +6 dB.
-    ///
-    /// Mutation (run): drop `makeup` from `CompressorCore::begin_block`'s
-    /// `makeup_to` → both levels are unity → fails.
     #[test]
     fn makeup_applies_per_band() {
         let (n, c) = node(2);
@@ -823,9 +812,6 @@ mod tests {
 
     /// A bypassed band passes unreduced and without makeup; releasing the
     /// bypass compresses again.
-    ///
-    /// Mutation (run): ignore `bypass` in `process` → the DC is reduced →
-    /// fails; drop the makeup from the released figure → fails.
     #[test]
     fn bypass_passes_the_band_unprocessed() {
         let (n, c) = node(4);
@@ -862,10 +848,6 @@ mod tests {
     /// frame is within 1.5 steps of 0.1253; releasing it ramps back down to the
     /// *running* detector's gain (0.1253 again, to 1e-3: a detector reset by
     /// the bypass would end near 0.5).
-    ///
-    /// Mutation (run): the blend weight taken whole (`bypass_from =
-    /// bypass_to`) → the first frame jumps to 0.5 → fails; `band.core.reset()`
-    /// while bypassed → the release ends near 0.5 → fails.
     #[test]
     fn toggling_bypass_ramps_and_keeps_the_compressor_warm() {
         let (n, c) = node(2);
@@ -912,10 +894,6 @@ mod tests {
     /// 1 ms release: band 0's level (the low-pass's slow tail) starts the
     /// block near 0.5 and the follower falls across it, so the first frames
     /// hold nearly the full reduction and the last does not.
-    ///
-    /// Mutation (run): store the follower's last value (`band.core
-    /// .gain_reduction_db()` after the loop) instead of `deepest` → the meter
-    /// equals the last frame's → fails.
     #[test]
     fn the_meter_holds_the_blocks_largest_reduction() {
         let (n, c) = node(2);
@@ -938,9 +916,6 @@ mod tests {
     ///
     /// Bands 1 and 2 of four at 3 kHz: band 1 is `HP(120) * LP(1 kHz)` (and a
     /// unit all-pass), band 2 `HP(120) * HP(1 kHz) * LP(6 kHz)`.
-    ///
-    /// Mutation (run): `solo[b] = ...` only for the last soloed band (clear the
-    /// earlier flags) → one band is heard → fails.
     #[test]
     fn several_solos_are_all_heard() {
         let (n, c) = node(4);
@@ -966,9 +941,6 @@ mod tests {
     }
 
     /// Releasing a solo brings the muted bands back across the block, rising.
-    ///
-    /// Mutation (run): `audible_from = audible_to` → the first frame is 0.5
-    /// at once → fails.
     #[test]
     fn un_soloing_ramps_the_bands_back() {
         let (n, c) = node(2);
@@ -985,10 +957,6 @@ mod tests {
 
     /// A band both soloed and bypassed is heard unprocessed; bypassing a band
     /// another band's solo mutes leaves it muted.
-    ///
-    /// Mutation (run): skip the bypass blend when the band is soloed → the
-    /// soloed, bypassed band is compressed → fails; skip the solo mute for
-    /// bypassed bands → the muted DC is heard → fails.
     #[test]
     fn solo_and_bypass_combine() {
         let (n, c) = node(2);
@@ -1018,9 +986,6 @@ mod tests {
     /// Nyquist): it is held under the rate, and moving the lowest crossover
     /// still reaches the filter: a DC of 0.5 stays in band 0 whatever the split,
     /// so the check is on the filter's target.
-    ///
-    /// Mutation (run): drop `fit_to_rate` in `Splits::read` → the
-    /// set is refused and the move never lands → fails.
     #[test]
     fn a_crossover_above_the_rate_does_not_freeze_the_others() {
         let (n, c) = node(4);
@@ -1043,8 +1008,6 @@ mod tests {
     /// Band 2 of four (1 kHz to 6 kHz) of a 3 kHz tone is
     /// `HP(120) * HP(1 kHz) * LP(6 kHz)`, each `x^4/(1+x^4)` or `1/(1+x^4)`
     /// with the warped ratio; a constant is in band 0 and must vanish.
-    ///
-    /// Mutation (run): ignore `solo` in `process` → the DC is heard → fails.
     #[test]
     fn solo_plays_only_the_soloed_band() {
         let (n, c) = node(4);
@@ -1077,9 +1040,6 @@ mod tests {
     /// DC through band 0, then band 1 soloed: the next 64-frame block falls
     /// from the old level to 0 in 64 equal steps, so its first frame is
     /// within a step and a half of 0.5 and its last is 0.
-    ///
-    /// Mutation (run): `audible_to` taken whole (`audible_from = audible_to`)
-    /// → the first frame is 0 → fails.
     #[test]
     fn a_solo_ramps_the_mute() {
         let (n, c) = node(2);
@@ -1100,9 +1060,6 @@ mod tests {
     /// L = 0.05 and R = 0.5 as DC through band 0 at -20 dB, 4:1. Unlinked,
     /// L (-26 dB) is under the threshold and untouched; linked, both are
     /// scaled by the one gain the loud channel sets.
-    ///
-    /// Mutation (run): the level loop run over channel 0 only → L is
-    /// untouched → fails; one gain per channel from its own level → fails.
     #[test]
     fn detection_is_linked_across_channels() {
         let n = MultibandCompressorNode::new(ChannelLayout::STEREO, 2).unwrap();
@@ -1127,8 +1084,6 @@ mod tests {
     }
 
     /// A band count outside 2 to 4, or a layout with no ports, is refused.
-    ///
-    /// Mutation (run): `MAX_BANDS` of 5 → five bands build → fails.
     #[test]
     fn the_band_count_and_layout_are_validated() {
         for bands in [0, 1, 5, 6, 100] {
@@ -1160,9 +1115,6 @@ mod tests {
 
     /// The defaults for each band count: the crossovers, and each band's
     /// settings.
-    ///
-    /// Mutation (run): the 3-band default `[200, 3000]` as `[200, 2000]` →
-    /// fails; `DEFAULT_RATIO` of 4 → fails.
     #[test]
     fn the_defaults_are_the_documented_ones() {
         let at = |c: &Ctl, kind, i| c.set.get(UnitAddr::new(kind, i));
@@ -1184,10 +1136,8 @@ mod tests {
     /// A non-finite threshold, makeup or crossover written mid-stream reads as
     /// unchanged.
     ///
-    /// Mutation (run): drop the `LastGood` on the makeup in
-    /// `CompressorCore::begin_block` → the output goes NaN → fails. The
-    /// crossover cells have two guards (`LastGood` and `set_frequencies`'s
-    /// own check), so dropping either alone passes by design.
+    /// The crossover cells have two guards (`LastGood` and `set_frequencies`'s own check),
+    /// so either alone is enough by design.
     #[test]
     fn non_finite_writes_never_reach_the_state() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -1219,11 +1169,6 @@ mod tests {
 
     /// A fork starts from the values set through every address and shares no
     /// cell with the live node, whatever the band.
-    ///
-    /// Mutation (run): drop `b.core.detach()` in `fork_fresh` → a live write
-    /// to a threshold reaches the fork → fails; replace `b.bypass`'s fresh
-    /// cell with a clone → the live bypass reaches the fork → fails; drop
-    /// `splits.detach()` → the crossover cells are shared → fails.
     #[test]
     fn a_fork_shares_no_cell() {
         tutti_graph::contract::assert_param_fork(
@@ -1233,10 +1178,6 @@ mod tests {
 
     /// A fork has its own meter: the live node's reads unity while the fork
     /// reduces.
-    ///
-    /// Mutation (run): drop `b.reduction = Param::new(Db::UNITY)` in
-    /// `fork_fresh` → the fork's reduction is written to the live meter →
-    /// fails.
     #[test]
     fn a_fork_has_its_own_meter() {
         let (n, c) = node(2);
@@ -1256,10 +1197,6 @@ mod tests {
     /// Band 0 at -20 dB, 4:1 reduces a DC of 0.5 by the analytic 10.48 dB.
     /// After the fork is taken the live node is bypassed and given +20 dB of
     /// makeup: a fork sharing either cell would not render the reduced level.
-    ///
-    /// Mutation (run): drop `b.core.detach()` in `fork_fresh` → the fork
-    /// follows the live bypass and makeup → fails; drop the meter replacement
-    /// → the live meter reads the fork's reduction → fails.
     #[test]
     fn the_graphs_fork_renders_from_the_values_it_took() {
         use tutti_graph::ForkMode;
@@ -1298,9 +1235,6 @@ mod tests {
     /// The meters are reachable from the controls once inserted, and read
     /// what the node measured: the analytic 10.48 dB on band 0, nothing on
     /// the bands without content, unity past the last.
-    ///
-    /// Mutation (run): build `reductions` in `into_parts` from a detached
-    /// `Param::new(Db::UNITY)` → the meter never moves → fails.
     #[test]
     fn the_controls_read_the_meters_after_insertion() {
         let (n, c) = node(2);
@@ -1323,9 +1257,6 @@ mod tests {
 
     /// Zero latency, `Tail::Unknown`, heavy, and one param port per band
     /// parameter then per crossover: 27 at four bands, within the graph's cap.
-    ///
-    /// Mutation (run): list the ports crossovers-first in `port_addrs` → the
-    /// order assertion fails.
     #[test]
     fn the_shape_declares_the_indexed_ports() {
         let n = MultibandCompressorNode::new(ChannelLayout::STEREO, 4).unwrap();
@@ -1354,9 +1285,6 @@ mod tests {
     /// Port `k`'s base is the cell of the address the shape names for it,
     /// for every port of every band count, and the toggles have a cell but no
     /// port.
-    ///
-    /// Mutation (run): swap the `Knee` and `Ratio` arms of `param_base` →
-    /// fails; `param_base` taking the band as `port % nb` → fails.
     #[test]
     fn each_port_reads_the_cell_of_its_address() {
         for bands in 2..=4 {
@@ -1391,9 +1319,6 @@ mod tests {
     /// The tone (0.5, -6 dB) is over the default -18 dB threshold in band 1;
     /// band 0 sees 1e-4 of it, far under. A 2:1 band-1 reduction is about
     /// 6 dB; at ratio 1 the detector's target is exactly zero.
-    ///
-    /// Mutation (run): wire `Ratio` at index 1 to band 0's cell in
-    /// `param_set` → the band-1 write does not silence its meter → fails.
     #[test]
     fn a_write_to_band_1_reaches_band_1_only() {
         let (n, c) = node(2);
@@ -1432,10 +1357,6 @@ mod tests {
     /// threshold, 4:1, 12 dB wide, is inside the knee and reduced by
     /// `slope * (x - (T - W / 2))^2`, `slope = (1 - 1/R) / (2W)`: 3.11 dB,
     /// where the hard knee gives 2.98 dB.
-    ///
-    /// Mutation (run): the `Knee` address wired to the threshold cell →
-    /// fails; the knee floored at 0 read as unset (`begin_block` ignoring the
-    /// cell) → the hard 2.98 dB → fails.
     #[test]
     fn the_knee_follows_the_static_curve() {
         let (n, c) = node(2);
@@ -1457,9 +1378,6 @@ mod tests {
     ///
     /// DC 0.5 through band 0 at -30 dB, 8:1 reduces by `(-6.02 + 30) * 7/8`;
     /// bypassed it is not reduced at all.
-    ///
-    /// Mutation (run): `>= 0.5` as `> 0.5` in `is_on` → 0.5 is off → fails;
-    /// as `!= 0.0` → 0.49 and NaN are on → fails.
     #[test]
     fn a_toggle_is_on_from_one_half() {
         let (n, c) = node(2);
@@ -1483,9 +1401,6 @@ mod tests {
     /// A band-0 threshold of -40 dB on a DC of 0.5 with a ratio written 0.25
     /// would expand by 100 dB if the ratio were taken raw; clamped, the DC
     /// passes untouched.
-    ///
-    /// Mutation (run): drop the `CompressionRatio::new_clamped` in
-    /// `begin_block` → the DC leaves at gain 1e5 → fails.
     #[test]
     fn raw_writes_are_clamped_as_the_node_reads_them() {
         let (n, c) = node(2);
@@ -1507,9 +1422,6 @@ mod tests {
     /// The crossover param moves the split: with band 0 soloed at unity, a
     /// 2 kHz tone is `1 / (1 + x^4)` of itself, `x` the warped ratio to the
     /// split, and at a 2 kHz split that is 0.5 (each branch -6.02 dB).
-    ///
-    /// Mutation (run): `Splits::read` ignoring the cells (the defaults) → the
-    /// 1 kHz split's 0.059 → fails.
     #[test]
     fn a_crossover_param_moves_the_split() {
         let (n, c) = node(2);
@@ -1526,9 +1438,6 @@ mod tests {
     /// Crossover writes that are out of order, not above 0 or not finite are
     /// refused as a whole and the last good set stands; a consistent set
     /// lands.
-    ///
-    /// Mutation (run): drop the `Order` check in `validate` → `[5000, 1000,
-    /// 6000]` is taken → fails.
     #[test]
     fn a_bad_crossover_set_is_held_until_consistent() {
         let (n, c) = node(4);
@@ -1553,10 +1462,6 @@ mod tests {
 
     /// The typed toggles write the band's own cell and read it back; past the
     /// last band they write nothing and read false.
-    ///
-    /// Mutation (run): `toggle` writing `UnitAddr::new(kind, 0)` → band 1's
-    /// bypass reads false → fails; `is_toggled` with `> 0.5` → the 0.5 write
-    /// through the set reads false → fails.
     #[test]
     fn the_controls_toggle_bands_by_type() {
         let (n, _) = node(3);
@@ -1578,9 +1483,6 @@ mod tests {
     /// soloed out), a 10 kHz tone at unity ratio is `x^4 / (1 + x^4)` of
     /// itself through the high-pass, times the driven +6 dB; the cell stays
     /// 0 dB.
-    ///
-    /// Mutation (run): read each band param from the port one before its own
-    /// (the release's for the make-up) → the gain is unity → fails.
     #[test]
     fn a_driven_makeup_port_moves_its_band() {
         let (n, c) = node(2);
@@ -1605,9 +1507,6 @@ mod tests {
     /// A driven crossover port moves its crossover: port `bands * 6` is
     /// crossover 0, and a driven 2 kHz leaves a 2 kHz tone at half amplitude
     /// in band 0 (soloed).
-    ///
-    /// Mutation (run): read crossover `i` from port `i` → the lane drives
-    /// band 0's threshold instead and the split stays at 1 kHz → fails.
     #[test]
     fn a_driven_crossover_port_moves_the_split() {
         let (n, c) = node(2);
@@ -1628,9 +1527,6 @@ mod tests {
     }
 
     /// A one-frame block and a full 1024-frame block both render.
-    ///
-    /// Mutation (run): size `gains` as `vec![0.0; 64]` in `prepare` → the
-    /// 1024-frame block indexes past it → fails.
     #[test]
     fn any_block_up_to_the_prepared_maximum_renders() {
         let (n, c) = node(4);

@@ -118,10 +118,6 @@ fn six_channel_sink_writes_six_samples_per_frame() {
 /// `ENOSPC`, which is what a full disk does. The take is large enough to push
 /// the buffer through to it, so the failure lands on a write rather than on
 /// the final flush.
-///
-/// Mutation: storing `std::io::Error::other(e)` in `write` flattens the kind to
-/// `Other` and fails the kind check (run); dropping the store (`let _ = e;`)
-/// makes that write return `Ok` and fails its assertion (run).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_surfaces_from_finalize() {
@@ -150,13 +146,6 @@ fn a_failed_write_surfaces_from_finalize() {
 ///
 /// The failure is the frame limit, lowered to two frames: the same latch a full
 /// disk sets.
-///
-/// Mutation: forgetting the encoder in `finalize` instead of finishing it (`mem::forget`)
-/// leaves the header unpatched and the buffer unflushed, so the prefix is not
-/// readable and the length assertion fails (run). (Removing the early return in
-/// `write` is not seen here: once the limit is reached a retried
-/// write fails the same way and writes nothing; the recorder's
-/// `a_failed_sink_fails_the_take` covers the pump stopping.)
 #[test]
 fn a_failed_sink_stops_writing_and_leaves_a_readable_prefix() {
     let dir = tempfile::tempdir().unwrap();
@@ -244,8 +233,6 @@ fn twenty_four_bit_capture_round_trips() {
 /// `WAVE_FORMAT_EXTENSIBLE` header. Manual check (not run here): `ffprobe`
 /// names the 4-channel file `quad`, the 6-channel one `5.1(side)`, and the
 /// 8-channel one `8 channels` (unassigned).
-///
-/// Mutation: writing a zero mask in the extensible header fails every nonzero row (run).
 #[test]
 fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
     let dir = tempfile::tempdir().unwrap();
@@ -283,9 +270,6 @@ fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
 /// channels with `ChannelTopology::quad()` carry `0x33`. (A topology of
 /// another width than the file cannot be asked for: the constructor takes the
 /// width from the topology.)
-///
-/// Mutation: ignoring the topology in the WAV writer's `create` leaves the bare-4 mask `0`
-/// and fails the `0x33` assertion (run).
 #[test]
 fn a_declared_quad_topology_sets_the_quad_mask() {
     let dir = tempfile::tempdir().unwrap();
@@ -300,9 +284,6 @@ fn a_declared_quad_topology_sets_the_quad_mask() {
 }
 
 /// A header with no mask (stereo, 16 bit) is the plain `PCMWAVEFORMAT` one.
-///
-/// Mutation: choosing the extensible header from `bits() >= 16` writes tag `0xFFFE` for
-/// stereo 16-bit and fails the tag assertion (run).
 #[test]
 fn a_plain_header_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -322,9 +303,6 @@ fn a_plain_header_is_left_alone() {
 ///
 /// The limit is lowered through `limit_frames`; the real one is
 /// pinned in `tutti-codec`.
-///
-/// Mutation: taking the whole block (`fits = block.len()`) writes all eight frames and
-/// fails the length assertion (run).
 #[test]
 fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
     let dir = tempfile::tempdir().unwrap();
@@ -359,9 +337,6 @@ fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
 }
 
 /// A take that ends exactly at the limit is not an error.
-///
-/// Mutation: erroring when a write ends exactly at the limit (`fits <= block.len()`) fails
-/// this (run).
 #[test]
 fn a_take_that_ends_at_the_limit_is_clean() {
     let dir = tempfile::tempdir().unwrap();
@@ -376,9 +351,6 @@ fn a_take_that_ends_at_the_limit_is_clean() {
 
 /// A `FileOut` dropped without `finalize` (a recording whose pump thread
 /// panicked) is still a readable file: the writer back-patches on drop.
-///
-/// Mutation (run): deleting `WavWriter`'s `Drop` leaves both sizes zero and
-/// `hound` reads no samples.
 #[test]
 fn a_dropped_sink_leaves_a_readable_take() {
     let dir = tempfile::tempdir().unwrap();
@@ -392,7 +364,7 @@ fn a_dropped_sink_leaves_a_readable_take() {
 /// Only whole frames are written: a trailing part of a frame is ignored, so an
 /// odd slice cannot rotate the file's channels.
 ///
-/// No mutation of `FileOut` breaks this: the whole-frame rule is `Interleaved`'s
+/// The whole-frame rule is `Interleaved`'s
 /// (it views `len / width` frames and ignores the remainder), which `FileOut`
 /// builds its block with; the test pins the contract through the sink for WAV
 /// and, in the FLAC round trip below, for a second format.
@@ -411,9 +383,6 @@ fn a_trailing_partial_frame_is_ignored() {
 /// The sink is generic over the format: a FLAC take round-trips through the
 /// codec's own decoder, at the rate and width it declared, within the 16-bit
 /// quantization.
-///
-/// Mutation (run): dropping the last frame of each block in `write`
-/// (`&frames[..whole - stride]`) fails the length assertion.
 #[cfg(all(feature = "encode-flac", feature = "decode-flac"))]
 #[test]
 fn a_flac_take_round_trips_through_the_decoder() {

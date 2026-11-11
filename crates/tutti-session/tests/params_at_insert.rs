@@ -11,14 +11,6 @@
 //! forgot to would leave every hand-built suite green. The nodes are the
 //! suites' own `ProbeUnit` of `Drive` (a host's `ParamNode`) and an engine
 //! node, `DistortionNode`.
-//!
-//! Mutations (run in `bevy-tutti`), each failed: the insertion not
-//! addressing the params (no `set_node_params`: the lane has no knob); the
-//! swap not addressing the incoming node's params (the lane keeps the
-//! outgoing cell). Run here, each fails its tests: `Graph::add` not
-//! addressing the params (the host-node and engine-node tests);
-//! `Swap::swap` not addressing the incoming node's params (the crossfade
-//! test).
 
 mod common;
 

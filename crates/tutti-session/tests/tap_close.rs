@@ -7,11 +7,6 @@
 //! (`a_dropped_reader_leaves_the_plan_at_the_reclaim_phase`); what it does not
 //! is a tap opened after the first render and one closed by name
 //! (`Graph::close_tap`).
-//!
-//! Mutations (run): `Graph::close_tap` doing nothing
-//! (`closing_the_tap_stops_the_copy`); `Graph::open_tap` not marking the graph
-//! edited, with nothing else edited after the first render (the reader stays
-//! empty: `opening_a_tap_yields_a_reader_that_sees_the_rendered_frames`).
 
 use tutti_nodes::testing::Const;
 use tutti_session::{GraphSource, Session};

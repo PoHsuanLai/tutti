@@ -11,9 +11,6 @@ fn the_default_host_is_always_available() {
 /// fallback.** Falling back to the default would send audio out of a
 /// different device than the user chose, which is exactly the class of
 /// failure this module exists to remove.
-///
-/// Mutation-checked: making `open_jack`'s unavailable arm return
-/// `Ok(default_host())` fails this.
 #[cfg(not(all(
     feature = "jack",
     any(

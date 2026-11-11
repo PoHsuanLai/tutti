@@ -1,7 +1,6 @@
 //! A ramp as constant-tempo cells on one fixed frame grid.
 //!
-//! "Mutation (run)" means the change was made, the test seen to fail, and the
-//! change reverted.
+//! "
 
 mod common;
 
@@ -47,9 +46,6 @@ fn cells_seen(map: &TempoMap, grid: CellGrid, end: u64, blocks: &[u64]) -> BTree
 /// The same map through several block layouts, including an irregular one, gives
 /// identical cells at identical absolute frames, and they are the cells a walk
 /// by the grid alone gives.
-///
-/// Mutation (run): `chord_cell` starts the cell at `frame` instead of the grid multiple
-/// (`let on_grid = frame.get()`); a cell then depends on where a block began.
 #[test]
 fn cells_do_not_depend_on_the_block_layout() {
     let map = mixed();
@@ -118,9 +114,6 @@ fn cells_do_not_depend_on_the_block_layout() {
 /// A cell that starts on a point starts on the map's exact beat there, and
 /// every ramp cell ends on the map's beat (to float rounding). A cell that ends
 /// at a point ends on its own segment's line, within one frame of the map's beat.
-///
-/// Mutation (run): a cell's beat is read one frame late (`beat_on(start + 1)`); the cell on a
-/// point no longer starts on the map's beat.
 #[test]
 fn cells_seat_on_the_map() {
     let map = mixed();
@@ -161,9 +154,6 @@ fn cells_seat_on_the_map() {
 /// A step inside a grid cell cuts it: the cell before holds the old tempo to
 /// the bit, the cell on the step the new one, the beat at the cut is the map's
 /// own, and the cells after it are back on the grid multiples.
-///
-/// Mutation (run): the cell's end ignores the next point (`.min(u64::MAX)`); the cell
-/// holding the step spans it.
 #[test]
 fn a_step_inside_a_grid_cell_cuts_it() {
     // 60 BPM is 1 beat/s: beat 10 is frame 480 000 exactly, and 479 744 is
@@ -221,9 +211,6 @@ fn a_step_inside_a_grid_cell_cuts_it() {
 
 /// `next_change` is the first frame at or after the one given on which a point
 /// starts; the first point is not a change.
-///
-/// Mutation (run): `next_change_with` never returns the frame it is given; "at or after"
-/// fails on a point's own frame.
 #[test]
 fn next_change_finds_the_next_point() {
     let map = mixed();
@@ -257,9 +244,6 @@ fn next_change_finds_the_next_point() {
 /// The chord's worst error against the curve, in frames, by grid (every 7th
 /// frame of the ramp): the ceilings are the measured worst figures with a
 /// quarter of headroom (0.0399 frames for 60 -> 240 over 8 beats at 128).
-///
-/// Mutation (run): the chord tempo divides by `end - start + 1` frames; the error leaves every
-/// ceiling.
 #[test]
 fn chord_error_stays_under_a_fraction_of_a_frame() {
     // (shape, from, to, beats, [(grid, ceiling in frames)])
@@ -311,8 +295,6 @@ fn chord_error_stays_under_a_fraction_of_a_frame() {
 /// A cell wholly inside a step segment has that segment's tempo to the bit, on
 /// a constant map and on both sides of a change; a clock that restarts when the
 /// tempo changes then restarts only at a real change.
-///
-/// Mutation (run): a step cell's tempo is `bpm0 * (1 + 1e-15)`; the bit equality fails.
 #[test]
 fn a_step_cell_has_the_segments_exact_tempo() {
     for bpm in [133.3, 120.0, 97.7, 61.3] {
@@ -340,10 +322,6 @@ fn a_step_cell_has_the_segments_exact_tempo() {
 /// tempo between the map's lowest and highest. The two literal maps are the
 /// ones that gave 1.19e10 BPM and -6.58 BPM when a cell was read from its
 /// segment's closed form past the segment's end.
-///
-/// Mutation (run): a ramp cell's end beat is read from its segment's closed form past the
-/// segment's end (`seg.beat_at(end / rate)` as the prototype did); the two literal
-/// maps give 1.19e10 and negative tempos.
 #[test]
 fn cells_over_sub_frame_segments_stay_inside_the_map() {
     fn check(

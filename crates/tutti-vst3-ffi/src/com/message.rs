@@ -94,10 +94,6 @@ mod tests {
     ///
     /// The lifetime is observed through a `Weak` of the stored id, not by
     /// reading freed memory.
-    ///
-    /// Mutations (run, each fails): drop the `lent` store in `getMessageID` ->
-    /// the `weak.upgrade()` assertion after the replacement; never release the
-    /// previous lent id (a growing list) -> the last `weak` assertion.
     #[test]
     fn an_id_pointer_outlives_its_replacement() {
         let message = Message::new();

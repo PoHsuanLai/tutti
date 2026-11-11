@@ -719,10 +719,6 @@ mod tests {
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it (see
     /// `tutti_graph::contract::assert_param_fork`).
-    ///
-    /// Mutation (run): drop the `feedback` detach in `fork_fresh` → "a live
-    /// write reached the fork" for `Feedback`. Leave `DelayTime` out of
-    /// `param_set` → the address list below fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
         let node = DelayLineNode::stereo(
@@ -741,9 +737,6 @@ mod tests {
     /// The cells a fork detaches beyond its `ParamSet`'s: channel 1's delay
     /// time and the cross-feedback keep their values at the fork and follow
     /// no live write.
-    ///
-    /// Mutation (run): drop the `delay_time` detach in `fork_fresh` → the
-    /// fork's right time follows the live write → fails.
     #[test]
     fn a_fork_detaches_the_unaddressed_cells_too() {
         let node = DelayLineNode::stereo(
@@ -935,9 +928,6 @@ mod tests {
     /// never changes the arity: a modulatable delay is as wide as it was
     /// built, in and out. (Doc 014 §12.6 widened the list: a route onto any of these was
     /// refused once the frame-rate driver went.)
-    ///
-    /// Mutation (run): swap `DELAY_PARAMS`' order → the first assertion
-    /// fails (and `feedback_feed_modulates` reads a delay time as feedback).
     #[test]
     fn the_feed_declares_feedback_and_delay_time() {
         let d = DelayLineNode::stereo(
@@ -1076,9 +1066,6 @@ mod tests {
     /// A delay-time change made between blocks glides across the next block —
     /// a brief pitch bend — instead of jumping (a click), and the block ends on
     /// the new time.
-    ///
-    /// Mutation: starting the delay ramp at the target (`last_delay[c] = d`
-    /// even when primed) fails `assert_ramps_in`.
     #[test]
     fn a_delay_time_change_glides_across_the_next_block() {
         use crate::test_support::change_between_node_blocks;
@@ -1103,9 +1090,6 @@ mod tests {
 
     /// A ring routing spins an echo around a six-channel field: channel 0's
     /// impulse recirculates into channel 1's line, and nowhere else.
-    ///
-    /// Mutation: transposing the routing lookup (`routing[j * n + c]`) sends the
-    /// echo to channel 5 instead and fails.
     #[test]
     fn a_ring_matrix_routes_each_channel_into_the_next() {
         let n = 6usize;
@@ -1147,9 +1131,6 @@ mod tests {
 
     /// Whatever the matrix says, a loop cannot run away: rows are scaled to an
     /// absolute sum of at most 1, and self/cross feedback are bounded as a pair.
-    ///
-    /// Mutation: skipping the row scale in `with_cross_feedback_matrix` makes
-    /// the all-ones matrix grow without bound and fails.
     #[test]
     fn a_dense_matrix_at_full_feedback_stays_bounded() {
         let n = 4usize;
@@ -1177,9 +1158,6 @@ mod tests {
     }
 
     /// A non-finite routing weight is refused at build time.
-    ///
-    /// Mutation: dropping the finiteness assert lets this build (the node
-    /// would then render NaN forever) and fails the `should_panic`.
     #[test]
     #[should_panic(expected = "must be finite")]
     fn a_non_finite_cross_feedback_weight_is_refused() {

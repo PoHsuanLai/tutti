@@ -290,12 +290,6 @@ mod tests {
     /// ring share, as a table over a 1000-slot ring (threshold 0.75, so 750
     /// frames ahead; far is 250; a reader may be refilled up to 875 ahead).
     /// Each row is `(label, play, window, end, expected)`.
-    ///
-    /// Mutation (run): the threshold test `fill >= FILL_THRESHOLD` as `>` ->
-    /// the "exactly at threshold" row says `Below`. Mutation (run): the `to >=
-    /// limit` arm removed -> the "all of the file is in" and "tail" rows say
-    /// `Below`, which is the spin `Stalled` exists to stop. Mutation (run): the
-    /// jump test's `play < from` removed -> the "behind" row says `Satisfied`.
     #[test]
     fn needs_refill_follows_its_documented_rule() {
         const F: usize = 1000;
@@ -491,12 +485,6 @@ mod tests {
     /// that voice is silent. (The test ring's length is unknown, so its end
     /// is `u64::MAX`; the reader sits one frame short of it. A looped stream
     /// has no end and takes the same branch.)
-    ///
-    /// Mutation (run): drop the `.min(MAX_POS_RING_POSITION)` on `limit` ->
-    /// the cycle reads a chunk for nothing and `buffer` is non-empty -> fails.
-    /// Mutation (run): drop `!parked` -> the second cycle moves the window
-    /// again and `moves()` grows -> fails. Mutation (run): `PosWriter::reset`
-    /// without its saturation -> the first cycle panics -> fails.
     #[test]
     fn a_reader_at_an_unbounded_position_parks_the_window() {
         use super::super::super::prefetch::RegionBuffer;

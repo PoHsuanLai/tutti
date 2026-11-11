@@ -42,9 +42,6 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// `node` driven by hand in blocks of `frames`, under a transport rolling
 /// from beat 0 at 120 BPM and moved after each block. Built outside every
 /// guard; a block allocates nothing of the rig's own.
-///
-/// Mutation (run): `MemorySource`'s `process` allocating a scratch `Vec` per
-/// block → every memory-source gate here aborts, the one-frame ones too.
 struct Rig<N> {
     direct: Direct<N>,
     t: Arc<MockTransport>,
@@ -162,9 +159,6 @@ fn time_stretch_process_is_allocation_free() {
 /// One `process` of a block past the 8192-frame scratch, in processing
 /// mode: the block is split into runs inside `process`, and the split must
 /// not allocate either. The 64-frame gate above never reaches the split.
-///
-/// Mutation (run): a `Vec::<f32>::with_capacity(run)` built (and
-/// `black_box`ed) inside `process`'s split loop → the gate aborts → fails.
 #[test]
 fn time_stretch_process_past_the_scratch_is_allocation_free() {
     const FRAMES: usize = 8192 + 300;
@@ -201,12 +195,9 @@ fn time_stretch_process_past_the_scratch_is_allocation_free() {
 /// `time_stretch_process_is_allocation_free` above cannot catch a regression
 /// here: it drives a freshly constructed unit, not a clone.
 ///
-/// Mutation (run): `Unit::process` building its input scratch per block
-/// (`self.ch.scratch_in = … vec![0.0; MAX_BUFFER_SIZE].into_boxed_slice() …`)
-/// → fails. (A clone that sized its scratch only on first use would slip
-/// past: the warm-up runs that use.
-/// `stretch::tests::a_clone_arrives_with_its_block_scratch_sized` pins that a
-/// clone arrives sized.)
+/// A clone that sized its scratch only on first use would slip past: the warm-up runs
+/// that use. `stretch::tests::a_clone_arrives_with_its_block_scratch_sized` pins that a
+/// clone arrives sized.
 #[test]
 fn cloned_time_stretch_process_is_allocation_free() {
     let mut original = TimeStretchUnit::new(SampleRate::new(48_000.0));
@@ -292,10 +283,6 @@ fn voice_pool_process_steady_state_is_allocation_free() {
 /// (the slot reads through `stretch::Unit::filter_lanes` into them). (The
 /// graph never clones a node — a pool's fork is a fresh, empty pool —
 /// so a clone is what a host holding a template makes.)
-///
-/// Mutation (run): the pool building its block lanes in `process` rather
-/// than at construction (`self.scratch = BlockScratch::new()` per block) →
-/// fails.
 #[test]
 fn cloned_voice_pool_with_stretch_is_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
@@ -428,13 +415,6 @@ fn placed_voice(wave: &Arc<Wave>, stretch: f32) -> Voice {
 /// a silent one — each block in one piece
 /// through scratch sized in `prepare`. (The disk voice's gate is in-crate:
 /// `clip_reader_ragged_blocks_at_max_block_512_are_allocation_free`.)
-///
-/// Mutation (run): `VoicePool::process` resizing its scratch to the block
-/// (`self.scratch.resize(frames)`) → aborts. Mutation (run):
-/// `MemorySource::process` taking a fresh `vec![None; frames]` for its
-/// positions → aborts. Mutation (run): a `Vec` built per call in
-/// `MemorySource::read_placed_lanes`'s looped branch → the looped pool
-/// aborts.
 #[test]
 fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
@@ -525,10 +505,6 @@ fn wraps_without_allocating<N: Node>(node: N) {
 /// A loop wrap's crossfade does not allocate, through a pool, a
 /// `VoiceNode` and a bare `MemorySource`: the tail lanes are sized in
 /// `prepare`.
-///
-/// Mutation (run): a `Vec` built per call in `MemorySource::render_placed`'s
-/// tail read (`views` collected into a `Vec`) → all three abort. Mutation
-/// (run): `crossfade_wraps` never called → each fails its step check.
 #[test]
 fn a_loop_wrap_crossfade_is_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
@@ -1025,12 +1001,6 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
 /// The refused voice is a stretched one (it carries a filter, the largest
 /// thing a refusal could free) over a wave only it holds, so a `Weak` to
 /// the wave says where it was freed.
-///
-/// Mutation (run): the drain's capacity check removed (the 65th add pushed
-/// as before) → the vector grows → aborts in the guard. Mutation (run): the
-/// refusal dropping the voice instead of retiring it (`drop((voice,
-/// stretch))`) → aborts in the guard. Mutation (run): the
-/// `voices_refused` bump removed → fails on the count.
 #[test]
 fn an_add_past_the_voice_cap_is_refused_without_allocating() {
     const CAP: usize = 64;
@@ -1187,9 +1157,6 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 /// Both halves are covered — a block that applies a new window (the eight
 /// publishes before the gate leave the last one to apply), and the unchanged
 /// read that runs on every other block.
-///
-/// Mutation (run): `drain_commands` cloning the window into a fresh `Arc`
-/// each block (`let _keep = Arc::new(published)`) → aborts in the gate.
 #[test]
 fn voice_node_command_drain_does_not_allocate() {
     let source = MemorySource::new(sine_wave(1.0, 48_000.0))
@@ -1243,11 +1210,6 @@ fn voice_node_command_drain_does_not_allocate() {
 /// wave of a `ReplaceWave` aimed at a slot that does not exist (its only owner
 /// is the command). A `Weak` to each tells where it was freed: alive after
 /// the drain, gone after `collect_retired`.
-///
-/// Mutation (run): the drain calling `sampler.set_wave(wave)` (the direct
-/// drop) in place of `replace_wave` and retiring nothing → aborts in the
-/// first guard. Mutation (run): the missing-slot arm dropping `wave` instead
-/// of retiring it → aborts in the second guard.
 #[test]
 fn replacing_a_wave_retires_the_old_one_rather_than_freeing_it_in_the_drain() {
     let (pool, handle) = VoicePool::new().with_handle();

@@ -463,9 +463,6 @@ mod tests {
 
     /// The lane reads the snapshot, never the cell: a store after the
     /// snapshot (a store in the middle of the block) reaches no op.
-    ///
-    /// Mutation: `weight` reads `cell.load()` in place of `self.target` ->
-    /// the store lands in this block and the first assertion fails.
     #[test]
     fn a_store_after_the_snapshot_waits_for_the_next_block() {
         let (cell, mut lane) = lane(0.5);
@@ -484,9 +481,6 @@ mod tests {
 
     /// First block: no ramp; unity is the plain add; a static weight is
     /// static; a move ramps from the weight the previous block was given.
-    ///
-    /// Mutation: `prev.unwrap_or(to)` -> `prev.unwrap_or(Amplitude::SILENT)`
-    /// (a first block ramps from zero) fails the first assertion.
     #[test]
     fn first_block_has_no_ramp_and_a_static_weight_skips_it() {
         let (cell, mut lane) = lane(0.25);
@@ -524,9 +518,6 @@ mod tests {
     }
 
     /// The kernel's ramp is the doc's expression, sample for sample.
-    ///
-    /// Mutation: `ramp_at` uses `i as f32 / frames` (starts at the old
-    /// weight, never reaches the new) fails.
     #[test]
     fn the_ramp_is_the_documented_expression() {
         let frames = 8usize;

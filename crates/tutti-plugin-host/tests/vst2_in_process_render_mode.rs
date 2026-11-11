@@ -263,10 +263,6 @@ fn restoring_realtime_reaches_the_plugin() {
 /// **A rate change keeps the render mode**: re-activating the plugin at a new
 /// rate (a rejoin and an activation) must not put it back to realtime. An export
 /// sets the mode and then prepares at its own rate.
-///
-/// Mutation (run): `Instance::set_offline_render` not recording the mode in
-/// `prepare` (the activation then re-applies the load-time realtime mode) → the
-/// block after the rate change reads level 2 → fails.
 #[test]
 fn a_rate_change_keeps_the_render_mode() {
     let _guard = lock_probe();

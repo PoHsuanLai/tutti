@@ -134,10 +134,6 @@ mod tests {
 
     /// A probe that does not finish by the deadline is killed and reaped, and the
     /// caller is told it timed out.
-    ///
-    /// Mutation (run): `wait` without its `child.kill()` and `Reaped::drop`
-    /// without its `kill()` block until the stand-in's 30 s sleep ends, and the
-    /// elapsed-time assertion fails.
     #[test]
     fn a_probe_that_hangs_is_killed_at_the_deadline() {
         let dir = TempDir::new().unwrap();
@@ -177,9 +173,6 @@ mod tests {
     }
 
     /// No result file and an exit, by status or by signal, is a crash.
-    ///
-    /// Mutation (run): the `(Ok(None), Waited::Exited)` arm answering
-    /// `Timeout` fails both assertions.
     #[test]
     fn exiting_without_a_result_is_a_crash() {
         for body in ["exit 7", "exit 0", "kill -SEGV $$"] {
@@ -195,10 +188,6 @@ mod tests {
     /// **A partial result is never read as a result**: a staging file left by a
     /// probe that died mid-write is not one (it is a crash), and a cut-short
     /// file at the result path is refused as a protocol fault, not decoded.
-    ///
-    /// Mutation (run): `run` reading `result_tmp_path(result)` instead of
-    /// `result` fails the first case (the garbage is refused, not a crash);
-    /// mapping a `read_result` error to `Ok(None)` makes the second a crash.
     #[test]
     fn a_partial_result_file_is_not_a_result() {
         let dir = TempDir::new().unwrap();
@@ -231,9 +220,6 @@ mod tests {
 
     /// The deadline is the caller's: the same probe, one that outlasts 300 ms and
     /// not 5 s, times out under the one and is a plain crash under the other.
-    ///
-    /// Mutation (run): `probe_metadata_with` using a fixed 100 ms instead of
-    /// `timeout` makes the second a `Timeout` and fails it.
     #[test]
     fn the_deadline_is_the_callers() {
         let dir = TempDir::new().unwrap();
@@ -255,9 +241,6 @@ mod tests {
 
     /// The result file is in a directory of the probe's own, not a predictable
     /// name in the shared temp directory, and the directory is gone after.
-    ///
-    /// Mutation (run): the result path put back at
-    /// `temp_dir().join("tutti-probe-<pid>.result")` fails the parent check.
     #[test]
     fn the_result_lives_in_a_private_directory_that_is_removed() {
         let dir = TempDir::new().unwrap();

@@ -43,8 +43,6 @@ const FLUTE_TB: [(u8, u8, usize); 10] = [
     (95, 108, 7),
 ];
 
-// Mutation (run): `low..=high` -> `low..=low` in `generator_range` makes every
-// range a single key and fails the range comparison on the first region.
 #[test]
 fn the_first_instrument_has_the_regions_decoded_from_the_file() {
     let soundfont = timgm6mb();
@@ -61,10 +59,8 @@ fn the_first_instrument_has_the_regions_decoded_from_the_file() {
     }
 }
 
-// Mutation (run): `contains` testing the key against `start..end` (exclusive)
-// fails at the last key of a range. The fixture has no velocity range, so the
-// velocity half of `contains` is covered by `tutti-soundfont`'s
-// `a_region_answers_only_the_velocities_of_its_range`.
+// The fixture has no velocity range, so the velocity half of `contains` is covered by
+// `tutti-soundfont`'s `a_region_answers_only_the_velocities_of_its_range`.
 #[test]
 fn a_region_contains_the_keys_and_velocities_of_the_decoded_ranges() {
     let soundfont = timgm6mb();

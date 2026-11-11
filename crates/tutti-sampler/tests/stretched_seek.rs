@@ -71,11 +71,6 @@ fn render(frames: usize, seek_at: usize) -> Vec<f32> {
 
 /// The first 2 048 frames after a seek are as loud as the steady state
 /// before it (within 3 dB), not the flushed filter's silence.
-///
-/// Mutations: drop `prime_stretch`'s call in `PlaybackSlot::render_into` →
-/// the post-seek window's RMS is 0 (the filter is still refilling) and this
-/// fails; prime only `latency_samples` frames (a window, not a window times
-/// the stretch) → the first loud frame is 2 054 after the seek, RMS 0, fails.
 #[test]
 fn a_stretched_voice_is_audible_right_after_a_seek() {
     let seek_at = 375 * BLOCK; // 24 000

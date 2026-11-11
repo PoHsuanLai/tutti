@@ -105,10 +105,6 @@ fn the_limit_is_judged_at_the_output_rate() {
 /// This restores the export-level half of the old
 /// `an_export_at_the_limit_succeeds_and_declares_its_mask`; the limit half
 /// lives in `tutti-codec`, where the limit can be lowered.
-///
-/// Mutation: `topology: None` in `spec()` leaves the quad file at mask 0
-/// and fails the first row; deleting the width check in `WavWriter::create`
-/// lets the stereo file declare a quad topology and fails the refusal.
 #[cfg(feature = "wav")]
 #[test]
 fn the_topology_reaches_the_file_and_must_match_its_width() {

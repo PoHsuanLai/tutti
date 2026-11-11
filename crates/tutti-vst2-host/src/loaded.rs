@@ -113,8 +113,8 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// Not `Sync`: the instance behind it is not, and an entry the format puts on the main
 /// thread takes a [`MainThread`] (see [`PluginInstance`]).
 ///
-/// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
-/// type makes it compile, and the test fails):
+/// The doc test below is the guard: an `unsafe impl Sync` for the
+/// type makes it compile, and the test fails:
 ///
 /// ```compile_fail
 /// fn needs_sync<T: Sync>() {}
@@ -122,7 +122,7 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// ```
 ///
 /// An entry the format puts on the main thread takes the proof, so safe code without one
-/// cannot make the call (mutation, run: give `set_bypass` back its token-free signature and
+/// cannot make the call (give `set_bypass` back its token-free signature and
 /// the doctest compiles and fails):
 ///
 /// ```compile_fail,E0061
@@ -137,9 +137,9 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// [`OutOfProcess`](tutti_plugin_types::OutOfProcess): an `AEffect` is one
 /// object for its editor and its audio, so no editor-only second instance can
 /// show what an audio instance in another process holds (design 021 §4). The
-/// absence is a statement, and this checks it (mutation, run: add
-/// `impl OutOfProcess for Vst2Loaded` and the first doctest compiles and fails;
-/// change its type to a typo and it fails with E0412, not the pinned E0277):
+/// absence is a statement, and this checks it (with `impl OutOfProcess for
+/// `Vst2Loaded` the first doctest would compile and fail; a typo in its type
+/// fails with E0412, not the pinned E0277):
 ///
 /// ```compile_fail,E0277
 /// use tutti_plugin_types::OutOfProcess;
@@ -580,9 +580,6 @@ mod pin_count_tests {
 
     /// The widest a layout holds passes; one past it, or a negative count, is
     /// refused naming the side.
-    ///
-    /// Mutation (run): `check_pin_counts` returning `Ok(())` always (or testing
-    /// only `inputs`) fails the refusals here.
     #[test]
     fn a_pin_count_no_layout_holds_is_refused_naming_the_side() {
         assert!(check_pin_counts(0, i32::from(u16::MAX)).is_ok());

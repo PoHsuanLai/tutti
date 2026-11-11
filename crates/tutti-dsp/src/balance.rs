@@ -32,10 +32,6 @@ mod tests {
 
     /// Unity at centre, one side silent at each extreme, the far side falling
     /// linearly and the near side held at unity.
-    ///
-    /// Mutation (run): `(1.0 - p).min(1.0)` -> `(1.0 - p)` fails the left
-    /// side at `-0.5` (1.5, not 1); swapping the two gains fails hard left;
-    /// `1.0 + p` -> `1.0 + 0.9 * p` fails the extremes.
     #[test]
     fn balance_is_unity_at_centre_and_silences_the_far_side_at_the_extremes() {
         assert_eq!(at(0.0), (1.0, 1.0));
@@ -46,9 +42,6 @@ mod tests {
     }
 
     /// Nothing is boosted, and the far side is monotone in the position.
-    ///
-    /// Mutation (run): dropping a `.min(1.0)` fails the bound; a `max` for a
-    /// `min` fails the bound and the monotonicity.
     #[test]
     fn balance_never_boosts_and_is_monotone() {
         let mut prev = f32::INFINITY;
@@ -62,9 +55,6 @@ mod tests {
     }
 
     /// A pan past the range holds the extreme; a NaN is unity on both sides.
-    ///
-    /// Mutation (run): removing the `clamp` fails the first assert (a gain of
-    /// -1 on the far side).
     #[test]
     fn out_of_range_and_nan_are_held() {
         assert_eq!(at(3.0), (0.0, 1.0));

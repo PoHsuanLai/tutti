@@ -127,12 +127,6 @@ fn measure(s: &mut Session) -> (f64, f64) {
 /// **A `set_param` at index 1 reaches band 1 and leaves band 0 alone**, and
 /// the other way: the right channel (band 1's tone) follows `GainDb` at
 /// index 1 by the analytic figure, the left (band 0's) follows index 0.
-///
-/// Mutations (run), each fails:
-/// - `MultibandCompressorNode::param_set` addressing band 1's make-up with
-///   band 0's cell → the right channel does not move;
-/// - `Graph::set_param` writing the kind's index 0 whatever the address →
-///   the left channel moves with the write meant for band 1.
 #[test]
 fn a_write_to_band_1_moves_band_1_only() {
     let (mut s, mb, _) = rig();
@@ -159,9 +153,6 @@ fn a_write_to_band_1_moves_band_1_only() {
 
 /// The graph declares every band's ports, each modulatable on its own, and
 /// no more: 6 per band and one per crossover, none for the toggles.
-///
-/// Mutation (run): `port_addrs` listing every band at index 0 → the shape
-/// refuses the duplicate → fails; dropping the crossover ports → fails.
 #[test]
 fn the_graph_declares_each_band_and_crossover() {
     let (mut s, mb, _) = rig();
@@ -189,9 +180,6 @@ fn the_graph_declares_each_band_and_crossover() {
 /// The right tone (0.4, -8 dB) is over a -30 dB threshold at 2:1 (the reduction
 /// is positive) and under a 0 dB one (none, exactly, with the ratio back at
 /// 2).
-///
-/// Mutation (run): `MultibandControls::gain_reduction_db` reading band 0's
-/// meter for every band → the band-1 figures swap → fails.
 #[test]
 fn the_meter_of_band_1_follows_its_threshold() {
     let (mut s, mb, controls) = rig();
@@ -233,11 +221,6 @@ fn the_meter_of_band_1_follows_its_threshold() {
 /// The lane steps every 32 frames, so `g1` is within 0.2 dB (2.4%) of the
 /// sine; the tolerance is 4%, and the swing (a 24 dB span) is asserted
 /// whole.
-///
-/// Mutations (run), each fails:
-/// - the route resolved to band 0's make-up (index dropped) → the left
-///   swings and the right does not;
-/// - the lane's events addressed to index 0 → the same.
 #[cfg(feature = "modulation")]
 #[test]
 fn a_route_to_band_1_modulates_band_1_only() {
@@ -292,9 +275,6 @@ fn a_route_to_band_1_modulates_band_1_only() {
 /// **A fork takes each index's value as it stands and shares no cell with
 /// the live graph at any index**: after the fork, the live make-ups are
 /// moved the other way (each band), and each render keeps its own figures.
-///
-/// Mutation (run): drop `b.core.detach()` in `MultibandCompressorNode::
-/// fork_fresh` → the fork follows the live writes → fails.
 #[test]
 fn a_fork_keeps_each_index_to_itself() {
     let (mut s, mb, _) = rig();
@@ -330,9 +310,6 @@ fn a_fork_keeps_each_index_to_itself() {
 /// band 0's by `1 / (1 + x^4)` at the new split, so dropping the split from
 /// 1 kHz to 150 Hz takes the 100 Hz tone through the low-pass at
 /// `x = warp(100) / warp(150)` and the make-up of band 1 reaches it.
-///
-/// Mutation (run): `Graph::set_param` for `Cutoff` at index 0 writing a cell
-/// the node does not read → the left tone stays band 0's → fails.
 #[test]
 fn a_crossover_write_moves_the_split() {
     let (mut s, mb, _) = rig();

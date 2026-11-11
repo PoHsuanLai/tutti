@@ -198,15 +198,6 @@ fn looping_clock_at(rate: f64, looping: Option<LoopRange>) -> Clock {
 /// on: silent before beat 2 (frame 48 000 at 120 BPM), then frame `k` of
 /// the file on render frame `48 000 + k`, exactly, on both channels. As a bare
 /// voice and inside a `VoiceNode`.
-///
-/// Mutation (run): the placement not stepping (`step.advance(Samples(k))` →
-/// `Samples(0)` in `place`) → every block repeats one frame → fails.
-/// Mutation (run): `fork_copy` not handing the copy its file → silence →
-/// fails. Mutation (run): both
-/// whole-frame rules removed (`snap_to_whole_frame` and `tap_indices`'s
-/// carry of a fraction that rounds to 1.0) → file frame 129 reads an ulp off
-/// → fails. Either rule alone lands this case: the gate's origin comes out a
-/// hair under the frame, which each of them catches.
 #[test]
 fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -247,12 +238,6 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
 /// reads file frame `n / 2` on render frame `n` of the clip, and ends one
 /// second of file later (48 000 render frames), silent after. The file is a
 /// ramp, which the cubic kernel reproduces between frames up to rounding.
-///
-/// Mutation (run): the read rate without the conversion
-/// (`SrcRatio::for_rates` → `SrcRatio::UNITY` in `DiskVoice::step_rate`) →
-/// one file frame per render frame → fails. Mutation (run): the gate
-/// measuring by the render's rate instead of the file's (`DiskVoice::gate`'s
-/// `source_rate`) → the clip enters late → fails.
 #[test]
 fn a_fork_at_another_rate_resamples() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -294,12 +279,6 @@ fn a_fork_at_another_rate_resamples() {
 /// the lead-in `(k + 1) / 101`, and the wrap then plays 1000: the join is the
 /// file's own step (`LoopSpan`). At unit speed on whole frames
 /// every read is a frame of that sequence exactly.
-///
-/// Mutation (run): the fork reading its loop when the voice was built rather
-/// than when it is forked (`StreamFile::loop_` forced `Off`) → plays
-/// straight on past 3000 → fails. Mutation (run): the crossfade blend dropped
-/// → the hard-loop values in the fade → fails. Mutation (run): the lead-in
-/// `start + k` (the head replayed) → fails.
 #[test]
 fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -378,13 +357,6 @@ const PERIOD: usize = 100;
 /// 0 it clicks).
 ///
 /// The hard loop is asserted to click first, so the loop points have teeth.
-///
-/// Mutation (run): the lead-in `start + k` in `LoopSpan::fade_at` (the old
-/// head replay: fade into the loop's first frames, then play them again) → a
-/// step far above the sine's own at the wrap → fails. Mutation (run): the fade
-/// dropped (`LoopTap::fade` always `None`) → the hard cut → fails. Mutation
-/// (run): the head mode removed (the fade clamped to `start`) → the loop from
-/// 0 cuts hard → fails.
 #[test]
 fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -435,13 +407,6 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
 /// A reversed fork falls silent past the file's first frame, as a
 /// forward one does past its last: the file backwards, then
 /// silence — not frame 0 held as DC.
-///
-/// Mutation (run): `OfflineRead::read_into` without either silence — the
-/// early close of a reversed read at or past `len`, and the reverse arm's own
-/// check (`(len - 1 - pos).max(0.0)` alone) → `value(0)` from render
-/// frame `LEN` on → fails. (The early close alone keeps it silent once the
-/// file's length is known; the arm's check covers a first read already past
-/// it.)
 #[test]
 fn a_reversed_fork_is_silent_past_the_first_frame() {
     const LEN: usize = 5_000;
@@ -468,10 +433,6 @@ fn a_reversed_fork_is_silent_past_the_first_frame() {
 /// frames in at 2× is file frame 64) and stepping two file frames a frame.
 /// A block reads its rates once, so no change lands between two of its
 /// frames.
-///
-/// Mutation (run): the fork's gate ignoring varispeed (`DiskVoice::window_rate`
-/// without `effective_speed`) → the second render starts at file frame 32 →
-/// fails.
 #[test]
 fn a_varispeed_change_lands_on_a_forks_next_block() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -498,10 +459,6 @@ fn a_varispeed_change_lands_on_a_forks_next_block() {
 /// stopped, so the live voice is on a ring the streamer no longer feeds, and
 /// so is its fork — it must not read the file from the record that is left,
 /// and its render fails rather than pass the silence off as the clip.
-///
-/// Mutation (run): `StreamOrigin::describe` not checking that the stream
-/// ended → the fork plays the file from the record → fails. Mutation (run): the
-/// `StreamGone` latch removed from `fork_copy` → no fault → fails.
 #[test]
 fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -532,9 +489,6 @@ fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
 /// fork, which re-opens it by its path, cannot: it renders silence and latches
 /// the failure its render reports (the fork's health probe, which the
 /// export reads).
-///
-/// Mutation (run): `OfflineRead::open` not latching an open failure → no
-/// fault → fails.
 #[test]
 fn a_fork_whose_file_cannot_be_read_fails_naming_it() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -558,9 +512,6 @@ fn a_fork_whose_file_cannot_be_read_fails_naming_it() {
 /// nothing, and says so, rather than read at a default rate and play off
 /// pitch. (The graph prepares every fork before it renders; a fork source
 /// used by hand may not.)
-///
-/// Mutation (run): the offline read falling back to 44.1 kHz when no rate
-/// was given → it plays, with no fault → fails.
 #[test]
 fn a_fork_told_no_rate_fails_rather_than_guess() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -580,11 +531,6 @@ fn a_fork_told_no_rate_fails_rather_than_guess() {
 /// of the clip is the file's frame `len - 1 - k`, exactly, over a file three
 /// pages long. (Past the file's first frame is
 /// `a_reversed_fork_is_silent_past_the_first_frame`'s.)
-///
-/// Mutation (run): the reverse mirror removed from `OfflineRead::read_into`
-/// → plays forwards → fails. Mutation (run): `DiskVoice::fork_copy` handing
-/// the copy `Direction::Forward` instead of the ring's published direction →
-/// plays forwards → fails.
 #[test]
 fn a_reversed_fork_plays_the_file_backwards() {
     const LEN: usize = 100_000;
@@ -606,11 +552,6 @@ fn a_reversed_fork_plays_the_file_backwards() {
 /// seat as well as along it: at a read rate of 0.5 (a 2× stretch), frame `k`
 /// of the clip reads file frame `k / 2`, across every chunk. The file is a
 /// ramp, which the kernel reproduces between frames up to rounding.
-///
-/// Mutation (run): `.then(stretch)` dropped from the step
-/// (`DiskVoice::step_rate`) → a file frame per render frame within each
-/// piece → fails. Mutation (run): dropped from `DiskVoice::window_rate` (the
-/// seat) → every piece seats at `k`, not `k / 2` → fails.
 #[test]
 fn a_stretched_fork_reads_at_the_stretchers_rate() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -634,10 +575,6 @@ fn a_stretched_fork_reads_at_the_stretchers_rate() {
 /// A fork reads across its pages at a converted rate: a 44.1 kHz file
 /// three pages long, rendered at 48 kHz, reads file frame `n × 44.1 / 48` on
 /// every render frame `n`, through each page boundary, to its last frame.
-///
-/// Mutation (run): `Pages::load` skipping the decoder's seek (the decoder
-/// reads on from where the last page ended, `PAGE_LEAD` frames off) → every
-/// page after the first reads the wrong frames → fails.
 #[test]
 fn a_fork_reads_across_pages_at_a_converted_rate() {
     const LEN: usize = 100_000;
@@ -666,11 +603,6 @@ fn a_fork_reads_across_pages_at_a_converted_rate() {
 /// — the read re-seats where the render's `Env` wraps, rather than count on
 /// from where it was. The loop is not a whole number of blocks, so the
 /// wraps fall inside blocks (the first 48 frames into one).
-///
-/// Mutation (run): `Runs` not cutting a run at a wrap (`wrap_offset`
-/// answering `None`) → it plays on past the wrap → fails. (With a loop of
-/// 24 000 frames, a whole number of blocks, every wrap fell on a block's
-/// first frame and this mutation passed.)
 #[test]
 fn a_fork_follows_a_looping_render_timeline() {
     const LOOP: usize = 24_240;
@@ -716,18 +648,6 @@ fn a_fork_follows_a_looping_render_timeline() {
 /// oracles: `loop_span`'s own tests, `a_fork_loops_as_the_stream_is_looped_when_it_is_taken`
 /// (the fork) and `memory_source`'s `a_crossfaded_loop_plays_the_hand_computed_frames`
 /// (the memory tier).
-///
-/// Mutation (run): the fork's step not composing varispeed (`speed` →
-/// `PlaybackRate::UNITY` in `DiskVoice::step_rate`) → it parts from memory
-/// inside the first block → fails. Mutation (run): the memory tier's step
-/// `read_rate` → `window_rate` (`placed_positions`) → the 24 kHz case parts
-/// inside the clip's first block → fails. Mutation (run): `MemorySource::read_placed_into`
-/// ignoring the loop → the loop case parts at the first wrap → fails.
-/// Mutation (run): the memory tier's reverse holding frame 0 → the reverse
-/// case parts past the start → fails. Mutation (run): the paged blend weight
-/// alone changed (`blend(.., 1.0 - t)` in `Pages::read_looped_into`) → the
-/// paged row parts in the first fade → fails (the resident row does not see
-/// it, which is why the paged row exists).
 #[test]
 fn a_fork_matches_the_memory_tier_bit_for_bit() {
     const LEN: usize = 40_000;

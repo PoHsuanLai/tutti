@@ -1163,9 +1163,6 @@ mod tests {
     }
 
     /// Ties go to the earlier source; otherwise offset order.
-    ///
-    /// Mutation: `<` → `<=` in `merge_into` → the tie at offset 3 flips to
-    /// source 1 first → fails.
     #[test]
     fn merge_orders_by_offset_then_source() {
         let a = [ev(0, 1), ev(3, 2), ev(9, 3)];
@@ -1184,8 +1181,6 @@ mod tests {
     }
 
     /// The merge refuses past capacity and says how many it refused.
-    ///
-    /// Mutation: drop the `out.len() < cap` check → `out` grows to 5 → fails.
     #[test]
     fn merge_counts_what_did_not_fit() {
         let a = [ev(0, 1), ev(1, 2), ev(2, 3)];
@@ -1197,12 +1192,6 @@ mod tests {
 
     /// `SortedEvents::new` refuses what is unsorted or out of the block;
     /// `sort` repairs order (stably) and still refuses out-of-block.
-    ///
-    /// Mutation: drop the `Unsorted` check in `new` → the unsorted slice is
-    /// accepted → fails. Replace `sort_by_key` with `sort_unstable_by_key` →
-    /// usually still passes here, which is why the tie case below checks the
-    /// payload order explicitly on a slice long enough for the unstable sort
-    /// to reorder.
     #[test]
     fn sorted_events_are_sorted_and_in_block() {
         let unsorted = [ev(3, 0), ev(1, 1)];
@@ -1234,9 +1223,6 @@ mod tests {
     }
 
     /// The writer enforces the three invariants a consumer relies on.
-    ///
-    /// Mutation: delete the `OutOfOrder` branch → the second push succeeds →
-    /// fails.
     #[test]
     fn writer_rejects_out_of_order_out_of_block_and_overflow() {
         let mut buf = Vec::with_capacity(4);
@@ -1291,10 +1277,6 @@ mod tests {
     /// offset 0 (no empty leading chunk), several on one offset (one chunk,
     /// all of them, in order), one on the last frame (a one-frame chunk), and
     /// no events at all (the whole block).
-    ///
-    /// Mutation: in `SubBlocks::next`, split off only the *first* event at
-    /// `pos` (`split_at(here.min(1))`) → the second event at offset 5 comes
-    /// out in a zero-length chunk of its own → fails.
     #[test]
     fn sub_blocks_split_at_every_offset() {
         let evs = [ev(0, 1), ev(5, 2), ev(5, 3), ev(7, 4)];
@@ -1319,9 +1301,6 @@ mod tests {
         /// Against the hand-rolled splitter, on random sorted offsets — with
         /// offset 0, the last frame and repeats all drawn often — and random
         /// block lengths including 1.
-        ///
-        /// Mutation: yield all but the last of several events that share an
-        /// offset → the count and the comparison both fail.
         #[test]
         fn sub_blocks_match_a_hand_rolled_splitter(
             frames in 1usize..40,
@@ -1357,9 +1336,6 @@ mod tests {
 
     /// A foreign ramp and a built-in ramp never answer for each other, even
     /// when the foreign id equals the built-in's discriminant.
-    ///
-    /// Mutation: compare only the numeric id in `target` (drop the `Unit`
-    /// arm) → the foreign ramp with id 0 reads back as a cutoff → fails.
     #[test]
     fn foreign_and_builtin_ramps_are_distinct_addresses() {
         use tutti_types::{Hz, ParamKey};
@@ -1376,9 +1352,6 @@ mod tests {
 
     /// An event is a note-off when its packet is (`Ump::is_note_off` pins the
     /// spellings); a ramp is not one.
-    ///
-    /// Mutation: make `is_note_off` ignore the kind and return true -> the ramp
-    /// assertion fails.
     #[test]
     fn only_a_midi_note_off_event_is_a_note_off() {
         let (c, n, v) = (MidiChannel::FIRST, NoteNumber::of(60), U7::of(0x40));
@@ -1389,11 +1362,6 @@ mod tests {
 
     /// A segment's address round-trips, built-in and foreign never answer
     /// for each other, and its shape and timing read back as built.
-    ///
-    /// Mutations (run), each fails: drop the `foreign` test in
-    /// `ParamSegment::is_for` (the foreign segment with id 0 reads back as a
-    /// cutoff); the step guard in `segment_progress` as `length == 0.0` (a
-    /// negative or infinite length holds `from`).
     #[test]
     fn a_segment_reads_back_as_built() {
         use tutti_types::{Hz, ParamKey};
@@ -1434,8 +1402,6 @@ mod tests {
         let smooth = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(8), Law::Smootherstep);
         assert_eq!(smooth.piece(), Piece::new(1.0, 2.0, Law::Smootherstep));
         assert_eq!(s.piece(), Piece::new(1.0, 2.0, Law::PowerOut(3.0)));
-        // Mutation (run): `unpack` mapping `Smootherstep` to `Linear` -> the
-        // first assert fails.
         // A negative position holds `from` until it reaches 0, then moves.
         let late = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), Law::Linear)
             .resumed(SamplePosition(-3.0), SamplePosition(4.0));
@@ -1457,10 +1423,6 @@ mod tests {
     /// off@2]` and `b = [on@0, off@3]` into room for 3: both note-offs land
     /// (2), leaving one other, which is the first in merge order (`a`'s
     /// note-on at 0). The three others cut are counted: 2.
-    ///
-    /// Mutation: treat every event alike in `merge_into` (drop the
-    /// note-off arm) → the output is `[a0, b0, a1]` and loses both
-    /// note-offs → fails.
     #[test]
     fn a_merge_that_must_cut_keeps_its_note_offs() {
         let a = [ev(0, 1), ev(1, 2), off(2)];
@@ -1484,10 +1446,6 @@ mod tests {
     /// A writer at its capacity refuses a note-on and takes a note-off, up
     /// to `note_off_room`, and every refusal and every withheld event is
     /// counted once.
-    ///
-    /// Mutation: `room: note_off_room(cap)` → `room: cap` in `new` → the
-    /// note-off is refused → fails. Mutation: `withhold` without
-    /// `count_lost` → the count is one short → fails.
     #[test]
     fn a_writer_at_capacity_takes_note_offs_to_its_room() {
         let mut buf = Vec::with_capacity(16);
@@ -1509,9 +1467,6 @@ mod tests {
 
     /// The capacity a density asks for: the floor on a short block, one per
     /// frame on a long one, the cap beyond that, rounded up.
-    ///
-    /// Mutation: drop the `clamp` → the first and last figures are wrong →
-    /// fails.
     #[test]
     fn a_density_sizes_a_port_by_the_block() {
         let at = |density: EventDensity, block| {

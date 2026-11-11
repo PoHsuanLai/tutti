@@ -282,11 +282,6 @@ fn float_samples(bytes: &[u8]) -> Vec<f32> {
 /// The sine, built for the export and forked from a live graph: the closed
 /// form on every frame of both channels, the fork the fresh graph to the
 /// bit, and its golden digest.
-///
-/// Mutations (run): `block_size` rounded down to a multiple of 64 in
-/// `GraphSource::fill` (the last, short block is never rendered) → the
-/// length is short; the graph's output scaled by `1.0 + f32::EPSILON` →
-/// the digest moves (the closed form's tolerance cannot see it).
 #[test]
 fn a_sine_renders_its_closed_form() {
     let cfg = config(Pcm::Float32, ChannelLayout::STEREO);
@@ -316,9 +311,6 @@ fn a_sine_renders_its_closed_form() {
 /// The digest is of the scalar-FFT resampler; the analytic figures it must
 /// satisfy (frequency, level, DC, rejection, length, latency) are pinned in
 /// `tutti-dsp`'s `resample/streaming` tests and `oracle_resample.rs`.
-///
-/// Mutation (run): scale the graph path's output by `1.0 + f32::EPSILON` in
-/// `GraphSource::fill` → the digest moves.
 #[test]
 fn a_resampled_export_writes_its_render() {
     let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
@@ -349,8 +341,6 @@ fn a_resampled_export_writes_its_render() {
 /// -1 dBTP target or just under it (the true peak, between samples, is
 /// what reaches -1 dB); and the bytes match their golden
 /// digest.
-///
-/// Mutation (run): as above → the digest moves.
 #[test]
 fn a_peak_normalized_export_writes_its_normalized_render() {
     let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
@@ -388,8 +378,6 @@ fn a_peak_normalized_export_writes_its_normalized_render() {
 /// level's code (8 192.05) within the dither's two codes and average onto it;
 /// and its golden digest holds on every target: a DC level and a seeded
 /// integer dither use no libm.
-///
-/// Mutation (run): as above → the digest moves.
 #[test]
 fn a_dithered_export_writes_its_dithered_render() {
     let mut cfg = config(Pcm::Int16, ChannelLayout::STEREO);
@@ -437,11 +425,6 @@ fn a_dithered_export_writes_its_dithered_render() {
 /// The panners ramp across the render's 1024-frame blocks. A fresh panner
 /// glides in from front-centre, so the built render's digest depends on the
 /// block partition; the forked render's panners start on their bearing.
-///
-/// Mutations (run): the fold reading plane 0 for every source
-/// channel → the stereo file is not the quad render folded; `GRAPH_MAX_BLOCK
-/// = 1000` (not a multiple of 64) → the panners' ramps restart on other
-/// frames and the quad digest moves.
 #[test]
 fn a_surround_mix_folds_to_every_width() {
     let quad = buffers(
@@ -492,7 +475,7 @@ fn a_surround_mix_folds_to_every_width() {
 ///
 /// It turns out not to be the block-sensitive unit: it buffers its
 /// partitions internally, so `GRAPH_MAX_BLOCK = 1000` still passes here
-/// (run) and the surround case is what catches that. The assertion on the
+/// and the surround case is what catches that. The assertion on the
 /// constant below is the cheap guard; this test is here for the
 /// latency/tail-bearing unit.
 ///
@@ -505,10 +488,6 @@ fn a_surround_mix_folds_to_every_width() {
 /// previous digest (0x1163_cc03_0b49_99c6) exactly, so the real-FFT passes
 /// are unchanged and the scalar planner is the whole difference. The new
 /// digest is self-recorded.
-///
-/// Mutations (run): `block_size` rounded down to a multiple of 64 → the
-/// length is short; the output scaled by `1.0 + f32::EPSILON` → the digest
-/// moves.
 #[test]
 fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get() % 64, 0);
@@ -535,10 +514,6 @@ fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
 /// The graph reports a lookahead limiter's latency analytically (5 ms at
 /// 48 kHz, 240 frames), and a render trimmed by it is the untrimmed render
 /// from frame 240 on, sample for sample.
-///
-/// Mutations (run): `RenderGraph::reported_latency` returning
-/// `Samples::ZERO` → the figure is 0; `drive` trimming one frame more than
-/// the latency → the trimmed render is a frame short.
 #[test]
 fn the_latency_trim_drops_the_lookahead() {
     let latency = built(limited()).reported_latency();
@@ -570,12 +545,6 @@ fn the_latency_trim_drops_the_lookahead() {
 /// when nothing is trimmed), the sine (exactly 0 at its frame 0) leaves the
 /// limiter exactly the latency late: frames `0..=240` are exactly zero and
 /// frame 241 is not.
-///
-/// Mutations (run): `LimiterNode::shape` declaring its old
-/// `lookahead_samples - 1` tail → `Some(239)` against `Some(0)`, and the
-/// first assertion fails; each channel's ring 1000 frames longer than the
-/// declared latency (`FixedDelay::new(n + 1000)`) → frame 241 is still
-/// in the ring, zero, and the onset assertion fails.
 #[test]
 fn a_limiter_adds_no_tail_to_the_render() {
     let graph = built(limited());
@@ -608,9 +577,6 @@ fn a_limiter_adds_no_tail_to_the_render() {
 /// The graph reports a convolver's tail analytically (a 3 000-tap IR rings
 /// 2 999 frames), and a render trimmed by its latency and extended by its
 /// tail is the direct convolution, frame for frame, through the tail.
-///
-/// Mutation (run): `RenderGraph::reported_tail` folding an empty topology
-/// → `Some(0)` against the convolver's 2999.
 #[test]
 fn the_tail_extends_the_render_by_the_ring_out() {
     let graph = built(convolved());
@@ -637,9 +603,6 @@ fn the_tail_extends_the_render_by_the_ring_out() {
 
 /// An editor that does not feed the executor beside it is refused when the
 /// `RenderGraph` is assembled, not first at render.
-///
-/// Mutation (run): `RenderGraph::assemble` skipping the pairing check → it
-/// wraps the crossed pair.
 #[test]
 fn a_crossed_pair_is_refused_at_construction() {
     let (editor_a, executor_a) = sine(1000.0).build(RenderGraph::prepare(RATE)).unwrap();
@@ -671,8 +634,6 @@ fn a_pair_prepared_at_no_rate_is_refused_at_assembly() {
 }
 
 /// A pair prepared at another rate is refused, not rendered at the wrong one.
-///
-/// Mutation (run): drop the rate check in `GraphSource::new` → it renders.
 #[test]
 fn a_graph_prepared_at_another_rate_is_refused() {
     let g = sine(1000.0);
@@ -692,12 +653,6 @@ fn a_graph_prepared_at_another_rate_is_refused() {
 /// ([`BeatPorts`], what `EnvClock` did) emits the offline timeline's beat on
 /// every frame, starting at its start beat, and the
 /// timeline ends exactly the render's frames on.
-///
-/// Mutations (run):
-/// - `GraphSource::fill` rendering through `FrozenClock` (a stopped
-///   transport at beat 0) and only advancing the clock → every beat reads 0;
-/// - `RenderClock::render_graph` advancing before `graph_block` → the
-///   first frame reads a block past the start beat.
 #[test]
 fn the_graph_reads_the_render_clocks_transport() {
     let start = 4.0;
@@ -874,16 +829,6 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
 /// an ulp of beat into far more — computing the chunk positions a different
 /// way moves the fifth-up voice by 1e-3 at frame 3076.
-///
-/// Mutations (run): the graph path's output scaled by `1.0 + f32::EPSILON`
-/// → the dry render is not the tone, and the pitched digest moves;
-/// `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave → the
-/// pitched voice is not a fifth up, on every target. (`interp::place`
-/// seating a run at the block's first beat, `run.beat_at(e)` →
-/// `run.beat_at(0)`, failed here while voices rendered 64-frame pieces; in
-/// one piece with no transport change inside a block the two are the same
-/// frame, so it passes here (run) and tutti-sampler's run tests —
-/// `interp`'s seek and loop-wrap tests, `block_render` — catch it.)
 #[test]
 fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
@@ -929,13 +874,6 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
 /// tone from the render's start, to the bit, as a voice on the render's
 /// transport from the start does. The fork shares nothing with the live node
 /// and holds no clock: it reads the render's transport from its `Env`.
-///
-/// Mutation (run): the graph path's output scaled by `1.0 + f32::EPSILON`
-/// → the render is not the tone. Mutation (run): the `MemorySource`'s
-/// `ParamNode::fork_fresh` leaving the fork unplaced (`fork.placement = None`)
-/// → it ignores the render's transport → silent → fails. (Not caught: the
-/// fork not rewinding — a placed read derives every position from the
-/// transport, so it has no cursor to carry.)
 #[test]
 fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
     use tutti_sampler::MemorySource;

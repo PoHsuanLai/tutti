@@ -105,13 +105,6 @@ mod tests {
 
     /// A step closes `coeff` of the gap: a tenth up, a tenth down, all of it
     /// at 1, none at 0.
-    ///
-    /// Mutation (run): `toward` returning `current + coeff * target` fails.
-    /// Also carries the height half of the deleted `tutti-nodes` smoother tests
-    /// (the plain step of `AngleSmoother::step`): the same mutation
-    /// failed the deleted `linear_smoothing_still_converges_for_elevation`.
-    /// (The retention form is not caught here, where `1 - c` is exact; the
-    /// nodes' render digests catch it.)
     #[test]
     fn a_step_closes_the_coefficient_of_the_gap() {
         assert!((Smoother::toward(0.0, 1.0, 0.1) - 0.1).abs() < 0.001);
@@ -129,12 +122,6 @@ mod tests {
     /// documents (`1.5 * 2^-24 * R * min(steps, 1/coeff)`, with a factor of
     /// two for the closed form's own rounding), and exact for zero steps and
     /// for an instant smoother.
-    ///
-    /// Mutation (each run, each fails): the retention `1 - coeff` replaced by
-    /// `coeff` in `gap_closed`; `gap_closed`'s `steps` replaced by 1.
-    /// Also carries the height, zero-step and instant halves of the deleted
-    /// `tutti-nodes` `advance_is_the_closed_form_of_repeated_steps` (run: the
-    /// retention mutation fails both).
     #[test]
     fn advance_is_the_closed_form_of_repeated_steps() {
         for coeff in [0.0004_f32, 0.02, 0.3] {
@@ -173,9 +160,6 @@ mod tests {
     /// The fraction closed is `1 - (1 - c)^n`: nothing at zero steps, `c` at
     /// one, all of it at an instant coefficient, and a time constant's worth
     /// of steps (`1 / c`) closes 63%.
-    ///
-    /// Mutation (run): `gap_closed` returning `coeff * steps` fails the
-    /// time-constant case.
     #[test]
     fn the_gap_closed_is_one_minus_the_retention_to_the_steps() {
         let s = Smoother::new(0.01);

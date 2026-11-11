@@ -45,6 +45,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-types = { path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-voicing = { path = "../tutti-voicing" }
 vst3 = "0.3"
 tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
 
@@ -112,6 +113,10 @@ path = "tests/vst3_conformance_modes.rs"
 [[test]]
 name = "vst3_event_lists"
 path = "tests/vst3_event_lists.rs"
+
+[[test]]
+name = "vst3_midi_groups"
+path = "tests/vst3_midi_groups.rs"
 
 [[test]]
 name = "vst3_ffi_plugin"

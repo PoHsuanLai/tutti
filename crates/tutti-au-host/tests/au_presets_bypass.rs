@@ -269,7 +269,7 @@ fn loading_a_nonexistent_preset_is_an_error_and_the_au_still_renders() {
 /// preset 0's values (the other 3 already sit at their minimum there), and
 /// reloading preset 0 restores **16 of 16**. Distinct presets differ from each
 /// other in 13–15 of the 16 parameters. The assertions below are written to
-/// those measurements: "at least half moved" for the mutation, and *exact*
+/// those measurements: "at least half moved" for the slam to the minimum, and *exact*
 /// restoration, because restoration is the property that must hold completely.
 #[test]
 fn loading_a_preset_changes_parameter_values() {

@@ -60,9 +60,6 @@ use crate::{DevicePolicy, DeviceWatch, FollowEvent, Result, Session, SessionEven
 ///     std::thread::spawn(move || drop(device));
 /// }
 /// ```
-// Mutation (run): `_not_send` removed → the doctest above compiles, and
-// fails. Everything else in it compiles as written (`Device` is a public
-// type), so `Send` is the only thing it can be failing on.
 pub struct Device {
     driver: TuttiDriver,
     _not_send: PhantomData<*const ()>,

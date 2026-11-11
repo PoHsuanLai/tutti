@@ -22,29 +22,6 @@
 //! - **release**: a borrower refused while another holds the cell is granted
 //!   once that guard drops, and the cell is free once every guard has.
 //!
-//! # Mutation record
-//!
-//! Each was applied to `src/cell.rs`, and the models named failed:
-//!
-//! - `try_acquire_writer` always granting (the check compiled out, as it was
-//!   in release builds) → three models: "Causality violation: Concurrent
-//!   write accesses to `UnsafeCell`" (and read/write);
-//! - the writer's compare-exchange and store both `Relaxed` → the same three
-//!   (the bit still excludes, but the next borrow is not ordered after the
-//!   last's accesses);
-//! - `release_writer` a no-op → `a_refused_writer_later_succeeds` ("Model
-//!   exceeded maximum number of branches": the retry never succeeds),
-//!   `two_writers_…` ("free once every guard dropped") and
-//!   `a_reader_and_a_writer_never_overlap`;
-//! - `release_reader`'s decrement `Relaxed` → `a_writer_follows_readers` and
-//!   `a_reader_and_a_writer_never_overlap`: "Concurrent read and write
-//!   accesses to `UnsafeCell`" (the writer is not ordered after the read);
-//! - `try_acquire_reader` ignoring the writer bit → the same two: a
-//!   causality violation;
-//! - `try_acquire_reader` exclusive (a compare-exchange from 0 to 1) →
-//!   `two_readers_are_both_admitted` ("a second reader must be admitted")
-//!   and `a_writer_follows_readers`.
-//!
 //! # Why compare-exchanges
 //!
 //! Taking the writer bit with `swap(true, Acquire)` fails the model with "free once every guard dropped": a refused swap

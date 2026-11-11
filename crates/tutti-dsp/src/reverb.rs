@@ -551,11 +551,6 @@ mod tests {
     /// impulse response, from the transfer function, is -1 at frame 0 and
     /// `g^(k-1)` at frame `k D` for `k >= 1`, and zero elsewhere; its gain is 1
     /// at DC for `g = 0.5` and `(2 + g) / (1 + g)` where `D w = pi`.
-    ///
-    /// Mutations (run): `bufout - input` -> `input - bufout` in
-    /// `AllPassFilter::process` flips the sign and fails the first assertion;
-    /// `input + bufout * feedback` -> `input` removes the recirculation and
-    /// fails the `g^(k-1)` train.
     #[test]
     fn the_all_pass_is_the_freeverb_form_not_the_lattice() {
         let (d, g) = (8usize, 0.5f32);
@@ -601,9 +596,6 @@ mod tests {
     /// rounding), the first is far from the target, and the coefficient is the
     /// target at the last step and not before. (What jumped before: a size step was
     /// a step in the comb's loop gain, a click.)
-    ///
-    /// Mutation (run): `Steps::Fixed(0)` in place of `self.ramp` in `aim` lands the
-    /// first chunk on the target and fails the "far from the target" assertion.
     #[test]
     fn a_moving_room_glides_its_combs() {
         use crate::{Ceiling, Design, Effect, FreeverbControls, FreeverbDesign, Realization};

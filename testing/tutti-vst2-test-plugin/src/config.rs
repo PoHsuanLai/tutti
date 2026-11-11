@@ -217,9 +217,6 @@ mod tests {
 
     /// Pin the state DC's two shapes as literals, for the same reason as the
     /// tags: a host test reading `state_dc(...)` back would move with it.
-    ///
-    /// Mutation (run): read the chunk's last byte instead of its first →
-    /// `200`, not `7` → fails.
     #[test]
     fn the_state_dc_is_pinned() {
         assert_eq!(state_dc(true, &[7, 200], 0.5, 1), 7.0);

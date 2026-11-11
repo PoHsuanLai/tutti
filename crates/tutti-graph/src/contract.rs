@@ -195,39 +195,18 @@ pub enum Detect {
 }
 
 /// One path through the graph. Each is a separate case (see
-/// [`contract_tests!`](crate::contract_tests)), and each has a mutation it
-/// was seen to fail under, recorded on its variant (and, for a node's own
-/// rows, in the node crates' `tests/contract.rs`).
+/// [`contract_tests!`](crate::contract_tests)); a node's own rows are in the
+/// node crates' `tests/contract.rs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Path {
     /// The excitation straight in: an upstream event source, or the global
     /// input. Whole [`MAX_BLOCK`] blocks.
-    ///
-    /// Mutation (run): in `SubBlocks::next`, hand the whole block over as
-    /// one chunk carrying every event → the `Sample` rows apply their
-    /// event at offset 0 → every path fails but `Blocks1` (where every
-    /// offset is 0).
     Direct,
     /// Behind PDC: a latent sibling ([`Latent`], [`SIBLING_LATENCY`])
     /// merges with the excitation's path upstream of the node, so the node's
     /// arrival is [`SIBLING_LATENCY`] and the excitation is delayed to match.
     /// Excitations are put both where the source and where the node sees
     /// each of [`OFFSETS`].
-    ///
-    /// Mutation (run): in `EventFifo::pop_due`, hold back an event due on a
-    /// block's last frame to the next block (one frame late, on that frame
-    /// only) → the `Sample` event rows fail this path, both recompile paths,
-    /// `Blocks1`, `Blocks64` and `BlocksMax` (the coarser rows only
-    /// `Blocks1`, where every frame is a last frame). Under whole blocks
-    /// only the node-side offsets reach a block's last frame behind the
-    /// 141-frame delay, so without them this path would pass.
-    ///
-    /// Mutation (run): in `compile`, treat every audio and event gap as zero
-    /// (no `Delay`/`EventDelay` op) → the excitation arrives
-    /// `SIBLING_LATENCY` early → this path, both recompile paths and every
-    /// `Blocks*` path fail — and `EventFanIn`, on its PDC half — while
-    /// `Direct` and the scheduled paths (whose commands are compensated
-    /// separately) pass.
     BehindPdc,
     /// Through an event fan-in merge: two sources on the node's port, the
     /// exciting one second in source order (the higher key), the first
@@ -249,38 +228,18 @@ pub enum Path {
     /// `a_fan_in_tie_goes_by_source_order`) hold that property; the
     /// instrument rows did not hold it with the same key either.
     ///
-    /// Mutation (run): in `compile`, delay only an event input's first two
-    /// sources (`d if !d.is_zero() && refs.len() < 2`) → behind PDC the
-    /// exciting emitter, third on the port, arrives `SIBLING_LATENCY` early
-    /// → only this path fails, on its PDC half.
-    ///
-    /// Mutation (run): in `merge_into`, take the first source with an event
-    /// left rather than the earliest offset → only this path fails (not for
-    /// the `Block` row, whose gap is a whole block). Drop the first
-    /// source's events (the later one) → only this path fails, on the
-    /// missing second response. Ties are `tests/contract.rs`'s
-    /// `a_fan_in_tie_goes_by_source_order`.
+    /// Ties are `tests/contract.rs`'s `a_fan_in_tie_goes_by_source_order`.
     EventFanIn,
     /// Behind PDC, with an unrelated node inserted and committed while the
     /// excitation is in flight (between its frame and its response). After
     /// the next block the running plan must hold the new node, so the path
     /// cannot pass having recompiled nothing.
-    ///
-    /// Mutation (run): in `Executor::rebuild`, carry no delay ring across a
-    /// commit → both recompile paths fail, and nothing else. Carry the
-    /// event FIFOs with every queued event doubled (a re-delivery) → the
-    /// event rows fail both recompile paths (`Pulse` *adds*, so a second
-    /// delivery on one frame is a `2.0`). Skip the harness's commit → both
-    /// fail on the plan check.
     RecompileUnrelated,
     /// Behind PDC, with the node that feeds this one (the summing node on
     /// the audio path, the exciting source on the event path) re-inserted
     /// (a new generation) while the excitation is in flight in the delay
     /// into it. After the next block the running plan must carry the
     /// feeder's new generation.
-    ///
-    /// Mutation (run): in `Executor::rebuild`, drop the carried ring of any
-    /// delay whose sink or source changed generation → only this path fails.
     ///
     /// The executor closes the keys a replaced source holds (no note is left
     /// stuck), and the close travels the same delay as the note-on: it
@@ -290,14 +249,7 @@ pub enum Path {
     /// asserts from evidence what it is about, with a recording wrapper around the
     /// node: the node was handed the note-on on exactly the expected frame and
     /// then the close of that key, and its render is silent when the close
-    /// came within the row's delay stage. Mutations (run), on the SoundFont
-    /// row, each failing on the recorded events: drop the carried ring of a
-    /// delay whose sink or source changed generation (in `Executor::rebuild`,
-    /// by comparing the plans' generations) → "the delayed note-on should
-    /// reach the node on frame 653"; lengthen an event delay by one frame (in
-    /// `compile`) → the same, one frame late; push no close into the carried
-    /// FIFO (in `Executor::rebuild`) → "the node should be handed the note-on
-    /// and the close, and was handed" the note-on alone.
+    /// came within the row's delay stage.
     RecompileUpstreamGeneration,
     /// Direct and behind PDC, in blocks of one frame.
     Blocks1,
@@ -311,31 +263,14 @@ pub enum Path {
     BlocksMax,
     /// Direct and behind PDC, in blocks of random lengths from 1 to
     /// [`MAX_BLOCK`] (a fixed seed, so a failure reproduces).
-    ///
-    /// Mutations (run), for the `Blocks*` family, each one assuming blocks
-    /// come in whole 64-frame chunks:
-    ///
-    /// - `EventFifo::run` advancing its clock by the block rounded up to 64
-    ///   → the event rows fail `Blocks1`, `Blocks63`, `Blocks65` and
-    ///   `BlocksRandom`, and pass `Blocks64`, `BlocksMax` and every other
-    ///   path;
-    /// - [`Lookahead`] moving its ring by a whole chunk on a partial one →
-    ///   its row fails `Blocks63`, `Blocks65` and `BlocksRandom` only.
     BlocksRandom,
     /// Direct and behind PDC, the excitation delivered by
     /// [`Editor::schedule`] at `At::Frame(F)`.
-    ///
-    /// Mutation (run): land every due command at offset 0 of its block →
-    /// both scheduled paths fail. Resolve every command at arrival zero →
-    /// both scheduled paths fail (their PDC halves), and nothing else.
     ScheduledFrame,
     /// Direct and behind PDC, the excitation delivered at `At::Beat(b)`
     /// under a transport started by a timed start inside a block (a change
     /// in [`TransportChanges`]), for a beat on the start's own frame, a
     /// dozen frames after it and a quarter beat after it.
-    ///
-    /// Mutation (run): in `Env::due`, resolve a beat against the block's
-    /// first transport only (ignore its changes) → only this path fails.
     ScheduledBeat,
 }
 
@@ -1944,9 +1879,6 @@ pub fn drive_input(
 /// frame after. An `Unbounded` or `Unknown` figure is not checkable and
 /// passes; a figure above [`MAX_CHECKED_TAIL`] is refused as unchecked rather
 /// than rendered.
-///
-/// Mutation (run): a `Ringer` (tests/contract.rs) reporting half its ring
-/// fails; one reporting its ring passes.
 ///
 /// # Panics
 ///

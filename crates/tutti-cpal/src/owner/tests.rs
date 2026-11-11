@@ -20,11 +20,6 @@ impl Drop for Probe {
 /// The value is created and dropped on one thread that is neither the
 /// opener's nor the dropper's, and the drop has finished when the handle's
 /// drop returns.
-///
-/// Mutation: build the value on the calling thread (move it in) instead of
-/// inside `build` → created thread differs from the dropped one and the
-/// `!Send` closure fails to compile; make `Drop` skip the `join` → the
-/// recorded drop is not yet set when `drop(owned)` returns → fails.
 #[test]
 fn the_value_is_dropped_on_its_creating_thread() {
     let created = Arc::new(Mutex::new(None));
@@ -53,10 +48,6 @@ fn the_value_is_dropped_on_its_creating_thread() {
 
 /// A failed build reports its error, and by the time `spawn` returns the
 /// build closure (and what it captured) has been dropped on the owner thread.
-///
-/// Mutation: swallow the `Err` and send `Ok(())` → `spawn` returns `Ok`
-/// → fails; return before the closure runs (skip `build()`) → the guard
-/// is never dropped there → `expect` fails.
 #[test]
 fn a_failed_build_is_reported() {
     struct Guard(Arc<Mutex<Option<ThreadId>>>);
@@ -81,9 +72,6 @@ fn a_failed_build_is_reported() {
 }
 
 /// A panicking build is an error, not a hang.
-///
-/// Mutation: have `spawn` skip the `ready_rx.recv()` error arm and
-/// `unwrap` → this test panics instead of returning `Err`.
 #[test]
 fn a_panicking_build_is_an_error() {
     let r = Owned::spawn::<()>("probe", || panic!("boom"));

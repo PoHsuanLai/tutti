@@ -346,9 +346,6 @@ mod tests {
     }
 
     /// After a block, `last_value` is the block's last frame.
-    ///
-    /// Mutation (run): drop the `self.last_value = last` in `process` →
-    /// fails.
     #[test]
     fn test_process_updates_last_value() {
         let mut flat: Trajectory = Trajectory::new();
@@ -371,9 +368,6 @@ mod tests {
     /// The whole point of the per-frame beat: the value moves WITHIN a
     /// block, following the transport, rather than being held
     /// block-constant.
-    ///
-    /// Mutation (run): evaluate every frame at `cx.env.transport.beat()`
-    /// (the block's first beat) → the block holds 0.0 → fails.
     #[test]
     fn test_process_per_sample_varies() {
         // 120 BPM at 48 kHz, rolling from beat 0.
@@ -416,9 +410,6 @@ mod tests {
 
     /// A fork reads the curve's frozen copy: a write the live curve sees
     /// after the fork does not reach it.
-    ///
-    /// Mutation (run): `fork_fresh` sharing the `Arc` (ignoring `frozen`) →
-    /// the fork renders the later 0.75 → fails.
     #[test]
     fn a_fork_freezes_a_live_curve() {
         let cell = Arc::new(AtomicF32::new(0.25));

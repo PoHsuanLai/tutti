@@ -296,15 +296,6 @@ fn assert_same_outside(what: &str, live: &[f32], memory: &[f32], allowed: &[(usi
 /// file (clamped to it, on both tiers), at unity, 1.5×, 0.75× and a 44.1 kHz
 /// file at 48 kHz. The
 /// ring never moves and nothing underruns while it loops.
-///
-/// Mutation (run): the blend dropped from `Mapping::fill` → the crossfaded rows part in
-/// the first fade → fails. Mutation (run): `place_frame` wrapping to `start`
-/// rather than `resume` → the row from frame 0 parts at its first wrap →
-/// fails. Mutation (run): the loop's end not clamped to the file on the ring
-/// (the end left unclamped in `handle_set_stream_loop`) → the
-/// past-the-file row parts at the file's end → fails. Mutation (run): a
-/// refill that moves a looped ring's window every cycle (a flush at the
-/// loop's end) → the ring moves → fails.
 #[test]
 fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
     struct Case {
@@ -391,11 +382,6 @@ fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
 /// PERIOD)`), round the loop three times; and a loop from frame 0 `[0,
 /// 2281)`, whose fade goes into its head. The hard loops are asserted to click,
 /// so the loop points have teeth.
-///
-/// Mutation (run): the blend dropped from `Mapping::fill` → the crossfaded
-/// loops click → fails. Mutation (run): the fade's lead-in read from `resume`
-/// rather than before it (the head replayed) → a step far above the sine's
-/// own at the wrap → fails.
 #[test]
 fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -434,11 +420,6 @@ fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
 /// bit for bit: the stream's position counts the file straight on and the ring
 /// places it, so a voice entering at beat 1 (24 000 frames in, well past a
 /// loop `[3000, 7001)`) plays what a memory voice plays there.
-///
-/// Mutation (run): the ring writing the straight position unplaced
-/// (`place_frame` -> identity) -> fails. (The preroll row this test once had
-/// went with the streamer's preroll, doc 025 stage 5 cut 2: the compiler aligns
-/// a graph voice, `tutti-session`'s `tier_alignment` test.)
 #[test]
 fn an_entry_past_the_loop_lands_where_the_memory_tier_plays() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -465,13 +446,6 @@ fn an_entry_past_the_loop_lands_where_the_memory_tier_plays() {
 /// no loop, frame for frame, and as a reversed memory voice once the turn
 /// (a switch just past the block the voice was in, crossfaded) is done. A loop
 /// changed while it plays reversed is only stored: the ring does not move.
-///
-/// Mutation (run): the reverse mapping honouring the loop (`active_loop` not
-/// filtering reverse) → the looped run parts at the loop → fails. Mutation
-/// (run): the reverse fill read from `len - pos` (one frame off) → parts from
-/// the mirror → fails. Mutation (run): `apply_mapping` switching even where
-/// the mappings agree on every written slot → the mid-play change moves the
-/// ring → fails.
 #[test]
 fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -524,11 +498,6 @@ fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
 /// Here: a crossfaded loop `[1000, 3000)`, changed 81 blocks in (at straight
 /// 5 184, its frame 1 184) to a hard `[200, 1400)`, which places the same
 /// position on frame 384: the memory tier jumps 800 frames of ramp there.
-///
-/// Mutation (run): the change only stored (no switch) → the ring plays on
-/// through the old loop → fails. Mutation (run): the record's old frames
-/// taken under the *new* mapping → the fade blends new with new and the
-/// switch is a jump → the crossfade assertion fails.
 #[test]
 fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -570,11 +539,6 @@ fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
 /// memory voice. Outside a bounded span after each event the two are
 /// bit-identical — the last 200 blocks included, so nothing drifts — and the
 /// live voice never underruns: every reposition costs 0 frames.
-///
-/// Mutation (run): the reader rendering no continuation at a jump → the
-/// refill gap underruns → fails. Mutation (run): the
-/// refill not following a reader that jumped outside the window → the new
-/// position is never filled → fails.
 #[test]
 fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -633,13 +597,6 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
 /// reposition reading the ring's head off a pending flush and resuming at
 /// frame 0. The second change supersedes the first before the
 /// reader reaches it; the jump is the reader's own, the loop the streamer's.
-///
-/// Mutation (run): the second of two changes ignored while the first's switch
-/// is pending (`apply_mapping` returning `Same` whenever a switch is pending)
-/// → it settles to the first loop → fails. (The fold of a pending switch into
-/// the next, `at.min(switch_at)`, is a guard no sequence of loop edits here
-/// reaches: a divergence is found against what the ring holds, so it lies at
-/// or below a pending switch whenever the new mapping differs there.)
 #[test]
 fn two_changes_in_one_cycle_settle_to_the_last() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -674,12 +631,6 @@ fn two_changes_in_one_cycle_settle_to_the_last() {
 /// and a loop end moved far ahead switches exactly where the two loops part —
 /// so the output is bit-identical to the memory tier with the edit throughout
 /// (no crossfade, no guard), and to no edit at all until the old end.
-///
-/// Mutation (run): `apply_mapping` switching a guard past the reader
-/// whatever the divergence (`at` = `busy + GUARD`) → the switch lands near
-/// 1 000, dropping 29 000 buffered frames that agreed → fails. Mutation (run):
-/// `apply_mapping` switching even where the mappings agree on every written
-/// slot → the same loop set again moves the ring → fails.
 #[test]
 fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -727,8 +678,6 @@ fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
 /// The loop lives on the ring's writer (`loops::Content`), which the
 /// parallel pass hands each worker whole, so neither path can drop it on its
 /// own (a work item carrying its own copy of the loop range could).
-/// Mutation (run): the parallel pass
-/// skipping its work items → nothing refills → underruns → fails.
 #[test]
 fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -754,10 +703,6 @@ fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
 /// transport from beat 0) plays the edited loop from the start of its render
 /// — the stream's record holds the loop the streamer runs — and, frame for
 /// frame, what the live voice plays once its switch has landed and faded.
-///
-/// Mutation (run): the stream's record not told the new loop (`set_loop`
-/// dropped from `handle_set_stream_loop`) → the fork plays the old loop →
-/// fails.
 #[test]
 fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -804,10 +749,6 @@ fn max_step(v: &[f32]) -> (f32, usize) {
 /// streamer drops what differs below the reader when it edits, so the jump
 /// moves the window and the new loop is read; outside the edit's and the
 /// jump's spans the live voice is the memory tier's, frame for frame.
-///
-/// Mutation (run): the raise below the reader removed from `apply_mapping` →
-/// the jump reads the old loop from the window, cut hard at the switch →
-/// thousands of frames part → fails.
 #[test]
 fn a_jump_back_behind_a_loop_edit_plays_the_new_loop() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -849,11 +790,6 @@ fn sine_bound() -> f32 {
 /// what a fade between two sines adds per frame. (Before: the record fade read the *current* map's record, so a
 /// second edit swapped its old side mid-fade — a step of 1.06 against the
 /// sine's 0.063 — and a jump dropped the fade.) Nothing goes unread.
-///
-/// Mutation (run): `continue_from` not blending the fade in progress (the
-/// new continuation alone) → a step at the second discontinuity → fails.
-/// Mutation (run): `cross_switch` starting no fade → a hard cut at the
-/// switch → fails.
 #[test]
 fn fades_chain_without_a_step() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -907,10 +843,6 @@ fn fades_chain_without_a_step() {
 /// ramps back in. On a sine, no step exceeds the sine's own plus a ramp's
 /// `1 / 64` per frame — where cut hard it steps by up to the sine's full
 /// swing.
-///
-/// Mutation (run): the old side's ramp-out removed (`out_ramp` = 1) → a step
-/// near 1 where it runs out → fails. Mutation (run): the ramp-in after an
-/// underrun removed → a step near 1 where the ring returns → fails.
 #[test]
 fn a_starved_reader_ramps_out_and_back_in() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -957,13 +889,6 @@ fn a_starved_reader_ramps_out_and_back_in() {
 /// block as no seek: nothing buffered is stale after it, and the clock
 /// reads it as no jump. What stays a jump — a seek anywhere else, inside a
 /// block — is what this pins.)
-///
-/// Mutation (run): `DiskVoice::live_render` reading each piece as one run
-/// (the piece's first run's generation, one `LiveRead::render` call for the
-/// whole piece) → the read sees the seek only as positions that change mid
-/// call, with no jump → no fade at the seek → fails. Mutation (run): the
-/// live read never finding a jump (`LiveRead::render`'s jump filter always
-/// false) → fails the same way.
 #[test]
 fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -1039,10 +964,6 @@ fn streaming(path: &Path) -> (DiskStreamer<ByHand>, Stream, crate::StreamReader)
 /// is distinct, a hard loop `[1000, 3001)` played at unity: once the
 /// first wrap and its fades are behind it, every frame the pool puts out
 /// is a frame of the loop, and the loop's head comes round again.
-///
-/// Mutation (run): `send_loop` queueing the command without forwarding it
-/// → the pool records the loop but the stream never loops → frames past
-/// 3001 → fails.
 #[test]
 fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -1089,10 +1010,6 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
 /// loop for the first leaves the second's stream as it was (and the reverse).
 /// The loop is the stream's, applied by the streamer, which the ring's
 /// published control says.
-///
-/// Mutation (run): `VoicePoolHandle::stream_of` answering the table's first
-/// stream whatever slot it is asked for -> the second voice's loop is set on
-/// the first's stream -> fails.
 #[test]
 fn a_loop_set_on_one_pool_voice_leaves_the_other_voices_stream_alone() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -1162,12 +1079,6 @@ fn a_loop_set_on_one_pool_voice_leaves_the_other_voices_stream_alone() {
 /// the first does hold the write (so the test is not vacuous). The direction
 /// is the stream's, published with its ring's control: the first stream's
 /// direction turns, the second's does not.
-///
-/// Mutation (run): `build_stream` handing every stream one shared
-/// `Arc<Cells>` (a streamer-wide cell made once, cloned per stream) → the
-/// second voice reads the first's gain, speed and stretch → fails. Mutation
-/// (run): `handle_direction` applying the turn to every live record (the id
-/// check removed) → the second stream's control reads `Reverse` → fails.
 #[test]
 fn two_voices_opened_in_sequence_on_one_file_share_no_cell() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -1220,12 +1131,6 @@ fn two_voices_opened_in_sequence_on_one_file_share_no_cell() {
 /// arrangement, one epoch on from the forward one; and nothing polls a flag,
 /// since the stream's one step after the command is all it takes. Turning back
 /// is one more publish.
-///
-/// Mutation (run): `RingControl::new` taking its direction as `Forward`
-/// whatever the map → the lend reads `Forward` beside a reversed map → fails.
-/// Mutation (run): `handle_direction` returning before `apply_mapping` → no
-/// publish, the lend reads `Forward` → fails. Mutation (run): the `SetDirection`
-/// arm of `handle_command` removed → the same.
 #[test]
 fn direction_is_published_once_and_read_from_the_lent_control() {
     let dir = tempfile::tempdir().expect("a temp dir");

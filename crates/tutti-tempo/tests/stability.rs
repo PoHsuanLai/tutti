@@ -6,8 +6,7 @@
 //! no code with the map, so a cancellation in the map's forms shows as an
 //! error here. The pure-Rust `libm` makes the figures hold on any platform.
 //!
-//! "Mutation (run)" means the change was made, the test seen to fail, and the
-//! change reverted.
+//! "
 
 mod common;
 #[path = "stability/figures.rs"]
@@ -41,15 +40,6 @@ fn close(got: f64, want: f64) -> bool {
 /// Forward (beat to seconds) and inverse (seconds to beat), both shapes, on
 /// nearly equal, steep, very short and very long ramps. Offset 0 takes the
 /// guarded `x == 0.0` and `y == 0.0` branches and must be exactly 0.
-///
-/// Mutation (run): `ln_ratio` uses `log(1 + x)` for `log1p(x)`; the nearly equal ramps
-/// lose their digits.
-/// Mutation (run): `beat_in` uses `exp(y) - 1` for `expm1(y)`; the nearly equal beat ramps
-/// lose their digits.
-/// Mutation (run): the time ramp's inverse is `(sqrt(r0^2 + 2 k db) - r0) / k`, which
-/// cancels when the ends are nearly equal.
-/// Mutation (run): `ln_ratio`'s `x == 0.0` guard becomes `false`; offset 0 is `0 * (0 / 0)`.
-/// Mutation (run): `beat_in`'s `y == 0.0` guard becomes `false`; second 0 is `expm1(0) / 0`.
 #[test]
 fn ramps_match_decimal_figures() {
     for case in figures::CASES {

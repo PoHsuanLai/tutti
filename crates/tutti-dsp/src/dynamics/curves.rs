@@ -351,11 +351,6 @@ mod tests {
     /// non-monotonic, with a 5.7 dB drop at the knee. With the threshold
     /// driving the input the output is `min(in + 5.7, -0.3)`, on both the
     /// dB form and the block's linear form.
-    ///
-    /// Mutation (run): `ceiling - threshold` -> `(ceiling - threshold).min(0.0)`
-    /// in `compute_limiter_gain`, and
-    /// `gap` -> `gap.min(0.0)` in `LimiterCurve::new` -> -5.9 dB comes out
-    /// at -6.0 -> fails.
     #[test]
     fn the_curve_is_the_input_plus_the_drive_up_to_the_ceiling() {
         let (threshold, ceiling) = (Db(-6.0), Db(-0.3));
@@ -388,10 +383,6 @@ mod tests {
     /// The dB form (the fed path) and the linear form (the block path) are
     /// one curve: the same gain for every peak, threshold and ceiling,
     /// boost or cut.
-    ///
-    /// Mutation (run): `.min(0.0)` on the gap in `LimiterCurve::new` only
-    /// -> they disagree wherever the ceiling is above the threshold and the
-    /// peak over it -> fails.
     #[test]
     fn the_block_and_fed_forms_are_one_curve() {
         for (t, c) in [
@@ -417,9 +408,6 @@ mod tests {
     }
 
     /// A NaN peak takes `below`, not `over / NaN`.
-    ///
-    /// Mutation (run): `if !(peak <= self.threshold)` in `gain` -> a NaN
-    /// returns `over / NaN` -> fails.
     #[test]
     fn a_nan_peak_takes_the_below_gain() {
         let curve = LimiterCurve::new(Db(-6.0), Db(-3.0));

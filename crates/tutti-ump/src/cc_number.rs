@@ -339,8 +339,7 @@ mod tests {
     }
 
     /// Only the continuous controllers 0 to 31 have an LSB, and it is 32
-    /// above. Mutation (run): `< 32` -> `<= 32` fails at 32; an offset of 31
-    /// fails every row.
+    /// above.
     #[test]
     fn the_lsb_of_a_controller_is_32_above_for_0_to_31_only() {
         for raw in 0..=127u8 {

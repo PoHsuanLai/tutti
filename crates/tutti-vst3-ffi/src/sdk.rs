@@ -146,9 +146,6 @@ mod tests {
     /// A `String128` is read up to its first NUL, whatever follows it; a
     /// buffer with no NUL is read whole; an unpaired surrogate becomes U+FFFD
     /// instead of failing.
-    ///
-    /// Mutation: drop the `position(..)` and read the whole buffer: the first
-    /// assert sees the bytes after the NUL and fails.
     #[test]
     fn a_string128_is_read_to_its_nul_and_decoded_lossily() {
         let mut buf = [0u16; 128];
@@ -166,8 +163,6 @@ mod tests {
 
     /// A `char8` buffer is read to its first NUL as UTF-8, lossily, with the
     /// high bit kept (`i8` bytes above 127 are negative).
-    ///
-    /// Mutation: map bytes with `b as u8 & 0x7F` and the accented case fails.
     #[test]
     fn a_char8_buffer_is_read_to_its_nul_as_utf8() {
         let mut buf = [0i8; 16];
@@ -179,8 +174,6 @@ mod tests {
     }
 
     /// A class id formats as four dashed groups of four bytes, upper-case hex.
-    ///
-    /// Mutation: lower-case the format string and the assert fails.
     #[test]
     fn a_class_id_formats_as_dashed_upper_case_hex() {
         let cid: [u8; 16] = std::array::from_fn(|i| (i as u8) * 17);

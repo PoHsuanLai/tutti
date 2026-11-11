@@ -91,10 +91,6 @@ fn wrap_phase_maps_into_a_single_turn() {
 /// The original code divided twice, attenuating stretched audio by 60-78 dB
 /// depending on window. If an FFT backend normalized its inverse, this fails
 /// loudly here rather than showing up as a quiet stretcher.
-///
-/// Mutation (run): drop the `* norm` in `Vocoder::process_frame` and
-/// `vocoder_reconstructs_its_input_at_unity` fails (an unnormalized inverse in
-/// the output); changing the `/ n` below to `/ 1.0` fails this test.
 #[test]
 fn fft_roundtrip_is_the_identity() {
     let n = 1024usize;
@@ -125,10 +121,6 @@ fn fft_roundtrip_is_the_identity() {
 
 /// A clone shares the plans but not the scratch: both transform the same
 /// frame to the same bits, and neither disturbs the other.
-///
-/// Mutation (run): make `clone_fresh` build `Fft::new(size)` with a different
-/// size, or return a plan of another length -> the bins differ or the
-/// transform panics.
 #[test]
 fn a_cloned_fft_transforms_identically() {
     let n = 256usize;
@@ -231,9 +223,6 @@ fn overlap_add_clear_at_zeroes_a_future_slot() {
 /// on one slot contribute both signal and window energy, and the read divides
 /// one by the other — so a slot covered by twice as much window energy is not
 /// twice as loud.
-///
-/// Mutation check: return `self.data.data[at]` undivided and the first
-/// assertion reads 1.0 instead of 0.5.
 #[test]
 fn overlap_add_divides_by_the_accumulated_window_energy() {
     let mut o = OverlapAdd::new(8);
@@ -271,9 +260,7 @@ fn overlap_add_does_not_divide_by_a_vanishing_window_sum() {
 /// `reset` must clear the window sum too, or the first frames of the next
 /// stream divide by the previous stream's denominator.
 ///
-/// Silent, and only at a boundary — the shape of bug that ships. Mutation
-/// check: drop `window_sum.reset()` and the drained value here is halved,
-/// because the stale energy from before the reset is still in the slot.
+/// Silent, and only at a boundary — the shape of bug that ships.
 #[test]
 fn reset_clears_the_window_sum_not_just_the_samples() {
     let mut o = OverlapAdd::new(8);
@@ -431,12 +418,6 @@ fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
 /// lands it inside its clamp, so the analysis hop stays a finite stride (at
 /// most the synthesis hop over the smallest effective stretch, 0.25 × two
 /// octaves down) and the unit still produces finite audio.
-///
-/// Mutations, each failed, then reverted:
-/// - `set_stretch_factor` storing `factor.get()` unclamped: a factor of 0
-///   is stored as 0 (whose analysis hop is `inf as usize`, `usize::MAX`).
-/// - `clamp_pitch` without its `is_finite` arm (`clamp` alone): NaN
-///   passes through, and the pitch it reads back is not finite.
 #[test]
 fn a_degenerate_factor_or_transposition_never_reaches_the_hops() {
     let u = Unit::with_channels(SampleRate::new(44_100.0), 1u16);
@@ -516,12 +497,6 @@ fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
 ///
 /// The graph clones a unit only for a fork, which resets what it clones, so
 /// the clone is what that needs: fresh.
-///
-/// Mutation (run): `Unit::clone` cloning the vocoders' running state instead
-/// of `clone_fresh` (a `Vocoder` copy of the rings) → the clone's input ring
-/// holds the original's samples → fails. Mutation (run): `clone_fresh`
-/// rebuilding the window (`Arc::new(geometry.window_coefficients())`) →
-/// the tables are not shared → fails.
 #[test]
 fn a_clone_is_a_fresh_filter_on_the_shared_tables() {
     let mut u = Unit::with_channels(SampleRate::new(44_100.0), 6u16);
@@ -566,12 +541,6 @@ fn a_clone_is_a_fresh_filter_on_the_shared_tables() {
 /// ticking one shared bank could go.
 ///
 /// A clone does not continue its original's stream: nothing commits by clone.
-///
-/// Mutation (run): `Unit::clone` copying the running input ring into the
-/// clone → the clone plays the original's history → fails. The sharing this
-/// guards against (one vocoder bank ticked by two handles) is not a one-line
-/// mutation: the unit owns its vocoders by value, so the types rule
-/// it out, and this pins what reintroducing a shared bank would break.
 #[test]
 fn a_clone_and_its_original_tick_independently() {
     let build = || {
@@ -620,9 +589,6 @@ fn a_clone_and_its_original_tick_independently() {
 /// `tests/rt_no_alloc.rs`'s `cloned_time_stretch_process_is_allocation_free`).
 ///
 /// Replaces `the_block_scratch_rides_the_shared_bank`.
-///
-/// Mutation (run): `from_vocoders` sizing the scratch
-/// `vec![0.0f32; 0].into_boxed_slice()` → fails.
 #[test]
 fn a_clone_arrives_with_its_block_scratch_sized() {
     let u = Unit::with_channels(SampleRate::new(44_100.0), 6u16);
@@ -688,12 +654,6 @@ fn a_clone_renders_identically() {
 /// width relation the slot can hand it (narrower, equal, wider than the
 /// unit), stretched, pitched, stretched and pitched, and bypassing; the block
 /// split into runs, as a placed voice leaving its window splits it.
-///
-/// Mutation (run): the debt not replayed per channel (channel `c` starting
-/// from channel `c - 1`'s end debt) → fails. Mutation (run): a lane past the
-/// input's width reading silence instead of lane 0 → fails (the wider-unit
-/// rows). Mutation (run): the drain skipped for the last output channel
-/// (`c + 1 < n_out`) → fails.
 #[test]
 fn filter_lanes_is_tick_per_frame() {
     // One 64-frame lane per channel: the lane length when this was written
@@ -1237,8 +1197,7 @@ fn input_rate_is_unity_when_bypassing() {
 fn overlap_add_flushes_subnormals() {
     let mut o = OverlapAdd::new(4);
     // Unity window energy, so `drain`'s division cannot be what zeroes this —
-    // the flush in `add_at` has to be. Mutation check: drop the `is_subnormal`
-    // branch and this reads `MIN_POSITIVE / 4.0` rather than exactly zero.
+    // the flush in `add_at` has to be.
     o.add_at(0, f32::MIN_POSITIVE / 4.0, UNIT_W);
     o.advance(1);
 
@@ -1513,10 +1472,6 @@ fn vocoder_reconstructs_its_input_at_unity() {
 /// ([`CosineWindow::cola_overlap`]) and `FftSize::hop` is pinned to `size / 4`, so
 /// the grid cannot express it. That refusal is itself pinned, in
 /// `a_hann_cola_grid_may_not_be_cola_for_another_window`.
-///
-/// Mutation check: restore the `/ 1.5` constant and this fails at ~0.06
-/// relative error while `vocoder_reconstructs_its_input_at_unity` still
-/// passes — which is precisely why the Hann case alone was not enough.
 #[test]
 fn vocoder_reconstructs_under_a_non_hann_window() {
     let sample_rate = 44_100.0;
@@ -1658,7 +1613,7 @@ fn stretch_factor_changes_the_source_consumption_rate() {
 /// (must be bit-identical); clone again and render (must differ, so the move
 /// is audible and the check can fail).
 ///
-/// No mutation can break this: the cells are owned `AtomicF32`s, not `Arc`s,
+/// Nothing can break this at runtime: the cells are owned `AtomicF32`s, not `Arc`s,
 /// so a clone that shared them with its original would not compile. The
 /// property is structural; the test stays as the isolate row's record.
 #[test]
@@ -1711,11 +1666,6 @@ fn isolate_snapshots_stretch_and_pitch() {
 /// `process` of 8192 + 300 frames renders exactly what a fresh twin renders
 /// from two calls of 8192 and 300, processing and bypassing alike: every
 /// output frame is written, with none left stale past the scratch.
-///
-/// Mutation (run): `process` calling `process_run(0, size, …)` once instead
-/// of in runs → panics on the scratch slice → fails. Mutation (run): a
-/// `break` after the first run (the old clamp's truncation) → the tail
-/// stays at its sentinel → fails.
 #[test]
 fn a_block_past_the_scratch_is_rendered_in_runs() {
     let head = MAX_BUFFER_SIZE;
@@ -1765,10 +1715,6 @@ fn a_block_past_the_scratch_is_rendered_in_runs() {
 /// Pinned two ways: the reported latency is still the configured window,
 /// and the unit still transposes an octave correctly at the new rate (the
 /// same frequency invariant as `pitch_shift_transposes_by_the_requested_interval`).
-///
-/// Mutation (run): rebuild with `FftSize::default()` in `set_sample_rate`
-/// (the old code) → the latency reads 2048 for every non-default size, and
-/// the render at the new rate is no longer an octave up.
 #[test]
 fn a_rate_change_keeps_a_non_default_fft_size() {
     let sr = 96_000.0f32;
@@ -1797,10 +1743,6 @@ fn a_rate_change_keeps_a_non_default_fft_size() {
 /// `reset` must bring the unit back: the poisoned frame leaves NaN in the
 /// phase history (the vocoder does not scrub it, as before the real-input
 /// FFT), and a flush clears that.
-///
-/// Mutation (run): in `Fft::inverse`, replace the `Ok(()) |
-/// Err(FftError::InputValues(..))` arm with `Ok(())` only -> a NaN spectrum
-/// reaches the `unreachable!` and the first loop panics.
 #[test]
 fn a_nan_source_does_not_panic_and_a_reset_recovers() {
     let sr = 48_000.0f32;

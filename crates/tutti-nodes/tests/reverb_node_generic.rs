@@ -175,9 +175,6 @@ fn impulse_block() -> Vec<f32> {
 /// The realization's latency and the network's tail are declared apart (a tail
 /// excludes latency), the harness's honesty check holds for an honest echo, and
 /// the node's shape says so.
-///
-/// Mutation (run): folding the latency into the tail (`ring + latency` reported)
-/// fails the equality; dropping `with_latency` fails the first assertion.
 #[test]
 fn latency_and_tail_are_declared_apart() {
     let echo = Echo {
@@ -200,10 +197,6 @@ fn latency_and_tail_are_declared_apart() {
 /// input frame, to the frame, inside the block that holds it: dense noise in,
 /// and the last frame to sound is the last input frame plus the reported tail
 /// plus the latency.
-///
-/// Mutation (run): a frame more or less in the node's `live` count (the `Some`
-/// arm, since the cut falls in the block that holds the input), or the latency
-/// left out of `owed`, fails.
 #[test]
 fn a_cut_inside_a_block_is_at_tail_plus_latency() {
     let (claimed, latency) = (10, 7);
@@ -252,9 +245,6 @@ fn a_cut_inside_a_block_is_at_tail_plus_latency() {
 /// park resets the realization: the node that woke answers as a fresh one. The echo
 /// rings far past its claim, so its line still holds the impulse when the cut
 /// lands, and a node that parked without resetting would play it back.
-///
-/// Mutation (run): returning `Idle` without the reset in the `cut == 0` branch
-/// fails the comparison.
 #[test]
 fn a_block_aligned_cut_parks_and_resets() {
     // The ring the node reports for an echo of 20 frames, to land the cut at 64.
@@ -318,9 +308,6 @@ fn a_block_aligned_cut_parks_and_resets() {
 /// half-strength at `latency` (the input, delayed to line up) and half-strength at
 /// `latency + echo` (the wet). A block of silence first, so the mix's ramp from
 /// the unit's `WET` start is over before the impulse.
-///
-/// Mutation (run): the shape declaring `latency - 1` (the graph's aligned input
-/// one frame early) moves the first spike and fails.
 #[test]
 fn the_graphs_mix_is_aligned_to_the_kernels_latency() {
     let (claimed, latency) = (25, 7);

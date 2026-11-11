@@ -408,8 +408,7 @@ impl Drop for MockServer {
     /// - joining the mock server thread waits on a socket read that only ends
     ///   when the host hangs up — which the line above was supposed to cause.
     ///
-    /// Verified rather than assumed: raising the bridge's timeouts to an hour
-    /// (a mutation that *should* have failed four tests) instead wedged the
+    /// Without it, raising the bridge's timeouts to an hour wedges the
     /// whole run, with three threads in `futex_wait` inside this `drop` and the
     /// mock threads in `unix_stream_data_wait`.
     ///
@@ -976,10 +975,6 @@ fn a_silent_server_is_bounded_by_the_timeout() {
 /// **A refusal is not a crash.** The server refuses the first rate and takes
 /// the second: the bridge reports the refusal (rate and reason) while it
 /// stands, stays healthy, and clears it when a later rate is taken.
-///
-/// Mutation (run): the bridge returns an error from the refusal arm of the
-/// `SetSampleRate` reply (the crash path) → `is_crashed` is true → fails.
-/// The success arm without `set_rate_refusal(None)` → the refusal stays → fails.
 #[test]
 fn a_refused_rate_is_reported_without_crashing_the_bridge() {
     let calls = std::sync::atomic::AtomicU32::new(0);
@@ -1011,11 +1006,6 @@ fn a_refused_rate_is_reported_without_crashing_the_bridge() {
 /// answers (accepted) after 800 ms. In between the bridge reports the refusal
 /// ("did not answer") and stays healthy; the late reply is taken off the stream
 /// and clears it.
-///
-/// Mutation (run): the expiry returns `BridgeError::Timeout` (the old fatal
-/// path) → the bridge crashes → fails. Drop `expect_late_rate_reply` → the late
-/// reply is read as another request's → `UnexpectedMessage` crash or a refusal
-/// that never clears → fails.
 #[test]
 fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
     let mock = MockServer::start("late_rate", |msg| match msg {
@@ -1069,9 +1059,6 @@ fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
 /// barrier is a round trip behind B: the bridge handles commands one at a
 /// time, so B's command, and anything it applies when it ends, is done before
 /// the barrier returns.
-///
-/// Mutation (run): park the late answer and apply it when the command ends
-/// (the old `take_late_rate` path) → the refusal is cleared again → fails.
 #[test]
 fn a_late_rate_answer_does_not_override_a_later_one() {
     let calls = std::sync::atomic::AtomicU32::new(0);
@@ -1126,9 +1113,6 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
 /// **Dropping the bridge ends a wait for a rate change that never answers.**
 /// The bridge thread waits up to `RATE_TIMEOUT` (10 s) for the reply, and the
 /// drop joins it: the wait must notice the shutdown, not run out.
-///
-/// Mutation (run): the wait loop's `!lifecycle.is_running()` exit removed →
-/// the drop takes the full 10 s → fails.
 #[test]
 fn dropping_the_bridge_ends_a_hung_rate_change() {
     let mut mock = MockServer::start("hung_rate", |_| Action::Silent);
@@ -1340,21 +1324,6 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
 /// failure here, where in the stall tests it only delays detection. At 400 ms
 /// it failed on a shared macOS runner with `Stalled { bytes: 1 }`: the first
 /// 40 ms gap took over 400 ms of wall clock.
-///
-/// **Mutation note**, and the first attempt at it was wrong in a way worth
-/// recording. Turning `StateProgress::wait` into a total budget takes *two*
-/// edits, not one: `idle` accumulates only inside the no-progress branch, so
-/// deleting the `idle = Duration::ZERO` reset on its own leaves the behaviour
-/// correct and this test still passes. Mutating either half alone therefore
-/// proves nothing.
-///
-/// Verified to fail:
-/// - Accumulating `idle` unconditionally **and** dropping the reset — a genuine
-///   total budget — fails this at chunk 40 of 60 with
-///   `Stalled { bytes: 40 }`, which is the production bug reproduced in
-///   miniature: a transfer that is visibly advancing, killed by the clock.
-/// - Removing `progress.advance(bytes.len())` from `recv_state` fails it, since
-///   the caller then sees a counter that never moves.
 #[test]
 fn a_slow_but_progressing_state_transfer_completes() {
     /// Enough chunks that the total dwarfs the deadline while each gap stays
@@ -1441,34 +1410,6 @@ fn a_slow_but_progressing_state_transfer_completes() {
 /// by a command reaching a live bridge thread and a reply coming back —
 /// impossible on a crashed bridge, which short-circuits on `is_crashed` before
 /// it sends anything.
-///
-/// **Mutation note.** Verified to fail, not merely pass:
-/// - Propagating the bridge thread's timeout instead of reporting it (i.e.
-///   `recv_state` returning `Err(BridgeError::Timeout { .. })` when
-///   `next_reply` answers `None`) fails this test.
-///   Worth recording precisely, because it is *not* the health assertions that
-///   catch it: now that one deadline drives both waits, the bridge thread
-///   crashes before the caller's own wait expires, so the caller is answered
-///   `PluginCrashed` and the **typed** assertion fires first. The health
-///   assertions are the backstop for the ordering going the other way — a
-///   deferred crash landing after the caller has been told `Stalled`, which is
-///   the shape the reviewer probed and measured (`crashed_after_11s = true`).
-///   Both are kept: which one fires depends on a race this test should not
-///   depend on.
-/// - Returning `StateError::Rejected` from the stall path fails the typed
-///   assertion.
-/// - Removing the `idle >= deadline` check (waiting forever) fails via
-///   `call_within`'s `NOTICE_TIMEOUT` rather than hanging the run, which is why
-///   the call is made off-thread.
-/// - Reporting `bytes: 0` rather than the running count fails the byte
-///   assertion.
-/// - Making `StateProgress::deadline` return the `PROGRESS_TIMEOUT` constant
-///   instead of the transfer's own figure — i.e. putting the bridge thread back
-///   on a second, hardcoded configuration — fails the health assertions here
-///   (and in the load test) after ~6 s. That is the check that keeps this test
-///   on the production path: with two configurations, the injected deadline
-///   shortens only the caller's wait, and the bridge thread's real behaviour
-///   goes untested.
 #[test]
 fn a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy() {
     // Two chunks, then silence with `last` never sent: the transfer starts,
@@ -1538,14 +1479,6 @@ fn a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy() {
 /// receive path was covered, so the load path's timeout — a distinct call
 /// site, the `LoadState` arm's `answer` — was crashing the bridge with no test
 /// to say so.
-///
-/// **Mutation note.** Verified to fail:
-/// - Propagating the timeout at the `LoadState` reply site (its `answer`
-///   returning `None` turned into an `Err`) fails the health assertions here while leaving
-///   the `save_state` test above green — which is precisely why this test has
-///   to exist separately.
-/// - Answering `Ok(())` on a missing acknowledgement fails the typed assertion:
-///   a write that was never acknowledged is not a load that succeeded.
 #[test]
 fn a_stalled_load_state_fails_typed_and_leaves_the_bridge_healthy() {
     let mock = MockServer::start_with_state_progress_timeout(
@@ -1619,10 +1552,6 @@ fn assert_healthy_after_stall(mock: &MockServer, direction: &str) {
 /// answered after the 5 s budget; the second at once. The bridge owes the
 /// first reply, takes it off the stream when it lands, and gives the second
 /// query its own value.
-///
-/// Mutations (run), each fails: `answer` not owing a reply that timed out (the
-/// second query reads 0.25, the first's value); a query's timeout propagated
-/// as an error, as its `?` did (the bridge crashes).
 #[test]
 fn a_late_query_reply_is_not_the_next_querys_answer() {
     let asked = Arc::new(AtomicU64::new(0));
@@ -1670,9 +1599,6 @@ fn a_late_query_reply_is_not_the_next_querys_answer() {
 /// answer: an oversleeping runner only lengthens the events, which widens the
 /// margin. (A first version required the answer within the second caller's
 /// 5 s wait, which macOS runners' 100 ms sleeps overran.)
-///
-/// Mutation (run): `recv_reply` passing the whole `timeout` to each read (the
-/// per-message restart) → nothing is waiting when the events stop → fails.
 #[test]
 fn a_chatty_plugin_does_not_extend_the_budget() {
     let asked = Arc::new(AtomicU64::new(0));
@@ -1725,11 +1651,6 @@ fn a_chatty_plugin_does_not_extend_the_budget() {
 /// part-way finishes with 300 ms to spare, which a loaded runner's late wakeups
 /// do not use up. A 400 ms split left 100 ms and failed on a loaded macOS
 /// runner.
-///
-/// Mutation (run, at both splits): the partial arm extending the read's
-/// deadline once by `DRAIN_FINISH` and failing the next partial (as it was) →
-/// the bridge crashes → fails. The peer is mid-frame about 95% of the time, so the mutation fails on almost every run,
-/// not every one; the fixed code passes on every run.
 #[test]
 fn a_live_peer_mid_frame_at_the_budget_is_not_a_crash() {
     let mock = MockServer::start("split-events", |msg| match msg {
@@ -1751,9 +1672,6 @@ fn a_live_peer_mid_frame_at_the_budget_is_not_a_crash() {
 /// **The rest of a stalled state is taken off the stream, not read as the next
 /// answer** (doc 027 D5). `SaveState` stalls before its first chunk; the two
 /// chunks land later, ahead of the answer to `GetParameterList`.
-///
-/// Mutation (run): `recv_state` not owing `Late::StateRest` on a stall → the
-/// first chunk is read as the parameter list's answer → `None` → fails.
 #[test]
 fn the_rest_of_a_stalled_state_is_not_the_next_answer() {
     let mock = MockServer::start_with_state_progress_timeout(

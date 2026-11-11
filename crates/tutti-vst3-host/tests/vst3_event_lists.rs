@@ -72,10 +72,6 @@ fn reassembled(events: &[WireMidi]) -> Vec<Vec<u8>> {
 /// output list keeps every byte of it: capping it at the 16 inline bytes, or
 /// at one UMP packet (6 bytes), would mean no message of 7 bytes or more ever
 /// reached the host.
-///
-/// Mutation (run): drop the SysEx branch in `addEvent` so the event goes
-/// through `Event::from_c` (16 inline bytes) → the 40-byte and the 17-byte
-/// messages come back cut or missing → fails.
 #[test]
 fn a_sysex_from_the_plugin_reaches_the_host_whole() {
     for len in [4usize, 7, 14, 16, 17, 40, 100] {
@@ -99,9 +95,6 @@ fn a_sysex_from_the_plugin_reaches_the_host_whole() {
 
 /// A SysEx the output list cannot hold is dropped whole and counted; the
 /// list keeps working for the next message.
-///
-/// Mutation (run): truncate to the arena's room instead of refusing →
-/// the oversize message arrives cut (no `0xF7`) → fails.
 #[test]
 fn a_sysex_past_the_output_room_is_dropped_whole_and_counted() {
     let list = EventList::output();
@@ -130,12 +123,6 @@ fn a_sysex_past_the_output_room_is_dropped_whole_and_counted() {
 /// could not pack into one packet; a data event of another type is not SysEx
 /// whatever its bytes; and a raw channel-voice message carried as data
 /// (status byte first) stays a MIDI-1 message.
-///
-/// Mutations (run): detect by `size > 16 || bytes[0] == 0xF0` alone → the
-/// unframed 7/10/16-byte messages are cut or missing, and the other-type
-/// 40-byte event is staged as SysEx → fails; drop the `< 0x80` arm → the
-/// unframed messages fail; drop the `0xF0`/`< 0x80` guard (type alone) →
-/// the raw note-on becomes a SysEx7 packet and fails.
 #[test]
 fn a_sysex_is_detected_by_its_data_type() {
     for len in [7usize, 10, 16] {
@@ -188,9 +175,6 @@ fn a_sysex_is_detected_by_its_data_type() {
 /// **A SysEx the host's MIDI pool has no room for is dropped whole and
 /// counted in `dropped`** (and latches the pool's `is_overflowed`); the
 /// message before it arrives intact.
-///
-/// Mutation (run): drop `list.add_dropped(refused)` in `drain_midi`
-/// → `dropped()` stays 0 → fails.
 #[test]
 fn a_sysex_past_the_midi_pool_is_counted_in_dropped() {
     let list = EventList::output();
@@ -216,10 +200,6 @@ fn a_sysex_past_the_midi_pool_is_counted_in_dropped() {
 /// **The plugin-SysEx path is allocation-free**: a 200-byte message
 /// through `addEvent`, then more until the list refuses one, then
 /// `drain_midi` over what it holds.
-///
-/// Mutation (run): a `Vec` copy of the message in `stage_plugin_sysex`
-/// (`let _v = std::slice::from_raw_parts(bytes, size).to_vec();`), and one
-/// in `drain_midi`'s SysEx arm → `assert_no_alloc` aborts.
 #[test]
 fn the_plugin_sysex_path_is_allocation_free() {
     let list = EventList::output();
@@ -250,12 +230,6 @@ fn the_plugin_sysex_path_is_allocation_free() {
 /// read after, as a plugin does; the names that fit read back intact,
 /// the ones past the room are staged with an empty text and counted, and
 /// staging the block, the very first time included, allocates nothing.
-///
-/// Mutations (run), each fails: interning without the room check (the
-/// arena grows past its reservation) → the over-room texts arrive and the
-/// drop count is 0; not counting the refusal → the drop count;
-/// `TextArena::new` reserving nothing → the first staging allocates in
-/// the gate.
 #[test]
 fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
     const LONG: usize = 256;
@@ -348,10 +322,6 @@ fn sysex_read_by_plugin(list: &EventList) -> Vec<(i32, Vec<u8>)> {
 /// offset, in that order, as `kDataEvent`s of raw MIDI-1 bytes.
 ///
 /// With room for fewer than three, none is staged and all three are counted.
-///
-/// Mutation (run): `Stager::stage_midi` encoding the event with
-/// `MidiEncoder::encode` alone → only the PC → fails; pushing each message
-/// without the room check → a partial bank in the full list → fails.
 #[test]
 fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
     let pc = (
@@ -410,9 +380,6 @@ fn framed(payload: &[u8]) -> Vec<u8> {
 /// **A multi-packet SysEx reaches the plugin as one complete message**,
 /// `0xF0 … 0xF7`, at its `END` packet's frame, beside the block's other
 /// events, and the staging does not allocate.
-///
-/// Mutation (run): `Stager::stage_midi` encoding every event with
-/// `MidiEncoder::encode` (no reassembly) → no SysEx event → fails.
 #[test]
 fn a_multi_packet_sysex_reaches_the_plugin_whole() {
     let body = midi::sysex_payload(100);
@@ -429,7 +396,8 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         ),
     );
     let list = EventList::input();
-    let mut stager = Stager::default();
+    // A plugin with two event input buses: Group 1 is bus 1.
+    let mut stager = Stager::new(2);
     assert_no_alloc::assert_no_alloc(|| {
         stager.stage(
             &list,
@@ -446,10 +414,6 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
 
 /// **A SysEx that spans blocks completes in the block of its `END`**;
 /// the block holding only its start hands the plugin nothing of it.
-///
-/// Mutation (run): `EventList::begin` clearing the assembler's open run
-/// (a `begin_block` that always clears) → the `END` finds no run → the
-/// message never arrives → fails.
 #[test]
 fn a_sysex_spanning_blocks_completes_in_the_block_of_its_end() {
     let body = midi::sysex_payload(MIDI_STACK_CAPACITY * 6 + 100);
@@ -469,9 +433,6 @@ fn a_sysex_spanning_blocks_completes_in_the_block_of_its_end() {
 
 /// **A SysEx past `SYSEX_MESSAGE_CAPACITY` is dropped whole and counted**
 /// (never truncated), and the next one arrives intact.
-///
-/// Mutation (run): the assembler's capacity check removed → the
-/// over-long message is delivered → fails.
 #[test]
 fn a_sysex_past_capacity_is_dropped_whole_and_counted() {
     use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
@@ -491,9 +452,6 @@ fn a_sysex_past_capacity_is_dropped_whole_and_counted() {
 
 /// **A `START` with no `END` before the next `START` is dropped and
 /// counted**; the later message arrives whole.
-///
-/// Mutation (run): the assembler's `START` not abandoning the open run →
-/// the two messages are spliced together and delivered → fails.
 #[test]
 fn a_start_without_its_end_before_the_next_start_is_dropped() {
     let a = midi::sysex_payload(30);

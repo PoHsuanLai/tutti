@@ -121,9 +121,6 @@ mod tests {
     /// `Explicit` fell through to the search, a test's stand-in would be
     /// replaced by whatever `PATH` holds, and the test would exercise the real
     /// binary while claiming otherwise.
-    ///
-    /// Mutation (run): `Explicit` resolving through `search` fails the second
-    /// half (the search finds nothing at that name, or finds something else).
     #[test]
     fn an_explicit_locator_is_that_path_or_nothing() {
         let this_exe = std::env::current_exe().expect("test binary has a path");
@@ -141,8 +138,6 @@ mod tests {
     /// A directory with the helper's name is not the helper. (The search used
     /// `exists()`, so a directory resolved and the failure surfaced later as a
     /// confusing spawn error.)
-    ///
-    /// Mutation (run): `beside` checking `exists()` fails it.
     #[test]
     fn a_directory_is_not_a_binary() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -158,9 +153,6 @@ mod tests {
     /// An empty `PATH` entry is skipped, not read as the working directory:
     /// `"".join(name)` is the relative `name`, which would spawn whatever file
     /// of that name sits in the host's current directory.
-    ///
-    /// Mutation (run): deleting the emptiness check makes `beside` return the
-    /// relative path when the file is in the working directory, and fails.
     ///
     /// It changes the working directory, which is this process's alone: each
     /// test runs in a process of its own under nextest (CLAUDE.md).

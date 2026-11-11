@@ -93,10 +93,9 @@ fn add_ram_clip(handle: &VoicePoolHandle, id: SlotId, sampler: MemorySource) {
 /// pins that whatever the render does to its fork, the live voice keeps
 /// its state.
 ///
-/// Mutation: none expressible as a one-line edit — a fork's node builds
-/// its own filter (`VoiceNode::with_channels`), and a filter owns its
-/// vocoders by value, so the types rule a shared one out (see the test
-/// below). This pins, at the node, what a shared filter would break.
+/// This pins, at the node, what a shared filter would break: a fork's node builds its
+/// own filter (`VoiceNode::with_channels`), and a filter owns its vocoders by value, so
+/// the types rule a shared one out (see the test below).
 #[test]
 fn resetting_a_fork_leaves_the_live_voice_playing() {
     // Matches `make_wave`, so the source needs no rate conversion.
@@ -167,12 +166,8 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
 /// and rendered for 4096 frames plays, sample for sample, what an
 /// identical voice that was never forked plays.
 ///
-/// Mutation: none expressible as a one-line edit. The sharing this guards
-/// against needs a shared bank type, and the filter owns its vocoders by
-/// value, so the types rule it out; the unit-level twin,
-/// `stretch::tests::a_clone_and_its_original_tick_independently`, runs
-/// its mutation. This pins, at the voice, what a reintroduced shared bank
-/// would break.
+/// This pins, at the voice, what a reintroduced shared bank would break; the unit-level
+/// twin is `stretch::tests::a_clone_and_its_original_tick_independently`.
 #[test]
 fn a_standalone_voices_fork_shares_no_stretch_state() {
     const SR: f64 = 44_100.0;
@@ -234,12 +229,6 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
 /// pool at the live one's width: it holds none of the live voices, drains
 /// none of the live handle's commands, and preparing it at another rate
 /// does not move the rate the live handle builds its stretch filters at.
-///
-/// Mutation (run): `PoolFork` sharing the live pool's `SharedRate` (a
-/// `rate` field cloned into it and the fork built with it) → the live
-/// handle's rate reads 96 kHz → fails. Mutation (run): the fork built
-/// with the live pool's voices (a clone of the pool as inserted, voices
-/// and all) → the fork sounds → fails.
 #[test]
 fn a_pools_fork_shares_nothing_with_the_live_pool() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -313,10 +302,6 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
 /// a 60 dB gain error live in the vocoder. Here, parking the playhead in the
 /// silent half means any output above the floor is provably material the
 /// filter should not still be holding.
-///
-/// Mutation (run): `PlaybackSlot::render_into` skipping
-/// `flush_playhead_state` on a jump (priming kept) → peak 0.20 after the
-/// seek, fails.
 #[test]
 fn a_transport_seek_flushes_stretch_state() {
     const SR: f64 = 44_100.0;
@@ -422,9 +407,6 @@ fn a_transport_seek_flushes_stretch_state() {
 /// nodes, and a timeline clip is one. A scrub across a stretched correction would drag pre-seek audio
 /// over the new region with nothing in the suite to notice, because every
 /// other assertion on this path checks only that output is non-zero.
-///
-/// Mutation (run): the jump's `flush_playhead_state` skipped (priming
-/// kept) → peak 0.22 after the seek, fails.
 #[test]
 fn a_transport_seek_flushes_a_standalone_voice_node() {
     const SR: f64 = 44_100.0;
@@ -624,10 +606,6 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
 /// one-frame blocks as in 64-frame ones, the clock moving by each
 /// block: a 24 kHz ramp on a 48 kHz clock reads file frame `n / 2` on
 /// output frame `n`, forward and reversed, across every block boundary.
-///
-/// Mutation (run): the slot's memory arm placing by `window_rate` instead
-/// of `read_rate` (`placed_positions`' step) → a file frame per output
-/// frame in the 64-frame blocks → fails.
 #[test]
 fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
     const LEN: usize = 4_096;
@@ -997,11 +975,6 @@ fn insert_voice_is_audible_without_channel() {
 
 /// A pool no handle was taken for (what a fork builds) is empty and
 /// silent, and a voice inserted directly still plays.
-///
-/// Mutation (run): `insert_voice` dropping its voice → the inserted
-/// voice is silent → fails. (The first half is structural: no sender
-/// exists for a handle-less pool's receiver, so no one-line edit can
-/// deliver it a command.)
 #[test]
 fn a_pool_with_no_handle_has_no_channel_and_is_empty() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -1306,11 +1279,6 @@ fn voice_node_is_a_standalone_graph_node() {
 /// Asserted behaviourally, on what the fork plays under the render's
 /// transport: silent before its window (beat 1), sounding inside it (beat
 /// 3), silent on a stopped render.
-///
-/// Mutation (run): `Voice::fork_copy` not keeping the memory source's
-/// window (`set_window(VoiceWindow::default())` on the copy, which places it
-/// at beat 0 whether or not it was placed) → the fork sounds at beat 1 →
-/// fails.
 #[test]
 fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
     let wave = make_wave(44_100);
@@ -1514,10 +1482,6 @@ fn looped(mut voice: Voice) -> Voice {
 /// A loop the stream takes is recorded, and it was set on the stream by the
 /// handle, before the drain ran: the add's own loop and the update's, each
 /// naming the voice's stream.
-///
-/// Mutation (run): `apply_loop` not recording a streaming slot's loop →
-/// fails. Mutation (run): `send_loop` queueing without setting the loop on
-/// the stream → one command at the streamer, not two → fails.
 #[test]
 fn a_loop_the_stream_takes_is_recorded() {
     let (commands, streamer) = test_streamer(4);
@@ -1563,10 +1527,6 @@ fn a_loop_the_stream_takes_is_recorded() {
 /// voice's loop needs from the streamer is sent by the handle as it
 /// queues the command; once queued, the streamer can be gone and the
 /// drain records the loop all the same, counting nothing.
-///
-/// Mutation (run): the drain's streaming arm setting the loop on a stream
-/// of its own and returning on an error → the gone streamer leaves the loop
-/// unrecorded → fails.
 #[test]
 fn the_drain_sends_nothing_to_the_streamer() {
     let (commands, streamer) = test_streamer(8);
@@ -1588,12 +1548,6 @@ fn the_drain_sends_nothing_to_the_streamer() {
 
 /// A loop a gone streamer never received is not recorded, on an add
 /// or an update, and the loss is counted.
-///
-/// Mutation (run): `add_stream_voice` keeping the voice's `On` when its
-/// stream refuses it → the add records it → fails. Mutation (run):
-/// `send_loop` not re-queueing the previous loop when the stream refuses
-/// the update → the update records `On` → fails. Mutation (run): deleting
-/// the `loops_streamer_gone` bumps → fails on the count.
 #[test]
 fn a_loop_a_gone_streamer_never_received_is_not_recorded() {
     let (commands, streamer) = test_streamer(8);
@@ -1626,10 +1580,6 @@ fn a_loop_a_gone_streamer_never_received_is_not_recorded() {
 /// what it asked for is not recorded either, where `insert_voice` would
 /// otherwise replay it as if it were real. The same for an `AddVoice` through
 /// the handle.
-///
-/// Mutation (run): `insert_voice_with_stretch` not calling `without_stream`
-/// → the slot records `On` and `Reverse` → fails. Mutation (run): deleting
-/// the `directions_dropped` bump in `without_stream` → fails on the count.
 #[test]
 fn a_streaming_voice_without_a_stream_drops_its_loop_and_direction_and_counts_them() {
     let mut pool = VoicePool::new();
@@ -1661,11 +1611,6 @@ fn a_streaming_voice_without_a_stream_drops_its_loop_and_direction_and_counts_th
 /// turned on for a streaming voice with no stream, and a `ReplaceWave`
 /// aimed at a streaming voice. Clearing a loop there (the add's own
 /// `Off`) loses nothing and is not counted.
-///
-/// Mutation (run): deleting the `loops_not_forwarded` bump → fails.
-/// Mutation (run): counting `Off` too (the `matches!(setting, On)` guard
-/// removed in `without_stream`) → fails on the add's count. Mutation (run):
-/// deleting the `wave_swaps_ignored` bump → fails.
 #[test]
 fn the_drains_silent_drops_are_counted() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -1709,9 +1654,6 @@ fn the_drains_silent_drops_are_counted() {
 /// A loop sent through the handle waits for the streamer's room
 /// rather than dropping it: the handle is control-thread code, and
 /// sends as the control thread does.
-///
-/// Mutation (run): `Stream::set_loop` sending with `try_send` (refusing on
-/// a full queue) → the loop is dropped → fails.
 #[test]
 fn a_handle_send_waits_for_the_streamer() {
     let (commands, streamer) = test_streamer(1);
@@ -1747,9 +1689,6 @@ fn a_handle_send_waits_for_the_streamer() {
 /// An add of a looping streaming voice waits for the streamer's room rather
 /// than dropping its loop: it is control-thread code (it allocates the slot's
 /// box), so it sends as the control thread does.
-///
-/// Mutation (run): `Stream::set_loop` sending with `try_send` (refusing on
-/// a full queue) → the add drops its loop → fails.
 #[test]
 fn an_add_waits_for_the_streamer() {
     let (commands, streamer) = test_streamer(1);
@@ -1782,12 +1721,6 @@ fn an_add_waits_for_the_streamer() {
 /// it: the stream is told (a `SetDirection` naming it), and the slot records
 /// it once the drain runs. A direction on the add is set the same way. A
 /// gone streamer's is counted and not recorded.
-///
-/// Mutation (run): `send_reverse` queueing without setting the direction on
-/// the stream → no `SetDirection` at the streamer → fails. Mutation (run):
-/// `apply_queued_direction` recording without checking `forwarded` → the
-/// unforwarded slot below records `Reverse` → fails. Mutation (run): deleting
-/// the `directions_dropped` bump in `send_reverse` → fails on the count.
 #[test]
 fn a_direction_set_through_the_handle_reaches_the_stream() {
     use crate::streamer::StreamerCommand as C;
@@ -1855,11 +1788,6 @@ fn a_direction_set_through_the_handle_reaches_the_stream() {
 /// A stream ends with its voice: the handle holds it from the add, and a
 /// `Remove` (or an add at the same id) drops it, which sends the streamer
 /// its close.
-///
-/// Mutation (run): `send` not removing the stream from the table on a
-/// `Remove` → no close reaches the streamer → fails. Mutation (run): the
-/// replacing add not removing the displaced stream → fails on the second
-/// close.
 #[test]
 fn a_stream_ends_when_its_voice_is_removed_or_replaced() {
     use crate::streamer::StreamerCommand as C;
@@ -1909,10 +1837,6 @@ fn add(id: SlotId, voice: Voice) -> VoiceCommand {
 /// Exact, analytically: the sounding voice reads whole frames (44.1 kHz on
 /// both sides, from beat 0), where the cubic returns the frame, gained by
 /// 0.5.
-///
-/// Mutation (run): `audible` returning its gain unguarded -> the infinite and
-/// NaN rows read NaN from the voice that sounds for 20 frames -> fails. (The
-/// voice wholly out of its window is skipped, and so passes either way.)
 #[test]
 fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
     const BLOCK: usize = 64;
@@ -2009,10 +1933,6 @@ fn fill_queue(handle: &VoicePoolHandle, queued: usize, room: usize) {
 /// recorded: a voice inserted with `insert_voice` after the handle was
 /// taken. The handle has no stream to set it on, so the drain must refuse it
 /// from the command alone, and count it.
-///
-/// Mutation (run): `apply_queued_loop` recording without checking
-/// `forwarded` → the slot records `On` → fails. Mutation (run): deleting the
-/// `loops_not_forwarded` bump → fails on the count.
 #[test]
 fn a_loop_for_a_voice_inserted_after_the_handle_is_not_recorded() {
     let (mut pool, handle) = VoicePool::new().with_handle();
@@ -2035,10 +1955,6 @@ fn a_loop_for_a_voice_inserted_after_the_handle_is_not_recorded() {
 /// since been replaced by `insert_voice` with another stream's voice. The old
 /// stream still gets the loop (it is the stream the handle holds), and the
 /// slot, which plays another, does not claim it.
-///
-/// Mutation (run): `apply_queued_loop` accepting any `Some` forward
-/// (not comparing it with the slot's stream) → the slot records `On`
-/// → fails.
 #[test]
 fn a_loop_forwarded_to_a_replaced_stream_is_not_recorded() {
     let (commands, streamer) = test_streamer(8);
@@ -2063,12 +1979,6 @@ fn a_loop_forwarded_to_a_replaced_stream_is_not_recorded() {
 /// A streaming loop or add that meets a full command queue is refused
 /// before the stream hears of it: `Err` means the command is gone, and the
 /// stream stays on the loop it had (the add's stream is handed back).
-///
-/// Mutation (run): `send_loop` setting the loop on the stream before
-/// queueing (the queue-first order reversed) → the stream hears the refused
-/// loop (two commands at the streamer, not one) → fails. Mutation (run):
-/// deleting `add_stream_voice`'s full-queue check → the add's loop is set on
-/// the stream and put back (three commands, not one) → fails.
 #[test]
 fn a_full_queue_refuses_a_streaming_loop_or_add_before_the_streamer() {
     let (commands, streamer) = test_streamer(8);
@@ -2135,10 +2045,6 @@ fn wait_for_forward(handle: &VoicePoolHandle, id: SlotId) {
 /// filled to its last slot, and the streamer is drained only once that has
 /// happened. If the add has not reached its check by then, the check refuses
 /// it instead, and the streamer ends on the same loop either way.
-///
-/// Mutation (run, `--stress-count 20`): `add_stream_voice` returning the
-/// queueing error without putting the stream back → the streamer ends on the
-/// refused loop → fails 20/20.
 #[test]
 #[cfg_attr(miri, ignore = "threads and wall-clock waits")]
 fn an_add_crowded_out_of_the_queue_puts_the_stream_back() {
@@ -2185,9 +2091,6 @@ fn an_add_crowded_out_of_the_queue_puts_the_stream_back() {
 /// stream: they touch no streamer, so a stalled one must not hold them. The
 /// loop whose send was waiting was queued before it, so the remove still
 /// orders after it.
-///
-/// Mutation (run): `send_loop` holding the stream table's lock across the
-/// send → the remove waits for the stalled streamer → fails on the timeout.
 #[test]
 #[cfg_attr(miri, ignore = "threads and wall-clock waits")]
 fn a_remove_never_waits_on_another_threads_forward() {
@@ -2274,9 +2177,6 @@ fn reader_and_voice_node_default_to_stereo() {
 /// A pool wider than the sampler reads is refused, by name, where one
 /// at the ceiling is built: past `MAX_SAMPLER_CHANNELS` it would declare
 /// outputs its read never writes.
-///
-/// Mutation (run): `with_channels` without the width check → the 9-wide
-/// pool is built → fails.
 #[test]
 fn a_pool_wider_than_the_sampler_reads_is_refused() {
     let ceiling = crate::MAX_SAMPLER_CHANNELS;
@@ -2298,9 +2198,6 @@ fn a_pool_wider_than_the_sampler_reads_is_refused() {
 /// channels past it, not what the buffer held: the node's constructor
 /// cannot refuse (it is infallible, and hosts clamp the width first), so
 /// its `process` clears every output it declares.
-///
-/// Mutation (run): `VoiceNode::process` clearing only the `n` channels the
-/// read writes → channels 8 and 9 keep the stale 7.0 → fails.
 #[test]
 fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -2336,9 +2233,6 @@ fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
 
 /// Both nodes declare the width they were built at, as generators: no
 /// inputs, no latency, never skipped.
-///
-/// Mutation (run): `VoiceNode::shape` declaring stereo whatever it was
-/// built at → fails at width 1.
 #[test]
 fn both_nodes_declare_their_width() {
     for w in [1usize, 2, 6, 8] {

@@ -55,12 +55,6 @@ mod tests {
 
     /// The first error is kept: a later one does not replace it, and an
     /// untouched latch reports nothing.
-    ///
-    /// Mutation (run): drop the `is_none` guard and `set` unconditionally →
-    /// still passes (`OnceLock::set` refuses a second value), so the guard is
-    /// what spares a later error its box, not what keeps the first; the
-    /// property pinned here is `OnceLock`'s. Mutation (run): `fault` returns
-    /// `None` always → fails.
     #[test]
     fn the_first_error_is_kept() {
         let l = FaultLatch::default();

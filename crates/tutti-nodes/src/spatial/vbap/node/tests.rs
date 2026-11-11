@@ -96,13 +96,9 @@ fn reset_keeps_the_authored_placement() {
 ///
 /// This test therefore resets with no intervening tick, which is the
 /// sequence a caller writes. The `-90°` half is
-/// the mutation guard: at `+90°` a bug that seeds front-centre still leaves
+/// the guard: at `+90°` a bug that seeds front-centre still leaves
 /// the left channel leading, so a one-sided assertion could pass for the
 /// wrong reason.
-///
-/// Mutation: seat `VbapPannerNode::reset` on `Azimuth::FRONT` instead of
-/// the cells' bearing → both halves fail, reading `[0.707, 0.707]`
-/// (front-centre) instead of a hard pan.
 #[test]
 fn reset_seats_the_smoother_on_the_commanded_position() {
     let input = [1.0f32, 1.0f32];
@@ -140,9 +136,6 @@ fn reset_seats_the_smoother_on_the_commanded_position() {
 /// The ramp is genuinely in flight before a reset — otherwise
 /// [`reset_seats_the_smoother_on_the_commanded_position`] would hold
 /// trivially and prove nothing about the reset.
-///
-/// Mutation: make `AngleSmoother::step` jump straight to the target (coeff
-/// 1.0) → fails, because the first frame would already be settled.
 #[test]
 fn the_de_zipper_ramp_is_in_flight_without_a_reset() {
     let input = [1.0f32, 1.0f32];
@@ -284,10 +277,6 @@ fn vbap_clone_shares_atomics() {
 /// A clone keeps the original's sample rate, so its de-zipper ramp runs at
 /// the same speed: two fresh nodes at 96 kHz — the original and its clone —
 /// sweep to a new bearing identically.
-///
-/// Mutation (run): dropping `new_panner.set_sample_rate(self.sample_rate)`
-/// from `Clone` leaves the clone's smoother at 48 kHz (the ramp twice as
-/// fast) and fails.
 #[test]
 fn a_clone_ramps_at_the_originals_sample_rate() {
     let rate = SampleRate(96_000.0);
@@ -305,10 +294,6 @@ fn a_clone_ramps_at_the_originals_sample_rate() {
 /// A non-finite position, spread or width never reaches the de-zipper
 /// smoother, whose state is recursive: the node keeps the last finite
 /// value, renders finite audio, and follows the next finite write.
-///
-/// Mutation (each run, each fails): reading the azimuth, elevation, spread
-/// or width raw (no `LastGood`) — the first two leave the smoother, and
-/// so every later frame, NaN.
 #[test]
 fn a_non_finite_control_never_reaches_the_smoother() {
     let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -350,9 +335,6 @@ fn a_non_finite_control_never_reaches_the_smoother() {
 
 /// The `ParamSet` an insert hands back addresses the node's own cells: a move
 /// through it reaches the running node, which the graph owns.
-///
-/// Mutation (run): `param_set` builds its cells with `Param::new` (cells of
-/// its own) → the source stays front-centre, `[0.707, 0.707]` → fails.
 #[test]
 fn the_inserted_params_move_the_running_node() {
     use tutti_graph::Solo;
@@ -378,9 +360,6 @@ fn the_inserted_params_move_the_running_node() {
 /// the channels after it take the next one, so the surrounds are not one slot
 /// early. The literals are the file orders worked by hand, the bed's speakers
 /// being L R C (Ls Rs) (Lrs Rrs) (TFL TFR TBL TBR) in the preset's order.
-///
-/// Mutation (run): `speaker_of_channel` not skipping the LFE (every channel a
-/// speaker) -> the 5.1, 7.1 and 7.1.4 rows fail.
 #[test]
 fn a_channels_speaker_skips_the_lfe() {
     let rows: [(u16, &[Option<usize>]); 5] = [
@@ -426,9 +405,6 @@ fn a_channels_speaker_skips_the_lfe() {
 
 /// A topology is a bed only in the engine's order: the right width in another
 /// order (unassigned channels) has no angles to pan to, and the error names it.
-///
-/// Mutation (run): `for_topology` dropping the `assumed` comparison -> the
-/// unassigned cases build a panner and fail.
 #[test]
 fn a_topology_that_is_not_a_bed_is_refused_by_name() {
     for width in [4u16, 6, 12] {
@@ -450,8 +426,6 @@ fn a_topology_that_is_not_a_bed_is_refused_by_name() {
 
 /// The ports a lane can drive are the params the node declares, each with
 /// its cell as the base the graph's modulation rides on.
-///
-/// Mutation (run): `param_base(3)` answering the spread cell -> fails.
 #[test]
 fn the_panner_declares_its_params() {
     let node = VbapPannerNode::stereo();
@@ -475,9 +449,6 @@ fn the_panner_declares_its_params() {
 /// The cell and the lane are told apart by the default: a render at the
 /// value differs from one at the default (else the row would pass on a node
 /// that ignored both).
-///
-/// Mutation (run): `process` reading every param from its cell
-/// (`driven` all `None`) -> every row fails.
 #[test]
 fn a_lane_drives_each_param_as_its_cell_would() {
     let (left, right) = ([0.5f32; 64], [-0.25f32; 64]);
@@ -535,10 +506,6 @@ fn a_lane_drives_each_param_as_its_cell_would() {
 ///
 /// The speakers that are silent at both ends are found by rendering both
 /// ends settled, not named, so the row follows the bed.
-///
-/// Mutation (run): `AngleSmoother::advance` taking the arc as
-/// `target - current` with no wrap (`ArcDegrees(target.azimuth.get() -
-/// current.get())`) -> the glide sweeps through the front pair -> fails.
 #[test]
 fn a_lane_driven_bearing_crosses_the_seam_the_short_way() {
     let ones = [1.0f32; 64];

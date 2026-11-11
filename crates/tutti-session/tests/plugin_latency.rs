@@ -78,15 +78,6 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
 /// into its cell) reaches the graph through `Phase::Plugins`, with a
 /// `PluginLatencyChanged`; a figure past what PDC compensates is clamped, not
 /// refused.
-///
-/// Mutations (each run, each failed): handing the editor the plugin's own
-/// figure instead of its declared one (`PluginControls::latency`, which drops
-/// the pipeline chunk) fails the first latency assertion; the session's
-/// `refresh_node_latency` marking the graph edited before it compares the
-/// figures fails the clean-graph assertion; `Phase::Plugins` not calling
-/// `refresh_node_latency` leaves the graph at the load-time figure; dropping
-/// the clamp in `clamp_latency` makes the editor refuse the figure, and the
-/// graph keeps 300 + chunk.
 #[test]
 fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
     let mut s = offline();
@@ -161,11 +152,6 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
 /// against the incoming plugin's figure plus the chunk, and a later change of
 /// the incoming plugin's latency is the one the phase hands the graph (its
 /// record moved to the incoming plugin). The node keeps its key.
-///
-/// Mutation (run, failed): `Graph::replace_plugin` not moving its record to
-/// the incoming plugin (`HostedPlugin::replace` skipped): the phase keeps
-/// reading the outgoing client's cell, and both assertions read the
-/// outgoing figure.
 #[test]
 fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
     const INCOMING: usize = 211;
@@ -217,11 +203,6 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
 /// restart re-prepares the graph for the second (`OutputSpec::quantum` ->
 /// `Prepare::quantum`). The session's total latency (the plugin alone on
 /// output 0) is the new figure before the first block.
-///
-/// Mutation: the session's `rerate` passing `None` for the quantum -> the
-/// chunk falls back to the graph's `MaxBlock` (1024) -> 1161, not 393 ->
-/// fails. Mutation: `SessionBuilder::build_on` not passing the opened spec's
-/// quantum -> 1161 on the first device -> fails.
 #[test]
 fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
     fn spec(quantum: usize) -> OutputSpec {

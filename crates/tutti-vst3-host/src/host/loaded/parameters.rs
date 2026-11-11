@@ -533,9 +533,6 @@ mod requirements_tests {
     /// The FFI layer keeps `u32::MAX` for "interface not implemented"; every
     /// other word, including `0` (implemented, asks for nothing), is a real
     /// answer.
-    ///
-    /// Mutation (run): `!=` to `==` in `requirements` fails all three rows;
-    /// returning `Some(raw)` always fails the first.
     #[test]
     fn only_the_sentinel_means_no_interface() {
         assert_eq!(requirements(u32::MAX), None);
@@ -545,10 +542,6 @@ mod requirements_tests {
 
     /// **A requirement bit this host does not name survives the decode**, so
     /// the figure a caller reads is what the plugin returned.
-    ///
-    /// Mutation (run, fails): `from_bits_truncate` in `requirements` together
-    /// with removing the `const _ = !0` of `ProcessContextRequirements` (alone,
-    /// `from_bits_truncate` passes: that const makes every bit "named").
     #[test]
     fn an_unnamed_requirement_bit_survives() {
         let raw = f::NEED_TEMPO.bits() | (1 << 30);
@@ -557,10 +550,6 @@ mod requirements_tests {
 
     /// A plugin without the interface wants every field; one that has it wants
     /// exactly what it flags.
-    ///
-    /// Mutation (run): replacing `is_none_or` with `is_some_and` in the transport
-    /// predicate fails the `None` row; dropping `NEED_CHORD` from the
-    /// sequencer predicate (testing `req != 0`) fails the tempo-only row.
     #[test]
     fn no_interface_wants_everything() {
         assert!(wants_transport(None));
@@ -595,9 +584,6 @@ mod measures_tests {
     }
 
     /// Every string on the closed list maps over a plain range that fits.
-    ///
-    /// Mutation (run, 2026-11-11): `"st" => Some(Self::Semitones)` changed to
-    /// `Some(Self::Cents)` in `ParamUnit::from_label` → the `st` row fails.
     #[test]
     fn every_accepted_units_string_maps() {
         for (label, unit) in [
@@ -624,9 +610,6 @@ mod measures_tests {
     }
 
     /// Near-misses are `None`, whatever the range.
-    ///
-    /// Mutation (run, 2026-11-11): `ParamUnit::from_label`'s `Hz` arm widened to
-    /// `"Hz" | "hz"` → the `hz` row maps, and this test fails.
     #[test]
     fn near_misses_are_not_units() {
         for label in ["kHz", "Db", "dB(A)", "semitones", "", "\u{a0}Hz", "hz"] {
@@ -640,10 +623,6 @@ mod measures_tests {
 
     /// A label with no plain range, or a range that does not fit, is `None`:
     /// VST3 declares only normalized values, so most plugins get `None` here.
-    ///
-    /// Mutation (run): `build_param_info`-style `with_measures` replaced by
-    /// assigning `measures` directly → the normalized and `0..1000` rows
-    /// return `Some`, and this test fails.
     #[test]
     fn a_unit_without_a_range_that_fits_is_none() {
         let hz = |range| measures("Hz", false, 0, range);
@@ -654,10 +633,6 @@ mod measures_tests {
 
     /// A list flag with a step count is a `Choice`; a step count of 1 is a
     /// `Toggle`; both over a normalized range, which is all VST3 declares.
-    ///
-    /// Mutation (run): `step_count == 1` changed to `step_count == 2` → the
-    /// `Toggle` row fails; `is_list && step_count >= 1` changed to
-    /// `is_list && step_count >= 99` → the `Choice` rows fail.
     #[test]
     fn a_list_is_a_choice_and_one_step_is_a_toggle() {
         let n = || ParamRange::Normalized { default: 0.0 };
@@ -674,9 +649,6 @@ mod measures_tests {
     }
 
     /// The bypass flag is the `Bypass` role, and nothing else gives one.
-    ///
-    /// Mutation (run): `is_bypass.then_some(UnitParam::Bypass)` changed to
-    /// `(!is_bypass).then_some(..)` → both rows fail.
     #[test]
     fn the_bypass_flag_gives_bypass() {
         assert_eq!(declared_role(true), Some(UnitParam::Bypass));
@@ -685,9 +657,6 @@ mod measures_tests {
 
     /// `IParameterFunctionName`'s answer for the dry/wet mix gives that one
     /// parameter `Wet`; no answer leaves every role alone.
-    ///
-    /// Mutation (run): the filter `p.id == wet` changed to `true` → every
-    /// parameter becomes `Wet`, and the neighbour row fails.
     #[test]
     fn the_dry_wet_function_name_gives_wet() {
         let list = || {

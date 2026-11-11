@@ -577,10 +577,6 @@ mod tests {
 
     /// A caller's sample type must be the slab's width: a mismatch is an error
     /// both ways and touches nothing.
-    ///
-    /// Mutation: drop either `check_width` call: the matching write or read
-    /// below returns `Ok` (the `f64` write into an `f32` slab spills into the
-    /// next channel) and the assertion fails.
     #[test]
     fn a_sample_type_of_the_wrong_width_is_refused() {
         let (mut host, _server) = pair("width32", layout(32, SampleFormat::Float32));
@@ -628,9 +624,6 @@ mod tests {
     ///
     /// The server publishes so the read is not refused on the sequence: with
     /// aliased regions, the published "output" would be the input.
-    ///
-    /// Mutation (run): give the output region the input's base in
-    /// `offset_of` → the read returns the input → fails.
     #[test]
     fn the_output_region_never_aliases_the_input_region() {
         let (mut host, mut server) = pair("alias", stereo_layout(64, SampleFormat::Float32));
@@ -658,11 +651,6 @@ mod tests {
     /// Reading a slot that holds a *different* block must be detectable, and
     /// the read must not hand back its bytes: they are real audio, just the
     /// wrong block's.
-    ///
-    /// Mutation (run): both sequence loads removed (`held = true` and the
-    /// recheck's `||` clause) → the read of block 3 returns block 1's samples
-    /// → fails. Either load alone catches a slot that stays stale; the first
-    /// one has a test of its own below.
     #[test]
     fn a_stale_slot_is_detectable_and_never_read() {
         let (host, mut server) = pair("stale", stereo_layout(64, SampleFormat::Float32));
@@ -691,10 +679,6 @@ mod tests {
     ///
     /// Deterministic: the republish runs in the window between the copy and
     /// the recheck, through `read_region_then`'s seam.
-    ///
-    /// Mutation (run): drop the second sequence load (the `||` clause in
-    /// `read_region_then`) → the read returns 64 and block 1's samples →
-    /// fails.
     #[test]
     fn a_slot_republished_during_the_copy_is_discarded() {
         let (host, mut server) = pair("torn", stereo_layout(64, SampleFormat::Float32));
@@ -717,9 +701,6 @@ mod tests {
     /// half the new; the recheck alone would see the right sequence and pass it.
     /// The load before the copy refuses it: the slot did not hold the block
     /// when the copy began.
-    ///
-    /// Mutation (run): `let held = true;` (no load before the copy) → the read
-    /// returns 64 with block 1's samples → fails.
     #[test]
     fn a_block_published_during_the_copy_is_not_read() {
         let (host, mut server) = pair("late", stereo_layout(64, SampleFormat::Float32));
@@ -811,9 +792,6 @@ mod tests {
     /// The writer's direction is its constructor's: `create` writes inputs and
     /// `open` writes outputs. A writer of the wrong direction would let the
     /// host overwrite the plugin's answer.
-    ///
-    /// Mutation (run): `open` returning `Direction::Input` → the server's
-    /// write lands in the input region → `has_output` is false → fails.
     #[test]
     fn create_writes_inputs_and_open_writes_outputs() {
         let (mut host, mut server) = pair("dirs", stereo_layout(8, SampleFormat::Float32));
@@ -870,9 +848,6 @@ mod tests {
     /// A layout whose size does not fit in `usize` is an error, from either
     /// end: the server sizes its mapping from a layout the peer sent, and a
     /// wrapped size would map a small file the layout's offsets run past.
-    ///
-    /// Mutation (run): `byte_size` with unchecked arithmetic → the
-    /// multiplication overflows (a panic under test) → fails.
     #[test]
     fn a_layout_too_large_to_address_is_refused() {
         // 2 slots x 2 channels x 2^62 frames: each ring's byte count wraps to
@@ -887,10 +862,6 @@ mod tests {
     /// **`create` is exclusive (D3).** A name that exists is refused rather
     /// than truncated: truncating a file another process has mapped faults
     /// that process (SIGBUS), and a planted file would carry our audio.
-    ///
-    /// Mutation (run): `create(true).truncate(true)` in `tutti-plugin-ipc-ffi`'s
-    /// `open_file` → the
-    /// second create succeeds → fails.
     #[test]
     fn create_refuses_a_name_that_exists() {
         let n = name("exists");

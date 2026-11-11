@@ -274,11 +274,6 @@ fn said_at(seen: &[(Env, Told)], f: Option<u64>) -> Transport {
 /// frames before its first frame: the previous block's, 24 frames into it,
 /// across a seek at the boundary, a tempo change, a loop that wrapped before
 /// that frame, a record toggle and a stop — not the block's own.
-///
-/// Mutation (run): read `cx.env.transport_at(at)` in `Snapshot::at` (the
-/// block's own time, the old polled behaviour) → every block reports its own
-/// scene → fails. Mutation (run): build the snapshot in
-/// `TransportFeed::block` from a `Cx` with `arrival: Latency::ZERO` → fails.
 #[test]
 fn a_live_node_behind_a_latent_path_is_told_its_inputs_transport() {
     let _lock = lock_probe();
@@ -312,9 +307,6 @@ fn a_live_node_behind_a_latent_path_is_told_its_inputs_transport() {
 
 /// **With no latency** the plugin is told the block's own first frame, as
 /// before.
-///
-/// Mutation (run): read the transport `ARRIVAL` frames before the block (a
-/// `Cx` whose arrival is 40 here) → fails.
 #[test]
 fn a_live_node_with_no_latency_is_told_the_blocks_own_time() {
     let _lock = lock_probe();
@@ -344,12 +336,6 @@ fn seven_eight() -> ProjectMeter {
 /// `set_meter` on the client before it went in; cleared, after it went in,
 /// through the controls inserting it handed back (4/4); and installed
 /// again through them.
-///
-/// Mutation (run): drop the meter source (`TransportFeed::block` reading
-/// `self.default_meter` always) → 4 → fails. Mutation (run): hand back a
-/// fresh `PluginMeter::default()` as the controls' meter in the node's
-/// `IntoNode` (`InProcClient::controls`) → the handle is not the
-/// node's cell → fails.
 #[test]
 fn the_live_node_tells_the_plugin_its_meter() {
     let _lock = lock_probe();
@@ -377,10 +363,6 @@ fn the_live_node_tells_the_plugin_its_meter() {
 /// **`Plugin::set_meter` reaches an in-process VST2** (its VST2 arm): the
 /// catalog's `Plugin` for the probe is given 7/8 before it goes in, and the
 /// plugin is told 7/8.
-///
-/// Mutation (run): make the VST2 arm of `Plugin::meter` (which
-/// `Plugin::set_meter` writes through) a fresh `PluginMeter::default()`, so
-/// the install reaches no node → 4 → fails.
 #[test]
 fn plugin_set_meter_reaches_an_in_process_vst2() {
     let _lock = lock_probe();
@@ -408,10 +390,6 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
 /// `samplesToNextClock` the signed distance to the nearest 24-ppq clock at
 /// that tempo, both under their scenes' seeks, tempo change, loop and stop;
 /// `nanoSeconds` is flagged and never runs backwards.
-///
-/// Mutation (run): drop `.with_position_samples` in `transport_info` →
-/// `samplePos` is 0 → fails. Mutation (run): `TransportFeed::over` with
-/// `host_clock: None` → `kVstNanosValid` clear → fails.
 #[test]
 fn a_live_node_is_told_project_time_the_midi_clock_and_the_host_clock() {
     let _lock = lock_probe();

@@ -12,16 +12,6 @@
 //!   value or of one store, never one store's `min` with another's `max`;
 //! - **no going back**: two loads in program order never see an older store
 //!   after a newer one (the word is a single location, so coherence holds).
-//!
-//! # Mutation record
-//!
-//! Each was applied to `src/packed_atomic.rs` and the model failed:
-//!
-//! - `store` writing the word's two halves separately (a `fetch_and`
-//!   clearing one half, then a `fetch_or` of its new bytes, then the same
-//!   for the other), as two `AtomicF32`s would → "a torn range";
-//! - `load` reading the word twice and taking the low half from the first
-//!   read and the high half from the second → "a torn range".
 
 #![cfg(loom)]
 

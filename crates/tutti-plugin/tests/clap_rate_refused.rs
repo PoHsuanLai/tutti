@@ -108,17 +108,6 @@ fn assert_silent(unit: &mut Rig, what: &str) {
 /// The whole cycle on one plugin: running, refused (silent, visible, not
 /// dead, an invalidation raised), refused again, revived by a rate it takes,
 /// and a drop during a refusal that returns promptly.
-///
-/// Mutations (run): the bridge latches the refusal as a crash again
-/// (`mark_crashed` in the `SampleRateSet` error arm) → `RateRefused` never
-/// shows, the status is `Dead` → fails. The server's `rate_refused` early
-/// return removed (`if false && …`) → the rolled-back plugin renders at its
-/// old rate and the silence assertion fails. The bridge never clears the
-/// refusal on a success reply → the status stays `RateRefused` after the
-/// accepted rate → fails. The server keeps `rate_refused` after a success →
-/// the plugin stays silent → fails. `collect` counts a missed chunk while the
-/// refusal is latched (drop the `rate_refusal().is_none()` condition) → the
-/// dropout count rises → fails.
 #[test]
 fn a_refused_rate_is_silent_visible_and_retried() {
     let _lock = machine_lock();

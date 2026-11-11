@@ -753,9 +753,6 @@ mod tests {
     /// saturates for infinity and anything from 2^64 up) makes taps near
     /// `usize::MAX`, not an overflow, and none is in a ring window, which
     /// stops at 2^40: the read misses and that voice is silent.
-    ///
-    /// Mutation (run): the `saturating_add` calls back to `+` -> `taps(inf)`
-    /// panics on overflow in debug -> fails.
     #[test]
     fn a_looped_position_past_usize_saturates_to_taps_no_window_holds() {
         let arrangement = Arrangement {
@@ -843,11 +840,6 @@ mod tests {
     /// it), the fade at most half the loop there — `LoopSpan`'s rule, which
     /// every tier reads by. A lead-in that cannot be read leaves the loop
     /// hard and says so, rather than fading toward silence.
-    ///
-    /// Mutation (run): the lead-in read from `resume` (the head replayed) →
-    /// `[5.0, 6.0]` → fails. Mutation (run): the head mode removed from
-    /// `LoopSpan::new` → a 2-frame fade before frame 2 → fails. Mutation
-    /// (run): `capture` keeping the fade when the read fails → fails.
     #[test]
     fn a_loop_fades_in_from_what_leads_into_its_resume() {
         let wave = make_mono_wave(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
@@ -874,12 +866,6 @@ mod tests {
     /// first; and a loop whose fade goes into its head resumes after it. A
     /// short loop's wraps come from its resident body: the file is read only
     /// for the first pass.
-    ///
-    /// Mutation (run): the blend dropped from `Mapping::fill` → frame 7 reads
-    /// 7.0 → fails. Mutation (run): `place_frame` wrapping to `start` in head
-    /// mode → fails. Mutation (run): the run not cut at the loop's end → 9.0
-    /// after 8 → fails. Mutation (run): `body_run` never used → the read count
-    /// → fails.
     #[test]
     fn a_fill_writes_the_looped_sequence() {
         let wave = make_mono_wave(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
@@ -924,9 +910,6 @@ mod tests {
     /// 100-frame loop is its frame 0, frame 150 its frame 50 — the failure
     /// `CLAUDE.md` names for this boundary ("a 6-channel looped clip wraps at a
     /// sixth of its length").
-    ///
-    /// Mutation (run): the fill's frame count taken in samples (`out.len()`
-    /// rather than `out.len() / ch`) → fails.
     #[test]
     fn a_six_channel_loop_wraps_at_its_frame_length() {
         const CH: usize = 6;
@@ -969,10 +952,6 @@ mod tests {
     /// A reversed mapping holds the file mirrored: straight position `s`
     /// holds file frame `len - 1 - s`, every channel in its place (a flat
     /// reverse would swap each frame's channels), and nothing past the file.
-    ///
-    /// Mutation (run): the frames reversed as a flat slice → channels swap →
-    /// fails. Mutation (run): the run read from `len - pos` → off by one →
-    /// fails.
     #[test]
     fn a_reversed_mapping_holds_the_file_mirrored() {
         let wave = make_test_wave(&[(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)]);
@@ -995,11 +974,6 @@ mod tests {
     /// on a non-dyadic grid, through the fade, across many wraps, and past the
     /// file's end (silent). This is the property the live tier's bit-identity
     /// rests on.
-    ///
-    /// Mutation (run): the looped taps one frame late (`idx .. idx + 3`) →
-    /// fails. Mutation (run): the reverse taps not mirrored → fails. (Taking
-    /// the fraction from the placed position instead is no mutation at all:
-    /// placement is exact, `Arrangement::taps`.)
     #[test]
     fn a_positions_taps_read_what_the_memory_tier_reads() {
         use crate::voice::interp::{Place, interpolate_taps, read_frame, read_looped_frame};
@@ -1061,9 +1035,6 @@ mod tests {
     /// Two mappings part where their slots first differ: the same loop
     /// nowhere, a longer loop at the old end, a reversal at once, and a
     /// content split at its switch is compared piecewise.
-    ///
-    /// Mutation (run): the fade left out of the key → a fade change parts
-    /// nowhere → fails.
     #[test]
     fn mappings_part_where_their_slots_first_differ() {
         let wave = make_mono_wave(&(0..100).map(|i| i as f32).collect::<Vec<_>>());
@@ -1146,12 +1117,6 @@ mod tests {
     /// while the streamer reads: the switch is chosen again, a guard past the
     /// new in-flight end, and crossfaded (the reader would have played the
     /// old content past where the two part).
-    ///
-    /// Mutation (run): `apply_mapping` keeping its first choice (`break`
-    /// whatever `now` is) → the switch stays at 3 000, under the reader's
-    /// block, unfaded → fails. Mutation (run): the retry keeping the old
-    /// `busy` (`busy = now` removed) → it chooses 3 000 again, four times →
-    /// fails.
     #[test]
     fn a_reader_reaching_the_switch_during_the_read_moves_it() {
         let (mut writer, mut reader, wave) = switching_ring();
@@ -1184,9 +1149,6 @@ mod tests {
     /// each read the reader claims a block past where the switch was just
     /// chosen, and the fourth choice stands (its fade record covers the
     /// reader crossing it), rather than chasing the reader to the ring's end.
-    ///
-    /// Mutation (run): the `tries == 4` bound removed → the streamer chases
-    /// the reader until it claims past the ring's end, at 9 256 → fails.
     #[test]
     fn a_reader_keeping_pace_is_given_up_on_after_four_reads() {
         let (mut writer, mut reader, wave) = switching_ring();

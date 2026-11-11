@@ -15,9 +15,6 @@ fn lfo_parts(source: Source) -> (LfoShape, u64, Clock) {
 
 /// Each named constructor's shape, at the defaults: seed 0, one cycle a
 /// second, phase 0, no anchor.
-///
-/// Mutations (each run, each failed): `triangle` building a sine (its row);
-/// `new` defaulting to 2 Hz (the clock assert).
 #[test]
 fn each_lfo_constructor_is_its_shape_at_one_hertz() {
     let rows = [
@@ -46,10 +43,6 @@ fn each_lfo_constructor_is_its_shape_at_one_hertz() {
 /// `rate` is a beat clock with the phase; `hz` is a seconds clock with
 /// the phase and no anchor; `seed` reaches the wave. The last of `rate`
 /// and `hz` wins.
-///
-/// Mutations (each run, each failed): the beat clock dropping the phase
-/// (the beats assert); `hz` setting a beat rate (the seconds assert);
-/// `seed` ignored (the seed assert).
 #[test]
 fn an_lfos_clock_and_seed_are_pinned_field_by_field() {
     let beats = Lfo::saw()
@@ -84,8 +77,6 @@ fn an_lfos_clock_and_seed_are_pinned_field_by_field() {
 }
 
 /// A macro is its value.
-///
-/// Mutation: `From<Macro>` negating the value (failed).
 #[test]
 fn a_macro_is_its_value() {
     assert_eq!(Source::from(Macro(-0.4)), Source::Macro { value: -0.4 });
@@ -93,9 +84,6 @@ fn a_macro_is_its_value() {
 
 /// A follower defaults to 5 ms / 100 ms, `Default` agrees with `new`, and
 /// each builder sets only its own field.
-///
-/// Mutations (each run, each failed): `attack` writing the release (the
-/// built assert); a 10 ms default attack (the default assert).
 #[test]
 fn a_followers_times_are_pinned_field_by_field() {
     assert_eq!(
@@ -116,8 +104,6 @@ fn a_followers_times_are_pinned_field_by_field() {
 }
 
 /// A note envelope carries its stages unchanged.
-///
-/// Mutation: `From<NoteEnvelope>` swapping attack and release (failed).
 #[test]
 fn a_note_envelope_carries_its_stages() {
     let adsr = Adsr {

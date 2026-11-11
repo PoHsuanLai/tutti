@@ -483,8 +483,7 @@ mod tests {
     }
 
     /// A Windows CLAP module is `<stem>.clap` in the arch directory (the bundle
-    /// is spelled `.CLAP` so the full-name spelling cannot find it). Mutation:
-    /// drop `"clap"` from `ModuleKind::Clap`'s extensions in `exts_for`.
+    /// is spelled `.CLAP` so the full-name spelling cannot find it).
     #[test]
     fn a_clap_module_is_named_with_the_clap_extension_on_windows() {
         let tmp = TempDir::new().unwrap();
@@ -496,7 +495,7 @@ mod tests {
     }
 
     /// A macOS CLAP or AU bundle's executable is the bare stem under
-    /// `Contents/MacOS`. Mutation: make `probe_named` skip the bare stem.
+    /// `Contents/MacOS`.
     #[test]
     fn a_macos_clap_or_au_bundle_resolves_its_bare_stem_executable() {
         let tmp = TempDir::new().unwrap();
@@ -514,8 +513,7 @@ mod tests {
     }
 
     /// An AU executable need not carry the bundle's stem (its `Info.plist` names
-    /// it); the enumeration finds it. Mutation: set `enumerate` to `false` in
-    /// `any_module_in_bundle`.
+    /// it); the enumeration finds it.
     #[test]
     fn an_au_executable_with_another_name_is_found_by_enumeration() {
         let tmp = TempDir::new().unwrap();

@@ -117,9 +117,6 @@ mod tests {
         message(failure.as_ref()).to_owned()
     }
 
-    // Mutation (run), for the four tests: `run_gapped` treating every case as
-    // gapped fails the first; not requiring the gapped body to fail fails the
-    // second; ignoring the failure text fails the third.
     #[test]
     fn an_ungapped_case_runs_plainly() {
         run_gapped("f", GAPS, "other", || {});

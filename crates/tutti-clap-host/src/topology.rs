@@ -76,9 +76,6 @@ mod tests {
     /// Two hand-written arms could transpose a pair and still compile, so the
     /// positions are written as literals from the header (`CLAP_SURROUND_FL = 0`
     /// ... `CLAP_SURROUND_TSR = 19`), not derived from the conversion.
-    ///
-    /// Mutation (run): mapping `SideLeft` to `Speaker::SideRight` in
-    /// `speaker_of` fails this at position 9.
     #[test]
     fn every_clap_position_decodes_to_its_speaker() {
         let spec: [(u8, Speaker); 20] = [

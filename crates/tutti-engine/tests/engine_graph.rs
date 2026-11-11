@@ -205,9 +205,6 @@ fn graph_engine(
 /// past the prepared maximum as consecutive maximum-sized ones), the
 /// executor's own frame clock, the transport as it stands, and a fold that is
 /// the identity at equal width.
-///
-/// Mutation (run): cap the engine's block at 64 frames
-/// (`block_bound`) → channel 1 reads 64 → fails.
 #[test]
 fn graph_engine_render_is_bit_identical_to_the_executor() {
     let blocks = [64usize, 256, 100, 1024, 1, 512];
@@ -249,10 +246,6 @@ fn graph_engine_render_is_bit_identical_to_the_executor() {
 /// after it, up to 1. Bit-equal wherever the gain is 1; within `f32`
 /// rounding of the ramp inside it: the fader accumulates `1/480` a frame in
 /// `f32`, at most 480 roundings of half an ulp of 1 (under 3e-5, relative).
-///
-/// Mutation (run): copy channel `c` straight across instead of the matrix
-/// in the graph render → the 6→2 case fails. Skip the fader's `apply` → the
-/// stop's frame is not zero → fails.
 #[test]
 fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
     let blocks = [256usize, 256, 300, 64, 128, 512, 256];
@@ -318,11 +311,6 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
 /// `At::Frame` play: the first frame the transport rolls — the first
 /// non-silent sample of a transport-gated graph — is exactly that frame, in
 /// the middle of a block.
-///
-/// Mutation (run): land every due command at its piece's first frame
-/// (`at = cursor` in the walk) → fails. Hand the executor
-/// `TransportChanges::NONE` → the graph hears the start a block late →
-/// fails. Drop `schedule.release` → the credit stays held → fails.
 #[test]
 fn a_timed_start_sounds_from_its_exact_frame() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -346,14 +334,6 @@ fn a_timed_start_sounds_from_its_exact_frame() {
 /// The seek's beat falls on a block's first frame, where the engine's
 /// playhead is exactly beat 1 (it counts frames and derives the beat): it
 /// must land there, on that frame, without counting as late.
-///
-/// Mutation (run): land every due command at its piece's first frame
-/// (`at = cursor` in the walk) → the stop lands at its block's start →
-/// fails. Hand the executor `TransportChanges::NONE` → fails. Drop
-/// `schedule.release` → `scheduled_outstanding` stays 2 → fails. (With the
-/// playhead exact, the behind-side rounding tolerance in `Env::beat_due` is
-/// not exercised here; tutti-graph's
-/// `a_beat_a_rounding_error_behind_is_the_first_frame` pins it.)
 #[test]
 fn beat_timed_seek_and_stop_land_on_their_frames() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -444,10 +424,6 @@ impl Node for RecLog {
 /// (`Transport::recording`), read once per block: what a hosted plugin's
 /// transport snapshot reports as recording, now that it is a function of
 /// `Env`.
-///
-/// Mutation: drop `.with_recording(control.recording)` in
-/// `TransportClock::begin` → every block reads not recording → fails.
-/// Mutation: read `recording: false` in `Control::read` → fails.
 #[test]
 fn the_recording_flag_reaches_a_nodes_env() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -517,10 +493,6 @@ fn dc_run(
 /// (from 520), reaching zero exactly on frame 1 000, where the transport
 /// jumps; the new position's audio fades in from there. The gain never moves
 /// by more than one fade step a frame.
-///
-/// Mutation (run): give no lead (`Gain::Aim(None)` at every walk step) →
-/// the gain steps from 1 to 0 at 1 000 → fails. Snap the gain back to 1
-/// after the jump (no fade-in) → fails.
 #[test]
 fn a_timed_declicked_seek_fades_out_before_and_in_after_its_frame() {
     let (out, t) = dc_run(12, |m, i| {
@@ -552,10 +524,6 @@ fn a_timed_declicked_seek_fades_out_before_and_in_after_its_frame() {
 /// (the block after it was sent) for frame 1 224, it fades out over the 200
 /// frames that remain (a steeper, still continuous ramp) and lands on its
 /// frame.
-///
-/// Mutation (run): fade out at `1/FADE` a frame regardless of the lead left
-/// → the gain is not zero on frame 1 224 → fails. Give no lead → a 1-to-0
-/// step → fails.
 #[test]
 fn a_declicked_seek_with_short_notice_fades_over_what_is_left() {
     let (out, t) = dc_run(12, |m, i| {
@@ -582,10 +550,6 @@ fn a_declicked_seek_with_short_notice_fades_over_what_is_left() {
 /// at zero on frame 1 000 where the transport stops, and the gain recovers
 /// from there (the DC source keeps sounding while stopped, as live input or
 /// a reverb tail would), continuously.
-///
-/// Mutation (run): snap the gain back to 1 after the zero (no recovery
-/// ramp) → a step → fails. Give no lead → a 1-to-0 step at the stop →
-/// fails.
 #[test]
 fn a_timed_declicked_stop_fades_out_before_its_frame() {
     let (out, t) = dc_run(12, |m, i| {
@@ -604,9 +568,6 @@ fn a_timed_declicked_stop_fades_out_before_its_frame() {
 /// A declick lasts 10 ms at the engine's rate, not a fixed frame count: a
 /// timed stop at frame 4 000 starts fading `fade` frames before it, is at
 /// zero on it, and is back at full level `fade` frames after.
-///
-/// Mutation (run): a fixed 480-frame fade (a `fade_frames` that ignores the
-/// rate) → fails at 44.1, 96 and 192 kHz.
 #[test]
 fn a_declick_lasts_ten_milliseconds_at_any_rate() {
     for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
@@ -644,9 +605,6 @@ fn a_declick_lasts_ten_milliseconds_at_any_rate() {
 /// the next block's first frame with the gain at zero there (the old audio
 /// ends on that frame, the one accepted step), and the new
 /// audio fades in continuously from it.
-///
-/// Mutation (run): skip the fade-in after a no-lead jump (gain straight back
-/// to 1) → a second step → fails.
 #[test]
 fn a_next_block_declicked_seek_fades_in_after_the_jump() {
     let (out, t) = dc_run(8, |m, i| {
@@ -669,8 +627,6 @@ fn a_next_block_declicked_seek_fades_in_after_the_jump() {
 
 /// A command whose frame is already past lands at the next block's first
 /// frame and is counted late, never dropped.
-///
-/// Mutation (run): drop `schedule.count_late()` → fails.
 #[test]
 fn a_past_frame_lands_at_once_and_is_counted() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -687,9 +643,6 @@ fn a_past_frame_lands_at_once_and_is_counted() {
 
 /// Tempo and loop changes at a frame: the beat advances at the old tempo up
 /// to it and the new one after, and a loop armed at a frame wraps from then.
-///
-/// Mutation (run): land every due command at its piece's first frame → the
-/// tempo changes at 1 024, not 1 200 → fails.
 #[test]
 fn tempo_and_loop_change_on_their_frames() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -733,11 +686,6 @@ fn tempo_and_loop_change_on_their_frames() {
 /// starts at a frame inside a block (`At::Frame`), and graph notes scheduled
 /// at beats land on the frames playback reaches them — beat 0 on the start
 /// frame itself, beat 0.5 half a beat later.
-///
-/// Mutation (run): hand the executor `TransportChanges::NONE` → beat 0 is
-/// not reached in the start's block, and lands late at the next block's
-/// first frame → fails. Land every due command at its piece's first frame →
-/// fails.
 #[test]
 fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -774,11 +722,6 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
 ///
 /// The model below is what the clock is pinned to in `clock.rs`; it is exact up to the rebasing at each
 /// segment's origin, so the tolerance is 1e-9 beat.
-///
-/// Mutation (run): skip the loop wrap in `FrameClock::advance` → fails after
-/// the loop arms. Hand the executor `TransportChanges::NONE` → the
-/// per-frame beats differ after a cut → fails. Land every due command at
-/// its piece's first frame → fails.
 #[test]
 fn env_beats_are_the_closed_form_of_each_segment() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -885,12 +828,6 @@ fn env_beats_are_the_closed_form_of_each_segment() {
 /// until a seek puts the playhead inside the loop, and from then it wraps
 /// (the common DAW behaviour). The linear beat also bounds the published
 /// playhead after every block.
-///
-/// Mutation (run): drop the armed-behind guard in `FrameClock::advance`
-/// (wrap whether or not the playhead was before the end) → the clock jumps
-/// into the loop on the frame after it is armed, the published playhead is
-/// inside [1, 2) → fails. (`LoopRange::advance` is the offline timeline's
-/// rule; the live clock's is that guard.)
 #[test]
 fn a_loop_armed_behind_the_playhead_does_not_jump() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -950,10 +887,6 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
 /// that frame; only the audio fades. The graph's `Env` reads the transport
 /// stopped from the frame, its beat holds, and a graph `At::Beat` command
 /// due after it in the same block does not fire.
-///
-/// Mutation (run): leave `apply_outcome` out of `publish`'s
-/// `DeclickStarted` arm (so the transport rolls until the fade completes) → `Env` reads rolling after frame 600, the beat-0.03 note
-/// fires → fails.
 #[test]
 fn a_declick_stop_stops_the_transport_on_its_frame() {
     // Rolling from frame 256; a declick stop at frame 600, inside the block
@@ -1016,10 +949,6 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
 /// more than `MAX_ROOT_CHANNELS` global outputs at construction, and any
 /// later commit that would widen past it; and an executor that is not the
 /// editor's. Never silence.
-///
-/// Mutation (run): set no output limit in `with_capacity`
-/// (`max_global_outputs: usize::MAX`) → both refusals pass → fails. Skip the
-/// pair check → the stranger's executor is accepted → fails.
 #[test]
 fn a_graph_engine_refuses_more_outputs_than_it_folds() {
     use tutti_engine::GraphEngineError;
@@ -1077,10 +1006,6 @@ fn a_graph_engine_refuses_more_outputs_than_it_folds() {
 /// lands in (no stale split, no assertion in the callback), through both
 /// `process` and `process_segment`; and a re-prepare past its block
 /// capacity is refused on the control thread.
-///
-/// Mutation (run): read the block bound before `apply_pending` in `settle`
-/// → the shrink hands the executor a 512-frame block
-/// against a 256 maximum → panics → fails.
 #[test]
 fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
     use tutti_graph::CommitError;
@@ -1137,10 +1062,6 @@ fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
 /// under the clock's hysteresis does not move it, so a beat-timed stop at
 /// beat 10 lands on beat 10's frame at the tempo in force (120 BPM), not
 /// at the 120.0005 BPM asked.
-///
-/// Mutation (run): take the raw asked tempo in `TransportClock::take_tempo`
-/// (no hysteresis) → the clock runs at 120.0005 BPM and the stop's frame
-/// is not on beat 10 → fails.
 #[test]
 fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
     let transport = Transport::new(SampleRate::new(SR));
@@ -1189,10 +1110,6 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
 /// writes out (`Segment::at` is
 /// `TimelineSegment::beat_at`'s arithmetic, IEEE-exact on every target: no
 /// libm).
-///
-/// Mutation (run): advance the engine's clock by accumulating
-/// (`beat + beats_per_sample × frames`, a new segment each block) → the
-/// playhead parts from the closed form within the first blocks → fails.
 #[test]
 fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     // Logs only each block's first beat: 450 000 blocks.
@@ -1289,11 +1206,6 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
 /// seek at 1 000 then a stop at 1 020; a seek at 900 then a seek at 1 000;
 /// an untimed seek (no lead, the accepted step on its frame) then a timed
 /// one 100 frames on, inside its fade window.
-///
-/// Mutation (run): clear the aim after the inner loop on a jump
-/// (`if jump { self.aim = None }`) → the aim pushed after the jump at the
-/// same offset is lost, the gain rises and is forced back to 0 at the second
-/// command → a step (about 0.04 and 0.2) → fails.
 #[test]
 fn two_declicked_commands_close_together_stay_continuous() {
     let seek = |beat: f64| MotionEvent::Locate {
@@ -1361,14 +1273,6 @@ const NEW_SR: f64 = 48_000.0;
 /// is continuous across the silent block, and a stop scheduled at
 /// `Frame(44 100)` (one second at the old rate) lands on frame 48 000, one
 /// second at the new one.
-///
-/// Mutations (run):
-/// - `GraphRender::settle` following the rate at the resume only (reading
-///   `exec.prepare()`, as before this change) → the clock steps the silent
-///   block at the old rate, and every later beat is ~0.0018 of a beat
-///   early → fails;
-/// - dropping `schedule.rescale` there → the stop lands on executor frame
-///   44 100 → fails.
 #[test]
 fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
     let transport = Transport::new(SampleRate::new(OLD_SR));
@@ -1435,11 +1339,6 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
 /// `Transport::audio`; once the engine is dropped the transport
 /// hands the claim out again. Two engines would both consume every seek
 /// and both write the playhead.
-///
-/// Mutation (run): `MotionFsm::audio` building a fresh machine instead of
-/// popping the home → the second engine builds → fails. Mutation (run):
-/// `MotionAudio`'s `hand_back` not pushing the home back → the engine after
-/// the drop is refused → fails.
 #[test]
 fn a_transport_has_one_playhead_writer() {
     use tutti_engine::GraphEngineError;
@@ -1467,10 +1366,6 @@ fn a_transport_has_one_playhead_writer() {
 /// segment generation on**, and so does a play start; a block that only
 /// rolls does not. What the sampler's seat keys on, so it re-seats through
 /// a jump its beat cannot show.
-///
-/// Mutation (run): `TransportClock::publish_position` not storing the
-/// generation → it stays 0 → fails. Mutation (run): `note_rolling` not
-/// marking the start → the play start leaves it → fails.
 #[test]
 fn a_seek_to_the_same_beat_moves_the_live_generation() {
     use tutti_transport::Timeline;
@@ -1515,12 +1410,6 @@ fn a_seek_to_the_same_beat_moves_the_live_generation() {
 /// seconds of 512-frame device blocks on a rolling transport, while the
 /// graph renders (moved here from the deleted `legacy_chunk_major.rs`, which
 /// pinned it beside the `Legacy` chunking).
-///
-/// Mutation (run then): the engine publishing its playhead in the walk *and*
-/// re-publishing the block's first beat before the render
-/// (`TransportClock::advance` writing back, and `render` storing
-/// `transport.beat` before processing) → the reader thread sees it step
-/// back to the block's start every block.
 #[test]
 fn the_playhead_another_thread_reads_never_goes_backwards() {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

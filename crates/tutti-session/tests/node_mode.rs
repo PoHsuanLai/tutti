@@ -86,9 +86,6 @@ fn all_are(block: &[f32], want: f32) -> bool {
 
 /// Each mode's steady output, through the session: active `A / 2`, bypassed
 /// `A`, muted `+0.0`, and active again `A / 2`.
-///
-/// Mutation (run): `Graph::set_mode` returning `Ok(())` without calling the
-/// editor → the bypassed block reads `A / 2` and the test fails.
 #[test]
 fn each_mode_reaches_the_running_node() {
     let mut r = rig();
@@ -106,9 +103,6 @@ fn each_mode_reaches_the_running_node() {
 
 /// `mode` reads back what `set_mode` stored, and is `Active` for a node never
 /// given one.
-///
-/// Mutation (run): `Graph::mode` returning `NodeMode::Active` always → the
-/// read-back after the bypass fails.
 #[test]
 fn mode_reads_back_what_was_set() {
     let mut r = rig();
@@ -121,9 +115,6 @@ fn mode_reads_back_what_was_set() {
 
 /// A mode is a control: setting one marks nothing edited, and the next
 /// update sends no commit (the plan last sent is the same `Arc`).
-///
-/// Mutation (run): `set_mode` also setting `self.edited = true` → the
-/// `is_edited` assertion fails.
 #[test]
 fn a_mode_is_not_an_edit() {
     let mut r = rig();
@@ -141,9 +132,6 @@ fn a_mode_is_not_an_edit() {
 
 /// A node that is not in the graph, or no longer is, is refused, and reads
 /// `Active`.
-///
-/// Mutation (run): `Graph::set_mode` mapping the editor's refusal to `Ok(())`
-/// → the `NoSuchNode` assertions fail.
 #[test]
 fn a_missing_node_is_refused() {
     let mut r = rig();

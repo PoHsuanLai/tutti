@@ -101,9 +101,6 @@ fn block_discovery(block: BlockSelect, info: bool, name: bool) -> Stream {
 
 // M2-104 §7.1.2: version 1.1, static, NFB = highest block number + 1 = 4,
 // M2 and M1, RXJR and TXJR. Word 1: 1 << 31 | 4 << 24 | 1 << 9 | 1 << 8 | 2 | 1.
-//
-// Mutation record: NFB as the count of blocks (2) fails the 4; `static` not
-// reported fails the top bit.
 #[test]
 fn endpoint_info_words() {
     let out = ask(
@@ -117,8 +114,6 @@ fn endpoint_info_words() {
     assert_eq!(words(&out[0]), [0xF001_0101, 0x8400_0303, 0, 0]);
 }
 
-// Mutation record: sending the Stream Configuration Notification first fails the
-// order.
 #[test]
 fn a_full_discovery_is_answered_in_the_order_of_the_spec() {
     let out = ask(&mut device(), discovery(ALL));
@@ -128,9 +123,6 @@ fn a_full_discovery_is_answered_in_the_order_of_the_spec() {
 }
 
 // §7.1.1: "Each bit set will result in an individual reply."
-//
-// Mutation record: ignoring any one filter bit in `answer_discovery` fails its
-// row.
 #[test]
 fn each_filter_bit_asks_for_its_own_reply() {
     let rows = [
@@ -182,7 +174,7 @@ fn each_filter_bit_asks_for_its_own_reply() {
 }
 
 // A part the endpoint does not have is not answered (§7.1.3 to §7.1.5 say
-// "may"). Mutation record: sending an empty-name packet fails this.
+// "may").
 #[test]
 fn a_part_an_endpoint_lacks_is_left_out() {
     let mut bare = Endpoint::new(FULL);
@@ -191,7 +183,7 @@ fn a_part_an_endpoint_lacks_is_left_out() {
 }
 
 // §7.1.1: a higher version's appended fields are ignored and the reply is the
-// same. Mutation record: answering only an equal version fails this.
+// same.
 #[test]
 fn a_discovery_of_another_version_is_answered() {
     let newer = Stream::EndpointDiscovery {
@@ -204,9 +196,6 @@ fn a_discovery_of_another_version_is_answered() {
 // Figure 14, §7.1.3: word 1 holds the manufacturer's three bytes, word 2 the
 // family and model, word 3 the revision. §7.1.4: a 30 byte name is a Start (14),
 // a Continue (14) and an End (2 then zeros). §7.1.5: "SN-0001" is Complete.
-//
-// Mutation record: the Product Instance Id sent as an Endpoint Name, or a name
-// split at 7 bytes, fails a word.
 #[test]
 fn identity_name_and_instance_id_words() {
     let out = ask(&mut device(), discovery(ALL));
@@ -224,10 +213,6 @@ fn identity_name_and_instance_id_words() {
 // 3-2, direction 1-0; word 1: first group, groups spanned, MIDI-CI version, SysEx 8
 // streams. Block 3: 0x8000 | 0x0300 | 0x30 | 0 | 0b11 = 0x8333, then 4, 2, 2, 2.
 // §7.1.9 Figure 23: block number in bits 15-8 then thirteen name bytes.
-//
-// Mutation record: swapping the CI version and the stream count, or reporting
-// the UI hint as unknown, fails a word; so does a Function Block Name with every
-// packet `Complete` (`a_long_block_name_splits_at_thirteen_bytes`).
 #[test]
 fn function_block_info_and_name_words() {
     let out = ask(
@@ -267,8 +252,7 @@ fn a_long_block_name_splits_at_thirteen_bytes() {
     );
 }
 
-// §7.1.7: 0xFF is every block, a number one block. Mutation record: answering
-// only the first block for 0xFF, or all blocks for a number, fails.
+// §7.1.7: 0xFF is every block, a number one block.
 #[test]
 fn function_block_discovery_answers_one_block_or_all() {
     let all = ask(
@@ -316,8 +300,6 @@ fn function_block_filter_bits_pick_info_and_name() {
 
 // The spec asks for 0 to 31 (§7.1.7) and names no reply for the rest: a number
 // above 31, which decode keeps, and a block that is not there, answer nothing.
-//
-// Mutation record: masking the number to 5 bits answers block 0 for 0x20.
 #[test]
 fn an_out_of_range_or_absent_block_answers_nothing() {
     let wire = Ump([0xF010_2003, 0, 0, 0]);
@@ -358,9 +340,7 @@ fn notified(out: &[Ump]) -> StreamConfig {
 }
 
 // §7.1.6.2 and §7.1.6.3: the reply reports what is now active, and the new
-// configuration is kept. Mutation record: not storing the request fails the
-// second call; replying with the request instead of `self.active` fails the
-// refusal tests below.
+// configuration is kept.
 #[test]
 fn a_supported_request_is_honoured_and_reported() {
     let mut e = device();
@@ -382,8 +362,6 @@ fn a_supported_request_is_honoured_and_reported() {
 
 // §7.1.6.1 step 3: "If the Receiver is unable to change some or all parts of the
 // configuration, the Receiver replies with its current configuration."
-//
-// Mutation record: honouring a Protocol it lacks, or JR it lacks, fails its row.
 #[test]
 fn what_an_endpoint_cannot_do_is_not_done() {
     let mut midi1_only = Endpoint::midi1_device(None);
@@ -429,8 +407,6 @@ fn a_message_that_is_not_a_request_is_not_answered() {
 }
 
 // Design 017 §5: a MIDI 1.0 device is an Endpoint with one inferred block.
-//
-// Mutation record: a span of 2, or no MIDI 1.0 port flag, fails this.
 #[test]
 fn a_midi1_device_has_one_inferred_block() {
     let e = Endpoint::midi1_device(EndpointName::new("Keystep"));
@@ -461,9 +437,6 @@ fn a_midi1_device_has_one_inferred_block() {
 // inside 16 Groups (§7.1.8), a MIDI 1.0 port is one Group, the direction is not
 // the reserved `0b00`. (The field types' own ranges are `tutti-ump`'s tests;
 // `check_range_contract` needs serde, which these refusals do not use.)
-//
-// Mutation record: `> 16` as `>= 16` fails the exact fit; `> 17` fails the
-// overrun; removing the reserved check fails the third.
 #[test]
 fn a_function_block_stays_inside_the_groups() {
     let new = |first, span, dir| {

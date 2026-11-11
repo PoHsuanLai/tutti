@@ -162,10 +162,6 @@ mod tests {
 
     /// A level on either side of the threshold's linear value opens or closes
     /// the gate; closed, the gain is the range.
-    ///
-    /// Mutation (run): compare against `threshold_linear * 2.0` → the "just
-    /// above" row stays closed and fails; invert the comparison → the "just
-    /// under" row opens and fails.
     #[test]
     fn the_block_threshold_decides_open_and_closed() {
         let b = GateBlock::new(Db(-20.0), Db(-60.0), Db(-60.0));
@@ -180,10 +176,6 @@ mod tests {
     }
 
     /// Silence opens the gate only for a threshold at or under `Db::FLOOR`.
-    ///
-    /// Mutation (run): `silence_opens` always `true` → the -20 dB row opens on
-    /// silence and fails; always `false` → the floor row stays closed and
-    /// fails.
     #[test]
     fn silence_opens_only_at_or_under_the_floor() {
         for (threshold, opens) in [(-20.0f32, false), (Db::FLOOR.get(), true), (-200.0, true)] {
@@ -198,11 +190,8 @@ mod tests {
     /// is the target range exactly (`ramp_is_at_end`), not a computed value
     /// that could round past it.
     ///
-    /// Mutation (run): `ramp_db`'s fraction `(i + 1) / n` replaced by `i / n`
-    /// → frame 0 reads the start range and the first assertion fails.
-    /// Not pinned: the `i + 1 >= n` shortcut itself, since the unshortcut
-    /// sum rounds to `to` for these figures; the last-frame assertion pins
-    /// the value, not the branch.
+    /// Not pinned: the `i + 1 >= n` shortcut itself, since the unshortcut sum rounds to
+    /// `to` for these figures; the last-frame assertion pins the value, not the branch.
     #[test]
     fn the_range_ramps_and_ends_exactly_on_the_target() {
         let b = GateBlock::new(Db(-20.0), Db(-80.0), Db(-20.0));

@@ -922,11 +922,6 @@ mod tests {
 
     /// A position a hair before a bar line is in the bar before it, at its
     /// last beat: the remainder never reaches the unit it is a remainder of.
-    ///
-    /// Mutation (run): drop the `rem >= unit` arm of `floor_div_rem` → the
-    /// remainder rounds up to the whole bar, the beat index is 4 and the
-    /// `debug_assert` in `bar_position_within` fires → fails.
-    ///
     #[test]
     fn a_position_just_before_a_bar_line_stays_in_the_bar_before() {
         let sig = TimeSignature::default();
@@ -951,9 +946,6 @@ mod tests {
 
     /// The `rem < 0` arm is reached by `-5e-324`: `v / 4` underflows to
     /// `-0.0`, so the quotient is `-0` and the remainder is `v` itself.
-    ///
-    /// Mutation (run): disable that arm (`else if false`) → the fraction is
-    /// negative and the `debug_assert` fires → fails.
     #[test]
     fn the_smallest_negative_position_is_the_last_instant_of_the_bar_before() {
         let sig = TimeSignature::default();
@@ -964,8 +956,6 @@ mod tests {
     }
 
     /// `MAX_BEATS_PER_BAR` is 64, the figure the wire form and `clamped` share.
-    ///
-    /// Mutation (run): `MAX_BEATS_PER_BAR` 64 → 65 → fails.
     #[test]
     fn the_beats_per_bar_ceiling_is_64() {
         assert_eq!(MAX_BEATS_PER_BAR, 64);
@@ -991,11 +981,6 @@ mod tests {
     }
 
     /// `BeatsPerBar::clamped` saturates; `new` refuses the same raws.
-    ///
-    /// Mutation (run): `clamped` mapping 0 to 0 -> the `clamped(0)` assertion
-    /// fails; `new` accepting 0 -> the `BeatsPerBar::new(0)` assertion fails;
-    /// `new` accepting any non-zero value up to 64 -> the `NoteValue::new`
-    /// loop fails.
     #[test]
     fn saturation_is_named_and_new_refuses() {
         // Zero beats per bar would make bar_length zero and every bar_at divide
@@ -1280,9 +1265,6 @@ mod tests {
     /// `bar_length` `NaN` — on the audio thread, via the metronome.
     ///
     /// A hostile value is refused, not coerced: the document does not load.
-    ///
-    /// Mutation (run): `serde(try_from = "u32")` removed from `NoteValue` ->
-    /// the documents with a bad `note_value` load and `is_err` fails.
     #[cfg(feature = "serde")]
     #[test]
     fn deserialization_refuses_hostile_values() {
@@ -1363,10 +1345,6 @@ mod tests {
 
     /// A foreign number is checked, not coerced: `-1i32` cannot even become a
     /// `u32`, and the error carries the refused raw.
-    ///
-    /// Mutation (run): `BeatsPerBar::new` accepting 0 -> the `try_from(0)`
-    /// assertion fails; `NoteValue::new` accepting any non-zero value up to 64
-    /// -> the `try_from(6)` assertion fails.
     #[test]
     fn abi_conversions_check_foreign_input() {
         // A bare `as u16` on an i32 at the CLAP boundary turns -1 into 65535.
@@ -1428,8 +1406,7 @@ mod tests {
     /// substring check is too weak: serializing `(&changes, &starts)` emits
     /// `[[{..},{..}],[1,3]]`, which still starts with `[` and contains no
     /// `"starts"` key, so it slips past both. Round-tripping through the exact
-    /// expected type is what makes the extra element a failure. (Verified by
-    /// mutation: the tuple form fails this test.)
+    /// expected type is what makes the extra element a failure.
     #[cfg(feature = "serde")]
     #[test]
     fn the_derived_cache_is_not_on_the_wire() {
@@ -1486,11 +1463,6 @@ mod tests {
     /// A signature the file states as `0/0` is refused, not taken literally and
     /// not repaired: nested inside a map, so this covers the path a document
     /// actually uses. A legal one beside it still loads.
-    ///
-    /// Mutation (run): the `serde(try_from = "u32")` attribute removed from
-    /// `NoteValue` -> the bad-`note_value` documents load and `is_err` fails;
-    /// `NoteValue::new` accepting any non-zero value up to 64 -> the `4/5`
-    /// document loads.
     #[cfg(feature = "serde")]
     #[test]
     fn map_deserialization_refuses_nested_signatures() {

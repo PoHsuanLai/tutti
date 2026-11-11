@@ -71,12 +71,6 @@ fn watch(f: impl FnOnce()) -> (usize, usize) {
 /// second add at the first one's id, which replaces that slot — are drained
 /// by one `process`, counting frees on this thread. The replaced slot comes
 /// back through the retirement channel, where the control thread frees it.
-///
-/// Mutation (run): the drain unboxing the voice (`insert_voice_inner(id,
-/// Box::new(*voice), …)`, the pre-fix `*voice`) → the command's box is freed
-/// in the drain → fails. Mutation (run): a replaced slot dropped in place
-/// (`self.voices.retain(|s| s.id != id)`, the pre-fix line) → its filter and
-/// box are freed in the drain → fails.
 #[test]
 fn the_add_voice_drain_frees_nothing() {
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -178,11 +172,6 @@ fn stream() -> (
 /// the handle on the control thread frees no ring, and the ring is freed in the
 /// streamer's step that handles the close: the thread that steps, never the one
 /// that drops the handle.
-///
-/// Mutation (run): `Drop for Stream` without its `Close` send -> the step
-/// frees no ring and the second assertion fails. Mutation (run): `Drop for
-/// Stream` freeing in place (sending nothing and holding the ring itself, via a
-/// clone of it) -> the first assertion fails.
 #[test]
 fn dropping_a_stream_frees_the_ring_in_the_streamers_step() {
     let (_dir, mut streamer, stream, reader) = stream();
@@ -210,13 +199,6 @@ fn dropping_a_stream_frees_the_ring_in_the_streamers_step() {
 /// by the streamer's next sweep (`reclaim_control`), on its own thread. So a
 /// `StreamReader` and its blocks are free-detecting-clean: the audio thread
 /// never owns published state.
-///
-/// Mutation (run): `Block` holding an owning `Arc` of the control
-/// (`ArcLend::current`) instead of the lent `Loan` -> the streamer's sweep
-/// frees the cell's own reference, the block is the retired control's last
-/// holder and frees it in its drop -> the first assertion fails. Mutation
-/// (run): the cycle's `reclaim_control` loop removed -> the second assertion
-/// fails (nothing frees the retired control).
 #[test]
 fn a_block_that_ends_after_a_publish_frees_nothing() {
     let (_dir, mut streamer, mut stream, mut reader) = stream();
@@ -274,9 +256,6 @@ fn pool_holding_the_last_holder(
 /// nothing (the slot goes over the retirement channel) and the control thread's
 /// `collect_retired` frees the ring. Answers doc 025 §10 Q4 for the normal path:
 /// no, a disk voice's drop is on the control thread.
-///
-/// Mutation (run): `retire` dropping the value in the drain instead of sending
-/// it -> the drain frees the ring -> fails.
 #[test]
 fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
     let (_dir, mut streamer, stream, reader) = stream();
@@ -317,10 +296,6 @@ fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
 ///
 /// The channel is filled by replacing a slot 64 times without collecting: each
 /// replaced slot is retired.
-///
-/// Mutation (run): the 64 replacing adds removed -> the channel has room, the
-/// voice is retired, the drain frees nothing and `freed_in_callback` stays 0
-/// -> fails.
 #[test]
 fn a_removed_disk_voice_on_a_full_retirement_channel_frees_its_ring_in_the_callback() {
     let (_dir, mut streamer, stream, reader) = stream();

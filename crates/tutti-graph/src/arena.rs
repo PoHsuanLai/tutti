@@ -283,10 +283,6 @@ mod tests {
     use crate::node::MAX_PORTS;
 
     /// Every slot starts on a 64-byte boundary, whatever `max_block` is.
-    ///
-    /// Mutation: `#[repr(C, align(64))]` → `#[repr(C)]` on `Line` → the
-    /// allocation is only 4-aligned and some slot misses → fails (usually on
-    /// the base pointer itself).
     #[test]
     fn slots_are_cache_line_aligned() {
         for max_block in [1, 7, 64, 100, 1000] {
@@ -301,9 +297,6 @@ mod tests {
 
     /// Reads share, writes are exclusive, and the right port gets the right
     /// slot.
-    ///
-    /// Mutation: in `borrow_sorted`, drop the `base = slot + 1` update → the
-    /// second slot's offset is computed from 0 again → wrong slot → fails.
     #[test]
     fn borrow_hands_each_port_its_slot() {
         let mut a = Arena::new(6, 16);
@@ -333,9 +326,6 @@ mod tests {
 
     /// A slot requested for writing and reading in one op is refused, never
     /// aliased.
-    ///
-    /// Mutation: delete the `assert!` in `borrow_sorted` → the read is
-    /// silently dropped and no panic happens → fails.
     #[test]
     #[should_panic(expected = "written and also borrowed")]
     fn borrow_refuses_a_write_that_aliases() {
@@ -348,11 +338,6 @@ mod tests {
 
     /// Requests the compiler failed to sort are a panic, never a slot behind
     /// the cursor handed out as the wrong buffer.
-    ///
-    /// Mutation: in `borrow_sorted`, drop the `debug_assert!` and replace the
-    /// `checked_sub(..).expect(..)` with a plain `slot - base` → the walk
-    /// dies on an arithmetic overflow whose message does not name the order
-    /// → fails.
     #[test]
     #[should_panic(expected = "sorted")]
     fn borrow_refuses_unsorted_requests() {

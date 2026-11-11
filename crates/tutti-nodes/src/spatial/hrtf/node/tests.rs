@@ -76,10 +76,6 @@ fn make_node() -> HrtfBinauralNode {
 /// answers some face for a NaN direction and the output stays finite,
 /// at the wrong place. Without `LastGood` the smoother's state turns
 /// NaN on the first step and stays NaN through every later target.
-///
-/// Mutation (run): `placement` returning the raw cells
-/// (`self.azimuth.load()`, unguarded) → the aim is NaN while the position
-/// is NaN and never returns to 90° → fails.
 #[test]
 fn a_non_finite_position_is_ignored_and_does_not_stick() {
     let mut node = make_node();
@@ -130,9 +126,6 @@ fn a_non_finite_position_is_ignored_and_does_not_stick() {
     }
     // The cells hold any `f32` raw (a param write is not normalized), so ±∞
     // reaches the node as it wrote it; `LastGood` must refuse it there.
-    //
-    // Mutation (run): `LastGood`'s `is_finite` → `!is_nan` → the aim
-    // goes to ∞ and does not recover → fails.
     for (az, el) in [
         (f32::INFINITY, 30.0),
         (f32::NEG_INFINITY, 30.0),
@@ -233,10 +226,6 @@ fn onsets(ch: &[f32]) -> Vec<usize> {
 /// Impulses land at several offsets within a step (first, second, last,
 /// and across a step boundary), because a renderer whose delay depended on
 /// the in-step phase would have no single latency to report.
-///
-/// Mutation (run): declaring `Latency::ZERO` in `shape` fails the
-/// declaration assertion (reports 0). Mutation: `LATENCY = STEP - 1`
-/// fails every impulse (declared one frame early).
 #[test]
 fn reported_latency_is_the_measured_impulse_delay() {
     use tutti_dsp::{HRTF_LATENCY as LATENCY, HRTF_STEP as STEP};
@@ -256,9 +245,6 @@ fn reported_latency_is_the_measured_impulse_delay() {
 /// Through PDC: a binaural track on outputs 0/1 beside a dry path on 2,
 /// in a graph. The compiler must delay the dry path by the
 /// declared latency, so an impulse leaves all three outputs on one frame.
-///
-/// Mutation (run): declaring `Latency::ZERO` in `shape` → the dry onset
-/// leaves at frame 0, `LATENCY` early → fails.
 #[test]
 fn pdc_compensates_the_other_path_by_the_binaural_latency() {
     use tutti_dsp::HRTF_LATENCY as LATENCY;
@@ -291,12 +277,6 @@ fn pdc_compensates_the_other_path_by_the_binaural_latency() {
 /// The dry half of the blend leaves with the wet half, so the reported
 /// latency is true of the whole output at any blend. Blending the undelayed
 /// mono against a wet signal a step late would break that.
-///
-/// Mutation: blending against the incoming mono instead of the delayed
-/// `dry` fails blend 0.0 and 0.5 (an onset at the impulse itself).
-/// Mutation: dropping the `dry.copy_from_slice` in `render_step` fails
-/// them too (the dry step is never refreshed, so the dry half never
-/// arrives).
 #[test]
 fn dry_and_wet_leave_together_at_every_blend() {
     use tutti_dsp::{HRTF_LATENCY as LATENCY, HRTF_STEP as STEP};
@@ -319,9 +299,6 @@ fn dry_and_wet_leave_together_at_every_blend() {
 
 /// A blend that is NaN (`Mix::new_clamped` passes a NaN through) renders as
 /// the blend it replaced, never as NaN output.
-///
-/// Mutation (run): reading `self.blend.load()` in `process` without
-/// the `LastGood` makes the NaN case render NaN (it failed that way before the fix).
 #[test]
 fn a_nan_blend_holds_the_last_one() {
     let mut node = make_node();
@@ -415,9 +392,6 @@ fn clone_shares_the_position_atomics() {
 /// and prepared at 1.024 MHz, 50 ms is 51 200 samples, exactly 400 steps,
 /// and leaves `e^-1` of a move. Left at 1.536 MHz's coefficient (600 steps
 /// per 50 ms) it would leave `e^-(2/3)` = 0.51.
-///
-/// Mutation (run): drop `self.aim.set_sample_rate(self.sample_rate)` from
-/// `prepare` → 0.513 of the move is left and the glide assertion fails.
 #[test]
 fn a_prepare_above_the_ceiling_retunes_the_glide() {
     assert_eq!(HRTF_STEP, 128, "the rates below assume 128-sample steps");
@@ -451,13 +425,6 @@ fn remaining_after(aim: &mut AngleSmoother, steps: usize) -> f32 {
 /// steps a move has `e^-1` of its distance left. At 51.2 kHz, 50 ms is
 /// 2560 samples, exactly twenty 128-sample steps; at 102.4 kHz (after a
 /// retune) it is forty.
-///
-/// Mutations (run):
-/// - build with a stride of one (`AngleSmoother::new(sample_rate,
-///   Samples(1))`) → after twenty steps almost all of the move is left
-///   and the assertion fails.
-/// - drop `self.stride` from `AngleSmoother::set_sample_rate`
-///   (retune with a stride of one) → the 102.4 kHz half fails.
 #[test]
 fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
     assert_eq!(HRTF_STEP, 128, "the rates below assume 128-sample steps");
@@ -480,8 +447,6 @@ fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
 
 /// The ports a lane can drive are the params the node declares, each with
 /// its cell as the base the graph's modulation rides on.
-///
-/// Mutation (run): `param_base(2)` answering the elevation cell -> fails.
 #[test]
 fn the_renderer_declares_its_params() {
     let node = make_node();
@@ -503,9 +468,6 @@ fn the_renderer_declares_its_params() {
 ///
 /// The value must change the render from the default's, else the row would
 /// pass on a node that ignored both the lane and the cell.
-///
-/// Mutation (run): `process` reading the blend from its cell instead of
-/// `block_driven(&io, 2)` -> the `Wet` row fails; likewise the other two.
 #[test]
 fn a_lane_drives_each_param_as_its_cell_would() {
     let input = [0.5f32; BLOCK];

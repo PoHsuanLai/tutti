@@ -3329,9 +3329,6 @@ mod tests {
     /// pass before it applies the queued commit. The command must wait, not
     /// be judged against the old plan (where its node does not exist), and
     /// land once the commit does.
-    ///
-    /// Mutation: drop the `plan_seq > applied` hold in `CommandRx::gather`
-    /// → the command is counted unrouted in the staged pass → fails.
     #[test]
     fn a_command_seen_before_its_commit_waits_for_it() {
         let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64)));

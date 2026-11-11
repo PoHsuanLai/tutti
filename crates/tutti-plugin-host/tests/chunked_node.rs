@@ -430,12 +430,6 @@ fn note_on(frame: usize, len: usize) -> Event {
 /// piece reads the transport at its chunk's first frame** (the contract of
 /// `Processor::chunk`, amended in design 021 step 4b PR 3a: the transport is
 /// chunk-level, like the parameters).
-///
-/// Mutation (run): cutting at the block's start (`phase` always 0) -> the second
-/// block is 64+36 -> fails. Mutation (run): the transport snapshot taken per
-/// piece (`begin` and the snapshot at every piece's first frame, not at
-/// `phase == 0`) -> a continued piece reads its own first frame, not its chunk's
-/// -> fails.
 #[test]
 fn a_block_is_cut_at_the_chunk_edges_and_each_piece_reads_its_chunks_transport() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
@@ -474,13 +468,6 @@ fn a_block_is_cut_at_the_chunk_edges_and_each_piece_reads_its_chunks_transport()
 /// chunk (100..128) are handed it (the chunk's changes so far), and the chunk's
 /// own transport stays the 120 it started at; the chunks before and after have
 /// no change and the tempo they stand at.
-///
-/// Mutation (run): each piece scanned alone (the walk begun at every piece's
-/// first frame, changes cleared per piece, chunk frame 0) -> the change is at
-/// piece frame 16 only in the piece that holds it and the rest of the chunk
-/// has none -> fails. Mutation (run): the scan's chunk frame left at 0 for a
-/// continued piece -> a change in a continued piece lands at its piece
-/// frame -> fails (see the stop and seek pins, below).
 #[test]
 fn a_transport_change_is_the_chunks_on_the_chunks_frame() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
@@ -512,9 +499,6 @@ fn a_transport_change_is_the_chunks_on_the_chunks_frame() {
 
 /// **A Processor with no chunk is handed the whole block, as before**: one
 /// call a block, no transport changes.
-///
-/// Mutation (run): `chunk` read as `Some(64)` for every Processor → the call
-/// is cut → fails.
 #[test]
 fn a_processor_without_a_chunk_is_handed_whole_blocks() {
     let rig = Rig::new(None, Features::TRANSPORT);
@@ -533,10 +517,6 @@ fn a_processor_without_a_chunk_is_handed_whole_blocks() {
 
 /// **`reset` reaches the Processor and starts the chunk count over**: the
 /// block after it is cut from its first frame again.
-///
-/// Mutation (run): the node's `reset` not calling `Processor::reset` → no
-/// reset is counted → fails. Mutation (run): `phase` not zeroed in `reset` →
-/// the block after it is 28+64+8 → fails.
 #[test]
 fn reset_reaches_the_processor_and_restarts_the_chunks() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
@@ -558,10 +538,6 @@ fn reset_reaches_the_processor_and_restarts_the_chunks() {
 /// and its parameter changes unsent: the node counts the three as dropped
 /// MIDI and owes the ramp's value to the next chunk (a deferred chunk, nothing
 /// sent). The next chunk to complete reports nothing: the owed value is sent.
-///
-/// Mutation (run): `params_unsent` not read (`handed_off(true)` at the
-/// chunk's end) → no deferred chunk → fails. Mutation (run): `midi_lost` not
-/// folded → no dropped MIDI → fails.
 #[test]
 fn the_loss_a_chunked_processor_reports_is_counted() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
@@ -599,9 +575,6 @@ fn the_loss_a_chunked_processor_reports_is_counted() {
 /// in the next block, is refused (counted) while a note after it is taken, so
 /// a message never reaches the Processor with a gap. A loss with no SysEx open
 /// cuts nothing.
-///
-/// Mutation (run): the `intake.lost()` after a reported loss removed from the
-/// node's chunk loop -> the tail reaches the Processor -> fails.
 #[test]
 fn a_sysex_cut_by_a_reported_loss_stays_cut() {
     let payload: Vec<u8> = (0..30).collect();
@@ -644,10 +617,6 @@ fn a_sysex_cut_by_a_reported_loss_stays_cut() {
 /// at frame 10 of the second block lands in its first piece (28 frames, the
 /// end of a chunk begun in the block before) at 10; a note and a chord at
 /// frame 70 of the first block land in its second piece at 6.
-///
-/// Mutation (run): the chord not pushed in `push_harmony` → no chord arrives
-/// → fails. Mutation (run): the MIDI offset left on the chunk's frames (not
-/// `frame - phase`) → the note in the continued chunk arrives at 46 → fails.
 #[test]
 fn midi_and_harmony_arrive_on_the_frames_of_their_piece() {
     let chord = Event::harmony(at(70, 100), Harmony::chord(0, 0, 0b1001_0001));
@@ -679,9 +648,6 @@ fn midi_and_harmony_arrive_on_the_frames_of_their_piece() {
 /// **The chunked audio path allocates nothing** once warm: blocks of 100 over
 /// a chunk of 64, with MIDI, a ramp and the transport walk, inside
 /// `assert_no_alloc`.
-///
-/// Mutation (run): a `Vec` collected per piece in the node's loop → the gate
-/// aborts → fails.
 #[test]
 fn the_chunked_audio_path_does_not_allocate() {
     let mut rig = Rig::new(Some(64), Features::TRANSPORT);
@@ -714,9 +680,6 @@ fn the_chunked_audio_path_does_not_allocate() {
 /// (`Editor::take_event_losses`, which `Session::report_event_losses` drains).
 /// The Processor reports three MIDI events lost when its chunk completes; the
 /// graph names three lost, charged to the plugin's node.
-///
-/// Mutation (run): `lost += reported;` deleted from the node's chunked path →
-/// no loss is reported for the node → fails.
 #[test]
 fn a_chunked_processors_lost_midi_reaches_the_graphs_event_losses() {
     use tutti_graph::{Editor, NodeKey, Prepare};
@@ -752,11 +715,6 @@ fn a_chunked_processors_lost_midi_reaches_the_graphs_event_losses() {
 /// a change at 36 (not playing) and so is every later piece of the chunk; moved
 /// to beat 10 there, the change is at 36 and carries the new playhead. The
 /// chunk's own transport is still the one it began with.
-///
-/// Mutation (run): the walk begun at every piece (`phase == 0` check removed:
-/// a continued piece starts a fresh stretch) -> the break is never seen -> no
-/// change -> fails. Mutation (run): the scan's chunk frame left at 0 -> the
-/// change lands at frame 0 of the chunk -> fails.
 #[test]
 fn a_stop_and_a_seek_on_a_block_boundary_are_changes_at_their_chunk_frame() {
     for (playing, beat, want) in [
@@ -788,9 +746,6 @@ fn a_stop_and_a_seek_on_a_block_boundary_are_changes_at_their_chunk_frame() {
 /// long, so the slope is `-30 / D` BPM a second, `-30 / D / 48000` a frame. The
 /// chunk 64..128 spans the boundary of the 100-frame blocks, and its transport
 /// (final in the piece that completes it) carries that figure.
-///
-/// Mutation (run): `finish` not called at the completing piece -> `tempo_inc`
-/// stays 0 -> fails.
 #[test]
 fn a_tempo_ramp_across_a_block_boundary_gives_the_chunks_slope() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
@@ -836,10 +791,6 @@ fn a_tempo_ramp_across_a_block_boundary_gives_the_chunks_slope() {
 /// the chunk (the Processor clears its own), so the delivery's dropped-MIDI
 /// count has it at once and the block after reports it to the executor
 /// (`Io::count_lost`, what an export fails on).
-///
-/// Mutation (run): `drop_chunk` not adding to the delivery's dropped-MIDI count
-/// -> the first count stays 0 -> fails. Mutation (run): `drop_chunk` not owing
-/// it to the executor (`owed_lost`) -> the executor's count stays 0 -> fails.
 #[test]
 fn the_midi_in_flight_at_a_reset_is_lost_and_counted() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);
@@ -864,9 +815,6 @@ fn the_midi_in_flight_at_a_reset_is_lost_and_counted() {
 /// counted**, in the same counter the served node used
 /// (`NodeControls::dropped_transport_changes`): twelve tempo steps inside one
 /// chunk, eight kept (`MAX_TRANSPORT_CHANGES`), four counted.
-///
-/// Mutation (run): the `over` of `scan` not counted -> the count stays 0 ->
-/// fails.
 #[test]
 fn transport_changes_past_the_bound_are_dropped_and_counted() {
     let rig = Rig::new(Some(64), Features::TRANSPORT);

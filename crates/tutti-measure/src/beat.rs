@@ -194,8 +194,6 @@ mod tests {
     use super::*;
 
     /// A period far past the curve sizes no table past the curve.
-    ///
-    /// Mutation checked: removing `.min(len)` from either helper fails here.
     #[test]
     fn tables_never_outgrow_the_curve() {
         let (lo, hi) = gap_bounds(1e12, 1000);

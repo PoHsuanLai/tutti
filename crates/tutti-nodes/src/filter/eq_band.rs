@@ -113,9 +113,6 @@ mod tests {
 
     /// **A fork reaches the inner SVF's param cells**: it starts from the
     /// authored values and shares none of them.
-    ///
-    /// Mutation (run): `fork_fresh` cloning `svf` instead of forking it →
-    /// "a live write reached the fork" → fails.
     #[test]
     fn a_fork_severs_the_inner_filters_cells() {
         assert_param_fork(EqBandNode::<f64>::new(
@@ -127,9 +124,6 @@ mod tests {
     }
 
     /// The band declares the inner filter's tail, not the shape default.
-    ///
-    /// Mutation (run): drop the band's `.with_tail(..)` → `Tail::None` →
-    /// fails.
     #[test]
     fn the_band_rings_on_as_its_filter_does() {
         let band =

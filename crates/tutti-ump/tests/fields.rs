@@ -4,12 +4,6 @@
 //! keeps the low bits, `get` and `From` give the raw back, and serde (feature
 //! `serde`) refuses what `new` refuses. `tutti-ump` depends on no workspace
 //! crate, so this is its own `check_range_contract`.
-//!
-//! Mutation record (planted in `src/field.rs`, seen to fail, restored):
-//! - `new` accepting `MAX + 1` (`<=` to `<= MAX + 1`) -> `each_field_keeps_the_contract`;
-//! - `masked` not masking -> the same test;
-//! - `TryFrom` error carrying `MAX` as the refused value -> the same test;
-//! - `serde(try_from)` replaced by `serde(transparent)` -> `serde_refuses_what_new_refuses`.
 
 use tutti_ump::{DeltaTicks, NoteNumber, OutOfRange, U4, U7, U14};
 

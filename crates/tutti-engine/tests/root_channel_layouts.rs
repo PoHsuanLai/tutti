@@ -131,9 +131,6 @@ fn center_root_folds_symmetrically_to_stereo() {
 /// refusal (the refusal of
 /// a later widening commit is `engine_graph`'s
 /// `a_graph_engine_refuses_more_outputs_than_it_folds`).
-///
-/// Mutation (run): `max_global_outputs: usize::MAX` in
-/// `Engine::with_capacity` → the engine is built → fails.
 #[test]
 fn over_wide_root_is_refused_before_it_can_render() {
     let wide = 12;

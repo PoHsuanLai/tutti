@@ -188,9 +188,6 @@ mod tests {
     /// `tutti_shared_plugin::core::TAIL`); the latency the plan compensated is trimmed
     /// from the front, not added. The file is 24-bit stereo,
     /// 6 bytes a frame, after a header of at least 44 bytes.
-    ///
-    /// Mutation (run, failed): the duration at the file's first tempo
-    /// throughout (`file.end_beat()` at 120 BPM: 4 s) → 2 s short.
     #[test]
     fn the_example_plays() {
         let dir = std::env::temp_dir().join(format!("tutti-5-2-{}", std::process::id()));

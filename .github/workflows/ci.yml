@@ -194,17 +194,12 @@ jobs:
           # cannot build its `audio-probe` reference plugin.
           submodules: recursive
       - name: Install Linux audio deps
-        run: |
-          sudo apt-get update
-          # libasound2-dev:    tutti-cpal (ALSA).
-          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
-          #                    RT-priority request on Linux.
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: lint-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # One format at a time: a test helper or a match that only the other
@@ -325,10 +320,7 @@ jobs:
         with:
           submodules: recursive
       - name: Install Linux audio deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -497,7 +489,9 @@ jobs:
       # cannot be served, so only the Linux build reaches the real code — which
       # is precisely why it needs compiling somewhere.
       - name: Install JACK headers
-        run: sudo apt-get install -y --no-install-recommends libjack-jackd2-dev
+        uses: ./.github/actions/linux-audio-deps
+        with:
+          extra: libjack-jackd2-dev
       - name: Lint JACK
         run: cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings
 
@@ -548,15 +542,11 @@ jobs:
         with:
           submodules: recursive
       - name: Install Linux audio deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # No Rust cache: push-only and release-profile, so it would hold 260 MB
+      # for one rarely-run job.
       # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
       # also runs the test targets in the release profile, where
       # `debug_assert!` is gone and a `#[should_panic]` over one fails.
@@ -600,13 +590,7 @@ jobs:
           submodules: recursive
       - name: Install Linux audio deps
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          # libasound2-dev:    tutti-cpal (ALSA).
-          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
-          #                    RT-priority request on Linux.
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -680,13 +664,7 @@ jobs:
           submodules: recursive
       - name: Install Linux audio deps
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          # libasound2-dev:    tutti-cpal (ALSA).
-          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
-          #                    RT-priority request on Linux.
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -741,18 +719,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux audio deps
-        run: |
-          sudo apt-get update
-          # libasound2-dev:    tutti-cpal (ALSA).
-          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
-          #                    RT-priority request on Linux.
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Restores the lint cache (a subset of it); clippy is the one writer.
+          shared-key: lint-linux
+          save-if: false
       # The engine must stay usable without Bevy. `--no-default-features` does
       # NOT test that — `bevy` is already off by default on every engine crate
       # that has one, so that flag drops the codec and midi features instead and proves
@@ -794,13 +768,7 @@ jobs:
         with:
           submodules: recursive
       - name: Install Linux audio deps
-        run: |
-          sudo apt-get update
-          # libasound2-dev:    tutti-cpal (ALSA).
-          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
-          #                    RT-priority request on Linux.
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
+        uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -905,7 +873,7 @@ jobs:
       - uses: actions/checkout@v4
       # ALSA headers: `tutti-rt` does not need them, but
       # cargo resolves the whole workspace before building a member.
-      - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: ./.github/actions/linux-audio-deps
       # `+nightly` on each command below: `rust-toolchain.toml` overrides the
       # default this action sets, and an explicit `+toolchain` overrides it.
       - uses: dtolnay/rust-toolchain@nightly
@@ -913,8 +881,9 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.crate }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # One cache for both crates; tutti-rt writes it.
+          shared-key: miri
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.crate == 'tutti-rt' }}
       # `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
       # rather than vanishing, so the run says what it did not cover. So are
@@ -1026,13 +995,15 @@ jobs:
       - uses: actions/checkout@v4
       # ALSA headers: neither crate needs them, but cargo resolves the whole
       # workspace before building a member.
-      - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.group }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # One cache for the four loom jobs (same cfg, same crates); `rest`
+          # writes it.
+          shared-key: loom
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.group == 'rest' }}
       # Clippy under `--cfg loom`: the flag changes constants the lints see
       # (`PROGRESS_EVERY` is 1, so `% PROGRESS_EVERY` tripped `modulo_one`),
       # and no other job compiles that configuration.
@@ -1095,12 +1066,13 @@ jobs:
       LOOM_MAX_PREEMPTIONS: 3
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: ./.github/actions/linux-audio-deps
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: loom
+          save-if: false
       - run: cargo test --locked -p tutti-rt --release --test split_loom
       - run: cargo test --locked -p tutti-rt --release --test job_gate_loom
       - run: cargo test --locked -p tutti-rt --release --test task_graph_loom

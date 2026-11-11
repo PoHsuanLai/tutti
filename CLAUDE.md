@@ -686,8 +686,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   time, so the de-zipper is the caller's; the nodes, the `Param` reads and the smoother stay in `tutti-nodes`' `spatial` module), the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
-  multi-output `Lti`; `Biquad`, the shared second-order section; the realizations
-  and `Cadence::every(16)`'s use in the nodes (doc 024 §4.5) are step 2b's), the dynamics curves, followers and kernels, the partitioned
+  multi-output `Lti`; `Biquad`, the shared second-order section; the filters' one
+  `Design`, `Filter<K>` over a `ChannelKernel` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
+  `SvfDesign<F>`, `LadderDesign<F>` and `CrossoverDesign` its aliases), whose channels run
+  alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
+  written once), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
@@ -698,8 +701,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
   to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
-  and a stability test, all bounds stated as such); a `Realization<M>` is one
-  realization of a model and an `Effect<M>` its planar block shape, prepared from a
+  and a stability test, all bounds stated as such); a `Realization<M>` (`Clone`, with a
+  default `fresh`) is one realization of a model and an `Effect<M>` its planar block shape;
+  every effect moved onto it is the one `Realized<K>` over a `Kernel` (its per-frame math),
+  whose coefficients approach each new model by a `Glide` (`Lerp`, `Approach`); prepared from a
   `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
   over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` (a period and an anchor: only a
   stream-anchored one is block independent) are the

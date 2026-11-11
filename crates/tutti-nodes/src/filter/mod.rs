@@ -12,6 +12,36 @@ pub use eq_band::EqBandNode;
 pub use ladder::LadderFilterNode;
 pub use svf::SvfFilterNode;
 
+use tutti_dsp::{Cadence, ChannelKernel, Design, Filter};
+
+use crate::blend::NoBlend;
+use crate::params::ControlSet;
+use crate::reverb::NodeDesign;
+
+/// A filter kernel's control set: what [`Filter`] needs of it to be one [`NodeDesign`]
+/// for the SVF, the ladder and the crossover.
+pub trait NodeKernel: ChannelKernel {
+    /// The cells of the filter's controls.
+    type Set: ControlSet<Controls = Self::Controls>;
+
+    /// The control set for a filter whose controls start at `initial`.
+    fn set(&self, initial: &Self::Controls) -> Self::Set;
+}
+
+/// A filter declares an unknown tail and never parks; it reads its controls on its own
+/// grid, so a control that moves inside a block is in the render within 16 frames.
+impl<K: NodeKernel> NodeDesign for Filter<K> {
+    type Set = K::Set;
+    type Blend = NoBlend;
+
+    const PARKS: bool = false;
+    const SAMPLING: Cadence = <Self as Design>::CADENCE;
+
+    fn set(&self, initial: &K::Controls) -> K::Set {
+        self.kernel().set(initial)
+    }
+}
+
 #[cfg(test)]
 pub(super) mod test_utils {
     use tutti_graph::Node;

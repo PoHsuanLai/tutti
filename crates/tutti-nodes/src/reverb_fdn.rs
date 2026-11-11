@@ -5,7 +5,7 @@ use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
 use tutti_types::{Db, Depth, Hz, Mix, Seconds, StereoWidth, UnitAddr, UnitParam};
 
 use crate::blend::DryWet;
-use crate::params::{ControlSet, Params};
+use crate::params::ControlSet;
 use crate::reverb::{DesignNode, FreeverbNode, NodeDesign};
 
 /// The addresses of a freezable FDN's params, in port order after the mix; a
@@ -78,16 +78,13 @@ impl ControlSet for FdnSet {
 }
 
 impl NodeDesign for FdnDesign {
-    type Params = Params<FdnSet>;
+    type Set = FdnSet;
     type Blend = DryWet;
 
-    fn params(&self, c: FdnControls) -> Self::Params {
-        Params::new(
-            FdnSet {
-                freezable: self.freezable(),
-            },
-            &c,
-        )
+    fn set(&self, _: &FdnControls) -> FdnSet {
+        FdnSet {
+            freezable: self.freezable(),
+        }
     }
 }
 

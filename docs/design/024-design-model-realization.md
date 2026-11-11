@@ -812,7 +812,7 @@ So the family is its kernel, and the realization is written once:
 /// length: a swept delay is a pitch shift, and the rate bounds it). `Steps::Fixed(0)` lands at once.
 pub struct Glide<T: Lerp> { from: T, to: T, k: u32, n: u32 }
 pub enum Steps { Fixed(u32), Rate(f32) }
-pub trait Lerp: Copy { fn lerp(&self, to: &Self, t: f64) -> Self; }   // t through Law::Linear
+pub trait Lerp: Copy + PartialEq { fn lerp(&self, to: &Self, k: u32, n: u32) -> Self; }   // t = k / n, computed by the coefficient type in its own precision
 
 /// A coefficient set that approaches a target: a struct of `Glide`s (or a `Crossfade`), sized at prepare.
 pub trait Approach { fn step(&mut self) -> bool; fn settle(&mut self); }   // step: false once landed
@@ -851,7 +851,7 @@ pub trait ChannelKernel: Clone + Send + 'static {
     fn coeffs(&self, model: &Self::Model) -> Self::Coeffs;
     fn tick(c: &Self::Coeffs, s: &mut Self::State, x: f32) -> Self::Frame;
 }
-pub struct PerChannel<C>(C);                          // impl Kernel: Coeffs = Glide<C::Coeffs>, STEP = 1
+pub struct PerChannel<C> { kernel: C, width: usize }  // impl Kernel: Coeffs = Glide<C::Coeffs>, State = Vec<C::State>, STEP = 1
 ```
 
 - **Who is what.** The SVF, the ladder and the crossover are `ChannelKernel`s under `PerChannel`
@@ -876,6 +876,27 @@ pub struct PerChannel<C>(C);                          // impl Kernel: Coeffs = G
 - **What goes.** Five `Realization` impls become one; `tutti_dsp::Ramp`, the FDN's `Slew` and the
   filters' glide become `Glide`. Every effect moved onto it renders independently of the block length
   (the compressor, gate, delay, strip and VBAP ramp across the block today).
+
+**Built (7a).** `tutti-dsp`'s `model/realized.rs` holds `Lerp`, `Glide`, `Approach`, `Kernel` and `Realized<K>`;
+`filter/channel.rs` holds `ChannelKernel`, `PerChannel<C>` (the held lane-group path, once) and `Filter<K>`, the one
+`Design` of the three filters. Where the code differs from the sketch above: **`Lerp::lerp` takes `(k, n)`**, so the
+SVF and the ladder compute `t` in `F` exactly as the code they replace did and their digests did not move; there is no
+`Law` in `tutti-dsp`. **`Steps` is not built**: `ChannelKernel::STEPS` is a `u32` until the delay's rate-limited glide
+(7b or the delay lane) needs `Steps::Rate`. `Kernel` has `start(model)` (the coefficients and state of an unprepared
+realization) where the sketch had `prepare`, and `run` takes the frame range it renders, so a glide's step is a
+one-frame range with no re-slicing; `Kernel::prepare` waits for the first kernel that allocates from `Bounds`. A
+`ChannelKernel` also carries `Controls`, `Model`, `blank` and `design_into`, which is all `Filter<K>`'s `Design` is. The
+crossover kernel is `CrossoverTree` (`Crossover` is the standalone state); its glide has `STEPS = 0`, and
+`Lerp for CrossoverModel` is only ever the target. The ladder's coefficient (`LadderPoint`) carries the tap, and a
+blend keeps the target's. `Realization` is `Clone` with a default `fresh`; the SVF, ladder and crossover overrides went.
+`Glide`'s midpoint between two reachable coefficient sets is held stable by
+`filter::channel::tests::assert_midpoints_decay`, run on the SVF and the ladder.
+
+**Built (7a, B2).** `ControlParams` is deleted: `Params<S>`'s methods are inherent, `At` lives with it, `NodeDesign` has
+`type Set: ControlSet` and `fn set(&self, &Controls)` where it had `Params` and `params`, `moved` is `ControlSet::moved`
+(the SVF's and the ladder's override it), and `DesignNode` holds `Params<D::Set>`. The three filters are one
+`impl NodeDesign for Filter<K>` over a `NodeKernel` (a `ChannelKernel` that names its `ControlSet`), `PARKS = false`,
+`SAMPLING = CADENCE`, `NoBlend`. Freeverb and the FDN keep their own impls (their `Blend` leaves in PR9).
 
 ### 4.4 The engineering layer
 
@@ -2150,8 +2171,8 @@ Step 2b ran as one lane of PRs; amendments B (Summary) re-cut what follows it.
 | 5 | the crossover on the stream grid; one `FilterSizes` | #539 |
 | 6 | one control reader, `Params<S: ControlSet>`; the readers' floors and clamps go to the models | #544 |
 | 8a | the convolver, delay, chorus/flanger and phaser wet only; their blend is the graph's mix | #542 |
-| 7 | **B1 and B2:** `Glide`, `Approach`, `Kernel`, `Realized<K>`, `ChannelKernel`/`PerChannel`, `Filter<K>`; the SVF, ladder, crossover, Freeverb and FDN onto them (Freeverb gains a glide); `ControlParams` deleted, `NodeDesign` as in section 5; `Realization: Clone` with a default `fresh`; `tutti_dsp::Ramp` and `Slew` replaced by `Glide` | next |
-| 8 | the second paths go: the multiband onto `Realized<PerChannel<Crossover>>` (`Crossover::split_block` and its helpers deleted), the phaser onto the stream grid (`Cadence::every`, `Anchor::Block` and `COEFF_CADENCE` deleted) | |
+| 7 | **B1 and B2:** `Glide`, `Approach`, `Kernel`, `Realized<K>`, `ChannelKernel`/`PerChannel`, `Filter<K>`; the SVF, ladder, crossover, Freeverb and FDN onto them (Freeverb gains a glide); `ControlParams` deleted, `NodeDesign` as in section 5; `Realization: Clone` with a default `fresh`; `tutti_dsp::Ramp` and `Slew` replaced by `Glide` | 7a built; 7b (Freeverb, FDN, `Slew`) and 7c (`Ramp`) next |
+| 8 | the second paths go: the multiband onto `Realized<PerChannel<CrossoverTree>>` (`Crossover::split_block` and its helpers deleted), the phaser onto the stream grid (`Cadence::every`, `Anchor::Block` and `COEFF_CADENCE` deleted) | |
 | 9 | the reverbs' own dry/wet goes; `Blend`, `DryWet`, `NoBlend` leave `NodeDesign`. HRTF keeps its centre-fold blend (its dry is not the input) | |
 | 10 | tests from the spec replace the past-render digests; at most five tripwires stay (the SVF lane, the limiter, VBAP stereo, the reverb GM render, the SoundFont voice); the scipy validation report | |
 

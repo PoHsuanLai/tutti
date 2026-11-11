@@ -11,7 +11,7 @@ use tutti_dsp::{
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode};
-use tutti_nodes::{ControlParams, DesignNode, DryWet, NodeDesign};
+use tutti_nodes::{ControlSet, DesignNode, DryWet, NodeDesign};
 use tutti_types::{ChannelLayout, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -122,26 +122,25 @@ impl Design for Echo {
 #[derive(Clone, Debug)]
 struct NoParams;
 
-impl ControlParams for NoParams {
+impl ControlSet for NoParams {
     type Controls = ();
+
     fn addrs(&self) -> &'static [UnitAddr] {
         &[]
     }
-    fn bind(&self, set: tutti_graph::ParamSetBuilder) -> tutti_graph::ParamSetBuilder {
-        set
-    }
-    fn base(&self, _: usize) -> Option<f32> {
-        None
-    }
-    fn read(&mut self, _: &tutti_graph::Io<'_>, _: usize, _: tutti_nodes::At<()>) {}
-    fn detach(&mut self) {}
+
+    fn defaults(&self) {}
+
+    fn flatten(&self, _: &(), _: &mut [f32]) {}
+
+    fn assemble(&self, _: &[f32]) {}
 }
 
 impl NodeDesign for Echo {
-    type Params = NoParams;
+    type Set = NoParams;
     type Blend = DryWet;
 
-    fn params(&self, _: ()) -> NoParams {
+    fn set(&self, _: &()) -> NoParams {
         NoParams
     }
 }

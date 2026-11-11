@@ -16,7 +16,7 @@ pub struct FilterSizes<M>(PhantomData<fn() -> M>);
 
 impl<M> FilterSizes<M> {
     /// The only figure there is.
-    pub(super) const NONE: Self = Self(PhantomData);
+    pub(crate) const NONE: Self = Self(PhantomData);
 }
 
 impl<M> Sizes for FilterSizes<M>

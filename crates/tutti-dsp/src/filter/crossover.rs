@@ -144,7 +144,7 @@ impl Section {
 /// The state of one channel of a crossover tree: the sections' words, apart from the
 /// model whose coefficients run them ([`CrossoverModel`]).
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct CrossoverState {
+pub struct CrossoverState {
     /// Per split, the two cascaded sections of its low-pass and high-pass.
     low: [[Section; 2]; MAX_SPLITS],
     high: [[Section; 2]; MAX_SPLITS],

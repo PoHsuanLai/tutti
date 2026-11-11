@@ -913,30 +913,7 @@ impl Editor {
             // copied nor asked to be forkable (an unrouted mic monitor does
             // not refuse the export; an unrouted plugin launches no server).
             // The same reachability `graph_tail` folds over.
-            ForkTarget::Master => {
-                (
-                    // The lanes that drive the gain of an output edge are
-                    // heard through it: roots too.
-                    Self::upstream(
-                        live,
-                        live.topology
-                            .outputs
-                            .iter()
-                            .flatten()
-                            .filter_map(|s| match s {
-                                Source::Node(p) => Some(p.node),
-                                _ => None,
-                            })
-                            .chain(
-                                live.gains
-                                    .iter()
-                                    .filter(|(id, _)| matches!(id.sink, Sink::Output(_)))
-                                    .filter_map(|(_, g)| g.source.map(|s| s.node)),
-                            ),
-                    ),
-                    live.topology.outputs.clone(),
-                )
-            }
+            ForkTarget::Master => (Self::heard(live), live.topology.outputs.clone()),
             ForkTarget::Node(key) => {
                 let Some(shape) = self.shapes().get(&key) else {
                     return Err(ForkError::NoSuchNode { key });
@@ -1121,6 +1098,54 @@ impl Editor {
             }
         }
         Ok(())
+    }
+
+    /// What the global outputs hear, and nothing else: every node an output
+    /// (or the lane that drives the gain of an output edge) reads, and
+    /// everything upstream of those. The set a master fork copies.
+    fn heard(live: &GraphSpec) -> BTreeSet<NodeKey> {
+        Self::upstream(
+            live,
+            live.topology
+                .outputs
+                .iter()
+                .flatten()
+                .filter_map(|s| match s {
+                    Source::Node(p) => Some(p.node),
+                    _ => None,
+                })
+                .chain(
+                    // The lanes that drive the gain of an output edge are
+                    // heard through it: roots too.
+                    live.gains
+                        .iter()
+                        .filter(|(id, _)| matches!(id.sink, Sink::Output(_)))
+                        .filter_map(|(_, g)| g.source.map(|s| s.node)),
+                ),
+        )
+    }
+
+    /// Whether `node` is in what a [`ForkTarget::Master`] fork copies: it is
+    /// read by a global output, or feeds (by audio, feedback, event, param or
+    /// edge gain) a node that is. A node no output reaches renders nothing
+    /// into a master fork, so it is not in one.
+    ///
+    /// # Errors
+    ///
+    /// [`ForkError::Commit`] when the spec's bus edges do not lower (the
+    /// refusal a fork of it would give).
+    pub fn reaches_outputs(&self, node: NodeKey) -> Result<bool, ForkError> {
+        let lowered = if !self.spec().has_bus_edges() {
+            None
+        } else {
+            Some(
+                self.spec()
+                    .lowered(self.shapes())
+                    .map_err(|e| ForkError::Commit(CommitError::Compile(CompileError::Bus(e))))?,
+            )
+        };
+        let live = lowered.as_ref().map_or_else(|| self.spec(), |l| &l.spec);
+        Ok(Self::heard(live).contains(&node))
     }
 
     /// `roots` and every node that feeds them, walking back along audio,

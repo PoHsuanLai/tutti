@@ -201,7 +201,7 @@ fn preparing_reports_steps_in_the_band_the_render_leaves() {
         let token = CancelToken::new();
         let mut control = Control::new(&token).on_progress(&mut record);
         for (done, _) in steps {
-            control.preparing(outputs, done, 4);
+            control.preparing(outputs.iter().map(Output::target), done, 4);
         }
         control.begin(Stage::Rendering, Some(Samples(10)));
         for (p, (_, want)) in seen.iter().zip(steps) {

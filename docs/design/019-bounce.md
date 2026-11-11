@@ -836,6 +836,54 @@ itself. Every caller is migrated (the session suites, `clap_fork.rs`, the
   the map, and `beats_to_seconds` and `duration_to_frames` are retired.
 
 
+**As built (step 6).** `Stem<N = NodeKey>`, `StemGain` (`None`, `Shared`,
+`Each(Normalize)`), `Bounce<N = NodeKey>` with `stem`, `stem_with`,
+`normalize_stems` and `try_map`, and `Bounced::{stems, into_targets}`
+(`tutti-session/src/bounce.rs`); `Bounce::node` and its `Source` are gone. A
+bounce is always the master's fork (`ForkTarget::Master`); each stem is one plan
+tap on its editor, opened after the edit hook and before the commit
+(`TapAlign::ToOutput`, `2 x GRAPH_MAX_BLOCK` frames a lane, the ids above any
+the hook opened), and an `Output::tap` of the render, so a stem's file runs the
+chain the master's does (the bounce's resample and dither, its own or the
+bounce's format). `tutti-graph` gained `Editor::reaches_outputs`, the one
+reachability a master fork copies (`fork_gather` and the check share it), and
+`Control::preparing` takes the targets (a stem's reader does not exist until the
+taps are open). Where this differs from the text above:
+
+- **`Stem::buffers(node)`.** A stem into memory, as `master_buffers` is: the
+  node-isolation tests (a sampler voice, a synth, a plugin, the filter) read
+  planes, and a float WAV written and read back would only be a longer way to
+  the same bits. `StemGain` other than `None` with one is
+  `BounceConfigError::NormalizeBuffers`, as for a master.
+- **The channel declaration is `layout`**, not `channels_layout`; `channels`
+  takes any `IntoIterator<Item = u16>`. A stem with no channels, or a node with
+  no audio output, is `StemChannelMissing { channel: 0 }`.
+- **A stem is a node an output hears**, so the node-isolation tests route their
+  node to the outputs first (an unwired source is `StemNotAudible`, and the
+  fork copies what the outputs reach, so an unforkable sibling refuses a stem
+  as it refuses the master). `StemNotInGraph` and `StemNotAudible` are checked
+  at start against the live graph, before anything is forked
+  (`Editor::reaches_outputs`); an edit that removes the node is the same
+  `StemNotInGraph`, where the taps open. The stem's width is the node's own
+  (a mono node is one channel, not clamped across the root).
+- **`Placement` is checked by the pipeline, when the render starts**
+  (`Error::Target { output, why: Placement | Lanes }`, before a frame is rendered
+  and before a path is touched), not as `BounceConfigError::Placement`: the fold
+  is built there, and it is built once. The variants of the session's config
+  error are `StemNotInGraph`, `StemNotAudible`, `StemChannelMissing`,
+  `DuplicatePath` (the master's path and every stem's, at start) and
+  `SharedGainWithoutMaster`.
+- **A master is still required** (`Missing(Field::Master)`); a bounce of stems
+  alone is a master into memory the caller drops. `Bounced::targets` is the
+  master then the stems in the order named.
+- **`TapOverrun`** is the pipeline's from step 3 and is unchanged here; no
+  session test can undersize a ring (the session sizes it), so it stays pinned
+  by `tutti-export`'s own.
+- **The tail and the length** are the master's for every target, as section 7.2
+  says; with a latency kept, the part not trimmed is on top of the tail, in every
+  target alike (`stems_are_aligned_with_the_master_and_sum_to_it`).
+
+
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;
 golden digests, if any, go through `assert_golden`.

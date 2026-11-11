@@ -928,7 +928,7 @@ impl Graph {
         }
     }
 
-    /// The control-thread half of a copy of `target` for an offline render
+    /// The control-thread half of a copy of the master for an offline render
     /// at `rate`, sharing no state with this graph: `Editor::fork_gather`
     /// with `ForkMode::Offline`, prepared as a bounce is
     /// (`RenderGraph::prepare`). [`PendingExport::build`] makes the rest on a
@@ -945,17 +945,11 @@ impl Graph {
     #[cfg(feature = "export")]
     pub(crate) fn gather_for_bounce(
         &self,
-        target: tutti_graph::ForkTarget,
         rate: SampleRate,
         serial: bool,
         root: Option<Option<tutti_types::ChannelTopology>>,
     ) -> tutti_export::Result<PendingExport> {
-        // Only the master's outputs are the root's channels; a node's
-        // sub-graph has its own, undeclared.
-        let root = match target {
-            tutti_graph::ForkTarget::Master => root.unwrap_or_else(|| self.root.clone()),
-            _ => None,
-        };
+        let root = root.unwrap_or_else(|| self.root.clone());
         // Its own pool, not the live engine's: the live callback would find a
         // shared one busy with the bounce's job and render alone. No start
         // hook: a bounce's threads are not the callback's, and promoting
@@ -965,7 +959,13 @@ impl Graph {
         } else {
             self.render_pool("tutti-export", None)
         };
-        PendingExport::gather(&self.editor, target, rate, pool, root)
+        PendingExport::gather(
+            &self.editor,
+            tutti_graph::ForkTarget::Master,
+            rate,
+            pool,
+            root,
+        )
     }
 
     /// Runs every node's reclaimer ([`SessionNode::reclaimer`], kept by
@@ -1462,6 +1462,14 @@ impl Graph {
     /// included (staged, committed or not).
     pub fn contains(&self, node: NodeKey) -> bool {
         self.editor.spec().topology.nodes.contains_key(&node)
+    }
+
+    /// Whether `node` is in what a bounce of the master forks: an output
+    /// reads it, or it feeds one that is read. A bounce's stem names such a
+    /// node. A graph whose bus edges do not lower reaches none.
+    #[cfg(feature = "export")]
+    pub(crate) fn reaches_outputs(&self, node: NodeKey) -> bool {
+        self.editor.reaches_outputs(node).unwrap_or(false)
     }
 
     /// Applies `decl` to the editor through `m` (doc 014 §8.2), resolving the

@@ -669,7 +669,7 @@ capture path should not make silently. What is open is whether `Dither`
 (and `Resample`) become adapters that both export and the recorder use,
 replacing export's private chain; as `Sink` adapters (wrapping the file sink) a
 recorder opts in with one line, and as `Source` adapters export keeps its order
-rule. Decided 2026-11-10: `Dither` alone, as a `Sink` adapter at stage 7 (§10, decision A). **Done at stage 7:** `tutti_dsp::DitherSink`; export's `DitherState` is gone and a recorder opts in by wrapping its sink (see "As built, stage 7"). `Resample` still waits.
+rule. Decided 2026-11-10: `Dither` alone, as a `Sink` adapter at stage 7 (§10, decision A).
 
 Decision of 2026-11-07: wait for a second pipeline (resample on record, import to the project
 rate, a bounce path) or for acceptance of the Ogg change. If pushed, push
@@ -1549,48 +1549,7 @@ Each stage is one PR that stays green. Line figures are estimates.
    - **The cycle count is test-only** (`Bell::cycles`, `cfg(test)`).
 7. **The `Dither` sink adapter** (decision A, §10): export and the recorder
    share it. `Resample` and the `Stage` marker wait for a pipeline that needs
-   them. Done.
-
-   *As built, stage 7.* `DitherSink<S: Sink>` is `tutti-dsp`'s
-   (`dither_sink.rs`), beside `DitherNoise`, which it applies and does not
-   reimplement. It takes `Option<DitherSpec>` (`DitherSpec { shape, lsb }`):
-   `None` is the identity (the block goes on uncopied, in one write), and the
-   caller names the depth as an `lsb`, from `IntDepth::lsb()` (new in
-   `tutti-codec`: `2^-(bits-1)`), because a `Sink` has no depth to read and a
-   guess would dither a float file. `get_mut` and `into_inner` let a caller that
-   finishes the inner sink itself keep its own error type.
-
-   *Why `tutti-dsp`.* The adapter needs `DitherNoise` (`tutti-dsp`, layer 2) and
-   `Sink` (`tutti-types`, layer 0), and is reached from export (layer 5) and
-   the session's recorder (layer 7). `tutti-codec` depends on `tutti-types`
-   alone and cannot take the noise; `tutti-export` is not below the session's
-   `record` feature, which would otherwise pull the whole renderer for one
-   adapter; a new crate would hold one type. `tutti-dsp` already depends on
-   `tutti-types`, `tutti-export` and `tutti-measure` already depend on it, and
-   it adds no edge to `scripts/check-layout.sh`'s table except `tutti-session`
-   -> `tutti-dsp`, behind `record`, which points down.
-
-   The scratch is one chunk (1024 frames) sized in `new`; a longer write goes
-   through in pieces, which changes nothing in what lands because the noise
-   advances once per sample in order (and no encoder's bytes depend on the
-   split of a dithered write: Ogg never dithers, and FLAC re-blocks). A
-   trailing partial frame is ignored, as every sink does; `Failed` is the
-   inner sink's `SinkFailed`, passed through, and `finalize` is the inner's.
-
-   Export's `DitherState` is gone. `process/dither.rs` is now `dither_spec`
-   (the config's guard: `Dither::Off`, `Float32` and Ogg give `None`), and
-   export's `Chain` ends in `DitherSink<EncoderSink>`, where `EncoderSink` is
-   the encoder as a `Sink` that counts clipping just before the quantizer, as
-   the write closure did, and keeps the first codec error for `Chain` to return
-   with its detail. The order is unchanged (gain in the gate, resample, dither,
-   quantize), so every dithered export is bit-identical. The recorder opts in
-   by wrapping its sink: `Recorder::start(src, DitherSink::new(file,
-   Some(spec)))`; a recorder with no wrap writes what it always did.
-   `tutti-session` (feature `record`) and `tutti::io` re-export `DitherSink`,
-   `DitherSpec` and `DitherShape`.
-   `tests/dither_agrees.rs` in `tutti-session` is decision A's test: a take
-   pulled in 100-frame blocks and an export of the same planes, both 16-bit
-   triangular, write the same samples.
+   them.
 8. **`Cue`** only with a measured gap.
 
 The smallest useful version of the whole design is stages 0, 1 and 3, and the

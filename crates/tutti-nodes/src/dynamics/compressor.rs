@@ -10,7 +10,7 @@ use super::utils::{apply_gain_lane, sidechain_levels};
 use tutti_dsp::{CompressorBlock, CompressorKernel};
 use tutti_types::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
-use crate::buses::{keyed, main_bus};
+use crate::buses::Keyed;
 use crate::ramp::{LastGood, block_driven, clamp_finite};
 
 /// Shared compressor state used by the per-sample gain computation.
@@ -208,7 +208,7 @@ impl CompressorCore {
 /// first block.
 pub struct CompressorNode {
     core: CompressorCore,
-    channels: ChannelLayout,
+    ports: Keyed,
     /// The per-frame gain lane, sized to the prepared `MaxBlock`.
     gains: Vec<f32>,
 }
@@ -217,7 +217,7 @@ impl std::fmt::Debug for CompressorNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompressorNode")
             .field("core", &self.core)
-            .field("channels", &self.channels)
+            .field("channels", &self.ports.width())
             .finish_non_exhaustive()
     }
 }
@@ -287,7 +287,7 @@ impl CompressorNode {
     ) -> Self {
         Self {
             core: CompressorCore::new(threshold_db, ratio, attack, release),
-            channels: ChannelLayout::from(channels.max(1)),
+            ports: Keyed::new(ChannelLayout::from(channels.max(1))),
             gains: Vec::new(),
         }
     }
@@ -322,14 +322,14 @@ impl CompressorNode {
     /// It has `2 * channels` inputs (audio then sidechain) and `channels`
     /// outputs, plus a threshold port if one was requested.
     pub fn channels(&self) -> u8 {
-        self.channels.count() as u8
+        self.ports.width().count() as u8
     }
 
     /// The width this compressor was built for, as the engine's channel
     /// vocabulary. [`channels`](Self::channels) is the same number as a bare
     /// count, kept for callers doing port arithmetic.
     pub fn layout(&self) -> ChannelLayout {
-        self.channels
+        self.ports.width()
     }
 
     /// The shared threshold cell in [`Db`] — the level above which reduction
@@ -445,10 +445,10 @@ impl Node for CompressorNode {
     /// but it only scales (`output = input * gain`), so a silent input is a
     /// silent output whatever the envelope is doing.
     fn shape(&self) -> Shape {
-        let n = self.channels.count();
-        Shape::audio(ChannelLayout::from_count(2 * n), self.channels)
-            .with_buses_in(keyed(self.channels))
-            .with_buses_out(main_bus(self.channels))
+        let width = self.ports.width();
+        Shape::audio(ChannelLayout::from_count(2 * width.count()), width)
+            .with_buses_in(self.ports.inputs())
+            .with_buses_out(self.ports.outputs())
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&COMPRESSOR_PARAMS)
@@ -466,7 +466,6 @@ impl Node for CompressorNode {
         let block = self
             .core
             .begin_block([None, block_driven(&io, 1), block_driven(&io, 4)]);
-        let ch = self.channels.count() as usize;
         // A modulated threshold overrides the cell per sample; the cell is
         // the base the graph's modulation rides on.
         let threshold_fed = io.param(0).frames();
@@ -477,13 +476,13 @@ impl Node for CompressorNode {
         // planar slices, a memoryless multiply the compiler can vectorize.
         // The lane is sized to the prepared `MaxBlock`.
         let gains = &mut self.gains[..size];
-        sidechain_levels(&inputs, ch, gains);
+        sidechain_levels(&inputs, &self.ports, gains);
         for (i, g) in gains.iter_mut().enumerate() {
             let sc = *g;
             let threshold = threshold_fed.map(|v| Db(v[i]));
             *g = self.core.gain(&block, i, size, sc, threshold);
         }
-        apply_gain_lane(gains, ch, &inputs, &mut outputs);
+        apply_gain_lane(gains, &self.ports, &inputs, &mut outputs);
         Status::Modified
     }
 
@@ -542,7 +541,7 @@ impl Clone for CompressorNode {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
-            channels: self.channels,
+            ports: self.ports,
             gains: self.gains.clone(),
         }
     }

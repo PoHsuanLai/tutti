@@ -4077,7 +4077,6 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-codec",
  "tutti-cpal",
- "tutti-dsp",
  "tutti-engine",
  "tutti-export",
  "tutti-fixtures",

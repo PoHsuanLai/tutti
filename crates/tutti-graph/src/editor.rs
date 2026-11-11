@@ -117,7 +117,13 @@ pub enum CommitError {
     },
     /// The spec bypasses, mixes or drives the mix of a node with no pass
     /// ([`Editor::check_pass`]): its input would go where a guess put it.
-    /// Nothing was compiled or sent.
+    /// Nothing was compiled or sent, and the last plan goes on sounding.
+    ///
+    /// **Recovery:** it is usually a node replaced while bypassed or mixed. Set
+    /// that node's mode to [`Active`](NodeMode::Active)
+    /// ([`Editor::set_mode`]), its mix to [`Mix::WET`] ([`Editor::set_mix`]),
+    /// or take the lane off its mix, and commit again; or declare the node's
+    /// buses so it has a pass.
     Unplaced {
         /// The node.
         node: NodeKey,

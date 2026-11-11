@@ -26,8 +26,8 @@ use tutti_types::{ChannelTopology, Fold, FoldError, Speaker};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PassError {
-    /// The main input and output differ in width and name no placement, so
-    /// which input reaches which output is a guess. Declare the buses
+    /// The main input and output differ in width and one of them names no
+    /// placement, so which input reaches which output is a guess. Declare the buses
     /// ([`Shape::with_buses_in`], [`Shape::with_buses_out`]).
     Unplaced {
         /// The main input's width.
@@ -113,15 +113,21 @@ impl Pass {
                 .iter()
                 .all(|s| *s == Speaker::Discrete)
         };
-        if discrete(src) && discrete(dst) {
-            return if src.width() == dst.width() {
-                Ok(Self::by_index(src.width()))
-            } else {
-                Err(PassError::Unplaced {
+        // A side that names no speaker says nothing about where a channel of
+        // the other goes, except by its index at one width. (`Fold::between`
+        // takes a named source onto a discrete destination by index, zero
+        // filling, which suits an edge that knows only a width; for a dry path
+        // it is the guess: a centre on the left alone.)
+        if discrete(src) || discrete(dst) {
+            if src.width() != dst.width() {
+                return Err(PassError::Unplaced {
                     inputs: src.width(),
                     outputs: dst.width(),
-                })
-            };
+                });
+            }
+            if discrete(src) && discrete(dst) {
+                return Ok(Self::by_index(src.width()));
+            }
         }
         let fold = Fold::between(
             &ChannelTopology::from(src.topology),

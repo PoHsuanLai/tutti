@@ -17,7 +17,7 @@ use core::ops::Range as Frames;
 
 use tutti_dsp::{
     Cadence, Ceiling, Channels, Design, Effect, Effort, FreeverbControls, FreeverbDesign,
-    MAX_CHANNELS, Placement, Range, Realization, Ring, Setup, Sizes, System,
+    MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
@@ -461,11 +461,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         };
         Shape::audio(self.channels.input, self.channels.output)
             .with_buses_in(main_bus(self.channels.input))
-            .with_buses_out(main_bus(match self.channels.placement {
-                Placement::Speakers => self.channels.output,
-                // Band 0, the main output; the further bands are ports.
-                Placement::Bands => self.channels.input,
-            }))
+            .with_buses_out(main_bus(self.channels.main_output()))
             .with_cost(cost(self.realization.effort()))
             .with_latency(Latency::new(self.realization.latency()))
             .with_tail(if D::PARKS {

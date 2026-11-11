@@ -7383,8 +7383,8 @@ bit for bit (the M1 tests, unedited, are the proof).
   (1) both are `Discrete` (what `Shape::audio` builds, which names no
   placement) **of one width**, or a side has no `Main` bus and the widths agree:
   output `c` is input `c`, unchanged to the bit; (2) a named pair that folds to
-  the identity: the same copy; (3) a named pair (or one named side):
-  `Fold::between`, applied with `Fold::planar_channel` over the aligned inputs,
+  the identity: the same copy; (3) a named pair, or one named side against an
+  unplaced side **of the same width** (a relabelling): `Fold::between`, applied with `Fold::planar_channel` over the aligned inputs,
   so a 5.1 bus bypassed into a stereo bus is the ITU rows and a mono centre
   under a stereo pair is heard on both sides at gain 1, delayed by the declared
   latency. Every input channel of the input bus has a ring of the declared
@@ -7393,8 +7393,10 @@ bit for bit (the M1 tests, unedited, are the proof).
   work costs a second arena of `max_block` frames per output channel, only for a
   pass that folds.
 - **A pass the graph would have to guess is refused, wherever it would be
-  heard** (`PassError`): main buses of different widths that name no placement
-  (`Unplaced { inputs, outputs }`; by index, the old width rule, a mono input
+  heard** (`PassError`): main buses of different widths of which either names
+  no placement (`Unplaced { inputs, outputs }`; `Fold::between` would take a
+  named source onto an unplaced destination by index, zero-filling, which suits
+  an edge that knows only a width and is the same guess for a dry path; by index, the old width rule, a mono input
   under a stereo output was heard on the left alone, the bug the reverbs shipped
   with after they went wet only), or named buses that do not fold (`Fold`, six
   `Discrete` channels into a named stereo bus). `Editor::check_pass` is the one
@@ -7404,15 +7406,23 @@ bit for bit (the M1 tests, unedited, are the proof).
   lane (`CommitError::Unplaced`), and the modulation reconciler's route onto a
   mix (`ReconcileError::Unplaced`). Any other mode, and a node nothing bypasses
   or mixes, is not refused: such a node commits and runs, so a plugin whose
-  buses name nothing still loads. **Reversed:** a node replaced, while Bypassed
+  buses name nothing still loads. **Reversed by #570:** a node replaced, while Bypassed
   or at a mix, by one with no pass used to pass nothing (silence) and the commit
   did not fail, a mode being a control and not an edit; silence there is the
   silent mistake this rule exists to stop, so that commit now fails naming the
-  node, and the host sets the mode or the mix back first. A node whose channels
-  are not speaker feeds says what its other ports are: the gate's and the
-  compressor's key is a `Sidechain` bus after the main one, a crossover's band 0
-  is its main output and its further bands plain ports
-  (`tutti_dsp::Placement::Bands`).
+  node (`CommitError::Unplaced`), the last plan goes on sounding, and the host
+  sets the mode to Active or the mix to WET (or declares the node's buses) and
+  commits again (`tutti-session`'s
+  `a_refused_replace_keeps_the_last_plan_until_the_mix_or_mode_is_set_back`). It
+  matches B4, where a re-declared root that no longer folds fails its commit. A node whose channels
+  are not speaker feeds says what its other ports are, and reads them through
+  the same value it declares, so the declaration and the indexing cannot drift:
+  the gate's and the compressor's key is a `Sidechain` bus after the main one
+  (`tutti-nodes`' `Keyed`: `shape` declares its buses, `process` reads
+  `audio(c)` and `key(c)`, the ports those buses cover), and a crossover's band
+  0 is its main output (`tutti_dsp::Placement::Bands`; the realization writes
+  through `Channels::port`, band-major, and the node declares
+  `Channels::main_output`, output 0's ports).
 - The root as a bus sink is B4, below.
 
 **As built (B4).** The root is a bus sink: the graph's outputs take a bus edge,

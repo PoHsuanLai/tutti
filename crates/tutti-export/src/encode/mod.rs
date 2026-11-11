@@ -26,8 +26,7 @@ use crate::render::{FrameSource, PlaneSource, RenderPlan};
 use crate::{Error, Written};
 use std::path::Path;
 use tutti_codec::{Encoder, Spec};
-use tutti_dsp::DitherSink;
-use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples, Sink, SinkFailed};
+use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 
 /// The rate the file is written at: the resample target, else the render rate.
 pub(crate) fn output_rate(config: &ExportConfig) -> tutti_types::SampleRate {
@@ -132,8 +131,19 @@ pub(crate) fn encode_to_file(
         config,
         spec.format.max_frames(spec.layout),
     )?;
-    let encoder = Encoder::create_file(&spec, path)?;
-    let mut chain = Chain::new(config, source_rate, encoder, &spec)?;
+    let mut encoder = Encoder::create_file(&spec, path)?;
+    // Counted here, just before the encoder's quantizer: the pipeline owns
+    // gain, resample and dither, so it is the one that knows what reaches the
+    // quantizer, and `tutti-codec` keeps its boundary (blocks in, a file out).
+    let counts_clipping = spec.format.int_depth().is_some();
+    let mut clipped = 0u64;
+    let mut chain = Chain::new(config, source_rate)?;
+    let mut write = |block: Interleaved<'_>| {
+        if counts_clipping {
+            clipped += clipped_in(block.samples());
+        }
+        encoder.write(block).map_err(Error::from)
+    };
     let driven = drive(
         src,
         config.encode.channels,
@@ -141,7 +151,7 @@ pub(crate) fn encode_to_file(
         stage,
         control,
         config.render.on_event_loss,
-        |block| chain.block(block),
+        |block| chain.block(block, &mut write),
     )?;
     if driven == Outcome::Cancelled {
         return Ok(Outcome::Cancelled);
@@ -151,7 +161,7 @@ pub(crate) fn encode_to_file(
     if control.is_cancelled() {
         return Ok(Outcome::Cancelled);
     }
-    chain.flush()?;
+    chain.flush(&mut write)?;
     // Before the file is put in place: a render that lost events, or that a
     // forked unit failed in (silence from then on), is never written, and
     // `path` keeps what it held (the encoder removes its file when it drops).
@@ -162,7 +172,6 @@ pub(crate) fn encode_to_file(
     if control.is_cancelled() {
         return Ok(Outcome::Cancelled);
     }
-    let (encoder, clipped) = chain.into_encoder();
     encoder.finish()?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     // After the rename: the only reading that is exactly 1.0.
@@ -188,53 +197,6 @@ fn clipped_in(samples: &[f32]) -> u64 {
         .count() as u64
 }
 
-/// The encoder as the [`Sink`] the dither wraps, counting what reaches its
-/// quantizer.
-///
-/// `Sink::write` answers only a marker, so the first codec error is kept here
-/// for [`Chain`] to return with its detail.
-struct EncoderSink {
-    encoder: Encoder<std::io::BufWriter<std::fs::File>>,
-    layout: ChannelLayout,
-    /// Counted just before the encoder's quantizer: the pipeline owns gain,
-    /// resample and dither, so it is the one that knows what reaches the
-    /// quantizer, and `tutti-codec` keeps its boundary (blocks in, a file
-    /// out). Only an integer format counts.
-    counts_clipping: bool,
-    clipped: u64,
-    error: Option<Error>,
-}
-
-impl Sink for EncoderSink {
-    fn layout(&self) -> ChannelLayout {
-        self.layout
-    }
-
-    fn write(&mut self, interleaved: &[f32]) -> std::result::Result<(), SinkFailed> {
-        if self.error.is_some() {
-            return Err(SinkFailed);
-        }
-        if self.counts_clipping {
-            self.clipped += clipped_in(interleaved);
-        }
-        self.encoder
-            .write(Interleaved::new(interleaved, self.layout))
-            .map_err(|e| {
-                self.error = Some(Error::from(e));
-                SinkFailed
-            })
-    }
-
-    /// Export finishes the encoder itself ([`Chain::into_encoder`]), to keep
-    /// the codec's error whole; this is the trait's form of the same step.
-    fn finalize(self) -> std::io::Result<()> {
-        self.encoder
-            .finish()
-            .map(drop)
-            .map_err(std::io::Error::other)
-    }
-}
-
 /// The resample and dither between the gate and the encoder, one block at a
 /// time.
 ///
@@ -245,11 +207,9 @@ impl Sink for EncoderSink {
 /// Order matters: resample first, dither second. Dither's noise is scaled to one
 /// LSB at the *output* depth, so dithering before a rate conversion would filter
 /// that noise along with the signal and land it somewhere other than one LSB.
-/// The dither is `tutti_dsp`'s [`DitherSink`] over the encoder, the same adapter
-/// a recording opts into.
 struct Chain {
     layout: ChannelLayout,
-    sink: DitherSink<EncoderSink>,
+    dither: crate::process::DitherState,
     /// Interleaved, so it is a flat sample buffer with `ch` samples per frame.
     staging: Vec<f32>,
     /// The converter, and the planes it takes from and gives to.
@@ -257,14 +217,8 @@ struct Chain {
 }
 
 impl Chain {
-    /// The chain for `config`, from frames at `source_rate`, ending in
-    /// `encoder` (made from `spec`).
-    fn new(
-        config: &ExportConfig,
-        source_rate: tutti_types::SampleRate,
-        encoder: Encoder<std::io::BufWriter<std::fs::File>>,
-        spec: &Spec,
-    ) -> Result<Self> {
+    /// The chain for `config`, from frames at `source_rate`.
+    fn new(config: &ExportConfig, source_rate: tutti_types::SampleRate) -> Result<Self> {
         // Once, at entry — never inside a per-block or per-frame loop.
         let layout = config.encode.channels;
         let ch = usize::from(layout.count());
@@ -292,76 +246,67 @@ impl Chain {
             // A resample to the rate the frames are already at is not a resample.
             _ => None,
         };
-        let encoder = EncoderSink {
-            encoder,
-            layout,
-            counts_clipping: spec.format.int_depth().is_some(),
-            clipped: 0,
-            error: None,
-        };
         Ok(Self {
             layout,
-            sink: DitherSink::new(encoder, crate::process::dither_spec(config)),
+            dither: crate::process::DitherState::for_config(config),
             staging: Vec::new(),
             resampler,
         })
     }
 
-    /// One gated block through the converter and the dither into the encoder.
-    fn block(&mut self, block: Interleaved<'_>) -> Result<()> {
+    /// One gated block through the converter and the dither into `write`.
+    fn block<W>(&mut self, block: Interleaved<'_>, write: &mut W) -> Result<()>
+    where
+        W: FnMut(Interleaved<'_>) -> Result<()>,
+    {
         if let Some((rs, planes, out)) = self.resampler.as_mut() {
             block.deinterleave_into(planes);
             rs.push(planes, out)?;
-            emit_planes(out, &mut self.staging, &mut self.sink, self.layout)
+            emit_planes(out, &mut self.staging, &mut self.dither, self.layout, write)
+        } else if self.dither.is_off() {
+            // Nothing to add, so nothing to copy: the gated block goes
+            // straight to the encoder.
+            write(block)
         } else {
-            // With no dither the adapter hands the gated block straight on,
-            // uncopied.
-            self.sink.write(block.samples()).map_err(|_| self.failure())
+            self.staging.clear();
+            self.staging.extend_from_slice(block.samples());
+            self.dither.apply(&mut self.staging);
+            write(Interleaved::new(&self.staging, self.layout))
         }
     }
 
-    /// What the converter still holds, through the dither into the encoder; a
+    /// What the converter still holds, through the dither into `write`; a
     /// chain with no converter holds nothing.
-    fn flush(&mut self) -> Result<()> {
+    fn flush<W>(&mut self, write: &mut W) -> Result<()>
+    where
+        W: FnMut(Interleaved<'_>) -> Result<()>,
+    {
         let Some((rs, _, out)) = self.resampler.as_mut() else {
             return Ok(());
         };
         rs.finish(out)?;
-        emit_planes(out, &mut self.staging, &mut self.sink, self.layout)
+        emit_planes(out, &mut self.staging, &mut self.dither, self.layout, write)
     }
-
-    /// The error the encoder stashed when it refused a write.
-    fn failure(&mut self) -> Error {
-        failure_of(&mut self.sink)
-    }
-
-    /// The encoder, to finish it, and how many samples clipped on the way.
-    fn into_encoder(self) -> (Encoder<std::io::BufWriter<std::fs::File>>, u64) {
-        let sink = self.sink.into_inner();
-        (sink.encoder, sink.clipped)
-    }
-}
-
-fn failure_of(sink: &mut DitherSink<EncoderSink>) -> Error {
-    sink.get_mut()
-        .error
-        .take()
-        .unwrap_or_else(|| Error::from(std::io::Error::other("the encoder refused a write")))
 }
 
 /// Interleave the resampler's output planes, dither, hand them on, and clear
 /// the planes for the next push.
-fn emit_planes(
+fn emit_planes<W>(
     out: &mut [Vec<f32>],
     staging: &mut Vec<f32>,
-    sink: &mut DitherSink<EncoderSink>,
+    dither: &mut crate::process::DitherState,
     layout: ChannelLayout,
-) -> Result<()> {
+    write: &mut W,
+) -> Result<()>
+where
+    W: FnMut(Interleaved<'_>) -> Result<()>,
+{
     let frames = Samples(out.first().map_or(0, Vec::len));
     staging.clear();
     staging.resize(frames.interleaved_len(layout), 0.0);
     InterleavedMut::new(staging, layout).interleave_from(out, 0);
-    let r = sink.write(staging).map_err(|_| failure_of(sink));
+    dither.apply(staging);
+    let r = write(Interleaved::new(staging, layout));
     for p in out.iter_mut() {
         p.clear();
     }

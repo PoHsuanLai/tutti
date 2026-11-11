@@ -366,8 +366,7 @@ crates/          everything shipped; directory name = package name; no nesting
   bevy-tutti     PARKED (out of the workspace, see above): Bevy umbrella + adapter; the only Bevy-mandatory crate.
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
-                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
-                 recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`).
+                 `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-rt.
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
@@ -719,8 +718,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
-  (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
-  the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
+  (`DitherNoise`), the Freeverb reverb (`Freeverb`, the state of
   `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
   (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
   `retarget`s in 32-frame chunks counted from the last reset, so the output does
@@ -1176,8 +1174,10 @@ read the `Cargo.toml`, grep for the type, run the probe.
   dry path (a bypass, a mix, a lane on the mix): main buses of different widths
   that name no placement have no pass and are refused (`PassError`,
   `Editor::check_pass`; doc 013 "As built (B3)"). By index, the reverbs' mono dry
-  was heard on the left alone. A key is a `Sidechain` bus after the main one; a
-  crossover's band 0 is its main output (`tutti_dsp::Placement::Bands`).
+  was heard on the left alone. A node reads its ports through the value it
+  declares, so the two cannot drift: a key is a `Sidechain` bus after the main
+  one (`tutti-nodes`' `Keyed`), a crossover's band 0 its main output
+  (`Channels::port`, `Channels::main_output`).
 - **One bundle walk:** `tutti_plugin_types::bundle` is the only code that
   knows the `Contents/<arch>/` layout.
   - `native_module_in_bundle` is for hosts.

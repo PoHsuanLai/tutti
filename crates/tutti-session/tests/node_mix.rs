@@ -11,10 +11,10 @@
 //! so its aligned input is its input) and a mix of one half is
 //! `A / 2 * 0.5 + A * 0.5`, each exact in `f32`.
 
-use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
+use tutti_graph::{CrossfadeCurve, Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
 use tutti_session::{GraphSource, MixError, NodeMode, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, Mix, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut, Mix, SampleRate, Samples, Seconds};
 
 const A: f32 = 0.25;
 const BLOCK: usize = 64;
@@ -195,4 +195,95 @@ fn a_missing_node_and_a_bad_mix_are_refused() {
         Mix::WET,
         "a removed node's mix goes with it"
     );
+}
+
+/// `out = (in * 0.25, in * 0.25)`: one input, two outputs that name no
+/// placement, so it has no pass (`PassError::Unplaced`) and nothing may bypass
+/// or mix it: by index its input would be heard on the left alone.
+#[derive(Clone)]
+struct Quarter;
+
+impl Node for Quarter {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let (ins, mut outs) = io.split();
+        for c in 0..2 {
+            for (o, &x) in outs.get(c).iter_mut().zip(ins.get(0)) {
+                *o = x * 0.25;
+            }
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **A replace the graph refuses leaves the last plan sounding, and setting the
+/// node's mix or mode back lets the next commit through** (doc 013, "As built
+/// (B3)", reversed by #570). A node at a mix of one half, or bypassed, replaced
+/// by one with no pass: the commit is refused (`CommitError::Unplaced`), so the
+/// old node's figure goes on (`A/2 * 0.5 + A * 0.5`, or `A`), the graph stays
+/// edited, and once the host sets the mix to WET or the mode to Active the next
+/// update commits and the new node is heard alone (`A / 4`).
+///
+/// Mutation (each run, each failed): `check_passes` not called in `commit` →
+/// the replace commits and the first figure is the new node's blend; the
+/// session clearing the edit flag on a refused commit → the recovery never
+/// commits and the last figure is the old node's.
+#[test]
+fn a_refused_replace_keeps_the_last_plan_until_the_mix_or_mode_is_set_back() {
+    for bypass in [false, true] {
+        let mut r = rig();
+        let before = if bypass {
+            r.s.graph().set_mode(r.halve, NodeMode::Bypassed).unwrap();
+            A
+        } else {
+            r.s.graph().set_mix(r.halve, Mix::new(0.5)).unwrap();
+            A * 0.5 * 0.5 + A * 0.5
+        };
+        for _ in 0..6 {
+            r.settled();
+        }
+        assert!(all_are(&r.settled(), before), "bypass {bypass}: before");
+
+        assert!(
+            r.s.graph()
+                .replace(
+                    r.halve,
+                    ForkByClone(Quarter),
+                    Seconds(0.0),
+                    CrossfadeCurve::EqualAmplitude
+                )
+                .is_ok()
+        );
+        for _ in 0..6 {
+            r.settled();
+        }
+        let got = r.settled();
+        assert!(
+            all_are(&got, before),
+            "bypass {bypass}: the refused commit leaves the last plan: {} want {before}",
+            got[0]
+        );
+        assert!(
+            r.s.graph_ref().is_edited(),
+            "bypass {bypass}: still to commit"
+        );
+
+        if bypass {
+            r.s.graph().set_mode(r.halve, NodeMode::Active).unwrap();
+        } else {
+            r.s.graph().set_mix(r.halve, Mix::WET).unwrap();
+        }
+        for _ in 0..6 {
+            r.settled();
+        }
+        assert!(
+            all_are(&r.settled(), A * 0.25),
+            "bypass {bypass}: set back, the next commit places the new node"
+        );
+        assert!(!r.s.graph_ref().is_edited(), "bypass {bypass}: committed");
+    }
 }

@@ -44,7 +44,7 @@ pub trait ChannelKernel: Clone + core::fmt::Debug + Send + 'static {
     const STEPS: u32;
 
     /// How many outputs each input channel makes, at most `MAX_OUTPUTS` (6). Output `o`
-    /// of channel `c` is `o * width + c`.
+    /// of channel `c` is port [`Channels::port`]`(o, c)`.
     fn outputs(&self) -> usize {
         1
     }
@@ -128,6 +128,7 @@ impl<K: ChannelKernel> Design for Filter<K> {
             PerChannel {
                 kernel: self.kernel.clone(),
                 width,
+                ports: self.channels(),
             },
             &self.blank(SampleRate::DEFAULT),
         )
@@ -141,6 +142,9 @@ impl<K: ChannelKernel> Design for Filter<K> {
 pub struct PerChannel<C> {
     kernel: C,
     width: usize,
+    /// The design's channels: the port each output of each channel is written
+    /// to ([`Channels::port`]), the order its node declares its buses from.
+    ports: Channels,
 }
 
 impl<C: ChannelKernel> PerChannel<C> {
@@ -165,7 +169,7 @@ impl<C: ChannelKernel> PerChannel<C> {
         let mut ys: [&mut [f32]; LANES * MAX_OUTPUTS] =
             core::array::from_fn(|_| Default::default());
         for (slot, out) in output.iter_mut().enumerate() {
-            let (o, ch) = (slot / self.width, slot % self.width);
+            let (o, ch) = self.ports.of_port(slot);
             if o < outputs && (first..first + N).contains(&ch) {
                 ys[(ch - first) * MAX_OUTPUTS + o] = &mut out[frames.clone()];
             }
@@ -222,7 +226,7 @@ impl<C: ChannelKernel> Kernel for PerChannel<C> {
             for (ch, s) in state.iter_mut().enumerate() {
                 let frame = C::tick(&c, s, input[ch][i]);
                 for (o, &y) in frame.as_ref().iter().take(outputs).enumerate() {
-                    output[o * self.width + ch][i] = y;
+                    output[self.ports.port(o, ch)][i] = y;
                 }
             }
             return;

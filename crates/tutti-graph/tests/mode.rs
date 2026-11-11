@@ -30,7 +30,7 @@ use tutti_graph::{
     Source, Status, Topology, Transport, Unforkable, ValidGraph,
 };
 use tutti_types::{
-    BusTopology, ChannelLayout, ChannelTopology, FoldError, Latency, M3DB, Samples, Tail,
+    BusTopology, ChannelLayout, ChannelTopology, FoldError, Latency, M3DB, Samples, Speaker, Tail,
 };
 use tutti_ump::Ump;
 
@@ -491,15 +491,17 @@ fn a_bypass_is_the_fold_between_the_main_buses() {
 }
 
 /// **A bypass of a node with no pass is refused**, with the reason, and nothing
-/// changes: six discrete channels into a named stereo bus have no relabelling
-/// (`FoldError::Discrete`), and six channels into two built from widths name no
-/// placement (`PassError::Unplaced`: by index, the first two inputs would be a
-/// guess). Any other mode, and a bypass at one width, is not refused.
+/// changes: a stereo pair into a centre and an LFE has no place for the left
+/// (`PassError::Fold`); six channels into two built from widths name no
+/// placement, and six unplaced channels into a named stereo pair say nothing of
+/// where each goes (`PassError::Unplaced`: by index, the first two inputs would
+/// be a guess). Any other mode, and a bypass at one width, is not refused.
 ///
 /// Mutation (each run, each failed): `Editor::set_mode` not asking
 /// `check_pass` → the bypasses are accepted; asking it for every mode → the
-/// Muted assertion fails; `Pass::of` passing discrete buses of different
-/// widths by index again → the six-into-two bypass is accepted.
+/// Muted assertion fails; `Pass::of` passing a discrete side of another width
+/// by index again (the `discrete(src) || discrete(dst)` arm removed) → the six
+/// into a named two folds by index and is accepted.
 #[test]
 fn a_bypass_with_no_pass_is_refused() {
     let (mut ed, _exec) = Editor::new(prepare(MAX_BLOCK));
@@ -512,38 +514,57 @@ fn a_bypass_with_no_pass_is_refused() {
             tail: Tail::None,
         }))
     };
+    let named = |s: &[Speaker]| Bus {
+        topology: BusTopology::new(s.iter().copied()).expect("a bus"),
+        role: BusRole::Main,
+    };
+    let stereo = [Speaker::FrontLeft, Speaker::FrontRight];
+    let centre_lfe = [Speaker::FrontCenter, Speaker::LowFrequency];
     ed.insert(
         key(1),
-        "named",
-        Unforkable(TestNode::new(bused(6, 2, 0, discrete(6), smpte(2)))),
+        "no fold",
+        Unforkable(TestNode::new(bused(
+            2,
+            2,
+            0,
+            named(&stereo),
+            named(&centre_lfe),
+        ))),
     );
     ed.insert(key(2), "widths", widths(6, 2));
-    ed.insert(key(3), "one width", widths(2, 2));
+    ed.insert(
+        key(3),
+        "unplaced into named",
+        Unforkable(TestNode::new(bused(6, 2, 0, discrete(6), smpte(2)))),
+    );
+    ed.insert(key(4), "one width", widths(2, 2));
     let refused = ed.set_mode(key(1), NodeMode::Bypassed);
     assert!(
         matches!(
             refused,
             Err(ModeError::Unplaced {
-                error: PassError::Fold(FoldError::Discrete { .. }),
+                error: PassError::Fold(FoldError::Unplaced { .. }),
                 ..
             })
         ),
         "{refused:?}"
     );
-    assert_eq!(
-        ed.set_mode(key(2), NodeMode::Bypassed),
-        Err(ModeError::Unplaced {
-            node: key(2),
-            error: PassError::Unplaced {
-                inputs: 6,
-                outputs: 2
-            },
-        })
-    );
+    for k in [2, 3] {
+        assert_eq!(
+            ed.set_mode(key(k), NodeMode::Bypassed),
+            Err(ModeError::Unplaced {
+                node: key(k),
+                error: PassError::Unplaced {
+                    inputs: 6,
+                    outputs: 2
+                },
+            })
+        );
+        assert_eq!(ed.mode(key(k)), NodeMode::Active, "nothing changed");
+    }
     assert_eq!(ed.mode(key(1)), NodeMode::Active, "nothing changed");
-    assert_eq!(ed.mode(key(2)), NodeMode::Active, "nothing changed");
     assert_eq!(ed.set_mode(key(1), NodeMode::Muted), Ok(()));
-    assert_eq!(ed.set_mode(key(3), NodeMode::Bypassed), Ok(()));
+    assert_eq!(ed.set_mode(key(4), NodeMode::Bypassed), Ok(()));
 }
 
 /// **`Muted`: every output is `+0.0`** (the bit pattern of positive zero),

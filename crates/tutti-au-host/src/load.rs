@@ -134,13 +134,7 @@ impl AuLoaded {
         }
         let _ = loaded.install_host_callbacks();
         let _ = loaded.watch_properties();
-        loaded.origin = Some(Origin::new(path, load.clone()));
+        loaded.origin = Origin::new(path, load.clone());
         Ok(loaded)
-    }
-
-    /// Where the unit was loaded from, when it came through [`load`](Self::load).
-    #[must_use]
-    pub fn origin(&self) -> Option<&Origin> {
-        self.origin.as_ref()
     }
 }

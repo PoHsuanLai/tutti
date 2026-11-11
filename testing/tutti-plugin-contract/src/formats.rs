@@ -99,3 +99,84 @@ impl Format for Vst3Cpp {
         vst3(plugin::vst3_cpp_module())
     }
 }
+
+/// A case that configures or reads the shared plugin through its state blob (a
+/// mode word, the transcript): the unit under test has none, so the case stops
+/// at the first read of it.
+#[cfg(target_os = "macos")]
+const NEEDS_THE_BLOB: Gap = Gap {
+    why: "the case selects a mode or reads the transcript through the shared plugin's \
+          state blob; AUDelay's state is an AU class-info property list with no such blob",
+    fails_with: "the state holds the plugin's blob",
+};
+
+/// AU, from Apple's AUDelay in `CoreAudio.component`. There is no AU build of
+/// the shared plugin, so this runs every case against a unit that has none of
+/// its mode word, transcript or spec figures: a case that needs them is a gap.
+#[cfg(target_os = "macos")]
+pub struct Au;
+
+#[cfg(target_os = "macos")]
+impl Format for Au {
+    const NAME: &'static str = "au";
+    const SURFACE: spec::Surface = spec::AU;
+    type L = tutti_au_host::AuLoaded;
+    /// The host writes the last point of each parameter's queue at the block
+    /// head (`AudioUnitSetParameter` with no ramp offset).
+    const PARAM_TIMING: ParamTiming = ParamTiming::BlockHead;
+    const GAPS: &'static [(&'static str, Gap)] = &[
+        ("routing_tag_oracle", NEEDS_THE_BLOB),
+        ("reconfigure_keeps_rendering", NEEDS_THE_BLOB),
+        ("buses_reported", NEEDS_THE_BLOB),
+        ("latency_reported", NEEDS_THE_BLOB),
+        ("latency_applied", NEEDS_THE_BLOB),
+        ("reset_clears_the_delay_line", NEEDS_THE_BLOB),
+        ("tail_reported", NEEDS_THE_BLOB),
+        ("active_write_applied", NEEDS_THE_BLOB),
+        ("automation_point_offset", NEEDS_THE_BLOB),
+        ("note_at_offset", NEEDS_THE_BLOB),
+        ("arrival_is_ordered_and_sized", NEEDS_THE_BLOB),
+        ("transport_reaches_the_plugin", NEEDS_THE_BLOB),
+        ("transport_change_is_told_at_its_frame", NEEDS_THE_BLOB),
+        ("loaded_write_reaches_the_audio", NEEDS_THE_BLOB),
+        ("loaded_write_survives_a_save", NEEDS_THE_BLOB),
+        ("reopen_is_a_fresh_instance", NEEDS_THE_BLOB),
+        ("corrupt_state_leaves_plugin_usable", NEEDS_THE_BLOB),
+        ("f64_carries_same_audio", NEEDS_THE_BLOB),
+        ("overflowing_log_fails_the_oracle", NEEDS_THE_BLOB),
+        ("process_does_not_allocate", NEEDS_THE_BLOB),
+        (
+            "parameters_listed",
+            Gap {
+                why: "AUDelay lists its own four parameters; the spec's plugin lists three",
+                fails_with: "the listed parameters",
+            },
+        ),
+        (
+            "parameter_round_trip",
+            Gap {
+                why: "an AU holds a parameter as an f32 in plain units, so a normalized 0.75 \
+                      reads back as 0.7500000169765675; the case asserts exact equality",
+                fails_with: "0.7500000169765675",
+            },
+        ),
+        (
+            "state_round_trip",
+            Gap {
+                why: "an AU holds a parameter as an f32 in plain units, so a restored \
+                      normalized 0.5 reads back as 0.4999999743455097; the case asserts \
+                      exact equality",
+                fails_with: "0.4999999743455097",
+            },
+        ),
+    ];
+
+    fn load() -> Self::L {
+        tutti_au_host::AuLoaded::load(
+            &main_thread(),
+            std::path::Path::new("/System/Library/Components/CoreAudio.component"),
+            &tutti_plugin_types::Load::new().plugin("au.aufx.dely.appl"),
+        )
+        .expect("AUDelay loads")
+    }
+}

@@ -497,3 +497,46 @@ fn a_block_with_more_events_than_any_scratch_reads_them_all() {
     let out = render(&mut organ(), &events, 22_050);
     assert!(rms(&out[11_025..]) > 0.001, "the last event sounds");
 }
+
+/// **A unit plays one Group's channels** (M2-104 section 2.1.2, Appendix B.1: a
+/// Group is a channel space of its own): a Note On in Group 2 is silence to a
+/// unit of Group 1, whichever channel it names, and a unit built for Group 2
+/// plays it and not Group 1's.
+///
+/// Mutation: `apply_event` ignoring the Group (the check dropped) -> the
+/// first unit sounds Group 2's note and the first assertion fails.
+#[test]
+fn a_unit_plays_its_own_groups_channels_only() {
+    let note = |group: MidiGroup| {
+        Ump::from(Message::Midi2(
+            tutti_ump::Address {
+                group,
+                channel: MidiChannel::FIRST,
+            },
+            Voice2::NoteOn {
+                note: NoteNumber::of(60),
+                velocity: 0xFFFF,
+                attribute: Attribute::None,
+            },
+        ))
+    };
+    let group2 = MidiGroup::of(1);
+    let heard = |settings: Settings, group: MidiGroup| {
+        let mut unit = Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).unwrap());
+        unit.program_change(MidiChannel::FIRST, U7::of(16));
+        rms(&render(&mut unit, &[note(group)], 11_025))
+    };
+    assert!(heard(Settings::new(RATE), MidiGroup::FIRST) > 0.001);
+    assert_eq!(
+        heard(Settings::new(RATE), group2),
+        0.0,
+        "Group 2 is not Group 1's"
+    );
+    let second = Settings::new(RATE).with_group(group2);
+    assert!(heard(second, group2) > 0.001);
+    assert_eq!(
+        heard(second, MidiGroup::FIRST),
+        0.0,
+        "Group 1 is not Group 2's"
+    );
+}

@@ -131,6 +131,6 @@ pub use tutti_dsp::{DitherShape, DitherSink, DitherSpec};
 pub use tutti_graph::{BusError, BusRef, BusSource, Buses, MissingSource};
 pub use tutti_graph::{MixError, ModeError, NodeMode, PassError};
 #[cfg(feature = "midi")]
-pub use tutti_ump::MidiChannel;
+pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]
 pub use watch::{Backoff, DevicePolicy, DeviceWatch, Follow, FollowEvent, LISTING_WARNING};

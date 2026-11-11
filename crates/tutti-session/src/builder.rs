@@ -40,6 +40,8 @@ pub struct SessionBuilder {
     midi_backend: Option<MidiBackend>,
     #[cfg(feature = "midi")]
     mpe_mode: tutti_midi_protocol::MpeMode,
+    #[cfg(feature = "midi")]
+    midi_ports: tutti_midi_runtime::MidiInputPorts,
     #[cfg(feature = "modulation")]
     unresolved_warning: std::time::Duration,
     #[cfg(feature = "plugin")]
@@ -73,6 +75,8 @@ impl Default for SessionBuilder {
             midi_backend: None,
             #[cfg(feature = "midi")]
             mpe_mode: tutti_midi_protocol::MpeMode::Disabled,
+            #[cfg(feature = "midi")]
+            midi_ports: tutti_midi_runtime::MidiInputPorts::FIRST_GROUP,
             #[cfg(feature = "modulation")]
             unresolved_warning: crate::UNRESOLVED_WARNING,
             #[cfg(feature = "plugin")]
@@ -189,6 +193,18 @@ impl SessionBuilder {
         self
     }
 
+    /// The Groups the engine's MIDI input hears, from the first through
+    /// `last`. Default the first Group alone, whose seventeen ports are what a
+    /// one-Group device needs; each Group heard adds as many event outputs
+    /// ([`tutti_midi_runtime::MidiInputPorts`]). An event of a Group past
+    /// `last` is not delivered.
+    #[cfg(feature = "midi")]
+    #[must_use]
+    pub fn midi_groups(mut self, last: tutti_ump::MidiGroup) -> Self {
+        self.midi_ports = tutti_midi_runtime::MidiInputPorts::through(last);
+        self
+    }
+
     /// How long a modulation target may stay unresolved, measured on
     /// [`PhaseCx::now`](crate::PhaseCx::now), before it is logged and
     /// reported ([`SessionEvent::ModulationUnresolved`](crate::SessionEvent::ModulationUnresolved)).
@@ -300,8 +316,11 @@ impl SessionBuilder {
             });
             #[cfg(not(feature = "midi-hardware"))]
             let wire: Option<Box<dyn tutti_midi_runtime::MidiIn>> = None;
-            let (input, input_controls) =
-                graph.add(tutti_midi_runtime::MidiInputNode::new(wire).with_mpe(self.mpe_mode));
+            let (input, input_controls) = graph.add(
+                tutti_midi_runtime::MidiInputNode::new(wire)
+                    .hearing(self.midi_ports)
+                    .with_mpe(self.mpe_mode),
+            );
             let (clock, clock_master) = graph.insert(tutti_midi_runtime::ClockNode::new());
             // The hardware out: a tap on the clock's event output, aligned to
             // the outputs' time so MIDI leaves with the audio (doc 017, E3).
@@ -315,6 +334,7 @@ impl SessionBuilder {
             (
                 Some(crate::MidiNodes {
                     input,
+                    input_ports: self.midi_ports,
                     input_controls,
                     clock,
                     clock_master,

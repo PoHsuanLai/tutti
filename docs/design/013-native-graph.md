@@ -7844,11 +7844,14 @@ fourth.
     `HardwareMidiInputs`) as a source node. Each block it polls, assembles
     (N)RPN runs and ingests classic MPE (the mode requested through its
     controls is adopted once and latched, as the pre-block did), and sends
-    each event out of **its channel's port** — sixteen, plus
-    `CHANNELLESS_PORT` for system, SysEx, Flex and Stream. **Routing is
-    wiring**: a listener on channel `c` takes edges from port `c` and the
-    channelless port, one on every channel from all seventeen
-    (`input_ports`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
+    each event out of **its Group and channel's port** — sixteen for each
+    Group heard, plus one channelless port per Group for system, SysEx and
+    Flex (a message with no Group, Utility and Stream, leaves the first Group's;
+    doc 017 L3). **Routing is wiring**: a listener on channel `c` of a Group
+    takes edges from that Group's port `c` and its channelless port, one on
+    every channel from its seventeen (`MidiInputPorts::listening`; for the
+    first Group alone, which is the default, the ports are `c` and
+    `CHANNELLESS_PORT`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
     and `MAX_TARGETS_PER_ROUTE` are gone, and so is `MidiRouter`. Its fork
     reads no wire.
   - **`MidiQueueNode`** (deleted, doc 017 stage E4: the event inlet

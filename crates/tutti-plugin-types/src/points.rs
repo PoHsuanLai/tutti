@@ -271,11 +271,27 @@ impl PointPool {
     /// `true`, or returns `false` for a holder that is gone, which keeps its
     /// block. Each block comes back emptied. Allocation-free.
     pub fn give_back(&mut self, mut swap: impl FnMut(usize, &mut PointBuf) -> bool) {
-        for (i, mut own) in self.lent.drain(..) {
-            self.holds[i] = false;
-            if swap(i, &mut own) {
-                own.clear();
-                self.free.push(own);
+        self.try_give_back(|i, own| Some(swap(i, own)));
+    }
+
+    /// [`give_back`](Self::give_back) for holders that may be unavailable:
+    /// `swap` returns `None` for a holder it could not reach right now, and
+    /// that holder's block stays lent for the next call. Allocation-free.
+    pub fn try_give_back(&mut self, mut swap: impl FnMut(usize, &mut PointBuf) -> Option<bool>) {
+        let mut at = 0;
+        while at < self.lent.len() {
+            let (i, own) = &mut self.lent[at];
+            let i = *i;
+            match swap(i, own) {
+                None => at += 1,
+                Some(returned) => {
+                    let (_, mut own) = self.lent.remove(at);
+                    self.holds[i] = false;
+                    if returned {
+                        own.clear();
+                        self.free.push(own);
+                    }
+                }
             }
         }
     }

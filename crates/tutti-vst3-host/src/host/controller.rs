@@ -502,7 +502,7 @@ impl Vst3Loaded {
             context_requirements,
             drain,
             beat,
-            carried: carried.into_iter().map(|(id, v)| (id.get(), v)).collect(),
+            carried,
         });
         Ok((
             processor,

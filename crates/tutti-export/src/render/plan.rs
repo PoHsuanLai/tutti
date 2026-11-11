@@ -3,8 +3,8 @@
 //! Derived once from (duration, rate, latency), and drives both how many frames
 //! the graph must produce and how many leading frames the sink drops.
 
-use crate::ConfigError;
 use crate::config::RenderConfig;
+use crate::{ConfigError, Job, JobError};
 use tutti_types::{BeatDuration, Bpm, Samples};
 use tutti_types::{SampleRate, Seconds};
 
@@ -39,30 +39,36 @@ impl RenderPlan {
     /// [`ConfigError::InvalidDuration`] for a duration that is NaN, infinite
     /// or negative, and [`ConfigError::EmptyRender`] for a plan that keeps no
     /// frame at all: neither is a render anyone meant, and a silent empty file
-    /// reported as success hides which one it was.
+    /// reported as success hides which one it was. The rest is what
+    /// [`Job::new`] refuses ([`ConfigError::Job`]): a rate that is not finite
+    /// and positive, or a span past [`MAX_FRAMES`](crate::MAX_FRAMES).
     pub fn new(config: &RenderConfig) -> Result<Self, ConfigError> {
         if !config.duration_seconds.get().is_finite() || config.duration_seconds.get() < 0.0 {
             return Err(ConfigError::InvalidDuration);
         }
         let duration = duration_to_frames(config.duration_seconds, config.sample_rate);
+        // A tail alone is a render (the audible span is nothing and the tail is
+        // all of it), which `Job` refuses as a zero length: its length is then
+        // the tail, which keeps the same frames and trims the same head.
+        let (length, tail) = if duration == Samples(0) {
+            (config.tail, Samples(0))
+        } else {
+            (duration, config.tail)
+        };
+        let job =
+            Job::new(config.sample_rate, length, config.latency, tail).map_err(|e| match e {
+                JobError::ZeroLength => ConfigError::EmptyRender,
+                other => ConfigError::Job(other),
+            })?;
         // The tail extends what the sink KEEPS, not just what the graph produces.
         // Two gates truncate independently — `total` bounds the pull loop and
         // `output_length` caps the kept frames — so extending only the first
-        // would render the decay and then discard it.
-        let output_length = duration + config.tail;
-        // Render the kept span PLUS the trimmed head, so the output is still
-        // `output_length` frames long after the drop.
-        // Both are frame counts, so this is `Samples`' own saturating `Add`
-        // rather than an unwrapped `usize` one.
-        let total = output_length + config.latency;
-        if output_length == Samples(0) {
-            return Err(ConfigError::EmptyRender);
-        }
-
+        // would render the decay and then discard it. The job's counts are
+        // both: the kept span plus the tail, and that plus the trimmed head.
         Ok(Self {
-            total,
-            output_length,
-            latency: config.latency,
+            total: job.total(),
+            output_length: job.output_length(),
+            latency: job.latency(),
         })
     }
 }

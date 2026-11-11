@@ -149,7 +149,8 @@ pub(crate) fn encode_to_file(
         bytes,
         dropped_events: lost,
         clipped_samples: clipped,
-        normalized: None,
+        gain: None,
+        measured: None,
     }))
 }
 
@@ -285,17 +286,17 @@ pub(crate) fn encode_planes(
 ) -> Result<Outcome<Written>> {
     // The planes carry the events their render lost: judged by this config's
     // policy, before anything is written.
-    crate::render::check_loss(config.render.on_event_loss, rendered.dropped_events)?;
+    crate::render::check_loss(config.render.on_event_loss, rendered.dropped_events())?;
     let frames = rendered.frames();
     // Planes of another width than the file's are folded onto it, by the
     // same rule the graph's outputs are (the file's `topology` included); a
     // width it cannot place is an error, never a dropped channel.
-    let fold = if rendered.planes.is_empty() || rendered.layout() == config.encode.channels {
+    let fold = if rendered.planes().is_empty() || rendered.layout() == config.encode.channels {
         None
     } else {
         Some(crate::file_channels(config).fold_from(rendered.channels(), None)?)
     };
-    let mut src = PlaneSource::new(&rendered.planes, fold);
+    let mut src = PlaneSource::new(rendered.planes(), fold);
     let plan = RenderPlan {
         total: frames,
         output_length: frames,
@@ -303,9 +304,16 @@ pub(crate) fn encode_planes(
     };
     // The frames' OWN rate, never `config.render.sample_rate`: these planes may
     // have been rendered under a different config entirely.
-    let written = encode_to_file(&mut src, rendered.sample_rate, &plan, config, path, control)?;
+    let written = encode_to_file(
+        &mut src,
+        rendered.sample_rate(),
+        &plan,
+        config,
+        path,
+        control,
+    )?;
     Ok(written.map(|mut w| {
-        w.dropped_events = rendered.dropped_events;
+        w.dropped_events = rendered.dropped_events();
         w
     }))
 }

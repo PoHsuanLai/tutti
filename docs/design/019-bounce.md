@@ -205,11 +205,14 @@ is `vec![Output::master(target)]`.
 | `Rendered` | `planes`, `rate`, `dropped_events` | `Rendered::new(planes, rate, dropped) -> Result<_, RenderedError>` checks equal plane lengths, at least one plane, valid rate. `frames()`, `channels()`, `planes()`, `into_planes()`. No public fields. |
 | `RenderGraph` | an installed, paired `(Editor, Executor)` plus `Setup { pool, root }` | `RenderGraph::assemble(editor, executor, Setup) -> Result<_>` checks pairing and rate. `prepare(rate)`, `reported_latency()`, `reported_tail()` stay. The rest of the fork machinery is not here (§5). |
 
-Built today, for comparison: `Written` has `path`, `bytes`, `dropped_events`,
-`clipped_samples` and `normalized` (no `frames`), and `Rendered` has public
-`planes`, `sample_rate` and `dropped_events`. `Job`, `Output`, `Feed`, `Target`,
-`Stage`, `CancelToken` and `render` do not exist yet; `Control`'s role is played
-by `Flow` and `Pass`.
+Built today (step 1), for comparison: `Job` (`Job::new`, `with_event_loss`,
+getters, `JobError::{InvalidRate, ZeroLength, TooLong}`, and `MAX_FRAMES`, which
+is `u32::MAX`); `Rendered` is sealed (`Rendered::new`, `RenderedError::{NoPlanes,
+UnequalPlanes, InvalidRate}`, getters `planes`, `into_planes`, `sample_rate`,
+`dropped_events`); `Written` has `path`, `bytes`, `dropped_events`,
+`clipped_samples`, `gain` and `measured` (no `frames` yet). `Output`, `Feed`,
+`Target`, `Stage`, `CancelToken` and `render` do not exist yet; `Control`'s role
+is played by `Flow` and `Pass`.
 
 What leaves `tutti-export`'s public surface: `ExportConfig`, `RenderConfig`,
 `EncodeConfig`, the five `render_*` functions and `write_buffers`,
@@ -508,6 +511,28 @@ proceed in parallel with E3.
 | 6 | Stems | Tap opening on the fork, `Placement`, `StemGain`, `TapOverrun`, alignment test (stem equals master when the stem is the only source; stems sum to the master within one LSB), serial-versus-parallel bit identity with stems, cancel tests for every point in §6.2. | Additive; a bounce without stems is unchanged. |
 | 7 | bevy | `BounceRequest`, `BounceDone`, `BounceInFlight`, `BounceStage`, `BouncePlugin`, entity resolution, prelude re-exports; delete the mirror and the wrapper; tests and example migrated. | |
 | 8 | Docs and cleanup | READMEs, CLAUDE.md workspace table, doc 015 §4.3 note, this doc's status line, `check-adapter.sh` exception review. | |
+
+**As built (step 1).** `Job` (`tutti-export/src/job.rs`), `Rendered` sealed
+(`rendered.rs`), `Written::{gain, measured}` replacing `Written::normalized` and
+the `Normalized` type with it. The split from section 4, and why:
+
+- `Job` is built by `RenderPlan::new` from the old `RenderConfig`
+  (`ConfigError::EmptyRender` for `JobError::ZeroLength`, `ConfigError::Job` for
+  the other two). A tail-only render (zero audible span, a tail) is a render
+  today and a test pins it; `Job` refuses a zero `length`, so the old path hands
+  `Job::new` the tail as the length, which keeps the same frames and the same
+  trimmed head. A span past `MAX_FRAMES` from the old path is still
+  `Error::RenderTooLarge` when held in memory.
+- `MAX_FRAMES` did not exist; it is `u32::MAX` frames (6.2 hours at 192 kHz).
+- `Error::Job` and `Error::Rendered` are not added: no pipeline function
+  returns them until `render` (step 3); `Job::new` and `Rendered::new` return
+  `JobError` and `RenderedError` themselves.
+- `Written::gain` is the gain after an integer format's headroom was taken off
+  the target; `Written::measured` is the reading before the gain, at the file's
+  rate. The effective target the old `Normalized::target` carried is
+  `measured.true_peak + gain` for a peak target. `Written::frames` is step 2 or
+  later, not this PR.
+
 
 Test policy applies throughout: every new case is mutation-tested (break the
 property, watch it fail, restore, note the mutation on the case); no existing

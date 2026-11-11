@@ -420,11 +420,13 @@ source reads its fault flag before its ring (`tutti_rt::FaultLatch`) so a
 **Adding a trait, when the type system is the point.** The units rule ("distinct
 range *or* distinct algebra; two names for the same behaviour is not a type") has
 a trait analogue worth applying: a trait earns its name if you can state its
-boundary in one sentence without "and". The plugin capability split (`PluginMeta`
-/ `PluginAudio` / `PluginParams` / `PluginState` / `PluginPresets`, reassembled
-by the blanket-impl `PluginInstance`) passes — each answers a *different* "why is
-this not just a graph node?", which is why they are five doc comments and not
-one. The failure mode to watch is reaching for a **compile-time** guarantee where
+boundary in one sentence without "and". The plugin hosting split (`Loaded` / `Processor` /
+`Controller` / `Control`, and `AnyThread` / `Health` beside them) passes — each
+answers a *different* "why is this not just a graph node?", which is why they
+are separate doc comments and not one. (The per-capability traits of the first
+split, `PluginMeta` / `PluginAudio` / `PluginParams` / `PluginState` /
+`PluginPresets` under a blanket-impl `PluginInstance`, were the server's own
+dispatch seam; one generic `Served<F>` replaced it and they are deleted.) The failure mode to watch is reaching for a **compile-time** guarantee where
 the quantity is genuinely runtime, which is exactly how `AudioIn` ended up with a
 vocabulary it could not cover.
 

@@ -5,11 +5,18 @@ The `plugin-server` subprocess behind Tutti's out-of-process plugin hosting.
 ## What this is
 
 [`tutti-plugin`](https://docs.rs/tutti-plugin) spawns one `plugin-server`
-process per loaded plugin. This crate is that process: it hosts one VST2, VST3,
-CLAP or AU plugin in isolation, speaks [`tutti_plugin::server`]'s wire protocol
-over a Unix socket (a named pipe on Windows), and moves audio through a
-shared-memory slab. A plugin that crashes takes down this process and nothing
-else.
+process per loaded plugin. This crate is that process: it hosts one VST3, CLAP
+or AU plugin in isolation, speaks [`tutti_plugin_ipc`]'s wire protocol over a
+Unix socket (a named pipe on Windows), and moves audio through a shared-memory
+slab. A plugin that crashes takes down this process and nothing else.
+
+It is one generic shell, `Served<F: OutOfProcess>`, over what each served
+format's host crate implements (`Loaded`, `Processor`, `Controller`, `Control`):
+a format is a row of the `served!` table, which calls `F::load_served`, so a row
+for a format that cannot be served from another process does not compile. VST2
+is not one: its `AEffect` fuses editor and audio, so it runs in the host's
+process (design 021 §4); a VST2 file is refused by the client and, if one
+arrives, by the table.
 
 Most users never call this library. They build the binary and let
 `tutti-plugin` find it:
@@ -50,7 +57,9 @@ derives a unique path per call, which could never meet the host that spawned
 this process.
 
 [`BridgeConfig`] is re-exported from
-`tutti-plugin`, and `BridgeError` is `tutti-plugin-types`'; the wire protocol and its version are defined there too.
+`tutti-plugin-ipc`, and `BridgeError` is `tutti-plugin-types`'; the wire protocol
+and its version are defined in `tutti-plugin-ipc`. A load carries which plugin
+of a file that exports several to load (`LoadPlugin::load`).
 
 ## How a session runs
 
@@ -73,11 +82,10 @@ parent process is still alive on Windows.
 
 | Feature | Enables |
 |---|---|
-| `vst2` | VST2 plugins, through `tutti-vst2-host` |
 | `vst3` | VST3 plugins, through `tutti-vst3-host` |
 | `clap` | CLAP plugins, through `tutti-clap-host` |
 | `au` | Audio Unit plugins, through `tutti-au-host` (macOS only; elsewhere it compiles to no AU support) |
-| `all` | All four formats |
+| `all` | All three formats |
 
 All four formats are on by default.
 
@@ -99,4 +107,4 @@ MIT OR Apache-2.0
 [`PluginServer`]: crate::PluginServer
 [`PluginServer::run`]: crate::PluginServer::run
 [`BridgeConfig`]: crate::BridgeConfig
-[`tutti_plugin::server`]: tutti_plugin::server
+[`tutti_plugin_ipc`]: tutti_plugin_ipc

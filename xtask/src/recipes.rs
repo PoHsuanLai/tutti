@@ -576,7 +576,6 @@ const CHECK_FEATURES: &[&str] = &[
     r#"cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings"#,
-    r#"cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings"#,
     r#"cargo clippy --locked -p tutti-plugin-probe --no-default-features --features vst2 --all-targets -- -D warnings"#,
@@ -586,7 +585,7 @@ const CHECK_FEATURES: &[&str] = &[
 
 const TEST_FEATURES: &[&str] = &[
     r#"cargo nextest run --locked -p tutti-au-host --features installed-units --no-tests=pass"#,
-    r#"cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3"#,
+    r#"cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst3"#,
     r#"cargo build --locked -p tutti-plugin-probe"#,
     r#"cargo nextest run --locked -p tutti-cpal --features capture"#,
     r#"cargo nextest run --locked -p tutti-session --features audio-io"#,

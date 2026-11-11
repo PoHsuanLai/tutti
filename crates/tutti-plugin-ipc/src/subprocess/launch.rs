@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tutti_plugin_types::MAX_CHUNK;
 use tutti_plugin_types::{BridgeError, BridgeResult};
-use tutti_plugin_types::{Helper, Locator};
+use tutti_plugin_types::{Helper, Load, Locator};
 use tutti_types::SampleRate;
 
 /// How long to keep retrying the connect while the plugin-server binds.
@@ -103,6 +103,7 @@ impl std::fmt::Debug for LaunchedServer {
 pub fn launch(
     config: &BridgeConfig,
     plugin_path: &Path,
+    load: &Load,
     sample_rate: SampleRate,
     state: Option<&[u8]>,
 ) -> BridgeResult<LaunchedServer> {
@@ -110,6 +111,7 @@ pub fn launch(
         &Locator::Search,
         config,
         plugin_path,
+        load,
         sample_rate,
         state,
         STATE_RESTORE_TIMEOUT,
@@ -136,6 +138,7 @@ pub(super) fn launch_with(
         locator,
         config,
         plugin_path,
+        &Load::new(),
         sample_rate,
         None,
         STATE_RESTORE_TIMEOUT,
@@ -150,6 +153,7 @@ pub(super) fn launch_with_state(
     locator: &Locator,
     config: &BridgeConfig,
     plugin_path: &Path,
+    load: &Load,
     sample_rate: SampleRate,
     state: Option<&[u8]>,
     restore_timeout: Duration,
@@ -180,6 +184,7 @@ pub(super) fn launch_with_state(
             &mut stream,
             config,
             plugin_path,
+            load,
             sample_rate,
             &shm_name,
             declared,
@@ -300,6 +305,7 @@ fn load_plugin(
     stream: &mut ControlStream,
     config: &BridgeConfig,
     plugin_path: &Path,
+    load: &Load,
     sample_rate: SampleRate,
     shm_name: &str,
     state: Option<StagedState>,
@@ -314,6 +320,7 @@ fn load_plugin(
         stream,
         &HostMessage::LoadPlugin {
             path: plugin_path.to_path_buf(),
+            load: load.clone(),
             sample_rate,
             block_size: config.max_buffer_size,
             preferred_format: config.preferred_format,
@@ -603,6 +610,7 @@ mod tests {
             &Locator::at(tutti_fixtures::plugin_server()),
             &config,
             plugin,
+            &Load::new(),
             SampleRate(48_000.0),
             Some(&[0u8; 16]),
             restore_timeout,
@@ -692,11 +700,12 @@ mod tests {
     /// reason. The server answers the load; it does not exit, which the host
     /// would report as `ProcessCrashed`.
     ///
-    /// The reference CLAP plugin's cdylib, copied under a `.so` name, is a real
-    /// library the server reads as VST2 and the VST2 loader refuses. The copy is
-    /// what makes it VST2 on every unix: the cdylib is `.so` on Linux but
-    /// `.dylib` on macOS, an extension the server refuses before any loader runs
-    /// (`Unsupported plugin format`), which is the failure this test excludes.
+    /// The reference CLAP plugin's cdylib, copied under a `.vst3` name, is a real
+    /// library the server reads as VST3 and the VST3 host refuses. The copy is
+    /// what gives it a format's extension on every unix: the cdylib is `.so` on
+    /// Linux but `.dylib` on macOS, an extension the server refuses before any
+    /// format runs (`Unsupported plugin format`), which is the failure this test
+    /// excludes.
     ///
     /// Needs `cargo build -p tutti-plugin-server` first (`CLAUDE.md`).
     #[test]
@@ -710,12 +719,12 @@ mod tests {
         // A copy in this test's own directory, not `publish_with_extension`:
         // that names the link `real.with_extension(..)`, which on Linux is the
         // cdylib's own path.
-        let not_a_plugin = dir.path().join("not_a_plugin.so");
+        let not_a_plugin = dir.path().join("not_a_plugin.vst3");
         std::fs::copy(
             tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin"),
             &not_a_plugin,
         )
-        .expect("copy the cdylib under a VST2 name");
+        .expect("copy the cdylib under a VST3 name");
 
         let err = match launch_with(
             &Locator::at(tutti_fixtures::plugin_server()),
@@ -736,8 +745,7 @@ mod tests {
                     !reason.contains("Unsupported plugin format"),
                     "reason: {reason}"
                 );
-                #[cfg(target_os = "linux")]
-                assert!(reason.contains("NotAPlugin"), "reason: {reason}");
+                assert!(!reason.is_empty(), "the reply names a reason");
             }
             other => panic!("expected LoadFailed, got {other:?}"),
         }

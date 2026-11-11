@@ -282,6 +282,66 @@ compile. The server drops its dependency on `tutti-plugin`, takes
 (`tutti-vst2-host` leaves its dependencies). It is only `Ipc` hosting over
 `OutOfProcess` formats.
 
+**As built (step 5).** `Served<F: OutOfProcess>` (`tutti-plugin-server/src/served.rs`)
+is the one shell over a format: it holds a `Lifecycle<F>`, the core's `State`, a
+local `Hand`, the cached descriptor and wiring, and the `BridgeMessage`s the host
+has not been told. Its load is `F::load_served(main, path, &Load)` (so a CLAP
+bundle or an AU component with several plugins loads the one `Load::chosen`
+names), the state a host staged is restored before the activation, and a
+64-bit request is an activation at 64-bit that falls back to 32-bit on refusal
+(what the plugin runs at is its wiring's `F64_AUDIO`, never the request). The
+table is
+
+```rust
+served! {
+    #[cfg(feature = "clap")] Clap(tutti_clap_host::ClapLoaded, "clap"),
+    #[cfg(feature = "vst3")] Vst3(tutti_vst3_host::Vst3Loaded, "vst3"),
+    #[cfg(all(feature = "au", target_os = "macos"))] Au(tutti_au_host::AuLoaded, "component"),
+}
+```
+
+a row being a variant of `AnyServed`, the format's `Loaded` type and the extension
+its files carry; the table's `load` picks the row by extension. `Served<F>` is
+bounded by `OutOfProcess`, so `Vst2(Vst2Loaded, "vst")` is the compile error
+`Vst2Loaded cannot be hosted over IPC` (the `on_unimplemented` of design §2.1; checked
+once by adding that row).
+
+What still differs between the served formats, and that only this process does,
+is `ServerSide` (`served/format.rs`, every method defaulted): CLAP lends its
+`clap.thread-pool` extension a pool of this process's own (`adopt`), takes
+only what was raised on a later pass of one poll (a period-0 timer would
+otherwise be served on every pass: `take_raised`), and delivers the writes a
+Processor has not drained as out-of-band `params.flush`es before a state save
+(`settle_edits`); VST3 drops the notifications it queues unread
+(`before_requests`); AU differs in nothing. Everything else the loaders did
+(rate and mode changes with rollback, the notices, presets, state, reset,
+the silent block of a deactivated plugin) is written once in `Served<F>`.
+
+The session stays one concrete `Session` over `AnyServed`, not `Session<P: Hosted>`.
+`AnyServed::plugin()` lends `&dyn ServedPlugin` (the object-safe set of calls the
+session makes; `Render`, its supertrait, is the pipeline's one door, so the
+pipeline's tests drive a stand-in that is not a plugin). Against the plan:
+`Hosted` was not widened or given `control()` or `settle`: nothing needed it
+(`Lifecycle::control` and the new `control_ref` give the shell the surface) and,
+with no consumer, it is **deleted**; `From<Notice> for BridgeMessage` is not
+written either, because a notice is not only a message (it also updates the cached
+wiring, and `Refused` and `Lost` are not messages: `Served::absorb`).
+
+**VST2** is out of the server: no `vst2` feature, no `tutti-vst2-host`
+dependency, no `Vst2Instance`. A VST2 path is refused by the client with
+`BridgeError::NotOutOfProcess` before a server starts (`PluginClient::open`), and by
+the table (`Unsupported plugin format`). The three served-VST2 parameter-delivery
+suites (`plugin_param_delivery`, `plugin_param_delivery_no_alloc`) now run
+against the CLAP probe, which advertises `TUTTI_CLAP_PROBE_EXTRA_PARAMS` extra
+parameters, so the 200-parameter chunk still crosses a real server and bridge; the
+VST2 contract case through the server is dropped (VST2's hosting is in process,
+the contract's `hostings`).
+
+**The protocol** is 28: `LoadPlugin` carries the `Load` (`tutti_plugin_types::Load`
+is serde), which the server hands `load_served`, and `IpcOrigin` keeps it so a
+fork or an offline render loads the same plugin (`Ipc::launch` and
+`PluginClient::open` take it).
+
 ### 2.5 Probing
 
 Probing is neither hosting. If it stayed in the server it would stay coupled to
@@ -583,7 +643,7 @@ separates it from the IPC code).
 | **`tutti-plugin-host`** (new) | `host/node/` less the batcher (about 7,500 + tests), `host/handles/` (1,416) reworked over `Control`, the reusable parts of `vst2_in_process` (node, client, fork, about 1,450 merged into the above), `host/param_values.rs`, `liveness.rs`, `render_mode.rs`, `util/node`, `util/window`; `PluginNode<H>`, `InProc<F>` (~300) | `tutti-plugin-types`, `tutti-graph`, `tutti-transport`, `tutti-tempo`, `tutti-types`, `tutti-rt`, `tutti-ump` (no `tutti-plugin-ipc`: what the node code shares with it, `MidiIntake`, the invalidation vocabulary, `BlockCounts`, `MAX_CHUNK`, `BridgeError` and `PluginForkError`, lives in `tutti-plugin-types`, as built in 4a-4a) | 5 | yes, once `os_monotonic_ns` (`transport_source.rs:430-465`, a `clock_gettime` / `QueryPerformanceCounter` call, 35 lines) moves to `tutti-rt` |
 | **`tutti-plugin`** (shrinks) | the facade: `plugin.rs` (472, becomes the `hosts!` table), `plugins.rs` (1,026), `db_probe.rs` (279), `lib.rs`; `AnyHost`, `Hosting`, `open` | `-host`, `-ipc`, `tutti-plugin-db`, and the four format hosts behind features | 6 | yes |
 | **`tutti-plugin-probe`** (new, bin) | `main.rs` (~150) and the descriptor read per format, which `Vst2Instance::probe`, `ClapInstance::probe`, `Vst3Instance::probe` and `AuInstance::probe` (inside `loaders/`) do today | `tutti-plugin-types`, the four format hosts behind features (not `-ipc`, not `-host`, not `tutti-plugin`) | 6 (above the layer-5 format hosts; nothing depends on it) | yes: every host it calls forbids `unsafe` and the binary adds none |
-| `tutti-plugin-server` (shrinks) | `session.rs` (2,111), `audio_pipeline.rs` (1,406), `transport.rs` (649), `server.rs`, `lib.rs`; the `served!` table; probe mode removed; `loaders/` (7,689) gone | `-ipc`, `tutti-plugin-types`, the CLAP, VST3 and AU hosts behind features (not VST2, not `-host`, not `tutti-plugin`) | 7 (could be 6; leave) | yes, once the loaders' `unsafe impl Send` and `WindowHandle::from_u64` go and the `libloading` tests move to the contract |
+| `tutti-plugin-server` (shrinks; built in step 5: `session.rs`, `audio_pipeline.rs`, `transport.rs`, `server.rs`, `lib.rs`, `served.rs`, `served/{any,format}.rs`, no `unsafe` anywhere in it, tests included) | `session.rs` (2,111), `audio_pipeline.rs` (1,406), `transport.rs` (649), `server.rs`, `lib.rs`; the `served!` table; probe mode removed; `loaders/` (7,689) gone | `-ipc`, `tutti-plugin-types`, the CLAP, VST3 and AU hosts behind features (not VST2, not `-host`, not `tutti-plugin`) | 7 (could be 6; leave) | yes, once the loaders' `unsafe impl Send` and `WindowHandle::from_u64` go and the `libloading` tests move to the contract |
 | `tutti-{clap,vst3,vst2,au}-host` | gain `impl InProcess`, `impl OutOfProcess` (not VST2), and `OutOfProcess::Editor` | `tutti-plugin-types` only (unchanged) | 5, 5, 4, 5 (`tutti-au-host` moves from 4 to 5 over the new `tutti-au-ffi`, layer 4; PRs #350 and #353) | yes (unchanged); the `-ffi` crates keep the `unsafe` |
 
 The ordering is lower-to-higher with no new upward edge: `-ipc` (4) is above
@@ -598,7 +658,7 @@ at 7; `tutti` and `bevy-tutti` at 8. **`tutti-plugin` stays at layer 6, so
 | Script | Change |
 |---|---|
 | `check-layout.sh` | Add both crates to `LAYERS` (4 and 5). New rules, in its `only(...)` style: `-ipc` and `-host` depend on no `tutti-*-host` format crate; no format host depends on `-ipc` or `-host`; `tutti-plugin-server` depends on neither `-host` nor `tutti-plugin`. It fails an unplaced crate, so the crates land with their rows |
-| `check-plugin-ffi.sh` | It scans `tutti-plugin-server/src/loaders/<fmt>.rs` and `tutti-plugin/src/format/gui/<fmt>.rs`. Both disappear; point it at `tutti-<fmt>-host` (already scanned) and drop the two paths in the step that moves them |
+| `check-ffi` (was `check-plugin-ffi.sh`) | It scanned `tutti-plugin-server/src/loaders/<fmt>.rs` and `tutti-plugin/src/format/gui/<fmt>.rs`. Both are gone; the crate-root forbid covers the host crates and the server (`check-ffi`) |
 | `check-layout.sh` (probe) | `tutti-plugin-probe` is placed at layer 6 and depends on no `-ipc`, `-host` or `tutti-plugin`; nothing depends on it |
 | `check-adapter.sh`, `check-bevy-free.sh` | none: `bevy-tutti` reaches the plugin crates through `tutti-session` and `tutti-plugin` as now |
 | `check-paths` | `tutti_plugin::{PluginClient, …}` paths in code and `*.md` move to the new crates' roots |
@@ -709,9 +769,9 @@ a `Loaded`.
 | 4a | Extract `tutti-plugin-host`; `PluginNode<H>` and `InProc<F>`; `Vst2` in-process runs through them; **delete** `vst2_in_process` (2,274) and its `Arc<Mutex>` / `try_lock` | No | -2.3k, +~0.9k |
 | 4b | `Ipc: Loaded` over the existing bridge (no format parameter until AU has a `Loaded`, §10.4); `PluginNode<Ipc>` replaces `PluginClient`'s node; **delete** `graph_node.rs`, the IPC `fork.rs` and `composite.rs` duplicates and the `Host*` capability traits where `Control` replaces them. Four PRs, §10.4 | No new AU work, but the served client carries AU today, so AU stays on `Ipc` through it (§10.4 (c)) | -1.5k |
 | 4c (built) | **The probe binary.** Build `tutti-plugin-probe` (CLAP, VST3, VST2; AU's probe row joins when AU's `Loaded` lands), the file wire, `ProbeLocator` and `tutti-fixtures::plugin_probe`; switch `probe_plugin` (`db_probe.rs`) to it; then delete probe mode (`TUTTI_PROBE_MODE`, `ProbePlugin`, `Plugin::probe`) from the server. `check-layout.sh` row, CLAUDE.md "build first" note. Independent of 4a and 4b | No (AU row later) | -300 in server, +~300 new |
-| 5 | Generic server: `Served<F: OutOfProcess>` and `served!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` (the whole VST2 loader), `plugin.rs`, `format_host.rs`'s capability traits. Supersedes 016 step 4's `AnyPlugin` | AU row waits; the macro takes it later | -5.5k |
-| 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs` | No | `Backend` gone |
-| 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 3) | -2.1k. The impls, the editor and the contract's AU format (AUDelay, 23 gaps) are in; `loaders/au.rs` waits for step 5 |
+| 5 (built) | Generic server: `Served<F: OutOfProcess>` and `served!`; delete `loaders/clap.rs`, `vst3.rs`, `vst2.rs` (the whole VST2 loader), `loaders/au.rs`, `plugin.rs`, `format_host.rs`'s capability traits (and `Hosted`, `tutti_plugin::server`). Supersedes 016 step 4's `AnyPlugin`. The AU row is in (macOS-verified); `LoadPlugin` carries the `Load`, protocol 28 (§2.3 "As built") | AU row built with it | -7.5k in the server (loaders 7.7k and `plugin.rs` 0.7k out, `served.rs` and its table and tests 0.9k in, the loaders' tests moved), `format_host.rs` -0.4k |
+| 6 | The facade: `hosts!`, `AnyHost`, `Hosting`, `open`; replace `Backend`; CLAP and VST3 hostable in-process; contract grows `hostings` and per-hosting gaps; delete `tests/server.rs`. **Folded into [029](029-plugin-api.md)**, whose step 6 fixes its user-facing shape | No | `Backend` gone |
+| 7 | **AU:** `impl InProcess` (confirm `LoadInProcess`, §3.2) and `impl OutOfProcess` for `AuLoaded`, `OutOfProcess::Editor` from `gui/au.rs`, the AU row in both tables, `loaders/au.rs` (2,121) deleted | **Yes** (AU `Loaded`, 016 step 3) | -2.1k. The impls, the editor and the contract's AU format (AUDelay, 23 gaps) are in; `loaders/au.rs` went with step 5 (the AU row of `served!`) |
 | 8 | Cleanup: stale Cargo comments (the unused `OpenEditor` message and handler went early, protocol 25) and features, 016 and CLAUDE.md and engineering-notes updates | After 7 | docs |
 
 ### 10.1 Steps 1 and 2 as built
@@ -1206,8 +1266,8 @@ served node is gone.
 
 **What is left of the plan (steps 5 and 6).** The `Ipc` hosting is complete:
 node, fork, handle and health all go through `Loaded`, `Control` and the two
-small traits. Step 5 (the generic server) is untouched by 4b: `Served<F>`
-still has to replace the four loaders, and AU stays on `Ipc` until step 7.
+small traits. Step 5 (the generic server) was untouched by 4b and is built since
+(§2.3 "As built"): `Served<F>` replaced the four loaders, AU's row included.
 Step 6's facade (`hosts!`, `AnyHost`, `Hosting`, `open`) has what it needs
 at the handle: one `PluginHandle::from_backend(backend, control, ..)` for
 any hosting, with `AnyThread` and `Health` as the only per-hosting part and
@@ -1221,7 +1281,7 @@ would implement `AnyThread` through `ControlBackend` as VST2 does.
 | # | Question | Recommendation |
 |---|---|---|
 | Q1 | Marker and host names | **Decided.** Both layers: markers `InProcess`/`OutOfProcess`, hosts `InProc<F>`/`Ipc<F>`; the rejected alternatives are in §3.1 |
-| Q2 | Remove VST2-over-IPC, or keep it behind an explicit opt-in? | **Decided: remove VST2 hosting from the server.** The owner recalled that it "doesn't work, that's why it's like that; if it doesn't work, remove it", and `26d748df7` (§1.5) confirms: `AEffect` fuses editor and audio, and the subprocess path was never a real implementation. An opt-in would need the server-window machinery (§4.1), unused and impossible on macOS and Wayland |
+| Q2 | Remove VST2-over-IPC, or keep it behind an explicit opt-in? | **Decided and built (step 5): remove VST2 hosting from the server.** The owner recalled that it "doesn't work, that's why it's like that; if it doesn't work, remove it", and `26d748df7` (§1.5) confirms: `AEffect` fuses editor and audio, and the subprocess path was never a real implementation. An opt-in would need the server-window machinery (§4.1), unused and impossible on macOS and Wayland |
 | Q3 | Default hosting per format | **Decided.** CLAP, VST3, AU `OutOfProcess`; VST2 `InProcess` only; per-plugin override by `Hosting` (§9); `Auto` never moves a blacklisted plugin in-process (see Q11) |
 | Q4 | Does the server-window option count as a remote editor? | No: the editor is the audio instance, so it is not "a separate instance"; it is a different capability (§4.1). Recommended, owner did not object |
 | Q5 | `unsafe trait` like `Send`/`Sync`? | Safe, unsealed, guarded by `on_unimplemented`, the compile-fail doctests and `check-hosting.sh` (§3.3). Recommended, owner did not object |

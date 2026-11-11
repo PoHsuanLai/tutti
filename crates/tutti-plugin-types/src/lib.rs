@@ -18,7 +18,6 @@ mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake;
 pub mod features;
-mod format_host;
 mod harmony;
 mod host;
 mod hosting;
@@ -78,7 +77,7 @@ pub use classification::{
     ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories, clap_features_role,
 };
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
-pub use driver::{Hand, Hosted, Lifecycle, Seat};
+pub use driver::{Hand, Lifecycle, Seat};
 pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
     ResizeHints, WindowHandle,
@@ -93,9 +92,6 @@ pub use requests::{Edit, EditDrain, EditSink, edits, taken};
 // glob import.
 pub use error::{Delivered, PluginError, Result as PluginResult, StateError};
 pub use features::{FeatureReport, Features};
-pub use format_host::{
-    PluginAudio, PluginInstance, PluginMeta, PluginParams, PluginPresets, PluginState,
-};
 pub use harmony::{
     ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,

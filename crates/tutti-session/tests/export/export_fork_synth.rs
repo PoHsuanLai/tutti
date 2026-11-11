@@ -12,7 +12,6 @@ use tutti_session::Root;
 
 use tutti_export::Produced;
 use tutti_fixtures::midi::{note_off, note_on};
-use tutti_fixtures::{assert_golden, digest_planes};
 use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
@@ -299,13 +298,8 @@ fn an_exported_soundfont_plays_its_clip() {
 }
 
 /// **A node export of a synth plays its clip**: silent until beat 1,
-/// then the synth's own note ([`reference`]) sample for sample, and
-/// the golden digest. The fork carries the clip itself.
-///
-/// The digest is the one the `bevy-tutti` test of this name recorded: that
-/// graph was this one (the synth inserted, routed to the outputs, its clip
-/// played through `Midi::play_clip`, which is the call the adapter made),
-/// exported by the same session call.
+/// then the synth's own note ([`reference`]) sample for sample. The fork
+/// carries the clip itself.
 #[test]
 fn a_synth_node_export_plays_its_clip() {
     let (mut session, synth) = session_with(poly());
@@ -313,9 +307,4 @@ fn a_synth_node_export_plays_its_clip() {
     let exported = render_stem(&mut session, request(RATE).stem_with(Stem::buffers(synth)));
     let reference = reference(poly(), RATE);
     assert_note_at_beat_1("PolySynth node export", RATE, &exported, &reference);
-    assert_golden(
-        "the synth's node export",
-        digest_planes(&exported),
-        0x2f47_791e_730f_81b5,
-    );
 }

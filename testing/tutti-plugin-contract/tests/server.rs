@@ -4,7 +4,9 @@
 //! extension, so VST3 goes by its `.vst3` bundle.
 //!
 //! Needs `cargo build -p tutti-plugin-server --no-default-features --features
-//! clap,vst2,vst3` first.
+//! clap,vst3` first. VST2 is not here: the server does not serve it (its
+//! `AEffect` fuses editor and audio, design 021 §4), and its in-process
+//! hosting is the contract's own `hostings`.
 
 use std::path::PathBuf;
 use tutti_fixtures::main_thread;
@@ -13,8 +15,8 @@ use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::PluginClient;
 use tutti_plugin_contract::spec::{Mode, Param};
 use tutti_plugin_contract::{
-    Clap, Format, Transcript, Vst2, Vst3, Vst3Cpp, bundle_of, clap_path, library, patch_mode,
-    vst3_cpp_module, vst3_module,
+    Clap, Format, Transcript, Vst3, Vst3Cpp, bundle_of, clap_path, patch_mode, vst3_cpp_module,
+    vst3_module,
 };
 use tutti_plugin_types::ParamId;
 
@@ -50,11 +52,6 @@ fn through_server<F: Format>(path: PathBuf) {
 #[test]
 fn clap_mode_and_transcript_cross_the_process_boundary() {
     through_server::<Clap>(clap_path());
-}
-
-#[test]
-fn vst2_mode_and_transcript_cross_the_process_boundary() {
-    through_server::<Vst2>(library());
 }
 
 #[test]

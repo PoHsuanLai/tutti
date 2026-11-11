@@ -26,7 +26,7 @@ mod param_probe;
 use std::time::Duration;
 
 use clap_probe::Rig;
-use param_probe::{knobs, load_vst2_probe};
+use param_probe::{knobs, load_param_probe};
 use tutti_fixtures::machine_lock;
 use tutti_graph::{Prepare, Transport, TransportChanges};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
@@ -50,7 +50,7 @@ const PARAMS: usize = 200;
 #[test]
 fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
     let _lock = machine_lock();
-    let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
+    let (client, handle) = load_param_probe(PARAMS, SAMPLE_RATE);
     let (knobs, lanes) = knobs(PARAMS, |_| 0.5);
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK)))
         .with_quantum(MaxBlock::of(Samples(QUANTUM)));

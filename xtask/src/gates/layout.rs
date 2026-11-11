@@ -143,6 +143,24 @@ const ONLY: &[(&str, &[&str])] = &[
             "tutti-ump",
         ],
     ),
+    // The server is `Ipc` hosting over the served formats (design 021 sections
+    // 2.3 and 6.1): the wire, the vocabulary and the CLAP, VST3 and AU hosts.
+    // Not the facade, not `-host`, not VST2 (not served: editor and audio are
+    // one object): the banned ones below hold for a dev-dependency too.
+    (
+        "tutti-plugin-server",
+        &[
+            "tutti-plugin-ipc",
+            "tutti-plugin-ipc-ffi",
+            "tutti-plugin-types",
+            "tutti-rt",
+            "tutti-ump",
+            "tutti-graph",
+            "tutti-clap-host",
+            "tutti-vst3-host",
+            "tutti-au-host",
+        ],
+    ),
     (
         "tutti-plugin-probe",
         &[
@@ -514,6 +532,9 @@ pub(super) fn check(tree: &dyn Tree, cargo: &dyn Cargo) -> Report {
     for (name, banned) in [
         ("tutti-plugin-host", "tutti-plugin"),
         ("tutti-plugin-probe", "tutti-plugin"),
+        ("tutti-plugin-server", "tutti-plugin"),
+        ("tutti-plugin-server", "tutti-plugin-host"),
+        ("tutti-plugin-server", "tutti-vst2-host"),
     ] {
         if deps_of(name, &all).contains(banned) {
             bad.push(format!(

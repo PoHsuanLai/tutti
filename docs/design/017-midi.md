@@ -2502,7 +2502,7 @@ ignored all of it. Now:
 
 - **The state is `PerNoteState`**, a pure type in `tutti-voicing` that `Voicing` uses
   inside and a plugin host (which allocates no voices) can use as it is: one copy of the rules.
-  `PerNoteState::new(groups, default_range)` sizes it (about 190 KiB for each Group; `Voicing`
+  `PerNoteState::new(groups, default_range)` sizes it (about 270 KiB for each Group; `Voicing`
   passes 1, since an instrument plays one Group); `step(address, &Voice2) -> &[NoteEvent]` reads
   one message, `start` is the Note On path, and `clear` drops everything held in place. It keeps
   one slot for each (Group, channel, Note Number) (`NOTE_CONTROLS` distinct controllers each, the
@@ -2511,9 +2511,13 @@ ignored all of it. Now:
   sounds. Reset All Controllers leaves them (Appendix B.2). `Voicing::reset` is `clear`;
   `forget_notes` keeps the state, as it keeps the bends.
 - **Every started note has an id**, a `NoteId` above `NoteId::MAX_CHANNEL_NOTE` that names no
-  (channel, note) pair, so two notes on one key are two ids and a Detach separates them. The
-  messages of a number address the note most recently started on it (a Note On supersedes the
-  previous one; a releasing tail stops responding).
+  (channel, note) pair, so two notes on one key are two ids and a Detach separates them. A number
+  keeps the set of its notes that still respond (`LIVE_NOTES`, 4: tutti's bound, the oldest
+  dropped past it), and a controller or a Reset reaches every one, a releasing tail included
+  (section 7.4.5: after a Detach "all currently playing notes and previous notes" stop
+  responding, so before it they respond). Detach empties the set; `end(id)` removes one note,
+  for an owner that knows it is over (`Voicing` calls it when the last voice of a strike is
+  freed; a host on the plugin's note-end); a Note Off is not an end.
 - **What it says** is a `NoteEvent`: `Started { id, address, note }`, then `Control { id,
   control: NoteControl }` for each value the number holds in the order told (`NoteControl`:
   `Pitch`, `Bend` already in semitones over the channel's sensitivity, `Pressure`, `Registered`,
@@ -2522,10 +2526,9 @@ ignored all of it. Now:
   noted id (the voices of one strike share it) and `ResetControls(id)`. An instrument applies
   what its voice has a place for and drops the rest; it holds no per-note state of its own and
   no detach flag.
-- **Detach and Reset** are section 7.4.5. Detach makes the number's current note stop being
-  addressed: it keeps its values and answers nothing more (no event is sent; the next Note On has a
-  new id). Reset clears the number's held values and resets the current note if it was not
-  detached. With D=1 and S=1 the Detach runs first, so the playing note is told nothing and the
+- **Detach and Reset** are section 7.4.5. Detach empties the number's live set: those notes keep
+  their values and answer nothing more (no event is sent; the next Note On has a new id). Reset
+  clears the number's held values and resets the live notes. With D=1 and S=1 the Detach runs first, so the playing note is told nothing and the
   next one starts at the defaults.
 - **Attribute Pitch 7.9** on a Note On is the note's own `Control(Pitch)` after the stored ones,
   and is not stored (section 7.4.15.3: not valid for later notes).

@@ -31,7 +31,7 @@ mod voicing;
 
 pub use controller::{Controller, Effect, Stop};
 pub use holds::Holds;
-pub use per_note::{NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
+pub use per_note::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 pub use phase::Phase;
 pub use voicing::{
     Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, VoiceView, Voicing,

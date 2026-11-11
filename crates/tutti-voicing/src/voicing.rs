@@ -346,6 +346,8 @@ pub struct Voicing {
     per_note: PerNoteState,
     /// What the per-note state said of the message being read.
     events: Vec<NoteEvent>,
+    /// Per-note ids whose voices left the table in this step.
+    retired: Vec<NoteId>,
     /// The id of the note being started, which the voices it starts take.
     strike_note: NoteId,
     out: Vec<Command>,
@@ -368,6 +370,7 @@ impl Clone for Voicing {
             held: self.held,
             per_note: self.per_note.clone(),
             events: Vec::with_capacity(self.events.capacity()),
+            retired: Vec::with_capacity(self.retired.capacity()),
             strike_note: self.strike_note,
             out: Vec::with_capacity(self.out.capacity()),
         }
@@ -395,6 +398,7 @@ impl Voicing {
             held: [Held::NONE; CHANNELS],
             per_note: PerNoteState::new(1, rules.per_note_bend_range),
             events: Vec::with_capacity(NOTE_EVENTS),
+            retired: Vec::with_capacity(2 * rules.polyphony + MAX_SPECS + 2),
             strike_note: NoteId::from_raw(0),
         }
     }
@@ -424,6 +428,9 @@ impl Voicing {
     /// Note Number was told, are controller state, which outlives its notes.
     /// No command is returned; the instrument ends its voices.
     pub fn forget_notes(&mut self) {
+        for n in &self.notes {
+            self.per_note.end(n.note);
+        }
         self.notes.clear();
         self.sustain = [false; CHANNELS];
         self.held = [Held::NONE; CHANNELS];
@@ -480,6 +487,7 @@ impl Voicing {
     ) -> &[Command] {
         self.out.clear();
         self.events.clear();
+        self.retired.clear();
         match *message {
             // A MIDI 2.0 Note On at velocity 0 is a Note On (M2-104 section
             // 7.4.2), played as quietly as there is. A MIDI 1.0 one is a Note
@@ -525,6 +533,7 @@ impl Voicing {
             _ => {}
         }
         self.deliver();
+        self.settle();
         &self.out
     }
 
@@ -616,8 +625,33 @@ impl Voicing {
     /// the table, so the polyphony, the steal and a return to a held key see
     /// what sounds.
     fn reconcile(&mut self, voices: &[VoiceView]) {
-        self.notes
-            .retain(|n| voices.binary_search_by_key(&n.id, |v| v.id).is_ok());
+        let retired = &mut self.retired;
+        self.notes.retain(|n| {
+            let alive = voices.binary_search_by_key(&n.id, |v| v.id).is_ok();
+            if !alive && retired.len() < retired.capacity() && !retired.contains(&n.note) {
+                retired.push(n.note);
+            }
+            alive
+        });
+    }
+
+    /// A voice left the table: its per-note id is ended once no voice of the
+    /// same strike remains ([`settle`](Self::settle)).
+    fn retire(&mut self, note: NoteId) {
+        if self.retired.len() < self.retired.capacity() && !self.retired.contains(&note) {
+            self.retired.push(note);
+        }
+    }
+
+    /// Ends in the per-note state every note whose voices have all left the
+    /// table, so its number stops moving it.
+    fn settle(&mut self) {
+        for i in 0..self.retired.len() {
+            let note = self.retired[i];
+            if !self.notes.iter().any(|n| n.note == note) {
+                self.per_note.end(note);
+            }
+        }
     }
 
     /// A voice of an exclusive class ends the sounding voices of that class in
@@ -709,7 +743,8 @@ impl Voicing {
                     let id = self.notes[i].id;
                     self.notes[i].key = key;
                     self.notes[i].strike = strike;
-                    self.notes[i].note = self.strike_note;
+                    let moved = std::mem::replace(&mut self.notes[i].note, self.strike_note);
+                    self.retire(moved);
                     self.push(Command::Retarget { id, key, velocity });
                 }
                 Some(i) => {
@@ -734,7 +769,8 @@ impl Voicing {
         if let Some(v) = steal
             && let Ok(i) = self.notes.binary_search_by_key(&v, |n| n.id)
         {
-            self.notes.remove(i);
+            let gone = self.notes.remove(i).note;
+            self.retire(gone);
         }
         let id = VoiceId(self.next);
         self.next += 1;
@@ -869,7 +905,8 @@ impl Voicing {
                     if self.notes[i].channel == channel {
                         let id = self.notes[i].id;
                         self.push(Command::Cut(id));
-                        self.notes.remove(i);
+                        let gone = self.notes.remove(i).note;
+                        self.retire(gone);
                     } else {
                         i += 1;
                     }
@@ -942,6 +979,7 @@ impl Voicing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LIVE_NOTES;
     use tutti_midi_protocol::MpeZoneConfig;
     use tutti_midi_protocol::widen;
     use tutti_ump::{Attribute, CCNumber, Pitch, RegisteredPerNoteController, U7, Voice1};
@@ -2133,7 +2171,11 @@ mod tests {
     #[test]
     fn step_never_grows_its_tables() {
         let mut s = Sim::new(POLY);
-        let (n, o) = (s.core.notes.capacity(), s.core.out.capacity());
+        let (n, o, r) = (
+            s.core.notes.capacity(),
+            s.core.out.capacity(),
+            s.core.retired.capacity(),
+        );
         for i in 0..200u8 {
             s.on(i % 2, 40 + i % 30);
             if i % 3 == 0 {
@@ -2146,7 +2188,14 @@ mod tests {
                 s.cc(i % 2, 64, 127 * (i % 2));
             }
         }
-        assert_eq!((s.core.notes.capacity(), s.core.out.capacity()), (n, o));
+        assert_eq!(
+            (
+                s.core.notes.capacity(),
+                s.core.out.capacity(),
+                s.core.retired.capacity()
+            ),
+            (n, o, r)
+        );
     }
 
     // ---- per-note controllers (M2-104 section 7.4) ----------------------
@@ -2211,34 +2260,58 @@ mod tests {
         );
     }
 
+    fn told(c: &[Command]) -> Vec<VoiceId> {
+        c.iter()
+            .filter_map(|c| match c {
+                Command::Control { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// M2-104 section 7.4.15.2: a value is for the note, and a note a patch
-    /// makes of several voices is one note: every voice of the strike takes it,
-    /// and no voice of another note on the same number does.
+    /// makes of several voices is one note: every voice of the strike takes it.
     #[test]
     fn every_voice_of_a_strike_takes_the_per_note_value() {
         let mut s = Sim::new(POLY);
         pnc(&mut s, 0, 5, RegisteredPerNoteController::Pitch, PITCH_60);
         let c = s.on_with(0, 5, &Pair { group: 0, scope: 0 });
-        let told: Vec<VoiceId> = c
-            .iter()
-            .filter_map(|c| match c {
-                Command::Control { id, .. } => Some(*id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(told, vec![id(1), id(2)], "{c:?}");
-        // The same key struck again is a new note: the voices of the first
-        // are no longer addressed.
-        s.on_with(0, 5, &Pair { group: 0, scope: 0 });
+        assert_eq!(told(&c), vec![id(1), id(2)], "{c:?}");
+    }
+
+    /// M2-104 section 7.4.5: only a Detach makes "previous notes on the
+    /// referenced Note Number" stop responding, so until then the tail of the
+    /// first strike (released by the second on the same key) follows a value
+    /// with the second; after the Detach neither does.
+    #[test]
+    fn a_tail_follows_a_per_note_value_until_a_detach() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 5);
+        s.on(0, 5);
+        assert!(s.core.phase(id(1)).is_some_and(|p| p == Phase::Releasing));
         let c = per_note_bend(&mut s, 0, 5, 0xC000_0000);
-        let told: Vec<VoiceId> = c
-            .iter()
-            .filter_map(|c| match c {
-                Command::Control { id, .. } => Some(*id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(told, vec![id(3), id(4)], "{c:?}");
+        assert_eq!(told(&c), vec![id(1), id(2)], "{c:?}");
+        management(&mut s, 0, 5, true, false);
+        let c = per_note_bend(&mut s, 0, 5, 0x4000_0000);
+        assert_eq!(told(&c), vec![], "{c:?}");
+    }
+
+    /// A voice the instrument freed has ended its note, and the number's room
+    /// for responding notes (`LIVE_NOTES`) is not spent on it: a tail still
+    /// sounding keeps following the number's values after more strikes than
+    /// the bound, as long as the strikes' voices were freed.
+    #[test]
+    fn freed_voices_leave_room_for_a_tail_that_still_sounds() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 5);
+        for n in 2..=(LIVE_NOTES as u64 + 2) {
+            s.on(0, 5);
+            s.end(id(n));
+        }
+        s.on(0, 5);
+        let c = per_note_bend(&mut s, 0, 5, 0xC000_0000);
+        let told = told(&c);
+        assert!(told.contains(&id(1)), "{told:?}");
     }
 
     /// `reset` is a fresh start, and what a Note Number was told goes with the

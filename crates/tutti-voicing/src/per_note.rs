@@ -17,22 +17,25 @@
 //! - **Every started note has an id of its own**, a [`NoteId`] above
 //!   [`NoteId::MAX_CHANNEL_NOTE`] that names no (channel, note) pair, so two
 //!   notes on one number are two ids. The messages of a number address the
-//!   note most recently started on it, and a new Note On supersedes the
-//!   previous one.
-//! - **Per-Note Management** (section 7.4.5): Detach makes the current note of
-//!   the number stop taking per-note values (it keeps what it has; no event is
+//!   notes started on it that have not been detached or [`end`](PerNoteState::end)ed:
+//!   a Note Off does not end a note, so a tail still responds (section 7.4.5:
+//!   after a Detach, "all currently playing notes and previous notes" stop
+//!   responding, so before it they respond). A number keeps [`LIVE_NOTES`] of
+//!   them, tutti's bound; past it the oldest is dropped.
+//! - **Per-Note Management** (section 7.4.5): Detach makes the notes of the
+//!   number stop taking per-note values (they keep what they have; no event is
 //!   sent, the next Note On has a new id); Reset clears the number's held
-//!   values, for future notes, and resets the current note if it was not
-//!   detached; with both, Detach runs first.
+//!   values, for future notes, and resets the notes not detached; with both,
+//!   Detach runs first.
 //! - **Attribute Pitch 7.9** on a Note On is that note's own Pitch, and is not
 //!   held (section 7.4.15.3).
 //! - **The per-note bend sensitivity** (RPN 0/7, section 7.4.13) is one value
 //!   for each channel, and a bend is handed out already scaled by it; a new
-//!   sensitivity hands each current note that holds a bend its new size.
+//!   sensitivity hands each live note of a number that holds a bend its new size.
 //! - Reset All Controllers does not reach it (Appendix B.2): nothing here reads
 //!   a Control Change.
 //!
-//! The state is sized in [`PerNoteState::new`], about 190 KiB for each Group
+//! The state is sized in [`PerNoteState::new`], about 270 KiB for each Group
 //! (128 notes on 16 channels), and `step` allocates nothing.
 
 use tutti_midi_protocol::{PitchBendSensitivity, bend_u32_to_signed_f32};
@@ -50,10 +53,15 @@ const KEYS: usize = 128;
 /// this many on one note loses the oldest.
 pub const NOTE_CONTROLS: usize = 8;
 
+/// The notes of one Note Number that are kept as responding to its per-note
+/// controllers (tutti's bound: section 7.4.5 sets none). A fifth started
+/// without a Detach or an [`end`](PerNoteState::end) drops the oldest.
+pub const LIVE_NOTES: usize = 4;
+
 /// The most events one `step` returns: a Note On's (the start, every held
 /// value and the attribute), or a new sensitivity's (one bend for each of a
 /// channel's notes).
-pub(crate) const MAX_EVENTS: usize = KEYS + NOTE_CONTROLS + 2;
+pub(crate) const MAX_EVENTS: usize = KEYS * LIVE_NOTES + NOTE_CONTROLS + 2;
 
 /// A per-note controller and its value, as a note reads it (M2-104 section
 /// 7.4). A controller never sent has no value: the note's own default stands.
@@ -88,8 +96,8 @@ pub enum NoteEvent {
         /// Its Note Number.
         note: NoteNumber,
     },
-    /// A controller of a note took a value. Only the current note of a number
-    /// that has not been detached is addressed.
+    /// A controller of a note took a value: sent for each live note of the
+    /// number (one not detached or ended).
     Control {
         /// The note.
         id: NoteId,
@@ -143,20 +151,39 @@ impl Held {
     }
 }
 
-/// One (Group, channel, Note Number).
+/// The notes of a number that still respond, oldest first.
 #[derive(Debug, Clone, Copy)]
-struct Slot {
-    held: Held,
-    /// The note the number's messages address: the latest started, and `None`
-    /// before one or after a Detach.
-    current: Option<NoteId>,
+struct Live {
+    len: usize,
+    ids: [NoteId; LIVE_NOTES],
 }
 
-impl Slot {
-    const NONE: Slot = Slot {
-        held: Held::NONE,
-        current: None,
+impl Live {
+    const NONE: Live = Live {
+        len: 0,
+        ids: [NoteId::from_raw(0); LIVE_NOTES],
     };
+
+    fn ids(&self) -> &[NoteId] {
+        &self.ids[..self.len]
+    }
+
+    /// `id` is the newest. The oldest goes if the list is full.
+    fn push(&mut self, id: NoteId) {
+        if self.len == LIVE_NOTES {
+            self.ids.copy_within(1.., 0);
+            self.len -= 1;
+        }
+        self.ids[self.len] = id;
+        self.len += 1;
+    }
+
+    fn remove(&mut self, id: NoteId) {
+        if let Some(at) = self.ids().iter().position(|&i| i == id) {
+            self.ids.copy_within(at + 1..self.len, at);
+            self.len -= 1;
+        }
+    }
 }
 
 /// The per-note state. See the module docs.
@@ -165,7 +192,10 @@ pub struct PerNoteState {
     groups: usize,
     default_range: Semitones,
     /// `(group * 16 + channel) * 128 + note`.
-    slots: Vec<Slot>,
+    /// What each (Group, channel, Note Number) was told.
+    held: Vec<Held>,
+    /// The notes of each that respond. Parallel to `held`.
+    live: Vec<Live>,
     /// Each channel's Per-Note Pitch Bend sensitivity, `group * 16 + channel`.
     ranges: Vec<Semitones>,
     next: u32,
@@ -179,7 +209,8 @@ impl Clone for PerNoteState {
         Self {
             groups: self.groups,
             default_range: self.default_range,
-            slots: self.slots.clone(),
+            held: self.held.clone(),
+            live: self.live.clone(),
             ranges: self.ranges.clone(),
             next: self.next,
             out: Vec::with_capacity(self.out.capacity()),
@@ -197,18 +228,19 @@ impl PerNoteState {
         Self {
             groups,
             default_range,
-            slots: vec![Slot::NONE; groups * CHANNELS * KEYS],
+            held: vec![Held::NONE; groups * CHANNELS * KEYS],
+            live: vec![Live::NONE; groups * CHANNELS * KEYS],
             ranges: vec![default_range; groups * CHANNELS],
             next: NoteId::MAX_CHANNEL_NOTE + 1,
             out: Vec::with_capacity(MAX_EVENTS),
         }
     }
 
-    /// Drops everything held: the values, the detached marks, the current
-    /// notes, and every sensitivity back to the default. Allocates nothing.
+    /// Drops everything held: the values, the live notes (detached or not), and every sensitivity back to the default. Allocates nothing.
     /// Ids already minted are not reused.
     pub fn clear(&mut self) {
-        self.slots.fill(Slot::NONE);
+        self.held.fill(Held::NONE);
+        self.live.fill(Live::NONE);
         self.ranges.fill(self.default_range);
     }
 
@@ -291,9 +323,9 @@ impl PerNoteState {
             .next
             .checked_add(1)
             .unwrap_or(NoteId::MAX_CHANNEL_NOTE + 1);
-        self.slots[at].current = Some(id);
+        self.live[at].push(id);
         self.out.push(NoteEvent::Started { id, address, note });
-        let held = self.slots[at].held;
+        let held = self.held[at];
         for &(code, value) in &held.set[..held.len] {
             let control = self.resolve(address, code, value);
             self.out.push(NoteEvent::Control { id, control });
@@ -325,15 +357,15 @@ impl PerNoteState {
         }
     }
 
-    /// A controller arrives: it becomes the number's held value and moves the
-    /// current note, unless it was detached.
+    /// A controller arrives: it becomes the number's held value and moves
+    /// every live note of the number.
     fn control(&mut self, address: Address, note: NoteNumber, code: u16, value: u32) {
         let Some(at) = self.slot(address, note) else {
             return;
         };
-        self.slots[at].held.set(code, value);
-        if let Some(id) = self.slots[at].current {
-            let control = self.resolve(address, code, value);
+        self.held[at].set(code, value);
+        let control = self.resolve(address, code, value);
+        for &id in self.live[at].ids() {
             self.out.push(NoteEvent::Control { id, control });
         }
     }
@@ -342,13 +374,12 @@ impl PerNoteState {
         let Some(at) = self.slot(address, note) else {
             return;
         };
-        let current = self.slots[at].current;
         if detach {
-            self.slots[at].current = None;
+            self.live[at] = Live::NONE;
         }
         if reset {
-            self.slots[at].held = Held::NONE;
-            if !detach && let Some(id) = current {
+            self.held[at] = Held::NONE;
+            for &id in self.live[at].ids() {
                 self.out.push(NoteEvent::Reset { id });
             }
         }
@@ -359,14 +390,24 @@ impl PerNoteState {
             return;
         };
         self.ranges[c] = Semitones(PitchBendSensitivity::from_rpn_bits(value).as_semitones_f32());
-        for key in 0..KEYS {
-            let slot = self.slots[c * KEYS + key];
-            if let Some(id) = slot.current
-                && let Some(bend) = slot.held.get(Held::BEND)
-            {
+        for at in c * KEYS..(c + 1) * KEYS {
+            if let Some(bend) = self.held[at].get(Held::BEND) {
                 let control = self.resolve(address, Held::BEND, bend);
-                self.out.push(NoteEvent::Control { id, control });
+                for &id in self.live[at].ids() {
+                    self.out.push(NoteEvent::Control { id, control });
+                }
             }
+        }
+    }
+
+    /// The note `id` has fully ended (its voice was freed, the plugin said its
+    /// note ended): its number no longer moves it. A Note Off does not end a
+    /// note, since its tail still responds. Looks the note up among every
+    /// number's live notes, so it costs a pass over the state; allocates
+    /// nothing.
+    pub fn end(&mut self, id: NoteId) {
+        for live in &mut self.live {
+            live.remove(id);
         }
     }
 }
@@ -510,6 +551,79 @@ mod tests {
         assert!(
             matches!(e[..], [NoteEvent::Control { id, .. }] if id == new),
             "{e:?}"
+        );
+    }
+
+    /// M2-104 section 7.4.5: only a Detach makes "previous notes on the
+    /// referenced Note Number" stop responding. A Note On on a number whose
+    /// earlier note has not been detached leaves both responding.
+    #[test]
+    fn a_number_moves_every_live_note_until_a_detach() {
+        let mut s = state();
+        let a = at(0, 0);
+        let first = started(&start(&mut s, a, 5));
+        let second = started(&start(&mut s, a, 5));
+        let e = bend(&mut s, a, 5, 0xC000_0000);
+        let ids: Vec<NoteId> = e
+            .iter()
+            .map(|e| match e {
+                NoteEvent::Control { id, .. } => *id,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, vec![first, second]);
+        // A Reset reaches both, too, and the Detach after it none.
+        assert_eq!(
+            management(&mut s, a, 5, false, true),
+            vec![
+                NoteEvent::Reset { id: first },
+                NoteEvent::Reset { id: second }
+            ]
+        );
+        management(&mut s, a, 5, true, false);
+        assert_eq!(bend(&mut s, a, 5, 0xC000_0000), vec![]);
+    }
+
+    /// `end` is for the owner that knows a note is over: that note stops
+    /// responding and the others of its number go on; a Note Off is not an
+    /// end.
+    #[test]
+    fn an_ended_note_stops_responding_and_a_note_off_does_not_end_it() {
+        let mut s = state();
+        let a = at(0, 0);
+        let first = started(&start(&mut s, a, 5));
+        let second = started(&start(&mut s, a, 5));
+        s.step(
+            a,
+            &Voice2::NoteOff {
+                note: key(5),
+                velocity: 0,
+                attribute: Attribute::None,
+            },
+        );
+        assert_eq!(bend(&mut s, a, 5, 0xC000_0000).len(), 2);
+        s.end(first);
+        let e = bend(&mut s, a, 5, 0xC000_0000);
+        assert!(
+            matches!(e[..], [NoteEvent::Control { id, .. }] if id == second),
+            "{e:?}"
+        );
+    }
+
+    /// The live notes of a number are bounded (`LIVE_NOTES`): past it the
+    /// oldest stops responding.
+    #[test]
+    fn a_number_keeps_a_bounded_set_of_live_notes() {
+        let mut s = state();
+        let a = at(0, 0);
+        let ids: Vec<NoteId> = (0..=LIVE_NOTES)
+            .map(|_| started(&start(&mut s, a, 5)))
+            .collect();
+        let e = bend(&mut s, a, 5, 0xC000_0000);
+        assert_eq!(e.len(), LIVE_NOTES);
+        assert!(
+            !e.iter()
+                .any(|e| matches!(e, NoteEvent::Control { id, .. } if *id == ids[0]))
         );
     }
 

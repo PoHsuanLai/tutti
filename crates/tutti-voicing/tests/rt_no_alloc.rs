@@ -201,6 +201,9 @@ fn per_note_state_is_allocation_free() {
                 std::hint::black_box(twin.step(address, m));
             }
             std::hint::black_box(state.start(address, note, Attribute::None));
+            state.end(tutti_ump::NoteId::from_raw(
+                tutti_ump::NoteId::MAX_CHANNEL_NOTE + 1 + round,
+            ));
             if round % 131 == 130 {
                 state.clear();
             }

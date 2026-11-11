@@ -196,6 +196,35 @@ next `update()`. Without a spawner the session runs them on a thread of its
 own; `load_plugin(..).run()` stays for a host that wants the load's latency in
 its own hands.
 
+### 3.5 Where it meets the graph and MIDI
+
+Agreed with the graph's surface ([013](013-native-graph.md), "The session
+graph's surface") and MIDI's ([017](017-midi.md)), so a host learns one way of
+doing each thing:
+
+- **The key.** `add_plugin` returns `Key<Plugin>`; `replace` and `crossfade`
+  keep it. Ports come from it as from any node's (`synth.out(0)`,
+  `fx.input(1)`, the event ports), and wiring is the graph's `connect`.
+  `synth.param(ParamId)` is the same reference a native node's param method
+  gives, so a modulation route or an automation lane targets a plugin
+  parameter and a native one through one type. Values, text, gestures and
+  units go through the view, which holds the plugin's descriptors.
+- **Buses.** `plugin.buses()` hands out the graph's bus handles; a sidechain is
+  `connect(kick.out(0), comp.sidechain())`.
+- **MIDI.** A route targets the plugin node and the Group picks the port (Group
+  N to CLAP note port or VST3 event bus N); there is no plugin port index on a
+  route. Per-note control is MIDI 2.0's own messages (no note-expression type);
+  a plugin's MIDI out is read by the same event tap as a native node's.
+- **Events.** `SessionEvent::Plugin { node, event: PluginEvent }` beside
+  `SessionEvent::Midi(MidiEvent)`; both inner enums `#[non_exhaustive]`.
+- **Errors.** One `tutti::plugin::Error`, its specifics (`BridgeError`,
+  `StateError`, `PresetError`, `EditorError`) as sources, folded into
+  `tutti::Error` as one variant.
+- **The prelude** (feature `plugin`): `Catalog`, `PluginRef`, the load request,
+  `PluginState`, `PluginEvent`, `ParamId`, `Normalized`, `MainThread`,
+  `ContentScale`, `EditorSize` and the `Plugin` marker. Not `PluginHandle`,
+  `AnyThread`, the bridge's tuning or a format's types.
+
 ## 4. Steps
 
 Each is one reviewable PR that leaves `cargo xtask ci` green. Each deletes

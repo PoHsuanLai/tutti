@@ -410,7 +410,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  `thread-priority`, and `libc` / `windows` for the clock),
                  `publish = false`
   tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
-                 `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
+                 `CCNumber`, and `Message` with `Ump::decode` and `From<Message> for Ump`,
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
@@ -914,7 +914,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   framing (chunks, variable-length quantities, meta and sysex lengths) with running status threaded as a
   value, in `src/smf/read.rs`; `tutti-ump` decodes a channel message (`Voice1::data_len`,
   `Midi1Parser::message`); the writer (`src/smf/write.rs`) is a fold of pure functions. The Clip File reader
-  (`src/clip_file/read.rs`, doc 017 L1b) is a `winnow` grammar over the packets `split_stream` and `decode`
+  (`src/clip_file/read.rs`, doc 017 L1b) is a `winnow` grammar over the packets `split_stream` and `Ump::decode`
   made, each M2-116 placement rule one rule of it. No winnow type is in a
   public signature, field or error, and no file but those two `read.rs` names `winnow`
   (`cargo xtask check-layout` holds it per crate, like symphonia in `tutti-codec`). A test builds files from
@@ -1300,7 +1300,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output

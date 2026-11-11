@@ -195,13 +195,13 @@ impl AuProcessor {
     /// block continues in the next.
     pub fn send_midi(&mut self, events: &[UmpAt]) {
         use tutti_midi_protocol::midi1;
-        use tutti_ump::{Message, SysexStep, decode};
+        use tutti_ump::{Message, SysexStep};
 
         self.sysex.begin_block();
 
         let unit = &self.unit;
         for &(offset, ev) in events {
-            match decode(ev) {
+            match ev.decode() {
                 Ok(message @ (Message::Midi1(..) | Message::Midi2(..))) => {
                     for bytes in midi1(message) {
                         let [status, d1, d2] = bytes.padded();

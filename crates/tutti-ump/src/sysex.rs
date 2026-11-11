@@ -3,7 +3,7 @@
 
 use core::iter::FusedIterator;
 
-use crate::{Message, MidiGroup, Sysex7Packet, SysexStatus, U7, Ump, decode};
+use crate::{Message, MidiGroup, Sysex7Packet, SysexStatus, U7, Ump};
 
 /// The longest SysEx7 payload (the bytes between `0xF0` and `0xF7`) tutti
 /// carries: 64 KiB. It is tutti's cap on one message, used to size a
@@ -89,12 +89,12 @@ impl<'a> SysexMessage<'a> {
 /// the caller pairs each with an offset. [`SysexAssembler`] is the inverse.
 ///
 /// ```
-/// use tutti_ump::{MidiGroup, SysexStatus, U7, decode, Message, sysex7_packets};
+/// use tutti_ump::{MidiGroup, SysexStatus, U7, Message, sysex7_packets};
 ///
 /// let payload = [U7::of(1); 7];
 /// let mut packets = sysex7_packets(MidiGroup::of(0), &payload);
 /// assert_eq!(packets.len(), 2);
-/// let Ok(Message::Sysex7(_, first)) = decode(packets.next().unwrap()) else { unreachable!() };
+/// let Ok(Message::Sysex7(_, first)) = packets.next().unwrap().decode() else { unreachable!() };
 /// assert_eq!(first.status(), SysexStatus::Start);
 /// ```
 #[must_use]
@@ -410,7 +410,7 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> SysexAssembler<B> {
     /// the type's rule). A malformed SysEx7 packet (a length past six, a data
     /// byte of 128 or more) is [`SysexStep::Held`] and has no effect.
     pub fn push(&mut self, ump: Ump) -> SysexStep {
-        let (group, packet) = match decode(ump) {
+        let (group, packet) = match ump.decode() {
             Ok(Message::Sysex7(group, packet)) => (group, packet),
             Ok(_) => return self.other(ump),
             Err(_) if ump.message_type() == 0x3 => return SysexStep::Held,

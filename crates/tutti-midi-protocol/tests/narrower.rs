@@ -282,7 +282,7 @@ fn the_round_trip_returns_the_controller_sequence() {
             let mut back = Vec::new();
             for ump in sent {
                 t.feed(ump, |u| {
-                    let m = tutti_ump::decode(u).unwrap();
+                    let m = u.decode().unwrap();
                     n.feed(m, |b| back.push(b.as_slice().to_vec()));
                 });
             }

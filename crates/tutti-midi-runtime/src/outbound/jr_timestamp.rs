@@ -28,7 +28,7 @@ use tutti_graph::UmpAt;
 
 use tutti_graph::Offset;
 use tutti_types::{Frame, SampleRate, Samples};
-use tutti_ump::{Message, Ump, Utility, decode};
+use tutti_ump::{Message, Ump, Utility};
 
 /// The JR timestamp reference clock: **31 250 ticks per second** (one tick every
 /// 32 µs), a 16-bit counter that wraps roughly every 2.097 s (M2-104 §2.1.4).
@@ -350,7 +350,7 @@ impl JrReceiver {
     /// delay since the previous timestamp — `Some(Duration::ZERO)` when two events
     /// share a timestamp, `None` before any timestamp has been seen.
     pub fn observe(&mut self, event: &Ump) -> Option<Duration> {
-        if let Ok(Message::Utility(Utility::JrTimestamp(ticks))) = decode(*event) {
+        if let Ok(Message::Utility(Utility::JrTimestamp(ticks))) = (*event).decode() {
             // Delta from the previous timestamp, honoring the 16-bit wrap.
             let delay = self.prev.map(|p| wrap_delta(p, ticks));
             self.prev = Some(ticks);

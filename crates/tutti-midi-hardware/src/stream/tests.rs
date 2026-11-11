@@ -67,7 +67,7 @@ impl Wire {
             .counters
             .take_sent(self.raw)
             .into_iter()
-            .map(|ump| match tutti_ump::decode(ump) {
+            .map(|ump| match ump.decode() {
                 Ok(Message::Stream(stream)) => stream,
                 other => panic!("sent something that is not a Stream message: {other:?}"),
             })
@@ -376,7 +376,7 @@ fn a_midi1_port_is_never_sent_type_4() {
     assert!(got.iter().all(|u| u.message_type() == 2), "{got:?}");
     let bytes: Vec<(u8, u8)> = got[1..]
         .iter()
-        .map(|&u| match decode(u) {
+        .map(|&u| match u.decode() {
             Ok(Message::Midi1(_, tutti_ump::Voice1::ControlChange { controller, value })) => {
                 (controller.get(), value.get())
             }

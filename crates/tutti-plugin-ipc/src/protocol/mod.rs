@@ -451,13 +451,13 @@ mod tests {
 
     fn is_note_on(ev: &WireMidi) -> bool {
         matches!(
-            tutti_ump::decode(ev.ump),
+            ev.ump.decode(),
             Ok(Message::Midi2(_, Voice2::NoteOn { .. }))
         )
     }
 
     fn note_number(ev: &WireMidi) -> Option<u8> {
-        match tutti_ump::decode(ev.ump).ok()? {
+        match ev.ump.decode().ok()? {
             Message::Midi2(_, Voice2::NoteOn { note, .. } | Voice2::NoteOff { note, .. }) => {
                 Some(note.get())
             }

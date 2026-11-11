@@ -4,9 +4,7 @@
 //! 16,384 fourteen-bit values).
 
 use tutti_midi_protocol::widen;
-use tutti_ump::{
-    Address, Attribute, CCNumber, Message, NoteNumber, U7, U14, Ump, Voice1, Voice2, decode,
-};
+use tutti_ump::{Address, Attribute, CCNumber, Message, NoteNumber, U7, U14, Ump, Voice1, Voice2};
 
 /// M2-115 section 3.3 stated bit by bit: up to the centre a left shift; above
 /// it, the low `src - 1` bits repeated, most significant first, into the
@@ -246,5 +244,5 @@ fn the_widened_message_is_a_message() {
     let ump = Ump::from(Message::Midi2(address, voice));
     // Group 5, channel 9, Note On, note 60, velocity 0x8000, no attribute.
     assert_eq!(ump, Ump([0x4599_3C00, 0x8000_0000, 0, 0]));
-    assert_eq!(decode(ump), Ok(Message::Midi2(address, voice)));
+    assert_eq!(ump.decode(), Ok(Message::Midi2(address, voice)));
 }

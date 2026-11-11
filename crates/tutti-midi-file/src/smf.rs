@@ -17,7 +17,8 @@
 //! A chunk that runs past the end of the file, or fewer track chunks than the
 //! header declares, is [`Error::Truncated`](crate::Error::Truncated); a track
 //! that ends mid-event, or a track count that disagrees with the header the
-//! other way, is [`Error::MidiFileParse`](crate::Error::MidiFileParse).
+//! other way, is [`Error::MidiFileParse`](crate::Error::MidiFileParse). A
+//! write the fields cannot hold is [`ConfigError::TooLarge`](crate::ConfigError::TooLarge).
 
 mod read;
 mod write;

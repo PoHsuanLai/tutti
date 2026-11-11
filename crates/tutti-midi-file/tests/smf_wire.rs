@@ -76,7 +76,7 @@ fn a_quantity_writes_to_its_bytes() {
         let written = MidiFile::smf(
             SmfFormat::SingleTrack,
             TPQ,
-            vec![Track::new(vec![(
+            vec![unsorted(vec![(
                 Tick(u64::from(value)),
                 FileEvent::Meta(Meta::Text {
                     kind: TextKind::Text,
@@ -346,7 +346,7 @@ fn note(key: u8) -> FileEvent {
 }
 
 fn track_body(events: Vec<(u64, FileEvent)>) -> Vec<u8> {
-    let track = Track::new(events.into_iter().map(|(t, e)| (Tick(t), e)).collect());
+    let track = unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect());
     let bytes = MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![track])
         .unwrap()
         .to_bytes()
@@ -401,9 +401,19 @@ fn a_written_file_reads_back_equal() {
         (300, note(64)),
         (0x0FFF_FFFF, note(65)),
     ];
-    let track = Track::new(events.into_iter().map(|(t, e)| (Tick(t), e)).collect());
+    let track = unsorted(events.into_iter().map(|(t, e)| (Tick(t), e)).collect());
     let file = MidiFile::smf(SmfFormat::Parallel, TPQ, vec![track.clone(), track]).unwrap();
     let back = MidiFile::from_bytes(&file.to_bytes().unwrap()).unwrap();
     assert_eq!(back.tracks(), file.tracks());
     assert_eq!(back.ticks_per_quarter(), TPQ);
+}
+
+/// A track of `events` exactly as given: not sorted, so a test can hand the
+/// constructor events out of order.
+fn unsorted(events: Vec<(Tick, FileEvent)>) -> Track {
+    Track {
+        end: events.last().map_or(Tick(0), |&(tick, _)| tick),
+        events,
+        ..Track::new()
+    }
 }

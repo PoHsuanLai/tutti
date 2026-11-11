@@ -1,7 +1,7 @@
 use tutti_ump::{
     BlockFilter, BlockSelect, DeviceIdentity, Direction as BlockDirection, DiscoveryFilter,
     FirstGroup, FunctionBlockId, GroupSpan, Message, Midi1Port, Protocol, Stream, StreamConfig, U7,
-    UiHint, Ump, decode,
+    UiHint, Ump,
 };
 
 use super::*;
@@ -303,7 +303,7 @@ fn function_block_filter_bits_pick_info_and_name() {
 #[test]
 fn an_out_of_range_or_absent_block_answers_nothing() {
     let wire = Ump([0xF010_2003, 0, 0, 0]);
-    let Message::Stream(stream) = decode(wire).unwrap() else {
+    let Message::Stream(stream) = wire.decode().unwrap() else {
         panic!("a Stream message")
     };
     assert!(ask(&mut device(), stream).is_empty());
@@ -333,7 +333,7 @@ fn request(protocol: Protocol, rx_jr: bool, tx_jr: bool) -> Stream {
 
 fn notified(out: &[Ump]) -> StreamConfig {
     assert_eq!(out.len(), 1);
-    match decode(out[0]).unwrap() {
+    match out[0].decode().unwrap() {
         Message::Stream(Stream::StreamConfigurationNotification(c)) => c,
         other => panic!("{other:?}"),
     }

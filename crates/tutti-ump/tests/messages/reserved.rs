@@ -2,7 +2,7 @@
 //! sections.
 //!
 //! A reserved bit is ignored on decode and zero on encode. A packet is
-//! canonical when `Ump::from(decode(x)) == x`: its reserved bits are zero, and
+//! canonical when `Ump::from(x.decode()) == x`: its reserved bits are zero, and
 //! a field another field makes meaningless has its canonical value (attribute
 //! data under type 0, bank bytes under a clear Bank Valid bit, and a chord bass
 //! accidental under bass note 0, which is -8). A reserved value in an
@@ -16,20 +16,26 @@ use tutti_ump::{
     ChordPitch, ChordType, Direction, EndpointInfo, Flex, FlexAddress, FlexTextKind, Form,
     KeySignature, Letter, Message, Midi1Port, MidiChannel, MidiGroup, NoteNumber, Protocol,
     RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, U4, U7, Ump, UmpVersion,
-    Unknown, Utility, Voice2, decode,
+    Unknown, Utility, Voice2,
 };
 
 /// `dirty` decodes to the message `clean` encodes, and re-encoding gives
 /// `clean`: the reserved bits are read as zero and written as zero.
 fn ignores(dirty: [u32; 4], clean: [u32; 4]) {
-    let message = decode(Ump(clean)).unwrap_or_else(|u| panic!("clean {clean:08x?} is {u:?}"));
-    assert_eq!(decode(Ump(dirty)), Ok(message), "dirty {dirty:08x?}");
+    let message = Ump(clean)
+        .decode()
+        .unwrap_or_else(|u| panic!("clean {clean:08x?} is {u:?}"));
+    assert_eq!(Ump(dirty).decode(), Ok(message), "dirty {dirty:08x?}");
     assert_eq!(Ump::from(message), Ump(clean));
     assert_ne!(dirty, clean);
 }
 
 fn unknown(words: [u32; 4]) {
-    assert_eq!(decode(Ump(words)), Err(Unknown(Ump(words))), "{words:08x?}");
+    assert_eq!(
+        Ump(words).decode(),
+        Err(Unknown(Ump(words))),
+        "{words:08x?}"
+    );
 }
 
 const ALL: u32 = 0xFFFF_FFFF;
@@ -204,7 +210,7 @@ fn undefined_statuses_are_unknown() {
 /// A reserved value in an enumerated or bounded field is kept: the message is
 /// read, with the raw value, and re-encodes to the same words.
 fn kept(words: [u32; 4], message: Message) {
-    assert_eq!(decode(Ump(words)), Ok(message), "decode {words:08x?}");
+    assert_eq!(Ump(words).decode(), Ok(message), "decode {words:08x?}");
     assert_eq!(Ump::from(message), Ump(words), "encode {message:?}");
 }
 
@@ -413,7 +419,7 @@ fn reserved_values_are_kept() {
                 block: BlockSelect::One(id),
                 ..
             }),
-        ) = decode(Ump(words))
+        ) = Ump(words).decode()
         else {
             panic!("{words:08x?}");
         };
@@ -425,7 +431,7 @@ fn reserved_values_are_kept() {
         [0xD610_0006u32, 0x031C_0000, 0, 0x8000_0000],
         [0xD610_0006, 0x0301_0000, 0, 0x801C_0000],
     ] {
-        let Ok(message @ Message::Flex(_, Flex::SetChordName(_, c))) = decode(Ump(words)) else {
+        let Ok(message @ Message::Flex(_, Flex::SetChordName(_, c))) = Ump(words).decode() else {
             panic!()
         };
         assert!(c.chord_type.get() == 0x1C || c.bass.chord_type.get() == 0x1C);
@@ -437,7 +443,7 @@ fn reserved_values_are_kept() {
 fn an_inactive_function_block_with_zeroed_fields_is_still_read() {
     // The message a device sends for a block it has switched off: direction
     // 0 is reserved, and the active flag and the id are still there to read.
-    let Ok(Message::Stream(Stream::FunctionBlockInfo(info))) = decode(Ump([0xF011_0500, 0, 0, 0]))
+    let Ok(Message::Stream(Stream::FunctionBlockInfo(info))) = Ump([0xF011_0500, 0, 0, 0]).decode()
     else {
         panic!("a Function Block Info with zeroed fields is a Function Block Info");
     };
@@ -464,7 +470,7 @@ fn a_later_revisions_reserved_codes_leave_the_message_readable() {
         ([0xF011_8303, 0x0411_0110], 5),
     ] {
         let Ok(Message::Stream(Stream::FunctionBlockInfo(info))) =
-            decode(Ump([words[0], words[1], 0, 0]))
+            Ump([words[0], words[1], 0, 0]).decode()
         else {
             panic!("{words:08x?} is a Function Block Info");
         };
@@ -483,7 +489,7 @@ fn a_later_revisions_reserved_codes_leave_the_message_readable() {
     }
     // Function Block Name: a block above 31.
     assert!(matches!(
-        decode(Ump([0xF012_2000, 0, 0, 0])),
+        Ump([0xF012_2000, 0, 0, 0]).decode(),
         Ok(Message::Stream(Stream::FunctionBlockName { .. }))
     ));
 }
@@ -519,13 +525,13 @@ fn what_cannot_be_framed_is_unknown() {
 #[test]
 fn unknown_keeps_every_word() {
     let words = [0x6123_4567, 0x89AB_CDEF, 0x0F0F_0F0F, 0xF0F0_F0F0];
-    match decode(Ump(words)) {
+    match Ump(words).decode() {
         Err(Unknown(ump)) => assert_eq!(ump.0, words),
         other => panic!("{other:?}"),
     }
     // A defined type with a reserved value keeps the words past the size too.
     let words = [0x0050_0000, 1, 2, 3];
-    assert_eq!(decode(Ump(words)), Err(Unknown(Ump(words))));
+    assert_eq!(Ump(words).decode(), Err(Unknown(Ump(words))));
 }
 
 #[test]
@@ -534,7 +540,7 @@ fn a_defined_message_has_no_unknown_form() {
     // by everything being `Unknown`.
     for words in [[0u32; 4], [0x2090_3C40, 0, 0, 0], [0xF020_0000, 0, 0, 0]] {
         assert!(matches!(
-            decode(Ump(words)),
+            Ump(words).decode(),
             Ok(Message::Utility(_) | Message::Midi1(..) | Message::Stream(_))
         ));
     }

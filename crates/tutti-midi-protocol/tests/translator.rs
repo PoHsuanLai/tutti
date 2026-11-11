@@ -8,7 +8,7 @@
 use tutti_midi_protocol::Translator;
 use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump,
-    Voice1, Voice2, decode,
+    Voice1, Voice2,
 };
 
 fn at(group: u8, channel: u8) -> Address {
@@ -43,7 +43,7 @@ fn run(t: &mut Translator, input: &[Ump]) -> Vec<Vec<Message>> {
         .map(|&ump| {
             let mut out = Vec::new();
             t.feed(ump, |u| {
-                out.push(decode(u).expect("the translator sends defined packets"))
+                out.push(u.decode().expect("the translator sends defined packets"))
             });
             out
         })
@@ -331,7 +331,7 @@ fn other_controllers_are_scaled_min_center_max() {
             let mut n = (0, 0);
             for &s in &selects {
                 t.feed(s, |_| {});
-                let Ok(Message::Midi1(_, Voice1::ControlChange { controller, value })) = decode(s)
+                let Ok(Message::Midi1(_, Voice1::ControlChange { controller, value })) = s.decode()
                 else {
                     unreachable!()
                 };
@@ -369,7 +369,7 @@ fn the_group_and_channel_are_kept() {
         cc_on(a, CCNumber::DATA_ENTRY, 2),
         cc_on(a, CCNumber::DATA_ENTRY_LSB, 0),
     ] {
-        t.feed(ump, |u| out.push(decode(u).unwrap()));
+        t.feed(ump, |u| out.push(u.decode().unwrap()));
     }
     assert_eq!(
         out,
@@ -400,7 +400,7 @@ fn groups_keep_their_own_runs() {
         cc_on(g0, CCNumber::DATA_ENTRY_LSB, 0),
         cc_on(g1, CCNumber::DATA_ENTRY_LSB, 0),
     ] {
-        t.feed(ump, |u| out.push(decode(u).unwrap()));
+        t.feed(ump, |u| out.push(u.decode().unwrap()));
     }
     assert_eq!(
         out,
@@ -733,7 +733,7 @@ fn flush_sends_a_lone_cc_6_once() {
         ],
     );
     let mut sent = Vec::new();
-    t.flush(|address, ump| sent.push((address, decode(ump).unwrap())));
+    t.flush(|address, ump| sent.push((address, ump.decode().unwrap())));
     assert_eq!(sent, [(at(0, 0), registered(0, 0, zx(12, 0)))]);
     let mut again = 0;
     t.flush(|_, _| again += 1);
@@ -754,7 +754,7 @@ fn flush_sends_a_lone_cc_38_on_its_own_channel() {
         t.feed(ump, |_| {});
     }
     let mut sent = Vec::new();
-    t.flush(|address, ump| sent.push((address, decode(ump).unwrap())));
+    t.flush(|address, ump| sent.push((address, ump.decode().unwrap())));
     let Message::Midi2(_, Voice2::Assignable { bank, index, .. }) = sent[0].1 else {
         panic!("an Assignable Controller, got {:?}", sent[0].1);
     };

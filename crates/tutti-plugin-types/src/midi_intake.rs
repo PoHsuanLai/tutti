@@ -16,7 +16,7 @@
 //!
 //! [`MIDI_STACK_CAPACITY`]: crate::MIDI_STACK_CAPACITY
 
-use tutti_ump::{Key, KeyEvent, Message, SysexStatus, Ump, decode};
+use tutti_ump::{Key, KeyEvent, Message, SysexStatus, Ump};
 
 use crate::{MidiEventVec, WireMidi};
 
@@ -190,7 +190,7 @@ fn same_note(a: Key, b: Key) -> bool {
 
 /// A SysEx7 packet's status, or `None` for any other message.
 fn sysex7_status(event: &Ump) -> Option<SysexStatus> {
-    match decode(*event) {
+    match (*event).decode() {
         Ok(Message::Sysex7(_, packet)) => Some(packet.status()),
         _ => None,
     }

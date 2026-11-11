@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::sine;
 
 /// Push `planes` through a [`StreamingResampler`] in blocks of `block` frames
 /// (`None` is the whole signal at once, the two-pass path), then finish.
@@ -258,10 +259,9 @@ fn level_at(x: &[f32], rate: f64, f_hz: f64, from: usize, to: usize) -> f64 {
     2.0 * re.hypot(im) / (to - from) as f64
 }
 
-fn tone(hz: f64, rate: f64, n: usize, amp: f64) -> Vec<f32> {
-    (0..n)
-        .map(|i| (amp * (2.0 * std::f64::consts::PI * hz * i as f64 / rate).sin()) as f32)
-        .collect()
+/// `n` samples of a sine of amplitude `amp` at `hz`.
+fn tone(hz: f64, rate: f64, n: usize, amp: f32) -> Vec<f32> {
+    sine(hz, rate, n).into_iter().map(|v| v * amp).collect()
 }
 
 /// A sine keeps its frequency and amplitude: a 1 kHz, 0.5-amplitude sine

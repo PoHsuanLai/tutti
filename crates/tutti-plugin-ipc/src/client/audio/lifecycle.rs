@@ -166,10 +166,6 @@ mod tests {
 
     /// **The audio thread's flag follows the refusal**, set with it and
     /// cleared with it, and answering never allocates (doc 027 D9).
-    ///
-    /// Mutations (run), each fails: the flag not stored in
-    /// `set_rate_refusal` (stays false); `is_rate_refused` reading the slot
-    /// through `rate_refusal()` (the gate trips on the clone).
     #[test]
     fn the_refused_flag_follows_the_refusal_without_allocating() {
         let life = Lifecycle::new();

@@ -202,8 +202,9 @@ fn rms(samples: &[f32]) -> f64 {
 ///
 /// The historical failure (not rerun): a private truncating converter
 /// (`(clamped * 32767.0) as i32` in FLAC in place of the shared rounding one)
-/// failed at sample 0 of the Int16 0.7 case, 22936 vs 22937. One LSB, which is the whole point: the float-tolerance
-/// draft of this test passed under exactly this mutation.
+/// failed at sample 0 of the Int16 0.7 case, 22936 vs 22937. One LSB, which is the whole
+/// point: a float-tolerance
+/// version of this test would pass a truncating converter.
 #[test]
 fn flac_and_wav_agree_sample_for_sample() {
     let d = tempfile::tempdir().unwrap();
@@ -265,9 +266,6 @@ fn flac_and_wav_agree_sample_for_sample() {
 }
 
 /// AIFF must hold what the WAV holds — same claim, different container.
-///
-/// Mutation: scale the AIFF encoder's Int16 sample by 0.999 before quantizing →
-/// fails at sample 0 of the 0.3 case, 9830 vs 9820.
 #[test]
 fn aiff_and_wav_agree_sample_for_sample() {
     let d = tempfile::tempdir().unwrap();
@@ -315,10 +313,6 @@ fn aiff_and_wav_agree_sample_for_sample() {
 
 /// Ogg is lossy, so the claim is spectral: the tone survives at the right
 /// frequency and roughly the right level.
-///
-/// Mutation: halve the samples handed to the Ogg encoder → fails the 1 dB level
-/// bound at −6.33 dB (the frequency assertion still passes, which is why the
-/// level one has to be here).
 #[test]
 fn ogg_preserves_the_tone() {
     let d = tempfile::tempdir().unwrap();
@@ -376,10 +370,6 @@ fn ogg_preserves_the_tone() {
 /// The render is a sine with both channels equal, so the side channel is
 /// silence: level 0 codes left and right independently, and every higher
 /// level tries mid/side and codes the silent side in a few bits.
-///
-/// Mutation (run): ignore the level (`encoder_config` returning
-/// `EncoderConfig::default()` for every level) → the two files are the same
-/// size and the size assertion fails.
 #[test]
 fn the_flac_compression_level_changes_the_size_not_the_samples() {
     let d = tempfile::tempdir().unwrap();
@@ -463,13 +453,6 @@ fn decode_flac_verified(path: &std::path::Path) -> (Vec<f32>, usize, Option<bool
 /// block exactly or leaves a short one, including tails under flacenc's
 /// 64-frame block minimum (FLAC allows any length for the last block). The
 /// samples are the WAV's, quantized to integers as above, at three widths.
-///
-/// Mutations (run): encode the last block padded to the full block size
-/// (`buf.resize(BLOCK_SIZE)` in `FrameWriter::block`) → every short-tailed
-/// length decodes 4096-frame-rounded and the length assertion fails (the
-/// pre-streaming encoder's behaviour); hash each sample's full four bytes
-/// (`v.to_le_bytes()` without the `bytes_per_sample` cut) → the MD5 check
-/// fails on every file.
 #[test]
 fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
     let d = tempfile::tempdir().unwrap();

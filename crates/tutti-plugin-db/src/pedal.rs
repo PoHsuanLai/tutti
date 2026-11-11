@@ -180,7 +180,6 @@ mod tests {
         assert!(!pedal.path.exists());
     }
 
-    /// Mutation: skip the `save` call.
     #[test]
     fn recover_blacklists_crashed_plugin_and_saves_before_clearing_the_pedal() {
         let dir = TempDir::new().unwrap();
@@ -201,7 +200,6 @@ mod tests {
         assert!(!pedal.path.exists());
     }
 
-    /// Mutation: remove the pedal whatever `save` returned.
     #[test]
     fn recover_keeps_the_pedal_when_the_save_fails() {
         let dir = TempDir::new().unwrap();
@@ -225,9 +223,6 @@ mod tests {
         assert!(pedal.recover(&mut db, |_| Ok(())).is_empty());
     }
 
-    // Mutation records: the edit that breaks each in-memory test.
-
-    /// Mutation: drop the `trim` (the trailing newline becomes part of the path).
     #[test]
     fn parse_pedal_names_the_plugin_without_surrounding_whitespace() {
         assert_eq!(
@@ -240,15 +235,13 @@ mod tests {
         );
     }
 
-    /// Mutation: return `Some` for the empty path (a blank pedal would then
-    /// blacklist the path `""`).
     #[test]
     fn parse_pedal_names_nothing_for_blank_text() {
         assert!(parse_pedal("".as_bytes()).is_empty());
         assert!(parse_pedal(" \n\t ".as_bytes()).is_empty());
     }
 
-    /// A path with interior spaces is one path. Mutation: split on whitespace.
+    /// A path with interior spaces is one path.
     #[test]
     fn parse_pedal_keeps_interior_spaces() {
         assert_eq!(
@@ -258,8 +251,6 @@ mod tests {
     }
 
     /// An unreadable or blank pedal is removed without blacklisting anything.
-    /// Mutation: leave the file in place on the `None` path (every later start
-    /// would find it again).
     #[test]
     fn recover_removes_a_blank_pedal_and_blacklists_nothing() {
         let dir = TempDir::new().unwrap();
@@ -273,7 +264,7 @@ mod tests {
     }
 
     /// On the first run the pedal's directory does not exist yet; arming must
-    /// still protect the probe. Mutation: drop the `create_dir_all` in `arm`.
+    /// still protect the probe.
     #[test]
     fn arm_creates_the_pedals_directory() {
         let dir = TempDir::new().unwrap();
@@ -285,8 +276,7 @@ mod tests {
     }
 
     /// A name that is not UTF-8 survives the pedal, so the file that crashed is
-    /// the file that is blacklisted. Mutation: store `to_string_lossy()` in
-    /// `path_bytes`.
+    /// the file that is blacklisted.
     #[cfg(unix)]
     #[test]
     fn a_non_utf8_path_round_trips_through_the_pedal() {
@@ -305,8 +295,6 @@ mod tests {
     }
 
     /// Arming beside an entry keeps it, and disarming removes only its own.
-    /// Mutation: write only the new entry in `arm`; or clear the file in
-    /// `disarm`.
     #[test]
     fn entries_sit_side_by_side_and_disarm_removes_only_its_own() {
         let dir = TempDir::new().unwrap();
@@ -326,7 +314,6 @@ mod tests {
     /// pedal file (replaceable, because the directory is writable) is rewritten
     /// without error, which an in-place `File::create` cannot do. Running as
     /// root defeats the permission check, so there the test cannot fail.
-    /// Mutation: write the pedal with `File::create(&self.path)` in `write`.
     #[cfg(unix)]
     #[test]
     fn read_only_pedal_is_replaced_not_truncated() {
@@ -348,7 +335,6 @@ mod tests {
     }
 
     /// `forget` drops the entries for a file and keeps the rest.
-    /// Mutation: retain everything in `forget`.
     #[test]
     fn forget_drops_only_the_named_files_entries() {
         let dir = TempDir::new().unwrap();
@@ -367,8 +353,7 @@ mod tests {
     /// Entries written under an alias of the file (a link to its directory) are
     /// blacklisted under the canonical key a scan uses, and `forget` takes any
     /// name for the file. This is what a symlinked temp root (macOS `/var`)
-    /// exercises. Mutation: drop the `canonical_path` map in `recover`; or the
-    /// one in `forget`.
+    /// exercises.
     #[cfg(unix)]
     #[test]
     fn entries_under_an_alias_are_keyed_canonically() {

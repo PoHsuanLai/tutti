@@ -259,11 +259,6 @@ fn frames(blocks: usize) -> impl Iterator<Item = u64> {
 /// gave it the compensation an output gets), a raw one is the source as it
 /// leaves its node, a global input and silence work as sources, and the
 /// outputs themselves are untouched by all four taps being open.
-///
-/// Mutation (run, recorded here): skip the `DelayKey::Tap` delay in
-/// `compile` (`if false && spec.align == ToOutput ...`) -> the aligned lanes
-/// fail. Mutation (run): align every tap, `Raw` included (drop the `align`
-/// test from the same condition) -> the raw lane of chain 0 fails.
 #[test]
 fn a_tap_is_aligned_by_the_compiler_and_any_width() {
     let mut r = rig(1, false);
@@ -295,10 +290,6 @@ fn a_tap_is_aligned_by_the_compiler_and_any_width() {
 /// The parallel render, outputs and every tap, is bit-identical to the serial
 /// one at several worker counts, with every participant inside
 /// `assert_no_alloc`, and the serial render itself is the analytic one.
-///
-/// Mutation (run, recorded here): make the `Op::Tap` arm in `par.rs` a no-op
-/// -> the parallel taps are empty and the comparison with the serial run
-/// fails.
 #[test]
 fn the_parallel_taps_are_bit_identical_and_allocation_free() {
     let mut s = rig(1, false);
@@ -316,10 +307,6 @@ fn the_parallel_taps_are_bit_identical_and_allocation_free() {
 
 /// The plan's tap ops: one per lane while open, none once closed, and a closed
 /// plan has the ops of a graph that never had a tap.
-///
-/// Mutation (run, recorded here): `Editor::close_tap` drops the pending lanes
-/// but leaves the spec's `TapSpec` -> the closed plan still has tap ops. The
-/// aligned-delay mutations of the test above fail the op counts here too.
 #[test]
 fn a_closed_tap_leaves_no_op() {
     let ops = |r: &Rig| {
@@ -374,10 +361,6 @@ fn a_closed_tap_leaves_no_op() {
 
 /// A slow reader loses frames and is told how many, once for the tap whatever
 /// its width; a closed tap receives nothing more.
-///
-/// Mutation (run, recorded here): drop the `fetch_add` in `tap_op` ->
-/// `take_lost` reads 0. Mutation (run): give every lane the counter (`lost:
-/// Some(..)` for all) -> the six-lane tap reports 900.
 #[test]
 fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
     let mut r = rig(1, false);
@@ -405,9 +388,6 @@ fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
 
 /// A read is whole frames: a buffer that ends mid-frame leaves its tail as it
 /// was, and the reader says how wide it is.
-///
-/// Mutation (run, recorded here): `.min(out.len() / width)` -> `.min(out.len())`
-/// in `pop_into` -> the read runs past the buffer and the test fails.
 #[test]
 fn a_read_is_whole_frames() {
     let mut r = rig(1, false);
@@ -430,10 +410,6 @@ fn a_read_is_whole_frames() {
 /// commit that removes it retires the ring with the old state. The ring and
 /// its producer are freed at the editor's collect, never in a block (a lane's
 /// drop is a debug panic inside one).
-///
-/// Mutation (run, recorded here): `old.taps.clear()` in `Executor::rebuild` ->
-/// the commit's apply drops the lanes on the audio side and the test panics
-/// with "a tap lane dropped on the audio thread".
 #[test]
 fn a_reader_dropped_first_is_reaped_and_freed_on_the_control_side() {
     let mut r = rig(1, true);
@@ -465,9 +441,6 @@ fn a_reader_dropped_first_is_reaped_and_freed_on_the_control_side() {
 
 /// The reader is control-side state: dropping it inside a block is a debug
 /// panic, as for a unit.
-///
-/// Mutation (run, recorded here): delete the `check_outside` in
-/// `TapReader::drop` -> no panic, the test fails.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "a tap reader dropped on the audio thread")]
@@ -487,12 +460,6 @@ fn a_reader_dropped_on_the_audio_thread_panics() {
 /// The fork carries no tap by construction: `fork_gather` copies the live
 /// topology's inputs, outputs and edges piecewise into the fork's editor, never
 /// its taps.
-///
-/// Mutation (run, recorded here): copy the live taps into the fork's spec
-/// literal *and* into the editor `fork_gather` builds
-/// (`fork.topology.taps = spec.topology.taps`) -> the first assertion fails.
-/// Copying them into the literal alone passes: nothing reads that field,
-/// which is why the empty map there is only what the struct needs.
 #[test]
 fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
     let mut r = rig(1, false);
@@ -548,12 +515,7 @@ fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
 /// output wired to it would be, and the graph still commits.
 ///
 /// Two layers hold this: `Editor::remove` turns the lane to `Zero`, and the
-/// compiler reads a missing node as silence. Mutation (run, recorded here):
-/// breaking either one alone leaves this test green (the other still
-/// silences the lane; the `remove` loop is covered by
-/// `a_reused_key_is_not_read_by_the_old_tap`, the compiler's fallback by the
-/// narrowing tests); breaking both (delete the tap loop in `remove` and index
-/// `audio_out_val[&p]`) fails it.
+/// compiler reads a missing node as silence.
 #[test]
 fn removing_a_tapped_node_silences_its_lane() {
     let mut r = rig(1, false);
@@ -582,9 +544,6 @@ fn removing_a_tapped_node_silences_its_lane() {
 
 /// Closing a tap twice, or one that never opened, is a no-op: the plan stays
 /// the graph's own.
-///
-/// Mutation (run, recorded here): `Editor::close_tap` panicking on a missing
-/// id (`.expect` on the `taps.remove`) -> this fails.
 #[test]
 fn closing_a_tap_twice_is_a_no_op() {
     let mut r = rig(1, false);
@@ -623,11 +582,6 @@ impl Drop for Raise<'_> {
 /// This is the review's repro: before the tap was one op that writes its lanes
 /// by one count, lane 1 accepted frames lane 0 refused and the lanes stayed
 /// offset for good (hundreds of torn frames in a run, lane 0 alone counting).
-///
-/// Mutation (run, recorded here): in `tap_op`, push each lane's whole block
-/// (`take = frames` per lane, independent `push_slice`) -> torn frames, and
-/// the accounting fails. Mutation (run): `pop_into` popping the lane's own
-/// occupancy rather than the minimum -> torn frames.
 fn concurrent_drain(workers: usize, width: usize, align: TapAlign) {
     const BLOCKS: usize = 130;
     let mut r = rig(workers, workers > 1);
@@ -710,11 +664,6 @@ fn lanes_do_not_tear_under_a_concurrent_drain() {
 
 /// The same, on the pool: the chains run in different tasks and the tap op
 /// joins them, and every participant is inside `assert_no_alloc`.
-///
-/// Mutation (run, recorded here): as above, and the compiler not registering
-/// the tap op as a reader of its lanes' values (`read_aref` dropped) -> the
-/// tap is scheduled with no order against the chains and every tap test
-/// fails.
 #[test]
 fn lanes_do_not_tear_on_the_pool() {
     for workers in [2, 4] {
@@ -729,9 +678,6 @@ fn lanes_do_not_tear_on_the_pool() {
 /// Opening an id again replaces the tap: the new reader is fed from the next
 /// commit, the old one gets nothing more, and the old writer is retired on the
 /// control side (a free in a block is a debug panic).
-///
-/// Mutation (run, recorded here): in `Executor::rebuild`, let the carried
-/// writer win over the one just opened -> the new reader stays empty.
 #[test]
 fn opening_an_id_again_replaces_the_tap() {
     let mut r = rig(1, false);
@@ -761,9 +707,6 @@ fn opening_an_id_again_replaces_the_tap() {
 /// another length through the spec is refused at the commit (the writer the
 /// executor holds has that many rings), and opening the id again at another
 /// width replaces the tap at the new one, lanes and all.
-///
-/// Mutation (run, recorded here): delete `check_tap_widths` from `commit` ->
-/// the edited spec commits and the first assertion fails.
 #[test]
 fn a_tap_cannot_change_its_width_under_its_writer() {
     let mut r = rig(1, false);
@@ -801,12 +744,6 @@ fn a_tap_cannot_change_its_width_under_its_writer() {
 /// together come out of each lane in order, up to what was asked and what is
 /// there, and a lane with no plane still drops the frames so the lanes stay
 /// level.
-///
-/// Mutation (run, recorded here): replacing `lane.skip(frames)` for the
-/// plane-less lane with nothing leaves lane 2 two frames behind, and the next
-/// read returns lane 0's third frame beside lane 2's first -> the second
-/// assertion fails; `.min(want.get())` dropped reads the whole ring -> the
-/// first fails.
 #[test]
 fn pop_planes_reads_whole_frames_and_keeps_the_lanes_level() {
     let (mut reader, mut writer) = TapReader::pair(TapId(7), 3, Samples(8));
@@ -841,11 +778,6 @@ fn port(node: u64, port: u16) -> Source {
 /// must not wedge the graph. The silence is zeros in the stream, not a loss
 /// (`take_lost` stays 0) and not a gap (the stream keeps its length), and the
 /// other lanes play on, on the serial and the pooled executor alike.
-///
-/// Mutation (run, recorded here): index `audio_out_val[&p]` for a tap lane in
-/// `compile` instead of `.get` -> the commit panics (also fails the aligned
-/// test below). `_ => continue` for a missing lane instead of `Zero` -> the
-/// lanes shift and this test and the aligned one fail.
 #[test]
 fn a_narrowed_node_silences_the_tap_lanes_past_its_width_and_commits() {
     for (workers, gated) in [(1, false), (3, true)] {
@@ -880,9 +812,6 @@ fn a_narrowed_node_silences_the_tap_lanes_past_its_width_and_commits() {
 
 /// A global input that goes past the declared width after the open is the same
 /// as a narrowed node: silence, not a refused commit.
-///
-/// Mutation (run, recorded here): index `global_val[&ch]` for a tap lane in
-/// `compile` instead of `.get` -> the commit panics.
 #[test]
 fn a_tap_on_a_global_input_that_goes_missing_reads_silence() {
     let mut r = rig(1, false);
@@ -911,11 +840,6 @@ fn a_tap_on_a_global_input_that_goes_missing_reads_silence() {
 /// global input past the graph's width, for a tap and for a meter, each named
 /// in the error. A lane that is fine does not hide a bad one after it, and a
 /// source inserted but not yet committed is accepted.
-///
-/// Mutation (run, recorded here): make `Editor::check_sources` return `Ok(())`
-/// at once -> every refusal assertion fails. Drop its `port >= outputs.count()`
-/// test -> the bad-port assertions fail. Compare against `t.inputs` of zero
-/// instead of `count()` of the declared width -> the global assertions fail.
 #[test]
 fn opening_refuses_a_source_that_does_not_exist_now() {
     let mut r = rig(1, false);
@@ -984,9 +908,6 @@ fn opening_refuses_a_source_that_does_not_exist_now() {
 
 /// A key is the author's and can be inserted again after a removal: a tap left
 /// naming the removed node must not start reading the new one.
-///
-/// Mutation (run, recorded here): delete the tap loop in `Editor::remove` ->
-/// the lane reads the new node's 0.125 and the assertion fails.
 #[test]
 fn a_reused_key_is_not_read_by_the_old_tap() {
     let mut r = rig(1, false);
@@ -1015,12 +936,6 @@ fn a_reused_key_is_not_read_by_the_old_tap() {
 /// rings of their own, neither shift nor leak: the surviving constant lane
 /// still carries the old value for the `LATENCY` frames its ring held, and the
 /// latent chain's lane is the analytic aligned signal throughout.
-///
-/// Mutation (run, recorded here): give a found node port no alignment delay
-/// in `compile` (`Latency::ZERO` for `departure(n)`) -> the surviving
-/// constant lane is not `LATENCY` frames late and its assertion fails (so do
-/// the other aligned-tap tests). `_ => continue` for a missing lane -> the
-/// stream's width is wrong and this test fails.
 #[test]
 fn an_aligned_tap_across_a_narrowing_keeps_the_other_lanes_level() {
     let mut r = rig(1, false);

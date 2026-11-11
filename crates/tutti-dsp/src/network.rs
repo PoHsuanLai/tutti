@@ -447,9 +447,6 @@ mod tests {
 
     /// The pre-delay is whole frames, rounded: 1 ms at 48 kHz is 48, more than half a
     /// frame rounds up, and a negative or NaN span is none.
-    ///
-    /// Mutation (run): `to_samples_floor` for `to_samples` fails the 0.6-frame
-    /// row.
     #[test]
     fn the_pre_delay_is_rounded_to_whole_frames() {
         let rate = SampleRate(48_000.0);
@@ -466,8 +463,6 @@ mod tests {
     /// A `Network` lives on the stack of the audio thread: the whole value stays
     /// under 64 KiB (design 022 guessed "a few kilobytes"; it is about 55 KB: `MAX_STAGES` of the
     /// largest stage).
-    ///
-    /// Mutation (run): `MAX_LINES` 64 -> 1024 fails it.
     #[test]
     fn a_network_fits_the_audio_thread_stack() {
         let bytes = std::mem::size_of::<Network>();
@@ -487,10 +482,6 @@ mod tests {
     /// The two forms differ in their direct term: a lattice has `-g` (none at
     /// `g = 0`, a plain delay), Freeverb's always `-1`; only the lattice has a
     /// finite low-frequency group delay for the loop analysis.
-    ///
-    /// Mutations (run): `self.gain != 0.0` -> `true` fails the lattice-at-zero
-    /// row; the Freeverb arm returning `self.gain != 0.0` fails the last row;
-    /// dropping the form test from `low_frequency_delay` fails the Freeverb row.
     #[test]
     fn the_forms_differ_in_their_direct_term_and_group_delay() {
         let ap = |form, gain| AllPass {
@@ -515,9 +506,6 @@ mod tests {
     /// recurrence `y[n] = -g x[n] + x[n-D] + g y[n-D]`; with the same `g` the
     /// Freeverb form (`((1+g) z^-D - 1) / (1 - g z^-D)`) is not. Both
     /// impulse responses are run from their difference equations.
-    ///
-    /// Mutation (run): the sign of `-g * x` flipped in the lattice recurrence
-    /// breaks its unit magnitude and fails the first loop.
     #[test]
     fn the_lattice_is_unit_magnitude_and_the_freeverb_form_is_not() {
         let (d, g) = (8usize, 0.5f64);

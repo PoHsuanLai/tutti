@@ -160,14 +160,6 @@ fn run(from: PlayReading, n: usize) -> Vec<PlayReading> {
 /// between blocks and on a start inside one (on its frame), and a seek or a
 /// stop restarts nothing. The control side reads the next block's first
 /// reading.
-///
-/// Mutations (run): `PlayState::begin` restarting whenever the block plays
-/// (ignoring the last block's state) → the third block restarts → fails.
-/// `Env::play_at` restarting on a seek (any change to playing) → the seek
-/// at 5 restarts → fails. `PlayState::end` not publishing → the control
-/// reading stays at 0 → fails. The reference's `play_clock` ignoring a
-/// start inside a block (its next block counting on from the old start)
-/// → the fifth block's counts differ from the executor's → fails.
 #[test]
 fn the_clock_restarts_on_each_play_start_and_nowhere_else() {
     let mut r = rig(0, false);
@@ -232,11 +224,6 @@ fn the_clock_restarts_on_each_play_start_and_nowhere_else() {
 /// Behind a 100-frame path, the probe reads the clock its input was
 /// rendered at: 100 frames back, through block boundaries and across a play
 /// start, from the executor's history.
-///
-/// Mutations (run): `Cx::play_at` reading the block's own time (no arrival)
-/// → the first playing block reads 0 where it must read the old epoch's
-/// count → fails. `TransportHistory::observe` storing `PlayClock::ZERO`'s
-/// reading in each piece → reads before the block read 0 → fails.
 #[test]
 fn a_latent_node_reads_the_clock_at_its_input_time() {
     const LAT: usize = 100;
@@ -278,10 +265,6 @@ fn a_latent_node_reads_the_clock_at_its_input_time() {
 /// live graph has played: an export's free-running phase starts from its
 /// own first frame (doc 014 §4.3), and the fork's readings never name a
 /// live play start.
-///
-/// Mutation (run): one clock shared by every executor (`PlayState::new`
-/// seeding its count from a process-wide copy of the newest reading `end`
-/// published) → the fork's first frame reads 192 → fails.
 #[test]
 fn a_fork_starts_its_clock_at_zero() {
     let mut r = rig(0, true);

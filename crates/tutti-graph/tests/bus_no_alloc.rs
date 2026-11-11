@@ -6,9 +6,6 @@
 //!
 //! The renders are not compared: the figures are `bus_edges.rs`'s and
 //! `mode.rs`'s. This pins the cost.
-//!
-//! Mutation (run): collect the sources into a `Vec` inside `Pass::fold_into`
-//! (the bypass fold) -> the gate aborts -> fails.
 
 mod common;
 

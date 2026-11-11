@@ -19,16 +19,6 @@
 //! their own index, and the plan's tap op copies them into the rings the
 //! reader drains.
 //!
-//! Mutations (run against `TapReader::pop_into` and `tap_op` in `tutti-graph`;
-//! the frames→samples and left/right swap rows are also
-//! `tutti-graph`'s `tests/tap_audio_in.rs`
-//! `rendered_frames_come_back_in_order_and_channel_side`, and these):
-//!
-//! | mutation | fails |
-//! |---|---|
-//! | `.min(out.len() / width)` → `.min(out.len())` in `pop_into` (frames→samples) | `…_in_order_through_the_whole_chain` only (it panics past the pump's buffer) |
-//! | swap the lanes (`skip(width - 1 - channel)`) | both |
-//!
 //! `FRAMES` stays above the pump's scratch so a push that *exceeds* it forces
 //! a bad bound to be used.
 
@@ -183,8 +173,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
     );
     // The tap is empty now, so the next pass must report a live source waiting
     // rather than a finished one. `TapReader::pull` answers `Starved` for an empty
-    // tap, and this is what that answer buys. Mutation (run): answering `Ended`
-    // there makes this pass report `Ended` and fails the assertion.
+    // tap, and this is what that answer buys.
     assert_eq!(
         pump.pump_once(),
         PumpPass::Starved,
@@ -280,10 +269,6 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
 /// the pump runs, so the first 512 are kept and 1536 are lost. The recorder
 /// counts them; the file holds the 512 and is shorter than the take by the
 /// lost frames, with nothing in the audio to mark where.
-///
-/// Mutation (run, recorded here): delete `impl Source for TapReader`'s `take_lost` (the trait's
-/// zero default) -> `lost()` reads 0 and the first assertion fails. Delete the
-/// `fetch_add` in `PumpLoop::pump_once` -> the same.
 #[test]
 fn a_gap_in_a_take_is_counted_and_the_file_closes_up_over_it() {
     let dir = tempfile::tempdir().unwrap();

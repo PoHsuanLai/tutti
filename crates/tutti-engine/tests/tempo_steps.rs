@@ -8,8 +8,6 @@
 //! another render except where the property *is* an equality of two renders
 //! (block-size independence; live equals offline), and those are also held to
 //! the arithmetic.
-//!
-//! Each test names the mutation that fails it.
 
 use std::sync::{Arc, Mutex};
 
@@ -147,10 +145,6 @@ fn assert_on_the_line(points: &[(f64, f64)], beats: &[f64], from: u64, what: &st
 /// A step from 120 to 60 BPM at beat 4, at 48 kHz: beats 0 to 4 are 24 000
 /// frames each, and beat 5 is on frame 4 x 24 000 + 48 000 = 144 000. The step
 /// frame carries beat 4 to the bit.
-///
-/// Mutation (run): the walk never taking a cell's tempo (`TempoWalk::sync`
-/// returning early) -> the beat keeps running at 120 and reaches 5 on frame
-/// 120 000 -> fails.
 #[test]
 fn a_step_from_120_to_60_puts_beat_5_on_frame_144000() {
     let points = [(0.0, 120.0), (4.0, 60.0)];
@@ -167,10 +161,6 @@ fn a_step_from_120_to_60_puts_beat_5_on_frame_144000() {
 /// The same map at block sizes 1, 64, 100, 512, an odd 1000 (two graph blocks
 /// per device block) and a ragged pattern: the beats of every frame are the
 /// same to the bit, and on the line.
-///
-/// Mutation (run): roll a whole `advance` as one chunk (`chunk = frames -
-/// rolled` in `TempoWalk::roll`, no cell edge) -> a step is taken at the end
-/// of the call it falls in, so the beats depend on the block size -> fails.
 #[test]
 fn the_beats_do_not_depend_on_the_block_size() {
     let points = [(0.0, 120.0), (1.0, 60.0), (2.0, 180.0), (2.5, 90.0)];
@@ -197,10 +187,6 @@ fn the_beats_do_not_depend_on_the_block_size() {
 /// about 21 steps. The engine cuts it where the ninth change would be, no
 /// block carries more than 8, and the render is the one a block of 1 gives
 /// (which has no change inside it) and the one the map's arithmetic gives.
-///
-/// Mutation (run): `limit` never set in `TempoWalk::ahead` (the changes past
-/// the 8th dropped) -> the beats after the 8th step in a block stay at the old
-/// tempo -> fails.
 #[test]
 fn a_block_crossing_more_than_8_changes_is_split_and_exact() {
     let points: Vec<(f64, f64)> = (0..41)
@@ -236,11 +222,6 @@ fn a_block_crossing_more_than_8_changes_is_split_and_exact() {
 /// An offline render over the same map is the live render, frame for frame,
 /// to the bit: both are the one walker. The offline timeline cuts its own
 /// blocks where more than 8 changes fall (`OfflineTimeline::render_graph`).
-///
-/// Mutation (run): `OfflineTimeline::block` returning the block whole
-/// (ignoring `limit`) -> the changes past the 8th are lost -> fails; the
-/// offline `advance` rolling with the closed form instead of the walk -> the
-/// playhead ignores the steps -> fails.
 #[test]
 fn an_offline_render_is_the_live_render_with_a_step_map() {
     let mut points: Vec<(f64, f64)> = (0..41)
@@ -284,10 +265,6 @@ fn an_offline_render_is_the_live_render_with_a_step_map() {
 /// A seek lands on its exact beat and the tempo of the step it lands in: back
 /// to 3.9 (before the step at 4) the beat runs at 120 for 2 400 frames and then
 /// at 60; to 4.5 (inside the step) and to 4.0 (on it) at 60 at once.
-///
-/// Mutation (run): `apply_pending_seek` seating the clock without the walk
-/// (`self.clock.seat(target)` for a map) -> after the seek back the map frame
-/// is still past the step, the tempo stays 60 -> fails.
 #[test]
 fn a_seek_seats_at_the_exact_beat_in_its_step() {
     let points = [(0.0, 120.0), (4.0, 60.0)];
@@ -333,9 +310,6 @@ fn a_seek_seats_at_the_exact_beat_in_its_step() {
 /// A loop over a step: [3, 5) with the step at 4 from 120 to 60, started at
 /// 3.5. The wrap lands on the frame the beat reaches 5 (frame 60 000), at
 /// beat 3 and at the tempo there (120), and every pass after is 72 000 frames.
-///
-/// Mutation (run): `TempoWalk::roll` skipping `place` after a wrap -> the
-/// playhead goes on at 60 after the wrap -> fails.
 #[test]
 fn a_loop_wrap_takes_the_tempo_where_it_lands() {
     let points = [(0.0, 120.0), (4.0, 60.0)];

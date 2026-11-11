@@ -344,8 +344,6 @@ mod tests {
         );
     }
 
-    /// Mutations: `pays` always true (always parallel) → the tiny case
-    /// fails; always false (always serial) → the wide case fails.
     #[test]
     fn spreads_wide_work_and_keeps_tiny_work_serial() {
         // Eight equal lanes of about 20 µs at 256 frames; it pays from 13

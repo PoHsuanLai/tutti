@@ -435,10 +435,10 @@ pub fn an_instrument_is_one_handle_at_a_time<S: Subject>() {
 /// a note in it. It pins that a fork carries the instrument over (a plugin's
 /// mode among it) and plays what its graph gives it. It does **not** pin the
 /// order a plugin's state is restored in: a plugin restored after its activation
-/// still came up in the state's mode here (mutation, run: the CLAP state applied
+/// still came up in the state's mode here (the CLAP state applied
 /// after the activation), because the fork's own prepare activates it again. The
 /// order is pinned by the plugin subject's other cases, six of which fail under
-/// that mutation, and by the server's staging tests.
+/// that reordering, and by the server's staging tests.
 pub fn a_fork_starts_silent_and_plays<S: Subject>() {
     use tutti_fixtures::midi;
     use tutti_midi_runtime::TimedMidiEvent;

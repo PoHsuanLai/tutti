@@ -649,8 +649,6 @@ mod select_tests {
     ///
     /// This is what keeps every single-plugin bundle, which is nearly all of
     /// them, loading exactly as it did before ids were selectable.
-    ///
-    /// Mutation: return `descriptors.len() - 1` for `None`: fails.
     #[test]
     fn no_id_selects_the_first_descriptor() {
         assert_eq!(select_index(&two(), None).unwrap(), 0);
@@ -662,8 +660,6 @@ mod select_tests {
     /// so a bundle shipping a synth plus companion effects exposed only the
     /// synth, and the effects were unreachable with no error, since index 0
     /// loads fine.
-    ///
-    /// Mutation: ignore `wanted` and return 0: fails.
     #[test]
     fn a_named_id_selects_a_plugin_that_is_not_the_first() {
         let picked = select_index(&two(), Some("com.example.fx"))
@@ -677,8 +673,6 @@ mod select_tests {
     /// asked for: a session restoring "the compressor" would come back with the
     /// synth and no complaint. The message lists what the bundle does hold, so
     /// the caller can correct the id.
-    ///
-    /// Mutation: `unwrap_or(0)` in place of the error: fails.
     #[test]
     fn an_unknown_id_fails_rather_than_loading_something_else() {
         let err = select_index(&two(), Some("com.example.missing"))
@@ -694,9 +688,6 @@ mod select_tests {
     ///
     /// `id` is a raw pointer straight from the plugin; a factory that leaves
     /// it null must not take the host down mid-selection.
-    ///
-    /// Mutation: have `lossy` call `CStr::from_ptr` without the null test:
-    /// the null read crashes the test.
     #[test]
     fn a_null_id_is_skipped_rather_than_dereferenced() {
         // SAFETY: `clap_plugin_descriptor` is a version struct and pointers;
@@ -716,8 +707,6 @@ mod select_tests {
     ///
     /// `id` is a raw string straight from the plugin; a factory that leaves it
     /// null must not stop a valid sibling matching.
-    ///
-    /// Mutation: drop the `!d.id.is_empty()` test and select `""`: fails.
     #[test]
     fn a_null_id_is_skipped_rather_than_matched() {
         let descriptors = vec![desc_with_id(""), desc_with_id("com.example.fx")];
@@ -734,14 +723,9 @@ mod select_tests {
     /// inherit one (`init` run twice on one image, or skipped on a new one).
     /// The test holds the lock and shows both wait for it.
     ///
-    /// Mutation: take no lock in `Bundle`'s drop: the drop finishes while the
-    /// test holds the lock and the first assertion fails; have `open` use a
-    /// registry of its own, not the global one (`let mut local = None;`, passed
-    /// to `acquire_in`): the opener never waits and the second fails.
-    /// Not covered: that `open` takes the lock *before* it maps the image
-    /// rather than at the acquire (an opener blocks at either, and the map
-    /// call has no observable effect here); that order is the construction in
-    /// `open`, argued at `acquire_in`.
+    /// Not covered: that `open` takes the lock *before* it maps the image rather than at
+    /// the acquire (an opener blocks at either, and the map call has no observable effect
+    /// here); that order is the construction in `open`, argued at `acquire_in`.
     #[test]
     fn opening_and_dropping_a_bundle_take_the_registry_lock() {
         use std::sync::mpsc;

@@ -921,13 +921,7 @@ mod tests {
     ///
     /// The two 8192-sample onset windows are far wider than the pitch hop; an
     /// onset cut there would clip a note's edges, which the guards in
-    /// `split_run` prevent. Mutation checked: a guard of zero, or dropping
-    /// `t + guard <= run_end`, fails this test.
-    ///
-    /// Mutation checked: dropping the `+ span_of` from the end (ending a note
-    /// at its last frame's start) fails the late-end side at every config;
-    /// returning `covered_start + hop` for the start fails the early side;
-    /// reporting `Note::A4` for every note fails the pitch check.
+    /// `split_run` prevent.
     #[test]
     fn a_melody_gives_its_notes_at_every_geometry() {
         let melody = [
@@ -976,9 +970,6 @@ mod tests {
 
     /// A tone 30 cents sharp is A4 plus 30 cents; 49 cents either way still
     /// rounds to A4, and 51 to the neighbour.
-    ///
-    /// Mutation checked: negating the bend, or taking the note by truncating
-    /// the semitone count rather than `Note::nearest_to`, fails the -49 case.
     #[test]
     fn a_detuned_tone_reports_its_bend() {
         for (cents, midi, bend) in [
@@ -1002,10 +993,6 @@ mod tests {
 
     /// One pitch struck twice, with a 30 ms dip between, is two notes. Without
     /// the onsets the same track is one: the split is the onset's.
-    ///
-    /// Mutation checked: skipping the onset cuts in `split_run` fails the first
-    /// assertion; ordering by `floor(t / hop)` rather than `ceil` is caught in
-    /// `an_onset_splits_at_its_first_whole_frame`.
     #[test]
     fn a_re_articulated_note_is_two_notes() {
         let c = cfg();
@@ -1041,13 +1028,6 @@ mod tests {
     /// (30 cents over a 30 ms smoothing span, under the 50 cent split) that
     /// travels 600 cents, are one note each; a 100 cent step with no gap is
     /// two.
-    ///
-    /// Mutation checked: a 20 cent split fails the vibrato and the slide (both
-    /// move over 20 cents in a span). The step case is also split by the onset
-    /// the change makes, so disabling the pitch split does not fail it; the
-    /// pitch cut is pinned on hand-made tracks, with no onsets, in
-    /// `a_pitch_step_splits_at_the_frame_midpoint_and_blips_do_not` and
-    /// `a_fast_slide_splits_and_a_slow_one_does_not`.
     #[test]
     fn pitch_changes_split_only_beyond_the_threshold() {
         let c = cfg();
@@ -1096,12 +1076,6 @@ mod tests {
     /// The rule is a rate: a slide of 3 cents a frame (30 over a 10 frame
     /// span, under the split) stays one note over 180 cents, and one of 8 cents
     /// a frame (80 over a span) splits once, in the middle of the slide.
-    ///
-    /// Mutation checked: a split of 20 cents splits the slow slide; a split of
-    /// 120 cents leaves the fast one whole; taking the first position of a
-    /// stretch rather than its middle (at both pushes in `pitch_changes`; the
-    /// slide's stretch runs to the end of the run, so the last push is the one
-    /// that matters here) moves the fast cut and fails the position.
     #[test]
     fn a_fast_slide_splits_and_a_slow_one_does_not() {
         let c = cfg().with_min_length(Seconds(0.0)).unwrap();
@@ -1125,9 +1099,6 @@ mod tests {
 
     /// The sliding median agrees with sorting every window, on sequences with
     /// repeats, negative zero and extremes.
-    ///
-    /// Mutation checked: removing `cents[pos]` instead of `cents[pos - span]`
-    /// from `before` fails the comparison.
     #[test]
     fn the_sliding_median_matches_sorting_each_window() {
         let mut rng = StdRng::seed_from_u64(11);
@@ -1161,9 +1132,6 @@ mod tests {
 
     /// A tone shorter than the minimum is dropped, and kept when the minimum is
     /// lowered; a zero minimum keeps everything.
-    ///
-    /// Mutation checked: deleting the `min_length` filter keeps the short note
-    /// and fails the first assertion.
     #[test]
     fn a_note_shorter_than_the_minimum_is_dropped() {
         let x = render(
@@ -1182,12 +1150,6 @@ mod tests {
 
     /// Silence is `NoSignal`, noise gives no notes, a NaN or infinity and a
     /// buffer shorter than a frame are refused.
-    ///
-    /// Mutation checked: removing the peak test returns `Ok(vec![])` for
-    /// silence and fails the first. Removing the sample check alone survives
-    /// for a NaN inside a frame (the level check refuses it with the same
-    /// error), so the last case puts it in the tail no frame covers, where
-    /// only that check sees it and removing it fails.
     #[test]
     fn silence_noise_and_bad_input_are_defined() {
         let c = cfg();
@@ -1223,10 +1185,6 @@ mod tests {
     /// Louder notes read louder: the level of a sine is its RMS in dBFS, to a
     /// tenth of a decibel, and the MIDI velocity follows it. A note that
     /// swells reads at its peak, not its start.
-    ///
-    /// Mutation checked: taking the first frame's level, or the minimum,
-    /// reads the swell at its quiet start and fails the swell check; using the
-    /// peak amplitude rather than the RMS is 3 dB off and fails the figure.
     #[test]
     fn velocity_follows_amplitude() {
         let amps = [0.05, 0.2, 0.8];
@@ -1270,10 +1228,6 @@ mod tests {
 
     /// The map is linear in dB between its bounds, clamps outside them, and
     /// reads NaN as the quietest.
-    ///
-    /// Mutation checked: `126.0` to `127.0` makes the ceiling 128 and fails
-    /// the ceiling; dropping the `1 +` fails the floor; returning 127 for a
-    /// NaN fails the NaN case.
     #[test]
     fn the_velocity_map_is_linear_and_clamped() {
         let r = VelocityRange::new(Db(-60.0), Db(-20.0)).unwrap();
@@ -1293,10 +1247,6 @@ mod tests {
     /// Scaling the input by a power of two (exact in floating point) changes
     /// nothing: pitch and timing are the same, bit for bit, and only the level
     /// moves, by the gain in dB. Below the floor the note is gone.
-    ///
-    /// Mutation checked: gating frames on a fixed amplitude of 0.05 rather than
-    /// the floor fails the 1/32 case; an absolute threshold anywhere in the
-    /// timing fails the equality.
     #[test]
     fn gain_changes_only_the_level() {
         let c = cfg();
@@ -1333,10 +1283,6 @@ mod tests {
     /// A dropout of up to the bridge is inside one note; one more frame is a
     /// rest. On real audio a rest as short as 20 ms is never bridged, even
     /// with a minute of hold.
-    ///
-    /// Mutation checked: `hold` ignored (bridge 0) fails the first case;
-    /// removing the `.min(rest...)` cap fails the real-audio case; an off by
-    /// one in `runs` (`<` for `<=`) fails the boundary pair.
     #[test]
     fn dropouts_are_bridged_and_rests_are_not() {
         let c = cfg();
@@ -1365,12 +1311,6 @@ mod tests {
     /// An onset at `t` cuts before the first whole frame at or after `t`: the
     /// earlier note ends at `t` and the later starts on that frame. Onsets in
     /// any order, repeated, or at the run's own start give the same cut.
-    ///
-    /// Mutation checked: `floor` in place of `div_ceil` starts the later note
-    /// at `t` and fails the start; clamping the end with `max` fails the end;
-    /// not sorting the onsets fails the reversed case; a guard of zero fails
-    /// the one-sample-inside case, and dropping `t + guard <= run_end` fails
-    /// the `late` case.
     #[test]
     fn an_onset_splits_at_its_first_whole_frame() {
         let c = cfg().with_min_length(Seconds(0.0)).unwrap();
@@ -1414,11 +1354,6 @@ mod tests {
 
     /// A pitch step in a hand-made track splits at the midpoint of the two
     /// frames' centres; a single octave-error frame and a short blip do not.
-    ///
-    /// Mutation checked: median replaced by the first value of the span fails
-    /// the octave-error case; using `first` rather than the stretch middle
-    /// fails the boundary; a `>=` for `>` on the split is not distinguishable
-    /// here and is not claimed.
     #[test]
     fn a_pitch_step_splits_at_the_frame_midpoint_and_blips_do_not() {
         let c = cfg();
@@ -1446,9 +1381,6 @@ mod tests {
 
     /// The earlier note of an onset split reads its own level: frames that
     /// reach past the cut see the louder note and are not counted.
-    ///
-    /// Mutation checked: taking the maximum over every frame of the piece
-    /// reads 0.8 and fails.
     #[test]
     fn a_note_does_not_read_its_neighbours_level() {
         let c = cfg();
@@ -1466,11 +1398,6 @@ mod tests {
     }
 
     /// Every setting is validated, so absurd ones cannot allocate or overflow.
-    ///
-    /// Mutation checked: each assertion names a guard; removing that guard
-    /// (the `MAX_FRAME` test, the hop bounds, the `MAX_SECONDS` range, the
-    /// sample-rate and function checks, the length check, the smoothing cap,
-    /// the level checks) fails its line.
     #[test]
     fn settings_and_inputs_are_validated() {
         let g = StftGeometry::new(SampleRate::new(RATE), Samples(1024), Samples(256)).unwrap();
@@ -1538,9 +1465,6 @@ mod tests {
 
     /// A hop so small the input would make over 4 M frames is refused before
     /// anything is allocated.
-    ///
-    /// Mutation checked: removing the frame-count test in `transcribe` lets it
-    /// run (and this test times out rather than returning the error).
     #[test]
     fn too_many_frames_are_refused() {
         let yin = YinConfig::new(SampleRate::new(RATE), Hz(5000.0), Hz(10000.0)).unwrap();
@@ -1559,9 +1483,6 @@ mod tests {
 
     /// Exactly `MAX_FRAMES` frames are accepted and one more is not, for any
     /// hop, including a length that leaves a partial hop.
-    ///
-    /// Mutation checked: `>=` to `>` in `too_many_frames` accepts one frame
-    /// too many and fails the second assertion of each pair.
     #[test]
     fn the_frame_limit_is_exact() {
         for (frame, hop) in [(17, 1), (1764, 220), (1764, 27)] {
@@ -1575,11 +1496,6 @@ mod tests {
     /// A note that runs to the end of the buffer ends at its last whole
     /// frame's start plus half a frame, short of the end by at least that half;
     /// a tone that starts inside the last half frame is lost.
-    ///
-    /// Mutation checked: ending notes at `last * hop + frame` fails the
-    /// equality; framing the tail (one more frame than `(len - frame) / hop`)
-    /// is not reachable from here, and the lost-note case fails if a tone in
-    /// the unframed tail is given a frame that reaches it.
     #[test]
     fn a_note_at_the_end_of_the_buffer_stops_short_of_it() {
         let c = cfg();
@@ -1608,8 +1524,6 @@ mod tests {
 
     /// A note built by hand with its end before its start has no length rather
     /// than panicking or wrapping, and is empty.
-    ///
-    /// Mutation checked: plain subtraction in `len` panics (debug) and fails.
     #[test]
     fn a_reversed_note_has_no_length() {
         let n = NoteEvent {

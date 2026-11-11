@@ -92,10 +92,6 @@ fn cents(a: f64, b: f64) -> f64 {
 }
 
 /// The two implementations must agree on the fundamental.
-///
-/// Mutation: scale the reported frequency by 1.02 (a 2% error) in
-/// `PitchDetector::detect` -> fails at the 110 Hz case, tutti reading
-/// 112.08 Hz, 32.4 cents off, against the 10 cent bound.
 #[test]
 fn tutti_yin_agrees_with_an_independent_yin() {
     // Mid-range fundamentals, well inside `YinConfig::standard`'s 50..2000 Hz
@@ -154,11 +150,9 @@ fn tutti_yin_agrees_with_an_independent_yin() {
 /// The cheapest failure to have and the easiest to miss: a detector that always
 /// returns *something* passes every frequency-accuracy test above.
 ///
-/// Mutation: **two** gates have to go, and that is the finding. Silence reaches
-/// `estimate` as `Hz(0.0)`, which `PitchResult::is_voiced` rejects (frequency
-/// and confidence both zero) *and* `Note::nearest_to` independently rejects
-/// (`None` at 0 Hz). Removing either alone leaves this test passing — verified
-/// for both. Removing both -> fails, "silence was reported as a voiced pitch".
+/// Two gates keep silence from being reported as a pitch: silence reaches `estimate` as
+/// `Hz(0.0)`, which `PitchResult::is_voiced` rejects (frequency and confidence both
+/// zero) *and* `Note::nearest_to` independently rejects (`None` at 0 Hz).
 ///
 /// So this test does not pin any single line; it pins the *conjunction*, which
 /// is the honest description of a genuinely redundant pair of gates. Worth

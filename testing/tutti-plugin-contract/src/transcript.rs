@@ -109,9 +109,6 @@ mod tests {
         b
     }
 
-    // Mutation (run): reading the fields one word early fails every assertion;
-    // `parse` reading the transport's tempo and beat swapped, or its flags one
-    // bit off, fails the last.
     #[test]
     fn a_blob_parses_to_what_it_holds() {
         let t = Transcript::parse(&blob(0, &[64, 1])).complete();
@@ -147,14 +144,12 @@ mod tests {
         );
     }
 
-    // Mutation (run): `complete` not checking the flag fails it.
     #[test]
     #[should_panic(expected = "log overflowed")]
     fn an_overflowed_transcript_is_refused() {
         let _ = Transcript::parse(&blob(1, &[64])).complete();
     }
 
-    // Mutation (run): `replace_blob` writing at the start of the state fails it.
     #[test]
     fn a_blob_is_found_and_replaced_inside_a_wrapper() {
         let mut state = b"wrap".to_vec();

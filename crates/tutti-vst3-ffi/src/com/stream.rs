@@ -246,9 +246,6 @@ mod tests {
     }
 
     /// A negative absolute seek is refused, and leaves the position where it was.
-    ///
-    /// Mutation: restore `SeekFrom::Start(pos as u64)` and the seek answers
-    /// `kResultOk` with a position near 2^64.
     #[test]
     fn test_stream_seek_set_negative_is_invalid() {
         let stream = BStream::from_data(vec![1, 2, 3]);
@@ -371,10 +368,6 @@ mod tests {
     /// **A plugin cannot make the host allocate past the cap by seeking far and
     /// writing.** `Cursor<Vec<u8>>` zero-fills up to the position, so a seek to
     /// 1 TiB and a one-byte write used to ask for a terabyte.
-    ///
-    /// Mutations (run, each fails): delete the position check in `write`; or the
-    /// `Ok(_)` arm of `seek` -> the write below succeeds, allocating 1 GiB, and the test
-    /// fails on its status.
     #[test]
     fn a_far_seek_then_a_write_is_refused() {
         let stream = BStream::new();

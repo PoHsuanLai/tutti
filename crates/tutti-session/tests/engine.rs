@@ -114,15 +114,6 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 /// the frame after its beat (its first sample is `sin(0)`). The locate
 /// itself clicks too (60 417): it moves the whole beat from 2 to 0, which
 /// the click takes for a new beat.
-///
-/// Mutations (run in `bevy-tutti`, where this test was recorded):
-/// - the click reading the block's first beat for the whole block → the
-///   onsets land on block starts and move;
-/// - the click's volume at 0.99 → the digest moves.
-///
-/// Mutation (run here): `SessionBuilder::parts` building the click with
-/// its own `ClickSettings` (not the session's) → the settings the test sets
-/// reach no click, which stays silent → fails.
 #[test]
 fn the_click_sounds_on_every_beat_across_the_seek() {
     let frames = 3 * RATE as usize;
@@ -139,9 +130,6 @@ fn the_click_sounds_on_every_beat_across_the_seek() {
 /// the click lands every 24 000 frames. Every unit inserted is prepared at
 /// the graph's rate, so a graph left at its 44.1 kHz default would click
 /// every 22 050 frames.
-///
-/// Mutation (run): `build_offline` building the graph at
-/// `SampleRate::DEFAULT` → clicks at 22 050 and fails.
 #[test]
 fn the_graph_runs_at_the_rate_it_was_built_at() {
     let on = onsets(&render_click(50_000));
@@ -154,9 +142,6 @@ fn the_graph_runs_at_the_rate_it_was_built_at() {
 /// the conversion a host schedules against (a beat's frame, a time in
 /// frames). At 120 BPM and 48 kHz a beat is 24 000 frames; a transport left
 /// at its 44.1 kHz default would say 22 050.
-///
-/// Mutation (run): `SessionBuilder::parts` building the transport at
-/// `SampleRate::DEFAULT` → 22 050 → fails (the click test passes under it).
 #[test]
 fn the_transport_converts_at_the_sessions_rate() {
     let s = offline();
@@ -243,13 +228,6 @@ fn dominant_frequency(x: &[f32], from: usize, rate: f64) -> f64 {
 /// the tone it plays, to the bit, on both channels; the voice a fifth up
 /// renders the same bits as at 64-frame blocks, and the
 /// golden digest's.
-///
-/// Mutation (run in `bevy-tutti`, where this test was recorded):
-/// `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave → the
-/// pitched voice is not a fifth up, on every target.
-///
-/// Mutation (run here): `Session::render` rendering a block of silence
-/// (skipping `Engine::process`) → the dry voice is silent → fails.
 fn a_voice_plays_in_time(block: usize) {
     let frames = 24_000;
     // The dry voice is pinned to the tone itself; only the pitched one,
@@ -315,9 +293,6 @@ fn a_voice_plays_in_time_at_512_frame_blocks() {
 
 /// An offline session's [`Session::render`] feeds its load meter, one block
 /// per call; a detached session has no engine and no meter.
-///
-/// Mutation (run): `SessionBuilder::session` leaving `load` at `None` for
-/// an offline engine → fails.
 #[test]
 fn an_offline_render_feeds_the_load_meter() {
     let s = offline();
@@ -339,9 +314,6 @@ fn an_offline_render_feeds_the_load_meter() {
 /// build: [`Session::render`] feeds it as a device callback would, and so does
 /// a detached session's [`Session::render_frame`] (it had no meter while the
 /// engine fed it).
-///
-/// Mutation (run, recorded here): `Graph::new` not declaring the master
-/// meter -> `expect` fails; not enabling it -> the peak reads 0.0.
 #[test]
 fn an_offline_render_feeds_the_master_meter() {
     let mut s = offline();
@@ -379,11 +351,6 @@ fn an_offline_render_feeds_the_master_meter() {
 /// source named, and opens nothing; a key no node has is no zero-width meter.
 /// A node inserted since the last update is accepted (the edited graph is
 /// what is checked).
-///
-/// Mutation (run, recorded here): `open_node_meter` without its
-/// `shape(node).is_none()` check -> a zero-width meter opens and the first
-/// assertion fails; `Editor::check_sources` returning `Ok` at once -> the tap
-/// and meter assertions fail.
 #[test]
 fn opening_a_tap_or_meter_on_a_missing_source_is_refused() {
     let mut s = offline();
@@ -430,9 +397,6 @@ fn opening_a_tap_or_meter_on_a_missing_source_is_refused() {
 /// a second meter on the same port is its own consumer; and removing the node
 /// leaves the channel on silence while the graph still commits. A dropped
 /// reader's meter is closed by the Reclaim phase and its op leaves the plan.
-///
-/// Mutation (run, recorded here): `Graph::open_meter` not marking the graph
-/// edited -> `update` sends no plan and the meter reads nothing.
 #[test]
 fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
     let mut s = offline();
@@ -469,9 +433,6 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
 /// A dropped meter reader is closed by the `Reclaim` phase: the meter's op
 /// leaves the plan at the commit after it, and the master meter's (held by
 /// the session) stays.
-///
-/// Mutation (run, recorded here): delete `self.graph.reap_meters()` from the
-/// `Phase::Reclaim` arm -> the plan keeps its meter ops.
 #[test]
 fn a_dropped_meter_reader_leaves_the_plan_at_the_reclaim_phase() {
     let meters = |s: &Session| {
@@ -502,9 +463,6 @@ fn a_dropped_meter_reader_leaves_the_plan_at_the_reclaim_phase() {
 /// A tap on an offline session's outputs is fed by [`Session::render`]: a
 /// 64-frame block leaves 64 frames in the tap, each the output's analytic
 /// value (a constant 0.5 on the left, silence on the right), in order.
-///
-/// Mutation (run, recorded here): `Graph::open_tap` not marking the graph
-/// edited -> `update` sends no plan and the tap stays empty.
 #[test]
 fn an_offline_render_feeds_an_output_tap() {
     let mut s = offline();
@@ -533,10 +491,6 @@ fn an_offline_render_feeds_an_output_tap() {
 
 /// An output tap follows the outputs when they are re-wired: lane 0 reads
 /// the new source from the next commit on.
-///
-/// Mutation (run, recorded here): `Graph::open_output_tap` opens a ports tap
-/// on a snapshot of each output's first source instead of `TapSpec::Outputs`
-/// -> the tap keeps reading the old source and the second half reads 0.5.
 #[test]
 fn an_output_tap_follows_a_rewired_output() {
     let mut s = offline();
@@ -563,9 +517,6 @@ fn an_output_tap_follows_a_rewired_output() {
 
 /// A tap whose reader was dropped is closed by the next `Reclaim` phase and
 /// leaves the plan at the commit after it.
-///
-/// Mutation (run, recorded here): delete `self.graph.reap_taps()` from the
-/// `Phase::Reclaim` arm -> the plan keeps its tap ops.
 #[test]
 fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
     let taps = |s: &Session| {
@@ -597,9 +548,6 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
 
 /// A detached session renders by hand ([`Session::render_frame`]) and its
 /// taps are fed too: the tap is an op in the plan, not the engine's.
-///
-/// Mutation (run, recorded here): `Session::render_frame_at` rendering
-/// without committing first -> the tap is not in the executor's plan.
 #[test]
 fn a_detached_render_feeds_a_tap() {
     let mut s = Session::builder()
@@ -658,7 +606,7 @@ impl tutti_graph::Node for Gated {
 /// either (`Play` is not declicked), so the output and the tap step alike.
 /// The post-fade write is the fix for the stop (not in this change).
 ///
-/// This is a characterisation, so it has no mutation of its own: it fails if
+/// This is a characterisation, so it fails if
 /// the declick stops being a ramp in the output, or the tap stops being
 /// pre-fade (a tap fed after the fader would ramp too).
 #[test]
@@ -718,10 +666,6 @@ fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
 /// (an invariant of this one render, not a second render), so its largest step
 /// across the stop is the declick's ramp (about 0.001) where the plan tap's
 /// is the source's whole level (0.5). A take recorded through it has no click.
-///
-/// Mutation (run, recorded here): write the tap before the fader in
-/// `Engine::process` (the write moved above `fader.apply`) -> it steps 0.5 and
-/// is not the output, and both assertions fail.
 #[test]
 fn the_heard_tap_carries_the_fade_at_a_stop() {
     use tutti_types::{At, Frame};
@@ -778,11 +722,6 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
 /// Offline, a block `render` pulls is written whole; a detached session has no
 /// engine and says so; a fork (what an export renders) has no write into the
 /// live tap.
-///
-/// Mutation (run, recorded here): `Session::open_heard_tap` returning the
-/// tap even when detached is not expressible; delete the `Engine::process`
-/// write (see `tutti-engine`'s `heard_tap` mutations) -> the 64-frame
-/// assertion fails.
 #[test]
 fn render_feeds_the_heard_tap_and_a_fork_does_not() {
     let mut s = offline();
@@ -821,11 +760,6 @@ fn render_feeds_the_heard_tap_and_a_fork_does_not() {
 /// between. Opening itself sees a dead reader, so the phase's close is not
 /// observable here; it keeps the engine from writing for nobody, which the
 /// writer also checks (`read_is_held`).
-///
-/// Mutation (run, recorded here): either alone passes (`open` and the phase
-/// each notice the dead reader); both removed (`open` treating any recorded
-/// reader as alive, and the `reclaim` call out of the `Reclaim` arm) -> the
-/// reopen is refused `Busy`.
 #[test]
 fn a_dropped_heard_reader_frees_the_tap() {
     let mut s = offline();
@@ -841,9 +775,6 @@ fn a_dropped_heard_reader_frees_the_tap() {
 /// not rendered silent: a six-channel project on a five-channel interface would
 /// lose a channel, and neither width has an order to fold it by. Widened, or
 /// into a device whose width has one, it builds.
-///
-/// Mutation (run): `check_placement` removed from `build_offline` → the five
-/// channel build succeeds and the first assertion fails.
 #[test]
 fn a_project_the_device_cannot_take_is_refused_at_build() {
     let build = |floor: usize, device: u16| {

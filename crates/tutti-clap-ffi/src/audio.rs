@@ -569,9 +569,6 @@ mod tests {
 
     /// RT regression: once the scratch has been sized at activation, `bind`
     /// only reuses capacity, with no heap grow.
-    ///
-    /// Mutation: have `bind` collect the pointers into a fresh `Vec`: the
-    /// allocation gate panics.
     #[test]
     fn bind_is_allocation_free() {
         // main + sidechain stereo in, stereo out
@@ -619,9 +616,6 @@ mod tests {
     /// even when the pad total alone would cover it: five input channels in
     /// a scratch sized for four would grow the pointer table on the audio
     /// thread.
-    ///
-    /// Mutation: drop the capacity check in `bind`: the input table grows and
-    /// the allocation gate aborts the test.
     #[test]
     fn a_layout_the_scratch_was_not_sized_for_is_refused_without_allocating() {
         let mut scratch = Typed::<f32>::new();
@@ -649,9 +643,6 @@ mod tests {
     /// A caller that supplies fewer channels than the plugin expects (a mono
     /// caller on a stereo input) is padded from the preallocated pool: no
     /// allocation either, and the pad is silent.
-    ///
-    /// Mutation: skip the `fill` of a padded channel: the silence assertion
-    /// fails once the pad holds a stale sample.
     #[test]
     fn bind_with_pad_is_allocation_free_and_silent() {
         let input_ports = [4];
@@ -706,9 +697,6 @@ mod tests {
 
     /// A channel shorter than the block is refused before any pointer is
     /// taken: the plugin would write past it.
-    ///
-    /// Mutation: drop the `s.len() < frames` check in `bind`: this returns
-    /// `Ok` and the assertion fails.
     #[test]
     fn a_channel_shorter_than_the_block_is_refused() {
         let ports = [1];
@@ -726,9 +714,6 @@ mod tests {
 
     /// A block longer than the pad the scratch was sized for is refused when
     /// it needs a pad channel.
-    ///
-    /// Mutation: drop the `c.len() < frames` check: the pad is sliced past its
-    /// length and this panics instead of returning the error.
     #[test]
     fn a_block_longer_than_the_scratch_is_refused() {
         let ports = [2];
@@ -744,11 +729,6 @@ mod tests {
     /// The 64-bit kernel's `bind` holds the same contracts as the 32-bit one:
     /// no allocation on a steady block, a padded channel is silent, a layout it
     /// was not sized for or a short channel is refused.
-    ///
-    /// Mutations (run): drop the `s.len() < frames` check in `bind` -> the
-    /// `BufferTooShort` assertion fails; drop the capacity check -> the table
-    /// grows and the allocation gate aborts; skip the `fill` of a padded
-    /// channel -> the silence assertion fails.
     #[test]
     fn the_64bit_scratch_binds_like_the_32bit_one() {
         let input_ports = [4];

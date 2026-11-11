@@ -245,9 +245,6 @@ mod tests {
     use tutti_types::SampleRate;
 
     /// **A crash's drain counts the queued chunks' MIDI.**
-    ///
-    /// Mutation (run): the `note_dropped_midi` call removed from
-    /// `drain_with_errors` → 0 counted → fails.
     #[test]
     fn a_crash_drain_counts_the_queued_midi() {
         use tutti_plugin_types::WireMidi;
@@ -277,9 +274,6 @@ mod tests {
     /// **A bridge that never connects counts the MIDI queued before it
     /// failed.** `run_thread` runs here on the test thread, so the chunk is
     /// queued before the connect fails, deterministically.
-    ///
-    /// Mutation (run): the connect-failure site's `drain_with_errors` call
-    /// removed → the chunk stays queued, 0 counted → fails.
     #[test]
     fn a_failed_connect_counts_the_queued_midi() {
         use tutti_plugin_types::WireMidi;
@@ -317,10 +311,6 @@ mod tests {
     /// **A drain hands every held event to the listener and publishes the
     /// drop count to the bridge's counter, cumulatively.** The inbox's own
     /// test pins what it keeps; this pins that `pump`'s drain reports it.
-    ///
-    /// Mutations (run): the `note_dropped_param_events` call deleted → the
-    /// counter stays 0 → fails. `note_dropped_param_events` storing instead of
-    /// adding → the second drain's count replaces the first → fails.
     #[test]
     fn a_drain_reports_the_drops() {
         let channels = Channels::new(SampleRate(48_000.0));

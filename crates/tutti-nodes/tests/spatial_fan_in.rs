@@ -31,9 +31,6 @@ fn settled_energy(layout: ChannelLayout, bearings: &[f32]) -> Vec<f32> {
 /// Two sources, one at a front and one at a rear speaker of a quad field: the
 /// fan-in keeps each in its own channel, and the render does not collapse to
 /// the front pair. Quad: ch0 FL 45, ch1 FR -45, ch2 RL 135, ch3 RR -135.
-///
-/// Mutation (run): the rear panner's `connect_output` skipped for channel 2
-/// -> the rear assertion fails.
 #[test]
 fn fanned_in_panners_place_front_and_rear_sources() {
     let energy = settled_energy(ChannelLayout::QUAD, &[45.0, 135.0]);
@@ -52,9 +49,6 @@ fn fanned_in_panners_place_front_and_rear_sources() {
 /// A dead-centre source lands in the centre channel (2 of 5.1 file order), not
 /// the surrounds, and a left-surround source lands in channel 4 with the LFE
 /// channel (3) exactly silent: the panner never writes it.
-///
-/// Mutation (run): the 5.1 `speaker_of_channel` as `[0, 1, 2, 3, 4]` (the
-/// surrounds one slot early) -> the surround case fails on the LFE assertion.
 #[test]
 fn a_centre_source_lands_in_the_centre_and_never_in_the_lfe() {
     let energy = settled_energy(ChannelLayout::from(6u16), &[0.0]);

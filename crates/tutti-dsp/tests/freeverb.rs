@@ -23,9 +23,6 @@ fn impulse(reverb: &mut Freeverb, frames: usize) -> (Vec<f32>, Vec<f32>) {
 /// more on the right. The four all-pass stages each negate the first sample
 /// they see (nothing is in their line yet), so four of them leave it as it
 /// was.
-///
-/// Mutations (run): `FIXED_GAIN` 0.015 -> 0.03 fails the level; the stereo
-/// spread 23 -> 0 fails the right channel's start.
 #[test]
 fn the_first_echo_is_the_input_at_the_fixed_gain_after_the_shortest_comb() {
     let mut reverb = Freeverb::new(RATE);
@@ -47,8 +44,6 @@ fn the_first_echo_is_the_input_at_the_fixed_gain_after_the_shortest_comb() {
 
 /// The tunings scale with the rate: at twice 44.1 kHz the first echo is at
 /// twice the frames.
-///
-/// Mutation (run): `scale_tuning` returning the tuning unscaled fails.
 #[test]
 fn the_lines_scale_with_the_rate() {
     let mut reverb = Freeverb::new(SampleRate(88_200.0));
@@ -60,8 +55,6 @@ fn the_lines_scale_with_the_rate() {
 /// `mute` empties the lines: after it, the response to an impulse is the same
 /// as a fresh reverb's, bit for bit (a property of the state, not a render
 /// compared with another implementation's).
-///
-/// Mutation (run): `mute` clearing only the comb filters fails.
 #[test]
 fn mute_returns_the_reverb_to_a_fresh_state() {
     let mut used = Freeverb::new(RATE);
@@ -73,10 +66,6 @@ fn mute_returns_the_reverb_to_a_fresh_state() {
 
 /// The ring-out bound covers the response: the last frame of the wet signal at
 /// or above a thousandth (-60 dB) of its own peak is within it.
-///
-/// Mutation (run): the loop count halved (times 0.5) fails. (The bound is looser
-/// than the response, so this test cannot see a missing trip; the next one pins
-/// the count.)
 #[test]
 fn the_ring_out_bound_covers_the_response() {
     let mut reverb = Freeverb::new(RATE);
@@ -104,8 +93,6 @@ fn the_ring_out_bound_covers_the_response() {
 /// = 40 trips of power, one trip more: 41 round the longest comb (1617 + 23 =
 /// 1640 frames at 44.1 kHz), then the four all-pass lines once
 /// (556 + 441 + 341 + 225 = 1563).
-///
-/// Mutation (run): the `+ 1` in `ring_out` removed gives 40 trips and fails it.
 #[test]
 fn the_ring_out_bound_counts_the_trip_of_the_first_echo() {
     let reverb = Freeverb::new(RATE);

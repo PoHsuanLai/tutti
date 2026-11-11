@@ -69,10 +69,6 @@ fn budget(frames: usize) -> Duration {
 
 /// A block whose render spins for twice its budget reads a load of at least
 /// two, counts one block over budget, and shows as the peak exactly once.
-///
-/// Mutations (run): `record` never counting over budget → `over_budget` 0 →
-/// fails; `Engine::process` not recording → `blocks` 0 → fails; the
-/// elapsed time recorded as zero → no block over budget → fails.
 #[test]
 fn a_block_past_its_deadline_counts_and_peaks_once() {
     let (engine, _t, _ed) = engine(budget(64) * 2, 64);
@@ -98,10 +94,6 @@ fn a_block_past_its_deadline_counts_and_peaks_once() {
 /// graph of one node, which holds on a heavily loaded machine (a
 /// 1 024-frame version, with about 30 ms of slack, failed 2 in 200 under
 /// load), and it still catches a budget of one piece (load ≥ 3).
-///
-/// Mutations (run): `budget = ` instead of `budget +=` in `process` → the
-/// budget is one piece, load ≥ 3.0 → fails; the same in `process_segment`
-/// → fails.
 #[test]
 fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
     let (engine, _t, _ed) = engine(budget(4096).mul_f64(1.5), 4096);
@@ -119,9 +111,6 @@ fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
 
 /// Recording the load is allocation-free: the gate runs `process` and
 /// `process_segment` (each recording a block) and the reads.
-///
-/// Mutation (run): a `Vec` allocated in `LoadRecorder::record` → the gate
-/// panics → fails.
 #[test]
 fn recording_the_load_is_allocation_free() {
     let (engine, _t, mut ed) = engine(Duration::ZERO, 64);
@@ -175,11 +164,6 @@ impl tutti_graph::Node for Burst {
 /// node writing 100 more than the default capacity each block reads 100
 /// dropped per device block, from `process` and `process_segment` both,
 /// and a reset zeroes the count.
-///
-/// Mutations (run): `Engine::process` not forwarding the executor's count
-/// (`record_dropped_events` dropped) → 0 after the first block → fails;
-/// `take_dropped_events` returning the executor's running total instead
-/// of the change → 300 after the second block → fails.
 #[test]
 fn events_past_a_ports_capacity_reach_the_meter() {
     let transport = Transport::new(SampleRate::new(RATE));

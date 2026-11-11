@@ -61,8 +61,6 @@ pub(crate) fn check(code: i32, operation: &'static str) -> Result<i32> {
 mod tests {
     use super::*;
 
-    /// Mutation: `code < 0` -> `code <= 0` fails the zero assertion; `<` -> `>`
-    /// fails the first.
     #[test]
     fn a_negative_code_is_the_failure_and_zero_is_a_value() {
         assert_eq!(

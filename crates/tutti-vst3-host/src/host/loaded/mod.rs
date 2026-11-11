@@ -354,9 +354,6 @@ mod activation_tests {
     use tutti_plugin_types::SampleFormat;
 
     /// Inactive is the absence of a format; only a 64-bit activation is f64.
-    ///
-    /// Mutation (run): `is_f64` returning `self.format.is_some()` fails the
-    /// 32-bit row; `is_active` returning `true` fails the default row.
     #[test]
     fn activation_is_its_format() {
         let off = Activation::default();

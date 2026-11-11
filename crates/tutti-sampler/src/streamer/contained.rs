@@ -110,8 +110,6 @@ impl Driver {
     }
 }
 
-/// Mutation record is on each test; this is the lane's gate for a test that
-/// holds a decode open.
 #[derive(Clone)]
 struct Gate(Arc<(Mutex<bool>, Condvar)>);
 
@@ -155,9 +153,6 @@ impl Drop for Gate {
 /// it.** A FLAC cut at 90% opens and reports its length; the stream is `Live`
 /// until the refill reaches the cut, then faulted, and a voice playing it
 /// sounds the frames before the cut and nothing after.
-///
-/// Mutation (run): `Record::settle` not publishing the decode fault (the
-/// `fault(Decode)` call removed) -> the stream stays `Live` -> fails.
 #[test]
 fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -195,11 +190,6 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
 
 /// **The end of the file is `Ended`, and a looped stream never is.** A short
 /// file is wholly in its ring once primed; a loop leaves the stream `Live`.
-///
-/// Mutation (run): `Record::settle` never publishing `Ended` -> the end
-/// assertion fails. Mutation (run): `Ended` decided without the loop (the
-/// window reaching the file's length, whatever the mapping) -> the looped
-/// stream reads `Ended` -> fails.
 #[test]
 fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -237,10 +227,6 @@ fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
 /// **Underruns are read from the status**, the first reader of what the voice
 /// counts: the total grows with what the audio side reports, and reading it
 /// does not lose a count.
-///
-/// Mutation (run): `Stream::status` answering `underruns: 0` -> fails.
-/// Mutation (run): the drained count not added to the total (the read taking
-/// and discarding it) -> the second read falls back to what is new -> fails.
 #[test]
 fn underruns_are_read_from_the_status() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -263,9 +249,6 @@ fn underruns_are_read_from_the_status() {
 
 /// **A dropped streamer publishes `Faulted(StreamerGone)` to a live stream**,
 /// hand-stepped and threaded.
-///
-/// Mutation (run): `Drop for Record` without its `fault(StreamerGone)` -> the
-/// stream still reads `Live` -> fails, on both drivers.
 #[test]
 fn a_dropped_streamer_publishes_streamer_gone() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -299,11 +282,6 @@ fn a_dropped_streamer_publishes_streamer_gone() {
 /// where stream 1 reads its file once armed; every stream's reader then plays
 /// near the end of a file longer than its ring, so each one's refill has
 /// frames to read.
-///
-/// Mutation (run): `Record::contained` without its `catch_unwind` (running the
-/// work directly) -> the hand-stepped case panics through the step, and on the
-/// threaded driver the thread dies and the survivors never fill (nor does the
-/// faulted stream's status read anything but `StreamerGone`) -> fails on both.
 fn a_panicking_decode_faults_only_its_stream(threaded: bool) {
     const RATE: u32 = 4_000;
     // 40 s against a 30 s ring: a reader near the end needs reads.
@@ -373,9 +351,6 @@ fn a_panicking_decode_faults_only_its_stream_threaded() {
 /// **A panic while a loop is captured faults that stream and no other**: the
 /// capture reads the file (a crossfade's lead-in), under the same containment
 /// as a refill. Hand-stepped.
-///
-/// Mutation (run): `handle_loop` calling `capture_loop` directly, not through
-/// `Record::contained` -> the step panics -> fails.
 #[test]
 fn a_panic_while_a_loop_is_captured_faults_that_stream() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -428,9 +403,6 @@ fn refuse(
 
 /// **`DiskStreamer::new` returns `Err` when the spawn fails**, where it used
 /// to panic: the streamer's thread is refused through the spawn seam.
-///
-/// Mutation (run): `Built::start` mapping the failure to a panic (`.expect`)
-/// -> the test panics -> fails.
 #[test]
 fn a_refused_spawn_is_an_error() {
     let seams = Seams {
@@ -477,9 +449,6 @@ pub(super) fn mp3(dir: &Path) -> PathBuf {
 /// **A file that cannot seek opens through the decode lane and plays what
 /// the file holds**, hand-stepped and threaded: the first frames of its ring
 /// are the decoded file's.
-///
-/// Mutation (run): the decode lane answering with a silent wave (a `Wave::new`
-/// of the right shape) -> the ring holds zeros -> fails.
 #[cfg(feature = "mp3")]
 #[test]
 fn a_file_that_cannot_seek_opens_through_the_decode_lane() {
@@ -511,10 +480,6 @@ fn a_file_that_cannot_seek_opens_through_the_decode_lane() {
 /// decode is held open at a gate on the decode thread, and a stream on the
 /// shared thread is still refilled meanwhile; the open then completes when the
 /// gate does.
-///
-/// Mutation (run): the decode run inline on the streamer's thread (the hook
-/// and `load_wave` called in `begin` in place of the lane) -> the gate holds
-/// the shared thread, the other stream is never refilled -> fails at the bound.
 #[cfg(feature = "mp3")]
 #[test]
 fn a_decode_held_open_does_not_stop_another_stream() {
@@ -560,10 +525,6 @@ fn a_decode_held_open_does_not_stop_another_stream() {
 /// **A decode thread that cannot start fails the open with `Io`**, where the
 /// open would wait for good: the lane's spawn is refused through the seam
 /// (the streamer's own thread is not started: hand-stepped).
-///
-/// Mutation (run): `DecodeLane::submit` swallowing the start error (the open
-/// pushed as pending anyway) -> the open is never answered -> fails at the
-/// bound.
 #[cfg(feature = "mp3")]
 #[test]
 fn a_refused_decode_thread_fails_the_open() {
@@ -587,9 +548,6 @@ fn a_refused_decode_thread_fails_the_open() {
 /// **A panic in the decode is that open's failure, not the lane's**: the
 /// first open of a file whose decode panics fails with `Format`, and the next
 /// open through the same lane succeeds.
-///
-/// Mutation (run): the lane's `catch_unwind` removed -> the decode thread dies
-/// and the first open is never answered -> fails at the bound.
 #[cfg(feature = "mp3")]
 #[test]
 fn a_panicking_decode_fails_that_open_only() {
@@ -628,12 +586,6 @@ fn a_panicking_decode_fails_that_open_only() {
 /// the stream's status and the ring's published control carry the downgrade,
 /// the handle's own copy carries the request, and a fork of the voice plays the
 /// downgrade.
-///
-/// Mutation (run): `capture_loop` publishing the asked loop (`ask` where
-/// `recorded` is) → the status and the fork read the crossfade the stream
-/// never played → fails. Mutation (run): `fork_copy` taking the loop from
-/// `Stream::loop_`'s request (hard-wired `Off`/the ask instead of the applied
-/// control) → the fork reads the wrong loop → fails.
 #[test]
 fn a_fork_plays_the_loop_as_applied_not_as_asked() {
     use crate::LoopSetting;
@@ -690,10 +642,6 @@ fn a_fork_plays_the_loop_as_applied_not_as_asked() {
 /// has none; a file that cannot seek is decoded whole to be streamed, and the
 /// stream's file is that wave itself (not a second decode), the one its writer
 /// reads. The reader names the same file as the handle.
-///
-/// Mutation (run): `build_stream` passing `None` as the resident wave → the
-/// mp3's file has none → fails. Mutation (run): `build_stream` naming the
-/// file by a path other than the stream's → fails.
 #[test]
 fn a_stream_names_its_file() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -730,11 +678,6 @@ fn a_stream_names_its_file() {
 /// A fork of a stream whose record is gone says so even when the stream met
 /// a decode fault first: the fault word is sticky (the first fault stays), so
 /// "the stream is closed" is a fact of its own, which the voice reads.
-///
-/// Mutation (run): `fork_copy` deciding the stream is gone from
-/// `StatusCell::phase() == Faulted(StreamerGone)` instead of `closed()` → the
-/// decode-faulted stream still reads `Faulted(Decode)` after its close → the
-/// fork plays on → fails.
 #[test]
 fn a_fork_of_a_closed_stream_fails_even_after_a_decode_fault() {
     let dir = tempfile::tempdir().expect("a temp dir");

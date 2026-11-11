@@ -128,9 +128,6 @@ mod tests {
     /// **A meter cleared while a block held it is freed by `reclaim`**,
     /// with nothing published again: once cleared, the slot follows no
     /// project meter whose own `reclaim` would reach it.
-    ///
-    /// Mutation (run): `PluginMeter::reclaim` returning 0 without reclaiming
-    /// → the cleared meter is still retired, fails.
     #[test]
     fn reclaim_frees_a_meter_cleared_while_a_block_held_it() {
         let slot = PluginMeter::default();
@@ -158,12 +155,6 @@ mod tests {
     /// lib test binary registers the `AllocDisabler` allocator
     /// (`process_pipeline_tests`). This pins the reader's code path; the race
     /// itself is `arc-lend`'s loom model's.
-    ///
-    /// Mutation (run): the block taking an owning handle rather than a
-    /// borrow (`Option::clone(&reader.lend())`, the shape an `ArcSwapOption`
-    /// guard upgraded into) aborts inside the gate (SIGABRT): an install
-    /// replaced the only other owner of the meter the block held, and the
-    /// handle's drop frees it there.
     #[test]
     fn installing_or_clearing_during_a_block_frees_nothing_on_the_audio_thread() {
         let slot = PluginMeter::default();
@@ -172,7 +163,7 @@ mod tests {
         // handle.
         slot.set_meter(meter_of(1));
         // One read outside the gate, as a stream's first block would be: so
-        // the mutation below fails on the free, not on anything a first read
+        // a failure below is on the free, not on anything a first read
         // might set up (arc-swap allocated a per-thread node on a thread's
         // first `load`; a `Reader` is registered above, off the gate).
         assert!(reader.lend().is_some());
@@ -205,10 +196,6 @@ mod tests {
 
     /// **A project meter edit reaches the node** with nothing re-installed,
     /// and a clear stops it: the node's cell follows the meter it was given.
-    ///
-    /// Mutation (run): `set_meter` publishing the project meter's value once
-    /// and not following it (`MeterSlot::follow` without `attach`'s
-    /// registration) → the edit to 7/8 never reaches the cell, fails.
     #[test]
     fn a_project_meter_edit_reaches_the_installed_node() {
         let project = meter_of(3);

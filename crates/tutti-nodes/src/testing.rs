@@ -420,10 +420,6 @@ mod tests {
     /// The oscillator's samples are the closed form of its phase, on every
     /// channel, and a render in blocks of one frame agrees with a render in
     /// one block, sample for sample.
-    ///
-    /// Mutation: dropping the `phase -= floor` wrap leaves the sine intact (it
-    /// is periodic) but walks the saw off past +1 — the saw row fails. Filling
-    /// only channel 0 in `process` fails the per-channel assertion.
     #[test]
     fn oscillator_samples_are_the_closed_form_of_the_phase() {
         let sr = SampleRate(8_000.0);
@@ -475,10 +471,6 @@ mod tests {
 
     /// Amplitude scales, the sample rate sets the pitch, and `reset` returns
     /// the phase to its start.
-    ///
-    /// Mutation: ignoring the rate in `prepare` leaves it at the 44.1 kHz
-    /// placeholder, so sample 2 is `sin(2π·2000/44100)` rather than `sin(π/2)`;
-    /// making `reset` a no-op fails the replay.
     #[test]
     fn amplitude_rate_and_reset_are_honoured() {
         let mut osc = Osc::sine(Hz(1_000.0)).with_amplitude(Amplitude(0.25));
@@ -497,10 +489,6 @@ mod tests {
 
     /// Plumbing widths come from the layout, and each node moves the samples
     /// it claims to.
-    ///
-    /// Mutation: `Split` copying input channel `c` instead of 0 reads past its
-    /// single input (panics); `Through` skipping channel 1 leaves it zero;
-    /// `Const::frame` broadcasting `values[0]` fails the channel-1 value.
     #[test]
     fn plumbing_moves_the_samples_it_claims() {
         let sr = SampleRate(48_000.0);
@@ -537,10 +525,8 @@ mod tests {
     /// A tiny negative start (`-1e-9`) is the last instant of a cycle, so the
     /// saw starts at the top of its ramp, +1.0, rather than at −1.0.
     ///
-    /// Mutation: skipping `Phase::wrapped` fails the `1.25` row (the saw emits
-    /// 1.5). The edge row does not tell a start of `1.0 - ε` from `1.0`, which
-    /// the saw also emits as +1.0; that `Phase::wrapped` stays under 1.0 is
-    /// pinned in `tutti-types`.
+    /// The edge row does not tell a start of `1.0 - ε` from `1.0`, which the saw also emits
+    /// as +1.0; that `Phase::wrapped` stays under 1.0 is pinned in `tutti-types`.
     #[test]
     fn with_phase_wraps_into_one_cycle_and_reset_restores_it() {
         let quarter = 2.0 * 0.25 - 1.0; // the saw's value at 0.25 turns

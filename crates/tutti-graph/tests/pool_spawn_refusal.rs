@@ -6,10 +6,6 @@
 //! test in its own process, so the lowered limit touches nothing else. The
 //! limit counts every thread of the user, so the headroom is read once and
 //! the pool asks for far more than that.
-//!
-//! Mutation (run): `build` unwraps the spawn (a `panic!` on the error) -> the
-//! test panics instead of seeing `Err`; `build` skips a failed spawn
-//! (`Err(_) => continue`) -> it returns `Ok` and `expect_err` fails.
 #![cfg(target_os = "linux")]
 
 use tutti_graph::WorkerPool;

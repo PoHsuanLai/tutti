@@ -330,10 +330,7 @@ impl StreamingResampler {
         // with runs out within `ceil(have / need)` passes (the last one
         // padded when flushing). The `+ 1` is slack; past it the carry is
         // not shrinking, and a bug that stops it shrinking fails here
-        // instead of spinning forever. Mutations (run): drop
-        // `self.head += need`, or pad to `self.head + need + 1` → both
-        // hung the flush before this bound; now every resample test
-        // fails at it.
+        // instead of spinning forever.
         let max_passes = {
             let have = self.carry.first().map_or(0, |c| c.len()) - self.head;
             have.div_ceil(self.inner.input_frames_next().max(1)) + 1

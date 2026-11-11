@@ -142,10 +142,6 @@ mod tests {
     /// Several requests between two takes yield only the last; a take
     /// consumes it, so the next poll reports nothing until the plugin asks
     /// again.
-    ///
-    /// Mutation: keeping the *first* request (`get_or_insert` instead of the
-    /// overwrite in `resizeView`) fails the first assertion; `clone()` in
-    /// place of `take()` fails the second.
     #[test]
     fn the_latest_resize_request_wins_and_is_taken_once() {
         let frame = frame();
@@ -188,10 +184,6 @@ mod tests {
 
     /// A rect that is inverted, or whose extent overflows `i32`, is refused and
     /// does not replace the pending request.
-    ///
-    /// Mutation: go back to `(right - left) as u32` and the inverted rect is
-    /// stored as a ~4-billion-wide size (and the overflowing one panics in
-    /// debug builds, caught by the guard, or wraps in release).
     #[test]
     fn an_inverted_or_overflowing_rect_is_refused() {
         let frame = frame();

@@ -90,11 +90,6 @@ fn drain(tap: &mut TapReader, into: &mut Vec<f32>) {
 /// blocks (written chunk by chunk) arrives complete and in order. The pure
 /// render (`process_segment`) writes too, on purpose: it is a render a host
 /// pulls and the tap is "what the engine rendered".
-///
-/// Mutation (run, recorded here): `push_interleaved` reading every lane from
-/// channel 0 (`skip(0)`) -> the lanes are all channel 0 and this fails. Delete
-/// the `write` after the executor's render in `process_segment` -> the
-/// segment half fails. Delete the one in `process` -> the first half fails.
 #[test]
 fn the_tap_is_the_device_output_on_every_channel() {
     for segment in [false, true] {
@@ -121,9 +116,6 @@ fn the_tap_is_the_device_output_on_every_channel() {
 /// The first frame is the first of the first call that begins after `open`
 /// returns; a close stops the next call's writes. A second open is refused
 /// while the reader lives, and allowed once it is dropped.
-///
-/// Mutation (run, recorded here): delete the `swap` at the top of `process`
-/// -> the tap is never installed and the 64-frame assertion fails.
 #[test]
 fn a_tap_flows_from_the_next_call_and_stops_at_a_close() {
     let engine = engine(2);
@@ -160,10 +152,6 @@ fn a_tap_flows_from_the_next_call_and_stops_at_a_close() {
 
 /// A ring that cannot hold the block keeps its first frames, counts the rest
 /// once, and a block of another width than the tap's is counted whole.
-///
-/// Mutation (run, recorded here): drop the `count_lost` in `push_interleaved`
-/// -> `take_lost` reads 0. Make `Hearing::write` push a block of the wrong
-/// width instead of `skip` -> the width half fails (frames arrive).
 #[test]
 fn drops_are_counted_and_a_wrong_width_is_lost_whole() {
     let engine = engine(2);
@@ -198,10 +186,6 @@ fn engine_wide() -> Engine {
 /// bursts with pauses against a ring that overflows, and every frame that
 /// arrives has all six channels from one instant (`(c + 1) * lane 0`), with
 /// frames read plus frames lost equal to frames rendered.
-///
-/// Mutation (run, recorded here): in `push_interleaved`, push each lane its
-/// own `frames` instead of the common `take` -> torn frames and the accounting
-/// fails.
 #[test]
 fn channels_do_not_tear_under_a_concurrent_drain() {
     const CALLS: usize = 200;
@@ -250,10 +234,6 @@ fn channels_do_not_tear_under_a_concurrent_drain() {
 /// the audio thread (the engine enters `RtScope`, where a `TapWriter`'s drop
 /// is a debug panic) and never loses the hand-over: a control thread opens,
 /// drops and closes while the main thread renders.
-///
-/// Mutation (run, recorded here): in `Hearing::swap`, drop the writer it
-/// replaces instead of sending it back -> the first replacement panics with
-/// "a tap writer dropped on the audio thread".
 #[test]
 fn opening_and_closing_while_rendering_never_frees_on_the_audio_thread() {
     let engine = engine(2);
@@ -286,10 +266,6 @@ fn opening_and_closing_while_rendering_never_frees_on_the_audio_thread() {
 /// opens fill the queue (the readers dropped, bar the last); the close still
 /// has its reserved slot, so the next render installs everything in order and
 /// ends on the close: the last reader gets nothing.
-///
-/// Mutation (run, recorded here): no reserved slot (`vacant_len() <= 1` ->
-/// `== 0` in `open`, queue one smaller) -> the close fails for want of room,
-/// the last writer stays installed and the reader gets the block.
 #[test]
 fn a_close_is_not_lost_to_a_full_install_queue() {
     let engine = engine(2);

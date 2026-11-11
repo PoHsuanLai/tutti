@@ -28,9 +28,6 @@ impl<T: Sync> Wrap<T> {
 
 /// A loan must not escape the thread that took it: that is what makes "moved
 /// to another thread" a compile error rather than a convention.
-///
-/// Mutation: `unsafe impl<T: Sync> Send for Loan<'_, T> {}`; the first
-/// assertion stops compiling.
 #[test]
 fn a_loan_is_not_send() {
     const {
@@ -45,10 +42,6 @@ fn a_loan_is_not_send() {
 
 /// A reader moves to the thread that lends (it is made on the control side),
 /// and is not shared: one reader, one owner, one slot.
-///
-/// Mutations: delete the `unsafe impl Send for Reader`; the first assertion
-/// stops compiling. Add `unsafe impl<T: Send + Sync> Sync for Reader<T> {}`;
-/// the second does.
 #[test]
 fn a_reader_is_send_but_not_sync() {
     const {
@@ -70,9 +63,6 @@ fn a_reader_is_send_but_not_sync() {
 /// neither `Send` nor `Sync` by default; `PhantomData<Arc<T>>` plus the
 /// atomics is what gives it `Arc<T>`'s auto traits back without an
 /// `unsafe impl`.
-///
-/// Mutation: replace `_owns: PhantomData<Arc<T>>` with
-/// `PhantomData<*const T>`; this stops compiling.
 #[test]
 fn the_cell_is_send_and_sync_for_send_sync_payloads() {
     fn assert_send_sync<X: Send + Sync>() {}

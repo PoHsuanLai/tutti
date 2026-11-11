@@ -41,10 +41,6 @@ mod tests {
 
     /// The whole table: 64-bit only when asked for and supported; a plugin's
     /// capability alone never raises a 32-bit request.
-    ///
-    /// Mutation: return `Float64` whenever `supports_f64`: the
-    /// `(Float32, true)` row fails. Return `requested` unchanged: the
-    /// `(Float64, false)` row fails.
     #[test]
     fn negotiation_table() {
         use SampleFormat::{Float32 as F32, Float64 as F64};

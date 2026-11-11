@@ -98,11 +98,6 @@ fn fork(ed: &Editor) -> Executor {
 /// A fork of a pool is born empty and channel-less, and steals no command
 /// the live pool needs — each command is delivered to exactly one consumer,
 /// so a shared channel means the worker steals playback.
-///
-/// Mutation (run): `PoolFork` building its pool over the live pool's
-/// command receiver (a clone of it kept in the fork source) → the fork
-/// drains the live `AddVoice` → fails. (A fork built from the pool's voices
-/// as inserted is not caught: this pool is inserted empty.)
 #[test]
 fn a_forked_pool_steals_no_commands_from_the_live_one() {
     let (ed, mut exec, handle) = graph(VoicePool::new(), 2);
@@ -130,9 +125,6 @@ fn a_forked_pool_steals_no_commands_from_the_live_one() {
 /// A forked `VoiceNode` plays on its render's transport, not the live one.
 /// The live graph rolls and sounds; the fork, rendered on a stopped
 /// transport, renders exact silence.
-///
-/// Mutation (run): `place` ignoring `run.rolling()` → the fork sounds on
-/// the stopped transport → fails.
 #[test]
 fn a_forked_voice_node_reads_its_renders_transport_not_the_live_one() {
     let (ed, mut exec, _handle) =
@@ -159,10 +151,6 @@ fn a_forked_voice_node_reads_its_renders_transport_not_the_live_one() {
 /// A bare `MemorySource` sitting directly in the graph, wrapped in neither
 /// a pool nor a voice node. It forks through `param_parts`, and reads its
 /// render's transport like the others.
-///
-/// Mutation (run): `ParamNode::fork_fresh` for `MemorySource` leaving the
-/// copy free-running (`placed = false`) → the fork plays its stopped cursor:
-/// silent on the rolling transport too → the last assertion fails.
 #[test]
 fn a_bare_memory_source_node_is_forked_too() {
     let (ed, mut exec, _params) = graph(placed(), 2);
@@ -198,7 +186,7 @@ impl Node for Const {
 /// of a constant renders the constant, stopped or rolling.
 ///
 /// A control for the tests above: no sampler code runs here, so no
-/// sampler mutation reaches it. It fails if the render's transport alone
+/// sampler change reaches it. It fails if the render's transport alone
 /// changed what a fork renders.
 #[test]
 fn pure_dsp_is_unaffected() {
@@ -233,10 +221,6 @@ impl Node for Pass {
 /// The fork reaches a voice behind another node. The graph's fork walks
 /// every node an output reaches, and each reads its own `Env`. A voice feeding a
 /// pass-through, forked, renders silence on a stopped render transport.
-///
-/// Mutation (run): `place` ignoring `run.rolling()` → the fork sounds on the
-/// stopped transport → fails. (A fork keeping the live clock is not a
-/// possible mutation: a graph node holds no clock to keep.)
 #[test]
 fn a_voice_behind_another_node_is_forked_too() {
     let (mut ed, mut exec) = Editor::new(prepare());

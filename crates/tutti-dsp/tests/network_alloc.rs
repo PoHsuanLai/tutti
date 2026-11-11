@@ -59,9 +59,6 @@ fn design_allocates_nothing<D: Design>(design: &D, controls: &[D::Controls], rat
 
 /// Freeverb's design, over in-range and hostile controls and several rates,
 /// allocates nothing.
-///
-/// Mutation (run): a `Vec` built inside `FreeverbDesign::design` (for instance
-/// `let _v = vec![0u8; 1];`) fails with "design allocated".
 #[test]
 fn freeverb_design_allocates_nothing() {
     let controls: Vec<FreeverbControls> = [0.0, 0.5, 1.0, f32::NAN, 9.0]
@@ -88,10 +85,6 @@ fn freeverb_design_allocates_nothing() {
 /// different network every block (design 022 section 8.2, "no allocation"): the
 /// node's audio-thread path, the network designed in place into one built
 /// beforehand.
-///
-/// Mutation (run): a `Vec` built inside `Freeverb::retarget` (for instance
-/// `let _v = vec![0u8; 1];`) fails with "the block allocated"; `Vec::new()` in
-/// `Inline::push` of the design would too.
 #[test]
 fn freeverb_retargets_and_renders_without_allocating() {
     use tutti_dsp::{Ceiling, FreeverbKernel, Network, Realization, Realized, Setup};
@@ -128,9 +121,6 @@ fn freeverb_retargets_and_renders_without_allocating() {
 /// `design_into` builds no value of the network's size (about 56 KB): it runs
 /// on a 96 KiB stack, as an audio thread's callback may. An unoptimised build
 /// copies a network about three times, so building one needs well over that.
-///
-/// Mutation (run): `out.clear(rate)` in `FreeverbDesign::design_into` replaced
-/// by `*out = Network::new(rate)` overflows the stack and aborts the test.
 #[test]
 fn design_into_needs_no_network_sized_stack() {
     let rate = SampleRate(44_100.0);
@@ -150,10 +140,6 @@ fn design_into_needs_no_network_sized_stack() {
 /// width, a wet gain and a freeze all move), after the one `prepare` that sizes
 /// the realization from the bounds. The ramps the realization starts are the work of the
 /// following blocks, which allocate nothing either.
-///
-/// Mutation (run): a `Vec` built inside `FdnKernel::retarget`, or in
-/// `begin_chunk`, fails with "the block allocated"; a `Vec::new()` in the
-/// design's line loop fails the first.
 #[test]
 fn the_fdn_retargets_and_renders_without_allocating() {
     use tutti_dsp::{Ceiling, FdnControls, FdnDesign, Network, Realization, Setup};
@@ -199,9 +185,6 @@ fn the_fdn_retargets_and_renders_without_allocating() {
 }
 
 /// The FDN's `design_into` runs on a 96 KiB stack, like Freeverb's.
-///
-/// Mutation (run): `out.clear(rate)` replaced by `*out = Network::new(rate)`
-/// overflows it.
 #[test]
 fn the_fdns_design_into_needs_no_network_sized_stack() {
     use tutti_dsp::{FdnControls, FdnDesign};

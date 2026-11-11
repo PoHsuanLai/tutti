@@ -8,11 +8,6 @@
 //! exactly zero (the voice's lanes ramp from zero), so the response is found
 //! one frame after its onset: a constant lead of one frame
 //! (`Row::with_lead`), the same on every path.
-//!
-//! Mutations (run): the synth's `render_events` applying every chunk's events
-//! before the first frame → the note sounds at its block's start → the paths
-//! that see a non-zero offset fail; the row without its
-//! lead → every path fails one frame late.
 
 use tutti_fixtures::midi;
 use tutti_graph::EventKind;

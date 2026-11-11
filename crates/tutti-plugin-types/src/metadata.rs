@@ -307,8 +307,6 @@ mod tests {
 
     /// **Every role crosses the wire as itself**, and a byte that names no
     /// role is refused rather than read as one.
-    ///
-    /// Mutation (run): `role_wire::deserialize` reading 1 as `Aux` → fails.
     #[test]
     fn every_role_crosses_the_wire_and_an_unknown_one_is_refused() {
         for role in [BusRole::Main, BusRole::Sidechain, BusRole::Aux] {

@@ -145,11 +145,6 @@ impl Rig {
 /// A command at frame `f` lands on exactly offset `f - block_start`, under a
 /// ragged block schedule — at a block's first frame, its last, in the middle,
 /// and on both sides of a boundary — in both interpreters.
-///
-/// Mutation: in `Env::due`, compute the offset from the block's *end*
-/// instead of its start (`f.since(self.end())`-style off-by-a-block) →
-/// nothing lands where it should → fails. Mutation: in `CommandRx::gather`,
-/// deliver every command at `Offset::ZERO` → fails.
 #[test]
 fn a_command_lands_on_its_exact_frame_across_ragged_blocks() {
     let mut rig = rig();
@@ -192,11 +187,6 @@ fn a_command_lands_on_its_exact_frame_across_ragged_blocks() {
 
 /// A scheduled ramp changes the output on exactly its frame: the node reads
 /// it through `sub_blocks`, so the step is at the sample, not the block.
-///
-/// Mutation: in `Probe`, fill the whole block after applying all events
-/// (ignore `range`) → the step moves to the block start → fails. Mutation:
-/// in the executor, skip the overlay for a node with scheduled commands
-/// (`scheduled` always false) → the ramp never arrives → fails.
 #[test]
 fn a_scheduled_ramp_steps_the_output_on_its_frame() {
     let mut rig = rig();
@@ -217,10 +207,6 @@ fn a_scheduled_ramp_steps_the_output_on_its_frame() {
 
 /// A time already past lands at offset 0 of the next block and is counted
 /// late — not dropped. `NextBlock` lands at offset 0 and is not late.
-///
-/// Mutation: in `CommandRx::gather`, keep a late command pending (treat
-/// `Due::Late` like `NotYet`) → it never lands → fails. Mutation: drop the
-/// `late += 1` → the count stays 0 → fails.
 #[test]
 fn a_late_command_lands_at_the_next_block_and_is_counted() {
     let mut rig = rig();
@@ -244,10 +230,6 @@ fn a_late_command_lands_at_the_next_block_and_is_counted() {
 /// `At::Beat` resolves against the transport snapshot of the block where it
 /// falls: 120 BPM at 48 kHz is 24 000 frames a beat, so beat 1.5 is frame
 /// 36 000 — here inside a block that starts at 35 990.
-///
-/// Mutation: resolve beats against the transport of the block the command
-/// was *first seen* in (cache the frame then) with a tempo change between →
-/// lands on the old tempo's frame → fails.
 #[test]
 fn a_beat_command_lands_where_the_transport_reaches_it() {
     let mut rig = rig();
@@ -280,10 +262,6 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
 /// debug asserts) still moves the transport: a beat command passed inside it
 /// lands late at the next block, rather than reading as a seek that jumped
 /// over it.
-///
-/// Mutation (run, release): drop `commands.observe(&env)` from the
-/// short-outputs path of `render_applied` → the playhead sees a jump, the
-/// command is dropped, the log is empty → fails.
 #[test]
 #[cfg(not(debug_assertions))]
 fn a_beat_passed_in_a_refused_block_lands_late() {
@@ -304,9 +282,6 @@ fn a_beat_passed_in_a_refused_block_lands_late() {
 
 /// Back-pressure: at `COMMAND_CAPACITY` outstanding, `schedule` refuses and
 /// sends nothing; once commands land their credit returns.
-///
-/// Mutation: in `CommandTx::send`, drop the credit check → the ring's push
-/// fails and hits the `unreachable!` → fails.
 #[test]
 fn scheduling_back_pressures_at_capacity() {
     let mut rig = rig();
@@ -331,10 +306,6 @@ fn scheduling_back_pressures_at_capacity() {
 /// A command must name a port the plan has; one whose node is removed —
 /// or replaced by a unit without that port — before it falls due is counted
 /// unrouted, not delivered somewhere else.
-///
-/// Mutation: in `CommandRx::gather`, skip the port-range filter → the
-/// command to the replaced node's vanished port is "delivered", and the
-/// executor panics indexing the node's event inputs → fails.
 #[test]
 fn a_command_needs_a_port_and_an_orphan_is_counted() {
     let mut rig = rig();
@@ -439,11 +410,6 @@ impl Node for Impulse {
 /// its own frame `F + 20`. So the note lands 20 frames later there than at a
 /// sibling with arrival 0 — and both impulses come out of the graph on the
 /// same output frame, the sibling's channel delayed by the output alignment.
-///
-/// Mutation: drop the arrival in `CommandRx::gather` (`Latency::ZERO`) →
-/// the latent sink's note lands at 100, 20 frames early against its own
-/// audio, and its impulse leaves 20 frames before the sibling's → fails.
-/// Mutation: the same in the reference only → fails on the reference.
 #[test]
 fn a_scheduled_command_is_compensated_like_an_upstream_event() {
     const LAT: NodeKey = NodeKey(1);
@@ -558,9 +524,7 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
 /// rounds here. The deterministic staged version is the unit test
 /// `exec::tests::a_command_seen_before_its_commit_waits_for_it`, which does.
 /// What this one does catch: anything that loses, repeats or strands a
-/// command across threads. Mutation: skip the `done.fetch_add` in
-/// `CommandRx::gather` → the editor never sees its credit back and the
-/// round waits out its deadline → fails.
+/// command across threads.
 #[test]
 fn a_command_waits_for_the_commit_it_was_checked_against() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -633,11 +597,6 @@ fn a_command_waits_for_the_commit_it_was_checked_against() {
 /// `cancel` and `cancel_all` take commands back and return their credit —
 /// even with every credit held by commands that will never fall due (beats
 /// on a stopped transport), where nothing else could be scheduled.
-///
-/// Mutation: in `CommandRx::pull`, do not return the credit of what it
-/// cancels (drop the `done.fetch_add`) → `schedule` still refuses after the
-/// `cancel_all` → fails. Mutation: apply cancels before pulling new
-/// commands → the targeted cancel misses its command, which lands → fails.
 #[test]
 fn cancel_takes_commands_back_and_frees_their_credit() {
     let mut rig = rig();
@@ -686,9 +645,6 @@ fn cancel_takes_commands_back_and_frees_their_credit() {
 
 /// A ramp into a node that does not honour offsets sample-accurately is
 /// refused at `schedule`, as a marked edge would be at `compile`.
-///
-/// Mutation: drop the resolution check in `Editor::schedule` → accepted →
-/// fails.
 #[test]
 fn a_ramp_into_a_coarse_node_is_refused() {
     struct Coarse;
@@ -776,20 +732,6 @@ fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
 /// the `Playhead` (so a bug there would pass the differential). Covers tempo,
 /// a loop wrap, a stopped transport, a seek over the beat and back, a beat
 /// crossed before it was scheduled (late), and an arrival shift.
-///
-/// Mutation: in `Playhead::crossed`, treat every beat behind the playhead as
-/// crossed → the seek-over case lands late at the seek → fails. Mutation:
-/// after a wrap, call the whole loop crossed (`beat < loop end` instead of
-/// `beat < now`) → the beat ahead of the playhead fires
-/// late at once → fails. Mutation:
-/// in `Env::beat_due`, drop the wrap branch → the loop case never lands →
-/// fails. Mutation: in `Env::due_at_arrival`, drop the arrival shift for a
-/// resolved beat → the arrival case lands 20 frames early → fails. Mutation:
-/// in `Env::beat_due`, treat a playhead at or past the loop end as looping
-/// (drop `now < l.end`) → the armed-behind case never lands → fails.
-/// Mutation (run, each side): make the behind-side tolerance in
-/// `Env::beat_due`, or in the reference's `land`, a millionth of a frame
-/// again (`<= TOLERANCE`) → the between-frames case lands late → fails.
 #[test]
 fn beat_resolution_matches_a_hand_computed_table() {
     let cases = vec![
@@ -1073,10 +1015,6 @@ fn beat_resolution_matches_a_hand_computed_table() {
 /// inputs) is still timed by the node's arrival: both interpreters count it
 /// unrouted when timeline frame 100 reaches the node, at its own frame 120 —
 /// not at 100.
-///
-/// Mutation: in `CommandRx::gather`, take the arrival from the port-filtered
-/// target (0 when the port is gone) → the executor counts it at 100, before
-/// the reference → fails.
 #[test]
 fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
     let (lat, sink) = (NodeKey(1), NodeKey(2));
@@ -1161,11 +1099,6 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
 /// audio thread spins one-frame blocks. A lost cancel would leave its command
 /// pending forever, holding its credit. The staged, deterministic version of
 /// the race is `command::tests::a_cancel_seen_before_its_command_is_held_until_it_arrives`.
-///
-/// Mutation: drop cancels that name a command not pulled yet (the pre-fix
-/// behaviour) → in some runs a command outlives its cancel and the credit
-/// never returns → the deadline fails. (The window is narrow: this is a
-/// stress test, and the staged test is the one that always catches it.)
 #[test]
 fn cancels_are_never_lost_across_threads() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1213,10 +1146,6 @@ fn cancels_are_never_lost_across_threads() {
 /// recovery from a poisoned editor), an old id is refused by the new editor
 /// — it can neither cancel the new pair's command that shares its number
 /// nor clog the executor's held-cancel list for a command that never comes.
-///
-/// Mutation: drop the pair check in `CommandTx::cancel` → the old id #0
-/// cancels the new pair's own #0, which never lands → fails; and the spam of
-/// old ids is accepted → fails.
 #[test]
 fn a_command_id_from_another_pair_is_refused() {
     let mut old = rig();
@@ -1262,12 +1191,6 @@ fn a_command_id_from_another_pair_is_refused() {
 /// beats are scheduled: one the run crossed *before* the seek (3.99995, now
 /// ahead of the playhead again — it must wait), and one crossed after it (it
 /// is late). Both interpreters must agree, and both be right.
-///
-/// Mutation: drop the executor's "inside the loop" guard in
-/// `Env::arrives_at` → the executor keeps its old run, never sees the
-/// post-seek beat as crossed → it disagrees with the reference → fails.
-/// Mutation: drop the reference's guard in `RefPlayhead::observe` → the
-/// reference keeps the pre-seek history and fires 3.99995 as late → fails.
 #[test]
 fn a_seek_out_of_a_loop_that_lines_up_with_wraps_is_a_seek() {
     let mut rig = rig();

@@ -37,8 +37,6 @@ fn test_basic_beat_counting() {
     );
 }
 
-// Mutation: ignore 0xF2 (the old behaviour) and the position stays 0;
-// swap the two halves and 0x0123 reads as 0x2301.
 #[test]
 fn song_position_then_continue_resumes_at_spp_times_six_ticks() {
     let mut clock = MidiClockDecoder::new();

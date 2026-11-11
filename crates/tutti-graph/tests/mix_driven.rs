@@ -8,8 +8,6 @@
 //! the `m` the driver's steps give at each frame, written out in the test.
 //! Executor and reference are compared at every block (`Pair`), and the
 //! parallel executor against the serial one, bit for bit.
-//!
-//! Mutations are recorded on each test (each run, each failed, then restored).
 
 #![allow(
     clippy::needless_range_loop,
@@ -219,13 +217,6 @@ fn plan_of(rig: &Rig) -> tutti_graph::Plan {
 /// give at every frame (clamped to the blend), for a node with no latency and
 /// for a latent one (whose aligned input is its input `L` frames late), serial,
 /// parallel and reference.
-///
-/// Mutations (each run, each failed): `drive_step` never called in
-/// `moded_node_op` -> the mix reads its base (WET) and the render is `3 * x`;
-/// `ModeState::lane` returning `&[]` -> `MixRun::at` indexes an empty lane
-/// (panic); `MixRun::driven` always false in `mix_run` -> the block ramps the
-/// base and the render is the static blend; `moded_node_op` reading the lane's
-/// events from slot 0 -> the lane never hears its driver.
 #[test]
 fn a_driven_mix_renders_the_analytic_blend() {
     for (kind, delay) in [(plain(), 0), (latent(), L)] {
@@ -246,10 +237,6 @@ fn a_driven_mix_renders_the_analytic_blend() {
 /// a block of seven driver periods (112 frames) the lane's last frame is the
 /// same step every block, so the previous block's value and this block's are
 /// equal while the frames between differ (the differential suite found it).
-///
-/// Mutation (run, failed): `MixRun::is_static` without its `!self.driven` term
-/// -> from the second block the whole block blends at the one value of its last
-/// frame.
 #[test]
 fn a_driven_block_whose_ends_agree_is_not_static() {
     const SEVEN: usize = 7 * PERIOD as usize;
@@ -275,11 +262,6 @@ fn a_driven_block_whose_ends_agree_is_not_static() {
 /// The lane's value is clamped to `0..=1` whatever range the entry holds: the
 /// default (`ParamMod::default` is unbounded, narrowed to the blend), a range
 /// inside it, and one wider than it (`NodeMix::lane_range`).
-///
-/// Mutations (each run, each failed): `lane_range` returning its argument ->
-/// the default and the wide range let `-1.0` and `2.0` through (off the
-/// blend); the range cell not the lane's (`ParamState::lane` given a fresh
-/// `ParamRanges` in `set_driven`) -> the narrow range is ignored.
 #[test]
 fn a_driven_mix_is_clamped_to_its_range_and_to_the_blend() {
     let wide = ParamRange::new(-5.0, 5.0);
@@ -308,10 +290,6 @@ fn a_driven_mix_is_clamped_to_its_range_and_to_the_blend() {
 /// A range moved between blocks (`set_param_range` at the mix's address)
 /// clamps from the next block on, the cell the editor writes being the one the
 /// lane reads.
-///
-/// Mutation (run, failed): `Editor::set_param_range` storing a mix range into
-/// the node's declared cells rather than the mode cell -> the move never lands
-/// and the second half is unclamped.
 #[test]
 fn a_range_moved_between_blocks_clamps_from_the_next() {
     let rig = Rig::new(plain(), 0, None);
@@ -345,11 +323,6 @@ fn a_range_moved_between_blocks_clamps_from_the_next() {
 /// disconnects the source. Frame `j` after it is
 /// `base + (held - base) * (1 - (j + 1) / PARAM_DECLICK)`, and after that the
 /// base: the node is the static blend (and, once the base is WET, plain again).
-///
-/// Mutations (each run, each failed): `set_driven` dropping the state of a
-/// lane that is no longer driven (`self.drive = None`) -> the mix jumps to the
-/// base; `snapshot` not resetting `lane_on` -> the block after the fade reads
-/// a stale lane (a panic or a frozen mix).
 #[test]
 fn a_source_that_goes_is_declicked_to_the_base() {
     let base = 0.75f32;
@@ -395,10 +368,6 @@ fn a_source_that_goes_is_declicked_to_the_base() {
 
 /// A driven lane's state survives a commit that keeps the node: the held value
 /// does not fall back to the base.
-///
-/// Mutation (run, failed): `set_driven` rebuilding the lane's state on every
-/// apply (`self.drive = None` first) -> after the first switch the mix reads
-/// its base.
 #[test]
 fn a_driven_lane_survives_a_commit_that_keeps_its_node() {
     let mut rig = Rig::new(plain(), 0, None);
@@ -432,11 +401,6 @@ fn a_driven_lane_survives_a_commit_that_keeps_its_node() {
 /// **Mode wins over a driven mix**: a bypassed node writes its aligned input
 /// whatever the lane says, and un-bypassing fades to the lane's value at each
 /// frame, the lane having run all the while.
-///
-/// Mutation (run, failed): `drive_step` moved after the parked early return
-/// in `moded_node_op` (a parked node's lane is not stepped) -> the lane's state is
-/// stale when the node comes back and the reference (which steps it every
-/// block) diverges.
 #[test]
 fn the_mode_wins_over_a_driven_mix() {
     let rig = Rig::new(plain(), 0, None);
@@ -473,10 +437,6 @@ fn the_mode_wins_over_a_driven_mix() {
 /// 32; its input gets a 32-frame ring (silent for the first 32 frames), the
 /// lane none, and frame `n >= 32` is the blend of that delayed input at the
 /// step of its own frame.
-///
-/// Mutation (run, failed): leave the mix's `ParamIn` out of `driving_nodes` ->
-/// the node does not wait for the lane: no audio ring and the render starts at
-/// frame 0.
 #[test]
 fn a_late_lane_delays_the_audio_to_the_node() {
     let rig = Rig::new(plain(), 32, None);
@@ -518,9 +478,6 @@ fn a_late_lane_delays_the_audio_to_the_node() {
 /// 48-frame event ring (`DelayKey::ParamEvent` at the mix's address) and its
 /// event stamped `f` lands on frame `f + 48`; until then the lane reads the
 /// base (the set mix).
-///
-/// Mutation (run, failed): align the mix's source with `by = 0` in `compile` ->
-/// the steps land 48 frames early and the ring is missing.
 #[test]
 fn an_early_lane_is_delayed_to_the_node() {
     let mut rig = Rig::new(plain(), 0, Some(latent_dc(1.0, 48)));
@@ -554,13 +511,6 @@ fn an_early_lane_is_delayed_to_the_node() {
 /// (a param edge in it), a node that declares the reserved address cannot
 /// (`ParamPortsError::Reserved`), and an address no node declares other than
 /// the mix's is still `UnknownParam`.
-///
-/// Mutations (each run, each failed): `UnknownParam`'s exemption widened to any
-/// index of `Wet` -> the last assertion compiles; the `Reserved` check removed
-/// from `try_of` -> the declaration is accepted; the mix left out of the
-/// cycle's `preds` (it is the loop over `graph.params()`, which this edge is
-/// in: replace it with a filter on `at.param != NodeMix::ADDR`) -> the cycle
-/// compiles.
 #[test]
 fn the_mix_port_is_refused_as_a_param_is() {
     let rig = Rig::new(plain(), 0, None);
@@ -716,13 +666,6 @@ fn block(exec: &mut tutti_graph::Executor, input: &[f32]) -> Vec<f32> {
 /// reads it, a commit that nothing moved leaves it (the spec's copy is
 /// behind), a spec edit that moved lands over it, and a fork starts at it. The
 /// range cell is the mode cell's too.
-///
-/// Mutations (each run, each failed): `ModeCell::knob` returning a fresh
-/// `Arc` -> the write reaches nothing; `carry_mix` storing unconditionally ->
-/// the commit puts the spec's `0.25` back; `Editor::mix` reading the spec ->
-/// `mix` says `0.25`; the fork reading `spec.mixes` rather than `self.mix`
-/// -> it starts at `0.25`; `param_range_cell` answering the declared cells ->
-/// `None` for the mix.
 #[test]
 fn the_mix_cell_is_the_one_writer() {
     let (mut ed, mut exec) = solo();

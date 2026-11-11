@@ -372,8 +372,7 @@ mod tests {
     use super::*;
 
     /// A message shorter than four words leaves the rest zero, and a longer
-    /// one is cut to four. Mutations: dropping `.min(field.len())` panics on
-    /// the five-word message; copying into `field[4 - n..]` fails the first.
+    /// one is cut to four.
     #[test]
     fn a_message_fills_the_front_of_the_four_words() {
         let mut field = [9; 4];

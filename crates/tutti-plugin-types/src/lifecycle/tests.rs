@@ -4,9 +4,6 @@
 //! a model of the plugin (is it split, where is the Processor) and feeds the
 //! reply back, recording what each step did. Properties run arbitrary event
 //! sequences through it.
-//!
-//! Each test's comment names the mutation that makes it fail. Every mutation
-//! was applied to `step`, the test watched to fail, and the code restored.
 
 use std::collections::VecDeque;
 
@@ -485,9 +482,6 @@ fn count(fx: &[Fx], f: impl Fn(&Fx) -> bool) -> usize {
 proptest! {
     /// Every `Replied(Activated)` is answered, in the same step, by the three
     /// reads and then one `Lend`, whatever preceded it and whatever the format.
-    ///
-    /// Mutation: swap `Effect::Lend` ahead of `Effect::ReadLatency` in the
-    /// `Reply::Activated` arm, or drop `Effect::ReadTail` from it; this fails.
     #[test]
     fn an_activation_is_answered_by_the_reads_then_one_lend(
         rules in rules(),
@@ -506,10 +500,6 @@ proptest! {
 
     /// The plugin renders only in `Active`: a `Lend` is emitted only into it,
     /// and `Refused` is left only by emitting an activation (or by dying).
-    ///
-    /// Mutation: let `HostOp::Deactivate` take a `Refused` stage to `Loaded`
-    /// (match `Stage::Active | Stage::Refused { .. }` in its idle arm and set
-    /// the stage); the second assertion fails.
     #[test]
     fn only_an_active_plugin_renders(
         rules in rules(),
@@ -535,10 +525,6 @@ proptest! {
 
     /// From `Refused`, nothing but an activation reaches an effect that
     /// renders, whatever the events (replies included).
-    ///
-    /// Mutation: make `Reply::Activated` ignore `wait == Wait::Activate`
-    /// (`Reply::Activated =>`); a stray reply then revives the plugin and
-    /// this fails.
     #[test]
     fn a_refused_plugin_stays_silent_until_asked_to_activate(
         rules in rules(),
@@ -559,9 +545,6 @@ proptest! {
     }
 
     /// `Poisoned` absorbs: nothing after `Died` emits an effect or changes it.
-    ///
-    /// Mutation: let `Event::Op` through before the `Poisoned` guard in
-    /// `on_event` (move the guard below the match); this fails.
     #[test]
     fn a_poisoned_plugin_absorbs_every_event(
         rules in rules(),
@@ -583,9 +566,6 @@ proptest! {
 
     /// A latency or tail change raised while the plugin activates is answered
     /// by the reads after it: the next tick restarts nothing.
-    ///
-    /// Mutation: make the `LatencyChanged | TailChanged` arm of `on_request`
-    /// `active || activating`; the bit is then kept and the tick restarts.
     #[test]
     fn a_change_raised_inside_an_activation_does_not_restart_it(
         io in any::<bool>(),
@@ -605,9 +585,6 @@ proptest! {
 
     /// A quiet state's tick plans nothing, after any sequence of events: what
     /// lets a shell skip the tick of an idle pass.
-    ///
-    /// Mutation: `State::is_quiet` ignoring `pending` (or answering `true`) →
-    /// a tick after a request plans a restart or a notice → fails.
     #[test]
     fn a_quiet_state_ticks_to_nothing(
         rules in rules(),
@@ -626,9 +603,6 @@ proptest! {
 
     /// Activations over a sequence are at most one per activating op plus one
     /// per tick that planned a restart.
-    ///
-    /// Mutation: in `plan_restart`, push `Task::Activate(prepare)` twice; this
-    /// fails once a plan runs.
     #[test]
     fn activations_are_bounded_by_ops_and_planned_restarts(
         rules in rules(),
@@ -649,10 +623,6 @@ proptest! {
 
     /// A reload subsumes every other request: one rebuild, one rejoin, one
     /// activation, one notice, however many finer requests came with it.
-    ///
-    /// Mutation: in `plan_restart` do not push `Task::Rebuild` and the rebuild
-    /// count fails; stop calling `clear_requests` there and the last tick
-    /// repeats the parameter notices.
     #[test]
     fn a_reload_subsumes_the_finer_requests(
         rules in rules(),
@@ -679,10 +649,6 @@ proptest! {
     /// A rejoin never meets a Processor that is away: `CallDeactivate` and
     /// `Rebuild` come only after a `Recall` was answered `Returned` or
     /// followed by `Event::Returned`.
-    ///
-    /// Mutation: in the `Reply::Lent` arm continue the plan (`self.advance(out)`
-    /// instead of parking) or emit `CallDeactivate` straight after `Recall` in
-    /// `begin`; this fails.
     #[test]
     fn a_rejoin_never_meets_a_processor_that_is_away(
         rules in rules(),
@@ -699,9 +665,6 @@ proptest! {
 
     /// A restart that ends in `Refused` notifies the refusal once and never a
     /// latency change, and renders nothing after.
-    ///
-    /// Mutation: in the `Reply::Refused` arm also emit `Effect::ReadLatency`
-    /// (a read against a stopped plugin); this fails.
     #[test]
     fn a_restart_that_ends_refused_says_so_once(
         rules in rules(),
@@ -731,10 +694,6 @@ proptest! {
 
     /// `step` is total and bounded: no event in any state panics or emits more
     /// than `EFFECT_CAPACITY` effects.
-    ///
-    /// Mutation: drop the `.min(TIMERS_PER_TICK)` and `.min(FDS_PER_TICK)`
-    /// caps in `tick`; a tick that runs every pending one exceeds the bound
-    /// and fails (`emit` asserts it).
     #[test]
     fn step_is_total_and_bounded(
         rules in rules(),
@@ -759,10 +718,6 @@ proptest! {
 
     /// A parked plan runs once, with the latest `Prepare`: `Returned` emits
     /// the rest of it, a second `Returned` emits nothing.
-    ///
-    /// Mutation: in `set_activate` push a second `Task::Activate` instead of
-    /// replacing; the activation count fails. (The second `Returned` is pinned
-    /// by the rule 9 table test.)
     #[test]
     fn a_parked_plan_runs_once_with_the_last_prepare(
         rules in rules(),
@@ -785,9 +740,6 @@ proptest! {
 
 // -------------------------------------------------------------- state tables
 
-// Mutation: drop the `!matches!(self.stage, Stage::Active)` test from
-// `HostOp::Activate` (an active plugin is then activated again), or make
-// `Reconfigure` on an active plugin plan only `Task::Activate`; fails.
 #[test]
 fn rule_1_activate_and_reconfigure() {
     let p = prep(1);
@@ -839,9 +791,6 @@ fn rule_1_activate_and_reconfigure() {
     assert!(matches!(s.stage(), Stage::Refused { .. }));
 }
 
-// Mutation: delete `p.latency = false;` and `p.tail = false;` from
-// `settle_requests`; the bits raised before the deactivation survive it and
-// the tick below restarts.
 #[test]
 fn rule_2_a_change_raised_before_the_deactivation_is_answered_by_the_reads() {
     let p = prep(1);
@@ -856,8 +805,6 @@ fn rule_2_a_change_raised_before_the_deactivation_is_answered_by_the_reads() {
     assert!(go(s, Event::Tick).1.is_empty());
 }
 
-// Mutation: in the `Refused` arm, push `Effect::ReadTail` after the notice,
-// or delete `self.stage = Stage::Refused { rate };`; fails.
 #[test]
 fn rule_3_a_refusal_reads_nothing_and_a_later_activation_retries() {
     let p = prep(3);
@@ -872,9 +819,6 @@ fn rule_3_a_refusal_reads_nothing_and_a_later_activation_retries() {
     assert!(s.renders());
 }
 
-// Mutation: make the `Latency` arm notify when `before.is_none()` too (the
-// first read then notifies); drop `|| announced` and the announced case fails;
-// drop `b != now` and the changed case fails. The same for `Tail`.
 #[test]
 fn rule_4_a_figure_is_notified_when_it_moved_or_was_announced() {
     // The first read after load only records the figure.
@@ -913,8 +857,6 @@ fn rule_4_a_figure_is_notified_when_it_moved_or_was_announced() {
     assert_eq!(fx, [Fx::TailNotice]);
 }
 
-// Mutation: drop `revived ||` from the `Some(before)` arm; the revival is
-// then silent and this fails.
 #[test]
 fn rule_4_a_layout_is_notified_when_it_differs_or_the_stage_changed() {
     let s = active(REST, prep(1));
@@ -933,8 +875,6 @@ fn rule_4_a_layout_is_notified_when_it_differs_or_the_stage_changed() {
     assert!(fx.contains(&Fx::IoNotice));
 }
 
-// Mutation: make `Request::Restart` set no bit in `on_request`, or treat
-// `p.io && rules.io` as `p.io` (a re-reading format then restarts); fails.
 #[test]
 fn rule_5_requests_set_bits_and_a_tick_plans() {
     let p = prep(1);
@@ -968,8 +908,6 @@ fn rule_5_requests_set_bits_and_a_tick_plans() {
     assert_eq!(go(s, Event::Tick).1, [Fx::Recall]);
 }
 
-// Mutation: skip the callback branch in `tick` (`if false && callback ..`),
-// or delete `self.after_main = true;`; fails.
 #[test]
 fn rule_5_a_callback_runs_first_because_it_may_ask_for_the_rest() {
     let s = req(active(RESTARTS, prep(1)), Request::Callback);
@@ -987,8 +925,6 @@ fn rule_5_a_callback_runs_first_because_it_may_ask_for_the_rest() {
     assert!(fx.is_empty());
 }
 
-// Mutation: make a `Values` or an `Info` rescan set `p.all` in `on_request`
-// (a restart); fails.
 #[test]
 fn rule_5_a_rescan_restarts_only_when_it_must() {
     let p = prep(1);
@@ -1025,9 +961,6 @@ fn rule_5_a_rescan_restarts_only_when_it_must() {
     );
 }
 
-// Mutation: make the `LatencyChanged | TailChanged` arm of `on_request`
-// `active || activating`; the first tick below restarts. Make `IoChanged`
-// ignored while activating and the last one does not.
 #[test]
 fn rule_6_a_request_during_an_activation_is_kept_except_latency_and_tail() {
     let p = prep(1);
@@ -1049,8 +982,6 @@ fn rule_6_a_request_during_an_activation_is_kept_except_latency_and_tail() {
     assert_eq!(go(s, Event::Tick).1, [Fx::Recall]);
 }
 
-// Mutation: delete the `if !accepted { return; }` guard in `on_request`; the
-// bits survive into the activation that follows and the last tick restarts.
 #[test]
 fn rule_7_a_request_on_a_plugin_that_is_not_running_changes_nothing() {
     let all = [
@@ -1093,8 +1024,6 @@ fn rule_7_a_request_on_a_plugin_that_is_not_running_changes_nothing() {
     assert_eq!(fx, [Fx::Timer(4), Fx::Fd(5)]);
 }
 
-// Mutation: leave the plan in place on `Event::Died` (delete
-// `self.plan = Plan::default();` from `poison`); fails.
 #[test]
 fn rule_8_dying_drops_a_parked_plan() {
     let s = active(RESTARTS, prep(1));
@@ -1108,8 +1037,6 @@ fn rule_8_dying_drops_a_parked_plan() {
     assert!(go(s, Event::Returned).1.is_empty());
 }
 
-// Mutation: drop the `Wait::Parked` guard on `Event::Returned` (the second
-// `Returned` then emits the activation early).
 #[test]
 fn rule_9_a_plan_parks_behind_a_lent_processor_and_runs_once() {
     let (p, q, r) = (prep(1), prep(2), prep(3));
@@ -1141,8 +1068,6 @@ fn rule_9_a_plan_parks_behind_a_lent_processor_and_runs_once() {
     assert!(go(s, Event::Tick).1.is_empty());
 }
 
-// Mutation: make `HostOp::Deactivate` on a parked plan push to the tasks
-// instead of replacing them; fails (an activation follows).
 #[test]
 fn rule_9_a_deactivate_replaces_a_parked_plan() {
     let s = active(RESTARTS, prep(1));
@@ -1157,8 +1082,6 @@ fn rule_9_a_deactivate_replaces_a_parked_plan() {
     assert_eq!(s.stage(), Stage::Loaded);
 }
 
-// Mutation: leave the plan in place on `Stuck` (drop `self.plan =
-// Plan::default();`) or forget the `Lend`; fails.
 #[test]
 fn rule_10_a_plugin_that_will_not_stop_stays_active_and_is_lent_again() {
     let s = active(RESTARTS, prep(1));
@@ -1171,8 +1094,6 @@ fn rule_10_a_plugin_that_will_not_stop_stays_active_and_is_lent_again() {
     assert!(go(s, Event::Tick).1.is_empty());
 }
 
-// Mutation: ignore `wait` in the `Deactivated` arm; a stray reply then moves
-// an active plugin to `Loaded`.
 #[test]
 fn a_reply_that_answers_nothing_is_ignored() {
     let s = active(RESTARTS, prep(1));
@@ -1192,8 +1113,6 @@ fn a_reply_that_answers_nothing_is_ignored() {
     }
 }
 
-// Mutation: delete `p.restart = false;` from `settle_requests`; the tick
-// after the re-activation recalls again.
 #[test]
 fn a_request_raised_while_a_plan_waits_is_answered_by_the_plan() {
     let q = prep(2);
@@ -1244,8 +1163,6 @@ fn a_request_raised_while_a_plan_waits_is_answered_by_the_plan() {
     finish(s);
 }
 
-// Mutation: in `on_op` make `HostOp::Activate` on a busy plan do nothing
-// (`_ => {}`); the activation is lost.
 #[test]
 fn an_activate_raised_while_a_plan_waits_is_the_latest_intent() {
     let (p, q) = (prep(1), prep(2));
@@ -1261,8 +1178,6 @@ fn an_activate_raised_while_a_plan_waits_is_the_latest_intent() {
     assert_eq!(s.prepare(), Some(q));
 }
 
-// Mutation: delete the `self.replay(out);` call from the `Activated` arm, or
-// store only the first op raised (`self.later.get_or_insert(op)`); fails.
 #[test]
 fn an_op_raised_during_an_activation_runs_when_it_ends() {
     let (p, q) = (prep(1), prep(2));
@@ -1297,8 +1212,6 @@ fn an_op_raised_during_an_activation_runs_when_it_ends() {
     assert_eq!(fx, [Fx::RefusedNotice, Fx::Activate(q)]);
 }
 
-// Mutation: delete the `.min(TIMERS_PER_TICK)` and `.min(FDS_PER_TICK)` caps
-// (everything runs at once), or make `has_backlog` always false; fails.
 #[test]
 fn timers_and_descriptors_over_the_cap_wait_for_the_next_tick() {
     let mut s = State::new(REST);
@@ -1328,8 +1241,6 @@ fn timers_and_descriptors_over_the_cap_wait_for_the_next_tick() {
     assert!(!s.has_backlog());
 }
 
-// Mutation: make `MAX_STEP_EFFECTS` one less (`+ 5`), or delete the
-// `ReadLayout` branch of `read_without_restart`, or the `midi_cc` one; the count no longer equals it.
 #[test]
 fn the_busiest_tick_emits_exactly_the_documented_maximum() {
     let mut s = active(REST, prep(1));
@@ -1355,8 +1266,6 @@ fn the_busiest_tick_emits_exactly_the_documented_maximum() {
     assert_eq!(MAX_STEP_EFFECTS, EFFECT_CAPACITY);
 }
 
-// Mutation: in the `Refused` arm keep the timers (`clear_requests` instead of
-// `Pending::default()`); the stale timer runs after the revival.
 #[test]
 fn a_refusal_forgets_what_was_pending() {
     let p = prep(1);
@@ -1370,8 +1279,6 @@ fn a_refusal_forgets_what_was_pending() {
     assert!(go(s, Event::Tick).1.is_empty());
 }
 
-// Mutation: drop `self.rebuild_pending |= ...` from the `Refused` arm; the
-// retry activates a plugin whose rebuild failed.
 #[test]
 fn a_refused_rebuild_is_retried_before_the_activation() {
     let p = prep(1);
@@ -1393,8 +1300,6 @@ fn a_refused_rebuild_is_retried_before_the_activation() {
     assert_eq!(fx, [Fx::Activate(p)]);
 }
 
-// Mutation: delete `std::mem::take(&mut self.after_main)` (clear only on
-// `Done`); the unrelated `Done` below plans a restart.
 #[test]
 fn only_the_answer_to_the_main_thread_work_continues_the_tick() {
     let s = req(active(RESTARTS, prep(1)), Request::Callback);
@@ -1416,13 +1321,6 @@ proptest! {
     /// for an active one at `p` only when the intent is not active already.
     /// When the plugin may refuse or stick, nothing is promised about the end
     /// state, only that it settles without breaking a transition.
-    ///
-    /// Mutation: delete the `self.replay(out);` call from the `Activated` arm
-    /// (an op raised during an activation is lost); make `HostOp::Reconfigure`
-    /// on a busy plan do nothing (`_ => {}`); let `HostOp::Activate` rewrite a
-    /// plan that ends active (drop the `leads_active` arm); or let `merge_later`
-    /// replace a kept `Reconfigure` with an `Activate` (`(op, _) => op`); this
-    /// fails.
     #[test]
     fn the_latest_op_wins_whenever_it_is_raised(
         rules in rules(),
@@ -1473,8 +1371,6 @@ proptest! {
     }
 }
 
-// Mutation: drop the `_ if self.leads_active() => {}` arm of
-// `HostOp::Activate` in `on_op`; the restart is rewritten to `r`.
 #[test]
 fn an_activate_leaves_an_active_plugins_restart_as_it_is() {
     let (q, r) = (prep(2), prep(3));
@@ -1488,10 +1384,6 @@ fn an_activate_leaves_an_active_plugins_restart_as_it_is() {
     assert_eq!(fx, [Fx::Activate(q)]);
 }
 
-// Mutation: make `merge_later` return `op` first (`(op, _) => op` as its
-// first arm); the `Activate` displaces the kept `Reconfigure` and the plugin
-// ends at the first `Prepare`. Drop its `Deactivate` arm and the last case
-// stays unloaded.
 #[test]
 fn an_activate_does_not_displace_a_kept_op_that_leaves_the_plugin_active() {
     let (p, q, r) = (prep(1), prep(2), prep(3));
@@ -1515,8 +1407,6 @@ fn an_activate_does_not_displace_a_kept_op_that_leaves_the_plugin_active() {
     assert_eq!(fx, [Fx::Activate(r)]);
 }
 
-// Mutation: delete `self.reread_params = true;` in `settle_requests`; the
-// parameters are not read after the next activation.
 #[test]
 fn a_rescan_raised_before_a_deactivation_is_read_after_the_next_activation() {
     let q = prep(2);
@@ -1547,9 +1437,6 @@ fn a_rescan_raised_before_a_deactivation_is_read_after_the_next_activation() {
     assert_eq!(fx.len(), 4);
 }
 
-// Mutation: accept `Request::Callback` in every stage (`active ||
-// matches!(self.stage, Stage::Loaded | Stage::Refused { .. })`); the
-// activation that follows then runs it.
 #[test]
 fn a_callback_raised_on_a_refused_plugin_is_dropped() {
     let s = req(refused(RESTARTS, prep(1)), Request::Callback);
@@ -1562,11 +1449,6 @@ fn a_callback_raised_on_a_refused_plugin_is_dropped() {
 
 /// A MIDI-mapping change is rebuilt in place, once, with no restart; a
 /// note-expression change is told to the host once.
-///
-/// Mutation: in `read_without_restart` drop the `p.midi_cc = false` reset and
-/// the second tick repeats the rebuild; drop the `p.note_expr = false` reset
-/// and the second tick repeats the notice; delete the `if p.midi_cc` block and
-/// the rebuild is never emitted.
 #[test]
 fn a_midi_mapping_or_note_expression_change_needs_no_restart() {
     for rules in [REST, RESTARTS] {
@@ -1580,9 +1462,6 @@ fn a_midi_mapping_or_note_expression_change_needs_no_restart() {
 
 /// Raised beside a restart, the mapping is rebuilt once after the activation
 /// and the note-expression notice is told once.
-///
-/// Mutation: delete the `if midi_cc { tasks.push(..) }` in `plan_restart` and
-/// the rebuild is lost; delete the notice emit there and the notice is lost.
 #[test]
 fn a_mapping_change_beside_a_restart_is_rebuilt_after_the_activation() {
     let s = req(active(RESTARTS, prep(1)), Request::Restart);
@@ -1602,9 +1481,6 @@ fn a_mapping_change_beside_a_restart_is_rebuilt_after_the_activation() {
     assert!(go(s, Event::Tick).1.is_empty());
 }
 
-// Mutation (run): make `State::set_mode` a no-op; the restart's activation
-// carries the old mode and this fails. Make it emit an effect (a plan); the
-// emptiness check fails.
 #[test]
 fn set_mode_changes_the_next_activation_and_restarts_nothing() {
     let p = prep(1);
@@ -1627,10 +1503,6 @@ fn set_mode_changes_the_next_activation_and_restarts_nothing() {
 
 /// **A `Prepare` has a real rate and a block of at least one frame**: no other
 /// one can be built, so a host is never asked to activate at one.
-///
-/// Mutation (run): dropping `is_finite` from `valid_rate` -> infinity builds ->
-/// fails; dropping `> 0.0` -> zero and a negative rate build -> fails;
-/// `with_rate` not calling `valid_rate` -> the `with_rate` assertions fail.
 #[test]
 fn a_prepare_has_a_real_rate_and_a_block() {
     let block = MaxBlock::of(Samples(64));
@@ -1664,10 +1536,6 @@ fn a_prepare_has_a_real_rate_and_a_block() {
 
 /// `MaxBlock` keeps the range contract. It is tested here, not in
 /// `tutti-types`, which dev-depends on no workspace crate.
-///
-/// Mutation (run): `MaxBlock::new` accepting zero -> "new accepted Samples(0)";
-/// the `serde(try_from)` attribute removed -> "deserialize accepted"; `of` not
-/// panicking on zero -> "of accepted".
 #[cfg(feature = "serde")]
 #[test]
 fn a_max_block_keeps_the_range_contract() {
@@ -1682,11 +1550,6 @@ fn a_max_block_keeps_the_range_contract() {
 
 /// `BeatsPerBar` keeps the range contract. It is tested here, not in
 /// `tutti-types`, which dev-depends on no workspace crate.
-///
-/// Mutation (run): `new` accepting 0 (the bound check without the zero test)
-/// fails the helper at "new accepted 0". Not run: the serde attribute, the
-/// error carrying the raw and `of` panicking, which the helper checks the same
-/// way as for `NoteValue` below, whose serde attribute removal was run.
 #[cfg(feature = "serde")]
 #[test]
 fn a_beats_per_bar_keeps_the_range_contract() {
@@ -1701,10 +1564,6 @@ fn a_beats_per_bar_keeps_the_range_contract() {
 }
 
 /// `NoteValue` keeps the range contract: only powers of two from 1 to 64.
-///
-/// Mutation (run): `new` checking only `1..=64` (not `is_power_of_two`) fails
-/// the helper at "new accepted 3"; the `serde(try_from)` attribute removed
-/// fails it at the serde refusal.
 #[cfg(feature = "serde")]
 #[test]
 fn a_note_value_keeps_the_range_contract() {
@@ -1722,9 +1581,6 @@ fn a_note_value_keeps_the_range_contract() {
 /// active, "deactivated" otherwise. A refusal that leaves a plugin deactivated is reachable
 /// only after a failed rollback, which no probe forces, so the sentence is pinned here, where
 /// every loader gets it.
-///
-/// Mutation (run): `standing` always taking the active arm -> the "deactivated" assertion
-/// fails; always the inactive arm -> the "running at" assertion fails.
 #[test]
 fn a_standing_says_running_or_deactivated() {
     assert_eq!(

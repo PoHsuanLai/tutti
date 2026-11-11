@@ -115,10 +115,6 @@ fn phase_wrap_lands_a_negative_phase_in_range() {
 /// the edges of each range, where a sloppier wrap (`v - 1.0` for all
 /// `v >= 1`, or `< 1.0` tested as `<= 1.0`) would hand back `1.0`, which is
 /// not a phase.
-///
-/// Mutation: widening the second range to `1.0..=2.0` returns `1.0` for
-/// `v = 2.0` (where `rem_euclid` gives `0.0`) and fails; dropping the first
-/// range's upper bound returns `1.0` for `v = 1.0` and fails.
 #[test]
 fn the_wrap_shortcuts_are_rem_euclid_exactly() {
     let mut probes = vec![
@@ -191,11 +187,6 @@ fn phase_increment_derives_from_frequency_and_rate() {
 /// the code under test. Up to `2^24` the result is within one `f32` ulp of
 /// it; beyond that only the range is asserted, since the `f64` `2pi` no
 /// longer holds the turn count.
-///
-/// Mutations (run, each fails this test): the old f32 formula
-/// `x - TAU * floor((x + PI) / TAU)` in place of the f64 reduction; the
-/// `s >= PI` fix-up replaced by `if false`; the `x == PI` early return
-/// removed; the in-range early return removed.
 #[test]
 fn wrapped_signed_holds_its_range_exactly() {
     use core::f32::consts::PI;

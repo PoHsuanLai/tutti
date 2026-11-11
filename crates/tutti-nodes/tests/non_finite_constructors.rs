@@ -47,7 +47,7 @@ fn probe(name: &str, bad: f32, make: impl FnOnce() -> Box<dyn Node>) -> Option<S
     }
 }
 
-/// No mutation is claimed beyond `non_finite_inputs.rs`'s (the delay and
+/// Nothing is claimed beyond `non_finite_inputs.rs`'s (the delay and
 /// limiter guards); this sweep widens the net over every constructor.
 #[test]
 fn sweep() {

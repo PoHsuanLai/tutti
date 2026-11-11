@@ -10,9 +10,6 @@ fn collect<const W: usize>(bytes: &[u8]) -> Vec<(Form, [u8; W])> {
 
 // The longest text of each kind, from the packet counts of M2-104 §7.1.4,
 // §7.1.5 and §7.1.9.
-//
-// Mutation record: `Name<N>::from_bytes` refusing `> N` as `>= N` fails the
-// 98/91/42 accepts; as `> N + 1` fails the refusals.
 #[test]
 fn a_name_holds_exactly_what_its_packets_carry() {
     assert!(EndpointName::new(&"a".repeat(98)).is_some());
@@ -23,7 +20,6 @@ fn a_name_holds_exactly_what_its_packets_carry() {
     assert!(ProductInstanceId::new(&"a".repeat(43)).is_none());
 }
 
-// Mutation record: dropping the NUL check in `from_bytes` fails this.
 #[test]
 fn a_nul_cannot_be_in_a_name_because_it_ends_one() {
     assert!(EndpointName::new("a\0b").is_none());
@@ -71,8 +67,7 @@ fn a_leading_byte_order_mark_is_refused() {
     assert!(EndpointName::new("Piano").is_some());
 }
 
-// §7.1.5: ASCII 32 to 126. Mutation record: `32..=126` as `33..=126` fails the
-// space, as `32..=127` fails DEL, as `0..=126` fails the control byte.
+// §7.1.5: ASCII 32 to 126.
 #[test]
 fn an_instance_id_is_printable_ascii() {
     assert!(ProductInstanceId::new(" ~").is_some());
@@ -82,9 +77,7 @@ fn an_instance_id_is_printable_ascii() {
 }
 
 // §7.1.4: "a Complete message (if less than 15 bytes)", else a Start, up to five
-// Continue and an End. Mutation record: `div_ceil` as plain division leaves the
-// tail unsent (the 15-byte case); the `(_, 1)` arm removed makes a short name
-// a Start with no End.
+// Continue and an End.
 #[test]
 fn packets_are_complete_start_continue_end() {
     assert!(collect::<14>(b"").is_empty());
@@ -121,8 +114,6 @@ fn assemble<const N: usize>(parts: &[(Form, &[u8])]) -> Vec<Option<Vec<u8>>> {
         .collect()
 }
 
-// Mutation record: not cutting at the first NUL returns the padding; clearing
-// `len` on `Start` only (not on `Complete`) fails the second case.
 #[test]
 fn the_assembler_cuts_at_the_padding_and_restarts_on_a_start() {
     let out = assemble::<98>(&[
@@ -137,9 +128,6 @@ fn the_assembler_cuts_at_the_padding_and_restarts_on_a_start() {
     assert_eq!(out, [None, Some(b"hi".to_vec())]);
 }
 
-// Mutation record: dropping the `open` check makes the orphan End return text;
-// dropping the capacity check panics on the overlong message; not closing the
-// message on overflow lets the empty End complete it.
 #[test]
 fn the_assembler_drops_what_has_no_start_or_does_not_fit() {
     assert_eq!(assemble::<98>(&[(Form::End, b"zz")]), [None]);
@@ -170,9 +158,6 @@ fn the_packets_of_a_name_reassemble_to_it() {
 }
 
 // §7.1.4, §7.1.5, §7.1.9: a name at its limit is seven, seven and three packets.
-//
-// Mutation record: a limit one higher fails `a_name_holds_exactly_what_its_packets_carry`;
-// a 13-byte split of the Endpoint Name makes it eight packets.
 #[test]
 fn the_longest_names_are_seven_seven_and_three_packets() {
     assert_eq!(

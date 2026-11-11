@@ -18,9 +18,6 @@ use tutti_types::{ChannelLayout, SampleRate, Samples};
 static A: AllocDisabler = AllocDisabler;
 
 /// Blocks with the ring full, then running dry (both branches of the pop).
-///
-/// Mutation (run): collect a block's frames into a `Vec` in `process` -> the
-/// gate aborts -> fails.
 #[test]
 fn inlet_process_is_allocation_free() {
     let (node, mut prod) = InletNode::pair(ChannelLayout::STEREO, Samples(4096));

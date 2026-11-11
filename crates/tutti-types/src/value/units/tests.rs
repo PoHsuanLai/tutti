@@ -14,9 +14,6 @@ use super::*;
 /// The replacement for the omitted `From<raw>` / `From<Unit> for raw`: `new`
 /// and `get` agree with the `Unit` trait's `from_raw` / `to_raw`, one of each
 /// per representation (float, and an integer count).
-///
-/// Mutation: make `new` wrap a different value than `from_raw` (or `get` read
-/// another field) and the equalities below fail.
 #[test]
 fn new_and_get_are_the_one_way_between_a_unit_and_its_raw() {
     assert_eq!(Hz::new(440.0), Hz::from_raw(440.0));
@@ -78,10 +75,6 @@ fn clamp_stays_in_the_unit_type() {
 /// The module's one non-finite rule, for every `new_clamped`: NaN stays
 /// NaN, an infinity lands on the bound on its side, and an unbounded side
 /// stays infinite.
-///
-/// Mutation (run): write `StereoWidth::new_clamped` as `v.max(0.0)` again
-/// → NaN reads as `0.0` → fails; give `Mix::new_clamped` a
-/// `if v.is_nan() { 0.0 }` arm → fails.
 #[test]
 fn every_new_clamped_passes_nan_and_saturates_infinity() {
     let nan = f32::NAN;
@@ -121,10 +114,6 @@ fn every_new_clamped_passes_nan_and_saturates_infinity() {
 
 /// Tiny negatives are within rounding of a whole cycle below zero, and the
 /// documented half-open range holds for them.
-///
-/// Mutation (run): drop the `r >= 1.0` guard in `Phase::wrapped` →
-/// `-1e-9` gives `1.0` → fails. Drop the `r >= 360.0` guard in
-/// `Azimuth::wrap` → `-180.00002` gives `180.0` → fails.
 #[test]
 fn the_wraps_hold_their_half_open_range_at_the_seam() {
     let below_one = 1.0_f32.next_down();

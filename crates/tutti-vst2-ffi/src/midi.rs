@@ -609,9 +609,6 @@ mod tests {
     /// **Draining a full inbox does not allocate**: the out-list was reserved
     /// for the inbox's whole capacity when it was built, and is cleared, not
     /// rebuilt, between blocks.
-    ///
-    /// Mutation (run): `MidiIo::new` building `out` with `MidiEventVec::new()` → the first
-    /// drain grows the list inside the gate → aborts.
     #[test]
     fn draining_a_full_inbox_does_not_allocate() {
         let inbox = Arc::new(ArrayQueue::new(256));
@@ -631,9 +628,6 @@ mod tests {
     /// **A split block's pieces cannot grow the MIDI-out list**: each piece
     /// drains a full inbox, the list holds one inbox's worth, and what does not
     /// fit is counted, not pushed. Inside the no-alloc gate.
-    ///
-    /// Mutation (run): drop the `self.out.len() >= self.room` guard -> the
-    /// second piece grows the list inside the gate -> aborts.
     #[test]
     fn a_split_block_with_full_inboxes_does_not_grow_the_out_list() {
         let inbox = Arc::new(ArrayQueue::new(256));
@@ -805,9 +799,6 @@ mod tests {
     /// `from_midi` is one event: a Program Change with a bank is three, so it
     /// has none (`stage_piece` sends the three), and a MIDI 2.0 Note On at
     /// velocity 0 goes out at velocity 1, not as a MIDI 1.0 Note Off (M2-104).
-    ///
-    /// Mutation (run): `from_midi` returning the first of `midi1`'s messages →
-    /// the bank's CC 0 → fails.
     #[test]
     fn from_midi_is_one_message_or_none() {
         let banked = wire(
@@ -962,10 +953,6 @@ mod tests {
     /// whatever the caller gave: an offset past the block is clamped to its
     /// last frame (as JUCE clamps with `jlimit`) and out-of-order events are
     /// delivered sorted, stably.
-    ///
-    /// Mutation (run): drop the `insertion_sort_by_key` -> delivered in input
-    /// order -> fails. Mutation (run): `delta_in_piece` without the `.min(last)`
-    /// -> the event at 9000 is dropped as out of the block -> fails.
     #[test]
     fn stage_clamps_and_sorts_delta_frames() {
         let mut buf = MidiSendBuffer::new();
@@ -977,9 +964,6 @@ mod tests {
 
     /// A piece of a split block gets the events that fall in it, rebased to
     /// the piece, and each event is delivered in exactly one piece.
-    ///
-    /// Mutation (run): rebase by nothing (`at` for `at - start`) -> the second
-    /// piece reads 70 -> fails.
     #[test]
     fn stage_piece_delivers_each_event_once_rebased() {
         let mut buf = MidiSendBuffer::new();
@@ -1005,9 +989,6 @@ mod tests {
     /// completed the run and discarded it as out-of-piece, piece 1 then saw
     /// the `END` with no run open, and a run still open at the block's end
     /// was counted dropped once per extra piece.
-    ///
-    /// Mutation (run): assemble in every piece (`begin_block` and the feed
-    /// outside the `start == 0` guard) -> piece 1 delivers nothing -> fails.
     #[test]
     fn a_sysex_ending_in_a_later_piece_is_delivered_once() {
         let body: Vec<u8> = (0..20).map(|i| i as u8 + 1).collect();
@@ -1042,9 +1023,6 @@ mod tests {
     /// **A SysEx keeps its input position among events at the same frame**:
     /// one whose `END` is listed before a note at that frame reaches the
     /// plugin first.
-    ///
-    /// Mutation (run): stage the completed SysEx after every plain event
-    /// (a second loop) -> the note comes first -> fails.
     #[test]
     fn a_sysex_keeps_input_order_at_an_equal_frame() {
         let body: Vec<u8> = (0..20).map(|i| i as u8 + 1).collect();
@@ -1101,10 +1079,6 @@ mod tests {
     /// A Program Change with a bank reaches the plugin as CC 0, CC 32, PC at one
     /// offset, in that order, each in its own slot. With room for fewer than
     /// three, none is staged and all three are counted.
-    ///
-    /// Mutation (run): `stage_piece` sending the event through `from_midi` (one
-    /// message) → only the PC → fails; staging each message on its own room
-    /// check (the old per-message loop) → a partial bank → fails.
     #[test]
     fn a_banked_program_change_stages_as_three_events() {
         let pc = at(
@@ -1157,9 +1131,6 @@ mod tests {
     /// **A multi-packet SysEx reaches the plugin as one `SysExEvent`**, in
     /// order beside the block's MIDI, `0xF0 … 0xF7`; one spanning two blocks
     /// arrives in the second.
-    ///
-    /// Mutation (run): `stage` sending every event through `from_midi` (no
-    /// reassembly) → no SysEx event → fails.
     #[test]
     fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         let body: Vec<u8> = (0..40).collect();
@@ -1205,10 +1176,6 @@ mod tests {
     /// past it is refused and counted.** Notes and complete SysEx messages
     /// fill every list (`api_events`, `sysex_events`, `order`, `header`) to
     /// [`MIDI_STACK_CAPACITY`]; then one more of each.
-    ///
-    /// Mutation (run): `new()` reserving the old 64 events → the lists grow
-    /// inside the gate → aborts. Mutation (run): the `full` refusal removed
-    /// → the lists grow past their room → aborts.
     #[test]
     fn staging_the_whole_cap_does_not_allocate() {
         let note = at(
@@ -1246,10 +1213,6 @@ mod tests {
     /// are valid, banked, undefined and malformed goes through `stage_piece`
     /// inside `assert_no_alloc`; only System, MIDI 1.0 and MIDI 2.0 channel
     /// voice packets stage anything.
-    ///
-    /// Mutation (run): the message-type gate removed from
-    /// `to_midi1_messages` → a Flex Data or Stream packet reaches the
-    /// `midi2` decoder and `assert_no_alloc` aborts.
     #[test]
     fn staging_a_packet_of_any_message_type_allocates_nothing() {
         const BODIES: [u32; 8] = [
@@ -1281,8 +1244,6 @@ mod tests {
 
     /// **The staged `api::Events` pointer is 8-aligned for every list size**,
     /// and its pointer table starts at the flexible array's offset.
-    ///
-    /// Mutation (run): return `words_ptr.byte_add(1)` from `stage_piece` → fails.
     #[test]
     fn the_staged_events_pointer_is_8_aligned() {
         let note = at(
@@ -1312,9 +1273,6 @@ mod tests {
 
     /// **A SysEx left open by a later `START` is dropped whole and counted**,
     /// and the later one arrives.
-    ///
-    /// Mutation (run): the assembler's `START` not abandoning the open run
-    /// → the two are spliced and delivered → fails.
     #[test]
     fn a_start_left_open_is_dropped_and_counted() {
         let a: Vec<u8> = (0..30).collect();

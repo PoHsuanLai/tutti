@@ -843,9 +843,6 @@ mod tests {
 
     /// A ramp event starts on its frame and lands on its target on its last
     /// frame; a zero-length one is a step on its frame.
-    ///
-    /// Mutation (run): `step` interpolating one frame behind (`(done - 1) /
-    /// len`) → the ramp's first frame stays at 0 → fails.
     #[test]
     fn a_ramp_lands_on_its_last_frame() {
         let ev = |at: usize, t: f32, len: usize| {
@@ -872,10 +869,6 @@ mod tests {
     /// A segment and then a ramp on one frame, as a source's first events:
     /// the ramp replaces the segment from the base at that frame, as it
     /// would alone, under a base that moves every frame.
-    ///
-    /// Mutation (run): drop the base seed from `render_ramps`' segment arm
-    /// → the ramp starts from the never-written value 0 (frame 4 reads 0
-    /// for 2.5) → fails.
     #[test]
     fn a_ramp_after_a_first_segment_on_its_frame_starts_from_the_base() {
         use crate::event::ParamSegment;
@@ -914,10 +907,6 @@ mod tests {
     /// A linear ramp renders what the port rendered before ramps had a
     /// shape, bit for bit: `from + (target - from) · (done / len)`, written
     /// out here, at every frame of ramps of many lengths and spans.
-    ///
-    /// Mutation (run): `step` taking `t` as `done · (1 / len)` (a reciprocal
-    /// multiply, a different rounding) → some frame differs in its last bit
-    /// → fails.
     #[test]
     fn a_linear_ramp_renders_the_unshaped_bits() {
         for len in [1usize, 2, 3, 7, 10, 64, 97, 1000] {
@@ -946,9 +935,6 @@ mod tests {
     }
 
     /// A list a node cannot declare is a named error, not a panic.
-    ///
-    /// Mutation (run): drop the duplicate check from `try_new` → the
-    /// repeated list is accepted → fails.
     #[test]
     fn an_undeclarable_list_is_a_named_error() {
         use UnitParam::*;

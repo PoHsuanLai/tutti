@@ -332,11 +332,6 @@ mod off_main_tests {
     /// tick**, with the real values: the state equals one saved on the main
     /// thread, and the parameter reads what was written. This is what the
     /// session's snapshot and parameter-mirror jobs do.
-    ///
-    /// Mutation (run): `on_main` answering `None` off the main thread -> the
-    /// state is `Unavailable` and the value `None` -> fails. Mutation (run): the
-    /// test not calling `run_deferred` -> the calls wait out the deadline and
-    /// answer "unavailable" -> fails.
     #[test]
     fn a_pool_threads_calls_are_answered_by_the_main_threads_tick() {
         let main = main_thread();
@@ -366,9 +361,6 @@ mod off_main_tests {
 
     /// **With nothing pumping the main thread, an off-main call answers
     /// "unavailable" after the deadline**, not never.
-    ///
-    /// Mutation (run): `recv_timeout` replaced by `recv` -> the thread never
-    /// returns -> the test hangs.
     #[test]
     fn an_unpumped_main_thread_gets_the_unavailable_answer() {
         let _main = main_thread();
@@ -390,10 +382,6 @@ mod off_main_tests {
     /// the probe's parameters, the value is the one written, and the text
     /// and parse are the plugin's own (a text it cannot parse is `None`, never a
     /// default that looks like an answer).
-    ///
-    /// Mutation (run): `parameter_descriptors` returning `None` -> the catalog
-    /// assertion fails. Mutation (run): `parameter_value` ignoring the id
-    /// (reading parameter 0) -> the value assertion fails.
     #[test]
     fn the_parameter_reads_answer_on_the_main_thread() {
         let _main = main_thread();
@@ -419,9 +407,6 @@ mod off_main_tests {
 
     /// **A parameter write lands on the plugin** (on the main thread it runs at
     /// once, under the instance's lock).
-    ///
-    /// Mutation (run): `set_parameter_value` doing nothing -> the read-back
-    /// is still 0.75 -> fails.
     #[test]
     fn a_parameter_write_lands_on_the_plugin() {
         let _main = main_thread();
@@ -440,9 +425,6 @@ mod off_main_tests {
 
     /// **The state saved on the main thread is the plugin's own**: not
     /// `Unavailable` (nothing waited) and not empty.
-    ///
-    /// Mutation (run): `save_state` answering `Err(Unavailable)` on the main
-    /// thread too -> fails.
     #[test]
     fn the_state_saves_on_the_main_thread() {
         let _main = main_thread();
@@ -453,8 +435,6 @@ mod off_main_tests {
 
     /// **The render mode is accepted** (VST2 answers the process level from a
     /// host callback, so there is nothing to decline).
-    ///
-    /// Mutation (run): `set_render_mode` returning `false` -> fails.
     #[test]
     fn the_render_mode_is_accepted_on_the_main_thread() {
         let _main = main_thread();
@@ -466,8 +446,6 @@ mod off_main_tests {
     /// **No in-process format carries the automation advisory**, and says so
     /// with the editor's `GuiNotSupported` for its format, as the handle with
     /// no such route always did.
-    ///
-    /// Mutation (run): `set_automation_mode` answering `Ok(())` -> fails.
     #[test]
     fn the_automation_advisory_is_not_supported_in_process() {
         let _main = main_thread();
@@ -483,9 +461,6 @@ mod off_main_tests {
 
     /// **An in-process plugin is never observed dead**: alive, no refusal,
     /// zero block counts, and a `terminate` that ends nothing.
-    ///
-    /// Mutation (run): `is_crashed` returning `true` -> `status` reads `Dead`
-    /// -> fails.
     #[test]
     fn an_in_process_plugin_is_never_observed_dead() {
         let _main = main_thread();
@@ -508,9 +483,6 @@ mod off_main_tests {
     /// pumps the main thread**: the catalog and the text are `None`, a render
     /// mode is refused (`false`), never a default that looks like an answer.
     /// (The advisory needs no main thread: it refuses at once.)
-    ///
-    /// Mutation (run): `set_render_mode`'s `unwrap_or(false)` replaced by
-    /// `unwrap_or(true)` -> the refusal reads accepted -> fails.
     #[test]
     fn an_unpumped_main_thread_refuses_the_other_calls_too() {
         let _main = main_thread();

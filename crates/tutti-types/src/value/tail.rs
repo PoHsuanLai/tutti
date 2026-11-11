@@ -274,10 +274,6 @@ mod tests {
     /// CLAP reads every value at or above `INT32_MAX` as infinite, so
     /// `INT32_MAX` itself and everything up to `u32::MAX` decode to
     /// `Unbounded`, while one below stays finite.
-    ///
-    /// Mutation (run): `n if n == u32::MAX` as the unbounded arm (the shared
-    /// decode this replaced) → `INT32_MAX` reads as a finite 12-hour tail
-    /// → fails; `n > i32::MAX as u32` → `INT32_MAX` itself is finite → fails.
     #[test]
     fn from_clap_samples_reads_int32_max_and_above_as_infinite() {
         let int32_max = i32::MAX as u32;
@@ -297,10 +293,6 @@ mod tests {
 
     /// Seconds: `+∞` is unbounded, zero is none, a finite span rounds up, and
     /// NaN, negatives and `-∞` are unknown rather than unbounded or none.
-    ///
-    /// Mutation (run): the old AU decode (`!is_finite()` → `Unbounded`, then
-    /// `to_samples_ceil`) → NaN and `-∞` read as `Unbounded` and a negative
-    /// span as `None` → fails.
     #[test]
     fn from_seconds_reads_only_plus_infinity_as_unbounded() {
         let rate = SampleRate(48_000.0);

@@ -448,8 +448,6 @@ mod tests {
     use tutti_graph::contract::{assert_param_fork, drive};
 
     /// The strip measured as a `Light` node, at every width.
-    ///
-    /// Mutation (run): back to `Cost::Moderate` → fails.
     #[test]
     fn the_strip_is_light() {
         for layout in [ChannelLayout::MONO, ChannelLayout::STEREO] {
@@ -473,9 +471,6 @@ mod tests {
 
     /// A fork starts from the values last set through the strip's
     /// `ParamSet` and shares no cell with it.
-    ///
-    /// Mutation (run): skip `fork.pan.detach()` in `fork_fresh` → "a live
-    /// write reached the fork" for `Pan` → fails.
     #[test]
     fn a_fork_shares_no_cell() {
         assert_param_fork(BusStripNode::new());
@@ -544,9 +539,6 @@ mod tests {
     }
 
     /// The shape declares volume then pan, and never changes the arity.
-    ///
-    /// Mutation (run): swap `STRIP_PARAMS`' order → the first assertion
-    /// fails, and `a_fed_volume_overrides_the_atomic` reads the pan.
     #[test]
     fn the_shape_declares_volume_then_pan() {
         let s = BusStripNode::with_channels(ChannelLayout::from(6u16));
@@ -576,9 +568,6 @@ mod tests {
     /// Starting or stopping a feed is not ramped by the strip, so the gain
     /// is never applied twice across the block: the fed value takes over
     /// from its first frame, where the graph's declick puts it at the base.
-    ///
-    /// Mutation (run): drop the `last_fed` guard (ramp from the previous control
-    /// share) → the first fed block starts at volume² (0.25) → fails.
     #[test]
     fn starting_a_feed_does_not_apply_the_gain_twice() {
         let mut s = BusStripNode::new();
@@ -625,9 +614,6 @@ mod tests {
 
     /// One block renders what the same frames do one at a time, while the
     /// controls hold: the ramp is the only thing block length changes.
-    ///
-    /// Mutation (run): read frame 0 for every frame in `render` →
-    /// a frame at a time is unchanged, the block is not → fails.
     #[test]
     fn a_block_matches_its_frames() {
         let mut framed = BusStripNode::new();
@@ -687,12 +673,6 @@ mod tests {
     ///
     /// A fader that stepped would make the move on a full-scale signal a
     /// full-scale step — a click.
-    ///
-    /// Mutation: rendering `target` unconditionally in `render` (no ramp) makes
-    /// the move a step of 1.0 and fails the step bound on both edges; ramping
-    /// with `from + (to - from) * t` instead of the exact-endpoint form is caught
-    /// by the `== 0.0` assertion only when the rounding bites, so it is not
-    /// claimed as covered here.
     #[test]
     fn a_fader_pulled_to_zero_ramps_instead_of_clicking() {
         const BLOCK: usize = 64;
@@ -739,11 +719,6 @@ mod tests {
     /// A fader move is reached by a linear ramp across one block, starting from
     /// where the last block ended — not by a step, and not per sample from the
     /// atomic.
-    ///
-    /// Mutation: rendering `target` unconditionally (no ramp) makes the first
-    /// frame 0.5 and fails the "first frame is still near the old level"
-    /// assertion; starting the ramp at `t = 0` instead of `t = 1/size` never
-    /// reaches the target in-block and fails the last-frame assertion.
     #[test]
     fn volume_change_ramps_across_one_block() {
         const BLOCK: usize = 32;
@@ -770,10 +745,6 @@ mod tests {
     /// The first block after construction — or after `reset` — has no previous
     /// output to be continuous with, so it starts *at* its target. A strip built
     /// at zero must not fade in from unity for a block before going silent.
-    ///
-    /// Mutation: seeding `ramp_from` with unity gains instead of `None` (in the
-    /// constructor or in `reset`) makes the first frame of each render below
-    /// non-zero and fails.
     #[test]
     fn a_fresh_or_reset_strip_starts_at_its_target() {
         let mut s = BusStripNode::new();
@@ -797,10 +768,6 @@ mod tests {
     /// linear ramp `from·(1−t) + to·t` at `t = (i+1)/n`, at a block length
     /// no SIMD width divides (so a vectorised loop's tail is covered), and
     /// lands exactly on the target.
-    ///
-    /// Mutations (run): the ramping branch of `render` applying the steady
-    /// target alone → frame 0 is 0.5, not ≈1 → fails; the ramp's `t` as
-    /// `i / n` → the last frame misses the target → fails.
     #[test]
     fn every_channel_ramps_linearly_past_the_simd_width() {
         const N: usize = 67;
@@ -828,12 +795,6 @@ mod tests {
 
     /// A fader ramp under a fed pan is the product of the two:
     /// `ramp(volume)[i] · balance(pan[i])` on each channel, frame by frame.
-    ///
-    /// Mutations (run): the ramping-and-fed branch of `render` dropping the
-    /// ramp (`steady · fed`) → frame 0 is 0.5, not ≈1 → fails; `fed_gain`
-    /// taking the left side for both channels of the pair → the right is
-    /// halved → fails; `fed_gain` without its past-the-pair case → the
-    /// third channel takes the left side's balance → fails.
     #[test]
     fn a_fader_ramp_under_a_fed_pan_is_their_product() {
         const N: usize = 37;

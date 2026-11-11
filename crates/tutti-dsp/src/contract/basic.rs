@@ -46,8 +46,6 @@ pub(super) mod design {
     use super::*;
 
     /// `bounds()` dominates `design()` in every figure for every control.
-    ///
-    /// Mutation: `bounds` one line short.
     pub fn bounds_dominate<D: DesignCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             let ceiling = d.ceiling(rate);
@@ -65,8 +63,7 @@ pub(super) mod design {
 
     /// The same controls give the same network, however often they are asked.
     ///
-    /// Mutation: the design reads a counter (a stand-in for a clock). The
-    /// no-allocation half is `tests/network_alloc.rs`.
+    /// The no-allocation half is `tests/network_alloc.rs`.
     pub fn pure<D: DesignCase>(d: &D) -> Result<(), String>
     where
         D::Model: PartialEq,
@@ -84,9 +81,6 @@ pub(super) mod design {
 
     /// Every hook of [`DesignCase`] that returns a list returns something, or the
     /// design says why it cannot ([`DesignCase::vacant`]).
-    ///
-    /// Mutations (run, in `reverb_design.rs`): `hostile` returning no controls and
-    /// unlisted fails; a hook listed as vacant that returns controls fails.
     pub fn vacuity<D: DesignCase>(d: &D) -> Result<(), String> {
         if d.reachable().is_empty() {
             return Err("no reachable controls".into());
@@ -103,10 +97,6 @@ pub(super) mod realization {
     /// frames in (the model's own shortest path, pre-delay included, and the
     /// realization's declared latency),
     /// on the earliest channel, and on no channel before.
-    ///
-    /// Mutations: the realization's output delayed by one frame (its `latency` still
-    /// says the same); a `latency` that claims one frame more than the realization
-    /// delays.
     pub fn arrival<D: RealizationCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.static_probes() {
@@ -131,8 +121,6 @@ pub(super) mod realization {
 
     /// The realization declares the model's own latency (zero for a time-domain
     /// model, a partition for a FIR), never a pre-delay or a tap spacing.
-    ///
-    /// Mutation: a realization that declares one frame more than it has.
     pub fn latency<D: RealizationCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.static_probes() {
@@ -155,10 +143,6 @@ pub(super) mod realization {
     /// two steady states' (each measured on a realization left at its controls). A
     /// tone, not noise: its steady jumps are small, so a step in a gain or a
     /// jump in a delay is a jump many times them, where noise hides it.
-    ///
-    /// Mutations: the realization scales its output by 4 from its second retarget on,
-    /// a gain applied unslewed (a `Defective` test); an FDN that takes its new
-    /// gains, or its new line lengths, whole (run by hand on `fdn.rs`).
     pub fn click_free<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let second = rate.get() as usize;
@@ -202,8 +186,6 @@ pub(super) mod realization {
 
     /// After `reset` the realization renders bit for bit what a freshly built one
     /// does, at the same controls.
-    ///
-    /// Mutation: a `reset` that does nothing.
     pub fn reset<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
@@ -222,8 +204,6 @@ pub(super) mod realization {
 
     /// `fresh()` of a used realization renders bit for bit what a freshly built one
     /// does, at the same controls: state gone, coefficients kept.
-    ///
-    /// Mutation: a `fresh` that keeps the state (a plain clone).
     pub fn fresh<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
@@ -247,10 +227,6 @@ pub(super) mod realization {
     /// block-anchored design skips the two cases by saying so, and a stream
     /// grid cannot leave them out. `listed` is whether the macro was given the
     /// group.
-    ///
-    /// Mutations (run, in `fdn_design.rs`): the FDN's `CADENCE` set to `BLOCK`
-    /// fails (the group is listed, the cadence is not stream-anchored); the
-    /// FDN's contract line without `BlockIndependent` fails (the cadence is).
     pub fn cadence<D: RealizationCase>(_: &D, listed: bool) -> Result<(), String> {
         match (D::CADENCE.block_independent(), listed) {
             (true, false) => Err(
@@ -268,8 +244,6 @@ pub(super) mod realization {
     /// The output does not depend on how the input is cut into blocks: blocks of
     /// 1, 17 and 64 frames render bit for bit what blocks of 512 do (a
     /// time-domain realization; a convolver would declare its own tolerance).
-    ///
-    /// Mutation: a gain that depends on the block's length.
     pub fn block_independent<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
@@ -295,12 +269,6 @@ pub(super) mod realization {
     /// settled reference (built at `b`, used, reset: at `b` with silent state):
     /// a realization retargeted once to `b`; one at `a` retargeted to `b` and
     /// reset mid-ramp; and the `fresh()` of that one.
-    ///
-    /// Mutations (run, in `fdn_design.rs`): `Defect::RampFirst` (the first
-    /// retarget goes to a model that is not the target, and the target ramps) fails
-    /// the first render; `Realized::reset` that empties the lines and leaves
-    /// the glides where they were (a test-only flaw) fails the second and the
-    /// third.
     pub fn landed<D: RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let probe = noise(9, 8192, 1.0);
@@ -347,9 +315,6 @@ pub(super) mod realization {
     /// plain `block_independent` case holds one retarget; this one moves the
     /// controls through the render, where a ramp that restarts at a block's edge
     /// shows.
-    ///
-    /// Mutation (run, in `fdn_design.rs`): `Realized::process` that restarts its
-    /// step count at every call (a test-only flaw) fails.
     pub fn stream_clock<D: RealizationCase>(d: &D) -> Result<(), String> {
         const SPAN: usize = 8704;
         let rate = rate_of(d);
@@ -389,9 +354,6 @@ pub(super) mod realization {
 
     /// Every hook of [`RealizationCase`] that returns a list returns something, or
     /// the design says why it cannot ([`DesignCase::vacant`]).
-    ///
-    /// Mutation (run, in `reverb_design.rs`): `steps` returning nothing, unlisted,
-    /// fails.
     pub fn vacuity<D: RealizationCase>(d: &D) -> Result<(), String> {
         check_vacuity(
             d.vacant(),
@@ -415,9 +377,6 @@ mod tests {
     /// A hook that returns nothing and is not listed fails, one that is listed and
     /// returns something fails, a listing without a reason fails, and the other
     /// two rows pass.
-    ///
-    /// Mutations (run): dropping the `(true, None)` arm fails the first; the
-    /// `(false, Some)` arm the second; the empty-reason arm the third.
     #[test]
     fn vacuity_names_the_unlisted_empty_hook_and_the_listed_full_one() {
         let listed = [(Hook::Steps, "no steps")];
@@ -442,8 +401,6 @@ mod tests {
 
     /// The realization-level case reads the realization hooks of a design: Freeverb
     /// lists none of them as vacant, so listing one it fills fails.
-    ///
-    /// Mutation (run): `steps` dropped from the list the case reads fails this.
     #[test]
     fn the_realization_vacuity_reads_the_realization_hooks() {
         let mut m = Mutant::new(FreeverbDesign, |_| {});

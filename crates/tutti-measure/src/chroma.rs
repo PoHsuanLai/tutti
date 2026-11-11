@@ -686,8 +686,6 @@ mod tests {
     /// Parabolic interpolation of the log magnitude places a Hann peak within
     /// 0.02 bin (measured worst 0.016) wherever it falls in a bin; the raw
     /// peak bin is up to half a bin off.
-    ///
-    /// Mutation checked: returning offset 0 fails at 0.5 bins.
     #[test]
     fn interpolation_places_a_peak_to_a_fiftieth_of_a_bin() {
         assert!(worst_offset_error(interpolate) <= INTERP_BIAS_BINS);
@@ -707,10 +705,6 @@ mod tests {
 
     /// Silence is all zero and finite, a sine under -90 dBFS is silence and one
     /// above is not, and no frame is NaN.
-    ///
-    /// Mutation checked: a floor of -150 dB reads the 1e-5 sine (-100 dBFS)
-    /// as pitched and fails the second assertion; dropping the `max > 0`
-    /// guard in `step_chroma` makes 0/0 and fails the first.
     #[test]
     fn a_silent_frame_is_zero_not_nan() {
         let silent = run(&vec![0.0; 8192], &cfg());
@@ -723,8 +717,6 @@ mod tests {
     }
 
     /// A pitched frame's largest column is exactly 1, whatever the level.
-    ///
-    /// Mutation checked: skipping the division fails at the level 0.1 case.
     #[test]
     fn a_frame_is_normalized_by_its_largest_column() {
         for level in [0.1, 0.9] {
@@ -740,10 +732,6 @@ mod tests {
     /// C (a third of it, 130.7 Hz); the fourth subharmonic, 98 Hz, is under the
     /// band's 100 Hz floor and does not vote. With decay 0.6 the energies are
     /// G = 1 + 0.6, C = 0.6^2, so C reads `0.36 / 1.6 = 0.225`.
-    ///
-    /// Mutation checked: letting 98 Hz vote (no `break`) makes G 1.816 and C
-    /// 0.198; a decay of 0.5 makes C 0.25/1.5 = 0.167; each fails the 0.01
-    /// tolerance.
     #[test]
     fn a_peak_votes_for_its_subharmonics_down_to_the_band_floor() {
         let c = run(&sine(392.0, 8192, 0.5), &cfg()).mean();
@@ -757,8 +745,6 @@ mod tests {
     }
 
     /// Partials outside the band do not fold.
-    ///
-    /// Mutation checked: a default `min_freq` of 50 Hz reads the 80 Hz sine.
     #[test]
     fn peaks_outside_the_band_are_not_folded() {
         for freq in [80.0, 6000.0] {
@@ -770,8 +756,6 @@ mod tests {
     /// A sine's tuning is its distance from the grid, within the interpolation
     /// bias at its frequency: 0.02 bin is `1200 log2(1 + 0.02 w / f)` cents,
     /// `w = 22050 / 4096` Hz. The mean wraps: +45 and -55 are the same.
-    ///
-    /// Mutation checked: negating the estimate fails every non-zero case.
     #[test]
     fn the_tuning_of_a_sine_is_its_distance_from_the_grid() {
         let width = 22_050.0 / 4096.0;
@@ -786,8 +770,6 @@ mod tests {
 
     /// The tuning is subtracted before a peak is rounded to a class: a sine
     /// 30 cents above A folds to A at +30 and to A# at -30 (60 cents up).
-    ///
-    /// Mutation checked: folding without the tuning puts both on A.
     #[test]
     fn a_fixed_tuning_moves_the_fold() {
         let x = sine(440.0 * (30.0f64 / 1200.0).exp2(), 8192, 0.5);
@@ -803,9 +785,6 @@ mod tests {
 
     /// Streaming at the batch's tuning gives the batch's frames to the bit and
     /// the same mean; the carry counts frames and resets.
-    ///
-    /// Mutation checked: reading each batch frame one sample late fails the
-    /// bit equality.
     #[test]
     fn streaming_at_a_fixed_tuning_is_the_batch() {
         let x: Vec<f32> = sine(440.0, 12_000, 0.5)
@@ -830,8 +809,6 @@ mod tests {
     }
 
     /// With an estimated tuning the state reads the peaks seen so far.
-    ///
-    /// Mutation checked: not accumulating the sums leaves the tuning at 0.
     #[test]
     fn a_running_estimate_follows_the_peaks_seen() {
         let x = sine(440.0 * (25.0f64 / 1200.0).exp2(), 4096, 0.5);
@@ -842,8 +819,6 @@ mod tests {
     }
 
     /// A settings change resets the carry rather than mixing two grids.
-    ///
-    /// Mutation checked: comparing no config (never resetting) keeps 2 frames.
     #[test]
     fn a_new_config_resets_the_carry() {
         let (mut state, mut fft) = (ChromaState::new(), FftScratch::new());
@@ -856,10 +831,6 @@ mod tests {
 
     /// A frame that is refused leaves the carry alone, even under a config
     /// that differs, and `reset` reads like a fresh state.
-    ///
-    /// Mutation checked: adopting the config before the checks resets the carry
-    /// on the bad frame and fails the first block; resetting only the frame
-    /// count leaves the tuning and fails the second.
     #[test]
     fn a_refused_frame_keeps_the_carry_and_reset_reads_fresh() {
         let (mut state, mut fft) = (ChromaState::new(), FftScratch::new());
@@ -881,9 +852,6 @@ mod tests {
     }
 
     /// Every setting is validated, NaN and infinity included.
-    ///
-    /// Mutation checked: raising `MAX_HARMONICS` to 17 fails the 17 case;
-    /// removing the `!(..)` NaN form of the decay check fails the NaN case.
     #[test]
     fn settings_are_validated() {
         let bad = |r: Result<ChromaConfig>| matches!(r, Err(Error::InvalidTonalParameter(_)));
@@ -927,10 +895,6 @@ mod tests {
     }
 
     /// Bad input is an error, and a refused call computes nothing.
-    ///
-    /// Mutation checked: dropping the whole-buffer finite scan lets the gap NaN
-    /// through (each frame's own check still catches the others); `MAX_FRAMES
-    /// + 1` in the cap fails the frame-count case.
     #[test]
     fn bad_input_is_refused() {
         let mut fft = FftScratch::new();

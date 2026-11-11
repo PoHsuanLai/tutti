@@ -654,9 +654,6 @@ pub struct Events {
 /// let raw = Events { num_events: i32::MAX, _reserved: 0, events: [std::ptr::null_mut(); 2] };
 /// let _ = raw.plugin_events();
 /// ```
-///
-/// Mutation (run): make `PluginEvents::new` or its field `pub`, or put an `iter` back on
-/// `Events`: the matching doctest compiles and fails.
 #[derive(Debug)]
 pub struct PluginEvents<'a> {
     events: &'a Events,
@@ -686,9 +683,6 @@ pub enum PluginEvent<'a> {
 /// # use tutti_vst2_ffi::api::SysExEvent;
 /// fn go(e: &SysExEvent) { let _ = e.payload(); }
 /// ```
-///
-/// Mutation (run): make the fields `pub`, or give `SysExEvent` a `payload` again: the matching
-/// doctest compiles and fails.
 #[derive(Debug)]
 pub struct SysExMessage<'a> {
     delta_frames: i32,
@@ -1431,9 +1425,6 @@ mod tests {
     }
 
     /// A negative event count is no events, not `usize::MAX` of them.
-    ///
-    /// Mutation (run): `num_events as usize` in `events_raw`: the slice is built
-    /// with a length of about 2^64 and iterating it dereferences a null pointer.
     #[test]
     fn a_negative_event_count_is_empty() {
         let events = Events {
@@ -1448,9 +1439,6 @@ mod tests {
     }
 
     /// A null entry in the event array is skipped, not read.
-    ///
-    /// Mutation (run): remove the `filter` in `Events::events`: the null entry is
-    /// dereferenced and the test aborts on a signal.
     #[test]
     fn a_null_event_entry_is_skipped() {
         let events = Events {

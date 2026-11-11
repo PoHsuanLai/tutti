@@ -42,10 +42,6 @@ const LIMITS: Limits = Limits {
 
 /// Past the limits, a commit and a re-prepare are refused and nothing is
 /// sent; within them, both go through.
-///
-/// Mutation: drop the output check from `commit` → the 10-output commit is
-/// sent → fails. Drop the block check from `reprepare` → the 2048-frame
-/// re-prepare starts → fails.
 #[test]
 fn commits_and_re_prepares_past_the_limits_are_refused() {
     let (mut ed, mut exec) = Editor::new(prep(512));
@@ -86,10 +82,6 @@ fn commits_and_re_prepares_past_the_limits_are_refused() {
 
 /// Limits that what was already sent breaks are refused, and change
 /// nothing.
-///
-/// Mutation: skip the sent-plan check in `set_limits` → accepted → fails.
-/// Skip the `Prepare` check → the 512 limit is accepted over a 1024
-/// `MaxBlock` → fails.
 #[test]
 fn limits_below_what_was_sent_are_refused() {
     let (mut ed, _exec) = Editor::new(prep(1024));
@@ -113,8 +105,6 @@ fn limits_below_what_was_sent_are_refused() {
 }
 
 /// An editor knows its own executor.
-///
-/// Mutation: make `same_pair` return `true` → fails.
 #[test]
 fn an_editor_knows_its_executor() {
     let (ed, exec) = Editor::new(prep(64));
@@ -125,10 +115,6 @@ fn an_editor_knows_its_executor() {
 
 /// Limits only tighten: a looser (or no) limit after a host set one changes
 /// nothing, so no caller can let through a graph the host cannot run.
-///
-/// Mutation (run): take `limits` as given in `set_limits` (no per-field min)
-/// → `Limits::NONE` lifts the bound and the 10-output commit is sent →
-/// fails.
 #[test]
 fn limits_only_tighten() {
     let (mut ed, _exec) = Editor::new(prep(512));

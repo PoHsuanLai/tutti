@@ -50,9 +50,6 @@ fn skewed(s: &mut Session) -> (tutti_graph::NodeKey, Samples) {
 
 /// **A graph where nothing reports latency has no figure to display**: the
 /// total is zero and the table has a zero per output.
-///
-/// Mutation (run, failed): `Session::publish_sent` publishing a total one
-/// frame too long.
 #[test]
 fn a_graph_with_no_latency_reports_none() {
     let mut s = detached();
@@ -76,10 +73,6 @@ fn a_graph_with_no_latency_reports_none() {
 /// a DAW displays is exactly the one the table does not contain. Nothing is
 /// spliced in to get there: both outputs still read the nodes they were
 /// wired to.
-///
-/// Mutations (each run, each failed): `Session::publish_sent` publishing the
-/// channels reversed -> the table and the sent plan disagree on both
-/// channels; `Session::commit` not publishing on `Sent` -> the table is empty.
 #[test]
 fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
     let mut s = detached();
@@ -126,10 +119,6 @@ fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
 /// plan, and a clean session sends none. The graph's own inserts edit it, so
 /// the first update commits; a sentinel published into the table after that
 /// must survive an update with no edit.
-///
-/// Mutation (run, failed): the session's `Commit` phase committing whether or
-/// not the graph is edited -> the second update republishes the plan's table
-/// over the sentinel.
 #[test]
 fn an_update_with_no_edit_publishes_nothing() {
     let mut s = detached();
@@ -148,9 +137,6 @@ fn an_update_with_no_edit_publishes_nothing() {
 /// and on one with no latency: the fold (`latency_plan`, what a readout
 /// reads) is what the compiled plan compensates by, zeros and all (the fold
 /// reports no channels when nothing is latent; the plan a zero per output).
-///
-/// Mutation (run, failed): `Graph::planned_compensation` returning the plan's
-/// channels reversed -> the skewed graph's two figures differ.
 #[test]
 fn the_latency_fold_and_the_compiled_plan_agree() {
     fn figures(s: &Session) -> (Vec<Samples>, Samples) {
@@ -188,9 +174,6 @@ fn the_latency_fold_and_the_compiled_plan_agree() {
 /// time, so its latency in samples moves with the rate, and the resumed plan
 /// compensates by the new figure: the update whose collect resumes the plan
 /// publishes its figures.
-///
-/// Mutation (run, failed): the session's `Commit` phase not publishing on a
-/// resume (`publish_sent` skipped) -> the 44.1 kHz figure stays published.
 #[test]
 fn a_re_prepare_republishes_the_figures_once_it_resumes() {
     let mut s = detached();

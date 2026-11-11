@@ -345,10 +345,6 @@ mod tests {
         db
     }
 
-    // Mutation records: the edit that breaks each test.
-
-    /// Mutation: ignore `Remove`, or make `Put` keep the row already there
-    /// (`entry().or_insert`).
     #[test]
     fn apply_puts_replaces_and_removes_a_row() {
         let mut db = db_with("/p/a.vst3", row(T));
@@ -362,13 +358,11 @@ mod tests {
         assert!(db.is_empty());
     }
 
-    /// Mutation: return `false` for an absent row.
     #[test]
     fn a_path_with_no_row_needs_a_rescan() {
         assert!(PluginDb::new().needs_rescan(Path::new("/p/unknown.vst3"), &facts(T)));
     }
 
-    /// Mutation: pass the facts through unread, or invert the comparison.
     #[test]
     fn needs_rescan_follows_the_facts_time() {
         let db = db_with("/p/a.vst3", row(T));
@@ -376,7 +370,6 @@ mod tests {
         assert!(db.needs_rescan(Path::new("/p/a.vst3"), &facts(T + 1)));
     }
 
-    /// Mutation: ignore the facts and report the flag alone.
     #[test]
     fn a_blacklist_holds_only_while_the_file_is_unchanged() {
         let mut db = PluginDb::new();
@@ -388,7 +381,6 @@ mod tests {
         assert!(!db.is_blacklisted_and_unchanged(Path::new("/p/other.vst3"), &facts(T)));
     }
 
-    /// Mutation: stamp no time, or keep the old row's time, in `blacklist`.
     #[test]
     fn blacklist_stamps_the_facts_time_on_a_new_and_on_an_existing_row() {
         let mut db = PluginDb::new();
@@ -401,8 +393,7 @@ mod tests {
         assert_eq!(db.len(), 2);
     }
 
-    /// A blacklisted file lists no plugin and is listed as hidden. Mutation:
-    /// make `PluginDb::blacklisted` list every row.
+    /// A blacklisted file lists no plugin and is listed as hidden.
     #[test]
     fn a_blacklisted_file_lists_no_plugins_and_a_probed_one_lists_its_own() {
         let mut db = db_with("/p/good.vst3", row(T));
@@ -417,7 +408,6 @@ mod tests {
     }
 
     /// A file may hold several plugins and each is listed under the file's path.
-    /// Mutation: list only the first descriptor.
     #[test]
     fn a_file_with_several_plugins_lists_each() {
         let ids = ["a", "b"].map(|n| PluginDescriptor::new(n, n, PluginClass::Unknown));
@@ -430,8 +420,7 @@ mod tests {
     }
 
     /// Lifting a blacklist drops the row, so the next scan probes the file
-    /// whatever its time. Mutation: keep the row (only clear the flag), or
-    /// report `true` for a healthy or absent row.
+    /// whatever its time.
     #[test]
     fn unblacklist_drops_the_row_so_the_file_is_probed_again() {
         let mut db = PluginDb::new();
@@ -446,7 +435,6 @@ mod tests {
         assert_eq!(db.len(), 1, "a healthy row is left alone");
     }
 
-    /// Mutation: clear nothing, or clear healthy rows too.
     #[test]
     fn clear_blacklist_lifts_exactly_the_blacklisted_rows() {
         let mut db = db_with("/p/ok.vst3", row(T));
@@ -463,7 +451,6 @@ mod tests {
         assert_eq!(db.blacklisted().count(), 0);
     }
 
-    /// Mutation: remove the rows that are present, or return an empty list.
     #[test]
     fn prune_missing_removes_and_reports_exactly_the_absent_rows() {
         let mut db = db_with("/p/here.vst3", row(T));

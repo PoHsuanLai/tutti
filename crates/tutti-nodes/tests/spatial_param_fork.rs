@@ -1,11 +1,6 @@
 //! Both panners fork like every param node: a fork starts from the values
 //! last set through the node's `ParamSet` and shares no cell with the live
 //! node, in either direction (`assert_param_fork`).
-//!
-//! Mutations (run): drop `fork.azimuth.detach()` from either panner's
-//! `fork_fresh` -> "a live write reached the fork" for `Azimuth`; likewise
-//! the `elevation` detach, VBAP's `spread` and `width`, and HRTF's `blend`
-//! (`Wet`).
 
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{SAMPLE_RATE, assert_param_fork};
@@ -30,9 +25,6 @@ fn hrtf_forks_from_its_params() {
 
 /// Every param a panner lets a lane drive is one its `ParamSet` addresses,
 /// so a host reaches the cell a lane rides on.
-///
-/// Mutation (run): drop `UnitParam::StereoWidth` from `param_set` -> the
-/// VBAP row fails.
 #[test]
 fn a_panner_declares_every_param_it_reads() {
     let vbap = VbapPannerNode::stereo().param_set();

@@ -2,8 +2,6 @@ use super::*;
 
 // An event stamped 30 ms before the clock's reading arrived 30 ms before the
 // OS's.
-// Mutation: `os.checked_sub` to `os.checked_add`: the first assertion reads
-// 30 ms after.
 #[test]
 fn an_event_arrived_as_long_before_the_reading_as_its_stamp_is() {
     let os = Instant::now() + Duration::from_secs(10);
@@ -16,7 +14,6 @@ fn an_event_arrived_as_long_before_the_reading_as_its_stamp_is() {
 }
 
 // A stamp after the reading lands on it.
-// Mutation: `saturating_sub` to `-`: the call panics.
 #[test]
 fn a_stamp_after_the_reading_lands_on_it() {
     let os = Instant::now();

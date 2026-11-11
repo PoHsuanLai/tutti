@@ -3,13 +3,6 @@
 //!
 //! The expectation comes from `decode`, so the raw bit reads in `key_event`
 //! cannot drift from the codec.
-//!
-//! Mutation record (each planted, seen to fail, restored):
-//! - read a MIDI 1.0 Note On at velocity 0 as an on -> `key_event_agrees_with_decode`;
-//! - read a MIDI 2.0 Note On at velocity 0 as an off -> `key_event_agrees_with_decode`;
-//! - build `note_off` with status 9 -> `a_close_decodes_to_the_off_of_its_key`;
-//! - drop the protocol bit from `Key::new` -> `a_key_carries_its_fields` and
-//!   `a_close_decodes_to_the_off_of_its_key`.
 
 mod common;
 
@@ -130,9 +123,6 @@ fn a_key_carries_its_fields() {
 
 /// MIDI 2.0 reads the pedal from the 32-bit value (down from half), and the
 /// controller index as `decode` does: seven bits, the eighth ignored.
-///
-/// Mutation (run): read the M2 value from the first word, or the index with
-/// `& 0xff` -> fails.
 #[test]
 fn the_midi2_pedal_reads_index_and_value_as_decode_does() {
     let pedal = |w0: u32, w1: u32| Ump([w0, w1, 0, 0]).key_event();

@@ -12,10 +12,6 @@
 //! blocks inside `assert_no_alloc`, reads the plugin's close count (the plugin's own view: 0,
 //! nothing closed on the audio side), then collects on the control thread and reads it again
 //! (1).
-//!
-//! Mutation (run): in `tutti-graph`'s `apply_pending`, drop the retired unit instead of pushing
-//! it into the commit box (`c.retired.push((p.key, u.node))` -> `drop(u.node)`): the drop runs
-//! inside the audio scope and panics (`dropped on the audio thread`), failing the test.
 
 use std::path::PathBuf;
 use tutti_plugin_types::Load;

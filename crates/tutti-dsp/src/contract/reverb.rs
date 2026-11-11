@@ -94,9 +94,6 @@ pub(super) mod design {
     /// `rt60(band)` equals the RT60 the controls ask for, per
     /// `g = 10^(-3m/(RT60 fs))`, within 1e-3 relative. The design must ask for
     /// at least one.
-    ///
-    /// Mutation: every gain scaled by 0.98 on `ToyFdn` (a shorter RT60) or by
-    /// 1.02 on Freeverb (a longer one).
     pub fn rt60_matches<D: ReverbCase>(d: &D) -> Result<(), String> {
         let mut asked = 0;
         for rate in d.rates() {
@@ -124,8 +121,6 @@ pub(super) mod design {
 
     /// The bands' RT60s are ordered as the controls ask: for every pair of
     /// bands, the order of the requested figures is the order of the network's.
-    ///
-    /// Mutation: two bands' gains swapped.
     pub fn band_order<D: ReverbCase>(d: &D) -> Result<(), String> {
         let mut checked = 0;
         for rate in d.rates() {
@@ -166,9 +161,6 @@ pub(super) mod design {
 
     /// The tail is non-decreasing in decay and in size, a lower floor is longer,
     /// and a pre-delay adds its length to the tail and no more.
-    ///
-    /// Mutations: the decay term of `tail` dropped (pairs); the pre-delay term
-    /// of `tail` dropped (run by hand in `queries.rs`).
     pub fn tail_monotone<D: ReverbCase>(d: &D) -> Result<(), String> {
         let floor = Db(-60.0);
         for rate in d.rates() {
@@ -207,8 +199,6 @@ pub(super) mod design {
     /// is unbounded then and only then (a freeze is still stable). Vacuous in
     /// the lossless direction for a design that cannot freeze: it still asserts
     /// that no control gives a lossless loop.
-    ///
-    /// Mutation: one band left at 0.999 in a frozen network.
     pub fn lossless_iff_frozen<D: ReverbCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.reachable() {
@@ -230,9 +220,6 @@ pub(super) mod design {
 
     /// Modal density is positive, finite and grows with size; echo density never
     /// falls with time and grows with diffusion: orderings, not absolute figures.
-    ///
-    /// Mutations: line lengths made independent of size; a mixing matrix made
-    /// diagonal.
     pub fn density<D: ReverbCase>(d: &D) -> Result<(), String> {
         let at = |s: f32| Seconds::from_f32(s);
         for rate in d.rates() {
@@ -280,9 +267,6 @@ pub(super) mod design {
     /// the unit circle (or not a number), a negative pole that peaks above its
     /// gain, a gain of 1.5, NaN, infinity or below zero, and a length of 0, a
     /// negative, NaN or infinite one; none may be stable.
-    ///
-    /// Mutations: dropping the `|damp| < 1` guard in `Absorption::gain`; the
-    /// `length > 0` test in `lines_hold`.
     pub fn stable_refuses_hostile<D: ReverbCase>(d: &D) -> Result<(), String> {
         let pole = |damp| Absorption::OnePole {
             gain: Amplitude(0.9),
@@ -350,8 +334,6 @@ pub(super) mod design {
 
     /// A design that says it is wet-only has no path from input to output
     /// shorter than a frame.
-    ///
-    /// Mutation: a line of length 0.
     pub fn no_direct_path<D: ReverbCase>(d: &D) -> Result<(), String> {
         if !d.wet_only() {
             return Ok(());
@@ -369,8 +351,6 @@ pub(super) mod design {
 
     /// `pre_delay` is `round(pre_delay seconds * rate)` frames, for every control
     /// in range (a hostile one is clamped to the design's own range).
-    ///
-    /// Mutation: one frame more.
     pub fn pre_delay<D: ReverbCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.reachable() {
@@ -397,8 +377,6 @@ pub(super) mod design {
     /// so a model that carried such gains would describe a loop the kernel does not
     /// run. The design applies that scaling itself (`FdnDesign` writes the scaled
     /// gains into its network), so the network is what runs.
-    ///
-    /// Mutation (run, in `reverb_design.rs`): every comb gain scaled by 1.1.
     pub fn no_rescale<D: ReverbCase>(d: &D) -> Result<(), String> {
         let mut checked = 0;
         for rate in d.rates() {
@@ -448,9 +426,6 @@ pub(super) mod realization {
     /// A tone burst in each band, stopped; the energy decay after it has the RT60
     /// the network's `rt60(band)` says, within the realization's tolerance (measured
     /// from 40 to 65 dB down, where the slowest line governs).
-    ///
-    /// Mutation (a `Defective` test): the realization retargets every loop gain
-    /// scaled by 1.05, 39% longer to fall 60 dB.
     pub fn rt60<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
@@ -486,9 +461,6 @@ pub(super) mod realization {
     /// The measured bands fall in the order the network gives them: for every pair
     /// of bands whose network RT60s differ by more than twice the tolerance, the
     /// measured ones are ordered alike (and differ by more than the tolerance).
-    ///
-    /// Mutation: the realization ignores the damping (every band decays like the
-    /// lowest).
     pub fn band_order<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
@@ -532,8 +504,6 @@ pub(super) mod realization {
     /// The realization is wet only: with noise in from the first frame, every output
     /// channel is exactly zero until the network's shortest path has been
     /// travelled, so none of the input reaches the output.
-    ///
-    /// Mutation: the realization adds its input to its first output.
     pub fn wet_only<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         if !d.wet_only() {
             return Ok(());
@@ -561,8 +531,6 @@ pub(super) mod realization {
     /// A stereo output is decorrelated: the zero-lag correlation of the two
     /// channels' response to noise stays under 0.3. A design with one output
     /// channel has nothing to say.
-    ///
-    /// Mutation: the realization copies its first output channel onto its second.
     pub fn decorrelated<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let (_, outputs) = widths(d);
         if outputs < 2 {
@@ -596,9 +564,6 @@ pub(super) mod realization {
     /// chain of four passes the first sample at full size). Pins every line
     /// length, not only the shortest that `arrival` finds. Vacuous (an error) for
     /// a network of another shape.
-    ///
-    /// Mutation: the last right comb (1640 frames, the longest) 5% long, which is
-    /// inside the RT60 tolerance.
     pub fn line_lengths<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         use crate::network::Stage;
         let rate = rate_of(d);
@@ -665,8 +630,6 @@ pub(super) mod realization {
     /// A pre-delay moves the first sound by exactly its frames, and `latency()`
     /// stays what it was: pre-delay is part of the wet sound, never latency.
     /// Vacuous for a design with no pre-delay control.
-    ///
-    /// Mutation: the realization drops the pre-delay (a `Defective` test).
     pub fn pre_delay<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (without, with, by) in d.pre_delay_pairs() {
@@ -686,8 +649,6 @@ pub(super) mod realization {
 
     /// A larger room sounds later: the first sound of `b` is after `a`'s.
     /// Vacuous for a design with no size control.
-    ///
-    /// Mutation: the realization keeps every line at one length.
     pub fn size<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (a, b) in d.size_pairs() {
@@ -702,8 +663,6 @@ pub(super) mod realization {
     /// More diffusion measures denser: in the window from 0.15 to 0.3 s of an
     /// impulse's response the denser controls fill at least 0.15 more of the
     /// frames. Vacuous for a design with no diffusion control.
-    ///
-    /// Mutation: the realization mixes no line into another.
     pub fn diffusion<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let (from, to) = ((0.15 * rate.get()) as usize, (0.3 * rate.get()) as usize);
@@ -728,9 +687,6 @@ pub(super) mod realization {
     /// the lines, then the freeze; a second later the level is `L`, nine seconds
     /// later it is within 0.25 dB of it, and a second of loud noise on top
     /// leaves it there. Vacuous for a design that cannot freeze.
-    ///
-    /// Mutations: a loop gain of 0.998 in the frozen network loses 4 dB; an input
-    /// left open raises the level.
     pub fn freeze<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let second = rate.get() as usize;
@@ -764,8 +720,6 @@ pub(super) mod realization {
     /// Width: at its natural setting the channels are decorrelated and at none
     /// they are one (correlation over 0.999). Vacuous for a design with no width
     /// control.
-    ///
-    /// Mutation: the realization ignores the width.
     pub fn width<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let corr = |c: &D::Controls| -> f64 {
@@ -796,8 +750,6 @@ pub(super) mod realization {
     /// The wet gain scales the sound: `b` is `a` at `ratio` times the level to
     /// 2%, and exactly silent when the ratio is 0. Vacuous for a design with no
     /// wet gain.
-    ///
-    /// Mutation: the realization ignores the wet gain.
     pub fn wet_gain<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let x = noise(12, 1 << 14, 1.0);

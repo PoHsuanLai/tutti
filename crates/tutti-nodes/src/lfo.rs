@@ -517,11 +517,6 @@ mod tests {
     /// and rate ([`LFO_PARAMS`]), each port's base its cell; a beat-synced
     /// one declares only its depth, as its `ParamSet` addresses only that
     /// (its rate cell holds beats per cycle, not `Hz`).
-    ///
-    /// Mutation (run): `param_base(1)` answering in either mode (the
-    /// mode guard dropped) → the beat-synced node reports a rate base →
-    /// fails. Mutation (run): `param_base(0)` answering the rate →
-    /// fails.
     #[test]
     fn the_shape_declares_depth_and_a_free_running_rate() {
         let free = LfoNode::new(LfoShape::Sine)
@@ -634,10 +629,6 @@ mod tests {
     /// `ParamSet` and shares no cell with it (see
     /// `tutti_graph::contract::assert_param_fork`). The rate is addressed
     /// only while free-running: a beat-synced cell holds beats, not `Hz`.
-    ///
-    /// Mutation (run): drop `fork.depth.detach()` in `fork_fresh` → "a live
-    /// write reached the fork" for `Depth`. Address `Rate` in both modes →
-    /// the beat-synced list fails.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
         let free = LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0));
@@ -683,9 +674,6 @@ mod tests {
     /// While the transport rolls, each frame is evaluated at its own beat,
     /// not the block's first: a sine over one 4-beat cycle, frame by frame,
     /// across blocks.
-    ///
-    /// Mutation (run): evaluate every frame at `cx.env.transport.beat()`
-    /// (the block's first beat) → the frames inside a block hold → fails.
     #[test]
     fn a_rolling_transport_is_read_frame_by_frame() {
         let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
@@ -779,11 +767,6 @@ mod tests {
     /// that beat's cycle, whether the transport rolled there from zero or
     /// was placed there: the step is addressed by the cycle index, not
     /// counted from wraps the node happened to see.
-    ///
-    /// Mutation (run): evaluate the beat-synced mode at the free-running
-    /// `self.position` instead of the beat's cycles → fails. Mutation (run):
-    /// `beat_cycles` wrapped to `[0, 1)` (`rem_euclid(1.0)`, the old phase)
-    /// → every cycle reads step 0 → fails.
     #[test]
     fn a_random_value_is_the_same_after_a_seek() {
         let seed = 11;
@@ -808,10 +791,6 @@ mod tests {
     /// wave's values from there, as the original did: both read the value
     /// at each frame's cycle, `i / 256` at 187.5 Hz and 48 kHz (an exact
     /// binary step, so the position is exact).
-    ///
-    /// Mutation (run): `reset` leaving `position` alone → the fork resumes
-    /// at the original's cycle 16 → fails. Mutation (run): `with_seed`
-    /// ignored → the values are seed 0's → fails.
     #[test]
     fn a_random_value_is_the_same_in_a_fork() {
         let rate = SampleRate(48_000.0);
@@ -843,11 +822,6 @@ mod tests {
     /// 187.5 Hz, and every 12 000 frames beat-synced at half a beat per cycle
     /// (120 BPM, 48 kHz), each step the wave's value for its index. The
     /// smooth wave reaches each step at its boundary.
-    ///
-    /// Mutation (run): the beat-synced span read as a rate (`beat * span`
-    /// instead of `beat / span`, in `Beat::cycles_of`) → steps every 48 000
-    /// frames → fails. Mutation (run): the free-running step doubled → steps
-    /// every 128 frames → fails.
     #[test]
     fn random_steps_fall_where_the_rate_says() {
         let w = random(0);
@@ -886,11 +860,6 @@ mod tests {
     /// same wave: seed, phase and rate carried over. Beat-synced, on the same
     /// clock (the beat); free-running, at the same frequency on the node's
     /// own clock, which counts from its insert (frame 0 here).
-    ///
-    /// Mutation (run): `From` dropping `with_phase_offset` → reads the wave
-    /// a quarter cycle early → fails. Dropping `with_seed` → fails.
-    /// Dropping `with_frequency` in the `Hz` arm → runs at the default 1 Hz
-    /// → the free-running case fails.
     #[test]
     fn a_node_from_a_control_lfo_reads_its_wave() {
         let lfo = tutti_modulation::Lfo::new(LfoShape::RandomSmooth)

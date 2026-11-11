@@ -245,10 +245,6 @@ mod tests {
 
     /// `from(65538usize)` used to be Stereo and `from(70000u32)` 4464 channels;
     /// now they are errors carrying the refused count.
-    ///
-    /// Mutation (run): `try_from` written `Ok(Self::from_count(n as u16))`
-    /// fails every assertion here; `u16::try_from` replaced by a `& 0xffff`
-    /// mask fails them too.
     #[test]
     fn a_count_beyond_u16_is_refused_not_truncated() {
         for raw in [65_536usize, 65_537, 65_538, 70_000] {
@@ -273,9 +269,6 @@ mod tests {
     }
 
     /// `clamped` saturates at `u16::MAX` instead of wrapping.
-    ///
-    /// Mutation (run): `clamped` written `Self(n as u16)` fails the
-    /// `65_538` and `65_536` assertions.
     #[test]
     fn clamped_saturates() {
         assert_eq!(ChannelLayout::clamped(2), ChannelLayout::STEREO);

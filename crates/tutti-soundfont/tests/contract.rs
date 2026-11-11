@@ -8,11 +8,6 @@
 //! from exactly zero, so the response is found `LEAD` frames on — a constant
 //! of the preset's DSP (`Row::with_lead`), the same on every path (41
 //! frames: what `tests/soundfont_unit_audio.rs` measures at 44.1 kHz too).
-//!
-//! Mutations (run): the row without its lead → every path fails ("puts it at
-//! 512", the response at 553); the unit's `render_events` applying every chunk's
-//! events before the first frame → the paths that see a non-zero offset (behind PDC, the recompiles) fail
-//! past the 7-frame tolerance.
 
 use std::sync::Arc;
 

@@ -580,10 +580,6 @@ mod tests {
 
     /// The slope rides beside a tempo the flag vouches for and is finite; a
     /// slope with no usable tempo, or a NaN one, is `0.0`.
-    ///
-    /// Mutation (run): drop the `is_usable(tempo_inc)` gate -> the NaN slope
-    /// is sent -> fails. Mutation (run): drop the `HAS_TEMPO` gate -> the
-    /// slope beside a zero tempo is sent -> fails.
     #[test]
     fn the_slope_is_sent_only_beside_a_usable_tempo() {
         let mut t = TransportInfo::new().with_tempo(120.0).with_tempo_inc(0.002);

@@ -267,10 +267,6 @@ fn reverse_does_not_read_outside_the_source() {
 ///
 /// The source here starts at a non-zero value, so a held frame 0 is not
 /// silence by accident.
-///
-/// Mutation (run): the silence removed from `MemorySource::read_placed_into`'s
-/// reverse arm (`(len - 1 - pos).max(0.0)` alone) → frame 0 held from
-/// output `LEN` on → fails.
 #[test]
 fn reverse_past_the_first_frame_is_silent() {
     const LEN: usize = 512;
@@ -355,18 +351,9 @@ fn largest_step(x: &[f32]) -> (f32, usize) {
 ///
 /// The hard loop is asserted to click first, so the loop points have teeth.
 ///
-/// Mutation (run): the head mode removed (the fade clamped to `start`) → the
-/// loop from 0 cuts hard → fails.
-///
-/// Mutation (run): `LoopSpan::fade_at`'s lead-in `start + k` (the head
-/// replay: the fade blends toward the loop's first frames, then the wrap plays
-/// them again) → a step far above the sine's own at the wrap → fails.
-/// Mutation (run): the fade dropped (`LoopTap::fade` always `None`) → the hard
-/// cut → fails. Mutation (run): `MemorySource::read_placed_into` ignoring the
-/// loop → the placed voice plays straight on → fails. Not pinned here: the
-/// fade weight `k / fade` (the last blended frame keeps `1 / fade` of the
-/// tail) stays under the bound at this length; `loop_span`'s own tests pin
-/// the weight.
+/// Not pinned here: the fade weight `k / fade` (the last blended frame keeps `1 / fade`
+/// of the tail) stays under the bound at this length; `loop_span`'s own tests pin the
+/// weight.
 #[test]
 fn a_crossfaded_loop_is_continuous_at_its_wrap() {
     const LEN: usize = 4_000;

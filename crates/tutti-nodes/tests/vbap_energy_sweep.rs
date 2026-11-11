@@ -34,9 +34,6 @@ fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
 ///
 /// Checked on 5.1, where full spread has somewhere to spread *to*: it must
 /// light up more speakers than a point source at the same bearing does.
-///
-/// Mutation: skip `apply_spread` in `SpeakerLayout::gains_into`, which both branches share (the
-/// width branch included) → fails, because both readings light the same speakers.
 #[test]
 fn spread_reaches_the_stereo_width_path() {
     let mut node = VbapPannerNode::surround_5_1();

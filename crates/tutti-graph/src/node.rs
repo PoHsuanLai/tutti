@@ -1429,9 +1429,6 @@ mod tests {
     use super::*;
 
     /// `all` and `covers` agree at the edges, including the 64-channel cap.
-    ///
-    /// Mutation: `n >= 64` → `n > 64` in `all` → `1u64 << 64` overflows →
-    /// panics in debug → fails.
     #[test]
     fn masks_cover_their_width() {
         assert_eq!(SilenceMask::all(0), SilenceMask(0));
@@ -1447,9 +1444,6 @@ mod tests {
     /// A prepare carries the host's device quantum only when told, and a
     /// different quantum is a different prepare (so a re-prepare to it is not
     /// skipped as a no-op).
-    ///
-    /// Mutation: `with_quantum` returning `self` unchanged → `quantum()` is
-    /// `None` and the two compare equal → fails.
     #[test]
     fn a_prepare_carries_the_device_quantum_it_is_given() {
         let p = Prepare::new(SampleRate(48_000.0), Samples(1024));
@@ -1462,10 +1456,6 @@ mod tests {
 
     /// Scratch built from a `MaxBlock` serves every block up to it, and
     /// refuses past it rather than truncating.
-    ///
-    /// Mutation: in `Scratch::channel`, clamp `frames` to `max` instead of
-    /// asserting → the over-long request returns a short slice and no panic →
-    /// the `should_panic` half fails.
     #[test]
     fn scratch_fits_every_prepared_block() {
         let p = Prepare::new(SampleRate(48_000.0), Samples(100));

@@ -5,7 +5,6 @@ use tutti_ump::{
     Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, System, Ump, Voice2, decode,
 };
 
-/// Mutation (run): `Address::first` using `MidiGroup::LAST` fails the group.
 #[test]
 fn first_is_the_first_group_with_the_channel() {
     for c in 0..16 {
@@ -17,9 +16,7 @@ fn first_is_the_first_group_with_the_channel() {
 }
 
 /// M2-104 section 7.4.2: Note On and Note Off carry a 16-bit velocity and an
-/// attribute type, and "no attribute" is type 0. Mutation (run): swapping the
-/// two constructors' variants fails the decode; a nonzero attribute fails the
-/// equality.
+/// attribute type, and "no attribute" is type 0.
 #[test]
 fn note_constructors_are_the_no_attribute_messages() {
     let note = NoteNumber::of(60);
@@ -58,7 +55,6 @@ fn note_constructors_are_the_no_attribute_messages() {
 }
 
 /// MIDI 1.0 Detailed Specification: 24 Timing Clocks per quarter note.
-/// Mutation (run): any other value fails.
 #[test]
 fn a_quarter_note_is_24_timing_clocks() {
     assert_eq!(System::TIMING_CLOCKS_PER_QUARTER, 24);

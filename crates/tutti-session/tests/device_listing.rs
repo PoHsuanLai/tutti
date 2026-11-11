@@ -15,11 +15,6 @@ use tutti_types::{ChannelLayout, SampleRate};
 /// answers.** While the enumerator is blocked, updates go by and report
 /// nothing; once it answers, a later update reports the list
 /// (`SessionEvent::OutputsListed`).
-///
-/// Mutation (run, failed): `OutputListing::poll` not reporting the answer:
-/// no `OutputsListed` ever arrives and the wait fails. (Not run:
-/// `DeviceListing::spawn_with` running `list()` on the calling thread would
-/// hang `list_outputs`' caller on the blocked enumerator.)
 #[test]
 fn a_blocked_enumeration_does_not_hold_the_update_and_lands_when_it_answers() {
     let (driver, _stream) = ManualStreamDriver::new();

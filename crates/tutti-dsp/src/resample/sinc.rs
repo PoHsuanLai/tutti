@@ -81,9 +81,6 @@ mod tests {
     /// The centre is `cutoff` (sinc and window are 1 there), and at cutoff 1
     /// every other integer offset is a sinc zero crossing, so the kernel is
     /// an exact interpolator: it reads samples back unchanged.
-    ///
-    /// Mutation (run): `x.sin() / x` -> `x.cos() / x` fails the zeros;
-    /// dropping the `self.cutoff *` factor fails the centre at 0.95.
     #[test]
     fn the_centre_is_the_cutoff_and_integers_are_zero_crossings() {
         let k = kernel(1.0);
@@ -97,9 +94,6 @@ mod tests {
     /// Unity DC gain: the kernel's samples at any fractional offset sum to 1
     /// (cutoff 1 and 0.95 alike), so a constant keeps its level. The
     /// truncation to 32 crossings leaves the sum within a few 1e-4.
-    ///
-    /// Mutation (run): scaling the weight by 1.01 fails it; a rectangular
-    /// window in place of Blackman widens the error far past the bound.
     #[test]
     fn the_samples_at_any_offset_sum_to_one() {
         for cutoff in [1.0, 0.95] {
@@ -117,14 +111,6 @@ mod tests {
 
     /// The kernel is even, and zero at and beyond its half-width, where the
     /// Blackman window ends.
-    ///
-    /// Mutation (run): `t.abs() > self.half` -> `> 2.0 * self.half` fails the
-    /// cut beyond the half-width. (The weight *at* the half-width is 0 through
-    /// the sinc's last zero crossing as well as the window, so it pins the
-    /// support, not the window; the window's scale is pinned by
-    /// `the_samples_at_any_offset_sum_to_one`, which fails under
-    /// `t / self.half`.) Symmetry is exact by construction, so no mutation
-    /// of it is claimed.
     #[test]
     fn it_is_even_and_ends_at_the_half_width() {
         let k = kernel(0.95);

@@ -85,10 +85,6 @@ fn onset(out: &[f32]) -> Option<usize> {
 /// **A clip's note sounds on its frame.** At frame 1 000 (a multiple of the
 /// 8-frame chunk) it sounds exactly 1 000 frames after the same note at
 /// frame 0 does.
-///
-/// Mutation (run): `render_events` reading no event (only the chunks) →
-/// silence → fails. Mutation (run): `render_events` applying every chunk's
-/// events at the block start (offsets ignored) → 1 000 becomes 768 → fails.
 #[test]
 fn a_clip_note_sounds_on_its_frame() {
     let lead = {
@@ -104,9 +100,6 @@ fn a_clip_note_sounds_on_its_frame() {
 
 /// **The node follows its graph's rate.** A unit built at 44.1 kHz in a
 /// graph prepared at 48 kHz renders what a unit built at 48 kHz does.
-///
-/// Mutation: skip the rebuild in `prepare` → it renders at 44.1 kHz, every
-/// sample differs → fails.
 #[test]
 fn the_node_follows_its_graphs_rate() {
     let (ed, exec) = graph(unit(44_100), 48_000.0, 0);
@@ -119,9 +112,6 @@ fn the_node_follows_its_graphs_rate() {
 
 /// **A forked graph plays the clip**, on its render's `Env`, from frame
 /// 1 000 as live.
-///
-/// Mutation: the unit inserted with no fork source (`fork: None` in its
-/// `IntoNode`) → the fork is refused → fails.
 #[test]
 fn a_forked_graph_plays_the_clip() {
     let lead = {

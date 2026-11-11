@@ -82,11 +82,6 @@ fn config(policy: EventLossPolicy) -> ExportConfig {
 /// the 12 of the whole render, so the progress callback never hears of the
 /// second block (its reading at 2,048 frames, the plan's total, is delivered
 /// whenever the block is rendered).
-///
-/// Mutation: drop the per-block `check_loss` in `drive` → the render runs both
-/// blocks and reports 12 (and delivers the second block's reading) → fails. Mutation: compare the
-/// executor's total, not its change over the render, where the graph was
-/// reused → covered by the reused-graph assertion below.
 #[test]
 fn a_render_that_dropped_events_stops_at_the_first_block_that_did() {
     let mut rendered_frames = Vec::new();
@@ -109,9 +104,6 @@ fn a_render_that_dropped_events_stops_at_the_first_block_that_did() {
 
 /// Allowed, it succeeds and carries the figure; a graph rendered a second
 /// time reports that render's drops, not the total.
-///
-/// Mutation: report `dropped_event_count()` without subtracting the count
-/// before the render → the second render reads 24 → fails.
 #[test]
 fn an_allowed_loss_is_reported() {
     let mut g = graph();
@@ -127,11 +119,6 @@ fn an_allowed_loss_is_reported() {
 /// path is byte for byte what it was, and no temporary is left beside it, on
 /// the streaming path and the normalizing one. An allowed render replaces it
 /// and carries the count. A render the caller cancels is not judged.
-///
-/// Mutation: move the `check_loss` in `encode_to_file` after `staged.commit`
-/// (or remove it) → the old file is replaced → fails. Mutation: the same
-/// check in `render_pass` removed → the normalizing path writes the damaged
-/// render → fails.
 #[test]
 fn a_render_that_lost_events_replaces_nothing() {
     let dir = std::env::temp_dir().join(format!("tutti-export-loss-{}", std::process::id()));
@@ -200,9 +187,6 @@ fn a_render_that_lost_events_replaces_nothing() {
 /// Planes that carry a loss are judged by the config they are written with:
 /// `Fail` refuses them and leaves the file alone, `Allow` writes them and
 /// reports the count.
-///
-/// Mutation: drop the `check_loss` in `encode_planes` → the write under `Fail`
-/// succeeds and replaces the file → fails.
 #[test]
 fn write_buffers_applies_the_event_loss_policy() {
     let rendered =

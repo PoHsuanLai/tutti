@@ -438,10 +438,6 @@ fn master_volume_scales_the_output() {
 /// A master volume cell a host wrote a NaN or an infinity into leaves the
 /// synth at the volume it had: the output stays finite and keeps its level,
 /// and a finite write after it lands.
-///
-/// Mutation (run): `process` reading `master_volume.load()` without the
-/// `last_volume` hold makes the NaN case render NaN and the infinite ones
-/// infinity.
 #[test]
 fn a_non_finite_master_volume_write_leaves_the_synth_at_its_volume() {
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -478,11 +474,6 @@ fn a_non_finite_master_volume_write_leaves_the_synth_at_its_volume() {
 /// release the synth is silent. Guards the plan 36a item "double note-on from
 /// two sources leaves a gated voice", which holds no longer now that the note
 /// logic is `tutti-voicing`'s.
-///
-/// Mutation (run, in `tutti-voicing`): the retrigger not releasing the earlier
-/// strike (`if false && self.rules.retrigger == Replace`) together with
-/// `each_note` stopping after its first release leaves the second strike's
-/// voice gated: "one group twice" fails with a peak of 0.55.
 #[test]
 fn a_key_struck_twice_then_released_once_goes_silent() {
     let group_one = MidiGroup::new(1).expect("a second group");
@@ -581,10 +572,6 @@ fn render_tick(synth: &mut Hand, samples: usize) -> (Vec<f32>, Vec<f32>) {
 /// block edges, so the phase relationship to a note-on differs by up to a
 /// block. What must agree is the pitch, the level, and the fact that both
 /// channels are fed.
-///
-/// Mutation (run): the node writing only the left channel on a one-frame
-/// block (`None` for `right` when `frames == 1` in `Node::process`) → "the
-/// one-frame path's right channel is silent" → fails.
 #[test]
 fn the_tick_path_matches_the_block_path() {
     let mut ticked = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));

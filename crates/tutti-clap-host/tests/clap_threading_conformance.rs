@@ -356,10 +356,6 @@ fn restart_requested(inst: &mut ClapLoaded) -> bool {
 /// `process()`, so the contract is to record the request and let the embedder
 /// (the core, through `Lifecycle`) pick the moment. The reactivation half is
 /// covered by [`restart_cycle_reactivates_and_reruns_the_plugin_lifecycle`].
-///
-/// Mutation (run): `take_requests_with` reading the word with `load` instead
-/// of `swap` → the second assertion fails; `host_request_restart` raising
-/// nothing → the first assertion fails.
 #[test]
 fn request_restart_from_process_reaches_the_host() {
     let probe = Probe::acquire();
@@ -390,12 +386,6 @@ fn request_restart_from_process_reaches_the_host() {
 /// on whether audio has started. Keying it on processing took the main-thread
 /// branch in this window, which TAL-Reverb-4's validation layer reported as
 /// `clap_plugin_params.flush() was called on the wrong thread`.
-///
-/// Mutation (run): change `if self.flags.active` in `ClapLoaded::flush_params`
-/// to `if false` → the active flush is answered as a main-thread call and the
-/// second assertion fails. (The flag lived on `LifecycleFlags` beside a
-/// `processing` flag that has since moved to the shell; this pins the one key
-/// that matters, `active`.)
 #[test]
 fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
     let probe = Probe::acquire();
@@ -794,9 +784,6 @@ fn host_routes_plugin_log_lines_at_every_severity() {
 /// What this test can pin is the second half: the thread that is not the main
 /// one is refused the proof. (That a `MainThread` cannot be moved over is the
 /// `compile_fail` doctest of `tutti_plugin_types::MainThread`.)
-///
-/// Mutation (run): `MainThread::claim` accepting any thread → the second
-/// thread is handed a token and `refused` is `None`.
 #[test]
 fn a_timer_thread_is_refused_the_proof_the_main_thread_methods_take() {
     let probe = Probe::acquire();
@@ -837,9 +824,6 @@ fn main_thread_methods_run_on_the_loading_thread() {
 /// thread that holds the main role it answers from the factory alone
 /// (`EditorPresence::Unknown`) and asks nothing; on the main thread it
 /// measures, and keeps the measurement.
-///
-/// Mutation (run): in `info`, answer the `None` arm (no `MainThread`) with a
-/// measured descriptor -> the off-thread assertion fails.
 #[test]
 fn info_off_the_main_thread_asks_the_plugin_nothing() {
     use tutti_plugin_types::{Control, EditorPresence};
@@ -867,10 +851,6 @@ fn info_off_the_main_thread_asks_the_plugin_nothing() {
 /// run beside it) but must not make the main thread answer as the audio thread,
 /// or the host refuses the `[main-thread]` callback and the timer outlives the
 /// plugin's editor.
-///
-/// Mutation (run): have `ThreadRoles::claim_lifecycle` publish the audio
-/// identity as `claim` does -> `unregister_timer` is refused, `timer_unregistered`
-/// reads false, and the timer fires after `deactivate`.
 #[test]
 fn a_timer_unregistered_from_deactivate_is_accepted_and_does_not_fire_after() {
     let probe = Probe::acquire();

@@ -1,8 +1,5 @@
 //! `sysex7_packets` and `SysexMessage::packets`: one payload as SysEx7 packets
 //! (M2-104 section 7.7), and `Sysex7Packet::data`.
-//!
-//! Mutation record per case, each run against `Sysex7Packets::next` unless
-//! it says otherwise.
 
 use tutti_ump::{
     Message, MidiGroup, Sysex7Packet, SysexAssembler, SysexMessage, SysexStatus, SysexStep, U7,
@@ -33,9 +30,6 @@ fn decoded(group: MidiGroup, p: &[U7]) -> Vec<(SysexStatus, Vec<u8>)> {
 use SysexStatus::{Complete, Continue, End, Start};
 
 /// Up to six bytes is one `Complete`; empty is one `Complete` of no bytes.
-///
-/// Mutation: an empty payload yielding no packet, or `> 6` written `>= 6`
-/// -> fails here.
 #[test]
 fn a_short_payload_is_one_complete_packet() {
     assert_eq!(decoded(MidiGroup::of(0), &[]), [(Complete, vec![])]);
@@ -46,9 +40,6 @@ fn a_short_payload_is_one_complete_packet() {
 }
 
 /// Seven bytes: `Start` with six, `End` with one.
-///
-/// Mutation: the last packet's status `Continue` instead of `End`, or the
-/// first `Complete` -> fails here.
 #[test]
 fn seven_bytes_are_start_and_end() {
     let p = payload(7);
@@ -60,9 +51,6 @@ fn seven_bytes_are_start_and_end() {
 }
 
 /// Twelve bytes: `Start` and `End`, six each; thirteen: a `Continue` between.
-///
-/// Mutation: `div_ceil` replaced by floor in `size_hint`, or an `End` of zero
-/// bytes after a full last chunk -> fails here.
 #[test]
 fn twelve_and_thirteen_bytes() {
     let p = payload(12);
@@ -84,8 +72,6 @@ fn twelve_and_thirteen_bytes() {
 }
 
 /// A long payload: `Start`, `Continue`*, `End`, six bytes each but the last.
-///
-/// Mutation: the middle status `Start` -> fails here.
 #[test]
 fn a_long_payload_runs_start_continue_end() {
     let p = payload(1000);
@@ -101,9 +87,6 @@ fn a_long_payload_runs_start_continue_end() {
 }
 
 /// `len()` is the packet count at every point, and the iterator is fused.
-///
-/// Mutation: `size_hint` returning 1 for an exhausted iterator, or not
-/// shrinking as packets are taken -> fails here.
 #[test]
 fn len_counts_the_packets_left_and_the_iterator_is_fused() {
     for len in 0..=40 {
@@ -122,8 +105,6 @@ fn len_counts_the_packets_left_and_the_iterator_is_fused() {
 }
 
 /// Every packet carries the group it was asked for.
-///
-/// Mutation: group 0 written into the words -> fails here.
 #[test]
 fn the_group_is_on_every_packet() {
     let p = payload(20);
@@ -143,9 +124,6 @@ fn the_group_is_on_every_packet() {
 
 /// The writer's packets assemble back into the framed message, for every
 /// length, through `SysexMessage::packets`.
-///
-/// Mutation: a dropped `Continue` (skip the second packet), or the last
-/// chunk one byte short -> fails here.
 #[test]
 fn the_assembler_gives_back_the_message() {
     for len in 0..=40 {
@@ -172,8 +150,6 @@ fn the_assembler_gives_back_the_message() {
 }
 
 /// `data` is the same bytes as `bytes`.
-///
-/// Mutation: `data` returning the whole six-byte array -> fails here.
 #[test]
 fn data_is_bytes_as_plain_bytes() {
     for len in 0..=6 {
@@ -191,9 +167,6 @@ fn data_is_bytes_as_plain_bytes() {
 }
 
 /// A `SysexRef` made by hand reads back its range and length.
-///
-/// Mutation: `new` swapping `start` and `len`, or `range` ending at `len`
-/// instead of `start + len` -> fails here.
 #[test]
 fn a_ref_made_by_hand_names_its_range() {
     let r = tutti_ump::SysexRef::new(10, 4);
@@ -204,9 +177,6 @@ fn a_ref_made_by_hand_names_its_range() {
 
 /// The words of a single packet from M2-104 Table 18: type 3, group, status 0,
 /// byte count, then the bytes.
-///
-/// Mutation (run): the count nibble shifted by 20 instead of 16 -> each case
-/// fails.
 #[test]
 fn a_single_packet_is_the_spec_words() {
     let words = |group, payload: &[u8]| {
@@ -225,8 +195,6 @@ fn a_single_packet_is_the_spec_words() {
 
 /// `Sysex7Packets::checked` is `sysex7_packets` for a payload of plain bytes,
 /// and refuses one with a byte of 128 or more instead of masking it.
-///
-/// Mutation: `b < 0x80` written `b <= 0x80`, or the check dropped -> fails.
 #[test]
 fn checked_bytes_are_the_same_packets_and_a_high_bit_is_refused() {
     use tutti_ump::Sysex7Packets;

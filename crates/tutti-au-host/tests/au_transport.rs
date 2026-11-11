@@ -605,12 +605,6 @@ const CANNOT_DO: i32 = -10863;
 /// instead would have a tempo-synced AU lock to a tempo nobody chose. Nothing
 /// is consumed either: a pending locate must still be there for the first real
 /// answer. `set_samples_to_next_beat` alone is not a publish.
-///
-/// Mutation: drop the `is_published` check in `guarded` → the pre-publish
-/// statuses read 0 → fails. Mutation: `set_transport` without its
-/// `published.store` → the post-publish statuses read -10863 → fails.
-/// Mutation: `set_samples_to_next_beat` also storing `published` → the
-/// "still unpublished" assertion fails.
 #[test]
 fn every_proc_answers_cannot_do_until_the_host_publishes() {
     let state = TransportState::new();
@@ -688,11 +682,6 @@ fn every_proc_answers_cannot_do_until_the_host_publishes() {
 /// render-thread read, the answers. A real tempo-synced AU *acting* on them
 /// (an AU delay locking to the project tempo) needs such a unit on macOS
 /// hardware and is not asserted here.
-///
-/// Mutation: skip `install_host_callbacks` → `pulls` stays 0 → fails.
-/// Mutation: `set_transport` publishing the tempo into the beat field → the
-/// 137.5 / 12.25 checks fail. Mutation: drop the `is_published` check in
-/// `guarded` → the pre-publish pull reads status 0 → fails.
 #[test]
 fn an_au_pulls_the_published_transport_through_audiotoolbox() {
     let _g = lock();
@@ -765,9 +754,6 @@ fn an_au_pulls_the_published_transport_through_audiotoolbox() {
 /// treats that as "no transport for this unit" (its `TRANSPORT` bit clear)
 /// rather than a failed load; this pins the host half that makes that possible:
 /// a reported error, not a panic and not a silent success.
-///
-/// Mutation: make `install_host_callbacks` discard the `set_property` result
-/// (`let _ =`) → the install returns `Ok` → fails.
 #[test]
 fn a_refused_host_callbacks_install_is_an_error() {
     let _g = lock();

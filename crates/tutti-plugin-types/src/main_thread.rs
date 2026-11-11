@@ -79,9 +79,6 @@ static MAIN: OnceLock<ThreadId> = OnceLock::new();
 ///     });
 /// });
 /// ```
-// Mutation record (the two `compile_fail` doctests above): replacing the
-// marker `PhantomData<*const ()>` by `PhantomData<()>` makes the type `Send`
-// and `Sync`, and both doctests then compile, so both fail as doctests.
 #[derive(Debug, Clone, Copy)]
 pub struct MainThread {
     // A raw pointer is neither `Send` nor `Sync`.
@@ -204,10 +201,6 @@ pub struct NotMainThread;
 mod tests {
     use super::*;
 
-    // Mutations (run): `claim` always returning `Ok` (drop the thread
-    // comparison) fails the refusal assertion; `current` returning `Some`
-    // whenever anything is claimed fails the `elsewhere` assertion; `claimed_elsewhere` answering `false` always
-    // fails the `off` assertion.
     #[test]
     fn a_claim_is_refused_on_another_thread_and_repeats_on_the_first() {
         assert!(MainThread::current().is_none(), "nobody has claimed yet");
@@ -236,8 +229,6 @@ mod tests {
         assert!(off, "another thread is elsewhere once a thread has claimed");
     }
 
-    // Mutation (run): `run_deferred` returning without draining (or `defer_to_main` dropping
-    // the work) leaves the flag unset on the main thread and the count at 0: both fail.
     #[test]
     fn work_deferred_off_the_main_thread_runs_on_it() {
         use std::sync::Arc;

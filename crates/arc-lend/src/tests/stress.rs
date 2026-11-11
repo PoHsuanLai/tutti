@@ -79,9 +79,6 @@ fn readers_against_a_publisher(readers: usize, publishes: usize, nest: bool) {
 }
 
 /// Concurrent readers against a publisher hammering the cell.
-///
-/// Mutation: in `Control::scan`, drop the announcement check; readers see
-/// poisoned vectors and the whole-value assertion fails.
 #[test]
 #[cfg_attr(miri, ignore = "threaded stress test; miri runs the small one below")]
 fn concurrent_readers_and_a_publisher_hammering() {
@@ -90,10 +87,6 @@ fn concurrent_readers_and_a_publisher_hammering() {
 
 /// The same, small enough for miri, whose weak-memory emulation is the
 /// second check on the protocol beside the loom model.
-///
-/// Mutations: remove either `SeqCst` fence; miri reports a data race on the
-/// freed value on some seeds (CI runs 16). A plain x86 run does not, which is
-/// why the loom model exists.
 #[test]
 fn concurrent_readers_and_a_publisher_small() {
     readers_against_a_publisher(2, 40, true);

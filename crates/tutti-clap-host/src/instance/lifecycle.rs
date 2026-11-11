@@ -414,10 +414,6 @@ mod tests {
     /// 1`), the output list's is the same, and the output queues hold
     /// exactly that budget; each under a third of a full room per
     /// parameter.
-    ///
-    /// Mutation (run): `reserve_input_events` back to `params × (room + 1)`
-    /// → the input room is the product of parameters and room → fails; `reserve_output_params`'
-    /// room back to `queues * points` → fails.
     #[test]
     fn activation_reserves_the_pool_budget_not_params_times_room() {
         for params in [2_000u32, 16_384] {
@@ -463,11 +459,6 @@ mod tests {
     /// does (`prepend_carried`, into the slot the set kept, so nothing
     /// grows): every point is handed on, none counted, each parameter's
     /// points in order.
-    ///
-    /// Mutation (run): `reserve_input_events` sizing the room without the
-    /// carried point of each queue (`point_budget(params, room) - params`)
-    /// → the carried values of the floor queues overflow it: the last
-    /// parameters lose all their points, counted → fails.
     #[test]
     fn a_chunk_with_carried_values_reaches_the_plugin_whole() {
         use tutti_plugin_types::ParameterPoint;

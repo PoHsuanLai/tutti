@@ -34,9 +34,6 @@ impl Drop for Watched {
 /// Dropping the writer stops its thread before `drop` returns, so the sink (a
 /// file, in a staged encoder) is closed by then. The sink is slow, so the
 /// thread is still working through its queue when the drop starts.
-///
-/// Mutation (run): deleting the `Drop` impl returns from `drop` with the thread
-/// still encoding, the sink not yet dropped, and fails the assertion.
 #[test]
 fn a_dropped_writer_has_stopped_its_thread() {
     let dropped = Arc::new(AtomicBool::new(false));
@@ -87,11 +84,6 @@ fn names(speakers: &[Speaker]) -> ChannelTopology {
 /// Vorbis I's `FL FC FR SL SR RL RR LFE`, and 5.1 (`FL FR FC LFE SL SR`) is
 /// `FL FC FR RL RR LFE` with the sides standing for the rears. Pinned as the
 /// permutation itself, against the table in the specification (4.3.9).
-///
-/// Mutation (run): `FrontRight` and `FrontCenter` exchanged in the 3-channel
-/// row of `vorbis_speakers` fails the 3-channel round trip and this test;
-/// matching stand-ins before exact speakers (`[true, false]`) fails this test,
-/// the next and the round trip.
 #[test]
 fn the_engines_order_is_permuted_to_vorbis_i() {
     use Speaker::*;
@@ -107,10 +99,6 @@ fn the_engines_order_is_permuted_to_vorbis_i() {
 /// A side takes a side and a rear a rear whenever the file has them; the
 /// stand-in is only for the speaker that is missing. A file with both pairs
 /// and no `LFE` still cannot be placed.
-///
-/// Mutation (run): matching stand-ins in the first pass puts the engine's
-/// `SL SR` on Vorbis's `RL RR` slots of 7.1 and fails the first assertion; an
-/// unplaced slot falling back to its own index fails the last one.
 #[test]
 fn a_rear_stands_in_only_for_a_missing_side() {
     use Speaker::*;
@@ -143,10 +131,6 @@ fn a_rear_stands_in_only_for_a_missing_side() {
 /// A width Vorbis defines is refused when the file cannot say which speakers it
 /// holds (3, 4, 5 and 7 have no engine default), or says speakers that are not
 /// Vorbis's layout; the topology of another width is refused as for WAV.
-///
-/// Mutation (run): treating a missing topology as the identity order
-/// (`return Ok(None)`) fails the first loop; an unplaced slot falling back to
-/// its own index fails the unassigned row.
 #[test]
 fn a_width_with_no_vorbis_layout_is_refused() {
     for width in [3u16, 4, 5, 7] {
@@ -209,11 +193,6 @@ mod round_trip {
     /// Encodes a sine of `level(c)` on file channel `c`, reads the Ogg back
     /// with `Wave::read`, and asserts each decoded plane carries the level of
     /// the file channel for the speaker that plane is.
-    ///
-    /// Mutation (run): `order` forced to `None` in `create` (the old writer)
-    /// fails this test (the 3-channel row first; the quad row has the same
-    /// order in both and would pass alone, by design); the `FC`/`FR` exchange in
-    /// the 3-channel table fails it too.
     #[test]
     fn each_channel_lands_on_its_own_plane() {
         use Speaker::*;

@@ -59,9 +59,6 @@ fn a_block_drains_and_pads_with_silence() {
 }
 
 /// There is no gain: what the producer pushed is what the graph gets.
-///
-/// Mutation (run): scale each popped plane by 0.5 in `process` and the block
-/// reads half the pushed level -> fails.
 #[test]
 fn the_signal_passes_at_unity() {
     let (node, _prod) = ring_with(&[[1.0, 0.25]]);
@@ -71,9 +68,6 @@ fn the_signal_passes_at_unity() {
 }
 
 /// `reset` pops nothing: the frames are still there for the next block.
-///
-/// Mutation (run): `reset` draining the ring (`self.ring.pop_planes(..)`) ->
-/// the block reads silence -> fails.
 #[test]
 fn reset_does_not_consume_the_ring() {
     let (node, _prod) = ring_with(&[[9.0, 9.0]]);
@@ -87,10 +81,6 @@ fn reset_does_not_consume_the_ring() {
 /// A block reads across the ring's wrap: the frames stored at the end of its
 /// storage, then the ones at the start, in push order, and pads with silence
 /// past them.
-///
-/// Mutation (run): `pop_planes` in the tap reader popping into
-/// `plane[..frames.min(2)]` stops after two frames -> the third and the
-/// post-wrap reads come back as silence -> fails.
 #[test]
 fn a_block_reads_across_the_ring_wrap() {
     let (node, mut prod) = InletNode::pair(ChannelLayout::STEREO, Samples(4));
@@ -106,9 +96,6 @@ fn a_block_reads_across_the_ring_wrap() {
 
 /// The declared shape: no inputs, as wide as the ring out, never skipped as
 /// silent, no latency, cheap.
-///
-/// Mutation (run): `Cost::Light` removed from `shape` fails the cost row;
-/// `Tail::Unbounded` replaced by `Tail::ZERO` fails the tail row.
 #[test]
 fn the_declared_shape_matches_what_the_graph_is_told() {
     let (node, _prod) = ring_with(&[]);
@@ -131,9 +118,6 @@ fn the_declared_shape_matches_what_the_graph_is_told() {
 /// The inlet refuses to be forked. A copy over the ring's one consumer would
 /// take live frames beside the live node, so its `IntoNode` hands the editor
 /// no fork source, and a fork of a graph that needs it fails naming its key.
-///
-/// Mutation (run): hand the editor a fork source (`fork: Some(..)`, even one
-/// whose fork fails) -> the fork is not refused as `NotForkable` -> fails.
 #[test]
 fn the_inlet_refuses_to_fork() {
     use crate::NodeKey;
@@ -158,10 +142,6 @@ fn the_inlet_refuses_to_fork() {
 
 /// The node is as wide as its ring: six lanes are six outputs, each channel on
 /// its own output in the order the producer pushed it, and the shape says so.
-///
-/// Mutation (run): `Shape::source_unassigned(ChannelLayout::STEREO)` back in `shape`
-/// fails the width assertion; `pop_planes` handing lane `c` the plane `5 - c`
-/// fails the order.
 #[test]
 fn a_ring_of_six_is_six_outputs_in_the_order_pushed() {
     let (node, mut writer) = InletNode::pair(ChannelLayout::from(6u16), Samples(64));
@@ -182,9 +162,6 @@ fn a_ring_of_six_is_six_outputs_in_the_order_pushed() {
 /// A frame the ring has no room for is refused whole, on every channel: a ring
 /// of room for two frames, offered three, keeps the first two complete and the
 /// lanes level, never a third frame on some channels.
-///
-/// Mutation (run): dropping the `.min(frames)` in `TapWriter::push_interleaved`
-/// makes the third frame overrun and the writer's `debug_assert` fail.
 #[test]
 fn a_full_ring_refuses_whole_frames() {
     let (node, mut writer) = InletNode::pair(ChannelLayout::from(3u16), Samples(2));
@@ -239,10 +216,6 @@ fn process_over(node: &mut InletNode, planes: usize, frames: usize, fill: f32) -
 /// so the node is driven by hand over outputs holding a sentinel: a node that
 /// left them unwritten would hand the sentinel on. The ring is not popped
 /// either, so the frames wait for a block that can be written.
-///
-/// Mutation (run): returning early without the `fill(0.0)` leaves the
-/// sentinel and fails the silence assertions; popping before the width check
-/// (`self.ring.pop_planes(..)` above it) fails the final read of `[7.0, 8.0]`.
 #[test]
 fn a_width_mismatch_writes_silence_and_keeps_the_ring() {
     let (node, _prod) = ring_with(&[[7.0, 8.0]]);
@@ -266,9 +239,6 @@ fn a_width_mismatch_writes_silence_and_keeps_the_ring() {
 
 /// The matched case over dirty outputs: the popped frames, then silence over
 /// what the arena held, never its leftovers.
-///
-/// Mutation (run): dropping the `plane[popped..].fill(0.0)` leaves the
-/// sentinel past the popped frame and fails.
 #[test]
 fn an_underrun_overwrites_what_the_output_held() {
     let (node, _prod) = ring_with(&[[1.0, 2.0]]);

@@ -216,9 +216,6 @@ mod seq_scratch_tests {
 
     /// The block's integer expressions reach the plugin's event list: the
     /// context's slice is what `process_shared` hands the stager.
-    ///
-    /// Mutation (run): `expr_ints_of` returning an empty slice → no event
-    /// is staged → fails.
     #[test]
     fn int_expressions_reach_the_event_list() {
         use crate::events::{InputEvents, Payload, Stager};

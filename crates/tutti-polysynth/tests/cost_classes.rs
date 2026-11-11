@@ -157,9 +157,6 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 
 /// Sixteen lanes and fewer are `Moderate`, more are `Heavy`, whether the
 /// lanes are voices or unison sub-voices.
-///
-/// Mutation (run): `MODERATE_LANES` 16 → 8 → the 16-voice and the 8 × 2
-/// asserts fail.
 #[test]
 fn the_class_follows_the_lane_count() {
     assert_eq!(synth(8, 1).shape().cost, Cost::Moderate);
@@ -174,9 +171,6 @@ fn the_class_follows_the_lane_count() {
 /// fused with its clip) pack into fewer tasks than the same synths
 /// declaring nothing, the plan still spreads, and on a pool of two and of
 /// four the render is bit for bit the serial one.
-///
-/// Mutation (run): `PolySynth::cost` always `Heavy` → the moderate synths
-/// pack no further than undeclared → the task-count assert fails.
 #[test]
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn moderate_synths_pack_and_render_bit_identically() {

@@ -12,9 +12,6 @@ use tutti_plugin_types::{MainThread, defer_to_main};
 use tutti_types::SampleRate;
 
 /// **The session's update runs what another thread deferred, on the main thread.**
-///
-/// Mutation (run): delete the `run_deferred` call from `Phase::Collect`: the flag stays unset
-/// after the update and the assertion fails.
 #[test]
 fn an_update_runs_the_work_a_thread_deferred_to_the_main_thread() {
     let main = MainThread::claim().expect("one test, one process");

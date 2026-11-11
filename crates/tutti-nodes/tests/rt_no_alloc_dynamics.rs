@@ -12,10 +12,6 @@
 //! outside the measurement; a burst and its release are measured from the
 //! first block, which is where the deque fills to its whole window.
 //! Lookahead changes are off-RT (`prepare`).
-//!
-//! Mutation (run): size the compressor's gain lane in `process` rather
-//! than `prepare` (`self.gains = vec![0.0; size]` at the top of `process`)
-//! → both compressor gates fail on the first measured block.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_graph::IntoNode;
@@ -162,10 +158,6 @@ fn gate_stereo_process_is_allocation_free() {
 /// every push and fills to the whole lookahead window. The constant-drive
 /// gates above warm up outside the gate, so the one fill that would grow
 /// the deque happens before they measure.
-///
-/// Mutation (run): push into the deque before evicting the entry leaving
-/// the window (`MonotonicMinDeque::push`'s old order) → the deque reaches
-/// window + 1 entries and grows inside the gate.
 #[test]
 fn limiter_node_burst_and_release_are_allocation_free() {
     let node = LimiterNode::new(Db::new(-3.0), Db::new(-0.3))
@@ -201,9 +193,6 @@ fn limiter_node_burst_and_release_are_allocation_free() {
 /// writes each frame's linear ceiling into channel 0 and clips it last),
 /// 6 channels, 1 000 blocks under `assert_no_alloc`. `Direct` feeds the
 /// port, which `BlockRig` cannot.
-///
-/// Mutation (run): a `black_box(vec![0.0f32; size])` inside the fed
-/// branch of `BrickwallLimiterNode::process` → fails.
 #[test]
 fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
     use tutti_graph::contract::Direct;
@@ -238,9 +227,6 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
 /// (the path that reads both per sample instead of through the block's
 /// curve), 6 channels, 1 000 blocks under `assert_no_alloc`, the first
 /// measured after a warm-up that has the limiter reducing.
-///
-/// Mutation (run): a `black_box(vec![0.0f32; size])` inside the per-frame
-/// loop of `LimiterNode::process` -> fails.
 #[test]
 fn limiter_node_fed_ceiling_and_threshold_process_is_allocation_free() {
     use tutti_graph::contract::Direct;
@@ -280,10 +266,6 @@ fn limiter_node_fed_ceiling_and_threshold_process_is_allocation_free() {
 /// one block of a rising run, fewer entries than its window; the clone must
 /// still hold the whole window's allocation, or the release grows it on
 /// the audio thread.
-///
-/// Mutation (run): derive `Clone` for `MonotonicMinDeque` (the copy is
-/// sized to the entries it holds) → the clone's deque grows inside the
-/// gate → fails.
 #[test]
 fn a_limiter_cloned_mid_release_processes_allocation_free() {
     use tutti_graph::contract::Direct;

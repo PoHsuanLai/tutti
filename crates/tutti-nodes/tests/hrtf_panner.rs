@@ -248,8 +248,6 @@ fn assert_between(mid: &[f32], a: &[f32], b: &[f32], ear: &str) {
 
 /// At a measured equatorial vertex the interpolated IR equals that vertex's
 /// encoded IR within 1e-6.
-///
-/// Mutation: snap azimuth to a 90° grid in `unit_vector` → fails at 45° (rounds to 90°, left peak 1.5 not 1.354).
 #[test]
 fn measured_vertex_ir_matches_the_encoded_hrir() {
     let mut node = make_node();
@@ -264,8 +262,6 @@ fn measured_vertex_ir_matches_the_encoded_hrir() {
 /// Midway between two measured points the IR is a blend of the neighbours,
 /// not a snap to either one: every sample lies in the neighbour min/max, and
 /// both neighbour taps are present.
-///
-/// Mutation: snap azimuth to a 45° grid in `unit_vector` → fails at 22.5° (rounds to 45°, drops the t=0 right-ear tap).
 #[test]
 fn midway_azimuth_interpolates_between_neighbours() {
     let mut node = make_node();
@@ -290,8 +286,6 @@ fn midway_azimuth_interpolates_between_neighbours() {
 /// earlier than the right by the encoded sample count; at −90° (right) the
 /// opposite. `Azimuth` has no `Ord` — the sign lives in which ear peaks first,
 /// not in a comparison of bearings.
-///
-/// Mutation: flip the sign of `x` in `unit_vector` (`-az.sin()` → `az.sin()`) → +90° delays the left ear (peak t=6).
 #[test]
 fn itd_sign_follows_the_near_ear() {
     let mut node = make_node();
@@ -325,8 +319,6 @@ fn itd_sign_follows_the_near_ear() {
 }
 
 /// The near ear is louder by the encoded factor `(1+ILD)/(1−ILD)`.
-///
-/// Mutation: flip the sign of `x` in `unit_vector` → at +90° the far ear is louder (L/R ratio 1/3 not 3).
 #[test]
 fn ild_sign_makes_the_near_ear_louder() {
     let mut node = make_node();
@@ -357,8 +349,6 @@ fn ild_sign_makes_the_near_ear_louder() {
 /// apart across 0°/360° and must both render as *front* (marker ≈ +1), never
 /// as back (marker ≈ −1). Poles are well-defined: finite samples, finite
 /// energy, no NaN, for any azimuth at ±90° elevation.
-///
-/// Mutation: fold azimuth with `rem_euclid(180)` in `unit_vector` → 359° maps to 179° (back, marker −0.993) while 1° stays front.
 #[test]
 fn wrap_seam_is_continuous_and_poles_are_finite() {
     let mut node = make_node();
@@ -414,8 +404,6 @@ fn wrap_seam_is_continuous_and_poles_are_finite() {
 /// `2 + 2·(ILD·sin(az))² + cos²(az)` ∈ `[2.25, 3]` on the equator, `2` at the
 /// poles; the bound leaves room for interpolation without accepting silence
 /// or a doubled IR.
-///
-/// Mutation: snap azimuth to a 45° grid in `unit_vector` → 1° step to 23° jumps by the full neighbour difference (1.0, bound 0.25).
 #[test]
 fn azimuth_sweep_is_continuous_and_energy_bounded() {
     let mut node = make_node();
@@ -494,9 +482,6 @@ fn azimuth_sweep_is_continuous_and_energy_bounded() {
 ///
 /// The test also checks the source got where it was sent, so a renderer
 /// that never moved cannot pass.
-///
-/// Mutation (run): `t = 1.0` in `render_step`'s crossfade (a hard switch at
-/// each step) → the left ear jumps by 0.092 against a bound of 0.017.
 #[test]
 fn a_direction_change_crossfades_without_a_jump() {
     let mut node = make_node();

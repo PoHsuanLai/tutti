@@ -130,23 +130,18 @@ mod tests {
         check_range_contract(&contract(Good::new, |g| g.0));
     }
 
-    /// Mutation: `Good::new` limit 9 to 10 (`Lax`) fails with "new accepted 10".
     #[test]
     #[should_panic(expected = "new accepted 10")]
     fn a_new_that_accepts_too_much_fails() {
         check_range_contract(&contract(Lax::new, |g| g.0));
     }
 
-    /// Mutation: the `Deserialize` that skips `new` fails with "deserialize
-    /// accepted 10".
     #[test]
     #[should_panic(expected = "deserialize accepted 10")]
     fn a_serde_bypass_fails() {
         check_range_contract(&contract(Bypass::new, |g| g.0));
     }
 
-    /// Mutation: the error built without the raw (`Mute`) fails with "does not
-    /// carry it".
     #[test]
     #[should_panic(expected = "does not carry it")]
     fn an_error_without_the_raw_fails() {

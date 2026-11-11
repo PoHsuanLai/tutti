@@ -104,9 +104,6 @@ fn pump_into_wav_sink_round_trips_frame_count() {
 ///
 /// The matching pair must still be accepted, which is the half that stops
 /// this from passing vacuously.
-///
-/// Mutation (run): deleting the `layout != sink.layout()` check in
-/// `PumpLoop::new` fails every refusal below.
 #[test]
 fn start_rejects_a_source_sink_width_mismatch() {
     let dir = tempfile::tempdir().unwrap();
@@ -302,10 +299,6 @@ impl Source for Ramp {
 /// full passes and a 40-frame tail, then `Ended`. The values are read back from
 /// the sink, so a pass that skipped or repeated frames fails on the content,
 /// not just the count.
-///
-/// *Mutation:* size the scratch from `SCRATCH_FRAMES` instead of `frames` in
-/// `PumpLoop::new`. The first pass then writes all 1000 frames and the
-/// `Wrote(64)` assertion fails.
 #[test]
 fn a_named_capacity_bounds_each_pass_over_any_sink() {
     let seen = Collect(Arc::new(std::sync::Mutex::new(Vec::new())));
@@ -344,9 +337,6 @@ fn a_named_capacity_bounds_each_pass_over_any_sink() {
 /// An empty scratch makes every pull find no room, and the source's verdict
 /// then stands for it: a finite take ends before its first frame, a live one
 /// parks forever. The clamp lives in `PumpLoop::new`.
-///
-/// *Mutation:* drop the clamp (`let frames = capacity;`). The first pass then
-/// reports `Ended` with nothing written and this fails.
 #[test]
 fn a_zero_capacity_moves_one_frame_per_pass() {
     let seen = Collect(Arc::new(std::sync::Mutex::new(Vec::new())));
@@ -399,10 +389,6 @@ fn frames(n: usize) -> std::collections::VecDeque<[f32; 2]> {
 
 /// A mic that dies mid-take ends the take as failed, keeps the frames it
 /// delivered and finalizes them. A healthy but quiet mic does not fail.
-///
-/// Mutation: mapping `Pull::Failed` to `PumpPass::Ended` in `pump_once` fails the
-/// `Failed` assertion; not recording `source_failed` leaves `finalize` `Ok` and
-/// fails the `SourceFailed` assertion.
 #[test]
 fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
     let dir = tempfile::tempdir().unwrap();
@@ -443,9 +429,6 @@ fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
 
 /// Frames still buffered when the device dies are written before the take is
 /// declared failed.
-///
-/// Mutation: `DyingMic::pull` answering `Failed` whenever `dead` is set, ring or
-/// not, hides the five frames and fails this.
 #[test]
 fn frames_buffered_at_the_fault_are_written_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -468,9 +451,6 @@ fn frames_buffered_at_the_fault_are_written_first() {
 /// A sink that fails mid-take (here the WAV frame limit, the same latch a full
 /// disk sets) fails the take, and the sink's error still comes out of
 /// finalize.
-///
-/// Mutation: mapping `Err(SinkFailed)` to `PumpPass::Wrote` in `pump_once` fails
-/// the `Failed` assertion.
 #[test]
 fn a_failed_sink_fails_the_take() {
     let dir = tempfile::tempdir().unwrap();
@@ -519,9 +499,6 @@ impl Source for Scripted {
 /// (The race this once guarded, a frame landing between an empty poll and the
 /// failure check, is closed in the source now: `MicIn::pull` reads its flag
 /// before its ring, and `tutti-rt`'s `fault_latch_loom` model checks that.)
-///
-/// Mutation: mapping `Pull::Frames` to `PumpPass::Starved` in `pump_once` drops
-/// the frame and fails the second assertion.
 #[test]
 fn a_frame_delivered_before_the_failure_is_recorded() {
     let dir = tempfile::tempdir().unwrap();
@@ -542,8 +519,6 @@ fn a_frame_delivered_before_the_failure_is_recorded() {
 }
 
 /// A finite source that failed is a failure, not a clean end.
-///
-/// Mutation: mapping `Pull::Failed` to `PumpPass::Ended` fails this.
 #[test]
 fn a_failed_finite_source_is_failed_not_ended() {
     struct DeadFile;
@@ -562,8 +537,6 @@ fn a_failed_finite_source_is_failed_not_ended() {
 }
 
 /// A source that reports `lost` frames once per pass: the loop sums them.
-///
-/// Mutation: deleting the `fetch_add` in `pump_once` leaves `lost()` at zero.
 #[test]
 fn the_loop_sums_what_the_source_lost() {
     struct Dropping;
@@ -647,9 +620,6 @@ impl Sink for Tally {
 /// Pumping a finite source to exhaustion moves every frame exactly once, in
 /// order, and never writes past the pulled count even when the buffer is larger
 /// than what the source produces that pass.
-///
-/// Mutation: writing the whole `buf` instead of `buf[..n * ch]` fails the
-/// equality.
 #[test]
 fn pump_drains_a_finite_source_exactly() {
     let samples: Vec<f32> = (0..1000).flat_map(|i| [i as f32, -(i as f32)]).collect();
@@ -680,10 +650,6 @@ fn pump_drains_a_finite_source_exactly() {
 /// **Frames, not samples**, at a width where the two visibly differ: six
 /// channels, a buffer of ten frames' worth of samples. The pull returns frames
 /// (10, not 60) and the sink receives frames x channels samples.
-///
-/// Mutation: returning the sample count from `Chunked::pull` fails the first
-/// assertion; handing the sink `buf[..n]` (frames as a slice length) fails the
-/// second.
 #[test]
 fn every_count_on_this_boundary_is_denominated_in_frames() {
     const CH: usize = 6;
@@ -714,9 +680,6 @@ fn every_count_on_this_boundary_is_denominated_in_frames() {
 
 /// A sink that refuses is the pump's `Err`, and the pulled frames are not
 /// silently dropped into a `Wrote`.
-///
-/// Mutation: ignoring the write's `Result` in `pump` (`let _ = dst.write(..)`)
-/// returns `Ok(Frames)` and fails this.
 #[test]
 fn a_refusing_sink_is_the_pumps_error() {
     struct Refuse;
@@ -738,8 +701,6 @@ fn a_refusing_sink_is_the_pumps_error() {
 /// The width check, **inner half**: pumping a mismatched pair trips the
 /// `debug_assert` rather than quietly writing a stream whose channels rotate
 /// every frame. The outer half is `PumpLoop::new`'s error, tested above.
-///
-/// Mutation: deleting the `debug_assert_eq!` in `pump` fails this.
 // It tests a `debug_assert`, so it exists only where that assertion does: a
 // release build has no check to test, and the test would fail there for that
 // reason alone.

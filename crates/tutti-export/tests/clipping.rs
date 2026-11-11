@@ -59,11 +59,6 @@ fn quarter_rate_sine() -> RenderGraph {
 /// every sample of a 1.2 DC (two channels, 4,800 frames) at 16 bit, none of a
 /// 1.0 (full scale is representable), and none for a format that does not
 /// quantize.
-///
-/// Mutation (run): count `> 1.0` as `>= 1.0` → the 1.0 render counts every
-/// sample → fails. Mutation (run): drop the `clipped +=` in `encode_to_file` →
-/// 0 for the 1.2 render → fails. Mutation (run): count for `Float32` too →
-/// the float render reports 9,600 → fails.
 #[test]
 fn the_samples_the_quantizer_clamps_are_counted() {
     let dir = tempfile::tempdir().unwrap();
@@ -96,12 +91,6 @@ fn max_code(path: &std::path::Path) -> i64 {
 /// plus its dither stays at or under `full - 1` (for one LSB of headroom with
 /// triangular dither, a crest plus noise reaches `full`). Every depth and
 /// dither. The target the gain lands the measured peak on is the clamped figure.
-///
-/// Mutation (run): `Normalize::within` returning `self` (the 0 dBTP target
-/// kept) → about half the crests carry positive dither past full scale and are
-/// counted, and the landed target reads 0 → fails. Mutation (run): the dither term
-/// dropped from `headroom_ceiling` (1 LSB for every dither) → triangular
-/// crests reach the saturating code and the reported target is off → fails.
 #[test]
 fn a_zero_dbtp_target_leaves_an_integer_format_its_headroom() {
     let dir = tempfile::tempdir().unwrap();
@@ -142,9 +131,6 @@ fn a_zero_dbtp_target_leaves_an_integer_format_its_headroom() {
 
 /// Non-finite samples are counted as clipped: a NaN is written as 0 and an
 /// infinity as full scale, and neither is the signal that was rendered.
-///
-/// Mutation (run): `clipped_in` back to `s.abs() > 1.0` → the NaN render
-/// counts 0 → fails.
 #[test]
 fn non_finite_samples_are_counted() {
     let dir = tempfile::tempdir().unwrap();

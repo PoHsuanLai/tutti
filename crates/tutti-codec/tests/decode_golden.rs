@@ -74,9 +74,6 @@ fn stream_digest(name: &str) -> (u64, usize) {
 
 /// `(file, load digest, streamed digest)`. The lossy rows are asserted only
 /// where they were recorded; see [`bit_portable`].
-///
-/// Mutation: shortening every decoded packet by one frame in the shared
-/// packet-decode helper changes every row that has audio (checked).
 const GOLDEN: &[(&str, u64, u64)] = &[
     ("stereo_s16.wav", 0x3a5e069030cee9fe, 0x5983063d609be7ed),
     ("stereo_s24.wav", 0x9e907ce1c8607f10, 0xb9f775ef850a7f23),
@@ -203,10 +200,6 @@ const LEVELS: &[(&str, usize, usize, &[(f64, f64)])] = &[
 /// channel, a gain error of 0.01 dB — moves them far past 1e-5. This is what
 /// catches a lossy-decode regression where the bit-exact digest is not
 /// asserted.
-///
-/// Mutations (checked), each in the decode loop every container shares:
-/// swapping channels by index fails on RMS; dropping each packet's last frame
-/// fails on frame count; scaling every decoded sample by 1.0001 fails on RMS.
 #[test]
 fn decoded_levels_match_on_every_platform() {
     const REL: f64 = 1e-5;
@@ -242,9 +235,6 @@ fn decoded_levels_match_on_every_platform() {
 /// and the streamer took a zero-frame packet for end-of-stream. A streamed Ogg
 /// clip therefore played as silence from its first block, and `probe` called
 /// it streamable because the container reports a frame count.
-///
-/// Mutation: restoring `return Ok(frames)` for a zero-frame packet in
-/// `FileIn::decode_next_packet` fails this on `stereo.ogg` (checked).
 #[test]
 fn the_stream_reads_every_frame_the_load_does() {
     for &(name, _, _) in GOLDEN {
@@ -279,9 +269,6 @@ fn the_stream_reads_every_frame_the_load_does() {
 ///
 /// Restores the fork's `probe_metadata_matches_full_load`, which the move
 /// deleted along with the fork's WAV writer it depended on.
-///
-/// Mutation: have `Wave::read_metadata` report `n_frames.map(|n| n + 1)` and every
-/// row fails (checked).
 #[test]
 fn the_probe_agrees_with_the_full_load() {
     for &(name, _, _) in GOLDEN {
@@ -335,10 +322,6 @@ fn lag_of(w: &Wave, start: usize, out: &[f32]) -> Option<i64> {
 /// `actual_ts` rather than from the packet that produced audio — and when that
 /// primer is the packet containing `start`, no discard can recover it, so the
 /// seek has to step back past it.
-///
-/// Mutations (checked): the pre-fix `seek` fails `stereo.ogg` at lag +576
-/// (start 1); disabling only the step back past the primer fails it at lag
-/// +575; discarding one extra preroll frame fails `stereo_s16.wav` at lag +1.
 #[test]
 fn seek_lands_on_the_whole_file_load_frames() {
     for &(name, _, _) in GOLDEN {
@@ -383,10 +366,6 @@ fn seek_lands_on_the_whole_file_load_frames() {
 /// `Wave::from_bytes` — the Bevy loader's path, which probes from the
 /// bytes alone with no extension hint — decodes to the same samples as the
 /// path-based load, for every fixture.
-///
-/// Mutation: have `from_bytes` decode only the first half of its bytes and
-/// every row fails (checked). (A wrong extension hint does not: symphonia
-/// probes the bytes regardless.)
 #[test]
 fn from_bytes_decodes_what_load_decodes() {
     // Against this platform's own `Wave::read`, not the recorded golden: both

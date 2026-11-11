@@ -3,9 +3,7 @@
 //! Every figure here comes from IEEE `+ - * / sqrt` and `libm`'s pure-Rust
 //! `log1p`, `expm1` and `exp`, and a test that needs `ln` calls `libm::log`
 //! too. None of it reaches the platform's libm, so the figures hold on any
-//! target and no golden digest is needed. Mutations are recorded under each
-//! test: "Mutation (run)" means the change was made, the test seen to fail, and
-//! the change reverted.
+//! target and no golden digest is needed.
 
 mod common;
 
@@ -15,9 +13,6 @@ use tutti_types::{Beat, Bpm, Frame, Seconds};
 
 /// 4 beats at 120 are 2.0 s, frame 96 000; a step reads back the tempo it was
 /// given, not `bpm / 60 * 60`.
-///
-/// Mutation (run): a step's `bpm_at_beat` returns `60.0 * r0` instead of `bpm0`; fails at the
-/// first sampled tempo (60.8 BPM does not survive `/ 60 * 60`).
 #[test]
 fn step_is_beats_over_rate() {
     let m = TempoMap::constant(Bpm::of(120.0)).unwrap();
@@ -43,9 +38,6 @@ fn step_is_beats_over_rate() {
 
 /// 120 -> 180 over 4 beats, tempo linear in time. `T = 2*4/(2+3) = 1.6 s`
 /// exactly = 76 800 frames; `a = (3-2)/1.6`; `beats(0.8 s) = 2*0.8 + a*0.32 = 1.8`.
-///
-/// Mutation (run): the `RampTime` inverse's `r0 + sqrt(..)` becomes `r0 - sqrt(..)`; fails on the
-/// 1.6 s duration.
 #[test]
 fn time_ramp_matches_closed_form() {
     let m = TempoMap::new([pt(0.0, 120.0, Shape::RampTime), pt(4.0, 180.0, Shape::Step)]).unwrap();
@@ -63,8 +55,6 @@ fn time_ramp_matches_closed_form() {
 /// 120 -> 180 over 4 beats, tempo linear in beats. `T = ln(1.5)/g`, `g = 0.25`
 /// (beats/s per beat), so `T = 4 ln 1.5` s; the beat where the rate is 2.5
 /// (beat 2) is `ln(1.25)/0.25` s in.
-///
-/// Mutation (run): `log1p(x)` becomes `log1p(x * 0.5)` in `ln_ratio`; fails on `4 ln 1.5`.
 #[test]
 fn beat_ramp_matches_closed_form() {
     let m = TempoMap::new([
@@ -88,9 +78,6 @@ fn beat_ramp_matches_closed_form() {
 
 /// Independent oracle: integrate `dt = db / r(b)` by Simpson using only
 /// `tempo_at` (a different formula from `seconds_at`), over a mixed map.
-///
-/// Mutation (run): a `RampBeats` `bpm_at_beat` uses `0.9 * k`; the closed-form seconds still
-/// hold, so only this oracle (which reads `tempo_at`) fails.
 #[test]
 fn seconds_agree_with_numeric_integration() {
     let m = TempoMap::new([
@@ -133,9 +120,6 @@ fn seconds_agree_with_numeric_integration() {
 
 /// A 5.5-hour session of 20 000 mixed points: beat to seconds to beat, and
 /// frame to beat to frame, over 200 000 random queries.
-///
-/// Mutation (run): `frame_at_or_after` uses a bare `ceil` and drops the `FRAME_TOLERANCE` rule
-/// (`first_frame_at_or_after`); the frame round trip mismatches.
 #[test]
 fn long_session_round_trip() {
     let mut rng = Lcg(7);
@@ -183,9 +167,6 @@ fn long_session_round_trip() {
 /// Anchors over 100 000 segments: cycle 100, 120, 150, 200 BPM over 1-beat
 /// steps (0.6, 0.5, 0.4, 0.3 s), so the anchor of segment `4m` is `9m/5` s. A
 /// naive running sum is off by about 1e-8 s; the compensated one by under 1e-10.
-///
-/// Mutation (run): the compensation term (`comp += ..`) becomes `comp += 0.0`; the anchors drift
-/// past 1e-10 s.
 #[test]
 fn anchors_do_not_drift() {
     let n = 100_000usize;
@@ -213,9 +194,6 @@ fn anchors_do_not_drift() {
 
 /// An edit builds a new map: beats before it keep their seconds, beats after it
 /// move, and the old map is untouched. Adding at an existing beat replaces.
-///
-/// Mutation (run): `with_point` inserts at an existing beat instead of replacing it
-/// (`Ok(i) => pts.insert(i, point)`); the replace step fails with `BadOrder`.
 #[test]
 fn edit_in_the_past() {
     let m = TempoMap::new([pt(0.0, 120.0, Shape::Step), pt(16.0, 120.0, Shape::Step)]).unwrap();
@@ -243,13 +221,6 @@ fn edit_in_the_past() {
 
 /// Every refusal, with the index it names. A non-finite or non-positive tempo
 /// never gets here: `Bpm` refuses it.
-///
-/// Mutation (run): `Bpm::new` accepts zero (`raw > 0.0` becomes `raw >= 0.0`); the `-0.0` and
-/// `0.0` cases fail.
-/// Mutation (run): the last segment's `r0` underflow check in `TempoMap::new` becomes `false`;
-/// the smallest-tempo case builds a map and fails.
-/// Mutation (run): `is_sound`'s `(back - dsec).abs() <= 1e-9 * dsec` becomes `true`; the
-/// squared-overflow ramp is accepted.
 #[test]
 fn refusals() {
     use Shape::{RampBeats, RampTime, Step};
@@ -328,9 +299,6 @@ fn refusals() {
 
 /// A hint never changes a result: monotone, backward and random queries agree
 /// with cold lookups, bit for bit.
-///
-/// Mutation (run): the hint check drops its upper bound (`x < key(next)` becomes `true`); a
-/// stale hint returns a wrong segment on the backward and random queries.
 #[test]
 fn cursor_agrees_with_cold_lookup() {
     let mut rng = Lcg(11);
@@ -372,9 +340,6 @@ fn cursor_agrees_with_cold_lookup() {
 
 /// A point's own beat belongs to that point, and seconds are continuous across
 /// it: the end of a ramp is the start of the next segment.
-///
-/// Mutation (run): the binary search's `key(s) <= x` becomes `key(s) < x`; a point's own beat
-/// falls in the previous segment.
 #[test]
 fn a_point_belongs_to_the_segment_it_starts() {
     let m = TempoMap::new([
@@ -407,9 +372,6 @@ fn a_point_belongs_to_the_segment_it_starts() {
 
 /// Before beat 0 the map runs at the first tempo, even when the first segment
 /// is a ramp (a count-in has a time, and `sqrt` of a negative is not asked).
-///
-/// Mutation (run): `Seg::sec_in` loses its `db < 0.0` early return; the ramp's `sqrt` of a
-/// negative gives NaN before beat 0.
 #[test]
 fn a_first_ramp_extrapolates_at_its_first_tempo() {
     for shape in [Shape::RampTime, Shape::RampBeats] {
@@ -424,9 +386,6 @@ fn a_first_ramp_extrapolates_at_its_first_tempo() {
 /// A tempo is given back to the bit at its own point, ramp or step: the given
 /// tempo plus a change of 0, not `60 * (bpm / 60)` (which differs by an ulp
 /// for about 5% of tempos).
-///
-/// Mutation (run): a time ramp's `bpm_at_beat` is `60 * sqrt(r0^2 + 2 k db)`; the tempo at a
-/// point is off by an ulp for some tempos.
 #[test]
 fn a_tempo_at_its_point_is_the_given_tempo_to_the_bit() {
     let mut rng = Lcg(3);
@@ -468,9 +427,6 @@ fn a_tempo_at_its_point_is_the_given_tempo_to_the_bit() {
 }
 
 /// `-0.0` is beat 0: an edit there replaces the first point.
-///
-/// Mutation (run): `with_point` drops its `+ 0.0` normalization; `-0.0` is inserted before
-/// the point at beat 0 and the map is refused with `BadOrder`.
 #[test]
 fn an_edit_at_negative_zero_replaces_the_first_point() {
     let m = TempoMap::new([pt(0.0, 120.0, Shape::Step), pt(8.0, 90.0, Shape::Step)]).unwrap();
@@ -488,10 +444,6 @@ fn an_edit_at_negative_zero_replaces_the_first_point() {
 /// map that changes, whatever its tempos: two points of the same tempo are
 /// still a map with a step in it as far as a reader that follows one tempo
 /// goes.
-///
-/// Mutation (run): `constant_tempo` returning the first point's tempo for any
-/// map (`self.pts.first().map(|p| p.tempo)`) -> the two-point maps give
-/// `Some` -> fails.
 #[test]
 fn constant_tempo_is_the_single_points_tempo_to_the_bit() {
     let odd = Bpm::of(97.123_456_789_012_35);
@@ -518,9 +470,6 @@ fn constant_tempo_is_the_single_points_tempo_to_the_bit() {
 /// tempo at that second: 120 -> 180 linear in time reads 150 at 0.8 s (frame
 /// 38 400) and 120 on frame 0 to the bit; linear in beats (`g = 0.25`) it reads
 /// `120 e^(0.25 x 1)` at 1 s (frame 48 000), written with `libm::exp`.
-///
-/// Mutation (run): `tempo_at_frame_with` dividing by `rate` twice -> the
-/// frame is read at the wrong second -> fails.
 #[test]
 fn tempo_on_a_frame_is_the_tempo_at_that_second() {
     let time =
@@ -547,11 +496,6 @@ fn tempo_on_a_frame_is_the_tempo_at_that_second() {
 /// end is held to it; a step segment has none, and the jump down to 60 at
 /// its end is not part of a span that crosses it; an empty or reversed span
 /// has none.
-///
-/// Mutation (run): drop the `.min(s.dsec)` (the span crosses into the next
-/// segment) -> the beat ramp's span past its end reads an extrapolated
-/// exponential, not the chord to its end, and fails. Mutation (run): return
-/// `1.0` for an empty span -> fails.
 #[test]
 fn the_slope_is_held_inside_the_segment_it_starts_in() {
     let m = TempoMap::new([

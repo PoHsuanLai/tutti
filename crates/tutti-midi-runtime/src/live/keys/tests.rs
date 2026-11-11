@@ -26,9 +26,6 @@ fn sent(d: &Direct<EventInletNode>) -> Vec<Ump> {
 
 /// The `note_on` / `note_off` helpers build the same packets the explicit
 /// constructors do, and they come out of the inlet's port on the next block.
-///
-/// Mutation (run): a helper emitting another channel, another group or a
-/// scaled velocity fails.
 #[test]
 fn the_key_helpers_match_explicit_events() {
     let (mut d, mut keys) = rig();
@@ -53,9 +50,6 @@ fn the_key_helpers_match_explicit_events() {
 
 /// A Note On at velocity 0 is a MIDI 2.0 Note On (M2-104 §7.4.2), not a Note
 /// Off.
-///
-/// Mutation (run): `note_on` widening a MIDI 1.0 Note On (which turns
-/// velocity 0 into a Note Off) fails here.
 #[test]
 fn a_note_on_at_velocity_zero_stays_a_note_on() {
     let (mut d, mut keys) = rig();
@@ -70,8 +64,6 @@ fn a_note_on_at_velocity_zero_stays_a_note_on() {
 
 /// A full ring refuses a helper's event with `Full` (the writer's own rule,
 /// reached through the helper), so a note stuck for want of room is reported.
-///
-/// Mutation (run): a helper discarding the writer's result fails.
 #[test]
 fn a_full_ring_refuses_through_the_helper() {
     let (_d, mut keys) = rig();

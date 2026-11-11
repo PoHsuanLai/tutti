@@ -156,11 +156,6 @@ fn fan_in(values: &[f32], at_port: bool) -> (Topology, BTreeMap<NodeKey, Kind>) 
 /// rounds back to `2^24`, so `((0 + 2^24) + 1) + 1` is `2^24`, the reverse
 /// `((0 + 1) + 1) + 2^24` is `2^24 + 2`, and the pairwise `2^24 + (1 + 1)`
 /// is `2^24 + 2` as well.
-///
-/// Mutations (each run, each failed this test, then restored): sum the
-/// addends in reverse in `sum_op`; sum pairwise (`a_0 + (a_1 + a_2)`); in
-/// `compile`, drop the `sources.sort()` of the input loop and list the sources
-/// reversed (the order test below holds this too).
 #[test]
 fn three_sources_are_the_left_fold() {
     let values = [16_777_216.0f32, 1.0, 1.0];
@@ -185,12 +180,6 @@ fn three_sources_are_the_left_fold() {
 /// bits do not depend on where the compiler cut. 100 sources, and the sizes at
 /// each cut (a chain holds 64, then 63 more per op), each equal to the fold
 /// written out here over all of them.
-///
-/// Mutations (each run, each failed): fold the chain's run of the first op
-/// and the rest separately and add the two (`(a_0 + .. + a_63) + (a_64 + ..)`);
-/// make a chain's later ops start from `+0.0` instead of the last result
-/// (drops the earlier addends); cut the runs at `MAX_PORTS` rather than
-/// `MAX_PORTS - 1` (the chain's shape test below).
 #[test]
 fn a_wide_fan_in_is_one_flat_fold() {
     for n in [2usize, 63, 64, 65, 100, 127, 128, 129] {
@@ -227,12 +216,6 @@ fn a_wide_fan_in_is_one_flat_fold() {
 /// does one live `-0.0` beside a silent source; a lone source is an alias and
 /// keeps its `-0.0`. In place (the first addend read nowhere else) and not
 /// (the first addend also read by another node).
-///
-/// Mutations (each run, each failed): start the fold from the first addend
-/// (`*o = a` instead of `0.0 + a` in the fresh form) -> the not-in-place cases
-/// keep a `-0.0`; delete the `*o += 0.0` of the in-place form -> the in-place
-/// cases keep one; skip the silent addend by value rather than by flag is not
-/// a mutation (it is the same bits).
 #[test]
 fn the_sum_starts_at_positive_zero() {
     let neg = -0.0f32;
@@ -271,11 +254,6 @@ fn the_sum_starts_at_positive_zero() {
 /// refused when it fans out to another reader that nothing orders before the
 /// sum; the bits are the same either way (`a_wide_fan_in...` and the render
 /// comparisons above hold the fold in both).
-///
-/// Mutations (each run, each failed): offer the alias without the colouring's
-/// legality check (always `dst = srcs[0]`'s slot) -> the fanned-out first
-/// addend is overwritten and the verifier or the render fails; never offer
-/// it (delete the `Pre::Sum` arm of `in_place`) -> the first assert fails.
 #[test]
 fn the_first_addend_is_aliased_unless_it_fans_out() {
     let sum_slots = |plan: &Plan| {
@@ -318,10 +296,6 @@ fn the_first_addend_is_aliased_unless_it_fans_out() {
 /// The order is a property of the wiring, not of how the spec lists it. The
 /// sources `1.0` (key 1), `1e8` (key 2) and `-1e8` (key 3) sum to `0.0` in key
 /// order (`1 + 1e8` is `1e8`) but to `1.0` in the order `2, 3, 1`.
-///
-/// Mutation (run, failed): delete `sources.sort()` in the input loop of
-/// `compile` (and, for the output half, the `sources.sort()` of the output
-/// loop) -> the listed order is folded and the figure is `1.0`.
 #[test]
 fn the_order_is_the_wiring_not_the_listing() {
     let values = [1.0f32, 1.0e8, -1.0e8];
@@ -348,9 +322,6 @@ fn the_order_is_the_wiring_not_the_listing() {
 /// (skipped) and sums `1 + 1 = 2`; every later one sums
 /// `((0 + 1) + 1) + 2^24 = 2^24 + 2`, where a feedback addend listed first
 /// gives `((0 + 2^24) + 1) + 1 = 2^24`.
-///
-/// Mutation (run, failed): sort `Edge::Feedback` before `Direct` (a stable
-/// `sort_by_key` putting feedback first) -> the later blocks read `2^24`.
 #[test]
 fn a_feedback_addend_sums_last() {
     let (mut t, kinds) = nodes(&[dc(1.0), dc(16_777_216.0), dc(1.0), Kind::Thru { width: 1 }]);
@@ -382,11 +353,6 @@ fn a_feedback_addend_sums_last() {
 
 /// A global source takes part like any other: `Node` sources sort before
 /// `Global` ones, so `(0 + 0.25) + x`. At an output channel and at a port.
-///
-/// Mutation (run, failed): sum the global input first in `compile` (put the
-/// `Global` sources ahead) -> the order differs and a sample's bits differ
-/// (the figure `0.25 + x` is exact for the test's inputs, so the mutation that
-/// shows is dropping the global source: skip the `Source::Global` arm).
 #[test]
 fn a_global_source_is_an_addend() {
     let mut t = Topology {
@@ -417,11 +383,6 @@ fn a_global_source_is_an_addend() {
 /// frame 0 as `0.5`: the lag path is `0` for `L` frames and `0.5` after, the
 /// other path, delayed by `L`, is the same, so the sum is `0` then `1.0`. At a
 /// port (whose sink's arrival is `L`) and at the output channel.
-///
-/// Mutation (run, failed): skip the PDC delay of the shorter path
-/// (`align_audio` returns `ARef::Val(v)` for a source whose `by` is nonzero
-/// and whose key is the second) -> the sum reads `0.5` for the first `L`
-/// frames.
 #[test]
 fn each_source_is_aligned_before_the_sum() {
     const L: usize = 50;
@@ -457,10 +418,6 @@ fn each_source_is_aligned_before_the_sum() {
 /// the source that stays keeps its PDC ring (it is keyed by the sink port and
 /// the source), the new one gets its own, and the removed one's goes. The
 /// executor, over the commits, is the reference's, which keys its lines alike.
-///
-/// Mutation (run, failed): rebuild the rings on every commit (in
-/// `Executor::apply`, take no old ring) -> the staying source's ring restarts
-/// empty and the render diverges from the reference.
 #[test]
 fn adding_and_removing_a_source_keeps_the_others_rings() {
     // 1: a counter-like source (an emitter's count steps), 2: Lag(40) of it,
@@ -611,11 +568,6 @@ fn block(exec: &mut Executor) -> Vec<f32> {
 /// then parked, its output is `+0.0`; the first live source after the silence
 /// is heard on the very next block; and one live source among 70 (the 64-bit
 /// input mask is the node's, never the sum's) is neither parked nor lost.
-///
-/// Mutations (each run, each failed): flag the sum `SILENT` unconditionally ->
-/// the live-after-silence case is parked and not heard; never flag it silent
-/// (`flag(false, constant)` for the all-silent case too) -> the probe is
-/// called every block.
 #[test]
 fn silent_addends_make_a_silent_sum_and_a_live_one_is_heard() {
     for n in [3u64, 70] {
@@ -644,9 +596,6 @@ fn silent_addends_make_a_silent_sum_and_a_live_one_is_heard() {
 
 /// A sum is constant when every live addend is, and not when one is not;
 /// silent addends do not count against it.
-///
-/// Mutation (run, failed): flag the output `CONSTANT` unconditionally -> the
-/// non-constant case reports a constant input.
 #[test]
 fn a_sum_is_constant_when_its_live_addends_are() {
     let constant_calls = |kinds: &[Kind]| {

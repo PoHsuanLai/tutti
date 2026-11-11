@@ -336,15 +336,6 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
 /// what the block that rendered its input said, two and more blocks back,
 /// across every kind of transport discontinuity; the first 100 frames read
 /// the first block's transport, unmoved. The probe's arrival is 100.
-///
-/// Mutation: in `Cx::transport_at`, read `self.env.transport_at(offset)`
-/// (no arrival) → every frame reads its own block's transport → fails.
-/// Mutation: drop `history.observe(&env)` from `Executor::process` → every
-/// frame before the block reads the clamp (the executor's oldest piece
-/// is from no block at all, so the block's own transport) → fails, and so
-/// does the executor/reference comparison. Mutation: in
-/// `TransportHistory::observe`, never keep a block start after the first
-/// (drop the `roll(..) != t` term) → the seeks are lost → fails.
 #[test]
 fn a_node_behind_a_latent_path_reads_the_transport_its_input_was_rendered_at() {
     const LAT: usize = 100;
@@ -363,10 +354,6 @@ fn a_node_behind_a_latent_path_reads_the_transport_its_input_was_rendered_at() {
 /// rolls on in one-frame blocks with a scene every 20, so the jumps inside
 /// even the raised 300-frame arrival fit, and once the probe has 300 frames
 /// behind it no frame reads the clamp, before or after either change.
-///
-/// Mutation: keep every block start in `observe` (`keep = true`) → 256
-/// pieces of mostly one-frame blocks cover too little, frames 300 back read
-/// the clamp, and the no-clamp assertion fails.
 #[test]
 fn a_recompile_that_moves_the_arrival_keeps_the_history() {
     let mut rig = Rig::new(30);
@@ -401,9 +388,6 @@ fn a_recompile_that_moves_the_arrival_keeps_the_history() {
 /// arrival: the history keeps the newest 256, and the frames older than
 /// those read the oldest kept, unmoved: exactly where the model says, in the
 /// executor and the reference alike.
-///
-/// Mutation: in `TransportHistory::push`, overwrite the newest piece when
-/// full instead of dropping the oldest → the boundary moves → fails.
 #[test]
 fn a_burst_of_seeks_past_the_capacity_clamps_where_the_model_says() {
     const LAT: usize = 300;
@@ -429,12 +413,6 @@ fn a_burst_of_seeks_past_the_capacity_clamps_where_the_model_says() {
 /// there. The first blocks after it read the clamp (the first block at the
 /// new rate, unmoved) until it has `reach` frames behind it, in the executor
 /// and the reference alike; then every frame reads its block again.
-///
-/// Mutation: drop `self.history.clear()` from `Executor::apply`'s suspend →
-/// the executor rolls the last 48 kHz piece across the rescaled gap and
-/// disagrees with the model and the reference → fails. Mutation: drop
-/// `self.history.clear()` from `Reference::suspend` → the reference does
-/// the same → the executor/reference comparison fails.
 #[test]
 fn a_sample_rate_change_starts_the_history_over() {
     const LAT: usize = 100;
@@ -496,12 +474,6 @@ fn wide(workers: usize) -> (Editor, Executor) {
 /// stop, recording): every probe's output, the transport its input was
 /// rendered at, is bit-identical to the serial render's. Every participant
 /// reads the executor's one history, observed before the pool runs.
-///
-/// Mutation (run): in `par::run_block`, hand the workers
-/// `TransportHistory::none()` instead of the executor's (`history:
-/// b.history` in `Shared`) → the probes behind a latent path read the
-/// block's own transport before its first frame → differs from serial →
-/// fails.
 #[test]
 fn the_parallel_render_reads_the_same_history_as_the_serial_one() {
     let lens = [64usize, 17, 50, 1, 33, 64, 2, 40];

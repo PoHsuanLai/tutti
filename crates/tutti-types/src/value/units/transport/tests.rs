@@ -264,8 +264,7 @@ fn read_rate_composes_varispeed_with_conversion() {
     // Half speed on a 48k file in a 44.1k session: both effects apply once.
     // Both rates are f64-backed and the quotient is rounded once, so the
     // composition matches the exact figure to f64 precision (an f32 ratio was
-    // off by ~1e-8 here). Mutation: `for_rates` casting the quotient through
-    // `f32` leaves ~3e-8 of error and fails the 1e-12 bound.
+    // off by ~1e-8 here).
     let rate = PlaybackRate::new(0.5);
     let src = SrcRatio::for_rates(SampleRate::new(48_000.0), SampleRate::new(44_100.0));
     let expected = 0.5 * (48_000.0 / 44_100.0);
@@ -346,9 +345,6 @@ fn stretch_factor_clamps_and_follows_the_non_finite_rule() {
 /// after one hour of session frames the accumulated file position is
 /// `n * file_rate / session_rate` to a small fraction of a frame. The oracle is
 /// the closed form, not another render.
-///
-/// Mutation: `for_rates` casting its quotient through `f32` puts 48000 -> 44100
-/// ~6 file frames off and 44100 -> 96000 several more, failing both bounds.
 #[test]
 fn a_converted_read_position_does_not_drift_over_an_hour() {
     for (file, session) in [

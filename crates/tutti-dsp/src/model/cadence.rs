@@ -166,9 +166,6 @@ mod tests {
 
     /// The steps tile the block with no gap and no overlap, each solved at its
     /// last frame, and a block grid is one step.
-    ///
-    /// Mutation: solving at `start` instead of `end - 1` fails the `solve_at`
-    /// check.
     #[test]
     fn steps_tile_the_block_and_solve_at_their_last_frame() {
         let grid = Cadence::every(N16);
@@ -184,9 +181,6 @@ mod tests {
     }
 
     /// An unprimed block solves its first frame alone, then tiles the rest.
-    ///
-    /// Mutation: dropping the `unprimed && start == 0` arm (never isolating
-    /// frame 0) fails the first assertion.
     #[test]
     fn an_unprimed_block_isolates_frame_zero() {
         let grid = Cadence::every(N16);
@@ -198,10 +192,6 @@ mod tests {
 
     /// A stream grid cuts the block at the stream's grid points, whatever the
     /// block's own start, and only a step that begins on one is solved.
-    ///
-    /// Mutation: counting the phase from the block start (`phase = 0`) fails the
-    /// block that begins at 5; `solve_at` at the end instead of `start` fails the
-    /// `solve_at` check.
     #[test]
     fn a_stream_grid_is_cut_at_the_streams_grid_points() {
         let grid = Cadence::stream(N16);
@@ -239,10 +229,6 @@ mod tests {
     const N16: NonZeroU32 = NonZeroU32::new(16).unwrap();
 
     /// Only a fixed period on the stream clock is block independent.
-    ///
-    /// Mutation: `block_independent` that tests the anchor alone (a
-    /// `Period::Block` on a stream anchor answers true) or the period alone
-    /// (`every(16)` answers true) fails.
     #[test]
     fn only_a_stream_grid_is_block_independent() {
         assert!(!Cadence::BLOCK.block_independent());

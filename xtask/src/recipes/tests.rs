@@ -7,7 +7,6 @@
 //! - the stub moved back to `/tmp`: `check_windows_stubs_under_the_target_dir`;
 //! - the `-E` filter dropped from `test`: `test_builds_the_plugins_then_runs_nextest`;
 //! - `deny` without its probe: `deny_probes_cargo_deny_first`.
-//! - `check-hosting` dropped from `ci`: `check_hosting_runs_its_script_and_ci_runs_it`.
 //! - `loom`'s filter matching a name as a prefix (`--test {a}` alone):
 //!   `loom_runs_only_the_models_it_is_named`.
 
@@ -36,30 +35,24 @@ fn every_recipe_plans_with_no_arguments() {
     }
 }
 
-/// The justfile's 37, `check-hosting` (design 021 step 1), the two gates
-/// that became recipes of their own when their scripts moved into `gates`, and
-/// `check-midi-ffi` (design 017 stage 4d).
 #[test]
-fn the_justfiles_37_recipes_and_check_hosting() {
-    assert_eq!(RECIPES.len(), 41);
+fn the_recipe_list_is_the_one_the_help_prints() {
+    assert_eq!(RECIPES.len(), 40);
 }
 
-// Mutation: leave `check-midi-ffi` out of the `ci` list: the second assertion fails.
+/// Every static gate is a Rust gate: no recipe plans a script.
 #[test]
-fn check_midi_ffi_runs_its_script_and_ci_runs_it() {
-    assert_eq!(dry("check-midi-ffi", &[]), ["scripts/check-midi-ffi.sh"]);
-    assert!(
-        dry("ci", &[])
-            .iter()
-            .any(|l| l == "scripts/check-midi-ffi.sh")
-    );
+fn no_recipe_runs_a_shell_script() {
+    for (name, ..) in RECIPES {
+        for line in dry(name, &[]) {
+            assert!(!line.contains("scripts/"), "{name}: {line}");
+        }
+    }
 }
 
-/// The four ported gates are recipes that run in this process, and `ci`
-/// (which CI mirrors) runs each; `doc` runs the per-feature rustdoc between
-/// its two `cargo doc` lines and the docs.rs build.
-// Mutation: plan one of them as `lines(&["scripts/..."])`, or leave it out of
-// the `ci` list: the matching assertion below fails.
+/// The static gates are recipes that run in this process, and `ci` (which CI
+/// mirrors) runs each; `doc` runs the per-feature rustdoc between its two
+/// `cargo doc` lines and the docs.rs build.
 #[test]
 fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
     assert_eq!(dry("check-range-types", &[]), ["gate check-range-types"]);
@@ -68,26 +61,30 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         ["gate check-submodule-pins"]
     );
     assert_eq!(dry("check-paths", &[]), ["gate check-canonical-paths"]);
+    for (recipe, gate) in [
+        ("check-layout", "gate check-layout"),
+        ("check-ffi", "gate check-ffi"),
+        ("check-guards", "gate check-guards"),
+        ("check-hosting", "gate check-hosting"),
+        ("check-session", "gate check-session"),
+    ] {
+        assert_eq!(dry(recipe, &[]), [gate]);
+    }
     assert!(dry("check-doc-features", &[])[0].starts_with("doc-features: "));
     let ci = dry("ci", &[]);
     for want in [
         "gate check-range-types",
         "gate check-submodule-pins",
         "gate check-canonical-paths",
+        "gate check-layout",
+        "gate check-ffi",
+        "gate check-guards",
+        "gate check-hosting",
+        "gate check-session",
     ] {
         assert!(ci.iter().any(|l| l == want), "{want}");
     }
     assert!(ci.iter().any(|l| l.starts_with("doc-features: ")));
-}
-
-#[test]
-fn check_hosting_runs_its_script_and_ci_runs_it() {
-    assert_eq!(dry("check-hosting", &[]), ["scripts/check-hosting.sh"]);
-    assert!(
-        dry("ci", &[])
-            .iter()
-            .any(|l| l == "scripts/check-hosting.sh")
-    );
 }
 
 #[test]

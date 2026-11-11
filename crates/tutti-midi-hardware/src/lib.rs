@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // Every `unsafe` call into ALSA and CoreMIDI is in `tutti-alsa-ffi` and
-// `tutti-coremidi-ffi` (`scripts/check-midi-ffi.sh`).
+// `tutti-coremidi-ffi` (`cargo xtask check-ffi`).
 #![forbid(unsafe_code)]
 
 // --- Framework-free hardware I/O core ---

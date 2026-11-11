@@ -584,8 +584,6 @@ impl From<&LoadedPlugin> for Layout {
         Self {
             inputs: wiring.inputs.clone(),
             outputs: wiring.outputs.clone(),
-            input_topology: wiring.input_topology.clone(),
-            output_topology: wiring.output_topology.clone(),
         }
     }
 }

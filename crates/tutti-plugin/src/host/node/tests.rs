@@ -15,8 +15,8 @@ use tutti_plugin_ipc::unique_socket_path;
 use tutti_plugin_ipc::{BridgeEvent, BridgeThread};
 use tutti_plugin_ipc::{BridgeMessage, HostMessage, PROTOCOL_VERSION};
 use tutti_plugin_types::{
-    ChannelLayout, Features, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
-    PluginTail, Samples,
+    ChannelLayout, Features, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginBus,
+    PluginDescriptor, PluginTail, Samples,
 };
 use tutti_plugin_types::{EditorPresence, PluginClass, SampleFormat};
 use tutti_types::SampleRate;
@@ -173,13 +173,12 @@ fn handle_with_mock_server(
         editor: EditorPresence::Present,
     };
     let loaded = LoadedPlugin {
-        inputs: vec![ChannelLayout::STEREO],
-        outputs: vec![ChannelLayout::STEREO],
+        inputs: vec![PluginBus::main(ChannelLayout::STEREO)],
+        outputs: vec![PluginBus::main(ChannelLayout::STEREO)],
         latency_samples: Samples::ZERO,
         tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
-        ..Default::default()
     };
     let plugin_handle = handle_over(bridge, slab, descriptor, loaded);
 
@@ -277,13 +276,12 @@ fn handle_with_multi_reply_server(
         editor: EditorPresence::Present,
     };
     let loaded = LoadedPlugin {
-        inputs: vec![ChannelLayout::STEREO],
-        outputs: vec![ChannelLayout::STEREO],
+        inputs: vec![PluginBus::main(ChannelLayout::STEREO)],
+        outputs: vec![PluginBus::main(ChannelLayout::STEREO)],
         latency_samples: Samples::ZERO,
         tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
-        ..Default::default()
     };
     let plugin_handle = handle_over(Arc::clone(&bridge), slab, descriptor, loaded);
 

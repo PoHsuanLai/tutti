@@ -23,11 +23,11 @@ use tutti_graph::{
 };
 use tutti_plugin_host::{InProcClient, NodeControls, PluginNode, load_client};
 use tutti_plugin_types::{
-    AudioBufferMut, ChannelLayout, ChannelTopology, ContentScale, Control, Controller, EditorError,
-    EditorSize, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin, MainThread,
-    Normalized, Origin, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo,
-    PluginResult, PluginTail, Prepare, Processor, Refused, RestartRules, Samples, Speaker, Stuck,
-    WindowHandle,
+    AudioBufferMut, BusRole, ChannelLayout, ChannelTopology, ContentScale, Control, Controller,
+    EditorError, EditorSize, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin,
+    MainThread, Normalized, Origin, ParamId, ParameterInfo, PluginBus, PluginDescriptor,
+    PluginError, PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RestartRules,
+    Samples, Speaker, Stuck, WindowHandle,
 };
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::TempoReader;
@@ -124,18 +124,18 @@ macro_rules! rec_control {
             fn wiring(&self, _: &MainThread) -> LoadedPlugin {
                 let stereo = ChannelTopology::new([Speaker::FrontLeft, Speaker::FrontRight]);
                 let mut wiring = LoadedPlugin {
-                    inputs: vec![ChannelLayout::STEREO],
-                    outputs: vec![ChannelLayout::STEREO],
-                    input_topology: vec![Some(stereo.clone())],
-                    output_topology: vec![Some(stereo)],
+                    inputs: vec![
+                        PluginBus::main(ChannelLayout::STEREO).placed(Some(stereo.clone())),
+                    ],
+                    outputs: vec![PluginBus::main(ChannelLayout::STEREO).placed(Some(stereo))],
                     features: self.rig.features,
                     ..LoadedPlugin::default()
                 };
                 if self.rig.key_bus.load(Ordering::Relaxed) {
-                    wiring.inputs.push(ChannelLayout::MONO);
-                    wiring
-                        .input_topology
-                        .push(Some(ChannelTopology::new([Speaker::FrontCenter])));
+                    wiring.inputs.push(
+                        PluginBus::new(ChannelLayout::MONO, BusRole::Aux)
+                            .placed(Some(ChannelTopology::new([Speaker::FrontCenter]))),
+                    );
                 }
                 wiring
             }

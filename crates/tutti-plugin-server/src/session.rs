@@ -1264,8 +1264,8 @@ mod tests {
         RoundTrip {
             format: s.clock.format,
             f64_audio: loaded.features.contains(Features::F64_AUDIO),
-            inputs: loaded.inputs.clone(),
-            outputs: loaded.outputs.clone(),
+            inputs: loaded.input_widths(),
+            outputs: loaded.output_widths(),
             out,
         }
     }
@@ -1444,7 +1444,7 @@ mod tests {
         format: SampleFormat,
         /// The plugin's `F64_AUDIO` bit.
         f64_audio: bool,
-        /// The node's graph-facing input buses, as the server reports them.
+        /// The node's graph-facing input bus widths, as the server reports them.
         inputs: tutti_plugin::server::BusChannels,
         /// The node's graph-facing output buses.
         outputs: tutti_plugin::server::BusChannels,
@@ -1560,8 +1560,8 @@ mod tests {
 
     /// An f64 instrument (no input port, 64-bit stereo out) runs end to end
     /// in an f64 session and is handed no input buffer, as CLAP requires
-    /// (`audio_inputs_count` equals the plugin's own input port count), while
-    /// the node keeps its graph-facing stereo input bus.
+    /// (`audio_inputs_count` equals the plugin's own input port count), and
+    /// reports no input bus: a direction with no audio is an empty list.
     ///
     /// The slab's inputs carry `0.1`; `TagPassthrough` adds input port 0 to
     /// output port 0 when the host hands one, so an undeclared input bus
@@ -1569,13 +1569,13 @@ mod tests {
     /// its `data32` is null, which a plugin that reads `data32` for every
     /// counted input would dereference.
     ///
-    /// Mutation (run): handing the plugin the defaulted layout again
-    /// (`ports.default_empty_buses()` on the layout `ClapLoaded` keeps, in
-    /// `load_with_library`) → the plugin is handed a stereo input bus
-    /// carrying the slab's `0.1`, and every output sample is `0.1 + tag`;
-    /// fails. Deriving the reported totals from the declared layout instead
-    /// of the defaulted copy (`ports.input_channel_total()`) → the node's
-    /// input shape becomes `[Empty]`; fails.
+    /// Mutations (run): handing the plugin a stereo input port it did not
+    /// declare (`PortLayout::inputs` given one when empty, in
+    /// `read_audio_ports`) → the plugin is handed a stereo input bus carrying
+    /// the slab's `0.1`, and every output sample is `0.1 + tag`; fails.
+    /// Reporting a stereo input for a plugin with none (the totals read off a
+    /// stereo-defaulted copy, as before) → the input list is a stereo bus;
+    /// fails.
     #[test]
     #[cfg(feature = "clap")]
     fn an_f64_clap_instrument_is_handed_no_input_buffer() {
@@ -1597,13 +1597,14 @@ mod tests {
         );
         assert_eq!(format, SampleFormat::Float64);
         assert!(f64_audio, "an instrument with 64-bit outputs runs at f64");
-        let stereo = [tutti_plugin::server::ChannelLayout::STEREO];
-        assert_eq!(
-            inputs.as_slice(),
-            &stereo,
-            "the graph-facing input shape is still one stereo bus"
+        assert!(
+            inputs.is_empty(),
+            "an instrument has no input bus: {inputs:?}"
         );
-        assert_eq!(outputs.as_slice(), &stereo);
+        assert_eq!(
+            outputs.as_slice(),
+            &[tutti_plugin::server::ChannelLayout::STEREO]
+        );
         for (ch, samples) in out.iter().enumerate() {
             let want = f64::from(tutti_clap_test_plugin::probe_tag(0, ch as u32));
             assert!(
@@ -2163,8 +2164,8 @@ mod tests {
             samples_per_channel: 8192,
             format: s.clock.format,
             slots: tutti_plugin::server::RING_SLOTS as u32,
-            inputs: loaded.inputs.to_vec(),
-            outputs: loaded.outputs.to_vec(),
+            inputs: loaded.input_widths(),
+            outputs: loaded.output_widths(),
         };
         let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
         let guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();

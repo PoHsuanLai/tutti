@@ -37,7 +37,11 @@ pub(crate) mod wire;
 ///   **version 25** removed `OpenEditor`, `CloseEditor`, `EditorOpened` and
 ///   `EditorClosed`, which nothing sent (the host opens an editor in its own
 ///   process, through its `EditorLoader`).
-pub const PROTOCOL_VERSION: u32 = 25;
+/// - A **field's type** is its bytes too: **version 26** made `LoadedPlugin`'s
+///   `inputs` and `outputs` lists of `PluginBus` (width, placement, a role
+///   byte) and dropped the `input_topology` and `output_topology` lists that
+///   followed `probed`, so a load reply reads differently from its first byte.
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

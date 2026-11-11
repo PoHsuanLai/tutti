@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use proptest::prelude::*;
 
 use super::*;
-use crate::ChannelLayout;
+use crate::{ChannelLayout, PluginBus};
 
 // ---------------------------------------------------------------- vocabulary
 
@@ -109,9 +109,8 @@ fn reply(state: State, r: Reply) -> (State, Vec<Fx>) {
 
 fn stereo() -> Layout {
     Layout {
-        inputs: vec![ChannelLayout::STEREO],
-        outputs: vec![ChannelLayout::STEREO],
-        ..Layout::default()
+        inputs: vec![PluginBus::main(ChannelLayout::STEREO)],
+        outputs: vec![PluginBus::main(ChannelLayout::STEREO)],
     }
 }
 

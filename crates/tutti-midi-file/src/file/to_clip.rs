@@ -11,6 +11,8 @@ use tutti_ump::{
     SharpsFlats, SysexMessage, TimeSignature, Ump, decode, flex_text_packets,
 };
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::{FileEvent, Meta, MidiFile, Result, SmfFormat, TextKind, Tick, Track};
 
 /// Why a file cannot be a clip.
@@ -33,9 +35,12 @@ pub enum ToClipError {
 pub enum DropReason {
     /// No UMP message replaces it (M2-116 Appendix B lists none): Sequence
     /// Number, Marker, Cue Point, Instrument, Program and Device Name,
-    /// SMPTE Offset, Sequencer Specific, any other meta event, and an `F7`
-    /// escape.
+    /// Sequencer Specific, any other meta event, and an `F7` escape.
     NoSuccessor,
+    /// SMPTE Offset. M2-116 Appendix B names an SMPTE Offset message as its
+    /// successor, "defined in" M2-104, but M2-104 v1.1.2 defines no such
+    /// message, so there is nothing to write it as yet.
+    SuccessorUndefined,
     /// Channel Prefix and MIDI Port Prefix. They address the meta events
     /// that follow to a channel or port, which the UMP does in the packet: a
     /// Flex Data message carries its own address and a group names the port.
@@ -46,8 +51,9 @@ pub enum DropReason {
     /// to name (SMF 1.0 section 3.3: only the first track of a format 1 file
     /// names the sequence).
     TrackName,
-    /// A text that is not UTF-8. Flex Data text is UTF-8 and the SMF text is
-    /// in no declared encoding, so it cannot be carried as it is.
+    /// A text that is not UTF-8. Flex Data text is UTF-8 (M2-104 sections
+    /// 1.8 and 7.5.9) and the SMF text is in no declared encoding, so it
+    /// cannot be carried as it is.
     TextNotUtf8,
     /// A text with a NUL, which Flex Data text uses as its padding.
     TextHasNul,
@@ -55,8 +61,11 @@ pub enum DropReason {
     /// not hold.
     KeySignatureOutOfRange,
     /// A Time Signature with a denominator power of 0 (a whole note): the
-    /// Flex field reads 0 as "non-standard".
+    /// Flex field reads 0 as "non-standard" (M2-104 section 7.5.4).
     WholeNoteDenominator,
+    /// A Time Signature with a numerator of 0, a bar of no beats: the Flex
+    /// field holds "a value from 1 to 256" (M2-104 section 7.5.4).
+    ZeroNumerator,
     /// A System Exclusive event that is not one complete message of 7-bit
     /// bytes from `F0` to `F7`: a divided message (its `F0` part has no `F7`)
     /// or one with an 8-bit byte. SysEx7 carries only the complete one.
@@ -133,11 +142,15 @@ fn signature(
             denominator,
             thirty_seconds,
         })),
-        // SMF has the clocks per click only; the accents and subdivisions
-        // are 0, which M2-104 section 7.5.5 reads as none.
+        // SMF has the clocks per click only, so the bar is not divided:
+        // "If the bar is not divided, then the value of Bar Accent Part 1
+        // shall be equal to the number of beats in the bar, Bar Accent Part 2
+        // shall be set to zero, and Bar Accent Part 3 shall be set to zero"
+        // (M2-104 section 7.5.5). "Set a value of 0 to not use any
+        // Subdivision Clicks" (same section).
         flex(Flex::SetMetronome(Metronome {
             clocks_per_click,
-            accent_1: 0,
+            accent_1: numerator,
             accent_2: 0,
             accent_3: 0,
             subdivision_1: 0,
@@ -173,9 +186,15 @@ fn key_signature(sharps: i8, minor: bool) -> Option<KeySignature> {
 }
 
 /// A text as its Flex packets, or why it has none.
+///
+/// "MIDI messages only use normalized UTF-8 encoded Unicode characters,
+/// following the NFC (Normalization Form C) standard" and "shall not include
+/// a Byte Order Mark" (M2-104 section 1.8): a leading BOM goes and the rest is
+/// composed to NFC, which changes how the text is spelled, never what it says.
 fn text(kind: FlexTextKind, bytes: &[u8]) -> std::result::Result<Vec<FileEvent>, DropReason> {
     let text = std::str::from_utf8(bytes).map_err(|_| DropReason::TextNotUtf8)?;
-    let packets = flex_text_packets(MidiGroup::FIRST, FlexAddress::Group, kind, text)
+    let text: String = text.strip_prefix('\u{FEFF}').unwrap_or(text).nfc().collect();
+    let packets = flex_text_packets(MidiGroup::FIRST, FlexAddress::Group, kind, &text)
         .ok_or(DropReason::TextHasNul)?;
     Ok(packets.map(event).collect())
 }
@@ -209,6 +228,9 @@ fn convert(
             } => {
                 if *denominator_power == 0 {
                     return Err(DropReason::WholeNoteDenominator);
+                }
+                if *numerator == 0 {
+                    return Err(DropReason::ZeroNumerator);
                 }
                 Ok((
                     Rank::Signature,
@@ -251,6 +273,7 @@ fn convert(
             }
             Meta::Other { kind, .. } => Err(match kind {
                 0x20 | 0x21 => DropReason::ReplacedByAddressing,
+                0x54 => DropReason::SuccessorUndefined,
                 _ => DropReason::NoSuccessor,
             }),
         },
@@ -269,7 +292,7 @@ impl MidiFile {
     /// |---|---|
     /// | channel message | the same [`Message::Midi1`] packet, group 0 |
     /// | Set Tempo `FF 51`, us per quarter | Flex Set Tempo, `us * 100` (10 ns units per quarter) |
-    /// | Time Signature `FF 58` | Flex Set Time Signature (numerator, denominator power, 32nds per quarter) then Flex Set Metronome (clocks per click, no accents or subdivisions) |
+    /// | Time Signature `FF 58` | Flex Set Time Signature (numerator, denominator power, 32nds per quarter) then Flex Set Metronome (clocks per click; the bar undivided, its one accent part the numerator; no subdivisions) |
     /// | Key Signature `FF 59` | Flex Set Key Signature: the sharps or flats, and the tonic's letter from the circle of fifths (a minor key's from the major key 3 sharps up) |
     /// | Copyright `FF 02` | Flex Copyright Notice |
     /// | Lyric `FF 05` | Flex Lyrics |

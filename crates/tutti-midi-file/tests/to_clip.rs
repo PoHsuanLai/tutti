@@ -27,6 +27,11 @@
 //! | the UTF-8 check as `from_utf8_lossy` | `text_that_flex_cannot_carry_is_reported` |
 //! | the whole-note refusal removed | `what_has_no_successor_is_reported_with_its_tick` |
 //! | `flex_text_packets` without its NUL check (`tutti-ump`) | `a_nul_is_refused` (there) |
+//! | the metronome's `accent_1` as 0 | `a_time_signature_is_a_signature_and_a_metronome` |
+//! | `0x54` not a `SuccessorUndefined` | `what_has_no_successor_is_reported_with_its_tick` |
+//! | the zero-numerator refusal removed | `what_has_no_successor_is_reported_with_its_tick` |
+//! | the NFC composition removed (`.nfc()`) | `text_is_composed_to_nfc_without_a_byte_order_mark` |
+//! | the byte order mark kept (`strip_prefix` removed) | `text_is_composed_to_nfc_without_a_byte_order_mark` |
 //!
 //! The round trip (`the_clip_round_trips_through_its_bytes`) is a property of
 //! the codec the conversion feeds; it is pinned by the clip codec's own
@@ -87,9 +92,12 @@ fn signature_events(n: u8, d: u8, bb: u8, cc: u8) -> [FileEvent; 2] {
             denominator: d,
             thirty_seconds: bb,
         })),
+        // M2-104 section 7.5.5: an undivided bar's Bar Accent Part 1 "shall be
+        // equal to the number of beats in the bar", the other two zero; a
+        // Subdivision Clicks value of 0 is "not use any".
         flex(Flex::SetMetronome(Metronome {
             clocks_per_click: cc,
-            accent_1: 0,
+            accent_1: n,
             accent_2: 0,
             accent_3: 0,
             subdivision_1: 0,
@@ -491,10 +499,19 @@ fn what_has_no_successor_is_reported_with_its_tick() {
         (8, text(TextKind::InstrumentName, "piano")),
         (8, text(TextKind::ProgramName, "p")),
         (9, text(TextKind::DeviceName, "d")),
-        (10, other(0x54)), // SMPTE offset
+        (10, other(0x54)), // SMPTE offset: Appendix B names a successor M2-104 lacks
         (11, other(0x7F)), // sequencer specific
         (12, escape.clone()),
         (13, whole_note.clone()),
+        (
+            13,
+            meta(Meta::TimeSignature {
+                numerator: 0,
+                denominator_power: 2,
+                clocks_per_click: 24,
+                thirty_seconds_per_quarter: 8,
+            }),
+        ),
         (
             14,
             meta(Meta::KeySignature {
@@ -523,10 +540,11 @@ fn what_has_no_successor_is_reported_with_its_tick() {
             (8, NoSuccessor),
             (8, NoSuccessor),
             (9, NoSuccessor),
-            (10, NoSuccessor),
+            (10, SuccessorUndefined),
             (11, NoSuccessor),
             (12, NoSuccessor),
             (13, WholeNoteDenominator),
+            (13, ZeroNumerator),
             (14, KeySignatureOutOfRange),
             (15, NoSuccessor),
         ]
@@ -610,6 +628,35 @@ fn text_that_flex_cannot_carry_is_reported() {
             Form::Complete,
             b"remark\0\0\0\0\0\0".to_vec()
         )]
+    );
+}
+
+/// M2-104 section 1.8: "MIDI messages only use normalized UTF-8 encoded
+/// Unicode characters, following the NFC (Normalization Form C) standard" and
+/// "shall not include a Byte Order Mark". A decomposed `e` + combining acute
+/// (`65 CC 81`) is written composed (`C3 A9`), and a leading BOM goes.
+#[test]
+fn text_is_composed_to_nfc_without_a_byte_order_mark() {
+    let smf = format0(vec![
+        (0, text(TextKind::Lyric, "cafe\u{301}")),
+        (0, text(TextKind::Copyright, "\u{FEFF}me")),
+    ]);
+    let converted = smf.to_clip().unwrap();
+    assert!(converted.dropped.is_empty());
+    assert_eq!(
+        flex_texts(&converted.clip),
+        [
+            (
+                FlexTextKind::Lyrics,
+                Form::Complete,
+                b"caf\xC3\xA9\0\0\0\0\0\0\0".to_vec()
+            ),
+            (
+                FlexTextKind::Copyright,
+                Form::Complete,
+                b"me\0\0\0\0\0\0\0\0\0\0".to_vec()
+            ),
+        ]
     );
 }
 

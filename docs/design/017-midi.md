@@ -1909,7 +1909,7 @@ tick, event, reason: DropReason }` in clip order. A format 2 file is `ToClipErro
 |---|---|
 | channel message | the same `Midi1` packet, group 0 |
 | Set Tempo `FF 51`, us per quarter | Flex Set Tempo, `us * 100` (10 ns units per quarter; 24 bits times 100 fits `u32`) |
-| Time Signature `FF 58` `nn dd cc bb` | Flex Set Time Signature (`nn`, `dd`, `bb`) then Set Metronome (`cc` clocks per click; accents and subdivisions 0, "none") |
+| Time Signature `FF 58` `nn dd cc bb` | Flex Set Time Signature (`nn`, `dd`, `bb`) then Set Metronome (`cc` clocks per click; the bar undivided, so Bar Accent Part 1 is `nn` and Parts 2 and 3 are 0; no Subdivision Clicks: M2-104 §7.5.5) |
 | Key Signature `FF 59` `sf mi` | Flex Set Key Signature on the group: `sf` sharps or flats, and the tonic's letter (the field has no accidental or mode: the circle of fifths F C G D A E B at `sf + 1`, a minor key's from `sf + 3`, so 3 sharps minor is F) |
 | Copyright `FF 02` | Flex Copyright Notice |
 | Lyric `FF 05` | Flex Lyrics |
@@ -1933,20 +1933,22 @@ would be located" and "the beginning of a bar" are asks of the author's grid, an
 moving an event would change the music.
 
 No successor (`DropReason`), each reported with its tick: Sequence Number, Marker, Cue
-Point, Instrument, Program and Device Name, SMPTE Offset, Sequencer Specific, any
-other meta event, and an `F7` escape (`NoSuccessor`: Appendix B lists no message for
-them; SMPTE Offset and Extended MIDI Time Code are listed there, but `tutti-ump` models
-neither); Channel Prefix and MIDI Port Prefix (`ReplacedByAddressing`: the UMP carries a
+Point, Instrument, Program and Device Name, Sequencer Specific, any other meta event,
+and an `F7` escape (`NoSuccessor`: Appendix B lists no message for them); SMPTE Offset
+(`SuccessorUndefined`: Appendix B lists an SMPTE Offset message "defined in" M2-104, and
+so Extended MIDI Time Code, but M2-104 v1.1.2 defines neither); Channel Prefix and MIDI Port Prefix (`ReplacedByAddressing`: the UMP carries a
 channel in the packet and a port as a group, and every meta message here is addressed
 to the group); the name of any track but the first (`TrackName`: a clip has no tracks);
-a text that is not UTF-8 or has a NUL (`TextNotUtf8`, `TextHasNul`); a Key Signature
-beyond 7 sharps or flats and a Time Signature whose denominator power is 0
-(`KeySignatureOutOfRange`, `WholeNoteDenominator`: the Flex fields hold no such value,
-and 0 reads "non-standard"); a `F0` event that is not one complete 7-bit message
+a text that is not UTF-8 or has a NUL (`TextNotUtf8`, `TextHasNul`: Flex text is UTF-8,
+M2-104 §1.8 and §7.5.9; a text that is carried loses a leading BOM and is composed to
+NFC, as §1.8 requires); a Key Signature beyond 7 sharps or flats, a Time Signature whose
+denominator power is 0 and one whose numerator is 0 (`KeySignatureOutOfRange`,
+`WholeNoteDenominator`, `ZeroNumerator`: the Flex fields hold no such value, a
+denominator of 0 reads "non-standard" and a numerator is "a value from 1 to 256",
+§7.5.4); a `F0` event that is not one complete 7-bit message
 (`SysexNotCompleteSevenBit`: a divided message and its `F7` continuations are each
-reported, not joined). Not settled from the specs in hand: whether M2-104's Set Metronome
-reads 0 in the accent and subdivision fields as "none" (assumed from the field names), and
-the encoding of Flex text (UTF-8 assumed).
+reported, not joined). The SMF 1.0 defaults (120 bpm, 4/4) are quoted from SMF 1.0,
+whose text is not among the specs in hand.
 
 ## 10. Stages
 

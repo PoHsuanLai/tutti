@@ -128,7 +128,7 @@ impl Node for Recorder {
 }
 
 fn decoded(u: Ump) -> (MidiChannel, Voice2) {
-    match tutti_ump::decode(u).expect("a packet") {
+    match u.decode().expect("a packet") {
         Message::Midi2(address, voice) => {
             assert_eq!(address.group, G);
             (address.channel, voice)

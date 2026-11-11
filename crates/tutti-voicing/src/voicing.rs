@@ -3281,7 +3281,7 @@ mod tests {
 
         let mut b = Sim::new(POLY);
         for ump in messages {
-            let Ok(Message::Midi2(address, voice)) = tutti_ump::decode(ump) else {
+            let Ok(Message::Midi2(address, voice)) = ump.decode() else {
                 panic!("a chase message is MIDI 2.0 channel voice: {ump:?}");
             };
             assert_eq!(address.group, MidiGroup::of(2));

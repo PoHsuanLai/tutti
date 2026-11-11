@@ -152,31 +152,17 @@ fn wait_for_connection(listener: &PlatformListener) -> BridgeResult<()> {
     /// How long each `poll` waits before host liveness is re-checked. Also the
     /// worst-case delay this adds to a connection arriving between two polls,
     /// so it stays well inside the host's handshake timeout.
-    const POLL_SLICE_MS: libc::c_int = 50;
+    const POLL_SLICE_MS: i32 = 50;
 
-    let fd = listener.as_fd();
     loop {
-        let mut pollfd = libc::pollfd {
-            fd: std::os::fd::AsRawFd::as_raw_fd(&fd),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: `pollfd` is a live, correctly-initialised single-element array
-        // and `fd` is borrowed from the listener for the duration of this call.
-        let n = unsafe { libc::poll(&mut pollfd, 1, POLL_SLICE_MS) };
-
-        if n < 0 {
-            let e = std::io::Error::last_os_error();
+        match tutti_plugin_ipc_ffi::wait_readable(listener.as_fd(), POLL_SLICE_MS) {
             // A signal during the wait is not a failure; poll again.
-            if e.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e.into());
-        }
-        if n > 0 {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
             // Readable means a connection is queued: the accept that follows will
             // not block.
-            return Ok(());
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
         }
         // Timed out with nothing pending — the only moment worth asking whether
         // there is still anyone to serve.
@@ -267,11 +253,7 @@ pub fn record_parent_pid() {
                 .ok()
                 .and_then(|v| v.parse::<i32>().ok())
                 .filter(|&pid| pid > 1)
-                .unwrap_or_else(|| {
-                    // SAFETY: `getppid` takes no arguments, touches no memory,
-                    // and cannot fail.
-                    unsafe { libc::getppid() }
-                })
+                .unwrap_or_else(current_parent)
         });
     }
 }
@@ -294,27 +276,17 @@ pub fn record_parent_pid() {
 /// same tradeoff the Windows path makes.
 #[cfg(unix)]
 fn parent_is_alive() -> bool {
-    // SAFETY: `getppid` takes no arguments, touches no memory, and cannot fail.
-    let current = unsafe { libc::getppid() };
-    parent_is_alive_given(ORIGINAL_PPID.get().copied(), current, pid_exists)
+    parent_is_alive_given(
+        ORIGINAL_PPID.get().copied(),
+        current_parent(),
+        tutti_plugin_ipc_ffi::process_exists,
+    )
 }
 
-/// Whether `pid` names a live process, without signalling it.
-///
-/// `kill(pid, 0)` runs the permission and existence checks and delivers
-/// nothing. `EPERM` means it exists but is not ours to signal, which is still
-/// "alive"; only `ESRCH` is a definite death. Anything else is a failure to
-/// ask, and per the same rule the Windows arm follows, a failure to ask counts
-/// as alive — erring toward waiting rather than toward a server that quits on
-/// a live host.
+/// `getppid()`, as the `i32` PID the watchdog compares.
 #[cfg(unix)]
-fn pid_exists(pid: i32) -> bool {
-    // SAFETY: signal 0 sends nothing; `kill` only performs its checks. Scalar
-    // arguments, no memory touched.
-    if unsafe { libc::kill(pid, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+fn current_parent() -> i32 {
+    i32::try_from(std::os::unix::process::parent_id()).expect("a PID fits an i32")
 }
 
 /// The watchdog's whole decision, as a pure function of the two PIDs.
@@ -328,7 +300,7 @@ fn pid_exists(pid: i32) -> bool {
 ///
 /// `original` is `None` for a library embedder that never called
 /// [`record_parent_pid`]; `current` is a fresh `getppid()`; `exists` answers
-/// whether a PID names a live process (`pid_exists` in production, a stub in
+/// whether a PID names a live process (`process_exists` in production, a stub in
 /// tests).
 ///
 /// # Why this is two questions and not one
@@ -396,73 +368,8 @@ fn parent_is_alive_given(
 /// so it is consulted rather than assumed.
 #[cfg(windows)]
 fn parent_is_alive() -> bool {
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
-    };
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
-    };
-
-    let Some(parent_pid) = parent_pid() else {
-        // Could not determine it — assume alive and keep waiting.
-        return true;
-    };
-
-    // SAFETY: `OpenProcess` takes only scalars. A null return means the process
-    // is gone or inaccessible; the handle is closed on every path below.
-    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
-    if handle.is_null() {
-        // SAFETY: reads this thread's last-error value, set by the call above.
-        let err = unsafe { GetLastError() };
-        // `ERROR_INVALID_PARAMETER` is what Windows reports for a PID naming no
-        // live process — the one unambiguous "it is gone". Anything else, and
-        // `ERROR_ACCESS_DENIED` in particular, means the caller was not
-        // permitted to ask, which says nothing about whether it is running.
-        return err != ERROR_INVALID_PARAMETER;
-    }
-    // A process handle becomes signalled when the process exits, so a zero-length
-    // wait is a liveness probe. Test for the *signalled* result specifically
-    // rather than for `WAIT_TIMEOUT`: timing out means alive, but so does
-    // `WAIT_FAILED`, which is a failure to ask rather than an answer.
-    // SAFETY: `handle` was just opened above and is still valid.
-    let alive = unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0;
-    // SAFETY: closing a handle opened above and not yet closed.
-    unsafe { CloseHandle(handle) };
-    return alive;
-
-    /// This process's parent PID, from the process table. `None` if the
-    /// snapshot fails or this process is not in it.
-    fn parent_pid() -> Option<u32> {
-        let me = std::process::id();
-        // SAFETY: scalar arguments; the returned handle is closed below.
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return None;
-        }
-
-        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-
-        let mut found = None;
-        // SAFETY: `snapshot` is valid and `entry` is a correctly sized, live
-        // `PROCESSENTRY32W` for the duration of the walk.
-        let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
-        while ok {
-            if entry.th32ProcessID == me {
-                found = Some(entry.th32ParentProcessID);
-                break;
-            }
-            // SAFETY: as above.
-            ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-        }
-        // SAFETY: closing a handle opened above and not yet closed.
-        unsafe { CloseHandle(snapshot) };
-        found
-    }
+    // Could not determine the parent: assume alive and keep waiting.
+    tutti_plugin_ipc_ffi::parent_process_id().is_none_or(tutti_plugin_ipc_ffi::process_exists)
 }
 
 #[cfg(all(test, unix))]

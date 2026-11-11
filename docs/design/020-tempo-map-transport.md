@@ -55,7 +55,7 @@ Evidence for "no map anywhere": `grep TempoMap crates` hits only `tutti-tempo`;
 | `tutti-plugin` `transport_source.rs` | Counts a plugin's steady time across chunks by segment; its own docs state "the engine has no tempo map" and that a ramp is counted at the faster tempo. |
 | `tutti-plugin-types`, `tutti-clap-host`, `tutti-vst3-host`, `tutti-vst2-host`, `tutti-au-host` | `timing.tempo` into `ProcessContext` / CLAP `transport` / VST2 `VstTimeInfo` / AU callbacks. CLAP's `tempo_inc` was always `0.0` until stage 5a (`clap-host/instance/audio.rs`). |
 | `bevy-tutti`, `tutti-export` | `transport.settings.tempo()` seeds an `OfflineTimelineConfig` (examples); `beats_to_seconds` and `duration_to_frames` convert export ranges. |
-| `tutti-midi-file` | `MidiFile::seconds_at`: its own step-only integration of the file's tempo list. |
+| `tutti-midi-file` | `MidiFile::seconds_at`, now `TempoMap::seconds_at` over the file's own map (017 stage 6). |
 
 Why `plugin_midi_export` passes today: its test pins the file length in frames
 (the length comes from `MidiFile::seconds_at`, which is tempo-aware), and
@@ -254,14 +254,12 @@ both relative to the same origin as the timeline. The session supplies the map
 | `OfflineTimelineConfig::tempo: Bpm` | `tempo_map: Arc<TempoMap>`; a `Bpm` shorthand builds `TempoMap::constant` |
 | `OfflineTimeline::tempo()`, `Timeline::tempo()` | A tempo at a beat: `Timeline` exposes the map or `tempo_at(beat)` |
 
-`MidiFile::seconds_at` is pointed at `TempoMap`: the file's `tempo_map()` list
-(`Vec<(Beat, Bpm)>`) builds a step-only `TempoMap` (`TempoPoint { shape: Step }`),
-and `seconds_at` is `map.seconds_at`. A file's tempo track is the file's data,
-not the project's, so the file builds its own map and the project adopts it on
-import (an explicit session call), never implicitly. [017](017-midi.md) gives
-`MidiFile` that map as a field (`tempo_map: TempoMap`, built from the file's tempo
-meta events); this design is what makes `seconds_at` read it. The same figures come out
-for step lists, which the existing `midi_file.rs` tests pin. An export
+`MidiFile::seconds_at` is pointed at `TempoMap` (done, [017](017-midi.md) stage 6): the
+file builds a step-only `TempoMap` (`TempoPoint { shape: Step }`) from its tempo events
+in its constructors, and `seconds_at` is `map.seconds_at`. A file's tempo track is the
+file's data, not the project's, so the file builds its own map and the project adopts it
+on import (an explicit session call), never implicitly. The same figures come out for
+step lists (`tests/smf_model.rs` pins 120 then 60 BPM exactly). An export
 config's `duration_seconds` is then derived from the project's map.
 
 ## 7. Goldens and differential suites
@@ -325,7 +323,7 @@ render bit-identical (stage 0 adds the guards first).
 | 3 | Steps | Non-constant maps in the walker; step cells push `TransportChanges`; the block split at the 8th entry. `OfflineTimelineConfig` takes a map. | New step tests of §8. |
 | 4 | Ramps | Ramp cells, the grid bound, `tempo_at` slope on `TempoMap` if missing. | Ramp tests; block-size independence. |
 | 5 | Readers | Sampler, plugin transport source, MIDI clock; CLAP `tempo_inc`, VST3/VST2/AU tempo from the map (5a: the plugin hosts, below; 5b: a transport event at each change inside a chunk, below). | Per-host contract cases (`tutti-plugin-contract`), with a `gaps` ratchet untouched. |
-| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds`, `duration_to_frames`; `MidiFile::seconds_at` over `TempoMap`; `plugin_midi_export` pins the note frames, not only the length. | Needs lane E4's bounce API; docs 013 updated. |
+| 6 | Retire | `TransportCommand::Tempo`, `Timeline::tempo()`, `OfflineTimelineConfig::tempo`, `beats_to_seconds`, `duration_to_frames`; `MidiFile::seconds_at` over `TempoMap` (done, 017 stage 6); `plugin_midi_export` pins the note frames, not only the length. | Needs lane E4's bounce API; docs 013 updated. |
 
 **As built, stages 0 to 2 (publish a constant map).** Stage 0's guards already
 exist (the closed-form `FrameClock` property, `offline_timeline_agrees_with_transport_clock_sample_for_sample`,

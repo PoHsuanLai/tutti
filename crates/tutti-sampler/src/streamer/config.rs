@@ -1,5 +1,7 @@
 //! Streamer thread configuration.
 
+use tutti_types::Samples;
+
 /// Ring, cache and crossfade sizing for the streamer thread.
 ///
 /// `Default` is tuned for 64-channel streaming on a typical desktop; use
@@ -23,7 +25,7 @@ pub struct BufferConfig {
     /// stream (a timeline seek). 512 by default, about
     /// 12 ms at 44.1 kHz — long enough to hide the discontinuity, short enough
     /// not to smear the seek target.
-    pub seek_crossfade_frames: usize,
+    pub seek_crossfade_frames: Samples,
     /// When true, refills for three or more concurrent streams run on rayon,
     /// each worker holding an exclusive `&mut` to a different region ring.
     pub parallel_io: bool,
@@ -35,7 +37,7 @@ impl Default for BufferConfig {
             chunk_size: 16384,
             cache_max_entries: 64,
             cache_max_bytes: 1024 * 1024 * 1024, // 1GB
-            seek_crossfade_frames: 512,
+            seek_crossfade_frames: Samples::new(512),
             parallel_io: true,
         }
     }

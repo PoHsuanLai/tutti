@@ -3,14 +3,14 @@
 //! [`DesignNode<D>`] is the one node over every reverb algorithm. It is generic
 //! rather than boxed: a [`Design`] has a `Controls` type and a [`Realization`] of its
 //! own, and erasing them would bring back a settings bag. The node holds the
-//! design, its realization and the algorithm's [`Param`] cells ([`Params`]),
+//! design, its realization and the algorithm's [`Param`](tutti_types::Param) cells ([`Params`]),
 //! and per block it reads the cells once, designs a [`Model`](Design::Model) when the
 //! controls changed, moves the realization to it ([`Realization::retarget`]), renders, and
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
 //!
-//! The node is wet only unless its **mix** ([`UnitParam::Wet`], default 1) is
-//! lowered: then it blends the dry input (aligned to the realization's latency, never
-//! to its pre-delay) against the wet one, for use as an insert.
+//! The node is wet only: its blend with its input, for use as an insert, is the
+//! graph's mix (`Editor::set_mix`, doc 013 M4), which aligns the input by the
+//! realization's latency (never its pre-delay, which is part of the wet sound).
 //! [`FreeverbNode`] is the General MIDI send of the SoundFont player.
 
 use core::ops::Range as Frames;
@@ -22,11 +22,8 @@ use tutti_dsp::{
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{
-    Db, Latency, MaxBlock, Mix, Param, SampleRate, Samples, Tail, UnitAddr, UnitParam,
-};
+use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam};
 
-use crate::blend::{Blend, DryWet};
 use crate::params::{At, ControlSet, Params};
 
 /// The level the wet signal has fallen to when the declared tail ends, and below
@@ -41,16 +38,11 @@ const TAIL_FLOOR: Db = Db(-60.0);
 const UNBOUNDED: u64 = u64::MAX;
 
 /// A [`Design`] a [`DesignNode`] can run: the design plus the cells of its
-/// controls and what the node does with the input around it.
+/// controls.
 pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'static {
     /// The cells: the family's addresses and the conversion between its controls and
     /// the `f32`s the ports carry.
     type Set: ControlSet<Controls = Self::Controls>;
-
-    /// What the node does with its input: [`DryWet`] for a reverb used as an
-    /// insert, [`NoBlend`](crate::NoBlend) for a family that is only ever the
-    /// wet signal.
-    type Blend: Blend;
 
     /// Whether the node parks: it tracks how long the model still rings
     /// ([`Io::report_tail`]), cuts the realization off past it and goes idle. A
@@ -114,7 +106,6 @@ impl ControlSet for FreeverbSet {
 
 impl NodeDesign for FreeverbDesign {
     type Set = FreeverbSet;
-    type Blend = DryWet;
 
     fn set(&self, _: &FreeverbControls) -> FreeverbSet {
         FreeverbSet
@@ -151,7 +142,7 @@ enum Mode<C> {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`], through [`tutti_graph::param_parts`]): inserted,
-/// its controls are a [`ParamSet`] over the mix ([`UnitParam::Wet`]) and the
+/// its controls are a [`ParamSet`] over the
 /// algorithm's cells, and a fork starts from the values set with a
 /// [`Realization::fresh`] realization, silent (the graph's preroll warms it).
 ///
@@ -167,8 +158,6 @@ pub struct DesignNode<D: NodeDesign> {
     realization: D::Realization,
     params: Params<D::Set>,
     mode: Mode<D::Controls>,
-    /// The dry path and its controls.
-    blend: D::Blend,
     /// The model the realization was last retargeted to: designed in place.
     network: Box<D::Model>,
     /// The longest-ringing model of a modulated block, for the tail only.
@@ -215,7 +204,7 @@ impl<D: NodeDesign> DesignNode<D> {
         Self::build(design, controls, Mode::Live)
     }
 
-    /// A reverb of `design` with no cells but its mix: its controls are
+    /// A reverb of `design` with no cells: its controls are
     /// `controls` for good, so its tail is the exact figure of that one
     /// network, not a worst case. Allocates.
     #[must_use]
@@ -234,7 +223,6 @@ impl<D: NodeDesign> DesignNode<D> {
             realization,
             params,
             mode,
-            blend: D::Blend::default(),
             network,
             longest,
             applied: None,
@@ -274,16 +262,12 @@ impl<D: NodeDesign> DesignNode<D> {
                 frames(self.network.tail(TAIL_FLOOR), self.rate)
             }
         };
-        let inputs = usize::from(self.channels.input.count());
-        self.blend
-            .prepare(self.realization.latency(), inputs, max_block);
         self.clear();
     }
 
     /// Back to silence: no ring-out owed, no input heard.
     fn clear(&mut self) {
         self.realization.reset();
-        self.blend.clear();
         self.silent = true;
         self.ring = 0;
         self.since = UNBOUNDED;
@@ -310,12 +294,12 @@ impl<D: NodeDesign> DesignNode<D> {
     /// How many frames of the block may still sound, and the tail it reports:
     /// the tail owed is measured from the last non-silent input frame, the longer
     /// figure held until a shorter decay has been heard out.
-    fn cut(&mut self, io: &mut Io<'_>, first: usize) -> usize {
+    fn cut(&mut self, io: &mut Io<'_>) -> usize {
         let size = io.frames();
         let inputs = usize::from(self.channels.input.count());
         let mut current = self.current;
         if matches!(self.mode, Mode::Live)
-            && let Some(longest) = self.params.longest(io, first)
+            && let Some(longest) = self.params.longest(io)
             && Some(longest) != self.applied
         {
             self.design
@@ -389,7 +373,7 @@ impl<D: NodeDesign> DesignNode<D> {
     /// the last design designs and retargets before it renders. The steps that did
     /// not move render together, in one call, with the model held; the rest of a
     /// segment an earlier block began is rendered with the model that block set.
-    fn render_steps(&mut self, io: &mut Io<'_>, first: usize, position: u64) {
+    fn render_steps(&mut self, io: &mut Io<'_>, position: u64) {
         let size = io.frames();
         // A cell glides from where the block began, whatever the steps designed,
         // and arrives at its value on the block's last solve.
@@ -411,7 +395,7 @@ impl<D: NodeDesign> DesignNode<D> {
                 applied,
                 rate: self.rate,
             };
-            let target = self.params.read(io, first, at);
+            let target = self.params.read(io, at);
             if self
                 .applied
                 .as_ref()
@@ -427,19 +411,10 @@ impl<D: NodeDesign> DesignNode<D> {
     }
 }
 
-impl<D: NodeDesign<Blend = DryWet>> DesignNode<D> {
-    /// The shared cell of the mix: `0` is the dry input alone, `1` (the default)
-    /// the room alone.
-    #[must_use]
-    pub fn mix(&self) -> Param<Mix> {
-        self.blend.mix()
-    }
-}
-
 impl DesignNode<FreeverbDesign> {
     /// The General MIDI reverb send: Freeverb at room 0.5 and damping 0.5, mono
     /// in and stereo out, wet only. Its controls are fixed, so its tail is the
-    /// exact figure of that one network, and it declares no cells but the mix.
+    /// exact figure of that one network, and it declares no cells.
     #[must_use]
     pub fn general_midi() -> Self {
         Self::fixed(FreeverbDesign, FreeverbControls::GENERAL_MIDI)
@@ -478,10 +453,10 @@ fn cost(effort: Effort) -> Cost {
 
 impl<D: NodeDesign> Node for DesignNode<D> {
     fn shape(&self) -> Shape {
-        let mut addrs = D::Blend::ADDRS.to_vec();
-        if matches!(self.mode, Mode::Live) {
-            addrs.extend_from_slice(self.params.addrs());
-        }
+        let addrs = match self.mode {
+            Mode::Live => self.params.addrs(),
+            Mode::Fixed(_) => &[],
+        };
         Shape::audio(self.channels.input, self.channels.output)
             .with_cost(cost(self.realization.effort()))
             .with_latency(Latency::new(self.realization.latency()))
@@ -490,7 +465,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             } else {
                 Tail::Unknown
             })
-            .with_param_addrs(&addrs)
+            .with_param_addrs(addrs)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -502,7 +477,6 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         if size == 0 {
             return Status::Modified;
         }
-        let first = D::Blend::ADDRS.len();
         let position = self.position;
         self.position += size as u64;
 
@@ -513,7 +487,6 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             Mode::Fixed(c) => c,
             Mode::Live => self.params.read(
                 &io,
-                first,
                 At {
                     frame: size - 1,
                     block: size,
@@ -525,21 +498,16 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         let moved = |applied: &D::Controls| self.params.moved(applied, &target);
         let stepped = D::SAMPLING != Cadence::BLOCK
             && matches!(self.mode, Mode::Live)
-            && (self.params.driven(&io, first) || self.applied.as_ref().is_some_and(moved));
+            && (self.params.driven(&io) || self.applied.as_ref().is_some_and(moved));
         if !stepped && self.applied.as_ref().is_none_or(moved) {
             self.apply(target);
         }
 
-        let cut = if D::PARKS {
-            self.cut(&mut io, first)
-        } else {
-            size
-        };
+        let cut = if D::PARKS { self.cut(&mut io) } else { size };
 
         // Past its tail the room is cut off and parked: its state is below the
         // floor, and the input has been silent for longer than the realization's
-        // latency, so the dry path holds only silence too and the output is
-        // silent.
+        // latency, so the output is silent.
         if cut == 0 {
             if !self.silent {
                 self.realization.reset();
@@ -548,11 +516,8 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             return Status::Idle;
         }
 
-        // The blend reads its controls only now: an idle block above read none.
-        self.blend.begin(&io);
-
         if stepped {
-            self.render_steps(&mut io, first, position);
+            self.render_steps(&mut io, position);
         } else {
             self.render(&mut io, 0..cut);
         }
@@ -567,8 +532,6 @@ impl<D: NodeDesign> Node for DesignNode<D> {
             }
         }
 
-        let (ins, mut outs) = io.split();
-        self.blend.finish(&ins, &mut outs, size);
         Status::Modified
     }
 
@@ -577,11 +540,9 @@ impl<D: NodeDesign> Node for DesignNode<D> {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        let first = D::Blend::ADDRS.len();
-        match (k, self.mode) {
-            (k, _) if k < first => self.blend.base(k),
-            (k, Mode::Live) => self.params.base(k - first),
-            _ => None,
+        match self.mode {
+            Mode::Live => self.params.base(k),
+            Mode::Fixed(_) => None,
         }
     }
 }
@@ -590,12 +551,11 @@ impl<D: NodeDesign> Node for DesignNode<D> {
 /// state empty ([`Realization::fresh`]).
 impl<D: NodeDesign> Clone for DesignNode<D> {
     fn clone(&self) -> Self {
-        let mut copy = Self {
+        Self {
             design: self.design.clone(),
             realization: self.realization.fresh(),
             params: self.params.clone(),
             mode: self.mode,
-            blend: self.blend.clone(),
             network: self.network.clone(),
             longest: self.longest.clone(),
             applied: self.applied,
@@ -607,17 +567,14 @@ impl<D: NodeDesign> Clone for DesignNode<D> {
             since: UNBOUNDED,
             silent: true,
             position: 0,
-        };
-        copy.blend.clear();
-        copy
+        }
     }
 }
 
 impl<D: NodeDesign> ParamNode for DesignNode<D> {
-    /// The blend's (the mix of a [`DryWet`]), and in a live node the algorithm's
-    /// cells.
+    /// In a live node the algorithm's cells; a fixed one has none.
     fn param_set(&self) -> ParamSet {
-        let set = self.blend.bind(ParamSet::builder());
+        let set = ParamSet::builder();
         match self.mode {
             Mode::Live => self.params.bind(set).build(),
             Mode::Fixed(_) => set.build(),
@@ -627,7 +584,6 @@ impl<D: NodeDesign> ParamNode for DesignNode<D> {
     /// A clone with every cell detached (at its value now) and the room empty.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.blend.detach();
         fork.params.detach();
         fork
     }

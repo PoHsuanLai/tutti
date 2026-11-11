@@ -16,14 +16,15 @@ workspace = true
 
 [dependencies]
 thiserror = "2"
-tracing = "0.1"
 
-# `channel_voice`, the Clip File's note-on width read.
+# `channel_voice`, the note-on width read by `Track::notes`.
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
-# midly's workspace base is no_std; re-add the `std` + `parallel` features this
-# crate's SMF I/O relies on (midly's own default).
-midly = { workspace = true, features = ["std", "parallel"] }
+# midly's workspace base is no_std; re-add `std`, and turn on `strict`, which
+# makes a cut-off or malformed file an error rather than a silently shorter
+# one. Not `parallel`: it pulls rayon for files this small (doc 017, "Files").
+midly = { workspace = true, features = ["std", "strict"] }
+tutti-tempo = { path = "../tutti-tempo" }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 

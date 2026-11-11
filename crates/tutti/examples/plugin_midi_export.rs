@@ -51,9 +51,20 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
     s.graph().set_outputs_from(synth);
 
     let file = MidiFile::read(midi)?; // an SMF or a Clip File
-    let tempo = file.tempo().unwrap_or(Bpm::of(120.0)); // the tempo at beat 0
-    s.midi()
-        .play_clip(synth, file.iter().map(TimedMidiEvent::from))?;
+    let tempo = file.tempo_map().tempo_at(Beat(0.0)); // the tempo at beat 0
+    // Its messages on the file's timeline (a format 2 file has none), as the
+    // packets they are: the clip translates them when it is loaded.
+    let timeline = file.events().ok_or("a format 2 file has no one timeline")?;
+    s.midi().play_clip(
+        synth,
+        timeline.filter_map(|(beat, event)| {
+            let message = event.message()?;
+            Some(TimedMidiEvent::from((
+                beat,
+                tutti::ump::Ump::from(*message),
+            )))
+        }),
+    )?;
     s.transport().settings.set_tempo(tempo);
     s.update();
 
@@ -78,53 +89,33 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
 }
 
 /// Two bars: a note on each beat, 120 BPM for the first four beats and 60
-/// for the last four. Written through `midly`: `tutti-midi-file`'s writer
-/// sets one tempo only.
+/// for the last four, as a file with a tempo map.
 fn phrase(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use midly::{
-        Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind, num::u28,
+    use tutti::midi_file::{FileEvent, Meta, SmfFormat, Tick, Track};
+    use tutti::ump::{Address, Message, NoteNumber, U7, Voice1};
+    const TPQ: u16 = 480;
+    let message = |tick: u64, key: u8, on: bool| {
+        let (note, velocity) = (NoteNumber::of(key), U7::of(100));
+        let voice = if on {
+            Voice1::NoteOn { note, velocity }
+        } else {
+            Voice1::NoteOff { note, velocity }
+        };
+        let message = Message::Midi1(Address::first(MidiChannel::FIRST), voice);
+        (Tick(tick), FileEvent::Message(message))
     };
-    const TPQ: u32 = 480;
-    let event = |delta: u32, kind| TrackEvent {
-        delta: u28::new(delta),
-        kind,
-    };
-    let note = |delta: u32, key: u8, on: bool| {
-        let (key, vel) = (key.into(), 100.into());
-        event(
-            delta,
-            TrackEventKind::Midi {
-                channel: 0.into(),
-                message: if on {
-                    MidiMessage::NoteOn { key, vel }
-                } else {
-                    MidiMessage::NoteOff { key, vel }
-                },
-            },
-        )
-    };
-    let tempo = |delta: u32, us_per_quarter: u32| {
-        event(
-            delta,
-            TrackEventKind::Meta(MetaMessage::Tempo(us_per_quarter.into())),
-        )
-    };
-    let mut track = vec![tempo(0, 500_000)]; // 120 BPM
-    for beat in 0..8u8 {
-        if beat == 4 {
-            track.push(tempo(0, 1_000_000)); // 60 BPM from beat 4
+    let tempo = |tick: u64, bpm: f64| (Tick(tick), FileEvent::Meta(Meta::tempo(Bpm::of(bpm))));
+    let beat = |n: u64| n * u64::from(TPQ);
+    let mut events = vec![tempo(0, 120.0)];
+    for n in 0..8u64 {
+        if n == 4 {
+            events.push(tempo(beat(4), 60.0)); // 60 BPM from beat 4
         }
-        track.push(note(0, 60 + beat, true));
-        track.push(note(TPQ, 60 + beat, false));
+        let key = 60 + n as u8;
+        events.push(message(beat(n), key, true));
+        events.push(message(beat(n + 1), key, false));
     }
-    track.push(event(0, TrackEventKind::Meta(MetaMessage::EndOfTrack)));
-    let smf = Smf {
-        header: Header::new(Format::SingleTrack, Timing::Metrical(480.into())),
-        tracks: vec![track],
-    };
-    let mut bytes = Vec::new();
-    smf.write_std(&mut bytes)?;
-    std::fs::write(path, bytes)?;
+    MidiFile::smf(SmfFormat::SingleTrack, TPQ, vec![Track::new(events)])?.write(path)?;
     Ok(())
 }
 

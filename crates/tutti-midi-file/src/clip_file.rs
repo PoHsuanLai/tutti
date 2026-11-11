@@ -1,518 +1,77 @@
-//! MIDI 2.0 **Clip File** (M2-116) reader/writer.
+//! MIDI 2.0 **Clip File** (M2-116) byte codec: the wire half under
+//! [`MidiFile`](crate::MidiFile).
 //!
-//! A MIDI Clip File is the MIDI-2 analogue of a Standard MIDI File Type 0: one
-//! sequence of Universal MIDI Packets. Layout (M2-116 §4–7, all big-endian):
+//! A Clip File is one sequence of Universal MIDI Packets. Layout (M2-116
+//! sections 4 to 7, all big-endian):
 //!
 //! ```text
-//! ["SMF2CLIP" 8 bytes] [DCS=0] [DCTPQ] [ (DCS · UMP)* ] [DCS] [StartOfClip]
-//!   [ (DCS · UMP)* ] [DCS] [EndOfClip]
+//! ["SMF2CLIP" 8 bytes] [Set Profile On]* [DCS=0] [DCTPQ] [ (DCS * UMP)* ]
+//!   [DCS] [StartOfClip] [ (DCS * UMP)* ] [DCS] [EndOfClip]
 //! ```
+//!
+//! Everything from the file header up to the DCS of Start of Clip is the
+//! **Clip Configuration Header** (M2-116 section 6): leading Set Profile On
+//! messages (no DCS), the DCTPQ, and any UMP messages that configure a
+//! receiver (Bank Select, Program Change, volume, System Exclusive), each
+//! behind its own DCS. It holds at most one Set Tempo and one Set Time
+//! Signature (sections 6.1 to 6.1.2). The rest, from Start of Clip to End of
+//! Clip, is the Sequence Data (section 7).
 //!
 //! Every UMP is preceded by a **Delta Clockstamp** (DCS) giving the ticks since
 //! the previous event; the tick unit is declared once by the **DCTPQ** (Delta
-//! Clockstamp Ticks Per Quarter Note). The stream is bracketed by Start-of-Clip
-//! and End-of-Clip UMP Stream messages.
+//! Clockstamp Ticks Per Quarter Note). The stream is bracketed by Start of Clip
+//! and End of Clip UMP Stream messages, and the DCS before End of Clip is the
+//! clip's length.
 //!
-//! This module models the file as a flat list of `(delta_ticks, Ump)`,
-//! which is all a Type-0-like clip needs; the caller supplies the DCTPQ.
-//!
-//! # Examples
-//!
-//! A clip written with a [`ClipHeader`] declares its own tempo and time
-//! signature (M2-116 §7.1.1/§7.1.2), so an importer can place it in real time
-//! rather than assuming the project's:
-//!
-//! ```
-//! use tutti_fixtures::midi::note_on;
-//! use tutti_midi_file::{
-//!     ParsedClipFile, write_clip_file_with_header, ClipEvent, ClipHeader,
-//!     CLIP_FILE_MAGIC,
-//! };
-//! use tutti_types::Bpm;
-//! use tutti_ump::{MidiChannel, MidiGroup};
-//!
-//! let bytes = write_clip_file_with_header(
-//!     480,
-//!     ClipHeader { tempo_bpm: Bpm::of(174.0), time_signature: (7, 8) },
-//!     &[ClipEvent::new(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))],
-//! );
-//!
-//! // Self-identifying: a file can be recognised before it is parsed.
-//! assert_eq!(&bytes[..8], &CLIP_FILE_MAGIC);
-//!
-//! let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
-//! assert_eq!(clip.time_signature(), Some((7, 8)));
-//! assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm::of(174.0), 0.05));
-//! ```
-//!
-//! [`ParsedClipFile::notes`] pairs the event stream into whole notes, so an
-//! importer gets durations without reimplementing note matching — and without
-//! narrowing velocity to 7 bits on the way:
-//!
-//! ```
-//! use tutti_fixtures::midi::{note_off, note_on};
-//! use tutti_midi_file::{ParsedClipFile, write_clip_file_from_beats};
-//! use tutti_types::{Beat, BeatDuration};
-//! use tutti_ump::{MidiChannel, MidiGroup};
-//!
-//! let bytes = write_clip_file_from_beats(96, [
-//!     (Beat(0.0), note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
-//!     (Beat(1.5), note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
-//! ]);
-//!
-//! let notes = ParsedClipFile::from_bytes(&bytes).unwrap().notes();
-//! assert_eq!(notes.len(), 1);
-//! assert_eq!(notes[0].duration_beats, BeatDuration(1.5));
-//! assert_eq!(notes[0].velocity, 0xABCD);
-//! ```
+//! This module reads and writes a clip as absolute ticks and packets, with no
+//! decoding past the structure: [`MidiFile`](crate::MidiFile) is the model
+//! over it.
 
 use std::vec::Vec;
 
-use crate::flex;
-use tutti_midi_protocol::channel_voice;
-use tutti_types::{Beat, BeatDuration, Bpm};
 use tutti_ump::{
-    DeltaTicks, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Stream, Ump, Utility,
-    Voice2, decode, split_stream,
+    DeltaTicks, Flex, Message, Stream, Sysex7Packet, SysexStatus, Ump, Utility, decode,
+    split_stream,
 };
 
-/// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
-pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
+/// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 section 5).
+pub(crate) const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
 
-/// A timed UMP event in a clip: `delta_ticks` since the previous event, then the
-/// event itself.
-///
-/// This is the file's on-wire timing model (relative ticks). If you think in
-/// beats — as most callers do — prefer [`write_clip_file_from_beats`] and
-/// [`ParsedClipFile::iter`], which own the beat↔tick↔delta conversion so you
-/// never build these by hand.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClipEvent {
-    /// Ticks since the *previous* event, not since the clip start. Absolute
-    /// position is the running sum, which is why a dropped event shifts every
-    /// event after it.
-    pub delta_ticks: u32,
-    /// The event itself. Only its UMP words are written; position in the clip
-    /// comes from `delta_ticks`.
-    pub event: Ump,
-}
-
-impl ClipEvent {
-    /// A timed event: `delta_ticks` since the previous event, then the event.
-    #[inline]
-    #[must_use]
-    pub const fn new(delta_ticks: u32, event: Ump) -> Self {
-        Self { delta_ticks, event }
-    }
-}
-
-impl From<(u32, Ump)> for ClipEvent {
-    /// `(delta_ticks, event)` — lets a caller write the tuple form.
-    #[inline]
-    fn from((delta_ticks, event): (u32, Ump)) -> Self {
-        Self { delta_ticks, event }
-    }
-}
-
-/// The musical context a clip declares up front: tempo and time signature.
-///
-/// M2-116 §7.1.1 and §7.1.2 say the sequence *should* open with a Set Tempo and
-/// a Set Time Signature, in that order, immediately after Start of Clip. Without
-/// them a reader has no tempo map, so [`ParsedClipFile::iter`]'s beats cannot be
-/// converted to seconds by any importer.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ClipHeader {
-    /// Quarter-notes per minute.
-    pub tempo_bpm: Bpm,
-    /// Beats per bar and the beat unit, e.g. `(4, 4)`.
-    pub time_signature: (u8, u8),
-}
-
-impl Default for ClipHeader {
-    /// 120 BPM, 4/4 — the conventional default when a caller has no better idea.
-    fn default() -> Self {
-        Self {
-            tempo_bpm: Bpm::of(120.0),
-            time_signature: (4, 4),
-        }
-    }
-}
-
-/// Serializes a MIDI Clip File (M2-116) from a tick-per-quarter unit and a flat
-/// list of timed events. Emits header + DCTPQ + Start-of-Clip + (DCS·UMP)* +
-/// End-of-Clip, big-endian.
-///
-/// This writes no Set Tempo or Set Time Signature, which §7.1.1/§7.1.2 recommend
-/// — use [`write_clip_file_with_header`] when you know the clip's musical
-/// context, so the file carries its own tempo map.
-pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> {
-    write_clip(ticks_per_quarter, None, events)
-}
-
-/// Serializes a MIDI Clip File that opens with its tempo and time signature, per
-/// M2-116 §7.1.1 / §7.1.2 — the shape an importer needs to place the clip in
-/// real time.
-///
-/// **`header` replaces a header the events already carry.** Tempo and time
-/// signature are ordinary events in this format, so a clip that came from
-/// [`ParsedClipFile::from_bytes`] already has its pair sitting at the front of
-/// `events`; any such leading zero-delta pair is dropped in favour of
-/// `header`. Without that, re-encoding a parsed clip grew a duplicate pair
-/// on every cycle. A Set Tempo later in the stream is a mid-clip tempo
-/// change and is left alone.
-///
-/// Re-encode a parsed clip with [`ParsedClipFile::header`]:
-///
-/// ```
-/// # use tutti_midi_file::{ParsedClipFile, write_clip_file_with_header, ClipHeader};
-/// # let first = write_clip_file_with_header(96, ClipHeader::default(), &[]);
-/// let clip = ParsedClipFile::from_bytes(&first).unwrap();
-/// let again = write_clip_file_with_header(
-///     clip.ticks_per_quarter,
-///     clip.header().unwrap(),
-///     &clip.events,
-/// );
-/// assert_eq!(first, again, "a round trip is byte-stable");
-/// ```
-pub fn write_clip_file_with_header(
-    ticks_per_quarter: u16,
-    header: ClipHeader,
-    events: &[ClipEvent],
-) -> Vec<u8> {
-    write_clip(ticks_per_quarter, Some(header), events)
-}
-
-/// How many events at the head of `events` sit in the **header position** — the
-/// run of zero-delta Set Tempo / Set Time Signature messages that M2-116
-/// §7.1.1 / §7.1.2 place immediately after Start of Clip.
-///
-/// Only the *leading* run counts, and that is the whole point: a Set Tempo
-/// further along the stream is a mid-clip tempo change, which is musical
-/// content and must survive a round trip untouched.
-fn leading_header_len(events: &[ClipEvent]) -> usize {
-    events
-        .iter()
-        .take_while(|ce| {
-            ce.delta_ticks == 0
-                && (flex::tempo(&ce.event).is_some() || flex::time_signature(&ce.event).is_some())
-        })
-        .count()
-}
-
-fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[ClipEvent]) -> Vec<u8> {
-    // A supplied header REPLACES one the events already carry rather than being
-    // prepended to it. Tempo and time signature are ordinary events in this
-    // format, so `ParsedClipFile::from_bytes` hands them back inside `events` — and writing
-    // the header on top of them would make a parse -> write -> parse cycle
-    // grow a duplicate pair every time round. Stripping is confined to the
-    // leading zero-delta run, so a mid-clip tempo change is not touched.
-    let events = if header.is_some() {
-        &events[leading_header_len(events)..]
-    } else {
-        events
-    };
-    let mut out = Vec::with_capacity(8 + (events.len() + 3) * 8);
-    out.extend_from_slice(&CLIP_FILE_MAGIC);
-
-    // DCTPQ declares the tick unit (preceded by a zero DCS per §3.2.1).
-    push_words(&mut out, delta_clockstamp(0).words());
-    push_words(&mut out, dctpq(ticks_per_quarter).words());
-
-    // Start of Clip (preceded by a zero DCS — bar 1 begins here).
-    push_words(&mut out, delta_clockstamp(0).words());
-    push_words(&mut out, start_of_clip().words());
-
-    // Set Tempo then Set Time Signature, in that order and at the same (zero)
-    // clockstamp as Start of Clip — M2-116 §7.1.1: the first Set Tempo "should
-    // use the Delta Clockstamp which precedes the Start of Clip message";
-    // §7.1.2 puts the time signature "immediately following the Start of Clip
-    // and Set Tempo messages".
-    if let Some(h) = header {
-        let (numerator, denominator) = h.time_signature;
-        push_words(&mut out, delta_clockstamp(0).words());
-        push_words(
-            &mut out,
-            flex::set_tempo(MidiGroup::FIRST, h.tempo_bpm).words(),
-        );
-        push_words(&mut out, delta_clockstamp(0).words());
-        push_words(
-            &mut out,
-            flex::set_time_signature(MidiGroup::FIRST, numerator, denominator).words(),
-        );
-    }
-
-    // The timed event stream: each UMP preceded by its delta clockstamp(s).
-    // A DCS field is only 20 bits, so a delta beyond `DCS_MAX` is expressed as
-    // DCS·NOOP restarts (M2-116 §3.2.2) — see `push_delta`.
-    for ev in events {
-        push_delta(&mut out, ev.delta_ticks);
-        push_words(&mut out, ev.event.words());
-    }
-
-    // End of Clip (preceded by a zero DCS).
-    push_words(&mut out, delta_clockstamp(0).words());
-    push_words(&mut out, end_of_clip().words());
-    out
-}
-
-/// Serializes a MIDI Clip File from **beat-positioned** events — the ergonomic
-/// entry point when you think in beats rather than delta ticks.
-///
-/// Each `(beat, event)` carries an *absolute* beat position (quarter notes from
-/// the clip start). This quantizes them to `ticks_per_quarter` and computes the
-/// inter-event delta ticks for you, so you never accumulate deltas by hand.
-/// Input need not be sorted — events are ordered by beat first; a zero or
-/// negative gap (simultaneous or slightly out-of-order events) becomes a
-/// zero-tick delta. A non-finite beat has no tick: it is written with a
-/// zero-tick delta wherever it sorts (`+inf` and a NaN after every other
-/// event, `-inf` and a NaN whose sign bit is set before them). A gap longer
-/// than `u32::MAX` ticks is clamped to it.
-///
-/// ```
-/// # use tutti_midi_file::{write_clip_file_from_beats, ParsedClipFile};
-/// # use tutti_types::Beat;
-/// # use tutti_ump::{MidiChannel, MidiGroup};
-/// use tutti_fixtures::midi::{note_off, note_on};
-/// let bytes = write_clip_file_from_beats(96, [
-///     (Beat(0.0), note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
-///     (Beat(2.0), note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
-/// ]);
-/// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
-/// assert_eq!(clip.iter().count(), 2);
-/// ```
-pub fn write_clip_file_from_beats(
-    ticks_per_quarter: u16,
-    events: impl IntoIterator<Item = (Beat, Ump)>,
-) -> Vec<u8> {
-    let tpq = f64::from(ticks_per_quarter);
-    let mut timed: Vec<(Beat, Ump)> = events.into_iter().collect();
-    // `total_cmp`: a total order even with a NaN beat, which a partial
-    // order made `Equal` to everything (an inconsistent order the sort may
-    // panic on).
-    timed.sort_by(|a, b| a.0.get().total_cmp(&b.0.get()));
-
-    let mut prev_tick: i64 = 0;
-    let clip_events: Vec<ClipEvent> = timed
-        .into_iter()
-        .map(|(beat, event)| {
-            let pos = (beat.get() * tpq).round();
-            // A non-finite beat has no tick: write it at the previous
-            // event's tick. `as i64` would saturate ±inf to `i64::MAX`/`MIN`
-            // and the subtraction below would overflow on the next event.
-            if !pos.is_finite() {
-                return ClipEvent::new(0, event);
-            }
-            // `as i64` saturates a huge finite position; the gap saturates
-            // too, and a gap past `u32::MAX` ticks is clamped rather than
-            // truncated (`push_delta` splits any `u32` into DCS restarts).
-            let tick = pos as i64;
-            let delta = tick.saturating_sub(prev_tick).clamp(0, i64::from(u32::MAX)) as u32;
-            prev_tick = tick;
-            ClipEvent::new(delta, event)
-        })
-        .collect();
-    write_clip_file(ticks_per_quarter, &clip_events)
-}
-
-/// A parsed MIDI Clip File.
+/// A clip as the wire states it: the tick unit, the events at absolute
+/// ticks, and the tick the clip ends at.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParsedClipFile {
-    /// Ticks per quarter note — the resolution every `delta_ticks` in `events`
-    /// is denominated in. Needed to convert any of them to `Beat`.
-    pub ticks_per_quarter: u16,
-    /// Events in file order. Their positions are relative, so the order is
-    /// load-bearing; use [`iter`](Self::iter) to get absolute `Beat`s.
-    pub events: Vec<ClipEvent>,
-}
-
-impl ParsedClipFile {
-    /// Parses a MIDI Clip File (M2-116) from its bytes.
-    ///
-    /// Delta Clockstamps set the delta of the following UMP; Start/End-of-Clip and
-    /// the DCTPQ are structural and not returned as events. Unknown/utility
-    /// messages between a DCS and a real event are tolerated.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ClipFileError`] naming the first structural problem: a bad
-    /// magic, a body that is not whole UMP words, a truncated UMP, a missing or
-    /// zero DCTPQ, a missing Start or End of Clip, or data after the End of Clip.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ClipFileError> {
-        parse_clip(bytes)
-    }
-
-    /// Re-encodes the clip as Clip File bytes, events as they stand (a tempo
-    /// and time signature the file declared are events, so they are kept).
-    pub fn to_bytes(&self) -> Vec<u8> {
-        write_clip_file(self.ticks_per_quarter, &self.events)
-    }
-
-    /// Iterate events as `(beat, event)` with **absolute** beat positions —
-    /// quarter notes from the clip start — undoing the file's relative delta
-    /// ticks. The inverse of [`write_clip_file_from_beats`]: the natural way to
-    /// consume a clip when you schedule in beats.
-    ///
-    /// Beats are `delta_ticks` summed and divided by [`Self::ticks_per_quarter`].
-    pub fn iter(&self) -> impl Iterator<Item = (Beat, Ump)> + '_ {
-        let tpq = f64::from(self.ticks_per_quarter);
-        let mut abs_tick: u64 = 0;
-        self.events.iter().map(move |ce| {
-            abs_tick += u64::from(ce.delta_ticks);
-            (Beat(abs_tick as f64 / tpq), ce.event)
-        })
-    }
-
-    /// The clip's own tempo in BPM — the first Flex Data **Set Tempo** in the
-    /// sequence (M2-116 §7.1.1), or `None` if the file declares none.
-    ///
-    /// A clip file carries its own tempo map, and it is not the project's: an
-    /// importer that ignores this places every note at the wrong wall-clock
-    /// time, silently. Read it and decide explicitly whether to adopt it or
-    /// keep the project tempo — do not let it default by omission.
-    pub fn tempo_bpm(&self) -> Option<Bpm> {
-        self.events.iter().find_map(|ce| flex::tempo(&ce.event))
-    }
-
-    /// The clip's musical context as a [`ClipHeader`] — the value to hand back
-    /// to [`write_clip_file_with_header`] when re-encoding this clip.
-    ///
-    /// `Some` only when the file declares **both** a tempo and a time
-    /// signature. A clip carrying one and not the other has no complete
-    /// header, and substituting [`ClipHeader::default`]'s 120/4-4 for the
-    /// missing half is a decision for the caller — doing it here would write a
-    /// tempo the file never claimed and make it indistinguishable from one it
-    /// did.
-    pub fn header(&self) -> Option<ClipHeader> {
-        Some(ClipHeader {
-            tempo_bpm: self.tempo_bpm()?,
-            time_signature: self.time_signature()?,
-        })
-    }
-
-    /// The clip's first Flex Data **Set Time Signature** as
-    /// `(numerator, denominator)` (M2-116 §7.1.2), or `None` if unset.
-    pub fn time_signature(&self) -> Option<(u8, u8)> {
-        self.events
-            .iter()
-            .find_map(|ce| flex::time_signature(&ce.event))
-    }
-
-    /// The clip's musical length in beats: the absolute beat of the last event
-    /// (0.0 for an empty clip). Note-offs are events too, so this reflects where
-    /// the last message lands, not necessarily where sound stops.
-    pub fn duration_beats(&self) -> BeatDuration {
-        let total_ticks: u64 = self.events.iter().map(|ce| u64::from(ce.delta_ticks)).sum();
-        BeatDuration(total_ticks as f64 / f64::from(self.ticks_per_quarter))
-    }
-
-    /// Pair the event stream into whole notes with durations — the shape an
-    /// importer wants, and the MIDI-2 analogue of `tutti_midi_file::SmfFile::tracks`.
-    ///
-    /// Velocity stays 16-bit ([`ClipNote::velocity`]): pairing here rather than
-    /// in a caller is what keeps a clip file's full-resolution velocity from
-    /// being narrowed to 7 bits on the way in.
-    ///
-    /// Pairing is keyed on `(group, channel, note)`, so a Note Off only closes a
-    /// Note On on the same group *and* channel; overlapping identical notes
-    /// close in LIFO order; notes still open at End of Clip are dropped (their
-    /// duration is unknowable). MIDI 1.0 velocity-0 Note On counts as a Note Off
-    /// — [`Ump::is_note_off`] already folds that in.
-    pub fn notes(&self) -> Vec<ClipNote> {
-        use std::collections::BTreeMap;
-
-        // `Beat`, so `beat - start` below is a `BeatDuration` by construction.
-        let mut held: BTreeMap<(MidiGroup, MidiChannel, NoteNumber), Vec<(Beat, u16)>> =
-            BTreeMap::new();
-        let mut out: Vec<ClipNote> = Vec::new();
-
-        for (beat, event) in self.iter() {
-            // `key_event` reads the status, group, channel and note bits of a
-            // MIDI 1.0 or 2.0 channel-voice packet and counts a MIDI 1.0 Note On
-            // at velocity 0 as an off, as `Ump::is_note_off` does.
-            let Some(key_event) = event.key_event() else {
-                continue;
-            };
-            let (KeyEvent::On(key) | KeyEvent::Off(key)) = key_event else {
-                continue;
-            };
-            let lane = key.lane();
-            let group = MidiGroup::masked(lane >> 4);
-            let channel = MidiChannel::masked(lane & 0x0F);
-            // A `Key`'s note is 7 bits, framed by the packet.
-            let note = NoteNumber::masked(key.note());
-            let map_key = (group, channel, note);
-            if matches!(key_event, KeyEvent::Off(_)) {
-                if let Some((start, velocity)) = held.get_mut(&map_key).and_then(Vec::pop) {
-                    out.push(ClipNote {
-                        group,
-                        channel,
-                        note,
-                        velocity,
-                        start_beats: start,
-                        duration_beats: (beat - start).max(BeatDuration(0.0)),
-                    });
-                }
-            } else {
-                // A Note On at velocity 0 is only an off in MIDI 1.0; a MIDI 2.0
-                // one is neither a start nor an end here.
-                // A MIDI 1.0 Note On widens (`channel_voice`), a MIDI 2.0 one
-                // keeps its 16 bits.
-                let velocity = match channel_voice(event) {
-                    Some((_, Voice2::NoteOn { velocity, .. })) => velocity,
-                    _ => 0,
-                };
-                if velocity > 0 {
-                    held.entry(map_key).or_default().push((beat, velocity));
-                }
-            }
-        }
-
-        // Onset order, then key, so simultaneous notes have a stable order
-        // rather than one that depends on when their Note Offs arrived.
-        out.sort_by(|a, b| {
-            a.start_beats
-                .get()
-                .total_cmp(&b.start_beats.get())
-                .then_with(|| (a.group, a.channel, a.note).cmp(&(b.group, b.channel, b.note)))
-        });
-        out
-    }
-}
-
-/// One note from a clip file, paired from its Note On / Note Off, in beats from
-/// the clip start. The MIDI-2 counterpart of `tutti_midi_file::SmfNote` —
-/// same shape, but velocity keeps all 16 bits and the UMP group is carried.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ClipNote {
-    /// UMP group. Part of the pairing key: groups are independent 16-channel
-    /// spaces, so the same channel+note in two groups is two notes.
-    pub group: MidiGroup,
-    /// MIDI channel.
-    pub channel: MidiChannel,
-    /// The note.
-    pub note: NoteNumber,
-    /// Note On velocity at full MIDI 2.0 width. A MIDI 1.0 note in the clip is
-    /// upscaled by Min-Center-Max, so this is lossless in both directions.
-    /// A bare `u16` because 16 bits is the whole raw of a MIDI 2.0 velocity
-    /// (`Voice2::NoteOn::velocity` is one): every value is in range, so there
-    /// is nothing for a range type to refuse.
-    pub velocity: u16,
-    /// Onset (quarter notes) from the clip start.
-    pub start_beats: Beat,
-    /// Length (Note Off beat − Note On beat, clamped to ≥ 0).
-    ///
-    /// A [`BeatDuration`] beside a [`Beat`] — a span and a position, so the
-    /// pair cannot be transposed.
-    pub duration_beats: BeatDuration,
+pub(crate) struct ParsedClip {
+    /// Ticks per quarter note (the DCTPQ), never zero.
+    pub(crate) ticks_per_quarter: u16,
+    /// The header's messages after the file header, as `(tick, packet)`: the
+    /// leading Set Profile On packets at 0, then each message behind its DCS,
+    /// ticks counted from the DCTPQ (the header's own clock, which runs
+    /// before the sequence).
+    pub(crate) header: Vec<(u64, Ump)>,
+    /// Every packet between Start of Clip and End of Clip that is not itself
+    /// structure (a DCS, a Null, a JR message, the DCTPQ), at its absolute
+    /// tick, in file order.
+    pub(crate) events: Vec<(u64, Ump)>,
+    /// The tick of End of Clip: the clip's length.
+    pub(crate) end: u64,
 }
 
 /// Why a byte stream failed to parse as a MIDI Clip File (M2-116). Distinguishes
 /// "this isn't a clip file" from "this clip file is malformed" so a caller can
 /// react differently (e.g. try another importer vs. report corruption).
+///
+/// The structure rules are one variant each: [`DctpqNotFirst`](Self::DctpqNotFirst)
+/// and [`DuplicateDctpq`](Self::DuplicateDctpq) (section 6),
+/// [`DuplicateHeaderTempo`](Self::DuplicateHeaderTempo),
+/// [`MisplacedHeaderTempo`](Self::MisplacedHeaderTempo),
+/// [`DuplicateHeaderTimeSignature`](Self::DuplicateHeaderTimeSignature) and
+/// [`MisplacedHeaderTimeSignature`](Self::MisplacedHeaderTimeSignature)
+/// (sections 6.1 to 6.1.2), [`DuplicateStartOfClip`](Self::DuplicateStartOfClip)
+/// (section 7) and [`TrailingData`](Self::TrailingData) (section 7.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ClipFileError {
-    /// Fewer than 8 bytes, or the leading 8 bytes are not [`CLIP_FILE_MAGIC`].
+    /// Fewer than 8 bytes, or the leading 8 bytes are not `SMF2CLIP`.
     #[error("not a MIDI Clip File (bad or missing SMF2CLIP magic)")]
     BadMagic,
     /// The body length is not a whole number of 32-bit UMP words.
@@ -521,34 +80,61 @@ pub enum ClipFileError {
     /// A UMP claims more words than remain in the stream.
     #[error("clip file is truncated mid-message")]
     Truncated,
-    /// No DCTPQ (tick-unit declaration) was seen before the events.
+    /// No DCTPQ (tick-unit declaration) in the file.
     #[error("clip file has no DCTPQ tick-unit declaration")]
     MissingDctpq,
     /// The DCTPQ declared zero ticks per quarter note.
     ///
     /// Distinct from [`MissingDctpq`](Self::MissingDctpq) because the file did
-    /// declare one — it is unusable rather than absent, and a caller reporting
-    /// corruption wants to say which. Every beat in the file is that tick count
-    /// divided by this, so a zero yields infinities rather than a parse error
-    /// unless it is caught here.
+    /// declare one: it is unusable rather than absent, and a caller reporting
+    /// corruption wants to say which. Every beat in the file is a tick count
+    /// divided by this.
     #[error("clip file declares zero ticks per quarter note")]
     ZeroDctpq,
-    /// No Start of Clip message. M2-116 §7: "A Clip Sequence Data shall include
-    /// one Start of Clip message … as the first UMP message."
+    /// A message other than a Set Profile On comes before the DCTPQ. M2-116
+    /// section 6: the DCTPQ follows the Set Profile On messages, or the file
+    /// header if there are none.
+    #[error("clip file has a message before its DCTPQ")]
+    DctpqNotFirst,
+    /// A second DCTPQ. The tick unit is declared once.
+    #[error("clip file declares its DCTPQ more than once")]
+    DuplicateDctpq,
+    /// No Start of Clip message. M2-116 section 7: "A Clip Sequence Data shall
+    /// include one Start of Clip message ... as the first UMP message."
     #[error("clip file has no Start of Clip message")]
     MissingStartOfClip,
-    /// No End of Clip message. §7: "A Clip Sequence Data shall include one End
-    /// of Clip message as the last UMP message."
+    /// A second Start of Clip. Section 7 asks for one.
+    #[error("clip file has more than one Start of Clip message")]
+    DuplicateStartOfClip,
+    /// A second Set Tempo in the header. Section 6.1: the header holds at
+    /// most one.
+    #[error("clip header has more than one Set Tempo")]
+    DuplicateHeaderTempo,
+    /// A second Set Time Signature in the header. Section 6.1.2: at most one.
+    #[error("clip header has more than one Set Time Signature")]
+    DuplicateHeaderTimeSignature,
+    /// The header's Set Tempo is not the first message after the DCTPQ, or its
+    /// Delta Clockstamp is not 0. Section 6.1.1: "shall" be first, with a DCS
+    /// of 0 or sharing the DCTPQ's.
+    #[error("clip header's Set Tempo is not first after the DCTPQ at delta 0")]
+    MisplacedHeaderTempo,
+    /// The header's Set Time Signature does not immediately follow the Set
+    /// Tempo (or the DCTPQ, in a header with no Set Tempo). Section 6.1.2.
+    #[error("clip header's Set Time Signature does not immediately follow the Set Tempo")]
+    MisplacedHeaderTimeSignature,
+    /// No End of Clip message. Section 7: "A Clip Sequence Data shall include
+    /// one End of Clip message as the last UMP message."
     #[error("clip file has no End of Clip message")]
     MissingEndOfClip,
-    /// Bytes follow the End of Clip. §7.3: "A MIDI Clip File shall not have any
-    /// data following the End of Clip message." There is no multi-clip clip
-    /// file — that is what the MIDI Container File is for.
+    /// Bytes follow the End of Clip, which must be last. Section 7.3: "A MIDI
+    /// Clip File shall not have any data following the End of Clip message."
+    /// There is no multi-clip clip file: that is what the MIDI Container File
+    /// is for.
     #[error("clip file has data following the End of Clip message")]
     TrailingData,
 }
 
-fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
+pub(crate) fn parse(bytes: &[u8]) -> Result<ParsedClip, ClipFileError> {
     if bytes.len() < 8 || bytes[..8] != CLIP_FILE_MAGIC {
         return Err(ClipFileError::BadMagic);
     }
@@ -560,10 +146,19 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     // NOOP restarts before it. See the DCS/NOOP arms below.
     let mut pending_delta: u32 = 0;
     let mut banked_delta: u32 = 0;
-    // §7 requires both brackets. Tracked rather than assumed: a file missing
-    // either is malformed, and `ClipFileError` exists to say which.
-    let mut saw_start_of_clip = false;
-    let mut saw_end_of_clip = false;
+    // Where the sequence is: the tick the last event (or the start) sits at.
+    let mut tick: u64 = 0;
+    // Structure order (M2-116 sections 6 and 7). `content` is whether any
+    // message other than a DCS, a Null or a JR message has come: the DCTPQ
+    // must not follow one, and `started` is whether Start of Clip has.
+    let mut content = false;
+    let mut started = false;
+    let mut end = None;
+    // The header: Set Profile On packets before the DCTPQ (counted by `pre`),
+    // then what follows the DCTPQ up to Start of Clip.
+    let mut header: Vec<(u64, Ump)> = Vec::new();
+    let mut pre = 0;
+    let mut profile = ProfileScan::default();
 
     // Words consumed so far: `split_stream` ends at a truncated packet without
     // saying so, and the words it left are what `taken` falls short of.
@@ -578,15 +173,27 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
         match decode(ev) {
             Ok(Message::Utility(utility)) => {
                 match utility {
-                    // A DCS is the count since the last event or Null message —
+                    // A DCS is the count since the last event or Null message:
                     // it *replaces* the current count rather than adding to it
-                    // (M2-116 §3.2.2). Only `banked_delta`, closed off by a
-                    // NOOP below, carries over from earlier restarts.
+                    // (M2-116 section 3.2.2). Only `banked_delta`, closed off by
+                    // a NOOP below, carries over from earlier restarts.
                     Utility::DeltaClockstamp(ticks) => pending_delta = ticks.get(),
-                    Utility::TicksPerQuarterNote(ticks) => ticks_per_quarter = Some(ticks),
+                    Utility::TicksPerQuarterNote(ticks) => {
+                        if ticks_per_quarter.is_some() {
+                            return Err(ClipFileError::DuplicateDctpq);
+                        }
+                        if content {
+                            return Err(ClipFileError::DctpqNotFirst);
+                        }
+                        ticks_per_quarter = Some(ticks);
+                        // The DCTPQ's DCS is 0 and starts the header's clock.
+                        tick = 0;
+                        pending_delta = 0;
+                        banked_delta = 0;
+                    }
                     // NOOP = the Null message that restarts the delta count
-                    // (M2-116 §3.2.2). Bank what the preceding DCS declared;
-                    // the next DCS counts from here.
+                    // (M2-116 section 3.2.2). Bank what the preceding DCS
+                    // declared; the next DCS counts from here.
                     Utility::Noop => {
                         banked_delta = banked_delta.saturating_add(pending_delta);
                         pending_delta = 0;
@@ -598,14 +205,27 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
             }
             Err(_) if ev.message_type() == 0x0 => continue,
             Ok(Message::Stream(Stream::StartOfClip)) => {
-                saw_start_of_clip = true;
+                if started {
+                    return Err(ClipFileError::DuplicateStartOfClip);
+                }
+                header_rules(&header, pre)?;
+                started = true;
+                content = true;
+                tick = 0;
+                // The DCS before it is not an event's delta: the sequence
+                // starts at tick 0 however the file spells it.
+                pending_delta = 0;
+                banked_delta = 0;
                 continue; // structural
             }
             Ok(Message::Stream(Stream::EndOfClip)) => {
-                saw_end_of_clip = true;
-                // §7.3: "A MIDI Clip File shall not have any data following the
-                // End of Clip message." There is no multi-clip clip file, so
-                // anything after this is corruption rather than a second clip.
+                // The DCS before End of Clip is the clip's length (all of the
+                // delta since the last event, restarts included).
+                end = Some(tick + u64::from(banked_delta) + u64::from(pending_delta));
+                // Section 7.3: "A MIDI Clip File shall not have any data
+                // following the End of Clip message." There is no multi-clip
+                // clip file, so anything after this is corruption rather than
+                // a second clip.
                 if taken < words.len() {
                     return Err(ClipFileError::TrailingData);
                 }
@@ -613,12 +233,34 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
             }
             _ => {}
         }
-        // A real event: its delta is the current count plus everything banked
-        // by NOOP restarts since the previous event.
-        events.push(ClipEvent {
-            delta_ticks: banked_delta.saturating_add(pending_delta),
-            event: ev,
-        });
+        // Before the DCTPQ only Set Profile On messages are allowed (section
+        // 6), with no DCS; anything else is content the DCTPQ must not follow (a
+        // Set Profile On after such content is kept, and the DCTPQ's arrival
+        // names the error).
+        if ticks_per_quarter.is_none() {
+            if decode(ev).is_ok_and(|m| profile.accepts(&m)) {
+                header.push((0, ev));
+                pre += 1;
+            } else {
+                content = true;
+            }
+            continue;
+        }
+        // After the DCTPQ and before Start of Clip: a header message, on the
+        // header's own clock.
+        if !started {
+            tick += u64::from(banked_delta) + u64::from(pending_delta);
+            header.push((tick, ev));
+            pending_delta = 0;
+            banked_delta = 0;
+            continue;
+        }
+        content = true;
+        // Its delta is the current count plus everything banked by NOOP
+        // restarts since the previous event. A u64 sum: two saturated u32
+        // deltas must not wrap.
+        tick += u64::from(banked_delta) + u64::from(pending_delta);
+        events.push((tick, ev));
         pending_delta = 0;
         banked_delta = 0;
     }
@@ -630,22 +272,153 @@ fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     // a caller sees the first reason the file is unusable rather than the last.
     let ticks_per_quarter = ticks_per_quarter.ok_or(ClipFileError::MissingDctpq)?;
     // Declared, but unusable: every beat this file yields is a tick count
-    // divided by this. Checking presence and not value let a zero through to
-    // `timed()`, which returned infinities instead of failing here.
+    // divided by this.
     if ticks_per_quarter == 0 {
         return Err(ClipFileError::ZeroDctpq);
     }
-    if !saw_start_of_clip {
+    if !started {
         return Err(ClipFileError::MissingStartOfClip);
     }
-    if !saw_end_of_clip {
-        return Err(ClipFileError::MissingEndOfClip);
+    let end = end.ok_or(ClipFileError::MissingEndOfClip)?;
+
+    Ok(ParsedClip {
+        ticks_per_quarter,
+        header,
+        events,
+        end,
+    })
+}
+
+/// Tracks whether the packets it is fed are a Set Profile On message (MIDI-CI
+/// sub-ID 2 `0x22`, a Universal SysEx `7E <device> 0D 22 ...`), packet by
+/// packet: a message's first packet says what it is, and its Continue and End
+/// packets belong to it.
+#[derive(Default)]
+struct ProfileScan {
+    open: bool,
+}
+
+impl ProfileScan {
+    fn accepts(&mut self, message: &Message) -> bool {
+        let Message::Sysex7(_, packet) = message else {
+            self.open = false;
+            return false;
+        };
+        let is_set_profile_on = |p: &Sysex7Packet| matches!(p.data(), [0x7E, _, 0x0D, 0x22, ..]);
+        match packet.status() {
+            SysexStatus::Complete => {
+                self.open = false;
+                is_set_profile_on(packet)
+            }
+            SysexStatus::Start => {
+                self.open = is_set_profile_on(packet);
+                self.open
+            }
+            SysexStatus::Continue => self.open,
+            SysexStatus::End => std::mem::take(&mut self.open),
+        }
+    }
+}
+
+/// How many packets at the head of `header` are Set Profile On messages at
+/// tick 0: the ones a write puts before the DCTPQ, where they carry no DCS.
+pub(crate) fn leading_profile_len(header: &[(u64, Ump)]) -> usize {
+    let mut scan = ProfileScan::default();
+    header
+        .iter()
+        .take_while(|(tick, ump)| *tick == 0 && decode(*ump).is_ok_and(|m| scan.accepts(&m)))
+        .count()
+}
+
+/// The header's own rules (M2-116 sections 6.1 to 6.1.2) over `header`, whose
+/// first `pre` packets precede the DCTPQ: at most one Set Tempo and one Set
+/// Time Signature; the Set Tempo first after the DCTPQ at delta 0; the Set
+/// Time Signature right behind it (first, if there is no Set Tempo).
+///
+/// # Errors
+///
+/// The [`ClipFileError`] naming the rule broken.
+pub(crate) fn header_rules(header: &[(u64, Ump)], pre: usize) -> Result<(), ClipFileError> {
+    let (mut tempo, mut signature) = (false, false);
+    for (i, (tick, ump)) in header[pre..].iter().enumerate() {
+        match decode(*ump) {
+            Ok(Message::Flex(_, Flex::SetTempo(_))) => {
+                if tempo {
+                    return Err(ClipFileError::DuplicateHeaderTempo);
+                }
+                if i != 0 || *tick != 0 {
+                    return Err(ClipFileError::MisplacedHeaderTempo);
+                }
+                tempo = true;
+            }
+            Ok(Message::Flex(_, Flex::SetTimeSignature(_))) => {
+                if signature {
+                    return Err(ClipFileError::DuplicateHeaderTimeSignature);
+                }
+                if i != usize::from(tempo) {
+                    return Err(ClipFileError::MisplacedHeaderTimeSignature);
+                }
+                signature = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Serializes a clip: the leading Set Profile On packets (no DCS), the DCTPQ,
+/// the rest of the header, Start of Clip, each event behind its Delta
+/// Clockstamp, and End of Clip behind the DCS that makes the clip `end` ticks
+/// long. `header` and `events` are absolute ticks in order (the header's on
+/// its own clock), `events` none past `end`, no two more than `u32::MAX` apart
+/// (the caller checks; [`MidiFile`] does).
+///
+/// [`MidiFile`]: crate::MidiFile
+pub(crate) fn write(
+    ticks_per_quarter: u16,
+    header: &[(u64, Ump)],
+    events: &[(u64, Ump)],
+    end: u64,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + (header.len() + events.len() + 4) * 8);
+    out.extend_from_slice(&CLIP_FILE_MAGIC);
+
+    // Set Profile On messages come first and carry no DCS (section 6).
+    let pre = leading_profile_len(header);
+    for (_, ump) in &header[..pre] {
+        push_words(&mut out, ump.words());
     }
 
-    Ok(ParsedClipFile {
-        ticks_per_quarter,
-        events,
-    })
+    // DCTPQ declares the tick unit (preceded by a zero DCS per section 3.2.1).
+    push_words(&mut out, delta_clockstamp(0).words());
+    push_words(&mut out, dctpq(ticks_per_quarter).words());
+
+    // The rest of the header, each message behind its DCS.
+    let mut at = 0u64;
+    for &(tick, ump) in &header[pre..] {
+        push_delta(&mut out, tick.saturating_sub(at));
+        push_words(&mut out, ump.words());
+        at = tick;
+    }
+
+    // Start of Clip (preceded by a zero DCS: the sequence begins here).
+    push_words(&mut out, delta_clockstamp(0).words());
+    push_words(&mut out, start_of_clip().words());
+
+    // The timed event stream: each UMP preceded by its delta clockstamp(s).
+    // A DCS field is only 20 bits, so a delta beyond `DCS_MAX` is expressed as
+    // DCS*NOOP restarts (M2-116 section 3.2.2): see `push_delta`.
+    let mut at = 0u64;
+    for &(tick, ump) in events {
+        push_delta(&mut out, tick.saturating_sub(at));
+        push_words(&mut out, ump.words());
+        at = tick;
+    }
+
+    // End of Clip, behind the DCS that is the clip's length.
+    push_delta(&mut out, end.saturating_sub(at));
+    push_words(&mut out, end_of_clip().words());
+    out
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -657,27 +430,28 @@ fn push_words(out: &mut Vec<u8>, words: &[u32]) {
 }
 
 /// Widest value a single 20-bit Delta Clockstamp field can carry.
-const DCS_MAX: u32 = 0x000F_FFFF;
+const DCS_MAX: u64 = 0x000F_FFFF;
 
-fn delta_clockstamp(ticks: u32) -> Ump {
+fn delta_clockstamp(ticks: u64) -> Ump {
     Ump::from(Message::Utility(Utility::DeltaClockstamp(
-        DeltaTicks::masked(ticks & DCS_MAX),
+        DeltaTicks::masked((ticks & DCS_MAX) as u32),
     )))
 }
 
 /// Emit `ticks` as Delta Clockstamps, restarting the count with a NOOP each
 /// time a gap exceeds the 20-bit DCS field.
 ///
-/// M2-116 §3.2.2 (identically M2-104-UM §7.2.3.2): "If no MIDI message has
-/// occurred during the previous 1,048,575 ticks, then the application which
-/// creates the MIDI Clip File shall insert a Delta Clockstamp followed by a
-/// Null message to restart the delta time count. Then the next Delta Clockstamp
-/// in the file declares the ticks since the previous Null message."
+/// M2-116 section 3.2.2 (identically M2-104-UM section 7.2.3.2): "If no MIDI
+/// message has occurred during the previous 1,048,575 ticks, then the
+/// application which creates the MIDI Clip File shall insert a Delta Clockstamp
+/// followed by a Null message to restart the delta time count. Then the next
+/// Delta Clockstamp in the file declares the ticks since the previous Null
+/// message."
 ///
-/// So consecutive DCSs do **not** accumulate — each one is the count since the
+/// So consecutive DCSs do **not** accumulate: each one is the count since the
 /// last event, and a NOOP is what makes a long gap expressible as a sequence of
 /// restarts. `0` still emits exactly one (zero) DCS.
-fn push_delta(out: &mut Vec<u8>, mut ticks: u32) {
+fn push_delta(out: &mut Vec<u8>, mut ticks: u64) {
     while ticks > DCS_MAX {
         push_words(out, delta_clockstamp(DCS_MAX).words());
         push_words(out, Ump::from(Message::Utility(Utility::Noop)).words());
@@ -709,6 +483,3 @@ fn words_of(bytes: &[u8]) -> Option<Vec<u32>> {
     rest.is_empty()
         .then(|| chunks.iter().map(|c| u32::from_be_bytes(*c)).collect())
 }
-
-#[cfg(test)]
-mod tests;

@@ -17,10 +17,10 @@ use tutti_graph::contract::Direct;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
-    ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, SlotId, Stream, Voice,
-    VoiceCommand, VoicePool, VoiceSource,
+    ByHand, DiskStreamer, DiskVoice, LoopSetting, MemorySource, Placement, Playback, SlotId,
+    Stream, Voice, VoiceCommand, VoicePool, VoiceSource,
 };
-use tutti_types::{Beat, Bpm, SampleRate, StretchFactor};
+use tutti_types::{Beat, Bpm, SamplePosition, SampleRate, Samples, StretchFactor};
 
 thread_local! {
     static WATCHING: Cell<bool> = const { Cell::new(false) };
@@ -199,6 +199,49 @@ fn dropping_a_stream_frees_the_ring_in_the_streamers_step() {
     assert!(
         biggest >= RING_BYTES,
         "the close's step freed at most {biggest} bytes: the ring was not freed there"
+    );
+}
+
+/// **A `Block` frees nothing when it ends** (doc 025 §10 Q4, the reader's
+/// half). A block lends the stream's published control and holds it to its
+/// end; the streamer publishes a new one meanwhile (a loop edit), which
+/// retires the old one *behind* the block's loan. Dropping the block, on the
+/// audio thread, returns the loan and frees nothing; the old control is freed
+/// by the streamer's next sweep (`reclaim_control`), on its own thread. So a
+/// `StreamReader` and its blocks are free-detecting-clean: the audio thread
+/// never owns published state.
+///
+/// Mutation (run): `Block` holding an owning `Arc` of the control
+/// (`ArcLend::current`) instead of the lent `Loan` -> the streamer's sweep
+/// frees the cell's own reference, the block is the retired control's last
+/// holder and frees it in its drop -> the first assertion fails. Mutation
+/// (run): the cycle's `reclaim_control` loop removed -> the second assertion
+/// fails (nothing frees the retired control).
+#[test]
+fn a_block_that_ends_after_a_publish_frees_nothing() {
+    let (_dir, mut streamer, mut stream, mut reader) = stream();
+    let none = || Samples::new(0)..Samples::new(0);
+    let block = reader.block(Samples::new(0), [none(), none()]);
+    stream
+        .set_loop(LoopSetting::On {
+            start: SamplePosition::new(1_000.0),
+            end: SamplePosition::new(3_000.0),
+            crossfade_frames: 0,
+        })
+        .expect("the streamer lives");
+    let _ = streamer.step_once();
+
+    let frees = frees_during(|| drop(block));
+    assert_eq!(
+        frees, 0,
+        "ending the block freed {frees} time(s) on the audio thread"
+    );
+    let frees = frees_during(|| {
+        let _ = streamer.step_once();
+    });
+    assert!(
+        frees > 0,
+        "the streamer's sweep freed nothing: the retired control leaked"
     );
 }
 

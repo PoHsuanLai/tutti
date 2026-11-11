@@ -33,6 +33,34 @@ impl core::fmt::Display for StreamerGone {
 
 impl std::error::Error for StreamerGone {}
 
+/// Why [`Stream::set_loop`](crate::Stream::set_loop) did not take a loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopError {
+    /// A point of the loop is negative or not a number: a file has no frame
+    /// there. Nothing was sent.
+    Position,
+    /// The streamer thread has exited and the command was discarded; it is
+    /// permanent ([`StreamerGone`]).
+    StreamerGone,
+}
+
+impl From<StreamerGone> for LoopError {
+    fn from(StreamerGone: StreamerGone) -> Self {
+        Self::StreamerGone
+    }
+}
+
+impl core::fmt::Display for LoopError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Position => write!(f, "a loop point is negative or not a number"),
+            Self::StreamerGone => StreamerGone.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for LoopError {}
+
 /// The file a stream plays: where it is, its own rate and, when the streamer
 /// holds it decoded whole, the wave.
 ///

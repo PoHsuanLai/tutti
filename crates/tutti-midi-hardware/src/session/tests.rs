@@ -2,7 +2,7 @@ use super::*;
 use crate::InputProducerHandle;
 use crate::capability::EndpointInfo;
 use crate::devices::{ChangeSink, os_devices};
-use crate::endpoints::{InputConnection, NoWatch, Watch};
+use crate::endpoints::{DeviceOut, InputConnection, NoWatch, Watch};
 use crate::test_support::FakeBackend;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_graph::{Offset, UmpAt};
@@ -301,7 +301,7 @@ impl MidiEndpoints for LoggingBackend {
             _producer: producer,
         }))
     }
-    fn open_output(&self, _id: EndpointId) -> Result<Box<dyn MidiOut>> {
+    fn open_output(&self, _id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         Err(Error::MidiDevice("no outputs".into()))
     }
 }

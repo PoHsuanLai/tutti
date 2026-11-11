@@ -2116,6 +2116,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-midi"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f171af1a0d1762fb4ca116a58a584cf0238f7b02e9cf7af08a10755424c15950"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-encode"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3576,6 +3588,9 @@ dependencies = [
  "core-foundation 0.10.1",
  "coremidi-sys",
  "mach2",
+ "objc2 0.6.5",
+ "objc2-core-midi",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

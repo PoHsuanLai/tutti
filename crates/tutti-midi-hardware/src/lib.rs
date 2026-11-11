@@ -9,6 +9,7 @@
 // No `///` on these: a doc comment on a `pub mod` shadows the module's own
 // `//!` and re-resolves its intra-doc links in this scope.
 mod backend;
+mod block;
 mod capability;
 mod devices;
 mod endpoints;
@@ -31,7 +32,7 @@ pub use devices::{
     ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, RecvTimeoutError, SeedError,
     WatchFailure,
 };
-pub use endpoints::{InputConnection, MidiEndpoints, Watch};
+pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};
 pub use session::MidiSession;

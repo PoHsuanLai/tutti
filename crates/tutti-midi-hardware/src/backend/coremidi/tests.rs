@@ -58,7 +58,7 @@ fn capability_is_read_from_the_endpoint_not_assumed() {
         return;
     };
 
-    let cap = endpoint_capability(&source);
+    let cap = endpoint_capability(&source, None);
     assert_eq!(
         cap.protocol,
         Protocol::Midi1,
@@ -92,5 +92,35 @@ fn a_midi2_endpoint_is_covered_by_enumeration() {
             "note: no MIDI-2.0 endpoint on this machine; the Midi2 direction \
              of capability reading is uncovered here"
         );
+    }
+}
+
+/// Whatever the OS reports for its UMP Endpoints is within what the spec can
+/// hold: the Protocol is one of the two, and every block that reaches a
+/// capability has a number 0 to 31 and Groups inside 0 to 15 (M2-104 §7.1.8,
+/// §3.1), at most 32 blocks to an endpoint (§7.1.8: five-bit block numbers).
+/// Before macOS 15 the list is absent and no endpoint has a block. This asserts
+/// invariants only: how many endpoints, and what they declare, is the machine's.
+#[test]
+fn the_os_blocks_are_within_the_spec() {
+    let backend = CoreMidiEndpoints::new();
+    let all = backend.inputs().into_iter().chain(backend.outputs());
+    for info in all {
+        let cap = &info.capability;
+        assert!(matches!(cap.protocol, Protocol::Midi1 | Protocol::Midi2));
+        assert!(
+            cap.blocks.len() <= 32,
+            "{}: {} blocks",
+            info.name,
+            cap.blocks.len()
+        );
+        for block in &cap.blocks {
+            assert!(block.id().get() < 32);
+            let end = u16::from(block.first_group().get()) + u16::from(block.groups().get());
+            assert!(end <= 16, "{}: Groups run to {end}", info.name);
+        }
+        if ump_endpoints().is_none() {
+            assert!(cap.blocks.is_empty(), "no UMP classes, no blocks");
+        }
     }
 }

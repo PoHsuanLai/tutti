@@ -249,10 +249,8 @@ fn read_audio_ports(
         inputs: port_channels(main, source, true)?,
         outputs: port_channels(main, source, false)?,
     };
-    let mut reported = ports.clone();
-    reported.default_empty_buses();
-    info.audio_inputs = reported.input_channel_total();
-    info.audio_outputs = reported.output_channel_total();
+    info.audio_inputs = ports.input_channel_total();
+    info.audio_outputs = ports.output_channel_total();
     Ok((ports, check_f64_support(main, source)))
 }
 

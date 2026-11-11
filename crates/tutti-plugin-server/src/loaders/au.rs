@@ -15,14 +15,14 @@ use tutti_plugin::server::{
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
     Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
-    PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset,
-    PresetId, ProcessContext, ProcessOutput, RenderMode,
+    PluginBus, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail,
+    Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
 };
 use tutti_plugin_types::MainThread;
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin_types::SampleRate;
 
-use crate::loaders::common::{Meta, single_bus};
+use crate::loaders::common::Meta;
 use tutti_plugin::LoadStage;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
@@ -500,40 +500,50 @@ impl AuInstance {
             features.set(Features::PRESET_LOAD, has_presets);
             let probed = tutti_plugin::server::probed::AU;
 
-            // AU exposes a single main bus per direction here.
-            // One main bus per direction, so one topology entry each. The tag
-            // is the AU's own answer; `topology_of` declines the tags that name
-            // a processing relationship rather than speaker placement (MidSide,
+            // AU's element 0 per direction, read as its one main bus (an AU
+            // marks no element a sidechain, and this loader reads no other
+            // element). Its placement is the AU's own layout tag;
+            // `topology_of` declines the tags that name a processing
+            // relationship rather than speaker placement (MidSide,
             // MatrixStereo, ambisonics), which arrive here as `None`.
-            let bus_topology = |direction: tutti_au_host::BusDirection| {
+            let placement = |direction: tutti_au_host::BusDirection| {
                 let tag = inner.layout_tag(direction, 0).ok()?;
                 tutti_au_host::topology_of(tag)
             };
-            let input_topology =
-                core::iter::once(bus_topology(tutti_au_host::BusDirection::Input)).collect();
-            let output_topology =
-                core::iter::once(bus_topology(tutti_au_host::BusDirection::Output)).collect();
-
             // `num_inputs`/`num_outputs` are `u32` off the AU element count. A
             // count no layout holds fails the load, naming the side, as
             // `AuError::BusTooWide` does inside the host.
-            let bus_of = |scope: &'static str, channels: u32| {
-                tutti_plugin::server::ChannelLayout::try_from(channels)
-                    .map(single_bus)
-                    .map_err(|_| BridgeError::LoadFailed {
-                        path: path.to_path_buf(),
-                        stage: LoadStage::Initialization,
-                        reason: tutti_au_host::AuError::BusTooWide { scope, channels }.to_string(),
-                    })
+            let buses_of = |scope: &'static str, channels: u32, direction| {
+                let layout =
+                    tutti_plugin::server::ChannelLayout::try_from(channels).map_err(|_| {
+                        BridgeError::LoadFailed {
+                            path: path.to_path_buf(),
+                            stage: LoadStage::Initialization,
+                            reason: tutti_au_host::AuError::BusTooWide { scope, channels }
+                                .to_string(),
+                        }
+                    })?;
+                Ok::<_, BridgeError>(
+                    PluginBus::single(layout)
+                        .into_iter()
+                        .map(|bus| bus.placed(placement(direction)))
+                        .collect(),
+                )
             };
-            let inputs = bus_of("input", inner.num_inputs())?;
-            let outputs = bus_of("output", inner.num_outputs())?;
+            let inputs = buses_of(
+                "input",
+                inner.num_inputs(),
+                tutti_au_host::BusDirection::Input,
+            )?;
+            let outputs = buses_of(
+                "output",
+                inner.num_outputs(),
+                tutti_au_host::BusDirection::Output,
+            )?;
 
             let loaded = LoadedPlugin {
                 inputs,
                 outputs,
-                input_topology,
-                output_topology,
                 latency_samples: latency,
                 tail,
                 features,

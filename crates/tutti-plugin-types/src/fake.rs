@@ -21,9 +21,9 @@ use tutti_rt::RequestWord;
 use crate::{
     AudioBufferMut, ChannelLayout, ContentScale, Control, Controller, EditDrain, EditSink,
     EditorError, EditorSize, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThread,
-    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo, PluginResult,
-    PluginTail, Prepare, Processor, Refused, RenderMode, Request, RescanScope, RestartRules,
-    SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
+    Normalized, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError, PluginIo,
+    PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, Request, RescanScope,
+    RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
 };
 
 /// One call the fake received.
@@ -212,8 +212,8 @@ impl Shared {
         let outputs = ChannelLayout::try_from(self.outputs.load(Ordering::Relaxed))
             .expect("a fake plugin has few outputs");
         LoadedPlugin {
-            inputs: vec![ChannelLayout::STEREO],
-            outputs: vec![outputs],
+            inputs: vec![PluginBus::main(ChannelLayout::STEREO)],
+            outputs: vec![PluginBus::main(outputs)],
             latency_samples: Samples(self.latency.load(Ordering::Relaxed)),
             tail: self.tail(),
             ..LoadedPlugin::default()

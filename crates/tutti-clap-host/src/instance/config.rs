@@ -10,7 +10,6 @@ use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use std::sync::atomic::AtomicI32;
 use tutti_clap_ffi::PortScratch;
 use tutti_plugin_types::BusChannels;
-use tutti_plugin_types::ChannelLayout;
 use tutti_plugin_types::RtMidiEvents;
 use tutti_plugin_types::SampleFormat;
 
@@ -151,49 +150,22 @@ impl PortLayout {
     pub fn output_channel_total(&self) -> usize {
         self.outputs.iter().map(|c| c.count() as usize).sum()
     }
-
-    /// Give each empty direction one stereo bus, so "unknown layout" is stated as
-    /// a bus rather than left for later code to guess at.
-    ///
-    /// A plugin with no `audio-ports` extension reports no buses at all. Stereo
-    /// because it is what the overwhelming majority of plugins present — the same
-    /// rule, and the same reason, as the subprocess host's `default_if_empty`.
-    ///
-    /// For the layout the host **reports** (`PluginInfo`'s channel totals,
-    /// which the plugin server turns into the node's graph-facing buses) only,
-    /// never for the one handed to the plugin: `process` must carry exactly
-    /// `clap_plugin_audio_ports::count()` buffers on each side, so
-    /// `ClapLoaded::ports` keeps the declared layout, empty sides included,
-    /// and the load applies this to a copy.
-    ///
-    /// Call this **before** reading the reported totals. Putting a `.max(2)`
-    /// floor on the totals instead makes a genuine mono plugin report
-    /// 2-in/2-out while `self` still holds the true `[Mono]` — two sources of
-    /// truth about one width, disagreeing.
-    pub fn default_empty_buses(&mut self) {
-        if self.inputs.is_empty() {
-            self.inputs.push(ChannelLayout::STEREO);
-        }
-        if self.outputs.is_empty() {
-            self.outputs.push(ChannelLayout::STEREO);
-        }
-    }
 }
 
 #[cfg(test)]
 mod port_layout_tests {
     use super::*;
+    use tutti_plugin_types::ChannelLayout;
 
     /// A plugin that reports a real mono bus keeps width 1 all the way to the
     /// totals. A `.max(2)` floor on the totals would report 2 here, sizing a
     /// stereo slab for a mono plugin.
     #[test]
     fn a_mono_bus_is_not_widened_to_stereo() {
-        let mut ports = PortLayout {
+        let ports = PortLayout {
             inputs: vec![ChannelLayout::MONO],
             outputs: vec![ChannelLayout::MONO],
         };
-        ports.default_empty_buses();
 
         assert_eq!(
             ports.input_channel_total(),
@@ -207,37 +179,18 @@ mod port_layout_tests {
         );
     }
 
-    /// The no-`audio-ports` case: the default is applied to the bus list, so the
-    /// total *derives* from it and the two agree by construction.
-    #[test]
-    fn an_absent_bus_list_defaults_to_one_stereo_bus() {
-        let mut ports = PortLayout::default();
-        ports.default_empty_buses();
-
-        assert_eq!(ports.inputs.as_slice(), &[ChannelLayout::STEREO]);
-        assert_eq!(ports.outputs.as_slice(), &[ChannelLayout::STEREO]);
-        assert_eq!(ports.input_channel_total(), 2);
-        assert_eq!(ports.output_channel_total(), 2);
-    }
-
     /// Multi-bus layouts sum rather than being floored or truncated, and an
     /// effect with no input bus but real outputs keeps 0 inputs — the asymmetry
     /// a blanket `.max(2)` on both directions erased.
     #[test]
-    fn totals_sum_across_buses_and_survive_defaulting() {
-        let mut ports = PortLayout {
+    fn totals_sum_across_buses_and_an_absent_side_is_zero() {
+        let ports = PortLayout {
             inputs: BusChannels::new(),
             outputs: vec![ChannelLayout::STEREO, ChannelLayout::from(6u16)],
         };
-        ports.default_empty_buses();
 
-        // Only the empty direction was defaulted.
         assert_eq!(ports.output_channel_total(), 8, "2 + 6, not floored");
-        assert_eq!(
-            ports.inputs.as_slice(),
-            &[ChannelLayout::STEREO],
-            "an absent input bus is stated as stereo, not left empty"
-        );
+        assert_eq!(ports.input_channel_total(), 0, "no input port, no input");
     }
 }
 

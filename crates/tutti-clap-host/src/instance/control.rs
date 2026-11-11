@@ -8,16 +8,17 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    ClapFeature, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, FdId, Features,
-    Layout, LoadedPlugin, Normalized, ParamId, ParamRange, ParameterInfo, PluginClass,
-    PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, RenderMode, Request,
-    RescanScope, Samples, TimerId, WindowHandle,
+    BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence, EditorSize,
+    EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamId, ParamRange,
+    ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples, TimerId,
+    WindowHandle,
 };
 
 use super::controller::ClapController;
 use super::lifecycle::plugin_error;
 use super::{ClapLoaded, polling::WorkRan};
-use crate::types::PluginInfo;
+use crate::types::{AudioPortFlags, PluginInfo};
 
 /// What the two editor answers mean for the three capability bits.
 #[derive(Debug, PartialEq, Eq)]
@@ -118,34 +119,39 @@ impl ClapLoaded {
         descriptor_of(&self.info, EditorPresence::measured(bits.has_editor))
     }
 
-    /// What the plugin declares on its audio ports now: the buses and, per
-    /// port, what `clap.surround` says (`None` for a port the plugin will not
-    /// answer for: no extension, or no `get_channel_map`).
+    /// What the plugin declares on its audio ports now: per port, its width,
+    /// what `clap.surround` says (`None` for a port the plugin will not answer
+    /// for: no extension, or no `get_channel_map`) and its role.
     pub fn layout(&self, main: &MainThread) -> Layout {
-        let inputs = self.bus_channels(main, true);
-        let outputs = self.bus_channels(main, false);
-        let topology = |is_input: bool, count: usize| {
-            (0..count)
-                .map(|i| self.surround_topology(main, is_input, i as u32))
-                .collect()
-        };
         Layout {
-            input_topology: topology(true, inputs.len()),
-            output_topology: topology(false, outputs.len()),
-            inputs,
-            outputs,
+            inputs: self.buses(main, true),
+            outputs: self.buses(main, false),
         }
     }
 
-    /// Per-bus channel counts for one direction, main bus first, read off the
-    /// CLAP `audio-ports` extension (e.g. `[2, 1]` = stereo main + mono
-    /// sidechain). Falls back to a single aggregate main bus when the plugin
-    /// doesn't implement the extension (empty port list).
-    fn bus_channels(&self, main: &MainThread, is_input: bool) -> tutti_plugin_types::BusChannels {
+    /// One direction's buses, read off the CLAP `audio-ports` extension (e.g.
+    /// a stereo main and a mono aux). A port flagged
+    /// [`MAIN`](AudioPortFlags::MAIN) is [`BusRole::Main`], any other
+    /// [`BusRole::Aux`]: CLAP marks no port a sidechain. The list stops at
+    /// the first index `get` refuses, as the port table does, so a bus here is
+    /// the port at its index. A plugin without the extension (no ports) is
+    /// read as its aggregate total on a single main bus; none at all stays
+    /// none.
+    fn buses(&self, main: &MainThread, is_input: bool) -> PluginBuses {
         let count = self.audio_port_count(main, is_input);
-        let buses: tutti_plugin_types::BusChannels = (0..count)
-            .filter_map(|i| self.audio_port_info(main, i, is_input))
-            .map(|p| p.layout)
+        let buses: PluginBuses = (0..count)
+            .map_while(|i| {
+                let port = self.audio_port_info(main, i, is_input)?;
+                let role = if port.flags.contains(AudioPortFlags::MAIN) {
+                    BusRole::Main
+                } else {
+                    BusRole::Aux
+                };
+                Some(
+                    PluginBus::new(port.layout, role)
+                        .placed(self.surround_topology(main, is_input, i)),
+                )
+            })
             .collect();
         if !buses.is_empty() {
             return buses;
@@ -155,11 +161,9 @@ impl ClapLoaded {
         } else {
             self.info.audio_outputs
         };
-        // The aggregate total as a single main bus, the convention the
-        // downstream slab expects; none at all stays none.
         match u16::try_from(total) {
-            Ok(0) | Err(_) => tutti_plugin_types::BusChannels::new(),
-            Ok(n) => vec![tutti_plugin_types::ChannelLayout::from(n)],
+            Ok(0) | Err(_) => PluginBuses::new(),
+            Ok(n) => vec![PluginBus::main(ChannelLayout::from(n))],
         }
     }
 
@@ -261,8 +265,6 @@ impl Control for ClapLoaded {
         LoadedPlugin {
             inputs: layout.inputs,
             outputs: layout.outputs,
-            input_topology: layout.input_topology,
-            output_topology: layout.output_topology,
             latency_samples,
             tail: self.tail_figure(main),
             features: self.features(main),

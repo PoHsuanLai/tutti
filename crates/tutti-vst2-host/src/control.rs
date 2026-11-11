@@ -5,8 +5,8 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin,
-    Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
-    Preset, PresetId, RenderMode, Request, WindowHandle,
+    Normalized, ParamId, ParameterInfo, PluginBus, PluginClass, PluginDescriptor, PluginError,
+    PluginResult, Preset, PresetId, RenderMode, Request, WindowHandle,
 };
 
 use crate::error::Vst2Error;
@@ -72,8 +72,12 @@ impl Control for Vst2Loaded {
         let (inputs, outputs) = self.pins();
         LoadedPlugin {
             // VST2 is single-bus: one main input bus, one main output bus.
-            inputs: vec![inputs],
-            outputs: vec![outputs],
+            // One bus a side, with no placement: `effSetSpeakerArrangement`
+            // (opcode 42) exists, but the `VstSpeakerArrangement` struct its
+            // ABI needs is not defined anywhere in the forked bindings and
+            // the host never sends it.
+            inputs: PluginBus::single(inputs),
+            outputs: PluginBus::single(outputs),
             latency_samples: self.latency_samples(),
             // Asked and decoded: VST2 inverts the tail convention, so `0` is "no
             // information" where every other format means "no tail" (see
@@ -82,14 +86,6 @@ impl Control for Vst2Loaded {
             tail: self.tail(main),
             features: self.features(),
             probed: probed::VST2,
-            // VST2 reports no speaker placement. `effSetSpeakerArrangement`
-            // (opcode 42) exists, but the `VstSpeakerArrangement` struct its
-            // ABI needs is not defined anywhere in the forked bindings and
-            // the host never sends it. Empty lists claim nothing about any
-            // bus, which is the honest answer for a format that cannot be
-            // asked.
-            input_topology: Default::default(),
-            output_topology: Default::default(),
         }
     }
 

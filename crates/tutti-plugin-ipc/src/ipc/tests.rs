@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use tutti_fixtures::{machine_lock, main_thread};
 use tutti_plugin_types::{
     ChannelLayout, Control, Controller, Loaded, LoadedPlugin, MaxBlock, ParamId, ParameterInfo,
-    PluginDescriptor, Prepare, Processor, Reopen, Request, SampleFormat, SampleRate, Samples,
+    PluginBus, PluginDescriptor, Prepare, Processor, Reopen, Request, SampleFormat, SampleRate,
+    Samples,
 };
 
 use crate::{
@@ -157,8 +158,8 @@ fn mock() -> (Ipc, Mock) {
         guard: Arc::new(ProcessGuard::for_test(BridgeConfig::default())),
         descriptor: PluginDescriptor::default(),
         loaded: LoadedPlugin {
-            inputs: vec![ChannelLayout::STEREO],
-            outputs: vec![ChannelLayout::STEREO],
+            inputs: vec![PluginBus::main(ChannelLayout::STEREO)],
+            outputs: vec![PluginBus::main(ChannelLayout::STEREO)],
             latency_samples: Samples(5),
             ..LoadedPlugin::default()
         },

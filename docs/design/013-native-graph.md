@@ -7273,13 +7273,15 @@ yet, so no plan, op or render moves.
   its terms' gains; a grouped term's gain goes to each of its sources. It is
   the fold to rounding only, as this section says of the lowering.
 - **Plugins.** `PluginNode::shape` declares the plugin's buses from
-  `LoadedPlugin`'s `inputs`/`outputs` widths and `input_topology`/
-  `output_topology`, in bus order, first `Main`, the rest `Aux`. A bus whose
-  topology is `None` or disagrees with its width is `Discrete`. It stops at
-  the first bus past `MAX_BUSES` or past 16 channels. **Sidechain is not
-  declared yet:** `LoadedPlugin` does not say which input bus is one, so the
-  hosts have to report a role (list in the hand-off) and `buses_of` then
-  maps it to `BusRole::Sidechain`.
+  `LoadedPlugin`'s `inputs`/`outputs`, one `PluginBus` each (width,
+  placement, role), in bus order. The role is the format's: CLAP's
+  `CLAP_AUDIO_PORT_IS_MAIN`, VST3's `busType` (`kMain`/`kAux`), the one bus
+  VST2 has and AU's element 0 are `Main`, every other bus `Aux`. No format
+  marks a bus a sidechain, so no loader reports `Sidechain`; a node that
+  knows better declares it itself. A bus without a placement (or one that
+  disagrees with its width) is `Discrete`. It stops at the first bus past
+  `MAX_BUSES` or past 16 channels. A direction with no audio is an empty
+  list, not a bus of no channels.
 
 **As built (B2).** Wiring is bus to bus, lowered to weighted lanes; no op,
 plan or render moves for a graph with no bus edge, and `DownmixNode` and the

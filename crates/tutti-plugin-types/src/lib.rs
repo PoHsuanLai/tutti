@@ -109,9 +109,10 @@ pub use lifecycle::{
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
-pub use metadata::{BusChannels, BusTopologies, Layout, LoadedPlugin, PluginTail};
+pub use metadata::{BusChannels, Layout, LoadedPlugin, PluginBus, PluginBuses, PluginTail};
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 pub use midi_intake::MidiIntake;
+pub use tutti_graph::BusRole;
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use locate::{Helper, Locator};

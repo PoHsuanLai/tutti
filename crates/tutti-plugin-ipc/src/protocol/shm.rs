@@ -25,9 +25,9 @@ use super::SampleFormat;
 /// back its own input as though it were the plugin's output, at unity gain, with
 /// nothing in the system able to tell. Deriving makes that unrepresentable.
 ///
-/// Both lists are therefore **mandatory and non-empty**. A loader that cannot
-/// determine a plugin's buses supplies a stereo default rather than an empty
-/// list; "empty" has no meaning to fall back to.
+/// Both lists are therefore **mandatory and non-empty**: a direction with no
+/// buses (an instrument's inputs) is one bus of no channels, which
+/// [`new`](Self::new) makes of an empty list and which occupies no bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabLayout {
     /// Samples per channel in one block — the largest block that can cross the

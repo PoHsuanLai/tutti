@@ -4,6 +4,6 @@
 
 tutti_plugin_contract::contract!(
     tutti_plugin_contract::Au,
-    gaps = 0,
+    gaps = 23,
     hostings = [InProcess, OutOfProcess]
 );

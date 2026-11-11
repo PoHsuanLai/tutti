@@ -14,9 +14,9 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    ContentScale, EditorSize, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps,
-    ParameterInfo, PluginAudio, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState,
-    PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset,
+    PresetId, ProcessContext, ProcessOutput, RenderMode,
 };
 use tutti_plugin_types::MainThread;
 #[cfg(all(target_os = "macos", feature = "au"))]

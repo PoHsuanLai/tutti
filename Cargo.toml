@@ -192,6 +192,8 @@ criterion = "0.8"
 # `src/smf/read.rs` only: `scripts/check-layout.sh`): `binary` is `be_u16` and
 # kin, `alloc` the `Vec` a `repeat` collects.
 winnow = { version = "1", default-features = false, features = ["alloc", "binary"] }
+# NFC composition for text written into UMP messages (M2-104 section 1.8).
+unicode-normalization = { version = "0.1", default-features = false }
 coremidi = "0.9"
 # Raw CoreMIDI FFI + Core Foundation strings — needed only for the native-UMP
 # virtual source (MIDISourceCreateWithProtocol / MIDIReceivedEventList), which

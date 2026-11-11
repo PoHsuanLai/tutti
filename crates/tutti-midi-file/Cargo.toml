@@ -25,6 +25,7 @@ tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # The SMF reader (`src/smf/read.rs`) alone names it; no signature does.
 winnow = { workspace = true }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 # The path-based clip tests need a private directory. nextest runs each test in

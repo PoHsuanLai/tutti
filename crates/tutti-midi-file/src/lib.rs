@@ -9,7 +9,10 @@ mod kind;
 mod smf;
 
 pub use clip_file::ClipFileError;
-pub use file::{FileEvent, Meta, MidiFile, PairedNote, SmfFormat, TextKind, Tick, Track};
+pub use file::{
+    Converted, DropReason, Dropped, FileEvent, Meta, MidiFile, PairedNote, SmfFormat, TextKind,
+    Tick, ToClipError, Track,
+};
 pub use kind::MidiFileKind;
 
 use thiserror::Error;
@@ -62,6 +65,10 @@ pub enum Error {
     /// would lose which container was being read.
     #[error(transparent)]
     Clip(#[from] ClipFileError),
+
+    /// The file cannot be converted to a Clip File ([`MidiFile::to_clip`]).
+    #[error(transparent)]
+    ToClip(#[from] ToClipError),
 
     /// The leading bytes match neither container's magic, so no decoder ran
     /// ([`MidiFile::from_bytes`]). Distinct from a parse failure: "this is not

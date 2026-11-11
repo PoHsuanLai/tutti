@@ -14,7 +14,8 @@
 //! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
 //! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
 //! reassembler, over a buffer the caller owns; [`sysex7_packets`] is its inverse,
-//! the one writer of a payload as SysEx7 packets. [`split_stream`] cuts a buffer
+//! the one writer of a payload as SysEx7 packets, as [`flex_text_packets`] is of a text as Flex
+//! Data packets. [`split_stream`] cuts a buffer
 //! of concatenated packets (a native-UMP transport's) into [`Ump`]s.
 //!
 //! ```
@@ -48,6 +49,7 @@ mod cc_number;
 mod decode;
 mod encode;
 mod field;
+mod flex_text;
 mod message;
 mod midi1;
 mod midi_channel;
@@ -63,6 +65,7 @@ pub use field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, OutOfRange, Pitch, SharpsFlats,
     U4, U7, U14,
 };
+pub use flex_text::{FlexTextPackets, flex_text_packets};
 pub use message::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,
     ChordBass, ChordName, ChordPitch, ChordType, Data128, DeviceIdentity, Direction,

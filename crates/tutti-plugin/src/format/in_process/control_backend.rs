@@ -206,18 +206,17 @@ where
     ///
     /// `effGetChunk` and its kin are main-thread calls, and the health snapshot
     /// runs this on a task pool (`PluginSnapshot::run`): off the main thread it
-    /// is run by the main thread's next tick (`on_main`), and `Rejected` if
-    /// that does not come within the deadline.
+    /// is run by the main thread's next tick (`on_main`), and
+    /// [`StateError::Unavailable`] if that does not come within the deadline.
     fn save_state(&self) -> Result<Vec<u8>, StateError> {
-        let rejected = |why: &str| StateError::Rejected(why.into());
         match self.on_main(|main, instance| {
             instance
                 .control()
                 .map(|control| control.save_state(main).map_err(|e| e.to_string()))
         }) {
             Some(Some(state)) => state.map_err(StateError::Rejected),
-            Some(None) => Err(rejected("the plugin is lost")),
-            None => Err(rejected("the main thread did not answer in time")),
+            Some(None) => Err(StateError::Rejected("the plugin is lost".into())),
+            None => Err(StateError::Unavailable),
         }
     }
 
@@ -402,7 +401,7 @@ mod off_main_tests {
     /// session's snapshot and parameter-mirror jobs do.
     ///
     /// Mutation (run): `on_main` answering `None` off the main thread -> the
-    /// state is `Rejected` and the value `None` -> fails. Mutation (run): the
+    /// state is `Unavailable` and the value `None` -> fails. Mutation (run): the
     /// test not calling `run_deferred` -> the calls wait out the deadline and
     /// answer "unavailable" -> fails.
     #[test]
@@ -450,7 +449,7 @@ mod off_main_tests {
         })
         .join()
         .expect("the job returns");
-        assert!(matches!(state, Err(StateError::Rejected(_))), "{state:?}");
+        assert!(matches!(state, Err(StateError::Unavailable)), "{state:?}");
         assert_eq!(value, None);
     }
 }

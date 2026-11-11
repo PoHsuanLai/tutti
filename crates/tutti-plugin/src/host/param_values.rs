@@ -50,7 +50,8 @@ pub struct PluginParamValues {
 ///
 /// `Send`, so it runs on any thread. [`run`](Self::run) makes one round trip
 /// per parameter, so a host keeps it off a thread that must not block.
-#[must_use = "a mirror whose read is dropped never becomes ready"]
+#[must_use = "a mirror whose read is dropped never becomes ready; a read that \
+              was not answered comes back from `run` to be run again"]
 #[derive(Debug)]
 pub struct ParamRead {
     handle: PluginHandle,
@@ -58,17 +59,25 @@ pub struct ParamRead {
 
 impl ParamRead {
     /// Reads every parameter the plugin lists, by id. A parameter whose value
-    /// the plugin does not answer is left out; a plugin that lists none gives an
-    /// empty map.
-    #[must_use]
-    pub fn run(self) -> HashMap<ParamId, Normalized> {
+    /// the plugin does not answer is left out; a plugin that lists none gives
+    /// `Ok` of an empty map.
+    ///
+    /// # Errors
+    ///
+    /// The read itself (boxed: a handle is large), given back to be run again, when the plugin's list is
+    /// unavailable (`HostParams::parameter_descriptors` answered `None`: the
+    /// main thread of an in-process plugin did not answer in time, or the
+    /// backend cannot list). That is not "lists none": landing an empty map
+    /// would make the mirror ready with nothing in it, for good.
+    pub fn run(self) -> Result<HashMap<ParamId, Normalized>, Box<ParamRead>> {
         let params = self.handle.params();
-        params
-            .parameter_descriptors()
-            .unwrap_or_default()
+        let Some(descriptors) = params.parameter_descriptors() else {
+            return Err(Box::new(self));
+        };
+        Ok(descriptors
             .into_iter()
             .filter_map(|p| Some((p.id, params.parameter_value(p.id)?)))
-            .collect()
+            .collect())
     }
 }
 
@@ -276,7 +285,10 @@ mod tests {
         );
 
         // On another thread, as a host runs it: the job is `Send`.
-        let values = std::thread::spawn(move || read.run()).join().unwrap();
+        let values = std::thread::spawn(move || read.run())
+            .join()
+            .unwrap()
+            .expect("the plugin lists its parameters");
         assert_eq!(values, HashMap::from([(opaque, n(0.25)), (index, n(0.75))]));
 
         mirror.land(values);
@@ -310,7 +322,7 @@ mod tests {
         mirror.drain_edits(|id, v| seen.push((id, v)));
         assert!(seen.is_empty(), "an edit before the read lands waits");
 
-        mirror.land(read.run());
+        mirror.land(read.run().expect("the plugin lists its parameters"));
         mirror.drain_edits(|id, v| seen.push((id, v)));
         assert_eq!(seen, [(ParamId::new(1), n(0.9))]);
         assert_eq!(

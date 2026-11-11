@@ -145,6 +145,14 @@ pub enum StateError {
     #[error("plugin rejected the state: {0}")]
     Rejected(String),
 
+    /// The plugin was not asked: its state is read on the host's main thread,
+    /// and the main thread did not run the request within the deadline (it was
+    /// not pumping, or was blocked on this very call). Nothing was refused and
+    /// nothing was produced, so a caller must keep what it had, never
+    /// substitute an empty state, and may retry.
+    #[error("the main thread did not answer in time; the plugin was not asked")]
+    Unavailable,
+
     /// This backend cannot carry state at all — distinct from a plugin that was
     /// asked and said no.
     #[error("this backend has no state route")]

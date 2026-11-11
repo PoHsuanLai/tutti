@@ -166,6 +166,55 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     assert_eq!(reached, 50, "the last member's port carries one per block");
 }
 
+/// One MPE gesture on member channel 2 of a lower zone for block `block`: a
+/// bend, pressure and CC 74 before the Note On, the manager's pressure, the
+/// manager's CC 74, then the Note Off.
+fn gesture(device: &mut EventInletWriter, block: u64) {
+    let (g, ch) = (MidiGroup::FIRST, MidiChannel::of(2));
+    for ev in [
+        midi::pitch_bend(g, ch, 0xC000_0000),
+        midi::channel_pressure(g, ch, 0x4000_0000),
+        midi::cc(g, ch, tutti_ump::CCNumber::BRIGHTNESS, 0x2000_0000),
+        note_on(2, 60),
+        midi::channel_pressure(g, MidiChannel::FIRST, 0x6000_0000),
+        midi::cc(g, MidiChannel::FIRST, tutti_ump::CCNumber::BRIGHTNESS, 7),
+        note_off(g, ch, 60, 0),
+    ] {
+        device.push(frame_of(block, 0), ev).unwrap();
+    }
+}
+
+/// The values a member was told before its Note On, the manager's pressure
+/// and CC 74 combined into each held note, and a Note Off's release process
+/// without allocating, block after block.
+#[test]
+fn the_mpe_expression_paths_process_without_allocating() {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    ed.insert(
+        NodeKey(1),
+        "in",
+        MidiIngestNode::new(1).with_mpe(tutti_fixtures::midi::lower_zone(15)),
+    );
+    let mut dev = device(&mut ed, 4);
+    let mut out = common::sink(&mut ed, 0, &[(1, 2)]);
+    ed.commit().unwrap();
+    let t = Transport::default();
+    let mut drain = [(0, Ump([0; 4])); 256];
+    gesture(&mut dev, 0);
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    let mut reached = 0;
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 1..=50 {
+            gesture(&mut dev, b);
+            exec.process(512, &t, &[], &mut []);
+            reached += out.poll_into(&mut drain);
+        }
+    });
+    assert!(reached > 0, "channel 2's port carries the gesture");
+}
+
 /// An upper-zone MPE Configuration Message for block `block` when `upper`, a
 /// lower-zone one otherwise.
 fn mcm(device: &mut EventInletWriter, block: u64, upper: bool) {

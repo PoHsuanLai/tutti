@@ -3620,6 +3620,7 @@ dependencies = [
  "tutti-codec",
  "tutti-dsp",
  "tutti-export",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-measure",
  "tutti-nodes",

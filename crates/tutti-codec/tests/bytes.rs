@@ -30,9 +30,9 @@ use tutti_codec::{Encoder, Format, Spec};
 use tutti_types::{ChannelLayout, Interleaved, SampleRate};
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
-        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
-    })
+    let mut h = tutti_fixtures::Fnv::new();
+    h.bytes(bytes.iter().copied());
+    h.finish()
 }
 
 /// `frames` interleaved frames of `channels`: a 1024-step sawtooth offset per

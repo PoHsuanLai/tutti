@@ -1,6 +1,7 @@
 //! The lookahead limiter's render, pinned by a digest across the move of its
 //! recursion into `tutti_dsp::LimiterKernel` (doc 024 step 0b, consolidation 9).
 
+use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::contract::{drive_input, prepared};
 use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
 use tutti_nodes::LimiterNode;
@@ -11,13 +12,7 @@ const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
 
 fn noise(seed: u32, frames: usize, gain: f32) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..frames)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            gain * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
-        .collect()
+    Noise::seeded(seed).take(frames).map(|x| gain * x).collect()
 }
 
 /// A stereo lookahead limiter renders what it always did, bit for bit: a
@@ -39,15 +34,7 @@ fn noise(seed: u32, frames: usize, gain: f32) -> Vec<f32> {
 fn the_limiter_renders_what_it_always_did() {
     let mut node = prepared(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), SR, BLOCK);
     let set = node.param_set();
-    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |samples: &[f32]| {
-        for s in samples {
-            for byte in s.to_bits().to_le_bytes() {
-                digest ^= u64::from(byte);
-                digest = digest.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-    };
+    let mut digest = Fnv::new();
     let left = noise(5, 64 * 375, 1.5);
     let right = noise(9, 64 * 375, 1.5);
     let ceiling_lane: Vec<f32> = (0..BLOCK).map(|i| -3.0 - i as f32 * 0.05).collect();
@@ -72,9 +59,10 @@ fn the_limiter_renders_what_it_always_did() {
             play: PlayClock::ZERO,
         };
         let out = drive_input(&mut node as &mut dyn Node, &env, &[l, r], &params, &[]).audio;
-        eat(&out[0]);
-        eat(&out[1]);
+        digest.f32s(&out[0]);
+        digest.f32s(&out[1]);
     }
+    let digest = digest.finish();
     println!("DIGEST {digest:#018x}");
     assert_golden("limiter_render", digest, 0x193c_3ddd_3ece_3335);
 }

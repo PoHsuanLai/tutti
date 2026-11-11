@@ -24,6 +24,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tutti_fixtures::Noise;
 
 use tutti_curve::Law;
 use tutti_graph::NodeKey;
@@ -50,13 +51,7 @@ const FRAMES: usize = 24_000;
 const SETTLED: usize = 20_000;
 
 fn noise(seed: u32) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..FRAMES)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            0.8 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
-        .collect()
+    Noise::seeded(seed).take(FRAMES).map(|x| 0.8 * x).collect()
 }
 
 /// The key a test's lane goes in at: no builder key reaches it.

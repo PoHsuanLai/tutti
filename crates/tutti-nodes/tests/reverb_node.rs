@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tutti_dsp::{
     Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Realization, System,
 };
+use tutti_fixtures::{Fnv, Noise};
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
     Env, GraphBuilder, IntoNode, Node, ParamFork, ParamIn, ParamNode, Prepare, Status, Transport,
@@ -70,13 +71,7 @@ impl<N: Node> Rig<N> {
 }
 
 fn noise(seed: u32, frames: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..frames)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
-        .collect()
+    Noise::seeded(seed).take(frames).map(|x| 0.5 * x).collect()
 }
 
 fn impulse() -> Vec<f32> {
@@ -115,21 +110,13 @@ fn tail_of(c: FreeverbControls) -> usize {
 #[test]
 fn the_general_midi_send_renders_what_it_always_did() {
     let mut rig = Rig::new(prepared(FreeverbNode::general_midi(), SR, BLOCK));
-    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |samples: &[f32]| {
-        for s in samples {
-            for byte in s.to_bits().to_le_bytes() {
-                digest ^= u64::from(byte);
-                digest = digest.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-    };
+    let mut digest = Fnv::new();
     for chunk in noise(21, 24_000).chunks(BLOCK) {
         let out = rig.block(chunk, &[]).audio;
-        eat(&out[0]);
-        eat(&out[1]);
+        digest.f32s(&out[0]);
+        digest.f32s(&out[1]);
     }
-    assert_eq!(digest, 0x1140_a790_410d_b275);
+    assert_eq!(digest.finish(), 0x1140_a790_410d_b275);
 }
 
 /// The General MIDI send takes a mono input and gives a stereo one, with no

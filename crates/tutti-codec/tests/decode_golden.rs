@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 use tutti_codec::{FileIn, Wave};
+use tutti_fixtures::Fnv;
 use tutti_types::{Pull, Samples, Source};
 
 /// The frames one pull produced, `0` for any verdict (these loops read until
@@ -26,22 +27,10 @@ fn read(dec: &mut FileIn, buf: &mut [f32]) -> usize {
 fn asset(name: &str) -> PathBuf {
     tutti_fixtures::asset(&format!("audio/{name}"))
 }
-
-struct Fnv(u64);
-
-impl Fnv {
-    fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-    fn u64(&mut self, v: u64) {
-        for b in v.to_le_bytes() {
-            self.0 ^= u64::from(b);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    fn f32(&mut self, v: f32) {
-        self.u64(u64::from(v.to_bits()));
-    }
+/// A sample is fed as its bits widened to a `u64`, the width these goldens
+/// were recorded with.
+fn eat_sample(h: &mut Fnv, v: f32) {
+    h.u64(u64::from(v.to_bits()));
 }
 
 fn wave_digest(w: &Wave) -> u64 {
@@ -51,10 +40,10 @@ fn wave_digest(w: &Wave) -> u64 {
     h.u64(w.sample_rate().get().to_bits());
     for c in 0..w.channels() {
         for i in 0..w.len() {
-            h.f32(w.at(c, i));
+            eat_sample(&mut h, w.at(c, i));
         }
     }
-    h.0
+    h.finish()
 }
 
 /// Read the whole file through `FileIn` in odd-sized chunks, so reads cross
@@ -71,7 +60,7 @@ fn stream_digest(name: &str) -> (u64, usize) {
             break;
         }
         for &s in &buf[..n * ch] {
-            h.f32(s);
+            eat_sample(&mut h, s);
         }
         frames += n;
     }
@@ -80,7 +69,7 @@ fn stream_digest(name: &str) -> (u64, usize) {
         None,
         "{name} ends cleanly"
     );
-    (h.0, frames)
+    (h.finish(), frames)
 }
 
 /// `(file, load digest, streamed digest)`. The lossy rows are asserted only

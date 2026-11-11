@@ -31,6 +31,7 @@
 //! as `mono(l, r) * (g_to + 1e-4)` moves the stereo digest; `pair()`'s `half`
 //! as `* 0.6` (the crossfade out of and into the mono branch) moves all five.
 
+use tutti_fixtures::Fnv;
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::VbapPannerNode;
@@ -43,13 +44,7 @@ const BLOCK: usize = 64;
 const BLOCKS: usize = 120;
 
 fn noise(seed: u32) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..BLOCK * BLOCKS)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
-        })
-        .collect()
+    tutti_fixtures::noise(seed, BLOCK * BLOCKS)
 }
 
 fn digest_of(node: VbapPannerNode) -> u64 {
@@ -57,7 +52,7 @@ fn digest_of(node: VbapPannerNode) -> u64 {
     aim(&controls, Azimuth(170.0), Elevation(10.0));
     let mut node = prepared(node, RATE, BLOCK);
     let planes = [noise(3), noise(4)];
-    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut digest = Fnv::new();
     let moves = [
         (-110.0f32, -20.0f32),
         (45.0, 45.0),
@@ -86,15 +81,10 @@ fn digest_of(node: VbapPannerNode) -> u64 {
             &[&planes[0][at.clone()], &planes[1][at]],
             &[],
         ) {
-            for s in plane {
-                for byte in s.to_bits().to_le_bytes() {
-                    digest ^= u64::from(byte);
-                    digest = digest.wrapping_mul(0x0100_0000_01b3);
-                }
-            }
+            digest.f32s(&plane);
         }
     }
-    digest
+    digest.finish()
 }
 
 fn check(name: &str, node: VbapPannerNode, want: u64) {

@@ -32,11 +32,12 @@ mod support;
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
 use crate::support::render_to_file;
-use tutti_export::{
-    ChannelLayout, FlacLevel, Format, FrozenClock, IntDepth, Pcm, RenderGraph, Setup,
-};
+use tutti_codec::{FlacLevel, Format, IntDepth, Pcm};
+use tutti_export::{RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
+use tutti_transport::FrozenClock;
+use tutti_types::ChannelLayout;
 use tutti_types::Seconds;
 
 const SR: f64 = 44_100.0;
@@ -366,5 +367,28 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
                  (a resampler that dropped its output writes zeros here)"
             );
         }
+    }
+}
+
+/// `Written::frames` is what the file holds: the frame count the reader finds
+/// in the header, for a file at the render's rate and for files resampled up and
+/// down, whose length is the converter's stated one.
+#[test]
+fn written_frames_is_what_the_file_holds() {
+    let d = tempfile::tempdir().unwrap();
+
+    for target in [None, Some(48_000.0f64), Some(22_050.0)] {
+        let path = d.path().join(format!("frames_{target:?}.wav"));
+        let mut cfg = config(Format::Wav(Pcm::Int16));
+        cfg.render.duration_seconds = Seconds(0.25);
+        if let Some(rate) = target {
+            cfg.resample = Some(tutti_export::Resample::to(tutti_types::SampleRate(rate)));
+        }
+
+        let written = render_to_file(dc_graph(0.4), &cfg, &FrozenClock, &path).unwrap();
+
+        let held = hound::WavReader::open(&path).unwrap().duration() as usize;
+        assert!(held > 0);
+        assert_eq!(written.frames.get(), held, "resample to {target:?}");
     }
 }

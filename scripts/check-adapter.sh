@@ -187,7 +187,7 @@ Modulation|the session'"'"'s modulation phase: Session::run_phase(Phase::Modulat
 TuttiDriver|tutti_session::Device (the sound card): SessionBuilder::build_device, Session::restart
 AudioCallbackState|tutti_session::Device (the sound card): SessionBuilder::build_device
 Engine|tutti_session::SessionBuilder (the renderer): build_device / build_offline
-RenderGraph|tutti_session::Session::export (the offline render): ExportRequest, ExportJob, finish_export
+RenderGraph|tutti_session::Session::bounce (the offline render): Bounce, BounceJob, finish_bounce
 '
 
 # EXCEPTIONS: `kind|file|name|the lane that removes it`. Check 5's violations

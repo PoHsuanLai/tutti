@@ -44,6 +44,11 @@ fn the_length_is_the_rounded_ratio_however_the_input_is_blocked() {
             for n in [0usize, 1, 1000, 4096, 4410, 10_007] {
                 let planes: Vec<Vec<f32>> = (0..2).map(|_| vec![0.1f32; n]).collect();
                 let want = (n as f64 * f64::from(to) / f64::from(from)).round() as usize;
+                assert_eq!(
+                    StreamingResampler::output_frames(from.into(), to.into(), Samples(n)),
+                    Samples(want),
+                    "{from}->{to} n={n}: the stated length is the stream's"
+                );
                 for block in BLOCKINGS {
                     let out = resample_blocked(&planes, from, to, chunk, block);
                     for (c, plane) in out.iter().enumerate() {
@@ -613,4 +618,19 @@ fn the_passband_is_flat_to_the_band_edge() {
             );
         }
     }
+}
+
+/// Two rates that are one whole rate in Hz are no conversion, and the stated
+/// length is then the input's, to the frame; a rate the converter refuses is
+/// not an identity, so `new` is the one to say so.
+#[test]
+fn rates_of_one_whole_hz_are_no_conversion() {
+    let hz = |r: f64| SampleRate::new(r);
+    assert!(!StreamingResampler::converts(hz(44_100.0), hz(44_100.2)));
+    assert!(StreamingResampler::converts(hz(44_100.0), hz(48_000.0)));
+    assert!(StreamingResampler::converts(hz(f64::NAN), hz(f64::NAN)));
+    assert_eq!(
+        StreamingResampler::output_frames(hz(44_100.0), hz(44_100.2), Samples(1_000_000)),
+        Samples(1_000_000)
+    );
 }

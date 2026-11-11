@@ -36,7 +36,8 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tutti::export::{Format, Pcm, Produced, Written};
+use tutti::codec::{Format, Pcm};
+use tutti::export::{Produced, Written};
 use tutti::prelude::*;
 
 const RATE: SampleRate = SampleRate(48_000.0);

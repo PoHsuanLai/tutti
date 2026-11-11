@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use tutti_export::{ChannelLayout, Produced};
+use tutti_export::Produced;
 use tutti_fixtures::assert_golden;
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
@@ -21,6 +21,7 @@ use tutti_session::{Bounce, ExportClock, Latency, Range, Session, Stem, Tail};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
+use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, SampleRate, Samples, Seconds, UnitParam};
 use tutti_ump::{MidiChannel, MidiGroup, U7, Ump};
 

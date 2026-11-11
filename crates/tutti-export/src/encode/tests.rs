@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Format, Job, Pcm, Resample};
+use crate::{Job, Resample};
+use tutti_codec::{Format, Pcm};
 
 /// What these tests vary: a 1 kHz, eight-frame render into a WAV of `pcm`.
 struct Case {
@@ -38,9 +39,6 @@ fn config(channels: u16, pcm: Pcm) -> Case {
 /// The plan is real: 2^32 mono frames at 16 bits is 8 GiB, past the format's
 /// 32-bit sizes, and no frame is written because the refusal is made before
 /// the file is opened.
-///
-/// Mutation: deleting the `check_fits` call in `open_file` lets the file open
-/// and fails the `expect_err`.
 #[test]
 fn a_plan_that_cannot_fit_is_refused_before_the_file_is_touched() {
     let dir = tempfile::tempdir().unwrap();
@@ -74,11 +72,10 @@ fn a_plan_that_cannot_fit_is_refused_before_the_file_is_touched() {
 /// The limit is judged on the frames the file will hold, which a resample to a
 /// higher rate raises: 2^31 - 1000 frames fit a mono 16-bit WAV at the render
 /// rate, and do not once they are written at twice the rate.
-///
-/// Mutation: returning `kept` before scaling (ignoring the resample) accepts
-/// the second plan and fails the last assertion.
 #[test]
 fn the_limit_is_judged_at_the_output_rate() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.wav");
     let mut config = config(1, Pcm::Int16);
     let frames = Samples((1 << 31) - 1_000);
     let plan = RenderPlan {
@@ -87,32 +84,16 @@ fn the_limit_is_judged_at_the_output_rate() {
         latency: Samples(0),
     };
     let rate = config.rate;
-    let max = Format::Wav(config.pcm).max_frames(config.channels);
-    let path = Path::new("unused.wav");
-    check_fits(&plan, rate, &config.target(path), max).expect("2^31 - 1000 mono 16-bit frames fit");
+    open_file(&config.target(&path), &plan, rate)
+        .map(drop)
+        .expect("2^31 - 1000 mono 16-bit frames fit");
     config.resample = Some(Resample::to(SampleRate::new(2_000.0)));
-    assert!(check_fits(&plan, rate, &config.target(path), max).is_err());
-}
-
-/// The frames a file will hold are the plan's, scaled by the resample ratio
-/// and rounded up; a resample to the rate the frames are at is no resample.
-///
-/// Mutation: rounding down instead of up gives 8 for the 1.1x case (8.8 frames)
-/// and fails the second assertion.
-#[test]
-fn the_planned_frames_follow_the_plan_and_the_resample() {
-    let mut config = config(2, Pcm::Int16);
-    let plan = config.plan();
-    let rate = config.rate;
-    let path = Path::new("unused.wav");
-    assert_eq!(planned_frames(&plan, rate, &config.target(path)), 8);
-    config.resample = Some(Resample::to(SampleRate::new(1_100.0)));
-    assert_eq!(planned_frames(&plan, rate, &config.target(path)), 9);
-    config.resample = Some(Resample::to(SampleRate::new(1_000.0)));
-    assert_eq!(
-        planned_frames(&plan, rate, &config.target(path)),
-        8,
-        "the same rate is no resample"
+    let err = open_file(&config.target(&path), &plan, rate)
+        .map(drop)
+        .expect_err("twice the frames do not");
+    assert!(
+        matches!(err, Error::Encode(tutti_codec::Error::WavTooLarge { .. })),
+        "{err}"
     );
 }
 

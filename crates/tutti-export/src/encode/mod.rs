@@ -24,7 +24,7 @@ use crate::render::{PlaneSource, REPLAY_BLOCK, RenderPlan, Replay};
 use crate::{Error, Written};
 use std::path::Path;
 use tutti_codec::{Encoder, Finalized, Spec};
-use tutti_dsp::DitherSink;
+use tutti_dsp::{DitherSink, StreamingResampler};
 use tutti_types::{
     Amplitude, ChannelLayout, Interleaved, InterleavedMut, SampleRate, Samples, Sink, SinkFailed,
 };
@@ -33,15 +33,6 @@ use tutti_types::{
 /// rendered at.
 pub(crate) fn output_rate(target: &FileTarget, render_rate: SampleRate) -> SampleRate {
     target.resample().map_or(render_rate, |r| r.target_rate)
-}
-
-/// A rate as the whole Hz the codec headers speak.
-///
-/// The resampler compares rates for *equality* to decide whether to convert at
-/// all, which a float would turn into an ULP coin-flip: two rates that write
-/// the same header are the same rate.
-fn whole_hz(rate: SampleRate) -> u32 {
-    rate.get().round() as u32
 }
 
 /// What the file is written as: the target's format, width and speaker order at
@@ -55,59 +46,22 @@ fn spec(target: &FileTarget, source_rate: SampleRate) -> Spec {
     }
 }
 
-/// Frames the file will hold for `plan` at the output rate, rounded up: the
-/// plan's kept frames, scaled only when the pipeline resamples (the condition
-/// [`Chain`] uses).
-fn planned_frames(plan: &RenderPlan, source_rate: SampleRate, target: &FileTarget) -> u64 {
-    let kept = plan.output_length.get() as u64;
-    if target.resample().is_none() {
-        return kept;
-    }
-    let (out, src) = (
-        f64::from(whole_hz(output_rate(target, source_rate))),
-        source_rate.get().round(),
-    );
-    if src <= 0.0 || out == src {
-        return kept;
-    }
-    (kept as f64 * out / src).ceil() as u64
-}
-
-/// Refuses a render the format's file cannot hold, before any of it is
-/// rendered and before the path is touched.
-fn check_fits(
-    plan: &RenderPlan,
-    source_rate: SampleRate,
-    target: &FileTarget,
-    max_frames: Option<u64>,
-) -> Result<()> {
-    match max_frames {
-        Some(limit_frames) if planned_frames(plan, source_rate, target) > limit_frames => {
-            Err(tutti_codec::Error::WavTooLarge { limit_frames }.into())
-        }
-        _ => Ok(()),
-    }
-}
-
 /// The file of `target`, begun: written to a temporary beside its path (which
 /// the encoder removes unless it is finished and committed), through the
 /// converter and the dither of the target.
 ///
-/// Refuses a render the format cannot hold before the temporary exists. The
-/// frames are at `source_rate`.
+/// Refuses a render the format cannot hold before the temporary exists: the
+/// encoder judges the frames the file will hold, which are the plan's kept
+/// frames at the output rate (`StreamingResampler::output_frames`), and the
+/// error is its own. The frames of `plan` are at `source_rate`.
 pub(crate) fn open_file(
     target: &FileTarget,
     plan: &RenderPlan,
     source_rate: SampleRate,
 ) -> Result<Chain> {
     let spec = spec(target, source_rate);
-    check_fits(
-        plan,
-        source_rate,
-        target,
-        spec.format.max_frames(spec.layout),
-    )?;
-    let encoder = Encoder::create_file(&spec, target.path())?;
+    let planned = StreamingResampler::output_frames(source_rate, spec.rate, plan.output_length);
+    let encoder = Encoder::create_file_planned(&spec, target.path(), planned)?;
     Chain::new(target, source_rate, encoder, &spec)
 }
 
@@ -116,20 +70,24 @@ pub(crate) fn open_file(
 pub(crate) struct Closed {
     file: Finalized<std::io::BufWriter<std::fs::File>>,
     clipped: u64,
+    frames: Samples,
 }
 
 impl Closed {
     /// Puts the file in place.
-    pub(crate) fn commit(self) -> tutti_codec::Result<ClippedFile> {
-        self.file.commit().map(|_| ClippedFile {
+    pub(crate) fn commit(self) -> tutti_codec::Result<Landed> {
+        self.file.commit().map(|_| Landed {
             clipped: self.clipped,
+            frames: self.frames,
         })
     }
 }
 
-/// A file that was put in place, and the samples that clipped on the way.
-pub(crate) struct ClippedFile {
+/// A file that was put in place, the samples that clipped on the way and the
+/// frames it holds.
+pub(crate) struct Landed {
     pub(crate) clipped: u64,
+    pub(crate) frames: Samples,
 }
 
 impl Chain {
@@ -137,20 +95,22 @@ impl Chain {
     /// everything that can fail for the file's own sake, short of moving it.
     pub(crate) fn finalize(mut self) -> Result<Closed> {
         self.flush()?;
-        let (encoder, clipped) = self.into_encoder();
+        let (encoder, clipped, frames) = self.into_encoder();
         Ok(Closed {
             file: encoder.finalize()?,
             clipped,
+            frames,
         })
     }
 }
 
 /// What a landed file is, for the caller: its size on disk, `0` if it cannot
 /// be stat'd.
-pub(crate) fn written(path: &Path, closed: ClippedFile, dropped_events: u64) -> Written {
+pub(crate) fn written(path: &Path, closed: Landed, dropped_events: u64) -> Written {
     Written {
         path: path.to_path_buf(),
         bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        frames: closed.frames,
         dropped_events,
         clipped_samples: closed.clipped,
         gain: None,
@@ -183,6 +143,8 @@ struct EncoderSink {
     /// out). Only an integer format counts.
     counts_clipping: bool,
     clipped: u64,
+    /// Frames the encoder accepted, which is what the file holds.
+    frames: Samples,
     error: Option<Error>,
 }
 
@@ -203,7 +165,9 @@ impl Sink for EncoderSink {
             .map_err(|e| {
                 self.error = Some(Error::from(e));
                 SinkFailed
-            })
+            })?;
+        self.frames += Samples::from_interleaved_len(interleaved.len(), self.layout);
+        Ok(())
     }
 
     /// Export finishes the encoder itself ([`Chain::into_encoder`]), to keep
@@ -217,7 +181,7 @@ impl Sink for EncoderSink {
 }
 
 /// A converter and the planes it takes from and gives to.
-pub(crate) type Resampler = (tutti_dsp::StreamingResampler, Vec<Vec<f32>>, Vec<Vec<f32>>);
+pub(crate) type Resampler = (StreamingResampler, Vec<Vec<f32>>, Vec<Vec<f32>>);
 
 /// The converter `target` calls for from frames at `source_rate` of `ch`
 /// channels, or `None` when the file is at the rate the frames are.
@@ -226,21 +190,16 @@ pub(crate) fn resampler_for(
     source_rate: SampleRate,
     ch: usize,
 ) -> Result<Option<Resampler>> {
-    // Compare as the integer rate the codecs speak, via `whole_hz`. The
-    // comparison must not be a float one: these rates decide *whether to
-    // resample at all*, and an ULP apart would flip that coin. Two rates
-    // that write the same header are the same rate.
+    // Whether to convert at all is the converter's to say
+    // (`StreamingResampler::converts`), not a float comparison here.
     //
     // `source_rate` is the PARAMETER, not a rate of the target's.
     // Frames handed to `write_buffers` already exist and carry their own
     // rate, which may not be the one a config was rendered at; reading
     // it from a config resamples from a rate the samples were never at.
     Ok(match target.resample() {
-        Some(r) if whole_hz(output_rate(target, source_rate)) != whole_hz(source_rate) => Some((
-            // The rates themselves stay `SampleRate`: only the *comparison*
-            // narrows, and `StreamingResampler::new` derives its ratio from
-            // values that never did.
-            tutti_dsp::StreamingResampler::new(ch, source_rate, r.target_rate, r.chunk)?,
+        Some(r) if StreamingResampler::converts(source_rate, r.target_rate) => Some((
+            StreamingResampler::new(ch, source_rate, r.target_rate, r.chunk)?,
             vec![Vec::<f32>::new(); ch],
             vec![Vec::<f32>::new(); ch],
         )),
@@ -294,6 +253,7 @@ impl Chain {
             layout,
             counts_clipping: spec.format.int_depth().is_some(),
             clipped: 0,
+            frames: Samples(0),
             error: None,
         };
         Ok(Self {
@@ -348,10 +308,11 @@ impl Chain {
         failure_of(&mut self.sink)
     }
 
-    /// The encoder, to finish it, and how many samples clipped on the way.
-    fn into_encoder(self) -> (Encoder<std::io::BufWriter<std::fs::File>>, u64) {
+    /// The encoder, to finish it, how many samples clipped on the way and how
+    /// many frames it was given.
+    fn into_encoder(self) -> (Encoder<std::io::BufWriter<std::fs::File>>, u64, Samples) {
         let sink = self.sink.into_inner();
-        (sink.encoder, sink.clipped)
+        (sink.encoder, sink.clipped, sink.frames)
     }
 }
 

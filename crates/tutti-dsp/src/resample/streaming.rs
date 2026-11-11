@@ -125,6 +125,12 @@ fn whole_hz(hz: f64) -> Result<usize, ResampleError> {
     }
 }
 
+/// The frames `input` becomes at `ratio`, the one rounding the budget and
+/// [`StreamingResampler::output_frames`] share.
+fn scaled(input: usize, ratio: f64) -> usize {
+    (input as f64 * ratio).round() as usize
+}
+
 /// The most input frames one block of the converter can span, which bounds how
 /// much silence a flush may need past the filter's delay (`tutti_dsp`'s
 /// `MAX_BLOCK`, 2^20, is the largest block either side of an FFT may have).
@@ -206,6 +212,35 @@ impl StreamingResampler {
         })
     }
 
+    /// Whether a stream from `source_rate` to `target_rate` needs a converter
+    /// at all: `false` when both are the same whole rate in Hz, which is the
+    /// rate the converter and a codec's header speak, so two rates that write
+    /// the same header are one rate. A float comparison would turn on an ULP.
+    /// A rate [`new`](Self::new) refuses is not an identity either.
+    #[must_use]
+    pub fn converts(source_rate: SampleRate, target_rate: SampleRate) -> bool {
+        match (whole_hz(source_rate.get()), whole_hz(target_rate.get())) {
+            (Ok(source), Ok(target)) => source != target,
+            _ => true,
+        }
+    }
+
+    /// The frames a stream of `input` frames comes out as, flush included:
+    /// `input` itself when [`converts`](Self::converts) is `false`, else
+    /// `round(input * target / source)`, which is what a stream fed `input`
+    /// frames emits in all however it is blocked.
+    #[must_use]
+    pub fn output_frames(
+        source_rate: SampleRate,
+        target_rate: SampleRate,
+        input: Samples,
+    ) -> Samples {
+        if !Self::converts(source_rate, target_rate) {
+            return input;
+        }
+        Samples(scaled(input.get(), target_rate.get() / source_rate.get()))
+    }
+
     /// Feed one block of planar input; append whatever output it completes.
     ///
     /// # Errors
@@ -269,8 +304,7 @@ impl StreamingResampler {
     /// written earlier frames by the time `finish` runs, so there is nothing
     /// left to trim.
     fn budget(&self) -> usize {
-        let want = (self.fed as f64 * self.ratio).round() as usize;
-        want.saturating_sub(self.emitted)
+        scaled(self.fed, self.ratio).saturating_sub(self.emitted)
     }
 
     /// `(unconsumed carry frames, head, input frames the next chunk

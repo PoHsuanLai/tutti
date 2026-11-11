@@ -168,7 +168,7 @@ fn wired_probe(s: &mut Session) -> (NodeKey, Samples) {
 /// unrun, so before the fork can render a block. `finish_bounce` releases
 /// the token and runs the phase again: back to realtime, with no update.
 ///
-/// Mutations (each run, each failed): `Session::export` not running the
+/// Mutations (each run, each failed): `Session::bounce_start` not running the
 /// phase (the session still says Realtime after `export`); `finish_bounce`
 /// not running it (still Offline after it); `render_mode_phase` recording
 /// the mode without calling `set_render_mode` (the latency stays realtime

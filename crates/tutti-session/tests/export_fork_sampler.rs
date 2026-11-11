@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tutti_export::{ChannelLayout, Produced};
+use tutti_export::Produced;
 use tutti_graph::NodeKey;
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
@@ -24,6 +24,7 @@ use tutti_sampler::{
 };
 use tutti_session::{Bounce, BounceError, ExportClock, Latency, Range, Session, Stem, Tail};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
+use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, SampleRate, Seconds};
 
 const RATE: f64 = 48_000.0;

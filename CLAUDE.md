@@ -367,7 +367,12 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`), and
                  `Recorder` / `PumpLoop`, a source pumped into a sink (feature `record`; a
-                 recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`).
+                 recording dithers only by wrapping its sink in `tutti_dsp::DitherSink`), and
+                 the bounce (feature `export`, doc 019): `Bounce` (the master's fork, a
+                 `Range`, `Latency`, `Tail`, `stem`s, each a plan tap) through
+                 `Session::{bounce, bounce_start, finish_bounce}`, `BounceJob`,
+                 `BounceHandle` and `BounceError`; it derives the figures and
+                 `tutti-export` renders them.
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-rt.
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
@@ -456,7 +461,18 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-cpal     device
-  tutti-export   offline render
+  tutti-export   the offline render pipeline, which a `Bounce` drives (doc 019): a `Job`
+                 (rate, length, latency trim) and a list of `Output`s (a `Feed`, the
+                 graph's outputs or a plan tap, into a `FileTarget` or `BufferTarget`),
+                 `render` / `render_one` with a `Control` (`CancelToken`, `Progress`,
+                 `Stage`), and `RenderGraph::assemble` over a forked `Editor`/`Executor`
+                 pair. It re-exports no other crate's type: `Format` and `Pcm` are
+                 `tutti_codec`'s, `ChannelLayout` `tutti_types`', `RenderClock` and
+                 `FrozenClock` `tutti_transport`'s (the `tutti` umbrella's `export` feature
+                 implies `codec`). It asks the owner for a figure and
+                 builds no other crate's error: the frame limit is the encoder's
+                 (`Encoder::create_file_planned`), a resampled length the resampler's
+                 (`StreamingResampler::output_frames`), the clamp count the encoder's
   tutti-nodes (the `Node` adapters, the VBAP and HRTF panners among them), tutti-sampler, tutti-polysynth,
   tutti-soundfont (the SoundFont player: the node, the voices, the patch that
                  turns a note into voices; it executes `tutti-voicing`'s
@@ -730,7 +746,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   written once), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
-  bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
+  bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the
+  one figure of a resampled length; `ChunkSize`), the dither noise
   (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
   the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
   `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
@@ -1271,6 +1288,27 @@ read the `Cargo.toml`, grep for the type, run the probe.
   and `OfflineTimelineConfig::tempo_map` carry it, and a tempo is `TempoMap::tempo_at` a beat).
   A comment or doc that
   disagrees with the code is the bug.
+- **Dead export names** (doc 019): `tutti-export`'s `ExportConfig`, `RenderConfig`,
+  `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,
+  `render_to_buffers`, `render_normalized_to_file` and their `_with` twins → `render` /
+  `render_one` with a `Control`; `Flow`, `Pass` → `Control` and `CancelToken`;
+  `Normalized` → `Written::{gain, measured}`; `resample_rendered` and
+  `tutti_export::Dither` → one streamed chain and `tutti_dsp::DitherShape`;
+  `beats_to_seconds`, `duration_to_frames` → the session's range over the project's
+  `TempoMap`; `RenderGraph::{new, fork, gather, build, set_pool, set_root_topology,
+  root_topology, editor, editor_mut, commit, is_parallel}` → `RenderGraph::assemble` (the
+  session's private `Fork` edits first); `tutti_export::{Format, Pcm, IntDepth, FlacLevel,
+  Quality, ChannelLayout, RenderClock, FrozenClock}` → `tutti_codec::`, `tutti_types::` and
+  `tutti_transport::`; `tutti-session`'s `ExportRequest`, `ExportSource`, `ExportTarget`,
+  `ExportOutput`, `ExportJob`, `ExportRendered`, `ExportHandle`, `ExportConfigError`,
+  `Error::{Export, ExportConfig, ExportInFlight}`, `Session::{export, export_blocking,
+  finish_export{,_unannounced}, drop_export_leftovers, export_in_flight}`,
+  `EXPORT_STALL_WARNING` and `ExportClock`'s `Default` → `Bounce`, `BounceJob`,
+  `BounceRendered`, `BounceHandle`, `BounceConfigError`, `BounceError`,
+  `Session::{bounce, bounce_start, finish_bounce{,_unannounced}, drop_bounce_leftovers,
+  bounce_in_flight}` and `BOUNCE_STALL_WARNING` (a clock is named, never defaulted);
+  `Bounce::node` → a `stem` of the master's fork. `bevy-tutti`'s `ExportRequest`,
+  `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
 
 ## Consumers: the pin that must stay in step
 

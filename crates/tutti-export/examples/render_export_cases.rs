@@ -18,14 +18,16 @@
 //!
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
+use tutti_codec::{FlacLevel, Format, Pcm, Quality};
 use tutti_dsp::DitherShape;
 use tutti_export::{
-    ChannelLayout, Control, FileTarget, FlacLevel, Format, Job, Normalize, NormalizeSpec, Output,
-    Pcm, Quality, RenderGraph, Resample, Setup, render_one,
+    Control, FileTarget, Job, Normalize, NormalizeSpec, Output, RenderGraph, Resample, Setup,
+    render_one,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Amplitude;
+use tutti_types::ChannelLayout;
 use tutti_types::Hz;
 use tutti_types::{Samples, Seconds};
 
@@ -159,7 +161,7 @@ fn main() -> tutti_export::Result<()> {
             let w = render_one(
                 &mut graph,
                 &cfg.job(),
-                &tutti_export::FrozenClock,
+                &tutti_transport::FrozenClock,
                 Output::master(cfg.file_target(dir.join(&name), None)),
                 &mut Control::none(),
             )?

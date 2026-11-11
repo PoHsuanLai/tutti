@@ -2450,14 +2450,14 @@ out of process, which is the default for those formats (doc 021 Q3).
 **Open question: restoring `Realtime` after a failed bounce.** The archive asked
 for a guard type so that a bounce failing partway still puts plugins back to
 `Realtime`. As built the question is mostly answered, but not by a guard in
-`render_mode.rs`: the session owns it (015 §4.3). `Session::export` announces
-`Offline` while the export's token lives, `finish_export` drops the token and
+`render_mode.rs`: the session owns it (015 §4.3). `Session::bounce_start` announces
+`Offline` while the bounce's token lives, `finish_bounce` drops the token and
 announces `Realtime`, and `plugin_render_mode` in `bevy-tutti/src/plugin_host/render_mode.rs`
 runs `Phase::RenderMode` every frame as a level, so a despawned
-`ExportInFlight` (no `ExportDone`, no `finish_export`) is corrected on the next
+`ExportInFlight` (no `ExportDone`, no `finish_bounce`; the Bevy names, parked) is corrected on the next
 frame (`a_despawned_export_restores_realtime`). That system is the safety net and
 the token is the guard. What remains open: a headless `Session` caller who never
-calls `finish_export` after a failure and runs no `Phase::RenderMode` keeps the
+calls `finish_bounce` after a failure and runs no `Phase::RenderMode` keeps the
 plugins `Offline`; the token's `Drop` could announce, but it is dropped on a
 thread that may not be the main thread (015 §4.2 pins the announcement there). The
 tree does not decide it. Settled by a headless test that drops the export without

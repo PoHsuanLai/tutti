@@ -1,7 +1,13 @@
 # 019: the bounce API
 
-Status: proposal for the owner's review. No code changes in this document's
-PR. Lane E4, phase 1.
+Status: built, except step 7 (bevy-tutti: `BounceRequest`, `BounceDone`,
+`BounceInFlight`, `BounceStage`, `BouncePlugin`), which waits on un-parking
+`bevy-tutti`. Steps 1 to 6 and 8 are merged. Lane E4.
+
+Left over, each listed in the "As built (step 8)" note: the §4 table's
+getters on `Written` (its fields are public), `Unmeasured::Format` folded into
+the output's width and rate, and the `FrameSource` / `pump_blocks` pair, which
+is doc 025's.
 
 Dependencies on other lanes (this doc assumes they land first or alongside):
 
@@ -265,10 +271,10 @@ that step's work and not as a separate cleanup.
 | `Dither { Off, Rectangular, Triangular }`, mapped by hand onto `tutti_dsp::DitherShape` in `process/dither.rs` | `tutti-dsp` | `FileTarget` takes `Option<DitherShape>`; `None` is off. No second enum and no mapping. **Done in step 3.** | 3 |
 | The integer LSB `1 / (1 << (bits - 1))`, computed twice: in `DitherState::for_config` and in normalize's integer headroom | `tutti-codec`, whose `Pcm::quantize` holds the scale | One `IntDepth::lsb()` in `tutti-codec`, which both call. The quantizer, the dither amplitude and the headroom then cannot disagree. | 1 |
 | `clipped_in`: a scan of each block for samples the quantizer will clamp, before the encoder sees them | `tutti-codec` (`Pcm::quantize` does the clamp) | The encoder counts what it clamped, plus non-finite samples, and reports the count from `finish`; §4's `Written::clipped_samples` reads it. | 1 |
-| `planned_frames` and `whole_hz` re-derive the resampler's output length to pre-check `Format::max_frames`, and `check_fits` builds `tutti_codec::Error::WavTooLarge` itself | `tutti-dsp` (`StreamingResampler` knows its ratio and flush) and `tutti-codec` (the limit and its error) | The resampler states its output length for an input length. The encoder takes the planned frame count at creation and refuses it with its own error. Export passes numbers and builds neither error. | 3 |
+| `planned_frames` and `whole_hz` re-derive the resampler's output length to pre-check `Format::max_frames`, and `check_fits` builds `tutti_codec::Error::WavTooLarge` itself | `tutti-dsp` (`StreamingResampler` knows its ratio and flush) and `tutti-codec` (the limit and its error) | The resampler states its output length for an input length. The encoder takes the planned frame count at creation and refuses it with its own error. Export passes numbers and builds neither error. **Done in step 8** (`StreamingResampler::{converts, output_frames}`, `Encoder::create_file_planned`). | 3 |
 | Two resample paths: streamed in `pump_blocks`, and whole-buffer `resample_rendered` for normalize's write | `tutti-dsp` (`StreamingResampler`) | One path. Normalize's write pass feeds the spilled planes through the same streamed chain, so a normalized export and a plain one share resample, dither and encode. **Done in step 3** (`resample_rendered` is gone; the measurement reads the spill through the same converter). | 3 |
 | `FrameSource` and `pump_blocks`, a private pull trait and pump beside the edge's | doc 025 (`Source`, `Pull`) | Settled by doc 025 §5.4. Until then they stay private and are not widened. | doc 025 |
-| `pub use` of `tutti_codec::{Format, Pcm, IntDepth, FlacLevel, Quality}`, `tutti_types::ChannelLayout` and `tutti_transport::{RenderClock, FrozenClock}` | their crates | Removed. A type has one path (CLAUDE.md, "Import paths"). The `tutti` umbrella's `export` feature implies `codec` (today it does not), so `tutti::codec::Format` is that path; `tutti::transport` already carries the clocks. | 8 |
+| `pub use` of `tutti_codec::{Format, Pcm, IntDepth, FlacLevel, Quality}`, `tutti_types::ChannelLayout` and `tutti_transport::{RenderClock, FrozenClock}` | their crates | Removed. A type has one path (CLAUDE.md, "Import paths"). The `tutti` umbrella's `export` feature implies `codec` (today it does not), so `tutti::codec::Format` is that path; `tutti::transport` already carries the clocks. **Done in step 8.** | 8 |
 
 Rules a later change keeps:
 
@@ -648,7 +654,7 @@ the text above:
   { landed, cause }`. A zero-width target is still `UnsupportedChannels`, and
   the graph's channels not placing on a *master* output's target is still
   `ConfigError::Placement` (the tests pin it); only a tap's placement is
-  `TargetError::Placement`. `Unmeasurable` has no `output` yet.
+  `TargetError::Placement`. `Unmeasurable` has no `output` yet (step 8 adds it).
 - **The spill.** A normalizing output keeps its frames after the fold to its
   width, at the render's rate, interleaved. The memory budget (`SpillBudget`,
   512 MiB) is shared by the render's spills: a spill that cannot take a block
@@ -695,8 +701,8 @@ the text above:
   measured, written or finalized, by its index in the list.
 - **Not done here.** `Written::frames`, `Unmeasurable.output`, and the
   `planned_frames`/`whole_hz` copy of section 5.1 (the encoder still takes the
-  planned frame count from `check_fits`); `beats_to_seconds` and
-  `duration_to_frames` are still public.
+  planned frame count from `check_fits`), all step 8's; `beats_to_seconds` and
+  `duration_to_frames` were retired in step 5.
 
 **As built (step 4).** `RenderGraph` is sealed: `RenderGraph::assemble(editor,
 executor, Setup)` is the one constructor, and `new`, `fork`, `gather`, `build`,
@@ -882,6 +888,48 @@ taps are open). Where this differs from the text above:
   says; with a latency kept, the part not trimmed is on top of the tail, in every
   target alike (`stems_are_aligned_with_the_master_and_sum_to_it`).
 
+
+**As built (step 8).** The READMEs (`tutti`, `tutti-export`, the root), CLAUDE.md
+(the workspace table, and a dead-names entry mapping every removed export name
+to its successor), doc 015 §4.3 (a note that the request it describes is
+doc 019's `Bounce`), doc 016's note on the render mode, and the comments and
+manifests that named a removed API now name the current one. Where this differs
+from the text above:
+
+- **`tutti-export` re-exports no other crate's type** (section 5.1's last row):
+  `Format`, `Pcm`, `IntDepth`, `FlacLevel`, `Quality`, `ChannelLayout`,
+  `RenderClock` and `FrozenClock` are gone from its root, every caller names the
+  owner (`tutti_codec`, `tutti_types`, `tutti_transport`), `tutti-session`'s
+  `export` feature depends on `tutti-codec` for `Bounce::format`, and the
+  `tutti` umbrella's `export` feature implies `codec`.
+- **`Written::frames`** is a public field (the type's fields are public, as
+  built in step 1, not the private fields and getters of section 4): the frames
+  the encoder was given, at the file's rate. It is counted in the pipeline's
+  encoder sink, not derived from the plan, so it is what the file holds whatever
+  the resampler flushed.
+- **`Unmeasurable` has `output: Option<usize>`**: the index of the output
+  whose audio could not be read, `None` for planes measured on their own
+  (`Normalize::gain_for_rendered`), which belong to none. `Unmeasured::Format`
+  stays a reason beside the channels and rate (the section's "fold it into the
+  width and rate of the output it names" is not done: the width and rate are what
+  the error says and `output` says whose they are).
+- **The resampled length and the frame limit are asked of their owners.**
+  `StreamingResampler::converts(source, target)` decides whether a stream
+  needs a converter (the whole-Hz comparison, formerly `whole_hz` in export),
+  and `StreamingResampler::output_frames` states the stream's total length, the
+  one rounding its own budget uses. `Encoder::create_file_planned(spec, path,
+  frames)` refuses a count past `Format::max_frames` with the codec's own
+  `Error::WavTooLarge` before the temporary exists. `planned_frames`, `whole_hz`
+  and `check_fits` are gone from export, which passes numbers and builds no
+  error. The planned count is now the resampler's exact length (it was a
+  rounded-up upper bound).
+- **`check-adapter.sh`'s exceptions** both belong to `bevy-tutti` (the MIDI
+  device poll's clock read, doc 017, and the plugin load admission's limit
+  const), neither reason is gone and the scans that read them are skipped while
+  it is parked, so none is dropped. The deny list names `Session::bounce`.
+- **Left for later, not done here:** step 7; `FrameSource` and `pump_blocks`
+  (doc 025 section 5.4 decided they stay private); `Written`'s private fields
+  and getters; folding `Unmeasured::Format` into the output's width and rate.
 
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;

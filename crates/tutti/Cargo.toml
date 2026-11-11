@@ -151,7 +151,7 @@ audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
 # AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
 # Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
 # with `export` alone reaches no C.
-export = ["dep:tutti-export", "tutti-export/wav", "tutti-session?/export"]
+export = ["dep:tutti-export", "codec", "tutti-export/wav", "tutti-session?/export"]
 export-wav = ["export"]
 export-flac = ["export", "tutti-export/flac", "tutti-session?/export-flac"]
 export-aiff = ["export", "tutti-export/aiff", "tutti-session?/export-aiff"]

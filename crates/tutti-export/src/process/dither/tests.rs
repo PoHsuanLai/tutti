@@ -1,6 +1,7 @@
 use super::*;
-use crate::{ChannelLayout, Format, Pcm, Quality};
+use tutti_codec::{Format, Pcm, Quality};
 use tutti_dsp::DitherShape;
+use tutti_types::ChannelLayout;
 
 fn config(dither: Option<DitherShape>, format: Format) -> FileTarget {
     FileTarget::new("unused.wav", format, ChannelLayout::STEREO).with_dither(dither)

@@ -44,6 +44,12 @@ umbrellas (`tutti`, `bevy-tutti`, `tutti-session`) forward them as `export-wav`,
 `export-flac`, `export-aiff` and `export-ogg`; their `export` feature implies
 `export-wav` only, so `export-ogg` is the one path to C.
 
+This crate re-exports no other crate's type: a `Format` or `Pcm` is
+`tutti_codec`'s, a `ChannelLayout` is `tutti_types`', and the clocks (`RenderClock`,
+`FrozenClock`) are `tutti_transport`'s. Each figure it needs of one of them it asks
+that crate for: the frames a file can hold of the encoder, the length of a resampled
+stream of the resampler.
+
 What a render is and where it goes are values of this crate (`Job`, the
 targets); a project's bounce, whose figures are derived from a session, is
 `tutti-session`'s `Bounce`, and this crate is the pipeline it drives.
@@ -85,10 +91,9 @@ forks it and assembles the fork (`tutti-session` does both).
 ```rust
 use tutti_transport::FrozenClock;
 use tutti_types::{Hz, SampleRate, Samples, Seconds};
-use tutti_export::{
-    render, render_one, BufferTarget, ChannelLayout, Control, FileTarget, FlacLevel, Format,
-    IntDepth, Job, Output, Pcm, Produced, RenderGraph, Setup,
-};
+use tutti_export::{render, render_one, BufferTarget, Control, FileTarget, Job, Output, Produced, RenderGraph, Setup};
+use tutti_types::ChannelLayout;
+use tutti_codec::{FlacLevel, Format, IntDepth, Pcm};
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
 

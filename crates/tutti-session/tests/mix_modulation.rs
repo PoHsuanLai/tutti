@@ -28,7 +28,7 @@ struct Halve;
 
 impl Node for Halve {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -205,8 +205,8 @@ struct Spread;
 impl Node for Spread {
     fn shape(&self) -> Shape {
         Shape::buses(
-            tutti_graph::Buses::discrete(ChannelLayout::MONO),
-            tutti_graph::Buses::discrete(ChannelLayout::STEREO),
+            tutti_graph::Buses::unassigned(ChannelLayout::MONO),
+            tutti_graph::Buses::unassigned(ChannelLayout::STEREO),
         )
     }
     fn prepare(&mut self, _: &Prepare) {}

@@ -17,7 +17,7 @@ struct Play {
 
 impl Node for Play {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::STEREO)
+        Shape::source_unassigned(ChannelLayout::STEREO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

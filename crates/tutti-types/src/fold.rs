@@ -44,10 +44,10 @@ pub enum FoldError {
         /// The repeated speaker.
         speaker: Speaker,
     },
-    /// A discrete side meets another at a different width. The only rule is a
+    /// An unassigned side meets another at a different width. The only rule is a
     /// one to one relabelling of equal widths; by index is
     /// [`Fold::by_index`], asked for by name.
-    Discrete {
+    Unassigned {
         /// The source width.
         src: ChannelLayout,
         /// The destination width.
@@ -88,9 +88,9 @@ impl core::fmt::Display for FoldError {
             Self::Duplicate { end, speaker } => {
                 write!(f, "{end:?} feeds {speaker:?} from two channels")
             }
-            Self::Discrete { src, dst } => write!(
+            Self::Unassigned { src, dst } => write!(
                 f,
-                "cannot fold {src:?} into {dst:?}: discrete channels only relabel at equal width"
+                "cannot fold {src:?} into {dst:?}: unassigned channels only relabel at equal width"
             ),
             Self::NoSmpteOrder(layout) => write!(f, "{layout:?} has no SMPTE order"),
             Self::NoSuchChannel { channel, width } => {
@@ -308,16 +308,16 @@ impl Row {
 ///   `0.212`), as before.
 /// - **Upmix zero-fills.** A destination speaker nothing feeds is silent;
 ///   nothing is invented.
-/// - **Discrete channels** never pass through a surround matrix, and are
-///   never padded or dropped by a guess. A discrete side against any other at
+/// - **Unassigned channels** never pass through a surround matrix, and are
+///   never padded or dropped by a guess. An unassigned side against any other at
 ///   the same width is a relabelling, channel `i` to channel `i`; at another
-///   width it is [`FoldError::Discrete`], since a channel that names no
+///   width it is [`FoldError::Unassigned`], since a channel that names no
 ///   speaker says nothing about where it goes. An edge that wants channels by
 ///   index says so: [`Fold::by_index`] widens and zero-fills, [`Fold::select`]
 ///   chooses, and [`Fold::to_width`] and [`Fold::widths`] serve an edge that
 ///   knows only a width (a device, a file).
 ///   B-format is not speaker feeds and has no [`Speaker`]: an edge that has it
-///   declares it discrete, never quad.
+///   declares it unassigned, never quad.
 /// - **Not silent.** A source channel the destination has no place for is
 ///   [`FoldError::Unplaced`]; an [`Unknown`](Speaker::Unknown) speaker is
 ///   [`FoldError::Unnamed`] (unless the two topologies are identical, which is
@@ -419,7 +419,7 @@ const fn fallbacks(missing: Speaker) -> &'static [&'static [Speaker]] {
             &[SideLeft, SideRight],
             &[FrontLeft, FrontRight],
         ],
-        FrontLeft | FrontRight | LowFrequency | Unknown(_) | Discrete => &[],
+        FrontLeft | FrontRight | LowFrequency | Unknown(_) | Unassigned => &[],
     }
 }
 
@@ -547,7 +547,7 @@ fn expr(src: &[Speaker], hits: &[Hit], j: usize) -> Expr {
 fn first_duplicate(of: &[Speaker]) -> Option<Speaker> {
     of.iter()
         .enumerate()
-        .find(|&(i, sp)| !sp.is_discrete() && of[..i].contains(sp))
+        .find(|&(i, sp)| !sp.is_unassigned() && of[..i].contains(sp))
         .map(|(_, &sp)| sp)
 }
 
@@ -570,8 +570,8 @@ impl Fold {
             (0..s.len())
                 .map(|i| Row::One(Expr::Copy(narrow(i))))
                 .collect()
-        } else if dst.is_discrete() || s.iter().any(|p| p.is_discrete()) {
-            Self::discrete(src, dst)?
+        } else if dst.is_unassigned() || s.iter().any(|p| p.is_unassigned()) {
+            Self::unassigned(src, dst)?
         } else {
             for (end, side) in [(FoldEnd::Source, s), (FoldEnd::Destination, d)] {
                 if let Some(channel) = side.iter().position(|p| matches!(p, Speaker::Unknown(_))) {
@@ -616,7 +616,7 @@ impl Fold {
     /// a wider destination is zero-filled. A destination narrower than the
     /// source would have to drop channels, and a channel that cannot be placed
     /// is an error, never a silent drop: that is [`FoldError::Unplaced`] (the
-    /// first channel with no place, carrying [`Speaker::Discrete`] since a
+    /// first channel with no place, carrying [`Speaker::Unassigned`] since a
     /// width names no speaker). A caller who chooses to truncate says so with
     /// [`select`](Self::select).
     ///
@@ -634,7 +634,7 @@ impl Fold {
         if s > d {
             return Err(FoldError::Unplaced {
                 channel: usize::from(d),
-                speaker: Speaker::Discrete,
+                speaker: Speaker::Unassigned,
             });
         }
         let rows = (0..d)
@@ -653,7 +653,7 @@ impl Fold {
     /// - a source with an [`Unknown`](Speaker::Unknown) channel (a second LFE,
     ///   a wide or high speaker) is [`FoldError::Unnamed`], whatever the
     ///   destination: nothing can be said about where it goes;
-    /// - a [`Discrete`](Speaker::Discrete) source is a bare count, and is read
+    /// - a [`Unassigned`](Speaker::Unassigned) source is a bare count, and is read
     ///   in the engine's order for it where it has one (a stereo-or-wider file
     ///   whose container states nothing; a quad);
     /// - where both ends have an order, [`between`](Self::between);
@@ -676,7 +676,7 @@ impl Fold {
                 channel,
             });
         }
-        let from = if src.is_discrete() {
+        let from = if src.is_unassigned() {
             ChannelTopology::assumed(src.layout())
         } else {
             Some(src.clone())
@@ -691,7 +691,7 @@ impl Fold {
     /// graph root whose topology was declared, against a device or file of
     /// which only the width is known.
     ///
-    /// The difference from `to_width` is the all-[`Discrete`](Speaker::Discrete)
+    /// The difference from `to_width` is the all-[`Unassigned`](Speaker::Unassigned)
     /// source. There it is a bare count and is read in the engine's order for
     /// its width (a quad at 4); here the caller *declared* the channels to be
     /// independent buses, so they are placed by index
@@ -702,9 +702,9 @@ impl Fold {
     /// # Errors
     ///
     /// As [`to_width`](Self::to_width), and [`FoldError::Unplaced`] for a
-    /// discrete source wider than `dst`.
+    /// unassigned source wider than `dst`.
     pub fn declared(src: &ChannelTopology, dst: ChannelLayout) -> Result<Self, FoldError> {
-        if src.is_discrete() {
+        if src.is_unassigned() {
             Self::by_index(src.layout(), dst)
         } else {
             Self::to_width(src, dst)
@@ -725,7 +725,7 @@ impl Fold {
         Self::to_width(&ChannelTopology::for_width(src), dst)
     }
 
-    /// Chooses source channels for a discrete destination: destination channel
+    /// Chooses source channels for an unassigned destination: destination channel
     /// `i` is source channel `channels[i]`, gain 1.0, bit-exact. A channel may
     /// be chosen twice (one input to both sides); the rest are not read.
     ///
@@ -769,11 +769,11 @@ impl Fold {
         })
     }
 
-    /// A discrete side relabels at equal width, channel `i` to channel `i`,
+    /// An unassigned side relabels at equal width, channel `i` to channel `i`,
     /// and is refused at any other.
-    fn discrete(src: &ChannelTopology, dst: &ChannelTopology) -> Result<Box<[Row]>, FoldError> {
+    fn unassigned(src: &ChannelTopology, dst: &ChannelTopology) -> Result<Box<[Row]>, FoldError> {
         if src.layout() != dst.layout() {
-            return Err(FoldError::Discrete {
+            return Err(FoldError::Unassigned {
                 src: src.layout(),
                 dst: dst.layout(),
             });

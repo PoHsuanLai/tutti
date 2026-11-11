@@ -700,7 +700,7 @@ impl Place {
         }
         // A fold that is not the identity reads at most the widest named
         // source: a wider source than `MAX_WAVE_CHANNELS` would need more
-        // distinct speakers than there are, and a discrete one only widens.
+        // distinct speakers than there are, and an unassigned one only widens.
         debug_assert!(usize::from(fold.src_layout().count()) <= MAX_WAVE_CHANNELS);
         Ok(Self::Folded(fold))
     }
@@ -1281,7 +1281,7 @@ mod tests {
                 .err(),
             Some(PlaceError::Fold(FoldError::Unplaced {
                 channel: 5,
-                speaker: tutti_types::Speaker::Discrete
+                speaker: tutti_types::Speaker::Unassigned
             }))
         );
         assert!(

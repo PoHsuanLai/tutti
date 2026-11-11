@@ -209,8 +209,8 @@ fn shapes_of_spec(t: &Topology) -> Shapes {
             (
                 k,
                 Shape::buses(
-                    tutti_graph::Buses::discrete(s.inputs),
-                    tutti_graph::Buses::discrete(s.outputs),
+                    tutti_graph::Buses::unassigned(s.inputs),
+                    tutti_graph::Buses::unassigned(s.outputs),
                 )
                 .with_latency(Latency::new(s.latency))
                 .with_tail(s.tail),
@@ -321,10 +321,10 @@ fn ties_break_by_key_across_edge_kinds() {
     let shapes: Shapes = [
         (
             x,
-            Shape::source_discrete(ChannelLayout::MONO).with_events(0, 1),
+            Shape::source_unassigned(ChannelLayout::MONO).with_events(0, 1),
         ),
         (a, Shape::EMPTY.with_events(1, 0)),
-        (b, Shape::through_discrete(ChannelLayout::MONO)),
+        (b, Shape::through_unassigned(ChannelLayout::MONO)),
     ]
     .into();
     let plan = compile(
@@ -493,7 +493,7 @@ fn gain_kinds(keys: &[NodeKey]) -> Shapes {
         .map(|&k| {
             (
                 k,
-                Shape::through_discrete(ChannelLayout::MONO).with_events(1, 1),
+                Shape::through_unassigned(ChannelLayout::MONO).with_events(1, 1),
             )
         })
         .collect()
@@ -623,8 +623,8 @@ fn shape_disagreements_are_errors() {
     shapes.insert(
         A,
         Shape::buses(
-            tutti_graph::Buses::discrete(ChannelLayout::STEREO),
-            tutti_graph::Buses::discrete(ChannelLayout::MONO),
+            tutti_graph::Buses::unassigned(ChannelLayout::STEREO),
+            tutti_graph::Buses::unassigned(ChannelLayout::MONO),
         ),
     );
     assert!(matches!(
@@ -655,7 +655,7 @@ fn shape_disagreements_are_errors() {
     let mut t = Topology::default();
     t.nodes.insert(A, spec("wide", 0, 65));
     let valid = GraphSpec::new(t).validate().unwrap();
-    let shapes: Shapes = [(A, Shape::source_discrete(ChannelLayout::from_count(65)))].into();
+    let shapes: Shapes = [(A, Shape::source_unassigned(ChannelLayout::from_count(65)))].into();
     assert_eq!(
         compile(&valid, &shapes, &common::prepare(PREP), None).unwrap_err(),
         CompileError::TooManyPorts { node: A, count: 65 }
@@ -737,10 +737,10 @@ fn in_place_spec(ports_read_twice: bool) -> (GraphSpec, Shapes) {
     }
     t.set_outputs(vec![Source::Node(out(B, 0)), Source::Node(out(B, 1))]);
     let shapes: Shapes = [
-        (A, Shape::source_discrete(ChannelLayout::MONO)),
+        (A, Shape::source_unassigned(ChannelLayout::MONO)),
         (
             B,
-            Shape::through_discrete(ChannelLayout::STEREO).with_in_place(),
+            Shape::through_unassigned(ChannelLayout::STEREO).with_in_place(),
         ),
     ]
     .into();
@@ -779,7 +779,7 @@ fn in_place_aliasing_happens_exactly_when_legal() {
 
     // Not opted in: never aliased.
     let (g, mut shapes) = in_place_spec(false);
-    shapes.insert(B, Shape::through_discrete(ChannelLayout::STEREO));
+    shapes.insert(B, Shape::through_unassigned(ChannelLayout::STEREO));
     let plan = compile(
         &g.validate().unwrap(),
         &shapes,
@@ -796,7 +796,7 @@ fn in_place_aliasing_happens_exactly_when_legal() {
     g.topology.nodes.insert(C, spec("gain", 1, 1));
     edge(&mut g.topology, at(C, 0), out(A, 0));
     g.topology.outputs.push(vec![Source::Node(out(C, 0))]);
-    shapes.insert(C, Shape::through_discrete(ChannelLayout::MONO));
+    shapes.insert(C, Shape::through_unassigned(ChannelLayout::MONO));
     let plan = compile(
         &g.validate().unwrap(),
         &shapes,
@@ -982,7 +982,7 @@ fn an_event_source_counts_toward_arrival_in_both_solves() {
     );
     shapes.insert(
         C,
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_tail(Tail::None)
             .with_events(1, 0),
     );
@@ -1036,7 +1036,7 @@ fn a_shape_disagreeing_on_latency_or_tail_is_refused() {
     let valid = GraphSpec::new(t).validate().unwrap();
     let late: Shapes = [(
         A,
-        Shape::through_discrete(ChannelLayout::MONO).with_latency(Latency::new(Samples(12))),
+        Shape::through_unassigned(ChannelLayout::MONO).with_latency(Latency::new(Samples(12))),
     )]
     .into();
     assert!(matches!(
@@ -1045,7 +1045,7 @@ fn a_shape_disagreeing_on_latency_or_tail_is_refused() {
     ));
     let tailed: Shapes = [(
         A,
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_latency(Latency::new(Samples(10)))
             .with_tail(Tail::Unbounded),
     )]
@@ -1072,7 +1072,7 @@ fn automation_into(
     if let Some(r) = required {
         g.require_resolution(target, lane, r);
     }
-    let mono = || Shape::through_discrete(ChannelLayout::MONO);
+    let mono = || Shape::through_unassigned(ChannelLayout::MONO);
     let shapes: Shapes = [
         (A, mono().with_events(0, 1)),
         (B, mono().with_events(1, 0).with_event_resolution(sink)),
@@ -1133,7 +1133,7 @@ fn a_resolution_mark_without_its_edge_is_invalid() {
 #[test]
 fn nodes_default_to_sample_resolution() {
     use tutti_graph::Resolution;
-    let s = Shape::through_discrete(ChannelLayout::MONO);
+    let s = Shape::through_unassigned(ChannelLayout::MONO);
     assert_eq!(s.event_resolution, Resolution::Sample);
 }
 
@@ -1208,7 +1208,7 @@ fn disconnecting_an_edge_drops_its_resolution_mark() {
     g.connect_events(at, EventEdge::Direct(from));
     g.require_resolution(at, from, tutti_graph::Resolution::Sample);
     g.clear_resolution(at, from);
-    let mono = || Shape::through_discrete(ChannelLayout::MONO);
+    let mono = || Shape::through_unassigned(ChannelLayout::MONO);
     let shapes: Shapes = [
         (A, mono().with_events(0, 1)),
         (

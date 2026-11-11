@@ -150,7 +150,7 @@ impl Node for EnvelopeFollowerNode {
     /// with a piece every 32 frames, as the dynamics processors' detectors
     /// cost.
     fn shape(&self) -> Shape {
-        Shape::sink_discrete(self.input)
+        Shape::sink_unassigned(self.input)
             .with_events(0, 1)
             .with_event_capacity(FOLLOWER_EVENT_CAPACITY)
             .with_cost(Cost::Moderate)

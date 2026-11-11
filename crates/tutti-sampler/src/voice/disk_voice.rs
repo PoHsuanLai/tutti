@@ -857,7 +857,7 @@ impl DiskVoice {
 impl Node for DiskVoice {
     /// No inputs, the file's width out; a generator, never skipped.
     fn shape(&self) -> Shape {
-        Shape::source_discrete(self.inner.channels())
+        Shape::source_unassigned(self.inner.channels())
             .with_tail(Tail::Unbounded)
             // A `DiskSource`'s read, placed on the transport as a memory
             // voice is: `Moderate` for the same reason.

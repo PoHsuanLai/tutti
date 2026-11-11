@@ -1499,7 +1499,7 @@ mod tests {
 
     impl tutti_graph::Node for Ramp {
         fn shape(&self) -> tutti_graph::Shape {
-            tutti_graph::Shape::source_discrete(tutti_types::ChannelLayout::from_count(self.0))
+            tutti_graph::Shape::source_unassigned(tutti_types::ChannelLayout::from_count(self.0))
                 .with_tail(tutti_types::Tail::Unbounded)
         }
         fn prepare(&mut self, _: &Prepare) {}
@@ -1694,7 +1694,7 @@ mod tests {
     /// `declare_root` keeping the declaration when given `None` fails the
     /// last row.
     #[test]
-    fn a_declared_discrete_root_keeps_its_channels_by_index() {
+    fn a_declared_unassigned_root_keeps_its_channels_by_index() {
         let transport = Transport::new(SampleRate::new(48_000.0));
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
@@ -1706,7 +1706,7 @@ mod tests {
 
         let control = engine.output_control();
         control
-            .declare_root(Some(ChannelTopology::discrete(ChannelLayout::QUAD)), six)
+            .declare_root(Some(ChannelTopology::unassigned(ChannelLayout::QUAD)), six)
             .expect("buses place by index");
         assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 43.0, 44.0, 0.0, 0.0]);
 
@@ -1778,7 +1778,7 @@ mod tests {
         let control = engine.output_control();
         let by_index = [41.0, 42.0, 43.0, 44.0, 0.0, 0.0, 0.0, 0.0];
         for root in [
-            ChannelTopology::discrete(ChannelLayout::QUAD),
+            ChannelTopology::unassigned(ChannelLayout::QUAD),
             ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap(),
             ChannelTopology::smpte(eight).unwrap(),
         ] {
@@ -1813,7 +1813,7 @@ mod tests {
         let loan = reader.lend();
         control
             .declare_root(
-                Some(ChannelTopology::discrete(ChannelLayout::QUAD)),
+                Some(ChannelTopology::unassigned(ChannelLayout::QUAD)),
                 ChannelLayout::from(6u16),
             )
             .unwrap();
@@ -1839,12 +1839,12 @@ mod tests {
         let control = engine.output_control();
         assert_eq!(
             control.declare_root(
-                Some(ChannelTopology::discrete(ChannelLayout::QUAD)),
+                Some(ChannelTopology::unassigned(ChannelLayout::QUAD)),
                 ChannelLayout::STEREO
             ),
             Err(FoldError::Unplaced {
                 channel: 2,
-                speaker: tutti_types::Speaker::Discrete
+                speaker: tutti_types::Speaker::Unassigned
             })
         );
         let lfe2 = ChannelTopology::new([

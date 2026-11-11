@@ -58,7 +58,7 @@ already measured.
   time-varying, a linear parameter-varying system along a known trajectory `theta(t)`; (3) memoryless nonlinear, a
   static map; (4) stateful nonlinear, a composition of (3) with (1)/(2); (5)
   autonomous generators; (6) multirate or time-scale. Plus measurements
-  (functionals) and event or discrete logic.
+  (functionals) and event or unassigned logic.
 - **Inventory (section 3): 54 rows, sorted by class. 24 fit, 14 fit in part, 16
   do not.** The verdicts follow from the class: a row fits when its whole
   behaviour is one class (or a composition of them) whose queries are exact for
@@ -189,7 +189,7 @@ autonomous**. They give six processor classes and two that are not processors.
 | **5. Autonomous generators** | any, driven by a phase or an event, then autonomous | `f(phi(t))`, a segment list, or a stochastic process | the period or frequency, the harmonic spectrum, the segment durations, the range, a noise variance or spectrum | oscillators, LFOs, envelopes, noise, dither's noise, the click's waveform |
 | **6. Multirate or time-scale** | linear (resampler) or not (stretch), stateful, **periodically time-varying** with an LTI prototype (LTI under blocking by the period, section 4.2) | a ratio, an LTI prototype (the resampler's windowed-sinc low-pass), a time-varying read | the ratio, the prototype's response, the latency, the duration ratio | the FFT resampler, the stretch unit, the sampler's playback read |
 | **M. Measurements** | a functional of a signal, not a processor | a config and an analyser | a resolution (`fs/N`), a latency | `analysis/` |
-| **E. Event or discrete logic** | not a signal map | a state machine over events | transitions | voice allocation, the gate's hold timer, the click's trigger, lanes as data |
+| **E. Event or unassigned logic** | not a signal map | a state machine over events | transitions | voice allocation, the gate's hold timer, the click's trigger, lanes as data |
 
 Two consequences used throughout.
 
@@ -335,7 +335,7 @@ One row per algorithm, sorted by **class** (section 2.2); the **Class** column i
 the primary class of the algorithm's own behaviour at a frozen setting, with "(2)"
 where a moving control makes it class 2, "(1 lin.)" for class 1 only once
 linearised, "(comp.)" for a composite, "P" for a primitive or infrastructure, "M"
-for a measurement and "E" for event or discrete logic. **Realization today** says what
+for a measurement and "E" for event or unassigned logic. **Realization today** says what
 runs now and whether its controls are already typed units (`Param<Hz>` and the
 like, per CLAUDE.md "Unit types").
 
@@ -350,7 +350,7 @@ like, per CLAUDE.md "Unit types").
   `Effect<M>`, a model that is data, or a layering that blocks the trait. The row
   says which piece.
 - **No** when the algorithm is not a processor of a signal by a class: a
-  measurement (M), event or discrete logic (E), or a primitive below the shape
+  measurement (M), event or unassigned logic (E), or a primitive below the shape
   (P).
 
 ### 3.1 Tutti-dsp: filters, dynamics, time-based
@@ -362,7 +362,7 @@ like, per CLAUDE.md "Unit types").
 | 3 | 1 (2) | **Linkwitz-Riley crossover**, 2 to 6 bands (`filter/crossover.rs`, `CrossoverNode`) | `Crossover::split_block`; design and state fused in one struct (`set_frequency` re-solves). Typed: `Hz` | **Fits** | Design: `(frequencies, rate)` to per-split `Split` coefficients (already a private type). Multi-output `frequency_response` (`outputs() = bands`): LP/HP at `fc` are -6.02 dB and in phase, the bands sum to unity magnitude (the file's own header states it), and the sum is the Butterworth all-pass. Stability, `tail`, `latency` zero. Needs design and state separated, which is the one real refactor |
 | 4 | P | `Real` float trait (`filter/real.rs`) | `f32`/`f64` | **No** | A numeric abstraction below the shape. A realization generic over `F: Real` is still one realization |
 | 5 | 4 | **Compressor** (`dynamics/compressor.rs`, `curves.rs`; `CompressorNode`) | `CompressorKernel` (envelope + `EnvelopeFollower`), `CompressorBlock { threshold, knee, ratio, makeup_from, makeup_to }`. Typed: `Db`, `CompressionRatio`, `Seconds` | **Fits** | Design: `(threshold, knee, ratio, makeup, attack, release, rate)` to `GainControl<Wiener<Follower, GainMap>>` (section 4.9): a follower (`Lti`, one pole per direction) then the gain map (`Memoryless`, memoryless) multiplying the input. Queries: `SteadyState` (the gain map seen through the follower's DC gain; the map is `compute_compressor_gain_reduction`, `In = Db`, `Out = Db`: zero below `threshold - knee/2`, the quadratic over the knee, slope `1 - 1/ratio` above), time constants (step response reaches 63% in `attack`), `tail` zero (silent in, silent out; the node declares no tail, `compressor.rs` line 443), `latency` zero. `Readout`: `CompressorKernel::gain_reduction_db` exists |
-| 6 | 4 + E | **Gate** (`dynamics/gate.rs`; `GateNode`) | `GateKernel`, `GateEnvelopeFollower`, `GateBlock`. Typed: `Db`, `Seconds` | **Partly** | Class 4 plus event logic. Fits: the settled curve is a step (`gate_gain_at`: range below the threshold, unity above), so `Memoryless` is degenerate; attack and release are the smoother's time constants; `Readout`: `is_open`/`gate_level` exist. Does not: the **hold** is a timer (`GateEnvelopeFollower::step(gate_open: bool)`), a discrete state machine (class E) that no `Lti` or `Memoryless` query describes; it is an inherent query |
+| 6 | 4 + E | **Gate** (`dynamics/gate.rs`; `GateNode`) | `GateKernel`, `GateEnvelopeFollower`, `GateBlock`. Typed: `Db`, `Seconds` | **Partly** | Class 4 plus event logic. Fits: the settled curve is a step (`gate_gain_at`: range below the threshold, unity above), so `Memoryless` is degenerate; attack and release are the smoother's time constants; `Readout`: `is_open`/`gate_level` exist. Does not: the **hold** is a timer (`GateEnvelopeFollower::step(gate_open: bool)`), an unassigned state machine (class E) that no `Lti` or `Memoryless` query describes; it is an inherent query |
 | 7 | 4 | **Lookahead limiter** (`dynamics/limiter.rs`, `curves.rs`; `LimiterNode`) | `LookaheadRing`, `MonotonicMinDeque` for the window minimum, `LimiterCurve`. The per-frame recursion (linked peak, curve gain, instant attack, `smooth_envelope` release, `push_gain`) is in the node, `tutti-nodes/src/dynamics/limiter.rs` `process` (~362-440), where the compressor and gate already have dsp kernels (`CompressorKernel`, `GateKernel`). Typed: `Db`, `Seconds` | **Partly** | Class 4 with a delay and a windowed minimum. Fits: `Memoryless` (`LimiterCurve::gain`: gain `ceiling - threshold` up to the threshold, `ceiling/peak` past it, so output `<= ceiling`), `latency` = the lookahead (the node declares it, `limiter.rs` line 340), `tail` zero, `Readout` gain reduction. Does not: the detector is a sliding-window minimum (`MonotonicMinDeque`), a nonlinear operator that is not an LTI smoother, so the Wiener decomposition holds for steady input only and the attack is the lookahead by construction The recursion is the one part of a dynamics family not yet a pure algorithm over slices, which CLAUDE.md puts in `tutti-dsp`: a `LimiterKernel` takes it there (section 9, consolidation 9), and the node keeps the `Param` and lane reads, as `CompressorNode` does |
 | 8 | 3 | **Brickwall clip** (`limiter.rs` `brickwall_clip`; `BrickwallLimiterNode`) | one `clamp` | **Fits** | A memoryless `Memoryless` over amplitude (`In = Out = f32`), `latency` and `tail` zero. Trivial, and the same trait as the waveshaper (row 17) |
 | 9 | 4 (comp.) | **Multiband compressor** (`MultibandCompressorNode`) | crossover plus a `CompressorKernel` per band | **Partly** | A composite: `Series<Crossover, bands>` of the crossover model (row 3) and one compressor model per band (section 4.9). Per-band `Memoryless` and `Readout` (`gain_reduction_db(band)` exists). The summed `frequency_response` is not a single model query (it is signal dependent). Fits as a model that holds sub-models |
@@ -475,7 +475,7 @@ with nothing to design. The survey rows (46 to 54, section 3.5) add three Fits (
 | 5. Autonomous generators | 19, 25, 26, 27, 34, 35, 38, 39, 51 | 9 | `Autonomous`, `Periodic`, `Piecewise`, `Noise` | oscillators, LFOs, envelopes, noise, click waveform |
 | 6. Multirate, time-scale | 18, 41, 42, 47 | 4 | per-family; the prototype is an `Lti` | own realization shape |
 | M. Measurements | 23, 50 | 2 | none | `Readout`-like results |
-| E. Event or discrete logic | 29, 33, 37, 43, 49 | 5 | none | the gate's hold and the click's trigger are class E inside rows 6 and 27; row 49 is the engine's gain plan |
+| E. Event or unassigned logic | 29, 33, 37, 43, 49 | 5 | none | the gate's hold and the click's trigger are class E inside rows 6 and 27; row 49 is the engine's gain plan |
 | P. Primitives and infrastructure | 4, 14, 20, 21, 22, 24, 28, 54 | 8 | none | below or beside the shape |
 
 (Row 36 is counted in class 1 for its portamento, which the survey shows is a
@@ -486,7 +486,7 @@ signal. Rows total 54.)
 The 16 "no" rows are of four kinds, and the kind says what to do with them. Eight
 are **primitives or infrastructure** (4, 14, 20, 21, 22, 24, 28, 54): they sit below
 or beside the shape and need nothing. Two are **measurements** (23, 50). Five are
-**event or discrete logic** (29, 33, 37, 43, 49): a state machine, a plan or user
+**event or unassigned logic** (29, 33, 37, 43, 49): a state machine, a plan or user
 data, with a pure step of its own where one exists (`tutti-voicing`). One is a
 **duplicate scheduled for deletion** (53). None is "no" because the shape bends to
 it.

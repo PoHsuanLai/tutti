@@ -372,7 +372,7 @@ pub struct TransportState {
 
 /// How many transport requests the host queues before evicting the oldest.
 ///
-/// A transport request is a discrete sequencer- or user-scale intent — roll,
+/// A transport request is an unassigned sequencer- or user-scale intent — roll,
 /// stop, jump — not a per-block stream, so this is already far past what a
 /// well-behaved plugin emits between two host polls. The capacity exists to
 /// bound a plugin that is misbehaving, or a host that never drains at all.

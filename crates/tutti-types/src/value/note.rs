@@ -253,7 +253,7 @@ impl Note {
 
     /// Returns the note a whole number of semitones away. Fractional input is
     /// truncated —
-    /// a note is a discrete pitch, so use [`frequency`](Self::frequency) and
+    /// a note is an unassigned pitch, so use [`frequency`](Self::frequency) and
     /// detune from there when you want the space between two notes.
     #[inline]
     #[must_use]

@@ -107,10 +107,10 @@ pub enum Speaker {
     /// channel of a multitrack file, an effect's numbered output. It is
     /// *known* to be unplaced, which is what separates it from
     /// [`Unknown`](Self::Unknown) (a position the format named and this
-    /// vocabulary cannot). A fold maps discrete channels one to one by index
+    /// vocabulary cannot). A fold maps unassigned channels one to one by index
     /// and never passes them through a surround matrix. Declared last so the
     /// wire index of every other variant is unchanged.
-    Discrete,
+    Unassigned,
 }
 
 impl Speaker {
@@ -126,10 +126,10 @@ impl Speaker {
     }
 
     /// Returns whether this channel is deliberately speaker-less
-    /// ([`Discrete`](Self::Discrete)).
+    /// ([`Unassigned`](Self::Unassigned)).
     #[must_use]
-    pub const fn is_discrete(self) -> bool {
-        matches!(self, Self::Discrete)
+    pub const fn is_unassigned(self) -> bool {
+        matches!(self, Self::Unassigned)
     }
 
     /// Returns the surround speaker this one is exchanged with: side for back
@@ -178,7 +178,7 @@ impl Speaker {
 /// are: 4 is quad or B-format, 6 is 5.1 or six interface inputs, 12 is 7.1.4
 /// or twelve tracks. Only an edge knows, so an edge states a topology:
 /// [`smpte`](Self::smpte) when the width really is the engine's own order,
-/// [`quad`](Self::quad) for four speaker feeds, [`discrete`](Self::discrete)
+/// [`quad`](Self::quad) for four speaker feeds, [`unassigned`](Self::unassigned)
 /// for channels that feed no speaker. [`Fold::between`](crate::Fold::between)
 /// is the one place two topologies meet.
 ///
@@ -257,7 +257,7 @@ impl ChannelTopology {
     ///
     /// A caller that intends to *route* by speaker needs this: an
     /// [`Unknown`](Speaker::Unknown) channel keeps its slot, but nothing can be
-    /// said about where it should go. A [`Discrete`](Speaker::Discrete) channel
+    /// said about where it should go. A [`Unassigned`](Speaker::Unassigned) channel
     /// counts as named: it is known to feed no speaker. The plugin hosts decode
     /// only named speakers and `Unknown`, so their use of this is unchanged.
     #[must_use]
@@ -342,13 +342,13 @@ impl ChannelTopology {
     }
 
     /// Returns what a bare width of `layout` channels feeds: [`assumed`](Self::assumed)
-    /// where it has an order, and [`discrete`](Self::discrete) channels where
+    /// where it has an order, and [`unassigned`](Self::unassigned) channels where
     /// it has none.
     ///
     /// The one answer for the edges that know only a count (a graph root, a
     /// device, an export file, a decoded file read at its own width).
     pub fn for_width(layout: ChannelLayout) -> Self {
-        Self::assumed(layout).unwrap_or_else(|| Self::discrete(layout))
+        Self::assumed(layout).unwrap_or_else(|| Self::unassigned(layout))
     }
 
     /// Returns the quad topology, `FL FR BL BR`: four speaker feeds.
@@ -375,18 +375,18 @@ impl ChannelTopology {
     /// For an edge whose channels are numbered rather than placed (a 16-input
     /// interface, a multitrack file, B-format, which is not speaker feeds
     /// either). A fold maps them one to one and never through a surround matrix.
-    pub fn discrete(width: ChannelLayout) -> Self {
+    pub fn unassigned(width: ChannelLayout) -> Self {
         Self::new(core::iter::repeat_n(
-            Speaker::Discrete,
+            Speaker::Unassigned,
             usize::from(width.count()),
         ))
     }
 
     /// Returns whether the bus is not empty and every channel is
-    /// [`Discrete`](Speaker::Discrete).
+    /// [`Unassigned`](Speaker::Unassigned).
     #[must_use]
-    pub fn is_discrete(&self) -> bool {
-        !self.positions.is_empty() && self.positions.iter().all(|p| p.is_discrete())
+    pub fn is_unassigned(&self) -> bool {
+        !self.positions.is_empty() && self.positions.iter().all(|p| p.is_unassigned())
     }
 }
 
@@ -494,25 +494,25 @@ mod tests {
         );
     }
 
-    /// Discrete channels are explicit: the right count, named, and not any
+    /// Unassigned channels are explicit: the right count, named, and not any
     /// placed speaker.
     ///
-    /// Mutation (run): `is_discrete` testing `any` instead of `all` fails the
+    /// Mutation (run): `is_unassigned` testing `any` instead of `all` fails the
     /// mixed topology.
     #[test]
-    fn discrete_channels_are_counted_named_and_unplaced() {
-        let d = ChannelTopology::discrete(ChannelLayout::from(6u16));
+    fn unassigned_channels_are_counted_named_and_unplaced() {
+        let d = ChannelTopology::unassigned(ChannelLayout::from(6u16));
         assert_eq!(d.layout().count(), 6);
-        assert!(d.is_discrete() && d.is_fully_named());
+        assert!(d.is_unassigned() && d.is_fully_named());
         assert_eq!(d.index_of(Speaker::FrontCenter), None);
         assert!(
             !ChannelTopology::smpte(ChannelLayout::from(6u16))
                 .unwrap()
-                .is_discrete()
+                .is_unassigned()
         );
-        assert!(!ChannelTopology::discrete(ChannelLayout::EMPTY).is_discrete());
-        assert!(!ChannelTopology::new([Speaker::Discrete, Speaker::Unknown(1)]).is_discrete());
-        assert!(!ChannelTopology::new([Speaker::Discrete, Speaker::Unknown(1)]).is_fully_named());
+        assert!(!ChannelTopology::unassigned(ChannelLayout::EMPTY).is_unassigned());
+        assert!(!ChannelTopology::new([Speaker::Unassigned, Speaker::Unknown(1)]).is_unassigned());
+        assert!(!ChannelTopology::new([Speaker::Unassigned, Speaker::Unknown(1)]).is_fully_named());
     }
 
     /// An unknown position keeps its slot instead of collapsing the list.
@@ -614,18 +614,18 @@ mod tests {
             FrontCenter,
             LowFrequency,
             TopFrontLeft,
-            Discrete,
+            Unassigned,
         ] {
             assert_eq!(sp.counterpart(), None);
         }
     }
 
     /// A bare width is the engine's order where it has one (quad at 4) and
-    /// discrete channels where it has none.
+    /// unassigned channels where it has none.
     ///
-    /// Mutation (run): `for_width` as `smpte` alone -> 4 is discrete and fails.
+    /// Mutation (run): `for_width` as `smpte` alone -> 4 is unassigned and fails.
     #[test]
-    fn a_bare_width_is_assumed_else_discrete() {
+    fn a_bare_width_is_assumed_else_unassigned() {
         assert_eq!(
             ChannelTopology::for_width(ChannelLayout::from(4u16)),
             ChannelTopology::quad()
@@ -637,7 +637,7 @@ mod tests {
         let odd = ChannelLayout::from(3u16);
         assert_eq!(
             ChannelTopology::for_width(odd),
-            ChannelTopology::discrete(odd)
+            ChannelTopology::unassigned(odd)
         );
     }
 }

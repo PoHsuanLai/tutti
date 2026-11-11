@@ -22,7 +22,7 @@ struct Ramp {
 
 impl Node for Ramp {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::from_count(self.width))
+        Shape::source_unassigned(ChannelLayout::from_count(self.width))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

@@ -317,7 +317,7 @@ fn by_index_only_widens() {
             Fold::by_index(w(s), w(d)),
             Err(FoldError::Unplaced {
                 channel: usize::from(d),
-                speaker: Speaker::Discrete
+                speaker: Speaker::Unassigned
             }),
             "{s} -> {d}"
         );
@@ -337,7 +337,7 @@ fn by_index_only_widens() {
 /// there is no order.
 ///
 /// Mutation (run): the `Unknown` check removed lets the LFE2 file through to a
-/// 5-wide destination; reading a discrete 4 as discrete (not quad) makes the
+/// 5-wide destination; reading an unassigned 4 as unassigned (not quad) makes the
 /// stereo row the first two channels.
 #[test]
 fn to_width_refuses_the_unnamed_and_reads_a_count_in_the_engines_order() {
@@ -354,7 +354,7 @@ fn to_width_refuses_the_unnamed_and_reads_a_count_in_the_engines_order() {
         );
     }
     // A bare four is quad.
-    let four = ChannelTopology::discrete(ChannelLayout::QUAD);
+    let four = ChannelTopology::unassigned(ChannelLayout::QUAD);
     let mut out = [0.0f32; 2];
     Fold::to_width(&four, ChannelLayout::STEREO)
         .unwrap()
@@ -524,11 +524,11 @@ fn a_lone_centre_feeds_the_centre() {
     );
 }
 
-/// Discrete channels map one to one and never meet a matrix: they relabel at
+/// Unassigned channels map one to one and never meet a matrix: they relabel at
 /// equal width, and `between` refuses any other width on either side.
 #[test]
-fn discrete_channels_map_one_to_one() {
-    let d = |n: u16| ChannelTopology::discrete(ChannelLayout::from(n));
+fn unassigned_channels_map_one_to_one() {
+    let d = |n: u16| ChannelTopology::unassigned(ChannelLayout::from(n));
     let f = fold(&d(6), &d(6));
     for o in 0..6 {
         let mut want = [0.0; 6];
@@ -540,7 +540,7 @@ fn discrete_channels_map_one_to_one() {
     let refused = |s: ChannelTopology, t: ChannelTopology| {
         assert_eq!(
             Fold::between(&s, &t),
-            Err(FoldError::Discrete {
+            Err(FoldError::Unassigned {
                 src: s.layout(),
                 dst: t.layout()
             })
@@ -1112,7 +1112,7 @@ fn every_fallback_rule_is_pinned() {
     }
 }
 
-/// `select` maps chosen source channels one to one onto a discrete
+/// `select` maps chosen source channels one to one onto an unassigned
 /// destination, bit-exact, and names what is out of range.
 ///
 /// Mutation (run): the `c < src.count()` filter removed lets channel 16 of 16
@@ -1162,16 +1162,16 @@ fn select_refuses_a_list_past_u16() {
     );
 }
 
-/// `declared` places a declared all-`Discrete` source by index (where
+/// `declared` places a declared all-`Unassigned` source by index (where
 /// `to_width` would read a four as quad) and a named one as `to_width` does;
-/// a discrete source wider than the destination is refused.
+/// an unassigned source wider than the destination is refused.
 ///
-/// Mutation (run): `declared` delegating to `to_width` for a discrete source
+/// Mutation (run): `declared` delegating to `to_width` for an unassigned source
 /// puts the quad's rears in the 5.1 destination's side slots (positions 4 and
 /// 5) and zero at 2 and 3, failing the first assertion.
 #[test]
-fn declared_keeps_a_discrete_source_by_index() {
-    let four = ChannelTopology::discrete(ChannelLayout::QUAD);
+fn declared_keeps_a_unassigned_source_by_index() {
+    let four = ChannelTopology::unassigned(ChannelLayout::QUAD);
     let mut out = [9.0f32; 6];
     Fold::declared(&four, ChannelLayout::from(6u16))
         .unwrap()
@@ -1181,7 +1181,7 @@ fn declared_keeps_a_discrete_source_by_index() {
         Fold::declared(&four, ChannelLayout::STEREO),
         Err(FoldError::Unplaced {
             channel: 2,
-            speaker: Speaker::Discrete
+            speaker: Speaker::Unassigned
         })
     );
     // A named source is `to_width`'s.
@@ -1327,7 +1327,7 @@ fn copies_contribute_at_exactly_unity() {
 /// to within a few ulps (the sum order is the one thing that differs, see
 /// `contributions`). The pairs run over all the engine's ordered widths, the
 /// quad and side-surround spellings, a permutation, a 12-wide overhead source
-/// and a discrete relabel.
+/// and an unassigned relabel.
 ///
 /// Mutations (run), each failing this test: the pairs' gain scaled by a
 /// constant; two source channels' pairs swapped; the `Mix` half `b`
@@ -1340,8 +1340,8 @@ fn contributions_are_the_fold_as_a_matrix() {
         .collect();
     tops.push(ChannelTopology::quad());
     tops.push(ChannelTopology::new([FrontRight, FrontLeft, FrontCenter]));
-    tops.push(ChannelTopology::discrete(ChannelLayout::from(3u16)));
-    tops.push(ChannelTopology::discrete(ChannelLayout::from(6u16)));
+    tops.push(ChannelTopology::unassigned(ChannelLayout::from(3u16)));
+    tops.push(ChannelTopology::unassigned(ChannelLayout::from(6u16)));
     let mut checked = 0;
     for src in &tops {
         for dst in &tops {

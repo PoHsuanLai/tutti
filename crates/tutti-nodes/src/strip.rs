@@ -372,7 +372,7 @@ impl Node for BusStripNode {
     /// ([`STRIP_PARAMS`]). Volume and pan are per-frame gains, so it stops
     /// with its input.
     fn shape(&self) -> Shape {
-        Shape::through_discrete(self.layout)
+        Shape::through_unassigned(self.layout)
             // Measured (doc 013, "The cost model and coarsening"): steady
             // and ramping are far under the `Light`/`Moderate` boundary.
             // With the volume fed per frame it is borderline: about 0.7 of

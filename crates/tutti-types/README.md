@@ -22,7 +22,7 @@ Use it directly when you need only the vocabulary (a crate that implements
   own frame width, so a frame index and a sample index stop being the same type.
   `Fold::between(&src, &dst)` turns one `ChannelTopology` into another by
   speaker (ITU-R BS.775 / Dolby coefficients, a pure permutation for the same
-  speakers in another order, discrete channels one to one) and refuses a channel
+  speakers in another order, unassigned channels one to one) and refuses a channel
   it cannot place; the matrix is not normalised. `Fold::widths` / `Fold::to_width`
   are the entry points for an edge that knows only a width (a device, an export
   file, the graph root): the engine's order where the width has one, channels by

@@ -49,7 +49,7 @@ impl Plugin {
 
 impl Node for Plugin {
     fn shape(&self) -> Shape {
-        Shape::through_discrete(ChannelLayout::MONO)
+        Shape::through_unassigned(ChannelLayout::MONO)
             .with_latency(Latency::new(Samples(self.probed)))
     }
     fn prepare(&mut self, _: &Prepare) {

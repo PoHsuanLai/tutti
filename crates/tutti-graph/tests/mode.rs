@@ -420,8 +420,8 @@ fn smpte(n: u16) -> Bus {
     main_bus(ChannelTopology::smpte(ChannelLayout::from_count(n)).expect("an SMPTE width"))
 }
 
-fn discrete(n: u16) -> Bus {
-    main_bus(ChannelTopology::discrete(ChannelLayout::from_count(n)))
+fn unassigned(n: u16) -> Bus {
+    main_bus(ChannelTopology::unassigned(ChannelLayout::from_count(n)))
 }
 
 /// **A bypass is the fold between the main buses.** A node whose `Main` input
@@ -499,8 +499,8 @@ fn a_bypass_is_the_fold_between_the_main_buses() {
 ///
 /// Mutation (each run, each failed): `Editor::set_mode` not asking
 /// `check_pass` → the bypasses are accepted; asking it for every mode → the
-/// Muted assertion fails; `Pass::of` passing a discrete side of another width
-/// by index again (the `discrete(src) || discrete(dst)` arm removed) → the six
+/// Muted assertion fails; `Pass::of` passing an unassigned side of another width
+/// by index again (the `unassigned(src) || unassigned(dst)` arm removed) → the six
 /// into a named two folds by index and is accepted.
 #[test]
 fn a_bypass_with_no_pass_is_refused() {
@@ -535,7 +535,7 @@ fn a_bypass_with_no_pass_is_refused() {
     ed.insert(
         key(3),
         "unplaced into named",
-        Unforkable(TestNode::new(bused(6, 2, 0, discrete(6), smpte(2)))),
+        Unforkable(TestNode::new(bused(6, 2, 0, unassigned(6), smpte(2)))),
     );
     ed.insert(key(4), "one width", widths(2, 2));
     let refused = ed.set_mode(key(1), NodeMode::Bypassed);
@@ -915,8 +915,8 @@ impl Node for Probe {
     fn shape(&self) -> Shape {
         let ch = |n| ChannelLayout::try_from(n).expect("a width");
         Shape::buses(
-            tutti_graph::Buses::discrete(ch(self.ins)),
-            tutti_graph::Buses::discrete(ch(self.outs)),
+            tutti_graph::Buses::unassigned(ch(self.ins)),
+            tutti_graph::Buses::unassigned(ch(self.outs)),
         )
         .with_latency(Latency::new(Samples(self.latency)))
         .with_events(self.events_in, 0)
@@ -1374,7 +1374,7 @@ struct Hook {
 
 impl Node for Hook {
     fn shape(&self) -> Shape {
-        Shape::source_discrete(ChannelLayout::MONO)
+        Shape::source_unassigned(ChannelLayout::MONO)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {

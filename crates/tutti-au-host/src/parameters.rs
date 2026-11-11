@@ -324,7 +324,7 @@ impl DisplayCurve {
 pub enum ParameterUnit {
     /// Dimensionless / unclassified.
     Generic,
-    /// A discrete choice list: the value is an index into named options, so
+    /// An unassigned choice list: the value is an index into named options, so
     /// `[min, max]` are the first and last index. Common in real units —
     /// AUTimePitch's "Overlap" is `0..10`, TDR Nova has 16 such parameters.
     Indexed,
@@ -831,7 +831,7 @@ mod tests {
     /// `kAudioUnitParameterUnit_Indexed` (1) decodes to its own variant, not
     /// `Unknown(1)`.
     ///
-    /// An `Indexed` parameter is a discrete choice list — the loader turns it
+    /// An `Indexed` parameter is an unassigned choice list — the loader turns it
     /// into a nonzero `step_count` so a host renders a picker rather than a
     /// continuous slider. While the variant was missing it fell into `Unknown`
     /// and every such parameter looked continuous.

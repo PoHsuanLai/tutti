@@ -210,7 +210,7 @@ impl OutputControl {
     /// `None` takes the declaration back.
     ///
     /// A declaration of independent buses
-    /// ([`ChannelTopology::discrete`]) stays by index: a 4-wide one into a
+    /// ([`ChannelTopology::unassigned`]) stays by index: a 4-wide one into a
     /// 6-wide device keeps channels 2 and 3 at 2 and 3 (undeclared, a 4-wide
     /// root is quad, and they land on the side pair).
     ///
@@ -220,7 +220,7 @@ impl OutputControl {
     /// # Errors
     ///
     /// The [`FoldError`] when the declaration cannot be placed on `device`
-    /// (a discrete root wider than it, or an unnamed channel); nothing is
+    /// (an unassigned root wider than it, or an unnamed channel); nothing is
     /// published. Other devices the engine holds a fold for that cannot take
     /// it render a silent, counted block, as an unplaceable bare width does.
     pub fn declare_root(

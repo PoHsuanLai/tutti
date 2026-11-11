@@ -200,12 +200,14 @@ fn convolved() -> GraphBuilder {
     let conv = g
         .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir()))
         .0;
+    // Half the dry input, aligned by the latency, and half the wet: the graph's mix.
+    g.spec_mut().set_mix(conv, tutti_types::Mix::new(0.5));
     g.connect(src, 0, conv, 0).pipe_output(conv);
     g
 }
 
 /// [`convolved`]'s output in the time domain, computed directly, `n` frames
-/// after its latency: the node's default blend, half the dry input (delayed
+/// after its latency: the graph's blend at a mix of 0.5, half the dry input (delayed
 /// by the latency, so it leaves with the wet) and half the wet, and the wet
 /// frame `n` is `Σ ir[k] · x[n − k]` over the taps, with `x` the tone in
 /// closed form and the IR as the node holds it (`f32`), summed in `f64`. No

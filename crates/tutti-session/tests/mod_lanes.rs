@@ -53,8 +53,8 @@ use tutti_modulation::{
 use tutti_nodes::automation::{Breakpoint, RecordMode, Trajectory};
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    AudioSide, GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, Session,
-    SessionEvent, Take, declare_targets,
+    AudioSide, GraphSource, MixRef, ModInput, ModKeys, ModRefusal, ModTarget, PHASES, ParamRef,
+    PhaseCx, Session, SessionEvent, Take, declare_targets,
 };
 use tutti_types::{
     Amplitude, Beat, Bpm, ChannelLayout, Depth, Hz, SampleRate, Samples, Seconds, UnitParam,
@@ -895,9 +895,10 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
     }
 }
 
-/// **A chorus's rate and a phaser's mix take lanes.** The nodes declare these
-/// params as ports (`MOD_DELAY_PARAMS`, `PHASER_PARAMS`), so a route onto
-/// each resolves to a lane, with nothing refused. What a lane on them sounds
+/// **A chorus's rate and a phaser's mix take lanes.** The chorus declares its
+/// rate as a port (`MOD_DELAY_PARAMS`), and every node's mix is a port at the
+/// graph's reserved address (`MixRef`), so a route onto each resolves to a
+/// lane, with nothing refused. What a lane on them sounds
 /// like is pinned where the nodes live (`tutti-nodes`'
 /// `a_lane_modulates_a_chorus_rate_around_its_own_cell` and
 /// `each_fed_param_is_the_one_the_dsp_reads`).
@@ -915,22 +916,21 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
         ChannelLayout::STEREO,
         4,
     ));
+    // The phaser's mix is the graph's (`MixRef`), not a param of the node.
     let targets = [
-        ParamRef::unit(chorus, UnitParam::Rate),
-        ParamRef::unit(phaser, UnitParam::Wet),
+        ModTarget::from(ParamRef::unit(chorus, UnitParam::Rate)),
+        ModTarget::from(MixRef::of(phaser)),
     ];
     let mut m = s.mods();
     let offset = m.macro_(0.5);
+    let keys = targets.map(|at| m.key(at));
     for at in targets {
         m.range(at, 0.0, 1.0);
         m.route(offset, at, Depth(0.5));
     }
     settle(&mut s);
-    for at in targets {
-        assert!(
-            s.mod_state().lane(at.key()).is_some(),
-            "{at:?} has its lane"
-        );
+    for (at, key) in targets.into_iter().zip(keys) {
+        assert!(s.mod_state().lane(key).is_some(), "{at:?} has its lane");
     }
 }
 

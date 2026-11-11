@@ -1,7 +1,7 @@
 //! Chorus and flanger — one width-generic modulated delay, two presets.
 //!
 //! The two effects were structurally identical (a delay line per channel swept
-//! by an LFO, with feedback and a wet/dry mix) and differed only in numbers: a
+//! by an LFO, with feedback) and differed only in numbers: a
 //! chorus sits at a long base delay (10 ms) so the copy reads as a second voice
 //! thickening the sound, a flanger at a short one (1 ms) so the copy combs
 //! against the original and the sweep moves the notches. They were two node
@@ -11,10 +11,10 @@
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{AtomicF32, AtomicF64};
-use tutti_types::{ChannelLayout, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate, Seconds};
+use tutti_types::{ChannelLayout, Feedback, Hz, Phase, PhaseIncrement, SampleRate, Seconds};
 use tutti_types::{Tail, UnitParam};
 
-use super::shared::{LfoDrive, TimeModMix};
+use super::shared::{LfoDrive, TimeMod};
 use crate::ramp::block_driven;
 use tutti_dsp::{COEFF_INTERVAL, Ramp};
 use tutti_dsp::{DelayLine, SweptLines};
@@ -49,8 +49,6 @@ pub struct ModDelayConfig {
     pub depth: Seconds,
     /// Initial feedback.
     pub feedback: Feedback,
-    /// Initial wet/dry mix.
-    pub mix: Mix,
     /// The most feedback the node applies, whatever is set through its param
     /// or driven on its port, and whatever is written to the raw cells: a value
     /// above it reads as it, and one below zero as zero. [`Feedback::MAX_STABLE`]
@@ -87,8 +85,7 @@ impl ModDelayConfig {
     }
 
     /// Chorus: 10 ms base delay, a quarter-cycle stagger between channels, 1 Hz
-    /// rate, 5 ms sweep depth (clamped to `0..=40 ms`), 0.3 feedback, 50/50
-    /// mix. The long base delay is what separates chorus from flanger — the copy
+    /// rate, 5 ms sweep depth (clamped to `0..=40 ms`), 0.3 feedback. The long base delay is what separates chorus from flanger — the copy
     /// sits far enough behind to read as a second voice, and the stagger sweeps
     /// the channels out of step, which is what makes it feel wide.
     pub const CHORUS: Self = Self {
@@ -100,12 +97,11 @@ impl ModDelayConfig {
         rate: Hz(1.0),
         depth: Seconds(0.005),
         feedback: Feedback(0.3),
-        mix: Mix(0.5),
         feedback_max: Feedback::MAX_STABLE,
     };
 
     /// Flanger: 1 ms base delay, a half-cycle stagger, 0.5 Hz rate, 2 ms sweep
-    /// depth (clamped to `0.1..=10 ms`), 0.7 feedback, 50/50 mix. The short base
+    /// depth (clamped to `0.1..=10 ms`), 0.7 feedback. The short base
     /// delay lands the copy close enough to interfere with the original,
     /// producing the comb notches whose sweep is the flanger's signature;
     /// feedback sharpens them into the metallic ring.
@@ -118,18 +114,15 @@ impl ModDelayConfig {
         rate: Hz(0.5),
         depth: Seconds(0.002),
         feedback: Feedback(0.7),
-        mix: Mix(0.5),
         feedback_max: Feedback::MAX_STABLE,
     };
 
     /// The chorus of a General MIDI synthesizer's chorus send, as SoundFont
-    /// players have it: wet only (a send effect, summed with the dry signal
-    /// elsewhere), a 2 ms centre delay swept 1.9 ms either side by a sine at
+    /// players have it: a 2 ms centre delay swept 1.9 ms either side by a sine at
     /// 0.4 Hz, the right channel a quarter cycle ahead of the left, and no
     /// feedback at all.
     ///
-    /// The dry signal is not in the output (`mix` 1), and the node can recirculate
-    /// nothing (`feedback_max` 0), which is what lets it declare a finite tail:
+    /// The node can recirculate nothing (`feedback_max` 0), which is what lets it declare a finite tail:
     /// what it outputs was in its input at most `max_delay` ago.
     pub const GENERAL_MIDI_CHORUS: Self = Self {
         base_delay: Seconds(0.002),
@@ -140,17 +133,15 @@ impl ModDelayConfig {
         rate: Hz(0.4),
         depth: Seconds(0.0019),
         feedback: Feedback::NONE,
-        mix: Mix(1.0),
         feedback_max: Feedback::NONE,
     };
 }
 
-/// The block's depth / feedback / mix — where the next block's ramps start.
+/// The block's depth / feedback — where the next block's ramps start.
 #[derive(Clone, Copy, Debug)]
 struct ModDelayControls {
     depth: f32,
     fb: f32,
-    mix: f32,
 }
 
 /// A modulated delay of any width — chorus or flanger by configuration.
@@ -161,15 +152,21 @@ struct ModDelayControls {
 /// [`CHORUS`](ModDelayConfig::CHORUS) or [`FLANGER`](ModDelayConfig::FLANGER)
 /// preset it is a stereo chorus or flanger.
 ///
-/// Rate ([`Hz`]), depth ([`Seconds`] of delay sweep), [`Feedback`] and [`Mix`]
+/// Rate ([`Hz`]), depth ([`Seconds`] of delay sweep) and [`Feedback`]
 /// are live [`Param`](tutti_types::Param)s shared across clones, all read **once
 /// per block**. The LFO's phases for the block are computed once, into a block
 /// buffer every channel reads, and its sine is evaluated only every 16
 /// samples (on a grid counted across blocks, so the output
 /// does not depend on how the stream is cut into blocks) and interpolated
-/// between; depth, feedback and mix ramp across the block
+/// between; depth and feedback ramp across the block
 /// when they moved (a depth step would jump the delay time — a click). A
 /// block of one takes a change whole.
+///
+/// The output is the wet signal alone; the blend with the dry input is the
+/// graph's (`Editor::set_mix`; the node has no latency, so its aligned input is
+/// its input). At fully wet a chorus's detuned copy stands alone and a
+/// flanger's notches (wet and dry interfering) vanish, so both effects want a
+/// mix below one.
 ///
 /// **Depth is denominated in seconds of delay, not a fraction**: it is a
 /// duration added to the base delay, unlike the phaser's unitless depth.
@@ -180,8 +177,7 @@ struct ModDelayControls {
 /// modulated delay is the effect's sound, not processing latency, and PDC would
 /// otherwise delay every other path by the base delay. Inserted, its controls
 /// are a [`ParamSet`] over rate ([`UnitParam::Rate`]), depth
-/// ([`UnitParam::Depth`]), feedback ([`UnitParam::Feedback`]) and mix
-/// ([`UnitParam::Wet`]); a fork starts from the values last set through it. The
+/// ([`UnitParam::Depth`]) and feedback ([`UnitParam::Feedback`]); a fork starts from the values last set through it. The
 /// graph prepares it at the device rate, which sizes the lines, before its
 /// first block.
 ///
@@ -199,7 +195,7 @@ pub struct ModDelayNode {
     /// Per-channel LFO phase offset; same length as `delays`.
     phase_offsets: Vec<PhaseIncrement>,
     lfo: LfoDrive,
-    controls: TimeModMix,
+    controls: TimeMod,
     sample_rate: SampleRate,
     /// `None` until the first block (and after `reset`): the first block starts
     /// on its targets instead of ramping in from nothing.
@@ -264,7 +260,7 @@ impl ModDelayNode {
                 })
                 .collect(),
             lfo: LfoDrive::new(config.rate),
-            controls: TimeModMix::new(config.depth, config.feedback, config.mix),
+            controls: TimeMod::new(config.depth, config.feedback),
             sample_rate: SampleRate::DEFAULT,
             last: None,
             phases: Vec::new(),
@@ -343,14 +339,6 @@ impl ModDelayNode {
         self.controls.feedback.as_atomic()
     }
 
-    /// The shared wet/dry [`Mix`] cell: `0.0` dry, `1.0` fully wet.
-    ///
-    /// Both effects need both halves — at fully wet a chorus's detuned copy
-    /// stands alone and a flanger's notches (wet and dry interfering) vanish.
-    pub fn mix(&self) -> Arc<AtomicF32> {
-        self.controls.mix.as_atomic()
-    }
-
     /// Sets the LFO rate in [`Hz`], floored at 0.01 Hz.
     pub fn set_rate(&self, hz: impl Into<Hz>) {
         self.lfo
@@ -373,37 +361,30 @@ impl ModDelayNode {
             .store(Feedback::new_clamped(fb.into().get()));
     }
 
-    /// Sets the wet/dry [`Mix`], clamped to `0.0..=1.0`.
-    pub fn set_mix(&self, mix: impl Into<Mix>) {
-        self.controls.mix.store(Mix::new_clamped(mix.into().get()));
-    }
-
     /// The render kernel behind `process`, over `size` frames. `size` is at
     /// most the phase scratch's length.
     ///
-    /// `driven` is the block's rate, depth, feedback and mix from the
+    /// `driven` is the block's rate, depth and feedback from the
     /// node's param ports ([`MOD_DELAY_PARAMS`] order), each `None` where
     /// nothing drives it.
     fn render(
         &mut self,
         size: usize,
-        driven: [Option<f32>; 4],
+        driven: [Option<f32>; 3],
         x: impl Fn(usize, usize) -> f32,
         y: impl FnMut(usize, usize, f32),
     ) {
         debug_assert!(size <= self.phases.len());
         // Every control is read here, once, for the whole block.
-        let [rate, depth, fb, mix] = driven;
-        let (depth, fb, mix) = self.controls.load([depth, fb, mix]);
+        let [rate, depth, fb] = driven;
+        let (depth, fb) = self.controls.load([depth, fb]);
         let target = ModDelayControls {
             depth: self.config.clamp_depth(depth),
             fb: fb.clamp(0.0, self.config.feedback_max.get()),
-            mix: mix.get(),
         };
         let from = self.last.unwrap_or(target);
         let depth_r = Ramp::new(from.depth, target.depth, size);
         let fb_r = Ramp::new(from.fb, target.fb, size);
-        let mix_r = Ramp::new(from.mix, target.mix, size);
 
         // The LFO as a block buffer: the rate is read once and every channel
         // reads the same phases.
@@ -429,12 +410,12 @@ impl ModDelayNode {
             sr: self.sample_rate.get() as f32,
             base_delay: self.config.base_delay.to_f32(),
         };
-        if depth_r.is_flat() && fb_r.is_flat() && mix_r.is_flat() {
+        if depth_r.is_flat() && fb_r.is_flat() {
             // Nothing moved since the last block: constants in the loop.
-            let (d, f, m) = (target.depth, target.fb, target.mix);
-            lines.run(x, y, |_| d, |_| f, |_| m);
+            let (d, f) = (target.depth, target.fb);
+            lines.run(x, y, |_| d, |_| f);
         } else {
-            lines.run(x, y, |i| depth_r.at(i), |i| fb_r.at(i), |i| mix_r.at(i));
+            lines.run(x, y, |i| depth_r.at(i), |i| fb_r.at(i));
         }
         self.seg_pos = (self.seg_pos + size) % COEFF_INTERVAL;
         self.points_valid = true;
@@ -444,15 +425,11 @@ impl ModDelayNode {
 }
 
 /// The params a [`ModDelayNode`] lets the graph modulate, in port order:
-/// all four of its controls. Each is block-rate in the node (read once per
+/// all three of its controls. Each is block-rate in the node (read once per
 /// block and ramped across it), so a driven port is read the same way
 /// (`block_driven`).
-pub const MOD_DELAY_PARAMS: [UnitParam; 4] = [
-    UnitParam::Rate,
-    UnitParam::Depth,
-    UnitParam::Feedback,
-    UnitParam::Wet,
-];
+pub const MOD_DELAY_PARAMS: [UnitParam; 3] =
+    [UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback];
 
 impl Node for ModDelayNode {
     fn shape(&self) -> Shape {
@@ -477,7 +454,7 @@ impl Node for ModDelayNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let driven = [0, 1, 2, 3].map(|k| block_driven(&io, k));
+        let driven = [0, 1, 2].map(|k| block_driven(&io, k));
         let (inputs, mut outputs) = io.split();
         // A graph never hands a block past its `MaxBlock`, which the scratch
         // is sized for, so this is one call; a node driven by hand with a
@@ -513,7 +490,6 @@ impl Node for ModDelayNode {
             0 => Some(self.lfo.rate.load().get()),
             1 => Some(self.controls.depth.load().to_f32()),
             2 => Some(self.controls.feedback.load().get()),
-            3 => Some(self.controls.mix.load().get()),
             _ => None,
         }
     }
@@ -525,7 +501,6 @@ impl ParamNode for ModDelayNode {
             .param(UnitParam::Rate, self.lfo.rate.as_atomic())
             .param(UnitParam::Depth, self.controls.depth.as_atomic())
             .param(UnitParam::Feedback, self.controls.feedback.as_atomic())
-            .param(UnitParam::Wet, self.controls.mix.as_atomic())
             .build()
     }
 
@@ -572,9 +547,7 @@ impl Clone for ModDelayNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{
-        change_between_node_blocks, drive_frames, noise, prepared as at_48k,
-    };
+    use crate::test_support::{drive_frames, noise, prepared as at_48k};
     use tutti_graph::contract::assert_param_fork;
 
     /// A fork starts from the values last set through the node's
@@ -589,12 +562,7 @@ mod tests {
         let node = ModDelayNode::flanger(ChannelLayout::STEREO);
         assert_eq!(
             node.param_set().params().collect::<Vec<_>>(),
-            [
-                UnitParam::Rate,
-                UnitParam::Depth,
-                UnitParam::Feedback,
-                UnitParam::Wet
-            ]
+            [UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback]
         );
         assert_param_fork(node);
     }
@@ -630,7 +598,7 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    /// A mono, fully wet, feedback-free sweep: base 20 ms, 10 ms deep, 20 Hz.
+    /// A mono, feedback-free sweep: base 20 ms, 10 ms deep, 20 Hz.
     /// The fastest rate a chorus is run at is the worst case for the
     /// interpolation between control points.
     fn trajectory_node(depth: f32) -> ModDelayNode {
@@ -645,7 +613,6 @@ mod tests {
                 rate: Hz(TRAJ_RATE),
                 depth: Seconds::from_f32(depth),
                 feedback: Feedback(0.0),
-                mix: Mix(1.0),
                 feedback_max: Feedback::MAX_STABLE,
             },
         );
@@ -953,18 +920,8 @@ mod tests {
     }
 
     #[test]
-    fn test_chorus_passthrough_dry() {
-        let mut chorus = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
-        chorus.set_mix(Mix::new(0.0));
-        let out = drive_frames(&mut chorus, &[&[0.5], &[-0.3]]);
-        assert!((out[0][0] - 0.5).abs() < 0.001);
-        assert!((out[1][0] - (-0.3)).abs() < 0.001);
-    }
-
-    #[test]
     fn test_chorus_stereo_difference() {
         let mut chorus = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
-        chorus.set_mix(Mix::new(1.0));
         let ones = [1.0f32; 4410];
         let out = drive_frames(&mut chorus, &[&ones, &ones]);
         let l_sum: f64 = out[0].iter().map(|&s| s as f64).sum();
@@ -979,7 +936,6 @@ mod tests {
     fn test_flanger_feedback_effect() {
         let mut flanger = at_48k(ModDelayNode::flanger(ChannelLayout::STEREO));
         flanger.set_feedback(Feedback::new(0.9));
-        flanger.set_mix(Mix::new(1.0));
         let mut x = [0.0f32; 501];
         x[0] = 1.0;
         let out = drive_frames(&mut flanger, &[&x, &x]);
@@ -1016,22 +972,6 @@ mod tests {
         let flanger = ModDelayNode::flanger(ChannelLayout::STEREO);
         flanger.set_depth(Seconds::new(0.0));
         assert_eq!(flanger.controls.depth.load(), Seconds(0.0001));
-    }
-
-    /// A mix change made between blocks fades across the next block.
-    ///
-    /// Mutation: `Ramp::new(target.mix, target.mix, size)` (a jump) fails.
-    #[test]
-    fn a_mix_change_fades_across_the_next_block() {
-        let x = noise(8, 128);
-        let run = change_between_node_blocks(
-            || ModDelayNode::chorus(ChannelLayout::STEREO),
-            |n| n.set_mix(Mix::new(0.0)),
-            &[&x[..64], &x[..64]],
-            &[&x[64..], &x[64..]],
-        );
-        run.assert_ramps_in("chorus mix");
-        assert_eq!(run.r[1][63], x[127], "the block ends fully dry");
     }
 
     /// Six channels: the first two are exactly the stereo chorus, channel 4's

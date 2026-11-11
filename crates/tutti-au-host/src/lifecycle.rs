@@ -1,0 +1,179 @@
+//! The transitions of an Audio Unit: [`Loaded`] for [`AuLoaded`].
+//!
+//! `activate` is `AudioUnitInitialize` plus the configuration it needs (the
+//! rate and block ceiling of the [`Prepare`], the render mode, the input render
+//! callback); `deactivate` is `AudioUnitUninitialize`. A unit that refuses
+//! `initialize` comes back whole in [`Refused`]; one that refuses the render
+//! callback *and* the compensating uninitialize cannot be handed back, and
+//! `Refused::plugin` is `None`.
+
+#![cfg(target_os = "macos")]
+
+use std::sync::Arc;
+
+use tutti_au_ffi::Renderer;
+use tutti_plugin_types::{
+    Loaded, MainThread, PluginError, Prepare, Refused, RestartRules, Stuck, sysex_assembler,
+};
+use tutti_rt::ArcLend;
+
+use crate::control::plugin_error;
+use crate::controller::AuController;
+use crate::error::AuError;
+use crate::instance::AuLoaded;
+use crate::processor::{AuProcessor, ProcessorParts, Rendering, UninitializeOnDrop};
+
+impl Loaded for AuLoaded {
+    type Processor = AuProcessor;
+    type Controller = AuController;
+
+    /// AU re-reads: latency and tail are plain property reads with no documented
+    /// requirement that the unit be uninitialized, and the property listener
+    /// fires *after* the AU has already changed the value. A rate or stream
+    /// format change is the host's own reconfiguration, applied by `activate`.
+    const RESTARTS: RestartRules = RestartRules::NONE;
+
+    /// Initializes the unit so it can render.
+    ///
+    /// The stream is configured at `prepare`'s rate and block ceiling first
+    /// (rolled back if the unit refuses), the render mode is written (the
+    /// property is only honoured at `AudioUnitInitialize`), and the input render
+    /// callback is installed ONCE, off the renderer's heap-pinned scratch, never
+    /// per block on the render thread. The callback is gated on `has_input`, the
+    /// AU's own answer to "is there an input bus": setting a render callback on
+    /// the input scope of a unit that has no input element is a property error
+    /// that failed every instrument's activation.
+    ///
+    /// # Errors
+    /// [`Refused`] carries the unit back, as it was before the call, for a
+    /// stream configuration or `AudioUnitInitialize` the unit refuses.
+    #[allow(clippy::result_large_err)]
+    fn activate(
+        mut self,
+        _main: &MainThread,
+        prepare: Prepare,
+    ) -> Result<(AuProcessor, AuController), Refused<Self>> {
+        fn refuse(plugin: AuLoaded, error: AuError) -> Refused<AuLoaded> {
+            Refused {
+                plugin: Some(plugin),
+                reason: plugin_error(error),
+            }
+        }
+
+        let Ok(block_size) = u32::try_from(prepare.max_block().get()) else {
+            let error = AuError::InvalidBuffer(format!(
+                "a block of {} frames exceeds the unit's 32-bit frame count",
+                prepare.max_block().get()
+            ));
+            return Err(refuse(self, error));
+        };
+        // Zero would fail every render's `num_frames > block_size` check and size
+        // the scratch to empty buffers.
+        if block_size == 0 {
+            let error = AuError::InvalidBuffer("block_size must be non-zero".to_string());
+            return Err(refuse(self, error));
+        }
+        if let Err(e) = self.reconfigure(prepare.rate().0, block_size) {
+            return Err(refuse(self, e));
+        }
+
+        // Written only when it changes, and before `initialize`: a unit that
+        // sizes an oversampling or look-ahead buffer from the flag does so there.
+        let offline = prepare.mode().is_offline();
+        if offline != self.wrote_offline() {
+            self.write_render_mode(offline);
+        }
+
+        if let Err(e) = self.unit().initialize() {
+            return Err(refuse(self, e.into()));
+        }
+
+        let unit = self.unit().clone();
+        // The renderer owns the heap-pinned scratch the input callback reads,
+        // and withdraws that callback before freeing it.
+        let renderer = Renderer::new(&unit, self.config().channels, self.config().block_size);
+        let mut rendering = Box::new(Rendering {
+            guard: UninitializeOnDrop {
+                unit: unit.clone(),
+                armed: true,
+            },
+            renderer,
+        });
+
+        if self.config().channels.has_input
+            && let Err(e) = rendering.renderer.install_input_callback()
+        {
+            // The AU *is* initialized at this point, so backing out has to undo
+            // that too. The reported error is always `e`, the install failure: a
+            // follow-on `AudioUnitUninitialize` complaint would only describe the
+            // cleanup. If that cleanup also failed there is no `Loaded` unit to
+            // hand back: dropping the armed guard retries it and disposes.
+            let error: AuError = e.into();
+            return Err(match unit.uninitialize() {
+                Ok(()) => {
+                    rendering.guard.armed = false;
+                    drop(rendering);
+                    refuse(self, error)
+                }
+                Err(_) => {
+                    drop(rendering);
+                    drop(self);
+                    Refused {
+                        plugin: None,
+                        reason: plugin_error(error),
+                    }
+                }
+            });
+        }
+
+        let ranges = Arc::new(ArcLend::new(self.range_snapshot()));
+        let processor = AuProcessor::new(ProcessorParts {
+            rendering,
+            unit,
+            // Off the audio thread: reserve the SysEx buffer now, so
+            // `send_midi` never grows one.
+            sysex: sysex_assembler(),
+            ranges: ranges.reader(),
+            transport: self.share_transport(),
+            receives_midi: self.au_type().receives_midi(),
+            block_size: self.config().block_size,
+        });
+        Ok((processor, AuController::new(self, ranges)))
+    }
+
+    /// Tears down the render session: `AudioUnitUninitialize`, then the renderer
+    /// (and the scratch its input callback reads) is dropped.
+    ///
+    /// ORDERING INVARIANT: the uninitialize runs before the renderer is dropped.
+    /// Uninitialize is what stops the AU firing the input render callback, and
+    /// the renderer withdraws the callback itself before freeing; the guard is
+    /// disarmed only once the unit really is uninitialized.
+    ///
+    /// # Errors
+    /// [`Stuck`] hands both halves back, as they were, for a pair from two
+    /// activations or a unit that refuses to uninitialize (it stays
+    /// initialized, and the guard retries on drop).
+    fn deactivate(
+        _main: &MainThread,
+        mut processor: AuProcessor,
+        controller: AuController,
+    ) -> Result<Self, Stuck<AuProcessor, AuController>> {
+        if !processor.is_of(controller.loaded.unit()) {
+            return Err(Stuck {
+                processor,
+                controller,
+                reason: PluginError::Other("the halves are of two activations".into()),
+            });
+        }
+        if let Err(e) = processor.rendering.guard.unit.uninitialize() {
+            return Err(Stuck {
+                processor,
+                controller,
+                reason: plugin_error(e.into()),
+            });
+        }
+        processor.rendering.guard.armed = false;
+        drop(processor);
+        Ok(controller.loaded)
+    }
+}

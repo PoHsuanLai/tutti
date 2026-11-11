@@ -39,6 +39,21 @@ pub mod midi_out;
 mod instance;
 
 #[cfg(target_os = "macos")]
+mod control;
+#[cfg(target_os = "macos")]
+mod controller;
+#[cfg(target_os = "macos")]
+mod lifecycle;
+#[cfg(target_os = "macos")]
+mod load;
+#[cfg(target_os = "macos")]
+mod processor;
+#[cfg(target_os = "macos")]
+mod ranges;
+#[cfg(target_os = "macos")]
+mod watch;
+
+#[cfg(target_os = "macos")]
 pub mod offline;
 
 #[cfg(target_os = "macos")]
@@ -65,7 +80,7 @@ pub use unit_code::{unit_measures, unit_role};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
 // `WindowHandle` is consumed by the GUI bridge; `TransportInfo` is the input type of
-// `AuInstance::set_transport`, which publishes it for the AU's host callbacks to
+// `AuLoaded::set_transport`, which publishes it for the AU's host callbacks to
 // pull during render.
 pub use tutti_plugin_types::{EditorSize, TransportInfo, WindowHandle};
 
@@ -78,13 +93,13 @@ pub use tutti_types::value::units::Seconds;
 
 // Bus topology vocabulary. Unlike the parameter types below, these ARE flat
 // re-exports: `bus_count` / `bus_layout` / `supported_channel_configs` are
-// inherent methods on `AuInstance`, so a caller that reaches those methods needs
+// inherent methods on `AuLoaded`, so a caller that reaches those methods needs
 // their argument and return types in scope without a second import path.
 #[cfg(target_os = "macos")]
 pub use bus::{AuChannelConfig, AuChannelCount, BusDirection};
 // Channel *order* vocabulary, flat-re-exported for the same reason the bus
 // vocabulary above is: `supported_layout_tags` / `layout_tag` / `set_layout_tag`
-// are inherent methods on `AuInstance`, so a caller cannot name their argument
+// are inherent methods on `AuLoaded`, so a caller cannot name their argument
 // or return type without this.
 #[cfg(target_os = "macos")]
 pub use channel_layout::AuLayoutTag;
@@ -98,14 +113,18 @@ pub use channel_layout::AuLayoutTag;
 #[cfg(target_os = "macos")]
 pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
-pub use instance::{AuActive, AuInstance, AuLoaded};
+pub use controller::AuController;
+#[cfg(target_os = "macos")]
+pub use instance::AuLoaded;
+#[cfg(target_os = "macos")]
+pub use processor::AuProcessor;
 #[cfg(target_os = "macos")]
 pub use topology::topology_of;
 #[cfg(target_os = "macos")]
 pub use tutti_au_ffi::{AuEditor, Element, Property, Scope, Unit, property};
 // Flat-re-exported for the reason `AuLayoutTag` is: `AuMidiMapping` is the
 // argument and return type of the five `*_parameter_midi_mapping*` methods on
-// `AuInstance`, and `MidiTrigger` is the field of it a caller must construct, so
+// `AuLoaded`, and `MidiTrigger` is the field of it a caller must construct, so
 // neither is avoidable at the call site. There is no shared
 // `tutti_plugin_types` mapping vocabulary to translate into — VST3's equivalent
 // is a query, not a table, so the two formats have no common shape.
@@ -132,13 +151,13 @@ pub use offline::{PushScratch, RENDER_QUALITY_MAX};
 // `tutti_plugin_types::ParameterInfo` produced by the loader's trait impl.
 //
 // `AuPreset` is flat-re-exported where `AuParameter` is not, because it is the
-// return type of `AuInstance::factory_presets`/`current_preset`: there is no
+// return type of `AuLoaded::factory_presets`/`current_preset`: there is no
 // shared `tutti_plugin_types` preset vocabulary to translate into, so a caller
 // has to be able to name it without reaching into a submodule.
 #[cfg(target_os = "macos")]
 pub use preset::AuPreset;
 // Flat-re-exported for the same reason `AuPreset` is: `AuPresetIdentity` is the
-// return type of `AuInstance::load_preset_file` and of `read_preset_metadata`,
+// return type of `AuLoaded::load_preset_file` and of `read_preset_metadata`,
 // which is the function a preset browser is built on, so a caller cannot name
 // what it gets back without it.
 #[cfg(target_os = "macos")]
@@ -164,7 +183,7 @@ pub use render_notify::{
 #[cfg(target_os = "macos")]
 pub use stream::{AuBusLayout, StreamConfig};
 // `TransportState` is flat-re-exported for the same reason the bus vocabulary
-// above is: it is the return type of `AuInstance::install_host_callbacks` and
+// above is: it is the return type of `AuLoaded::install_host_callbacks` and
 // the thing a host writes each block, so a caller cannot use that method
 // without being able to name it.
 #[cfg(target_os = "macos")]

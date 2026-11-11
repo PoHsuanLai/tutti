@@ -66,7 +66,7 @@
 //! cannot be changed after initialize, but 0 of 55 units enforce that.
 //!
 //! The related point that *does* matter is upstream of this property:
-//! [`AuInstance::send_midi`](crate::instance::AuInstance::send_midi) down-converts
+//! [`AuProcessor::send_midi`](crate::processor::AuProcessor::send_midi) down-converts
 //! MIDI 2.0 to MIDI 1.0 because AUv2's `MusicDeviceMIDIEvent` takes legacy
 //! channel-voice bytes and has no UMP form. Carrying MIDI 2.0 resolution into an
 //! AU requires the AUv3 event-list entry point, not this property.

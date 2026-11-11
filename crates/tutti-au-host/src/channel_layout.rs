@@ -416,7 +416,7 @@ pub(crate) fn layout_tag(unit: &Unit, direction: BusDirection, bus: u32) -> Resu
 /// surround tag the AU advertises is refused, so a host that read the supported
 /// list and set an entry from it straight away would conclude the AU was lying.
 /// It is not — the width has to be applied first, via
-/// [`crate::stream::StreamConfig`] / `AuInstance::new_with_config`.
+/// [`crate::stream::StreamConfig`] / `AuLoaded::new_with_config`.
 ///
 /// This function deliberately does **not** widen the stream format on the
 /// caller's behalf: reconfiguring width is [`crate::stream`]'s duty, requires
@@ -435,7 +435,7 @@ pub(crate) fn layout_tag(unit: &Unit, direction: BusDirection, bus: u32) -> Resu
 ///   property, so there is no order to set.
 ///
 /// Propagated rather than absorbed for the same reason as
-/// [`crate::instance::AuInstance::set_bypass`]: a host that believes it set 5.1
+/// [`crate::instance::AuLoaded::set_bypass`]: a host that believes it set 5.1
 /// while the AU kept stereo will route six channels into a two-channel bus and
 /// never learn why the surround came out wrong.
 pub(crate) fn set_layout_tag(

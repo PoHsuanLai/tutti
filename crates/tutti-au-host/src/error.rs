@@ -27,7 +27,7 @@ pub enum AuError {
     /// a plugin list — `"aufx/dely/appl"`, the type/subtype/manufacturer triple
     /// the registry itself is keyed on.
     // Boxed for the reason `PresetIo` is: two inline `String`s re-open the
-    // `result_large_err` hole on `AuActive::uninitialize`'s `(AuActive, AuError)`.
+    // `result_large_err` hole on an activation's `Result<_, AuError>`.
     #[error("Failed to load AudioUnit {}: {} - {}", .0.component, .0.stage, .0.reason)]
     LoadFailed(Box<LoadFailedError>),
 
@@ -122,7 +122,7 @@ pub enum AuError {
     ///
     /// Fatal for the same reason [`AuError::SampleRateRejected`] is, but through
     /// a sharper edge. `MaximumFramesPerSlice` is what the AU sizes its internal
-    /// buffers from at `AudioUnitInitialize`, and `AuInstance::process` admits
+    /// buffers from at `AudioUnitInitialize`, and `AuProcessor::render_f32` admits
     /// any `num_frames` up to the *recorded* block size. So a config holding a larger
     /// figure than the AU accepted disables that bound check in the unsafe
     /// direction: the render proceeds and the AU writes past buffers it allocated
@@ -163,7 +163,7 @@ pub enum AuError {
     /// the file's *contents* fail as [`AuError::InvalidPreset`].
     // Boxed for the reason `PresetIdentityMismatch` is: `AuError` is the `Err`
     // of every `Result` in this crate, and two inline `String`s here would widen
-    // the enum enough to push `AuActive::uninitialize`'s `(AuActive, AuError)`
+    // the enum enough to push an activation's `Result<_, AuError>`
     // past clippy's `result_large_err` threshold. A preset diagnostic must not
     // tax the render path's result size.
     #[error("preset file I/O failed for {}: {}", .0.path, .0.message)]

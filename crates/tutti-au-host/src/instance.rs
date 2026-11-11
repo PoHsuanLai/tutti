@@ -1,57 +1,98 @@
-//! High-level AU instance lifecycle: load → initialize → render.
+//! [`AuLoaded`]: an Audio Unit that is instantiated and configured but not
+//! initialized (not rendering).
 //!
-//! [`AuInstance`] is the main entry point for hosting an Audio Unit. It
-//! internally tracks whether the AU has been `AudioUnitInitialize`d and only
-//! permits `process()` calls in the ready state.
+//! In this state parameters and state can be read and written, presets and
+//! bypass work, the editor can be opened and the unit's identity can be
+//! queried. [`Loaded::activate`](tutti_plugin_types::Loaded::activate) consumes
+//! it and returns the realtime [`AuProcessor`](crate::AuProcessor) and the
+//! main-thread [`AuController`](crate::AuController); the controller derefs to
+//! `AuLoaded`, so every call here stays reachable while audio runs. The traits
+//! the format implements are in `control` (the control surface both halves
+//! carry) and `lifecycle` (the transitions).
+//!
+//! Most of what this type offers beyond the shared
+//! [`Control`](tutti_plugin_types::Control) is AU-specific and has no shared
+//! shape to translate into: MIDI mappings, nick and context names,
+//! presentation latency, layout tags, document state, preset files and render
+//! quality. A few names are the plain-unit forms of the normalized
+//! [`Control`](tutti_plugin_types::Control) calls (`set_parameter`,
+//! `get_parameter`, `parameters`): reach those through the trait
+//! (`Control::set_parameter(&mut au, ..)`) when the normalized one is meant.
 
 #![cfg(target_os = "macos")]
 
+use std::cell::Cell;
+use std::sync::Arc;
+
 use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
-use tutti_au_ffi::{Element, Scope};
-use tutti_au_ffi::{HostCallbacks, Renderer, TransportState, Unit};
-use tutti_graph::UmpAt;
+use tutti_au_ffi::{AuEditor, Element, HostCallbacks, Scope, TransportState, Unit};
+use tutti_plugin_types::{
+    AuComponentType, ChannelLayout, Control, EditorPresence, MainThread, PluginClass,
+    PluginDescriptor, RequestWord, TransportInfo,
+};
+use tutti_types::Samples;
+use tutti_types::value::units::Seconds;
 
 use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::channel_layout::{self, AuLayoutTag};
 use crate::component::{AuComponentRef, AuType};
-use crate::error::{AuError, Result};
+use crate::error::Result;
 use crate::handle::AuHandle;
 use crate::identity;
 use crate::midi_map::{self, AuMidiMapping};
 use crate::midi_out::{self, AuMidiOutput, MidiOutSink, MidiOutputInfo};
 use crate::parameters::{self, AuParameter, ParamView};
 use crate::preset::AuPreset;
+use crate::ranges::RangeTable;
 use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport;
 use crate::types::*;
-use tutti_plugin_types::{
-    ChannelLayout, EditorSize, MainThread, SYSEX_MESSAGE_CAPACITY, TransportInfo, WindowHandle,
-    sysex_assembler,
-};
-use tutti_types::Samples;
-use tutti_types::value::units::Seconds;
-use tutti_ump::SysexAssembler;
+use crate::watch::PropertyWatch;
 
 /// An AU that has been instantiated but not yet initialized.
-///
-/// In this state parameters and state can be queried/set, the editor can
-/// be opened, but audio rendering is not yet possible.
 pub struct AuLoaded {
+    /// Declared **first** so it drops first: the registration holds the unit
+    /// (and keeps it alive), and a delivery after its owner has gone is wasted
+    /// work. `None` until [`watch_properties`](Self::watch_properties), or when
+    /// the listener could not be created, in which case the figures read at
+    /// load stand until the next ask.
+    watch: Option<PropertyWatch>,
     handle: AuHandle,
     config: StreamConfig,
     /// Host transport, installed on demand by
-    /// [`AuInstance::install_host_callbacks`].
+    /// [`install_host_callbacks`](Self::install_host_callbacks).
     ///
-    /// Heap-pinned for the same reason [`AuActive::scratch`] is: the AU retains
-    /// the `hostUserData` pointer derived from `&*transport`, and this struct is
-    /// `mem::replace`d between the `Loaded` and `Ready` states on every
-    /// initialize/uninitialize. Moving the `Box` moves only its 8-byte pointer,
-    /// so the address the AU holds stays valid across those transitions.
-    ///
-    /// `None` until a host installs callbacks — an AU with no transport wired
-    /// must not pay for an allocation, and a null `hostUserData` is exactly what
-    /// the procs treat as "no state".
+    /// The AU retains the `hostUserData` pointer derived from the state, which
+    /// lives on the heap behind an `Arc`, so this struct (and its halves) move
+    /// between activations without moving what the AU holds. `None` until a host
+    /// installs callbacks (an AU with no transport wired must not pay for an
+    /// allocation, and a null `hostUserData` is exactly what the procs treat as
+    /// "no state").
     transport: Option<HostCallbacks>,
+    /// The open editor, when one is. Owned here so the editor calls read like
+    /// their VST3 and CLAP counterparts, with the Cocoa specifics staying inside
+    /// [`AuEditor`].
+    editor: Option<AuEditor>,
+    /// What the property listener raised since the last
+    /// [`take_requests`](Control::take_requests).
+    pub(crate) requests: Arc<RequestWord>,
+    /// The declared plain range of every parameter, read at load and again when
+    /// the unit says its parameter list moved.
+    pub(crate) ranges: RangeTable,
+    /// The plugin's identity, with the editor measured at construction: a Cocoa
+    /// view is a property of the instance, readable before `initialize`.
+    descriptor: PluginDescriptor,
+    /// Whether `kAudioUnitProperty_OfflineRender` was last written as offline.
+    offline: bool,
+    /// Whether the unit took the last render mode written to it: the live
+    /// probe behind `Features::RENDER_MODE`, since the property is optional.
+    mode_accepted: bool,
+    /// The last latency read that succeeded: what a refusal answers, since a
+    /// unit that stops answering keeps what it last reported rather than being
+    /// silently recompensated to zero, which would move audio.
+    last_latency: Cell<Samples>,
+    /// Where the unit came from, when [`load`](Self::load) found it.
+    pub(crate) origin: Option<tutti_plugin_types::Origin>,
 }
 
 impl std::fmt::Debug for AuLoaded {
@@ -62,280 +103,195 @@ impl std::fmt::Debug for AuLoaded {
     }
 }
 
-/// Whether the AU raised `OutputIsSilence` for the block just rendered.
-///
-/// A bool would do, but the flag's meaning is the opposite of what a bare
-/// `true` reads as at the call site: it says the output buffers hold *nothing
-/// trustworthy*, not that they hold zeros. Naming the states keeps a caller
-/// from emitting the scratch on the strength of "it rendered fine".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Silence {
-    /// The AU declared the block silent; the scratch contents are stale and the
-    /// destination must be zeroed instead of copied into.
-    Declared,
-    /// A normal block — emit the scratch.
-    No,
-}
-
-/// An AU that has completed `AudioUnitInitialize` and has render buffers
-/// allocated. This is the only state in which [`AuInstance::process`] will
-/// succeed.
-pub struct AuActive {
-    // Boxed so `uninitialize`'s `(AuActive, AuError)` stays a small `Err`.
-    rendering: Box<Rendering>,
-    loaded: AuLoaded,
-}
-
-/// What an initialized unit holds beside its loaded state.
-///
-/// Field order is drop order. The guard goes first: it uninitializes the unit
-/// before the renderer (whose input callback the unit may still call while
-/// initialized) is dropped.
-struct Rendering {
-    guard: UninitializeOnDrop,
-    renderer: Renderer,
-}
-
-/// Uninitializes the unit when an [`AuActive`] is dropped without
-/// [`AuActive::uninitialize`] having done so.
-struct UninitializeOnDrop {
-    unit: Unit,
-    armed: bool,
-}
-
-impl Drop for UninitializeOnDrop {
-    fn drop(&mut self) {
-        if self.armed {
-            // Teardown: the status has nowhere to go.
-            let _ = self.unit.uninitialize();
-        }
-    }
-}
-
-impl std::fmt::Debug for AuActive {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuActive")
-            .field("loaded", &self.loaded)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Public façade wrapping either an [`AuLoaded`] or [`AuActive`] state.
-///
-/// Most host operations (parameters, state save/load, editor) work regardless
-/// of initialization status. [`AuInstance::process`] requires the Ready state
-/// and will return `Uninitialized` otherwise.
-pub struct AuInstance {
-    state: State,
-    /// The open editor, when one is. Owned here so
-    /// [`has_editor`](Self::has_editor) / [`open_editor`](Self::open_editor) /
-    /// [`close_editor`](Self::close_editor) read like their VST3 and CLAP
-    /// counterparts, with the Cocoa specifics staying inside [`AuEditor`].
-    editor: Option<tutti_au_ffi::AuEditor>,
-    /// Reassembles the SysEx7 packets [`send_midi`](Self::send_midi) is
-    /// handed into whole messages, in a buffer reserved by
-    /// [`initialize`](Self::initialize) and never grown, so the audio thread
-    /// does not allocate for a long message. A `RefCell` because `send_midi`
-    /// takes `&self`; it is not re-entered (`MusicDeviceSysEx` does not call
-    /// back into the host) and the instance is not `Sync`.
-    sysex: std::cell::RefCell<SysexAssembler<Box<[u8]>>>,
-}
-
-impl std::fmt::Debug for AuInstance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuInstance")
-            .field("editor_open", &self.editor.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-enum State {
-    Loaded(AuLoaded),
-    Active(AuActive),
-    /// Transient marker only seen while a `mem::replace` is mid-transition.
-    Empty,
-}
-
-impl AuInstance {
-    /// Instantiates an AU in the `Loaded` (pre-init) state.
+impl AuLoaded {
+    /// Instantiates and applies the initial stream configuration.
     ///
     /// # Errors
-    /// [`AuError::LoadFailed`] or [`AuError::RequiresAsyncInstantiation`] if the
-    /// component cannot be instantiated, or the stream-configuration errors of
-    /// [`StreamConfig`]'s `apply`.
+    /// [`AuError::LoadFailed`](crate::AuError::LoadFailed) or
+    /// [`AuError::RequiresAsyncInstantiation`](crate::AuError::RequiresAsyncInstantiation)
+    /// if the component cannot be instantiated, or the stream-configuration
+    /// errors of [`StreamConfig`]'s `apply`.
     pub fn new(component: AuComponentRef, sample_rate: f64, block_size: u32) -> Result<Self> {
-        Ok(AuInstance {
-            state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
-            editor: None,
-            // No room until `initialize` reserves one: every message is
-            // dropped and counted.
-            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0)),
-        })
+        let handle = AuHandle::new(component)?;
+
+        let probed = StreamConfig::probe(&handle);
+        // The stereo floor lives HERE, in the layout-less constructor, because
+        // this is the one entry point with no caller-supplied answer to "how
+        // wide?" and it has to pick a default. Stereo is the right default for a
+        // DAW: 2 buffers fed into a unit configured mono would have channel 1
+        // silently dropped. It is a *default*, not a guard: `new_with_config`
+        // bypasses it, and `StreamConfig::apply` does not re-impose it.
+        let channels = AuBusLayout {
+            inputs: probed.inputs,
+            outputs: ChannelLayout::from(probed.outputs.count().max(2)),
+            has_input: probed.has_input,
+        };
+        Self::with_layout(handle, StreamConfig::new(sample_rate, block_size, channels))
     }
 
-    /// Instantiates at an explicit [`StreamConfig`] — the way to open an AU in
-    /// mono, or at any width other than the stereo default [`Self::new`] picks.
+    /// Instantiates at a caller-chosen [`StreamConfig`], bypassing the stereo
+    /// default [`AuLoaded::new`] applies.
+    ///
+    /// This is how a host requests mono, or any other width the AU will take.
+    /// It is the only route to a sub-stereo width from outside the crate:
+    /// `apply` is `pub(crate)`, and without this a mono track pays for a doubled
+    /// channel through every AU in its chain.
     ///
     /// # Errors
-    /// As [`Self::new`].
+    /// As [`AuLoaded::new`].
     pub fn new_with_config(component: AuComponentRef, config: StreamConfig) -> Result<Self> {
-        Ok(AuInstance {
-            state: State::Loaded(AuLoaded::new_with_config(component, config)?),
+        Self::with_layout(AuHandle::new(component)?, config)
+    }
+
+    /// Shared tail of both constructors: apply the config, verify the block size
+    /// stuck, then record the layout the AU actually accepted.
+    ///
+    /// # Errors
+    /// [`AuError::BlockSizeRejected`](crate::AuError::BlockSizeRejected) when the
+    /// AU kept a `MaximumFramesPerSlice` other than the requested one, plus
+    /// whatever [`StreamConfig::apply`] propagates.
+    ///
+    /// The block size is verified here, not only when an activation changes it,
+    /// because this is the tail **every** load funnels through and the hazard is
+    /// identical on both paths: an AU that clamps to its own maximum returns
+    /// `noErr` from the set while keeping a smaller figure, and the recorded
+    /// larger number then turns the render's `num_frames > block_size` guard into
+    /// a false negative: the render is admitted and the AU writes past buffers it
+    /// sized for fewer frames.
+    ///
+    /// A failure is an `Err` rather than a silent adoption of the accepted
+    /// figure, which matches how the two other non-negotiable properties are
+    /// handled: `apply` `?`s on the `MaximumFramesPerSlice` *set* and makes a
+    /// rejected sample rate fatal. The channel layout is the deliberate
+    /// exception: it is *returned* rather than enforced because a narrower width
+    /// is recoverable by resizing the scratch, and nothing downstream indexes
+    /// past an allocation on account of it.
+    fn with_layout(handle: AuHandle, mut config: StreamConfig) -> Result<Self> {
+        // `apply` returns the layout the AU actually accepted, which may differ
+        // from what was requested. Store the effective layout so the render
+        // scratch is later sized to the real topology, not the wished-for one.
+        config.channels = config.apply(&handle)?;
+        config.verify_block_size(&handle)?;
+
+        let descriptor = describe(&handle);
+        let ranges = RangeTable::read(handle.unit());
+        Ok(Self {
+            watch: None,
+            handle,
+            config,
+            transport: None,
             editor: None,
-            // No room until `initialize` reserves one: every message is
-            // dropped and counted.
-            sysex: std::cell::RefCell::new(SysexAssembler::new(Box::default(), 0)),
+            requests: Arc::new(RequestWord::new()),
+            ranges,
+            descriptor,
+            offline: false,
+            mode_accepted: false,
+            last_latency: Cell::new(Samples::ZERO),
+            origin: None,
         })
     }
 
-    /// Whether the AU publishes a Cocoa editor view.
-    ///
-    /// Asks the live unit — `kAudioUnitProperty_CocoaUI` is a property of the
-    /// instance, not of the registry entry — so this needs an instantiated AU
-    /// rather than answering from the component description.
-    pub fn has_editor(&self) -> bool {
-        tutti_au_ffi::AuEditor::has_editor(self.unit())
+    /// Borrows the underlying [`AuHandle`].
+    pub fn handle(&self) -> &AuHandle {
+        &self.handle
     }
 
-    /// Embeds the AU's editor into `parent`, returning the size it made.
-    ///
-    /// `preferred` is a *hint* passed to the view factory as `inPreferredSize`
-    /// (`AUCocoaUIView.h:47-48`); the plugin may return any size, which is why
-    /// the returned figure is read back from the view rather than echoed. Pass
-    /// the host's real window size — a fixed figure tells every AU the host
-    /// wants that size whatever window the editor is about to live in.
-    ///
-    /// Re-opening closes the previous view first, so the AU is never asked to
-    /// hold two.
-    ///
-    /// # Errors
-    /// An error if the unit has no Cocoa view, or its view factory cannot be
-    /// loaded or returns no view.
-    pub fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        preferred: EditorSize,
-    ) -> Result<EditorSize> {
-        self.close_editor(main);
-        let editor = tutti_au_ffi::AuEditor::open(self.unit(), Some(parent), preferred)?;
-        let size = editor.editor_size();
-        self.editor = Some(editor);
-        Ok(size)
+    /// Borrows the configured [`StreamConfig`].
+    pub fn config(&self) -> &StreamConfig {
+        &self.config
     }
 
-    /// Detaches and releases the editor view. Safe to call when none is open.
+    /// The plugin's catalog identity, with the editor measured at construction.
+    pub(crate) fn descriptor(&self) -> &PluginDescriptor {
+        &self.descriptor
+    }
+
+    /// Starts watching the properties whose load-time values would otherwise go
+    /// stale (latency, tail and the parameter list): a change raises a request,
+    /// which [`take_requests`](Control::take_requests) hands out. Idempotent.
     ///
-    /// Must be called on the macOS main thread — the teardown is AppKit's
-    /// `removeFromSuperview` / `release`, and touching AppKit off the main
-    /// thread is undefined behavior.
-    pub fn close_editor(&mut self, _main: &MainThread) {
-        if let Some(mut editor) = self.editor.take() {
-            editor.close();
+    /// `false` when AudioToolbox refuses the listener, which leaves the figures
+    /// as read; a unit whose latency cannot be watched is still a usable plugin.
+    pub fn watch_properties(&mut self) -> bool {
+        if self.watch.is_none() {
+            self.watch = PropertyWatch::install(self.handle.unit(), Arc::clone(&self.requests));
         }
+        self.watch.is_some()
     }
 
-    /// Initializes the AU (`AudioUnitInitialize`) so it can render. No-op if
-    /// already initialized.
+    /// The word the property listener raises, for a caller that needs to say a
+    /// change no installed unit will make on request.
+    pub fn requests(&self) -> &Arc<RequestWord> {
+        &self.requests
+    }
+
+    /// Whether the unit took the last render mode written to it (activation
+    /// writes the mode of its [`Prepare`](tutti_plugin_types::Prepare); so does
+    /// [`Control::set_render_mode`]). `kAudioUnitProperty_OfflineRender` is
+    /// optional, so this is the live probe behind `Features::RENDER_MODE`.
+    pub fn render_mode_accepted(&self) -> bool {
+        self.mode_accepted
+    }
+
+    /// Writes the render mode, recording whether the unit took it.
+    pub(crate) fn write_render_mode(&mut self, offline: bool) -> bool {
+        let accepted = crate::offline::set_offline_render(self.handle.unit(), offline).is_ok();
+        if accepted {
+            self.offline = offline;
+        }
+        self.mode_accepted = accepted;
+        accepted
+    }
+
+    /// Whether the last render mode written was offline.
+    pub(crate) fn wrote_offline(&self) -> bool {
+        self.offline
+    }
+
+    /// Re-applies the stream configuration at a new rate and block ceiling.
     ///
-    /// A failure leaves the instance in the uninitialized state it started
-    /// from, so the caller may inspect it, retry at a different configuration,
-    /// or drop it. Some units do refuse — AUNetReceive, and any unit whose
-    /// hardware or entitlement is absent.
+    /// A refusal rolls the configuration back to the one the unit is still on,
+    /// and pushes it onto the unit again, so a caller that ignores the error
+    /// does not inherit a lie.
     ///
     /// # Errors
-    ///
-    /// Returns [`AuError::OsStatus`] if `AudioUnitInitialize` fails or the AU
-    /// refuses the input render callback.
-    ///
-    /// # Panics
-    ///
-    /// If the AU refuses the render callback *and* the compensating
-    /// uninitialize, the unit is disposed and no valid state remains: the error
-    /// is returned, and every later method call on this instance panics. Drop
-    /// the instance after such an error.
-    pub fn initialize(&mut self) -> Result<()> {
-        match std::mem::replace(&mut self.state, State::Empty) {
-            State::Loaded(l) => match l.initialize() {
-                Ok(r) => {
-                    self.state = State::Active(r);
-                    // Off the audio thread: reserve the SysEx buffer now, so
-                    // `send_midi` never grows one. A re-initialize keeps it.
-                    let sysex = self.sysex.get_mut();
-                    if sysex.max_message() < SYSEX_MESSAGE_CAPACITY {
-                        *sysex = sysex_assembler();
-                    }
-                    Ok(())
-                }
-                // `None` only when the AU refused both the callback install and
-                // the compensating uninitialize; the unit has already been
-                // disposed, so `Empty` is the honest state and every accessor
-                // reports the instance as dead rather than pretending.
-                Err((recovered, e)) => {
-                    if let Some(l) = recovered {
-                        self.state = State::Loaded(l);
-                    }
-                    Err(e)
-                }
-            },
-            other @ State::Active(_) => {
-                self.state = other;
+    /// The stream-configuration errors of `apply`, or
+    /// [`AuError::BlockSizeRejected`](crate::AuError::BlockSizeRejected).
+    pub(crate) fn reconfigure(&mut self, sample_rate: f64, block_size: u32) -> Result<()> {
+        if sample_rate == self.config.sample_rate && block_size == self.config.block_size {
+            return Ok(());
+        }
+        let previous = self.config;
+        let mut next = previous;
+        next.sample_rate = sample_rate;
+        next.block_size = block_size;
+        // Re-apply and capture the effective layout the AU accepts at the new
+        // rate, so the rebuilt scratch is sized to the real topology: the AU may
+        // take a different width at a different rate. `apply` also re-sends the
+        // stream format.
+        let outcome = next.apply(&self.handle).and_then(|channels| {
+            next.channels = channels;
+            next.verify_block_size(&self.handle)
+        });
+        match outcome {
+            Ok(()) => {
+                self.config = next;
                 Ok(())
             }
-            State::Empty => unreachable!("AuInstance left empty"),
-        }
-    }
-
-    /// Uninitializes the AU (`AudioUnitUninitialize`), freeing its render
-    /// resources. No-op if not initialized.
-    ///
-    /// As with [`initialize`](Self::initialize), a failure restores the state
-    /// the call started in rather than leaving the instance unusable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuError::OsStatus`] if `AudioUnitUninitialize` fails; the
-    /// instance stays initialized.
-    pub fn uninitialize(&mut self) -> Result<()> {
-        match std::mem::replace(&mut self.state, State::Empty) {
-            State::Active(r) => match r.uninitialize() {
-                Ok(l) => {
-                    self.state = State::Loaded(l);
-                    Ok(())
-                }
-                Err((r, e)) => {
-                    self.state = State::Active(r);
-                    Err(e)
-                }
-            },
-            other @ State::Loaded(_) => {
-                self.state = other;
-                Ok(())
+            Err(e) => {
+                // Best-effort restore of the AU's own format too; if this also
+                // fails there is nothing further to do but surface the original
+                // rejection.
+                let _ = previous.apply(&self.handle);
+                Err(e)
             }
-            State::Empty => unreachable!("AuInstance left empty"),
-        }
-    }
-
-    fn handle(&self) -> &AuHandle {
-        match &self.state {
-            State::Loaded(l) => &l.handle,
-            State::Active(r) => &r.loaded.handle,
-            State::Empty => unreachable!("AuInstance accessed while empty"),
-        }
-    }
-
-    fn config(&self) -> &StreamConfig {
-        match &self.state {
-            State::Loaded(l) => &l.config,
-            State::Active(r) => &r.loaded.config,
-            State::Empty => unreachable!(),
         }
     }
 
     /// The instance, for the safe AudioToolbox calls on it: the free functions of
     /// [`crate::parameters`], [`crate::identity`] and [`crate::offline`] take it.
     pub fn unit(&self) -> &Unit {
-        self.handle().unit()
+        self.handle.unit()
     }
 
     /// The raw `AudioUnit` pointer, for a test that makes an AudioToolbox call
@@ -345,15 +301,84 @@ impl AuInstance {
         self.unit().as_raw()
     }
 
+    /// Installs the host transport callbacks (`kAudioUnitProperty_HostCallbacks`)
+    /// so the AU can pull tempo, beat and transport state during its render,
+    /// returning the state the host publishes into.
+    ///
+    /// Offered before `initialize`, once, off the audio thread. A unit that
+    /// refuses the property runs on its own clock; the refusal is the error, and
+    /// no transport is kept for it, so [`transport`](Self::transport) is `Some`
+    /// exactly when the unit took the callbacks.
+    ///
+    /// # Errors
+    /// The `OSStatus` of the property write.
+    pub fn install_host_callbacks(&mut self) -> Result<&TransportState> {
+        // Allocate once and keep the same state on a re-install: the AU may
+        // already hold a `hostUserData` pointing at it, and swapping in a fresh
+        // allocation would leave that pointer dangling until the property write
+        // landed: a window on the render thread, not merely a leak.
+        let unit = self.handle.unit();
+        let callbacks = self
+            .transport
+            .get_or_insert_with(|| HostCallbacks::new(unit));
+        if let Err(e) = callbacks.install() {
+            // Nothing was installed, so nothing is kept: a re-install after a
+            // refusal starts from a fresh state.
+            self.transport = None;
+            return Err(e.into());
+        }
+        Ok(callbacks.state())
+    }
+
+    /// The state the host transport callbacks read, shared with the render
+    /// thread that publishes into it. `None` unless the callbacks are installed.
+    pub(crate) fn share_transport(&self) -> Option<Arc<TransportState>> {
+        self.transport.as_ref().map(HostCallbacks::share_state)
+    }
+
+    /// The state as the unit's `ClassInfo` plist, empty when the AU answers null.
+    pub(crate) fn capture_state(&self) -> Result<Vec<u8>> {
+        Ok(self
+            .unit()
+            .copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO)?)
+    }
+
+    /// Restores a `ClassInfo` plist and tells every open editor the values moved
+    /// (a failure to notify is not a failure to restore). Empty data is a no-op.
+    pub(crate) fn restore_state(&mut self, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        self.unit()
+            .set_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO, data)?;
+        let _ = crate::listener::notify_all_parameters(self.unit());
+        Ok(())
+    }
+
+    /// Whether an editor is open on this unit.
+    pub fn editor_open(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    pub(crate) fn editor_slot(&mut self) -> &mut Option<AuEditor> {
+        &mut self.editor
+    }
+
+    pub(crate) fn last_latency(&self) -> &Cell<Samples> {
+        &self.last_latency
+    }
+
+
     /// High-level [`AuType`] this component was classified as.
     pub fn au_type(&self) -> AuType {
-        self.handle().au_type()
+        self.handle.au_type()
     }
+
 
     /// Configured input channel count (`0` for generators / instruments, which
     /// have no input bus).
     pub fn num_inputs(&self) -> u32 {
-        let channels = self.config().channels;
+        let channels = self.config.channels;
         if channels.has_input {
             channels.inputs.count() as u32
         } else {
@@ -361,30 +386,18 @@ impl AuInstance {
         }
     }
 
+
     /// Configured output channel count.
     pub fn num_outputs(&self) -> u32 {
-        self.config().channels.outputs.count() as u32
+        self.config.channels.outputs.count() as u32
     }
+
 
     /// Configured sample rate in Hz.
     pub fn sample_rate(&self) -> f64 {
-        self.config().sample_rate
+        self.config.sample_rate
     }
 
-    /// Whether the AU is currently in the `Ready` state.
-    pub fn is_initialized(&self) -> bool {
-        matches!(self.state, State::Active(_))
-    }
-
-    /// Test-only: how many times the input render callback has been installed
-    /// on the current `Ready` instance (0 if not ready).
-    #[cfg(test)]
-    fn callback_install_count(&self) -> u32 {
-        match &self.state {
-            State::Active(r) => r.rendering.renderer.input_callback_installs(),
-            _ => 0,
-        }
-    }
 
     /// Copies the AU's display name.
     ///
@@ -393,8 +406,9 @@ impl AuInstance {
     /// Never returns `Err`; a name that cannot be read is reported as
     /// `"<unknown>"`.
     pub fn get_name(&self) -> Result<String> {
-        Ok(self.handle().get_name())
+        Ok(self.handle.get_name())
     }
+
 
     /// Writes a parameter value **and** notify listeners — including the AU's own
     /// open editor.
@@ -427,67 +441,6 @@ impl AuInstance {
         )?)
     }
 
-    /// Clears the AU's internal audio state — reverb tails, delay lines, filter
-    /// memory — without disturbing its parameters.
-    ///
-    /// A host must call this on every discontinuity in the timeline, and the
-    /// symptom of not calling it is stale audio arriving where none belongs:
-    /// jumping from bar 60 to bar 1 smears the reverb tail of bar 60 across the
-    /// downbeat, un-muting a channel replays whatever was sitting in its delay
-    /// line, and a loop wrap-around bleeds the end of the loop into its start.
-    /// Parameters are deliberately untouched — this resets the signal history,
-    /// not the patch.
-    ///
-    /// # Legality before `initialize`
-    ///
-    /// Legal, and a no-op in practice. Measured on macOS 15.6 against the whole
-    /// corpus (AUDelay, AUMatrixReverb, AUDynamicsProcessor, AUNBandEQ,
-    /// AULowpass, plus both instruments): every unit returns `noErr` for
-    /// `AudioUnitReset` in the `Loaded` state, and remains renderable after
-    /// `initialize`. That is the answer the AU gives, so this method does not
-    /// gate on the typestate the way [`process`](Self::process) does — a host
-    /// that resets a channel strip while wiring it up should not have to know
-    /// which plugins are initialized yet. There is nothing to flush pre-init
-    /// (no render resources are allocated), so the call is simply inert.
-    ///
-    /// `au_notification.rs::reset_is_accepted_before_initialize` pins this; if a
-    /// future AU refuses, that test fails rather than the behaviour changing
-    /// silently.
-    ///
-    /// # The render clock restarts too
-    ///
-    /// `AudioUnitReset` flushes the AU's signal history; the render cursor this
-    /// host stamps each block's `mSampleTime` from is *this crate's* state, and
-    /// AudioToolbox has no idea it exists. Leaving it running after a flush
-    /// hands the AU a timestamp saying the block after a locate follows
-    /// contiguously from the block before it, which is the opposite of what the
-    /// flush announced — see `crate::buffer::RenderScratch::reset_position` for
-    /// why it restarts at zero rather than seeking to the playhead.
-    ///
-    /// Only on success. A refused flush leaves the AU holding the history it
-    /// had, so restarting the clock beside it would produce the one state
-    /// neither branch describes: an AU whose tail belongs to bar 60 being told
-    /// it is at frame 0.
-    ///
-    /// The push path's cursor is a separate object the host owns — reset it
-    /// with [`PushScratch::reset_position`](crate::offline::PushScratch::reset_position).
-    ///
-    /// # Errors
-    /// Returns [`AuError::OsStatus`] with the AU's own status. Propagated rather
-    /// than absorbed: a host that jumps the playhead and silently fails to flush
-    /// produces audible garbage on the next block, and swallowing the error
-    /// would leave no way to tell that from a plugin that simply had no tail.
-    pub fn reset(&mut self) -> Result<()> {
-        // Global scope / element 0 is the documented address for a whole-unit
-        // reset; per-bus reset is not a thing AUv2 offers.
-        self.unit().reset(Scope::GLOBAL, Element::ZERO)?;
-        // Pre-`initialize` there is no scratch: the cursor is created at zero by
-        // `initialize` and has nothing to carry over, so there is nothing to do.
-        if let State::Active(r) = &mut self.state {
-            r.rendering.renderer.reset_position();
-        }
-        Ok(())
-    }
 
     /// Reads a parameter's current value, in the parameter's own units, from
     /// the global scope, element 0.
@@ -499,6 +452,7 @@ impl AuInstance {
     pub fn get_parameter(&self, id: u32) -> Result<f32> {
         parameters::get(self.unit(), id)
     }
+
 
     /// Installs a render notification, called twice per render (pre and post).
     ///
@@ -523,7 +477,7 @@ impl AuInstance {
     /// one block, an automation writer for the length of a gesture — and several
     /// may be installed at once, since AudioToolbox keys them by
     /// `(proc, ref_con)` and this crate gives each handle its own state. Storing
-    /// one inside `AuInstance` would impose a single slot and tie every tap to
+    /// one inside `AuLoaded` would impose a single slot and tie every tap to
     /// the plugin's lifetime.
     ///
     /// The consequence the caller owns: the handle must not outlive this
@@ -552,6 +506,7 @@ impl AuInstance {
         )?)
     }
 
+
     /// This instance's unit, wrapped so a render-notify callback can capture it.
     ///
     /// A pre-render callback's whole job is usually to schedule automation on the
@@ -568,13 +523,14 @@ impl AuInstance {
         self.unit().render_unit()
     }
 
+
     /// Schedules parameter events into the render call currently in flight.
     ///
     /// **Only correct from inside a pre-render notify.** The events apply to the
     /// current `AudioUnitRender` and to no other, so calling this from a control
     /// thread races the render it was meant to affect. Reach it through
     /// [`add_render_notify`](Self::add_render_notify); this method exists so a
-    /// caller holding an `&AuInstance` in the callback does not have to reach for
+    /// caller holding an `&AuLoaded` in the callback does not have to reach for
     /// the raw unit.
     ///
     /// For a parameter change that should simply take effect at the next block
@@ -604,101 +560,12 @@ impl AuInstance {
         )?)
     }
 
-    /// Delivers a block of UMP MIDI events to an instrument / music-effect AU as
-    /// legacy `MusicDeviceMIDIEvent` calls.
-    ///
-    /// Each channel-voice event goes out as the MIDI 1.0 messages it stands for
-    /// (`tutti_midi_protocol::midi1`: MIDI 2.0 resolutions narrowed per spec,
-    /// and a banked Program Change as CC 0, CC 32, then the program), each at
-    /// the event's block offset through `MusicDeviceMIDIEvent`.
-    ///
-    /// **SysEx goes out through `MusicDeviceSysEx`** (`MusicDevice.h:237-241`),
-    /// a separate entry point that takes a byte buffer rather than a packed
-    /// 3-byte word — there is no way to express a patch dump through
-    /// `MusicDeviceMIDIEvent`, which is why AU provides two calls. UMP carries
-    /// SysEx7 in 6-byte packets, so a message spanning several is reassembled
-    /// here, in a buffer reserved by [`initialize`](Self::initialize), before
-    /// being sent as one buffer: the call does not allocate.
-    ///
-    /// Families with genuinely no AUv2 form (per-note MIDI 2.0 messages, UMP
-    /// stream and utility messages) are still skipped.
-    ///
-    /// Only meaningful for AUs whose type [`AuType::receives_midi`] is true;
-    /// the caller gates on that. Errors from individual events are ignored so a
-    /// single rejected message can't abort the whole block.
-    pub fn send_midi(&self, events: &[UmpAt]) {
-        use tutti_midi_protocol::midi1;
-        use tutti_ump::{Message, SysexStep, decode};
-
-        /// Hands a complete SysEx message to the AU.
-        ///
-        /// `MusicDeviceSysEx` (`MusicDevice.h:237-241`) takes the bytes
-        /// *without* a frame offset — AUv2 has no way to schedule a SysEx
-        /// within a block, so it lands at the start of the current render
-        /// regardless of when it was stamped. That is the format's limit, not
-        /// a shortcut here.
-        ///
-        /// The status is ignored for the same reason every other call on this
-        /// path ignores one: a single rejected message must not abort the rest
-        /// of the block.
-        fn send_sysex(unit: &Unit, bytes: &[u8]) {
-            let _ = unit.sysex(bytes);
-        }
-
-        // A SysEx7 run spanning several UMP packets (at most six bytes each)
-        // is reassembled in the instance's pre-sized buffer; a message past
-        // its capacity is dropped whole and counted
-        // ([`sysex_dropped`](Self::sysex_dropped)). A run left open at the end
-        // of a block continues in the next.
-        let mut sysex = self.sysex.borrow_mut();
-        sysex.begin_block();
-
-        let unit = self.unit();
-        for &(offset, ev) in events {
-            match decode(ev) {
-                // A channel voice message as the MIDI 1.0 messages it stands
-                // for (`midi1`: a MIDI 1.0 one as it came, a MIDI 2.0 one
-                // narrowed, a Note On never at velocity 0, and a banked
-                // Program Change as CC 0, CC 32, then the program; doc 027
-                // D16). One with no MIDI 1.0 form (per-note controllers,
-                // RPN/NRPN, per-note management) sends nothing.
-                Ok(message @ (Message::Midi1(..) | Message::Midi2(..))) => {
-                    for bytes in midi1(message) {
-                        let [status, d1, d2] = bytes.padded();
-                        let _ = unit.midi_event(status, d1, d2, offset.get());
-                    }
-                }
-                // SysEx has no 3-byte form; it goes out through a different
-                // AU entry point entirely. Reassembled across packets first:
-                // a UMP SysEx7 packet carries at most 6 bytes, so anything
-                // longer arrives as START/CONTINUE.../END. Anything else
-                // (system, stream, utility) has no AUv2 delivery and the
-                // assembler passes it by.
-                _ => {
-                    if let SysexStep::Complete(message) = sysex.push(ev) {
-                        // `MusicDeviceSysEx` takes the complete message,
-                        // `0xF0` and `0xF7` included (`MusicDevice.h`).
-                        // The message is a `SysexMessage`: framed and 7-bit
-                        // by its type.
-                        send_sysex(unit, sysex.message(message).bytes());
-                    }
-                }
-            }
-        }
-    }
-
-    /// SysEx messages [`send_midi`](Self::send_midi) dropped whole since this
-    /// instance was made: longer than [`SYSEX_MESSAGE_CAPACITY`], cut by a
-    /// later `START`, or sent before [`initialize`](Self::initialize) reserved
-    /// the buffer. See [`SysexAssembler`] for the policy.
-    pub fn sysex_dropped(&self) -> u64 {
-        self.sysex.borrow().dropped()
-    }
 
     /// Enumerates all parameters exposed by the AU.
     pub fn get_parameter_list(&self) -> Vec<AuParameter> {
         parameters::list(self.unit())
     }
+
 
     /// How many buses the AU has on `direction`.
     ///
@@ -713,6 +580,7 @@ impl AuInstance {
     pub fn bus_count(&self, direction: BusDirection) -> u32 {
         bus::bus_count(self.unit(), direction)
     }
+
 
     /// The channel layout of bus `bus` on `direction`.
     ///
@@ -730,6 +598,7 @@ impl AuInstance {
         bus::bus_layout(self.unit(), direction, bus)
     }
 
+
     /// Every channel configuration the AU declares it can run.
     ///
     /// An empty vec means the AU publishes no constraint — which is what all 22
@@ -739,6 +608,7 @@ impl AuInstance {
     pub fn supported_channel_configs(&self) -> Vec<AuChannelConfig> {
         bus::supported_channel_configs(self.unit())
     }
+
 
     /// Every channel *order* the AU says it can run bus `bus` of `direction` in.
     ///
@@ -755,6 +625,7 @@ impl AuInstance {
         channel_layout::supported_layout_tags(self.unit(), direction, bus)
     }
 
+
     /// The channel order bus `bus` of `direction` is running right now.
     ///
     /// # Errors
@@ -769,6 +640,7 @@ impl AuInstance {
     pub fn layout_tag(&self, direction: BusDirection, bus: u32) -> Result<AuLayoutTag> {
         channel_layout::layout_tag(self.unit(), direction, bus)
     }
+
 
     /// Asks the AU to run bus `bus` of `direction` in the `tag` channel order.
     ///
@@ -796,6 +668,7 @@ impl AuInstance {
         channel_layout::set_layout_tag(self.unit(), direction, bus, tag)
     }
 
+
     /// The AU's own name for bus `bus` of `direction` — "Sidechain", "stereo mix".
     ///
     /// Without this a multi-input plugin's buses render as "Bus 1..N" in the host
@@ -819,6 +692,7 @@ impl AuInstance {
         channel_layout::element_name(self.unit(), direction, bus)
     }
 
+
     /// What the AU publishes about its MIDI **output** streams, or `None` if it
     /// publishes nothing.
     ///
@@ -835,6 +709,7 @@ impl AuInstance {
     pub fn midi_output_info(&self) -> Option<MidiOutputInfo> {
         midi_out::midi_output_info(self.unit())
     }
+
 
     /// Installs `sink` as the destination for MIDI this AU generates during render.
     ///
@@ -865,6 +740,7 @@ impl AuInstance {
         Ok(midi_out::install(self.unit(), sink)?)
     }
 
+
     /// Tells the AU where it sits in the host's project — `"track 3"`.
     ///
     /// Purely presentational: the AU shows it in its own window so a user with
@@ -882,6 +758,7 @@ impl AuInstance {
         identity::set_context_name(self.unit(), name)
     }
 
+
     /// Reads back the name set by [`set_context_name`](Self::set_context_name).
     ///
     /// All 57 instantiable units measured return the exact string written, so
@@ -893,6 +770,7 @@ impl AuInstance {
     pub fn context_name(&self) -> Result<Option<String>> {
         identity::context_name(self.unit())
     }
+
 
     /// Give this instance its own name, distinct from another load of the same
     /// AU.
@@ -907,6 +785,7 @@ impl AuInstance {
         identity::set_nick_name(self.unit(), name)
     }
 
+
     /// Reads back the name set by [`set_nick_name`](Self::set_nick_name).
     ///
     /// `Ok(None)` means the AU implements the property but has no name set —
@@ -917,6 +796,7 @@ impl AuInstance {
     pub fn nick_name(&self) -> Result<Option<String>> {
         identity::nick_name(self.unit())
     }
+
 
     /// The AU's own shortlist of its most important parameters, in its own
     /// priority order.
@@ -935,6 +815,7 @@ impl AuInstance {
         identity::parameters_for_overview(self.unit())
     }
 
+
     /// Filesystem path of the AU's icon, for a plugin browser row.
     ///
     /// `Ok(None)` means the AU implements the property but supplied no URL, or
@@ -947,6 +828,7 @@ impl AuInstance {
         identity::icon_location(self.unit())
     }
 
+
     /// Whether this AU implements the parameter↔MIDI mapping family at all.
     ///
     /// The capability gate to branch on before offering a MIDI-learn UI, and the
@@ -958,6 +840,7 @@ impl AuInstance {
     pub fn supports_parameter_midi_mapping(&self) -> bool {
         midi_map::supports_parameter_midi_mapping(self.unit())
     }
+
 
     /// The AU's current parameter↔MIDI mapping table.
     ///
@@ -979,6 +862,7 @@ impl AuInstance {
     pub fn parameter_midi_mappings(&self) -> Result<Vec<AuMidiMapping>> {
         midi_map::all(self.unit())
     }
+
 
     /// Adds `mappings`, replacing any that already target the same parameter.
     ///
@@ -1005,6 +889,7 @@ impl AuInstance {
         midi_map::add(self.unit(), mappings)
     }
 
+
     /// Removes the mappings targeting each argument's
     /// `(scope, element, parameter_id)`.
     ///
@@ -1023,6 +908,7 @@ impl AuInstance {
         midi_map::remove(self.unit(), mappings)
     }
 
+
     /// Replaces the AU's entire mapping table with `mappings`.
     ///
     /// The obvious way to *clear* the table — writing an empty one — does not
@@ -1038,6 +924,7 @@ impl AuInstance {
     pub fn set_parameter_midi_mappings(&mut self, mappings: &[AuMidiMapping]) -> Result<()> {
         midi_map::set_all(self.unit(), mappings)
     }
+
 
     /// Arms "learn" mode: the AU maps the **next MIDI message it sees** to the
     /// parameter `mapping` names.
@@ -1058,6 +945,7 @@ impl AuInstance {
         midi_map::arm_hot_map(self.unit(), mapping)
     }
 
+
     /// The mapping a hot map just completed, or `None` if none has.
     ///
     /// `None` rather than an error, because the AU's status cannot be trusted
@@ -1071,6 +959,7 @@ impl AuInstance {
         midi_map::hot_map(self.unit())
     }
 
+
     /// Whether a completed hot map is waiting to be read.
     ///
     /// Named form of [`hot_mapped_parameter`](Self::hot_mapped_parameter)
@@ -1080,10 +969,12 @@ impl AuInstance {
         midi_map::hot_map_pending(self.unit())
     }
 
+
     /// Borrows a [`ParamView`] for scoped parameter access.
     pub fn parameters(&self) -> ParamView<'_> {
         ParamView::new(self.unit())
     }
+
 
     /// Returns the plugin-reported processing latency in samples at the current
     /// sample rate.
@@ -1114,6 +1005,7 @@ impl AuInstance {
         Ok(Seconds(seconds).to_samples(tutti_types::SampleRate::new(self.sample_rate())))
     }
 
+
     /// Seconds of audio this AU keeps producing after its input goes silent.
     ///
     /// Distinct from [`get_latency`](Self::get_latency), which reports how far
@@ -1131,6 +1023,7 @@ impl AuInstance {
     pub fn get_tail_time(&self) -> Result<Seconds> {
         transport::tail_time(self.unit())
     }
+
 
     /// Tells this AU how far downstream of it the listener is, on one bus.
     ///
@@ -1161,6 +1054,7 @@ impl AuInstance {
         transport::set_presentation_latency(self.unit(), direction, bus, latency)
     }
 
+
     /// Which parameters writing the meta-parameter `id` may silently move.
     ///
     /// `None` means the AU did not answer — **not** that nothing moves. See
@@ -1176,48 +1070,6 @@ impl AuInstance {
         parameters::dependents_of(self.unit(), id)
     }
 
-    /// Installs the four AUv2 host transport callbacks, so tempo-synced AUs can
-    /// pull project tempo, beat position and transport state during render.
-    ///
-    /// Returns a borrow of the installed [`TransportState`]; write to it with
-    /// [`TransportState::set_transport`] from the control thread each block.
-    /// Calling this twice reuses the existing state rather than reallocating, so
-    /// the `hostUserData` pointer the AU already retains stays valid.
-    ///
-    /// # Why this is opt-in rather than done at `new`
-    ///
-    /// The state is a real allocation and the property write is a real IPC round
-    /// trip for an out-of-process AU. A host that does not sequence — a mastering
-    /// chain, an analysis pass — should not pay for either, and an AU that is
-    /// handed a transport it can pull is entitled to assume the host maintains
-    /// it. Installing by default would leave every non-sequencing host
-    /// advertising callbacks it never feeds. Until the first
-    /// [`TransportState::set_transport`] they answer
-    /// `kAudioUnitErr_CannotDoInCurrentContext`, so the plugin falls back to its
-    /// own clock, as it does with none installed.
-    ///
-    /// # Errors
-    /// Returns [`AuError::OsStatus`] if the AU refuses
-    /// `kAudioUnitProperty_HostCallbacks`. On this machine none do — all ~35
-    /// Apple units plus the three third-party units installed accept the write,
-    /// including the ones that never call back.
-    pub fn install_host_callbacks(&mut self) -> Result<&TransportState> {
-        let loaded = match &mut self.state {
-            State::Loaded(l) => l,
-            State::Active(r) => &mut r.loaded,
-            State::Empty => unreachable!("AuInstance accessed while empty"),
-        };
-        // Allocate once and keep the same state on a re-install: the AU may
-        // already hold a `hostUserData` pointing at it, and swapping in a fresh
-        // allocation would leave that pointer dangling until the property write
-        // landed — a window on the render thread, not merely a leak.
-        let unit = loaded.handle.unit();
-        let callbacks = loaded
-            .transport
-            .get_or_insert_with(|| HostCallbacks::new(unit));
-        callbacks.install()?;
-        Ok(callbacks.state())
-    }
 
     /// Borrows the installed transport, or `None` if
     /// [`install_host_callbacks`](Self::install_host_callbacks) was never called.
@@ -1226,12 +1078,9 @@ impl AuInstance {
     /// an atomic — the point of the type is that the control thread can publish
     /// while the render thread reads.
     pub fn transport(&self) -> Option<&TransportState> {
-        match &self.state {
-            State::Loaded(l) => l.transport.as_ref().map(HostCallbacks::state),
-            State::Active(r) => r.loaded.transport.as_ref().map(HostCallbacks::state),
-            State::Empty => unreachable!("AuInstance accessed while empty"),
-        }
+        self.transport.as_ref().map(HostCallbacks::state)
     }
+
 
     /// Publishes a transport snapshot for the AU to pull during the next render.
     ///
@@ -1252,6 +1101,7 @@ impl AuInstance {
             None => false,
         }
     }
+
 
     /// Enumerates the AU's factory presets.
     ///
@@ -1283,6 +1133,7 @@ impl AuInstance {
             .collect()
     }
 
+
     /// Selects factory preset `number`, restoring the parameter values the AU
     /// stores under it.
     ///
@@ -1294,6 +1145,7 @@ impl AuInstance {
     pub fn load_factory_preset(&mut self, number: i32) -> Result<()> {
         Ok(self.unit().set_present_preset(number)?)
     }
+
 
     /// Reads back the preset the AU currently considers active.
     ///
@@ -1308,6 +1160,7 @@ impl AuInstance {
         let (number, name) = self.unit().present_preset()?;
         Ok(AuPreset { number, name })
     }
+
 
     /// Bypass the effect: when set, the AU passes its input through to its
     /// output without processing it.
@@ -1332,6 +1185,7 @@ impl AuInstance {
             .set::<BypassEffect>(Scope::GLOBAL, Element::ZERO, &value)?)
     }
 
+
     /// Whether the AU is currently bypassed.
     ///
     /// # Errors
@@ -1343,6 +1197,7 @@ impl AuInstance {
             .get::<BypassEffect>(Scope::GLOBAL, Element::ZERO)?;
         Ok(value != 0)
     }
+
 
     /// Whether the AU has been told it is rendering offline.
     ///
@@ -1360,6 +1215,7 @@ impl AuInstance {
         crate::offline::is_offline_render(self.unit())
     }
 
+
     /// Tells the AU whether this render is a faster-than-real-time bounce.
     ///
     /// A host doing an offline export sets this on every AU in the graph before
@@ -1374,37 +1230,6 @@ impl AuInstance {
         crate::offline::set_offline_render(self.unit(), offline)
     }
 
-    /// Sets offline-render mode, re-initializing around the change if the AU was
-    /// already initialized.
-    ///
-    /// The same uninitialize → set → re-initialize dance
-    /// [`set_sample_rate`](Self::set_sample_rate) and
-    /// [`set_block_size`](Self::set_block_size) perform, and for the same
-    /// reason: a unit that sizes an oversampling buffer from this flag can only
-    /// do so at `AudioUnitInitialize`, so writing it to a live unit is accepted
-    /// and then ignored. (Ardour brackets it identically —
-    /// `audio_unit.cc:865-884`.)
-    ///
-    /// Returns `Ok(false)` when the AU has no
-    /// `kAudioUnitProperty_OfflineRender`: the property is optional, and a unit
-    /// that does not implement it has genuinely declined rather than failed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuError::OsStatus`] if uninitializing or re-initializing
-    /// fails; a refused property write is `Ok(false)`, not an error. After a
-    /// failed re-initialize the unit is left uninitialized.
-    pub fn set_offline_render_bracketed(&mut self, offline: bool) -> Result<bool> {
-        let was_ready = self.is_initialized();
-        if was_ready {
-            self.uninitialize()?;
-        }
-        let accepted = crate::offline::set_offline_render(self.unit(), offline).is_ok();
-        if was_ready {
-            self.initialize()?;
-        }
-        Ok(accepted)
-    }
 
     /// Whether the AU is willing to render with its input and output buffers
     /// aliasing the same memory.
@@ -1425,6 +1250,7 @@ impl AuInstance {
         crate::offline::supports_in_place(self.unit())
     }
 
+
     /// The AU's current render-quality setting, `0..=`[`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX).
     ///
     /// # Errors
@@ -1433,6 +1259,7 @@ impl AuInstance {
     pub fn render_quality(&self) -> Result<u32> {
         crate::offline::render_quality(self.unit())
     }
+
 
     /// Sets the AU's render quality, `0` (cheapest) to
     /// [`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX) (best).
@@ -1448,110 +1275,6 @@ impl AuInstance {
         crate::offline::set_render_quality(self.unit(), quality)
     }
 
-    /// Renders `frames` through the AU using the **push** model
-    /// (`AudioUnitProcess`) rather than the pull model
-    /// [`process`](Self::process) uses.
-    ///
-    /// The host stages input into `scratch` beforehand
-    /// ([`PushScratch::stage_input`](crate::offline::PushScratch::stage_input))
-    /// and reads the result out afterwards
-    /// ([`emit_output`](crate::offline::PushScratch::emit_output)); no render
-    /// callback is involved. The two render paths are genuinely distinct
-    /// contracts, not two spellings of one — see the
-    /// [`offline`](crate::offline) module docs — which is why this does not try
-    /// to share `AuActive`'s scratch.
-    ///
-    /// Requires the `Ready` state for the same reason
-    /// [`process`](Self::process) does: `AudioUnitProcess` renders through
-    /// buffers the AU allocated at `AudioUnitInitialize`.
-    ///
-    /// # Errors
-    /// [`AuError::OsStatus`] with `kAudioUnitErr_Uninitialized` before
-    /// `initialize`; otherwise as [`crate::offline::process_push`] — including
-    /// `unimpErr` from the majority of units, which do not implement the
-    /// selector.
-    pub fn process_push(
-        &mut self,
-        scratch: &mut crate::offline::PushScratch,
-        frames: u32,
-    ) -> Result<AudioUnitRenderActionFlags> {
-        if !self.is_initialized() {
-            return Err(AuError::OsStatus {
-                function: "AuInstance::process_push",
-                code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
-            });
-        }
-        crate::offline::process_push(self.unit(), scratch, frames)
-    }
-
-    /// Renders `frames` through the AU with `AudioUnitProcessMultiple` — the
-    /// multiple-input-bus (sidechain) push call.
-    ///
-    /// **Measured unusable against everything installed on this machine.** Of
-    /// every Apple unit in the corpus plus both third-party units, only AUReverb2
-    /// implements the selector at all, and it accepts exactly one input list;
-    /// everything else answers `unimpErr`. The numbers are in
-    /// [`crate::offline::process_push_multiple`]. This exists so the contract is
-    /// reachable and tested, not because a sidechain can be built on it today.
-    ///
-    /// # Errors
-    /// [`AuError::OsStatus`] with `kAudioUnitErr_Uninitialized` before
-    /// `initialize`; otherwise as
-    /// [`crate::offline::process_push_multiple`].
-    pub fn process_push_multiple(
-        &mut self,
-        scratch: &mut crate::offline::PushScratch,
-        frames: u32,
-    ) -> Result<AudioUnitRenderActionFlags> {
-        if !self.is_initialized() {
-            return Err(AuError::OsStatus {
-                function: "AuInstance::process_push_multiple",
-                code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
-            });
-        }
-        crate::offline::process_push_multiple(self.unit(), scratch, frames)
-    }
-
-    /// Serializes the AU's current state (all parameters + internal state) to
-    /// a binary plist blob suitable for persistence.
-    ///
-    /// # Errors
-    ///
-    /// [`AuError::OsStatus`] if the AU refuses to give up its `ClassInfo`, and
-    /// [`AuError::InvalidBuffer`] if that property list cannot be serialized.
-    pub fn get_state(&self, _main: &MainThread) -> Result<Vec<u8>> {
-        // The `ClassInfo` plist comes back under the Copy rule; empty when the
-        // AU answers null.
-        Ok(self
-            .unit()
-            .copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO)?)
-    }
-
-    /// Restores state previously produced by [`Self::get_state`]. Empty input is a no-op.
-    ///
-    /// A successful restore is followed by
-    /// [`notify_all_parameters`](crate::listener::notify_all_parameters), which
-    /// Apple's `ClassInfo` documentation mandates. Setting `ClassInfo` rewrites
-    /// the AU's entire parameter set *inside* the AU, without issuing a single
-    /// `AUParameterSet` — so no listener hears about any of it. Without the
-    /// notify, opening a project leaves every open plugin editor displaying the
-    /// values from before the load: the audio is correct and the UI is a lie,
-    /// and it stays a lie until the user nudges each control by hand.
-    ///
-    /// # Errors
-    /// Returns [`AuError::OsStatus`] if the AU rejects the state blob. A failure
-    /// of the *notify* is deliberately not propagated — see the inline comment.
-    pub fn set_state(&mut self, _main: &MainThread, data: &[u8]) -> Result<()> {
-        if data.is_empty() {
-            return Ok(());
-        }
-        self.unit()
-            .set_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO, data)?;
-        // Tell every open editor the values moved; a failure to notify is not a
-        // failure to restore.
-        let _ = crate::listener::notify_all_parameters(self.unit());
-        Ok(())
-    }
 
     /// Restores state that came from a **document** (a saved project), preferring
     /// `kAudioUnitProperty_ClassInfoFromDocument` and falling back to `ClassInfo`.
@@ -1579,7 +1302,7 @@ impl AuInstance {
     /// Returns the **fallback's** error if both properties fail, since that is the
     /// path a host without this method would have taken anyway. A refusal of
     /// property 50 alone is not an error — it is the documented normal case.
-    pub fn load_document_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
+    pub fn load_document_state(&mut self, _main: &MainThread, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -1589,11 +1312,12 @@ impl AuInstance {
             self.unit()
                 .set_plist::<ClassInfoFromDocument>(Scope::GLOBAL, Element::ZERO, data);
         if from_document.is_err() {
-            return self.set_state(main, data);
+            return self.restore_state(data);
         }
         let _ = crate::listener::notify_all_parameters(self.unit());
         Ok(())
     }
+
 
     /// Writes the AU's current state to `path` as a `.aupreset` file — the format
     /// Logic, Live and Reaper read.
@@ -1613,8 +1337,9 @@ impl AuInstance {
         path: &std::path::Path,
         name: &str,
     ) -> Result<()> {
-        crate::aupreset::save_preset_file(self.unit(), self.handle().component(), path, name)
+        crate::aupreset::save_preset_file(self.unit(), self.handle.component(), path, name)
     }
+
 
     /// Loads a `.aupreset` file, **validating that it belongs to this AU** before
     /// applying it. Returns the identity that was accepted.
@@ -1643,7 +1368,7 @@ impl AuInstance {
         path: &std::path::Path,
     ) -> Result<crate::aupreset::AuPresetIdentity> {
         let identity =
-            crate::aupreset::load_preset_file(self.unit(), self.handle().component(), path)?;
+            crate::aupreset::load_preset_file(self.unit(), self.handle.component(), path)?;
         // As in `set_state`: the state is loaded, so a failed notify is a stale
         // editor rather than a failed load.
         //
@@ -1651,882 +1376,17 @@ impl AuInstance {
         Ok(identity)
     }
 
-    /// Renders `num_frames` of audio through the AU.
-    ///
-    /// `input` and `output` are per-channel planar slices. `num_frames` must
-    /// not exceed the `block_size` passed to [`AuInstance::new`].
-    ///
-    /// Call from the audio thread. The render buffers are sized at
-    /// [`initialize`](Self::initialize), so the steady-state path does not
-    /// allocate.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuError::OsStatus`] with `kAudioUnitErr_Uninitialized` if the
-    /// AU has not been initialized, [`AuError::InvalidBuffer`] if `num_frames`
-    /// exceeds the configured block size, or [`AuError::RenderFailed`] if
-    /// `AudioUnitRender` fails.
-    pub fn process(
-        &mut self,
-        input: &[&[f32]],
-        output: &mut [&mut [f32]],
-        num_frames: u32,
-    ) -> Result<()> {
-        match &mut self.state {
-            State::Active(r) => r.process(input, output, num_frames),
-            State::Loaded(_) => Err(AuError::OsStatus {
-                function: "AuInstance::process",
-                code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
-            }),
-            State::Empty => unreachable!(),
-        }
-    }
-
-    /// [`process`](Self::process) for a host running an f64 signal path,
-    /// converting to and from the f32 the AU renders in.
-    ///
-    /// **The conversion is not optional and not a shortcut.** AUv2 has no f64
-    /// render entry point at all: `AudioUnitRender` consumes an
-    /// `AudioBufferList` of `Float32`, with no `…F64` counterpart of the kind
-    /// VST 2.4 provides via `processReplacingF64`. An f64 host therefore always
-    /// pays a narrowing round trip through an AU, and offering this here rather
-    /// than leaving each caller to hand-roll it is what keeps that round trip
-    /// allocation-free: it reuses the render scratch that already exists for the
-    /// f32 path instead of building conversion buffers per block.
-    ///
-    /// Precision beyond f32 does not survive the call, by construction.
-    ///
-    /// # Errors
-    /// As [`process`](Self::process).
-    pub fn process_f64(
-        &mut self,
-        input: &[&[f64]],
-        output: &mut [&mut [f64]],
-        num_frames: u32,
-    ) -> Result<()> {
-        match &mut self.state {
-            State::Active(r) => r.process_f64(input, output, num_frames),
-            State::Loaded(_) => Err(AuError::OsStatus {
-                function: "AuInstance::process_f64",
-                code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
-            }),
-            State::Empty => unreachable!(),
-        }
-    }
-
-    /// Changes the sample rate. If the AU was initialized, it is uninitialized
-    /// for reconfiguration and then re-initialized to preserve the state.
-    ///
-    /// This returns `Ok` only when the AU is *verified* to be running at
-    /// `rate`. `StreamConfig::apply` reads the accepted `mSampleRate` back and
-    /// errors on a mismatch; on that error the previous rate is restored into
-    /// the config, so [`sample_rate`](Self::sample_rate) and
-    /// [`get_latency`](Self::get_latency) never report a rate the AU is not
-    /// actually at.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuError::SampleRateRejected`] if the AU does not accept `rate`,
-    /// or [`AuError::OsStatus`] if uninitializing, applying the stream format or
-    /// re-initializing fails.
-    pub fn set_sample_rate(&mut self, rate: f64) -> Result<()> {
-        let was_ready = self.is_initialized();
-        if was_ready {
-            self.uninitialize()?;
-        }
-        if let State::Loaded(l) = &mut self.state {
-            let previous = l.config.sample_rate;
-            l.config.sample_rate = rate;
-            // Re-apply and capture the effective layout the AU accepts at the
-            // new rate, so the rebuilt scratch is sized to the real topology.
-            // The AU may take a different width at a different rate.
-            match l.config.apply(&l.handle) {
-                Ok(channels) => l.config.channels = channels,
-                Err(e) => {
-                    // Roll the config back to the rate the AU is still on, so a
-                    // caller that ignores this error doesn't inherit a lie.
-                    l.config.sample_rate = previous;
-                    // Best-effort restore of the AU's own format too; if this
-                    // also fails there is nothing further to do but surface the
-                    // original rejection.
-                    let _ = l.config.apply(&l.handle);
-                    if was_ready {
-                        self.initialize()?;
-                    }
-                    return Err(e);
-                }
-            }
-        }
-        if was_ready {
-            self.initialize()?;
-        }
-        Ok(())
-    }
 
     /// Configured maximum block size in frames.
     ///
-    /// This is the bound [`process`](Self::process) enforces: a `num_frames`
+    /// This is the bound the render enforces: a `num_frames`
     /// above it is [`AuError::InvalidBuffer`], because the AU allocated its
     /// internal buffers for this width at `AudioUnitInitialize` time and
     /// rendering wider writes past them.
     pub fn block_size(&self) -> u32 {
-        self.config().block_size
+        self.config.block_size
     }
 
-    /// Changes the maximum block size, re-initializing around the change if the
-    /// AU was already initialized.
-    ///
-    /// A DAW changing its buffer size in preferences would otherwise have to
-    /// destroy and rebuild every plugin instance, losing every scrap of state
-    /// that is not in a preset.
-    ///
-    /// `MaximumFramesPerSlice` is only writable on an **uninitialized** AU — the
-    /// AU sizes its internal buffers from it during `AudioUnitInitialize` — so
-    /// this performs the same uninitialize → reconfigure → re-initialize dance
-    /// [`set_sample_rate`](Self::set_sample_rate) does, with the same
-    /// verification discipline:
-    ///
-    /// * the accepted value is **read back**
-    ///   ([`StreamConfig::verify_block_size`]) and a mismatch is a hard error,
-    ///   rather than recording a width the AU is not running at. `process`
-    ///   rejects `num_frames > block_size`, so a config holding a larger figure
-    ///   than the AU allocated turns that guard into a false negative — the
-    ///   render is admitted and the AU writes past its own buffers. The same
-    ///   read-back guards the load path too, in the shared constructor tail of
-    ///   [`AuLoaded`]; a size that never reaches this method is checked there.
-    /// * on any failure the previous size is restored into the config **and**
-    ///   re-applied to the AU, so a caller that ignores the error does not
-    ///   inherit a lie.
-    /// * the render scratch is rebuilt at the new size, which happens via
-    ///   `initialize` → `RenderScratch::new`. Skipping it would leave `process`
-    ///   staging into buffers shorter than the frame count it now admits.
-    ///
-    /// # Errors
-    /// [`AuError::InvalidBuffer`] for a zero size, [`AuError::BlockSizeRejected`]
-    /// if the AU keeps a different one, or an `OsStatus` from the re-initialize.
-    /// A rejection leaves the instance in the state and at the size it started
-    /// in.
-    pub fn set_block_size(&mut self, frames: u32) -> Result<()> {
-        // Zero would fail every `process` call's `num_frames > block_size` check
-        // and size the scratch to empty buffers. Refuse it here rather than
-        // handing AudioToolbox a degenerate value.
-        if frames == 0 {
-            return Err(AuError::InvalidBuffer(
-                "block_size must be non-zero".to_string(),
-            ));
-        }
 
-        let was_ready = self.is_initialized();
-        if was_ready {
-            self.uninitialize()?;
-        }
 
-        if let State::Loaded(l) = &mut self.state {
-            let previous = l.config.block_size;
-            if previous != frames {
-                l.config.block_size = frames;
-                // Re-apply, then verify. `apply` also re-sends the stream format,
-                // so capture the effective layout as `set_sample_rate` does —
-                // the scratch is sized from it.
-                let outcome = l.config.apply(&l.handle).and_then(|channels| {
-                    l.config.channels = channels;
-                    l.config.verify_block_size(&l.handle)
-                });
-                if let Err(e) = outcome {
-                    // Roll back to the size the AU is still running at, and push
-                    // it back onto the unit so config and AU agree.
-                    l.config.block_size = previous;
-                    let _ = l.config.apply(&l.handle);
-                    if was_ready {
-                        self.initialize()?;
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        if was_ready {
-            self.initialize()?;
-        }
-        Ok(())
-    }
-}
-
-impl AuLoaded {
-    /// Instantiates and applies the initial stream configuration.
-    ///
-    /// # Errors
-    /// As [`AuInstance::new`].
-    pub fn new(component: AuComponentRef, sample_rate: f64, block_size: u32) -> Result<Self> {
-        let handle = AuHandle::new(component)?;
-
-        let probed = StreamConfig::probe(&handle);
-        // The stereo floor lives HERE, in the layout-less constructor, because
-        // this is the one entry point with no caller-supplied answer to "how
-        // wide?" and it has to pick a default. Stereo is the right default for a
-        // DAW: 2 buffers fed into a unit configured mono would have channel 1
-        // silently dropped. It is a *default*, not a guard — `new_with_config`
-        // bypasses it, and `StreamConfig::apply` does not re-impose it.
-        let channels = AuBusLayout {
-            inputs: probed.inputs,
-            outputs: ChannelLayout::from(probed.outputs.count().max(2)),
-            has_input: probed.has_input,
-        };
-        Self::with_layout(handle, StreamConfig::new(sample_rate, block_size, channels))
-    }
-
-    /// Instantiates at a caller-chosen [`StreamConfig`], bypassing the stereo
-    /// default [`AuLoaded::new`] applies.
-    ///
-    /// This is how a host requests mono, or any other width the AU will take.
-    /// It is the only route to a sub-stereo width from outside the crate:
-    /// `apply` is `pub(crate)`, and without this a mono track pays for a doubled
-    /// channel through every AU in its chain.
-    ///
-    /// # Errors
-    /// As [`AuInstance::new`].
-    pub fn new_with_config(component: AuComponentRef, config: StreamConfig) -> Result<Self> {
-        Self::with_layout(AuHandle::new(component)?, config)
-    }
-
-    /// Shared tail of both constructors: apply the config, verify the block size
-    /// stuck, then record the layout the AU actually accepted.
-    ///
-    /// # Errors
-    /// [`AuError::BlockSizeRejected`] when the AU kept a `MaximumFramesPerSlice`
-    /// other than the requested one, plus whatever [`StreamConfig::apply`]
-    /// propagates.
-    ///
-    /// The block size is verified here, not only in
-    /// [`AuInstance::set_block_size`], because this is the tail **every** load
-    /// funnels through and the hazard is identical on both paths: an AU that
-    /// clamps to its own maximum returns `noErr` from the set while keeping a
-    /// smaller figure, and the recorded larger number then turns
-    /// [`AuInstance::process`]'s `num_frames > block_size` guard into a false
-    /// negative — the render is admitted and the AU writes past buffers it sized
-    /// for fewer frames. Verifying only on the resize path left that unguarded
-    /// on the one path a host cannot avoid taking.
-    ///
-    /// A failure is an `Err` rather than a silent adoption of the accepted
-    /// figure, which matches how the two other non-negotiable properties are
-    /// handled: `apply` `?`s on the `MaximumFramesPerSlice` *set* and makes a
-    /// rejected sample rate fatal. Adopting the AU's number instead would hand
-    /// back an instance configured at a width its caller never asked for, and
-    /// the caller sized its own buffers from the request — the same mismatch in
-    /// the other direction. The channel layout is the deliberate exception: it
-    /// is *returned* rather than enforced because a narrower width is
-    /// recoverable by resizing the scratch, and nothing downstream indexes past
-    /// an allocation on account of it.
-    fn with_layout(handle: AuHandle, mut config: StreamConfig) -> Result<Self> {
-        // `apply` returns the layout the AU actually accepted, which may differ
-        // from what was requested. Store the effective layout so the render
-        // scratch is later sized to the real topology, not the wished-for one.
-        config.channels = config.apply(&handle)?;
-        config.verify_block_size(&handle)?;
-
-        Ok(Self {
-            handle,
-            config,
-            transport: None,
-        })
-    }
-
-    /// Consumes self and return an [`AuActive`] after a successful
-    /// `AudioUnitInitialize`.
-    ///
-    /// The input render callback is installed exactly ONCE here, off the
-    /// heap-pinned scratch's stable address — never per render block on the RT
-    /// thread. The `ref_con` is `&*scratch`; because `scratch` lives behind a
-    /// `Box`, its body never moves even as the enclosing [`AuActive`]/`State` is
-    /// `mem::replace`d, so the pointer the AU retains stays valid.
-    ///
-    /// # Errors
-    /// The error carries `self` back, because this is a by-value typestate
-    /// transition: without it a refusing AU is simply destroyed, and
-    /// [`AuInstance::initialize`] has nothing to put back into its state
-    /// machine. See that method for what the resulting hole costs.
-    ///
-    /// The recovered state is an `Option` for the one case that cannot produce
-    /// a `Loaded` AU: the callback install failed *and* the compensating
-    /// `AudioUnitUninitialize` failed too, leaving a unit that is still
-    /// initialized. Its `AuActive` is dropped here so the unit is still disposed
-    /// — there is simply no honest `AuLoaded` to return.
-    pub fn initialize(self) -> std::result::Result<AuActive, (Option<Self>, AuError)> {
-        if let Err(e) = self.handle.unit().initialize() {
-            return Err((Some(self), e.into()));
-        }
-
-        // The renderer owns the heap-pinned scratch the input callback reads,
-        // and withdraws that callback before freeing it.
-        let renderer = Renderer::new(
-            self.handle.unit(),
-            self.config.channels,
-            self.config.block_size,
-        );
-        let mut ready = AuActive {
-            rendering: Box::new(Rendering {
-                guard: UninitializeOnDrop {
-                    unit: self.handle.unit().clone(),
-                    armed: true,
-                },
-                renderer,
-            }),
-            loaded: self,
-        };
-
-        // Install the render callback ONCE, immediately after init, from the
-        // scratch's stable heap address. AU accepts a render-callback set on the
-        // input scope post-`AudioUnitInitialize`. There is deliberately no
-        // per-block install in `process` — that is a property write on the RT
-        // thread, every block.
-        // Gate on `has_input`, the AU's own answer to "is there an input bus",
-        // NOT on the scratch's input buffer count: `RenderScratch::new`
-        // over-allocates inputs to `in_ch.max(out_ch)` so a 0-in/2-out
-        // instrument still gets 2 input buffers. Keying the install off that
-        // made every instrument (DLSMusicDevice, AUSampler) fail `initialize`
-        // with -10877 — setting a render callback on the input scope of a unit
-        // that has no input element is a property error, and the `?` aborted
-        // init entirely.
-        if ready.loaded.config.channels.has_input
-            && let Err(e) = ready.rendering.renderer.install_input_callback()
-        {
-            // The AU *is* initialized at this point, so backing out has to
-            // undo that too — not merely drop the half-built `AuActive`.
-            // Route through `uninitialize`, which owns the ordering
-            // invariant (uninitialize before the boxed scratch is freed)
-            // rather than duplicating it here.
-            //
-            // The reported error is always `e`, the install failure: it is
-            // what actually went wrong, and a follow-on
-            // `AudioUnitUninitialize` complaint would only describe the
-            // cleanup. If that cleanup also failed there is no `Loaded` AU
-            // to hand back — dropping the `AuActive` still disposes the unit.
-            return Err(match ready.uninitialize() {
-                Ok(loaded) => (Some(loaded), e.into()),
-                Err((_ready, _unwind_err)) => (None, e.into()),
-            });
-        }
-        Ok(ready)
-    }
-
-    /// Borrows the underlying [`AuHandle`].
-    pub fn handle(&self) -> &AuHandle {
-        &self.handle
-    }
-
-    /// Borrows the configured [`StreamConfig`].
-    pub fn config(&self) -> &StreamConfig {
-        &self.config
-    }
-}
-
-impl AuActive {
-    /// Tears down the render session and returns to the [`AuLoaded`] state.
-    ///
-    /// # Errors
-    /// The error carries `self` back, for the reason
-    /// [`AuLoaded::initialize`]'s does. Handing it back also keeps the failure
-    /// path from leaking: the `ManuallyDrop` below has suppressed the `Drop`
-    /// that disposes the unit and frees the scratch, so an early `?` here would
-    /// have leaked both.
-    pub fn uninitialize(self) -> std::result::Result<AuLoaded, (Self, AuError)> {
-        // ORDERING INVARIANT: `AudioUnitUninitialize` runs before the renderer
-        // (and the scratch its input callback reads) is dropped. Uninitialize is
-        // what stops the AU firing the input render callback, and the renderer
-        // withdraws the callback itself before freeing; the guard is disarmed
-        // only once the unit really is uninitialized.
-        if let Err(e) = self.loaded.handle.unit().uninitialize() {
-            // The AU refused, so it is still initialized: hand the `AuActive`
-            // back intact (its guard retries the uninitialize on drop).
-            return Err((self, e.into()));
-        }
-        let AuActive {
-            mut rendering,
-            loaded,
-        } = self;
-        rendering.guard.armed = false;
-        drop(rendering);
-        Ok(loaded)
-    }
-
-    /// Renders `num_frames` through the AU. See [`AuInstance::process`] for
-    /// the argument semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AuError::InvalidBuffer`] if `num_frames` exceeds the
-    /// configured block size, or [`AuError::RenderFailed`] if `AudioUnitRender`
-    /// fails.
-    pub fn process(
-        &mut self,
-        input: &[&[f32]],
-        output: &mut [&mut [f32]],
-        num_frames: u32,
-    ) -> Result<()> {
-        self.rendering.renderer.stage_input(input, num_frames);
-        if self.render(num_frames)? == Silence::Declared {
-            let n = num_frames as usize;
-            for dst in output.iter_mut() {
-                let len = n.min(dst.len());
-                dst[..len].fill(0.0);
-            }
-        } else {
-            self.rendering.renderer.emit_output(output, num_frames);
-        }
-        Ok(())
-    }
-
-    /// [`process`](Self::process) for an f64 caller. See
-    /// [`AuInstance::process_f64`] for why the conversion exists.
-    ///
-    /// Identical to the f32 path but for the staging pair: the AU renders in
-    /// f32 either way, so this shares the same `render` body and the same
-    /// scratch rather than carrying a second set of buffers.
-    ///
-    /// # Errors
-    ///
-    /// As [`process`](Self::process).
-    pub fn process_f64(
-        &mut self,
-        input: &[&[f64]],
-        output: &mut [&mut [f64]],
-        num_frames: u32,
-    ) -> Result<()> {
-        self.rendering.renderer.stage_input_f64(input, num_frames);
-        if self.render(num_frames)? == Silence::Declared {
-            let n = num_frames as usize;
-            for dst in output.iter_mut() {
-                let len = n.min(dst.len());
-                dst[..len].fill(0.0);
-            }
-        } else {
-            self.rendering.renderer.emit_output_f64(output, num_frames);
-        }
-        Ok(())
-    }
-
-    /// The width-agnostic half of a render: bounds-check, `AudioUnitRender`,
-    /// and the silence-flag read.
-    ///
-    /// Split out so the f32 and f64 entry points cannot drift on any of it —
-    /// notably the `LastRenderError` enrichment and the `OutputIsSilence`
-    /// handling, which an f64 path written as a separate copy would be free to
-    /// omit. The two callers differ only in how they stage in and emit out.
-    ///
-    /// Allocation-free on the success path, which is what keeps both entry
-    /// points usable from the audio thread.
-    fn render(&mut self, num_frames: u32) -> Result<Silence> {
-        if num_frames > self.loaded.config.block_size {
-            return Err(AuError::InvalidBuffer(format!(
-                "num_frames ({num_frames}) > block_size ({})",
-                self.loaded.config.block_size
-            )));
-        }
-
-        // NOTE: the render callback is installed ONCE at initialize time off the
-        // renderer's stable heap scratch — deliberately NOT here. Re-installing
-        // per block issues an `AudioUnitSetProperty` on the RT thread every call.
-        //
-        // On failure the renderer attaches the AU's last render error (an
-        // advisory global-scope read, made only when the render itself failed,
-        // never on a steady-state block, so it does not affect the no-alloc
-        // guarantee).
-        let silent = self.rendering.renderer.render(num_frames)?;
-
-        // Honor the AU's OutputIsSilence signal. When the AU declares the
-        // block silent, its output buffers are not guaranteed to be zeroed
-        // (the flag is precisely how an AU says "I produced nothing, don't
-        // trust the buffer contents"), so the caller must force the destination
-        // to silence rather than emit stale scratch. Both callers do, with a
-        // `fill` that writes in place — no allocation, preserving the RT
-        // no-alloc guarantee.
-        Ok(if silent {
-            Silence::Declared
-        } else {
-            Silence::No
-        })
-    }
-
-    /// Borrows the underlying [`AuHandle`].
-    pub fn handle(&self) -> &AuHandle {
-        &self.loaded.handle
-    }
-
-    /// Borrows the configured [`StreamConfig`].
-    pub fn config(&self) -> &StreamConfig {
-        &self.loaded.config
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::component::*;
-    use tutti_au_ffi::property::StreamFormat;
-
-    fn find_apple_delay() -> Option<AuComponentRef> {
-        let desc = AudioComponentDescription {
-            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
-            componentSubType: u32::from_be_bytes(*b"dely"),
-            componentManufacturer: u32::from_be_bytes(*b"appl"),
-            componentFlags: 0,
-            componentFlagsMask: 0,
-        };
-        find_component(&desc)
-    }
-
-    #[test]
-    fn test_new() {
-        let comp = find_apple_delay().expect("AUDelay should be present");
-        let inst = AuInstance::new(comp, 44100.0, 512);
-        assert!(inst.is_ok());
-    }
-
-    #[test]
-    fn test_initialize_uninitialize() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-
-        assert!(!inst.is_initialized());
-        inst.initialize().unwrap();
-        assert!(inst.is_initialized());
-        inst.uninitialize().unwrap();
-        assert!(!inst.is_initialized());
-    }
-
-    #[test]
-    fn test_get_name() {
-        let comp = find_apple_delay().unwrap();
-        let inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        assert!(!inst.get_name().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_parameter_list() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        let params = inst.get_parameter_list();
-        assert!(!params.is_empty());
-    }
-
-    #[test]
-    fn test_get_set_parameter() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        let params = inst.get_parameter_list();
-        let p = &params[0];
-        let mid = p.range.mid();
-        inst.set_parameter(p.id, mid).unwrap();
-        let val = inst.get_parameter(p.id).unwrap();
-        assert!((val - mid).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_process_silence() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        let input = vec![vec![0.0f32; 512]; 2];
-        let mut output = vec![vec![0.0f32; 512]; 2];
-        let in_slices: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
-        let mut out_slices: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
-
-        inst.process(&in_slices, &mut out_slices, 512).unwrap();
-
-        // A delay adds nothing to silence, so every output frame must still be
-        // zero. Without this the test passed on a `process` that never touched
-        // the output buffers at all.
-        for (ch, buf) in output.iter().enumerate() {
-            assert!(
-                buf.iter().all(|s| *s == 0.0),
-                "channel {ch} is not silent after processing silence"
-            );
-        }
-    }
-
-    #[test]
-    fn test_process_audio() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        let input: Vec<Vec<f32>> = (0..2)
-            .map(|_| {
-                (0..512)
-                    .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44100.0).sin() * 0.5)
-                    .collect()
-            })
-            .collect();
-        let mut output = vec![vec![0.0f32; 512]; 2];
-        let in_slices: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
-        let mut out_slices: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
-
-        inst.process(&in_slices, &mut out_slices, 512).unwrap();
-
-        // The exact waveform depends on AUDelay's default mix, so assert only
-        // what holds for any setting: the buffers were actually written, and
-        // written with real numbers. A `process` that left them untouched, or
-        // one that wrote NaN through an uninitialised union, both passed the
-        // bare `unwrap` this replaces.
-        for (ch, buf) in output.iter().enumerate() {
-            assert!(
-                buf.iter().all(|s| s.is_finite()),
-                "channel {ch} carries a non-finite sample"
-            );
-            assert!(
-                buf.iter().any(|s| *s != 0.0),
-                "channel {ch} is silent after processing a 440 Hz tone"
-            );
-        }
-    }
-
-    #[test]
-    fn test_latency() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-        let _ = inst.get_latency().unwrap();
-    }
-
-    #[test]
-    fn test_save_load_state() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        let state = inst.get_state(&MainThread::claim().unwrap()).unwrap();
-        assert!(!state.is_empty());
-        inst.set_state(&MainThread::claim().unwrap(), &state)
-            .unwrap();
-    }
-
-    /// Presets and bypass must work in the `Loaded` state, before
-    /// `AudioUnitInitialize`. Both are global-scope properties with no render
-    /// resources behind them, and a host builds its preset menu and restores a
-    /// saved bypass state while wiring the plugin up — i.e. before it ever
-    /// initializes. Gating either on the Ready state would break that.
-    #[test]
-    fn presets_and_bypass_work_before_initialize() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        assert!(!inst.is_initialized());
-
-        // AUDelay ships no presets — the read fails and is absorbed. What is
-        // being asserted is that it does not panic or error out of the Loaded
-        // state, not the count (the integration suite pins counts).
-        assert!(inst.factory_presets().is_empty());
-        inst.set_bypass(true).expect("bypass in the Loaded state");
-        assert!(inst.is_bypassed().unwrap());
-        inst.set_bypass(false).unwrap();
-        assert!(!inst.is_bypassed().unwrap());
-    }
-
-    /// `factory_presets` must absorb the property error, but `current_preset`
-    /// must not invent a preset for a unit that has none.
-    ///
-    /// These two deliberately differ, and the difference is easy to "tidy" into
-    /// consistency later: an empty list is an honest description of a unit with
-    /// no presets, whereas any `AuPreset` returned from `current_preset` would
-    /// be a claim about the AU's state. AUDelay in fact implements
-    /// `PresentPreset` and reports the `-1`/"Untitled" no-selection sentinel,
-    /// so this asserts the number is negative rather than that the call fails —
-    /// the point is that the value came from the AU.
-    #[test]
-    fn a_preset_less_unit_reports_no_selection_rather_than_a_fabricated_preset() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        assert!(inst.factory_presets().is_empty());
-        if let Ok(current) = inst.current_preset() {
-            assert!(
-                current.number < 0,
-                "AUDelay advertises no factory presets, so it must not report a \
-                 selected one; got {current:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_render_callback_installed_once() {
-        // AUDelay is an effect (has input), so the render callback IS installed.
-        // Per-instance counter — no process-global, so this is race-free under
-        // cargo's parallel test runner.
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        // Exactly one install after initialize — none per render block.
-        assert_eq!(
-            inst.callback_install_count(),
-            1,
-            "render callback should be installed exactly once at initialize"
-        );
-
-        let input = vec![vec![0.0f32; 512]; 2];
-        let mut output = vec![vec![0.0f32; 512]; 2];
-        let in_slices: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
-
-        for _ in 0..16 {
-            let mut out_slices: Vec<&mut [f32]> =
-                output.iter_mut().map(|v| v.as_mut_slice()).collect();
-            inst.process(&in_slices, &mut out_slices, 512).unwrap();
-        }
-
-        // Still exactly one — process() must not re-install per block.
-        assert_eq!(
-            inst.callback_install_count(),
-            1,
-            "process() must not re-install the render callback per block"
-        );
-    }
-
-    /// A refused `initialize` must leave the instance usable.
-    ///
-    /// `initialize` takes the state out with `mem::replace(.., State::Empty)`
-    /// and the by-value transition consumes it, so the failure arm must put a
-    /// real state back. Every later accessor — `raw_unit`, `au_type`,
-    /// `num_outputs`, even `is_initialized` — routes through
-    /// `handle()`/`config()`, which `unreachable!()` on `Empty`. Leaving `Empty`
-    /// installed panics a host on the next thing it asks about any unit that
-    /// declined to initialize, and units do decline: AUSoundIsolation refuses on
-    /// this machine, as will any unit whose hardware or entitlement is absent.
-    ///
-    /// Driven through a real refusal rather than a mocked one. `vois` is not in
-    /// the corpus because it is not part of the *rendering* contract; it is
-    /// used here only as a unit that says no. If it ever starts initializing,
-    /// the test says so rather than passing silently.
-    #[test]
-    fn a_refused_initialize_leaves_the_instance_usable() {
-        let desc = AudioComponentDescription {
-            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
-            componentSubType: u32::from_be_bytes(*b"vois"),
-            componentManufacturer: u32::from_be_bytes(*b"appl"),
-            componentFlags: 0,
-            componentFlagsMask: 0,
-        };
-        let Some(comp) = find_component(&desc) else {
-            // Not a silent skip of the invariant: the same guarantee is
-            // asserted below against an AU that *does* initialize, so the state
-            // machine is still exercised. Only the refusal leg needs this unit.
-            eprintln!("AUSoundIsolation not registered; refusal leg not exercised");
-            return;
-        };
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        let unit_before = inst.unit().clone();
-
-        match inst.initialize() {
-            Err(_) => {
-                // The whole point: these must answer rather than panic.
-                assert!(!inst.is_initialized());
-                assert!(
-                    inst.unit().same_unit(&unit_before),
-                    "a refused initialize replaced the underlying unit"
-                );
-                let _ = inst.au_type();
-                let _ = inst.num_outputs();
-                // And the instance must still be re-drivable.
-                let _ = inst.initialize();
-            }
-            Ok(()) => {
-                // It accepted after all. Still assert the state is coherent, so
-                // this branch is not a free pass.
-                assert!(inst.is_initialized());
-            }
-        }
-    }
-
-    #[test]
-    fn test_set_sample_rate() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-        inst.set_sample_rate(48000.0).unwrap();
-        assert_eq!(inst.sample_rate(), 48000.0);
-        assert!(inst.is_initialized());
-    }
-
-    /// An `Ok` from `set_sample_rate` must mean the AU's own ASBD agrees, not
-    /// merely that the request was recorded.
-    ///
-    /// So this asserts against the AU's read-back ASBD rather than against
-    /// `sample_rate()`, which reports the stored figure and would agree with the
-    /// request even if the stream-format write had been dropped.
-    #[test]
-    fn set_sample_rate_ok_means_the_au_really_moved() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        for rate in [48000.0f64, 96000.0, 44100.0] {
-            if inst.set_sample_rate(rate).is_err() {
-                // A refusal is a legitimate outcome; what must never happen is
-                // a refusal reported as success. Check the config was rolled
-                // back rather than left holding the rejected rate.
-                assert_ne!(
-                    inst.sample_rate(),
-                    rate,
-                    "a rejected rate must not be left in the config"
-                );
-                continue;
-            }
-            assert_eq!(inst.sample_rate(), rate);
-            // The independent check: ask the AU itself.
-            let asbd = inst
-                .unit()
-                .get::<StreamFormat>(Scope::OUTPUT, Element::ZERO)
-                .expect("AUDelay reports its output stream format");
-            assert!(
-                (asbd.mSampleRate - rate).abs() < 1e-6,
-                "set_sample_rate({rate}) returned Ok but the AU is at {}",
-                asbd.mSampleRate
-            );
-        }
-    }
-
-    /// The end-to-end invariant: `set_sample_rate` returning `Ok` must
-    /// imply the AU's own ASBD agrees.
-    ///
-    /// CAVEAT on what this can prove locally: Apple's AUDelay accepts *every*
-    /// rate offered to it — probed here at 0.5 Hz, 1 Hz, 8 kHz, 48 kHz, 192 kHz
-    /// and 1 MHz, all reported back verbatim. So no installed AU on this machine
-    /// drives the *rejection* branch, and this test cannot fail by deleting the
-    /// `check_sample_rate` call site. The rejection logic itself is pinned by
-    /// `stream::tests::a_rate_the_au_did_not_accept_is_an_error`; what this adds
-    /// is the standing guarantee that the two agree for whatever the AU does —
-    /// including on a machine with a pickier AU installed.
-    #[test]
-    fn an_unusual_rate_cannot_be_reported_as_accepted_unless_it_was() {
-        let comp = find_apple_delay().unwrap();
-        let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
-        inst.initialize().unwrap();
-
-        // A rate a stricter AU would refuse.
-        let absurd = 1.0f64;
-        match inst.set_sample_rate(absurd) {
-            Err(_) => {
-                // Rejected, as expected. The config must have been rolled back
-                // rather than left holding the rate the AU refused.
-                assert_ne!(inst.sample_rate(), absurd);
-            }
-            Ok(()) => {
-                // Astonishing, but then the AU must really be at 1 Hz.
-                let asbd = inst
-                    .unit()
-                    .get::<StreamFormat>(Scope::OUTPUT, Element::ZERO)
-                    .expect("AUDelay reports its output stream format");
-                assert!(
-                    (asbd.mSampleRate - absurd).abs() < 1e-6,
-                    "set_sample_rate({absurd}) returned Ok while the AU is at {} — \
-                     Ok must mean the rate was actually applied",
-                    asbd.mSampleRate
-                );
-            }
-        }
-    }
 }

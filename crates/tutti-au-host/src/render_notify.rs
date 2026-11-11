@@ -15,7 +15,10 @@ pub use tutti_au_ffi::{
 mod tests {
     use super::*;
     use crate::component::find_component;
-    use crate::instance::AuInstance;
+    use crate::controller::AuController;
+    use crate::instance::AuLoaded;
+    use crate::processor::AuProcessor;
+    use tutti_plugin_types::{Loaded, MainThread, MaxBlock, Prepare, SampleRate};
     use crate::listener::EventAddress;
     use crate::parameters::ParamAddress;
     use crate::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
@@ -43,7 +46,7 @@ mod tests {
         assert_eq!(EventAddress::default(), EventAddress::GLOBAL);
     }
 
-    fn delay() -> AuInstance {
+    fn delay() -> (AuProcessor, AuController) {
         let desc = AudioComponentDescription {
             componentType: K_AUDIO_UNIT_TYPE_EFFECT,
             componentSubType: u32::from_be_bytes(*b"dely"),
@@ -52,17 +55,19 @@ mod tests {
             componentFlagsMask: 0,
         };
         let comp = find_component(&desc).expect("AUDelay ships with macOS");
-        let mut au = AuInstance::new(comp, 48_000.0, 512).unwrap();
-        au.initialize().unwrap();
-        au
+        let au = AuLoaded::new(comp, 48_000.0, 512).unwrap();
+        let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(tutti_types::Samples(512)))
+            .unwrap();
+        au.activate(&MainThread::claim().unwrap(), prepare)
+            .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
     }
 
-    fn render_once(au: &mut AuInstance) {
+    fn render_once(au: &mut AuProcessor) {
         let input = vec![vec![0.0f32; 512]; 2];
         let mut output = vec![vec![0.0f32; 512]; 2];
         let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
         let mut outs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
-        au.process(&ins, &mut outs, 512).unwrap();
+        au.render_f32(&ins, &mut outs, 512).unwrap();
     }
 
     /// The dispatch counter rises by exactly the pre/post pair per render while
@@ -72,8 +77,8 @@ mod tests {
     /// Mutation (run): skip the `fetch_add` in the callback -> the count stays 0.
     #[test]
     fn the_dispatch_counter_stops_when_the_handle_is_dropped() {
-        let mut au = delay();
-        let notify = au
+        let (mut au, controller) = delay();
+        let notify = controller
             .add_render_notify(|_| {})
             .expect("AUDelay accepts a notify");
         assert_eq!(notify.deliveries(), 0, "nothing rendered yet");
@@ -89,7 +94,7 @@ mod tests {
             render_once(&mut au);
         }
 
-        let fresh = au.add_render_notify(|_| {}).unwrap();
+        let fresh = controller.add_render_notify(|_| {}).unwrap();
         assert_eq!(fresh.deliveries(), 0, "a new handle starts from zero");
         render_once(&mut au);
         assert_eq!(
@@ -105,7 +110,7 @@ mod tests {
     /// count, so the test pins the observable contract, not the early return.
     #[test]
     fn scheduling_nothing_is_a_no_op() {
-        let au = delay();
+        let (_p, au) = delay();
         assert!(
             au.schedule_parameters(0, ScheduleAddress::GLOBAL, &[])
                 .is_ok()

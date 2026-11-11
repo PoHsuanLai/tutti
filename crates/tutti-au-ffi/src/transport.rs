@@ -633,7 +633,7 @@ unsafe impl crate::plain::Plain for HostCallbackInfo {}
 /// null procs) before the state is freed, so no pull can reach a freed state.
 pub struct HostCallbacks {
     unit: crate::Unit,
-    state: std::mem::ManuallyDrop<Box<TransportState>>,
+    state: std::sync::Arc<TransportState>,
     installed: std::sync::atomic::AtomicBool,
 }
 
@@ -651,7 +651,7 @@ impl HostCallbacks {
     pub fn new(unit: &crate::Unit) -> Self {
         Self {
             unit: unit.clone(),
-            state: std::mem::ManuallyDrop::new(Box::new(TransportState::new())),
+            state: std::sync::Arc::new(TransportState::new()),
             installed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -659,6 +659,15 @@ impl HostCallbacks {
     /// The state the callbacks read, for the host to publish into.
     pub fn state(&self) -> &TransportState {
         &self.state
+    }
+
+    /// A second owner of the state, for the render thread that publishes into
+    /// it. The state is freed when the last owner goes; the AU stops pulling
+    /// from it when this registration drops (below), not when the last owner
+    /// does, so an owner outliving the registration publishes into a state no
+    /// AU reads.
+    pub fn share_state(&self) -> std::sync::Arc<TransportState> {
+        std::sync::Arc::clone(&self.state)
     }
 
     /// Writes `kAudioUnitProperty_HostCallbacks` on the unit. Installing again
@@ -693,12 +702,14 @@ impl Drop for HostCallbacks {
                 .set::<HostCallbacksProperty>(Scope::GLOBAL, Element::ZERO, &none)
                 .is_ok()
         };
-        if withdrawn {
-            // SAFETY: dropped once, here, after the AU was told to stop pulling.
-            unsafe { std::mem::ManuallyDrop::drop(&mut self.state) };
+        if !withdrawn {
+            // The AU may still pull from the state, and other `Unit` clones can
+            // keep it rendering: leak one owner, so the state is never freed
+            // while it might be read.
+            std::mem::forget(std::sync::Arc::clone(&self.state));
         }
-        // Otherwise the AU may still pull from the state, and other `Unit`
-        // clones can keep it rendering: leak it rather than free memory it reads.
+        // Otherwise the AU was told to stop pulling, and the field's own drop
+        // releases this owner.
     }
 }
 

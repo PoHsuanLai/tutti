@@ -241,14 +241,16 @@ mod tests {
     ///
     /// v21 removed `ProbePlugin` (the probe is its own binary and file now,
     /// `tutti-plugin-probe`), which was tag 0: every tag after it moved down
-    /// one, and `LoadPlugin` is the first.
+    /// one, and `LoadPlugin` is the first. v25 removed `OpenEditor` and
+    /// `CloseEditor` (nothing sent them), two more ahead of `SetRenderMode`.
     #[test]
     fn the_preset_frames_are_appended_not_inserted() {
         /// `SetRenderMode`'s tag — the last variant v13 shipped (17 until v21
-        /// removed the request ahead of it). Pinned as a literal so a shift is
+        /// removed the request ahead of it, 16 until v25 removed `OpenEditor`
+        /// and `CloseEditor` ahead of it). Pinned as a literal so a shift is
         /// a failure here rather than an agreement between two expressions that
         /// move together.
-        const V13_LAST_TAG: u32 = 16;
+        const V13_LAST_TAG: u32 = 14;
 
         let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
 
@@ -373,8 +375,9 @@ mod tests {
     #[test]
     fn the_parameter_display_frames_are_appended_not_inserted() {
         /// `GetCurrentPreset`'s tag — the last request variant v14 shipped (20 until v21
-        /// removed the request ahead of it).
-        const V16_LAST_REQUEST_TAG: u32 = 19;
+        /// removed the request ahead of it, 19 until v25 removed `OpenEditor` and
+        /// `CloseEditor` ahead of it).
+        const V16_LAST_REQUEST_TAG: u32 = 17;
 
         let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
 

@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // One `unsafe` item: `WindowHandle::from_u64`, the constructor whose caller
-// vouches for a window number that crossed a process edge.
+// vouches for a window's bare platform number.
 #![deny(unsafe_code)]
 
 mod any_thread;

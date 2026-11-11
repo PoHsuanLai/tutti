@@ -421,7 +421,7 @@ source reads its fault flag before its ring (`tutti_rt::FaultLatch`) so a
 range *or* distinct algebra; two names for the same behaviour is not a type") has
 a trait analogue worth applying: a trait earns its name if you can state its
 boundary in one sentence without "and". The plugin capability split (`PluginMeta`
-/ `PluginAudio` / `PluginParams` / `PluginState` / `PluginEditorHost`, reassembled
+/ `PluginAudio` / `PluginParams` / `PluginState` / `PluginPresets`, reassembled
 by the blanket-impl `PluginInstance`) passes — each answers a *different* "why is
 this not just a graph node?", which is why they are five doc comments and not
 one. The failure mode to watch is reaching for a **compile-time** guarantee where

@@ -194,8 +194,11 @@ and the docs.rs build on a dated nightly); `cargo xtask check-loom` runs clippy 
   safe wrapper and forbids `unsafe`: a parent window is
   `WindowHandle::from_window(&impl HasWindowHandle)` (winit, Bevy, any
   `raw-window-handle` 0.6 window), and the one `unsafe` constructor,
-  `WindowHandle::from_u64`, is for a number that crossed a process edge. Test-only
-  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`).
+  `WindowHandle::from_u64`, is for a host holding only a bare platform handle. Test-only
+  `unsafe` is `tutti-fixtures`' (`ScopedEnv`, `StandInWindow`, and `ClapProbe` and
+  `Vst2Probe`, one typed method per probe export of the reference plugins).
+  `tutti-plugin-ipc` and `tutti-plugin-server` forbid `unsafe` too: the process
+  edge's is `tutti-plugin-ipc-ffi`'s.
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `cargo xtask ci`, and fix the new lints in the same PR.

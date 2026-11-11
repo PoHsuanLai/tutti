@@ -270,10 +270,11 @@ mod tests {
             rate: SampleRate(48_000.0),
             error: None,
         };
-        // variant 26, 48000.0f64, no error
+        // variant 24 (26 until v25 removed `EditorOpened` and `EditorClosed`
+        // ahead of it), 48000.0f64, no error
         assert_eq!(
             bincode::serialize(&set_reply).unwrap(),
-            [26, 0, 0, 0, 0, 0, 0, 0, 0, 112, 231, 64, 0]
+            [24, 0, 0, 0, 0, 0, 0, 0, 0, 112, 231, 64, 0]
         );
 
         let some = BridgeMessage::ParameterValue {
@@ -291,14 +292,15 @@ mod tests {
             index: ParamId::new(7),
             value: Normalized::of(0.5),
         };
-        // variant 9, index 7, 0.5f32
+        // variant 7 (9 until v25 removed `EditorOpened` and `EditorClosed` ahead
+        // of it), index 7, 0.5f32
         assert_eq!(
             bincode::serialize(&changed).unwrap(),
-            [9, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 63]
+            [7, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 63]
         );
 
         let back: BridgeMessage =
-            bincode::deserialize(&[9, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 63]).unwrap();
+            bincode::deserialize(&[7, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 63]).unwrap();
         assert!(matches!(
             back,
             BridgeMessage::ParameterChanged { index, value }

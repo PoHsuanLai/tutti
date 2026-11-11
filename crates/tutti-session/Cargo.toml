@@ -220,6 +220,11 @@ required-features = ["midi"]
 name = "midi_velocity"
 required-features = ["midi"]
 
+# The hardware out as an event tap on the clock (doc 017, E3).
+[[test]]
+name = "midi_out_tap"
+required-features = ["midi"]
+
 # Route rules: the union of two on one target, and a disabled one.
 [[test]]
 name = "midi_routes"

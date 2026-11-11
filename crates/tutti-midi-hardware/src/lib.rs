@@ -36,15 +36,14 @@ pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 
 // --- Runtime delivery (the graph's MIDI border) ---
 //
-// The nodes a port feeds and is fed by (`MidiInputNode`, `MidiOutNode`), the
+// The nodes a port feeds and is fed by (`MidiInputNode`), the
 // ring MIDI crosses threads on (`MidiMailbox`/`MidiSender`/`MidiReceiver`) and
 // clip playback live in `tutti-midi-runtime`; surfaced here because delivery
 // is what a port feeds, so a hardware consumer needs both. That is the test a
 // file codec fails: a `.mid` reader needs no port, and no port needs it.
 
 pub use tutti_midi_runtime::{
-    MidiIn, MidiInputNode, MidiMailbox, MidiOut, MidiOutNode, MidiReceiver, MidiSender,
-    TimedMidiEvent,
+    MidiIn, MidiInputNode, MidiMailbox, MidiOut, MidiReceiver, MidiSender, TimedMidiEvent,
 };
 
 // --- Standard MIDI File codec: NOT here ---
@@ -61,8 +60,8 @@ pub use tutti_midi_runtime::{
 /// `tutti_ump`'s):
 ///
 /// - **Hardware I/O** — [`MidiSession`] (enumerate / connect / send).
-/// - **Delivery** — [`MidiInputNode`] / [`MidiOutNode`] (the ports as graph
-///   nodes), [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] (the lock-free
+/// - **Delivery** — [`MidiInputNode`] (the input port as a graph
+///   node), [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] (the lock-free
 ///   ring), and [`TimedMidiEvent`] (a clip's events).
 ///
 /// The sync decoders (`MidiClockDecoder`, `MtcDecoder`) are
@@ -84,9 +83,7 @@ pub use tutti_midi_runtime::{
 /// assert_eq!(rx.poll_into(&mut buf), 1);
 /// ```
 pub mod prelude {
-    pub use crate::{
-        MidiInputNode, MidiMailbox, MidiOutNode, MidiReceiver, MidiSender, TimedMidiEvent,
-    };
+    pub use crate::{MidiInputNode, MidiMailbox, MidiReceiver, MidiSender, TimedMidiEvent};
 
     pub use crate::MidiSession;
 }

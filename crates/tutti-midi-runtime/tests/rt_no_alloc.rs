@@ -1,7 +1,7 @@
 //! Regression gate for RT-safety: the MIDI border nodes process a block
 //! without allocating, events flowing — a wire's through the input node's
 //! translation onto its ports, a control thread's through the queue into the
-//! out node's ring, and the clock's ticks.
+//! event tap's ring, and the clock's ticks.
 //!
 //! Mutation (run): a `Vec::new()` + push per block in `MidiInputNode::process`
 //! → the gate panics.
@@ -11,15 +11,15 @@ use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
 use tutti_graph::NodeKey;
 use tutti_graph::UmpAt;
-use tutti_graph::{
-    Editor, EventEdge, EventIn, EventOut, Harmony, LoopRange, Offset, Prepare, Transport,
-};
+use tutti_graph::{Editor, Harmony, LoopRange, Offset, Prepare, Transport};
 use tutti_midi_runtime::{
-    ClockNode, HarmonyNode, MidiClipNode, MidiIn, MidiInputNode, MidiMailbox, MidiOutNode,
-    MidiQueueNode, TimedHarmony, TimedMidiEvent, TimedQueueNode,
+    ClockNode, HarmonyNode, MidiClipNode, MidiIn, MidiInputNode, MidiMailbox, MidiQueueNode,
+    TimedHarmony, TimedMidiEvent, TimedQueueNode,
 };
 use tutti_types::{At, Beat, Bpm, Frame, FrameClock, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
+
+mod common;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -54,24 +54,8 @@ fn the_border_nodes_process_without_allocating() {
     ed.insert(NodeKey(1), "in", MidiInputNode::new(Some(Box::new(Busy))));
     let keys = ed.insert(NodeKey(2), "keys", MidiQueueNode::new());
     let clock = ed.insert(NodeKey(3), "clock", ClockNode::new());
-    let out = ed.insert(NodeKey(4), "out", MidiOutNode::new());
+    let mut out = common::sink(&mut ed, 0, &[(1, 0), (1, 3), (2, 0), (3, 0)]);
     clock.set_enabled(true);
-    let into_out = |ed: &mut Editor, node: u64, port: u16| {
-        ed.spec_mut().connect_events(
-            EventIn {
-                node: NodeKey(4),
-                port: 0,
-            },
-            EventEdge::Direct(EventOut {
-                node: NodeKey(node),
-                port,
-            }),
-        );
-    };
-    into_out(&mut ed, 1, 0);
-    into_out(&mut ed, 1, 3);
-    into_out(&mut ed, 2, 0);
-    into_out(&mut ed, 3, 0);
     ed.commit().unwrap();
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
@@ -131,17 +115,7 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
         MidiInputNode::new(Some(Box::new(BendRange)))
             .with_mpe(tutti_fixtures::midi::lower_zone(15)),
     );
-    let out = ed.insert(NodeKey(4), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(4),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 15,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
     ed.commit().unwrap();
     let t = Transport::default();
     let mut drain = [(0, Ump([0; 4])); 256];
@@ -194,17 +168,7 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
         "in",
         MidiInputNode::new(Some(Box::new(Mcms(false)))),
     );
-    let out = ed.insert(NodeKey(4), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(4),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 15,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
     ed.commit().unwrap();
     let t = Transport::default();
     let mut drain = [(0, Ump([0; 4])); 256];
@@ -258,19 +222,7 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
             TimedHarmony::new(beat(1_032.0), Harmony::chord(67, 67, 0b1001_0001)),
         ]),
     );
-    let out = ed.insert(NodeKey(3), "out", MidiOutNode::new());
-    for from in [1, 2] {
-        ed.spec_mut().connect_events(
-            EventIn {
-                node: NodeKey(3),
-                port: 0,
-            },
-            EventEdge::Direct(EventOut {
-                node: NodeKey(from),
-                port: 0,
-            }),
-        );
-    }
+    let mut out = common::sink(&mut ed, 0, &[(1, 0), (2, 0)]);
     ed.commit().unwrap();
     let region = tutti_types::LoopRange::new(start, end).unwrap();
     let looping = Some(LoopRange { start, end });
@@ -340,17 +292,7 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     }
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(64)));
     ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
-    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
     let mut drain = [(0, Ump([0; 4])); 1024];
     let mut polled = 0;
@@ -410,17 +352,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     });
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
-    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
     let mut drain = [(0, Ump([0; 4])); 1024];
     let mut f = 0u64;
@@ -481,17 +413,7 @@ fn the_timed_queue_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     let (queue, tx) = TimedQueueNode::new();
     ed.insert(NodeKey(1), "timed", queue);
-    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
@@ -531,17 +453,7 @@ fn the_timed_queue_with_a_full_list_processes_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     let (queue, tx) = TimedQueueNode::new();
     ed.insert(NodeKey(1), "timed", queue);
-    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
     let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];

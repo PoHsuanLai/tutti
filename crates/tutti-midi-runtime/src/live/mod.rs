@@ -1,5 +1,5 @@
-//! MIDI crossing the graph's edge: in from a wire or a control thread, out to
-//! one. Inside the graph MIDI travels on event
+//! MIDI crossing the graph's edge into it, from a wire or a control thread (out
+//! of it is an event tap, `tutti-graph`'s). Inside the graph MIDI travels on event
 //! ports; these are the nodes at its border.
 //!
 //! - [`MidiInputNode`] polls a [`MidiIn`](crate::MidiIn) (the
@@ -9,8 +9,6 @@
 //! - [`TimedQueueNode`] is the queue for a frame: each event leaves on the
 //!   frame its [`At`](tutti_types::At) names (a thin user of `tutti-graph`'s
 //!   `EventInletNode`).
-//! - [`MidiOutNode`] hands what reaches it to a control thread (a hardware
-//!   pump).
 //! - [`MidiMailbox`] is the ring the last two cross the thread boundary on.
 //! - [`compile_routes`] turns inbound routing rules into which of the input
 //!   node's ports each listener takes.
@@ -18,7 +16,6 @@
 pub mod input_node;
 pub mod mailbox;
 pub(crate) mod order;
-pub mod out_node;
 pub mod queue_node;
 mod route;
 pub mod timed_queue;
@@ -28,7 +25,6 @@ pub use input_node::{
     MidiInputControls, MidiInputNode, input_port_of, input_ports,
 };
 pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
-pub use out_node::{MIDI_OUT_CAPACITY, MidiOutControls, MidiOutNode};
 pub use queue_node::{MIDI_QUEUE_CAPACITY, MidiQueueNode};
 pub use route::{RouteRule, compile_routes};
 pub use timed_queue::{TIMED_QUEUE_CAPACITY, TimedQueueNode, TimedSendError, TimedSender};

@@ -536,6 +536,12 @@ impl Session {
         // A unit that panicked in `prepare`, or shapes that no longer
         // compile, poison the editor here: refuse, the stream still stopped.
         self.graph.check_reprepare(None)?;
+        // The hardware out's tap reads frames of one rate: reopened at the
+        // new one, committed with the rest below.
+        #[cfg(feature = "midi")]
+        if self.midi_state.follow_rate(&mut self.graph) {
+            self.commit();
+        }
         // A declaration a device refused is asked again of this one: if it
         // places, it is in force, committed and settled below with the rest.
         if self.root_refusal.is_some() {

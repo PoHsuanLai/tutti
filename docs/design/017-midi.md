@@ -1115,6 +1115,46 @@ Built as specified, except where the code decided otherwise:
 - **`tutti_session` re-exports no inlet type.** Like `InletNode`, the node
   and writer are named from `tutti_graph` (and the `tutti` prelude).
 
+### Stage E3 as built
+
+The hardware out is an `EventTapReader` on the clock node's event output
+(`TapAlign::ToOutput`, 1 024 events: the deleted ring's size), opened in the
+builder and held by the session's MIDI state; `Phase::MidiOut` reads it dry
+into the `UmpOut` and adds `take_lost` to the drop count that
+`SessionEvent::MidiOutDropped` reports. `MidiOutNode`, `MidiOutControls`,
+`MIDI_OUT_CAPACITY`, `MidiNodes::hardware_out` and `out_controls` and the
+`Feeder::Clock` variant are deleted. Built as specified, except:
+
+- **A single-tap reopen: `Graph::reopen_event_tap(id)`.** The doc's Q4 had the
+  session call `reopen_event_taps()` and take its readers, but that replaces
+  *every* tap's reader, a caller's included, and the readers dropped by a
+  session that wanted only its own would be reaped and kill the others. The
+  one-tap form reopens the hardware out's tap alone; `reopen_event_taps` is the
+  loop over it.
+- **The re-rate is followed in two places.** A device restart's hook
+  (`Session::rerate`) reopens the tap after the graph's re-prepare and commits;
+  `Phase::MidiOut` compares the reader's `rate()` with the graph's before each
+  drain, which covers `Graph::set_sample_rate` (no hook). Either drains the old
+  reader first. `Midi::hardware_out_rate` reports the scale the frames are on.
+- **`MidiOutRouter::route` takes `(Frame, Ump)`, and the rebasing moved into
+  `UmpOut::send_frames`, not away.** The stamper (`JrStream`) reads offsets in
+  a block, and a drain is the block: the batch is rebased onto its earliest
+  frame, so the stamper sees the events' spacing. The `u32` wrap-around
+  rebasing remains in `drain_receiver_through` only, for the host's own mailbox
+  (raw `u32` stamps), which E4 audits. What the stamper does not see is the
+  gap *between* two drains (the JR Clock advances by each batch's own span, as
+  before); stamping the gap needs `ClockMap`.
+- **The tap's loss joins the drop count without the "no output" warning**
+  (`MidiOutDrops::record_refused`): there is an output to blame, and the event
+  says it.
+- **Tests:** the nodes' tests that used `MidiOutNode` as a sink
+  (`rt_no_alloc`, `cost_classes`, `clock_tempo_map`, `edge_nodes`, the hardware
+  poll gate) read a tap through a small test sink (`tests/common`) with the same
+  properties; the session's own are `tests/midi_out_tap.rs`, the device restart
+  test and `midi.rs`'s router tests. A note-off's room past the ring is the
+  tap's, pinned in `tutti-graph/tests/event_tap.rs`; the hardware out's clock
+  sends none.
+
 ### The parallel executor
 
 - **Tap.** An op, `EVENTS` class, claims its writer and reads one slot through
@@ -1134,7 +1174,7 @@ Built as specified, except where the code decided otherwise:
 
 | Today | Becomes | What moves where |
 |---|---|---|
-| `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` | **Deleted.** The session opens an `EventTapReader` on the clock node's event output, `ToOutput`, and `Phase::MidiOut` drains it | `tutti-session` owns the open and the policy. `drain_receiver_through`'s rebasing goes: a tap's frames are real, so `MidiOutRouter::route` takes `(Frame, Ump)`; `UmpOut`, `JrStream` and the stamper stay where they are. The drop report reads `take_lost`. `MidiNodes::hardware_out` and `out_controls` go. `tutti-midi-hardware` stays the OS backend and the pump |
+| `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` | **Deleted (E3, built).** The session opens an `EventTapReader` on the clock node's event output, `ToOutput`, and `Phase::MidiOut` drains it | `tutti-session` owns the open and the policy. `drain_receiver_through`'s rebasing goes: a tap's frames are real, so `MidiOutRouter::route` takes `(Frame, Ump)`; `UmpOut`, `JrStream` and the stamper stay where they are. The drop report reads `take_lost`. `MidiNodes::hardware_out` and `out_controls` go. `tutti-midi-hardware` stays the OS backend and the pump |
 | `MidiQueueNode` | **Deleted.** `EventInletNode` with `At::NextBlock` | `MidiSender`'s key helpers (`note_on`, `note_off`, which build a `Voice2` into a `Ump`) become a thin MIDI wrapper over `EventInletWriter` in `tutti-midi-runtime`, since the graph builds no message. The session's live input (`Live`) holds that wrapper |
 | `TimedQueueNode`, `TimedSender`, `TimedSendError`, `Moment` | **Moved up** (E2 did `Moment` and the node's logic; `TimedQueueNode` stays a thin newtype over `EventInletNode` until E4 moves its callers): the node and its waiting list are `EventInletNode`, the sender is `EventInletWriter`, `Moment` is in `tutti-types` | What remains in `tutti-midi-runtime` is nothing of it. `InstrumentHandle` (`instrument.rs`) holds the writer, behind the session's own lock if it must stay `Clone` (below) |
 | `MidiMailbox`, `MidiReceiver`, the `MidiOut` trait | **Deleted when their last user moves**, if no non-graph user remains. The host's own outbound mailbox (read in `drain_receiver_through`) is one such: it stays until the host's outbound path is its own, and is named when it is | Stage E4 audits it |
@@ -1257,7 +1297,7 @@ describes changes: each graph PR edits that document's primitive table.
 |---|---|---|
 | **E1** (done) | The event tap: `EventTapId`, `EventTapSpec`, `Topology.event_taps`, `EventTapWriter` and `EventTapReader`, `Editor::open_event_tap`, `MissingSource::EventPort`, the compiler's op and `DelayKey::EventTap`, `verify`, `cost`, the serial, pooled and reference interpreters, the commit carry, reap. The tests above. Then `tutti-session`: `Graph::open_event_tap` and the `Reclaim` reap | Yes |
 | **E2** (done) | The event inlet: `EventInletNode`, `EventInletWriter`, `Refused`, `Moment` to `tutti-types`, the panic predicate in `tutti-ump`, the waiting list moved from `TimedQueueNode`. Then `tutti-session`: `Graph::open_event_inlet` and `add_event_inlet` | Yes, and `tutti-types` and `tutti-ump` |
-| **E3** | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
+| **E3** (done) | The hardware out: the session reads a tap on the clock; `MidiOutNode`, `MidiOutControls`, `MIDI_OUT_CAPACITY` and `MidiNodes::hardware_out` deleted; `drain_receiver_through` and `MidiOutRouter` take frames | No. After E1 |
 | **E4** | The queues: `MidiQueueNode` and `TimedQueueNode` deleted, `MidiSender` slimmed to the key helpers over `EventInletWriter`, `InstrumentHandle` and the session's live inputs moved, `MidiMailbox` audited | No. After E2 |
 | **E5** | `MidiInputNode` split into the OS-side inlet and `MidiIngestNode` | No. After E2 and `ClockMap` (stage 4, timing) |
 
@@ -1956,7 +1996,7 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
    refuses an overlap, with tests that state each refusal and a mutation for each.
 - **Stage E. The event tap and the event inlet** (the section of that name).
    E1 the tap in `tutti-graph` and its session API, E2 the inlet (built), E3 the hardware
-   out on a tap (`MidiOutNode` deleted), E4 the queues on the inlet
+   out on a tap (`MidiOutNode` deleted, built), E4 the queues on the inlet
    (`MidiQueueNode`, `TimedQueueNode` deleted), E5 `MidiInputNode` split, after
    `ClockMap`. E1 and E2 touch `tutti-graph`. Behaviour change: a tap's frame is
    a `u64` where `MidiOutNode`'s stamp was a wrapping `u32`, and a note-off has

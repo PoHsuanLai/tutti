@@ -93,6 +93,9 @@ struct Parts {
     compensation: Arc<PrerollTable>,
     #[cfg(feature = "midi")]
     midi: Option<crate::MidiNodes>,
+    /// The reader of the tap the hardware out drains.
+    #[cfg(feature = "midi")]
+    midi_tap: Option<tutti_graph::EventTapReader>,
     #[cfg(feature = "midi-hardware")]
     midi_io: Option<tutti_midi_hardware::MidiSession>,
     #[cfg(feature = "midi-hardware")]
@@ -284,7 +287,7 @@ impl SessionBuilder {
 
         // The engine's MIDI as graph nodes: the hardware input (translating,
         // and ingesting MPE in the builder's mode), the clock (off until a
-        // host enables it) and the hardware out the clock feeds.
+        // host enables it), and the event tap on the clock that is the hardware out.
         #[cfg(feature = "midi")]
         let midi = {
             // The node owns its drain: the read state on the port set, built
@@ -300,17 +303,27 @@ impl SessionBuilder {
             let (input, input_controls) =
                 graph.add(tutti_midi_runtime::MidiInputNode::new(wire).with_mpe(self.mpe_mode));
             let (clock, clock_master) = graph.insert(tutti_midi_runtime::ClockNode::new());
-            let (hardware_out, out_controls) = graph.insert(tutti_midi_runtime::MidiOutNode::new());
-            graph.set_feed(hardware_out, crate::Feeder::Clock, vec![clock.into()]);
-            Some(crate::MidiNodes {
-                input,
-                input_controls,
-                clock,
-                clock_master,
-                hardware_out,
-                out_controls,
-            })
+            // The hardware out: a tap on the clock's event output, aligned to
+            // the outputs' time so MIDI leaves with the audio (doc 017, E3).
+            let tap = graph
+                .open_event_tap(
+                    clock.into(),
+                    tutti_graph::TapAlign::ToOutput,
+                    crate::midi::MIDI_OUT_TAP_CAPACITY,
+                )
+                .expect("the clock node is in the graph with its event output");
+            (
+                Some(crate::MidiNodes {
+                    input,
+                    input_controls,
+                    clock,
+                    clock_master,
+                }),
+                Some(tap),
+            )
         };
+        #[cfg(feature = "midi")]
+        let (midi, midi_tap) = midi;
 
         Ok(Parts {
             graph,
@@ -320,6 +333,8 @@ impl SessionBuilder {
             compensation: Arc::default(),
             #[cfg(feature = "midi")]
             midi,
+            #[cfg(feature = "midi")]
+            midi_tap,
             #[cfg(feature = "midi-hardware")]
             midi_io,
             #[cfg(feature = "midi-hardware")]
@@ -363,9 +378,12 @@ impl SessionBuilder {
             #[cfg(feature = "midi")]
             midi: parts.midi,
             #[cfg(all(feature = "midi", not(feature = "midi-hardware")))]
-            midi_state: Default::default(),
+            midi_state: crate::midi::MidiState::with_hardware_tap(parts.midi_tap),
             #[cfg(feature = "midi-hardware")]
-            midi_state: crate::midi::MidiState::with_device_events(parts.device_events),
+            midi_state: crate::midi::MidiState::with_device_events(
+                parts.device_events,
+                parts.midi_tap,
+            ),
             #[cfg(feature = "modulation")]
             mods: crate::modulation::ModSession::new(self.unresolved_warning),
             #[cfg(feature = "midi-hardware")]
@@ -462,6 +480,8 @@ impl SessionBuilder {
                 compensation: Arc::default(),
                 #[cfg(feature = "midi")]
                 midi: None,
+                #[cfg(feature = "midi")]
+                midi_tap: None,
                 #[cfg(feature = "midi-hardware")]
                 midi_io: None,
                 #[cfg(feature = "midi-hardware")]

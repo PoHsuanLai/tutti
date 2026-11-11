@@ -3,8 +3,8 @@
 //!
 //! It carries MIDI across a thread boundary the graph does not: into the
 //! graph from a control thread ([`MidiQueueNode`](crate::MidiQueueNode), a
-//! keyboard's notes), and out of it to a control thread
-//! ([`MidiOutNode`](crate::MidiOutNode), what a hardware pump sends). Inside
+//! keyboard's notes), and, for a host's own outbound
+//! path, out to a control thread. Inside
 //! the graph MIDI travels on event ports, never through a mailbox.
 
 use std::sync::Arc;
@@ -23,8 +23,8 @@ pub const MAILBOX_CAPACITY: usize = 256;
 pub struct MidiMailbox {
     /// Each event with a raw `u32` stamp, not an `Offset`: the ring crosses
     /// threads ahead of any block, and what the stamp means is the reader's
-    /// (the queue node clamps it into the block that plays it; the out node
-    /// writes the graph-clock frame wrapped at 2^32). The types stop here; a
+    /// (the queue node clamps it into the block that plays it; a host's
+    /// outbound path writes its own frame). The types stop here; a
     /// stamp becomes an `Offset` where a block is known.
     events: ArrayQueue<(u32, Ump)>,
 }

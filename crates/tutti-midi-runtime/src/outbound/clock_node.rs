@@ -4,8 +4,8 @@
 //! It ticks its [`ClockMaster`] once per transport segment of each block
 //! (`Env::segments`), so a start, a stop or a locate inside a block sends its
 //! Start, Stop or Song Position on its own frame, and the ticks after it
-//! follow the transport from there. Wire its port to a
-//! [`MidiOutNode`](crate::MidiOutNode) for a hardware pump to drain.
+//! follow the transport from there. Tap its port
+//! (`Graph::open_event_tap`) for a hardware pump to drain.
 //!
 //! The master is shared: the node's controls are the same `Arc<ClockMaster>`,
 //! through which a control thread enables it and picks MTC. `prepare` gives

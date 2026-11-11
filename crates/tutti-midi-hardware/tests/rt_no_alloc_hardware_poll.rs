@@ -13,7 +13,7 @@
 //! released there would free inside it.
 //!
 //! Each gate runs the node in a graph, channel 0's port wired to a
-//! `MidiOutNode` whose ring the test drains, so what was polled is counted.
+//! event tap whose ring the test drains, so what was polled is counted.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -21,24 +21,26 @@ use std::time::Instant;
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::NodeKey;
-use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Transport};
+use tutti_graph::{
+    Editor, EventOut, EventTapId, EventTapReader, Executor, Prepare, TapAlign, TapEvent, Transport,
+};
 use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle};
-use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
+use tutti_midi_runtime::MidiInputNode;
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// A graph holding an input node over `inputs`, its channel-0 port feeding a
-/// MIDI-out node.
+/// A graph holding an input node over `inputs`, its channel-0 port under an
+/// event tap.
 struct Rig {
     _editor: Editor,
     exec: Executor,
-    out: MidiOutControls,
-    // The out node's raw stamps (`poll_into`'s element), not block offsets.
-    drain: Vec<(u32, Ump)>,
-    /// Events that reached the out node.
+    out: EventTapReader,
+    // The tap's events, each with its frame on the graph's clock.
+    drain: Vec<TapEvent>,
+    /// Events that reached the tap.
     carried: usize,
 }
 
@@ -50,32 +52,38 @@ impl Rig {
             "in",
             MidiInputNode::new(Some(Box::new(HardwareMidiDrain::new(inputs)))),
         );
-        let out = editor.insert(NodeKey(2), "out", MidiOutNode::new());
-        editor.spec_mut().connect_events(
-            EventIn {
-                node: NodeKey(2),
-                port: 0,
-            },
-            EventEdge::Direct(EventOut {
-                node: NodeKey(1),
-                port: 0,
-            }),
-        );
+        let out = editor
+            .open_event_tap(
+                EventTapId(0),
+                EventOut {
+                    node: NodeKey(1),
+                    port: 0,
+                },
+                TapAlign::Raw,
+                1024,
+            )
+            .expect("the input node is in the graph");
         editor.commit().expect("commits");
         Self {
             _editor: editor,
             exec,
             out,
-            drain: vec![(0, noop()); 2048],
+            drain: vec![
+                TapEvent {
+                    frame: tutti_types::Frame::ZERO,
+                    ump: noop()
+                };
+                2048
+            ],
             carried: 0,
         }
     }
 
-    /// One block of `frames`, and drain what reached the out node.
+    /// One block of `frames`, and drain what reached the tap.
     fn run(&mut self, frames: usize) {
         self.exec
             .process(frames, &Transport::default(), &[], &mut []);
-        self.carried += self.out.poll_into(&mut self.drain);
+        self.carried += self.out.pop_into(&mut self.drain);
     }
 }
 

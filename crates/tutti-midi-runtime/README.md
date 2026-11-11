@@ -13,14 +13,13 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
 - **MIDI as graph nodes**, sending on `tutti-graph` event ports:
   [`MidiInputNode`] (a wire, one port per channel), [`MidiQueueNode`] (what a
   control thread sends, a keyboard's notes), [`MidiClipNode`] and
-  [`HarmonyNode`] (a timeline), [`ClockNode`] (Beat Clock and MTC), and
-  [`MidiOutNode`], the sink handing MIDI back to a control thread (a hardware
-  pump).
+  [`HarmonyNode`] (a timeline), [`ClockNode`] (Beat Clock and MTC). MIDI leaves the graph
+  through an event tap (`tutti-graph`'s `EventTapReader`).
 - [`NoteLedger`]: the notes a node has started and not ended, and the only way
   it writes to its port; [`MidiClipNode`] uses it.
 - [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`]: the lock-free ring MIDI
   crosses a thread boundary on (into a [`MidiQueueNode`], out of a
-  [`MidiOutNode`]).
+  host's own outbound path).
 - [`ClockMaster`], [`JrClock`] and [`JrStamper`]: engine-produced MIDI *out*
   (Beat Clock, MTC, JR timestamps).
 - [`MidiClockDecoder`], [`MtcDecoder`], [`SmpteTimecode`] and

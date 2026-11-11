@@ -1,11 +1,13 @@
 //! The nodes at the graph's MIDI border:
 //! [`MidiInputNode`] sends a wire's events out of their channels' ports,
 //! translated; [`MidiQueueNode`] sends what a control thread pushed;
-//! [`MidiOutNode`] hands what reaches it back to one; [`ClockNode`] ticks
+//! an event tap hands what a port carries back to one; [`ClockNode`] ticks
 //! Beat Clock on the frames the transport reaches, a start inside a block
 //! included.
 
 use std::sync::{Arc, Mutex};
+
+mod common;
 use tutti_graph::UmpAt;
 
 use tutti_fixtures::midi::{
@@ -20,7 +22,7 @@ use tutti_graph::{
 use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIn,
-    MidiInputNode, MidiOutNode, MidiQueueNode,
+    MidiInputNode, MidiQueueNode,
 };
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{
@@ -467,7 +469,7 @@ fn the_queue_sends_in_offset_order() {
     assert_eq!(got, vec![(3, Some(62)), (511, Some(60))]);
 }
 
-/// **The out node hands MIDI back on the graph's clock, and counts what a
+/// **An event tap hands MIDI back on the graph's clock, and counts what a
 /// full ring drops.** Five blocks of 256 queued notes into a ring of 1 024
 /// nobody drains: 256 dropped; what is drained is the first 1 024, the
 /// first on its frame (block 0, offset 7) and the last of them on block 3's
@@ -477,20 +479,10 @@ fn the_queue_sends_in_offset_order() {
 /// fails. Mutation (run): stamping the offset in the block alone → the last
 /// reads 8 → fails.
 #[test]
-fn the_out_node_hands_midi_back_and_counts_drops() {
+fn an_event_tap_hands_midi_back_and_counts_drops() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
     let keys = ed.insert(NodeKey(1), "keys", MidiQueueNode::new());
-    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
     for _ in 0..5 {
         let batch: Vec<UmpAt> = (0..256).map(|i| note(0, 60, 7 + i / 128)).collect();

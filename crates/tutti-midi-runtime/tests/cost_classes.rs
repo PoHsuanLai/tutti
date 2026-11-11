@@ -6,6 +6,8 @@
 use std::sync::{Arc, Mutex};
 
 use tutti_fixtures::midi::note_on;
+
+mod common;
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
@@ -14,8 +16,8 @@ use tutti_graph::{
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{
-    ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiOutControls, MidiOutNode,
-    MidiQueueNode, TimedMidiEvent, TimedQueueNode,
+    ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiQueueNode, TimedMidiEvent,
+    TimedQueueNode,
 };
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
@@ -98,11 +100,11 @@ fn connect(ed: &mut Editor, from: NodeKey, to: NodeKey) {
     );
 }
 
-/// [`LANES`] clips each into an out node, and [`HEAVY`] clips each into a
+/// [`LANES`] clips each under an event tap, and [`HEAVY`] clips each into a
 /// recorder on a global output; on a pool of `workers` when more than one.
-/// `declared`: the clip → out lanes as shipped, or wrapped to declare
-/// nothing. The out nodes' controls (declared only) and the recorders' logs.
-fn graph(workers: usize, declared: bool) -> (Executor, Vec<MidiOutControls>, Vec<Seen>) {
+/// `declared`: the clips as shipped, or wrapped to declare nothing. The
+/// taps' sinks and the recorders' logs.
+fn graph(workers: usize, declared: bool) -> (Executor, Vec<common::Sink>, Vec<Seen>) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(
@@ -126,12 +128,14 @@ fn graph(workers: usize, declared: bool) -> (Executor, Vec<MidiOutControls>, Vec
             }));
         } else if declared {
             ed.insert(source, "clip", clip(k));
-            outs.push(ed.insert(sink, "out", MidiOutNode::new()));
+            outs.push(common::sink(&mut ed, k as u32, &[(source.0, 0)]));
         } else {
             ed.insert(source, "clip", Unforkable(Undeclared(clip(k))));
-            ed.insert(sink, "out", Unforkable(Undeclared(MidiOutNode::new())));
+            outs.push(common::sink(&mut ed, k as u32, &[(source.0, 0)]));
         }
-        connect(&mut ed, source, sink);
+        if k >= LANES {
+            connect(&mut ed, source, sink);
+        }
     }
     ed.spec_mut().topology.set_outputs(outputs);
     ed.commit().expect("commits");
@@ -154,13 +158,12 @@ fn render(exec: &mut Executor) {
     }
 }
 
-/// Everything the graph sent, by absolute frame: each out node's events
-/// (`MidiOutNode` stamps the block's frame plus the offset into
-/// the `Offset`, wrapping at 2^32), then each recorder's (it adds
-/// `Env::frame` itself).
-fn sent(outs: &[MidiOutControls], seen: &[Seen]) -> Vec<Vec<(u64, [u32; 4])>> {
+/// Everything the graph sent, by absolute frame: each tap's events (the
+/// frame is the block's plus the offset, as the tap stamps it), then each
+/// recorder's (it adds `Env::frame` itself).
+fn sent(outs: &mut [common::Sink], seen: &[Seen]) -> Vec<Vec<(u64, [u32; 4])>> {
     let mut all: Vec<Vec<(u64, [u32; 4])>> = outs
-        .iter()
+        .iter_mut()
         .map(|o| {
             let mut buf = vec![(0, Ump([0; 4])); 1024];
             let n = o.poll_into(&mut buf);
@@ -184,7 +187,6 @@ fn every_midi_node_is_light() {
     assert_eq!(ClockNode::new().shape().cost, Cost::Light);
     assert_eq!(MidiQueueNode::new().shape().cost, Cost::Light);
     assert_eq!(TimedQueueNode::new().0.shape().cost, Cost::Light);
-    assert_eq!(MidiOutNode::new().shape().cost, Cost::Light);
     assert_eq!(MidiInputNode::new(None).shape().cost, Cost::Light);
 }
 
@@ -218,14 +220,14 @@ fn light_lanes_pack_and_send_on_the_serial_frames() {
         plan.schedule(4)
     );
 
-    let (mut exec, outs, seen) = graph(1, true);
+    let (mut exec, mut outs, seen) = graph(1, true);
     render(&mut exec);
-    let serial = sent(&outs, &seen);
+    let serial = sent(&mut outs, &seen);
     assert!(serial.iter().all(|lane| !lane.is_empty()));
     for workers in [2, 4] {
-        let (mut exec, outs, seen) = graph(workers, true);
+        let (mut exec, mut outs, seen) = graph(workers, true);
         assert!(exec.is_parallel());
         render(&mut exec);
-        assert_eq!(serial, sent(&outs, &seen), "{workers} workers");
+        assert_eq!(serial, sent(&mut outs, &seen), "{workers} workers");
     }
 }

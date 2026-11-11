@@ -1,6 +1,6 @@
 //! The MIDI clock follows the published `TempoMap` (doc 020, stage 5): a real
-//! render of a `ClockNode` into a `MidiOutNode` through the live engine, the
-//! events read out of the out node's ring with their frame on the graph's
+//! render of a `ClockNode` under an event tap through the live engine, the
+//! events read out of the tap's ring with their frame on the graph's
 //! clock.
 //!
 //! The oracle is the map's definition, written here and never read back from
@@ -26,9 +26,11 @@
 
 use std::sync::Arc;
 
+mod common;
+
 use tutti_engine::Engine;
-use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, NodeKey, Prepare};
-use tutti_midi_runtime::{ClockNode, MidiOutControls, MidiOutNode};
+use tutti_graph::{Editor, Executor, NodeKey, Prepare};
+use tutti_midi_runtime::ClockNode;
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::{FadeOut, MotionEvent, Then, Transport};
 use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -134,27 +136,17 @@ fn frame_after(x: f64) -> u64 {
 struct Rig {
     engine: Engine,
     transport: Transport,
-    out: MidiOutControls,
+    out: std::cell::RefCell<common::Sink>,
 }
 
-/// A clock (enabled, MTC per `mtc`) into an out node, on an engine over `map`.
+/// A clock (enabled, MTC per `mtc`) under an event tap, on an engine over `map`.
 fn rig(map: &Arc<TempoMap>, mtc: bool) -> Rig {
     let (mut ed, exec): (Editor, Executor) =
         Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     let master = ed.insert(NodeKey(1), "clock", ClockNode::new());
     master.set_enabled(true);
     master.set_send_mtc(mtc);
-    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    let out = std::cell::RefCell::new(common::sink(&mut ed, 0, &[(1, 0)]));
     ed.commit().expect("commits");
     let transport = Transport::new(SampleRate::new(SR));
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
@@ -182,7 +174,7 @@ impl Rig {
                 .process(&mut InterleavedMut::new(&mut buf[..n], ChannelLayout::MONO));
             done += n;
             loop {
-                let got = self.out.poll_into(&mut ring);
+                let got = self.out.borrow_mut().poll_into(&mut ring);
                 sent.extend(ring[..got].iter().map(|&(frame, ump)| {
                     let Ok(Message::System(_, system)) = decode(ump) else {
                         panic!("the clock sends System messages: {ump:?}")
@@ -197,7 +189,11 @@ impl Rig {
                 }
             }
         }
-        assert_eq!(self.out.dropped(), 0, "the ring held every event");
+        assert_eq!(
+            self.out.borrow_mut().dropped(),
+            0,
+            "the ring held every event"
+        );
     }
 }
 

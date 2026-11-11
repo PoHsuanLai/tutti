@@ -154,7 +154,7 @@ fn blocks_of_any_length_render_alike_with_lanes_and_moved_cells() {
 ///
 /// Mutations (run): counting the grid from each block's start (the stream phase in
 /// `Cadence::steps` forced to 0) fails both (blocks of 1, 17, 64 and 512 differ); reading the
-/// drive lane 15 frames late (`s[at.frame + 15]` in `LadderParams::read`'s drive arm)
+/// drive lane 15 frames late (`s[at.frame + 15]` in `Params::read`'s drive arm)
 /// fails the first.
 #[test]
 fn the_ladder_renders_alike_at_every_block_length_with_lanes() {

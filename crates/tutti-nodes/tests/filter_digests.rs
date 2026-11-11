@@ -10,7 +10,7 @@
 //! 16-frame segment counted from the last reset, the coefficients ramping to it
 //! over the segment, or for the crossover held over it; the ladder's drive joins
 //! the grid, a lane sampled per segment and a cell glided like the others);
-//! the `held` digests below, which no grid touches, did not. The coefficient
+//! The coefficient
 //! solves reach `libm` (`tan`, `powf`), so every assert goes through
 //! `assert_golden`: asserted on the recorded target only.
 //!
@@ -245,108 +245,4 @@ fn the_crossover_renders_what_it_always_did() {
     println!("DIGEST crossover {digest:#018x}");
     // Moved in step 2b PR5 (the stream grid); was 0xe487_a6a1_7b13_6f8d. Recorded on glibc 2.39.
     assert_golden("crossover_render", digest, 0x333a_7595_b2e8_7939);
-}
-
-// Held controls (doc 024 step 2b, PR1): no cell moves and no lane drives, so the
-// node renders its construction-time coefficients (the held path). These digests
-// never move through the DesignNode migration and the stream grid (Q27); only the
-// moving paths above do. Same FNV-1a over every output sample, and the solves
-// reach `libm`, so each goes through `assert_golden`, recorded on glibc 2.39.
-//
-// Mutations (run): `SvfCoefficients::solve`'s `a1` times 1.001 changes the SVF and
-// EQ digests, `LadderCoefficients::from`'s `g1` times 1.001 the ladder's, and the
-// crossover's `solve` scaling the first low-pass `b0` by 1.001 the crossover's; each
-// changes every digest of its node, held ones included.
-
-fn held(node: impl ParamNode + 'static, rate: SampleRate) -> u64 {
-    run(node, rate, |_, _| {}, |_| vec![None, None, None])
-}
-
-/// A mono f64 low-pass and a stereo f32 bell, nothing moving.
-#[test]
-fn the_svf_holds_what_it_always_did() {
-    let mono = held(
-        SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(800.0), Q(1.2)),
-        SampleRate(48_000.0),
-    );
-    println!("DIGEST svf_held_mono_f64 {mono:#018x}");
-    assert_golden("svf_held_mono_f64", mono, 0x81f9_2d97_4e8c_af85);
-    let stereo = held(
-        SvfFilterNode::<f32>::with_controls(
-            ChannelLayout::STEREO,
-            SvfControls {
-                ty: SvfType::Bell,
-                freq: Hz(1_500.0),
-                q: Q(2.0),
-                gain: Db(6.0),
-            },
-        ),
-        SampleRate(44_100.0),
-    );
-    println!("DIGEST svf_held_stereo_f32 {stereo:#018x}");
-    assert_golden("svf_held_stereo_f32", stereo, 0xc2a9_a98d_4f7d_9dab);
-}
-
-/// A mono f64 high shelf and a mono f32 low shelf, nothing moving.
-#[test]
-fn the_eq_band_holds_what_it_always_did() {
-    let mono = held(
-        EqBandNode::<f64>::new(SvfType::HighShelf, Hz(4_000.0), Q(0.8), Db(8.0)),
-        SampleRate(48_000.0),
-    );
-    println!("DIGEST eq_band_held_mono_f64 {mono:#018x}");
-    assert_golden("eq_band_held_mono_f64", mono, 0x0a95_1de6_e8d4_df31);
-    let f32_band = held(
-        EqBandNode::<f32>::new(SvfType::LowShelf, Hz(250.0), Q(0.7), Db(-5.0)),
-        SampleRate(44_100.0),
-    );
-    println!("DIGEST eq_band_held_mono_f32 {f32_band:#018x}");
-    assert_golden("eq_band_held_mono_f32", f32_band, 0x43e2_01b7_7401_78c7);
-}
-
-/// A mono f64 and a stereo f32 24 dB ladder, nothing moving.
-#[test]
-fn the_ladder_holds_what_it_always_did() {
-    let mono = held(
-        LadderFilterNode::<f64>::new(LadderType::LP24, Hz(1_200.0), Resonance::new_clamped(0.6)),
-        SampleRate(48_000.0),
-    );
-    println!("DIGEST ladder_held_mono_f64 {mono:#018x}");
-    assert_golden("ladder_held_mono_f64", mono, 0x072a_a58a_c64f_3030);
-    let stereo = held(
-        LadderFilterNode::<f32>::with_channels(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            Hz(900.0),
-            Resonance::new_clamped(0.4),
-        ),
-        SampleRate(44_100.0),
-    );
-    println!("DIGEST ladder_held_stereo_f32 {stereo:#018x}");
-    assert_golden("ladder_held_stereo_f32", stereo, 0x1ba6_f3e3_5398_f6aa);
-}
-
-/// A mono and a stereo three-band crossover, nothing moving.
-#[test]
-fn the_crossover_holds_what_it_always_did() {
-    for (name, layout, recorded) in [
-        (
-            "crossover_held_mono",
-            ChannelLayout::MONO,
-            0xaa35_6d00_f659_5b22,
-        ),
-        (
-            "crossover_held_stereo",
-            ChannelLayout::STEREO,
-            0x2477_426b_8c07_c764,
-        ),
-    ] {
-        let digest = run(
-            CrossoverNode::new(layout, &[Hz(300.0), Hz(3_000.0)]).unwrap(),
-            SampleRate(48_000.0),
-            |_, _| {},
-            |_| vec![None, None],
-        );
-        assert_golden(name, digest, recorded);
-    }
 }

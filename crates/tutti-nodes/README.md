@@ -36,7 +36,7 @@ node without a lock.
   adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Wave`, the wave a
   control lane evaluates): an audio generator, whose output feeds a node's
   audio input.
-- **Dry/wet** — the convolver, delay, chorus/flanger and phaser output their wet signal only; blend with the input through the graph's `set_mix`.
+- **Dry/wet** — the convolver, delay, chorus/flanger, phaser and the two reverbs output their wet signal only; blend with the input through the graph's `set_mix`.
 - **Mixing** — `BusStripNode` (volume / balance; a mute or bypass is the graph's `NodeMode`).
   Summing is the graph's: a port or an output channel sums its sources; so is
   folding between layouts (a bus edge between declared buses).

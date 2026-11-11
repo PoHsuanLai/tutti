@@ -22,13 +22,13 @@ tutti-types = { path = "../tutti-types" }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde", "probe-wire"] }
+# The shared mapping and the OS calls, behind safe calls.
+tutti-plugin-ipc-ffi = { path = "../tutti-plugin-ipc-ffi" }
 
 # The wire.
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 
-# Shared memory.
-memmap2 = "0.9"
 # The slab's sample views (`Pod`), so no `unsafe` byte cast of our own.
 bytemuck = "1"
 # Unpredictable slab and socket names (pure Rust; the OS's random source).
@@ -43,21 +43,6 @@ interprocess = { version = "2" }
 
 thiserror = "2"
 tracing = "0.1"
-
-[target.'cfg(unix)'.dependencies]
-# `O_NOFOLLOW` for the server's open of the slab.
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.52", features = [
-    "Win32_System_Memory",
-    "Win32_System_Threading",
-    "Win32_Foundation",
-    # `PeekNamedPipe`, which is how a control read gets a deadline on Windows.
-    # `interprocess` refuses `set_recv_timeout` on a named pipe, so without this
-    # every read blocks until the peer speaks. See `transport::control`.
-    "Win32_System_Pipes",
-] }
 
 [dev-dependencies]
 tempfile = "3"

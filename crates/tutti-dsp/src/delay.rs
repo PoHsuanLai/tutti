@@ -1,8 +1,5 @@
-//! The fractional-read delay ring and its interpolation.
-//!
-//! The fractional read is the reason this is not just a
-//! [`CircularBuffer`](crate::CircularBuffer): a delay whose time is modulated
-//! must interpolate between taps or it steps audibly.
+//! The fractional-read delay ring and its interpolation: a delay whose time is
+//! modulated must interpolate between taps or it steps audibly.
 
 use tutti_types::{SampleRate, Seconds};
 

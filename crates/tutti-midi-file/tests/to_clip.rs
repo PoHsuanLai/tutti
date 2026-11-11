@@ -32,6 +32,9 @@
 //! | the zero-numerator refusal removed | `what_has_no_successor_is_reported_with_its_tick` |
 //! | the NFC composition removed (`.nfc()`) | `text_is_composed_to_nfc_without_a_byte_order_mark` |
 //! | the byte order mark kept (`strip_prefix` removed) | `text_is_composed_to_nfc_without_a_byte_order_mark` |
+//! | the Property Exchange refusal removed | `property_exchange_and_empty_text_are_reported` |
+//! | the PE sub-ID#2 range as `0x30..=0x3E` (Notify let through) | `property_exchange_and_empty_text_are_reported` |
+//! | the empty-text refusal removed | `property_exchange_and_empty_text_are_reported` |
 //!
 //! The round trip (`the_clip_round_trips_through_its_bytes`) is a property of
 //! the codec the conversion feeds; it is pinned by the clip codec's own
@@ -658,6 +661,42 @@ fn text_is_composed_to_nfc_without_a_byte_order_mark() {
             ),
         ]
     );
+}
+
+/// M2-116 sections 6.4 and 7.2: no Property Exchange message in a clip
+/// (MIDI-CI sub-ID#2 `0x30` to `0x3F`, M2-101 Table 4); another MIDI-CI
+/// message (Discovery, `0x70`) is not PE and is carried. M2-104 section
+/// 7.5.10.1: an empty Lyric would be a melisma, which SMF never said.
+#[test]
+fn property_exchange_and_empty_text_are_reported() {
+    // F0 7E 7F 0D <sub-ID#2> ... F7, the bytes after the F0.
+    let ci = |sub_id2: u8| FileEvent::SysEx(vec![0x7E, 0x7F, 0x0D, sub_id2, 0x02, 0xF7].into());
+    let smf = format0(vec![
+        (0, ci(0x34)), // Inquiry: Get Property Data
+        (1, ci(0x3F)), // Notify
+        (2, ci(0x70)), // Discovery: not PE
+        (3, text(TextKind::Lyric, "")),
+    ]);
+    let converted = smf.to_clip().unwrap();
+    let reasons: Vec<(u64, DropReason)> = converted
+        .dropped
+        .iter()
+        .map(|d| (d.tick.0, d.reason))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            (0, DropReason::PropertyExchange),
+            (1, DropReason::PropertyExchange),
+            (3, DropReason::EmptyText),
+        ]
+    );
+    let sysex_ticks: Vec<u64> = events_of(&converted.clip)
+        .iter()
+        .filter(|(_, e)| matches!(e, FileEvent::Message(Message::Sysex7(..))))
+        .map(|(t, _)| t.0)
+        .collect();
+    assert_eq!(sysex_ticks, [2], "Discovery is carried");
 }
 
 /// The clip written and read back is the same clip.

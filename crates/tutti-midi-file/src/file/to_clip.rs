@@ -70,6 +70,16 @@ pub enum DropReason {
     /// bytes from `F0` to `F7`: a divided message (its `F0` part has no `F7`)
     /// or one with an 8-bit byte. SysEx7 carries only the complete one.
     SysexNotCompleteSevenBit,
+    /// A MIDI-CI Property Exchange message (Universal System Exclusive
+    /// `7E`, sub-ID#1 `0D`, sub-ID#2 `30` to `3F`, M2-101 section 8):
+    /// "Property Data for PE Resources shall not be included in a MIDI Clip
+    /// File" (M2-116 section 6.4), and the sequence data may hold "any MIDI
+    /// messages in UMP Format, except Property Exchange messages" (7.2).
+    PropertyExchange,
+    /// A text event with no bytes. SMF gives it no meaning, and the Flex
+    /// message it would become does: a Complete Lyric packet "filled with the
+    /// value 0x00 ... specifies a melisma" (M2-104 section 7.5.10.1).
+    EmptyText,
 }
 
 /// One event of the SMF that is not in the clip.
@@ -192,6 +202,9 @@ fn key_signature(sharps: i8, minor: bool) -> Option<KeySignature> {
 /// a Byte Order Mark" (M2-104 section 1.8): a leading BOM goes and the rest is
 /// composed to NFC, which changes how the text is spelled, never what it says.
 fn text(kind: FlexTextKind, bytes: &[u8]) -> std::result::Result<Vec<FileEvent>, DropReason> {
+    if bytes.is_empty() {
+        return Err(DropReason::EmptyText);
+    }
     let text = std::str::from_utf8(bytes).map_err(|_| DropReason::TextNotUtf8)?;
     let text: String = text
         .strip_prefix('\u{FEFF}')
@@ -215,6 +228,9 @@ fn convert(
         // Already a UMP: a MIDI 1.0 channel message on group 0.
         FileEvent::Message(_) | FileEvent::Unknown(_) => other(vec![ev.clone()]),
         FileEvent::SysEx(body) => {
+            if let [0x7E, _, 0x0D, 0x30..=0x3F, ..] = **body {
+                return Err(DropReason::PropertyExchange);
+            }
             let whole: Vec<u8> = std::iter::once(0xF0).chain(body.iter().copied()).collect();
             let message = SysexMessage::new(&whole).ok_or(DropReason::SysexNotCompleteSevenBit)?;
             other(message.packets(MidiGroup::FIRST).map(event).collect())

@@ -1947,7 +1947,12 @@ denominator power is 0 and one whose numerator is 0 (`KeySignatureOutOfRange`,
 denominator of 0 reads "non-standard" and a numerator is "a value from 1 to 256",
 §7.5.4); a `F0` event that is not one complete 7-bit message
 (`SysexNotCompleteSevenBit`: a divided message and its `F7` continuations are each
-reported, not joined). The SMF 1.0 defaults (120 bpm, 4/4) are quoted from SMF 1.0,
+reported, not joined); a MIDI-CI Property Exchange message (`PropertyExchange`: M2-116
+§6.4 and §7.2 keep PE out of a clip); and an empty text (`EmptyText`: an all-zero
+Complete Lyric is a melisma, M2-104 §7.5.10.1, which an empty SMF event never said).
+A later tempo or time signature keeps its tick even where M2-104 §7.5.3/§7.5.4 ask a
+Standard MIDI File for a MIDI-clock or bar-line position: the source's grid may hold no
+such tick, and moving an event would change the music. The SMF 1.0 defaults (120 bpm, 4/4) are quoted from SMF 1.0,
 whose text is not among the specs in hand.
 
 ## 10. Stages

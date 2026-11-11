@@ -223,7 +223,7 @@ fn the_ladder_renders_what_it_always_did() {
         },
     );
     println!("DIGEST ladder {digest:#018x}");
-    assert_golden("ladder_render", digest, 0);
+    assert_golden("ladder_render", digest, 0xc146_444c_b50a_5bee);
 }
 
 /// A stereo three-band crossover: the first split moves by its cell at block 40

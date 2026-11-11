@@ -14,7 +14,8 @@
     reason = "a frame index reads several outputs and the signal at that frame"
 )]
 
-mod common;
+use common::spec_of;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,8 +25,8 @@ use common::{Kind, Pair, Ringer, SpecBehaviour, TestNode, bits, prepare};
 use tutti_graph::{
     Bus, BusRole, Buses, CrossfadeCurve, Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind,
     EventOut, Executor, ForkByClone, ForkMode, ForkTarget, GraphInvalid, GraphSpec, InPort, Io,
-    ModeError, Node, NodeKey, NodeMode, NodeSpec, Offset, OutPort, PassError, Prepare, Shape,
-    Source, Status, Topology, Transport, Unforkable, ValidGraph,
+    ModeError, Node, NodeKey, NodeMode, Offset, OutPort, PassError, Prepare, Shape, Source, Status,
+    Topology, Transport, Unforkable, ValidGraph,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, ChannelTopology, FoldError, Latency, M3DB, Samples, Speaker, Tail,
@@ -58,13 +59,6 @@ fn out(node: u64, port: u16) -> Source {
 
 fn direct(node: u64) -> Edge {
     Edge::Direct(out(node, 0))
-}
-
-fn spec_of(kind: &Kind) -> NodeSpec {
-    let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in(), s.audio_out())
-        .with_latency(s.latency.samples())
-        .with_tail(s.tail)
 }
 
 /// `(g_in, g_out)` of frame `k` of a mode fade: the one function the doc names.

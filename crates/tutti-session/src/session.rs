@@ -916,8 +916,9 @@ impl Session {
                     self.mods.resync(&mut self.graph);
                 }
             }
-            Phase::MidiOut =>
-            {
+            Phase::MidiOut => {
+                #[cfg(feature = "midi-hardware")]
+                self.midi_state.follow_output_config(self.midi_io.as_ref());
                 #[cfg(feature = "midi")]
                 self.midi_state.midi_out_phase(&mut self.graph, cx.now, out)
             }

@@ -1,7 +1,7 @@
 //! `Editor::replace`: swapping a running node's unit with a crossfade. The
 //! rules are in `src/fade.rs`; each test here pins one.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

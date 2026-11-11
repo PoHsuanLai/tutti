@@ -4,7 +4,7 @@
 //! change resets time-based state and flushes pending events; a `MaxBlock`
 //! change keeps everything).
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};

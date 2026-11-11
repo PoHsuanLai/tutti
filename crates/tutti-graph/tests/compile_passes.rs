@@ -4,7 +4,7 @@
 //! Thirteen fixed shapes (`shapes()`) cover the latency cases.
 //! `tutti_graph` is the pure pass the plan's delays must equal.
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 

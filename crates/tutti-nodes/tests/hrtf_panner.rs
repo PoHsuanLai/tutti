@@ -32,6 +32,7 @@
 //! conventional impulse and recovers the encoded IR at unity gain.
 
 use approx::assert_abs_diff_eq;
+use tutti_fixtures::signal::peak as peak_value;
 use tutti_graph::Node;
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{drive, prepared};
@@ -207,10 +208,6 @@ fn peak_index(ir: &[f32]) -> Samples {
             .map(|(i, _)| i)
             .expect("IR is non-empty"),
     )
-}
-
-fn peak_value(ir: &[f32]) -> f32 {
-    ir.iter().copied().fold(0.0f32, |a, s| a.max(s.abs()))
 }
 
 fn energy(left: &[f32], right: &[f32]) -> f32 {

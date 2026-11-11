@@ -162,7 +162,8 @@ impl ProcessConfig {
         ProcessSetup {
             processMode: self.setup_mode.to_vst3(),
             symbolicSampleSize: symbolic_sample_size,
-            maxSamplesPerBlock: self.block_size as i32,
+            // `activate_typed` refused a block past `i32::MAX`.
+            maxSamplesPerBlock: i32::try_from(self.block_size).unwrap_or(i32::MAX),
             // The ABI's `ProcessSetup.sampleRate` is a bare `f64`: the unit ends here.
             sampleRate: self.sample_rate.get(),
         }

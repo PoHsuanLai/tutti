@@ -22,6 +22,7 @@
 //! The allocation gate is in `rt_no_alloc_engine.rs`.
 
 use std::sync::{Arc, Mutex};
+use tutti_fixtures::signal::bits;
 use tutti_types::MaxBlock;
 
 mod support;
@@ -67,10 +68,6 @@ fn render(engine: &Engine, layout: ChannelLayout, blocks: &[usize]) -> Vec<f32> 
         all.extend_from_slice(&buf);
     }
     all
-}
-
-fn bits(v: &[f32]) -> Vec<u32> {
-    v.iter().map(|x| x.to_bits()).collect()
 }
 
 // ---- graph nodes ---------------------------------------------------------

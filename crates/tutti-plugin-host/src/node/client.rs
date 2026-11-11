@@ -582,7 +582,11 @@ impl<F: Loaded> InProcClient<F> {
         let Some(processor) = self.rt.poll(Processor::stop) else {
             return false;
         };
-        if !processor.retune(rate, max_block, p.quantum()) {
+        if !processor.retune(
+            rate,
+            max_block,
+            p.quantum().map(tutti_types::MaxBlock::samples),
+        ) {
             return false;
         }
         self.pipeline = processor.latency();

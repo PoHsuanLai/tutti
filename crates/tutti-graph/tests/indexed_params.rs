@@ -16,7 +16,7 @@
 //! The kind-and-index encoding itself is pinned in `tutti-types`
 //! (`unit_param.rs`); the session and Bevy sides in their own suites.
 
-mod common;
+use tutti_graph::testing as common;
 
 use common::prepare;
 use tutti_graph::NodeKey;

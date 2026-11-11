@@ -19,6 +19,7 @@ mod stamp;
 mod stream;
 #[cfg(test)]
 mod testing;
+mod wire;
 
 // A backend with no OS behind it, for testing the session layer. See the
 // module's own docs for why it is exported rather than `#[cfg(test)]`.

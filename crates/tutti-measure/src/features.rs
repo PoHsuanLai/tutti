@@ -154,9 +154,12 @@ mod tests {
     }
 
     fn sine(hz: f32, len: usize) -> Vec<f32> {
-        (0..len)
-            .map(|i| (core::f32::consts::TAU * hz * i as f32 / RATE as f32).sin())
-            .collect()
+        tutti_fixtures::signal::sine(
+            tutti_types::Hz(hz),
+            tutti_types::Amplitude(1.0),
+            tutti_types::SampleRate(RATE),
+            tutti_types::Samples(len),
+        )
     }
 
     /// A pure sine's centroid is its frequency, to within a bin.

@@ -2,7 +2,7 @@
 //! audio-thread mark, the block bound, and the editor's control-side
 //! protocol (typed controls, generations, the commit queue and its back-pressure).
 
-mod common;
+use tutti_graph::testing as common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

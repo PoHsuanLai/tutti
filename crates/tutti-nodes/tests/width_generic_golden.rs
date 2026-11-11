@@ -49,13 +49,7 @@ const TOL: f32 = 1e-5;
 
 /// Deterministic broadband input in `[-1, 1)`.
 fn noise(seed: u32) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    (0..LEN)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
-        })
-        .collect()
+    tutti_fixtures::noise(seed, LEN)
 }
 
 fn noise_channels(n: usize) -> Vec<Vec<f32>> {

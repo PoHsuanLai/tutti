@@ -24,10 +24,19 @@
 //! ([`Connection::with_wanted`] narrows the request to what the Endpoint
 //! supports), with **JR Timestamps off both ways**. Input time comes from the
 //! OS's arrival stamp (`InputProducerHandle::push`), which JR would only
-//! repeat, and nothing in the graph reads a JR clock; and JR on the output
-//! side is stamped by `UmpOut`'s flag, which nothing yet makes follow a
-//! negotiation (design 017, L6(c)). A device put in JR mode that nothing then
-//! fed would be worse than one left out of it.
+//! repeat, and the input edge drops a JR Clock or JR Timestamp a device sends
+//! anyway; JR on the output side is the session's `UmpOut` stamping, which
+//! follows the configuration the negotiation settled (`rx_jr`), so a device
+//! that is not asked is not sent it, and one that turns it on itself is.
+//!
+//! # After the settle
+//!
+//! A device that answered goes on being heard: a Stream Configuration
+//! Notification moves the Protocol and JR in use, and (when the Endpoint did
+//! not declare its Function Blocks static) a Function Block Info or Name
+//! changes a block (`Connection::on_message`, `Action::Changed`). A change is
+//! returned by [`MidiSession::poll`](crate::MidiSession::poll) as the settle
+//! is, and what the output sends in follows it.
 
 use std::time::Instant;
 
@@ -66,8 +75,9 @@ pub enum Basis {
 /// What is known of the UMP Stream state of one device: its Endpoint, the
 /// Protocol and JR Timestamps in use, and how that came to be known.
 ///
-/// The output side reads [`config`](Self::config) to decide which messages a
-/// device can be sent (design 017, L6(c)).
+/// The output side follows [`config`](Self::config): the device's output is
+/// sent in the Protocol it names, with JR Timestamps when it receives them
+/// (`OpenOutput`'s wire form, design 017 L6(c)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceStream {
     endpoint: Endpoint,
@@ -113,7 +123,12 @@ enum Run {
     /// Decided to ask, not yet started: the first poll starts it.
     Idle,
     Asking(Box<Connection>),
-    Done(Box<DeviceStream>),
+    /// Settled. `listening` is the connection of a device that answered, which
+    /// still hears what it changes; a device described by the OS has none.
+    Done {
+        stream: Box<DeviceStream>,
+        listening: Option<Box<Connection>>,
+    },
 }
 
 impl Negotiation {
@@ -125,10 +140,13 @@ impl Negotiation {
         let run = if asks {
             Run::Idle
         } else {
-            Run::Done(Box::new(DeviceStream {
-                endpoint: os.endpoint(),
-                basis: Basis::Described,
-            }))
+            Run::Done {
+                stream: Box::new(DeviceStream {
+                    endpoint: os.endpoint(),
+                    basis: Basis::Described,
+                }),
+                listening: None,
+            }
         };
         Self { os, out, run }
     }
@@ -136,14 +154,14 @@ impl Negotiation {
     /// What is known, once it is settled.
     pub(crate) fn settled(&self) -> Option<DeviceStream> {
         match &self.run {
-            Run::Done(stream) => Some(**stream),
+            Run::Done { stream, .. } => Some(**stream),
             _ => None,
         }
     }
 
     /// Takes the Stream messages the device sent (`incoming`) and the time
     /// `now`: starts the negotiation, or steps it. Returns the stream when this
-    /// call settled it.
+    /// call settled it, or, after that, changed it.
     pub(crate) fn poll(
         &mut self,
         now: Instant,
@@ -166,11 +184,24 @@ impl Negotiation {
                     actions.push(connection.on_timeout(now));
                 }
             }
-            Run::Done(_) => return None,
+            Run::Done { stream, listening } => {
+                let connection = listening.as_mut()?;
+                let mut changed = false;
+                for ump in incoming {
+                    if let Ok(message) = decode(ump) {
+                        changed |= connection.on_message(message, now) == Action::Changed;
+                    }
+                }
+                if !changed {
+                    return None;
+                }
+                stream.endpoint = *connection.endpoint();
+                return Some(**stream);
+            }
         }
         for action in actions {
             match action {
-                Action::Wait => {}
+                Action::Wait | Action::Changed => {}
                 Action::Send(ump) => self.send(ump),
                 Action::Settled(ending) => return self.settle(ending),
             }
@@ -191,17 +222,26 @@ impl Negotiation {
         let Run::Asking(connection) = &self.run else {
             return None;
         };
-        let stream = match ending {
-            Ending::Negotiated => DeviceStream {
-                endpoint: *connection.endpoint(),
-                basis: Basis::Negotiated,
-            },
-            Ending::Midi1Fallback => DeviceStream {
-                endpoint: self.os.endpoint(),
-                basis: Basis::Unanswered,
-            },
+        let (stream, listening) = match ending {
+            Ending::Negotiated => (
+                DeviceStream {
+                    endpoint: *connection.endpoint(),
+                    basis: Basis::Negotiated,
+                },
+                Some(connection.clone()),
+            ),
+            Ending::Midi1Fallback => (
+                DeviceStream {
+                    endpoint: self.os.endpoint(),
+                    basis: Basis::Unanswered,
+                },
+                None,
+            ),
         };
-        self.run = Run::Done(Box::new(stream));
+        self.run = Run::Done {
+            stream: Box::new(stream),
+            listening,
+        };
         Some(stream)
     }
 }

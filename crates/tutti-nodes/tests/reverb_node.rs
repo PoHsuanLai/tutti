@@ -77,9 +77,7 @@ fn noise(seed: u32, frames: usize) -> Vec<f32> {
 }
 
 fn impulse() -> Vec<f32> {
-    let mut x = vec![0.0; BLOCK];
-    x[0] = 1.0;
-    x
+    tutti_fixtures::signal::impulse(tutti_types::Samples(BLOCK))
 }
 
 fn reported(d: &tutti_graph::contract::Driven) -> usize {

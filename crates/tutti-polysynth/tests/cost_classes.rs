@@ -5,6 +5,7 @@
 //! on a pool is bit for bit the serial one.
 
 use std::sync::Arc;
+use tutti_fixtures::signal::plane_bits as bits;
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi;
@@ -151,12 +152,6 @@ fn render(exec: &mut Executor) -> Vec<Vec<f32>> {
         frame += n;
     }
     all
-}
-
-fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
-    v.iter()
-        .map(|c| c.iter().map(|x| x.to_bits()).collect())
-        .collect()
 }
 
 /// Sixteen lanes and fewer are `Moderate`, more are `Heavy`, whether the

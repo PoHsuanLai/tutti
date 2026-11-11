@@ -9,7 +9,7 @@
 //! Every figure is analytic (a frame, an offset, a capacity), none read from
 //! another render.
 
-mod common;
+use tutti_graph::testing as common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode};

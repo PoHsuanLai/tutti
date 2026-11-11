@@ -9,6 +9,7 @@
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
+use tutti_fixtures::signal::rms;
 
 use tutti_codec::Wave;
 use tutti_graph::contract;
@@ -18,10 +19,6 @@ use tutti_types::{Beat, Bpm, SampleRate, StretchFactor};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
-
-fn rms(x: &[f32]) -> f32 {
-    (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt()
-}
 
 /// Left channel of a 2x-stretched 440 Hz voice, seeked to beat 5 at the
 /// block starting on frame `seek_at`.

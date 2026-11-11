@@ -19,11 +19,13 @@ use tutti_midi_device::{
     OsDevice, Resolved,
 };
 use tutti_midi_runtime::MidiOut;
+use tutti_ump::StreamConfig;
 
 use crate::backend;
 use crate::capability::{EndpointInfo, UmpCapability};
 use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use crate::wire::Wire;
 use crate::{HardwareMidiInputs, PortId};
 
 /// Why a device watch ended on its own.
@@ -434,9 +436,12 @@ impl Devices {
     /// when it is not an output, or the platform error from opening it.
     pub fn open_output(&self, id: &DeviceId) -> Result<OpenOutput> {
         let (info, handle) = self.present(id, Direction::is_output)?;
+        // What the OS says it speaks, until a negotiation says better.
+        let described = self.capability(id).unwrap_or_default().endpoint().active();
         Ok(OpenOutput {
             info,
             sink: self.inner.backend.open_output(handle)?,
+            wire: Mutex::new(Wire::new(described)),
         })
     }
 
@@ -618,9 +623,22 @@ impl OpenInput {
 
 /// An output held open: the device, and the sink that sends to it. Dropping it
 /// closes the connection.
+///
+/// **What it queues is put in the device's wire form first** (M2-104 §3.2, §3.3.2
+/// and §7.1.6.2): a device in the MIDI 2.0 Protocol is sent the graph's MIDI 2.0
+/// Channel Voice as it is; one in the MIDI 1.0 Protocol (and a MIDI 1.0 port) is
+/// never sent type `0x4`, and its MIDI 2.0 messages go through one `Narrower`
+/// for this output (a Registered Controller as Control Changes 101, 100, 6 and
+/// 38); and JR Timestamps go only to a device whose configuration receives them.
+/// The configuration is the OS's description of the device until
+/// [`set_config`](Self::set_config) says what a negotiation settled
+/// ([`MidiSession::poll`](crate::MidiSession::poll) does it for the output it
+/// holds). UMP Stream messages pass in every form.
 pub struct OpenOutput {
     info: DeviceInfo,
     sink: Box<dyn MidiOut>,
+    /// Behind a lock because `queue` takes `&self`; control side.
+    wire: Mutex<Wire>,
 }
 
 impl core::fmt::Debug for OpenOutput {
@@ -643,11 +661,34 @@ impl OpenOutput {
     pub fn name(&self) -> &str {
         &self.info.name
     }
+
+    fn wire(&self) -> MutexGuard<'_, Wire> {
+        self.wire.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The Protocol and JR Timestamps this output sends in now.
+    #[must_use]
+    pub fn config(&self) -> StreamConfig {
+        self.wire().config()
+    }
+
+    /// Sends in `config` from now on: what the device's UMP Stream negotiation
+    /// settled.
+    pub fn set_config(&self, config: StreamConfig) {
+        self.wire().set_config(config);
+    }
 }
 
+/// Queues `events` in the device's wire form (see the type). Returns how many
+/// of them the device took: an event that has no form on the wire (a JR
+/// Timestamp the device does not take, a per-note controller for MIDI 1.0)
+/// counts as taken, and one of several packets counts when all went.
 impl MidiOut for OpenOutput {
     fn queue(&self, events: &[UmpAt]) -> usize {
-        self.sink.queue(events)
+        let mut wire = self.wire();
+        wire.convert(events);
+        let taken = self.sink.queue(wire.batch());
+        wire.accepted(taken)
     }
 }
 

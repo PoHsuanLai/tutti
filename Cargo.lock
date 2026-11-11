@@ -3666,12 +3666,14 @@ dependencies = [
 name = "tutti-fixtures"
 version = "0.0.1"
 dependencies = [
+ "hound",
  "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
  "tutti-midi-protocol",
  "tutti-plugin-types",
+ "tutti-types",
  "tutti-ump",
 ]
 
@@ -3703,6 +3705,7 @@ dependencies = [
  "rand 0.8.8",
  "thiserror 2.0.21",
  "tutti-dsp",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-types",
 ]

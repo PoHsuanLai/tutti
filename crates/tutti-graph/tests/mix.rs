@@ -15,7 +15,8 @@
     reason = "a frame index reads several outputs and the signal at that frame"
 )]
 
-mod common;
+use common::spec_of;
+use tutti_graph::testing as common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,8 +25,8 @@ use std::sync::{Arc, Mutex};
 use common::{Kind, Pair, SpecBehaviour, TestNode, bits, prepare};
 use tutti_graph::{
     CommitError, CrossfadeCurve, Cx, Edge, Editor, EventOut, ForkMode, ForkTarget, GraphInvalid,
-    GraphSpec, InPort, Io, MixError, Node, NodeKey, NodeMix, NodeMode, NodeSpec, OutPort, ParamIn,
-    PassError, Prepare, Shape, Source, Status, Topology, Transport, Unforkable,
+    GraphSpec, InPort, Io, MixError, Node, NodeKey, NodeMix, NodeMode, OutPort, ParamIn, PassError,
+    Prepare, Shape, Source, Status, Topology, Transport, Unforkable,
 };
 use tutti_types::{ChannelLayout, Mix, Tail};
 
@@ -53,13 +54,6 @@ fn out(node: u64, port: u16) -> Source {
         node: key(node),
         port,
     })
-}
-
-fn spec_of(kind: &Kind) -> NodeSpec {
-    let s = TestNode::new(kind.clone()).shape();
-    NodeSpec::new("test", s.audio_in(), s.audio_out())
-        .with_latency(s.latency.samples())
-        .with_tail(s.tail)
 }
 
 /// A signal that is never zero and never repeats within a test.

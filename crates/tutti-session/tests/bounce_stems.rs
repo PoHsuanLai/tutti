@@ -70,13 +70,8 @@ fn refused(session: &mut Session, bounce: Bounce) -> BounceError {
 /// Every sample of a WAV file written by a bounce (32-bit float, so read back
 /// exactly), plane after plane, and its frame count.
 fn read_wav(path: &Path) -> (Vec<Vec<f32>>, usize) {
-    let mut reader = hound::WavReader::open(path).expect("the file is a WAV");
-    let channels = usize::from(reader.spec().channels);
-    let samples: Vec<f32> = reader.samples::<f32>().map(Result::unwrap).collect();
-    let frames = samples.len() / channels;
-    let planes = (0..channels)
-        .map(|c| samples.iter().skip(c).step_by(channels).copied().collect())
-        .collect();
+    let planes = tutti_fixtures::signal::read_wav_f32(path);
+    let frames = planes.first().map_or(0, Vec::len);
     (planes, frames)
 }
 

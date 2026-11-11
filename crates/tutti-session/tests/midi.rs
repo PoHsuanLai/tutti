@@ -1080,3 +1080,86 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     assert_eq!(stream.config().protocol, Protocol::Midi2);
     assert_eq!(io.stream(id), Some(*stream));
 }
+
+/// **The hardware out JR-stamps only as its device's configuration says**
+/// (M2-104 §7.1.6.2: a Sender "shall not send JR Timestamps until after a
+/// Stream Configuration Notification" has said the device receives them). The
+/// session asks for JR off, so the output is unstamped when the device
+/// settles; when the device notifies that it receives JR the next `MidiOut`
+/// phase stamps, and the wire carries the JR messages; when it notifies the
+/// reverse the stamps stop. There is no switch of the session's own.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn the_hardware_out_stamps_as_the_devices_configuration_says() {
+    use tutti_midi_hardware::{Capabilities, Endpoint};
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig, decode};
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Dev", Direction::Duplex);
+    s.update();
+    let raw = EndpointId::from_raw(7);
+    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    io.connect_input_by_name("dev").expect("connects");
+    io.connect_output_by_name("dev").expect("connects");
+    s.midi()
+        .set_hardware_out(Some(UmpOut::new(Box::new(io.clone()), SampleRate(RATE))));
+
+    // The device answers the session's Stream messages as an Endpoint does.
+    let mut device = Endpoint::new(Capabilities {
+        midi1: true,
+        midi2: true,
+        rx_jr: true,
+        tx_jr: false,
+    });
+    let start = Instant::now();
+    let mut settled = false;
+    for ms in 0..8 {
+        let now = start + Duration::from_millis(ms);
+        let events = update_at(&mut s, now);
+        settled |= events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::MidiStream { .. }));
+        let mut answers = Vec::new();
+        for ump in fake.take_sent(raw) {
+            if let Ok(message @ Message::Stream(_)) = decode(ump) {
+                device.reply(message, &mut answers);
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(raw, ump, now));
+        }
+    }
+    assert!(settled, "the negotiation settled");
+    let stamping = |s: &mut Session| s.midi().hardware_out().out.map(|o| o.is_stamping());
+    assert_eq!(stamping(&mut s), Some(false), "asked for JR off");
+
+    // One frame of output, routed as a drain does.
+    let wire_after = |s: &mut Session, notification: StreamConfig, ms: u64| {
+        let ump = Ump::from(Message::Stream(Stream::StreamConfigurationNotification(
+            notification,
+        )));
+        assert!(fake.send_input(raw, ump, start));
+        update_at(s, start + Duration::from_millis(ms));
+        fake.take_sent(raw);
+        s.midi()
+            .hardware_out()
+            .route(&[(Frame::new(0), key(0, 60)), (Frame::new(480), key(0, 61))]);
+        fake.take_sent(raw)
+    };
+    let config = |rx_jr| StreamConfig {
+        protocol: Protocol::Midi2,
+        rx_jr,
+        tx_jr: false,
+    };
+    let sent = wire_after(&mut s, config(true), 20);
+    assert_eq!(stamping(&mut s), Some(true));
+    assert!(
+        sent.iter().any(|u| u.is_jr())
+            && sent.iter().filter(|u| u.message_type() == 4).count() == 2,
+        "{sent:?}"
+    );
+    let sent = wire_after(&mut s, config(false), 40);
+    assert_eq!(stamping(&mut s), Some(false));
+    assert!(!sent.iter().any(|u| u.is_jr()), "{sent:?}");
+    assert_eq!(sent.len(), 2);
+}

@@ -7498,8 +7498,11 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
 
 **T1. A shape is built from its buses.**
 
-- The width-only constructors are the three with nothing to guess:
-  - `Shape::through(layout)`: `layout` in and `layout` out; its pass is output `c` = input `c`.
+- Three constructors for the shapes with nothing to guess:
+  - `Shape::through(topology)`: one bus of `topology` in and the same out; its pass is output `c` = input `c`. The
+    caller names the topology (`stereo()`, `discrete(n)`), never a width alone: a width names no speakers (B1), and a
+    bare 6 bus-edged into a stereo bus would otherwise be downmixed as if it were 5.1. A test that wants only a width
+    writes `Shape::through_discrete(n)`, which spells the unplaced out.
   - `Shape::source(out)`: no audio input; nothing passes.
   - `Shape::sink(in)`: no audio output; nothing passes.
 - Every other shape is `Shape::buses(inputs: Buses, outputs: Buses)`, and its widths are the buses' widths. A bus names
@@ -7522,8 +7525,8 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
   knows only a width (a device, a file, the graph root undeclared). Today's three callers of `between`:
   - the pass: named pairs only, as #570 already enforces;
   - `bus_edge`: a named bus into a `Discrete` sink bus of another width is refused, where today it went by index. An
-    edge that wants index order says so: `connect_bus` takes an explicit `Fold::by_index` choice (a `BusFold::ByIndex`
-    argument, or a `connect_bus_by_index`), never a fallback. B2's "a named source into a wider discrete bus is accepted
+    edge that wants index order says so with its own method, `connect_bus_by_index(from, to)` (and
+    `connect_bus_to_root_by_index`), never a fallback; `connect_bus` stays speakers only. B2's "a named source into a wider discrete bus is accepted
     (zero-fill)" becomes that explicit option.
   - export's driver calls `Fold::between(root or ChannelTopology::for_width(graph), file topology)` today. It changes
     only where the file's topology is `Discrete` at another width than a named root. Today that goes by index; under T1
@@ -7538,8 +7541,8 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
 
 **T2. Bus handles, not indices.**
 
-- Declaring a bus returns a handle (`InBus`, `OutBus`: the bus, and a band for a repeated bus), issued only by the
-  declaration.
+- Declaring a bus returns a handle (`InBus`, `OutBus`), issued only by the declaration. A repeated bus's band
+  rides inside its handle, never as a second argument.
 - **There is no flat port space in `Io` any more.** `io.input(c)`, `io.output(c)` and `split()`'s `get(c)` stay, but
   cover the `Main` bus only: `c` runs over the main bus's channels. Every other port is reached only through its
   handle: `io.bus_in(h).channel(c)`, `io.bus_out(h).channel(c)`, each a view bounded to that bus.
@@ -7582,13 +7585,13 @@ which everything else is derived.** The refusals of #570 stay, for buses that ar
 They come before `tutti-dsp`'s PR10 and the family lanes (doc 024 §10), which rewrite node shapes and `process` and
 would otherwise be written once on the old API and migrated again.
 
-**Open for review.**
+**Decided in review (core, 2026-11-11).**
 
-- (a) The spelling of the explicit by-index bus edge (`BusFold::ByIndex` on `connect_bus`, or `connect_bus_by_index`).
-- (b) Whether `through` should also cover a node that is the same width and declares a placement (a stereo EQ), or
-  whether that node states `Shape::buses` (proposed: `through(layout)` takes the engine's speakers for `layout` where
-  it has an order, which is what a placed bus would say, so the two agree).
-- (c) The handle types' names.
+- (a) The by-index bus edge is its own method, `connect_bus_by_index` (`connect_bus_to_root_by_index` for the root).
+- (b) `through` takes a topology, never a width; `through_discrete(n)` spells an unplaced one.
+- (c) The handles are `InBus` and `OutBus`, the band inside.
+- T1's `Fold` split turns the flipped case of `fold::tests::discrete_channels_map_one_to_one` into a refusal assertion;
+  it does not delete it.
 
 #### What else is, and is not, a graph primitive
 

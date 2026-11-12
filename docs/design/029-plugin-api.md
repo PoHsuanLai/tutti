@@ -255,11 +255,52 @@ because a bare handle does not know its file. `PluginGaveUp` carries the
 `PluginState` (`state`), and `state().restore` takes the `MainThread` the
 handle's `load_state` takes. The editor-only instance of a served plugin loads the same plugin: the ipc
 `EditorLoader` takes the `Load`, and the `PluginBridge` is made with the
-`Origin` (file and `Load`) it serves. One thing stays for step 6: the probe
-describes only the first plugin of a file, so a catalog lists one plugin per
-bundle until the probe lists them all. `PluginClient::new` and `open` take a
+`Origin` (file and `Load`) it serves. (The probe described only the first plugin
+of a file until step 6a; it lists every one now, below.) `PluginClient::new` and `open` take a
 `&PluginRef` (`PluginRef::file` is the explicit "the file's first"); no
 path-only open is left.
+
+**As built (step 6a).** The probe lists every plugin of a file, in every format,
+and the catalog holds them all; `Catalog::open_db`, `scan()`, the removal of
+`Plugins::open`, `with_fresh_scan` and `Backend`, and `Hosting` are 6b.
+- **The wire.** `ProbeOutcome::Described` carries a `Vec<PluginDescriptor>` (never
+  empty: a file with no plugin is a `Failed`), and the result file's magic is
+  version 3 (a version 2 file, one descriptor, is refused by its magic).
+  `probe_metadata_with` returns the list, `probe_record_with` puts one `FileRow`
+  of it, and the scanner's probe (`tutti-plugin-db`'s `Scanner::new`) returns a
+  `Vec`; the db file is version 3, because a row written by a version 2 probe
+  lists a file's first plugin only and, up to date by its time, would never be
+  read again.
+- **Per format.** CLAP: each descriptor of the factory (`ClapLoaded::probe_all`).
+  VST3: each audio class of the factory, one entry per class id
+  (`Vst3Loaded::probe_all`; a class the factory lists and cannot create is left
+  out). AU: each unit the bundle declares in `AudioComponents` that the registry
+  has, described from the component and none created
+  (`AuLoaded::describe_all`; the probe gains an `au` feature, macOS only, and
+  routes `.component`; before this the probe read no AU at all). VST2: a file
+  that is no shell is one plugin; a shell (`effGetPlugCategory` is
+  `kPlugCategShell`, read with the shell loaded as id 0) is each sub-plugin
+  `effShellGetNextPlugin` names (`Vst2Loaded::describe_all`), each described by
+  loading it, falling back to the shell's own id, name and vendor with an
+  unasked category when it will not load.
+- **VST2's `Load`.** A choice is `vst2.<uniqueID>`, which is the descriptor id,
+  so `PluginRef::load()` carries the id in every format. The host answers
+  `audioMasterCurrentId` with the id chosen while `VSTPluginMain` runs (`0`
+  when none: `HostState`'s `current_id`, which replaces the constant `'DAWI'`),
+  answers `supportShell` and `shellCategory` yes, and checks that the plugin that
+  came up has the id asked for (a shell that does not know an id creates its
+  default, which is refused). The `Origin` keeps the choice, so a reopen loads
+  the same sub-plugin. VST2 is not served, so a served pick is CLAP's and
+  VST3's; a served VST2 load is still `NotOutOfProcess`.
+- **Tests.** `tutti-vst2-shell-plugin` (testing; two sub-plugins, nothing
+  configures it: its answer is the host's `audioMasterCurrentId`) is the
+  shell. The probe suite (`tutti-plugin-contract`'s `probe`) lists the CLAP test
+  plugin's two descriptors, the shared plugin's three VST3 classes and the
+  shell's two sub-plugins through the binary, loads each by the `PluginRef` of
+  its entry (a server for CLAP and VST3, in process for VST2); the probe crate's
+  `vst2_shell` loads and refuses by id. Not covered: an AU bundle of several
+  units (the AU probe is checked on macOS against the installed bundles); a
+  VST3 factory with a class that cannot be created.
 
 ### Lane order
 
@@ -368,7 +409,7 @@ The latent violations (no known plugin breaks on them) go into the same PRs as t
 
 | Finding | Step |
 |---|---|
-| VST2 shell plugins (`effShellGetNextPlugin`, a sub-plugin id) make "one plugin per VST2 file" false; `audioMasterCurrentId` answers 0 outside a shell | 6 (the catalog lists every plugin of a file, shells included) |
+| VST2 shell plugins (`effShellGetNextPlugin`, a sub-plugin id) make "one plugin per VST2 file" false; `audioMasterCurrentId` answers 0 outside a shell | 6a (done: the probe lists every plugin of a file, a shell's sub-plugins included; the `Load` is `vst2.<uniqueID>`; `audioMasterCurrentId` answers the chosen id, 0 when none) |
 | AU's 20 contract gaps are one missing AU shared plugin, not AU limits; the two `f32` round trips want a per-format tolerance, not a gap | AU completeness (the fixture is an in-process registered `AUAudioUnit` subclass) |
 | AU input as UMP (`MusicDeviceMIDIEventList`, `HostMIDIProtocol` / `AudioUnitMIDIProtocol`, the Group in each packet); the legacy path keeps the `Narrower`; v2 has no cable routing | AU MIDI input parity (done: `initialize` reads `AudioUnitMIDIProtocol` before `AudioUnitInitialize`; `HostMIDIProtocol` is not written, since writing it breaks withdrawing the legacy output callback (macOS 26.6) and is the output lane's, with the event-list callback; a unit that says MIDI 2.0 gets UMP unchanged, one list per protocol, timestamps are frame offsets, the list built in a buffer reserved at activation (`tutti_au_ffi::EventList`); MIDI 1.0 or no answer keeps `midi1` and `MusicDeviceMIDIEvent`, Group 0 only, other Groups and unnarrowable messages counted. Not covered: no installed Apple unit answers the protocol property, so the UMP path is tested over a sink and the call on AUSampler, not end to end through a unit that takes MIDI 2.0; waits for the AU shared plugin) |
 | Project time computed from beats at one tempo (`transport_source.rs`), not from the `TempoMap`; VST2 extrapolates a split block's transport at the block's first tempo | a transport PR beside step 4 |

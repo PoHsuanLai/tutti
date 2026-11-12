@@ -15,9 +15,10 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Leads every result file; the last byte is the format version (2: the
-/// payload is postcard; 1 was bincode).
-const MAGIC: [u8; 5] = *b"TPRB\x02";
+/// Leads every result file; the last byte is the format version (3: a file's
+/// outcome is every plugin it holds; 2 held one descriptor, and its payload was
+/// postcard as this is; 1 was bincode).
+const MAGIC: [u8; 5] = *b"TPRB\x03";
 /// Magic, then the payload length as a little-endian `u64`.
 const HEADER: usize = MAGIC.len() + 8;
 
@@ -25,8 +26,12 @@ const HEADER: usize = MAGIC.len() + 8;
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum ProbeOutcome {
-    /// The plugin loaded far enough to read its descriptor.
-    Described(PluginDescriptor),
+    /// The file loaded far enough to read the descriptor of every plugin it holds,
+    /// in the file's own order: the plugin of most files, each plugin of a CLAP
+    /// factory, each audio class of a VST3 factory, each unit an AU bundle
+    /// declares, each sub-plugin of a VST2 shell. Never empty: a file that holds
+    /// no plugin is a [`Failed`](Self::Failed).
+    Described(Vec<PluginDescriptor>),
     /// The probe ran to its end and the plugin could not be read. The message is
     /// the loader's own reason.
     Failed(String),
@@ -159,11 +164,12 @@ mod tests {
     use super::*;
 
     fn described() -> ProbeOutcome {
-        ProbeOutcome::Described(PluginDescriptor {
-            id: "clap.test".into(),
-            name: "Test".into(),
+        let plugin = |id: &str| PluginDescriptor {
+            id: id.into(),
+            name: id.into(),
             ..PluginDescriptor::default()
-        })
+        };
+        ProbeOutcome::Described(vec![plugin("clap.test"), plugin("clap.other")])
     }
 
     /// A file already at the staging name is refused, never written through
@@ -250,12 +256,25 @@ mod tests {
         ));
     }
 
-    /// A file from the bincode-era probe (format 1) is refused by its magic,
-    /// not decoded as postcard.
+    /// A file from an older probe (format 1, bincode; format 2, one descriptor)
+    /// is refused by its magic, not decoded as the current payload.
     #[test]
-    fn a_format_one_file_is_refused_by_its_magic() {
-        let mut old = encode_result(&described());
-        old[MAGIC.len() - 1] = 1;
-        assert_eq!(decode_result(&old), Err(ResultError::BadMagic));
+    fn an_older_format_file_is_refused_by_its_magic() {
+        for version in [1, 2] {
+            let mut old = encode_result(&described());
+            old[MAGIC.len() - 1] = version;
+            assert_eq!(decode_result(&old), Err(ResultError::BadMagic), "{version}");
+        }
+    }
+
+    /// Every plugin of a file, in order, is in the file: the list is the outcome.
+    #[test]
+    fn every_plugin_of_a_file_survives_it_in_order() {
+        let ProbeOutcome::Described(plugins) = decode_result(&encode_result(&described())).unwrap()
+        else {
+            panic!("described");
+        };
+        let ids: Vec<_> = plugins.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["clap.test", "clap.other"]);
     }
 }

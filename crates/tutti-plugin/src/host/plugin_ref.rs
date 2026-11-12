@@ -64,15 +64,14 @@ impl PluginRef {
         self.id.as_deref()
     }
 
-    /// The choice of plugin the loaders take: this plugin's id for a format
-    /// whose files can hold several plugins (CLAP, VST3, AU), the file's first
-    /// plugin when there is no id, and always for VST2, whose files hold one
-    /// (and whose loader refuses a choice).
+    /// The choice of plugin the loaders take: this plugin's id (a CLAP plugin
+    /// id, a VST3 class id, an AU unit, a VST2 shell's `vst2.<uniqueID>`), or
+    /// the file's first plugin when there is no id.
     #[must_use]
     pub fn load(&self) -> Load {
         match &self.id {
-            Some(id) if self.format != PluginFormat::Vst2 => Load::new().plugin(id.clone()),
-            _ => Load::new(),
+            Some(id) => Load::new().plugin(id.clone()),
+            None => Load::new(),
         }
     }
 
@@ -204,21 +203,20 @@ mod tests {
         }
     }
 
-    /// **The load follows the format.** A bundle format with an id chooses it;
-    /// VST2 never does (its loader refuses a choice); no id is the first plugin.
+    /// **The load chooses the plugin's id, in every format** (a VST2 shell
+    /// holds several plugins too); no id is the file's first plugin.
     #[test]
-    fn the_load_chooses_the_id_where_the_format_can_hold_several() {
+    fn the_load_chooses_the_id() {
         for format in [
             PluginFormat::Clap,
             PluginFormat::Vst3,
+            PluginFormat::Vst2,
             PluginFormat::AudioUnit,
         ] {
             let r = entry_ref("/p/x", format, Some("the.id"));
             assert_eq!(r.load(), Load::new().plugin("the.id"), "{format:?}");
             assert_eq!(entry_ref("/p/x", format, None).load(), Load::new());
         }
-        let vst2 = entry_ref("/p/x.vst", PluginFormat::Vst2, Some("vst2.1234"));
-        assert_eq!(vst2.load(), Load::new());
     }
 
     /// **Identity is the id when both have one, the file otherwise.**

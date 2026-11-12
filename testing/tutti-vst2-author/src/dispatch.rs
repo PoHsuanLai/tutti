@@ -333,6 +333,16 @@ fn dispatch_inner(
             return get_plugin().get_info().category.into();
         }
 
+        Ok(OpCode::ShellGetNextPlugin) => {
+            return match get_plugin().shell_next_plugin() {
+                Some((id, name)) => {
+                    copy_string(ptr, &name, MAX_PRODUCT_STR_LEN);
+                    id as isize
+                }
+                None => 0,
+            };
+        }
+
         Ok(OpCode::BeginSetPreset) => {
             get_plugin().begin_set_preset();
             return 1;

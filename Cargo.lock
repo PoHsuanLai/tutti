@@ -3898,6 +3898,7 @@ dependencies = [
  "tempfile",
  "tutti-au-host",
  "tutti-clap-host",
+ "tutti-clap-test-plugin",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-plugin",
@@ -3908,6 +3909,7 @@ dependencies = [
  "tutti-shared-plugin-vst3-cpp",
  "tutti-ump",
  "tutti-vst2-host",
+ "tutti-vst2-shell-plugin",
  "tutti-vst3-host",
 ]
 
@@ -3991,11 +3993,13 @@ version = "0.0.1"
 dependencies = [
  "libloading 0.8.9",
  "tempfile",
+ "tutti-au-host",
  "tutti-clap-host",
  "tutti-fixtures",
  "tutti-plugin-types",
  "tutti-types",
  "tutti-vst2-host",
+ "tutti-vst2-shell-plugin",
  "tutti-vst2-test-plugin",
  "tutti-vst3-host",
 ]
@@ -4326,6 +4330,13 @@ dependencies = [
  "tutti-ump",
  "tutti-vst2-ffi",
  "tutti-vst2-test-plugin",
+]
+
+[[package]]
+name = "tutti-vst2-shell-plugin"
+version = "0.1.0"
+dependencies = [
+ "tutti-vst2-author",
 ]
 
 [[package]]

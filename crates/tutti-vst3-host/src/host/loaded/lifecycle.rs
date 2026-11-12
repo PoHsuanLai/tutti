@@ -38,6 +38,47 @@ impl Vst3Loaded {
         Ok(build_plugin_info_raw(&library, &class))
     }
 
+    /// Reads the metadata of every audio-effect class the factory lists
+    /// (`kVstAudioEffectClass`), one [`PluginInfo`] per class id, as
+    /// [`probe`](Self::probe) reads the first. A class the factory lists but cannot create is
+    /// left out; the error is the first such class's when none can be created.
+    ///
+    /// # Errors
+    ///
+    /// As [`probe`](Self::probe).
+    pub fn probe_all(path: impl AsRef<Path>) -> Result<Vec<PluginInfo>> {
+        let path = path.as_ref();
+        check_exists(path)?;
+        let library = Library::load(path)?;
+        ensure_has_classes(&library, path)?;
+
+        let classes = audio_classes(&library);
+        if classes.is_empty() {
+            return Err(Vst3Error::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Factory,
+                cause: LoadCause::NoAudioClass,
+            });
+        }
+        let mut infos = Vec::new();
+        let mut refused = None;
+        for class in &classes {
+            match library.module().check_instantiable(&class.cid) {
+                Ok(()) => infos.push(build_plugin_info_raw(&library, class)),
+                Err(e) => {
+                    refused.get_or_insert(Vst3Error::PluginError {
+                        stage: LoadStage::Instantiation,
+                        code: e.code(),
+                    });
+                }
+            }
+        }
+        match (infos.is_empty(), refused) {
+            (true, Some(e)) => Err(e),
+            _ => Ok(infos),
+        }
+    }
+
     /// Loads a VST3 plugin: the bundle's first audio class, or the one
     /// [`LoadOptions::class_id`] names. It stays loaded (not activated) until
     /// [`Loaded::activate`](tutti_plugin_types::Loaded::activate), and a GUI-only
@@ -475,6 +516,21 @@ pub(super) fn find_audio_class_by_id(
                     .collect(),
             },
         })
+}
+
+/// Every audio-effect class of the factory, in the factory's order.
+fn audio_classes(library: &Library) -> Vec<AudioClass> {
+    (0..library.count_classes())
+        .filter_map(|i| library.class_info(i).ok())
+        .filter(|info| info.category.contains("Audio"))
+        .map(|info| AudioClass {
+            cid: info.cid,
+            name: info.name,
+            vendor: info.vendor,
+            version: info.version,
+            sub_categories: info.sub_categories,
+        })
+        .collect()
 }
 
 pub(super) fn find_audio_class(library: &Library, path: &Path) -> Result<AudioClass> {

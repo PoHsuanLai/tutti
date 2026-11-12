@@ -35,7 +35,7 @@ use crate::ranges::RangeTable;
 use crate::types::{AudioComponentDescription, fourcc_to_string};
 
 /// The wire's mirror of the AU host's component type.
-fn class_of(au_type: AuType) -> AuComponentType {
+pub(crate) fn class_of(au_type: AuType) -> AuComponentType {
     match au_type {
         AuType::Effect => AuComponentType::Effect,
         AuType::Instrument => AuComponentType::Instrument,

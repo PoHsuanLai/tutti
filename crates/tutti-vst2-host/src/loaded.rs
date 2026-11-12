@@ -197,8 +197,8 @@ pub struct Vst2Loaded {
     pub(crate) audio: Option<AudioSide>,
     metadata: PluginInfo,
     descriptor: PluginDescriptor,
-    /// The module opened, what a reopen loads again (a VST2 file holds one
-    /// plugin, so there is no choice to keep).
+    /// The module opened and the choice of plugin in it (a shell's sub-plugin, as
+    /// `vst2.<uniqueID>`), what a reopen loads again.
     pub(crate) origin: tutti_plugin_types::Origin,
 }
 
@@ -243,10 +243,72 @@ impl Vst2Loaded {
     /// produce an instance ([`LoadStage::Instantiation`]).
     ///
     pub fn load(main: &MainThread, path: impl AsRef<Path>) -> Result<Self> {
+        Self::open(main, path.as_ref(), None)
+    }
+
+    /// Opens the plugin of `path` whose `uniqueID` is `id`: a shell's sub-plugin (the host
+    /// answers `audioMasterCurrentId` with `id` while the module's `VSTPluginMain` runs), or
+    /// the plugin of a file that is no shell, when it has that id.
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load), and [`LoadStage::Instantiation`] when the plugin that
+    /// came up is not the one with `id` (a shell that does not know it creates its default).
+    pub fn load_plugin(main: &MainThread, path: impl AsRef<Path>, id: i32) -> Result<Self> {
+        Self::open(main, path.as_ref(), Some(id))
+    }
+
+    /// Every plugin the file at `path` holds, as the catalog describes them: the one plugin
+    /// of a file, or, when its category is `kPlugCategShell`, each sub-plugin
+    /// `effShellGetNextPlugin` names, described by loading it (a sub-plugin that will not
+    /// load is described by what the shell said: its id and name). Each instance is closed
+    /// before the next opens.
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load), and [`LoadStage::Initialization`] for a shell that names no
+    /// sub-plugin.
+    pub fn describe_all(
+        main: &MainThread,
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<PluginDescriptor>> {
+        let path = path.as_ref();
+        let first = Self::load(main, path)?;
+        if first.metadata.category != Vst2Category::Shell {
+            return Ok(vec![first.descriptor.clone()]);
+        }
+        let subs = first.instance.shell_plugins(main);
+        let shell = first.metadata.clone();
+        drop(first);
+        if subs.is_empty() {
+            return Err(Vst2Error::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Initialization,
+                reason: "a shell plugin that names no sub-plugin".into(),
+            });
+        }
+        Ok(subs
+            .into_iter()
+            .map(|sub| match Self::load_plugin(main, path, sub.id) {
+                Ok(loaded) => loaded.descriptor.clone(),
+                Err(_) => PluginDescriptor {
+                    id: format!("vst2.{}", sub.id),
+                    name: sub.name,
+                    vendor: shell.vendor.clone(),
+                    version: String::new(),
+                    class: tutti_plugin_types::PluginClass::Vst2 {
+                        category: Vst2Category::Unasked,
+                    },
+                    editor: tutti_plugin_types::EditorPresence::Unknown,
+                },
+            })
+            .collect())
+    }
+
+    fn open(main: &MainThread, path: &Path, chosen: Option<i32>) -> Result<Self> {
         // Loading runs the plugin's init sequence and probes its editor — VST2
         // requires this happen on the host main thread, which `main` proves.
 
-        let path = path.as_ref();
         let resolved = resolve_bundle(path);
 
         // Bounded, allocated once here. `automate` and `process_events` push
@@ -269,6 +331,7 @@ impl Vst2Loaded {
             time_info.reader(),
             UNACTIVATED_BLOCK,
             UNACTIVATED_RATE,
+            chosen.unwrap_or(0),
         ));
 
         let mut loader = PluginLoader::load(&resolved, Arc::clone(&host)).map_err(|e| {
@@ -367,6 +430,22 @@ impl Vst2Loaded {
             .collect();
         metadata.has_editor = instance.has_editor();
         let descriptor = crate::control::descriptor_of(&metadata);
+        if let Some(id) = chosen
+            && metadata.id != format!("vst2.{id}")
+        {
+            return Err(Vst2Error::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Instantiation,
+                reason: format!(
+                    "the file has no plugin `vst2.{id}` (it created `{}`)",
+                    metadata.id
+                ),
+            });
+        }
+        let load = match chosen {
+            Some(id) => tutti_plugin_types::Load::new().plugin(format!("vst2.{id}")),
+            None => tutti_plugin_types::Load::new(),
+        };
 
         Ok(Self {
             instance,
@@ -379,7 +458,7 @@ impl Vst2Loaded {
             }),
             metadata,
             descriptor,
-            origin: tutti_plugin_types::Origin::new(resolved, tutti_plugin_types::Load::new()),
+            origin: tutti_plugin_types::Origin::new(resolved, load),
         })
     }
 

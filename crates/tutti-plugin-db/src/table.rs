@@ -33,8 +33,9 @@ pub struct FileRow {
 /// cannot outlive the state that justifies it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FileState {
-    /// The plugins the file holds. One per file today; a shell file may hold
-    /// several.
+    /// The plugins the file holds, in the probe's order: every descriptor of a
+    /// CLAP factory, every audio class of a VST3 factory, every unit of an AU
+    /// bundle, every sub-plugin of a VST2 shell; one for any other file.
     Probed(Vec<PluginDescriptor>),
     /// The file brought a scan down and will not be opened.
     Blacklisted {

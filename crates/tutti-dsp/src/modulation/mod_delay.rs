@@ -26,12 +26,11 @@
 //! The delay has **no latency**: the sweep is the effect, not processing delay, and PDC
 //! must not delay the rest of the mix to line up with it.
 //!
-//! One frame of a channel is the loop of the swept delay: the feedback tap is read at the
-//! delay **before** the push and the output at the same delay **after** it, so the loop's
-//! period is the delay plus one frame ([`ModDelayMember::loop_frames`]) while the first echo
-//! is at the delay. ([`delay_step`](crate::delay_step) reads its tap one frame nearer, a
-//! period of exactly the delay: the swept loop keeps its own shape, so a render does not
-//! move.)
+//! One frame of a channel is [`delay_step`], the delay family's loop: the
+//! feedback tap is read one frame nearer than the delay **before** the push and the output at
+//! the delay **after** it, so the loop's period is exactly the delay
+//! ([`ModDelayMember::loop_frames`]) and the first echo is at the delay too: a comb
+//! `1 / (1 - g z^-d)`.
 //!
 //! The memory is the sweep's own [`Domain`](crate::Domain), its [`MaxDelay`]: a line holds
 //! that long, and `base + depth_max` fits in it by [`Sweep::new`] ([`Grows`]).
@@ -45,7 +44,7 @@ use tutti_types::{
 
 use super::sweep::{Stagger, StaggerError, Sweep};
 use crate::control::COEFF_STREAM;
-use crate::delay::{finite_or, read_taps, ring_seconds};
+use crate::delay::{delay_step, finite_or, read_taps, ring_seconds};
 use crate::{
     Approach, COEFF_INTERVAL, Cadence, Capacity, Channels, Complex64, DELAY_SLEW, DelayLine,
     DelayMember, Effort, Family, Feed, GAIN_GLIDE, Glide, Grows, InterpolationMode, Lti, MaxDelay,
@@ -126,7 +125,7 @@ impl Default for ModDelayControls {
 /// sweep moves around. [`at`](Self::at) freezes it at any position of the sweep. The
 /// frozen member is the comb `O / (1 - g T)` with `O` and `T` the line's own interpolated
 /// taps (so exact at every delay, the edges included): for a whole delay of `d >= 1` frames,
-/// `z^-d / (1 - g z^-(d + 1))`.
+/// `z^-d / (1 - g z^-d)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModDelayMember {
     rate: SampleRate,
@@ -240,12 +239,23 @@ impl ModDelayMember {
         }
     }
 
-    /// The frames the loop reaches back: the farthest tap of the read with a weight, plus
-    /// the frame the feedback tap is read behind the push. For a whole delay of `d` frames
-    /// that is `d + 1`, the loop's period; a fractional one reaches a frame farther.
+    /// The feedback taps of the loop: the line read one frame nearer than the delay, before
+    /// the push (`k` frames back is `z^-(k + 1)`), as [`delay_step`] reads
+    /// it.
+    fn feedback_taps(&self) -> ([(usize, f32); 4], usize) {
+        read_taps(
+            (self.centre_frames().max(1.0) - 1.0).max(0.0),
+            self.cap,
+            READ,
+        )
+    }
+
+    /// The frames the loop reaches back: the farthest feedback tap with a weight, plus the
+    /// frame it is read behind the push. For a whole delay of `d` frames that is `d`, the
+    /// loop's period; a fractional one reaches a frame farther.
     #[must_use]
     pub fn loop_frames(&self) -> usize {
-        let (taps, n) = read_taps(self.centre_frames(), self.cap, READ);
+        let (taps, n) = self.feedback_taps();
         // A tap with no weight (the neighbour of a whole delay) reaches nothing.
         let reach = taps[..n].iter().filter(|t| t.1 != 0.0).map(|t| t.0).max();
         reach.unwrap_or(0) + 1
@@ -289,15 +299,16 @@ impl Lti for ModDelayMember {
             return;
         }
         let (taps, n) = read_taps(self.centre_frames(), self.cap, READ);
+        let (ftaps, ftn) = self.feedback_taps();
         let g = f64::from(self.feedback);
         for (out, f) in gain.iter_mut().zip(freqs) {
             let w = std::f64::consts::TAU * f64::from(f.get()) / self.rate.get();
             // `z^-k` for a tap `k` frames back.
             let z = |k: usize| Complex64::from_polar(1.0, -w * k as f64);
             // The output is read after the push (`k` frames back is `z^-k`), the feedback
-            // tap, the same read, before it (`z^-(k+1)`).
+            // tap one frame nearer, before it (`z^-(k+1)`): the same delay.
             let o: Complex64 = taps[..n].iter().map(|&(k, a)| z(k) * f64::from(a)).sum();
-            let t: Complex64 = taps[..n]
+            let t: Complex64 = ftaps[..ftn]
                 .iter()
                 .map(|&(k, a)| z(k + 1) * f64::from(a))
                 .sum();
@@ -571,8 +582,8 @@ pub struct ModDelayState {
 /// The [`Recurrence`] of a [`ModDelayFamily`].
 ///
 /// K, per frame, is the swept loop of the module docs, a channel at a time (the lines are
-/// independent): the line is read at the delay, the tap scaled by the feedback is added to
-/// the input and pushed, and the output is the line read at the delay again. The delay is
+/// independent): [`delay_step`] at the delay, which reads the feedback
+/// tap, adds it scaled by the feedback to the input, pushes, and reads the output. The delay is
 /// `base + lfo * depth`, floored at one frame, with `lfo` the chord between the sine's two
 /// control points.
 ///
@@ -721,9 +732,7 @@ impl Recurrence for ModDelayRecurrence {
                 for (pos, k) in (state.pos..).zip(i..end) {
                     let lfo = prev + slope * pos as f32;
                     let delay = (base + lfo * depth * sr).max(1.0);
-                    let tap = line.read_sample(delay, READ);
-                    line.push_sample(input[k] + tap * feedback);
-                    out[k] = line.read_sample(delay, READ);
+                    out[k] = delay_step(line, input[k], delay, feedback, READ);
                 }
             }
             state.pos += end - i;

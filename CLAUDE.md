@@ -954,8 +954,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   from `clear`, so `prepare` restarts the sweep, and its sine is solved at control points every 16 frames and
   joined by chords; a rate lands whole at its grid point with the phase continuous (**floored at 0.01 Hz, a lane's
   value and a cell's alike**, `MIN_RATE`), the depth glides at most `DELAY_SLEW` frames of delay per frame, the
-  feedback over `GAIN_GLIDE`; the swept loop reads its feedback tap at the delay, so its period is the delay plus
-  one frame, which is not `delay_step`'s (a later, owner-gated change)), the cubic Hermite kernel, the phaser's all-pass chain, the
+  feedback over `GAIN_GLIDE`; the swept loop is `delay_step`'s, so its period is the delay), the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the
   one figure of a resampled length; `ChunkSize`), the dither noise

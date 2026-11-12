@@ -103,8 +103,14 @@ vst2 = ["plugin", "tutti-plugin/vst2"]
 vst3 = ["plugin", "tutti-plugin/vst3"]
 clap = ["plugin", "tutti-plugin/clap"]
 au = ["plugin", "tutti-plugin/au"]
+# What a test reads of the graph's plumbing (`Graph::testing`, `take_audio_side`,
+# `AudioSide`). Off by default; this crate's own tests turn it on through the
+# dev-dependency on itself below, as `tutti-graph` does.
+testing = []
 
 [dev-dependencies]
+# Turns `testing` on for this crate's own tests, benches and doctests.
+tutti-session = { path = ".", features = ["testing"] }
 # The SoundFont type the instrument contract's subject decodes a font into
 # (`tutti-soundfont` does not re-export it).
 tutti-sf2 = { path = "../tutti-sf2" }

@@ -163,17 +163,29 @@ fn the_graph_declares_each_band_and_crossover() {
     for band in 0..2u8 {
         for kind in tutti_nodes::BAND_PARAMS {
             assert!(
-                g.declares_param(mb, UnitAddr::new(kind, band)),
+                g.declares_param(mb, UnitAddr::new(kind, band)).unwrap(),
                 "{kind:?} {band}"
             );
         }
         for kind in [UnitParam::Bypass, UnitParam::Solo] {
-            assert!(!g.declares_param(mb, UnitAddr::new(kind, band)), "{kind:?}");
+            assert!(
+                !g.declares_param(mb, UnitAddr::new(kind, band)).unwrap(),
+                "{kind:?}"
+            );
         }
     }
-    assert!(g.declares_param(mb, UnitAddr::new(UnitParam::Cutoff, 0)));
-    assert!(!g.declares_param(mb, UnitAddr::new(UnitParam::Cutoff, 1)));
-    assert!(!g.declares_param(mb, UnitAddr::new(UnitParam::Threshold, 2)));
+    assert!(
+        g.declares_param(mb, UnitAddr::new(UnitParam::Cutoff, 0))
+            .unwrap()
+    );
+    assert!(
+        !g.declares_param(mb, UnitAddr::new(UnitParam::Cutoff, 1))
+            .unwrap()
+    );
+    assert!(
+        !g.declares_param(mb, UnitAddr::new(UnitParam::Threshold, 2))
+            .unwrap()
+    );
 }
 
 /// A `set_param` at index 1 reaches the band meter of band 1 through the
@@ -285,7 +297,7 @@ fn a_fork_keeps_each_index_to_itself() {
     s.graph().set_param(mb.gain_db_at(0), Db(-6.0)).unwrap();
     s.graph().set_param(mb.gain_db_at(1), Db(6.0)).unwrap();
     render(&mut s, 128);
-    let mut fork = s.graph_ref().fork_live().expect("the node forks");
+    let mut fork = s.graph_ref().testing().fork_live().expect("the node forks");
     s.graph().set_param(mb.gain_db_at(0), Db(12.0)).unwrap();
     s.graph().set_param(mb.gain_db_at(1), Db(-12.0)).unwrap();
 

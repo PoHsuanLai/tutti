@@ -211,6 +211,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
         let mut sources: Vec<_> = s
             .graph_ref()
             .sources(EventInPort::new(node, 0))
+            .unwrap()
             .into_iter()
             .map(|e| e.node())
             .collect();

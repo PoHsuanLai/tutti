@@ -721,7 +721,7 @@ impl MidiState {
         }
         let id: EventTapId = tap.id();
         self.drain_tap();
-        self.hardware_tap = graph.reopen_event_tap(id);
+        self.hardware_tap = graph.taps().reopen_event(id);
         true
     }
 
@@ -826,7 +826,7 @@ fn wire_inlets(
 impl Midi<'_> {
     /// `target`, if it takes MIDI: it is in the graph with an event input.
     fn takes_midi(&self, target: NodeKey) -> Result<()> {
-        if self.graph.contains(target) && self.graph.node_event_inputs(target) > 0 {
+        if self.graph.node_event_inputs(target).is_ok_and(|n| n > 0) {
             Ok(())
         } else {
             Err(Error::NoEventInput(target))

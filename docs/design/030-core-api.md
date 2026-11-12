@@ -94,7 +94,7 @@ finding where the API produces wrong results today, not only friction.
 | S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M |
 | S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S |
 | S7 | Removal is spelled `remove`, `remove_instrument`, `GeneralMidi::remove`, `unroute` and `close_*`, returning `bool` or `()`. `insert` against `add` is a trap (`insert` skips the reclaim sweep). `open_event_inlet` panics on a bad capacity | one `remove(key)` on typed keys, returning `Result`; `insert` folded into `add`; a checked capacity | S-M (built, 2d) |
-| S8 | The heard tap's `Backpressure` is a transient error mixed in with permanent ones. `LoadMeter::take` is `Clone`, so two readers split the peaks. tutti-cpal lists devices five ways | split the error; one reader, not `Clone`; one listing | S |
+| S8 | The heard tap's `Backpressure` is a transient error mixed in with permanent ones. `LoadMeter::take` is `Clone`, so two readers split the peaks. tutti-cpal lists devices five ways | split the error; one reader, not `Clone`; one listing (built, §6 item 5) | S |
 
 ### 3.2 Transport, tempo, modulation
 
@@ -322,8 +322,14 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      shortest node, `Shape`, a param'd node, events in and out, `Status` and
      `report_tail`, and what not to do, every example a doctest.
 4. **Modulation:** T4, T5, T9 (T1's typed range landed in 2c).
-5. **Graph surface 2** (doc 013): facets, plumbing, the failure rule; S8.
-   Then the deferred chase injection: preallocate the inject capacity of each
+5. **Graph surface 2** (doc 013), built: the facets (`g.taps()`, `g.meters()`;
+   the heard tap stays the session's, its writer being in the engine's output
+   buffer), the plumbing behind tutti-session's `testing` feature
+   (`Graph::testing()`, `take_audio_side`, `AudioSide`) or `pub(crate)`, and the
+   failure rule (every query, wire removal and modulation call that names a node
+   that is not there is a `Result`); S8: `HeardOpen::Retry` for a busy audio thread,
+   a `LoadMeter` with one reader, and tutti-cpal's one listing,
+   `DeviceHost::snapshot`. The deferred chase injection stays in this item: preallocate the inject capacity of each
    chasing unit, so that a chase whose takeover is delayed by a fade is delivered
    when the fade ends (`end_fades`), not dropped.
 6. **Playhead:** R2.

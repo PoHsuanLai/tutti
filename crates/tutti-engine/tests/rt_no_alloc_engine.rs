@@ -401,7 +401,11 @@ fn the_heard_tap_is_allocation_free() {
     ed.collect();
 
     // 16 frames of ring against 1024-frame blocks: every block overflows.
-    let first = taps.open(layout, tutti_types::Samples(16)).expect("opens");
+    let first = taps
+        .open(layout, tutti_types::Samples(16))
+        .expect("opens")
+        .reader()
+        .expect("the audio thread is not behind");
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..8 {
             engine.process(&mut InterleavedMut::new(&mut output, layout));
@@ -412,7 +416,9 @@ fn the_heard_tap_is_allocation_free() {
     // The reclaim queued a close; a new open queues a replacement behind it.
     let second = taps
         .open(layout, tutti_types::Samples(4096))
-        .expect("reopens");
+        .expect("reopens")
+        .reader()
+        .expect("the audio thread is not behind");
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..8 {
             engine.process(&mut InterleavedMut::new(&mut output, layout));

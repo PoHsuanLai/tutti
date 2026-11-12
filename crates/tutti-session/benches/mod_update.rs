@@ -80,7 +80,7 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<Key<SvfFilterNode<f32>>>) {
 
 fn measure(label: &str, n: usize, modulated: bool, edit: bool) {
     let (mut s, filters) = scene(n, modulated);
-    let commits = s.graph().commits_sent();
+    let commits = s.graph().testing().commits_sent();
     let mut times = Vec::with_capacity(UPDATES);
     for i in 0..UPDATES {
         if edit {
@@ -94,7 +94,7 @@ fn measure(label: &str, n: usize, modulated: bool, edit: bool) {
         drop(events);
     }
     assert_eq!(
-        s.graph().commits_sent(),
+        s.graph().testing().commits_sent(),
         commits,
         "a steady state commits nothing"
     );

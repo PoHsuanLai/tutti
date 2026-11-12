@@ -357,11 +357,15 @@ impl Session {
         if !self.graph_ref().feed(node, Feeder::Instrument).is_empty() {
             return Err(why(NotInstrument::AlreadyInstrument));
         }
-        if self.graph_ref().node_event_inputs(node) == 0 {
+        if self.graph_ref().node_event_inputs(node) == Ok(0) {
             return Err(why(NotInstrument::NoEventInput));
         }
         for port in main {
-            if usize::from(port) >= self.graph_ref().node_outputs(node) {
+            if self
+                .graph_ref()
+                .node_outputs(node)
+                .is_ok_and(|outputs| usize::from(port) >= outputs)
+            {
                 return Err(why(NotInstrument::NoOutput(port)));
             }
         }

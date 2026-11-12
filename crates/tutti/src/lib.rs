@@ -221,9 +221,9 @@ pub mod prelude {
     pub use tutti_types::{At, BarNumber, LoopRange, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
-    // The device handle and its enumeration record.
+    // The device handle and a device's identity.
     #[cfg(feature = "device")]
-    pub use tutti_cpal::{DeviceInfo, TuttiDriver};
+    pub use tutti_cpal::{DeviceId, TuttiDriver};
 
     #[cfg(feature = "sampler")]
     pub use tutti_sampler::{Clip, LoopSetting, Playback, Voice, VoiceWindow};
@@ -254,8 +254,8 @@ pub mod prelude {
     pub use tutti_session::Device;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        ConnectError, Edge, EventInPort, EventOutPort, HeardTapError, InPort, Key, OutPort, Phase,
-        Root, Session, SessionBuilder, SessionEvent, TypedParamRef,
+        ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Key,
+        NoSuchNode, OutPort, Phase, Root, Session, SessionBuilder, SessionEvent, TypedParamRef,
     };
 
     // What a session's calls take, by the feature that gates each (design

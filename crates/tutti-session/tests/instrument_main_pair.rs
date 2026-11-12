@@ -123,7 +123,7 @@ fn a_wide_root_is_fed_from_the_main_pair_not_the_sends() {
     let node = handle.node();
     session.graph().connect(node, Root).unwrap();
     let wrapped: Vec<_> = (0..5)
-        .map(|c| session.graph_ref().sources(Root::output(c)))
+        .map(|c| session.graph_ref().sources(Root::output(c)).unwrap())
         .collect();
     assert_eq!(wrapped[4], [OutPort::new(node, 4)], "the wrap feeds a send");
 
@@ -138,7 +138,7 @@ fn a_wide_root_is_fed_from_the_main_pair_not_the_sends() {
     for c in 0..5 {
         let want = 2 + c % 2;
         assert_eq!(
-            session.graph_ref().sources(Root::output(c)),
+            session.graph_ref().sources(Root::output(c)).unwrap(),
             [OutPort::new(node, want)],
             "channel {c}"
         );

@@ -88,12 +88,12 @@ impl Rig {
     pub fn settle(&mut self) {
         for _ in 0..64 {
             self.block();
-            if !self.session.graph_ref().is_repreparing() {
+            if !self.session.graph_ref().testing().is_repreparing() {
                 break;
             }
         }
         assert!(
-            !self.session.graph_ref().is_repreparing(),
+            !self.session.graph_ref().testing().is_repreparing(),
             "the re-prepare lands"
         );
         self.block();

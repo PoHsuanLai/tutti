@@ -50,18 +50,25 @@ fn an_event_edge_is_connected_read_back_and_disconnected() {
         "an event edge is no audio edge"
     );
     g.connect(src.events_out(), sink.events_in()).unwrap();
-    assert_eq!(g.sources(sink.events_in()), [src.events_out()], "once");
+    assert_eq!(
+        g.sources(sink.events_in()).unwrap(),
+        [src.events_out()],
+        "once"
+    );
 
     g.connect(src.events_out_at(1), sink.events_in()).unwrap();
     assert_eq!(
-        g.sources(sink.events_in()),
+        g.sources(sink.events_in()).unwrap(),
         [src.events_out(), src.events_out_at(1)],
         "events merge: a second source joins the first"
     );
 
-    assert!(g.disconnect(src.events_out(), sink.events_in()));
-    assert!(!g.disconnect(src.events_out(), sink.events_in()), "gone");
-    assert_eq!(g.sources(sink.events_in()), [src.events_out_at(1)]);
+    assert!(g.disconnect(src.events_out(), sink.events_in()).unwrap());
+    assert!(
+        !g.disconnect(src.events_out(), sink.events_in()).unwrap(),
+        "gone"
+    );
+    assert_eq!(g.sources(sink.events_in()).unwrap(), [src.events_out_at(1)]);
 }
 
 /// **Port 0 is the main event port, and an index names another**: an edge
@@ -78,10 +85,10 @@ fn event_port_zero_is_the_main_port_and_an_index_names_another() {
 
     g.connect(src.events_out(), sink.events_in_at(1)).unwrap();
     assert!(
-        g.sources(sink.events_in()).is_empty(),
+        g.sources(sink.events_in()).unwrap().is_empty(),
         "the main input is unfed"
     );
-    assert_eq!(g.sources(sink.events_in_at(1)), [src.events_out()]);
+    assert_eq!(g.sources(sink.events_in_at(1)).unwrap(), [src.events_out()]);
 }
 
 /// **A port the node does not have, a node that is not there, and a node
@@ -136,17 +143,17 @@ fn set_sources_and_disconnect_all_cover_event_inputs() {
 
     g.set_sources(input, [a.events_out(), b.events_out()])
         .unwrap();
-    let mut held = g.sources(input);
+    let mut held = g.sources(input).unwrap();
     held.sort();
     let mut both = [a.events_out(), b.events_out()];
     both.sort();
     assert_eq!(held, both);
     g.set_sources(input, [b.events_out()]).unwrap();
-    assert_eq!(g.sources(input), [b.events_out()]);
+    assert_eq!(g.sources(input).unwrap(), [b.events_out()]);
 
-    assert!(g.disconnect_all(input));
-    assert!(g.sources(input).is_empty());
-    assert!(!g.disconnect_all(input), "nothing left to take");
+    assert!(g.disconnect_all(input).unwrap());
+    assert!(g.sources(input).unwrap().is_empty());
+    assert!(!g.disconnect_all(input).unwrap(), "nothing left to take");
 
     // The refusal names the port and changes nothing.
     assert_eq!(
@@ -157,5 +164,5 @@ fn set_sources_and_disconnect_all_cover_event_inputs() {
         g.set_sources(EventInPort::new(sink, 3), [a.events_out()]),
         Err(ConnectError::NoSuchEventIn(EventInPort::new(sink, 3)))
     );
-    assert!(g.sources(input).is_empty());
+    assert!(g.sources(input).unwrap().is_empty());
 }

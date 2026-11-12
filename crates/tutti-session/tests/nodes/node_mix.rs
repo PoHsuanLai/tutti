@@ -133,11 +133,11 @@ fn the_mode_wins_over_the_mix() {
 #[test]
 fn mix_reads_back_what_was_set() {
     let mut r = rig();
-    assert_eq!(r.s.graph_ref().mix(r.halve), Mix::WET);
+    assert_eq!(r.s.graph_ref().mix(r.halve).unwrap(), Mix::WET);
     r.s.graph().set_mix(r.halve, Mix::new(0.25)).unwrap();
-    assert_eq!(r.s.graph_ref().mix(r.halve), Mix::new(0.25));
+    assert_eq!(r.s.graph_ref().mix(r.halve).unwrap(), Mix::new(0.25));
     r.s.graph().set_mix(r.halve, Mix::DRY).unwrap();
-    assert_eq!(r.s.graph_ref().mix(r.halve), Mix::DRY);
+    assert_eq!(r.s.graph_ref().mix(r.halve).unwrap(), Mix::DRY);
 }
 
 /// A mix is a control: setting one marks nothing edited, and the next update
@@ -145,20 +145,24 @@ fn mix_reads_back_what_was_set() {
 #[test]
 fn a_mix_is_not_an_edit() {
     let mut r = rig();
-    let plan = r.s.graph_ref().sent_plan().expect("a plan");
-    let sent = r.s.graph_ref().commits_sent();
+    let plan = r.s.graph_ref().testing().sent_plan().expect("a plan");
+    let sent = r.s.graph_ref().testing().commits_sent();
 
     r.s.graph().set_mix(r.halve, Mix::DRY).unwrap();
     assert!(!r.s.graph_ref().is_edited(), "a mix marks nothing edited");
     let _ = r.settled();
 
-    assert_eq!(r.s.graph_ref().commits_sent(), sent, "no commit was sent");
-    let now = r.s.graph_ref().sent_plan().expect("a plan");
+    assert_eq!(
+        r.s.graph_ref().testing().commits_sent(),
+        sent,
+        "no commit was sent"
+    );
+    let now = r.s.graph_ref().testing().sent_plan().expect("a plan");
     assert!(std::sync::Arc::ptr_eq(&plan, &now), "the same plan");
 }
 
-/// A node that is not in the graph, or no longer is, is refused and reads
-/// `WET`; a mix off the scale (NaN, negative, above one) is refused and
+/// A node that is not in the graph, or no longer is, is refused (set and
+/// read alike); a mix off the scale (NaN, negative, above one) is refused and
 /// changes nothing.
 #[test]
 fn a_missing_node_and_a_bad_mix_are_refused() {
@@ -168,7 +172,7 @@ fn a_missing_node_and_a_bad_mix_are_refused() {
         r.s.graph().set_mix(stranger, Mix::DRY),
         Err(MixError::NoSuchNode { node: stranger })
     );
-    assert_eq!(r.s.graph_ref().mix(stranger), Mix::WET);
+    assert_eq!(r.s.graph_ref().mix(stranger).unwrap_err().node(), stranger);
 
     r.s.graph().set_mix(r.halve, Mix::new(0.5)).unwrap();
     for bad in [f32::NAN, -0.5, 1.5] {
@@ -177,7 +181,7 @@ fn a_missing_node_and_a_bad_mix_are_refused() {
             Err(MixError::OutOfRange)
         );
     }
-    assert_eq!(r.s.graph_ref().mix(r.halve), Mix::new(0.5));
+    assert_eq!(r.s.graph_ref().mix(r.halve).unwrap(), Mix::new(0.5));
 
     r.s.graph().remove(r.halve).unwrap();
     assert_eq!(
@@ -185,7 +189,7 @@ fn a_missing_node_and_a_bad_mix_are_refused() {
         Err(MixError::NoSuchNode { node: r.halve })
     );
     assert_eq!(
-        r.s.graph_ref().mix(r.halve),
+        r.s.graph_ref().mix(r.halve).unwrap(),
         Mix::WET,
         "a removed node's mix goes with it"
     );

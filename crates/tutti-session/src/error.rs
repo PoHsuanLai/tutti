@@ -8,16 +8,13 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum HeardTapError {
     /// The session has no engine, so nothing renders to tap (a detached
-    /// session; a plan tap, [`Graph::open_tap`](crate::Graph::open_tap), is
+    /// session; a plan tap, [`Taps::open`](crate::Taps::open), is
     /// fed by its `render_frame`).
     #[error("this session has no engine to tap")]
     Detached,
     /// A reader of the output tap is alive; close it first.
     #[error("the output tap already has a reader; close it before opening again")]
     Busy,
-    /// The audio thread has not yet taken the last installs.
-    #[error("the audio thread has not yet taken the last tap installs")]
-    Backpressure,
     /// No heard tap is open to close (none was opened, it was closed, or its
     /// dropped reader was reclaimed).
     #[error("no heard tap is open")]
@@ -33,6 +30,29 @@ pub enum RemoveError {
     /// The node is not in the graph: removed already, or never added.
     #[error("{0:?} is not in the graph")]
     NoSuchNode(tutti_graph::NodeKey),
+}
+
+/// A query or a control named a node the graph does not have: removed already,
+/// or never added. Nothing is changed or read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[error("{0:?} is not in the graph")]
+pub struct NoSuchNode(tutti_graph::NodeKey);
+
+impl NoSuchNode {
+    pub(crate) fn new(node: tutti_graph::NodeKey) -> Self {
+        Self(node)
+    }
+
+    /// The key no node has.
+    pub fn node(self) -> tutti_graph::NodeKey {
+        self.0
+    }
+}
+
+impl From<NoSuchNode> for ConnectError {
+    fn from(e: NoSuchNode) -> Self {
+        Self::NoSuchNode(e.node())
+    }
 }
 
 /// Why [`Graph::open_inlet`](crate::Graph::open_inlet) refused.

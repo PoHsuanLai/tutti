@@ -18,7 +18,7 @@ mod roster;
 mod mic;
 
 pub use block::OutputBlock;
-pub use driver::{DeviceInfo, Stopped, TuttiDriver};
+pub use driver::{Stopped, TuttiDriver};
 pub use driver_seam::{
     CpalDriver, CpalStream, ManualRunning, ManualStream, ManualStreamDriver, OutputSpec,
     PREFERRED_QUANTUM, RunningStream, StreamDriver,

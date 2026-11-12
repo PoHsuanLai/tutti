@@ -28,7 +28,10 @@ fn unit() -> SoundFontUnit {
 
 /// The one source a port holds (these tests wire one).
 fn source(session: &Session, node: NodeKey, port: usize) -> OutPort {
-    let held = session.graph_ref().sources(InPort::new(node, port));
+    let held = session
+        .graph_ref()
+        .sources(InPort::new(node, port))
+        .unwrap();
     assert!(held.len() == 1, "one source a port: {held:?}");
     held[0]
 }
@@ -41,23 +44,26 @@ fn the_setup_adds_a_chorus_a_reverb_and_a_fader_of_the_right_widths() {
     let mut session = offline_session();
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
     let graph = session.graph_ref();
-    assert_eq!(graph.node_outputs(gm.instrument().node()), 5);
+    assert_eq!(graph.node_outputs(gm.instrument().node()).unwrap(), 5);
     assert_eq!(
         (
-            graph.node_inputs(gm.chorus()),
-            graph.node_outputs(gm.chorus())
+            graph.node_inputs(gm.chorus()).unwrap(),
+            graph.node_outputs(gm.chorus()).unwrap()
         ),
         (2, 2)
     );
     assert_eq!(
         (
-            graph.node_inputs(gm.reverb()),
-            graph.node_outputs(gm.reverb())
+            graph.node_inputs(gm.reverb()).unwrap(),
+            graph.node_outputs(gm.reverb()).unwrap()
         ),
         (1, 2)
     );
     assert_eq!(
-        (graph.node_inputs(gm.out()), graph.node_outputs(gm.out())),
+        (
+            graph.node_inputs(gm.out()).unwrap(),
+            graph.node_outputs(gm.out()).unwrap()
+        ),
         (2, 2),
         "the fader"
     );
@@ -87,7 +93,10 @@ fn the_sends_feed_the_effects_and_the_effects_feed_the_fader() {
         OutPort::new(unit, 4)
     );
     for (port, channel) in [(0, 0), (1, 1)] {
-        let mut held = session.graph_ref().sources(InPort::new(gm.out(), port));
+        let mut held = session
+            .graph_ref()
+            .sources(InPort::new(gm.out(), port))
+            .unwrap();
         let mut want = vec![
             OutPort::new(strip, channel),
             OutPort::new(gm.chorus(), channel),
@@ -110,7 +119,10 @@ fn the_setup_does_not_take_the_graphs_outputs() {
     let mut session = offline_session();
     session.add_general_midi(unit()).expect("a SoundFont unit");
     for channel in 0..session.graph_ref().outputs() {
-        assert_eq!(session.graph_ref().sources(Root::output(channel)), []);
+        assert_eq!(
+            session.graph_ref().sources(Root::output(channel)).unwrap(),
+            []
+        );
     }
 }
 
@@ -124,7 +136,7 @@ fn every_stage_declares_its_own_tail() {
     let gm = session.add_general_midi(unit()).expect("a SoundFont unit");
     let _ = session.update();
     let graph = session.graph_ref();
-    let frames = |node| match graph.node_tail(node) {
+    let frames = |node| match graph.node_tail(node).unwrap() {
         Tail::Finite(n) => n.get(),
         other => panic!("{node:?}: {other:?}"),
     };
@@ -135,7 +147,7 @@ fn every_stage_declares_its_own_tail() {
     );
     assert_eq!(frames(gm.chorus().erase()), 240);
     assert!((1.0..2.0).contains(&seconds(gm.reverb().erase())));
-    assert_eq!(graph.node_tail(gm.out()), Tail::None);
+    assert_eq!(graph.node_tail(gm.out()).unwrap(), Tail::None);
 }
 
 /// The ring-out of 3a holds against the per-node tails: a note let go through
@@ -184,7 +196,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
         .set_sources(Root::output(1), [OutPort::new(gm.out(), 1)])
         .unwrap();
     let _ = session.update();
-    let tail = |node| match session.graph_ref().node_tail(node) {
+    let tail = |node| match session.graph_ref().node_tail(node).unwrap() {
         Tail::Finite(n) => n.get(),
         other => panic!("{node:?}: {other:?}"),
     };

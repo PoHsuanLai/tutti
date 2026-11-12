@@ -11,7 +11,6 @@ use tutti_rt::with_no_denormals;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 
 use crate::block::OutputBlock;
-use crate::driver::DeviceInfo;
 use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
@@ -332,14 +331,6 @@ impl AudioEngine {
                 "the opened device could not be named: {why}"
             ))),
         }
-    }
-
-    /// Lists the default host's output devices.
-    ///
-    /// # Errors
-    /// [`Error::DevicesError`] if the host cannot enumerate.
-    pub fn output_devices() -> Result<Vec<DeviceInfo>> {
-        DeviceHost::open(AudioHost::Default)?.output_devices()
     }
 }
 

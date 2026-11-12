@@ -75,8 +75,8 @@ fn budget(frames: usize) -> Duration {
 /// two, counts one block over budget, and shows as the peak exactly once.
 #[test]
 fn a_block_past_its_deadline_counts_and_peaks_once() {
-    let (engine, _t, _ed) = engine(budget(64) * 2, 64);
-    let meter = engine.load_meter().clone();
+    let (mut engine, _t, _ed) = engine(budget(64) * 2, 64);
+    let mut meter = engine.take_load_meter().expect("not taken");
     let mut out = vec![0.0f32; 64];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     let r = meter.take();
@@ -100,8 +100,8 @@ fn a_block_past_its_deadline_counts_and_peaks_once() {
 /// load), and it still catches a budget of one piece (load ≥ 3).
 #[test]
 fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
-    let (engine, _t, _ed) = engine(budget(4096).mul_f64(1.5), 4096);
-    let meter = engine.load_meter().clone();
+    let (mut engine, _t, _ed) = engine(budget(4096).mul_f64(1.5), 4096);
+    let mut meter = engine.take_load_meter().expect("not taken");
     let mut out = vec![0.0f32; 8192];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     let r = meter.take();
@@ -117,12 +117,12 @@ fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
 /// `process_segment` (each recording a block) and the reads.
 #[test]
 fn recording_the_load_is_allocation_free() {
-    let (engine, _t, mut ed) = engine(Duration::ZERO, 64);
+    let (mut engine, _t, mut ed) = engine(Duration::ZERO, 64);
     let mut out = vec![0.0f32; 64];
     // Installing the commit allocates on the first block, before the gate.
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     ed.collect();
-    let meter = engine.load_meter();
+    let mut meter = engine.take_load_meter().expect("not taken");
     meter.reset();
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..16 {
@@ -181,8 +181,8 @@ fn events_past_a_ports_capacity_reach_the_meter() {
             port: 0,
         })]);
     ed.commit().expect("commits");
-    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    let meter = engine.load_meter().clone();
+    let mut engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    let mut meter = engine.take_load_meter().expect("not taken");
     let mut out = vec![0.0f32; 64];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     assert_eq!(meter.peek().dropped_events, 100);

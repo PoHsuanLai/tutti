@@ -49,7 +49,8 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
         .unwrap();
     let mut tap = session
         .graph()
-        .open_output_tap(Samples(1_024))
+        .taps()
+        .open_output(Samples(1_024))
         .expect("the sources exist");
     let _ = session.update();
     let mut meter = session.take_master_meter().expect("declared at the build");
@@ -73,14 +74,14 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
 #[test]
 fn the_session_reads_the_load_its_callback_measures() {
     let (driver, stream) = ManualStreamDriver::new();
-    let (session, _device) = Session::builder()
+    let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
-    let meter = session.load_meter().expect("a device's engine").clone();
     for _ in 0..3 {
         stream.render_block(64).expect("the stream is open");
     }
+    let meter = session.load_meter_mut().expect("a device's engine");
     assert_eq!(meter.take().blocks, 3);
 }
 
@@ -118,9 +119,9 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     let _ = s.update();
 
     let in_step = |s: &Session, what: &str| -> Samples {
-        let sent = s.graph_ref().sent_compensation().expect("a plan");
+        let sent = s.graph_ref().testing().sent_compensation().expect("a plan");
         let (channels, total) = (sent.channels(), sent.total());
-        let lim = s.graph_ref().node_latency(lim);
+        let lim = s.graph_ref().node_latency(lim).unwrap();
         assert_eq!(total, lim, "{what}: the plan compensates the limiter");
         assert_eq!(s.latency(), total, "{what}: the total is the plan's");
         assert_eq!(
@@ -142,7 +143,10 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     s.restart_on(&mut device, spec_at(96_000.0), driver, None, |_| {})
         .expect("restarts");
     assert!(!old.is_open() && new.is_open(), "on the new device");
-    assert_eq!(s.graph_ref().prepared().sample_rate(), SampleRate(96_000.0));
+    assert_eq!(
+        s.graph_ref().testing().prepared().sample_rate(),
+        SampleRate(96_000.0)
+    );
     assert_eq!(s.transport().sample_rate(), SampleRate(96_000.0));
     let at96 = in_step(&s, "96 kHz, before the first block");
     assert_eq!(at96, Samples(2 * at48.0), "the lookahead is a time");
@@ -709,7 +713,11 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
-    let across = s.open_heard_tap(Samples(1_024)).expect("opens");
+    let across = s
+        .open_heard_tap(Samples(1_024))
+        .expect("opens")
+        .reader()
+        .expect("the audio thread is not behind");
     assert_eq!(across.width(), 2);
 
     let six = OutputSpec::new(
@@ -725,7 +733,11 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
     assert_eq!(across.take_lost(), Samples(64), "and counts the block lost");
 
     drop(across);
-    let after = s.open_heard_tap(Samples(1_024)).expect("reopens");
+    let after = s
+        .open_heard_tap(Samples(1_024))
+        .expect("reopens")
+        .reader()
+        .expect("the audio thread is not behind");
     assert_eq!(after.width(), 6, "the device's width now");
     new.render_block(64).expect("open");
     assert_eq!(after.available(), Samples(64));

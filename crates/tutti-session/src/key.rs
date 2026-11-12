@@ -265,7 +265,7 @@ impl Root {
 /// One event port a stream of events leaves from: an event output of a node.
 /// Made by [`Key::events_out`], [`Key::events_out_at`] and
 /// [`EventOutPort::new`]. What [`Graph::connect`] wires into an
-/// [`EventInPort`] and [`Graph::open_event_tap`] copies.
+/// [`EventInPort`] and [`Taps::open_event`](crate::Taps::open_event) copies.
 ///
 /// The index is a port number of the node's declared event ports, a count
 /// and not a unit.
@@ -450,7 +450,12 @@ pub trait Wire: Sealed {
         to: Self::In,
     ) -> Result<Vec<(Edge, bool)>, ConnectError>;
     #[doc(hidden)]
-    fn disconnect(graph: &mut Graph, from: Self::Out, to: Self::In, hard: bool) -> bool;
+    fn disconnect(
+        graph: &mut Graph,
+        from: Self::Out,
+        to: Self::In,
+        hard: bool,
+    ) -> Result<bool, ConnectError>;
     #[doc(hidden)]
     fn harden(graph: &mut Graph, from: Self::Out, to: Self::In, edges: &[(Edge, bool)]);
 }
@@ -544,8 +549,14 @@ impl Wire for Channel {
         let added = graph.add_edge(from, to)?;
         Ok(vec![(Edge::new(from, to), added)])
     }
-    fn disconnect(graph: &mut Graph, from: OutPort, to: InPort, hard: bool) -> bool {
-        graph.remove_edge(from, to, hard)
+    fn disconnect(
+        graph: &mut Graph,
+        from: OutPort,
+        to: InPort,
+        hard: bool,
+    ) -> Result<bool, ConnectError> {
+        graph.check_wire(from, to)?;
+        Ok(graph.remove_edge(from, to, hard))
     }
     fn harden(graph: &mut Graph, _: OutPort, _: InPort, edges: &[(Edge, bool)]) {
         for (edge, _) in edges {
@@ -570,15 +581,24 @@ impl Wire for MainBus {
         }
         Ok(edges)
     }
-    fn disconnect(graph: &mut Graph, from: NodeKey, to: MainSink, hard: bool) -> bool {
-        let Ok(wires) = graph.main_wires(from, to) else {
-            return false;
+    fn disconnect(
+        graph: &mut Graph,
+        from: NodeKey,
+        to: MainSink,
+        hard: bool,
+    ) -> Result<bool, ConnectError> {
+        let wires = match graph.main_wires(from, to) {
+            Ok(wires) => wires,
+            // A main bus that is not wired (no bus there, another width) has
+            // no edge to take out; a node that is not there is a mistake.
+            Err(e @ ConnectError::NoSuchNode(_)) => return Err(e),
+            Err(_) => return Ok(false),
         };
         let mut removed = false;
         for (out, input) in wires {
             removed |= graph.remove_edge(out, input, hard);
         }
-        removed
+        Ok(removed)
     }
     fn harden(graph: &mut Graph, _: NodeKey, _: MainSink, edges: &[(Edge, bool)]) {
         for (edge, _) in edges {
@@ -598,8 +618,14 @@ impl Wire for Bus {
         graph.add_bus_edge(from, to, false)?;
         Ok(Vec::new())
     }
-    fn disconnect(graph: &mut Graph, from: BusSource, to: BusSink, hard: bool) -> bool {
-        graph.remove_bus_edge(from, to, hard)
+    fn disconnect(
+        graph: &mut Graph,
+        from: BusSource,
+        to: BusSink,
+        hard: bool,
+    ) -> Result<bool, ConnectError> {
+        graph.check_bus_nodes(from, to)?;
+        Ok(graph.remove_bus_edge(from, to, hard))
     }
     fn harden(graph: &mut Graph, from: BusSource, to: BusSink, _: &[(Edge, bool)]) {
         graph.harden_bus_edge(from, to);
@@ -617,8 +643,14 @@ impl Wire for Event {
         graph.add_event_edge(from, to)?;
         Ok(Vec::new())
     }
-    fn disconnect(graph: &mut Graph, from: EventOutPort, to: EventInPort, _hard: bool) -> bool {
-        graph.remove_event_edge(from, to)
+    fn disconnect(
+        graph: &mut Graph,
+        from: EventOutPort,
+        to: EventInPort,
+        _hard: bool,
+    ) -> Result<bool, ConnectError> {
+        graph.check_event_wire(from, to)?;
+        Ok(graph.remove_event_edge(from, to))
     }
     fn harden(_: &mut Graph, _: EventOutPort, _: EventInPort, _: &[(Edge, bool)]) {}
 }
@@ -644,7 +676,7 @@ pub trait Fanin: Sealed + Copy {
     /// What feeds it.
     type Source: Copy;
     #[doc(hidden)]
-    fn sources(self, graph: &Graph) -> Vec<Self::Source>;
+    fn sources(self, graph: &Graph) -> Result<Vec<Self::Source>, ConnectError>;
     #[doc(hidden)]
     fn set_sources(
         self,
@@ -653,13 +685,14 @@ pub trait Fanin: Sealed + Copy {
         hard: bool,
     ) -> Result<(), ConnectError>;
     #[doc(hidden)]
-    fn disconnect_all(self, graph: &mut Graph) -> bool;
+    fn disconnect_all(self, graph: &mut Graph) -> Result<bool, ConnectError>;
 }
 
 impl Fanin for InPort {
     type Source = OutPort;
-    fn sources(self, graph: &Graph) -> Vec<OutPort> {
-        graph.channel_sources(self)
+    fn sources(self, graph: &Graph) -> Result<Vec<OutPort>, ConnectError> {
+        graph.check_in(self)?;
+        Ok(graph.channel_sources(self))
     }
     fn set_sources(
         self,
@@ -669,15 +702,17 @@ impl Fanin for InPort {
     ) -> Result<(), ConnectError> {
         graph.set_channel_sources(self, from, hard)
     }
-    fn disconnect_all(self, graph: &mut Graph) -> bool {
-        graph.disconnect_all_channels(self)
+    fn disconnect_all(self, graph: &mut Graph) -> Result<bool, ConnectError> {
+        graph.check_in(self)?;
+        Ok(graph.disconnect_all_channels(self))
     }
 }
 
 impl Fanin for EventInPort {
     type Source = EventOutPort;
-    fn sources(self, graph: &Graph) -> Vec<EventOutPort> {
-        graph.event_sources_of(self)
+    fn sources(self, graph: &Graph) -> Result<Vec<EventOutPort>, ConnectError> {
+        graph.check_event_in(self)?;
+        Ok(graph.event_sources_of(self))
     }
     fn set_sources(
         self,
@@ -687,8 +722,9 @@ impl Fanin for EventInPort {
     ) -> Result<(), ConnectError> {
         graph.set_event_sources_of(self, &from)
     }
-    fn disconnect_all(self, graph: &mut Graph) -> bool {
-        graph.disconnect_all_events(self)
+    fn disconnect_all(self, graph: &mut Graph) -> Result<bool, ConnectError> {
+        graph.check_event_in(self)?;
+        Ok(graph.disconnect_all_events(self))
     }
 }
 

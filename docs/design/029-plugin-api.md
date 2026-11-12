@@ -303,7 +303,10 @@ freeing paths' `debug_assert!`: built next, below.
 **As built (step 2, the main-thread view).** `Session::main(MainThread) ->
 MainSession<'_>` is `&mut Session` and the proof (`MainThread` was already
 `Copy`: it is `!Send` and `!Sync` and zero-sized, so a copy cannot leave its
-thread); it derefs to the session. `MainSession::update()` is `Session::update`,
+thread). It does not deref to the session: its own verbs are `update` and
+`plugin`, and the rest goes through `session()` / `session_mut()`, so a call that
+reaches `Session::update` and skips the main thread's share is visible where it
+is written. `MainSession::update()` is `Session::update`,
 then the graveyard, `run_deferred`, and every editor opened through the view:
 `editor_idle`, then a poll of the plugin's resize request, raised as
 `PluginChange::EditorWantsSize(EditorSize)`. `ui.plugin(node)?` lends a

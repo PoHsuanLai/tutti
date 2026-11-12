@@ -57,8 +57,6 @@
 //! assert_send::<tutti_session::Session>();
 //! ```
 
-use std::ops::{Deref, DerefMut};
-
 use raw_window_handle::HasWindowHandle;
 use tutti_graph::NodeKey;
 use tutti_plugin_types::{
@@ -72,8 +70,12 @@ use crate::{NoSuchNode, PluginChange, PluginEvent, Session, SessionEvent};
 /// [`Session::main`]; see the module docs.
 ///
 /// `!Send` (the proof is), and it holds no state of its own: dropping it
-/// leaves the session as it was. It derefs to the session, so every other call
-/// is the session's.
+/// leaves the session as it was. It does not deref to the session: its own
+/// verbs are [`update`](Self::update) and [`plugin`](Self::plugin), and every
+/// other call names the session it reaches, [`session`](Self::session) or
+/// [`session_mut`](Self::session_mut), so a call that skips the main thread's
+/// share of an update (the graveyard, the editors) is visible where it is
+/// written.
 #[derive(Debug)]
 pub struct MainSession<'a> {
     session: &'a mut Session,
@@ -92,21 +94,19 @@ impl Session {
     }
 }
 
-impl Deref for MainSession<'_> {
-    type Target = Session;
-
-    fn deref(&self) -> &Session {
-        self.session
-    }
-}
-
-impl DerefMut for MainSession<'_> {
-    fn deref_mut(&mut self) -> &mut Session {
-        self.session
-    }
-}
-
 impl MainSession<'_> {
+    /// The session, to read.
+    pub fn session(&self) -> &Session {
+        self.session
+    }
+
+    /// The session, to change: wiring, transport, anything that is not the
+    /// main thread's. Its [`Session::update`] is not this view's
+    /// [`update`](Self::update): it leaves the graveyard and the editors alone.
+    pub fn session_mut(&mut self) -> &mut Session {
+        self.session
+    }
+
     /// The proof this view holds.
     pub fn proof(&self) -> MainThread {
         self.main

@@ -692,9 +692,9 @@ fn test_vst3_parameter_list() {
 
     for param in &params {
         assert!(
-            !param.name.is_empty(),
+            !param.name().is_empty(),
             "Parameter id {} has empty name",
-            param.id
+            param.id()
         );
     }
 }
@@ -709,7 +709,7 @@ fn test_vst3_get_parameter() {
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty(), "Need at least one parameter");
 
-    let first_id = params[0].id;
+    let first_id = params[0].id();
     let value = instance.normalized(&main_thread(), first_id);
     assert!(
         value.is_finite(),

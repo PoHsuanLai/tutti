@@ -40,7 +40,8 @@ use super::instance::Instance;
 use crate::MainThreadControl;
 use crate::ParameterChangeSink;
 use tutti_plugin_types::{
-    AnyThread, AutomationMode, Control, EditorError, Health, InProcess, StateError, defer_to_main,
+    AnyThread, AutomationMode, AutomationModeError, Control, Health, InProcess, StateError,
+    defer_to_main,
 };
 use tutti_plugin_types::{
     Normalized, ParamId, ParameterInfo, PluginFailure, RenderMode, TerminationReason,
@@ -219,8 +220,8 @@ where
     }
 
     /// No in-process format carries the VST3-style advisory.
-    fn set_automation_mode(&self, _mode: AutomationMode) -> Result<(), EditorError> {
-        Err(EditorError::GuiNotSupported {
+    fn set_automation_mode(&self, _mode: AutomationMode) -> Result<(), AutomationModeError> {
+        Err(AutomationModeError::Unsupported {
             format: self.format.to_string(),
         })
     }
@@ -319,7 +320,7 @@ where
 mod off_main_tests {
     use tutti_fixtures::main_thread;
     use tutti_plugin_types::{
-        AutomationMode, EditorError, Load, Normalized, ParamId, RenderMode, StateError,
+        AutomationMode, AutomationModeError, Load, Normalized, ParamId, RenderMode, StateError,
         run_deferred,
     };
     use tutti_types::SampleRate;
@@ -402,7 +403,7 @@ mod off_main_tests {
         let (_client, handle) = loaded();
         let any = handle.any_thread();
         let catalog = any.parameter_descriptors().expect("the probe lists");
-        assert!(catalog.iter().any(|p| p.id == ParamId::new(1)));
+        assert!(catalog.iter().any(|p| p.id() == ParamId::new(1)));
         assert_eq!(
             any.parameter_value(ParamId::new(1)).map(Normalized::get),
             Some(0.75)
@@ -458,7 +459,7 @@ mod off_main_tests {
     }
 
     /// **No in-process format carries the automation advisory**, and says so
-    /// with the editor's `GuiNotSupported` for its format, as the handle with
+    /// with `AutomationModeError::Unsupported` for its format, as the handle with
     /// no such route always did.
     #[test]
     fn the_automation_advisory_is_not_supported_in_process() {
@@ -468,7 +469,7 @@ mod off_main_tests {
             .set_automation_mode(AutomationMode::Writing)
             .expect_err("no in-process format carries it");
         assert!(
-            matches!(refused, EditorError::GuiNotSupported { ref format } if format == "vst2"),
+            matches!(refused, AutomationModeError::Unsupported { ref format } if format == "vst2"),
             "{refused:?}"
         );
     }
@@ -524,7 +525,7 @@ mod off_main_tests {
         assert!(!mode);
         assert!(matches!(
             automation,
-            Err(EditorError::GuiNotSupported { .. })
+            Err(AutomationModeError::Unsupported { .. })
         ));
     }
 }

@@ -353,7 +353,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
     // happens on the next request.
     let params = handle.any_thread().parameter_descriptors().unwrap();
     assert_eq!(params.len(), 1);
-    assert_eq!(params[0].name, "Vol");
+    assert_eq!(params[0].name(), "Vol");
 
     // Second request: the helper must peel the two trailing events off
     // before returning the real `ParameterValue` reply.
@@ -464,9 +464,9 @@ fn handle_get_parameter_list() {
 
     let params = handle.any_thread().parameter_descriptors().unwrap();
     assert_eq!(params.len(), 3);
-    assert_eq!(params[0].name, "Volume");
-    assert_eq!(params[1].name, "Pan");
-    assert_eq!(params[2].name, "Cutoff");
+    assert_eq!(params[0].name(), "Volume");
+    assert_eq!(params[1].name(), "Pan");
+    assert_eq!(params[2].name(), "Cutoff");
 }
 
 #[test]

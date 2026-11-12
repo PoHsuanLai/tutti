@@ -79,8 +79,8 @@ assert_eq!(mix.flag(ParamFlags::AUTOMATABLE), None); // unreported, not `false`
 
 // The id is the plugin's own number, and the type has no arithmetic: a host
 // hands it back, it does not count with it.
-assert_eq!(cutoff.id, ParamId::new(0x8000_0001));
-assert_eq!(mix.id.get(), 3);
+assert_eq!(cutoff.id(), ParamId::new(0x8000_0001));
+assert_eq!(mix.id().get(), 3);
 
 // The seam speaks normalized `0..=1`; what a value is in the plugin's own unit
 // is asked of the format (`AnyThread::parameter_plain`), not computed here.

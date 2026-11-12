@@ -785,7 +785,7 @@ fn plain_range_probe_recovers_real_ranges() {
         let mut probed = 0usize;
         let mut non_unit = 0usize;
         for entry in loaded.parameter_list(&main_thread()).into_iter().take(64) {
-            let id = entry.id;
+            let id = entry.id();
             let Some(info) = loaded.parameter_info(&main_thread(), id) else {
                 continue;
             };

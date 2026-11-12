@@ -12,7 +12,7 @@
 //! `argv[1]` becomes a [`PluginRef`] (its file *and* its id in it, so a bundle
 //! that exports several loads the one that was picked); the session loads it,
 //! hosts it, and bounces four beats of it to `out.wav`. An instrument plays a
-//! note; the plugin's first parameter is set; its state is saved with
+//! note; the plugin's first parameter is set and dragged (`params()`); its state is saved with
 //! `state().save()` and written beside the WAV.
 //!
 //! The plugin is a [`Plugin`] view (`session.plugin(node)`), and what happens to
@@ -106,17 +106,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 6. Set a parameter: the first one it lists, to the middle of its range.
+    //    `params()` is the session's own view of what the plugin declares (read
+    //    at load, read again when the plugin announces a rescan), so listing
+    //    asks the plugin nothing; `get` resolves an id once and refuses one the
+    //    plugin does not declare. A value set reads back at once, and `text` is
+    //    the plugin's own wording of it. A drag is a gesture: `edit()` begins
+    //    it, each `set` is a change, and dropping the guard ends it, so the
+    //    session reports the host's begin, changes and end in `update()`'s
+    //    events as it reports the plugin's own.
     let hosted = session.plugin(node)?;
-    let first: Option<ParamId> = hosted
-        .handle()
-        .any_thread()
-        .parameter_descriptors()
-        .and_then(|list| list.first().map(|p| p.id));
+    let params = hosted.params();
+    let first: Option<ParamId> = params.iter().next().map(|p| p.id());
     if let Some(id) = first {
-        hosted
-            .handle()
-            .any_thread()
-            .set_parameter_value(id, Normalized::clamped(0.5));
+        let param = params.get(id)?;
+        param.set(Normalized::clamped(0.5))?;
+        eprintln!(
+            "{} = {}",
+            param.info().name(),
+            param
+                .text()
+                .unwrap_or_else(|| param.normalized().get().to_string())
+        );
+        let drag = param.edit()?;
+        for step in 0..=4 {
+            drag.set(Normalized::clamped(f64::from(step) / 8.0))?;
+        }
+        drop(drag);
     }
 
     // 7. Save its state: now, from the plugin (`last_good` is the session's

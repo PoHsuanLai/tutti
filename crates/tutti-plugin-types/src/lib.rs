@@ -73,7 +73,7 @@ pub use tutti_types::{BarNumber, BeatsPerBar, NoteValue, Seconds, TimeSignature}
 
 pub use any_thread::{AnyThread, Health};
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
-pub use automation_mode::AutomationMode;
+pub use automation_mode::{AutomationMode, AutomationModeError};
 pub use bridge_error::{BridgeError, BridgeResult, PluginForkError};
 pub use channels::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, MAX_BLOCK_CHANNELS, Sample,
@@ -122,7 +122,7 @@ pub use note_expression::{
 pub use note_id::{note_id_to_channel_note, plugin_note_id};
 pub use param_edit::ParamEdit;
 pub use param_mapping::ParamMapping;
-pub use param_unit::{FromPlain, ParamUnit};
+pub use param_unit::{ParamUnit, PlainUnit};
 pub use parameters::{
     InvalidNormalized, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
 };

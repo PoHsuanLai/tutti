@@ -1,17 +1,18 @@
-//! [`NetworkSizes`]: the reverb's worst-case sizes, [`FreeverbDesign::Bounds`](crate::FreeverbDesign).
+//! [`NetworkCapacity`]: the reverb's worst-case sizes, what [`Grows::reach`](crate::Grows::reach)
+//! gives for [`FreeverbFamily`](crate::FreeverbFamily) and [`FdnFamily`](crate::FdnFamily).
 
 use tutti_types::{Db, Samples};
 
 use super::{Network, Stage};
-use crate::{Ring, Sizes, System};
+use crate::{Capacity, Ring, System};
 
-/// The size of a [`Network`], or the worst case over a design's controls: every
-/// figure a realization allocates from.
+/// The size of a [`Network`], or the worst case over a family's controls: every
+/// figure a runner allocates from.
 ///
-/// [`Sizes::measure`] measures one network; [`Sizes::dominates`] says one bound holds
+/// [`Capacity::need`] measures one network; [`Capacity::dominates`] says one capacity holds
 /// another.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NetworkSizes {
+pub struct NetworkCapacity {
     /// Delay lines in all.
     pub lines: usize,
     /// Stages.
@@ -30,15 +31,15 @@ pub struct NetworkSizes {
     pub ir: Samples,
     /// The longest pre-delay.
     pub pre_delay: Samples,
-    /// The longest [`tail`](System::tail) at the ceiling's floor.
+    /// The longest [`tail`](System::tail) at the reach's floor.
     pub tail: Ring,
 }
 
-impl Sizes for NetworkSizes {
+impl Capacity for NetworkCapacity {
     type Source = Network;
 
-    fn measure(network: &Network, floor: Db) -> Self {
-        let mut b = NetworkSizes {
+    fn need(network: &Network, floor: Db) -> Self {
+        let mut b = NetworkCapacity {
             lines: 0,
             stages: network.stages.len(),
             taps: 0,
@@ -80,7 +81,7 @@ impl Sizes for NetworkSizes {
         self.tail
     }
 
-    fn dominates(&self, other: &NetworkSizes) -> bool {
+    fn dominates(&self, other: &NetworkCapacity) -> bool {
         self.lines >= other.lines
             && self.stages >= other.stages
             && self.taps >= other.taps

@@ -9,7 +9,7 @@
 //! [`Freeverb`] starts with the figures of the General MIDI reverb the SoundFont
 //! unit used to carry inside itself (room size 0.5, damping 0.5, width 1, wet 1).
 //! It is the state of [`FreeverbRecurrence`], the [`Recurrence`] of
-//! [`FreeverbDesign`](crate::FreeverbDesign): the two coefficients a network
+//! [`FreeverbFamily`](crate::FreeverbFamily): the two coefficients a network
 //! carries (the comb feedback and damping) are the only figures its
 //! [`retarget`](crate::Realized::retarget) moves, and they glide, 20 ms in
 //! whole `CHUNK`s (a size or a damping that jumped would click), while the lines
@@ -24,7 +24,7 @@ use tutti_types::{Db, SampleRate, Seconds};
 use core::ops::Range;
 
 use crate::reverb::fdn::recurrence::{CHUNK, ramp};
-use crate::reverb::network::{Absorption, Network, NetworkSizes, Stage};
+use crate::reverb::network::{Absorption, Network, NetworkCapacity, Stage};
 use crate::{Approach, Effort, Glide, Recurrence, Setup, Start, Steps};
 
 /// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
@@ -262,7 +262,7 @@ impl Freeverb {
     }
 }
 
-/// The recurrence of [`FreeverbDesign`](crate::FreeverbDesign): [`Freeverb`] is its
+/// The recurrence of [`FreeverbFamily`](crate::FreeverbFamily): [`Freeverb`] is its
 /// state and `run` is its comb and all-pass loops, untouched.
 ///
 /// κ ([`coefficients_into`](Recurrence::coefficients_into)) takes the comb loop gain
@@ -271,7 +271,7 @@ impl Freeverb {
 /// the 20 ms: a step per frame would run the lines in one-frame slices for it). A
 /// network without a one-pole absorption, or with figures that are not finite or not a
 /// stable loop, is ignored. The network's pre-delay, width and wet gain are not read:
-/// [`FreeverbDesign`](crate::FreeverbDesign) never sets them.
+/// [`FreeverbFamily`](crate::FreeverbFamily) never sets them.
 #[derive(Clone, Debug)]
 pub struct FreeverbRecurrence;
 
@@ -317,8 +317,8 @@ impl FreeverbRecurrence {
 }
 
 impl Recurrence for FreeverbRecurrence {
-    type Model = Network;
-    type Bounds = NetworkSizes;
+    type Member = Network;
+    type Capacity = NetworkCapacity;
     type Target = FreeverbTarget;
     type Coeffs = FreeverbCoeffs;
     type State = Freeverb;
@@ -345,7 +345,7 @@ impl Recurrence for FreeverbRecurrence {
     /// are kept.
     fn prepare(
         &mut self,
-        _: &NetworkSizes,
+        _: &NetworkCapacity,
         setup: &Setup,
         c: &mut FreeverbCoeffs,
         state: &mut Freeverb,

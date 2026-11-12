@@ -6,6 +6,6 @@ mod design;
 mod legacy;
 mod model;
 
-pub use design::{CrossoverControls, CrossoverDesign, CrossoverTree};
+pub use design::{CrossoverControls, CrossoverFamily, CrossoverTree};
 pub use legacy::{Crossover, CrossoverError, MAX_SPLITS, SOLVE_CEILING, fit_to_rate};
 pub use model::CrossoverModel;

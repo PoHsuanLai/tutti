@@ -1,7 +1,7 @@
 use super::*;
 use crate::contract::cases::design as cases;
 
-crate::design_contract!(ToyFdn, Lti, reverb);
+crate::family_contract!(ToyFdn, Grows, Lti, reverb);
 
 /// Asserts a case failed, with a message containing `why`.
 fn fails(result: Result<(), String>, why: &str) {
@@ -119,13 +119,13 @@ fn a_defective_design_fails_its_case() {
     let m = toy(|n| map_fdn(n, |f| f.matrix = Matrix::Diagonal));
     fails(cases::density(&m), "echo density");
 
-    // bounds: one line short.
+    // reach: one line short.
     let mut m = toy(|_| {});
-    m.bounds = |b| NetworkSizes {
+    m.capacity = |b| NetworkCapacity {
         lines: b.lines - 1,
         ..b
     };
-    fails(cases::bounds_dominate(&m), "does not dominate");
+    fails(cases::reach_covers_need(&m), "does not dominate");
 
     // pure: the design reads a counter, as a clock would be read.
     let m = toy(|n| {
@@ -162,7 +162,7 @@ fn the_toy_design_exercises_every_hook() {
 // `loop_gain` is used by `Absorption::from_rt60`; keep the import honest.
 #[test]
 fn the_toy_gains_are_the_formula() {
-    let n = ToyFdn.design(&ToyControls::BASE, SampleRate(48_000.0));
+    let n = ToyFdn.member(&ToyControls::BASE, SampleRate(48_000.0));
     let Stage::Fdn(f) = &n.stages[0] else {
         panic!()
     };

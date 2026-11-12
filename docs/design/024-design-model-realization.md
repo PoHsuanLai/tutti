@@ -66,8 +66,8 @@ already measured.
   variable-rate realization) is outside the class; not at all when it is a measurement,
   event logic or a primitive.
 - **Three levels, each a different mathematical object** (section 2.1):
-  `Design` is a parameter map; the **model** is a system up to equivalence, held
-  by a *class trait* (`Lti`, `Memoryless`, `Autonomous`, ...); a `Realization<M>` is one
+  `Family` is a parameter map; the **member** is a system up to equivalence, held
+  by a *class trait* (`Lti`, `Memoryless`, `Autonomous`, ...); a `Recurrence` (run by `Realized`) is one
   realization, and "realization realizes model" is the realization check. TDF-II, the
   state-variable filter and a lattice are three realizations of one `Lti` model.
 - **Queries hang off the class** (section 4.2): `System` (latency, tail; every
@@ -81,8 +81,8 @@ already measured.
   answers its class's queries from its parts with a stated bound; no runtime
   graph. It resolves doc 022's step 3b blocker (early reflections in parallel
   with the FDN tail) and the old Q4 (a series EQ chain's curve).
-- **The engineering layer is labelled and kept apart** (section 4.4): `Bounds`,
-  `Ceiling`, `Effort`, `Cadence` and `Quality` size and schedule a realization;
+- **The engineering layer is labelled and kept apart** (section 4.4): `Capacity`,
+  `Reach`, `Effort`, `Cadence` and `Quality` size and schedule a realization;
   they are not properties of the math object. `Cadence` is the time grid on which
   `theta(t)` is sampled, with its anchor (section 4.5); the *law* by which `theta` moves
   between grid points is not engineering but part of the model (section 4.5a).
@@ -95,7 +95,7 @@ already measured.
   `Scheduled` are not built. (A3) `Fold` and `ChannelTopology` carry a basis and a
   metric (section 4.2, order 0); the planned `GainMatrix` trait and the separate
   `Ambisonic` topology are not built. (A4) the periodic view of class 6, theory only
-  (section 4.2). (A5) a cap that bounds a design is a `Bounds` field (section 4.4).
+  (section 4.2). (A5) a cap that bounds a design is a `Capacity` field (section 4.4).
   Steps 2b0 and 7a of section 10 carry them.
 - **Amendments B of 2026-11-11, after step 2b's first six PRs: one realization, one control
   source.** Pressure-testing the built filters showed the realizations repeat (the SVF's and the
@@ -178,14 +178,14 @@ controls (typed units) --design--> model (a system, up to equivalence) <--realiz
 
 | Tutti term | Mathematical object | What it means here |
 |---|---|---|
-| `Design` | a **parameter map** `theta = D(c, fs)` | A pure, total function from typed controls and the rate to the parameters that fix one system. It has no signal and no state |
+| `Family` | a **parameter map** `theta = D(c, fs)` (`φ`, `member_into`) | A pure, total function from typed controls and the rate to the parameters that fix one system. It has no signal and no state |
 | the **model** (`System`, `Lti`, ...) | a **system** `S_theta` up to equivalence: the class of realizations with one input-output map | Queried through that map's invariants. Two models are the same model if no query tells them apart |
 | a **class trait** | the **kind** of system, with the invariants that kind defines | `Lti` has `H(z)`, a spectral radius, a slowest decay; `Memoryless` has `f`; `Autonomous` has a period or a duration |
-| `Realization<M>` | **one realization**: a state-space structure `(A, B, C, D)` with a particular form | TDF-II, a trapezoidal SVF and a lattice are three realizations of one `H(z)`. A realization has state, a model does not |
+| `Recurrence`, run by `Realized` | **one realization**: a state-space structure `(A, B, C, D)` with a particular form | TDF-II, a trapezoidal SVF and a lattice are three realizations of one `H(z)`. A realization has state, a model does not |
 | "realization realizes model" (the contract) | the **realization check**: the realization's input-output map equals `S_theta` within a stated tolerance | Measured through the class's invariants (impulse response against `H`, level sweep against `f`), never against another render |
 | `retarget` and `Cadence` | **sampling `theta(t)`** | The model is a family `S_theta` and `theta` moves slowly; `Cadence` states how slowly as a number (solve at least every `n` frames) and `retarget` takes one sample of it. The realization interpolates between samples |
 | `Readout` | an **observation of the state**, `y = C s` | What a running realization reports about itself (the deepest gain reduction since the last read). State, so it cannot be a query of the model |
-| `Bounds`, `Ceiling`, `Effort`, `Cadence`, `Quality` | **engineering**: the size and the schedule of a realization | Not properties of `S_theta`. Section 4.4 keeps them apart from the class traits |
+| `Capacity`, `Grows`, `Reach`, `Domain`, `Effort`, `Cadence`, `Quality` | **engineering**: the size and the schedule of a realization | Not properties of `S_theta`. Section 4.4 keeps them apart from the class traits |
 | `Fidelity` | the **distance from an ideal system** | The error floor of a realizable model against the ideal it approximates (aliasing of a shaper, the stopband of a resampler). A property of the model relative to its ideal |
 
 ### 2.2 The classes
@@ -273,10 +273,9 @@ a given `H(z)`; a *kernel* is an impulse response or a convolution kernel.
 
 | Term | Definition | Was |
 |---|---|---|
-| **`Design`** | a parameter map `theta = D(c, fs)`: a pure, total function | `Design` |
-| **model** | a system `S_theta` up to equivalence: the class of realizations with one input-output map | `Network` and its kin |
-| **`Realization<M>`** | one realization of `M`: a state-space structure computing its input-output map | `Kernel` |
-| **`Effect<M>`** | the planar block shape a node drives (engineering; not a math term) | `Effect` (kept) |
+| **`Family`** | a parameter map `theta = D(c, fs)`: a pure, total function (`φ`; `member_into`) | `Design` |
+| **member** (`Family::Member`) | a system `S_theta` up to equivalence: the class of realizations with one input-output map | `Model`; `Network` and its kin |
+| **`Recurrence`**, run by **`Realized<R>`** | one realization of a member: a state-space structure computing its input-output map, and the one runner of it | `Kernel`; `Realization<M>`, `Effect<M>` |
 | **`System`** | a causal system; answers `latency` and `tail` | `Causal` |
 | **`latency`** | the processing part of the onset of `h`; `onset(h) = latency + musical delay` | `Latent` |
 | **`tail(floor)`** | the effective support of `h` past `latency`: least `T` with `abs(h[n]) <= eps * max abs(h)` for `n > latency + T`, `eps = 10^(floor/20)` | `Ringing` |
@@ -300,7 +299,10 @@ a given `H(z)`; a *kernel* is an impulse response or a convolution kernel.
 | **`Periodic`, `Piecewise`, `Noise`** | an autonomous system that is periodic, a list of segments, or stochastic | `Periodic`, `Segmented`, `Noise` |
 | **`Readout`** | an observation of the state, `y = C s` | `Readout` |
 | **`Fidelity`** | the distance of a model from the ideal it approximates | `Fidelity` |
-| **`Bounds`, `Ceiling`, `Effort`, `Quality`** | engineering: size, limits, cost and tier of a realization | kept |
+| **`Capacity`** (`need`, `dominates`) | a point of the lattice `𝒦` of sizes a recurrence allocates: `need : M → 𝒦` | `Sizes`, `Bounds`, `measure`; `NetworkSizes` is `NetworkCapacity`; `FilterSizes` is `()` |
+| **`Grows`** (`reach`) | a family whose state grows with its member; `reach : 𝒫(C) × ℝ₊ → 𝒦` | `Design::bounds` |
+| **`Domain`**, **`Reach<D>`** | the family's own limit `D ⊆ C` on a control, and it with the rate and the tail floor: what `reach` is taken over | `Range`, `Ceiling<R>` |
+| **`Effort`, `Quality`** | engineering: cost and tier of a realization | kept |
 
 ### 2.6 Naming
 
@@ -485,30 +487,37 @@ caught the unit delay in its feedback path. A family whose `φ` has no closed-fo
 
 #### 2.7.5 The code: one function per map
 
+Built in steps 1 and 2 (the lines marked *not built* wait for their family lane):
+
 ```rust
-// φ — a family: controls in, member out.
-pub trait Family {
-    type Controls: Copy;
-    type Member: System;
-    fn member(&self, c: &Self::Controls, fs: SampleRate) -> Self::Member;
-    fn member_into(&self, c: &Self::Controls, fs: SampleRate, out: &mut Self::Member) { .. }
+// φ — a family: controls in, member out (`tutti-dsp/src/model/family.rs`).
+pub trait Family: Clone + Send {
+    type Controls: Copy + PartialEq + Send;
+    type Member: System + Clone + Send;
+    type Recurrence: Recurrence<Member = Self::Member>;
+    const CADENCE: Cadence = Cadence::BLOCK;
     fn channels(&self) -> Channels;
+    fn blank(&self, rate: SampleRate) -> Self::Member;
+    fn member_into(&self, c: &Self::Controls, rate: SampleRate, out: &mut Self::Member);
+    fn member(&self, c: &Self::Controls, rate: SampleRate) -> Self::Member { /* blank + member_into */ }
+    fn recurrence(&self) -> Self::Recurrence;
+    fn realized(&self) -> Realized<Self::Recurrence> { /* the runner at the blank member */ }
 }
 
-// κ, K, s₀ — the recurrence (built, step 1). It owns no glide: κ writes a target in place
-// and γ, the `Coeffs`, is aimed at it. `start`, `prepare` and `clear` stay as the way to s₀
-// (they are one thing in the target, `initial`; not merged yet).
+// κ, K, s₀ — the recurrence. It owns no glide: κ writes a target in place and γ, the
+// `Coeffs`, is aimed at it. `start`, `prepare` and `clear` stay as the way to s₀ (they are
+// one thing in the target, `initial`; not merged, see section 2.7.6).
 pub trait Recurrence: Clone + Debug + Send + 'static {
-    type Model;                   // the member (becomes `Member` with step 2)
-    type Bounds;                  // becomes `Capacity` with step 2
+    type Member;
+    type Capacity: Capacity;      // `()` for a recurrence whose state does not grow
     type Target: Clone + Debug + Send;                           // Θ, a point of coefficient space
     type Coeffs: Approach<Target = Self::Target> + Clone + Debug + Send;  // γ's state
     type State: Clone + Debug + Send;   // S
     const STEP: usize;
-    fn start(&self, m: &Self::Model) -> Start<Self>;  // s₀ at rest: a named { coeffs, state, target }
-    fn prepare(&mut self, b: &Self::Bounds, setup: &Setup,
+    fn start(&self, m: &Self::Member) -> Start<Self>;  // s₀ at rest: a named { coeffs, state, target }
+    fn prepare(&mut self, k: &Self::Capacity, setup: &Setup,
                c: &mut Self::Coeffs, s: &mut Self::State, t: &mut Self::Target) { .. } // s₀ sized
-    fn coefficients_into(&self, m: &Self::Model, t: &mut Self::Target) -> bool;          // κ, in place
+    fn coefficients_into(&self, m: &Self::Member, t: &mut Self::Target) -> bool;         // κ, in place
     fn clear(&self, s: &mut Self::State);                                                // s₀ again
     fn run(&self, c: &Self::Coeffs, s: &mut Self::State,
            input: &[&[f32]], output: &mut [&mut [f32]], frames: Range<usize>, into: usize); // K
@@ -527,16 +536,25 @@ pub trait Approach {
 }
 
 // H — only for an LTI member (today's `Lti`, unchanged: the queries are functions of H).
-// L — only for a nonlinear member with a small-signal model.
+// L — only for a nonlinear member with a small-signal model (not built).
 pub trait Linearisable { type Linear: Lti; fn linearise(&self) -> Self::Linear; }
 
-// need, reach — only for a family whose state grows with the member.
-pub trait Grows: Family {
-    type Capacity: Capacity;      // a lattice: `dominates`
-    type Domain: Domain;
-    fn need(m: &Self::Member) -> Self::Capacity;
-    fn reach(&self, r: &Reach<Self::Domain>) -> Self::Capacity;
+// need, reach — only for a family whose state grows with the member
+// (`model/capacity.rs`, `model/reach.rs`). The condition: need(φ(c)) ≤ reach(D) for every
+// c in D. The two reverbs are the family that grows today.
+pub trait Capacity: Copy + Debug {      // 𝒦, a lattice
+    type Source;                        // the part of a member the sizes depend on
+    fn need(source: &Self::Source, floor: Db) -> Self;   // need : M → 𝒦
+    fn tail(&self) -> Ring;             // the longest tail: what the node declares as its ceiling
+    fn dominates(&self, other: &Self) -> bool;           // the order of 𝒦
 }
+impl Capacity for () { .. }             // a recurrence whose state does not grow
+
+pub trait Grows: Family {
+    type Domain: Domain;                // D ⊆ C: `MaxDecay` for a reverb
+    fn reach(&self, r: &Reach<Self::Domain>) -> <Self::Recurrence as Recurrence>::Capacity;
+}
+pub struct Reach<D> { rate, floor, domain }   // `Reach::new(rate, domain, floor)`, `at(rate)`, `domain()`
 
 // `Glide<Θ>` is the generic Approach for one affine Θ with one rate (its own number of
 // steps, set where it is built): the filters' (SVF, ladder, crossover) and any family whose
@@ -548,26 +566,33 @@ pub trait Grows: Family {
 pub struct Glide<Θ: Lerp> { .. }
 
 // T̃ — the one runner: P = T̃ ∘ (γ ∘ κ ∘ φ, id). A plain struct with inherent methods
-// `prepare`, `retarget` (κ, then γ's `aim` iff κ accepted the member, then the landing of the
-// first retarget), `reset`, `latency`, `effort`, `fresh` and `process(input, output, frames)`:
-// the frame count is an argument.
+// `prepare(&Capacity, &Setup)`, `retarget` (κ, then γ's `aim` iff κ accepted the member, then
+// the landing of the first retarget), `reset`, `latency`, `effort`, `fresh` and
+// `process(input, output, frames)`: the frame count is an argument.
 pub struct Realized<R: Recurrence> { recurrence: R, coeffs: R::Coeffs, state: R::State, target: R::Target, .. }
 ```
+
+`Grows::reach` returns the recurrence's capacity, so the runner's `prepare` takes one type for a
+family that grows and for one that does not. `Capacity::need` is the only measure of a
+member; the family's `Member` borrows the `Source` it reads (`Member: Borrow<Source>`, a bound
+only the contract's `reach_covers_need` case needs, so it is written there and not on `Grows`).
+A filter's `Recurrence::Capacity` is `()`: the placeholder `FilterSizes` is deleted, and the case
+that compared two of them could not fail.
 
 What this changes against main:
 
 | Main | Becomes | Why (the map it was hiding) |
 |---|---|---|
-| trait `Design` (five associated types) | **`Family`** (`Controls`, `Member`) and, only where state grows, **`Grows`** | `φ` is all of the family; `Bounds` and `Range` were `need` and `reach`, forced on every filter as `FilterSizes` and `Range = ()` |
-| `Design::Model`, `design`, `design_into` | **`Member`**, **`member`**, **`member_into`** | `φ`'s codomain is the set of members |
+| trait `Design` (five associated types) | **`Family`** (`Controls`, `Member`, `Recurrence`) and, only where state grows, **`Grows`** (`Domain`, `reach`) | `φ` is all of the family; `Bounds` and `Range` were `need` and `reach`, forced on every filter as `FilterSizes` and `Range = ()` |
+| `Design::Model`, `Recurrence::Model`, `design`, `design_into` | **`Member`**, **`member`**, **`member_into`** | `φ`'s codomain is the set of members |
 | trait `Kernel` with `start`, `prepare`, `aim`, `clear` | **`Recurrence`** with `coefficients_into` (`κ`, built in step 1), `run` (`K`) and `start`/`prepare`/`clear` (kept as the way to `s₀`; one `initial` in the target) | `aim` coupled the glide `γ` into each kernel and read the model in the same breath; κ is now a function from a member to a point, written in place, and γ is the `Approach` |
 | `Kernel::Coeffs: Approach` | **`Recurrence::Coeffs: Approach<Target = Target>`**: `Approach { Target, aim, step, settle }`, with `Glide<Θ>` the generic one for an affine Θ with one rate and the FDN's and Freeverb's own for per-field rates | `γ` is one map over `Θ`; a family with one rate writes none, one with a rate a field writes its own |
-| `Sizes`, `Bounds`, `NetworkSizes`, `FilterSizes` | **`Capacity`**, `NetworkCapacity`; `FilterSizes` deleted | `𝒦`; a filter's capacity is a single point |
-| `Range`, `Ceiling<R>`, `bounds(&ceiling)` | **`Domain`**, **`Reach<D>`**, **`reach`** | `D ⊆ C` and the monotone map `reach` |
+| `Sizes`, `Bounds`, `NetworkSizes`, `FilterSizes`; `Sizes::measure` | **`Capacity`** (`Recurrence::Capacity`, `need`), `NetworkCapacity`; `FilterSizes` deleted, a filter's capacity is `()` | `𝒦`; a filter's capacity is a single point |
+| `Range`, `Ceiling<R>` (`range()`), `bounds(&ceiling)` | **`Domain`**, **`Reach<D>`** (`domain()`), **`Grows::reach`** | `D ⊆ C` and the monotone map `reach` |
 | traits `Realization<M>` and `Effect<M>` | deleted (step 1); **`Realized<R>`** is the one runner, a struct with inherent `prepare`, `retarget`, `reset`, `latency`, `effort`, `fresh` and `process` | the lifecycle is derived from `s₀`, and the shape is `X`; the trait's only production implementer was `Realized<K>`, the others test doubles, which are recurrences (`GainRecurrence`, `EchoRecurrence`, `Unrun`, `Lie`), a wrapper recurrence (`Flawed`) or the runner's flaws |
 | `Realized::process` reads `input[0].len()` | the frame count is an argument (step 1); the input an associated type `Input<'a>` (not built yet: the effect shape only) | a generator has `X = 1`, an instrument `X = E*` |
-| `Design::Realization`, `Design::realization()` | `Design::Recurrence`, `Design::recurrence()`, and the provided `Design::realized()` (the runner at the blank) | step 1 |
-| `NodeDesign`, `DesignNode<D>`, `*Design` | **`NodeFamily`**, **`FamilyNode<F>`**, `SvfFamily`, `LadderFamily`, `CrossoverFamily`, `FreeverbFamily`, `FdnFamily` | the node over a family |
+| `Design::Realization`, `Design::realization()` | `Family::Recurrence`, `Family::recurrence()`, and the provided `Family::realized()` (the runner at the blank) | step 1 |
+| `NodeDesign`, `DesignNode<D>`, `*Design` | **`NodeFamily`** (which also states the node's `capacity`), **`FamilyNode<F>`**, `SvfFamily`, `LadderFamily`, `CrossoverFamily`, `FreeverbFamily`, `FdnFamily` | the node over a family (step 2) |
 | `design_contract!`, `DesignCase`, `realization_contract!`, `RealizationCase` | **`family_contract!`** (`φ`'s diagram), **`recurrence_contract!`** (laws 1 to 3) | the contract is the diagrams of section 2.7.4 |
 
 **Kept:** `System`, `Lti` and every class trait (the class is the structure of `T_m`);
@@ -592,7 +617,15 @@ This section is the target; the code moves in steps, each a PR that changes no r
    hand out the target. `start`, `prepare` and `clear` stay as the way to `s₀`, and
    `Input<'a>` waits for the first generator.
 2. **`Design` splits** into `Family` and `Grows`, with the renames of section 2.7.5, and
-   CLAUDE.md's `tutti-dsp` paragraph follows.
+   CLAUDE.md's `tutti-dsp` paragraph follows. *Landed 2026-11-12, no render changes:* `Family`,
+   `Grows`, `Capacity` (`need`), `Domain`, `Reach`, `Recurrence::{Member, Capacity}`, `NodeFamily` and
+   `FamilyNode<F>`, `family_contract!` and `FamilyCase`; `FilterSizes` is deleted (a filter's
+   capacity is `()`). `start`, `prepare` and `clear` **stay three**: the runner exists before its
+   rate is known (a node is built before `prepare`), so one `initial` would make the runner an
+   `Option` or rebuild it, and `clear` writes s₀ in place without allocating. The contract's
+   `FamilyCase::capacity` gives the runner its capacity (`()` for a family that does not grow) and
+   the `Grows` group (`reach_covers_need`) runs only for a `Grows` family. `realization_contract!` and
+   `RealizationCase` keep their names until step 3.
 3. **The contract becomes the diagrams:** `family_contract!` states each family's design
    diagram, `recurrence_contract!` laws 1 to 3.
 
@@ -772,41 +805,45 @@ the real code (`Setup`, `Effort`, `Channels`, `Ring`, `Design`, `Realization`, `
 and `Bounds` are on `main` since #367 and move as described). They were
 type-checked in a scratch crate outside the repo.
 
-### 4.1 `Design`: the parameter map
+### 4.1 `Family`: the parameter map
 
 ```rust
-/// The pure function from a family's controls to the parameters of a system.
-pub trait Design: Clone + Send {
-    type Controls: Copy + PartialEq + Send;               // as today
-    type Model: System;                                   // new: a class trait, section 4.2
-    type Realization: Realization<Self::Model>;                     // generalised, section 4.3
-    // engineering (section 4.4), not math:
-    type Bounds: Bounds;  type Range: Copy;
+/// The pure function from a family's controls to a member: the parameters of a system.
+pub trait Family: Clone + Send {
+    type Controls: Copy + PartialEq + Send;
+    type Member: System + Clone + Send;                    // a class trait, section 4.2
+    type Recurrence: Recurrence<Member = Self::Member>;    // section 4.3a
     const CADENCE: Cadence = Cadence::BLOCK;
 
     fn channels(&self) -> Channels;
-    fn blank(&self, rate: SampleRate) -> Self::Model;     // Network::new(rate)
-    fn design_into(&self, c: &Self::Controls, rate: SampleRate, out: &mut Self::Model);
-    fn design(&self, c: &Self::Controls, rate: SampleRate) -> Self::Model { /* blank + design_into */ }
-    fn bounds(&self, ceiling: &Ceiling<Self::Range>) -> Self::Bounds;   // worst case over the controls
-    fn realization(&self) -> Self::Realization;
+    fn blank(&self, rate: SampleRate) -> Self::Member;     // Network::new(rate)
+    fn member_into(&self, c: &Self::Controls, rate: SampleRate, out: &mut Self::Member);
+    fn member(&self, c: &Self::Controls, rate: SampleRate) -> Self::Member { /* blank + member_into */ }
+    fn recurrence(&self) -> Self::Recurrence;
+}
+
+/// Engineering (section 4.4), only for a family whose recurrence allocates from its member.
+pub trait Grows: Family {
+    type Domain: Domain;
+    fn reach(&self, reach: &Reach<Self::Domain>) -> <Self::Recurrence as Recurrence>::Capacity;
 }
 ```
 
-Differences from `main`: `type Model` is any class trait, not `Network`; `Bounds`
-is the design's (engineering) and no longer part of the model, so the model trait
-states only mathematics; `blank` is what the old `Network::new` did, now on the design, and
-`Sizes::measure` (the old `Bounds::of`) is on the sizes that own the figure.
-`design_into` stays the required method: a `Network` is 56 KB and cannot be built
-by value on an audio thread (doc 022 "Step 1a as built"); a biquad is a few dozen
-bytes and in place is merely harmless.
+Differences from the draft this section was written as (`Design`, one trait with
+`Bounds` and `Range` for every family): `type Member` is any class trait, not
+`Network`; the capacity is the recurrence's (`Recurrence::Capacity`, `()` for a filter) and
+`Grows` carries the worst case, so a family that does not grow states none; `blank` is what
+the old `Network::new` did, now on the family, and `Capacity::need` (the old `Sizes::measure`)
+is on the capacity that owns the figure. `member_into` stays the required method: a `Network`
+is 56 KB and cannot be built by value on an audio thread (doc 022 "Step 1a as built"); a
+biquad is a few dozen bytes and in place is merely harmless.
 
-`Channels` is the design's buses (doc 013 typed ports, T3): an input `BusTopology`
+`Channels` is the family's buses (doc 013 typed ports, T3): an input `BusTopology`
 and an output `BusTopology` repeated `bands` times, band-major (`Channels::same` for
 a filter, `Channels::new` for a reverb's mono centre to its stereo pair,
 `Channels::bands` for a crossover, whose band 0 is the main output). The realization's
 outputs are the bands in order, band `b` the `b`-th run of one band's width.
-`DesignNode` declares it as its buses, one input and one banded output, so the graph's dry
+`FamilyNode` declares it as its buses, one input and one banded output, so the graph's dry
 path (mix, bypass) folds a mono input onto both sides of a stereo output by
 speaker; by index it landed on the left alone. The graph refuses a dry path it
 would have to guess (`PassError`, doc 013 "As built (B3)"), so a node that
@@ -1211,10 +1248,10 @@ property of the mathematical object, and none is on a class trait.
 
 | Item | What it is | Where |
 |---|---|---|
-| `Bounds` | the sizes a realization allocates for the worst case of a design (lines, taps, IR length, max delay); `dominates` | `Design::Bounds`, `Design::bounds`, `Design::measure` |
-| `Ceiling<R>` | the limits a node builds to: the rate, the level a tail is measured to, the family's range `R` of a control (`MaxDecay` for the reverb, `MaxDelay` for a delay, `()` for a filter) | argument of `Design::bounds` |
+| `Capacity` | the sizes a recurrence allocates for the worst case of a family (lines, taps, IR length, max delay); `need`, `dominates` | `Recurrence::Capacity`, `Grows::reach`, `Capacity::need` |
+| `Reach<D>` | the limits a node builds to: the rate, the level a tail is measured to, the family's domain `D` of a control (`MaxDecay` for the reverb, `MaxDelay` for a delay) | argument of `Grows::reach` |
 | `Effort` | `Light`, `Moderate` or `Heavy`: what scheduling class the realization merits | `Realization::effort` |
-| `Cadence` | the grid on which `theta` is sampled: a period and an anchor (section 4.5) | `Design::CADENCE` |
+| `Cadence` | the grid on which `theta` is sampled: a period and an anchor (section 4.5) | `Family::CADENCE` |
 | `Quality` | which realization tier is built (section 4.7) | `Graded`, a field of the design |
 
 **Ramping is inside the realization.** Doc 022 step 1c (the FDN, PR #372) found
@@ -1229,18 +1266,18 @@ first retarget after `prepare`, `reset` or `fresh` lands at once** while later o
 ramp. Whether a design needs `Every` at all, or an internal ramp, is revisited in
 section 4.5.
 
-`Ceiling<R>` keeps today's validation (a positive finite rate, a decay in
-`(0, 60]` s, a floor below 0 dB); `R`'s own constructor validates `R`. A bound
-that a design cannot make dominate its own designs fails `bounds_dominate` in the
-contract, as it does for the reverb today. The reverb's `Bounds` struct is
-unchanged and becomes `FreeverbDesign::Bounds`.
+`Reach<D>` keeps today's validation (a positive finite rate, a decay in
+`(0, 60]` s, a floor below 0 dB); `D`'s own constructor validates `D`. A capacity
+that does not dominate the need of its own family's members fails `reach_covers_need` in the
+contract, as it does for the reverb today. The reverb's capacity struct is
+`NetworkCapacity`, the `Capacity` of both reverb families.
 
 **Caps are sizes, not theory** (amendment A5, 2026-11-11). A cap that bounds a *design* is a
-`Bounds` field sized at `prepare`, and a cap that is a host capability stays an executor
+`Capacity` field sized at `prepare`, and a cap that is a host capability stays an executor
 capability. `MAX_SPEAKERS` (12, `tutti-dsp/src/spatial/vbap/layout.rs`) and `Network`'s
 `MAX_CHANNELS` (8, `tutti-dsp/src/reverb/network.rs`) exist for inline audio-thread storage and are
 bounds to lift, not design: where the audio thread can use a buffer sized at `prepare`, the
-constant is replaced by a `Bounds` value. `MAX_ROOT_CHANNELS` (8, `tutti-graph/src/editor.rs`,
+constant is replaced by a `Capacity` value. `MAX_ROOT_CHANNELS` (8, `tutti-graph/src/editor.rs`,
 what the host that runs the executor can take, enforced at commit) and `MAX_PORTS` (64 per node)
 are the second kind, limits of the current executor and likewise to lift where a consumer needs
 more than they allow; neither is a property of any model.

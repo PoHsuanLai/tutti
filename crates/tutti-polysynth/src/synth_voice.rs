@@ -438,7 +438,7 @@ impl SynthVoice {
         // `cutoff` is a bare `f32` multiplier chain, so each depth comes off its
         // type at the multiply rather than the struct carrying bare floats for
         // the arithmetic's sake.
-        if fm.mod_wheel_depth > Depth(0.0) {
+        if fm.mod_wheel_depth > Depth::of(0.0) {
             // The channel's wheel: its depth over the Modulation Depth Range
             // (RPN 5, CA-026) the depth is measured in, so at the default range
             // a full wheel is `mod_wheel_depth` and a range twice that opens
@@ -447,13 +447,13 @@ impl SynthVoice {
             cutoff *= 1.0 + wheel * fm.mod_wheel_depth.get();
         }
 
-        if fm.velocity_depth > Depth(0.0) {
+        if fm.velocity_depth > Depth::of(0.0) {
             let vel_mult = 1.0 - fm.velocity_depth.get() * 0.5
                 + self.velocity_mod_value * fm.velocity_depth.get() * 0.5;
             cutoff *= vel_mult;
         }
 
-        if fm.lfo_depth > Depth(0.0) && fm.lfo_rate > Hz(0.0) {
+        if fm.lfo_depth > Depth::of(0.0) && fm.lfo_rate > Hz(0.0) {
             // `advance` rather than `% 1.0`: the remainder operator keeps the
             // dividend's sign, so it is not a wrap for a negative phase.
             let step = PhaseIncrement::per_sample(fm.lfo_rate, sample_rate) * frames as f32;

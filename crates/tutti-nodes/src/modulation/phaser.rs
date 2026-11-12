@@ -173,7 +173,7 @@ impl PhaserNode {
             phases: Vec::new(),
             lane: vec![0.0; width],
             lfo: LfoDrive::new(Hz::new(0.3)),
-            controls: LinearMod::new(Depth::new(0.5), Feedback::new(0.5)),
+            controls: LinearMod::new(Depth::of(0.5), Feedback::new(0.5)),
             sample_rate: SampleRate::DEFAULT,
             range: FrequencyRange::new(Hz::new(200.0), Hz::new(4000.0)),
             authored_max_hz: Hz(4000.0),
@@ -233,9 +233,7 @@ impl PhaserNode {
 
     /// Sets the sweep [`Depth`], clamped to the unit range.
     pub fn set_depth(&self, d: impl Into<Depth>) {
-        self.controls
-            .depth
-            .store(Depth::new_clamped(d.into().get()));
+        self.controls.depth.store(Depth::clamped(d.into().get()));
     }
 
     /// Sets the [`Feedback`], clamped to the stable range.
@@ -301,7 +299,7 @@ impl PhaserNode {
         let (min_hz, max_hz) = (self.range.min_hz, self.range.max_hz);
         let coeff_at = |i: usize, offset: PhaseIncrement| -> f32 {
             let lfo_raw = phases[i].offset_by(offset).to_radians().get().sin();
-            let sweep = sweep_hz(min_hz, max_hz, lfo_raw, Depth(depth_r.at(i)));
+            let sweep = sweep_hz(min_hz, max_hz, lfo_raw, Depth::clamped(depth_r.at(i)));
             allpass_coeff(sweep.get(), sr)
         };
 

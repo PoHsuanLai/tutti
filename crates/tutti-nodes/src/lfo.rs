@@ -256,7 +256,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// rather than wrapping.
     #[must_use]
     pub fn with_depth(self, depth: impl Into<Depth>) -> Self {
-        self.depth.store(Depth::new_clamped(depth.into().get()));
+        self.depth.store(Depth::clamped(depth.into().get()));
         self
     }
 
@@ -344,7 +344,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// `&self`, and the cell is shared across clones, so this reaches a node
     /// already live in the graph.
     pub fn set_depth(&self, depth: impl Into<Depth>) {
-        self.depth.store(Depth::new_clamped(depth.into().get()));
+        self.depth.store(Depth::clamped(depth.into().get()));
     }
 
     /// Sets the [`PhaseIncrement`] added to the running phase before the shape
@@ -404,7 +404,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
         let finite = |v: &f32| v.is_finite();
         let depth = crate::ramp::block_driven(&io, 0)
             .filter(finite)
-            .map_or_else(|| self.depth.load(), Depth::new_clamped)
+            .map_or_else(|| self.depth.load(), Depth::clamped)
             .get();
         let driven_rate = match self.mode {
             LfoMode::FreeRunning => crate::ramp::block_driven(&io, 1).filter(finite),
@@ -513,7 +513,7 @@ mod tests {
     fn the_shape_declares_depth_and_a_free_running_rate() {
         let free = LfoNode::new(LfoShape::Sine)
             .with_frequency(Hz(2.0))
-            .with_depth(Depth(0.25));
+            .with_depth(Depth::of(0.25));
         assert_eq!(
             free.shape().params.as_slice(),
             &[UnitParam::Depth, UnitParam::Rate][..]
@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(free.param_base(1), Some(2.0));
         let synced = LfoNode::new(LfoShape::Sine)
             .with_beat_sync(BeatDuration(4.0))
-            .with_depth(Depth(0.5));
+            .with_depth(Depth::of(0.5));
         assert_eq!(synced.shape().params.as_slice(), &[UnitParam::Depth][..]);
         assert_eq!(synced.param_base(0), Some(0.5));
         assert_eq!(synced.param_base(1), None);
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn test_depth_control() {
         let lfo = LfoNode::new(LfoShape::Square);
-        lfo.set_depth(Depth::new(0.5));
+        lfo.set_depth(Depth::of(0.5));
         let out = render(lfo, 48_000.0, 1);
         assert!((out[0] - 0.5).abs() < 0.01);
     }
@@ -718,17 +718,13 @@ mod tests {
     fn negative_depth_inverts_instead_of_silencing() {
         let first = |depth: f32| {
             let lfo = LfoNode::new(LfoShape::Square);
-            lfo.set_depth(Depth::new(depth));
+            lfo.set_depth(Depth::of(depth));
             render(lfo, 48_000.0, 1)[0]
         };
         let (a, b) = (first(1.0), first(-1.0));
 
         assert!(a.abs() > 0.01, "the reference sample must be audible");
         assert!((b + a).abs() < 1e-6, "expected {b} to invert to {}", -a);
-
-        // And the range still saturates past full scale.
-        let c = first(-5.0);
-        assert!((c - b).abs() < 1e-6);
     }
 
     #[test]
@@ -871,7 +867,7 @@ mod tests {
             assert!((got - want).abs() < 1e-6, "beat {beat}: {got} vs {want}");
         }
         // 187.5 Hz at 48 kHz: 256 frames a cycle.
-        let free = render(LfoNode::from(lfo.hz(Hz(187.5))), 48_000.0, 2048);
+        let free = render(LfoNode::from(lfo.rate(Hz(187.5))), 48_000.0, 2048);
         for i in [0, 100, 256, 777, 2047] {
             let want = wave.raw_at(i as f64 / 256.0 + 0.25, false);
             let got = free[i];

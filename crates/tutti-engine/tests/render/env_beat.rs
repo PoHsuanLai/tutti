@@ -324,7 +324,7 @@ fn click_clicks_on_the_model_beats() {
     let transport = Transport::new(SampleRate::new(SR));
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
-    settings.set_volume(Amplitude::new(1.0));
+    settings.set_volume(Amplitude::new(1.0)).unwrap();
     let click = ClickNode::new(&transport, settings);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), MaxBlock::of(Samples(512))));
     const CLICK: NodeKey = NodeKey(1);

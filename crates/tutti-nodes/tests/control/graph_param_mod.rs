@@ -63,7 +63,7 @@ fn konst(depth: f32) -> Layer {
         },
         wave: Wave::Const(1.0),
         amount: Amount {
-            depth: Depth(depth),
+            depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },
@@ -687,7 +687,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_depth(Depth::new(v));
+                    n.set_depth(Depth::clamped(v));
                 }
                 parts_of(n)
             },

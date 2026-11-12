@@ -29,8 +29,8 @@ use tutti_plugin::catalog::PluginRef;
 use tutti_plugin::handles::PluginClient;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{
-    Crossfade, EventInPort, EventOutPort, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session,
-    SessionEvent,
+    Crossfade, EventInPort, EventOutPort, PHASES, ParamRef, PhaseCx, PluginLoadRequest, RouteSpec,
+    Session, SessionEvent,
 };
 use tutti_types::{Depth, Hz, SampleRate, Seconds};
 
@@ -159,7 +159,12 @@ fn wait_for_values(drive: &mut Drive, s: &mut Session, node: NodeKey) {
 fn lane_of(drive: &mut Drive, s: &mut Session, target: ParamRef) -> NodeKey {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
+        assert!(
+            !s.mod_state()
+                .problems()
+                .any(|p| matches!(p, tutti_session::Problem::Refused { .. })),
+            "the declarations apply"
+        );
         if let Some((key, _)) = s.mod_state().lane(target.key()) {
             return key;
         }
@@ -204,10 +209,11 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
 
     let gain = ParamRef::plugin(node, GAIN);
     {
-        let mut m = s.mods();
+        let mut m = s.mods_mut();
         m.range_raw(gain, 0.0, 1.0).unwrap();
         let source = m.macro_(1.0);
-        m.route(source, gain, Depth(-0.25)).unwrap();
+        m.route(RouteSpec::new(source, gain, Depth::of(-0.25)))
+            .unwrap();
     }
     lane_of(&mut drive, &mut s, gain);
     // The default is 60/72 of the range; the lane moves it down a quarter.
@@ -269,10 +275,11 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     wait_for_values(&mut drive, &mut s, node);
     let gain = ParamRef::plugin(node, GAIN);
     {
-        let mut m = s.mods();
+        let mut m = s.mods_mut();
         m.range_raw(gain, 0.0, 1.0).unwrap();
         let offset = m.macro_(0.0);
-        m.route(offset, gain, Depth(1.0)).unwrap();
+        m.route(RouteSpec::new(offset, gain, Depth::of(1.0)))
+            .unwrap();
     }
     let outgoing_lane = lane_of(&mut drive, &mut s, gain);
     assert_eq!(
@@ -355,10 +362,10 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
 
     let gain = ParamRef::plugin(node, GAIN);
     {
-        let mut m = s.mods();
+        let mut m = s.mods_mut();
         m.range_raw(gain, 0.0, 1.0).unwrap();
-        let lfo = m.lfo(Lfo::sine().hz(Hz(3.0)));
-        m.route(lfo, gain, Depth(0.1)).unwrap();
+        let lfo = m.lfo(Lfo::sine().rate(Hz(3.0)));
+        m.route(RouteSpec::new(lfo, gain, Depth::of(0.1))).unwrap();
     }
     lane_of(&mut drive, &mut s, gain);
     let knob = s

@@ -145,7 +145,7 @@ impl LinearMod {
         (
             // `set_depth`'s clamp, at the point of use: a depth past the
             // unit range sweeps the all-pass past Nyquist.
-            Depth::new_clamped(self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())))
+            Depth::clamped(self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())))
                 .get(),
             self.good[1].read(fb.map_or_else(
                 || self.feedback.load().get(),

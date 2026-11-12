@@ -97,7 +97,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             seed: 0,
         },
         amount: Amount {
-            depth: Depth(0.5),
+            depth: Depth::of(0.5),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },

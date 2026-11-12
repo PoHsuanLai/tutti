@@ -294,7 +294,7 @@ impl Decl {
             RouteDecl {
                 source,
                 to: RouteTarget::Param(to),
-                depth: Depth(depth),
+                depth: Depth::of(depth),
                 polarity: Polarity::Bipolar,
                 curve: Law::Linear,
             },
@@ -324,7 +324,7 @@ impl Decl {
     fn set_depth(&mut self, k: RouteKey, depth: f32) {
         for (r, d) in &mut self.routes {
             if *r == k {
-                d.depth = Depth(depth);
+                d.depth = Depth::of(depth);
             }
         }
     }

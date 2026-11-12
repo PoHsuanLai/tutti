@@ -20,6 +20,20 @@ pub enum LfoRate {
     Hz(Hz),
 }
 
+impl From<BeatDuration> for LfoRate {
+    /// One cycle per this many beats.
+    fn from(per_cycle: BeatDuration) -> Self {
+        Self::Beats(per_cycle)
+    }
+}
+
+impl From<Hz> for LfoRate {
+    /// This many cycles per second.
+    fn from(rate: Hz) -> Self {
+        Self::Hz(rate)
+    }
+}
+
 /// A low-frequency oscillator: a closed-form wave on a clock, no node.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lfo {
@@ -65,17 +79,12 @@ impl Lfo {
         Self::new(LfoShape::Sawtooth)
     }
 
-    /// One cycle per `per_cycle` beats.
+    /// Its rate: a `BeatDuration` (one cycle per that many beats, bar-locked)
+    /// or an `Hz` (cycles per second): `lfo.rate(BeatDuration(4.0))`,
+    /// `lfo.rate(Hz(0.5))`.
     #[must_use]
-    pub const fn rate(mut self, per_cycle: BeatDuration) -> Self {
-        self.rate = LfoRate::Beats(per_cycle);
-        self
-    }
-
-    /// `rate` cycles per second.
-    #[must_use]
-    pub const fn hz(mut self, rate: Hz) -> Self {
-        self.rate = LfoRate::Hz(rate);
+    pub fn rate(mut self, rate: impl Into<LfoRate>) -> Self {
+        self.rate = rate.into();
         self
     }
 

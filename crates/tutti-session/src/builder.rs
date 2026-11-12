@@ -224,7 +224,7 @@ impl SessionBuilder {
 
     /// How long a modulation target may stay unresolved, measured on
     /// [`PhaseCx::now`](crate::PhaseCx::now), before it is logged and
-    /// reported ([`SessionEvent::ModulationUnresolved`](crate::SessionEvent::ModulationUnresolved)).
+    /// reported ([`SessionEvent::Modulation`](crate::SessionEvent::Modulation)).
     /// Default [`UNRESOLVED_WARNING`](crate::UNRESOLVED_WARNING), 4 s.
     #[cfg(feature = "modulation")]
     #[must_use]

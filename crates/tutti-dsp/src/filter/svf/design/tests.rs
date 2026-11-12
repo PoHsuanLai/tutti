@@ -201,8 +201,8 @@ fn a_blend_arrives_on_the_new_set_at_its_last_frame() {
     let mut x = [0.0f32; 16];
     x[15] = 1.0;
     let (mut y, mut z) = ([0.0f32; 16], [0.0f32; 16]);
-    blended.process(&[&x], &mut [&mut y], 16);
-    held.process(&[&x], &mut [&mut z], 16);
+    blended.process(&crate::Feed::new(&[&x]), &mut [&mut y], 16);
+    held.process(&crate::Feed::new(&[&x]), &mut [&mut z], 16);
     assert_eq!(y[15], z[15]);
     assert_ne!(y[15], 0.0);
 }

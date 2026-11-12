@@ -13,7 +13,7 @@ use core::ops::Range;
 
 use tutti_types::Samples;
 
-use super::{Capacity, Effort, Setup};
+use super::{Capacity, Effort, Feed, Setup};
 
 impl Lerp for f32 {
     #[inline]
@@ -225,8 +225,10 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
     /// Clears the state to silence.
     fn clear(&self, state: &mut Self::State);
 
-    /// Renders `frames` of `input` into `output` with the coefficients as they
+    /// Renders `frames` of `feed` into `output` with the coefficients as they
     /// stand: one step's worth while they move, the rest of a block once landed.
+    /// `feed` is the effect's whole input ([`Feed`]): the audio, the side-chain key
+    /// and the per-frame lanes, each indexed by the frame of the block.
     /// `into` is how many frames of the current step came before `frames.start`
     /// (always 0 for a `STEP` of 1), so a recurrence that works once a step knows
     /// where the steps begin on the stream.
@@ -234,7 +236,7 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
         &self,
         coeffs: &Self::Coeffs,
         state: &mut Self::State,
-        input: &[&[f32]],
+        feed: &Feed<'_>,
         output: &mut [&mut [f32]],
         frames: Range<usize>,
         into: usize,
@@ -373,13 +375,13 @@ impl<R: Recurrence> Realized<R> {
         fresh
     }
 
-    /// Renders `frames` frames of `output` from `input`, planar slices at least that
+    /// Renders `frames` frames of `output` from `feed`, planar slices at least that
     /// long, at most [`Setup::max_block`]. Audio thread. A reverb overwrites the
     /// output with the **wet** signal alone: mixing is the node's.
     ///
     /// Runs a step at a time while the coefficients move, so a glide cut by the end
     /// of a call goes on in the next, and the rest of the block in one run.
-    pub fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], frames: usize) {
+    pub fn process(&mut self, feed: &Feed<'_>, output: &mut [&mut [f32]], frames: usize) {
         let step = R::STEP;
         let mut at = 0;
         while at < frames {
@@ -387,21 +389,21 @@ impl<R: Recurrence> Realized<R> {
                 break;
             }
             let end = (at + step - self.into).min(frames);
-            self.run(input, output, at..end);
+            self.run(feed, output, at..end);
             at = end;
         }
         if at < frames {
-            self.run(input, output, at..frames);
+            self.run(feed, output, at..frames);
         }
     }
 
     /// Runs `frames` and moves the step count on by them.
-    fn run(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], frames: Range<usize>) {
+    fn run(&mut self, feed: &Feed<'_>, output: &mut [&mut [f32]], frames: Range<usize>) {
         let n = frames.len();
         self.recurrence.run(
             &self.coeffs,
             &mut self.state,
-            input,
+            feed,
             output,
             frames,
             self.into,

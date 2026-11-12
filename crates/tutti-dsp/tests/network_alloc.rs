@@ -77,7 +77,11 @@ fn freeverb_retargets_and_renders_without_allocating() {
         let n = allocations(|| {
             design.member_into(&c, rate, &mut network);
             realization.retarget(&network);
-            realization.process(&[&input], &mut [&mut left, &mut right], 64);
+            realization.process(
+                &tutti_dsp::Feed::new(&[&input]),
+                &mut [&mut left, &mut right],
+                64,
+            );
         });
         assert_eq!(n, 0, "the block allocated");
     }
@@ -144,7 +148,11 @@ fn the_fdn_retargets_and_renders_without_allocating() {
         let n = allocations(|| {
             design.member_into(&c, rate, &mut network);
             realization.retarget(&network);
-            realization.process(&[&input], &mut [&mut left, &mut right], 64);
+            realization.process(
+                &tutti_dsp::Feed::new(&[&input]),
+                &mut [&mut left, &mut right],
+                64,
+            );
         });
         assert_eq!(n, 0, "the block allocated");
     }

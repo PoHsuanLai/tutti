@@ -1,11 +1,8 @@
-//! Two limiters: the lookahead [`LimiterNode`] and the hard-clipping
-//! [`BrickwallLimiterNode`].
+//! The lookahead limiter, [`LimiterNode`].
 //!
-//! They are not interchangeable. The lookahead limiter delays its audio so the
-//! gain decision runs ahead of a peak, which costs latency and sounds
-//! transparent; the brickwall clamps in place, which costs nothing and
-//! distorts. Reach for the first to limit musically, the second as a safety
-//! catch.
+//! It delays its audio so the gain decision runs ahead of a peak, which costs
+//! latency and sounds transparent. For a hard clip that costs nothing and distorts,
+//! a safety catch, see [`BrickwallLimiterNode`](super::BrickwallLimiterNode).
 
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
@@ -13,9 +10,7 @@ use tutti_types::ChannelLayout;
 use tutti_types::{Amplitude, AtomicF32, AtomicF64};
 
 use crate::ramp::LastGood;
-use tutti_dsp::{
-    LimiterBlock, LimiterKernel, LookaheadRing, amplitude_to_db, brickwall_clip, fold_peak,
-};
+use tutti_dsp::{LimiterBlock, LimiterKernel, LookaheadRing, amplitude_to_db, fold_peak};
 use tutti_types::Latency;
 use tutti_types::UnitParam;
 use tutti_types::{Db, Param, SampleRate, Samples, Seconds, Tail};
@@ -140,11 +135,6 @@ tutti_graph::declare_params!([] LimiterNode, n {
     Ceiling => Db = &n.ceiling_db,
     Threshold => Db = &n.threshold_db,
     Release => Seconds = &n.release,
-});
-
-// The params a [`BrickwallLimiterNode`] lets the graph modulate.
-tutti_graph::declare_params!([] BrickwallLimiterNode, n {
-    Ceiling => Db = &n.ceiling_db,
 });
 
 impl LimiterNode {
@@ -493,232 +483,6 @@ impl Clone for LimiterNode {
     }
 }
 
-/// Hard clipper at ceiling. No lookahead, zero latency.
-/// 2 inputs (L/R), 2 outputs (L/R).
-///
-/// # Modulated ceiling
-///
-/// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling (dB)
-/// is modulatable by the graph: modulated → the param
-/// port overrides the ceiling cell per sample, unmodulated → bit-identical to a
-/// node nothing modulates.
-///
-/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over the ceiling.
-///
-/// # A NaN ceiling is ignored
-///
-/// A NaN ceiling has no level to clamp to (and `f32::clamp` panics on a NaN
-/// bound), so it is ignored wherever it comes from: a NaN in the cell keeps
-/// the last ceiling the node clamped at, a NaN frame on the ceiling port
-/// clamps at the cell's ceiling, and a NaN given to
-/// [`new`](Self::new) starts the node at 0 dB. `±∞` dB are ceilings: `+∞`
-/// passes everything, `-∞` mutes.
-#[derive(Debug)]
-pub struct BrickwallLimiterNode {
-    ceiling_db: Param<Db>,
-    /// The linear ceiling the unmodulated path clamps at: never NaN.
-    ceiling_linear: f32,
-    /// Audio channel width (`inputs()` audio ports == `outputs()`). The clip is
-    /// stateless and per-channel, so widening is purely the port count.
-    layout: ChannelLayout,
-    /// [`layout`](Self::layout)'s count, cached as the iteration stride — see
-    /// the note on [`LimiterNode::channels`]. Set once at construction.
-    channels: usize,
-}
-
-impl BrickwallLimiterNode {
-    /// Builds a stereo brickwall limiter clamping at `ceiling_db`.
-    ///
-    /// **This is a hard clipper, not [`LimiterNode`].** It has no lookahead, no
-    /// envelope and no latency — a sample past the ceiling is simply clamped,
-    /// which distorts rather than ducking. Reach for it as a safety catch on an
-    /// output, and for musical limiting use [`LimiterNode`].
-    pub fn new(ceiling_db: impl Into<Db>) -> Self {
-        Self::with_channels(ChannelLayout::STEREO, ceiling_db)
-    }
-
-    /// An `n`-channel brickwall limiter. The clip is stateless, so every
-    /// channel is clamped to the same (linked) ceiling.
-    /// `with_channels(ChannelLayout::STEREO, …)` is bit-identical to
-    /// [`Self::new`].
-    pub fn with_channels(channels: impl Into<ChannelLayout>, ceiling_db: impl Into<Db>) -> Self {
-        let ceiling_db = ceiling_db.into();
-        // At least mono: a zero-width unit would report 0 input and output
-        // ports, which is not a limiter.
-        let layout = ChannelLayout::from_count(channels.into().count().max(1));
-        Self {
-            ceiling_db: Param::new(ceiling_db),
-            ceiling_linear: linear_ceiling(ceiling_db).unwrap_or(1.0),
-            layout,
-            channels: usize::from(layout.count()),
-        }
-    }
-
-    /// The audio width this limiter was built for.
-    pub fn layout(&self) -> ChannelLayout {
-        self.layout
-    }
-
-    /// The shared ceiling cell in [`Db`] — the level samples are clamped to.
-    ///
-    /// **A ceiling the graph feeds overrides this per sample.** Writing the
-    /// raw cell does *not* refresh the cached linear ceiling the
-    /// unmodulated path clamps against; use
-    /// [`set_ceiling`](Self::set_ceiling) for that.
-    pub fn ceiling(&self) -> Arc<AtomicF32> {
-        self.ceiling_db.as_atomic()
-    }
-
-    /// Sets the clamp ceiling in [`Db`], refreshing the cached linear
-    /// amplitude. A NaN is stored but ignored: the clip keeps its ceiling.
-    ///
-    /// `&mut self` because of that cache, so this cannot reach a node already
-    /// live in the graph — a live ceiling change is a write through its
-    /// [`ParamSet`] (the cell, which the node re-reads once per block) or the
-    /// graph's modulation of it.
-    pub fn set_ceiling(&mut self, db: impl Into<Db>) {
-        let db = db.into();
-        self.ceiling_db.store(db);
-        if let Some(linear) = linear_ceiling(db) {
-            self.ceiling_linear = linear;
-        }
-    }
-
-    #[inline]
-    fn clip(&self, sample: f32) -> f32 {
-        brickwall_clip(sample, self.ceiling_linear)
-    }
-
-    /// Clip against an explicit linear ceiling (the modulated path).
-    #[inline]
-    fn clip_at(sample: f32, ceiling_linear: f32) -> f32 {
-        brickwall_clip(sample, ceiling_linear)
-    }
-}
-
-/// `db` as a linear clamp bound, or `None` for a NaN, which has none.
-#[inline]
-fn linear_ceiling(db: Db) -> Option<f32> {
-    let linear = db.to_amplitude().get();
-    (!linear.is_nan()).then_some(linear)
-}
-
-impl Node for BrickwallLimiterNode {
-    /// `channels` in and out, the ceiling modulatable.
-    /// The clip is stateless, so it has no latency
-    /// and stops with its input.
-    fn shape(&self) -> Shape {
-        Shape::through_unassigned(self.layout)
-            .with_cost(tutti_graph::Cost::Light)
-            .with_tail(Tail::None)
-            .with_param_addrs(self.declared_ports().as_slice())
-    }
-
-    /// Nothing to prepare, and the only node in this crate that can honestly
-    /// say so: a brickwall is a memoryless `clamp` with no lookahead, no
-    /// envelope and therefore no time constant to derive from the rate.
-    fn prepare(&mut self, _: &Prepare) {}
-
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames();
-        let n = self.channels;
-        let ceiling_fed = self
-            .declared_param::<{ UnitParam::Ceiling as u16 }>(&io)
-            .frames();
-        let (inputs, mut outputs) = io.split();
-        // The cell's ceiling, re-derived once per block: the unmodulated
-        // clip, and a fed NaN frame's fallback. A NaN cell keeps the last.
-        if let Some(linear) = linear_ceiling(self.ceiling_db.load())
-            && (linear - self.ceiling_linear).abs() > 0.0001
-        {
-            self.ceiling_linear = linear;
-        }
-        // Channel-major: the clip is memoryless, so a sample's value depends
-        // only on its input and its frame's ceiling, not on the loop order.
-
-        // Modulated path: read the ceiling per frame. Each frame's linear
-        // ceiling is converted once and lands in channel 0's output, which
-        // every channel then clips against; channel 0 is clipped last, over
-        // its own ceiling.
-        if let Some(v) = ceiling_fed {
-            let mut outs = outputs.iter_mut();
-            let Some(first) = outs.next() else {
-                return Status::Modified;
-            };
-            let first = &mut first[..size];
-            let fallback = self.ceiling_linear;
-            for (o, &db) in first.iter_mut().zip(v) {
-                *o = linear_ceiling(Db(db)).unwrap_or(fallback);
-            }
-            for (c, out) in outs.enumerate() {
-                let input = &inputs.get(c + 1)[..size];
-                for ((o, &x), &ceiling) in out[..size].iter_mut().zip(input).zip(&*first) {
-                    *o = Self::clip_at(x, ceiling);
-                }
-            }
-            for (o, &x) in first.iter_mut().zip(&inputs.get(0)[..size]) {
-                *o = Self::clip_at(x, *o);
-            }
-            return Status::Modified;
-        }
-
-        for c in 0..n {
-            let (input, out) = (&inputs.get(c)[..size], &mut outputs.get(c)[..size]);
-            for (o, &x) in out.iter_mut().zip(input) {
-                *o = self.clip(x);
-            }
-        }
-        Status::Modified
-    }
-
-    fn reset(&mut self) {}
-
-    fn param_base(&self, k: usize) -> Option<f32> {
-        (k == 0).then(|| self.ceiling_db.load().get())
-    }
-}
-
-impl ParamNode for BrickwallLimiterNode {
-    /// The ceiling. A write through the set reaches the clip on the next
-    /// block: it re-derives its cached linear ceiling from the cell.
-    fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Ceiling, self.ceiling())
-            .build()
-    }
-
-    /// A clone with its ceiling cell detached.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.ceiling_db.detach();
-        fork
-    }
-}
-
-/// Inserted with its [`ParamSet`] as its controls and a fork from the value
-/// last set through it ([`tutti_graph::param_parts`]).
-impl IntoNode for BrickwallLimiterNode {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-/// Shares the ceiling cell (the template [`tutti_graph::param_parts`] forks
-/// from).
-impl Clone for BrickwallLimiterNode {
-    fn clone(&self) -> Self {
-        Self {
-            ceiling_db: self.ceiling_db.handle(),
-            ceiling_linear: self.ceiling_linear,
-            layout: self.layout,
-            channels: self.channels,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,25 +496,6 @@ mod tests {
     #[test]
     fn a_limiter_fork_shares_no_cell() {
         assert_param_fork(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)));
-    }
-
-    #[test]
-    fn a_brickwall_fork_shares_no_cell() {
-        assert_param_fork(BrickwallLimiterNode::new(Db::new(-1.0)));
-    }
-
-    /// A ceiling set through the brickwall's `ParamSet` reaches the clip on
-    /// the next block, though `set_ceiling` is `&mut self`: the node
-    /// re-derives its cached linear ceiling from the cell once per block.
-    #[test]
-    fn a_brickwall_ceiling_set_by_address_reaches_the_clip() {
-        let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(0.0)), RATE_44K);
-        let set = bw.param_set();
-        assert!(set.set(UnitParam::Ceiling, -6.0));
-        let mut out = [0.0f32; 2];
-        tick(&mut bw, &[1.0, -1.0], &mut out);
-        let ceiling = Db::new(-6.0).to_amplitude().get();
-        assert!((out[0] - ceiling).abs() < 1e-4, "clipped at {}", out[0]);
     }
 
     /// A limiter is **born at the placeholder rate**, and `prepare` is
@@ -958,59 +703,13 @@ mod tests {
         assert_eq!(lim.gain_reduction_db(), Db::UNITY);
     }
 
-    #[test]
-    fn test_brickwall_clips_at_ceiling() {
-        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
-
-        let mut out = [0.0f32; 2];
-        tick(&mut bw, &[2.0, -3.0], &mut out);
-
-        assert!(
-            (out[0] - 1.0).abs() < 0.001,
-            "Should clip to 1.0, got {}",
-            out[0]
-        );
-        assert!(
-            (out[1] - (-1.0)).abs() < 0.001,
-            "Should clip to -1.0, got {}",
-            out[1]
-        );
-    }
-
-    #[test]
-    fn test_brickwall_adjustable_ceiling() {
-        let mut bw = BrickwallLimiterNode::new(Db::new(-6.0));
-        let ceiling_lin = Db::new(-6.0).to_amplitude().get();
-
-        let mut out = [0.0f32; 2];
-        tick(&mut bw, &[1.0, -1.0], &mut out);
-
-        assert!(
-            (out[0] - ceiling_lin).abs() < 0.001,
-            "Should clip to {ceiling_lin}, got {}",
-            out[0]
-        );
-    }
-
-    #[test]
-    fn test_brickwall_passes_quiet_signal() {
-        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
-
-        let mut out = [0.0f32; 2];
-        tick(&mut bw, &[0.3, -0.2], &mut out);
-
-        assert!((out[0] - 0.3).abs() < 0.001);
-        assert!((out[1] - (-0.2)).abs() < 0.001);
-    }
-
     // ── Modulated params (the graph's param feed) ───────────────────────────
 
-    /// The shapes declare ceiling, threshold and release (and the brickwall
-    /// its ceiling), and never change the arity: a modulatable limiter is as
+    /// The shape declares ceiling, threshold and release, and never changes the arity: a modulatable limiter is as
     /// wide as it was built. (Doc 014 §12.6 widened the list: a route onto
     /// any of these was refused once the frame-rate driver went.)
     #[test]
-    fn the_shapes_declare_ceiling_threshold_and_release() {
+    fn the_shape_declares_ceiling_threshold_and_release() {
         let l = LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3));
         assert_eq!(
             l.shape().params.as_slice(),
@@ -1027,13 +726,6 @@ mod tests {
             Some(l.release_time().load(std::sync::atomic::Ordering::Acquire) as f32),
             "the release's base"
         );
-        let b = BrickwallLimiterNode::new(Db::new(-1.0));
-        assert_eq!(b.shape().params.as_slice(), &[UnitParam::Ceiling][..]);
-        assert_eq!(
-            (b.shape().audio_in().count(), b.shape().audio_out().count()),
-            (2, 2)
-        );
-        assert_eq!(b.param_base(0), Some(-1.0));
     }
 
     #[test]
@@ -1060,86 +752,6 @@ mod tests {
                 mod_out
             );
         }
-    }
-
-    #[test]
-    fn brickwall_unmodulated_matches_held_constant() {
-        // A brickwall whose fed ceiling is held at the atomic value must clip
-        // identically to a plain brickwall.
-        let mut plain = BrickwallLimiterNode::new(Db::new(-6.0));
-        let mut modn = BrickwallLimiterNode::new(Db::new(-6.0));
-
-        let mut plain_out = [0.0f32; 2];
-        let mut mod_out = [0.0f32; 2];
-        let samples = [2.0, -3.0, 0.1, -0.05, 1.5, -1.5];
-        for &s in &samples {
-            tick(&mut plain, &[s, -s], &mut plain_out);
-            tick_fed(&mut modn, &[s, -s], &[Some(-6.0)], &mut mod_out);
-            assert!(
-                (plain_out[0] - mod_out[0]).abs() < 1e-6
-                    && (plain_out[1] - mod_out[1]).abs() < 1e-6,
-                "modulated-held brickwall diverges from plain for input {s}: {:?} vs {:?}",
-                plain_out,
-                mod_out
-            );
-        }
-    }
-
-    #[test]
-    fn brickwall_fed_ceiling_modulates_clip() {
-        // A fed ceiling held low clips harder than one held high.
-        let mut bw = BrickwallLimiterNode::new(Db::new(0.0));
-        let mut out = [0.0f32; 2];
-        // Ceiling -12 dB ≈ 0.251 linear: 1.0 clips to ~0.251.
-        tick_fed(&mut bw, &[1.0, 1.0], &[Some(-12.0)], &mut out);
-        let low_ceiling = out[0];
-        // Ceiling 0 dB = 1.0 linear: 1.0 passes through.
-        tick_fed(&mut bw, &[1.0, 1.0], &[Some(0.0)], &mut out);
-        let high_ceiling = out[0];
-        assert!(
-            high_ceiling > low_ceiling + 0.1,
-            "higher fed ceiling should clip less: low={low_ceiling}, high={high_ceiling}"
-        );
-    }
-
-    /// A NaN fed on the ceiling port clamps at the cell's ceiling rather
-    /// than panicking in `f32::clamp`, and the next finite frame clamps at
-    /// its own.
-    #[test]
-    fn brickwall_a_fed_nan_ceiling_clamps_at_the_cell() {
-        let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(-6.0)), RATE_44K);
-        let cell = Db::new(-6.0).to_amplitude().get();
-        let mut out = [0.0f32; 2];
-        tick_fed(&mut bw, &[1.0, -1.0], &[Some(f32::NAN)], &mut out);
-        assert_eq!(out, [cell, -cell]);
-        tick_fed(&mut bw, &[1.0, -1.0], &[Some(-12.0)], &mut out);
-        let fed = Db::new(-12.0).to_amplitude().get();
-        assert_eq!(out, [fed, -fed]);
-    }
-
-    /// A NaN written to the ceiling cell keeps the ceiling the node last
-    /// clamped at, and a later finite write takes effect; a NaN at
-    /// construction starts at 0 dB.
-    #[test]
-    fn brickwall_a_nan_cell_keeps_the_last_ceiling() {
-        let mut bw = prepared_at(BrickwallLimiterNode::new(Db::new(-6.0)), RATE_44K);
-        let set = bw.param_set();
-        let mut out = [0.0f32; 2];
-        assert!(set.set(UnitParam::Ceiling, f32::NAN));
-        tick(&mut bw, &[1.0, -1.0], &mut out);
-        let held = Db::new(-6.0).to_amplitude().get();
-        assert_eq!(out, [held, -held]);
-        assert!(set.set(UnitParam::Ceiling, -12.0));
-        tick(&mut bw, &[1.0, -1.0], &mut out);
-        let next = Db::new(-12.0).to_amplitude().get();
-        assert!((out[0] - next).abs() < 1e-6, "{}", out[0]);
-
-        let mut born_nan = prepared_at(BrickwallLimiterNode::new(Db::new(f32::NAN)), RATE_44K);
-        tick(&mut born_nan, &[2.0, -2.0], &mut out);
-        assert_eq!(out, [1.0, -1.0], "a NaN-built brickwall clamps at 0 dB");
-        born_nan.set_ceiling(Db::new(f32::NAN));
-        tick(&mut born_nan, &[2.0, -2.0], &mut out);
-        assert_eq!(out, [1.0, -1.0], "set_ceiling(NaN) keeps the ceiling");
     }
 
     // ── Width-native (N-channel) ─────────────────────────────────────────────
@@ -1209,68 +821,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// A block of every channel clips each sample against its own frame's
-    /// fed ceiling: frame `i` is fed `-i/4` dB and every channel holds
-    /// `±2`, so each output is exactly that frame's linear ceiling, signed,
-    /// and a quiet sample passes through.
-    #[test]
-    fn brickwall_clips_each_frame_at_its_own_ceiling() {
-        use crate::test_support::RATE;
-        use tutti_graph::contract::drive;
-        const N: usize = 64;
-        let fed: Vec<f32> = (0..N).map(|i| -(i as f32) / 4.0).collect();
-        let ins: Vec<Vec<f32>> = (0..3)
-            .map(|c| {
-                (0..N)
-                    .map(|i| match (i + c) % 3 {
-                        0 => 2.0,
-                        1 => -2.0,
-                        _ => 0.0625,
-                    })
-                    .collect()
-            })
-            .collect();
-        let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
-        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(3u16), Db::new(0.0));
-        let out = drive(&mut bw, RATE, &refs, &[Some(&fed)]);
-        for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
-            for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
-                let ceiling = Db(fed[i]).to_amplitude().get();
-                let want = if x.abs() > ceiling {
-                    ceiling.copysign(x)
-                } else {
-                    x
-                };
-                assert_eq!(y, want, "fed: channel {c}, frame {i}");
-            }
-        }
-        // Unfed: one ceiling, 0 dB, for the whole block.
-        let out = drive(&mut bw, RATE, &refs, &[None]);
-        for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
-            for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
-                let want = if x.abs() > 1.0 { x.signum() } else { x };
-                assert_eq!(y, want, "unfed: channel {c}, frame {i}");
-            }
-        }
-    }
-
-    #[test]
-    fn brickwall_with_channels_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(0.0));
-        assert_eq!(bw.shape().audio_in().count(), 6);
-        assert_eq!(bw.shape().audio_out().count(), 6);
-        let mut out = [0.0f32; 6];
-        tick(&mut bw, &[2.0, -2.0, 3.0, -3.0, 0.5, -0.5], &mut out);
-        for (c, &y) in out.iter().enumerate() {
-            assert!(
-                (-1.0 - 1e-6..=1.0 + 1e-6).contains(&y),
-                "ch{c} not clipped: {y}"
-            );
-        }
-        assert!((out[0] - 1.0).abs() < 1e-4);
-        assert!((out[1] + 1.0).abs() < 1e-4);
     }
 
     #[test]

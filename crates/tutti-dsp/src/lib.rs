@@ -16,7 +16,8 @@
 //!   [`hinf_norm`](Lti::hinf_norm), with [`Complex64`]). A [`Recurrence`] runs a member:
 //!   its [`coefficients_into`](Recurrence::coefficients_into) asks for the coefficient point
 //!   of a member, its [`Approach`] (a [`Glide`]) moves the coefficients there, and its
-//!   [`run`](Recurrence::run) is the per-frame math; [`Realized`] is the one runner of
+//!   [`run`](Recurrence::run) is the per-frame math over a [`Feed`] (the audio, a side-chain
+//!   key, and up to [`MAX_LANES`] per-frame control lanes); [`Realized`] is the one runner of
 //!   them. A family whose state grows with its member is also [`Grows`]: its
 //!   [`reach`](Grows::reach) over a [`Reach`] (with a family's [`Domain`], [`MaxDecay`] for a
 //!   reverb) is a [`Capacity`], what its recurrence allocates; [`Effort`] and [`Cadence`]
@@ -30,7 +31,8 @@
 //! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the
 //!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`CompressorKernel`],
 //!   [`GateKernel`] and [`LimiterKernel`] with their blocks; the limiter's
-//!   [`LookaheadRing`].
+//!   [`LookaheadRing`]; and the brickwall clipper as a family ([`BrickwallFamily`], run by
+//!   [`BrickwallRecurrence`], its ceiling a per-frame lane of the [`Feed`]).
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
@@ -100,9 +102,10 @@ pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::sink::{DitherSink, DitherSpec};
 pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
-    CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
-    GateKernel, LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
-    brickwall_clip, compute_compressor_gain_reduction, compute_limiter_gain, fold_peak, ramp_db,
+    BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence, CompressorBlock,
+    CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower, GateKernel, LimiterBlock,
+    LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db, compute_compressor_gain_reduction,
+    compute_limiter_gain, fold_peak, ramp_db,
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{
@@ -114,9 +117,9 @@ pub use filter::{
 };
 pub use interp::cubic_hermite;
 pub use model::{
-    Anchor, Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Glide, Grows, Lerp, Lti,
-    MaxDecay, MaxDecayError, Period, Reach, Realized, Recurrence, Ring, Setup, Start, Step, Steps,
-    System, TAIL_FLOOR,
+    Anchor, Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Feed, Glide, Grows,
+    Lerp, Lti, MAX_LANES, MaxDecay, MaxDecayError, Period, Reach, Realized, Recurrence, Ring,
+    Setup, Start, Step, Steps, System, TAIL_FLOOR,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::swept::SweptLines;

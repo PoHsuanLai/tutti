@@ -16,7 +16,7 @@ use tutti_dsp::{Cadence, ChannelRecurrence, Family, Filter};
 use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 
 use crate::params::ControlSet;
-use crate::reverb::NodeFamily;
+use crate::reverb::{NodeFamily, Rings};
 
 /// A filter recurrence's control set: what [`Filter`] needs of it to be one [`NodeFamily`]
 /// for the SVF, the ladder and the crossover.
@@ -33,7 +33,7 @@ pub trait NodeRecurrence: ChannelRecurrence {
 impl<R: NodeRecurrence> NodeFamily for Filter<R> {
     type Set = R::Set;
 
-    const PARKS: bool = false;
+    const RINGS: Rings = Rings::Unknown;
     const SAMPLING: Cadence = <Self as Family>::CADENCE;
 
     fn set(&self, initial: &R::Controls) -> R::Set {

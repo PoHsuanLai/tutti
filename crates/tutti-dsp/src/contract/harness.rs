@@ -9,7 +9,7 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{MaxBlock, SampleRate, Samples};
 
 use super::FamilyCase;
-use crate::{Family, Realized, Recurrence, Setup};
+use crate::{Family, Feed, Realized, Recurrence, Setup};
 
 /// The longest block the cases prepare for.
 pub const MAX_BLOCK: usize = 512;
@@ -60,7 +60,7 @@ pub fn render<R: Recurrence>(
         let end = (start + block).min(input.len());
         let ins: Vec<&[f32]> = vec![&input[start..end]; inputs];
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[start..end]).collect();
-        k.process(&ins, &mut outs, end - start);
+        k.process(&Feed::new(&ins), &mut outs, end - start);
         start = end;
     }
     out

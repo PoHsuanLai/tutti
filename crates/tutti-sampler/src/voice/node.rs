@@ -320,7 +320,10 @@ impl Node for VoiceNode {
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        self.drain_commands(io.param(0).frames().and_then(|v| v.last().copied()));
+        self.drain_commands(
+            self.declared_param::<{ UnitParam::Volume as u16 }>(&io)
+                .last_frame(),
+        );
         // Lent for the block and given back after it: the render borrows the
         // whole node.
         let mut reader = self.tempo.take();

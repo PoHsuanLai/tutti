@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 use tutti_types::AtomicF32;
+use tutti_types::UnitParam;
 
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{BeatDuration, ChannelLayout, Depth, Hz, Param, PhaseIncrement, SampleRate};
@@ -94,8 +95,8 @@ impl core::fmt::Display for LfoMode {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over the depth ([`UnitParam::Depth`](tutti_types::UnitParam::Depth)) and, free-running, the rate
-/// ([`UnitParam::Rate`](tutti_types::UnitParam::Rate), in [`Hz`]); a beat-synced node's rate cell holds a
+/// over the depth ([`UnitParam::Depth`]) and, free-running, the rate
+/// ([`UnitParam::Rate`], in [`Hz`]); a beat-synced node's rate cell holds a
 /// span in beats, which is not a `Rate`, so it has no address there (set it
 /// with [`set_beats_per_cycle`](Self::set_beats_per_cycle)). A fork starts
 /// from the values last set through the set and every other cell at its value
@@ -401,12 +402,17 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
         // non-finite driven value reads the cell instead: a NaN rate would
         // leave the phase NaN for good.
         let finite = |v: &f32| v.is_finite();
-        let depth = crate::ramp::block_driven(&io, 0)
+        let depth = self
+            .declared_param::<{ UnitParam::Depth as u16 }>(&io)
+            .last_frame()
             .filter(finite)
             .map_or_else(|| self.depth.load(), Depth::clamped)
             .get();
         let driven_rate = match self.mode {
-            LfoMode::FreeRunning => crate::ramp::block_driven(&io, 1).filter(finite),
+            LfoMode::FreeRunning => self
+                .declared_param::<{ UnitParam::Rate as u16 }>(&io)
+                .last_frame()
+                .filter(finite),
             LfoMode::BeatSynced => None,
         };
         let out = io.output(0);

@@ -6,31 +6,38 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tutti_types::{Amplitude, BusTopology, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth};
 
-use crate::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase, ReverbCase};
+use crate::contract::{FamilyCase, Figure, Hook, LtiCase, RealizationCase, ReverbCase};
 use crate::reverb::network::{
     AllPass, AllPassForm, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, OutputMap,
     pre_delay_frames,
 };
 use crate::{
-    Absorption, Approach, Band, Ceiling, Channels, Design, Effort, Lti, MaxDecay, Network,
-    NetworkSizes, Realized, Recurrence, Ring, Setup, Sizes, Stage, Start, System, loop_gain,
+    Absorption, Approach, Band, Capacity, Channels, Effort, Family, Grows, Lti, MaxDecay, Network,
+    NetworkCapacity, Reach, Realized, Recurrence, Ring, Setup, Stage, Start, System, loop_gain,
 };
 
 /// A design whose model is a reverb [`Network`] and whose recurrence runs it: what a
 /// defect can be wrapped around.
-pub(crate) trait NetDesign:
-    Design<Model = Network, Bounds = NetworkSizes, Range = MaxDecay>
+pub(crate) trait NetFamily:
+    Grows<Member = Network, Domain = MaxDecay, Recurrence: Recurrence<Capacity = NetworkCapacity>>
 {
 }
 
-impl<D> NetDesign for D where D: Design<Model = Network, Bounds = NetworkSizes, Range = MaxDecay> {}
+impl<D> NetFamily for D where
+    D: Grows<
+            Member = Network,
+            Domain = MaxDecay,
+            Recurrence: Recurrence<Capacity = NetworkCapacity>,
+        >
+{
+}
 
 /// A design with one deliberate defect, to show a case fails on it.
 #[derive(Clone)]
 pub(crate) struct Mutant<D> {
     pub(crate) inner: D,
     pub(crate) network: fn(&mut Network),
-    pub(crate) bounds: fn(NetworkSizes) -> NetworkSizes,
+    pub(crate) capacity: fn(NetworkCapacity) -> NetworkCapacity,
     /// The hooks it says are vacant, when not the inner design's.
     pub(crate) vacant: Option<&'static [(Hook, &'static str)]>,
 }
@@ -40,17 +47,15 @@ impl<D> Mutant<D> {
         Self {
             inner,
             network,
-            bounds: |b| b,
+            capacity: |b| b,
             vacant: None,
         }
     }
 }
 
-impl<D: NetDesign> Design for Mutant<D> {
+impl<D: NetFamily> Family for Mutant<D> {
     type Controls = D::Controls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
+    type Member = Network;
     type Recurrence = D::Recurrence;
 
     fn blank(&self, rate: SampleRate) -> Network {
@@ -61,21 +66,25 @@ impl<D: NetDesign> Design for Mutant<D> {
         self.inner.channels()
     }
 
-    fn design_into(&self, controls: &D::Controls, rate: SampleRate, out: &mut Network) {
-        self.inner.design_into(controls, rate, out);
+    fn member_into(&self, controls: &D::Controls, rate: SampleRate, out: &mut Network) {
+        self.inner.member_into(controls, rate, out);
         (self.network)(out);
     }
 
     fn recurrence(&self) -> D::Recurrence {
         self.inner.recurrence()
     }
+}
 
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        (self.bounds)(self.inner.bounds(ceiling))
+impl<D: NetFamily> Grows for Mutant<D> {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        (self.capacity)(self.inner.reach(reach))
     }
 }
 
-impl<D: NetDesign + DesignCase> DesignCase for Mutant<D> {
+impl<D: NetFamily + FamilyCase> FamilyCase for Mutant<D> {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
     }
@@ -85,8 +94,8 @@ impl<D: NetDesign + DesignCase> DesignCase for Mutant<D> {
     fn hostile(&self) -> Vec<D::Controls> {
         self.inner.hostile()
     }
-    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
-        self.inner.ceiling(rate)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
     }
     fn musical_delay(&self, model: &Network) -> usize {
         self.inner.musical_delay(model)
@@ -96,7 +105,7 @@ impl<D: NetDesign + DesignCase> DesignCase for Mutant<D> {
     }
 }
 
-impl<D: NetDesign + RealizationCase> RealizationCase for Mutant<D> {
+impl<D: NetFamily + RealizationCase> RealizationCase for Mutant<D> {
     fn probes(&self) -> Vec<D::Controls> {
         self.inner.probes()
     }
@@ -111,7 +120,7 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Mutant<D> {
     }
 }
 
-impl<D: NetDesign + LtiCase> LtiCase for Mutant<D> {
+impl<D: NetFamily + LtiCase> LtiCase for Mutant<D> {
     fn figures(&self) -> Vec<Figure<D::Controls>> {
         self.inner.figures()
     }
@@ -138,7 +147,7 @@ impl<D: NetDesign + LtiCase> LtiCase for Mutant<D> {
     }
 }
 
-impl<D: NetDesign + ReverbCase> ReverbCase for Mutant<D> {
+impl<D: NetFamily + ReverbCase> ReverbCase for Mutant<D> {
     fn requested_rt60(&self, c: &D::Controls, rate: SampleRate, band: Band) -> Option<Seconds> {
         self.inner.requested_rt60(c, rate, band)
     }
@@ -268,8 +277,8 @@ impl Approach for NoCoeffs {
 }
 
 impl Recurrence for Unrun {
-    type Model = Network;
-    type Bounds = NetworkSizes;
+    type Member = Network;
+    type Capacity = NetworkCapacity;
     type Target = ();
     type Coeffs = NoCoeffs;
     type State = ();
@@ -300,11 +309,9 @@ impl Recurrence for Unrun {
     }
 }
 
-impl Design for ToyFdn {
+impl Family for ToyFdn {
     type Controls = ToyControls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
+    type Member = Network;
     type Recurrence = Unrun;
 
     fn blank(&self, rate: SampleRate) -> Network {
@@ -319,7 +326,7 @@ impl Design for ToyFdn {
         Unrun
     }
 
-    fn design_into(&self, c: &ToyControls, rate: SampleRate, out: &mut Network) {
+    fn member_into(&self, c: &ToyControls, rate: SampleRate, out: &mut Network) {
         let size = if c.size.get().is_nan() {
             0.5
         } else {
@@ -348,7 +355,7 @@ impl Design for ToyFdn {
                 length,
                 modulation: Modulation::NONE,
                 absorption: {
-                    // As `FdnDesign` does: scaled to peak at most 0.9999.
+                    // As `FdnFamily` does: scaled to peak at most 0.9999.
                     let Absorption::Bands {
                         low,
                         mid,
@@ -415,24 +422,32 @@ impl Design for ToyFdn {
         network.wet = Db(0.0);
         *out = network;
     }
+}
+
+impl Grows for ToyFdn {
+    type Domain = MaxDecay;
 
     /// The largest design (size 1, the longest decay, the longest pre-delay);
     /// the tail is unbounded because freeze is reachable.
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
         let worst = ToyControls {
-            decay: [ceiling.max_decay(); 3],
+            decay: [reach.max_decay(); 3],
             size: Mix(1.0),
             diffusion: Mix(1.0),
             pre_delay: TOY_MAX_PRE_DELAY,
             freeze: false,
         };
-        let mut b = NetworkSizes::measure(&self.design(&worst, ceiling.rate()), ceiling.floor());
+        let mut b = NetworkCapacity::need(&self.member(&worst, reach.rate()), reach.floor());
         b.tail = Ring::Unbounded;
         b
     }
 }
 
-impl DesignCase for ToyFdn {
+impl FamilyCase for ToyFdn {
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
+    }
+
     fn reachable(&self) -> Vec<ToyControls> {
         let mut all = Vec::new();
         for low in [0.2, 1.0, 8.0] {
@@ -535,7 +550,7 @@ impl ReverbCase for ToyFdn {
     fn requested_rt60(&self, c: &ToyControls, rate: SampleRate, band: Band) -> Option<Seconds> {
         // Not where the asked bands would exceed 1: the design scales them.
         let d = |i: usize| ToyFdn::decay(c.decay[i]);
-        let n = self.design(c, rate);
+        let n = self.member(c, rate);
         if let Some(Stage::Fdn(f)) = n.stages.first()
             && !c.freeze
             && let Some(l) = f.lines.first()
@@ -755,7 +770,7 @@ pub(crate) struct FlawedState<S> {
     runaway: f32,
 }
 
-impl<R: Recurrence<Model = Network, Bounds = NetworkSizes>> Flawed<R> {
+impl<R: Recurrence<Member = Network, Capacity = NetworkCapacity>> Flawed<R> {
     /// κ of the inner recurrence at `network` as `edit` leaves it.
     fn edited(
         &self,
@@ -802,9 +817,9 @@ impl<R: Recurrence<Model = Network, Bounds = NetworkSizes>> Flawed<R> {
     }
 }
 
-impl<R: Recurrence<Model = Network, Bounds = NetworkSizes>> Recurrence for Flawed<R> {
-    type Model = Network;
-    type Bounds = NetworkSizes;
+impl<R: Recurrence<Member = Network, Capacity = NetworkCapacity>> Recurrence for Flawed<R> {
+    type Member = Network;
+    type Capacity = NetworkCapacity;
     type Target = FlawedTarget<R::Target>;
     type Coeffs = FlawedCoeffs<R::Coeffs>;
     type State = FlawedState<R::State>;
@@ -841,7 +856,7 @@ impl<R: Recurrence<Model = Network, Bounds = NetworkSizes>> Recurrence for Flawe
 
     fn prepare(
         &mut self,
-        bounds: &NetworkSizes,
+        bounds: &NetworkCapacity,
         setup: &Setup,
         coeffs: &mut FlawedCoeffs<R::Coeffs>,
         state: &mut FlawedState<R::State>,
@@ -1038,18 +1053,16 @@ impl<R: Recurrence<Model = Network, Bounds = NetworkSizes>> Recurrence for Flawe
 
 /// A design whose recurrence has one [`Defect`].
 #[derive(Clone)]
-pub(crate) struct Defective<D: NetDesign> {
+pub(crate) struct Defective<D: NetFamily> {
     pub(crate) inner: D,
     pub(crate) defect: Defect,
     /// Applied to the runner as it is built: a defect in the runner's own state.
     pub(crate) tweak: fn(&mut Realized<Flawed<D::Recurrence>>),
 }
 
-impl<D: NetDesign> Design for Defective<D> {
+impl<D: NetFamily> Family for Defective<D> {
     type Controls = D::Controls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
+    type Member = Network;
     type Recurrence = Flawed<D::Recurrence>;
 
     fn blank(&self, rate: SampleRate) -> Network {
@@ -1060,12 +1073,8 @@ impl<D: NetDesign> Design for Defective<D> {
         self.inner.channels()
     }
 
-    fn design_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Network) {
-        self.inner.design_into(c, rate, out);
-    }
-
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        self.inner.bounds(ceiling)
+    fn member_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Network) {
+        self.inner.member_into(c, rate, out);
     }
 
     fn recurrence(&self) -> Flawed<D::Recurrence> {
@@ -1087,7 +1096,15 @@ impl<D: NetDesign> Design for Defective<D> {
     }
 }
 
-impl<D: NetDesign + DesignCase> DesignCase for Defective<D> {
+impl<D: NetFamily> Grows for Defective<D> {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        self.inner.reach(reach)
+    }
+}
+
+impl<D: NetFamily + FamilyCase> FamilyCase for Defective<D> {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
     }
@@ -1097,8 +1114,8 @@ impl<D: NetDesign + DesignCase> DesignCase for Defective<D> {
     fn hostile(&self) -> Vec<D::Controls> {
         self.inner.hostile()
     }
-    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
-        self.inner.ceiling(rate)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
     }
     fn musical_delay(&self, model: &Network) -> usize {
         self.inner.musical_delay(model)
@@ -1108,7 +1125,7 @@ impl<D: NetDesign + DesignCase> DesignCase for Defective<D> {
     }
 }
 
-impl<D: NetDesign + ReverbCase> ReverbCase for Defective<D> {
+impl<D: NetFamily + ReverbCase> ReverbCase for Defective<D> {
     fn requested_rt60(&self, c: &D::Controls, rate: SampleRate, band: Band) -> Option<Seconds> {
         self.inner.requested_rt60(c, rate, band)
     }
@@ -1153,7 +1170,7 @@ impl<D: NetDesign + ReverbCase> ReverbCase for Defective<D> {
     }
 }
 
-impl<D: NetDesign + RealizationCase> RealizationCase for Defective<D> {
+impl<D: NetFamily + RealizationCase> RealizationCase for Defective<D> {
     fn probes(&self) -> Vec<D::Controls> {
         self.inner.probes()
     }
@@ -1168,7 +1185,7 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Defective<D> {
     }
 }
 
-impl<D: NetDesign + LtiCase> LtiCase for Defective<D> {
+impl<D: NetFamily + LtiCase> LtiCase for Defective<D> {
     fn figures(&self) -> Vec<Figure<D::Controls>> {
         self.inner.figures()
     }
@@ -1256,9 +1273,9 @@ impl<M: Lti> Lti for Scaled<M> {
 #[derive(Clone, Debug)]
 pub(crate) struct Lie<R>(R);
 
-impl<R: Recurrence<Model = Network>> Recurrence for Lie<R> {
-    type Model = Scaled<Network>;
-    type Bounds = R::Bounds;
+impl<R: Recurrence<Member = Network>> Recurrence for Lie<R> {
+    type Member = Scaled<Network>;
+    type Capacity = R::Capacity;
     type Target = R::Target;
     type Coeffs = R::Coeffs;
     type State = R::State;
@@ -1279,7 +1296,7 @@ impl<R: Recurrence<Model = Network>> Recurrence for Lie<R> {
     }
     fn prepare(
         &mut self,
-        bounds: &R::Bounds,
+        bounds: &R::Capacity,
         setup: &Setup,
         coeffs: &mut R::Coeffs,
         state: &mut R::State,
@@ -1321,11 +1338,9 @@ pub(crate) struct Lying<D> {
     pub(crate) l1: f64,
 }
 
-impl<D: NetDesign> Design for Lying<D> {
+impl<D: NetFamily> Family for Lying<D> {
     type Controls = D::Controls;
-    type Model = Scaled<Network>;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
+    type Member = Scaled<Network>;
     type Recurrence = Lie<D::Recurrence>;
 
     fn blank(&self, rate: SampleRate) -> Scaled<Network> {
@@ -1339,19 +1354,24 @@ impl<D: NetDesign> Design for Lying<D> {
     fn channels(&self) -> Channels {
         self.inner.channels()
     }
-    fn design_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Scaled<Network>) {
-        self.inner.design_into(c, rate, &mut out.inner);
+    fn member_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Scaled<Network>) {
+        self.inner.member_into(c, rate, &mut out.inner);
         (out.tail, out.hinf, out.l1) = (self.tail, self.hinf, self.l1);
-    }
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        self.inner.bounds(ceiling)
     }
     fn recurrence(&self) -> Lie<D::Recurrence> {
         Lie(self.inner.recurrence())
     }
 }
 
-impl<D: NetDesign + DesignCase> DesignCase for Lying<D> {
+impl<D: NetFamily> Grows for Lying<D> {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        self.inner.reach(reach)
+    }
+}
+
+impl<D: NetFamily + FamilyCase> FamilyCase for Lying<D> {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
     }
@@ -1361,15 +1381,15 @@ impl<D: NetDesign + DesignCase> DesignCase for Lying<D> {
     fn hostile(&self) -> Vec<D::Controls> {
         self.inner.hostile()
     }
-    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
-        self.inner.ceiling(rate)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
     }
     fn vacant(&self) -> &'static [(Hook, &'static str)] {
         self.inner.vacant()
     }
 }
 
-impl<D: NetDesign + RealizationCase> RealizationCase for Lying<D> {
+impl<D: NetFamily + RealizationCase> RealizationCase for Lying<D> {
     fn probes(&self) -> Vec<D::Controls> {
         self.inner.probes()
     }
@@ -1384,7 +1404,7 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Lying<D> {
     }
 }
 
-impl<D: NetDesign + LtiCase> LtiCase for Lying<D> {
+impl<D: NetFamily + LtiCase> LtiCase for Lying<D> {
     fn figures(&self) -> Vec<Figure<D::Controls>> {
         self.inner.figures()
     }

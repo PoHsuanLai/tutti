@@ -1,4 +1,4 @@
-//! [`FdnRecurrence`]: the [`Recurrence`] of [`FdnDesign`](crate::FdnDesign), run by
+//! [`FdnRecurrence`]: the [`Recurrence`] of [`FdnFamily`](crate::FdnFamily), run by
 //! [`Realized`](crate::Realized) (design 022 step 1c, design 024 section 4.3a).
 //!
 //! `N` delay lines read with linear interpolation (so a length may move), a
@@ -42,7 +42,7 @@
 use core::ops::Range;
 
 use super::design::CROSSOVER;
-use crate::reverb::network::{Absorption, Band, Matrix, Network, NetworkSizes, Stage};
+use crate::reverb::network::{Absorption, Band, Matrix, Network, NetworkCapacity, Stage};
 use crate::{Approach, Effort, Glide, Recurrence, Setup, Start, Steps};
 
 /// The frames between control updates: every ramp advances once a chunk.
@@ -445,8 +445,8 @@ fn read(buf: &[f32], w: usize, delay: f32) -> f32 {
 }
 
 impl Recurrence for FdnRecurrence {
-    type Model = Network;
-    type Bounds = NetworkSizes;
+    type Member = Network;
+    type Capacity = NetworkCapacity;
     type Target = FdnTarget;
     type Coeffs = FdnCoeffs;
     type State = FdnState;
@@ -463,7 +463,7 @@ impl Recurrence for FdnRecurrence {
 
     fn prepare(
         &mut self,
-        bounds: &NetworkSizes,
+        bounds: &NetworkCapacity,
         setup: &Setup,
         c: &mut FdnCoeffs,
         s: &mut FdnState,

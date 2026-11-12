@@ -15,6 +15,7 @@
 use tutti_graph::{
     Chase, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::UnitParam;
 use tutti_types::{Amplitude, BusTopology, Cents, Spread};
 use tutti_voicing::Voicing;
 
@@ -29,13 +30,6 @@ tutti_graph::declare_params!([] PolySynth, n {
     Detune => Cents = n.unison.as_ref().map(|u| u.detune()),
     StereoSpread => Spread = n.unison.as_ref().map(|u| u.spread()),
 });
-
-/// The block's value of declared param port `k` when a lane drives it: its
-/// last frame. `None`: undriven, read the cell.
-#[inline]
-fn block_driven(io: &Io<'_>, k: usize) -> Option<f32> {
-    io.param(k).frames().and_then(|v| v.last().copied())
-}
 
 /// The most oscillator lanes (`max_voices` × unison sub-voices) a synth
 /// may render and still declare [`Cost::Moderate`](tutti_graph::Cost).
@@ -91,20 +85,29 @@ impl Node for PolySynth {
         if frames == 0 {
             return Status::Modified;
         }
+        let driven = [
+            self.declared_param::<{ UnitParam::Detune as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::StereoSpread as u16 }>(&io)
+                .last_frame(),
+        ];
         if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics([block_driven(&io, 1), block_driven(&io, 2)]);
+            unison.sync_from_atomics(driven);
         }
         let blocks = io.sub_blocks(0);
-        let volume = block_driven(&io, 0).map_or_else(
-            || {
-                let cell = self.master_volume.load().get();
-                if cell.is_finite() {
-                    self.last_volume = cell;
-                }
-                self.last_volume
-            },
-            Self::clamp_volume,
-        );
+        let volume = self
+            .declared_param::<{ UnitParam::Volume as u16 }>(&io)
+            .last_frame()
+            .map_or_else(
+                || {
+                    let cell = self.master_volume.load().get();
+                    if cell.is_finite() {
+                        self.last_volume = cell;
+                    }
+                    self.last_volume
+                },
+                Self::clamp_volume,
+            );
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();
         let (Some(left), right) = (channels.next(), channels.next()) else {

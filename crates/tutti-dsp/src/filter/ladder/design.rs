@@ -1,10 +1,10 @@
-//! [`LadderDesign`]: the Moog ladder as a [`Design`](crate::Design) (design 024 step 2b).
+//! [`LadderFamily`]: the Moog ladder as a [`Family`](crate::Family) (design 024 step 2b).
 //!
 //! The controls are [`LadderControls`], the model [`LadderModel`] (the small-signal
 //! linearisation) and the kernel [`Ladder`]: the four stages with the `tanh` in the
 //! loop, whose coefficients and drive are read from the model and narrowed once to the
 //! state precision `F`. Like the SVF it is designed on a 16-frame grid counted on the
-//! stream clock from the last reset ([`Design::CADENCE`](crate::Design::CADENCE)): the coefficients **and
+//! stream clock from the last reset ([`Family::CADENCE`](crate::Family::CADENCE)): the coefficients **and
 //! the drive** ramp linearly over the 16 frames after each retarget and arrive exactly
 //! on it, so a control is in the render at most 16 frames after it was sampled and the
 //! render does not depend on how audio is split into blocks.
@@ -19,18 +19,18 @@ use crate::Lerp;
 use crate::filter::real::Real;
 use crate::{ChannelRecurrence, Filter};
 
-/// The [`Design`](crate::Design) of the ladder filter, `channels` wide, with state
+/// The [`Family`](crate::Family) of the ladder filter, `channels` wide, with state
 /// precision `F` (`f64` in the nodes, for accuracy at low cutoffs). The coefficients
 /// and the drive are shared across the channels and only the four stage words are per
 /// channel.
-pub type LadderDesign<F> = Filter<Ladder<F>>;
+pub type LadderFamily<F> = Filter<Ladder<F>>;
 
 /// The ladder as a [`ChannelRecurrence`]: `[s0, s1, s2, s3]` per channel, in state precision
 /// `F`.
 #[derive(Clone, Copy, Debug)]
 pub struct Ladder<F>(PhantomData<fn() -> F>);
 
-impl<F> LadderDesign<F> {
+impl<F> LadderFamily<F> {
     /// A design on the bus `input`, one output bus where it is.
     #[must_use]
     pub fn new(input: BusTopology) -> Self {
@@ -73,7 +73,7 @@ impl<F: Real> Lerp for LadderPoint<F> {
 
 impl<F: Real> ChannelRecurrence for Ladder<F> {
     type Controls = LadderControls;
-    type Model = LadderModel;
+    type Member = LadderModel;
     type Coeffs = LadderPoint<F>;
     type State = [F; 4];
     type Frame = [f32; 1];
@@ -84,7 +84,7 @@ impl<F: Real> ChannelRecurrence for Ladder<F> {
         LadderModel::new(LadderControls::DEFAULT, rate)
     }
 
-    fn design_into(&self, controls: &LadderControls, rate: SampleRate, out: &mut LadderModel) {
+    fn member_into(&self, controls: &LadderControls, rate: SampleRate, out: &mut LadderModel) {
         *out = LadderModel::new(*controls, rate);
     }
 

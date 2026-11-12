@@ -1,25 +1,22 @@
-//! `design_contract!` and `realization_contract!`.
+//! `family_contract!` and `realization_contract!`.
 
-/// Makes one `#[test]` per case of the design contract for `$design`, an
-/// expression of a [`DesignCase`](crate::contract::DesignCase) type, then the
-/// cases of each group named after it: `Lti` (a
+/// Makes one `#[test]` per case of the family contract for `$design`, an
+/// expression of a [`FamilyCase`](crate::contract::FamilyCase) type, then the
+/// cases of each group named after it: `Grows` (a [`Grows`](crate::Grows) family:
+/// its `reach` covers the `need` of every member), `Lti` (a
 /// [`LtiCase`](crate::contract::LtiCase)) and `reverb` (a
 /// [`ReverbCase`](crate::contract::ReverbCase)).
 ///
 /// ```text
-/// design_contract!(MyDesign);               // the core
-/// design_contract!(MyDesign, Lti, reverb);  // and two groups
+/// family_contract!(MyFamily);                      // the core
+/// family_contract!(MyFamily, Grows, Lti, reverb);  // and three groups
 /// ```
 ///
-/// Invoke it where a design's own tests are, once a module: the tests have fixed
+/// Invoke it where a family's own tests are, once a module: the tests have fixed
 /// names.
 #[macro_export]
-macro_rules! design_contract {
+macro_rules! family_contract {
     ($design:expr $(, $group:ident)* $(,)?) => {
-        #[test]
-        fn contract_bounds_dominate() {
-            $crate::contract::cases::design::bounds_dominate(&$design).unwrap();
-        }
         #[test]
         fn contract_pure() {
             $crate::contract::cases::design::pure(&$design).unwrap();
@@ -28,13 +25,19 @@ macro_rules! design_contract {
         fn contract_vacuity() {
             $crate::contract::cases::design::vacuity(&$design).unwrap();
         }
-        $( $crate::__design_group!($group, $design); )*
+        $( $crate::__family_group!($group, $design); )*
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __design_group {
+macro_rules! __family_group {
+    (Grows, $design:expr) => {
+        #[test]
+        fn contract_reach_covers_need() {
+            $crate::contract::cases::design::reach_covers_need(&$design).unwrap();
+        }
+    };
     (Lti, $design:expr) => {
         #[test]
         fn contract_stable() {
@@ -108,7 +111,7 @@ macro_rules! __design_group {
 /// Makes one `#[test]` per case of the realization contract for `$design`, an
 /// expression of a [`RealizationCase`](crate::contract::RealizationCase) type,
 /// then the cases of each group named after it (`Lti`, `reverb`), as
-/// [`design_contract!`] does.
+/// [`family_contract!`] does.
 #[macro_export]
 macro_rules! realization_contract {
     ($design:expr $(, $group:ident)* $(,)?) => {

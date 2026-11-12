@@ -25,15 +25,15 @@
 //! modulation moves a line by a few frames around its centre and the queries do
 //! not model that.
 
+mod capacity;
 mod gain;
 mod inline;
 mod queries;
 mod response;
-mod sizes;
 
+pub use capacity::NetworkCapacity;
 pub use gain::{loop_gain, rt60_from_gain};
 pub use inline::{Full, Inline};
-pub use sizes::NetworkSizes;
 
 use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
 
@@ -113,7 +113,7 @@ impl Network {
     }
 
     /// Makes this an empty network at `rate`, in place: what
-    /// [`Design::design_into`](crate::Design::design_into) starts from. Unlike [`new`](Self::new) it builds
+    /// [`Family::member_into`](crate::Family::member_into) starts from. Unlike [`new`](Self::new) it builds
     /// no value of the network's size.
     pub fn clear(&mut self, rate: SampleRate) {
         self.rate = rate;

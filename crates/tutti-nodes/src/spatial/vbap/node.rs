@@ -1,12 +1,13 @@
 use super::error::{Result, VbapError};
 use tutti_dsp::{SpeakerLayout, VbapGains};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::UnitParam;
 use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
 use tutti_types::{ChannelLayout, ChannelTopology, Fold};
 
 use super::panner::VbapPanner;
 use crate::buses::main_bus;
-use crate::ramp::{LastGood, block_driven};
+use crate::ramp::LastGood;
 
 // The params a [`VbapPannerNode`] lets the graph modulate, in port order.
 tutti_graph::declare_params!([] VbapPannerNode, n {
@@ -34,7 +35,7 @@ struct Held {
 /// ([`for_topology`](Self::for_topology), with
 /// [`ChannelTopology::for_width`] for a bare count). It is a graph node
 /// (`tutti_graph::Node` and [`ParamNode`]); inserting it hands back its
-/// [`ParamSet`] ([`UnitParam::Azimuth`](tutti_types::UnitParam::Azimuth), [`Elevation`](tutti_types::UnitParam::Elevation),
+/// [`ParamSet`] ([`UnitParam::Azimuth`], [`Elevation`](tutti_types::UnitParam::Elevation),
 /// [`Spread`](tutti_types::UnitParam::Spread) and [`StereoWidth`](tutti_types::UnitParam::StereoWidth)),
 /// which move the source lock-free while it renders, and a graph's control
 /// lanes may drive all four .
@@ -337,8 +338,17 @@ impl Node for VbapPannerNode {
             return Status::Modified;
         }
         // A lane that drives a param overrides its cell for the block, at the
-        // block's last frame (`block_driven`).
-        let driven = [0, 1, 2, 3].map(|k| block_driven(&io, k));
+        // block's last frame (`ParamInput::last_frame`).
+        let driven = [
+            self.declared_param::<{ UnitParam::Azimuth as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Elevation as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Spread as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::StereoWidth as u16 }>(&io)
+                .last_frame(),
+        ];
         let (from, to) = self.block_gains(size, driven);
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);

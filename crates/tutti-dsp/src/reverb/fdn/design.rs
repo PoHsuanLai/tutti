@@ -1,4 +1,4 @@
-//! [`FdnDesign`]: a feedback delay network as a [`Design`] (design 022 step 1c).
+//! [`FdnFamily`]: a feedback delay network as a [`Family`] (design 022 step 1c).
 //!
 //! `N` delay lines of mutually unrelated lengths (a table of values near primes,
 //! scaled by the room size), each with a three-band absorption set from the
@@ -6,7 +6,7 @@
 //! that time), mixed by an orthogonal reflection `A = I - 2 v v^T`, with an
 //! input pre-delay, a slow modulation of the line lengths, a stereo output
 //! (even lines left, odd right) with a width and a wet gain, and, if the design
-//! is [`freezable`](FdnDesign::freezable), a freeze: every gain exactly one and
+//! is [`freezable`](FdnFamily::freezable), a freeze: every gain exactly one and
 //! the input gated off, so the network is lossless and its tail never ends.
 //!
 //! **Diffusion** is the vector `v`: from one axis (no line feeds another,
@@ -26,10 +26,10 @@ use core::num::NonZeroU32;
 
 use crate::reverb::fdn::recurrence::{CHUNK, FdnRecurrence};
 use crate::reverb::network::{
-    Absorption, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network, NetworkSizes,
+    Absorption, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network, NetworkCapacity,
     OutputMap, Stage, pre_delay_frames,
 };
-use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Ring, Sizes};
+use crate::{Cadence, Capacity, Channels, Family, Grows, MaxDecay, Reach, Ring};
 
 /// The line lengths at 44.1 kHz for a room size of 0.5 (the scale is
 /// `0.5 + size`), values near primes, so the delays share few factors.
@@ -56,7 +56,7 @@ const SILENT_DB: f32 = -120.0;
 /// The loudest wet gain.
 const MAX_WET_DB: f32 = 24.0;
 
-/// The controls of an [`FdnDesign`], in tutti units.
+/// The controls of an [`FdnFamily`], in tutti units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FdnControls {
     /// The RT60 of the mid band (index 0 of [`UnitParam::Decay`](tutti_types::UnitParam)),
@@ -107,18 +107,18 @@ impl Default for FdnControls {
     }
 }
 
-/// The [`Design`] of the feedback delay network: mono in, stereo out.
+/// The [`Family`] of the feedback delay network: mono in, stereo out.
 ///
 /// A control outside its range is clamped and a non-finite one takes the
 /// [`FdnControls::DEFAULT`] value, so every control gives a stable network.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FdnDesign {
+pub struct FdnFamily {
     lines: usize,
     max_decay: Seconds,
     freezable: bool,
 }
 
-impl FdnDesign {
+impl FdnFamily {
     /// The lines of the default network.
     pub const LINES: usize = 8;
 
@@ -126,7 +126,7 @@ impl FdnDesign {
     /// to `max_decay` (at most [`MaxDecay::CAP`]), which holds its tail
     /// on a freeze if `freezable`. `None` when the figures are out of range.
     ///
-    /// **A design that can freeze has an unbounded tail ceiling**, so a node
+    /// **A design that can freeze has an unbounded tail reach**, so a node
     /// of it never has a finite tail to declare to an export (which spends the
     /// whole cap): freeze is opt-in for that reason.
     #[must_use]
@@ -162,8 +162,8 @@ impl FdnDesign {
     }
 }
 
-impl FdnDesign {
-    /// What `NetworkSizes::tail` is multiplied by for the rounding of the reflection
+impl FdnFamily {
+    /// What `NetworkCapacity::tail` is multiplied by for the rounding of the reflection
     /// vector. Each entry of a unit `v` is rounded twice (stored as `f32`, then
     /// divided by the norm and rounded again), 2^-23 relative in all, so `|v|^2`
     /// is 1 to within `e = 2^-22` and `|A| = 1 + 2e` at most. `rt60_bound`
@@ -171,15 +171,14 @@ impl FdnDesign {
     /// is `3 / (RT60 fs)` decades a frame, so the bound reads a decay slower by
     /// `x = 2e / ln 10 * RT60 fs / 3` of itself, and the tail by `1 / (1 - x)`:
     /// 0.5% at 8 s and 44.1 kHz, 11% at 192 kHz.
-    fn rounding_margin(&self, ceiling: &Ceiling<MaxDecay>) -> f32 {
+    fn rounding_margin(&self, reach: &Reach<MaxDecay>) -> f32 {
         let e = 2.0 * f64::from(f32::EPSILON);
-        let x =
-            2.0 * e / std::f64::consts::LN_10 * self.max_decay.get() * ceiling.rate().get() / 3.0;
+        let x = 2.0 * e / std::f64::consts::LN_10 * self.max_decay.get() * reach.rate().get() / 3.0;
         (1.0 / (1.0 - x.min(0.5))) as f32
     }
 }
 
-impl Default for FdnDesign {
+impl Default for FdnFamily {
     /// Eight lines, RT60s up to 8 s, not freezable.
     fn default() -> Self {
         Self {
@@ -224,18 +223,16 @@ fn finite_secs(v: Seconds, default: Seconds) -> Seconds {
     if v.get().is_finite() { v } else { default }
 }
 
-impl Design for FdnDesign {
+impl Family for FdnFamily {
     type Controls = FdnControls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
+    type Member = Network;
     type Recurrence = FdnRecurrence;
 
     // The grid the render is a function of: the recurrence ramps in whole chunks
     // counted from the last reset (doc 024 section 4.4). The *design* is still
     // sampled once per block; a grid finer than that would redesign per chunk
     // for nothing the recurrence needs (doc 022), so this names the render's clock
-    // and not a schedule for `design_into` (doc 024 Q27).
+    // and not a schedule for `member_into` (doc 024 Q27).
     const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(CHUNK as u32) {
         Some(n) => n,
         None => unreachable!(),
@@ -253,7 +250,7 @@ impl Design for FdnDesign {
         FdnRecurrence::new()
     }
 
-    fn design_into(&self, c: &FdnControls, rate: SampleRate, out: &mut Network) {
+    fn member_into(&self, c: &FdnControls, rate: SampleRate, out: &mut Network) {
         let d = FdnControls::DEFAULT;
         let freeze = self.freezable && c.freeze;
         let rt60 = [
@@ -366,11 +363,15 @@ impl Design for FdnDesign {
         out.width = StereoWidth(width);
         out.wet = Db(wet);
     }
+}
+
+impl Grows for FdnFamily {
+    type Domain = MaxDecay;
 
     /// The largest design: size 1, the longest decay in every band, the longest
     /// pre-delay, the deepest modulation. The tail is unbounded if the design
     /// can freeze, and the network's own at the longest decay if not.
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
         let worst = FdnControls {
             decay: [self.max_decay; 3],
             size: Mix(1.0),
@@ -380,13 +381,13 @@ impl Design for FdnDesign {
             freeze: false,
             ..FdnControls::DEFAULT
         };
-        let mut network = Box::new(Network::new(ceiling.rate()));
-        self.design_into(&worst, ceiling.rate(), &mut network);
-        let mut b = NetworkSizes::measure(&network, ceiling.floor());
+        let mut network = Box::new(Network::new(reach.rate()));
+        self.member_into(&worst, reach.rate(), &mut network);
+        let mut b = NetworkCapacity::need(&network, reach.floor());
         b.tail = match b.tail {
             _ if self.freezable => Ring::Unbounded,
             Ring::Finite(t) => {
-                Ring::Finite(Seconds(t.get() * f64::from(self.rounding_margin(ceiling))))
+                Ring::Finite(Seconds(t.get() * f64::from(self.rounding_margin(reach))))
             }
             other => other,
         };

@@ -121,18 +121,18 @@ pub use dynamics::{
 mod strip;
 pub use strip::BusStripNode;
 
-// The reverb: any `tutti_dsp::Design` as a node, and the Freeverb send (mono in,
+// The reverb: any `tutti_dsp::Family` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
 pub use params::{At, ControlSet, Params};
-pub use reverb::{DesignNode, FreeverbNode, NodeDesign};
+pub use reverb::{FamilyNode, FreeverbNode, NodeFamily};
 
-// The feedback delay network as a `DesignNode`, and the choice between the two.
+// The feedback delay network as a `FamilyNode`, and the choice between the two.
 mod reverb_fdn;
 pub use reverb_fdn::{FdnNode, ReverbKind, SpawnedReverb};
 
-// The designs and controls that sit in a `DesignNode<D>`'s signature.
-pub use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign, SvfDesign};
+// The families and controls that sit in a `FamilyNode<F>`'s signature.
+pub use tutti_dsp::{FdnControls, FdnFamily, FreeverbControls, FreeverbFamily, SvfFamily};
 
 // The spatial panners: VBAP speaker panning and binaural HRTF rendering.
 mod spatial;

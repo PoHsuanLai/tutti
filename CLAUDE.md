@@ -93,12 +93,21 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `reopen_events` replaces every reader, a caller's too). The session's hardware MIDI
   out is such a tap, on the clock node, `ToOutput`, drained in `Phase::MidiOut`.
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
-  `InletNode` (`tutti-graph`) copies a ring (`TapReader::pair`)
+  `InletNode` (`tutti-graph`) copies a ring (`InletRing::pair`, which states
+  the rate its producer fills it at)
   a thread of your own fills (a capture callback) into the graph, and
   `Graph::open_inlet` / `add_inlet` (`tutti-session`) refuse a producer whose
   rate is not the graph's with `InletError::RateMismatch`. An inlet does not
   resample and two clocks drift; what fills or empties the ring is counted,
-  never blocked on. Gain is a node downstream, not the inlet's.
+  never blocked on. Gain is a node downstream, not the inlet's. A capture
+  device is an **input**: `Session::add_input(InputConfig)` opens a
+  `tutti_cpal::MicIn` (on the builder's `host`, by a `MicConfig`) and its inlet
+  in one call, `Input::node()` names the node, and a device restart
+  (`LiveSession::restart`) reopens every input at the new rate into the same
+  node. A restart is one `DeviceRestart` value through the `LiveSession` (the
+  pair), and device events are `SessionEvent::Device(DeviceEvent)` with typed
+  errors; `Device::latency` is what the streams' callback timestamps report, per
+  direction, `None` until reported.
 - Copying events into the graph is the **event inlet**: `EventInletNode`
   (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
   `push(impl Into<Stamp>, Ump)` (a `Stamp` is `NextBlock`, a `Frame` or a `Moment`: a beat is unwritable; `push_all` takes a run), held on `Env::due` until its frame
@@ -1186,7 +1195,7 @@ Scalars use `Param<U>`.
   the streaming tier reads a file at its own width and order. The input edges
   report a topology: a decoded file (`Wave::topology`, `FileIn::topology`,
   `WaveMetadata::topology`), a capture device (its inputs are `Unassigned`;
-  `MicIn::open_inputs` chooses them with `Fold::select`). The quad spelling is
+  `MicConfig::inputs` chooses them with `Fold::select`). The quad spelling is
   WAVE's (`FL FR BL BR`); `Fold` treats the side-surround spelling the plugin
   hosts decode as the same four feeds.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
@@ -1500,6 +1509,18 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `tutti_modulation::{SourceKey, RouteKey}` → `ModSourceId` and `ModRouteId`;
   `CompileError::BadRoute` → deleted (a `Depth` is never NaN). A comment or doc that
   disagrees with the code is the bug.
+- **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
+  restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook
+  `LiveSession::on_restart`; `restart_on`, `Session::watch_devices` with four
+  arguments and `SessionBuilder::build_device_on` are behind `testing`);
+  `Device::select_device` → the request's device; `MicIn::{open_inputs,
+  open_inputs_with_monitor}` → `MicIn::open(&MicConfig, rate)`;
+  `Graph::add_inlet(ring, rate)` → `add_inlet(InletRing)`;
+  `SessionEvent::{DeviceFault, DeviceLost, DeviceAppeared, DefaultChanged,
+  RestartWanted, DeviceRestarted, RestartFailed, OutputsListed, OutputsListFailed,
+  OutputsListSlow}` → `SessionEvent::Device(DeviceEvent::..)`; `render_workers(usize)`
+  (0 for per core) → `Workers`; `inputs`/`outputs_floor` of a bare `usize` →
+  `ChannelLayout`.
 - **Dead export names** (doc 019): `tutti-export`'s `ExportConfig`, `RenderConfig`,
   `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,
   `render_to_buffers`, `render_normalized_to_file` and their `_with` twins → `render` /

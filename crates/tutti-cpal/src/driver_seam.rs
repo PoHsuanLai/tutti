@@ -12,6 +12,7 @@
 //! runs exactly the callback CPAL runs.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
@@ -252,7 +253,7 @@ impl CpalDriver {
         let delivering = Arc::clone(&faults);
         Ok(self.device.build_output_stream(
             config,
-            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
                 // The CPAL contract: a callback no larger than MAX_FRAMES.
                 // The assertion lives HERE, at the boundary CPAL crosses, and
                 // not inside `render` — it is a claim about CPAL, not about
@@ -263,7 +264,7 @@ impl CpalDriver {
                     "CPAL callback frames {} exceeds MAX_FRAMES {MAX_FRAMES}",
                     data.len() / channels
                 );
-                block.render(data);
+                block.render_delayed(data, crate::latency::output_delay(&info.timestamp()));
                 delivering.delivered();
             },
             move |err| faults.record(&err),
@@ -367,9 +368,21 @@ impl ManualStream {
     /// interleaved `f32` buffer, or `None` if no stream is open. Allocates the
     /// returned buffer.
     pub fn render_block(&self, frames: usize) -> Option<Vec<f32>> {
+        self.render_block_inner(frames, None)
+    }
+
+    /// [`render_block`](Self::render_block) as a callback whose timestamp
+    /// reports `delay` between the callback and the block's playing, as a
+    /// backend's `OutputCallbackInfo` does: what
+    /// [`AudioEngine::latency`](crate::AudioEngine::latency) then reads.
+    pub fn render_block_delayed(&self, frames: usize, delay: Duration) -> Option<Vec<f32>> {
+        self.render_block_inner(frames, Some(delay))
+    }
+
+    fn render_block_inner(&self, frames: usize, delay: Option<Duration>) -> Option<Vec<f32>> {
         let channels = self.with_block(|b| b.channels())?;
         let mut out = vec![0.0f32; frames * channels];
-        self.with_block(|b| b.render(&mut out))?;
+        self.with_block(|b| b.render_delayed(&mut out, delay))?;
         if let Some(faults) = self
             .faults
             .lock()

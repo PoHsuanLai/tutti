@@ -54,7 +54,7 @@ const DECLICK: usize = 256;
 /// the executor on this side, played in device-sized blocks.
 fn rig(outputs: usize) -> (Session, AudioSide) {
     let mut s = Session::builder()
-        .outputs_floor(outputs)
+        .outputs_floor(ChannelLayout::clamped(outputs))
         .build_detached(SampleRate::DEFAULT)
         .expect("builds");
     s.graph().set_sample_rate(SampleRate(RATE));
@@ -1168,7 +1168,7 @@ fn a_depth_slider_keeps_phase() {
 #[test]
 fn a_fork_renders_a_modulated_param_as_live_does() {
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate(RATE))
         .expect("builds");
     let (written, _) = s.graph().add(ProbeUnit::of(UnitParam::Drive, 1.0));

@@ -32,7 +32,7 @@ use tutti_session::{
     Crossfade, EventInPort, EventOutPort, PHASES, ParamRef, PhaseCx, PluginLoadRequest, RouteSpec,
     Session, SessionEvent,
 };
-use tutti_types::{Depth, Hz, SampleRate, Seconds};
+use tutti_types::{ChannelLayout, Depth, Hz, SampleRate, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 /// The plugin's pipeline chunk in a detached session: its `MaxBlock`
@@ -57,7 +57,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 fn detached() -> Session {
     set_env("TUTTI_PLUGIN_SERVER", plugin_server());
     Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("a detached session builds")
 }

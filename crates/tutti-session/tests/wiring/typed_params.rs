@@ -13,7 +13,7 @@ use tutti_types::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Seconds, UnitAddr
 
 fn detached() -> Session {
     Session::builder()
-        .outputs_floor(1)
+        .outputs_floor(ChannelLayout::MONO)
         .build_detached(SampleRate(48_000.0))
         .expect("builds")
 }

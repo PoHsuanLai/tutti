@@ -261,7 +261,7 @@ pub mod prelude {
 
     // The device handle and a device's identity.
     #[cfg(feature = "device")]
-    pub use tutti_cpal::{DeviceId, TuttiDriver};
+    pub use tutti_cpal::{AudioHost, DeviceId, TuttiDriver};
 
     #[cfg(feature = "sampler")]
     pub use tutti_sampler::{Clip, LoopSetting, Playback, Voice, VoiceWindow};
@@ -288,14 +288,16 @@ pub mod prelude {
     #[cfg(feature = "session")]
     pub use tutti_session::Error;
 
-    #[cfg(all(feature = "session", feature = "device"))]
-    pub use tutti_session::Device;
     #[cfg(feature = "session")]
     pub use tutti_session::{
         ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Job,
         JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder,
-        SessionEvent, TypedParamRef,
+        SessionEvent, TypedParamRef, Workers,
     };
+    #[cfg(all(feature = "session", feature = "device"))]
+    pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};
+    #[cfg(all(feature = "session", feature = "device", feature = "audio-io"))]
+    pub use tutti_session::{Input, InputConfig};
 
     // What a session's calls take, by the feature that gates each (design
     // 015 §5): a modulation target, an export, a plugin load, a MIDI file.

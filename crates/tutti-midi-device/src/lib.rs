@@ -11,7 +11,7 @@
 //!
 //! ```
 //! use tutti_midi_device::{
-//!     DeviceEvent, DeviceTable, Direction, EndpointId, Identity, OsChange, OsDevice,
+//!     DeviceEvent, DeviceTable, PortDirection, EndpointId, Identity, OsChange, OsDevice,
 //! };
 //!
 //! let mut table = DeviceTable::default();
@@ -19,12 +19,12 @@
 //!     handle: EndpointId::from_raw(1),
 //!     identity: Identity::alsa("Keystep", "Keystep MIDI 1"),
 //!     name: "Keystep: Keystep MIDI 1".into(),
-//!     direction: Direction::Input,
+//!     direction: PortDirection::Input,
 //! };
 //! let Some(DeviceEvent::Added(info)) = table.apply(OsChange::Present(keys.clone())) else {
 //!     unreachable!()
 //! };
-//! assert_eq!(table.list(), [info]);
+//! assert!(table.list().eq([&info]));
 //! // The same report again changes nothing.
 //! assert_eq!(table.apply(OsChange::Present(keys)), None);
 //! assert!(matches!(
@@ -42,10 +42,11 @@
 //! use tutti_midi_device::{Action, Connection, Ending, STEP_TIMEOUT};
 //!
 //! let start = Instant::now();
-//! let (mut connection, discovery) = Connection::new(start);
-//! // Send `discovery`. A peer that never answers is sent it again after each
-//! // `STEP_TIMEOUT`, and is a MIDI 1.0 device after the third.
-//! assert_eq!(connection.on_timeout(start + STEP_TIMEOUT), Action::Send(discovery));
+//! let (mut connection, first) = Connection::new(start);
+//! // `first` is `Action::Send(discovery)`: the driver loop handles it like any
+//! // other action. A peer that never answers is sent the discovery again after
+//! // each `STEP_TIMEOUT`, and is a MIDI 1.0 device after the third.
+//! assert_eq!(connection.on_timeout(start + STEP_TIMEOUT), first);
 //! connection.on_timeout(start + 2 * STEP_TIMEOUT);
 //! assert_eq!(
 //!     connection.on_timeout(start + 3 * STEP_TIMEOUT + Duration::from_millis(1)),
@@ -70,7 +71,10 @@ pub use ci::{
 };
 
 pub use connection::{Action, Connection, Ending, MAX_ATTEMPTS, NAME_GRACE, STEP_TIMEOUT};
-pub use endpoint::{Capabilities, Endpoint, FunctionBlock, MAX_FUNCTION_BLOCKS, UMP_VERSION};
-pub use id::{DeviceId, DeviceInfo, Direction, EndpointId, Identity};
-pub use name::{BlockName, EndpointName, Name, ProductInstanceId};
+pub use endpoint::{
+    BlockError, Capabilities, Endpoint, FunctionBlock, FunctionBlockBuilder, MAX_FUNCTION_BLOCKS,
+    UMP_VERSION,
+};
+pub use id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection};
+pub use name::{BlockName, EndpointName, Name, NameError, ProductInstanceId};
 pub use table::{DeviceEvent, DeviceTable, OsChange, OsDevice, Resolved};

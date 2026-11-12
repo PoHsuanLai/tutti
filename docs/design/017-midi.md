@@ -3013,3 +3013,22 @@ such as reassembled SysEx; that is decided when that code is written.
   Channel rules of its Table 5 that M2-120 changes (the Profile's manager-only sensitivity
   and 48 default, §3.5) are L10b's.
 - **The MPE Profile, GM2 and other profiles** are out of the core set and unread.
+
+### L1g (voicing and device vocabulary): as built
+
+- **`tutti-voicing`.** `Rules::poly(n)`, `mono()`, `legato()`, `Default` and consuming `with_*`
+  setters (const). `Voicing::step(channel, message: Voice2, patch, level)` and
+  `PerNoteState::step` take the message by value. The instrument no longer hands a voice
+  slice sorted by id: `level: impl Fn(VoiceId) -> Option<Amplitude>` answers for a voice id
+  (`None`: it has ended) and is called only on a note message, so `VoiceView` is gone and
+  neither `tutti-polysynth` nor `tutti-soundfont` keeps a view list. `Holds::key_up`,
+  `sustain_up` and `sostenuto_up` return `Release { Now, Held }`. `VoiceSpec::group` is
+  `Option<NonZeroU16>`; `VoiceId` is `new`/`get` over a private `u64`.
+- **`tutti-midi-device`.** `DiscoveryData::identity` is a `tutti_ump::DeviceIdentity`.
+  `NameError { TooLong { max }, Nul, Bom, NotPrintableAscii }` with `parse`, `TryFrom<&str>`,
+  `FromStr`, `Display` and `AsRef<str>` on `Name<N>`, `ProductInstanceId` and `MessageText`.
+  `Direction` is `PortDirection`. `Connection::new` and `with_wanted` return
+  `(Self, Action)` (the first is `Action::Send`). `FunctionBlock::builder(..)` with `build() ->
+  Result<_, BlockError>` replaces `new` and the `with_*` chain. `DeviceTable::list` is an
+  `ExactSizeIterator` of `&DeviceInfo`. `CiMessage::encode_into(&mut impl Extend<u8>)` and
+  `CiMessage::packets(group)` (SysEx7 `Ump`s) replace encode, frame, packets.

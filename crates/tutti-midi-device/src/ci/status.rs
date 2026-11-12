@@ -68,19 +68,20 @@ macro_rules! status_message {
             }
 
             #[doc = concat!("The body of ", $table, ".")]
-            pub(crate) fn encode_body(&self, out: &mut Vec<u8>) {
-                out.push(self.$sub.get());
-                out.push(self.status_code.get());
-                out.push(self.status_data.get());
+            pub(crate) fn encode_body(&self, out: &mut impl Extend<u8>) {
+                out.extend([
+                    self.$sub.get(),
+                    self.status_code.get(),
+                    self.status_data.get(),
+                ]);
                 out.extend(self.details.iter().map(|d| d.get()));
                 let mut text = Vec::new();
                 self.message.encode(&mut text);
                 // The length is a 14-bit field; the text of a message we hold
                 // is at most 103 bytes, and one read from a peer fits it.
                 let len = text.len().min(0x3FFF);
-                out.push((len & 0x7F) as u8);
-                out.push(((len >> 7) & 0x7F) as u8);
-                out.extend_from_slice(&text[..len]);
+                out.extend([(len & 0x7F) as u8, ((len >> 7) & 0x7F) as u8]);
+                out.extend(text.into_iter().take(len));
             }
 
             /// Reads the body, or `None` when it is malformed: a byte with its

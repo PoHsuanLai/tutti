@@ -1567,24 +1567,6 @@ mod tests {
         );
     }
 
-    /// The core asks about voices by id: the order the instrument keeps them in
-    /// does not change who is stolen.
-    #[test]
-    fn the_victim_does_not_depend_on_the_order_of_the_instruments_voices() {
-        for order in [Order::Oldest, Order::Newest, Order::Quietest] {
-            let mut forward = Sim::new(POLY.with_steal(Steal::By(order)));
-            let mut backward = Sim::new(POLY.with_steal(Steal::By(order)));
-            for k in 60..64 {
-                forward.on(0, k);
-                backward.on(0, k);
-            }
-            forward.voices[2].level = Amplitude(0.1);
-            backward.voices[2].level = Amplitude(0.1);
-            backward.voices.reverse();
-            assert_eq!(forward.on(0, 70), backward.on(0, 70), "{order:?}");
-        }
-    }
-
     /// Only a note message asks about voices: a controller, a bend and a
     /// pressure never call the lookup.
     #[test]
@@ -1616,15 +1598,6 @@ mod tests {
         s.end(id(1));
         let c = s.on(0, 70);
         assert!(matches!(c[0], Command::Start { steal: None, .. }), "{c:?}");
-    }
-
-    /// A voice id is its number, the whole `u64`.
-    #[test]
-    fn a_voice_id_is_its_number() {
-        for n in [0, 1, u64::MAX] {
-            assert_eq!(VoiceId::new(n).get(), n);
-            assert_eq!(u64::from(VoiceId::new(n)), n);
-        }
     }
 
     #[test]

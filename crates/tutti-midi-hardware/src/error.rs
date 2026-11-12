@@ -31,7 +31,7 @@ pub enum Error {
         /// The device.
         id: tutti_midi_device::DeviceId,
         /// Which way it does go.
-        direction: tutti_midi_device::Direction,
+        direction: tutti_midi_device::PortDirection,
     },
 
     /// No present device has a name containing this text.

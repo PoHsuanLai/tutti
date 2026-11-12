@@ -1,4 +1,5 @@
 use super::*;
+use tutti_ump::DeviceIdentity;
 
 fn muid(raw: u32) -> Muid {
     Muid::new(raw).expect("a valid MUID")
@@ -40,10 +41,12 @@ fn header() -> CiHeader {
 
 fn sample() -> DiscoveryData {
     DiscoveryData::new(
-        [0x00, 0x21, 0x09],
-        0x1234,
-        0x0055,
-        [1, 2, 3, 4],
+        DeviceIdentity {
+            manufacturer: [0x00, 0x21, 0x09].map(U7::of),
+            family: [0x34, 0x24].map(U7::of),
+            model: [0x55, 0x00].map(U7::of),
+            revision: [1, 2, 3, 4].map(U7::of),
+        },
         CiCategories::PROFILE_CONFIGURATION,
         MaxSysexSize::of(512),
     )
@@ -333,4 +336,39 @@ fn the_device_id_and_version_are_range_checked_values() {
         valid: &[0x01, 0x02, 0x1F],
         invalid: &[0x00, 0x20, 0x80, 0xFF],
     });
+}
+
+fn long_message() -> CiMessage {
+    CiMessage::DiscoveryReply {
+        header: header(),
+        to: muid(2),
+        data: sample(),
+    }
+}
+
+/// M2-104 section 7.7: the payload as SysEx7 packets of six bytes, a Start,
+/// Continues and an End; reassembled they are the payload.
+#[test]
+fn packets_carry_the_payload_in_sysex7_packets() {
+    use tutti_ump::{Message, MidiGroup, SysexStatus};
+    let message = long_message();
+    let payload = message.encode();
+    let packets: Vec<_> = message.packets(MidiGroup::of(3)).collect();
+    assert_eq!(packets.len(), payload.len().div_ceil(6));
+    let mut bytes = Vec::new();
+    for (i, ump) in packets.iter().enumerate() {
+        let Ok(Message::Sysex7(group, packet)) = ump.decode() else {
+            panic!("not a SysEx7 packet: {ump:?}")
+        };
+        assert_eq!(group, MidiGroup::of(3));
+        let want = match (i, packets.len()) {
+            (0, 1) => SysexStatus::Complete,
+            (0, _) => SysexStatus::Start,
+            (i, n) if i + 1 == n => SysexStatus::End,
+            _ => SysexStatus::Continue,
+        };
+        assert_eq!(packet.status(), want);
+        bytes.extend_from_slice(packet.data());
+    }
+    assert_eq!(bytes, payload);
 }

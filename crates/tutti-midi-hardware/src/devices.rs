@@ -15,8 +15,8 @@ use std::time::Duration;
 use tutti_graph::UmpAt;
 
 use tutti_midi_device::{
-    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange,
-    OsDevice, Resolved,
+    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, EndpointId, Identity, OsChange, OsDevice,
+    PortDirection, Resolved,
 };
 use tutti_midi_runtime::MidiOut;
 use tutti_ump::StreamConfig;
@@ -366,7 +366,7 @@ impl Devices {
     /// The devices present now, ordered by id.
     #[must_use]
     pub fn list(&self) -> Vec<DeviceInfo> {
-        self.state().table.list()
+        self.state().table.list().cloned().collect()
     }
 
     /// Subscribes to the changes from now on. Each subscriber has a queue of
@@ -387,7 +387,7 @@ impl Devices {
         }
         state.subscribers.push(Arc::downgrade(&queue));
         DeviceEvents {
-            initial: state.table.list(),
+            initial: state.table.list().cloned().collect(),
             queue,
             _devices: self.clone(),
         }
@@ -415,7 +415,7 @@ impl Devices {
     /// or the platform error from opening it. A failed open leaves no port in
     /// `ports`.
     pub fn open_input(&self, id: &DeviceId, ports: &Arc<HardwareMidiInputs>) -> Result<OpenInput> {
-        let (info, handle) = self.present(id, Direction::is_input)?;
+        let (info, handle) = self.present(id, PortDirection::is_input)?;
         let producer = ports.open_input_port(info.name.as_str())?;
         let mut input = OpenInput {
             connection: None,
@@ -435,7 +435,7 @@ impl Devices {
     /// [`Error::NoDevice`] when `id` is not present, [`Error::WrongDirection`]
     /// when it is not an output, or the platform error from opening it.
     pub fn open_output(&self, id: &DeviceId) -> Result<OpenOutput> {
-        let (info, handle) = self.present(id, Direction::is_output)?;
+        let (info, handle) = self.present(id, PortDirection::is_output)?;
         // What the OS says it speaks, until a negotiation says better.
         let described = self.capability(id).unwrap_or_default().endpoint().active();
         let sink = self.inner.backend.open_output(handle)?;
@@ -452,7 +452,7 @@ impl Devices {
     fn present(
         &self,
         id: &DeviceId,
-        wanted: fn(Direction) -> bool,
+        wanted: fn(PortDirection) -> bool,
     ) -> Result<(DeviceInfo, EndpointId)> {
         let state = self.state();
         let (info, handle) = state
@@ -704,7 +704,7 @@ impl Drop for OpenInput {
 }
 
 /// The devices of an enumeration, one per handle: an endpoint listed both ways
-/// is [`Duplex`](Direction::Duplex).
+/// is [`Duplex`](PortDirection::Duplex).
 pub(crate) fn os_devices(inputs: &[EndpointInfo], outputs: &[EndpointInfo]) -> Vec<OsDevice> {
     let mut devices: BTreeMap<EndpointId, OsDevice> = BTreeMap::new();
     let as_device = |e: &EndpointInfo, direction| OsDevice {
@@ -714,13 +714,13 @@ pub(crate) fn os_devices(inputs: &[EndpointInfo], outputs: &[EndpointInfo]) -> V
         direction,
     };
     for e in inputs {
-        devices.insert(e.id, as_device(e, Direction::Input));
+        devices.insert(e.id, as_device(e, PortDirection::Input));
     }
     for e in outputs {
         devices
             .entry(e.id)
-            .and_modify(|d| d.direction = Direction::Duplex)
-            .or_insert_with(|| as_device(e, Direction::Output));
+            .and_modify(|d| d.direction = PortDirection::Duplex)
+            .or_insert_with(|| as_device(e, PortDirection::Output));
     }
     devices.into_values().collect()
 }

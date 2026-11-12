@@ -125,7 +125,7 @@ impl Connection {
     /// A connection that asks for the MIDI 2.0 Protocol with JR Timestamps both
     /// ways, where the peer supports them; with the Endpoint Discovery to send.
     #[must_use]
-    pub fn new(now: Instant) -> (Self, Ump) {
+    pub fn new(now: Instant) -> (Self, Action) {
         Self::with_wanted(
             StreamConfig {
                 protocol: Protocol::Midi2,
@@ -141,7 +141,7 @@ impl Connection {
     /// the peer sending them. Each part the peer does not support is dropped
     /// from the request, and a reserved Protocol asks for MIDI 2.0.
     #[must_use]
-    pub fn with_wanted(wanted: StreamConfig, now: Instant) -> (Self, Ump) {
+    pub fn with_wanted(wanted: StreamConfig, now: Instant) -> (Self, Action) {
         let connection = Self {
             wanted,
             step: Step::Discover(Heard::empty()),
@@ -154,8 +154,8 @@ impl Connection {
             block_name_of: 0,
             block_names: [None; MAX_FUNCTION_BLOCKS],
         };
-        let discovery = connection.packet_for_step();
-        (connection, discovery)
+        let first = Action::Send(connection.packet_for_step());
+        (connection, first)
     }
 
     /// What the connection learned so far. Final once [`settled`](Self::settled).

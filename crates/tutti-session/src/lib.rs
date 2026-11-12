@@ -98,6 +98,7 @@ pub use device::{
 pub use edge::EdgeGainError;
 pub use error::{
     ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result, ScheduleError,
+    TempoError,
 };
 #[cfg(feature = "midi")]
 pub use error::{MidiError, RouteDeclarer};

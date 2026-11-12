@@ -741,8 +741,12 @@ The audio thread never sees a map edit.
 
 - The follower keeps the project's tempo map and meter apart: the maps the session
   found when `follow_tempo` was called. The session has no project tempo apart from
-  the published map, so the map it finds is the one it restores. A map the app
-  publishes while following is replaced by the next change and is not restored.
+  the published map, so the map it finds is the one it restores. While following,
+  the session refuses a map of the app's (`Session::set_tempo` and `set_tempo_map`
+  return `TempoError::Following`), so nothing else publishes in between and the
+  restore is exact; the app unfollows first. (`Session::transport()` is the
+  transport's own handle, below the session's policy: a publish through its
+  `TransportSettings` is not refused, and is overwritten by the next live step.)
 - While following, the published map is the project's up to the beat of the first
   change, then the live steps. Each step **truncates** what came after it: a project
   point or ramp ahead of the playhead is not played while following, because two

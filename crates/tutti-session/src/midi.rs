@@ -961,6 +961,11 @@ impl MidiState {
         self.drops.record_refused(tap.take_lost());
     }
 
+    /// Whether the session follows a live tempo now.
+    pub(crate) fn is_following(&self) -> bool {
+        self.follow.is_some()
+    }
+
     /// `Phase::Poll`, for the tempo the session follows: reports what
     /// `unfollow_tempo` queued, reads the follower's tap and applies what it
     /// heard (the project's tempo map and meter, overlaid at the next block
@@ -1602,9 +1607,10 @@ impl Midi<'_> {
     /// so a project point or ramp ahead of the playhead is not played while
     /// following (a ramp a step lands in is cut at its beat). The session has no
     /// project tempo apart from the published map, so **the map it finds now is
-    /// the one [`unfollow_tempo`](Self::unfollow_tempo) restores**; a map the app
-    /// publishes (`Session::set_tempo_map`, `set_tempo`) while following is
-    /// replaced by the next change, and is not what unfollowing restores.
+    /// the one [`unfollow_tempo`](Self::unfollow_tempo) restores**. While
+    /// following, `Session::set_tempo` and `set_tempo_map` refuse with
+    /// [`TempoError::Following`](crate::TempoError::Following), so nothing else
+    /// publishes in between.
     ///
     /// A change takes effect at the start of the next block (a meter at the next
     /// bar line at or after it), at the latest one block and one update after it

@@ -48,7 +48,7 @@ fn a_step_published_behind_the_playhead_moves_no_beat() {
         TempoPoint::step(Beat(2.0), Bpm::of(60.0)),
     ])
     .unwrap();
-    s.set_tempo_map(behind);
+    s.set_tempo_map(behind).expect("not following");
     for _ in 0..8 {
         beats.push(block(&s));
     }

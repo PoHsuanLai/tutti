@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tutti_midi_hardware::EndpointId;
 use tutti_midi_hardware::test_support::{FakeBackend, FakeCounters, endpoint};
-use tutti_session::{FollowTempo, MidiError, MidiEvent, Session, SessionEvent};
+use tutti_session::{FollowTempo, MidiError, MidiEvent, Session, SessionEvent, TempoError};
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::MotionEvent;
 use tutti_types::{
@@ -265,7 +265,7 @@ fn a_step_in_a_project_ramp_cuts_the_ramp() {
         .step_to(Beat(16.0), Bpm::of(90.0))
         .build()
         .unwrap();
-    s.set_tempo_map(ramp.clone());
+    s.set_tempo_map(ramp.clone()).expect("not following yet");
     let _ = s.update();
     follow(&mut s, MidiGroup::FIRST, false);
     play(&s);
@@ -455,4 +455,24 @@ fn follow_refusals() {
         matches!(s.midi().unfollow_tempo(), Err(MidiError::NotFollowing)),
         "nothing was followed"
     );
+}
+
+/// **While a live tempo is followed, the app's own tempo is refused**, so the
+/// map `unfollow_tempo` restores is the one in force when following began:
+/// `set_tempo` and `set_tempo_map` return `TempoError::Following` and publish
+/// nothing, and both work again after unfollowing.
+#[test]
+fn the_apps_tempo_is_refused_while_following() {
+    let (mut s, _fake) = rig();
+    let project = s.transport().settings().tempo_map();
+    follow(&mut s, MidiGroup::FIRST, false);
+    assert_eq!(s.set_tempo(Bpm::of(90.0)), Err(TempoError::Following));
+    let map = TempoMap::constant(Bpm::of(90.0)).unwrap();
+    assert_eq!(s.set_tempo_map(map), Err(TempoError::Following));
+    assert!(
+        Arc::ptr_eq(&s.transport().settings().tempo_map(), &project),
+        "a refusal publishes nothing"
+    );
+    s.midi().unfollow_tempo().expect("was following");
+    assert_eq!(s.set_tempo(Bpm::of(90.0)), Ok(()));
 }

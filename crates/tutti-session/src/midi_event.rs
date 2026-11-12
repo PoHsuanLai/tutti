@@ -104,7 +104,9 @@ pub enum MidiEvent {
     TempoFollowed {
         /// The tempo.
         tempo: tutti_types::Bpm,
-        /// The beat the step was placed at, for a host to draw it.
+        /// The beat the step was placed at, for a host to draw it. A publish
+        /// that lands late takes effect from the block that picks it up, so
+        /// the change is heard after this beat (doc 020 §11).
         beat: tutti_types::Beat,
     },
     /// A meter the session follows was published: a Set Time Signature of the

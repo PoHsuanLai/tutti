@@ -54,6 +54,19 @@ pub enum ScheduleError {
     },
 }
 
+/// The session refused to set the project tempo. Nothing is published.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum TempoError {
+    /// The session follows a live tempo ([`Midi::follow_tempo`](crate::Midi::follow_tempo)),
+    /// which owns the published map until
+    /// [`unfollow_tempo`](crate::Midi::unfollow_tempo): a map set now would be
+    /// overwritten by the next live step, and unfollowing restores the map in
+    /// force when following began.
+    #[error("the session follows a live tempo; unfollow_tempo first")]
+    Following,
+}
+
 /// A query or a control named a node the graph does not have: removed already,
 /// or never added. Nothing is changed or read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]

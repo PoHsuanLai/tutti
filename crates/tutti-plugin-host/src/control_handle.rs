@@ -572,6 +572,23 @@ impl PluginHandle {
         Self::editor_call(control, |c| c.open_floating_editor(main))
     }
 
+    /// Tells the open editor its window's backing-store scale changed.
+    ///
+    /// # Errors
+    ///
+    /// [`EditorError::GuiNotSupported`] when this handle has no editor route,
+    /// [`EditorError::ScaleUnsupported`] for a format that takes the scale only
+    /// at open or has the OS scale the window, and otherwise any error of
+    /// [`EditorWindow::set_editor_scale`](tutti_plugin_types::EditorWindow::set_editor_scale).
+    pub fn set_editor_scale(
+        &self,
+        main: &MainThread,
+        scale: ContentScale,
+    ) -> Result<(), EditorError> {
+        let control = self.editor_route()?;
+        Self::editor_call(control, |c| c.set_editor_scale(main, scale))
+    }
+
     /// Closes the editor, if one is open.
     ///
     /// A no-op without an editor route, so a caller tearing a window down need

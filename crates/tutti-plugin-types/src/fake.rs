@@ -71,6 +71,8 @@ pub enum Call {
     CloseEditor,
     /// `EditorWindow::editor_idle`.
     EditorIdle,
+    /// `EditorWindow::set_editor_scale`, with the factor's bits.
+    SetEditorScale(u64),
 }
 
 const SCOPES: [RescanScope; 4] = [
@@ -108,6 +110,7 @@ impl Call {
             Self::OpenEditor => [19, 0, 0],
             Self::CloseEditor => [20, 0, 0],
             Self::EditorIdle => [21, 0, 0],
+            Self::SetEditorScale(bits) => [22, bits, 0],
         }
     }
 
@@ -137,6 +140,7 @@ impl Call {
             19 => Self::OpenEditor,
             20 => Self::CloseEditor,
             21 => Self::EditorIdle,
+            22 => Self::SetEditorScale(a),
             _ => return None,
         })
     }
@@ -218,6 +222,8 @@ struct Shared {
     state: Mutex<Vec<u8>>,
     /// Whether the fake has an editor (`FakePlugin::with_editor`).
     editor: AtomicBool,
+    /// Whether the editor takes a new scale live (`FakePlugin::with_editor_scale`).
+    takes_scale: AtomicBool,
     /// The size the plugin asked its window to take, packed `width << 32 | height`,
     /// until the host polls it; `0` when it has not asked.
     resize_request: AtomicU64,
@@ -281,6 +287,7 @@ impl FakePlugin {
             requests: RequestWord::new(),
             state: Mutex::new(Vec::new()),
             editor: AtomicBool::new(false),
+            takes_scale: AtomicBool::new(false),
             resize_request: AtomicU64::new(0),
         });
         (
@@ -379,6 +386,12 @@ impl FakePlugin {
     /// window calls are logged. The default is none.
     pub fn with_editor(&self, has: bool) {
         self.0.editor.store(has, Ordering::Relaxed);
+    }
+
+    /// Makes the fake's editor take a new scale live. The default is the trait's
+    /// refusal, `EditorError::ScaleUnsupported`, as VST2 and AU answer.
+    pub fn with_editor_scale(&self, takes: bool) {
+        self.0.takes_scale.store(takes, Ordering::Relaxed);
     }
 
     /// The plugin asks its window to take `size`; the host's next
@@ -560,6 +573,20 @@ macro_rules! fake_control {
                     width: 640,
                     height: 480,
                 })
+            }
+
+            fn set_editor_scale(
+                &mut self,
+                _main: &MainThread,
+                scale: ContentScale,
+            ) -> PluginResult<()> {
+                if !self.shared.takes_scale.load(Ordering::Relaxed) {
+                    return Err(PluginError::Editor(EditorError::ScaleUnsupported));
+                }
+                self.shared
+                    .log
+                    .push(Call::SetEditorScale(scale.get().to_bits()));
+                Ok(())
             }
 
             fn close_editor(&mut self, _main: &MainThread) {

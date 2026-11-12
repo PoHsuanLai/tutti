@@ -127,7 +127,7 @@ impl MainSession<'_> {
         self.session.graph.graveyard.exhume(&main);
         tutti_plugin_types::run_deferred(&main);
         for (&node, hosted) in &self.session.graph.plugins {
-            if hosted.editor == EditorState::Closed {
+            if !hosted.editor_open {
                 continue;
             }
             hosted.handle.editor_idle(&main);
@@ -187,17 +187,6 @@ impl MainPlugin<'_> {
     }
 }
 
-/// What the session knows of a plugin's editor window.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum EditorState {
-    /// Not opened through the view, or closed since.
-    Closed,
-    /// Embedded in this parent, at this scale.
-    Embedded(WindowHandle, ContentScale),
-    /// The plugin's own window.
-    Floating,
-}
-
 /// Whether the editor embedded in the parent the host gave, or the plugin
 /// opened a window of its own ([`EditorView::open`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,12 +233,12 @@ impl EditorView<'_> {
         let handle = &self.hosted.handle;
         if handle.loaded().features.contains(Features::EDITOR_FLOATING) {
             handle.open_floating_editor(&self.main)?;
-            self.hosted.editor = EditorState::Floating;
+            self.hosted.editor_open = true;
             return Ok(Opened::Floating);
         }
         let parent = WindowHandle::from_window(window)?;
         let size = handle.open_editor(&self.main, parent, scale)?;
-        self.hosted.editor = EditorState::Embedded(parent, scale);
+        self.hosted.editor_open = true;
         Ok(Opened::Embedded(size))
     }
 
@@ -264,33 +253,25 @@ impl EditorView<'_> {
         self.hosted.handle.set_editor_size(&self.main, requested)
     }
 
-    /// Follows a change of the window's backing-store scale (it moved to
-    /// another monitor): an embedded editor is closed and opened again in its
-    /// parent at `scale`, since every format takes the scale at open, and the
-    /// new size is returned. A floating editor is the plugin's window, which
-    /// follows its own display. Nothing happens when no editor is open.
+    /// Tells the open editor its window's backing-store scale changed (it moved
+    /// to another monitor), without closing it: CLAP's `gui.set_scale`, VST3's
+    /// `setContentScaleFactor`. A served plugin's editor is the editor-only
+    /// instance in this process, so this reaches it as it is.
     ///
     /// # Errors
     ///
-    /// The plugin refuses to open again.
-    pub fn rescale(&mut self, scale: ContentScale) -> Result<Option<EditorSize>, EditorError> {
-        let EditorState::Embedded(parent, was) = self.hosted.editor else {
-            return Ok(None);
-        };
-        if was == scale {
-            return Ok(None);
-        }
-        self.hosted.handle.close_editor(&self.main);
-        self.hosted.editor = EditorState::Closed;
-        let size = self.hosted.handle.open_editor(&self.main, parent, scale)?;
-        self.hosted.editor = EditorState::Embedded(parent, scale);
-        Ok(Some(size))
+    /// [`EditorError::ScaleUnsupported`] where the format takes the scale only at
+    /// open (VST2) or the OS scales the window (AU, and any logical-pixel window
+    /// such as Cocoa's): there is nothing to do, and the host keeps its window
+    /// as it is. Another error: no editor is open, or the plugin refused.
+    pub fn rescale(&mut self, scale: ContentScale) -> Result<(), EditorError> {
+        self.hosted.handle.set_editor_scale(&self.main, scale)
     }
 
     /// Closes the editor; the plugin stays loaded. Nothing happens when none
     /// is open.
     pub fn close(&mut self) {
         self.hosted.handle.close_editor(&self.main);
-        self.hosted.editor = EditorState::Closed;
+        self.hosted.editor_open = false;
     }
 }

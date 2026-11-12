@@ -7,6 +7,7 @@
 
 use std::cell::Cell;
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 use vst3::Steinberg::{
@@ -186,19 +187,9 @@ struct Extensions {
     audio_presentation_latency: Option<ComPtr<IAudioPresentationLatency>>,
 }
 
-/// One plugin instance: its component, its processor and its controller, with
-/// the host objects they call back into.
-///
-/// `Plugin` is `Send` but not `Sync`: it can move to the thread that drives
-/// the plugin's UI, and only one thread at a time calls into it. The
-/// audio-thread entries are [`AudioSide`]'s, taken once through
-/// [`audio_side`](Self::audio_side), so a processor that holds the audio half
-/// cannot make a main-thread call.
-///
-/// Dropping it runs the teardown the SDK requires, in order: stop processing
-/// and deactivate, close the editor, disconnect a separate controller, clear
-/// the component handler, terminate the controller, terminate the component.
-pub struct Plugin {
+/// What a [`Plugin`] holds: the instance itself, apart from the wrapper whose
+/// `Drop` decides where the teardown runs. Reached through `Plugin`'s `Deref`.
+pub struct Parts {
     // Fields drop in declaration order after `Drop::drop`. Every COM object
     // below is implemented inside the plugin's module, so the module is the
     // LAST field: releasing one after the module is unloaded jumps through a
@@ -224,7 +215,7 @@ pub struct Plugin {
     module: Arc<Module>,
 }
 
-/// The guard [`Plugin::scoped`] returns.
+/// The guard `Plugin::scoped` returns.
 #[cfg(target_os = "linux")]
 pub(super) struct CallScope(
     #[allow(dead_code, reason = "held for its drop")] crate::com::OwnedScope,
@@ -233,7 +224,78 @@ pub(super) struct CallScope(
 #[cfg(not(target_os = "linux"))]
 pub(super) struct CallScope;
 
+/// One plugin instance: its component, its processor and its controller, with
+/// the host objects they call back into.
+///
+/// `Plugin` is `Send` but not `Sync`: it can move to the thread that drives
+/// the plugin's UI, and only one thread at a time calls into it. The
+/// audio-thread entries are [`AudioSide`]'s, taken once through
+/// `audio_side`, so a processor that holds the audio half
+/// cannot make a main-thread call.
+///
+/// Dropping it runs the teardown the SDK requires, in order: stop processing
+/// and deactivate, close the editor, disconnect a separate controller, clear
+/// the component handler, terminate the controller, terminate the component.
+///
+/// A plugin dropped with an editor open on a thread that is not the main thread
+/// is not torn down there (a view cannot be detached off its thread, and
+/// `terminate` and a module's close are main-thread calls too): it is handed to
+/// the main thread (`tutti_plugin_types::defer_to_main`) and dropped at its next
+/// `run_deferred`, as the CLAP and VST2 hosts do.
+pub struct Plugin {
+    parts: ManuallyDrop<Parts>,
+}
+
+impl std::ops::Deref for Plugin {
+    type Target = Parts;
+
+    fn deref(&self) -> &Parts {
+        &self.parts
+    }
+}
+
+impl std::ops::DerefMut for Plugin {
+    fn deref_mut(&mut self) -> &mut Parts {
+        &mut self.parts
+    }
+}
+
+impl Plugin {
+    /// Queries the interfaces of a freshly created component.
+    pub(crate) fn assemble(
+        module: &Arc<Module>,
+        component: Component,
+    ) -> Result<Self, CreateError> {
+        Ok(Self {
+            parts: ManuallyDrop::new(Parts::assemble(module, component)?),
+        })
+    }
+}
+
+impl Drop for Plugin {
+    fn drop(&mut self) {
+        // SAFETY: taken once, here, and `self.parts` is not used again.
+        let parts = unsafe { ManuallyDrop::take(&mut self.parts) };
+        if parts.editor.is_some() && tutti_plugin_types::MainThread::current().is_none() {
+            eprintln!(
+                "tutti-vst3-ffi: a VST3 plugin with an open editor was dropped off the main thread; its \
+                 teardown is handed to the main thread"
+            );
+            // Never the audio thread: a unit leaves the graph on the control side
+            // (`defer_to_main`, "Never from an audio thread"). The audio half holds
+            // the shared claim, not this value.
+            tutti_plugin_types::defer_to_main(move |_main| drop(parts));
+        }
+    }
+}
+
 impl std::fmt::Debug for Plugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.parts, f)
+    }
+}
+
+impl std::fmt::Debug for Parts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Plugin")
             .field("active", &self.is_active())
@@ -255,17 +317,14 @@ impl std::fmt::Debug for Plugin {
 // thread holds. The tokenless entries are `latency_samples` and `tail_samples`
 // (plain getters; see their docs), `is_active`, `set_processing` and
 // `audio_side` (audio-half bookkeeping under the claim), and the
-// `MidiLearn` handle, which forwards live MIDI. `Drop` has no token: with an
-// editor open and no main thread under it, it leaks the whole plugin (see
-// `Drop for Plugin`); otherwise it tears down as usual.
-unsafe impl Send for Plugin {}
+// `MidiLearn` handle, which forwards live MIDI. `Plugin`'s `Drop` has no token:
+// with an editor open and no main thread under it, it hands the whole plugin to
+// the main thread (`defer_to_main`); otherwise it tears down as usual.
+unsafe impl Send for Parts {}
 
-impl Plugin {
+impl Parts {
     /// Queries the interfaces of a freshly created component.
-    pub(crate) fn assemble(
-        module: &Arc<Module>,
-        component: Component,
-    ) -> Result<Self, CreateError> {
+    fn assemble(module: &Arc<Module>, component: Component) -> Result<Self, CreateError> {
         let component = component.0;
         let processor = component
             .cast::<IAudioProcessor>()

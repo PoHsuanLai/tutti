@@ -265,6 +265,13 @@ pub enum EditorError {
     #[error("plugin failed to open editor: {0}")]
     PluginError(String),
 
+    /// The editor cannot take a new scale after it opened: the format takes the
+    /// scale only at open (VST2), the OS scales its window (AU, and a
+    /// logical-pixel window such as Cocoa's), or the plugin has no call for it.
+    /// Not a fault: nothing needs doing on the plugin's side.
+    #[error("the editor takes no new scale after it opened")]
+    ScaleUnsupported,
+
     /// Another `open_editor` holds the GUI lock. Retryable once it completes.
     #[error("could not acquire GUI lock (another open_editor in progress?)")]
     Busy,

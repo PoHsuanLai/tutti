@@ -597,6 +597,27 @@ impl EditorWindow for Vst3Loaded {
         Vst3Loaded::editor_capabilities(self, main)
     }
 
+    /// `IPlugViewContentScaleSupport` through [`Vst3Loaded::rescale_editor`]; a
+    /// logical-pixel view or one without the interface is a
+    /// [`ScaleUnsupported`](tutti_plugin_types::EditorError::ScaleUnsupported).
+    fn set_editor_scale(
+        &mut self,
+        main: &MainThread,
+        scale: tutti_plugin_types::ContentScale,
+    ) -> tutti_plugin_types::PluginResult<()> {
+        match Vst3Loaded::rescale_editor(self, main, scale) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(tutti_plugin_types::PluginError::Editor(
+                tutti_plugin_types::EditorError::ScaleUnsupported,
+            )),
+            Err(e) => Err(tutti_plugin_types::PluginError::Editor(
+                tutti_plugin_types::EditorError::PluginError(format!(
+                    "VST3 rescale_editor failed: {e}"
+                )),
+            )),
+        }
+    }
+
     /// `IPlugView::onSize` through [`Vst3Loaded::resize_editor`]: the size the
     /// plugin snapped to.
     fn set_editor_size(

@@ -163,6 +163,10 @@ impl EditorWindow for Vst3Editor {
         EditorWindow::editor_idle(&mut self.inner, main);
     }
 
+    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+        EditorWindow::set_editor_scale(&mut self.inner, main, scale)
+    }
+
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
         let inner = self.inner.editor_capabilities(main);
         EditorCapabilities {

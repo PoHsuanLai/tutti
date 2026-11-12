@@ -162,11 +162,11 @@ impl<'a> GuiCall<'a> {
         Some(unsafe { f(self.plugin, self.api, floating) })
     }
 
-    fn set_scale(&self, scale: f64) -> Option<()> {
+    /// `set_scale`, and whether the plugin took it; `None` without the entry.
+    fn set_scale(&self, scale: f64) -> Option<bool> {
         let f = self.gui.set_scale?;
         // SAFETY: as `is_api_supported`.
-        unsafe { f(self.plugin, scale) };
-        Some(())
+        Some(unsafe { f(self.plugin, scale) })
     }
 
     fn get_size(&self) -> Option<(u32, u32)> {
@@ -499,6 +499,27 @@ impl Plugin {
             Some(true) => {}
         }
         Ok((w, h))
+    }
+
+    /// Tells the created editor its window's scale changed (`gui.set_scale`).
+    /// Returns whether the plugin took it: `false` where the window api is in
+    /// logical pixels (Cocoa, UIKit: `ext/gui.h` says not to call it there),
+    /// where the plugin has no `set_scale`, or where it answered `false`.
+    ///
+    /// # Errors
+    /// No `clap.gui`, or no editor created.
+    pub fn rescale_gui(&mut self, _main: &MainThread, scale: f64) -> Result<bool, GuiError> {
+        let gui = self.gui()?;
+        if !self.gui_created {
+            return Err(GuiError::NotCreated);
+        }
+        let (api, _) = platform_window_handle(std::ptr::null_mut());
+        if api_uses_logical_pixels(api) {
+            return Ok(false);
+        }
+        // SAFETY: as `resize_gui`.
+        let call = unsafe { GuiCall::new(gui, self.raw(), api) };
+        Ok(call.set_scale(scale) == Some(true))
     }
 
     /// Hides the editor (unless its window is already gone) and destroys it. A

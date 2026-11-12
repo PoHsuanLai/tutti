@@ -16,7 +16,8 @@ use tutti_nodes::testing::Const;
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::fake::{Call, FakePlugin};
 use tutti_plugin_types::{
-    ContentScale, EditorSize, MainThread, Normalized, ParamId, ParameterInfo, PluginFailure,
+    ContentScale, EditorError, EditorSize, MainThread, Normalized, ParamId, ParameterInfo,
+    PluginFailure,
 };
 use tutti_session::{Opened, PluginChange, PluginEvent, Session, SessionEvent};
 use tutti_types::{ChannelLayout, SampleRate};
@@ -197,32 +198,36 @@ fn update_services_the_open_editor_and_no_other() {
     assert!(fake.calls().contains(&Call::CloseEditor));
 }
 
-/// **A new scale reopens an embedded editor in its parent**, and the same scale
-/// does nothing: every format takes the scale at open.
+/// **`rescale` reaches the plugin's live scale call, without closing the
+/// editor**, and a format with none answers the typed refusal: the fake
+/// takes the scale only when told to (as CLAP and VST3 do), and refuses
+/// like VST2 and AU otherwise.
 #[test]
-fn rescale_reopens_the_editor_at_the_new_scale_only() {
+fn rescale_reaches_the_plugins_scale_call_or_is_refused_by_name() {
     let (mut s, node, fake) = session_with_editor();
     let mut ui = s.main(main_thread());
-    let opens = |fake: &FakePlugin| {
-        fake.calls()
-            .iter()
-            .filter(|c| **c == Call::OpenEditor)
-            .count()
-    };
     let mut plugin = ui.plugin(node).unwrap();
     let mut editor = plugin.editor();
-    assert_eq!(
-        editor.rescale(ContentScale::IDENTITY).unwrap(),
-        None,
-        "nothing is open to rescale"
-    );
     editor.open(&StandInWindow, ContentScale::IDENTITY).unwrap();
-    assert_eq!(editor.rescale(ContentScale::IDENTITY).unwrap(), None);
-    assert_eq!(opens(&fake), 1);
     let two = ContentScale::new(2.0).unwrap();
-    assert!(editor.rescale(two).unwrap().is_some());
-    assert_eq!(opens(&fake), 2, "reopened once");
-    assert!(fake.calls().contains(&Call::CloseEditor));
+
+    assert!(
+        matches!(editor.rescale(two), Err(EditorError::ScaleUnsupported)),
+        "a format with no live scale call refuses by name"
+    );
+    fake.with_editor_scale(true);
+    editor.rescale(two).unwrap();
+    let calls = fake.calls();
+    assert!(calls.contains(&Call::SetEditorScale(2.0_f64.to_bits())));
+    assert_eq!(
+        calls.iter().filter(|c| **c == Call::OpenEditor).count(),
+        1,
+        "the editor was not reopened"
+    );
+    assert!(
+        !calls.contains(&Call::CloseEditor),
+        "the editor was not closed"
+    );
 }
 
 /// **A removed plugin waits in the graveyard until the main thread empties

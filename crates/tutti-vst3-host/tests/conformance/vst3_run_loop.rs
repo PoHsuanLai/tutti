@@ -188,14 +188,16 @@ fn a_plugin_never_initialized_is_not_terminated() {
     drop(create(&module));
 }
 
-/// **A plugin dropped off the main thread with its editor open is leaked whole.**
-/// A view belongs to the thread that attached it, and `setActive(0)`/`terminate`
-/// are main-thread calls (the shared plugin aborts the process if `removed` runs
-/// off the attaching thread or `terminate` off the initializing one, as a real
-/// plugin may crash). `Drop` has no token, so with an editor open and no main
-/// thread under it, it tears nothing down; the run loop is purged all the same.
+/// **A plugin dropped off the main thread with its editor open is torn down on
+/// the main thread, later, not leaked.** A view belongs to the thread that
+/// attached it, and `setActive(0)`/`terminate` are main-thread calls (the
+/// shared plugin aborts the process if `removed` runs off the attaching thread
+/// or `terminate` off the initializing one, as a real plugin may crash).
+/// `Drop` has no token, so the plugin is handed to the main thread
+/// (`defer_to_main`, as the CLAP and VST2 hosts do): still registered on the
+/// run loop after the drop, torn down at the main thread's next `run_deferred`.
 #[test]
-fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
+fn a_plugin_dropped_off_the_main_thread_is_torn_down_on_it_later() {
     let main = MainThread::claim().unwrap();
     let module = module();
     let mut plugin = plugin_with_editor(&module, TIDY);
@@ -203,7 +205,17 @@ fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
     let bystander = create(&module);
     assert_eq!(registered(&bystander), (1, 1));
     std::thread::spawn(move || drop(plugin)).join().unwrap();
-    assert_eq!(registered(&bystander), (0, 0), "purged though not detached");
+    assert_eq!(
+        registered(&bystander),
+        (1, 1),
+        "nothing was torn down on the dropping thread"
+    );
+    assert_eq!(tutti_plugin_types::run_deferred(&main), 1);
+    assert_eq!(
+        registered(&bystander),
+        (0, 0),
+        "the main thread detached it, and the run loop is purged"
+    );
 }
 
 /// **`activate_bus` reports the plugin's refusal.** The shared plugin has the

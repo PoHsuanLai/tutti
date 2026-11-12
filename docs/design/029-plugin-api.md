@@ -175,9 +175,9 @@ until it does; the leak is bounded by what the host removes, is counted
 (`Phase::Plugins`). The main-thread-only calls (an editor, a load, a state
 restore) take the proof, or are the view's, and the compile-fail doctests pin
 that `Plugin<'_>` has no `editor()` and that `MainSession` is `!Send`. A format's
-`Drop` keeps `MainThread::current()` (a `Drop` cannot take a token): CLAP and
-VST2 rebuild or move what they own to `defer_to_main` when released elsewhere;
-VST3 with an editor open does not (see the as-built note). `MainThread`
+`Drop` keeps `MainThread::current()` (a `Drop` cannot take a token): CLAP, VST2 and VST3 (with an editor open) move what they own to
+`defer_to_main` when released off the main thread, and `run_deferred` (the
+view's `update`) drops it there. `MainThread`
 is passed by value (it is a `Copy` zero-sized proof; a reference to it adds
 nothing). It is never derived from a window system's event loop, which winit
 lets run off the OS main thread on Linux and Windows.
@@ -310,21 +310,23 @@ then the graveyard, `run_deferred`, and every editor opened through the view:
 `MainPlugin` (`view()` for the read-only `Plugin<'_>`, `editor()`), whose
 `EditorView` has `open(&window, scale) -> Result<Opened, EditorError>` (`Opened::Embedded(size)`,
 or `Floating` for a plugin whose `Features::EDITOR_FLOATING` is set), `resize`,
-`rescale` and `close`. `rescale` closes an embedded editor and opens it again in
-its parent at the new scale, since every format takes the scale at open (there
-is no live content-scale call in `EditorWindow`); a floating editor is the
-plugin's window and follows its display. `PluginHandle::open_editor` takes a
+`rescale` and `close`. `rescale` is `EditorWindow::set_editor_scale`, a live call (CLAP's
+`gui.set_scale`, withheld on a logical-pixel api; VST3's
+`IPlugViewContentScaleSupport::setContentScaleFactor`); VST2 and AU, which take
+the scale at open or have the OS scale the window, answer the typed
+`EditorError::ScaleUnsupported`. A served plugin's editor is the editor-only
+instance in the host process, so the call reaches it through `PluginBridge`
+with no wire change. A floating editor is the plugin's window. `PluginHandle::open_editor` takes a
 `WindowHandle` now (`WindowHandle::from_window` still takes any
 `raw-window-handle` 0.6 window). The VST3 pieces of §6.3: the served editor's
 `editor_idle` pumps the Linux `IRunLoop` (it did nothing), and an in-process
 VST3's `Control` reports its resize capabilities, takes `set_editor_size` and
 answers `poll_editor_resize_request` (they were stubs). What the audit of the
 drop paths found: CLAP and VST2 hand their release to `defer_to_main` when
-dropped off the main thread; **a VST3 plugin with an editor open that is dropped
-off the main thread is leaked** (every COM object and the module, with a
-message), as before. The graveyard makes that rarer for a session's own
-removals, but a node the executor retires still drops where `Editor::collect`
-runs. Giving the VST3 `Plugin` a deferral like CLAP's is the open item.
+dropped off the main thread, and a VST3 plugin with an editor open, which used
+to be leaked whole (every COM object and the module), now does too: `Plugin`
+wraps its `Parts`, and its `Drop` hands them to the main thread. So whatever
+`Editor::collect` retires closes on the main thread, for every format.
 
 **As built (the typed cause, step 4's, done early).** The cause of a death is
 `tutti_plugin_types::PluginFailure`, latched by the bridge where it notices

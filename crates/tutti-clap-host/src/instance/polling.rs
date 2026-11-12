@@ -187,6 +187,20 @@ impl ClapLoaded {
         caps
     }
 
+    /// Tells the open editor its window's scale changed (`gui.set_scale`).
+    /// Returns whether the plugin took it: `false` on a logical-pixel window
+    /// api (Cocoa), for a plugin with no `set_scale`, or one that refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::EditorError`] if the plugin has no GUI extension or
+    /// no editor is created.
+    pub fn rescale_editor(&mut self, main: &MainThread, scale: ContentScale) -> Result<bool> {
+        self.plugin
+            .rescale_gui(main, scale.get())
+            .map_err(gui_error)
+    }
+
     /// Asks the plugin to resize its open editor to `requested`, returning the
     /// size it applied after snapping.
     ///

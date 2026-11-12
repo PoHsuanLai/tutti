@@ -1552,7 +1552,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `Session::update`, `commit`, `remove` and `replace` stay on `Session` and free no plugin:
   what they retire waits in the graveyard, `Session::retired_plugins`), and
   `PluginHandle::open_editor(.., impl HasWindowHandle)` → `open_editor(.., WindowHandle)`
-  (a host's own path is `ui.plugin(node)?.editor().open(&window, scale)` → `Opened`);
+  (a host's own path is `ui.plugin(node)?.editor().open(&window, scale)` → `Opened`, and `rescale(scale)` → `EditorWindow::set_editor_scale`);
   `Session::mods()` as the editor → `mods_mut()`; `Mods::route(source, target,
   depth)` → `route(RouteSpec)`; `Mods::route_mut` and its public `RouteDecl` fields →
   `route_of(id)?` setters; `ModState::{refusal, unresolved_targets,

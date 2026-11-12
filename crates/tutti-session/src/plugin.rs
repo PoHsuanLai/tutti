@@ -694,8 +694,9 @@ impl Graveyard {
 
 /// What the session keeps for one hosted plugin. See the module docs.
 pub(crate) struct HostedPlugin {
-    /// The editor as the view left it: what `MainSession::update` services.
-    pub(crate) editor: crate::main_session::EditorState,
+    /// Whether the editor was opened through the view and not closed since:
+    /// what `MainSession::update` services.
+    pub(crate) editor_open: bool,
     /// The plugin this is: from the load's ref, with the id the loaded plugin
     /// reports.
     plugin: PluginRef,
@@ -800,7 +801,7 @@ impl HostedPlugin {
     pub(crate) fn new(handle: PluginHandle, plugin: PluginRef) -> Self {
         let (notices, hearing) = hear(&handle);
         Self {
-            editor: crate::main_session::EditorState::Closed,
+            editor_open: false,
             plugin,
             handle,
             controls: None,
@@ -879,7 +880,7 @@ impl HostedPlugin {
         // What the outgoing plugin reported and nobody drained is its own.
         (self.notices, self.hearing) = hear(&handle);
         let outgoing = std::mem::replace(&mut self.handle, handle);
-        self.editor = crate::main_session::EditorState::Closed;
+        self.editor_open = false;
         self.liveness = Liveness::new();
         self.status = PluginLiveness::Healthy;
         self.told = false;

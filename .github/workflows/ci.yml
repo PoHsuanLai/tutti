@@ -779,11 +779,9 @@ jobs:
       - name: Install Linux audio deps
         uses: ./.github/actions/linux-audio-deps
       # JACK too: the umbrellas' `--all-features` line below turns on
-      # `tutti-cpal/jack`, whose `jack-sys` build script wants the headers. A
-      # second call on top of the first, as the `features` job does: the JACK
-      # list's cached .debs are what that order downloads (JACK and what the
-      # default list did not already install), so a job that asked for the JACK
-      # list alone would restore them without `libasound2-dev`.
+      # `tutti-cpal/jack`, whose `jack-sys` build script wants the headers. The
+      # action keys its cache on what is already installed, so this second call
+      # has its own cache, apart from a job that asks for the JACK list first.
       - name: Install JACK headers
         uses: ./.github/actions/linux-audio-deps
         with:

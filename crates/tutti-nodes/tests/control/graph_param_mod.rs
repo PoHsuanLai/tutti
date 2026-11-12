@@ -522,7 +522,10 @@ fn block_rate_cases() -> Vec<Case> {
         )
     }
     fn chorus(w: usize) -> ModDelayNode {
-        ModDelayNode::chorus(ChannelLayout::try_from(w).expect("a test width is small"))
+        ModDelayNode::chorus(
+            BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("at most one bus wide"),
+        )
     }
     fn phaser(w: usize) -> PhaserNode {
         PhaserNode::with_channels(
@@ -660,7 +663,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = chorus(w);
                 if let Some(v) = v {
-                    n.set_rate(Hz::new(v));
+                    assert!(n.param_set().set(UnitParam::Rate, v));
                 }
                 parts_of(n)
             },
@@ -673,7 +676,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = chorus(w);
                 if let Some(v) = v {
-                    n.set_depth(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::Depth, v));
                 }
                 parts_of(n)
             },
@@ -698,10 +701,13 @@ fn block_rate_cases() -> Vec<Case> {
             param: UnitParam::Depth,
             make: |w, v| {
                 let n = ModDelayNode::flanger(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    BusTopology::assumed(
+                        ChannelLayout::try_from(w).expect("a test width is small"),
+                    )
+                    .expect("at most one bus wide"),
                 );
                 if let Some(v) = v {
-                    n.set_depth(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::Depth, v));
                 }
                 parts_of(n)
             },
@@ -825,7 +831,10 @@ fn mix_cases() -> Vec<MixCase> {
             name: "chorus mix",
             make: |w| {
                 parts_of(ModDelayNode::chorus(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    BusTopology::assumed(
+                        ChannelLayout::try_from(w).expect("a test width is small"),
+                    )
+                    .expect("at most one bus wide"),
                 ))
             },
         },
@@ -833,7 +842,10 @@ fn mix_cases() -> Vec<MixCase> {
             name: "flanger mix",
             make: |w| {
                 parts_of(ModDelayNode::flanger(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    BusTopology::assumed(
+                        ChannelLayout::try_from(w).expect("a test width is small"),
+                    )
+                    .expect("at most one bus wide"),
                 ))
             },
         },

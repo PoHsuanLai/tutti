@@ -178,13 +178,15 @@ fn lfo() {
 #[test]
 fn chorus() {
     IsolateRow::new("ModDelayNode (stereo chorus)", || {
-        let c = ModDelayNode::chorus(ChannelLayout::STEREO);
-        c.set_feedback(Feedback::new(0.3_f32));
-        c
+        ModDelayNode::chorus(BusTopology::STEREO)
     })
-    .control("rate", |c| c.set_rate(Hz(3.0)))
-    .control("depth", |c| c.set_depth(Seconds(0.001)))
-    .control("feedback", |c| c.set_feedback(Feedback::new(0.6_f32)))
+    .control("rate", |c| assert!(c.param_set().set(UnitParam::Rate, 3.0)))
+    .control("depth", |c| {
+        assert!(c.param_set().set(UnitParam::Depth, 0.001))
+    })
+    .control("feedback", |c| {
+        assert!(c.param_set().set(UnitParam::Feedback, 0.6));
+    })
     .check();
 }
 

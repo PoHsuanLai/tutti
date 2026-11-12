@@ -231,13 +231,13 @@ fn the_delay_is_blended_by_the_graph() {
 fn the_chorus_flanger_and_phaser_are_blended_by_the_graph() {
     check(
         "chorus (stereo)",
-        &|| ModDelayNode::chorus(ChannelLayout::STEREO),
+        &|| ModDelayNode::chorus(BusTopology::STEREO),
         2,
         0,
     );
     check(
         "flanger (mono)",
-        &|| ModDelayNode::flanger(ChannelLayout::MONO),
+        &|| ModDelayNode::flanger(BusTopology::MONO),
         1,
         0,
     );

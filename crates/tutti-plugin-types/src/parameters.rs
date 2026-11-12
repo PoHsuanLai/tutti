@@ -19,9 +19,12 @@
 //! and may match on them; a *consumer* should not have to. Read a parameter
 //! through [`ParameterInfo`]'s own accessors — [`bounds`](ParameterInfo::bounds),
 //! [`default_value`](ParameterInfo::default_value),
-//! [`step_count`](ParameterInfo::step_count), [`flag`](ParameterInfo::flag),
-//! [`to_plain`](ParameterInfo::to_plain) — which answer the question a caller
-//! actually has without making them learn which format declined what. The
+//! [`step_count`](ParameterInfo::step_count), [`flag`](ParameterInfo::flag) —
+//! which answer the question a caller actually has without making them learn
+//! which format declined what. A range is **data for display**; converting a
+//! value between the plugin's plain domain and [`Normalized`] is the format's,
+//! asked through [`AnyThread::parameter_plain`](crate::AnyThread::parameter_plain)
+//! and [`parameter_normalized`](crate::AnyThread::parameter_normalized). The
 //! variants stay for the host that must produce them and for the caller
 //! building a coverage report; they are not the reading path.
 
@@ -38,7 +41,10 @@ use serde::{Deserialize, Serialize};
 /// The four hosted formats disagree about which domain a parameter value is
 /// in — VST3 and VST2 speak normalized natively, AU and CLAP speak the
 /// plugin's own units — and the shared seam ([`Control`](crate::Control))
-/// picks normalized, leaving each plain-native loader to adapt at its own edge.
+/// picks normalized, leaving each format to convert at its own edge: what a
+/// `Normalized` means in plain units is the format's answer
+/// ([`Control::parameter_plain`](crate::Control::parameter_plain)), never a
+/// formula over a range.
 /// Carried only in prose over a bare `f64`, that rule is unenforceable: writing
 /// `set_parameter(id, 20_000.0)` against a filter cutoff compiles and sets the
 /// parameter to full scale rather than 20 kHz.
@@ -54,8 +60,9 @@ use serde::{Deserialize, Serialize};
 /// check. Same discipline as [`ParamId`].
 ///
 /// There is no matching `Plain` newtype. A plain value's legal range is
-/// per-parameter, so the type could promise only "finite"; conversions go
-/// through [`ParamRange`] instead.
+/// per-parameter, so the type could promise only "finite"; the conversions are
+/// the format's, [`Control::parameter_plain`](crate::Control::parameter_plain)
+/// and [`parameter_normalized`](crate::Control::parameter_normalized).
 ///
 /// # Examples
 ///
@@ -151,10 +158,16 @@ pub enum ParamRange {
         /// Default, normalized `0..=1`.
         default: f64,
     },
-    /// The plugin's declared range, in the unit [`ParameterInfo::unit`] names.
+    /// The plugin's declared range, in the unit [`ParameterInfo::unit`] names,
+    /// as data: it says what the extremes are and where the default is, and
+    /// maps nothing. A value is converted by the format
+    /// ([`AnyThread::parameter_plain`](crate::AnyThread::parameter_plain)),
+    /// since the map between `min` and `max` is the plugin's (VST3's
+    /// `normalizedParamToPlain` fixes no shape) and may run backwards.
     ///
-    /// AU and CLAP report this natively; VST3 via `normalizedParamToPlain`;
-    /// VST2 via `effGetParameterProperties`.
+    /// AU and CLAP report this natively; VST3 from `normalizedParamToPlain` at
+    /// the ends (`min` is the smaller, even for a decreasing map) and its
+    /// default through the same call; VST2 via `effGetParameterProperties`.
     Plain {
         /// Minimum legal value.
         min: f64,
@@ -187,85 +200,11 @@ impl ParamRange {
             Self::Normalized { default } | Self::Plain { default, .. } => default,
         }
     }
-
-    /// Maps a normalized `0..=1` value onto this parameter's domain.
-    ///
-    /// For [`Normalized`](Self::Normalized) this is the identity, clamped —
-    /// there is nothing to map onto. For [`Plain`](Self::Plain) it maps the
-    /// declared endpoints, linearly and deliberately: a format that also
-    /// declares a taper (AU's `kAudioUnitParameterFlag_DisplayLogarithmic`)
-    /// must apply it on top.
-    ///
-    /// A degenerate range (`max <= min`, or either bound non-finite) yields
-    /// `min` when finite and `0.0` otherwise. So this never returns a
-    /// non-finite value, nor one outside what the plugin declared.
-    ///
-    /// # NaN
-    ///
-    /// Every input is untrusted: the bounds are `Deserialize`d straight off the
-    /// IPC wire into plain `f64`s, and `normalized` is a wire-supplied
-    /// automation value. Neither `clamp` nor `<=` rejects NaN — `f64::clamp`
-    /// *returns* NaN for a NaN input, and `max <= min` is `false` when either
-    /// bound is NaN, so the degenerate-range guard does not cover it. NaN is
-    /// therefore checked explicitly: this output reaches `AudioUnitSetParameter`
-    /// on the audio path, and a NaN in a live filter coefficient does not stay
-    /// confined to one parameter.
-    ///
-    /// Only NaN needs the check. `clamp` handles ±∞ correctly — `+∞` is "as high
-    /// as this parameter goes" — so an infinite *value* lands on an endpoint. An
-    /// infinite *bound* is rejected, because there is no endpoint to land on.
-    #[must_use]
-    pub fn to_plain(&self, normalized: f64) -> f64 {
-        let n = clamp_unit(normalized);
-        match *self {
-            Self::Normalized { .. } => n,
-            Self::Plain { min, max, .. } => {
-                let Some((min, max)) = finite_bounds(min, max) else {
-                    return 0.0;
-                };
-                if max <= min {
-                    return min;
-                }
-                min + n * (max - min)
-            }
-        }
-    }
-
-    /// Maps a value in this parameter's domain onto normalized `0..=1`.
-    ///
-    /// The inverse of [`to_plain`](Self::to_plain).
-    ///
-    /// A degenerate or non-finite range yields `0.0`, as does a NaN input — see
-    /// [`to_plain`](Self::to_plain) for why NaN is checked rather than clamped.
-    #[must_use]
-    pub fn to_normalized(&self, plain: f64) -> f64 {
-        match *self {
-            Self::Normalized { .. } => clamp_unit(plain),
-            Self::Plain { min, max, .. } => {
-                let Some((min, max)) = finite_bounds(min, max) else {
-                    return 0.0;
-                };
-                if max <= min || plain.is_nan() {
-                    return 0.0;
-                }
-                (plain.clamp(min, max) - min) / (max - min)
-            }
-        }
-    }
 }
 
 /// NaN checked before the clamp, which would pass it through.
 fn clamp_unit(v: f64) -> f64 {
     if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }
-}
-
-/// `(min, max)` if both are finite, else [`None`].
-///
-/// Infinities are rejected alongside NaN: with an infinite bound the endpoint
-/// map yields either an infinity or, at `n == 0`, a NaN — no more usable than a
-/// NaN bound.
-fn finite_bounds(min: f64, max: f64) -> Option<(f64, f64)> {
-    (min.is_finite() && max.is_finite()).then_some((min, max))
 }
 
 /// How many positions a parameter has.
@@ -457,7 +396,7 @@ impl std::fmt::Display for ParamId {
 ///
 /// Read it through the accessors — [`bounds`](Self::bounds),
 /// [`default_value`](Self::default_value), [`step_count`](Self::step_count),
-/// [`flag`](Self::flag), [`to_plain`](Self::to_plain) — rather than matching
+/// [`flag`](Self::flag) — rather than matching
 /// on [`range`](Self::range) and [`steps`](Self::steps): they answer the
 /// question a caller has without it learning which format declined what.
 ///
@@ -607,7 +546,8 @@ impl ParameterInfo {
     /// [`Seconds`](tutti_types::Seconds). `None` for a normalized-only
     /// parameter, one with no declared [`measures`](Self::measures), a unit
     /// `U` does not read, or a `plain` that is not finite. Get `plain` from
-    /// [`to_plain`](Self::to_plain) for a normalized value.
+    /// [`AnyThread::parameter_plain`](crate::AnyThread::parameter_plain) for a
+    /// normalized value.
     ///
     /// ```
     /// use tutti_plugin_types::{ParamId, ParamUnit, ParameterInfo};
@@ -676,28 +616,14 @@ impl ParameterInfo {
         self.known.contains(f).then(|| self.flags.contains(f))
     }
 
-    /// Maps a normalized `0..=1` value onto this parameter's domain.
-    /// See [`ParamRange::to_plain`].
-    #[must_use]
-    pub fn to_plain(&self, normalized: f64) -> f64 {
-        self.range.to_plain(normalized)
-    }
-
-    /// Maps a value in this parameter's domain onto normalized `0..=1`.
-    /// See [`ParamRange::to_normalized`].
-    #[must_use]
-    pub fn to_normalized(&self, plain: f64) -> f64 {
-        self.range.to_normalized(plain)
-    }
-
     /// Returns the plugin's declared bounds, or [`None`] when it declared none.
     ///
     /// The normalized read: a caller asking what this parameter's range *is*
     /// should not have to know that VST2 sometimes declines
     /// `effGetParameterProperties` while AU always answers. [`None`] is the one
-    /// fact that survives normalization — it means "no declared bounds", and a
-    /// caller that needs a span anyway uses `0..=1`, which is what
-    /// [`to_plain`](Self::to_plain) already maps onto.
+    /// fact that survives normalization — it means "no declared bounds". The
+    /// bounds are data for display and for [`typed`](Self::typed), never a
+    /// formula: the plain value of a normalized one is the format's answer.
     pub fn bounds(&self) -> Option<(f64, f64)> {
         self.range.bounds()
     }
@@ -740,25 +666,6 @@ impl ParameterInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A `Plain` parameter maps normalized input onto its declared range.
-    #[test]
-    fn a_plain_parameter_maps_onto_its_declared_range() {
-        let p =
-            ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(20.0, 20_000.0, 20.0);
-        assert_eq!(p.to_plain(0.0), 20.0);
-        assert_eq!(p.to_plain(1.0), 20_000.0);
-        assert_eq!(p.to_normalized(20_000.0), 1.0);
-    }
-
-    /// A `Normalized` parameter passes its input through, clamped.
-    #[test]
-    fn a_normalized_parameter_passes_its_input_through() {
-        let p = ParameterInfo::new(ParamId::new(1), "Mix").with_normalized_default(0.5);
-        assert_eq!(p.to_plain(0.25), 0.25);
-        assert_eq!(p.to_plain(1.5), 1.0, "out of range must still clamp");
-        assert_eq!(p.to_normalized(0.25), 0.25);
-    }
 
     /// Bounds of `0.0..1.0` that the plugin *declared* stay distinguishable
     /// from a parameter that declared none.
@@ -916,16 +823,6 @@ mod tests {
         assert_eq!(ParamSteps::from_span(10.0), ParamSteps::Enumerated(11));
     }
 
-    /// A `Normalized` parameter still refuses NaN.
-    #[test]
-    fn the_normalized_path_still_rejects_nan() {
-        let p = ParameterInfo::new(ParamId::new(1), "Mix").with_normalized_default(0.0);
-        assert!(p.to_plain(f64::NAN).is_finite());
-        assert!(p.to_normalized(f64::NAN).is_finite());
-        assert_eq!(p.to_plain(f64::INFINITY), 1.0);
-        assert_eq!(p.to_plain(f64::NEG_INFINITY), 0.0);
-    }
-
     /// The range survives the postcard wire format both IPC peers speak.
     ///
     /// Note what this does *not* prove: postcard is non-self-describing, so a
@@ -975,116 +872,6 @@ mod tests {
         assert_eq!(back.qualified_name(), "Ring Modulation / Mix");
     }
 
-    /// Apple's AUDelay Lowpass Cutoff: `[10, 22050]` Hz, native units. Writing
-    /// a normalized `1.0` straight through would set 1 Hz; `to_plain` is the
-    /// call that makes it 22050.
-    #[test]
-    fn to_plain_maps_normalized_onto_the_declared_range() {
-        let info = ParameterInfo::new(ParamId::new(1), "Lowpass Cutoff")
-            .with_plain_range(10.0, 22_050.0, 22_050.0);
-
-        assert_eq!(info.to_plain(0.0), 10.0);
-        assert_eq!(info.to_plain(1.0), 22_050.0);
-        assert_eq!(info.to_plain(0.5), 11_030.0);
-    }
-
-    #[test]
-    fn to_normalized_inverts_to_plain() {
-        let info = ParameterInfo::new(ParamId::new(1), "Gain").with_plain_range(-96.0, 6.0, 0.0);
-
-        for n in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            assert!((info.to_normalized(info.to_plain(n)) - n).abs() < 1e-12);
-        }
-    }
-
-    /// Out-of-contract inputs clamp rather than escaping the plugin's declared
-    /// range — a plugin never receives a value it didn't advertise.
-    #[test]
-    fn conversions_clamp_out_of_range_inputs() {
-        let info = ParameterInfo::new(ParamId::new(1), "Mix").with_plain_range(0.0, 100.0, 50.0);
-
-        assert_eq!(info.to_plain(-5.0), 0.0);
-        assert_eq!(info.to_plain(9.0), 100.0);
-        assert_eq!(info.to_normalized(-50.0), 0.0);
-        assert_eq!(info.to_normalized(500.0), 1.0);
-    }
-
-    /// A degenerate range (min == max) must not divide by zero.
-    #[test]
-    fn degenerate_range_does_not_produce_nan() {
-        let info = ParameterInfo::new(ParamId::new(1), "Fixed").with_plain_range(3.0, 3.0, 3.0);
-
-        assert_eq!(info.to_plain(0.5), 3.0);
-        assert_eq!(info.to_normalized(3.0), 0.0);
-    }
-
-    /// A NaN must never leave these conversions.
-    ///
-    /// The output of `to_plain` reaches `AudioUnitSetParameter` on a live unit,
-    /// so a NaN here becomes a NaN filter coefficient — which does not stay in
-    /// one parameter. Both the value and the bounds are untrusted:
-    /// `ParameterInfo` is `Deserialize`d off the IPC wire into plain `f64`
-    /// fields with no validating constructor, so a buggy or hostile peer
-    /// supplies all three.
-    ///
-    /// Specifically *not* covered by clamping: `f64::clamp` returns NaN for a
-    /// NaN input, and the `max <= min` degenerate guard is `false` when either
-    /// bound is NaN.
-    #[test]
-    fn nan_never_escapes_a_conversion() {
-        let info =
-            ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(10.0, 22_050.0, 10.0);
-
-        assert!(
-            info.to_plain(f64::NAN).is_finite(),
-            "a NaN normalized value must not reach the plugin"
-        );
-        assert!(info.to_normalized(f64::NAN).is_finite());
-
-        // Infinities are the same hazard: `clamp` passes them through unchanged.
-        assert_eq!(info.to_plain(f64::INFINITY), 22_050.0);
-        assert_eq!(info.to_plain(f64::NEG_INFINITY), 10.0);
-        assert_eq!(info.to_normalized(f64::INFINITY), 1.0);
-
-        // A NaN *bound*, which the degenerate-range check alone cannot catch.
-        for (min, max) in [
-            (f64::NAN, 1.0),
-            (0.0, f64::NAN),
-            (f64::NAN, f64::NAN),
-            (f64::NEG_INFINITY, 1.0),
-            (0.0, f64::INFINITY),
-        ] {
-            let broken =
-                ParameterInfo::new(ParamId::new(2), "Broken").with_plain_range(min, max, 0.0);
-            for v in [0.0, 0.5, 1.0, f64::NAN] {
-                assert!(
-                    broken.to_plain(v).is_finite(),
-                    "to_plain({v}) with bounds [{min}, {max}] returned non-finite"
-                );
-                assert!(
-                    broken.to_normalized(v).is_finite(),
-                    "to_normalized({v}) with bounds [{min}, {max}] returned non-finite"
-                );
-            }
-        }
-    }
-
-    /// The NaN guard must not have cost the ordinary contract: every finite
-    /// input still lands inside the declared range, at the declared endpoints.
-    #[test]
-    fn the_nan_guard_did_not_change_finite_behaviour() {
-        let info = ParameterInfo::new(ParamId::new(1), "Gain").with_plain_range(-96.0, 6.0, 0.0);
-
-        assert_eq!(info.to_plain(0.0), -96.0);
-        assert_eq!(info.to_plain(1.0), 6.0);
-        assert_eq!(info.to_plain(0.5), -45.0);
-        for n in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            let plain = info.to_plain(n);
-            assert!((-96.0..=6.0).contains(&plain));
-            assert!((info.to_normalized(plain) - n).abs() < 1e-12);
-        }
-    }
-
     /// A consumer asks `ParameterInfo` and never destructures `ParamRange`.
     /// Which format declined to declare a range is the host's problem, not the
     /// caller's — the whole point of normalizing here.
@@ -1096,11 +883,10 @@ mod tests {
         assert_eq!(declared.default_value(), 440.0);
 
         // A plugin that declared nothing answers `None` rather than inventing a
-        // span — but still converts, against the implicit `0..=1`.
+        // span.
         let undeclared = ParameterInfo::new(ParamId::new(2), "Mix").with_normalized_default(0.25);
         assert_eq!(undeclared.bounds(), None);
         assert_eq!(undeclared.default_value(), 0.25);
-        assert_eq!(undeclared.to_plain(1.0), 1.0);
     }
 
     /// `Continuous` and `Unknown` both mean "not a stepped control", which is

@@ -607,11 +607,19 @@ impl IEditControllerTrait for Plugin {
             None => kInvalidArgument,
         }
     }
-    unsafe fn normalizedParamToPlain(&self, _id: u32, v: f64) -> f64 {
-        v
+    unsafe fn normalizedParamToPlain(&self, id: u32, v: f64) -> f64 {
+        if id == core::TONE {
+            core::tone_plain(v)
+        } else {
+            v
+        }
     }
-    unsafe fn plainParamToNormalized(&self, _id: u32, v: f64) -> f64 {
-        v
+    unsafe fn plainParamToNormalized(&self, id: u32, v: f64) -> f64 {
+        if id == core::TONE {
+            core::tone_normalized(v)
+        } else {
+            v
+        }
     }
     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
         self.core.param(id).unwrap_or(0.0)

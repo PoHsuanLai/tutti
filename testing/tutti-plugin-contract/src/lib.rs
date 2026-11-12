@@ -53,6 +53,7 @@ macro_rules! contract {
             tail_reported,
             the_control_surface_answers_alike_loaded_and_active,
             parameters_listed,
+            parameter_conversion_is_the_formats_own,
             parameter_round_trip,
             unlisted_parameter_is_none,
             active_write_applied,

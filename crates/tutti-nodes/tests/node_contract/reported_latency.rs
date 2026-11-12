@@ -191,8 +191,8 @@ fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 #[test]
 fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
     for (name, node) in [
-        ("chorus", ModDelayNode::chorus(ChannelLayout::STEREO)),
-        ("flanger", ModDelayNode::flanger(ChannelLayout::STEREO)),
+        ("chorus", ModDelayNode::chorus(BusTopology::STEREO)),
+        ("flanger", ModDelayNode::flanger(BusTopology::STEREO)),
     ] {
         assert_eq!(
             declared(&node),
@@ -232,7 +232,7 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     );
     let (echo, _) = g.add_with_controls(echo);
     g.spec_mut().set_mix(echo, Mix::new(0.5_f32));
-    let (chorus, _) = g.add_with_controls(ModDelayNode::chorus(ChannelLayout::STEREO));
+    let (chorus, _) = g.add_with_controls(ModDelayNode::chorus(BusTopology::STEREO));
     let dry = g.add(Through::mono());
     g.connect_input(0, echo, 0)
         .connect_input(0, chorus, 0)

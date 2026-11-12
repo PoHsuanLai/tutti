@@ -13,7 +13,7 @@ use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, ParamNode, ParamSet};
 use tutti_nodes::{
     DelayControls, DelayNode, InterpolationMode, LadderFilterNode, LadderType, MaxDelay,
-    ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
+    ModDelayControls, ModDelayNode, PhaserNode, Stagger, SvfFilterNode, SvfType, Sweep,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, Q, Resonance, SampleRate, Seconds,
@@ -156,11 +156,18 @@ fn delay(layout: ChannelLayout) -> DelayNode {
 fn chorus(layout: ChannelLayout) -> ModDelayNode {
     // No stagger: one phase for every channel, as the mono node has.
     let zeros = vec![PhaseIncrement(0.0); usize::from(layout.count())];
-    let node = ModDelayNode::chorus(layout).with_phase_offsets(&zeros);
-    node.set_rate(Hz::new(1.7));
-    node.set_depth(Seconds::new(0.004));
-    node.set_feedback(Feedback::new(0.3));
-    node
+    let controls = ModDelayControls {
+        rate: Hz::new(1.7),
+        depth: Seconds::new(0.004),
+        feedback: Feedback::new(0.3),
+    };
+    ModDelayNode::new(
+        BusTopology::assumed(layout).expect("a test width is one bus"),
+        Sweep::CHORUS,
+        Stagger::each(&zeros).expect("zero offsets"),
+        controls,
+    )
+    .expect("one offset for each channel")
 }
 
 fn phaser(layout: ChannelLayout) -> PhaserNode {

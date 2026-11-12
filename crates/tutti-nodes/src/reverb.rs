@@ -114,6 +114,14 @@ impl TryFrom<Seconds> for TailCeiling {
     }
 }
 
+/// A longest delay is a ceiling: a [`MaxDelay`](tutti_dsp::MaxDelay) is finite and above
+/// zero, so this cannot fail.
+impl From<tutti_dsp::MaxDelay> for TailCeiling {
+    fn from(max: tutti_dsp::MaxDelay) -> Self {
+        Self(max.get())
+    }
+}
+
 impl From<TailCeiling> for Seconds {
     fn from(ceiling: TailCeiling) -> Seconds {
         ceiling.0

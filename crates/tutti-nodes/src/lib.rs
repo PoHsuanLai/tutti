@@ -30,8 +30,8 @@
 //!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
 //!   bands over a Linkwitz-Riley crossover, every setting an indexed param: see
 //!   [`BAND_PARAMS`]) with its [`MultibandControls`].
-//! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
-//!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
+//! - Modulation effects: [`ModDelayNode`] (over `tutti_dsp::ModDelayFamily`, its [`Sweep`] and
+//!   [`Stagger`] checked) and [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
 //!   [`Modulator`] (an LFO's is `tutti-modulation`'s [`Waveform`]).
 //! - Signal-driven modulation sources (design doc 014 §6), feeding a
@@ -146,7 +146,9 @@ mod spatial;
 pub use spatial::{HrtfBinauralNode, VbapError, VbapPannerNode};
 
 mod modulation;
-pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode};
+pub use modulation::{ModDelayNode, PhaserNode};
+// The sweep, its stagger and the controls are in `ModDelayNode::new`'s signature.
+pub use tutti_dsp::{ModDelayControls, ModDelayFamily, Stagger, StaggerError, Sweep, SweepError};
 
 // The signal-driven sources a `tutti_modulation::compile` declaration describes
 // (`SourceNode`): nodes that send a raw value into control lanes.

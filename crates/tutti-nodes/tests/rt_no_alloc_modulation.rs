@@ -127,10 +127,15 @@ fn wide_6ch_delay_node_process_is_allocation_free() {
     gate(delay(6, 0.02, 0.4, 0.0), 0.5, 2_000, |_| {});
 }
 
+/// A bus of `width` channels on the engine's order.
+fn bus(width: u16) -> BusTopology {
+    BusTopology::assumed(ChannelLayout::from(width)).expect("a test width is one bus")
+}
+
 #[test]
 fn chorus_node_process_is_allocation_free() {
     gate(
-        ModDelayNode::chorus(tutti_types::ChannelLayout::STEREO),
+        ModDelayNode::chorus(BusTopology::STEREO),
         0.4,
         2_000,
         |_| {},
@@ -140,7 +145,17 @@ fn chorus_node_process_is_allocation_free() {
 #[test]
 fn flanger_node_process_is_allocation_free() {
     gate(
-        ModDelayNode::flanger(tutti_types::ChannelLayout::STEREO),
+        ModDelayNode::flanger(BusTopology::STEREO),
+        0.4,
+        2_000,
+        |_| {},
+    );
+}
+
+#[test]
+fn general_midi_chorus_node_process_is_allocation_free() {
+    gate(
+        ModDelayNode::general_midi_chorus(BusTopology::STEREO),
         0.4,
         2_000,
         |_| {},
@@ -171,11 +186,15 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
         assert!(set.set(UnitParam::Feedback, 0.2 + 0.5 * t));
         assert!(set.set(UnitParam::CrossFeedback, 0.4 * (1.0 - t)));
     });
-    let chorus = ModDelayNode::chorus(6u16);
-    let c = chorus.clone();
+    // A 6-wide chorus whose rate, depth and feedback all move every block: the depth and
+    // feedback glides are in flight on every one, the rate lands whole at the grid.
+    let chorus = ModDelayNode::chorus(bus(6));
+    let c = chorus.param_set();
     gate(chorus, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        c.set_depth(tutti_types::Seconds::from_f32(0.002 + 0.01 * t));
+        assert!(c.set(UnitParam::Depth, 0.002 + 0.01 * t));
+        assert!(c.set(UnitParam::Rate, 0.5 + 4.0 * t));
+        assert!(c.set(UnitParam::Feedback, 0.6 * t));
     });
     let phaser = PhaserNode::with_channels(6u16, 8);
     let p = phaser.clone();
@@ -214,6 +233,43 @@ fn a_delay_with_its_lanes_fed_is_allocation_free() {
         assert!(
             rig.output(0).iter().any(|s| s.abs() > 1e-6),
             "the delay rendered silence; the gate would walk no DSP"
+        );
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..2_000 {
+                rig.block();
+            }
+        });
+    }
+}
+
+/// A chorus with its three slow controls driven (rate, depth and feedback lanes fed): each
+/// is read at the grid's solve frame, the depth and feedback glides move on every solve,
+/// and the 6-wide stagger renders every channel's sweep. Through `Direct`, which feeds a
+/// node's param ports.
+#[test]
+fn a_chorus_with_its_lanes_fed_is_allocation_free() {
+    for width in [2u16, 6] {
+        let mut rig = Direct::new(ModDelayNode::chorus(bus(width)), SampleRate(48_000.0), 64);
+        for c in rig.inputs_mut() {
+            for (i, x) in c.iter_mut().enumerate() {
+                *x = if i % 2 == 0 { 0.5 } else { -0.5 };
+            }
+        }
+        let tau = std::f32::consts::TAU / 64.0;
+        let lane = |base: f32, swing: f32, k: f32| -> Vec<f32> {
+            (0..64)
+                .map(|i| base + swing * (tau * k * i as f32).sin())
+                .collect()
+        };
+        rig.feed(0, Some(&lane(2.0, 1.5, 1.0)));
+        rig.feed(1, Some(&lane(0.006, 0.004, 2.0)));
+        rig.feed(2, Some(&lane(0.4, 0.3, 3.0)));
+        for _ in 0..32 {
+            rig.block();
+        }
+        assert!(
+            rig.output(0).iter().any(|s| s.abs() > 1e-6),
+            "the chorus rendered silence; the gate would walk no DSP"
         );
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..2_000 {

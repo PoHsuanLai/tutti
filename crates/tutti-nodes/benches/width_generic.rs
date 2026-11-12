@@ -128,7 +128,10 @@ fn mod_delay(c: &mut Criterion) {
             c,
             "chorus",
             w,
-            ModDelayNode::chorus(ChannelLayout::try_from(w).expect("a test width is small")),
+            ModDelayNode::chorus(
+                BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                    .expect("a test width is one bus"),
+            ),
             None,
         );
     }

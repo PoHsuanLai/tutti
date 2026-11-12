@@ -12,6 +12,7 @@ pub use family::{
     DELAY_SLEW, DelayCapacity, DelayControls, DelayFamily, DelayMember, DelayRecurrence,
     MAX_DELAY_CHANNELS,
 };
+pub(crate) use family::{finite_or, read_taps, ring_seconds};
 pub use max_delay::{MaxDelay, MaxDelayError};
 pub use routing::{Routing, RoutingError};
 pub use times::{ChannelTimes, ChannelTimesError};
@@ -127,6 +128,8 @@ impl DelayLine {
     /// request shortens silently rather than panicking. Does not allocate.
     #[inline]
     pub fn read_sample(&self, delay_samples: f32, mode: InterpolationMode) -> f32 {
+        // Defensive only: a family's `reach_covers_need` proves no member's read leaves the
+        // line, so this clamp is reached by a caller outside the model alone.
         let delay = delay_samples.clamp(0.0, self.max_delay_samples as f32);
         match mode {
             InterpolationMode::None => {

@@ -397,8 +397,8 @@ impl Session {
             }
         }
         #[cfg(feature = "plugin")]
-        if let Some(plugin) = self.plugin(node) {
-            let role = plugin.handle().descriptor().class.role();
+        if let Ok(plugin) = self.plugin(node) {
+            let role = plugin.descriptor().class.role();
             if role != tutti_plugin_types::PluginRole::Instrument {
                 return Err(why(NotInstrument::Plugin(role)));
             }

@@ -1,17 +1,17 @@
 //! Hosted plugins in the session (feature `plugin`; design 015 §4.2-§4.4):
 //! the load as a job ([`PluginLoad`]), the add ([`Session::add_plugin`]),
-//! the record the session keeps for each one ([`HostedPlugin`]), and the
+//! the view of the record the session keeps for each one ([`Plugin`]), and the
 //! work of [`Phase::Plugins`](crate::Phase::Plugins) and
 //! [`Phase::RenderMode`](crate::Phase::RenderMode).
 //!
 //! # The record
 //!
 //! Each plugin the graph holds (`Graph::insert_plugin`,
-//! [`Session::add_plugin`], [`Graph::host_plugin`](crate::Graph::host_plugin)) has a [`HostedPlugin`],
-//! keyed by its [`NodeKey`]: the [`PluginRef`] it is, its handle, its
+//! [`Session::add_plugin`], [`Graph::host_plugin`](crate::Graph::host_plugin)) has a record,
+//! keyed by its [`NodeKey`] and lent as a [`Plugin`] ([`Session::plugin`]): the [`PluginRef`] it is, its handle, its
 //! controls (an out-of-process plugin's latency and meter cells), its
 //! liveness, whether it was told the render mode, its last good state
-//! ([`state`](HostedPlugin::state)), and (`modulation`) its parameter
+//! ([`state`](Plugin::state)), and (`modulation`) its parameter
 //! mirror. A crossfade to another plugin (`Graph::crossfade_plugin`,
 //! `replace_plugin`) carries the record over to the incoming plugin, with
 //! nothing of the outgoing plugin's state (its last good state, an in-flight
@@ -39,11 +39,15 @@
 //!   `PhaseCx::now`: dead after at least `Liveness::DEATHS` consecutive
 //!   unhealthy observations spanning at least the window. A dead plugin's
 //!   node is removed ([`Session::remove`]) and reported once,
-//!   [`SessionEvent::PluginDied`].
+//!   [`PluginChange::Died`].
+//! - **Reports.** What the plugin reported since the last update (its own edit
+//!   of a parameter, a rescan, a new tail, a bus change) is queued where it
+//!   was heard and becomes [`PluginEvent`]s here, in the order the plugin made
+//!   them.
 //! - **Latency.** The figure its node declares now
 //!   (`PluginControls::declared_latency`) is handed to the graph when it
 //!   moved (`Graph::refresh_node_latency`):
-//!   [`SessionEvent::PluginLatencyChanged`].
+//!   [`PluginChange::LatencyChanged`].
 //! - **GUI edits** (`modulation`). The values the plugin reported go into
 //!   its mirror, and into the knob of the lane on that parameter when it
 //!   has one (doc 014 §8.2). A mirror rebuilt by a crossfade to another
@@ -70,15 +74,15 @@
 //!   verdict ends the server (`PluginHandle::terminate`), so a hung plugin
 //!   dies like a crashed one, and the load below never races a live server.
 //! - **Death.** The node stays in the graph, silent, with its wiring and
-//!   every lane fed to it; [`SessionEvent::PluginReloading`].
+//!   every lane fed to it; [`PluginChange::Reloading`].
 //! - **Load.** When the backoff passes, [`SessionEvent::PluginReloadDue`]
 //!   hands the host a [`PluginReload`] job: the existing [`PluginLoad`] with
 //!   the last good state as its state. [`Session::land_reload`] swaps the
 //!   loaded plugin in at the same node (`Graph::replace_plugin`) and keeps
 //!   the record: the last good state, its age, the failure history.
-//! - **Reported.** [`SessionEvent::PluginRecovered`] says whether the state
+//! - **Reported.** [`PluginChange::Recovered`] says whether the state
 //!   came back and how old it was; a spent budget is
-//!   [`SessionEvent::PluginGaveUp`] and the node is removed.
+//!   [`PluginChange::GaveUp`] and the node is removed.
 //!
 //! An in-process plugin (VST2) is not recovered: a crash in it takes the
 //! process, and a hang in it blocks the audio thread itself, which nothing
@@ -91,16 +95,22 @@
 //! mode, or if it was never told.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tutti_plugin::MainThread;
 
 use tutti_graph::NodeKey;
-use tutti_plugin::catalog::{AudioConfig, Catalog, Hosting, Plugin, PluginRef, PluginState};
+use tutti_plugin::catalog::{
+    AudioConfig, Catalog, Hosting, Plugin as HostPlugin, PluginRef, PluginState,
+};
 use tutti_plugin::error::StateError;
 use tutti_plugin_host::{Liveness, Verdict};
-use tutti_plugin_host::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
-use tutti_plugin_types::BridgeError;
+use tutti_plugin_host::{
+    Notice, PluginControls, PluginHandle, PluginMeter, PluginStatus, Subscription,
+};
+use tutti_plugin_types::{
+    BridgeError, Normalized, ParamEdit, ParamId, PluginInvalidation, PluginRefresh, PluginTail,
+};
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{
@@ -221,14 +231,14 @@ impl PluginLoad {
     }
 
     /// Whether the plugin is hosted in process (its ref's [`Hosting`]
-    /// resolved by the format, `Plugin::hosting_of`: VST2 by default, any
+    /// resolved by the format, `HostPlugin::hosting_of`: VST2 by default, any
     /// format built in on request): [`run`](Self::run) leaves it unopened, and
     /// [`Session::add_plugin`] opens it on the main thread, stalling that call
     /// for the library's init, the state restore and the parameter read. A
     /// hosting the format refuses is `false` here and the refusal is
     /// [`run`](Self::run)'s.
     pub fn opens_in_process(&self) -> bool {
-        matches!(Plugin::hosting_of(&self.plugin), Ok(Hosting::InProcess))
+        matches!(HostPlugin::hosting_of(&self.plugin), Ok(Hosting::InProcess))
     }
 
     /// Opens the plugin, restores the request's state, and (`modulation`)
@@ -251,7 +261,7 @@ impl PluginLoad {
             .refusal
             .take()
             .map(|refusal| *refusal)
-            .or_else(|| Plugin::hosting_of(&self.plugin).err());
+            .or_else(|| HostPlugin::hosting_of(&self.plugin).err());
         let opened = if let Some(refusal) = refused {
             Opened::Done(Box::new(Open::refused(refusal)))
         } else if self.opens_in_process() {
@@ -273,7 +283,7 @@ impl PluginLoad {
         // a plugin may take its mode from the state at activation. A refusal
         // does not abort the load: a plugin at its defaults beats no plugin. But
         // it is not silent.
-        let (plugin, restore) = match Plugin::open_with_state(
+        let (plugin, restore) = match HostPlugin::open_with_state(
             main,
             &self.config,
             &self.plugin,
@@ -336,7 +346,7 @@ struct Mirror {
 /// An opened plugin (or why it did not open) and (`modulation`) its
 /// parameter values.
 struct Open {
-    plugin: Result<Plugin, BridgeError>,
+    plugin: Result<HostPlugin, BridgeError>,
     /// The state restore, if one was asked for: the plugin's refusal, as text.
     restore: Option<Result<(), String>>,
     #[cfg(feature = "modulation")]
@@ -445,23 +455,174 @@ pub enum PluginLiveness {
         consecutive: u8,
     },
     /// Dead or hung, and being replaced at its node (recovery on): the node
-    /// stays, silent, until [`SessionEvent::PluginRecovered`] or
-    /// [`SessionEvent::PluginGaveUp`].
+    /// stays, silent, until [`PluginChange::Recovered`] or
+    /// [`PluginChange::GaveUp`].
     Recovering {
         /// Why it needs a replacement.
         cause: String,
     },
     /// Written off: its node was removed (recovery off, or its budget
     /// spent). Load a replacement restoring its last good state
-    /// ([`HostedPlugin::state`]) to bring it back by hand.
+    /// ([`Plugin::state`]) to bring it back by hand.
     Dead {
         /// The engine's latched reason.
         cause: String,
     },
 }
 
+/// What happened to a hosted plugin, as the session's
+/// [`SessionEvent::Plugin`](crate::SessionEvent::Plugin) reports it (design 029
+/// section 3.3): the node, and what changed.
+///
+/// One stream carries both what a plugin reports (its own edit of a
+/// parameter, a new tail) and every transition of its life (death, reload,
+/// recovery), so a host reads one place. There is no callback slot to install
+/// or clear; a host that needs a push from the thread that hears the plugin
+/// subscribes to its handle (`PluginHandle::subscribe`, the low layer).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PluginEvent {
+    /// The plugin's node. After a [`PluginChange::Died`] with recovery off, or
+    /// a [`PluginChange::GaveUp`], it is no longer in the graph.
+    pub node: NodeKey,
+    /// What happened.
+    pub change: PluginChange,
+}
+
+/// What changed in a hosted plugin ([`PluginEvent::change`]).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum PluginChange {
+    /// The plugin took hold of a parameter (its editor, or its own gesture):
+    /// the start of an edit that ends with [`GestureEnded`](Self::GestureEnded).
+    GestureBegan {
+        /// The parameter, by the id the plugin reports.
+        id: ParamId,
+    },
+    /// The plugin moved one of its own parameters (its editor, a preset load,
+    /// its own automation), inside a gesture or not. Every one is reported, in
+    /// the order the plugin made them.
+    ParamChanged {
+        /// The parameter, by the id the plugin reports.
+        id: ParamId,
+        /// Its normalized value.
+        value: Normalized,
+        /// Whether a host that records automation should record this edit
+        /// (`false` for a CLAP value the plugin flagged `DONT_RECORD`).
+        recorded: bool,
+    },
+    /// The plugin let go of a parameter.
+    GestureEnded {
+        /// The parameter, by the id the plugin reports.
+        id: ParamId,
+    },
+    /// The plugin's parameter values changed wholesale (a preset load, an
+    /// internal write-back): re-read them.
+    ParamsRescanned,
+    /// The plugin's parameter list or its titles, units or flags changed:
+    /// re-read the descriptors.
+    ParamTitlesChanged,
+    /// The plugin's declared latency moved, and the graph took it: the next
+    /// commit compensates it.
+    LatencyChanged {
+        /// Its latency now.
+        latency: Samples,
+    },
+    /// The plugin reported a new tail. The node's own cell is already
+    /// updated; a bounce already in flight keeps the figure it started with.
+    TailChanged {
+        /// The new tail, which may be bounded, unbounded or unreported.
+        tail: PluginTail,
+    },
+    /// The plugin's bus layout changed: re-read it and rewire.
+    IoChanged,
+    /// A hosted plugin was declared dead
+    /// (`tutti_plugin_host::Liveness`) with recovery off: its node was
+    /// removed. Reported once. With recovery on the death is
+    /// [`Reloading`](Self::Reloading), and the node's removal
+    /// [`GaveUp`](Self::GaveUp).
+    Died {
+        /// The engine's latched reason.
+        cause: String,
+    },
+    /// A hosted plugin died or hung and recovery is on
+    /// ([`RecoveryPolicy`](crate::RecoveryPolicy)): its node stays in the
+    /// graph, silent, and a replacement loads after `delay`. Reported once per
+    /// attempt.
+    Reloading {
+        /// Why it needs a replacement: the engine's latched cause, or a failed
+        /// attempt's reason.
+        cause: String,
+        /// Failures within the budget's window so far, this one included.
+        attempt: u32,
+        /// The wait before the load is handed out.
+        delay: Duration,
+    },
+    /// A replacement is in the graph at the same node, with the same wiring.
+    Recovered {
+        /// Whether its state came back, and from how long before.
+        state: StateRestore,
+        /// The node's latency before the failure. PDC follows at the next
+        /// commit.
+        latency_before: Samples,
+        /// The node's latency now.
+        latency_after: Samples,
+        /// Attempts it took.
+        attempts: u32,
+    },
+    /// Recovery stopped: the failures spent the budget. The node is removed.
+    GaveUp {
+        /// Why.
+        why: GiveUp,
+        /// The last state worth keeping, for a host that offers the user a
+        /// manual reload: the state a reload withheld, else the last good one.
+        state: Option<PluginState>,
+    },
+}
+
+/// `change` at `node`, as the session's event.
+pub(crate) fn event(node: NodeKey, change: PluginChange) -> SessionEvent {
+    SessionEvent::Plugin(PluginEvent { node, change })
+}
+
+/// `m`'s contents, whether or not a panic poisoned it: the queues hold plain values.
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a plugin reported, waiting for the next `Phase::Plugins`.
+type Notices = Arc<Mutex<Vec<Notice>>>;
+
+/// A queue for what `handle` reports and the subscription that fills it.
+fn hear(handle: &PluginHandle) -> (Notices, Subscription) {
+    let notices = Notices::default();
+    let queue = Arc::clone(&notices);
+    let hearing = handle.subscribe(move |notice| locked(&queue).push(notice));
+    (notices, hearing)
+}
+
+/// What `notice` is as an event, if it is one: a latency the plugin reports
+/// is reported once, by the update that hands it to the graph; a rate refusal,
+/// a crash and a reload are the plugin's health.
+fn change_of(notice: Notice) -> Option<PluginChange> {
+    Some(match notice {
+        Notice::Param(ParamEdit::Begin(id)) => PluginChange::GestureBegan { id },
+        Notice::Param(ParamEdit::End(id)) => PluginChange::GestureEnded { id },
+        Notice::Param(ParamEdit::Change { id, value, record }) => PluginChange::ParamChanged {
+            id,
+            value,
+            recorded: record,
+        },
+        Notice::Refresh(PluginRefresh::ParamValues) => PluginChange::ParamsRescanned,
+        Notice::Refresh(PluginRefresh::ParamTitles) => PluginChange::ParamTitlesChanged,
+        Notice::Invalidate(PluginInvalidation::Tail { tail }) => PluginChange::TailChanged { tail },
+        Notice::Invalidate(PluginInvalidation::Io) => PluginChange::IoChanged,
+        Notice::Invalidate(_) | _ => return None,
+    })
+}
+
 /// What the session keeps for one hosted plugin. See the module docs.
-pub struct HostedPlugin {
+pub(crate) struct HostedPlugin {
     /// The plugin this is: from the load's ref, with the id the loaded plugin
     /// reports.
     plugin: PluginRef,
@@ -491,6 +652,11 @@ pub struct HostedPlugin {
     /// When the last snapshot was asked for, or (until the first) when the
     /// plugin was first observed.
     snapshot_at: Option<Instant>,
+    /// What the plugin reported since the last `Phase::Plugins`, heard on
+    /// whichever thread the plugin reports from.
+    notices: Notices,
+    /// The handle's subscription that fills `notices`; replaced with the handle.
+    hearing: Subscription,
     #[cfg(feature = "modulation")]
     mirror: Option<tutti_plugin_host::PluginParamValues>,
     /// The read that fills a mirror a crossfade rebuilt, until
@@ -548,6 +714,7 @@ impl std::fmt::Debug for HostedPlugin {
             .field("told", &self.told)
             .field("snapshot_token", &self.snapshot_token)
             .field("snapshot_at", &self.snapshot_at)
+            .field("hearing", &self.hearing)
             .field("recovery", &self.recovery)
             .field("reload_due", &self.reload.due);
         #[cfg(feature = "modulation")]
@@ -560,6 +727,7 @@ impl std::fmt::Debug for HostedPlugin {
 
 impl HostedPlugin {
     pub(crate) fn new(handle: PluginHandle, plugin: PluginRef) -> Self {
+        let (notices, hearing) = hear(&handle);
         Self {
             plugin,
             handle,
@@ -577,6 +745,8 @@ impl HostedPlugin {
             reload: Reload::default(),
             snapshot_token: Arc::new(()),
             snapshot_at: None,
+            notices,
+            hearing,
             #[cfg(feature = "modulation")]
             mirror: None,
             #[cfg(feature = "modulation")]
@@ -629,6 +799,8 @@ impl HostedPlugin {
             self.param_read = Some(read);
             self.mirror_token = Arc::new(());
         }
+        // What the outgoing plugin reported and nobody drained is its own.
+        (self.notices, self.hearing) = hear(&handle);
         self.handle = handle;
         self.liveness = Liveness::new();
         self.status = PluginLiveness::Healthy;
@@ -675,52 +847,20 @@ impl HostedPlugin {
         self.reload.in_flight = false;
         // A job of an earlier attempt lands nowhere.
         self.reload.token = Arc::new(());
-        out.push(SessionEvent::PluginReloading {
+        out.push(event(
             node,
-            cause,
-            attempt,
-            delay,
-        });
-    }
-
-    /// The plugin's control surface: editor, parameters, state.
-    pub fn handle(&self) -> &PluginHandle {
-        &self.handle
-    }
-
-    /// An out-of-process plugin's controls (its latency, tail and meter
-    /// cells, shared with its node); `None` for a plugin hosted in process.
-    pub fn controls(&self) -> Option<&PluginControls> {
-        self.controls.as_ref()
+            PluginChange::Reloading {
+                cause,
+                attempt,
+                delay,
+            },
+        ));
     }
 
     /// The node's meter cell, either backend's; `None` for a plugin the
     /// host inserted itself ([`Graph::host_plugin`](crate::Graph::host_plugin)).
-    pub fn meter(&self) -> Option<&PluginMeter> {
+    pub(crate) fn meter(&self) -> Option<&PluginMeter> {
         self.meter.as_ref()
-    }
-
-    /// What the session believes about its liveness.
-    pub fn liveness(&self) -> &PluginLiveness {
-        &self.status
-    }
-
-    /// The plugin this is: its file, its format and its id.
-    pub fn plugin(&self) -> &PluginRef {
-        &self.plugin
-    }
-
-    /// The plugin's saved states: the last good one, the withheld one, and a
-    /// save now.
-    pub fn state(&self) -> StateView<'_> {
-        StateView { hosted: self }
-    }
-
-    /// Its parameter values (`modulation`): read at load, kept current from
-    /// what it reports; `None` for a plugin added without the read.
-    #[cfg(feature = "modulation")]
-    pub fn param_values(&self) -> Option<&tutti_plugin_host::PluginParamValues> {
-        self.mirror.as_ref()
     }
 
     /// Parameter `id`'s value, as a modulation lane's knob starts at it:
@@ -735,7 +875,80 @@ impl HostedPlugin {
     }
 }
 
-/// A hosted plugin's states ([`HostedPlugin::state`]): what the session holds
+/// A hosted plugin, lent by [`Session::plugin`]: its identity, and the
+/// surfaces the session holds for it (design 029 section 3.1).
+///
+/// A view borrows the session, so it cannot outlive the plugin it names: a
+/// node that is removed or replaced while one is held is a borrow error, and
+/// what is kept across updates is the node's key, looked up again.
+#[derive(Debug, Clone, Copy)]
+pub struct Plugin<'a> {
+    node: NodeKey,
+    hosted: &'a HostedPlugin,
+}
+
+impl<'a> Plugin<'a> {
+    /// The plugin's node.
+    pub fn node(&self) -> NodeKey {
+        self.node
+    }
+
+    /// The plugin's name, as it declares it.
+    pub fn name(&self) -> &'a str {
+        self.hosted.handle.name()
+    }
+
+    /// What the plugin declares about itself.
+    pub fn descriptor(&self) -> &'a tutti_plugin_types::PluginDescriptor {
+        self.hosted.handle.descriptor()
+    }
+
+    /// The plugin this is: its file, its format and its id.
+    pub fn plugin(&self) -> &'a PluginRef {
+        &self.hosted.plugin
+    }
+
+    /// The plugin's saved states: the last good one, the withheld one, a save
+    /// now, and a restore.
+    pub fn state(&self) -> StateView<'a> {
+        StateView {
+            hosted: self.hosted,
+        }
+    }
+
+    /// What the session believes about its liveness.
+    pub fn liveness(&self) -> &'a PluginLiveness {
+        &self.hosted.status
+    }
+
+    /// The plugin's control surface: editor, parameters, presets. Design 029
+    /// steps 2 to 4 replace it with the views of this one; until then it is
+    /// the low layer, as it was.
+    pub fn handle(&self) -> &'a PluginHandle {
+        &self.hosted.handle
+    }
+
+    /// An out-of-process plugin's controls (its latency, tail and meter cells,
+    /// shared with its node); `None` for a plugin hosted in process.
+    pub fn controls(&self) -> Option<&'a PluginControls> {
+        self.hosted.controls.as_ref()
+    }
+
+    /// The node's meter cell, either backend's; `None` for a plugin the host
+    /// inserted itself ([`Graph::host_plugin`](crate::Graph::host_plugin)).
+    pub fn meter(&self) -> Option<&'a PluginMeter> {
+        self.hosted.meter.as_ref()
+    }
+
+    /// Its parameter values (`modulation`): read at load, kept current from
+    /// what it reports; `None` for a plugin added without the read.
+    #[cfg(feature = "modulation")]
+    pub fn param_values(&self) -> Option<&'a tutti_plugin_host::PluginParamValues> {
+        self.hosted.mirror.as_ref()
+    }
+}
+
+/// A hosted plugin's states ([`Plugin::state`]): what the session holds
 /// of them, a save now, and a restore.
 #[derive(Debug, Clone, Copy)]
 pub struct StateView<'a> {
@@ -1031,7 +1244,7 @@ impl Session {
     /// controls and meter are captured as it goes in, the meter is the
     /// metronome's (time signature and bar), and its health, latency,
     /// parameter mirror and render mode are the session's from here
-    /// ([`HostedPlugin`]). An out-of-process plugin is bound as it goes in
+    /// ([`Plugin`]). An out-of-process plugin is bound as it goes in
     /// (`PluginClient::bind`); an in-process VST2 plugin is opened here (its
     /// job left it unopened: VST2 confines the load to the main thread) and
     /// goes in as its own node. That open blocks this call for the
@@ -1098,14 +1311,25 @@ impl Session {
     }
 
     /// The plugin hosted at `node`.
-    pub fn plugin(&self, node: impl Into<NodeKey>) -> Option<&HostedPlugin> {
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`](crate::NoSuchNode) when no plugin is hosted at `node`.
+    pub fn plugin(&self, node: impl Into<NodeKey>) -> Result<Plugin<'_>, crate::NoSuchNode> {
         let node = node.into();
-        self.graph.plugins.get(&node)
+        self.graph
+            .plugins
+            .get(&node)
+            .map(|hosted| Plugin { node, hosted })
+            .ok_or_else(|| crate::NoSuchNode::new(node))
     }
 
     /// Every hosted plugin, in node order.
-    pub fn plugins(&self) -> impl Iterator<Item = (NodeKey, &HostedPlugin)> {
-        self.graph.plugins.iter().map(|(&n, p)| (n, p))
+    pub fn plugins(&self) -> impl Iterator<Item = Plugin<'_>> {
+        self.graph
+            .plugins
+            .iter()
+            .map(|(&node, hosted)| Plugin { node, hosted })
     }
 
     /// Lands a finished snapshot: the plugin's last snapshot becomes it. A
@@ -1212,10 +1436,14 @@ impl Session {
     /// another plugin, or an earlier attempt's) lands nowhere and returns
     /// nothing; the loaded plugin is dropped, which ends its server. A
     /// failed load is the next attempt's backoff, or
-    /// [`SessionEvent::PluginGaveUp`] and the node's removal.
+    /// [`PluginChange::GaveUp`] and the node's removal.
     ///
     /// A main-thread call.
     pub fn land_reload(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
+        self.land_reload_inner(main, done)
+    }
+
+    fn land_reload_inner(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
         crate::main_thread();
         let now = self.plugins_now;
         let PluginReloaded {
@@ -1246,7 +1474,7 @@ impl Session {
             #[cfg(feature = "modulation")]
             mirror,
         } = opened;
-        let client = match plugin.map(Plugin::into_client) {
+        let client = match plugin.map(HostPlugin::into_client) {
             Ok(Ok(client)) => client,
             Ok(Err(_in_process)) => {
                 self.fail_reload(
@@ -1457,12 +1685,15 @@ impl Session {
         };
         hosted.status = PluginLiveness::Healthy;
         hosted.reload = Reload::default();
-        out.push(SessionEvent::PluginRecovered {
+        out.push(event(
             node,
-            state: restore,
-            latency: (latency_before, latency_after),
-            attempts,
-        });
+            PluginChange::Recovered {
+                state: restore,
+                latency_before,
+                latency_after,
+                attempts,
+            },
+        ));
     }
 
     /// One reload attempt failed (or its job was dropped): the next backoff,
@@ -1526,7 +1757,7 @@ impl Session {
                 .get(&node)
                 .and_then(|h| h.withheld.clone().or_else(|| h.snapshot.clone()));
             let _ = self.remove(node); // gone already is as good as removed
-            out.push(SessionEvent::PluginGaveUp { node, why, state });
+            out.push(event(node, PluginChange::GaveUp { why, state }));
         }
     }
 
@@ -1614,6 +1845,15 @@ impl Session {
             if matches!(hosted.status, PluginLiveness::Dead { .. }) {
                 continue;
             }
+            // What the plugin reported since the last update, in the order
+            // it reported it.
+            let heard = std::mem::take(&mut *locked(&hosted.notices));
+            out.extend(
+                heard
+                    .into_iter()
+                    .filter_map(change_of)
+                    .map(|change| event(node, change)),
+            );
             let cause = match hosted.handle.status() {
                 PluginStatus::Dead { cause } => Some(cause),
                 _ => None,
@@ -1749,10 +1989,12 @@ impl Session {
             if let Some(declared) = declared
                 && self.graph.refresh_node_latency(node, declared)
             {
-                out.push(SessionEvent::PluginLatencyChanged {
+                out.push(event(
                     node,
-                    latency: self.graph.node_latency(node).unwrap_or_default(),
-                });
+                    PluginChange::LatencyChanged {
+                        latency: self.graph.node_latency(node).unwrap_or_default(),
+                    },
+                ));
             }
             if let Some(snapshot) = snapshot {
                 out.push(SessionEvent::PluginSnapshotDue(snapshot));
@@ -1760,7 +2002,7 @@ impl Session {
         }
         for (node, cause) in dead {
             let _ = self.remove(node); // gone already is as good as removed
-            out.push(SessionEvent::PluginDied { node, cause });
+            out.push(event(node, PluginChange::Died { cause }));
         }
         self.finish_gave_up(gave_up, out);
     }
@@ -2086,14 +2328,19 @@ mod tests {
                         .is_ok()
                 );
             }
-            assert!(rig.session.plugin(rig.node).is_none(), "the record went");
+            assert!(rig.session.plugin(rig.node).is_err(), "the record went");
             // The outgoing plugin dies, past the debounce's count and window.
             rig.dead.store(true, Ordering::SeqCst);
             for ms in [0, 100, 200, 300, 400] {
-                let died = rig
-                    .events_at(ms)
-                    .into_iter()
-                    .any(|e| matches!(e, SessionEvent::PluginDied { .. }));
+                let died = rig.events_at(ms).into_iter().any(|e| {
+                    matches!(
+                        e,
+                        SessionEvent::Plugin(PluginEvent {
+                            change: PluginChange::Died { .. },
+                            ..
+                        })
+                    )
+                });
                 assert!(
                     !died,
                     "a native node is reported dead (crossfade: {crossfade})"
@@ -2213,7 +2460,7 @@ mod tests {
         let done = std::thread::spawn(move || job.run()).join().unwrap();
         assert!(rig.session.land_params(done));
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().param_value(3),
+            rig.session.graph.plugins[&rig.node].param_value(3),
             Some(Some(0.75)),
             "the mirror holds the incoming plugin's values"
         );
@@ -2230,11 +2477,11 @@ mod tests {
             !rig.session.land_params(stale.run()),
             "a read of the previous plugin must not land"
         );
-        assert_eq!(rig.session.plugin(rig.node).unwrap().param_value(3), None);
+        assert_eq!(rig.session.graph.plugins[&rig.node].param_value(3), None);
         let own = reads(rig.events_at(30)).pop().expect("its own read");
         assert!(rig.session.land_params(own.run()));
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().param_value(3),
+            rig.session.graph.plugins[&rig.node].param_value(3),
             Some(Some(0.125))
         );
     }
@@ -2286,7 +2533,7 @@ mod tests {
         let done = std::thread::spawn(move || job.run()).join().unwrap();
         assert!(!rig.session.land_params(done), "nothing was read");
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().param_value(3),
+            rig.session.graph.plugins[&rig.node].param_value(3),
             None,
             "the mirror is not ready"
         );
@@ -2298,7 +2545,7 @@ mod tests {
         let done = std::thread::spawn(move || job.run()).join().unwrap();
         assert!(rig.session.land_params(done));
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().param_value(3),
+            rig.session.graph.plugins[&rig.node].param_value(3),
             Some(Some(0.75)),
             "the re-run read filled the mirror"
         );

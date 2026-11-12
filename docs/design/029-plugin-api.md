@@ -168,20 +168,24 @@ lets run off the OS main thread on Linux and Windows.
 
 ### 3.3 Events
 
-`SessionEvent::Plugin { node, event: PluginEvent }`, with `PluginEvent`:
+`SessionEvent::Plugin(PluginEvent)`, nested like `Midi(MidiEvent)`,
+`Device(DeviceEvent)` and `Take(TakeEvent)`. The node is the session's own
+`NodeKey`, inside the event: `PluginEvent { node, change: PluginChange }`, both
+`#[non_exhaustive]`.
 
-| Variant | Replaces |
+| `PluginChange` | Replaces |
 |---|---|
-| `ParamChanged { id, value, gesture }` | `on_parameter_changed` |
-| `ParamsRescanned`, `ParamTitlesChanged` | `on_invalidate`'s parameter cases |
-| `LatencyChanged`, `TailChanged`, `IoChanged` | `PluginLatencyChanged`, `on_refresh` |
-| `PresetChanged(PresetId)` | polling `current_preset` |
-| `EditorWantsSize(EditorSize)` | `poll_editor_resize_request` |
+| `GestureBegan { id }`, `ParamChanged { id, value, recorded }`, `GestureEnded { id }` | `on_parameter_changed` (a plugin's own edit, its gesture's ends kept) |
+| `ParamsRescanned`, `ParamTitlesChanged` | `on_refresh`, and `on_invalidate`'s parameter cases |
+| `LatencyChanged { latency }`, `TailChanged { tail }`, `IoChanged` | `PluginLatencyChanged`, `on_invalidate` |
+| `PresetChanged(PresetId)` | polling `current_preset` (step 4) |
+| `EditorWantsSize(EditorSize)` | `poll_editor_resize_request` (step 2, editor half) |
 | `Died`, `Reloading`, `Recovered`, `GaveUp` | the existing `Plugin*` events, moved under one variant |
 
-A host that needs a push (a parameter mirror on another thread) gets
-`subscribe(f) -> Subscription`, which unsubscribes on drop; there is no
-`clear_*`.
+A host that needs a push from the thread that hears the plugin (a parameter
+mirror on another thread) subscribes at the low layer,
+`PluginHandle::subscribe(f) -> Subscription`, which unsubscribes on drop; there
+is no `clear_*`, and the session has no second channel for the same events.
 
 ### 3.4 The spawner
 
@@ -232,8 +236,9 @@ doing each thing:
   route. Per-note control is MIDI 2.0's own messages (no note-expression type);
   a plugin's MIDI out is read by the same event tap as a native node's.
 - **Events.** The session's rule, agreed with core and MIDI: one variant per
-  area, `SessionEvent::Plugin { node, event: PluginEvent }` beside
-  `SessionEvent::Midi(MidiEvent)`, `#[non_exhaustive]` at both levels.
+  area, a tuple, `SessionEvent::Plugin(PluginEvent)` beside
+  `SessionEvent::Midi(MidiEvent)` and `Device(DeviceEvent)`, with the node
+  inside the event; `#[non_exhaustive]` at both levels.
 - **Errors.** The session's rule: one variant per area. One
   `tutti::plugin::Error`, its specifics (`BridgeError`, `StateError`,
   `PresetError`, `EditorError`) as sources, is `tutti::Error::Plugin`.
@@ -250,11 +255,41 @@ what it replaces; no deprecated twin is kept.
 | # | Step | Deletes | Test |
 |---|---|---|---|
 | 1 (built) | **Identity and state.** `PluginRef` from `&PluginEntry`; the load passes the plugin id; `PluginState` and `StateError::OtherPlugin`; one `state()` view with `last_good()`, `withheld()`, `save()` and `restore()`; the acceptance example `crates/tutti/examples/plugin_host.rs` (scan, load, wire, MIDI, parameters, editor, save, bounce), which each later step rewrites to its shape | `PluginId` as a path; `snapshot()`; `Load::new()` in the open | the second plugin of the CLAP test bundle loads by its entry; a state restored into another plugin is refused |
-| 2 | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
+| 2 (view and events built; main-thread view and editor servicing open) | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
 | 3 | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
 | 4 | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
 | 5 | **The spawner.** `spawn_with`, `Job`; jobs landed in `update()` | `land_snapshot`, `land_params`, `land_reload` as public calls; the `*Due` events | a reload completes with no host code but `update()` |
 | 6 | **The catalog and the facade.** `Catalog::open_db`, `scan()`; `Plugins::open` removed; the probe lists every plugin of a bundle (`FileState::Probed` already holds several); 021 step 6's `Hosting` as a `PluginRef` field (`Auto`, `InProcess`, `OutOfProcess`) | `with_fresh_scan`, `Plugins::open`, `Backend` | a blacklisted plugin is refused at load, not at open |
+
+**As built (step 2, the view and events).** `session.plugin(node)` lends a
+`Plugin<'_>` (`Result<_, NoSuchNode>`; `plugins()` yields them): `node`, `name`,
+`descriptor`, `plugin`, `state`, `liveness`, and, until steps 3 and 4 replace
+them, `handle`, `controls`, `meter` and `param_values`. The record behind it,
+`HostedPlugin`, is crate-private. The handle's three one-slot callbacks
+(`on_parameter_changed`, `on_refresh`, `on_invalidate`, and their `clear_*`) are
+gone: a backend feeds three `Listener`s, now fan-outs, and
+`PluginHandle::subscribe(f) -> Subscription` hears all three as a `Notice`
+(every subscriber hears every notice, so the parameter mirror and the session no
+longer fight over one slot). The session subscribes once per plugin
+(re-subscribing when a crossfade or reload replaces the handle), queues what is
+heard, and `Phase::Plugins` turns it into `PluginEvent`s in the order the plugin
+made them. A latency the plugin reports is not an event of its own: the update
+that hands it to the graph reports `LatencyChanged` once; a rate refusal, a
+crash and an in-place reload stay the plugin's health (step 4's `Health`).
+A gesture is three variants, not a field:
+`GestureBegan`, `ParamChanged { recorded }`, `GestureEnded`, since the two ends
+carry no value (`ParamEdit`). `PluginSnapshotDue`, `PluginParamsDue` and
+`PluginReloadDue` stay `SessionEvent` variants until step 5. Still open in
+step 2: `MainSession` and `Session::main`, `update()` servicing editors, the
+editor's `Opened`, `resize` and `rescale`, `EditorWantsSize`, and removing the
+freeing paths' `debug_assert!`. Also open, and step 4's with `Health`: `Died`
+and `Reloading` still carry the cause as a `String`, because the bridge latches
+it as one (`mark_crashed`, and the same string in `Health::crash_cause`,
+`PluginStatus::Dead`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed` and
+`RecoveryEvent`). A typed cause starts where the bridge latches it: a
+`PluginFailure` (connect, handshake, stream closed, timeout, terminated, ...) in
+`tutti-plugin-types`, with the `BridgeError` as the `source` of a failed reload
+attempt, which `Died`, `Reloading` and `GaveUp` then carry.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 

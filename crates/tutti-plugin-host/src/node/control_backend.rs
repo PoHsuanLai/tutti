@@ -55,7 +55,7 @@ pub(crate) struct ControlBackend<F: InProcess> {
     /// activates it, which allocates.
     pub(crate) pending_sample_rate: Arc<AtomicU64>,
     /// Where a re-read that found the plugin's latency, tail or pins moved is
-    /// reported (`PluginHandle::on_invalidate`).
+    /// reported (`PluginHandle::subscribe`).
     pub(crate) invalidate_sink: crate::InvalidateSink,
     /// The plugin's format name, for the refusal of an advisory no in-process
     /// format carries.

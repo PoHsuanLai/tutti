@@ -58,7 +58,7 @@ pub enum ResyncClass {
 /// stale.
 ///
 /// Re-read the state; the audio graph is unaffected. Delivered via
-/// `tutti-plugin`'s `PluginHandle::on_refresh`.
+/// `tutti-plugin`'s `PluginHandle::subscribe`.
 /// Mirrors CLAP `params.rescan(flags)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginRefresh {
@@ -72,7 +72,7 @@ pub enum PluginRefresh {
 /// the audio graph's plan.
 ///
 /// The host must rewire and re-run latency compensation (PDC). Delivered via
-/// `tutti-plugin`'s `PluginHandle::on_invalidate`.
+/// `tutti-plugin`'s `PluginHandle::subscribe`.
 /// Mirrors CLAP `request_restart()` + `audio_ports.rescan()` + `latency.changed()`.
 ///
 /// **Not `Copy`**, because [`Crashed`](Self::Crashed) carries an owned cause.

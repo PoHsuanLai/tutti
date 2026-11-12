@@ -147,9 +147,9 @@ pub use node::{Reclaimer, SessionNode};
 pub use params::{ParamError, RangeError, TypedParamRef};
 #[cfg(feature = "plugin")]
 pub use plugin::{
-    HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
-    PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore,
-    StateView,
+    Plugin, PluginChange, PluginEvent, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded,
+    PluginReload, PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL,
+    StateRestore, StateView,
 };
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};

@@ -634,7 +634,7 @@ impl MidiState {
                 if io.disconnect_input(&device.id) {
                     out.push(crate::SessionEvent::MidiInputLost(device.clone()));
                 }
-                if io.output_device().as_ref() == Some(&device.id) && io.disconnect_output() {
+                if io.output().is_some_and(|open| open.id == device.id) && io.disconnect_output() {
                     out.push(crate::SessionEvent::MidiOutputLost(device));
                 }
             }
@@ -755,11 +755,9 @@ impl MidiState {
 /// Sets `out` to stamp iff the session's output device receives JR Timestamps.
 #[cfg(feature = "midi-hardware")]
 fn follow_output_config(out: Option<&mut UmpOut>, io: Option<&tutti_midi_hardware::MidiSession>) {
-    if let (Some(out), Some(config)) = (
-        out,
-        io.and_then(tutti_midi_hardware::MidiSession::output_config),
-    ) {
-        out.set_stamping(config.rx_jr);
+    if let (Some(out), Some(config)) = (out, io.and_then(tutti_midi_hardware::MidiSession::output))
+    {
+        out.set_stamping(config.config.rx_jr);
     }
 }
 
@@ -774,9 +772,9 @@ pub struct Midi<'a> {
 }
 
 /// Applies the devices' inlet changes: an inlet added to the graph and
-/// wired to its slot's event input of the ingest node (whose slot
-/// then starts over, so the device before it leaves no half-sent run), or
-/// taken out. Whether the graph was edited. A session with no ingest node
+/// wired to its slot's event input of the ingest node (which starts the
+/// slot over by itself when a new device takes it, so the device before it
+/// leaves no half-sent run), or taken out. Whether the graph was edited. A session with no ingest node
 /// has nothing to wire, and the changes are dropped with it.
 #[cfg(feature = "midi-hardware")]
 fn wire_inlets(
@@ -787,13 +785,17 @@ fn wire_inlets(
 ) -> bool {
     use tutti_midi_runtime::InletChange;
     let changes = inlets.take_changes();
-    let Some(nodes) = nodes else { return false };
-    let edited = !changes.is_empty();
+    let Some(nodes) = nodes else {
+        // Dropped with the session that has no ingest node.
+        changes.for_each(drop);
+        return false;
+    };
+    let mut edited = false;
     for change in changes {
+        edited = true;
         match change {
             InletChange::Attach { slot, node } => {
                 let key = graph.add_event_inlet(node).erase();
-                nodes.input_controls.restart_slot(slot);
                 if let Err(e) = graph.set_sources(
                     crate::EventInPort::new(nodes.input, slot),
                     [EventOutPort::new(key, 0)],
@@ -866,10 +868,10 @@ impl Midi<'_> {
     /// sounding), or a new `MidiClipNode` fed into its event input. Returns
     /// the clip's node.
     ///
-    /// The events are anything that is `Into<TimedMidiEvent>`: a
-    /// [`TimedMidiEvent`] or a `(Beat, Ump)` pair, so a file's
-    /// `MidiFile::timeline()` plays as it is. They are absolute-beat
-    /// positioned, in any order; the clip
+    /// The events are [`TimedMidiEvent`]s (each beat finite: it is checked
+    /// where one is built, `TimedMidiEvent::new`); a file's
+    /// `MidiFile::timeline()` is `(Beat, Ump)` pairs a caller builds them from.
+    /// They are absolute-beat positioned, in any order; the clip
     /// reads its block's `Env`, so a note lands on its frame through seeks
     /// and loop wraps, and an export forks it with the target.
     ///
@@ -880,14 +882,13 @@ impl Midi<'_> {
     pub fn play_clip(
         &mut self,
         target: impl Into<NodeKey>,
-        events: impl IntoIterator<Item = impl Into<TimedMidiEvent>>,
+        events: impl IntoIterator<Item = TimedMidiEvent>,
     ) -> Result<NodeKey> {
         let target = target.into();
         self.takes_midi(target)?;
-        let events = events.into_iter().map(Into::into);
         let clip = match self.clip(target) {
             Some(clip) => {
-                self.state.clips[&clip].controls.set_events(events);
+                self.state.clips[&clip].controls.set(events);
                 clip
             }
             None => {
@@ -1153,7 +1154,7 @@ impl Midi<'_> {
     /// **Whether it JR-stamps is the device's.** With the `midi-hardware`
     /// feature, each `MidiOut` phase sets the output's stamping from the
     /// configuration of the output device the session holds
-    /// (`tutti_midi_hardware::MidiSession::output_config`):
+    /// (`tutti_midi_hardware::MidiSession::output`):
     /// on only when the device receives JR Timestamps (`rx_jr`, which the
     /// session asks for off, so a device that does not turn it on itself is
     /// sent none), and the device's own output refuses a JR message otherwise.

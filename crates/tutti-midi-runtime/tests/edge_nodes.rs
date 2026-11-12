@@ -6,6 +6,7 @@
 //! included.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tutti_types::MaxBlock;
 
 mod common;
@@ -22,8 +23,8 @@ use tutti_graph::{
 use tutti_graph::{IntoNode as _, NodeKey};
 use tutti_midi_protocol::channel_voice;
 use tutti_midi_runtime::{
-    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIngestNode,
-    MidiInputPorts,
+    CHANNELLESS_PORT, ClockNode, DeviceInlets, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
+    MidiIngestNode, MidiInputPorts, SlotCountMismatch,
 };
 use tutti_types::{Beat, Bpm, Frame, SampleRate, Samples};
 use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
@@ -383,12 +384,13 @@ fn two_devices_runs_do_not_meet() {
     );
 }
 
-/// **A restarted slot starts empty**: device 0 selects an RPN in block 0, its
-/// slot is restarted, and its Data Entry in block 1 finds no select to
-/// complete, so no Registered Controller is made; without the restart the same
-/// Data Entry completes the run.
+/// **A slot a new device takes starts empty**: device 0 selects an RPN in
+/// block 0, a new device then opens the slot (the inlets bump its epoch, which
+/// the node follows with no call from the owner), and the Data Entry in block 1
+/// finds no select to complete, so no Registered Controller is made; with no
+/// new device the same Data Entry completes the run.
 #[test]
-fn a_restarted_slot_forgets_the_previous_devices_half_sent_run() {
+fn a_slot_a_new_device_takes_forgets_the_previous_devices_half_sent_run() {
     let script = || {
         Script::new(vec![
             vec![
@@ -401,13 +403,23 @@ fn a_restarted_slot_forgets_the_previous_devices_half_sent_run() {
             ],
         ])
     };
-    for restart in [false, true] {
-        let (_ed, mut exec, controls, seen) =
-            ingest(Ingest::new(script()), MIDI_INPUT_PORTS as u16, 512);
+    for reopened in [false, true] {
+        let inlets = DeviceInlets::new(1, EventCapacity::of(64), Duration::ZERO);
+        let Ingest {
+            node,
+            inlets: nodes,
+        } = Ingest::new(script());
+        let node = node.following(&inlets).expect("one slot each");
+        let (_ed, mut exec, _controls, seen) = ingest(
+            Ingest {
+                node,
+                inlets: nodes,
+            },
+            MIDI_INPUT_PORTS as u16,
+            512,
+        );
         block(&mut exec, 512);
-        if restart {
-            assert!(controls.restart_slot(0));
-        }
+        let _device = reopened.then(|| inlets.open().expect("a free slot"));
         block(&mut exec, 512);
         let made = seen
             .lock()
@@ -415,12 +427,19 @@ fn a_restarted_slot_forgets_the_previous_devices_half_sent_run() {
             .iter()
             .filter(|s| is_registered(s.2))
             .count();
-        assert_eq!(made, usize::from(!restart), "restart: {restart}");
+        assert_eq!(made, usize::from(!reopened), "reopened: {reopened}");
     }
-    assert!(
-        !MidiIngestNode::new(1).into_parts().controls.restart_slot(1),
-        "a slot the node has no input for"
+}
+
+/// A node follows inlets with the slots it has inputs for, and refuses others.
+#[test]
+fn a_node_refuses_inlets_with_another_number_of_slots() {
+    let inlets = DeviceInlets::new(2, EventCapacity::of(64), Duration::ZERO);
+    assert_eq!(
+        MidiIngestNode::new(3).following(&inlets).unwrap_err(),
+        SlotCountMismatch { node: 3, inlets: 2 }
     );
+    assert!(MidiIngestNode::new(2).following(&inlets).is_ok());
 }
 
 /// **The devices merge in the listener's fan-in**: two devices' notes on one
@@ -707,7 +726,14 @@ fn an_event_tap_hands_midi_back_and_counts_drops() {
 /// `prepare` gave the master).
 #[test]
 fn a_start_inside_a_block_clocks_from_its_frame() {
-    let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, 2048);
+    let (_ed, mut exec, clock, seen) = rig(
+        ClockNode::new(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_types::SampleRate(48_000.0),
+        ),
+        1,
+        2048,
+    );
     clock.set_enabled(true);
     let stopped = Transport::new(false, Bpm::of(120.0), Beat(0.0), None);
     let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
@@ -731,7 +757,14 @@ fn a_start_inside_a_block_clocks_from_its_frame() {
 /// **A clock's fork sends nothing.**
 #[test]
 fn a_clocks_fork_sends_nothing() {
-    let (live, _exec, clock, seen) = rig(ClockNode::new(), 1, 512);
+    let (live, _exec, clock, seen) = rig(
+        ClockNode::new(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_types::SampleRate(48_000.0),
+        ),
+        1,
+        512,
+    );
     clock.set_enabled(true);
     let prepare = *live.prepare();
     let (_fork, mut fork_exec) = live
@@ -763,7 +796,14 @@ fn a_clock_flood_past_the_port_capacity_is_counted() {
     const BPM: f64 = 300.0;
 
     let run = |blocks: &[usize]| -> (usize, u64) {
-        let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, LONG);
+        let (_ed, mut exec, clock, seen) = rig(
+            ClockNode::new(
+                tutti_ump::MidiGroup::FIRST,
+                tutti_types::SampleRate(48_000.0),
+            ),
+            1,
+            LONG,
+        );
         clock.set_enabled(true);
         clock.set_send_mtc(true);
         let mut frame = 0usize;
@@ -807,7 +847,14 @@ fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
     use tutti_graph::LoopRange;
     // The loop starts at beat 1, a quarter note: 4 MIDI beats (sixteenths).
     const LOOP_START: u16 = 4;
-    let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, 4096);
+    let (_ed, mut exec, clock, seen) = rig(
+        ClockNode::new(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_types::SampleRate(48_000.0),
+        ),
+        1,
+        4096,
+    );
     clock.set_enabled(true);
     let looping = Some(LoopRange {
         start: Beat(1.0),
@@ -853,7 +900,14 @@ fn a_short_loop_in_a_long_block_is_counted_past_the_cap() {
     let end = 47.3 / 24_000.0;
 
     let run = |len: usize| -> (usize, u64) {
-        let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, TOTAL);
+        let (_ed, mut exec, clock, seen) = rig(
+            ClockNode::new(
+                tutti_ump::MidiGroup::FIRST,
+                tutti_types::SampleRate(48_000.0),
+            ),
+            1,
+            TOTAL,
+        );
         clock.set_enabled(true);
         let looping = Some(LoopRange {
             start: Beat(0.0),
@@ -877,4 +931,16 @@ fn a_short_loop_in_a_long_block_is_counted_past_the_cap() {
     let (sent, dropped) = run(TOTAL);
     assert_eq!(sent, CLOCK_EVENT_CAPACITY);
     assert_eq!(sent as u64 + dropped, cut as u64);
+}
+
+/// **A clock node's master is built with a real rate and its Group, never a
+/// placeholder of zero**: the controls read both back before any prepare, and a
+/// fork keeps the Group.
+#[test]
+fn a_clock_node_holds_its_group_and_rate_from_construction() {
+    let group = MidiGroup::masked(2);
+    let node = ClockNode::new(group, SampleRate(44_100.0));
+    let master = node.into_parts().controls;
+    assert_eq!(master.group(), group);
+    assert_eq!(master.sample_rate(), SampleRate(44_100.0));
 }

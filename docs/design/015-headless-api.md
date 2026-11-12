@@ -233,7 +233,7 @@ A load, step by step:
 | Asset loader, write tasks | `midi/file.rs:169-330` | glue | stays |
 
 Clip sequencing keeps one `MidiClipNode` per target. It updates the events
-in place with `set_events`, and clears or removes the node when the clip is
+in place with `set`, and clears or removes the node when the clip is
 unplayable.
 
 ### 2.6 Samples, SoundFonts and export

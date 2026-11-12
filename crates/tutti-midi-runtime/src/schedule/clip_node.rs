@@ -44,7 +44,7 @@
 //! holds its key.
 //!
 //! The clip itself is published to the node with [`ArcLend`]
-//! ([`MidiClipControls::set_events`]); the node reads it once per block.
+//! ([`MidiClipControls::set`]); the node reads it once per block.
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -155,7 +155,7 @@ impl Shared {
 }
 
 fn class_of(timed: &TimedMidiEvent) -> Class {
-    Class::of(timed.event)
+    Class::of(timed.event())
 }
 
 /// `events` through one [`Translator`], in beat order (design 017 §4: a clip
@@ -166,15 +166,12 @@ fn class_of(timed: &TimedMidiEvent) -> Class {
 /// select or Data Entry that ends a run is replaced by the run's controller,
 /// and a run the clip ends on (a CC 6 with no CC 38 after it) is sent right
 /// after its CC 6's place, on its beat.
-/// A beat that is not finite is dropped here, as [`sorted`] would. Control
-/// thread.
+/// Control thread.
 fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidiEvent> {
     let events: Vec<TimedMidiEvent> = events.into_iter().collect();
-    let mut order: Vec<usize> = (0..events.len())
-        .filter(|&i| events[i].beat.get().is_finite())
-        .collect();
+    let mut order: Vec<usize> = (0..events.len()).collect();
     // Stable: events on one beat are translated in list order.
-    order.sort_by(|&a, &b| events[a].beat.get().total_cmp(&events[b].beat.get()));
+    order.sort_by(|&a, &b| events[a].beat().get().total_cmp(&events[b].beat().get()));
     let mut out: Vec<Option<Ump>> = vec![None; events.len()];
     // A run the clip ends on, at the position of its Data Entry.
     let mut flushed: Vec<Option<Ump>> = vec![None; events.len()];
@@ -183,14 +180,14 @@ fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidi
     let mut data_entry: HashMap<(MidiGroup, MidiChannel), usize> = HashMap::new();
     let mut translator = Translator::new();
     for i in order {
-        out[i] = translator.translate(events[i].event);
+        out[i] = translator.translate(events[i].event());
         if let Ok(Message::Midi1(
             address,
             Voice1::ControlChange {
                 controller: CCNumber::DATA_ENTRY | CCNumber::DATA_ENTRY_LSB,
                 ..
             },
-        )) = events[i].event.decode()
+        )) = events[i].event().decode()
         {
             data_entry.insert((address.group, address.channel), i);
         }
@@ -212,21 +209,20 @@ fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidi
             [sent, flushed]
                 .into_iter()
                 .flatten()
-                .map(|u| TimedMidiEvent::new(e.beat, u))
+                // The beat is the source's, finite already.
+                .filter_map(|u| TimedMidiEvent::new(e.beat(), u))
         })
         .collect()
 }
 
 /// `events` with each note-off paired to its note-on (see the module docs),
 /// sorted by beat, stably (events on one beat keep their order: a note-off
-/// before a note-on of the same note stays first). A beat that is not finite
-/// has no frame, and is dropped. A note's id is its note-on's index in the
+/// before a note-on of the same note stays first). A note's id is its note-on's index in the
 /// sorted clip, so two clips with the same events and the same pairing are
 /// equal. Control thread.
 fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> {
     let mut v: Vec<(u32, ClipEvent)> = events
         .into_iter()
-        .filter(|e| e.beat.get().is_finite())
         .enumerate()
         .map(|(i, timed)| (i as u32, ClipEvent { timed, note: None }))
         .collect();
@@ -249,11 +245,11 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
         while *first < list.len() && taken[list[*first] as usize] {
             *first += 1;
         }
-        let beat = v[i].1.timed.beat.get();
+        let beat = v[i].1.timed.beat().get();
         let found = list[*first..]
             .iter()
             .copied()
-            .find(|&o| !taken[o as usize] && v[o as usize].1.timed.beat.get() <= beat);
+            .find(|&o| !taken[o as usize] && v[o as usize].1.timed.beat().get() <= beat);
         if let Some(o) = found {
             taken[o as usize] = true;
             let id = Some(ClipNote::from_index(o));
@@ -267,7 +263,7 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
             e.note = Some(ClipNote::from_index(i as u32));
         }
     }
-    v.sort_by(|a, b| a.1.timed.beat.get().total_cmp(&b.1.timed.beat.get()));
+    v.sort_by(|a, b| a.1.timed.beat().get().total_cmp(&b.1.timed.beat().get()));
     // List index → sorted index, to renumber each note by its sorted note-on.
     let mut to_sorted = vec![0u32; v.len()];
     for (k, &(i, _)) in v.iter().enumerate() {
@@ -301,7 +297,7 @@ impl MidiClipControls {
     /// previous clip left sounding, on that block's first frame. Events equal
     /// to the clip's (in beat order, each note-off paired to the same
     /// note-on) change nothing: no note is cut.
-    pub fn set_events(&self, events: impl IntoIterator<Item = TimedMidiEvent>) {
+    pub fn set(&self, events: impl IntoIterator<Item = TimedMidiEvent>) {
         let events = sorted(translated(events));
         let _serial = self
             .shared
@@ -319,12 +315,19 @@ impl MidiClipControls {
 
     /// Play nothing (and end what is sounding).
     pub fn clear(&self) {
-        self.set_events([]);
+        self.set([]);
     }
 
     /// How many events the clip holds.
-    pub fn event_count(&self) -> usize {
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.shared.current().events.len()
+    }
+
+    /// Whether the clip holds no event.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -342,7 +345,7 @@ impl MidiClipControls {
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 /// let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
-/// let clip = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on)]);
+/// let clip = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on).unwrap()]);
 /// let controls = editor.insert(NodeKey(1), "clip", clip);
 /// assert_eq!(controls.event_count(), 1);
 /// ```
@@ -400,7 +403,7 @@ impl MidiClipNode {
 
 impl Beated for ClipEvent {
     fn beat(&self) -> f64 {
-        self.timed.beat.get()
+        self.timed.beat().get()
     }
 }
 
@@ -426,7 +429,7 @@ impl Visit<ClipEvent> for Playing<'_, '_> {
     }
 
     fn event(&mut self, at: Offset, e: &ClipEvent) {
-        self.sending.send(at, e.timed.event, e.note);
+        self.sending.send(at, e.timed.event(), e.note);
     }
 }
 

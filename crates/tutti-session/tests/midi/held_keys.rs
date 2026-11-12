@@ -126,11 +126,13 @@ fn retarget_with_a_held_clip_note() {
                 TimedMidiEvent::new(
                     Beat(1.0 / 3.0),
                     midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, MF),
-                ),
+                )
+                .unwrap(),
                 TimedMidiEvent::new(
                     Beat(1.0 / 3.0) + BeatDuration(8.0),
                     midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-                ),
+                )
+                .unwrap(),
             ],
         )
         .unwrap();

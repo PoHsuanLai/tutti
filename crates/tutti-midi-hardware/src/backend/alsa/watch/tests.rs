@@ -166,10 +166,10 @@ impl crate::MidiEndpoints for Capture {
         _: EndpointId,
         _: crate::InputProducerHandle,
     ) -> Result<Box<dyn crate::InputConnection>> {
-        Err(Error::MidiDevice("none".into()))
+        Err(Error::device("none"))
     }
     fn open_output(&self, _: EndpointId) -> Result<Box<dyn crate::DeviceOut>> {
-        Err(Error::MidiDevice("none".into()))
+        Err(Error::device("none"))
     }
 }
 

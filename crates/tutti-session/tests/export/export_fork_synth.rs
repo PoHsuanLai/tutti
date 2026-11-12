@@ -127,11 +127,12 @@ fn session_with<N: tutti_session::SessionNode>(unit: N) -> (Session, NodeKey) {
 /// Middle C from beat 1 to beat 2.
 fn clip() -> Vec<TimedMidiEvent> {
     vec![
-        TimedMidiEvent::new(Beat(1.0), clip_note_on()),
+        TimedMidiEvent::new(Beat(1.0), clip_note_on()).unwrap(),
         TimedMidiEvent::new(
             Beat(2.0),
             note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-        ),
+        )
+        .unwrap(),
     ]
 }
 

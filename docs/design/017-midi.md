@@ -122,7 +122,7 @@ A single message is built as `Ump::from(Message::..)`; tests use
 
 **The `Translator` is built (stage 3a).** `tutti_midi_protocol::Translator` runs
 at the two input edges there are: `MidiInputNode`, per polled event, and a clip
-as it is loaded (`MidiClipNode::new` and `MidiClipControls::set_events`, in beat
+as it is loaded (`MidiClipNode::new` and `MidiClipControls::set`, in beat
 order, each result in its source's place). The old `Midi1ToMidi2Translator` is
 deleted. A mailbox's `MidiSender` queue and a plugin's MIDI output are not translated: a
 host builds MIDI 2.0 itself, or runs a `Translator` on what it sends.
@@ -2933,9 +2933,13 @@ helpers below only build `Ump`s).
   beat, a divided message or one with an 8-bit byte dropped; `Meta`, `Escape` and `Unknown`
   are dropped, because the tempo is the file's `TempoMap` and the rest are not messages. The
   pair is plain `(Beat, Ump)`: `tutti-midi-file` and `tutti-midi-runtime` are both layer 4, so
-  neither names the other's type. `Midi::play_clip` takes `impl IntoIterator<Item = impl
-  Into<TimedMidiEvent>>`, so `play_clip(synth, file.timeline()?)` is the whole call. (A
-  literal `[]` needs its type now: `std::iter::empty::<TimedMidiEvent>()`.)
+  neither names the other's type. `Midi::play_clip` takes `impl IntoIterator<Item =
+  TimedMidiEvent>`, and a `TimedMidiEvent` is built by `TimedMidiEvent::new(beat, ump)`, which
+  refuses a beat that is not finite (L1h: the checking is at construction, so a clip never
+  meets one, and there is no `From<(Beat, Ump)>`). A file's timeline plays through
+  `file.timeline()?.map(|(beat, ump)| TimedMidiEvent::new(beat, ump))`, collected into a
+  `Result`/`Option` by the caller. (A literal `[]` needs its type:
+  `std::iter::empty::<TimedMidiEvent>()`.)
 - **Writing messages.** `tutti_ump::Message` has named constructors, MIDI 1.0 as the plain
   name and MIDI 2.0 with a `2`: `note_on`, `note_off`, `control_change`, `program_change`,
   `pitch_bend` and `note_on2`, `note_off2`, `control_change2`, `program_change2`,

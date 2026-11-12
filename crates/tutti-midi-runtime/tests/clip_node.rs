@@ -60,7 +60,7 @@ fn off(note: u8) -> Ump {
 }
 
 fn at(frame: u64, event: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(beat_of(frame), event)
+    TimedMidiEvent::new(beat_of(frame), event).unwrap()
 }
 
 /// A clip at key 1 feeding the sink at key 2, blocks of at most `max`.
@@ -193,8 +193,8 @@ fn a_new_clip_ends_the_old_clips_notes() {
     let clip = MidiClipNode::new([at(10, on(60)), at(1_000, off(60))]);
     let (_ed, mut exec, controls, seen) = rig(clip, 64);
     exec.process(64, &rolling(0), &[], &mut []);
-    controls.set_events([at(100, on(72))]);
-    assert_eq!(controls.event_count(), 1);
+    controls.set([at(100, on(72))]);
+    assert_eq!(controls.len(), 1);
     exec.process(64, &rolling(64), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
@@ -213,7 +213,7 @@ fn a_fork_plays_the_clip_as_it_was_at_the_fork() {
         .expect("a clip is forkable")
         .fork(ForkMode::Live)
         .expect("a clip forks");
-    controls.set_events([at(100, on(72))]);
+    controls.set([at(100, on(72))]);
     let (_ed, mut exec, (), seen) = rig_with(Unforkable(forked.node), 256);
     roll(&mut exec, 512, 256);
     assert_eq!(*seen.lock().unwrap(), vec![(300, on(60))]);
@@ -238,16 +238,17 @@ fn a_loop_that_wraps_at_a_block_edge_ends_its_held_notes() {
     assert_eq!(*seen.lock().unwrap(), vec![(50, on(60)), (200, off(60))]);
 }
 
-/// **A beat that is not finite is dropped, not the clip.** A NaN made at run
-/// time (negative on x86, which `total_cmp` sorts first) beside a note at
-/// frame 100: the note plays.
+/// **A beat that is not finite is refused at construction**, so a clip never
+/// holds one: NaN (negative on x86, made at run time) and both infinities
+/// build no event, and a finite beat does.
 #[test]
-fn a_nan_beat_does_not_silence_the_clip() {
+fn a_beat_that_is_not_finite_builds_no_event() {
     let nan = Beat(0.0 / std::hint::black_box(0.0));
-    let clip = MidiClipNode::new([TimedMidiEvent::new(nan, on(61)), at(100, on(60))]);
-    let (_ed, mut exec, _c, seen) = rig(clip, 256);
-    roll(&mut exec, 256, 256);
-    assert_eq!(*seen.lock().unwrap(), vec![(100, on(60))]);
+    for bad in [nan, Beat(f64::INFINITY), Beat(f64::NEG_INFINITY)] {
+        assert_eq!(TimedMidiEvent::new(bad, on(61)), None, "{bad:?}");
+    }
+    let good = TimedMidiEvent::new(Beat(1.5), on(61)).expect("a finite beat");
+    assert_eq!((good.beat(), good.event()), (Beat(1.5), on(61)));
 }
 
 /// **Note-offs the port refuses go out in the blocks after, until none is
@@ -293,7 +294,7 @@ fn setting_the_same_events_cuts_nothing() {
     let events = [at(10, on(60)), at(1_000, off(60))];
     let (_ed, mut exec, controls, seen) = rig(MidiClipNode::new(events), 64);
     exec.process(64, &rolling(0), &[], &mut []);
-    controls.set_events([events[1], events[0]]);
+    controls.set([events[1], events[0]]);
     exec.process(64, &rolling(64), &[], &mut []);
     assert_eq!(*seen.lock().unwrap(), vec![(10, on(60))]);
 }
@@ -309,8 +310,8 @@ fn setting_the_same_events_cuts_nothing() {
 #[test]
 fn a_note_lands_on_its_frame_at_ninety_bpm() {
     let clip = MidiClipNode::new([
-        TimedMidiEvent::new(Beat(1.0), on(60)),
-        TimedMidiEvent::new(Beat(3.0), on(62)),
+        TimedMidiEvent::new(Beat(1.0), on(60)).unwrap(),
+        TimedMidiEvent::new(Beat(3.0), on(62)).unwrap(),
     ]);
     let (_ed, mut exec, _c, seen) = rig(clip, 64);
     let mut f = 0u64;
@@ -574,7 +575,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
         notes
             .iter()
             .enumerate()
-            .map(|(i, &b)| TimedMidiEvent::new(Beat(b), on(60 + i as u8))),
+            .map(|(i, &b)| TimedMidiEvent::new(Beat(b), on(60 + i as u8)).unwrap()),
     );
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     let region = Region::new(start, end).unwrap();
@@ -637,7 +638,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
 fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, Ump)>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60))]);
+        let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60)).unwrap()]);
         let (_ed, mut exec, _c, seen) = rig(clip, 64);
         let mut clock =
             tutti_types::FrameClock::new(start, tutti_types::Bpm::of(120.0), SampleRate(RATE));

@@ -10,6 +10,7 @@
 
 use super::SmpteFrameRate;
 use tutti_types::{Beat, Bpm, Seconds};
+use tutti_ump::{Message, System, Ump};
 
 /// An assembled SMPTE position: `HH:MM:SS:FF` plus the rate that gives the frame
 /// count meaning.
@@ -209,10 +210,13 @@ impl MtcDecoder {
         }
     }
 
-    /// Feeds a quarter-frame data byte (the data byte from 0xF1 messages).
+    /// Feeds one inbound [`Ump`], as [`MidiClockDecoder::feed`](crate::MidiClockDecoder::feed)
+    /// does: a MTC Quarter Frame (0xF1) is taken, any other packet is ignored.
+    /// Returns `true` if the packet was a Quarter Frame. It takes no time:
+    /// the position is carried in the pieces, not in when they arrived.
     ///
-    /// The upper nibble (bits 4-6) identifies the piece (0-7).
-    /// The lower nibble (bits 0-3) carries 4 bits of timecode data.
+    /// A quarter frame's upper nibble (bits 4-6) identifies the piece (0-7)
+    /// and its lower nibble (bits 0-3) carries 4 bits of timecode data.
     ///
     /// Pieces must arrive in order. A gap discards the partial frame and waits
     /// for the next piece 0 rather than publishing a timecode assembled from two
@@ -221,7 +225,15 @@ impl MtcDecoder {
     /// discarded frame.
     ///
     /// Allocation-free, so it is safe to call from the audio thread.
-    pub fn feed(&mut self, quarter_frame: u8) {
+    pub fn feed(&mut self, ump: &Ump) -> bool {
+        let Ok(Message::System(_, System::TimeCode(code))) = (*ump).decode() else {
+            return false;
+        };
+        self.piece(code.get());
+        true
+    }
+
+    fn piece(&mut self, quarter_frame: u8) {
         let piece = (quarter_frame >> 4) & 0x07;
         let nibble = quarter_frame & 0x0F;
 

@@ -74,7 +74,7 @@ fn off(i: u32) -> Ump {
 }
 
 fn at(frame: u64, event: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(beat_of(frame), event)
+    TimedMidiEvent::new(beat_of(frame), event).unwrap()
 }
 
 struct Rig {

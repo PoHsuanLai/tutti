@@ -85,6 +85,7 @@ fn clip(k: u64) -> MidiClipNode {
                 0xFFFF,
             ),
         )
+        .unwrap()
     }))
 }
 
@@ -183,7 +184,15 @@ fn sent(outs: &mut [common::Sink], seen: &[Seen]) -> Vec<Vec<(u64, [u32; 4])>> {
 fn every_midi_node_is_light() {
     assert_eq!(clip(0).shape().cost, Cost::Light);
     assert_eq!(HarmonyNode::new([]).shape().cost, Cost::Light);
-    assert_eq!(ClockNode::new().shape().cost, Cost::Light);
+    assert_eq!(
+        ClockNode::new(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_types::SampleRate(48_000.0)
+        )
+        .shape()
+        .cost,
+        Cost::Light
+    );
     assert_eq!(
         EventInletNode::pair(EventCapacity::of(8)).0.shape().cost,
         Cost::Light

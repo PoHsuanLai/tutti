@@ -531,3 +531,55 @@ fn a_duplex_device_still_serves_a_saved_input() {
     let now = table.list().next().cloned().unwrap();
     assert_eq!(table.resolve(&saved), Resolved::SameName(now));
 }
+
+/// **`bind` takes only what the policy trusts**: an exact device always; the
+/// lone device of the saved name only under `OrSameName`; never an ambiguous
+/// or missing resolution, whatever the policy.
+#[test]
+fn bind_takes_only_what_the_policy_trusts() {
+    let mut table = DeviceTable::default();
+    let alone = keys_info(&mut table, 1);
+    let same_name = table.resolve(&alone);
+    assert_eq!(
+        same_name.clone().bind(BindPolicy::ExactOnly),
+        None,
+        "a name is not an identity"
+    );
+    assert_eq!(same_name.bind(BindPolicy::OrSameName), Some(alone.clone()));
+
+    let exact = Resolved::Exact(alone.clone());
+    assert_eq!(
+        exact.clone().bind(BindPolicy::ExactOnly),
+        Some(alone.clone())
+    );
+    assert_eq!(exact.bind(BindPolicy::OrSameName), Some(alone.clone()));
+
+    let several = Resolved::Ambiguous(vec![alone.clone(), alone.clone()]);
+    for policy in [BindPolicy::ExactOnly, BindPolicy::OrSameName] {
+        assert_eq!(several.clone().bind(policy), None, "{policy:?}");
+        assert_eq!(Resolved::Missing.bind(policy), None, "{policy:?}");
+    }
+}
+
+/// **`into_candidates` lists every device the saved one could be**, in the
+/// order the resolution holds them: one for an exact or same-name match, the
+/// several of an ambiguous one, none when missing.
+#[test]
+fn into_candidates_lists_what_the_saved_device_could_be() {
+    let mut table = DeviceTable::default();
+    let first = keys_info(&mut table, 1);
+    let second = keys_info(&mut table, 2);
+    assert_eq!(
+        Resolved::Exact(first.clone()).into_candidates(),
+        vec![first.clone()]
+    );
+    assert_eq!(
+        Resolved::SameName(second.clone()).into_candidates(),
+        vec![second.clone()]
+    );
+    assert_eq!(
+        Resolved::Ambiguous(vec![first.clone(), second.clone()]).into_candidates(),
+        vec![first, second]
+    );
+    assert_eq!(Resolved::Missing.into_candidates(), Vec::new());
+}

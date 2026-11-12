@@ -36,6 +36,7 @@ fn note_on_at(frame: u64) -> TimedMidiEvent {
         Beat(frame as f64 / 24_000.0),
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
     )
+    .unwrap()
 }
 
 /// A clip (key 1) playing a note at `frame` into a synth (key 2) on

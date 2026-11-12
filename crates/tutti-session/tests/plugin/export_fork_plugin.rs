@@ -264,7 +264,7 @@ fn instrument_at(rate: f64) {
         } else {
             note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
         };
-        TimedMidiEvent::new(Beat(beat), event)
+        TimedMidiEvent::new(Beat(beat), event).unwrap()
     };
     session
         .midi()

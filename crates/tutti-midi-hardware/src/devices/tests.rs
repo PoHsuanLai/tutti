@@ -37,13 +37,13 @@ fn id_of(devices: &Devices, name: &str) -> DeviceId {
 }
 
 fn ports() -> Arc<HardwareMidiInputs> {
-    Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
+    Arc::new(HardwareMidiInputs::new(
         tutti_midi_runtime::DeviceInlets::new(
             4,
             tutti_graph::EventCapacity::of(16),
             std::time::Duration::ZERO,
         ),
-    )))
+    ))
 }
 
 #[test]
@@ -245,10 +245,10 @@ impl MidiEndpoints for Refuses {
         _: EndpointId,
         _: crate::InputProducerHandle,
     ) -> Result<Box<dyn InputConnection>> {
-        Err(Error::MidiDevice("refused".into()))
+        Err(Error::device("refused"))
     }
     fn open_output(&self, _: EndpointId) -> Result<Box<dyn crate::DeviceOut>> {
-        Err(Error::MidiDevice("refused".into()))
+        Err(Error::device("refused"))
     }
 }
 
@@ -262,7 +262,7 @@ fn a_backend_failure_leaves_no_port() {
     for _ in 0..3 {
         assert!(matches!(
             devices.open_input(&keys, &ports),
-            Err(Error::MidiDevice(_))
+            Err(Error::MidiDevice { .. })
         ));
     }
     assert!(ports.list_input_ports().is_empty());
@@ -630,7 +630,7 @@ impl MidiEndpoints for Tagging {
         _: EndpointId,
         _: crate::InputProducerHandle,
     ) -> Result<Box<dyn InputConnection>> {
-        Err(Error::MidiDevice("no inputs".into()))
+        Err(Error::device("no inputs"))
     }
     fn open_output(&self, _: EndpointId) -> Result<Box<dyn crate::DeviceOut>> {
         Ok(Box::new(TaggedSink(Arc::clone(&self.0))))
@@ -655,4 +655,32 @@ fn the_sink_follows_the_protocol_the_output_is_in() {
         tx_jr: false,
     });
     assert_eq!(*told.lock().unwrap(), [Protocol::Midi2, Protocol::Midi1]);
+}
+
+/// **`for event in &events` takes what `try_iter` would**, oldest first, and
+/// leaves nothing queued: the same queue is read, not a copy.
+#[test]
+fn a_reference_to_the_events_iterates_the_queued_changes() {
+    let (_devices, events, fake) = fake();
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
+    fake.plug(endpoint(2, "Pads"), PortDirection::Input);
+    // Both reached the queue (the sentinel orders the watch thread).
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        let first = wake(&events);
+        seen.extend(first.iter().map(|e| e.info().name.clone()));
+    }
+    fake.plug(endpoint(3, "Drums"), PortDirection::Input);
+    fake.plug(endpoint(4, "Bass"), PortDirection::Input);
+    let mut queued = Vec::new();
+    while queued.len() < 2 {
+        let mut batch = Vec::new();
+        for event in &events {
+            batch.push(event.info().name.clone());
+        }
+        queued.extend(batch);
+        std::thread::yield_now();
+    }
+    assert_eq!(queued, ["Drums", "Bass"], "oldest first");
+    assert!(events.try_iter().next().is_none(), "the loop took them");
 }

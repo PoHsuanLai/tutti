@@ -15,7 +15,7 @@ use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
 use tutti_nodes::{ControlSet, FamilyNode, NodeFamily};
 use tutti_types::MaxBlock;
-use tutti_types::{BusTopology, Db, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
+use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -178,8 +178,8 @@ impl NodeFamily for Echo {
         NoParams
     }
 
-    fn capacity(&self, rate: SampleRate, floor: Db) -> NetworkCapacity {
-        self.grown(rate, floor)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.grown(rate)
     }
 }
 

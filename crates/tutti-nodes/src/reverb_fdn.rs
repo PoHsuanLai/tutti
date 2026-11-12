@@ -47,8 +47,8 @@ impl NodeFamily for FdnFamily {
         }
     }
 
-    fn capacity(&self, rate: SampleRate, floor: Db) -> NetworkCapacity {
-        self.grown(rate, floor)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.grown(rate)
     }
 }
 

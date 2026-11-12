@@ -41,14 +41,6 @@ fn a_max_decay_keeps_the_range_checked_shape() {
 /// A reach refuses what it cannot hold and never clamps.
 #[test]
 fn a_reach_refuses_what_it_cannot_hold() {
-    #[derive(Clone, Copy)]
-    struct Never;
-    impl Domain for Never {
-        const DEFAULT: Self = Never;
-        fn valid(&self) -> bool {
-            false
-        }
-    }
     let rate = SampleRate(48_000.0);
     let (decay, floor) = (MaxDecay::DEFAULT, Db(-60.0));
     let c = Reach::new(rate, decay, floor).unwrap();
@@ -63,8 +55,6 @@ fn a_reach_refuses_what_it_cannot_hold() {
             "rate {bad}"
         );
     }
-    assert!(Reach::new(rate, Never, floor).is_none());
-    assert!(Reach::<()>::at(rate).is_some());
     for bad in [0.0, 3.0, f32::NAN, f32::NEG_INFINITY] {
         assert!(Reach::new(rate, decay, Db(bad)).is_none(), "floor {bad}");
     }

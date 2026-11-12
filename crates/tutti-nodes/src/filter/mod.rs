@@ -13,7 +13,7 @@ pub use ladder::LadderFilterNode;
 pub use svf::SvfFilterNode;
 
 use tutti_dsp::{Cadence, ChannelRecurrence, Family, Filter};
-use tutti_types::{BusTopology, ChannelLayout, Db, SampleRate};
+use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 
 use crate::params::ControlSet;
 use crate::reverb::NodeFamily;
@@ -40,7 +40,7 @@ impl<R: NodeRecurrence> NodeFamily for Filter<R> {
         self.recurrence().set(initial)
     }
 
-    fn capacity(&self, _: SampleRate, _: Db) {}
+    fn capacity(&self, _: SampleRate) {}
 }
 
 /// The bus a filter built for a width runs on: the engine's order for it

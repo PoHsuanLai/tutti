@@ -16,24 +16,23 @@
 use core::ops::Range as Frames;
 
 use tutti_dsp::{
-    Cadence, Capacity, Channels, Domain, Effort, Family, FreeverbControls, FreeverbFamily, Grows,
-    MAX_CHANNELS, NetworkCapacity, Reach, Realized, Recurrence, Ring, Setup, System,
+    Cadence, Capacity, Channels, Effort, Family, FreeverbControls, FreeverbFamily, Grows,
+    MAX_CHANNELS, NetworkCapacity, Reach, Realized, Recurrence, Ring, Setup, System, TAIL_FLOOR,
 };
 use tutti_graph::{
     Bus, BusRole, Buses, Cost, Cx, HasParam, HasParams, IntoNode, Io, Node, NodeParts, OutBus,
     ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail};
+use tutti_types::{Latency, MaxBlock, Mix, SampleRate, Samples, Tail};
 
 use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 
-/// The level the wet signal has fallen to when the declared tail ends, and below
-/// which the node parks: 60 dB under what it carried, the figure the General MIDI
-/// reverb has always declared. Measured against the old, uncut Freeverb at
-/// `input_end + tail`, what the cut discards is more than 100 dB below the
-/// rendered peak: about -112 dBFS RMS after a 2 s noise burst, -128 dBFS after a
-/// 50 ms one, and nothing after an impulse (already flushed).
-const TAIL_FLOOR: Db = Db(-60.0);
+// The node measures its tail to `TAIL_FLOOR`: the level the wet signal has fallen to
+// when the declared tail ends, and below which the node parks, 60 dB under what it
+// carried, the figure the General MIDI reverb has always declared. Measured against
+// the old, uncut Freeverb at `input_end + tail`, what the cut discards is more than
+// 100 dB below the rendered peak: about -112 dBFS RMS after a 2 s noise burst,
+// -128 dBFS after a 50 ms one, and nothing after an impulse (already flushed).
 
 /// A tail of this many frames never ends.
 const UNBOUNDED: u64 = u64::MAX;
@@ -65,25 +64,23 @@ pub trait NodeFamily: Family + 'static {
     /// The control set, for a node whose controls start at `initial`. Control side.
     fn set(&self, initial: &Self::Controls) -> Self::Set;
 
-    /// The capacity the node's runner is prepared with at `rate`, a tail measured
-    /// to `floor`: `()` for a family that does not grow, and for a [`Grows`] one
-    /// [`grown`](Self::grown). Control side.
-    fn capacity(&self, rate: SampleRate, floor: Db) -> <Self::Recurrence as Recurrence>::Capacity;
+    /// The capacity the node's runner is prepared with at `rate`: `()` for a family
+    /// that does not grow, and for a [`Grows`] one [`grown`](Self::grown). Control side.
+    fn capacity(&self, rate: SampleRate) -> <Self::Recurrence as Recurrence>::Capacity;
 
-    /// What a [`Grows`] family's [`Grows::reach`] gives at `rate` over the family's
-    /// default [`Domain`], its tail measured to `floor`: such a family's
-    /// [`capacity`](Self::capacity).
+    /// What a [`Grows`] family's [`Grows::reach`] gives at `rate`, over the family's
+    /// default [`Domain`](tutti_dsp::Domain) with the tail measured to [`TAIL_FLOOR`] ([`Reach::at`]): such a
+    /// family's [`capacity`](Self::capacity).
     ///
     /// # Panics
     ///
-    /// For a `rate` that is not positive and finite, or a `floor` that is not finite
-    /// and below 0 dB ([`Reach::new`] refuses them).
-    fn grown(&self, rate: SampleRate, floor: Db) -> <Self::Recurrence as Recurrence>::Capacity
+    /// For a `rate` that is not positive and finite ([`Reach::at`] refuses it; the node
+    /// replaces such a rate before it asks).
+    fn grown(&self, rate: SampleRate) -> <Self::Recurrence as Recurrence>::Capacity
     where
         Self: Grows,
     {
-        let reach = Reach::new(rate, Self::Domain::DEFAULT, floor)
-            .expect("a positive finite rate and a floor under 0 dB");
+        let reach = Reach::<Self::Domain>::at(rate).expect("a positive finite rate");
         self.reach(&reach)
     }
 }
@@ -118,8 +115,8 @@ impl NodeFamily for FreeverbFamily {
         FreeverbSet
     }
 
-    fn capacity(&self, rate: SampleRate, floor: Db) -> NetworkCapacity {
-        self.grown(rate, floor)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.grown(rate)
     }
 }
 
@@ -263,7 +260,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         } else {
             SampleRate::DEFAULT
         };
-        let capacity = self.family.capacity(self.rate, TAIL_FLOOR);
+        let capacity = self.family.capacity(self.rate);
         self.realization.prepare(
             &capacity,
             &Setup {

@@ -116,7 +116,7 @@ pub use interp::cubic_hermite;
 pub use model::{
     Anchor, Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Glide, Grows, Lerp, Lti,
     MaxDecay, MaxDecayError, Period, Reach, Realized, Recurrence, Ring, Setup, Start, Step, Steps,
-    System,
+    System, TAIL_FLOOR,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::swept::SweptLines;

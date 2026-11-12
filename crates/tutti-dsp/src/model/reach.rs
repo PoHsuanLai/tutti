@@ -3,22 +3,17 @@
 
 use tutti_types::{Db, SampleRate, Seconds};
 
+/// The level a node and a [`Reach`] measure a tail to when nothing says otherwise:
+/// -60 dB, the reverberation time's definition.
+pub const TAIL_FLOOR: Db = Db(-60.0);
+
 /// A family's own limit on a control, `D ⊆ C` of design 024 section 2.7.2: the part of
-/// a [`Reach`] only the family knows (a reverb's longest decay, a delay's longest time, `()` for a filter).
+/// a [`Reach`] only the family knows (a reverb's longest decay, a delay's longest
+/// time). Only a [`Grows`](crate::Grows) family has one. A domain is range-checked
+/// where it is made (`MaxDecay::new`), so every value can be built to.
 pub trait Domain: Copy {
     /// The domain a node builds to when nothing says otherwise.
     const DEFAULT: Self;
-
-    /// Whether this domain can be built to.
-    fn valid(&self) -> bool;
-}
-
-impl Domain for () {
-    const DEFAULT: Self = ();
-
-    fn valid(&self) -> bool {
-        true
-    }
 }
 
 /// The longest decay a reverb's control may ask for: a [`Domain`] of
@@ -72,10 +67,6 @@ impl From<MaxDecay> for Seconds {
 
 impl Domain for MaxDecay {
     const DEFAULT: Self = MaxDecay::DEFAULT;
-
-    fn valid(&self) -> bool {
-        Self::new(self.0).is_some()
-    }
 }
 
 /// The limits a node builds a family to: the rate, the family's [`Domain`] of a
@@ -89,16 +80,12 @@ pub struct Reach<D> {
 }
 
 impl<D: Domain> Reach<D> {
-    /// The default tail floor.
-    pub const FLOOR: Db = Db(-60.0);
-
-    /// A reach, or `None` when the rate is not positive and finite, the domain
-    /// is not [`valid`](Domain::valid), or the floor is not finite and below 0 dB.
+    /// A reach, or `None` when the rate is not positive and finite or the floor is
+    /// not finite and below 0 dB (the domain is checked where it is made).
     #[must_use]
     pub fn new(rate: SampleRate, domain: D, floor: Db) -> Option<Self> {
         let ok = rate.get().is_finite()
             && rate.get() > 0.0
-            && domain.valid()
             && floor.get().is_finite()
             && floor.get() < 0.0;
         ok.then_some(Self {
@@ -108,11 +95,11 @@ impl<D: Domain> Reach<D> {
         })
     }
 
-    /// The defaults at `rate` ([`Domain::DEFAULT`], [`FLOOR`](Self::FLOOR)), or
+    /// The defaults at `rate` ([`Domain::DEFAULT`], [`TAIL_FLOOR`]), or
     /// `None` for a rate that is not positive and finite.
     #[must_use]
     pub fn at(rate: SampleRate) -> Option<Self> {
-        Self::new(rate, D::DEFAULT, Self::FLOOR)
+        Self::new(rate, D::DEFAULT, TAIL_FLOOR)
     }
 
     /// The rate.

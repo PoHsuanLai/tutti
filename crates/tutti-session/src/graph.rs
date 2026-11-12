@@ -200,7 +200,7 @@ where
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<Box<dyn Any + Send>, ReplaceRefused<Box<dyn ErasedSwap>>> {
-        match graph.replace(node, self.0, fade, curve) {
+        match graph.swap_node(node, self.0, fade, curve) {
             Ok(controls) => {
                 graph.address::<N>(node, &controls);
                 Ok(Box::new(controls))
@@ -977,14 +977,12 @@ impl Graph {
 
     /// Swaps the unit behind `node` for `incoming` under a `fade` along
     /// `curve` when its shape fits the running unit's, else as a plain swap
-    /// on the next commit (`Editor::replace_or_swap`). Hands back its
-    /// controls; the incoming node's params are not addressed
-    /// ([`crossfade`](Self::crossfade) addresses a [`SessionNode`]'s). The outgoing node's
-    /// reclaimer goes with it and the incoming node keeps none
-    /// ([`crossfade`](Self::crossfade) keeps a [`SessionNode`]'s). Refused as
-    /// [`ReplaceRefused::Busy`] with the node handed back while the graph
-    /// re-prepares, and for good on a poisoned graph.
-    /// [`crossfade`](Self::crossfade) waits out a re-prepare instead.
+    /// on the next commit (`Editor::replace_or_swap`), and hands back its
+    /// controls. The incoming node goes in as [`add`](Self::add) puts one in:
+    /// its params are addressed and its reclaimer kept, and the outgoing
+    /// node's go with it. Refused as [`ReplaceRefused::Busy`] with the node
+    /// handed back while the graph re-prepares, and for good on a poisoned
+    /// graph; [`crossfade`](Self::crossfade) waits out a re-prepare instead.
     ///
     /// (`plugin`) A hosted plugin replaced this way is no longer hosted: its
     /// record is dropped, so its health, snapshots and render mode stop
@@ -996,7 +994,7 @@ impl Graph {
     /// [`ReplaceRefused::Busy`] while the graph re-prepares, handing `incoming`
     /// back; [`ReplaceRefused::Failed`] on a poisoned graph or a `node` not in
     /// it, dropping `incoming`.
-    pub fn replace<N: IntoNode>(
+    pub fn replace<N: SessionNode>(
         &mut self,
         node: impl Into<NodeKey>,
         incoming: N,
@@ -1004,6 +1002,21 @@ impl Graph {
         curve: CrossfadeCurve,
     ) -> Result<N::Controls, ReplaceRefused<N>> {
         let node = node.into();
+        let incoming = incoming.bind_tempo(&self.tempo);
+        let controls = self.swap_node(node, incoming, fade, curve)?;
+        self.address::<N>(node, &controls);
+        Ok(controls)
+    }
+
+    /// The swap under [`replace`](Self::replace) and a crossfade, addressing
+    /// nothing: the caller addresses the incoming node.
+    fn swap_node<N: IntoNode>(
+        &mut self,
+        node: NodeKey,
+        incoming: N,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<N::Controls, ReplaceRefused<N>> {
         let controls = self.swap_unit(node, incoming, fade, curve)?;
         #[cfg(feature = "plugin")]
         self.plugins.remove(&node);
@@ -1074,7 +1087,7 @@ impl Graph {
                 curve,
             )));
         }
-        match self.replace(node, incoming, fade, curve) {
+        match self.swap_node(node, incoming, fade, curve) {
             Ok(controls) => {
                 self.address::<N>(node, &controls);
                 Ok(Crossfade::Landed(controls))

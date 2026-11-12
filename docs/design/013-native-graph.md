@@ -10710,8 +10710,10 @@ that is only an `IntoNode` does not compile there (a host's own is wrapped in
 `ForkByClone` or `Unforkable`, is a `Params`, or implements `SessionNode`; the
 audio and event inlets, the metronome and the MIDI clock now do). The
 unaddressed insert is `pub(crate)` (`place`, for a bound plugin). `replace`
-still takes an `IntoNode` and addresses nothing of the incoming node: that is
-what `crossfade` is for.
+takes a `SessionNode` too and addresses the incoming node as `add` does (the
+raw swap is the private `swap_node` under it and `crossfade`); the two differ
+only in that `replace` refuses while the graph re-prepares and `crossfade`
+waits.
 
 An event inlet's capacity is an `EventCapacity` (`tutti_graph`, 1 to `u32::MAX`,
 the shape of CLAUDE.md's range-checked values), so `open_event_inlet` and

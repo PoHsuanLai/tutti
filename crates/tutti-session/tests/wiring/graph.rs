@@ -907,13 +907,13 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
     let _ = s.update();
     assert_eq!(second.cell.retired_len(), 0, "the incoming node is swept");
 
-    // A raw replace (a plain `IntoNode`) keeps no reclaimer, and takes the
-    // outgoing node's with it.
+    // A replace by a node with no reclaimer (a plain clone-forked one)
+    // takes the outgoing node's with it.
     assert!(
         s.graph()
             .replace(
                 node,
-                Const::mono(0.0),
+                ForkByClone(Const::mono(0.0)),
                 Seconds(0.0),
                 CrossfadeCurve::EqualAmplitude
             )

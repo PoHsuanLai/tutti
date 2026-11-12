@@ -66,9 +66,9 @@ fn set_param_writes_the_cell_the_key_names() {
 }
 
 /// **A write that reaches nothing is refused, saying which**: a node that is
-/// not in the graph, and a node with no such param addressed (one swapped in
-/// by `replace`, which addresses nothing of the incoming node). Nothing is
-/// written.
+/// not in the graph, and a node with no such param addressed (the filter's
+/// key after `replace` swapped in an `Unforkable` one, which addresses no
+/// params). Nothing is written.
 #[test]
 fn set_param_refuses_a_missing_node_and_a_missing_param() {
     let mut s = detached();
@@ -82,7 +82,8 @@ fn set_param_refuses_a_missing_node_and_a_missing_param() {
         Hz(1_000.0),
         Q(0.7),
     ));
-    // `replace` swaps the node in and addresses nothing of the incoming one.
+    // `replace` addresses what the incoming node declares: an `Unforkable`
+    // declares nothing, so the key's cutoff now reaches no param.
     s.graph()
         .replace(
             bare,

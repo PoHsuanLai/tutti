@@ -16,7 +16,7 @@
 //! - Master Volume and Master Balance (M1 p.57, `04 01` and `04 02`).
 //! - Master Fine Tuning and Master Coarse Tuning (CA-025, `04 03` and `04 04`).
 //! - The MIDI Tuning Standard (`08`): [`TuningMessage`], with its
-//!   [frequency data](TuningFrequency). A dump whose checksum does not hold is
+//!   [frequency data](crate::TuningFrequency). A dump whose checksum does not hold is
 //!   [`Read::BadChecksum`], not `Unread`.
 //!
 //! Anything else is [`Read::Unread`] when it is Universal (another sub-id, or one

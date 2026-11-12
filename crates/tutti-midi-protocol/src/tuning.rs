@@ -23,7 +23,7 @@ use tutti_ump::{MidiChannel, NoteNumber, U7, U14};
 const FRACTION_STEPS: u32 = 1 << 14;
 
 /// One frequency data word of MTS: 21 bits, the semitone (7 bits) over the
-/// fraction of a semitone (14 bits). See the [module docs](self).
+/// fraction of a semitone (14 bits). See the frequency data format in the module docs.
 ///
 /// `new` refuses a raw with a bit above the 21st; the raw is `semitone << 14 |
 /// fraction`. [`NO_CHANGE`](Self::NO_CHANGE) (`7F 7F 7F`, the raw `0x1F_FFFF`)

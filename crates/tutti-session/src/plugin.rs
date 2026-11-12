@@ -7,7 +7,7 @@
 //! # The record
 //!
 //! Each plugin the graph holds (`Graph::insert_plugin`,
-//! [`Session::add_plugin`], [`Graph::host_plugin`]) has a [`HostedPlugin`],
+//! [`Session::add_plugin`], [`Graph::host_plugin`](crate::Graph::host_plugin)) has a [`HostedPlugin`],
 //! keyed by its [`NodeKey`]: its handle, its controls (an out-of-process
 //! plugin's latency and meter cells), its liveness, whether it was told
 //! the render mode, its last snapshot, and (`modulation`) its parameter
@@ -38,22 +38,22 @@
 //!   `PhaseCx::now`: dead after at least `Liveness::DEATHS` consecutive
 //!   unhealthy observations spanning at least the window. A dead plugin's
 //!   node is removed ([`Session::remove`]) and reported once,
-//!   [`SessionEvent::PluginDied`](crate::SessionEvent::PluginDied).
+//!   [`SessionEvent::PluginDied`].
 //! - **Latency.** The figure its node declares now
 //!   (`PluginControls::declared_latency`) is handed to the graph when it
-//!   moved ([`Graph::refresh_node_latency`]):
-//!   [`SessionEvent::PluginLatencyChanged`](crate::SessionEvent::PluginLatencyChanged).
+//!   moved ([`Graph::refresh_node_latency`](crate::Graph::refresh_node_latency)):
+//!   [`SessionEvent::PluginLatencyChanged`].
 //! - **GUI edits** (`modulation`). The values the plugin reported go into
 //!   its mirror, and into the knob of the lane on that parameter when it
 //!   has one (doc 014 §8.2). A mirror rebuilt by a crossfade to another
 //!   plugin is read as a job the host places:
-//!   [`SessionEvent::PluginParamsDue`](crate::SessionEvent::PluginParamsDue),
+//!   [`SessionEvent::PluginParamsDue`],
 //!   whose [`run`](PluginParamRead::run) makes one round trip per
 //!   parameter, landed with [`Session::land_params`]. Until then the
 //!   mirror is not ready, and a lane on the plugin waits for it.
 //! - **Snapshots.** A healthy plugin's state is captured every
 //!   [`SNAPSHOT_INTERVAL`] of `now` (`SessionBuilder::snapshot_interval`),
-//!   as a job the host places: [`SessionEvent::PluginSnapshotDue`](crate::SessionEvent::PluginSnapshotDue),
+//!   as a job the host places: [`SessionEvent::PluginSnapshotDue`],
 //!   whose [`run`](PluginSnapshot::run) is a blocking round trip, landed
 //!   with [`Session::land_snapshot`]. One is in flight per plugin at most:
 //!   the job holds the plugin's snapshot token, and a dropped job frees it.
@@ -514,7 +514,7 @@ impl HostedPlugin {
     /// not yet ready: its values are read by a job (one round trip per
     /// parameter, so not on the calling thread), which the next
     /// `Phase::Plugins` hands to the host
-    /// ([`SessionEvent::PluginParamsDue`](crate::SessionEvent::PluginParamsDue)).
+    /// ([`SessionEvent::PluginParamsDue`]).
     /// The outgoing mirror's report callback was on the outgoing handle,
     /// which reports nothing here once it is gone.
     pub(crate) fn replace(&mut self, handle: PluginHandle, controls: PluginControls) {
@@ -1008,7 +1008,7 @@ impl Session {
     /// nowhere. A read the plugin did not answer (its list unavailable) does
     /// not land either: the mirror stays not ready, the read goes back to the
     /// plugin's record, and the next `Phase::Plugins` hands it out again as
-    /// [`SessionEvent::PluginParamsDue`](crate::SessionEvent::PluginParamsDue).
+    /// [`SessionEvent::PluginParamsDue`].
     #[cfg(feature = "modulation")]
     pub fn land_params(&mut self, read: PluginParamsRead) -> bool {
         let PluginParamsRead {

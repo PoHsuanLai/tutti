@@ -112,6 +112,7 @@ mod narrower;
 mod scale;
 mod sensitivity;
 mod translator;
+mod tuning;
 mod unit;
 mod universal;
 mod voice;
@@ -123,12 +124,16 @@ pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use narrower::Narrower;
 pub use sensitivity::PitchBendSensitivity;
 pub use translator::Translator;
+pub use tuning::{
+    ChannelMask, KeyChange, KeyChanges, KeyTable, MAX_KEY_CHANGES, NotFrequencyData, OctaveOffsets,
+    Timing, TuningFrequency, TuningMessage, TuningName,
+};
 pub use unit::{
     bend_u14_to_signed_f32, bend_u32_to_signed_f32, signed_f32_to_bend_u32, u7_to_unit_f32,
     u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
 pub use universal::{
-    Addressed, Addressee, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient, SysexDeviceId,
-    Universal, UniversalReader, read,
+    Addressed, Addressee, BadChecksum, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient,
+    SysexDeviceId, Universal, UniversalReader, read,
 };
 pub use voice::{channel_voice, widen, widen_bytes, widen_message, widen_velocity};

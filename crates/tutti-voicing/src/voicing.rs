@@ -54,7 +54,8 @@
 use std::num::NonZeroU16;
 
 use tutti_midi_protocol::{
-    GeneralMidi, Heard, MpeZones, Universal, bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32,
+    GeneralMidi, Heard, KeyTable, MpeZones, Timing, TuningMessage, Universal,
+    bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32,
 };
 use tutti_types::{Amplitude, Seconds, Semitones};
 use tutti_ump::{
@@ -65,6 +66,7 @@ use tutti_ump::{
 use crate::channel::{Bend, ChannelState};
 use crate::master::{Master, MasterGain};
 use crate::per_note::{MAX_EVENTS as NOTE_EVENTS, NOTE_CONTROLS};
+use crate::tuning::{NoSuchTuning, TuningCapacity, Tunings};
 use crate::{Controller, Effect, Holds, NoteControl, NoteEvent, PerNoteState, Phase, Stop};
 
 const CHANNELS: usize = MidiChannel::COUNT as usize;
@@ -198,6 +200,9 @@ pub struct Rules {
     /// (each key a different sound), and GM2 section 4.2 recommends that it "will
     /// not alter sounds assigned to Rhythm Channels".
     pub percussion: Option<MidiChannel>,
+    /// How many tuning banks and programs the core holds for the MIDI Tuning
+    /// Standard.
+    pub tuning: TuningCapacity,
 }
 
 impl Rules {
@@ -222,6 +227,7 @@ impl Rules {
             bend_range: Semitones(2.0),
             per_note_bend_range: Semitones(48.0),
             percussion: None,
+            tuning: TuningCapacity::DEFAULT,
         }
     }
 
@@ -305,6 +311,15 @@ impl Rules {
     }
 }
 
+impl Rules {
+    /// These rules with room for `capacity` tuning programs.
+    #[must_use]
+    pub const fn with_tuning_capacity(mut self, capacity: TuningCapacity) -> Self {
+        self.tuning = capacity;
+        self
+    }
+}
+
 impl Default for Rules {
     /// [`Rules::poly`] of [`DEFAULT_POLYPHONY`](Rules::DEFAULT_POLYPHONY) voices.
     fn default() -> Self {
@@ -341,6 +356,9 @@ pub struct Glide {
     /// bend on it as on the note's own ("Pitch bend offsets the pitch used by
     /// both the Portamento Control starting note and the target Note-On").
     pub from: NoteNumber,
+    /// How far the key it leaves sounds from equal temperament on this channel
+    /// (its [MIDI Tuning](crate::Command::Start::tune)).
+    pub from_tune: Semitones,
     /// How long it takes to arrive.
     pub time: Seconds,
 }
@@ -388,6 +406,12 @@ pub enum Command {
         channel: MidiChannel,
         /// Its key.
         key: NoteNumber,
+        /// How far the key sounds from its equal-tempered pitch: what the
+        /// channel's tuning program stores for it (MIDI Tuning Standard) and
+        /// the channel's Scale/Octave offset, in semitones, on top of the
+        /// channel's own [`Retune`](Command::Retune). Zero in equal temperament
+        /// and on the percussion channel.
+        tune: Semitones,
         /// The strike's velocity, 16 bits, at least 1.
         velocity: u16,
         /// What the patch said.
@@ -405,6 +429,8 @@ pub enum Command {
         id: VoiceId,
         /// The new key.
         key: NoteNumber,
+        /// The new key's tuning (see [`Command::Start`]'s `tune`).
+        tune: Semitones,
         /// The new velocity.
         velocity: u16,
         /// The glide to the new key, if there is one: the voice's pitch
@@ -445,6 +471,18 @@ pub enum Command {
     /// A voice's per-note controllers return to their defaults (Per-Note
     /// Management Reset, section 7.4.5), whatever it keeps sounding.
     ResetControls(VoiceId),
+    /// A sounding voice's tuning changed: its key now sounds `tune` from its
+    /// equal-tempered pitch (see [`Command::Start`]'s `tune`), moving with no
+    /// new attack. Sent when a real-time tuning message or a Tuning Program or
+    /// Bank Select reaches a note that sounds (MTS: "the note should instantly
+    /// be re-tuned to the new frequency while it continues to sound"), never
+    /// for a non-real-time one.
+    Tune {
+        /// The voice.
+        id: VoiceId,
+        /// Its tuning.
+        tune: Semitones,
+    },
     /// A channel's pitch moved: its notes sound `bend` away from their keys.
     /// Sent for each channel a bend, its sensitivity or a reset reaches.
     Retune {
@@ -466,6 +504,8 @@ struct Note {
     strike: u64,
     channel: MidiChannel,
     key: NoteNumber,
+    /// What the key sounds from equal temperament: what the voice was last told.
+    tune: Semitones,
     group: Option<NonZeroU16>,
     scope: u32,
     tag: u32,
@@ -537,6 +577,8 @@ pub struct Voicing {
     zones: Option<MpeZones>,
     /// The device's own volume, balance and tuning (Universal Device Control).
     master: Master,
+    /// The MIDI Tuning Standard's programs and the channels' octave offsets.
+    tuning: Tunings,
     next: u64,
     strike: u64,
     held: [Held; CHANNELS],
@@ -564,6 +606,7 @@ impl Clone for Voicing {
             channels: self.channels,
             zones: self.zones,
             master: self.master,
+            tuning: self.tuning.clone(),
             next: self.next,
             strike: self.strike,
             held: self.held,
@@ -590,6 +633,7 @@ impl Voicing {
             channels: [ChannelState::new(rules.bend_range); CHANNELS],
             zones: None,
             master: Master::new(),
+            tuning: Tunings::new(rules.tuning),
             next: 1,
             strike: 0,
             held: [Held::NONE; CHANNELS],
@@ -616,6 +660,7 @@ impl Voicing {
         self.per_note.clear();
         self.channels = [ChannelState::new(self.rules.bend_range); CHANNELS];
         self.master = Master::new();
+        self.tuning.clear_octave();
     }
 
     /// Forgets every note, pedal and held key, and keeps the channels'
@@ -826,6 +871,14 @@ impl Voicing {
     ///   (RP-003); Off is the instrument's own initialized mode, the
     ///   [`Rules::bend_range`] it was built with. A [`Command::Retune`] follows for
     ///   every channel.
+    /// - **The MIDI Tuning Standard** (`08`; tables: [`TuningCapacity`]): a Single Note
+    ///   Tuning Change and a dump store into the tuning program they name (bank 0 when
+    ///   the message has no bank byte); a real-time change (and Scale/Octave Tuning, per
+    ///   channel mask) answers a [`Command::Tune`] for each sounding note whose key now
+    ///   sounds elsewhere, a non-real-time one and a dump tell no voice. A program or bank
+    ///   the core has no room for is ignored and counted ([`tuning_refused`](Self::tuning_refused)).
+    ///   A Bulk Tuning Dump Request is answered with nothing: an instrument has no SysEx
+    ///   output to reply on.
     /// - Identity Request and Reply are the device inquiry's (M1 p.40), a message
     ///   on a wire the instrument does not own: no command.
     pub fn universal(&mut self, heard: Heard) -> &[Command] {
@@ -844,10 +897,145 @@ impl Voicing {
                 self.retune_all();
             }
             Universal::GeneralMidi(mode) => self.general_midi(mode),
+            Universal::Tuning(message) => self.mts(message),
             // The inquiry's, and any message a later version reads.
             _ => {}
         }
         &self.out
+    }
+
+    /// The MIDI Tuning Standard (see [`universal`](Self::universal)).
+    fn mts(&mut self, message: TuningMessage) {
+        match message {
+            // Replying needs an output an instrument does not have.
+            TuningMessage::DumpRequest { .. } => {}
+            TuningMessage::KeyDump {
+                bank,
+                program,
+                table,
+                ..
+            } => {
+                let (bank, program) = (bank.unwrap_or(U7::of(0)), program);
+                if let Some(stored) = self.tuning.table_mut(bank, program) {
+                    for (k, &word) in table.words().iter().enumerate() {
+                        stored.set(NoteNumber::of(k as u8), word);
+                    }
+                }
+            }
+            TuningMessage::OctaveDump {
+                bank,
+                program,
+                offsets,
+                ..
+            } => {
+                if let Some(stored) = self.tuning.table_mut(bank, program) {
+                    *stored = Tunings::octave_table(&offsets);
+                }
+            }
+            TuningMessage::NoteChange {
+                timing,
+                bank,
+                program,
+                changes,
+            } => {
+                let bank = bank.unwrap_or(U7::of(0));
+                let Some(stored) = self.tuning.table_mut(bank, program) else {
+                    return;
+                };
+                for change in changes.as_slice() {
+                    stored.set(change.key, change.frequency);
+                }
+                if timing == Timing::RealTime {
+                    self.retune_notes(|_, c| c.tuning_bank == bank && c.tuning_program == program);
+                }
+            }
+            TuningMessage::OctaveTuning {
+                timing,
+                channels,
+                offsets,
+            } => {
+                for channel in channels.channels() {
+                    self.tuning.set_octave(channel.index(), &offsets);
+                }
+                if timing == Timing::RealTime {
+                    self.retune_notes(|n, _| channels.contains(n.channel));
+                }
+            }
+        }
+    }
+
+    /// Re-tunes the sounding notes `which` picks (with the state of their
+    /// channel) to what their keys now sound, telling the instrument of each that
+    /// moved.
+    fn retune_notes(&mut self, which: impl Fn(&Note, &ChannelState) -> bool) {
+        for i in 0..self.notes.len() {
+            let n = self.notes[i];
+            if !which(&n, &self.channels[n.channel.index()]) {
+                continue;
+            }
+            let tune = self.tune_of(n.channel, n.key);
+            if tune != n.tune {
+                self.notes[i].tune = tune;
+                self.push(Command::Tune { id: n.id, tune });
+            }
+        }
+    }
+
+    /// How far `key` sounds from equal temperament on `channel`: the table of
+    /// the channel's tuning bank and program, and its Scale/Octave offset. The
+    /// percussion channel is key-based and takes none, like the master tuning.
+    fn tune_of(&self, channel: MidiChannel, key: NoteNumber) -> Semitones {
+        if self.rules.percussion == Some(channel) {
+            return Semitones(0.0);
+        }
+        let state = &self.channels[channel.index()];
+        self.tuning.offset(
+            state.tuning_bank,
+            state.tuning_program,
+            channel.index(),
+            key,
+        )
+    }
+
+    /// Stores `table` as tuning program `program` of `bank`, replacing what it
+    /// held, without changing a sounding note (the instrument's initial tunings,
+    /// or a host's; the messages that store one are
+    /// [`universal`](Self::universal)'s).
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchTuning`] when the core has no such bank or program
+    /// ([`Rules::tuning`]); it is not counted, the caller has it.
+    pub fn store_tuning(
+        &mut self,
+        bank: U7,
+        program: U7,
+        table: KeyTable,
+    ) -> Result<(), NoSuchTuning> {
+        self.tuning
+            .store(bank, program, table)
+            .then_some(())
+            .ok_or(NoSuchTuning { bank, program })
+    }
+
+    /// The table of tuning program `program` of `bank`, if the core has it.
+    #[must_use]
+    pub fn tuning(&self, bank: U7, program: U7) -> Option<&KeyTable> {
+        self.tuning.table(bank, program)
+    }
+
+    /// How many tuning programs and banks the core holds ([`Rules::tuning`]).
+    #[must_use]
+    pub fn tuning_capacity(&self) -> TuningCapacity {
+        self.tuning.capacity()
+    }
+
+    /// Tuning messages for a bank or program the core has no room for, which
+    /// changed nothing: a dump, a Single Note Tuning Change, or a Tuning Bank or
+    /// Program Select (MTS: "it should ignore that message").
+    #[must_use]
+    pub fn tuning_refused(&self) -> u64 {
+        self.tuning.refused()
     }
 
     /// The gain the instrument's output is multiplied by: the Master Volume and
@@ -884,6 +1072,7 @@ impl Voicing {
             GeneralMidi::Off => self.rules.bend_range,
         };
         self.channels = [ChannelState::new(range); CHANNELS];
+        self.tuning.clear_octave();
         self.master.reset_to_general_midi();
         self.retune_all();
     }
@@ -908,6 +1097,22 @@ impl Voicing {
             }
             Rpn::MODULATION_DEPTH_RANGE => {
                 self.channels[channel.index()].set_modulation_range(value);
+            }
+            // Tuning Program and Bank Select (MTS): the channel's "current"
+            // tuning, effective at once on its sounding notes. A number the core
+            // holds nothing for is ignored.
+            Rpn::TUNING_PROGRAM_SELECT | Rpn::TUNING_BANK_SELECT => {
+                let chosen = U7::masked((value >> 25) as u8);
+                let state = &mut self.channels[channel.index()];
+                if rpn == Rpn::TUNING_PROGRAM_SELECT && self.tuning.has_program(chosen) {
+                    state.tuning_program = chosen;
+                } else if rpn == Rpn::TUNING_BANK_SELECT && self.tuning.has_bank(chosen) {
+                    state.tuning_bank = chosen;
+                } else {
+                    self.tuning.refuse();
+                    return;
+                }
+                self.retune_notes(|n, _| n.channel == channel);
             }
             _ => {
                 let address = Self::address(channel);
@@ -981,7 +1186,12 @@ impl Voicing {
     ) -> Option<Glide> {
         let from = from.filter(|&f| f != key)?;
         let time = self.channels[channel.index()].glide_time(from, key);
-        Some(Glide { from, time })
+        let from_tune = self.tune_of(channel, from);
+        Some(Glide {
+            from,
+            from_tune,
+            time,
+        })
     }
 
     fn address(channel: MidiChannel) -> Address {
@@ -1088,12 +1298,14 @@ impl Voicing {
         velocity: u16,
     ) -> bool {
         let glide = self.glide(channel, Some(from), key);
+        let tune = self.tune_of(channel, key);
         let strike = self.strike;
         let mut moved = false;
         for i in 0..self.notes.len() {
             let n = &mut self.notes[i];
             if n.channel == channel && n.key == from && !n.released {
                 n.key = key;
+                n.tune = tune;
                 n.strike = strike;
                 let id = n.id;
                 let old = std::mem::replace(&mut n.note, self.strike_note);
@@ -1101,6 +1313,7 @@ impl Voicing {
                 self.push(Command::Retarget {
                     id,
                     key,
+                    tune,
                     velocity,
                     glide,
                 });
@@ -1240,13 +1453,16 @@ impl Voicing {
                     // Portamento on, the key it sounded.
                     let from = source.ptc.or(portamento.then_some(self.notes[i].key));
                     let glide = self.glide(channel, from, key);
+                    let tune = self.tune_of(channel, key);
                     self.notes[i].key = key;
+                    self.notes[i].tune = tune;
                     self.notes[i].strike = strike;
                     let moved = std::mem::replace(&mut self.notes[i].note, self.strike_note);
                     self.retire(moved);
                     self.push(Command::Retarget {
                         id,
                         key,
+                        tune,
                         velocity,
                         glide,
                     });
@@ -1272,6 +1488,7 @@ impl Voicing {
         from: Option<NoteNumber>,
     ) {
         let glide = self.glide(channel, from, key);
+        let tune = self.tune_of(channel, key);
         if let Some(v) = steal
             && let Ok(i) = self.notes.binary_search_by_key(&v, |n| n.id)
         {
@@ -1286,6 +1503,7 @@ impl Voicing {
             strike: self.strike,
             channel,
             key,
+            tune,
             group: spec.group,
             scope: spec.scope,
             tag: spec.tag,
@@ -1298,6 +1516,7 @@ impl Voicing {
             id,
             channel,
             key,
+            tune,
             velocity,
             spec,
             steal,
@@ -2189,12 +2408,14 @@ mod tests {
                 Command::Retarget {
                     id: id(1),
                     key: NoteNumber::of(62),
+                    tune: Semitones(0.0),
                     velocity: 0x8000,
                     glide: None,
                 },
                 Command::Retarget {
                     id: id(2),
                     key: NoteNumber::of(62),
+                    tune: Semitones(0.0),
                     velocity: 0x8000,
                     glide: None,
                 },
@@ -2238,6 +2459,7 @@ mod tests {
                 Command::Retarget {
                     id: id(1),
                     key: NoteNumber::of(62),
+                    tune: Semitones(0.0),
                     velocity: 0x8000,
                     glide: None,
                 },
@@ -2317,6 +2539,7 @@ mod tests {
             [Command::Retarget {
                 id: id(1),
                 key: NoteNumber::of(60),
+                tune: Semitones(0.0),
                 velocity: 0x3000,
                 glide: None,
             }]
@@ -3422,6 +3645,7 @@ mod tests {
                             | Command::Cut(id)
                             | Command::Damp(id)
                             | Command::Retarget { id, .. }
+                            | Command::Tune { id, .. }
                             | Command::Control { id, .. }
                             | Command::ResetControls(id) => Some(id),
                             Command::Start { steal, .. } => steal,

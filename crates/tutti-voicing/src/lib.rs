@@ -22,7 +22,10 @@
 //!   instrument reads (Master Volume and Balance, Master Fine and Coarse
 //!   Tuning, General MIDI System On and Off), read by
 //!   [`UniversalReader`](tutti_midi_protocol::UniversalReader) at the
-//!   instrument's edge; [`MasterGain`] is the gain they set.
+//!   instrument's edge; [`MasterGain`] is the gain they set. The MIDI Tuning Standard
+//!   rides the same door: the tuning programs ([`TuningCapacity`]), RPN 3 and 4 and
+//!   Scale/Octave Tuning reach a voice as the key's tuning (`Command::Start`'s `tune`,
+//!   [`Command::Tune`]).
 //! - [`Holds`]: the note gate (key, sustain, sostenuto) as a state machine.
 //! - [`Controller`]: which channel-mode controllers mean the same to every
 //!   instrument.
@@ -39,6 +42,7 @@ mod holds;
 mod master;
 mod per_note;
 mod phase;
+mod tuning;
 mod voicing;
 
 pub use channel::{ChannelState, DEFAULT_MODULATION_RANGE};
@@ -47,6 +51,7 @@ pub use holds::{Holds, Release};
 pub use master::MasterGain;
 pub use per_note::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 pub use phase::Phase;
+pub use tuning::{NoSuchTuning, TuningCapacity};
 pub use voicing::{
     Command, Glide, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, Voicing,
 };

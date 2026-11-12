@@ -79,6 +79,7 @@ impl Voices {
                     id,
                     channel,
                     key,
+                    tune,
                     velocity,
                     spec,
                     steal,
@@ -96,15 +97,29 @@ impl Voices {
                         i32::from(key.get()),
                         i32::from(narrow_velocity(NoteVelocity::new(velocity)).get().max(1)),
                     );
+                    voice.tune(tune);
                     voice.glide(glide);
                     self.active.push(Slot { id, voice });
                 }
                 // A voice moved to a new key without a new attack: a legato
                 // channel's (the footswitch, CC 68), or the sounding voice a
                 // Portamento Control names.
-                Command::Retarget { id, key, glide, .. } => {
+                Command::Retarget {
+                    id,
+                    key,
+                    tune,
+                    glide,
+                    ..
+                } => {
                     if let Some(slot) = self.slot(id) {
-                        slot.voice.retarget(key, glide);
+                        slot.voice.retarget(key, tune, glide);
+                    }
+                }
+                // A voice's key moved off equal temperament by a tuning message
+                // or a Tuning Program or Bank Select, with no new attack.
+                Command::Tune { id, tune } => {
+                    if let Some(slot) = self.slot(id) {
+                        slot.voice.tune(tune);
                     }
                 }
                 Command::Release { id, .. } => {

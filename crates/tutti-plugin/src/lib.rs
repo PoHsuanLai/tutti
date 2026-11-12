@@ -6,9 +6,14 @@
 /// the fork's render fault, beside the format-agnostic ones every host shares.
 pub mod error {
     pub use tutti_plugin_ipc::PluginRenderFault;
-    pub use tutti_plugin_types::{Delivered, EditorError, LoadStage, PluginError, StateError};
+    pub use tutti_plugin_types::{
+        Delivered, EditorError, LoadStage, PluginError, PluginFailure, PortCounts, StateError,
+        TerminationReason,
+    };
 }
-pub use error::{EditorError, LoadStage, PluginRenderFault};
+pub use error::{
+    EditorError, LoadStage, PluginFailure, PluginRenderFault, PortCounts, TerminationReason,
+};
 
 mod format;
 mod host;

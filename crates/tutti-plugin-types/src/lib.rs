@@ -17,6 +17,7 @@ mod descriptor;
 mod driver;
 mod editor;
 mod error;
+mod failure;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake;
 pub mod features;
@@ -86,6 +87,7 @@ pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
     ResizeHints, WindowHandle,
 };
+pub use failure::{PluginFailure, PortCounts, TerminationReason};
 pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
 pub use hosting::{Editor, EditorWindow, InProcess, Load, Origin, OutOfProcess, Reopen};
 pub use invalidation::{PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind};

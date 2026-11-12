@@ -3,7 +3,7 @@
 
 use tutti_types::SampleRate;
 
-use crate::{PluginTail, Samples};
+use crate::{PluginFailure, PluginTail, Samples};
 
 /// Which aspect of plugin state the plugin asked the host to re-read.
 ///
@@ -124,6 +124,6 @@ pub enum PluginInvalidation {
     /// `BridgeEvent::Crashed` for why both exist.
     Crashed {
         /// Why the plugin died, latched at the detection site.
-        cause: String,
+        cause: PluginFailure,
     },
 }

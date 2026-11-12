@@ -402,22 +402,29 @@ fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminat
         replies_at_park,
         "a parked plugin gave no reply"
     );
-    assert_eq!(
-        handle.status(),
-        tutti_plugin_host::PluginStatus::Alive,
+    assert!(
+        matches!(handle.status(), tutti_plugin_host::PluginStatus::Alive),
         "a parked plugin has not crashed"
     );
 
-    handle.terminate("test: the plugin stopped answering");
+    let reason = tutti_plugin_types::TerminationReason::Hung {
+        blocks: HANG,
+        held: Duration::from_secs(5),
+    };
+    handle.terminate(reason);
     let deadline = Instant::now() + Duration::from_secs(10);
     while !handle.status().is_dead() {
         assert!(Instant::now() < deadline, "terminate left the plugin alive");
         let _ = drive_block(&mut client, &mut midi_out);
         std::thread::sleep(PACE);
     }
-    assert_eq!(
-        handle.status().cause(),
-        Some("test: the plugin stopped answering")
+    assert!(
+        matches!(
+            handle.status().cause(),
+            Some(tutti_plugin_types::PluginFailure::Terminated { reason: r }) if *r == reason
+        ),
+        "the host's reason is the cause: {:?}",
+        handle.status().cause()
     );
     // And the server is gone, not merely written off.
     #[cfg(target_os = "linux")]

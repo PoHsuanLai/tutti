@@ -51,6 +51,7 @@ use tutti_fixtures::machine_lock;
 use std::time::{Duration, Instant};
 
 use tutti_plugin_host::PluginStatus;
+use tutti_plugin_types::PluginFailure;
 
 /// Which `process()` call kills the plugin.
 ///
@@ -257,11 +258,12 @@ fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
          detection, and it is the loop above that is too short rather than this \
          wait."
     );
-    let cause = status.cause().unwrap_or_default();
     assert!(
-        !cause.is_empty(),
-        "a dead plugin must carry a latched cause; without one a host can \
-         report that something died but never what"
+        matches!(status.cause(), Some(PluginFailure::StreamClosed)),
+        "a plugin that aborts closes its stream, and the latched cause says so \
+         (got {:?}); without one a host can report that something died but \
+         never what",
+        status.cause()
     );
 
     // --- After the crash: silence. Not garbage, not the last good block.

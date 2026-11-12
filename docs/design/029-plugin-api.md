@@ -282,14 +282,28 @@ carry no value (`ParamEdit`). `PluginSnapshotDue`, `PluginParamsDue` and
 `PluginReloadDue` stay `SessionEvent` variants until step 5. Still open in
 step 2: `MainSession` and `Session::main`, `update()` servicing editors, the
 editor's `Opened`, `resize` and `rescale`, `EditorWantsSize`, and removing the
-freeing paths' `debug_assert!`. Also open, and step 4's with `Health`: `Died`
-and `Reloading` still carry the cause as a `String`, because the bridge latches
-it as one (`mark_crashed`, and the same string in `Health::crash_cause`,
-`PluginStatus::Dead`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed` and
-`RecoveryEvent`). A typed cause starts where the bridge latches it: a
-`PluginFailure` (connect, handshake, stream closed, timeout, terminated, ...) in
-`tutti-plugin-types`, with the `BridgeError` as the `source` of a failed reload
-attempt, which `Died`, `Reloading` and `GaveUp` then carry.
+freeing paths' `debug_assert!`.
+
+**As built (the typed cause, step 4's, done early).** The cause of a death is
+`tutti_plugin_types::PluginFailure`, latched by the bridge where it notices
+(`mark_crashed(PluginFailure)`) and the one value behind `Health::crash_cause`,
+`PluginStatus::Dead`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed`,
+`RecoveryEvent::{Died, LoadFailed}`, `GiveUp::last`, `PluginRenderFault::Crashed`
+and the session's `PluginChange::{Died, Reloading}` and `PluginLiveness`. Its
+variants are what the call sites produce: `Connect`, `Handshake` (a version skew
+is `BridgeError::ProtocolMismatch`, a wrong first message `UnexpectedMessage`),
+`StreamClosed`, `ServerExited`, `TimedOut`, `Io`, `Protocol` and `Bridge` (a
+stream error, classified once in `PluginFailure::from_stream`),
+`Terminated { reason: TerminationReason }` and `Unreported`; and the session's
+failed attempts, `ReloadFailed` (the load's `BridgeError`), `ReplacementDied`,
+`ReplacementPorts`, `ReplacementRefused`, `ReplacementInProcess`, `ReloadDropped`
+and `ReloadTimedOut`. A `BridgeError` or other error behind a failure is its
+`source` (held in an `Arc`, as `BridgeError` is not `Clone`), downcast to the
+type the caller knows. `terminate` takes a `TerminationReason`, a closed set (its
+only reason today is `Hung`, the session's), not free text. Two failures compare
+equal when they are the same kind and read the same, since an `io::Error` is not
+comparable. The server sends no cause, so the wire and `PROTOCOL_VERSION` are
+unchanged.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 

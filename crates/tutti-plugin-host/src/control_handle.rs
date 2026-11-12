@@ -11,7 +11,7 @@ use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, Control, EditorCapabilities, EditorError, Health, PluginError,
-    StateError, WindowHandle,
+    PluginFailure, StateError, TerminationReason, WindowHandle,
 };
 use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{
@@ -84,7 +84,7 @@ pub enum PluginStatus {
     /// was alive.
     Dead {
         /// Why the plugin died, latched at the detection site.
-        cause: String,
+        cause: PluginFailure,
     },
     /// The plugin refused the sample rate the engine runs at. It stays
     /// loaded and renders silence, and it is retried at every later rate
@@ -107,8 +107,14 @@ impl PluginStatus {
         matches!(self, Self::Dead { .. })
     }
 
+    /// `true` for [`Alive`](Self::Alive).
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        matches!(self, Self::Alive)
+    }
+
     /// Why the plugin died, or `None` while it is alive.
-    pub fn cause(&self) -> Option<&str> {
+    pub fn cause(&self) -> Option<&PluginFailure> {
         match self {
             Self::Dead { cause } => Some(cause),
             Self::Alive | Self::RateRefused { .. } => None,
@@ -342,7 +348,7 @@ impl PluginHandle {
             // why, and losing the death because the reason is missing would be
             // the worse failure.
             None if self.health.is_crashed() => PluginStatus::Dead {
-                cause: "the backend reported a crash without a cause".to_string(),
+                cause: PluginFailure::Unreported,
             },
             None => match self.health.rate_refusal() {
                 Some((rate, reason)) => PluginStatus::RateRefused { rate, reason },
@@ -451,8 +457,8 @@ impl PluginHandle {
     /// (unless it died of something else first), so [`status`](Self::status)
     /// turns [`Dead`](PluginStatus::Dead) as for any crash. Nothing for an
     /// in-process plugin. Not for the audio thread.
-    pub fn terminate(&self, cause: &str) {
-        self.health.terminate(cause);
+    pub fn terminate(&self, reason: TerminationReason) {
+        self.health.terminate(reason);
     }
 
     /// How many parameter-change events the plugin sent that the host lost,
@@ -862,7 +868,7 @@ mod tests {
             fn is_crashed(&self) -> bool {
                 false
             }
-            fn crash_cause(&self) -> Option<String> {
+            fn crash_cause(&self) -> Option<PluginFailure> {
                 None
             }
             fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
@@ -871,7 +877,7 @@ mod tests {
             fn block_counts(&self) -> BlockCounts {
                 BlockCounts::default()
             }
-            fn terminate(&self, _cause: &str) {}
+            fn terminate(&self, _reason: TerminationReason) {}
         }
 
         PluginHandle::from_backend(

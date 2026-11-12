@@ -1161,7 +1161,7 @@ impl Session {
     /// extrapolated to the moment a UI draws. A session with no engine
     /// rendering (detached, or before the first block) reads
     /// [`Playhead::default`]: stopped at the origin, with no clock reading
-    /// ([`Playhead::at`] is `None`). An offline [`Bounce`] renders a fork on
+    /// ([`Playhead::at`] is `None`). An offline bounce renders a fork on
     /// its own timeline and never moves this one.
     #[must_use]
     pub fn playhead(&self) -> Playhead {

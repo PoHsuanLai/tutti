@@ -11,7 +11,7 @@
 //!
 //! | output | consumer | why it can't be read from the FSM directly |
 //! |---|---|---|
-//! | [`MotionFsm::motion`] | the UI | the FSM is the engine's |
+//! | `motion` (crate-private) | the transport's `Timeline`, and the session's playhead | the FSM is the engine's |
 //! | `seek` ([`SeekSlot`]) | `TransportClock` | consumed once per buffer |
 //!
 //! The settings half — tempo, recording — lives in
@@ -374,7 +374,7 @@ impl MotionFsm {
     /// `Ok` means only that the event was *queued* — the FSM decides on the
     /// audio thread whether it actually applies, and that decision is not
     /// available synchronously. Observe the outcome by reading
-    /// [`MotionFsm::motion`] on a later frame.
+    /// the session's `playhead` on a later block.
     ///
     /// With no engine running over the transport, events stay queued. Past
     /// [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) in flight (timed

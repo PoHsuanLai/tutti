@@ -54,8 +54,7 @@ struct DelayControls {
 /// # Modulated params
 ///
 /// `N` audio inputs, `N` outputs. **Feedback** and **delay time** are
-/// modulatable by the graph, in that port order
-/// : a per-frame value on the param port
+/// modulatable by the graph, in that port order: a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) overrides the control, and a
 /// modulated delay time drives *every* channel through one shared value (the
 /// natural flanger/chorus control — the lines interpolate). An unmodulated

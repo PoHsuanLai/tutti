@@ -58,7 +58,7 @@ const DEFAULT_LANE: usize = 512;
 ///
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
 /// and the threshold (both dB) are modulatable by the graph,
-/// in that port order : a per-frame value on
+/// in that port order: a per-frame value on
 /// the param port ([`Io::param`](tutti_graph::Io::param)) overrides its cell
 /// per sample. Unmodulated, the node reads its cells once per block, which
 /// is the common case; the arity never changes.
@@ -329,8 +329,8 @@ impl LimiterNode {
 }
 
 impl Node for LimiterNode {
-    /// `channels` in and out, ceiling, threshold and release modulatable
-    /// . Its latency is the lookahead ring's, at the
+    /// `channels` in and out, ceiling, threshold and release modulatable,
+    /// in that port order. Its latency is the lookahead ring's, at the
     /// prepared rate: the audio is delayed by the window.
     ///
     /// It has no tail. A tail excludes latency, and the ring is a pure
@@ -491,7 +491,7 @@ impl Clone for LimiterNode {
 /// # Modulated ceiling
 ///
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling (dB)
-/// is modulatable by the graph : modulated → the param
+/// is modulatable by the graph: modulated → the param
 /// port overrides the ceiling cell per sample, unmodulated → bit-identical to a
 /// node nothing modulates.
 ///
@@ -597,8 +597,8 @@ fn linear_ceiling(db: Db) -> Option<f32> {
 }
 
 impl Node for BrickwallLimiterNode {
-    /// `channels` in and out, the ceiling modulatable
-    /// . The clip is stateless, so it has no latency
+    /// `channels` in and out, the ceiling modulatable.
+    /// The clip is stateless, so it has no latency
     /// and stops with its input.
     fn shape(&self) -> Shape {
         Shape::through_unassigned(self.layout)

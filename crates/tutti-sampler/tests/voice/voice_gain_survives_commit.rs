@@ -320,8 +320,7 @@ fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
     );
 }
 
-/// A voice's gain is a port, its base the cell
-/// : the value a driven port
+/// A voice's gain is a port, its base the cell: the value a driven port
 /// starts its connect crossfade from.
 #[test]
 fn a_voices_gain_port_reads_its_cell_as_its_base() {

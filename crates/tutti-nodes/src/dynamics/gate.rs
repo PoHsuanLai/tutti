@@ -155,8 +155,7 @@ impl GateCore {
 /// # Modulated threshold
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
-/// (`ch..2*ch`). The threshold is modulatable by the graph
-/// : a per-frame threshold in [`Db`] on the param
+/// (`ch..2*ch`). The threshold is modulatable by the graph: a per-frame threshold in [`Db`] on the param
 /// port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold cell
 /// per sample. Unmodulated, the node reads its cell once per block, which is
 /// the common case; the arity never changes.

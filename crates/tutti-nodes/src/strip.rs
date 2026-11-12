@@ -47,8 +47,7 @@ tutti_graph::declare_params!([] BusStripNode, n {
 /// A mixer strip: volume and stereo balance over `channels` audio ports.
 ///
 /// Ports are `channels` audio inputs → `channels` outputs. Volume and pan
-/// are modulatable by the graph, in that port order
-/// : a per-frame value on the param port
+/// are modulatable by the graph, in that port order: a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) overrides its cell per sample.
 /// There is deliberately no mute: it is `NodeMode::Muted`, which the graph
 /// holds for any node.
@@ -371,8 +370,8 @@ impl Default for BusStripNode {
 }
 
 impl Node for BusStripNode {
-    /// `channels` in and out, volume then pan modulatable
-    /// . Volume and pan are per-frame gains, so it stops
+    /// `channels` in and out, volume then pan modulatable.
+    /// Volume and pan are per-frame gains, so it stops
     /// with its input.
     fn shape(&self) -> Shape {
         Shape::through_unassigned(self.layout)

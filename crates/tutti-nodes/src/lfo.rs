@@ -506,7 +506,7 @@ mod tests {
     use tutti_types::{Beat, Bpm, Samples};
 
     /// **The ports and their bases.** A free-running LFO declares its depth
-    /// and rate , each port's base its cell; a beat-synced
+    /// and rate, each port's base its cell; a beat-synced
     /// one declares only its depth, as its `ParamSet` addresses only that
     /// (its rate cell holds beats per cycle, not `Hz`).
     #[test]

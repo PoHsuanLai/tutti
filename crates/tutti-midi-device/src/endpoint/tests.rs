@@ -26,14 +26,13 @@ fn id(n: u8) -> FunctionBlockId {
     FunctionBlockId::new(n).unwrap()
 }
 
-fn block(n: u8, first: u8, span: u8) -> FunctionBlock {
-    FunctionBlock::new(
+fn block(n: u8, first: u8, span: u8) -> FunctionBlockBuilder {
+    FunctionBlock::builder(
         id(n),
         BlockDirection::Bidirectional,
         FirstGroup::new(first).unwrap(),
         GroupSpan::new(span).unwrap(),
     )
-    .unwrap()
 }
 
 fn identity() -> DeviceIdentity {
@@ -61,12 +60,19 @@ fn device() -> Endpoint {
         .with_name(EndpointName::new("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123").unwrap())
         .with_instance_id(ProductInstanceId::new("SN-0001").unwrap())
         .with_static_function_blocks(true)
-        .with_function_block(block(0, 0, 1).with_name(BlockName::new("Keys").unwrap()))
+        .with_function_block(
+            block(0, 0, 1)
+                .name(BlockName::new("Keys").unwrap())
+                .build()
+                .unwrap(),
+        )
         .with_function_block(
             block(3, 4, 2)
-                .with_ui_hint(UiHint::Both)
-                .with_midi_ci(2, 2)
-                .with_name(BlockName::new("Piano").unwrap()),
+                .ui_hint(UiHint::Both)
+                .midi_ci(2, 2)
+                .name(BlockName::new("Piano").unwrap())
+                .build()
+                .unwrap(),
         )
 }
 
@@ -225,7 +231,8 @@ fn function_block_info_and_name_words() {
 
     // The other way round: MIDI-CI version 1, 16 streams, block 7, Groups 5 to 7,
     // so a swapped pair of bytes shows. 0x8000 | 0x0700 | 0b11, then 5, 3, 1, 16.
-    let mut e = Endpoint::new(FULL).with_function_block(block(7, 5, 3).with_midi_ci(1, 16));
+    let mut e =
+        Endpoint::new(FULL).with_function_block(block(7, 5, 3).midi_ci(1, 16).build().unwrap());
     let out = ask(
         &mut e,
         block_discovery(BlockSelect::One(id(7)), true, false),
@@ -237,7 +244,7 @@ fn function_block_info_and_name_words() {
 #[test]
 fn a_long_block_name_splits_at_thirteen_bytes() {
     let name = BlockName::new("0123456789abcdefghijklmnopqrst").unwrap();
-    let mut e = Endpoint::new(FULL).with_function_block(block(1, 0, 1).with_name(name));
+    let mut e = Endpoint::new(FULL).with_function_block(block(1, 0, 1).name(name).build().unwrap());
     let out = ask(
         &mut e,
         block_discovery(BlockSelect::One(id(1)), false, true),
@@ -433,14 +440,15 @@ fn a_midi1_device_has_one_inferred_block() {
     );
 }
 
-// The range checks `FunctionBlock::new` adds to the field types: a block stays
-// inside 16 Groups (§7.1.8), a MIDI 1.0 port is one Group, the direction is not
-// the reserved `0b00`. (The field types' own ranges are `tutti-ump`'s tests;
+// The range checks `FunctionBlockBuilder::build` adds to the field types: a
+// block stays inside 16 Groups (§7.1.8), a MIDI 1.0 port is one Group, the
+// direction and the port are not the reserved values, and each refusal says
+// which. (The field types' own ranges are `tutti-ump`'s tests;
 // `check_range_contract` needs serde, which these refusals do not use.)
 #[test]
 fn a_function_block_stays_inside_the_groups() {
     let new = |first, span, dir| {
-        FunctionBlock::new(
+        FunctionBlock::builder(
             id(0),
             dir,
             FirstGroup::new(first).unwrap(),
@@ -448,24 +456,39 @@ fn a_function_block_stays_inside_the_groups() {
         )
     };
     let bi = BlockDirection::Bidirectional;
-    assert!(new(0, 16, bi).is_some());
-    assert!(new(15, 1, bi).is_some());
-    assert!(new(15, 2, bi).is_none());
-    assert!(new(1, 16, bi).is_none());
-    assert!(new(0, 1, BlockDirection::Reserved(0)).is_none());
-    let one = new(2, 1, bi).unwrap();
-    assert!(one.with_midi1(Midi1Port::Restricted).is_some());
-    assert!(one.with_midi1(Midi1Port::Reserved(3)).is_none());
-    let two = new(2, 2, bi).unwrap();
-    assert!(two.with_midi1(Midi1Port::Unrestricted).is_none());
-    assert!(two.with_midi1(Midi1Port::No).is_some());
+    assert!(new(0, 16, bi).build().is_ok());
+    assert!(new(15, 1, bi).build().is_ok());
+    let past = |first, span| BlockError::PastGroup16 {
+        first_group: FirstGroup::new(first).unwrap(),
+        groups: GroupSpan::new(span).unwrap(),
+    };
+    assert_eq!(new(15, 2, bi).build(), Err(past(15, 2)));
+    assert_eq!(new(1, 16, bi).build(), Err(past(1, 16)));
+    assert_eq!(
+        new(0, 1, BlockDirection::Reserved(0)).build(),
+        Err(BlockError::ReservedDirection)
+    );
+    let one = || new(2, 1, bi);
+    assert!(one().midi1(Midi1Port::Restricted).build().is_ok());
+    assert_eq!(
+        one().midi1(Midi1Port::Reserved(3)).build(),
+        Err(BlockError::ReservedMidi1Port)
+    );
+    let two = || new(2, 2, bi);
+    assert_eq!(
+        two().midi1(Midi1Port::Unrestricted).build(),
+        Err(BlockError::Midi1PortSpansGroups {
+            groups: GroupSpan::new(2).unwrap()
+        })
+    );
+    assert!(two().midi1(Midi1Port::No).build().is_ok());
 }
 
 #[test]
 fn a_block_is_replaced_by_number_and_the_count_follows_the_highest() {
     let e = Endpoint::new(FULL)
-        .with_function_block(block(5, 0, 1))
-        .with_function_block(block(5, 2, 3));
+        .with_function_block(block(5, 0, 1).build().unwrap())
+        .with_function_block(block(5, 2, 3).build().unwrap());
     assert_eq!(e.declared_function_blocks(), 6);
     assert_eq!(e.function_blocks().count(), 1);
     assert_eq!(e.function_block(id(5)).unwrap().first_group().get(), 2);

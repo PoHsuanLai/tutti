@@ -15,7 +15,9 @@
 use tutti_midi_device::{
     CiCategories, CiHeader, CiMessage, Decoded, DiscoveryData, MaxSysexSize, Muid,
 };
-use tutti_ump::{Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, U7, Ump, frame};
+use tutti_ump::{
+    DeviceIdentity, Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, U7, Ump, frame,
+};
 
 #[test]
 fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
@@ -26,10 +28,12 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
     let probe = CiMessage::Discovery {
         header: CiHeader::new(Muid::new(0x1234).expect("a valid MUID")),
         data: DiscoveryData {
-            manufacturer: [0x00, 0x21, 0x09],
-            family: 0x0042,
-            family_model: 0x0007,
-            software_revision: [1, 2, 3, 4],
+            identity: DeviceIdentity {
+                manufacturer: [0x00, 0x21, 0x09].map(U7::of),
+                family: [0x42, 0x00].map(U7::of),
+                model: [0x07, 0x00].map(U7::of),
+                revision: [1, 2, 3, 4].map(U7::of),
+            },
             categories: CiCategories::PROFILE_CONFIGURATION,
             max_sysex_size: MaxSysexSize::of(512),
             output_path_id: U7::of(3),

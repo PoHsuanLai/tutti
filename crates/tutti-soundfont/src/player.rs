@@ -19,7 +19,7 @@ use tutti_midi_protocol::narrow_value;
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Semitones};
 use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2};
-use tutti_voicing::{Mode, Order, Retrigger, Rules, Steal, Voicing};
+use tutti_voicing::{Rules, Voicing};
 
 use crate::array_math::ArrayMath;
 use crate::channel::Channel;
@@ -132,18 +132,9 @@ const RATES: std::ops::RangeInclusive<i32> = 16_000..=192_000;
 ///   follows MIDI 1.0: 66 is the sostenuto and 67 the soft pedal (which is not
 ///   followed).
 fn rules(polyphony: usize) -> Rules {
-    Rules {
-        mode: Mode::Poly,
-        retrigger: Retrigger::Replace,
-        polyphony,
-        steal: Steal::By(Order::Oldest),
-        exclusive_groups: true,
-        sostenuto: true,
-        // What a full bend spans until RPN 0 says otherwise: General MIDI's
-        // default of 2 semitones.
-        bend_range: Semitones(2.0),
-        per_note_bend_range: Semitones(48.0),
-    }
+    // The bend ranges are General MIDI's 2 semitones until RPN 0 says
+    // otherwise (`Rules::poly`'s).
+    Rules::poly(polyphony).with_exclusive_groups(true)
 }
 
 /// The player. Its voices are built against a rate and cannot be re-rated in
@@ -331,14 +322,14 @@ impl Player {
     /// Hands a note or pedal message to the core, and carries out what it
     /// says.
     fn dispatch(&mut self, channel: MidiChannel, message: Voice2) {
-        self.voices.refresh();
         let patch = PresetPatch {
             font: &self.font,
             preset: self.preset_of(channel),
         };
+        let voices = &self.voices;
         let commands = self
             .voicing
-            .step(channel, &message, &patch, self.voices.views());
+            .step(channel, message, &patch, |id| voices.level(id));
         self.voices.execute(commands, &self.font);
     }
 

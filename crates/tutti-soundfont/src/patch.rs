@@ -1,5 +1,7 @@
 //! What a note becomes: the voices a preset starts for a key and a velocity.
 
+use std::num::NonZeroU16;
+
 use tutti_midi_protocol::narrow_velocity;
 use tutti_sf2::SoundFont;
 use tutti_ump::{MidiChannel, NoteNumber, U7};
@@ -51,7 +53,7 @@ impl Patch for PresetPatch<'_> {
                     spec(VoiceSpec {
                         group: instrument_zone
                             .exclusive_class()
-                            .map_or(0, |class| u16::from(class.get())),
+                            .and_then(|class| NonZeroU16::new(u16::from(class.get()))),
                         scope: self.preset as u32,
                         tag: ((p as u32) << 16) | i as u32,
                     });

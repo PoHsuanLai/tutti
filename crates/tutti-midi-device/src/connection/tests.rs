@@ -7,7 +7,7 @@ use tutti_ump::{
 };
 
 use super::*;
-use crate::endpoint::{Capabilities, Endpoint, FunctionBlock};
+use crate::endpoint::{Capabilities, Endpoint, FunctionBlock, FunctionBlockBuilder};
 use crate::name::{BlockName, EndpointName, ProductInstanceId};
 
 fn at(base: Instant, ms: u64) -> Instant {
@@ -29,19 +29,26 @@ const FULL: Capabilities = Capabilities {
     tx_jr: true,
 };
 
+/// The Endpoint Discovery a new connection says to send.
+fn discovery_of(first: Action) -> Ump {
+    let Action::Send(discovery) = first else {
+        panic!("a new connection sends its Discovery first, not {first:?}")
+    };
+    discovery
+}
+
 fn id(n: u8) -> FunctionBlockId {
     FunctionBlockId::new(n).unwrap()
 }
 
-fn block(n: u8, first: u8, span: u8, name: &str) -> FunctionBlock {
-    FunctionBlock::new(
+fn block(n: u8, first: u8, span: u8, name: &str) -> FunctionBlockBuilder {
+    FunctionBlock::builder(
         id(n),
         BlockDirection::Bidirectional,
         FirstGroup::new(first).unwrap(),
         GroupSpan::new(span).unwrap(),
     )
-    .unwrap()
-    .with_name(BlockName::new(name).unwrap())
+    .name(BlockName::new(name).unwrap())
 }
 
 /// A MIDI 2.0 device with every optional part and two blocks.
@@ -57,9 +64,12 @@ fn device() -> Endpoint {
         .with_name(EndpointName::new("A long endpoint name of 40 characters!").unwrap())
         .with_instance_id(ProductInstanceId::new("SERIAL-0123456789-ABCDEFGHIJ").unwrap())
         .with_static_function_blocks(true)
-        .with_function_block(block(0, 0, 1, "Keys"))
+        .with_function_block(block(0, 0, 1, "Keys").build().unwrap())
         .with_function_block(
-            block(1, 1, 2, "A function block name past thirteen bytes").with_midi_ci(2, 2),
+            block(1, 1, 2, "A function block name past thirteen bytes")
+                .midi_ci(2, 2)
+                .build()
+                .unwrap(),
         )
 }
 
@@ -106,6 +116,7 @@ fn discovery_words() -> [u32; 4] {
 fn the_happy_path_reaches_midi2_with_jr() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     assert_eq!(first.0, discovery_words());
     assert_eq!(c.deadline(), Some(at(t0, 1000)));
 
@@ -158,6 +169,7 @@ fn the_happy_path_reaches_midi2_with_jr() {
 fn a_midi1_peer_is_not_asked_to_change() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     let mut peer = Endpoint::midi1_device(EndpointName::new("Keystep"));
     let (end, sent) = run(&mut c, &mut peer, first, t0);
     assert_eq!(end, Action::Wait);
@@ -183,6 +195,7 @@ fn a_midi1_peer_is_not_asked_to_change() {
 fn the_request_asks_only_for_what_the_peer_supports() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     let mut peer = Endpoint::new(Capabilities {
         midi1: true,
         midi2: true,
@@ -194,6 +207,7 @@ fn the_request_asks_only_for_what_the_peer_supports() {
     assert_eq!(c.endpoint().active(), peer.active());
     // And the other direction.
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     let mut peer = Endpoint::new(Capabilities {
         midi1: true,
         midi2: true,
@@ -214,12 +228,14 @@ fn a_wanted_midi1_is_requested_of_a_midi2_peer() {
         tx_jr: false,
     };
     let (mut c, first) = Connection::with_wanted(wanted, t0);
+    let first = discovery_of(first);
     let mut peer = device();
     // The device starts in MIDI 1.0 without JR, which is what is wanted.
     let (_, sent) = run(&mut c, &mut peer, first, t0);
     assert!(sent.iter().all(|p| (p.0[0] >> 16) & 0x3FF != 0x05));
     // From MIDI 2.0 it is a request.
     let (mut c, first) = Connection::with_wanted(wanted, t0);
+    let first = discovery_of(first);
     let mut peer = device();
     peer.reply(
         stream(Stream::StreamConfigurationRequest(StreamConfig {
@@ -240,6 +256,7 @@ fn a_wanted_midi1_is_requested_of_a_midi2_peer() {
 fn a_peer_already_configured_is_not_asked() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     let mut peer = device();
     let configured = StreamConfig {
         protocol: Protocol::Midi2,
@@ -337,6 +354,7 @@ fn another_message_does_not_answer_the_request() {
 fn a_silent_peer_settles_as_midi1_after_the_retries() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     assert_eq!(c.on_timeout(at(t0, 999)), Action::Wait);
     assert_eq!(c.on_timeout(at(t0, 1000)), Action::Send(first));
     assert_eq!(c.deadline(), Some(at(t0, 2000)));
@@ -366,6 +384,7 @@ fn a_silent_peer_settles_as_midi1_after_the_retries() {
 fn a_retry_that_is_answered_goes_on() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     let Action::Send(again) = c.on_timeout(at(t0, 1000)) else {
         panic!()
     };
@@ -549,6 +568,7 @@ fn a_name_within_the_grace_is_kept() {
 fn a_reply_after_settling_is_ignored() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     c.on_timeout(at(t0, 1000));
     c.on_timeout(at(t0, 2000));
     c.on_timeout(at(t0, 3000));
@@ -570,6 +590,7 @@ fn a_reply_after_settling_is_ignored() {
 fn a_notification_after_a_negotiated_settle_is_followed() {
     let t0 = Instant::now();
     let (mut c, first) = Connection::new(t0);
+    let first = discovery_of(first);
     let mut peer = Endpoint::midi1_device(None);
     run(&mut c, &mut peer, first, t0);
     assert_eq!(

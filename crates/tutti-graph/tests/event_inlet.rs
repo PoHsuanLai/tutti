@@ -18,11 +18,11 @@ use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{
     Edge, Editor, Env, EventEdge, EventIn, EventInletNode, EventInletWriter, EventKind, EventOut,
     EventTapId, EventTapReader, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked,
-    InPort, IntoNode, Node, NodeKey, NodeParts, OutPort, PlayClock, Prepare, Refused, Source,
-    TapAlign, TapEvent, Transport, TransportChanges,
+    InPort, IntoNode, Losses, Node, NodeKey, NodeParts, OutPort, PlayClock, Prepare, Refused,
+    Source, Stamp, TapAlign, TapEvent, Transport, TransportChanges,
 };
 use tutti_types::MaxBlock;
-use tutti_types::{At, Frame, Moment, SampleRate, Samples};
+use tutti_types::{Frame, Moment, SampleRate, Samples};
 use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, Ump};
 
 #[global_allocator]
@@ -117,7 +117,7 @@ fn an_event_lands_on_its_frame_across_block_sizes() {
         let (node, mut tx) = EventInletNode::pair(64);
         let mut d = Direct::new(node, R48, size);
         for (k, &f) in frames.iter().enumerate().rev() {
-            tx.push(At::Frame(Frame(f)), note(k as u32)).unwrap();
+            tx.push(Frame(f), note(k as u32)).unwrap();
         }
         let mut got = Vec::new();
         let (mut start, mut blocks) = (0u64, 0u64);
@@ -135,10 +135,7 @@ fn an_event_lands_on_its_frame_across_block_sizes() {
             .map(|(k, &f)| (f, k as u32))
             .collect();
         assert_eq!(got, want, "block size {size} ({blocks} blocks)");
-        assert_eq!(
-            (tx.lost(), tx.late(), tx.evicted(), tx.refused()),
-            (0, 0, 0, 0)
-        );
+        assert_eq!(tx.counts().losses(), Losses::NONE);
     }
 }
 
@@ -150,15 +147,19 @@ fn next_block_late_and_not_yet() {
     let (mut d, mut tx) = rig(256);
     d.block();
     d.block();
-    tx.push(At::NextBlock, note(1)).unwrap();
+    tx.push(Stamp::NextBlock, note(1)).unwrap();
     d.block(); // 128..192
     assert_eq!(sent(&d), [(0, 9, 1)]);
-    assert_eq!(tx.late(), 0, "as soon as possible is not late");
-    tx.push(At::Frame(Frame(5)), note(2)).unwrap();
+    assert_eq!(
+        tx.counts().losses().late,
+        0,
+        "as soon as possible is not late"
+    );
+    tx.push(Frame(5), note(2)).unwrap();
     d.block(); // 192..256
     assert_eq!(sent(&d), [(0, 9, 2)], "a past frame lands at offset 0");
-    assert_eq!(tx.late(), 1);
-    tx.push(At::Frame(Frame(64 * 8 + 20)), note(3)).unwrap();
+    assert_eq!(tx.counts().losses().late, 1);
+    tx.push(Frame(64 * 8 + 20), note(3)).unwrap();
     for _ in 0..3 {
         d.block(); // 256..448
         assert_eq!(sent(&d), []);
@@ -170,7 +171,12 @@ fn next_block_late_and_not_yet() {
     d.block();
     assert_eq!(sent(&d), [], "and only once");
     assert_eq!(
-        (tx.late(), tx.lost(), tx.evicted(), tx.refused()),
+        (
+            tx.counts().losses().late,
+            tx.counts().losses().lost,
+            tx.counts().losses().evicted,
+            tx.counts().losses().refused
+        ),
         (1, 0, 0, 0)
     );
 }
@@ -183,12 +189,12 @@ fn equal_frames_leave_in_push_order() {
     let (mut d, mut tx) = rig(256);
     d.block();
     d.block();
-    tx.push(At::Frame(Frame(128 + 40)), note(61)).unwrap();
-    tx.push(At::Frame(Frame(128 + 10)), note(62)).unwrap();
-    tx.push(At::NextBlock, note(64)).unwrap();
-    tx.push(At::Frame(Frame(5)), note(63)).unwrap();
-    tx.push(At::Frame(Frame(128 + 20)), note(70)).unwrap();
-    tx.push(At::Frame(Frame(128 + 20)), off(70)).unwrap();
+    tx.push(Frame(128 + 40), note(61)).unwrap();
+    tx.push(Frame(128 + 10), note(62)).unwrap();
+    tx.push(Stamp::NextBlock, note(64)).unwrap();
+    tx.push(Frame(5), note(63)).unwrap();
+    tx.push(Frame(128 + 20), note(70)).unwrap();
+    tx.push(Frame(128 + 20), off(70)).unwrap();
     d.block();
     assert_eq!(
         sent(&d),
@@ -203,19 +209,6 @@ fn equal_frames_leave_in_push_order() {
     );
 }
 
-/// A beat is refused with its own error, queues nothing and is not a loss.
-#[test]
-fn a_beat_is_refused() {
-    let (mut d, mut tx) = rig(8);
-    assert_eq!(
-        tx.push(At::Beat(tutti_types::Beat(1.0)), note(60)),
-        Err(Refused::Beat)
-    );
-    d.block();
-    assert_eq!(sent(&d), []);
-    assert_eq!(tx.lost(), 0);
-}
-
 /// A producer faster than the graph: the ring of 8 takes 8, refuses the rest
 /// with `Full`, never blocks, and `lost()` equals the refusals; what it held
 /// is emitted, and room returns once the node has drained.
@@ -223,16 +216,36 @@ fn a_beat_is_refused() {
 fn a_full_ring_refuses_and_counts_lost() {
     let (mut d, mut tx) = rig(8);
     for k in 0..8 {
-        tx.push(At::NextBlock, note(k)).unwrap();
+        tx.push(Stamp::NextBlock, note(k)).unwrap();
     }
     for _ in 0..4 {
-        assert_eq!(tx.push(At::NextBlock, note(99)), Err(Refused::Full));
+        assert_eq!(tx.push(Stamp::NextBlock, note(99)), Err(Refused::Full));
     }
-    assert_eq!(tx.lost(), 4);
+    assert_eq!(tx.counts().losses().lost, 4);
     d.block();
     assert_eq!(keys(&d), (0..8).collect::<Vec<_>>());
-    assert_eq!((tx.evicted(), tx.refused(), tx.late()), (0, 0, 0));
-    tx.push(At::NextBlock, note(7)).expect("room after a drain");
+    assert_eq!(
+        (
+            tx.counts().losses().evicted,
+            tx.counts().losses().refused,
+            tx.counts().losses().late
+        ),
+        (0, 0, 0)
+    );
+    tx.push(Stamp::NextBlock, note(7))
+        .expect("room after a drain");
+}
+
+/// `push_all` queues in order, answers how many the ring took, and counts each
+/// refused one as lost: a ring of 4 given 6 takes 4 and loses 2.
+#[test]
+fn push_all_answers_how_many_were_taken_and_counts_the_rest_lost() {
+    let (mut d, mut tx) = rig(4);
+    let events = (0..6).map(|k| (Stamp::NextBlock, note(k)));
+    assert_eq!(tx.push_all(events), 4);
+    assert_eq!(tx.counts().losses(), Losses::new(2, 0, 0, 0));
+    d.block();
+    assert_eq!(keys(&d), vec![0, 1, 2, 3]);
 }
 
 /// Eight events wait (seven note-ons and, latest of all, `last`), the list is
@@ -241,19 +254,25 @@ fn a_full_ring_refuses_and_counts_lost() {
 fn full_list_keeps(last: Ump, survivor: Vec<u32>) {
     let (mut d, mut tx) = rig(8);
     for k in 0..7 {
-        tx.push(At::Frame(Frame(10_000 + u64::from(k))), note(10 + k))
-            .unwrap();
+        tx.push(Frame(10_000 + u64::from(k)), note(10 + k)).unwrap();
     }
-    tx.push(At::Frame(Frame(20_000)), last).unwrap();
+    tx.push(Frame(20_000), last).unwrap();
     d.block(); // the list is full
-    assert_eq!(tx.evicted(), 0);
-    tx.push(At::NextBlock, note(72)).unwrap();
+    assert_eq!(tx.counts().losses().evicted, 0);
+    tx.push(Stamp::NextBlock, note(72)).unwrap();
     d.block();
     assert_eq!(keys(&d), [72], "a due event is not held up by later ones");
-    assert_eq!(tx.evicted(), 1, "it took the room of the latest note-on");
+    assert_eq!(
+        tx.counts().losses().evicted,
+        1,
+        "it took the room of the latest note-on"
+    );
     block_at(&mut d, 30_000, R48, 64);
     assert_eq!(keys(&d), survivor);
-    assert_eq!((tx.lost(), tx.refused()), (0, 0));
+    assert_eq!(
+        (tx.counts().losses().lost, tx.counts().losses().refused),
+        (0, 0)
+    );
 }
 
 /// A full waiting list evicts the latest event that may be lost and keeps a
@@ -276,13 +295,13 @@ fn a_full_list_keeps_a_panic_controller() {
 fn a_list_of_nothing_but_note_offs_loses_the_latest() {
     let (mut d, mut tx) = rig(8);
     for k in 0u64..8 {
-        tx.push(At::Frame(Frame(10_000 + k)), off(10)).unwrap();
+        tx.push(Frame(10_000 + k), off(10)).unwrap();
     }
     d.block();
-    tx.push(At::Frame(Frame(10_000_000)), off(11)).unwrap();
-    tx.push(At::Frame(Frame(9_000)), off(12)).unwrap();
+    tx.push(Frame(10_000_000), off(11)).unwrap();
+    tx.push(Frame(9_000), off(12)).unwrap();
     d.block();
-    assert_eq!(tx.evicted(), 2);
+    assert_eq!(tx.counts().losses().evicted, 2);
     block_at(&mut d, 9_000, R48, 64);
     assert_eq!(keys(&d), [12], "the earlier one took the latest's place");
 }
@@ -294,13 +313,12 @@ fn a_list_of_nothing_but_note_offs_loses_the_latest() {
 fn a_note_on_never_displaces_a_waiting_note_off() {
     let (mut d, mut tx) = rig(8);
     for k in 0u32..8 {
-        tx.push(At::Frame(Frame(10_000 + u64::from(k))), off(20 + k))
-            .unwrap();
+        tx.push(Frame(10_000 + u64::from(k)), off(20 + k)).unwrap();
     }
     d.block();
-    tx.push(At::Frame(Frame(9_000)), note(30)).unwrap();
+    tx.push(Frame(9_000), note(30)).unwrap();
     d.block();
-    assert_eq!(tx.evicted(), 1);
+    assert_eq!(tx.counts().losses().evicted, 1);
     block_at(&mut d, 9_000, R48, 64);
     assert_eq!(
         keys(&d),
@@ -323,12 +341,19 @@ fn a_port_narrower_than_the_burst_counts_refused() {
     let burst = HAND_EVENT_CAPACITY + 476;
     let (mut d, mut tx) = rig(burst);
     for k in 0..burst {
-        tx.push(At::NextBlock, note((k % 100) as u32)).unwrap();
+        tx.push(Stamp::NextBlock, note((k % 100) as u32)).unwrap();
     }
     d.block();
     assert_eq!(sent(&d).len(), HAND_EVENT_CAPACITY);
-    assert_eq!(tx.refused(), 476);
-    assert_eq!((tx.lost(), tx.evicted(), tx.late()), (0, 0, 0));
+    assert_eq!(tx.counts().losses().refused, 476);
+    assert_eq!(
+        (
+            tx.counts().losses().lost,
+            tx.counts().losses().evicted,
+            tx.counts().losses().late
+        ),
+        (0, 0, 0)
+    );
 }
 
 /// The clock is where the last block ended, on the clock the node ran on and
@@ -354,7 +379,7 @@ fn the_writer_reads_the_clock_and_its_rate() {
 #[test]
 fn what_waits_is_rescaled_by_a_rate_change() {
     let (mut d, mut tx) = rig(8);
-    tx.push(At::Frame(Frame(1_000)), note(60)).unwrap();
+    tx.push(Frame(1_000), note(60)).unwrap();
     d.block();
     d.block();
     d.block(); // the node holds it now
@@ -376,22 +401,24 @@ fn a_moment_read_before_a_re_prepare_keeps_its_instant() {
     let read = tx.clock().expect("prepared");
     assert_eq!((read.frame(), read.rate()), (Frame(192), R48));
     reprepare(&mut d, R441);
-    tx.push_at(read.after(Samples(500)), note(61)).unwrap();
+    tx.push(read.after(Samples(500)), note(61)).unwrap();
     // 692 x 44100 / 48000 = 635.7, so offset 8 of the block at 628
     block_at(&mut d, 628, R441, 64);
     assert_eq!(sent(&d), [(8, 9, 61)]);
 }
 
-/// A frame pushed with `push` is at the rate the node last published, even
-/// when the graph is re-prepared before the node has taken it from the ring:
-/// the same wall-clock time at the new rate.
+/// A bare frame carries no rate: it is counted at the rate the node has when it
+/// takes the event from the ring, so one pushed before a re-prepare and taken
+/// after is at the new rate's frame number (a producer that needs the instant
+/// pushes a `Moment`).
 #[test]
-fn a_frame_pushed_before_a_re_prepare_is_at_the_rate_it_was_pushed() {
+fn a_bare_frame_is_at_the_rate_the_node_has_when_it_takes_it() {
     let (mut d, mut tx) = rig(8);
-    tx.push(At::Frame(Frame(1_000)), note(60)).unwrap();
+    tx.push(Frame(1_000), note(60)).unwrap();
     reprepare(&mut d, R441); // the ring still holds it
-    block_at(&mut d, 912, R441, 64);
-    assert_eq!(sent(&d), [(7, 9, 60)]);
+    // frame 1000 of 44.1 kHz: offset 40 of the block at 960
+    block_at(&mut d, 960, R441, 64);
+    assert_eq!(sent(&d), [(40, 9, 60)]);
 }
 
 /// An event whose frame passed while the node did not run (a re-prepare
@@ -400,19 +427,19 @@ fn a_frame_pushed_before_a_re_prepare_is_at_the_rate_it_was_pushed() {
 #[test]
 fn what_came_due_while_the_node_slept_lands_on_the_first_frame() {
     let (mut d, mut tx) = rig(8);
-    tx.push(At::Frame(Frame(100)), note(60)).unwrap();
-    tx.push(At::Frame(Frame(120)), note(61)).unwrap();
+    tx.push(Frame(100), note(60)).unwrap();
+    tx.push(Frame(120), note(61)).unwrap();
     d.block(); // frames 0..64: both wait
     block_at(&mut d, 500, R48, 64);
     assert_eq!(sent(&d), [(0, 9, 60), (0, 9, 61)]);
-    assert_eq!(tx.late(), 2);
+    assert_eq!(tx.counts().losses().late, 2);
 }
 
 /// What waits survives a reset: a note-off waiting must still arrive.
 #[test]
 fn what_waits_survives_a_reset() {
     let (mut d, mut tx) = rig(8);
-    tx.push(At::Frame(Frame(200)), note(70)).unwrap();
+    tx.push(Frame(200), note(70)).unwrap();
     d.block();
     d.node.reset();
     d.block();
@@ -605,15 +632,15 @@ fn render(
 
 /// What the three producers push: a mix of `NextBlock`, frames on block edges
 /// of every size below, equal frames, and note-offs.
-fn script(k: u32) -> Vec<(At, Ump)> {
-    let mut v = vec![(At::NextBlock, note(k))];
+fn script(k: u32) -> Vec<(Stamp, Ump)> {
+    let mut v = vec![(Stamp::NextBlock, note(k))];
     for i in 0..30u32 {
         let frame = u64::from(i) * (13 + u64::from(k)) + u64::from(k);
         let ump = if i % 4 == 3 { off(i) } else { note(i + k) };
-        v.push((At::Frame(Frame(frame)), ump));
+        v.push((Stamp::Frame(Frame(frame)), ump));
     }
-    v.push((At::Frame(Frame(100)), note(1)));
-    v.push((At::Frame(Frame(100)), off(1)));
+    v.push((Stamp::Frame(Frame(100)), note(1)));
+    v.push((Stamp::Frame(Frame(100)), off(1)));
     v
 }
 
@@ -647,7 +674,7 @@ fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
             got.extend_from_slice(&buf[..n]);
         }
         assert_eq!(tap.take_lost(), 0);
-        (bits, got, writers[0].late())
+        (bits, got, writers[0].counts().losses().late)
     };
     let (serial_bits, serial_tap, late) = run(1, false);
     assert!(serial_bits.iter().any(|&b| b != 0), "the inlets are heard");
@@ -656,7 +683,7 @@ fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
     let mut want: Vec<(u64, Ump)> = script(1)
         .into_iter()
         .map(|(at, u)| match at {
-            At::Frame(f) => (f.get(), u),
+            Stamp::Frame(f) => (f.get(), u),
             _ => (0, u),
         })
         .collect();
@@ -683,7 +710,7 @@ fn the_parallel_render_equals_the_serial_one_and_allocates_nothing() {
 #[test]
 fn the_fork_is_silent() {
     let (mut ed, mut exec, mut writers, _) = graph(1, 1, false, false, false);
-    writers[0].push(At::Frame(Frame(10)), note(5)).unwrap();
+    writers[0].push(Frame(10), note(5)).unwrap();
     commit(&mut ed, &mut exec);
     let (mut fed, mut fexec) = ed
         .fork(
@@ -695,7 +722,7 @@ fn the_fork_is_silent() {
     fexec.apply_pending();
     let live = render(&mut ed, &mut exec, &[64], 64, false);
     assert!(live.iter().any(|&b| b != 0), "the live graph hears it");
-    writers[0].push(At::NextBlock, note(6)).unwrap();
+    writers[0].push(Stamp::NextBlock, note(6)).unwrap();
     let silent = render(&mut fed, &mut fexec, &[64], 128, false);
     assert!(silent.iter().all(|&b| b == 0), "the fork renders silence");
 }

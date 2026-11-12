@@ -217,6 +217,12 @@ impl Drop for Jobs {
 impl Session {
     /// Runs `work` on the spawner and lands its result in a later
     /// [`update`](Self::update), on the control thread.
+    ///
+    /// `land` (and every lander of [`submit_stream`](Self::submit_stream))
+    /// runs on the thread that calls `update()`. A landing that needs the
+    /// main thread, such as a plugin reload taking `MainThread::current()`,
+    /// relies on `update()` running on the claiming thread, as a plugin host's
+    /// does.
     pub(crate) fn submit<R, W, L>(&mut self, work: W, land: L)
     where
         R: Send + 'static,

@@ -3781,10 +3781,16 @@ Decisions:
    input drops them and what the buffer refused is dropped too: both are
    counted (`Executor::dropped_event_count`). During a crossfade only the
    incoming node is chased (the outgoing one is not sent anything); a
-   replace that waits behind a crossfade already running is not chased (its
-   predecessor has not taken over, and delivering at the takeover would
-   need a second path into the flushed events): it is counted
-   (`Executor::chase_skipped_count`); a re-prepare keeps its units and a mode
+   replace that waits behind a crossfade already running is chased too, a
+   block after that fade ends: the unit fading in writes when the replace is
+   applied, the queued crossfade holds the events (allocated with the apply
+   that already allocates), the new plan state keeps an injection for the
+   successor sized for them, and `end_fades` delivers them at its takeover as
+   flushed events (offset 0, ahead of what is there), with no allocation. What
+   the buffer refused and what a successor with no event input cannot take
+   are counted as dropped; a queued replace that a later one supersedes, or a
+   cut, takes its held events with it. (`chase_skipped_count` is gone: nothing
+   is skipped.) A re-prepare keeps its units and a mode
    change swaps nothing, so neither chases; a fork does not, its copy
    carries the state. What the two instruments write is in doc 017, "L4d".
 7. **The caller spins, then yields** while it waits on a helper (on the

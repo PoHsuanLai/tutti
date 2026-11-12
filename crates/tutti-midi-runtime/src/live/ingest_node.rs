@@ -2,7 +2,7 @@
 //! one event port per Group and channel.
 //!
 //! A hardware device reaches the graph through an event inlet of its own
-//! ([`DeviceInlets`](crate::DeviceInlets)), each event already on its frame
+//! ([`DeviceInlets`]), each event already on its frame
 //! (the device's thread stamps it, `tutti-graph`'s event inlet holds it until
 //! its block); the node has one event input per device slot, so what it reads
 //! is what the inlets emitted. Each block it translates every slot's events,
@@ -406,7 +406,7 @@ impl MidiIngestControls {
     /// translation (a bend range or an MPE reset fans out over a zone) is
     /// dropped whole rather than cut partway. What a device's inlet could not
     /// hold is counted at the inlet, not here
-    /// ([`DeviceInlets`](crate::DeviceInlets)).
+    /// ([`DeviceInlets`]).
     pub fn losses(&self) -> Losses {
         Losses::refused(self.dropped.load(Ordering::Relaxed))
     }

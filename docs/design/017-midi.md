@@ -1524,8 +1524,9 @@ Each with the recommendation to take unless the owner says otherwise.
    has a fixed number of event inputs, one per slot
    (`SessionBuilder::midi_devices`, 8 by default), holds a `Translator` and a
    `MpeIngest` for each, and a hot-plug wires the new device's inlet to a free
-   slot's input (`Graph::set_event_sources`) and restarts that slot
-   (`MidiIngestControls::restart_slot`): the routes, which name the ingest
+   slot's input (`Graph::set_event_sources`); the node restarts that slot itself
+   (it follows the slot's epoch, which the inlets bump as a device opens it: L1h,
+   `MidiIngestNode::following`; `MidiIngestControls::restart_slot` is gone): the routes, which name the ingest
    node's outputs, never change. A device past the slots is refused
    (`Error::NoFreeSlot`).
 9. **The default alignment of the hardware out's tap.** Recommended: `ToOutput`,
@@ -3073,3 +3074,34 @@ such as reassembled SysEx; that is decided when that code is written.
   Result<_, BlockError>` replaces `new` and the `with_*` chain. `DeviceTable::list` is an
   `ExactSizeIterator` of `&DeviceInfo`. `CiMessage::encode_into(&mut impl Extend<u8>)` and
   `CiMessage::packets(group)` (SysEx7 `Ump`s) replace encode, frame, packets.
+
+### L1h part 2 (runtime and hardware API): as built
+
+- **Device inputs.** A `DeviceInput` holds its slot until it drops: the drop gives the slot
+  back and queues the inlet's removal (`DeviceInlets::close` is gone), through a `Weak` to the
+  inlets (`DeviceInlets::new` returns the `Arc`). `take_changes` returns a `Changes` iterator
+  that pops one change per step under the lock and holds none while the owner works, so
+  applying a change may open or drop a device, and what is not read stays queued. A slot's
+  epoch (the generation of the device that took it, plus one) is bumped in `open`;
+  `MidiIngestNode::following(&DeviceInlets)` shares the epochs and compares them each block,
+  so a new device in a slot starts with an empty translator and MPE state with no call.
+  There is one id, `DeviceSlot` (index and generation, ephemeral: no serde), which
+  `tutti-midi-hardware`'s `PortId` was; `HardwareMidiInputs` keeps its table keyed by it.
+  Removing a port retires its list entry; the slot is the handle's.
+- **Sync and clock.** `MtcDecoder::feed(&Ump) -> bool`; `MidiClockDecoder::{feed, tick}` take
+  an `Instant`, `beat_position()` is a `Beat`; `SmpteFrameRate: TryFrom<u8>`
+  (`UnknownFrameRate`); `ClockMap::set_rate -> Result<(), InvalidRate>`;
+  `ClockMaster::new(MidiGroup, SampleRate)` and `ClockNode::new(MidiGroup, SampleRate)` (no
+  zero-rate master, no `Default`).
+- **Schedule.** `TimedMidiEvent` has private fields (`beat()`, `event()`) and
+  `new(Beat, Ump) -> Option`, which refuses a beat that is not finite (`Beat` is
+  `tutti-types`' plain `f64`); `MidiClipControls::{set, len, is_empty}` match
+  `HarmonyControls`. `MpeIngest` moved from `outbound/` to `live/`.
+- **Hardware.** `MidiSession::open(Arc<DeviceInlets>)` owns its `HardwareMidiInputs`;
+  `DeviceQuery` (`&DeviceId` or `&str`) replaces the `*_by_name` forms; `output() ->
+  Option<OutputInfo>` replaces the output getters; `InputProducerHandle::push -> Pushed`;
+  `poll` and `drain_stream` return iterators; `Error::{MidiPort, MidiDevice}` keep a `source`
+  and `NoDeviceNamed` lists what it searched; `Resolved::bind(BindPolicy)` and
+  `into_candidates`; `for e in &events` over a `DeviceEvents`. Not done, by decision: a
+  typestate `MidiSession`, a sealed `MidiEndpoints`, a blocking reader `Iterator`, serde on
+  slot ids, `Extend` on `MidiMailbox`, `Clone` on `EventInletWriter`.

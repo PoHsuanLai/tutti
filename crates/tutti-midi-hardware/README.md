@@ -70,18 +70,19 @@ backend reads one yet: alsa-lib exposes none, and CoreMIDI's unique id stands in
 ## Quick start
 
 [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it:
-each opened input is a port of [`HardwareMidiInputs`], a slot of the shared
-[`DeviceInlets`], and the device's own thread stamps each arrival with the frame
-the engine's block clock puts it on and pushes it into that device's event
-inlet. The graph reads the inlets on their frames (a [`MidiIngestNode`] has one
-event input per slot), so the audio thread converts no time. The session only
-owns the connection. Disconnecting closes the port and gives its slot back, so
-hot-plug cycles do not accumulate inlets.
+each opened input is a port of the session's [`HardwareMidiInputs`]
+(`session.ports()`), a slot of the [`DeviceInlets`] the session was opened
+over, and the device's own thread stamps each arrival with the frame the
+engine's block clock puts it on and pushes it into that device's event inlet.
+The graph reads the inlets on their frames (a [`MidiIngestNode`] has one event
+input per slot), so the audio thread converts no time. The session only owns
+the connection. Disconnecting drops the connection's [`InputProducerHandle`],
+which gives its slot back, so hot-plug cycles do not accumulate inlets.
 
 ```rust,no_run
 use std::sync::Arc;
 use tutti_midi_hardware::prelude::*;
-use tutti_midi_hardware::{DeviceInlets, HardwareMidiInputs};
+use tutti_midi_hardware::DeviceInlets;
 use tutti_fixtures::midi::note_on;
 use tutti_graph::Offset;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -89,8 +90,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 // The inlets inbound events land in (four devices, 1024 events each, placed
 // 10 ms after they arrive), then a session over this platform's backend.
 let inlets = DeviceInlets::new(4, tutti_graph::EventCapacity::of(1024), std::time::Duration::from_millis(10));
-let ports = Arc::new(HardwareMidiInputs::new(inlets));
-let session = MidiSession::open(Arc::clone(&ports))?;
+let session = MidiSession::open(Arc::clone(&inlets))?;
 
 // The devices present now; capability (protocol, function blocks) is read from
 // the OS.
@@ -102,10 +102,12 @@ for device in session.inputs() {
 if let Some(first) = session.inputs().first() {
     session.connect_input(&first.id)?;
 }
+// Or by name: one `DeviceQuery` form for connect and disconnect.
+session.disconnect_input("keystep");
 
 // Outbound: `send` returns how many events were accepted, 0 when nothing is
 // connected.
-session.connect_output_by_name("iac")?;
+session.connect_output("iac")?;
 let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
 assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 # Ok::<(), tutti_midi_hardware::Error>(())
@@ -114,9 +116,15 @@ assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 ## Main types
 
 - [`Devices`]: the devices present, and the changes to them.
-- [`MidiSession`]: connect, disconnect and send; owns a [`Devices`].
-- [`HardwareMidiInputs`]: the open input ports, each a slot of the
-  [`DeviceInlets`] and the [`InputProducerHandle`] its driver thread pushes through.
+- [`MidiSession`]: connect, disconnect and send; owns a [`Devices`] and the
+  [`HardwareMidiInputs`] over the inlets it was opened with. `connect_input`,
+  `disconnect_input` and `connect_output` take a [`DeviceQuery`] (a
+  `&DeviceId` or a `&str`); `output()` reads the open output as an
+  [`OutputInfo`].
+- [`HardwareMidiInputs`]: the open input ports, each named by its
+  [`DeviceSlot`] (one id: the slot of the [`DeviceInlets`] and which device
+  took it) and the [`InputProducerHandle`] its driver thread pushes through,
+  whose `push` answers [`Pushed`].
 - [`DeviceInfo`], [`DeviceId`], [`DeviceEvent`]: what the list holds and reports;
   they live in `tutti-midi-device`, with the pure `DeviceTable` behind them.
 - [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what a backend enumerates.
@@ -130,15 +138,13 @@ assert_eq!(session.send(&[(Offset::ZERO, note)]), 1);
 
 ## Matching by name picks a device you did not choose
 
-Every `*_by_name` method matches **case-insensitive substring, first hit wins**,
-in id order. So `"iac"` matches `"IAC Driver Bus 1"`, and a name matching two
-devices takes the one with the lowest id. Connect by [`DeviceId`] when the
-choice matters.
-
-[`MidiSession::disconnect_input_by_name`] is weaker still: it searches a map of
-open connections, so there is no "first" at all and a name matching two open
-inputs closes an **arbitrary** one. Use [`MidiSession::disconnect_input`] with
-an id, or [`MidiSession::disconnect_all_inputs`].
+A name query ([`DeviceQuery`] from a `&str`) matches **case-insensitive
+substring, first hit wins**, in id order. So `"iac"` matches `"IAC Driver
+Bus 1"`, and a name matching two devices takes the one with the lowest id; for
+a disconnect the match is over the open inputs, and the lowest id among them is
+the one closed. Connect by [`DeviceId`] when the choice matters, and
+[`MidiSession::disconnect_all_inputs`] closes every one. A name that matches
+nothing is [`Error::NoDeviceNamed`], listing the names it searched.
 
 ## Backends
 

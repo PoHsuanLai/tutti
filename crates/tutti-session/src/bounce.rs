@@ -1964,6 +1964,7 @@ mod tests {
     use super::*;
     use crate::{InPort, Phase, PhaseCx, Root};
     use tutti_export::Stage;
+    use tutti_graph::ForkByClone;
     use tutti_tempo::{Shape, TempoPoint};
     use tutti_types::{Bpm, SampleRate};
 
@@ -1981,7 +1982,7 @@ mod tests {
         let mut session = Session::builder().build_detached(RATE).unwrap();
         let (dc, _) = session
             .graph()
-            .insert(tutti_nodes::testing::Const::mono(0.0));
+            .add(ForkByClone(tutti_nodes::testing::Const::mono(0.0)));
         session.graph().connect(dc, Root).unwrap();
         session
     }
@@ -1999,7 +2000,7 @@ mod tests {
         let mut session = session();
         let (half, _) = session
             .graph()
-            .insert(tutti_nodes::testing::Const::mono(0.5));
+            .add(ForkByClone(tutti_nodes::testing::Const::mono(0.5)));
         session.graph().connect(half, Root).unwrap();
         assert!(session.graph().is_edited(), "no update has run");
         let out = planes(session.bounce(short()));
@@ -2267,14 +2268,12 @@ mod tests {
         let mut session = session();
         let (dc, _) = session
             .graph()
-            .insert(tutti_nodes::testing::Const::mono(0.25));
-        let (lim, _) = session
-            .graph()
-            .insert(tutti_nodes::LimiterNode::with_channels(
-                ChannelLayout::MONO,
-                Db(-6.0),
-                Db(-1.0),
-            ));
+            .add(ForkByClone(tutti_nodes::testing::Const::mono(0.25)));
+        let (lim, _) = session.graph().add(tutti_nodes::LimiterNode::with_channels(
+            ChannelLayout::MONO,
+            Db(-6.0),
+            Db(-1.0),
+        ));
         session
             .graph()
             .set_sources(InPort::new(lim, 0), [crate::OutPort::new(dc, 0)])

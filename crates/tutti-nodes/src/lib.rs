@@ -102,7 +102,7 @@ pub use distortion::DistortionNode;
 pub use tutti_dsp::ShapeKind;
 
 mod filter;
-pub use filter::{CrossoverNode, EqBandNode, LadderFilterNode, NodeKernel, SvfFilterNode};
+pub use filter::{CrossoverNode, EqBandNode, LadderFilterNode, NodeRecurrence, SvfFilterNode};
 // The types in the filter nodes' signatures stay reachable from here; the
 // algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
 // `tutti-dsp`'s only.

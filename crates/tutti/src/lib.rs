@@ -204,7 +204,9 @@ pub mod prelude {
     pub use tutti_graph::{
         CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, NodeMode, TapReader,
     };
-    pub use tutti_graph::{EventInletNode, EventInletWriter, Losses, Refused, Stamp};
+    pub use tutti_graph::{
+        EventCapacity, EventInletNode, EventInletWriter, Losses, Refused, Stamp,
+    };
     pub use tutti_graph::{EventTapId, EventTapReader, TapAlign, TapEvent, TapId};
     pub use tutti_metering::{LoadMeter, LoadReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};

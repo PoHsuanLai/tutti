@@ -7,6 +7,7 @@
 //! weights, so the weighted fold `(0.0 + w * a) + b` is exact in `f32`.
 
 use std::sync::Arc;
+use tutti_graph::ForkByClone;
 use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
@@ -59,9 +60,9 @@ struct Rig {
 fn rig() -> Rig {
     let mut s = offline();
     let g = s.graph();
-    let (a, _) = g.insert(Const::mono(A));
-    let (b, _) = g.insert(Const::mono(B));
-    let (sink, _) = g.insert(Through::mono());
+    let (a, _) = g.add(ForkByClone(Const::mono(A)));
+    let (b, _) = g.add(ForkByClone(Const::mono(B)));
+    let (sink, _) = g.add(ForkByClone(Through::mono()));
     g.set_sources_hard(Root::output(0), [OutPort::new(sink, 0)])
         .unwrap();
     let _ = s.update();
@@ -192,7 +193,7 @@ fn add_source_weighted_adds_the_edge_and_its_weight() {
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 2.0 * A) + -0.25 * B));
 
     // A bad weight adds nothing.
-    let c = r.s.graph().insert(Const::mono(0.125)).0;
+    let c = r.s.graph().add(ForkByClone(Const::mono(0.125))).0;
     assert_eq!(
         r.s.graph()
             .connect(node(c.erase()), InPort::new(sink, 0))

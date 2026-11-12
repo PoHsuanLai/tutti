@@ -20,12 +20,12 @@ use tutti_graph::testing as common;
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
 use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+use tutti_graph::{CloseError, EventTapId, EventTapReader};
 use tutti_graph::{
     Cx, Edge, Editor, Event, EventOut, Executor, ForkByClone, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, InPort, IntoNode, Io, MissingSource, Node, NodeKey, NodeParts, Offset, Op,
     OutPort, Prepare, Shape, Source, Status, TapAlign, TapEvent, Transport, note_off_room,
 };
-use tutti_graph::{EventTapId, EventTapReader};
 use tutti_types::{Frame, Latency, Samples};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
@@ -457,9 +457,17 @@ fn closed_fork_reopen_and_reap() {
     let closed = open(&mut r, 1);
     commit(&mut r);
     assert_eq!(tap_ops(&r), 1);
-    r.ed.close_event_tap(closed.id());
-    r.ed.close_event_tap(closed.id());
-    r.ed.close_event_tap(EventTapId(99));
+    r.ed.close_event_tap(closed.id()).unwrap();
+    assert_eq!(
+        r.ed.close_event_tap(closed.id()),
+        Err(CloseError::EventTap(closed.id())),
+        "a closed tap is not open"
+    );
+    assert_eq!(
+        r.ed.close_event_tap(EventTapId(99)),
+        Err(CloseError::EventTap(EventTapId(99))),
+        "a tap never opened is not open"
+    );
     commit(&mut r);
     assert_eq!(tap_ops(&r), 0, "a closed tap leaves no op");
     drop(closed);
@@ -486,7 +494,7 @@ fn closed_fork_reopen_and_reap() {
     render(&mut r, &[100], 100);
     assert_eq!(stale.available(), 0, "the replaced reader is never fed");
     assert_eq!(drain(&mut fresh), vec![at(110, on_port(on(2), 0))]);
-    r.ed.close_event_tap(EventTapId(5));
+    r.ed.close_event_tap(EventTapId(5)).unwrap();
     drop((stale, fresh));
 
     // A reader dropped first: the tap writes nothing until it is reaped.

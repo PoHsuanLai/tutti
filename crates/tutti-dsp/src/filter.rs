@@ -1,5 +1,5 @@
 //! Filter algorithms: state-variable, Moog ladder and the Linkwitz-Riley
-//! crossover, over the [`Real`] float they share, each a [`ChannelKernel`] run by
+//! crossover, over the [`Real`] float they share, each a [`ChannelRecurrence`] run by
 //! [`PerChannel`] under the one [`Filter`] design.
 
 mod biquad;
@@ -19,7 +19,7 @@ pub use ladder::{
     Ladder, LadderCoefficients, LadderCoeffs, LadderControls, LadderDesign, LadderModel,
     LadderType, ladder_step,
 };
-pub use per_channel::{ChannelKernel, Filter, PerChannel};
+pub use per_channel::{ChannelRecurrence, Filter, PerChannel};
 pub use real::{Lanes, Real};
 pub use sizes::FilterSizes;
 pub use svf::{

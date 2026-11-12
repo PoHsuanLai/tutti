@@ -16,8 +16,8 @@ use tutti_fixtures::midi::{
     timing_clock,
 };
 use tutti_graph::{
-    Cx, Editor, EventEdge, EventIn, EventInletNode, EventKind, EventOut, Executor, ForkMode,
-    ForkTarget, Io, Node, Offset, Prepare, Shape, Status, Transport, TransportChanges,
+    Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode, EventKind, EventOut, Executor,
+    ForkMode, ForkTarget, Io, Node, Offset, Prepare, Shape, Status, Transport, TransportChanges,
 };
 use tutti_graph::{IntoNode as _, NodeKey};
 use tutti_midi_protocol::channel_voice;
@@ -179,7 +179,7 @@ impl Ingest {
         let inlets = scripts
             .iter()
             .map(|script| {
-                let (inlet, mut writer) = EventInletNode::pair(4096);
+                let (inlet, mut writer) = EventInletNode::pair(EventCapacity::of(4096));
                 for (block, batch) in script.0.iter().enumerate() {
                     for &(offset, ump) in batch {
                         let frame = Frame(512 * block as u64 + u64::from(offset.get()));
@@ -681,7 +681,7 @@ fn an_input_nodes_fork_is_silent() {
 fn an_event_tap_hands_midi_back_and_counts_drops() {
     let (mut ed, mut exec) =
         Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(512))));
-    let (inlet, mut keys) = EventInletNode::pair(256);
+    let (inlet, mut keys) = EventInletNode::pair(EventCapacity::of(256));
     ed.insert(NodeKey(1), "keys", inlet);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();

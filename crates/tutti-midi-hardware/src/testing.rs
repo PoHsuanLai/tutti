@@ -47,7 +47,7 @@ pub(crate) const RATE: f64 = 44_100.0;
 pub(crate) fn ports(slots: usize) -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(Arc::new(DeviceInlets::new(
         slots,
-        64,
+        tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     ))))
 }

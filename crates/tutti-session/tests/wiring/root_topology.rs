@@ -5,6 +5,7 @@
 //! where a fold is involved the expected frame is written out from the ITU
 //! rules (`M3DB`), not read from another render.
 
+use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
 use tutti_session::{Error, OutPort, Root, RootTopologyStatus, Session, SessionBuilder};
 use tutti_types::MaxBlock;
@@ -16,7 +17,7 @@ const RATE: SampleRate = SampleRate(48_000.0);
 
 /// The channels `values` hold, one per global output from channel 0.
 fn feed(session: &mut Session, values: &[f32]) {
-    let (node, _) = session.graph().insert(Const::frame(values));
+    let (node, _) = session.graph().add(ForkByClone(Const::frame(values)));
     for c in 0..values.len() {
         session
             .graph()

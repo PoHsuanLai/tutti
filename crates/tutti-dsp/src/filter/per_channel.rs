@@ -1,12 +1,12 @@
-//! [`Filter`]: the filters' one [`Design`], over a [`ChannelKernel`], and
-//! [`PerChannel`], the one [`Kernel`] that runs such a kernel's channels each alone
+//! [`Filter`]: the filters' one [`Design`], over a [`ChannelRecurrence`], and
+//! [`PerChannel`], the one [`Recurrence`] that runs such a recurrence's channels each alone
 //! (design 024 section 4.3a).
 //!
 //! The SVF, the ladder and the crossover differ in their coefficients, their few
 //! words of state per channel and the step that turns one sample into the next; a
-//! channel never reads another. That is a [`ChannelKernel`]. The glide of its
+//! channel never reads another. That is a [`ChannelRecurrence`]. The glide of its
 //! coefficients, the held path that runs up to eight channels side by side and the
-//! first-retarget landing are written once, here and in [`Realized`].
+//! first-retarget landing are written once, here and in [`Realized`](crate::Realized).
 
 use core::ops::Range;
 
@@ -15,7 +15,7 @@ use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 use super::sizes::FilterSizes;
 use crate::control::{COEFF_STREAM, lane_group};
 use crate::{
-    Cadence, Ceiling, Channels, Design, Effort, Glide, Kernel, LANES, Lerp, Realized, System,
+    Cadence, Ceiling, Channels, Design, Effort, Glide, LANES, Lerp, Recurrence, Start, System,
 };
 
 /// The most outputs one input channel makes: a crossover's bands.
@@ -23,7 +23,7 @@ const MAX_OUTPUTS: usize = 6;
 
 /// A filter whose channels run alone: per-channel `Copy` state, one step from a sample
 /// to the next, and coefficients shared by every channel.
-pub trait ChannelKernel: Clone + core::fmt::Debug + Send + 'static {
+pub trait ChannelRecurrence: Clone + core::fmt::Debug + Send + 'static {
     /// The plain values of the filter's controls.
     type Controls: Copy + PartialEq + Send;
     /// The system the controls describe.
@@ -61,27 +61,27 @@ pub trait ChannelKernel: Clone + core::fmt::Debug + Send + 'static {
     fn tick(c: &Self::Coeffs, state: &mut Self::State, x: f32) -> Self::Frame;
 }
 
-/// The [`Design`] of a filter over a [`ChannelKernel`], on one input bus.
+/// The [`Design`] of a filter over a [`ChannelRecurrence`], on one input bus.
 ///
 /// Solved every 16 frames on the stream clock, at the first frame of each segment
 /// (doc 024 Q27), so the render is a function of the stream and not of how it is cut
 /// into blocks. The design is only `Model::new(controls)`; a family's own checks stay
 /// in its constructor.
 #[derive(Clone, Copy, Debug)]
-pub struct Filter<K> {
-    kernel: K,
+pub struct Filter<R> {
+    recurrence: R,
     input: BusTopology,
 }
 
-impl<K> Filter<K> {
-    pub(crate) fn over(kernel: K, input: BusTopology) -> Self {
-        Self { kernel, input }
+impl<R> Filter<R> {
+    pub(crate) fn over(recurrence: R, input: BusTopology) -> Self {
+        Self { recurrence, input }
     }
 
-    /// The kernel.
+    /// The recurrence.
     #[must_use]
-    pub fn kernel(&self) -> &K {
-        &self.kernel
+    pub fn recurrence(&self) -> &R {
+        &self.recurrence
     }
 
     /// The input width; each output is this wide.
@@ -91,47 +91,44 @@ impl<K> Filter<K> {
     }
 }
 
-impl<K: ChannelKernel> Design for Filter<K> {
-    type Controls = K::Controls;
-    type Model = K::Model;
-    type Bounds = FilterSizes<K::Model>;
+impl<R: ChannelRecurrence> Design for Filter<R> {
+    type Controls = R::Controls;
+    type Model = R::Model;
+    type Bounds = FilterSizes<R::Model>;
     type Range = ();
-    type Realization = Realized<PerChannel<K>>;
+    type Recurrence = PerChannel<R>;
 
     const CADENCE: Cadence = COEFF_STREAM;
 
     fn channels(&self) -> Channels {
         // One output per input sits where the input does; several are a
         // crossover's bands, each where the input is.
-        Channels::bands(self.input, self.kernel.outputs() as u8)
-            .expect("a kernel makes at least one output")
+        Channels::bands(self.input, self.recurrence.outputs() as u8)
+            .expect("a recurrence makes at least one output")
     }
 
-    fn blank(&self, rate: SampleRate) -> K::Model {
-        self.kernel.blank(rate)
+    fn blank(&self, rate: SampleRate) -> R::Model {
+        self.recurrence.blank(rate)
     }
 
-    fn design_into(&self, controls: &K::Controls, rate: SampleRate, out: &mut K::Model) {
-        self.kernel.design_into(controls, rate, out);
+    fn design_into(&self, controls: &R::Controls, rate: SampleRate, out: &mut R::Model) {
+        self.recurrence.design_into(controls, rate, out);
     }
 
-    fn bounds(&self, _: &Ceiling<()>) -> FilterSizes<K::Model> {
+    fn bounds(&self, _: &Ceiling<()>) -> FilterSizes<R::Model> {
         FilterSizes::NONE
     }
 
-    fn realization(&self) -> Self::Realization {
+    fn recurrence(&self) -> PerChannel<R> {
         let width = usize::from(self.layout().count()).max(1);
-        Realized::new(
-            PerChannel {
-                kernel: self.kernel.clone(),
-                width,
-            },
-            &self.blank(SampleRate::DEFAULT),
-        )
+        PerChannel {
+            recurrence: self.recurrence.clone(),
+            width,
+        }
     }
 }
 
-/// The [`Kernel`] of a [`ChannelKernel`]: one state per channel (`len()` is the audio
+/// The [`Recurrence`] of a [`ChannelRecurrence`]: one state per channel (`len()` is the audio
 /// width, built with the design and never resized) and a [`Glide`] of the coefficients
 /// every channel shares.
 #[derive(Clone, Debug)]
@@ -140,11 +137,11 @@ impl<K: ChannelKernel> Design for Filter<K> {
 /// `o`-th run of `width` output slices, and channel `c`'s output `o` is channel `c`
 /// of it.
 pub struct PerChannel<C> {
-    kernel: C,
+    recurrence: C,
     width: usize,
 }
 
-impl<C: ChannelKernel> PerChannel<C> {
+impl<C: ChannelRecurrence> PerChannel<C> {
     /// The channels `first..first + N` through `c`, sample-inner, the group's states in
     /// registers. A recursive filter is latency-bound on one channel (each sample waits
     /// for the last), so running a few channels' independent chains side by side fills
@@ -161,7 +158,7 @@ impl<C: ChannelKernel> PerChannel<C> {
         output: &mut [&mut [f32]],
         frames: &Range<usize>,
     ) {
-        let outputs = self.kernel.outputs();
+        let outputs = self.recurrence.outputs();
         let xs: [&[f32]; N] = core::array::from_fn(|k| &input[first + k][frames.clone()]);
         let mut ys: [&mut [f32]; LANES * MAX_OUTPUTS] =
             core::array::from_fn(|_| Default::default());
@@ -183,23 +180,28 @@ impl<C: ChannelKernel> PerChannel<C> {
     }
 }
 
-impl<C: ChannelKernel> Kernel for PerChannel<C> {
+impl<C: ChannelRecurrence> Recurrence for PerChannel<C> {
     type Model = C::Model;
     type Bounds = FilterSizes<C::Model>;
+    type Target = C::Coeffs;
     type Coeffs = Glide<C::Coeffs>;
     type State = Vec<C::State>;
 
     const STEP: usize = 1;
 
-    fn start(&self, model: &C::Model) -> (Glide<C::Coeffs>, Vec<C::State>) {
-        (
-            Glide::landed(self.kernel.coeffs(model)),
-            vec![C::State::default(); self.width],
-        )
+    fn start(&self, model: &C::Model) -> Start<Self> {
+        let at = self.recurrence.coeffs(model);
+        Start {
+            coeffs: Glide::landed(at).by(C::STEPS),
+            state: vec![C::State::default(); self.width],
+            target: at,
+        }
     }
 
-    fn aim(&self, coeffs: &mut Glide<C::Coeffs>, model: &C::Model) {
-        coeffs.aim(self.kernel.coeffs(model), C::STEPS);
+    /// κ: the coefficients the step reads at `model`. Every model is one it can run.
+    fn coefficients_into(&self, model: &C::Model, target: &mut C::Coeffs) -> bool {
+        *target = self.recurrence.coeffs(model);
+        true
     }
 
     fn clear(&self, state: &mut Vec<C::State>) {
@@ -218,7 +220,7 @@ impl<C: ChannelKernel> Kernel for PerChannel<C> {
         let c = coeffs.now();
         if frames.len() == 1 {
             // A step of a glide: no inner loop to run a group over.
-            let (i, outputs) = (frames.start, self.kernel.outputs());
+            let (i, outputs) = (frames.start, self.recurrence.outputs());
             for (ch, s) in state.iter_mut().enumerate() {
                 let frame = C::tick(&c, s, input[ch][i]);
                 let bands = output.chunks_mut(self.width).take(outputs);
@@ -265,16 +267,16 @@ pub(crate) mod tests {
     use crate::contract::DesignCase;
 
     /// The glide's midpoint between two reachable controls is itself stable: an impulse
-    /// through the kernel with the half-way coefficients held decays (the last
+    /// through the recurrence with the half-way coefficients held decays (the last
     /// thousand frames of 150,000 peak below half of the first thousand's). A biquad's
     /// stable region in `(a1, a2)` is a triangle and so convex, and the ladder's loop is
     /// stable while its feedback is under the resonance limit, which a blend of two
     /// reachable sets keeps under; a glide that extrapolates leaves both.
-    pub(crate) fn assert_midpoints_decay<K>(d: &Filter<K>)
+    pub(crate) fn assert_midpoints_decay<R>(d: &Filter<R>)
     where
-        K: ChannelKernel,
-        K::Controls: core::fmt::Debug,
-        Filter<K>: DesignCase<Controls = K::Controls, Model = K::Model>,
+        R: ChannelRecurrence,
+        R::Controls: core::fmt::Debug,
+        Filter<R>: DesignCase<Controls = R::Controls, Model = R::Model>,
     {
         const FRAMES: usize = 150_000;
         const WINDOW: usize = 1_000;
@@ -287,16 +289,16 @@ pub(crate) mod tests {
                 all[rng.gen_range(0..all.len())],
             );
             let (from, to) = (
-                d.kernel.coeffs(&d.design(&a, rate)),
-                d.kernel.coeffs(&d.design(&b, rate)),
+                d.recurrence.coeffs(&d.design(&a, rate)),
+                d.recurrence.coeffs(&d.design(&b, rate)),
             );
-            let mid = from.lerp(&to, K::STEPS / 2, K::STEPS);
-            let mut state = K::State::default();
+            let mid = from.lerp(&to, R::STEPS / 2, R::STEPS);
+            let mut state = R::State::default();
             let mut peak = |from: usize, to: usize, x: f32| {
                 (from..to)
                     .map(|i| {
                         let input = if i == 0 { x } else { 0.0 };
-                        K::tick(&mid, &mut state, input).as_ref()[0].abs()
+                        R::tick(&mid, &mut state, input).as_ref()[0].abs()
                     })
                     .fold(0.0f32, f32::max)
             };

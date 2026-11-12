@@ -15,8 +15,12 @@ fn note(n: u8) -> Ump {
 
 /// A rig over `slots` inlets with `lead`, whose clock has read once (frame 0 at
 /// `origin`), so an arrival can be placed.
-fn rig(slots: usize, capacity: usize, lead: Duration) -> (Arc<HardwareMidiInputs>, Rig) {
-    let inlets = Arc::new(DeviceInlets::new(slots, capacity, lead));
+fn rig(slots: usize, capacity: u32, lead: Duration) -> (Arc<HardwareMidiInputs>, Rig) {
+    let inlets = Arc::new(DeviceInlets::new(
+        slots,
+        tutti_graph::EventCapacity::of(capacity),
+        lead,
+    ));
     let manager = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let mut rig = Rig::over(&inlets, now());
     rig.run(1);

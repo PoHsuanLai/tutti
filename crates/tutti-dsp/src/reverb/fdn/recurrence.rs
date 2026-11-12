@@ -1,4 +1,4 @@
-//! [`FdnKernel`]: the [`Kernel`] of [`FdnDesign`](crate::FdnDesign), run by
+//! [`FdnRecurrence`]: the [`Recurrence`] of [`FdnDesign`](crate::FdnDesign), run by
 //! [`Realized`](crate::Realized) (design 022 step 1c, design 024 section 4.3a).
 //!
 //! `N` delay lines read with linear interpolation (so a length may move), a
@@ -26,7 +26,7 @@
 //! reached line 0, where `I - 2 v v^T` flips one line's sign) and at the start
 //! of one that reaches it. Every step of a ramp is then orthogonal, `v` moves
 //! between unit vectors (a diagonal network aims it at line 0), and a mixing
-//! network is bit-identical to a kernel without `m`. The switch is a step in
+//! network is bit-identical to a recurrence without `m`. The switch is a step in
 //! the sign of line 0's loop, as the model's own matrix steps between
 //! `Diagonal` and the first `Reflection` near line 0.
 //!
@@ -43,7 +43,7 @@ use core::ops::Range;
 
 use super::design::CROSSOVER;
 use crate::reverb::network::{Absorption, Band, Matrix, Network, NetworkSizes, Stage};
-use crate::{Approach, Effort, Glide, Kernel, Setup, Steps};
+use crate::{Approach, Effort, Glide, Recurrence, Setup, Start, Steps};
 
 /// The frames between control updates: every ramp advances once a chunk.
 pub(crate) const CHUNK: usize = 32;
@@ -59,22 +59,72 @@ pub(crate) fn ramp(rate: f64) -> Steps {
     Steps::Fixed(((RAMP * rate / CHUNK as f64).ceil() as u32).max(1))
 }
 
-/// The kernel of a feedback delay network: what [`prepare`](Kernel::prepare) sized,
-/// and the math of a chunk. Its coefficients are `FdnCoeffs`, its words
-/// `FdnState`.
+/// The recurrence of a feedback delay network: what [`prepare`](Recurrence::prepare)
+/// sized, and the math of a chunk. Its κ ([`coefficients_into`](Recurrence::coefficients_into))
+/// writes an `FdnTarget`, its γ is `FdnCoeffs` (a glide a field, each at its own
+/// rate) and its words are `FdnState`.
 #[derive(Clone, Debug)]
-pub struct FdnKernel {
+pub struct FdnRecurrence {
     rate: f64,
-    ramp: Steps,
     max_lines: usize,
     cap: usize,
     pre_cap: usize,
 }
 
-/// What an [`FdnKernel`] approaches: every sounding parameter a [`Glide`], and the
-/// few that jump (the line count, the modulation rate, the absorption's poles).
+/// The coefficient point an FDN's model asks for, as [`FdnRecurrence`]'s κ writes it:
+/// the values [`FdnCoeffs`] glides to, before any rate is applied. Sized for the most
+/// lines the recurrence was prepared for; its fields from line `n` on are not read
+/// but for the input and output gains, which a smaller network closes.
+#[derive(Clone, Debug)]
+pub struct FdnTarget {
+    /// The lines in use.
+    n: usize,
+    rate_hz: f32,
+    crossover: [f32; 2],
+    pole: [f32; 2],
+
+    len: Vec<f32>,
+    pre_len: f32,
+    depth: f32,
+    gain: Vec<[f32; 3]>,
+    v: Vec<f32>,
+    v_len: f32,
+    mix: f32,
+    input: Vec<f32>,
+    out: Vec<[f32; 2]>,
+    wet: f32,
+    width: f32,
+}
+
+impl FdnTarget {
+    fn new(lines: usize) -> Self {
+        Self {
+            n: 0,
+            rate_hz: 0.5,
+            crossover: [0.0; 2],
+            pole: [0.0; 2],
+            len: vec![1.0; lines],
+            pre_len: 0.0,
+            depth: 0.0,
+            gain: vec![[0.0; 3]; lines],
+            v: vec![0.0; lines],
+            v_len: 0.0,
+            mix: 0.0,
+            input: vec![0.0; lines],
+            out: vec![[0.0; 2]; lines],
+            wet: 0.0,
+            width: 1.0,
+        }
+    }
+}
+
+/// What an [`FdnRecurrence`] approaches, γ: every sounding parameter a [`Glide`] (each
+/// at its own rate: a length and the pre-delay by a distance, the rest by 20 ms), and
+/// the few that jump (the line count, the modulation rate, the absorption's poles).
 #[derive(Clone, Debug)]
 pub struct FdnCoeffs {
+    /// The steps of the 20 ms ramp of a gain, at the rate prepared for.
+    ramp: Steps,
     /// The lines in use: 0 until the first valid retarget, and the block is silent.
     n: usize,
     rate_hz: f32,
@@ -92,7 +142,7 @@ pub struct FdnCoeffs {
     v_len: Glide<f32>,
     /// `m` of `I - 2 m v v^T`: 0 for a diagonal network, 1 for a reflection. Only
     /// its target and whether it is moving are read (see the module docs): the
-    /// kernel's `m` is 1 while it ramps or aims at 1, else 0.
+    /// recurrence's `m` is 1 while it ramps or aims at 1, else 0.
     mix: Glide<f32>,
     input: Vec<Glide<f32>>,
     out: Vec<[Glide<f32>; 2]>,
@@ -101,9 +151,10 @@ pub struct FdnCoeffs {
 }
 
 impl FdnCoeffs {
-    fn new(lines: usize) -> Self {
+    fn new(lines: usize, ramp: Steps) -> Self {
         let rest = Glide::landed(0.0);
         Self {
+            ramp,
             n: 0,
             rate_hz: 0.5,
             pole: [0.0; 2],
@@ -141,6 +192,40 @@ impl FdnCoeffs {
 }
 
 impl Approach for FdnCoeffs {
+    type Target = FdnTarget;
+
+    /// Aims every glide at the target's value with its own rate: a length by
+    /// [`LENGTH_STEP`] a chunk, the pre-delay by [`PRE_STEP`], every other gain in
+    /// the ramp. The lines from `n` on keep their gains and lengths; their input and
+    /// output gains close.
+    fn aim(&mut self, t: &FdnTarget) {
+        let ramp = self.ramp;
+        let n = t.n;
+        self.n = n;
+        self.crossover = t.crossover;
+        self.pole = t.pole;
+        for j in 0..n {
+            self.len[j].aim_by(t.len[j], Steps::Rate(LENGTH_STEP));
+            for (s, &g) in self.gain[j].iter_mut().zip(&t.gain[j]) {
+                s.aim_by(g, ramp);
+            }
+            self.v[j].aim_by(t.v[j], ramp);
+        }
+        for j in 0..self.input.len() {
+            self.input[j].aim_by(t.input[j], ramp);
+            for (s, &g) in self.out[j].iter_mut().zip(&t.out[j]) {
+                s.aim_by(g, ramp);
+            }
+        }
+        self.v_len.aim_by(t.v_len, ramp);
+        self.mix.aim_by(t.mix, ramp);
+        self.depth.aim_by(t.depth, ramp);
+        self.rate_hz = t.rate_hz;
+        self.pre_len.aim_by(t.pre_len, Steps::Rate(PRE_STEP));
+        self.wet.aim_by(t.wet, ramp);
+        self.width.aim_by(t.width, ramp);
+    }
+
     fn step(&mut self) -> bool {
         // Every glide steps: no short circuit.
         self.glides().fold(false, |moved, g| g.step() | moved)
@@ -182,7 +267,7 @@ pub struct FdnState {
 }
 
 impl FdnState {
-    fn new(k: &FdnKernel) -> Self {
+    fn new(k: &FdnRecurrence) -> Self {
         let lines = k.max_lines;
         let mut s = Self {
             buf: vec![0.0; lines * k.cap],
@@ -209,11 +294,10 @@ impl FdnState {
     }
 }
 
-impl FdnKernel {
+impl FdnRecurrence {
     pub(crate) fn new() -> Self {
         Self {
             rate: 48_000.0,
-            ramp: Steps::Fixed(1),
             max_lines: 0,
             cap: 0,
             pre_cap: 0,
@@ -224,12 +308,12 @@ impl FdnKernel {
         std::f64::consts::TAU * j as f64 / self.max_lines.max(1) as f64
     }
 
-    fn set_poles(&self, c: &mut FdnCoeffs, crossover: [f32; 2]) {
-        if crossover == c.crossover {
+    fn set_poles(&self, t: &mut FdnTarget, crossover: [f32; 2]) {
+        if crossover == t.crossover {
             return;
         }
-        c.crossover = crossover;
-        for (p, f) in c.pole.iter_mut().zip(crossover) {
+        t.crossover = crossover;
+        for (p, f) in t.pole.iter_mut().zip(crossover) {
             *p = libm::exp(-std::f64::consts::TAU * f64::from(f) / self.rate) as f32;
         }
     }
@@ -281,7 +365,7 @@ impl FdnKernel {
 /// whole state of a frozen network (the absorption's one-poles are not read
 /// while every gain is 1). For the tests.
 #[cfg(test)]
-impl crate::Realized<FdnKernel> {
+impl crate::Realized<FdnRecurrence> {
     pub(crate) fn state_energy(&mut self) -> f64 {
         let (k, c, s) = self.parts_mut();
         (0..c.n)
@@ -302,7 +386,7 @@ impl crate::Realized<FdnKernel> {
 /// `pole` (`exp(-2 pi fc / fs)` for the two crossovers), scaled to peak at 0.9999
 /// if their response would exceed 1 anywhere; NaN, infinite or negative gains
 /// are silence. The model's design applies it too, so the gains a network
-/// carries are the ones this kernel runs.
+/// carries are the ones this recurrence runs.
 pub(crate) fn rescale_bands(g: [f32; 3], pole: [f32; 2]) -> [f32; 3] {
     if !g.iter().all(|x| x.is_finite() && *x >= 0.0) {
         return [0.0; 3];
@@ -360,16 +444,21 @@ fn read(buf: &[f32], w: usize, delay: f32) -> f32 {
     a * (1.0 - frac) + b * frac
 }
 
-impl Kernel for FdnKernel {
+impl Recurrence for FdnRecurrence {
     type Model = Network;
     type Bounds = NetworkSizes;
+    type Target = FdnTarget;
     type Coeffs = FdnCoeffs;
     type State = FdnState;
 
     const STEP: usize = CHUNK;
 
-    fn start(&self, _: &Network) -> (FdnCoeffs, FdnState) {
-        (FdnCoeffs::new(self.max_lines), FdnState::new(self))
+    fn start(&self, _: &Network) -> Start<Self> {
+        Start {
+            coeffs: FdnCoeffs::new(self.max_lines, ramp(self.rate)),
+            state: FdnState::new(self),
+            target: FdnTarget::new(self.max_lines),
+        }
     }
 
     fn prepare(
@@ -378,45 +467,46 @@ impl Kernel for FdnKernel {
         setup: &Setup,
         c: &mut FdnCoeffs,
         s: &mut FdnState,
+        t: &mut FdnTarget,
     ) {
         self.rate = setup.rate.get();
-        self.ramp = ramp(self.rate);
         self.max_lines = bounds.lines;
         self.cap = bounds.line.ceil() as usize + 4;
         self.pre_cap = bounds.pre_delay.get() + 4;
-        *c = FdnCoeffs::new(self.max_lines);
-        self.set_poles(c, CROSSOVER.map(|f| f.get()));
+        *c = FdnCoeffs::new(self.max_lines, ramp(self.rate));
+        *t = FdnTarget::new(self.max_lines);
+        self.set_poles(t, CROSSOVER.map(|f| f.get()));
+        c.crossover = t.crossover;
+        c.pole = t.pole;
         *s = FdnState::new(self);
     }
 
-    fn aim(&self, c: &mut FdnCoeffs, network: &Network) {
+    /// κ: the first recirculating stage's lines, matrix, outputs, pre-delay, wet gain
+    /// and width, each as the value the coefficients glide to. A network with no such
+    /// stage or no line is ignored.
+    fn coefficients_into(&self, network: &Network, t: &mut FdnTarget) -> bool {
         let Some(Stage::Fdn(f)) = network.stages.iter().find(|s| matches!(s, Stage::Fdn(_))) else {
-            return;
+            return false;
         };
         let n = f.lines.len().min(self.max_lines);
         if n == 0 {
-            return;
+            return false;
         }
-        c.n = n;
-        let ramp = self.ramp;
+        t.n = n;
         let max_len = (self.cap - 4) as f32;
 
         if let Some(Absorption::Bands { crossover, .. }) = f.lines.first().map(|l| l.absorption) {
-            self.set_poles(c, [crossover[0].get(), crossover[1].get()]);
+            self.set_poles(t, [crossover[0].get(), crossover[1].get()]);
         }
         let flat = 1.0 / (n as f32).sqrt();
         for j in 0..n {
             let line = &f.lines[j];
-            let target = if line.length.is_finite() {
+            t.len[j] = if line.length.is_finite() {
                 line.length.clamp(1.0, max_len)
             } else {
                 1.0
             };
-            c.len[j].aim_by(target, Steps::Rate(LENGTH_STEP));
-            let g = Self::absorption_gains(line.absorption, c.pole);
-            for (s, t) in c.gain[j].iter_mut().zip(g) {
-                s.aim_by(t, ramp);
-            }
+            t.gain[j] = Self::absorption_gains(line.absorption, t.pole);
             // A diagonal network is `m = 0`; its `v` is a unit vector (line 0)
             // like the rest, so a ramp to a mixing matrix moves between unit
             // vectors and `v_len` stays 1.
@@ -426,9 +516,9 @@ impl Kernel for FdnKernel {
                 Matrix::Reflection(v) if v.len() == n => v[j],
                 _ => 0.0,
             };
-            c.v[j].aim_by(if v.is_finite() { v } else { 0.0 }, ramp);
+            t.v[j] = if v.is_finite() { v } else { 0.0 };
             let input = f.input.get(j).copied().unwrap_or(0.0);
-            c.input[j].aim_by(if input.is_finite() { input } else { 0.0 }, ramp);
+            t.input[j] = if input.is_finite() { input } else { 0.0 };
             let row = |r: usize| {
                 let x = f
                     .output
@@ -440,50 +530,37 @@ impl Kernel for FdnKernel {
                     .unwrap_or(0.0);
                 if x.is_finite() { x } else { 0.0 }
             };
-            c.out[j][0].aim_by(row(0), ramp);
-            c.out[j][1].aim_by(row(1), ramp);
+            t.out[j] = [row(0), row(1)];
         }
-        let want: f32 = c.v[..n]
-            .iter()
-            .map(|v| v.target() * v.target())
-            .sum::<f32>()
-            .sqrt();
-        c.v_len.aim_by(want, ramp);
-        let mix = f32::from(u8::from(!matches!(f.matrix, Matrix::Diagonal)));
-        c.mix.aim_by(mix, ramp);
+        t.v_len = t.v[..n].iter().map(|v| v * v).sum::<f32>().sqrt();
+        t.mix = f32::from(u8::from(!matches!(f.matrix, Matrix::Diagonal)));
         for j in n..self.max_lines {
-            c.input[j].aim_by(0.0, ramp);
-            c.out[j].iter_mut().for_each(|s| s.aim_by(0.0, ramp));
+            t.input[j] = 0.0;
+            t.out[j] = [0.0; 2];
         }
         let m = f.lines[0].modulation;
-        let depth = if m.depth.is_finite() {
+        t.depth = if m.depth.is_finite() {
             m.depth.abs().min((self.cap as f32) * 0.25)
         } else {
             0.0
         };
-        c.depth.aim_by(depth, ramp);
         let hz = m.rate.get();
-        c.rate_hz = if hz.is_finite() {
+        t.rate_hz = if hz.is_finite() {
             hz.clamp(0.0, 20.0)
         } else {
             0.5
         };
         let pre = network.pre_delay.get() as f32;
-        c.pre_len.aim_by(
-            pre.clamp(0.0, (self.pre_cap - 4) as f32),
-            Steps::Rate(PRE_STEP),
-        );
+        t.pre_len = pre.clamp(0.0, (self.pre_cap - 4) as f32);
         let wet = network.wet.to_amplitude().get();
-        c.wet.aim_by(if wet.is_finite() { wet } else { 0.0 }, ramp);
+        t.wet = if wet.is_finite() { wet } else { 0.0 };
         let width = network.width.get();
-        c.width.aim_by(
-            if width.is_finite() {
-                width.clamp(0.0, 4.0)
-            } else {
-                1.0
-            },
-            ramp,
-        );
+        t.width = if width.is_finite() {
+            width.clamp(0.0, 4.0)
+        } else {
+            1.0
+        };
+        true
     }
 
     fn clear(&self, s: &mut FdnState) {

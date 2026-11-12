@@ -22,8 +22,8 @@ use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
 use tutti_session::{
-    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx,
-    SendError, Session, SessionEvent, SessionNode, UmpOut,
+    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, NoSuchMidiRoute,
+    PHASES, PhaseCx, SendError, Session, SessionEvent, SessionNode, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -209,7 +209,7 @@ fn a_target_without_an_event_input_takes_no_clip() {
         s.midi().play_clip(dc, std::iter::empty::<TimedMidiEvent>()),
         Err(Error::NoEventInput(n)) if n == dc.erase()
     ));
-    s.remove(dc);
+    s.remove(dc).unwrap();
     assert!(matches!(
         s.midi().live_input(dc),
         Err(Error::NoEventInput(_))
@@ -231,7 +231,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     let live = s.midi().live_input(old).unwrap();
     let _ = s.update();
 
-    assert!(s.remove(old));
+    s.remove(old).unwrap();
     let (new, new_seen) = tap(&mut s);
     s.midi().retarget(clip, new).expect("the clip re-aims");
     s.midi()
@@ -291,7 +291,7 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
     assert!(heard[0].0 < 512 && heard[1].0 < 512, "{heard:?}");
     assert_eq!(heard[2].0, 3_000);
 
-    for _ in 0..LIVE_INLET_CAPACITY {
+    for _ in 0..LIVE_INLET_CAPACITY.slots() {
         a.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
             .unwrap();
     }
@@ -337,7 +337,12 @@ fn route_rules_wire_the_hardware_input() {
         .unwrap();
     assert_eq!(ports(&s, b), vec![2, CHANNELLESS_PORT as u16]);
 
-    assert!(s.midi().unroute(all));
+    s.midi().unroute(all).unwrap();
+    assert_eq!(
+        s.midi().unroute(all),
+        Err(NoSuchMidiRoute(all)),
+        "a removed rule is not there"
+    );
     assert_eq!(ports(&s, a), Vec::<u16>::new(), "unrouted");
 
     s.midi().set_route_fallback(Some(a)).unwrap();
@@ -427,7 +432,7 @@ fn the_routes_have_one_declarer() {
     ));
     assert!(fed(&s, a) && !fed(&s, b), "the refusal changed nothing");
 
-    assert!(s.midi().unroute(own));
+    s.midi().unroute(own).unwrap();
     s.midi().set_routes(input, &host, None, resolve).unwrap();
     assert!(fed(&s, b), "the host's routes apply");
     assert!(matches!(

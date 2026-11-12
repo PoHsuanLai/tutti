@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use tutti_graph::{EventInletNode, EventInletWriter, InletCounts, Stamp};
+use tutti_graph::{EventCapacity, EventInletNode, EventInletWriter, InletCounts, Stamp};
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::Moment;
 use tutti_ump::Ump;
@@ -119,7 +119,7 @@ struct State {
 /// devices and the owner of the graph. See the module docs.
 pub struct DeviceInlets {
     state: Mutex<State>,
-    capacity: usize,
+    capacity: EventCapacity,
     /// Nanoseconds: what each device's thread adds to an arrival's frame.
     lead: Arc<AtomicU64>,
     /// The engine's block clock, lent to each device's thread. `None` until
@@ -140,13 +140,8 @@ impl DeviceInlets {
     /// `slots` device slots (at least one), each device's inlet holding
     /// `capacity` events, and `lead` the time each arrival is placed after its
     /// mapped frame (see the module docs).
-    ///
-    /// # Panics
-    ///
-    /// If `capacity` is 0 (an inlet holds at least an event).
     #[must_use]
-    pub fn new(slots: usize, capacity: usize, lead: Duration) -> Self {
-        assert!(capacity > 0, "an inlet holds at least one event");
+    pub fn new(slots: usize, capacity: EventCapacity, lead: Duration) -> Self {
         Self {
             state: Mutex::new(State {
                 slots: vec![None; slots.max(1)],

@@ -9,10 +9,11 @@
 //! ramp must.
 
 use std::num::NonZeroU32;
+use std::ops::Range;
 
 use tutti_dsp::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
-    Cadence, Ceiling, Channels, Complex64, Design, Effect, Lti, Realization, Ring, Setup, Sizes,
+    Cadence, Ceiling, Channels, Complex64, Design, Glide, Lti, Recurrence, Ring, Sizes, Start,
     System, design_contract, realization_contract,
 };
 use tutti_types::BusTopology;
@@ -73,65 +74,48 @@ impl Sizes for NoSizes {
 #[derive(Clone, Copy, Debug)]
 struct GainDesign;
 
-/// The realization: the gain, slewed over 64 frames from the last reset.
+/// The recurrence: `y = g x` at the gain as it stands, the gain slewed over 64 frames
+/// from the last reset by a [`Glide`] (γ), toward the gain the model asks for (κ).
 #[derive(Clone, Debug)]
-struct GainRealization {
-    from: f32,
-    to: f32,
-    done: usize,
-    landed: bool,
-}
+struct GainRecurrence;
 
-const SLEW: usize = 64;
+const SLEW: u32 = 64;
 
-impl Realization<GainModel> for GainRealization {
+impl Recurrence for GainRecurrence {
+    type Model = GainModel;
     type Bounds = NoSizes;
+    type Target = f32;
+    type Coeffs = Glide<f32>;
+    type State = ();
 
-    fn prepare(&mut self, _: &NoSizes, _: &Setup) {
-        *self = Self::new();
-    }
+    const STEP: usize = 1;
 
-    fn retarget(&mut self, model: &GainModel) {
-        let now = self.current();
-        self.from = if self.landed { now } else { model.gain };
-        self.to = model.gain;
-        self.done = if self.landed { 0 } else { SLEW };
-        self.landed = true;
-    }
-
-    fn reset(&mut self) {
-        self.from = self.to;
-        self.done = SLEW;
-    }
-
-    fn fresh(&self) -> Self {
-        let mut fresh = self.clone();
-        fresh.reset();
-        fresh
-    }
-}
-
-impl GainRealization {
-    fn new() -> Self {
-        Self {
-            from: 0.0,
-            to: 0.0,
-            done: SLEW,
-            landed: false,
+    fn start(&self, model: &GainModel) -> Start<Self> {
+        Start {
+            coeffs: Glide::landed(model.gain).by(SLEW),
+            state: (),
+            target: model.gain,
         }
     }
 
-    fn current(&self) -> f32 {
-        let t = self.done as f32 / SLEW as f32;
-        self.from + (self.to - self.from) * t.min(1.0)
+    fn coefficients_into(&self, model: &GainModel, target: &mut f32) -> bool {
+        *target = model.gain;
+        true
     }
-}
 
-impl Effect<GainModel> for GainRealization {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        for i in 0..input[0].len() {
-            self.done = (self.done + 1).min(SLEW);
-            let g = self.current();
+    fn clear(&self, _: &mut ()) {}
+
+    fn run(
+        &self,
+        gain: &Glide<f32>,
+        _: &mut (),
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: Range<usize>,
+        _: usize,
+    ) {
+        let g = gain.now();
+        for i in frames {
             output[0][i] = g * input[0][i];
         }
     }
@@ -142,7 +126,7 @@ impl Design for GainDesign {
     type Model = GainModel;
     type Bounds = NoSizes;
     type Range = ();
-    type Realization = GainRealization;
+    type Recurrence = GainRecurrence;
     // The slew counts frames from the last reset: a per-frame stream grid.
     const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
 
@@ -166,8 +150,8 @@ impl Design for GainDesign {
         NoSizes
     }
 
-    fn realization(&self) -> GainRealization {
-        GainRealization::new()
+    fn recurrence(&self) -> GainRecurrence {
+        GainRecurrence
     }
 }
 

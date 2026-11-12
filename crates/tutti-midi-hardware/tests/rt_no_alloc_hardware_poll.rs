@@ -159,10 +159,10 @@ impl Rig {
     }
 }
 
-fn inputs(slots: usize, capacity: usize) -> Arc<HardwareMidiInputs> {
+fn inputs(slots: usize, capacity: u32) -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(Arc::new(DeviceInlets::new(
         slots,
-        capacity,
+        tutti_graph::EventCapacity::of(capacity),
         Duration::ZERO,
     ))))
 }

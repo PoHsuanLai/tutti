@@ -12,6 +12,7 @@
 //! and a restart's republication by `device.rs`'s
 //! `a_rerate_keeps_the_published_compensation_in_step_with_the_plan`.
 
+use tutti_graph::ForkByClone;
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
 use tutti_session::{InPort, OutPort, Root, Session};
@@ -34,9 +35,9 @@ fn limiter() -> LimiterNode {
 /// ch0 through a limiter, ch1 dry: ch1's source must pre-roll to match.
 /// Returns the limiter's node latency.
 fn skewed(s: &mut Session) -> (tutti_graph::NodeKey, Samples) {
-    let (a, _) = s.graph().insert(Const::mono(1.0));
-    let (eff, _) = s.graph().insert(limiter());
-    let (b, _) = s.graph().insert(Const::mono(1.0));
+    let (a, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
+    let (eff, _) = s.graph().add(limiter());
+    let (b, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
     s.graph()
         .set_sources(InPort::new(eff, 0), [OutPort::new(a, 0)])
         .unwrap();
@@ -59,7 +60,7 @@ fn skewed(s: &mut Session) -> (tutti_graph::NodeKey, Samples) {
 #[test]
 fn a_graph_with_no_latency_reports_none() {
     let mut s = detached();
-    let (a, _) = s.graph().insert(Const::mono(1.0));
+    let (a, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
     s.graph()
         .set_sources(Root::output(0), [OutPort::new(a, 0)])
         .unwrap();
@@ -173,7 +174,7 @@ fn the_latency_fold_and_the_compiled_plan_agree() {
     assert_eq!(figures(&s).1, lat);
 
     let mut s = detached();
-    let (a, _) = s.graph().insert(Const::mono(1.0));
+    let (a, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
     s.graph().connect(a, Root).unwrap();
     let _ = s.update();
     assert_eq!(figures(&s).1, Samples(0));
@@ -187,8 +188,8 @@ fn the_latency_fold_and_the_compiled_plan_agree() {
 #[test]
 fn a_re_prepare_republishes_the_figures_once_it_resumes() {
     let mut s = detached();
-    let (a, _) = s.graph().insert(Const::mono(1.0));
-    let (eff, _) = s.graph().insert(limiter());
+    let (a, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
+    let (eff, _) = s.graph().add(limiter());
     s.graph()
         .set_sources(InPort::new(eff, 0), [OutPort::new(a, 0)])
         .unwrap();

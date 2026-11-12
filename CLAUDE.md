@@ -94,7 +94,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
   `push(impl Into<Stamp>, Ump)` (a `Stamp` is `NextBlock`, a `Frame` or a `Moment`: a beat is unwritable; `push_all` takes a run), held on `Env::due` until its frame
   (late lands at offset 0 and is counted), `Graph::open_event_inlet` /
-  `add_event_inlet` (`tutti-session`). No rate to refuse: a `Moment` carries
+  `add_event_inlet` (`tutti-session`; the capacity is an `EventCapacity`, 1 to
+  `u32::MAX`, so neither it nor `EventInletNode::pair` panics). No rate to refuse: a `Moment` carries
   its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
   over any other event; its four counts are one `tutti_graph::Losses` (`lost`, `evicted`, `refused`, `late`, in events, never frames; `InletCounts::losses`, and every event holder answers its own `losses()`: `MidiIngestControls`, `ClockMaster`, `HardwareMidiInputs`, `InstrumentHandle`, `LiveInput`);
   its fork is silent, unlike the audio inlet's. A producer holding an OS time gets
@@ -768,7 +769,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   each) and thiserror, and `rand` under the `contract` feature only), keeps every
   module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it; `contract`, behind the off-by-default `contract`
-  feature, is the one public module: the cases a `Design` and its `Realization` are
+  feature, is the one public module: the cases a `Design` and its `Realized` runner are
   held to, `design_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
@@ -783,7 +784,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the filters' one
-  `Design`, `Filter<K>` over a `ChannelKernel` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
+  `Design`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
   `SvfDesign<F>`, `LadderDesign<F>` and `CrossoverDesign` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
   written once), the dynamics curves, followers and kernels, the partitioned
@@ -793,17 +794,19 @@ list (normal and build edges; dev-dependencies may go anywhere).
   one figure of a resampled length; `ChunkSize`), the dither noise
   (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
   the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
-  `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
-  (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
+  `FreeverbRecurrence`, the `Recurrence` of `FreeverbDesign`), the feedback delay network
+  (`FdnDesign`, `FdnRecurrence`: both run by `Realized`, whose glides step between
   `retarget`s in 32-frame chunks counted from the last reset, so the output does
   not depend on the block length), the
   model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
   to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
-  and a stability test, all bounds stated as such); a `Realization<M>` (`Clone`, with a
-  default `fresh`) is one realization of a model and an `Effect<M>` its planar block shape;
-  every effect moved onto it is the one `Realized<K>` over a `Kernel` (its per-frame math),
-  whose coefficients approach each new model by a `Glide` (`Lerp`, `Approach`); prepared from a
+  and a stability test, all bounds stated as such); a `Recurrence` is one
+  realization of a model (its `coefficients_into` writes the coefficient point a model asks for,
+  its `Approach` glides to it, its `run` is the per-frame math), and `Realized<R>` is the one
+  runner over it, with the planar block shape `process(input, output, frames)`;
+  the coefficients approach each new point by an `Approach` (a `Glide` of a `Lerp`
+  set, or the FDN's own, a glide a field); prepared from a
   `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
   over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` (a period and an anchor: only a
   stream-anchored one is block independent) are the
@@ -1139,7 +1142,7 @@ Scalars use `Param<U>`.
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
 - **The session graph has typed keys and one wiring vocabulary** (doc 013, "The
-  session graph's surface"). `Graph::add`/`insert` return a `Key<N>` (a `Copy`
+  session graph's surface"). `Graph::add` (the one way a node enters) returns a `Key<N>` (a `Copy`
   `NodeKey` with its node type; every call that takes a node takes
   `impl Into<NodeKey>`, `Key::erase` gives the plain key). Ports come from keys:
   `key.out(i)` is an `OutPort`, `key.input(i)` an `InPort`; the root is `Root`
@@ -1152,6 +1155,14 @@ Scalars use `Param<U>`.
   and into the root it folds to the declared topology, `BusError::RootUndeclared`
   otherwise). `Graph::chain` does a main bus down a list. All refuse with
   `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **Removal is a `#[must_use]` `Result` that names what was not there** (doc 030
+  step 2d, doc 013 "As built (removal)"): `Graph::remove` / `Session::remove`
+  (`RemoveError`, declicked), `close_tap` / `close_event_tap` / `close_meter`
+  (`CloseError`), `close_heard_tap` (`HeardTapError::NotOpen`), the session's
+  modulation `remove_source` / `remove_route` and `Midi::unroute`; never a `bool`.
+  A refusal changes nothing. **`Graph::add` is the one way a node enters** and
+  takes a `SessionNode`, so a node with params cannot be added unaddressed; the
+  unaddressed insert is private.
 - **Event ports are keys' too, and params are typed** (doc 030 step 2c).
   `key.events_out()` / `key.events_in()` are the main event ports (index 0;
   **event input 0 is the main event input, where the chase delivers**),
@@ -1221,8 +1232,8 @@ Scalars use `Param<U>`.
   system that runs a phase in its set. Node removal is an
   `On<Remove, AudioNode>` observer.
 - Every spawn path takes a `SessionNode`: `spawn_audio_node`,
-  `insert_audio_node`, `crossfade_audio_node` (and `Graph::insert` /
-  `replace`, reached through `AudioGraphRes::graph`, take its `IntoNode`). A host's plain node goes in as
+  `insert_audio_node`, `crossfade_audio_node` (and `Graph::add` /
+  `replace`, reached through `AudioGraphRes::graph`). A host's plain node goes in as
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with

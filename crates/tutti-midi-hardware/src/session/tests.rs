@@ -19,7 +19,11 @@ use tutti_midi_device::EndpointId;
 fn session() -> (MidiSession, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let (backend, counters) = FakeBackend::build();
     let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 64, std::time::Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(64),
+            std::time::Duration::ZERO,
+        ),
     )));
     (
         MidiSession::open_over(backend, ports).unwrap(),
@@ -92,7 +96,11 @@ fn connecting_an_absent_device_is_an_error_not_a_silent_noop() {
     let s = MidiSession::open_over(
         backend,
         Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-            tutti_midi_runtime::DeviceInlets::new(4, 64, std::time::Duration::ZERO),
+            tutti_midi_runtime::DeviceInlets::new(
+                4,
+                tutti_graph::EventCapacity::of(64),
+                std::time::Duration::ZERO,
+            ),
         ))),
     )
     .unwrap();
@@ -158,7 +166,11 @@ fn a_refusing_output_reports_zero_accepted() {
     let (backend, counters) = FakeBackend::build_accepting(0);
     let sent = counters.sent;
     let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 64, std::time::Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(64),
+            std::time::Duration::ZERO,
+        ),
     )));
     let s = MidiSession::open_over(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
@@ -177,7 +189,11 @@ fn a_refusing_output_reports_zero_accepted() {
 fn a_partial_accept_reports_what_landed() {
     let (backend, _counters) = FakeBackend::build_accepting(1);
     let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 64, std::time::Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(64),
+            std::time::Duration::ZERO,
+        ),
     )));
     let s = MidiSession::open_over(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
@@ -313,7 +329,11 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
         refuse,
     };
     let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 16, std::time::Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(16),
+            std::time::Duration::ZERO,
+        ),
     )));
     (
         MidiSession::open_over(Box::new(backend), ports).unwrap(),

@@ -135,9 +135,9 @@ fn session_with_probe(mode: u32) -> (Session, NodeKey) {
 fn feed_with(
     session: &mut Session,
     probe: NodeKey,
-    node: impl tutti_graph::IntoNode<Controls = ()>,
+    node: impl tutti_session::SessionNode<Controls = ()>,
 ) {
-    let (source, ()) = session.graph().insert(node);
+    let (source, ()) = session.graph().add(node);
     session
         .graph()
         .set_sources(InPort::new(probe, 0), [OutPort::new(source, 0)])
@@ -314,7 +314,7 @@ fn instrument_at(rate: f64) {
 #[test]
 fn a_plugin_fork_that_crashes_mid_export_is_a_named_failure() {
     let (mut session, probe) = session_with_probe(TAG_PASSTHROUGH);
-    feed_with(&mut session, probe, Const::mono(0.25));
+    feed_with(&mut session, probe, ForkByClone(Const::mono(0.25)));
     probe_env("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", 8);
     let started = Instant::now();
     match session.bounce(buffers(2.0)) {

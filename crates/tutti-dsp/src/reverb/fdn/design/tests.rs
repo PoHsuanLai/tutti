@@ -4,7 +4,7 @@ use rand::{Rng, SeedableRng};
 use super::*;
 use crate::contract::{DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
 use crate::reverb::network::{Band, Fdn, Matrix, Network, Stage};
-use crate::{Lti as _, System as _};
+use crate::{Lti as _, Realized, System as _};
 
 fn freezable() -> FdnDesign {
     FdnDesign::new(8, MaxDecay::DEFAULT.get(), true).unwrap()
@@ -151,7 +151,7 @@ impl ReverbCase for FdnDesign {
             let pole = CROSSOVER.map(|f| {
                 libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
             });
-            if crate::reverb::fdn::kernel::peak_response(g, pole) > 1.0 {
+            if crate::reverb::fdn::recurrence::peak_response(g, pole) > 1.0 {
                 return None;
             }
         }
@@ -574,10 +574,10 @@ fn a_configuration_refuses_what_it_cannot_hold() {
 /// fraction of the figure at a long decay.
 #[test]
 fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
-    use crate::{Effect, Realization, Setup};
+    use crate::Setup;
     let rate = SampleRate(48_000.0);
     let d = freezable();
-    let mut k = d.realization();
+    let mut k = d.realized();
     k.prepare(
         &d.bounds(&Ceiling::at(rate).unwrap()),
         &Setup {
@@ -616,7 +616,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
             x[0] = 1.0;
         }
         let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
-        k.process(&[&x], &mut [&mut l, &mut r]);
+        k.process(&[&x], &mut [&mut l, &mut r], 64);
         sum += l.iter().map(|&v| f64::from(v)).sum::<f64>();
     }
     assert!(
@@ -634,10 +634,10 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
 /// different length.)
 #[test]
 fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
-    use crate::{Effect, Realization, Setup};
+    use crate::Setup;
     let rate = SampleRate(48_000.0);
     let d = freezable();
-    let mut k = d.realization();
+    let mut k = d.realized();
     k.prepare(
         &d.bounds(&Ceiling::at(rate).unwrap()),
         &Setup {
@@ -655,14 +655,14 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
             rate,
         )
     };
-    let run = |k: &mut Realized<FdnKernel>, frames: usize, noise: bool| {
+    let run = |k: &mut Realized<FdnRecurrence>, frames: usize, noise: bool| {
         let mut rng = StdRng::seed_from_u64(5);
         let x: Vec<f32> = (0..frames)
             .map(|_| if noise { rng.gen_range(-0.5..0.5) } else { 0.0 })
             .collect();
         for chunk in x.chunks(64) {
             let (mut l, mut r) = (vec![0.0f32; chunk.len()], vec![0.0f32; chunk.len()]);
-            k.process(&[chunk], &mut [&mut l, &mut r]);
+            k.process(&[chunk], &mut [&mut l, &mut r], chunk.len());
         }
     };
     k.retarget(&at(0.0, false));

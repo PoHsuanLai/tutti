@@ -1,11 +1,13 @@
 //! Microtuning: an arbitrary scale resolved eagerly into a 128-entry frequency
-//! table.
+//! table, which is the synth's initial MIDI Tuning Standard table
+//! ([`Tuning::table`]).
 //!
-//! The table is the point. A note-on happens on the audio thread, so mapping a
-//! note number to [`Hz`] must be an array index — every scale, whether equal,
-//! just, meantone or user-supplied, is flattened to the same table at
-//! construction and costs the same to play.
+//! Every scale, whether equal, just, meantone or user-supplied, is flattened to
+//! the same table at construction. It is built off the audio thread and handed
+//! to the note logic once; the audio thread never reads it (the note logic's
+//! tuning offsets are what a voice is told, `tutti_voicing::Command::Start`).
 
+use tutti_midi_protocol::{KeyTable, TuningFrequency};
 use tutti_types::{Cents, Hz, Semitones};
 use tutti_ump::NoteNumber;
 
@@ -38,13 +40,20 @@ impl ScaleDegree {
     }
 }
 
+/// The frequency of a MIDI note (a fractional number is between keys) at
+/// equal temperament over A4 = 440 Hz, `tune` semitones sharp. This is the one
+/// place a voice's pitch is made of a note: the note logic says how far each key
+/// sounds from equal temperament (`tutti_voicing::Command::Start`'s `tune`), so
+/// the scale itself is no state of a voice.
+pub(crate) fn key_freq(note: f32, tune: Semitones) -> Hz {
+    A4_FREQ * (Semitones(note - f32::from(A4_NOTE.get())) + tune).to_pitch_ratio()
+}
+
 /// A note-number-to-frequency map, resolved once into a 128-entry table.
 ///
 /// The scale is a list of degrees in [`Cents`] that repeats every octave; the
-/// constructors below build it, and the table is recomputed eagerly so lookup
-/// on the audio thread is an array index with no arithmetic. That makes a
-/// `Tuning` cheap to *use* and comparatively expensive to *build* — construct
-/// it off the audio thread.
+/// constructors below build it, and the table is recomputed eagerly. It is
+/// comparatively expensive to build — construct it off the audio thread.
 ///
 /// # Scale size decides where the repeat lands
 ///
@@ -282,37 +291,24 @@ impl Tuning {
         self.freq_table[usize::from(note.get())]
     }
 
-    /// The frequency in [`Hz`] for a fractional MIDI note number.
-    ///
-    /// Interpolates geometrically (in log-frequency) between the two adjacent
-    /// table entries, so 69.5 is the geometric mean of notes 69 and 70 rather
-    /// than the arithmetic one. That is what lets an absolute per-note tuning
-    /// override land between keys.
-    ///
-    /// Note numbers outside 0..=127 clamp to the end entries rather than
-    /// extrapolating — this runs on the audio thread and never panics on a
-    /// wild input.
-    ///
-    /// The *interpolation* is always geometric even when the scale is not
-    /// equal-tempered, so a fractional note in an unequal scale is not
-    /// generally where that scale would put it.
-    #[inline]
-    pub fn fractional_note_to_freq(&self, note: f32) -> Hz {
-        if note <= 0.0 {
-            return self.freq_table[0];
+    /// This scale as the MIDI Tuning Standard's table: each key's frequency as
+    /// frequency data (`tutti_midi_protocol::TuningFrequency`, a pitch in
+    /// semitones above note 0 to the word's resolution of 0.0061 cents, saturating
+    /// at the ends of its range). It is what [`PolySynth`](crate::PolySynth)
+    /// stores as tuning program 0 of bank 0, the one a channel plays by until a
+    /// Tuning Program or Bank Select says otherwise: the construction-time
+    /// scale is the initial MTS table, and the note logic (`tutti-voicing`) keeps
+    /// every later change.
+    #[must_use]
+    pub fn table(&self) -> KeyTable {
+        let mut words = [TuningFrequency::NO_CHANGE; 128];
+        for (word, &hz) in words.iter_mut().zip(&self.freq_table) {
+            // MIDI note 69 is A4 = 440 Hz: the pitch of a frequency is its
+            // interval over A4 above that note.
+            let above_a4 = Semitones::from_pitch_ratio(hz.get() / A4_FREQ.get());
+            *word = TuningFrequency::nearest(above_a4 + Semitones(f32::from(A4_NOTE.get())));
         }
-        if note >= 127.0 {
-            return self.freq_table[127];
-        }
-
-        let low = note.floor() as usize;
-        let high = (low + 1).min(127);
-        let frac = note - low as f32;
-
-        let low_freq = self.freq_table[low].get();
-        let high_freq = self.freq_table[high].get();
-
-        Hz((low_freq.ln() + (high_freq.ln() - low_freq.ln()) * frac).exp())
+        KeyTable::new(words)
     }
 
     /// Number of degrees in the scale.

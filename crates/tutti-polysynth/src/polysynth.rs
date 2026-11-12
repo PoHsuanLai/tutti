@@ -16,6 +16,7 @@ use crate::UnisonVoices;
 use crate::bank::{CONTROL_BLOCK, VoiceBank};
 use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
+use crate::tuning::key_freq;
 use crate::voice::Gate;
 use crate::{UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
@@ -131,6 +132,7 @@ impl PolySynth {
         };
         let mut allocator = VoiceAllocator::new(allocator_config);
         allocator.set_zones(mpe_zones(&config.mpe));
+        allocator.store_initial_tuning(config.tuning.table());
 
         let unison = config.unison.as_ref().map(|u| UnisonEngine::new(u.clone()));
         // The engine's count: voices and bank must match its params.
@@ -469,10 +471,8 @@ impl PolySynth {
     fn apply_note_control(&mut self, slot: usize, control: NoteControl) {
         let mpe = match control {
             NoteControl::Pitch(pitch) => {
-                let freq = self
-                    .config
-                    .tuning
-                    .fractional_note_to_freq(pitch.note_number());
+                // An absolute pitch: no tuning of the key is on it.
+                let freq = key_freq(pitch.note_number(), Semitones(0.0));
                 let ratio = self.bend_ratio(self.voices[slot].channel());
                 self.voices[slot].set_tuning_freq(freq);
                 // The note's own pitch, with the glide it may be on and the
@@ -558,21 +558,20 @@ impl PolySynth {
         // The bend is a frequency ratio at every site (note-on and glide bend
         // interpolated frequencies, which have no note number). Adding it to
         // the note number instead would differ on an unequal tuning table.
-        let tuning = &self.config.tuning;
         let bends = &self.bends;
         self.voices
             .iter_mut()
             .filter(|v| v.is_active())
-            .for_each(|voice| Self::sound(voice, tuning, bends));
+            .for_each(|voice| Self::sound(voice, bends));
     }
 
     /// Sets `voice`'s pitch to what its factors make of it: the note's own (its
     /// key's, or the one a per-note controller told it), the glide it is on and
     /// its channel's bend.
-    fn sound(voice: &mut SynthVoice, tuning: &crate::Tuning, bends: &[tutti_types::Semitones; 16]) {
+    fn sound(voice: &mut SynthVoice, bends: &[tutti_types::Semitones; 16]) {
         let base_freq = voice
             .tuned()
-            .unwrap_or_else(|| tuning.fractional_note_to_freq(f32::from(voice.note().get())));
+            .unwrap_or_else(|| key_freq(f32::from(voice.note().get()), voice.tune()));
         let bend = bends[voice.channel().index()].to_pitch_ratio();
         voice.set_pitch(base_freq * voice.glide_ratio() * bend);
     }
@@ -592,6 +591,10 @@ impl PolySynth {
                     self.bends[channel.index()] = bend;
                     retuned = true;
                 }
+                Gate::Tune(i, tune) => {
+                    self.voices[i].set_tune(tune);
+                    retuned = true;
+                }
                 Gate::Control(i, control) => self.apply_note_control(i, control),
                 Gate::ResetControls(i) => {
                     self.voices[i].reset_mpe();
@@ -602,10 +605,11 @@ impl PolySynth {
                     slot,
                     key,
                     channel,
+                    tune,
                     velocity,
                     legato,
                     glide,
-                } => self.start_voice(slot, key, channel, velocity, legato, glide),
+                } => self.start_voice(slot, key, channel, tune, velocity, legato, glide),
             }
         }
         self.allocator.return_gates(gates);
@@ -624,12 +628,12 @@ impl PolySynth {
         slot_index: usize,
         note: NoteNumber,
         channel: MidiChannel,
+        tune: Semitones,
         vel_norm: f32,
         is_legato: bool,
         glide: Option<Glide>,
     ) {
-        let tuning = &self.config.tuning;
-        let base_freq = tuning.fractional_note_to_freq(f32::from(note.get()));
+        let base_freq = key_freq(f32::from(note.get()), tune);
         let last = std::mem::replace(&mut self.last_freq, base_freq);
         let bend_multiplier = self.bend_ratio(channel);
         let voice = &mut self.voices[slot_index];
@@ -641,6 +645,7 @@ impl PolySynth {
             }
         }
         voice.set_velocity_mod(vel_norm);
+        voice.set_tune(tune);
         if is_legato {
             // The new key's own pitch: what a per-note controller told the old
             // one is not the new one's.
@@ -651,7 +656,7 @@ impl PolySynth {
         }
         match glide {
             Some(g) => {
-                let from = tuning.fractional_note_to_freq(f32::from(g.from.get()));
+                let from = key_freq(f32::from(g.from.get()), g.from_tune);
                 voice.begin_glide(from, base_freq, g.time);
             }
             None => voice.config_glide(last, base_freq, is_legato),
@@ -681,7 +686,6 @@ impl PolySynth {
         // note's, the glide, the bend), so a glide never overwrites what a
         // per-note controller told the note. Neither operand changes inside a
         // step (MIDI is handled between steps).
-        let tuning = &self.config.tuning;
         let bends = &self.bends;
         for voice in self
             .voices
@@ -689,7 +693,7 @@ impl PolySynth {
             .filter(|v| v.is_active() && v.is_gliding())
         {
             voice.advance_glide(frames);
-            Self::sound(voice, tuning, bends);
+            Self::sound(voice, bends);
         }
 
         let unison = self.unison.as_ref();

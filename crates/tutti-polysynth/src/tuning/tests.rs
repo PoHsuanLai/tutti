@@ -1,4 +1,5 @@
 use super::*;
+use tutti_midi_protocol::TuningFrequency;
 use tutti_ump::NoteNumber;
 
 #[test]
@@ -44,21 +45,28 @@ fn test_just_intonation() {
     assert!((ratio - 1.5).abs() < 0.02);
 }
 
+/// The table is frequency data: equal temperament is each key at its own
+/// number, A4 (note 69) is `45 00 00`, and just intonation's major third over C
+/// (5/4, 386.3 cents) is that many cents above note 64's equal-tempered pitch
+/// less 400.
 #[test]
-fn test_fractional_note() {
-    let tuning = Tuning::equal_temperament();
-
-    let a4 = tuning.note_to_freq(NoteNumber::of(69)).get();
-    let a4_50 = tuning.fractional_note_to_freq(69.5).get();
-    let bb4 = tuning.note_to_freq(NoteNumber::of(70)).get();
-
-    // Fractional note should be between
-    assert!(a4_50 > a4);
-    assert!(a4_50 < bb4);
-
-    // Should be roughly in the middle (geometrically)
-    let expected = (a4 * bb4).sqrt();
-    assert!((a4_50 - expected).abs() < 0.1);
+fn the_table_is_frequency_data() {
+    let equal = Tuning::equal_temperament().table();
+    for k in 0..128u8 {
+        let key = NoteNumber::of(k);
+        assert_eq!(equal.get(key), TuningFrequency::equal(key), "key {k}");
+    }
+    let just = Tuning::just_intonation().table();
+    // Major third over C: 5/4 is 386.31 cents.
+    let c = just.get(NoteNumber::of(60)).pitch().unwrap().get();
+    let e = just.get(NoteNumber::of(64)).pitch().unwrap().get();
+    assert!(
+        ((e - c) * 100.0 - 386.3137).abs() < 0.01,
+        "{}",
+        (e - c) * 100.0
+    );
+    let a = just.get(NoteNumber::of(69)).pitch().unwrap().get();
+    assert!((a - 69.0).abs() < 1e-4, "{a}");
 }
 
 #[test]
@@ -85,16 +93,11 @@ fn test_from_ratios() {
     assert_eq!(tuning.scale_size(), 5);
 }
 
-/// The MIDI range's ends, and one step past each of them.
+/// The MIDI range's ends.
 ///
 /// The mapping is exponential in the note number, so an off-by-one in the
 /// octave arithmetic shows up here first: note 0 → 127 must span exactly
-/// 127 semitones. Past either end the fractional lookup *clamps* rather
-/// than extrapolating, which is what keeps a wild note number from walking
-/// off the table on the audio thread.
-///
-/// (Previously this test asserted nothing at all — it bound the results to
-/// `_`-prefixed locals and only checked that the calls did not panic.)
+/// 127 semitones.
 #[test]
 fn test_boundary_notes() {
     let tuning = Tuning::equal_temperament();
@@ -114,27 +117,6 @@ fn test_boundary_notes() {
         (high / low - want).abs() / want < 1e-3,
         "note 0 -> 127 spans {}x, expected {want}x",
         high / low
-    );
-
-    // Out of range CLAMPS to the end entries rather than extrapolating —
-    // the documented contract, because this runs on the audio thread and a
-    // wild note number must not walk off the table.
-    assert_eq!(
-        tuning.fractional_note_to_freq(-1.0).get(),
-        low,
-        "a note below 0 must clamp to note 0, not extrapolate downward"
-    );
-    assert_eq!(
-        tuning.fractional_note_to_freq(128.0).get(),
-        high,
-        "a note above 127 must clamp to note 127, not extrapolate upward"
-    );
-
-    // And the fractional path agrees with the integer one at a whole note.
-    let a440 = tuning.fractional_note_to_freq(69.0).get();
-    assert!(
-        (a440 - tuning.note_to_freq(NoteNumber::of(69)).get()).abs() < 1e-3,
-        "fractional and integer lookups disagree at note 69"
     );
 }
 

@@ -747,7 +747,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (a `winnow` grammar: `Read::Universal(Addressed { device, message })`, `Unread` for a Universal
   message it does not read or that is malformed, `Foreign` for a manufacturer's; never an error)
   over `Universal` (`#[non_exhaustive]`: Identity Request and Reply, General MIDI On and Off,
-  Master Volume, Balance, Fine and Coarse Tuning), and `UniversalReader::new(group, SysexDeviceId)` (a device's own id, `00` to `7E`: `7F` is the all-call, a header's `Recipient::AllCall`, and no device's own),
+  Master Volume, Balance, Fine and Coarse Tuning, and the MIDI Tuning Standard as
+  `Universal::Tuning(TuningMessage)`: dump requests, key-based and Scale/Octave dumps, Single Note
+  Tuning Change and Scale/Octave Tuning in both timings, frequency data as the 21-bit range-checked
+  `TuningFrequency` whose `NO_CHANGE` (`7F 7F 7F`) is a value of it, a dump whose checksum fails as
+  `Read::BadChecksum`, counted by the reader as `UniversalReader::corrupt`, a Bulk Tuning Dump's own
+  checksum ignored as the spec allows), and `UniversalReader::new(group, SysexDeviceId)` (a device's own id, `00` to `7E`: `7F` is the all-call, a header's `Recipient::AllCall`, and no device's own),
   an instrument's edge (every UMP of one Group in, `Heard { to: Addressee::{All, Own}, message }`
   out for the all-call `7F` and its own id only, M1 p.40). MIDI-CI's decode stays
   `tutti-midi-device`'s and reads none of this.
@@ -767,6 +772,16 @@ list (normal and build edges; dev-dependencies may go anywhere).
   only for a note message (liveness is read there). `VoiceId` has a private
   field (`new`, `get`: every `u64` is a voice) and `VoiceSpec::group` is an
   `Option<NonZeroU16>`.
+  **The MIDI Tuning Standard is the core's** (doc 017, "L7b ... as built (part 2)"): the tuning
+  programs (a `TuningCapacity` of banks and programs in `Rules::tuning`, default 1 x 128, sized in
+  `new`; a message for one beyond it is ignored and counted, `Voicing::tuning_refused`), the channels'
+  RPN 3 and 4 selection (`ChannelState::tuning_program`, `tuning_bank`) and Scale/Octave offsets. A
+  key's tuning is its offset from equal temperament in semitones, which a voice is told as
+  `Command::Start::tune`, `Retarget::tune`, `Glide::from_tune` and, when a real-time message or a
+  program select moves a sounding note, `Command::Tune` (never for a non-real-time one); the channel's
+  own pitch stays `Retune` and the two add. An instrument holds no tuning table of its own
+  (`tutti-polysynth`'s `Tuning` only builds the initial table, `Tuning::table`, stored as program 0 of
+  bank 0 by `Voicing::store_tuning`).
   **Universal System Exclusive is the core's too** (doc 017, "L7b"): `Voicing::universal(Heard)
   -> &[Command]` reads Master Fine and Coarse Tuning into every channel's pitch (a `Retune` each;
   `Rules::percussion` names the key-based channel it leaves), General MIDI On and Off (cuts the
@@ -775,7 +790,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   instrument keeps a `tutti_midi_protocol::UniversalReader` and its own device id
   (`SynthConfig::device`, `Settings::with_device`) and never parses SysEx itself.
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
-  and nothing is pinned against another implementation. A Relative Registered Controller (section 7.4.8) is added to the word the channel state reads back for RPN 0, 1, 2 and 5, saturating (`ChannelState::registered_word`); any other relative message is ignored. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
+  and nothing is pinned against another implementation. A Relative Registered Controller (section 7.4.8) is added to the word the channel state reads back for RPN 0 to 5, saturating (`ChannelState::registered_word`); any other relative message is ignored. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
   Group's sixteen channels** (`SynthConfig::with_group`, `Settings::with_group`, the one builder
   spelling both instruments share with `with_polyphony`; a message of
   another Group is not read, M2-104 section 2.1.2, Appendix B.1), so `step` never sees a
@@ -1658,7 +1673,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   (`tutti_codec::Wave` is the buffer); `LoopRange::new` as the only check →
   `LoopRange::try_from(a..b)` (a `LoopRangeError`; `new` is the same check as an `Option`);
   `Session::schedule -> Result<(), ScheduleFull>` → `Result<(), ScheduleError>`
-  (`Error::Schedule(ScheduleError)`). A comment or doc that
+  (`Error::Schedule(ScheduleError)`). `tutti_polysynth::Tuning::fractional_note_to_freq` (and a voice's read of the table at note-on) → deleted (doc 017, "L7b ... part 2": the note logic says how far each key sounds from equal temperament, `Command::Start::tune`; `Tuning::table` is the initial MTS table). A comment or doc that
   disagrees with the code is the bug.
 - **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
   restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook

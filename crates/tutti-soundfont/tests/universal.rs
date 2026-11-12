@@ -13,7 +13,7 @@ use tutti_fixtures::sf2::generator;
 use tutti_midi_protocol::SysexDeviceId;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::Settings;
-use tutti_ump::{MidiChannel, MidiGroup, SysexMessage, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, Rpn, SysexMessage, Ump, Voice2};
 
 /// `0:0` and `0:1` are the plain sine and an octave above it; the percussion
 /// bank's `128:0` is one or the other, as `drums_up` says.
@@ -213,4 +213,126 @@ fn another_groups_message_is_not_this_units() {
     rig.hand
         .queue_midi(&sysex(1, &device_control(0x7F, 0x04, 0x00, 0x4C)));
     near(pitch(&mut rig, 0), 441, "the first Group is untouched");
+}
+
+// ---- MIDI Tuning Standard (MIDI L7b part 2) ----
+
+/// A Single Note Tuning Change (`08 02` real time under `7F`, the bank form
+/// `08 07` under `7E`, bank 0 and program 0) for key 69 to the semitone
+/// `semitone` (the frequency data `semitone 00 00`).
+fn retune_69(realtime: bool, semitone: u8) -> Vec<u8> {
+    if realtime {
+        vec![
+            0xF0, 0x7F, 0x7F, 0x08, 0x02, 0x00, 0x01, 69, semitone, 0, 0, 0xF7,
+        ]
+    } else {
+        vec![
+            0xF0, 0x7E, 0x7F, 0x08, 0x07, 0x00, 0x00, 0x01, 69, semitone, 0, 0, 0xF7,
+        ]
+    }
+}
+
+/// The rising zero crossings in a second of what `rig` renders now.
+fn crossings(rig: &mut Rig) -> usize {
+    let (left, _) = rig.render(44_100);
+    left.windows(2)
+        .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+        .count()
+}
+
+/// MTS: "the note should instantly be re-tuned to the new frequency while it
+/// continues to sound": a real-time Single Note Tuning Change moves a sounding
+/// voice (key 69, 441 Hz, to the pitch of key 81: an octave), and one struck
+/// after has it.
+#[test]
+fn a_real_time_note_change_retunes_a_sounding_voice_and_the_next() {
+    let mut rig = Rig::dry(&font_with(false));
+    rig.note_on(0, 69, 100);
+    rig.render(4410);
+    near(crossings(&mut rig), 441, "before");
+    send(&mut rig, &retune_69(true, 81));
+    rig.render(4410);
+    near(crossings(&mut rig), 882, "the sounding note, an octave up");
+    near(pitch(&mut rig, 1), 882, "a note struck after");
+}
+
+/// CA-020: the non-real-time form "will NOT update the currently sounding
+/// notes": it stays at 441 Hz and the next note is at the new pitch.
+#[test]
+fn a_non_real_time_note_change_leaves_the_sounding_voice() {
+    let mut rig = Rig::dry(&font_with(false));
+    rig.note_on(0, 69, 100);
+    rig.render(4410);
+    send(&mut rig, &retune_69(false, 81));
+    rig.render(4410);
+    near(crossings(&mut rig), 441, "the sounding note");
+    rig.cut_all();
+    rig.render(512);
+    near(pitch(&mut rig, 0), 882, "the next note");
+}
+
+/// MTS: RPN 3 selects the channel's tuning and "the basic channel number"
+/// discriminates: channel 0 goes to program 1 (key 69 an octave up) while
+/// channel 1 stays on program 0.
+#[test]
+fn a_tuning_program_select_is_per_channel_and_instant() {
+    let mut rig = Rig::dry(&font_with(false));
+    let program1 = [
+        0xF0, 0x7E, 0x7F, 0x08, 0x07, 0x00, 0x01, 0x01, 69, 81, 0, 0, 0xF7,
+    ];
+    send(&mut rig, &program1);
+    rig.note_on(0, 69, 100);
+    rig.render(4410);
+    rig.voice2(
+        0,
+        Voice2::Registered {
+            bank: Rpn::TUNING_PROGRAM_SELECT.bank(),
+            index: Rpn::TUNING_PROGRAM_SELECT.index(),
+            value: 1 << 25,
+        },
+    );
+    rig.render(4410);
+    near(crossings(&mut rig), 882, "channel 0, on program 1");
+    rig.cut_all();
+    rig.render(512);
+    near(pitch(&mut rig, 1), 441, "channel 1, on program 0");
+}
+
+/// CA-021: Scale/Octave Tuning, 1 byte, real time, for channel 1 only (`hh` bit
+/// 0): +50 cents on A (pitch class 9). The 2-byte form states the same offset
+/// as `60 00` (+50 of 100 cents).
+#[test]
+fn scale_octave_tuning_offsets_the_named_channel_by_pitch_class() {
+    let mut rig = Rig::dry(&font_with(false));
+    let mut one = vec![0xF0, 0x7F, 0x7F, 0x08, 0x08, 0x00, 0x00, 0x01];
+    one.extend([
+        0x40,
+        0x40,
+        0x40,
+        0x40,
+        0x40,
+        0x40,
+        0x40,
+        0x40,
+        0x40,
+        0x40 + 50,
+        0x40,
+        0x40,
+    ]);
+    one.push(0xF7);
+    send(&mut rig, &one);
+    // 441 Hz up 50 cents.
+    near(pitch(&mut rig, 0), 454, "channel 1, +50 cents on A");
+    near(pitch(&mut rig, 1), 441, "channel 2 is not named");
+    let mut two = vec![0xF0, 0x7F, 0x7F, 0x08, 0x09, 0x00, 0x00, 0x01];
+    for class in 0..12 {
+        two.extend(if class == 9 {
+            [0x60, 0x00]
+        } else {
+            [0x40, 0x00]
+        });
+    }
+    two.push(0xF7);
+    send(&mut rig, &two);
+    near(pitch(&mut rig, 0), 454, "the 2-byte form, the same offset");
 }

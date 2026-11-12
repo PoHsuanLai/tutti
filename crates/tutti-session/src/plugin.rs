@@ -937,7 +937,7 @@ impl HostedPlugin {
 
     /// Parameter `id`'s value, as a modulation lane's knob starts at it:
     /// `None` while not read, `Some(None)` for one it does not list.
-    #[cfg(feature = "modulation")]
+    #[cfg(any(test, feature = "modulation"))]
     pub(crate) fn param_value(&self, id: u32) -> Option<Option<f32>> {
         self.mirror
             .get(tutti_plugin_types::ParamId::new(id))

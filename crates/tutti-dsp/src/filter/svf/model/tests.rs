@@ -120,6 +120,86 @@ fn the_response_is_the_rbj_closed_form() {
     }
 }
 
+/// The analog second-order prototype of `ty`, `H_a(s)` with `s` normalised to the
+/// prototype's cutoff and `k = 1 / Q`: the low-pass `1 / (s^2 + k s + 1)`, the
+/// high-pass `s^2 / D`, the band-pass `s / D` (peak gain `Q`), the notch
+/// `(s^2 + 1) / D`, the all-pass `(s^2 - k s + 1) / D`, and the RBJ cookbook's
+/// analog bell and shelves (`A = 10^(dB / 40)`), written out here from the
+/// textbook and nowhere else.
+fn prototype(ty: SvfType, s: Complex64, q: f64, gain_db: f64) -> Complex64 {
+    let one = Complex64::new(1.0, 0.0);
+    let (s2, k) = (s * s, 1.0 / q);
+    let a = 10f64.powf(gain_db / 40.0);
+    let d = s2 + s * k + one;
+    match ty {
+        SvfType::LowPass => one / d,
+        SvfType::HighPass => s2 / d,
+        SvfType::BandPass => s / d,
+        SvfType::Notch => (s2 + one) / d,
+        SvfType::Allpass => (s2 - s * k + one) / d,
+        SvfType::Bell => (s2 + s * (a / q) + one) / (s2 + s * (1.0 / (a * q)) + one),
+        SvfType::LowShelf => {
+            let r = a.sqrt() / q;
+            (s2 + s * r + a) * a / (s2 * a + s * r + one)
+        }
+        SvfType::HighShelf => {
+            let r = a.sqrt() / q;
+            (s2 * a + s * r + one) * a / (s2 + s * r + a)
+        }
+    }
+}
+
+/// The spec (the design diagram of the SVF, doc 024 section 2.7.4): the model is
+/// the analog prototype `H_a(s)` of its response under the bilinear map prewarped at
+/// the cutoff, `s = (1/g)(z - 1)/(z + 1)` with `g = tan(pi fc / rate)`, evaluated
+/// directly here with plain complex arithmetic. Every type (the bell and the
+/// shelves with the cookbook's analog prototypes), at cutoffs from 80 Hz to 20 kHz
+/// at 48 kHz (the last within a fifth of an octave of Nyquist), Q from 0.3 to 12,
+/// and frequencies from 20 Hz to 23.9 kHz, to 1e-9 of the larger magnitude (the
+/// model reads its response from the trapezoidal coefficients, so the two share
+/// nothing but the algebra; the margin over `f64` rounding is the near-Nyquist `tan`).
+/// A model whose `g` was not prewarped (`pi fc / rate` for `tan`) is off by far
+/// more at every cutoff above a few hundred hertz.
+#[test]
+fn the_svf_model_is_the_prewarped_bilinear_image_of_the_analog_prototype() {
+    let rate = 48_000.0;
+    for ty in TYPES {
+        for (fc, q, gain) in [
+            (80.0f32, 0.3f32, 6.0f32),
+            (1_000.0, 0.707, -9.0),
+            (4_000.0, 12.0, 12.0),
+            (20_000.0, 1.3, -6.0),
+        ] {
+            let (fc, q, gain) = (f64::from(fc), f64::from(q), f64::from(gain));
+            let m = model(ty, fc as f32, q as f32, gain as f32, rate);
+            let g = (PI * fc / rate).tan();
+            let freqs: Vec<f32> = [
+                20.0, 80.0, 300.0, 1_000.0, 4_000.0, 12_000.0, 20_000.0, 23_000.0, 23_900.0,
+            ]
+            .into_iter()
+            .chain([fc as f32])
+            .collect();
+            let mut got = vec![Complex64::new(0.0, 0.0); freqs.len()];
+            m.frequency_response(
+                0,
+                &freqs.iter().map(|&f| Hz(f)).collect::<Vec<_>>(),
+                &mut got,
+            );
+            for (f, got) in freqs.iter().zip(&got) {
+                let w = 2.0 * PI * f64::from(*f) / rate;
+                let z = Complex64::from_polar(1.0, w);
+                let s = (z - 1.0) / (z + 1.0) / g;
+                let want = prototype(ty, s, q, gain);
+                let scale = want.norm().max(got.norm()).max(1e-12);
+                assert!(
+                    (got - want).norm() <= 1e-9 * scale + 1e-12,
+                    "{ty:?} fc {fc} Q {q} {gain} dB at {f} Hz: {got} against {want}"
+                );
+            }
+        }
+    }
+}
+
 /// `biquad()` is the same `H(z)` as `frequency_response`: the direct form that
 /// the two other realizations compute.
 #[test]

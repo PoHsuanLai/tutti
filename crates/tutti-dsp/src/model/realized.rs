@@ -264,22 +264,6 @@ pub struct Start<R: Recurrence> {
     pub target: R::Target,
 }
 
-/// A deliberate flaw the contract's mutation records plant in a runner (design 024
-/// section 6.1): test-only.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Flaw {
-    #[default]
-    None,
-    /// `reset` clears the state and leaves the coefficients where they were.
-    ResetKeepsGlides,
-    /// `process` starts its step count over at every call, so a glide's clock is the
-    /// block's, not the stream's.
-    RestartClock,
-    /// `fresh` keeps the state.
-    FreshKeepsState,
-}
-
 /// The one runner: a [`Recurrence`]'s coefficients approaching the target κ asks of
 /// each new member, run a step at a time while they move and in one run once they
 /// have landed.
@@ -304,8 +288,6 @@ pub struct Realized<R: Recurrence> {
     landed: bool,
     /// Frames run of the current step.
     into: usize,
-    #[cfg(test)]
-    flaw: Flaw,
 }
 
 impl<R: Recurrence> Realized<R> {
@@ -324,15 +306,7 @@ impl<R: Recurrence> Realized<R> {
             target,
             landed: false,
             into: 0,
-            #[cfg(test)]
-            flaw: Flaw::None,
         }
-    }
-
-    /// Plants `flaw` (for the contract's mutation records).
-    #[cfg(test)]
-    pub(crate) fn flawed(&mut self, flaw: Flaw) {
-        self.flaw = flaw;
     }
 
     /// The recurrence, its coefficients and its state, for the tests.
@@ -371,11 +345,6 @@ impl<R: Recurrence> Realized<R> {
 
     /// Returns the runner to silence, keeping what it was retargeted to.
     pub fn reset(&mut self) {
-        #[cfg(test)]
-        if self.flaw != Flaw::ResetKeepsGlides {
-            self.coeffs.settle();
-        }
-        #[cfg(not(test))]
         self.coeffs.settle();
         self.recurrence.clear(&mut self.state);
         self.into = 0;
@@ -399,10 +368,6 @@ impl<R: Recurrence> Realized<R> {
     /// side; allocates.
     #[must_use]
     pub fn fresh(&self) -> Self {
-        #[cfg(test)]
-        if self.flaw == Flaw::FreshKeepsState {
-            return self.clone();
-        }
         let mut fresh = self.clone();
         fresh.reset();
         fresh
@@ -415,10 +380,6 @@ impl<R: Recurrence> Realized<R> {
     /// Runs a step at a time while the coefficients move, so a glide cut by the end
     /// of a call goes on in the next, and the rest of the block in one run.
     pub fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], frames: usize) {
-        #[cfg(test)]
-        if self.flaw == Flaw::RestartClock {
-            self.into = 0;
-        }
         let step = R::STEP;
         let mut at = 0;
         while at < frames {

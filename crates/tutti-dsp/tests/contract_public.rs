@@ -1,6 +1,6 @@
 //! The contract is public under the `contract` feature (design 024 section 6), and
 //! a family outside this crate runs it: a gain, the smallest system with a
-//! frequency response, through `family_contract!` and `realization_contract!`,
+//! frequency response, through `family_contract!` and `recurrence_contract!`,
 //! against the `Lti` group (the reverb group is for a `Network`).
 //!
 //! The gain slews to a new value over 64 frames from the first frame since the
@@ -11,10 +11,10 @@
 use std::num::NonZeroU32;
 use std::ops::Range;
 
-use tutti_dsp::contract::{FamilyCase, Figure, Hook, LtiCase, RealizationCase};
+use tutti_dsp::contract::{FamilyCase, Figure, Hook, LtiCase, RecurrenceCase};
 use tutti_dsp::{
     Cadence, Channels, Complex64, Family, Glide, Lti, Recurrence, Ring, Start, System,
-    family_contract, realization_contract,
+    family_contract, recurrence_contract,
 };
 use tutti_types::BusTopology;
 use tutti_types::{Db, Hz, SampleRate, Samples};
@@ -145,7 +145,7 @@ impl FamilyCase for GainFamily {
     }
 }
 
-impl RealizationCase for GainFamily {
+impl RecurrenceCase for GainFamily {
     fn probes(&self) -> Vec<f32> {
         vec![0.3, 0.8]
     }
@@ -183,5 +183,5 @@ mod design {
 
 mod realization {
     use super::*;
-    realization_contract!(GainFamily, Lti, BlockIndependent);
+    recurrence_contract!(GainFamily, Lti, BlockIndependent);
 }

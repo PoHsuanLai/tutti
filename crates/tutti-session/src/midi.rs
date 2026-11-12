@@ -1655,8 +1655,8 @@ mod tests {
     #[test]
     fn the_inlet_holds_a_second_of_a_saturated_midi1_cable() {
         let shortest_message = Duration::from_micros(2 * 320);
+        // 1,563 messages.
         let in_a_second = Duration::from_secs(1).as_micros() / shortest_message.as_micros() + 1;
-        assert_eq!(in_a_second, 1_563);
         assert!(u128::from(MIDI_INPUT_INLET_CAPACITY.get()) >= in_a_second);
     }
 

@@ -5,7 +5,7 @@
 
 use tutti_midi_protocol::{NoMidi1Form, midi1, narrow, widen};
 use tutti_ump::{
-    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
+    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
     RegisteredPerNoteController, Sysex7Packet, SysexStatus, System, U7, U14, Voice1, Voice2,
 };
 
@@ -28,7 +28,7 @@ fn a_note_on_never_narrows_to_velocity_zero() {
     for velocity in 0..=u16::MAX {
         let Ok(Voice1::NoteOn { velocity: got, .. }) = narrow(Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity,
+            velocity: NoteVelocity::new(velocity),
             attribute: Attribute::None,
         }) else {
             panic!("{velocity:#x}");
@@ -48,7 +48,7 @@ fn a_note_off_keeps_a_zero_velocity() {
     for (velocity, want) in [(0, 0), (0x01FF, 0), (0x0200, 1), (0xFFFF, 127)] {
         let off = narrow(Voice2::NoteOff {
             note: NoteNumber::of(60),
-            velocity,
+            velocity: NoteVelocity::new(velocity),
             attribute: Attribute::None,
         });
         assert_eq!(
@@ -82,7 +82,7 @@ fn a_note_with_any_attribute_type_sends_bytes() {
             address(2),
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity: 0x8000,
+                velocity: NoteVelocity::new(0x8000),
                 attribute,
             },
         );
@@ -91,7 +91,7 @@ fn a_note_with_any_attribute_type_sends_bytes() {
             address(2),
             Voice2::NoteOff {
                 note: NoteNumber::of(60),
-                velocity: 0x8000,
+                velocity: NoteVelocity::new(0x8000),
                 attribute,
             },
         );

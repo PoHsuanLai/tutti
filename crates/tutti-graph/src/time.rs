@@ -56,10 +56,10 @@ use crate::node::{Env, TransportChanges, TransportPosition};
 ///
 /// ```
 /// use tutti_graph::{Env, Event, Offset};
-/// use tutti_ump::{Address, Message, MidiChannel, NoteNumber, Ump, Voice2};
+/// use tutti_ump::{Address, Message, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2};
 /// fn note_on_at(env: &Env, when: tutti_types::Frame) -> Option<Event> {
 ///     let at: Offset = env.offset_of(when)?; // `None` outside this block
-///     let note = Voice2::note_on(NoteNumber::of(60), 0x8000);
+///     let note = Voice2::note_on(NoteNumber::of(60), NoteVelocity::new(0x8000));
 ///     let ump = Ump::from(Message::Midi2(Address::first(MidiChannel::FIRST), note));
 ///     Some(Event::midi(at, ump))
 /// }

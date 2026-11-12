@@ -13,8 +13,8 @@ use tutti_midi_protocol::{
 };
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
-    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump,
-    Voice1, Voice2,
+    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7,
+    U14, Ump, Voice1, Voice2,
 };
 
 /// MPE's lower zone as RP-053 allows it with no upper zone: master channel 0
@@ -2641,7 +2641,7 @@ fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
         address(3),
         Voice2::NoteOn {
             note: NoteNumber::of(64),
-            velocity: wide,
+            velocity: NoteVelocity::new(wide),
             attribute: Attribute::None,
         },
     );
@@ -2691,7 +2691,7 @@ fn every_note_off_form_releases_the_note() {
             address(0),
             Voice2::NoteOff {
                 note,
-                velocity: 0,
+                velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
         ),
@@ -2715,7 +2715,7 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
         address(0),
         Voice2::NoteOn {
             note,
-            velocity: 0,
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         },
     )));
@@ -2724,7 +2724,7 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
         address(0),
         Voice2::NoteOff {
             note,
-            velocity: 0,
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         },
     )));
@@ -2835,7 +2835,7 @@ fn per_note_management_flags_are_read_from_the_spec_bits() {
         address(1),
         Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity: 0xC000,
+            velocity: NoteVelocity::new(0xC000),
             attribute: Attribute::None,
         },
     ));
@@ -2883,7 +2883,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
         address(0),
         Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity: 0x8000,
+            velocity: NoteVelocity::new(0x8000),
             attribute: reserved,
         },
     )));
@@ -2892,7 +2892,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
         address(0),
         Voice2::NoteOff {
             note: NoteNumber::of(60),
-            velocity: 0,
+            velocity: NoteVelocity::MIN,
             attribute: reserved,
         },
     )));
@@ -2909,7 +2909,7 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
             address(1),
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity: 0x8000,
+                velocity: NoteVelocity::new(0x8000),
                 attribute: Attribute::None,
             },
         )));

@@ -20,6 +20,7 @@ use tutti_nodes::{BusStripNode, FreeverbNode, ModDelayConfig, ModDelayNode};
 use tutti_soundfont::SoundFontUnit;
 use tutti_types::{Amplitude, ChannelLayout, UnitParam};
 
+use crate::instrument::AddedInstrument;
 use crate::{InstrumentHandle, Key, OutPort, RemoveError, Session};
 
 /// A SoundFont unit wired to its chorus and reverb, and what they sum to.
@@ -36,7 +37,7 @@ use crate::{InstrumentHandle, Key, OutPort, RemoveError, Session};
 /// effects with it; so does muting it, which is the graph's, not a method
 /// here: `Graph::set_mode(gm.out(), NodeMode::Muted)`. A send's level is the font's
 /// and the channel's (CC 91 and CC 93), not a gain's.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GeneralMidi {
     instrument: InstrumentHandle,
     chorus: Key<ModDelayNode>,
@@ -50,6 +51,11 @@ impl GeneralMidi {
     #[must_use]
     pub fn instrument(&self) -> &InstrumentHandle {
         &self.instrument
+    }
+
+    /// The unit's handle, to send with ([`InstrumentHandle::keys_mut`]).
+    pub fn instrument_mut(&mut self) -> &mut InstrumentHandle {
+        &mut self.instrument
     }
 
     /// The chorus: the unit's chorus send in, the wet chorus out.
@@ -84,11 +90,12 @@ impl GeneralMidi {
     /// # Errors
     ///
     /// [`RemoveError::NoSuchNode`] naming the first part that was not in the
-    /// graph (the setup was removed already, or one part was removed by hand).
+    /// graph (a part was removed by hand).
     pub fn remove(self, session: &mut Session) -> Result<(), RemoveError> {
-        let mut first = session.remove_instrument(&self.instrument);
+        let node = self.instrument.node();
+        let mut first = session.remove_instrument(self.instrument);
         for node in [
-            self.instrument.node(),
+            node,
             self.chorus.erase(),
             self.reverb.erase(),
             self.strip.erase(),
@@ -118,7 +125,9 @@ impl Session {
     /// be played as an instrument; none for a `SoundFontUnit`, which has an
     /// event input and five outputs.
     pub fn add_general_midi(&mut self, unit: SoundFontUnit) -> Result<GeneralMidi, crate::Error> {
-        let (instrument, ()) = self.add_instrument(unit)?;
+        let AddedInstrument {
+            handle: instrument, ..
+        } = self.add_instrument_unwired(unit)?;
         let unit = instrument.node();
         let graph = self.graph();
         let (chorus, _) = graph.add(ModDelayNode::new(

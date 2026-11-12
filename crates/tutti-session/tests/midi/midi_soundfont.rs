@@ -178,12 +178,9 @@ fn preview_still_sounds_under_an_installed_clip() {
     );
 
     // A live input on the synth, then a live note, as a keyboard sends it.
-    let live = s
-        .midi()
-        .live_input(synth)
-        .expect("a synth takes a live input");
+    let mut live = s.midi().input(synth).expect("a synth takes a live input");
     let _ = s.update();
-    live.send(
+    live.push(
         Stamp::NextBlock,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
     )

@@ -7,7 +7,7 @@ use instrument_support::Rig;
 use tutti_graph::{
     Cx, ForkByClone, Instrument, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status,
 };
-use tutti_session::{Losses, Root};
+use tutti_session::{AddedInstrument, Losses, Root};
 use tutti_session::{SessionInstrument, SessionNode};
 use tutti_types::ChannelLayout;
 
@@ -52,11 +52,30 @@ impl SessionInstrument for Dressed {
 #[test]
 fn the_pair_a_node_names_is_the_one_played() {
     let mut session = instrument_support::rig::offline_session();
-    let (handle, ()) = session
+    let AddedInstrument { handle, .. } = session
         .add_instrument(Dressed(ForkByClone(Five)))
         .expect("five outputs and an event input");
-    let mut rig = Rig::wired(session, handle);
+    let mut rig = Rig::played(session, handle);
     rig.render_to(4 * instrument_support::BLOCK);
+    let at = rig.frame() - 1;
+    assert_eq!((rig.left[at], rig.right[at]), (3.0, 4.0));
+}
+
+/// `add_instrument` wires the strip to the master and `add_instrument_unwired`
+/// leaves it for the mix: the unwired one is silent at the root until its strip
+/// is connected, then plays the same pair.
+#[test]
+fn only_add_instrument_wires_the_strip_to_the_master() {
+    let mut session = instrument_support::rig::offline_session();
+    let AddedInstrument { handle, .. } = session
+        .add_instrument_unwired(Dressed(ForkByClone(Five)))
+        .expect("an instrument");
+    let strip = handle.out();
+    let mut rig = Rig::played(session, handle);
+    rig.render_to(4 * instrument_support::BLOCK);
+    assert_eq!(rig.peak(0..rig.frame()), 0.0, "nothing reaches the root");
+    rig.session.graph().connect(strip, Root).unwrap();
+    rig.render_to(8 * instrument_support::BLOCK);
     let at = rig.frame() - 1;
     assert_eq!((rig.left[at], rig.right[at]), (3.0, 4.0));
 }
@@ -100,21 +119,27 @@ fn a_pair_past_the_outputs_is_refused() {
 fn the_handle_counts_what_its_queue_dropped() {
     use tutti_types::Frame;
     let mut session = instrument_support::rig::offline_session();
-    let (handle, ()) = session
+    let AddedInstrument { handle, .. } = session
         .add_instrument(Dressed(ForkByClone(Five)))
         .expect("an instrument");
-    let mut rig = Rig::wired(session, handle.clone());
+    let mut rig = Rig::played(session, handle);
     let on = instrument_support::midi::note_on(0, 60, 100);
     for k in 0..256u64 {
-        handle.send(Frame(1_000_000 + k), on).unwrap();
+        rig.handle
+            .keys_mut()
+            .push(Frame(1_000_000 + k), on)
+            .unwrap();
     }
     rig.block();
-    assert_eq!(handle.losses(), Losses::NONE);
+    assert_eq!(rig.handle.keys().losses(), Losses::NONE);
     for k in 0..3u64 {
-        handle.send(Frame(9_000_000 + k), on).unwrap();
+        rig.handle
+            .keys_mut()
+            .push(Frame(9_000_000 + k), on)
+            .unwrap();
     }
     rig.block();
-    assert_eq!(handle.losses(), Losses::evicted(3));
+    assert_eq!(rig.handle.keys().losses(), Losses::evicted(3));
 }
 
 /// A root of five channels or more fed from an instrument with sends takes its
@@ -126,8 +151,8 @@ fn the_handle_counts_what_its_queue_dropped() {
 fn a_wide_root_is_fed_from_the_main_pair_not_the_sends() {
     use tutti_session::OutPort;
     let mut session = instrument_support::rig::offline_session();
-    let (handle, ()) = session
-        .add_instrument(Dressed(ForkByClone(Five)))
+    let AddedInstrument { handle, .. } = session
+        .add_instrument_unwired(Dressed(ForkByClone(Five)))
         .expect("an instrument");
     session.graph().widen_outputs(5).expect("a wider root");
     let node = handle.node();

@@ -24,8 +24,8 @@ use tutti_midi_protocol::{channel_voice, flex_tempo};
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{
-    Address, Flex, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Sysex7Packets, U7, Ump,
-    Unknown, Voice2,
+    Address, Flex, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
+    Sysex7Packets, U7, Ump, Unknown, Voice2,
 };
 
 use crate::MidiFileKind;
@@ -468,7 +468,7 @@ impl Track {
     pub fn notes(&self) -> Vec<PairedNote> {
         use std::collections::BTreeMap;
 
-        let mut held: BTreeMap<(MidiGroup, MidiChannel, NoteNumber), Vec<(Tick, u16)>> =
+        let mut held: BTreeMap<(MidiGroup, MidiChannel, NoteNumber), Vec<(Tick, NoteVelocity)>> =
             BTreeMap::new();
         let mut out: Vec<PairedNote> = Vec::new();
 
@@ -502,7 +502,7 @@ impl Track {
                 // keeps its 16 bits; a MIDI 2.0 Note On at velocity 0 is
                 // neither a start nor an end.
                 if let Some((_, Voice2::NoteOn { velocity, .. })) = channel_voice(ump)
-                    && velocity > 0
+                    && velocity.get() > 0
                 {
                     held.entry(map_key).or_default().push((*tick, velocity));
                 }
@@ -551,8 +551,7 @@ pub struct PairedNote {
     pub note: NoteNumber,
     /// The Note On velocity at MIDI 2.0 width: a MIDI 1.0 velocity is widened
     /// by the specification's scaling, so this is lossless in both directions.
-    /// A bare `u16` because 16 bits is the whole raw of a MIDI 2.0 velocity.
-    pub velocity: u16,
+    pub velocity: NoteVelocity,
     /// Where the note starts.
     pub start: Tick,
     /// Where it ends; not before `start`.

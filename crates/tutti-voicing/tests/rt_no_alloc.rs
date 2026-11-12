@@ -8,7 +8,8 @@ use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{
-    Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, U7, Voice2,
+    Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, RegisteredPerNoteController, U7,
+    Voice2,
 };
 use tutti_voicing::{
     Command, Mode, Order, Patch, PerNoteState, Rules, Steal, VoiceId, VoiceSpec, Voicing,
@@ -56,17 +57,17 @@ fn step_is_allocation_free_in_every_mode() {
                 let msgs = [
                     Voice2::NoteOn {
                         note: NoteNumber::of(k),
-                        velocity: 0x8000,
+                        velocity: NoteVelocity::new(0x8000),
                         attribute: Attribute::None,
                     },
                     Voice2::NoteOn {
                         note: NoteNumber::of(k + 3),
-                        velocity: 0x4000,
+                        velocity: NoteVelocity::new(0x4000),
                         attribute: Attribute::None,
                     },
                     Voice2::NoteOff {
                         note: NoteNumber::of(k + 3),
-                        velocity: 0x8000,
+                        velocity: NoteVelocity::new(0x8000),
                         attribute: Attribute::None,
                     },
                     // Per-note state: stored before and during a note, set
@@ -102,7 +103,7 @@ fn step_is_allocation_free_in_every_mode() {
                     },
                     Voice2::NoteOn {
                         note: NoteNumber::of(k),
-                        velocity: 0x8000,
+                        velocity: NoteVelocity::new(0x8000),
                         attribute: Attribute::Pitch(60 << 9),
                     },
                     cc(64, round % 2 * 127),
@@ -128,7 +129,7 @@ fn step_is_allocation_free_in_every_mode() {
                     Voice2::PitchBend(round.wrapping_mul(0x0101_0101)),
                     Voice2::NoteOff {
                         note: NoteNumber::of(k),
-                        velocity: 0x8000,
+                        velocity: NoteVelocity::new(0x8000),
                         attribute: Attribute::None,
                     },
                     cc([120, 121, 123, 124][(round % 4) as usize], 0),
@@ -194,7 +195,7 @@ fn per_note_state_is_allocation_free() {
                 },
                 Voice2::NoteOn {
                     note,
-                    velocity: 0x8000,
+                    velocity: NoteVelocity::new(0x8000),
                     attribute: Attribute::Pitch(60 << 9),
                 },
                 Voice2::PerNoteManagement {

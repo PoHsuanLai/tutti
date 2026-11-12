@@ -1,5 +1,5 @@
 use super::*;
-use tutti_ump::{NoteNumber, U7, Voice2};
+use tutti_ump::{NoteNumber, NoteVelocity, U7, Voice2};
 
 fn ch(n: u8) -> MidiChannel {
     MidiChannel::of(n)
@@ -155,7 +155,7 @@ fn from_mcm_rejects_non_mcm() {
         },
         Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity: 0x8000,
+            velocity: NoteVelocity::new(0x8000),
             attribute: tutti_ump::Attribute::None,
         },
     )

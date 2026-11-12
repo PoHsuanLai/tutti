@@ -116,7 +116,8 @@ use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
 use tutti_types::PlayReading;
 use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1, Voice2,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump, Voice1,
+    Voice2,
 };
 
 /// One param port's state, as the reference keeps it.
@@ -2249,7 +2250,7 @@ impl RefHeld {
         }
         for &(m2, g, c, note) in &self.notes {
             let msg = if m2 {
-                Message::Midi2(addr(g, c), Voice2::note_off(note, 0))
+                Message::Midi2(addr(g, c), Voice2::note_off(note, NoteVelocity::MIN))
             } else {
                 Message::Midi1(
                     addr(g, c),

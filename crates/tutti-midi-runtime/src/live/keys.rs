@@ -10,8 +10,8 @@
 
 use std::ops::{Deref, DerefMut};
 
-use tutti_graph::{EventCapacity, EventInletWriter, Refused, Stamp};
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, Voice2};
+use tutti_graph::{EventCapacity, EventInletWriter, Losses, Refused, Stamp};
+use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Voice2};
 
 /// The ring a live input's inlet is opened with, in events (it is also the
 /// waiting list's size and the port's declared capacity).
@@ -35,13 +35,20 @@ impl MidiKeys {
         Self { writer, group }
     }
 
+    /// What the inlet has lost, in events (the writer's
+    /// [`counts`](EventInletWriter::counts), read).
+    #[must_use]
+    pub fn losses(&self) -> Losses {
+        self.writer.counts().losses()
+    }
+
     /// The Group every key helper sends on.
     #[must_use]
     pub fn group(&self) -> MidiGroup {
         self.group
     }
 
-    /// A MIDI 2.0 Note On at `velocity` (16 bits) on the keys' Group, for
+    /// A MIDI 2.0 Note On at `velocity` on the keys' Group, for
     /// `at`. A velocity of 0 is a Note On (M2-104 §7.4.2).
     ///
     /// # Errors
@@ -52,7 +59,7 @@ impl MidiKeys {
         at: impl Into<Stamp>,
         channel: MidiChannel,
         note: NoteNumber,
-        velocity: u16,
+        velocity: NoteVelocity,
     ) -> Result<(), Refused> {
         self.voice(at, channel, Voice2::note_on(note, velocity))
     }
@@ -69,7 +76,7 @@ impl MidiKeys {
         channel: MidiChannel,
         note: NoteNumber,
     ) -> Result<(), Refused> {
-        self.voice(at, channel, Voice2::note_off(note, 0))
+        self.voice(at, channel, Voice2::note_off(note, NoteVelocity::MIN))
     }
 
     fn voice(

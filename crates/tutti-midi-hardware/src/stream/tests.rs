@@ -372,6 +372,38 @@ fn a_silent_midi1_device_is_asked_twice_and_stays_described() {
     assert_eq!(stream.endpoint().identity(), None);
 }
 
+/// Once the inquiry has given up on a silent device, its copy of the device's
+/// SysEx7 packets is off (a packet that arrives is not kept in the stream ring,
+/// though it still reaches the graph, the next test) and nothing more is sent.
+#[test]
+fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
+    use tutti_midi_device::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT};
+    let wire = midi1_wire();
+    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
+    // The request, its one retry, then the poll that gives up.
+    for step in 0..=u64::from(INQUIRY_ATTEMPTS) {
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+    }
+    let slot = wire.session.ports().list_input_ports()[0].id;
+    let _ = received(&wire);
+    // Whatever the ring holds from the inquiry is read off.
+    let _ = wire.session.ports().drain_stream(slot).count();
+
+    reply_at(&wire, identity_reply(0), 10 * ms);
+    assert_eq!(
+        wire.session.ports().drain_stream(slot).count(),
+        0,
+        "the copy is off once the inquiry is over"
+    );
+    for step in 10..13 {
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+    }
+    assert!(
+        received(&wire).is_empty(),
+        "nothing is sent after giving up"
+    );
+}
+
 /// A late reply (after the inquiry gave up) and a SysEx that is not an Identity
 /// Reply (here General MIDI System On, M1 p.52) leave the device as it was.
 #[test]

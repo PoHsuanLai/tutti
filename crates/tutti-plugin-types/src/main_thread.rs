@@ -110,8 +110,8 @@ impl MainThread {
     /// it is silent in a process with no main thread (a headless rig), and trips
     /// only for a free that happens on the wrong thread.
     ///
-    /// For the paths that cannot be handed a token (a `Drop`, a session's free
-    /// of a retired unit), where it backs a `debug_assert!`. An entry that can
+    /// For the paths that cannot be handed a token (a `Drop`, an off-main
+    /// call that must be posted to the main thread instead). An entry that can
     /// take a [`MainThread`] takes one instead, and checks nothing.
     #[must_use]
     pub fn claimed_elsewhere() -> bool {
@@ -142,10 +142,9 @@ static DEFERRED: std::sync::Mutex<Vec<Deferred>> = std::sync::Mutex::new(Vec::ne
 /// Hands `work` to the main thread, to run at its next [`run_deferred`].
 ///
 /// **Someone must call [`run_deferred`] on the main thread.** `Session::update`
-/// does, in `Phase::Collect`, but it is a main-thread call itself (it
-/// debug-asserts that it is not off a claimed main thread), so a host that
-/// drives the session from another thread must call [`run_deferred`] from its
-/// main-thread loop. Without a pump, work posted here never runs; a caller that
+/// does, in `Phase::Collect`, when it runs on the claiming thread (and
+/// `MainSession::update` always does), so a host that drives the session from
+/// another thread must call [`run_deferred`] from its main-thread loop. Without a pump, work posted here never runs; a caller that
 /// waits for it (the in-process plugin handle's off-main calls) gets its
 /// "unavailable" answer when its deadline expires.
 ///

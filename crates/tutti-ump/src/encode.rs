@@ -157,7 +157,7 @@ fn data128(g: MidiGroup, d: Data128) -> [u32; 4] {
         Data128::MixedDataHeader(m) => [
             h | (0x8 << 20) | (u32::from(m.mds_id.get()) << 16) | u32::from(m.chunk_bytes),
             (u32::from(m.chunks) << 16) | u32::from(m.chunk),
-            (u32::from(m.manufacturer) << 16) | u32::from(m.device),
+            (u32::from(m.manufacturer.get()) << 16) | u32::from(m.device),
             (u32::from(m.sub_id_1) << 16) | u32::from(m.sub_id_2),
         ],
         Data128::MixedDataPayload { mds_id, bytes: b } => [
@@ -454,7 +454,10 @@ fn stream(s: Stream) -> [u32; 4] {
         ],
         Stream::DeviceIdentity(d) => [
             stream_head(done, 0x02),
-            (u7(d.manufacturer[0]) << 16) | (u7(d.manufacturer[1]) << 8) | u7(d.manufacturer[2]),
+            {
+                let [a, b, c] = d.manufacturer.sysex_bytes();
+                (u7(a) << 16) | (u7(b) << 8) | u7(c)
+            },
             (u7(d.family[0]) << 24)
                 | (u7(d.family[1]) << 16)
                 | (u7(d.model[0]) << 8)

@@ -4,7 +4,7 @@
 use crate::field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
 };
-use crate::{CCNumber, MidiChannel, MidiGroup, Ump};
+use crate::{CCNumber, ManufacturerId, MidiChannel, MidiGroup, Ump};
 
 /// One UMP, decoded.
 ///
@@ -439,7 +439,7 @@ pub struct MixedDataHeader {
     /// This chunk's number, from 1; `0` marks an unverified end.
     pub chunk: u16,
     /// The 16-bit manufacturer id (§7.10).
-    pub manufacturer: u16,
+    pub manufacturer: ManufacturerId,
     /// The device id.
     pub device: u16,
     /// Sub id 1.
@@ -1097,8 +1097,8 @@ pub struct EndpointInfo {
 /// A device's identity, as in a Device Inquiry reply (§7.1.3). Every byte is 7-bit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceIdentity {
-    /// The manufacturer's SysEx id.
-    pub manufacturer: [U7; 3],
+    /// The manufacturer's SysEx id (on the wire, three bytes: `xx 00 00` or `00 xx yy`).
+    pub manufacturer: ManufacturerId,
     /// The family id, LSB first.
     pub family: [U7; 2],
     /// The model id, LSB first.

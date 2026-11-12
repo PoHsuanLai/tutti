@@ -9,7 +9,9 @@ use crate::transport::shm::AudioSlab;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use tutti_plugin_types::{BridgeResult, Delivered, EditorError, PluginFailure, StateError};
+use tutti_plugin_types::{
+    BridgeResult, Delivered, EditorError, PluginError, PluginFailure, StateError,
+};
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
 use tutti_plugin_types::{Editor, Load, Origin};
@@ -724,6 +726,28 @@ impl PluginBridge {
             .ok_or_else(|| EditorError::PluginError("editor not open".into()))?;
         gui.set_editor_size(main, requested)
             .map_err(|e| EditorError::PluginError(e.to_string()))
+    }
+
+    /// Tells the open editor its window's scale changed. The editor is the
+    /// host-process editor-only instance, so this is a call on it and no wire
+    /// message.
+    ///
+    /// # Errors
+    ///
+    /// No editor is open, or the editor's own refusal (`set_editor_scale`).
+    pub fn set_editor_scale(
+        &self,
+        main: &MainThread,
+        scale: ContentScale,
+    ) -> std::result::Result<(), EditorError> {
+        let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
+        let gui = guard
+            .as_mut()
+            .ok_or_else(|| EditorError::PluginError("editor not open".into()))?;
+        gui.set_editor_scale(main, scale).map_err(|e| match e {
+            PluginError::Editor(typed) => typed,
+            other => EditorError::PluginError(other.to_string()),
+        })
     }
 
     /// A size the open editor asked its window to take since the last poll.

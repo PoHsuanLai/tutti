@@ -8,7 +8,7 @@
 use std::fmt;
 
 use bitflags::bitflags;
-use tutti_ump::{DeviceIdentity, FunctionBlockId, U7};
+use tutti_ump::{DeviceIdentity, FunctionBlockId, ManufacturerId, U7};
 
 /// Sub-ID#2: Discovery message (M2-101 §5.5).
 pub const SUB_ID2_DISCOVERY: u8 = 0x70;
@@ -207,6 +207,7 @@ impl DiscoveryData {
         let id = &self.identity;
         out.extend(
             id.manufacturer
+                .sysex_bytes()
                 .iter()
                 .chain(&id.family)
                 .chain(&id.model)
@@ -228,7 +229,8 @@ impl DiscoveryData {
     /// Decode a Discovery or Reply body, or `None` when it is malformed: shorter
     /// than the common fields, a byte with its top bit set, a Receivable
     /// Maximum SysEx Message Size under 128 (§5.5.3), or a Function Block that
-    /// is neither 0 to 31 nor `0x7F` (§5.6.2).
+    /// is neither 0 to 31 nor `0x7F` (§5.6.2), or a one-byte manufacturer id
+    /// followed by a non-zero byte (M2-104 §7.1.3).
     ///
     /// The Version-2 trailer is read when present and defaulted when absent, so
     /// a Message Format Version 1 peer still decodes: §5.3 requires a receiver
@@ -256,7 +258,7 @@ impl DiscoveryData {
         Some(DiscoveryData {
             // Every byte of the common fields was checked 7-bit above.
             identity: DeviceIdentity {
-                manufacturer: [b[0], b[1], b[2]].map(U7::masked),
+                manufacturer: ManufacturerId::from_sysex_bytes([b[0], b[1], b[2]].map(U7::masked))?,
                 family: [b[3], b[4]].map(U7::masked),
                 model: [b[5], b[6]].map(U7::masked),
                 revision: [b[7], b[8], b[9], b[10]].map(U7::masked),

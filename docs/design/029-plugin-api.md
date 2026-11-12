@@ -159,9 +159,25 @@ let node = ui.add_plugin(loaded)?;
 ui.plugin(node)?.editor().open(&window, scale)?;
 ```
 
-The freeing paths that today `debug_assert!` the main thread (a retired
-in-process unit may tear down an editor in its `Drop`) run through this view
-whenever the `plugin` feature is on, so the rule is the type's. `MainThread`
+**The freeing paths stay on `Session`, in every build.** A retired in-process
+unit may tear down an editor in its `Drop`, but moving `update`, `commit`,
+`remove` and `replace` behind the view whenever `plugin` is on would make the
+feature non-additive (a crate that calls `session.update()` would stop compiling
+when something else in the build turned `plugin` on), and `Session` would no
+longer be usable headless. Instead nothing frees a plugin on those paths: what a
+removal, a replace, a crossfade or a reload retires (the plugin's record and its
+control handle) goes to a **graveyard** the session holds, and the view's
+`update()` drops it with the proof, beside `run_deferred` (the work a format's
+`Drop` handed to the main thread) and the editor servicing. The `debug_assert!`s
+are gone. A host that never claims the main thread keeps the retired plugins
+until it does; the leak is bounded by what the host removes, is counted
+(`Session::retired_plugins`) and is warned about once past sixteen
+(`Phase::Plugins`). The main-thread-only calls (an editor, a load, a state
+restore) take the proof, or are the view's, and the compile-fail doctests pin
+that `Plugin<'_>` has no `editor()` and that `MainSession` is `!Send`. A format's
+`Drop` keeps `MainThread::current()` (a `Drop` cannot take a token): CLAP, VST2 and VST3 (with an editor open) move what they own to
+`defer_to_main` when released off the main thread, and `run_deferred` (the
+view's `update`) drops it there. `MainThread`
 is passed by value (it is a `Copy` zero-sized proof; a reference to it adds
 nothing). It is never derived from a window system's event loop, which winit
 lets run off the OS main thread on Linux and Windows.
@@ -282,7 +298,38 @@ carry no value (`ParamEdit`). `PluginSnapshotDue`, `PluginParamsDue` and
 `PluginReloadDue` stay `SessionEvent` variants until step 5. Still open in
 step 2: `MainSession` and `Session::main`, `update()` servicing editors, the
 editor's `Opened`, `resize` and `rescale`, `EditorWantsSize`, and removing the
-freeing paths' `debug_assert!`.
+freeing paths' `debug_assert!`: built next, below.
+
+**As built (step 2, the main-thread view).** `Session::main(MainThread) ->
+MainSession<'_>` is `&mut Session` and the proof (`MainThread` was already
+`Copy`: it is `!Send` and `!Sync` and zero-sized, so a copy cannot leave its
+thread). It does not deref to the session: its own verbs are `update` and
+`plugin`, and the rest goes through `session()` / `session_mut()`, so a call that
+reaches `Session::update` and skips the main thread's share is visible where it
+is written. `MainSession::update()` is `Session::update`,
+then the graveyard, `run_deferred`, and every editor opened through the view:
+`editor_idle`, then a poll of the plugin's resize request, raised as
+`PluginChange::EditorWantsSize(EditorSize)`. `ui.plugin(node)?` lends a
+`MainPlugin` (`view()` for the read-only `Plugin<'_>`, `editor()`), whose
+`EditorView` has `open(&window, scale) -> Result<Opened, EditorError>` (`Opened::Embedded(size)`,
+or `Floating` for a plugin whose `Features::EDITOR_FLOATING` is set), `resize`,
+`rescale` and `close`. `rescale` is `EditorWindow::set_editor_scale`, a live call (CLAP's
+`gui.set_scale`, withheld on a logical-pixel api; VST3's
+`IPlugViewContentScaleSupport::setContentScaleFactor`); VST2 and AU, which take
+the scale at open or have the OS scale the window, answer the typed
+`EditorError::ScaleUnsupported`. A served plugin's editor is the editor-only
+instance in the host process, so the call reaches it through `PluginBridge`
+with no wire change. A floating editor is the plugin's window. `PluginHandle::open_editor` takes a
+`WindowHandle` now (`WindowHandle::from_window` still takes any
+`raw-window-handle` 0.6 window). The VST3 pieces of §6.3: the served editor's
+`editor_idle` pumps the Linux `IRunLoop` (it did nothing), and an in-process
+VST3's `Control` reports its resize capabilities, takes `set_editor_size` and
+answers `poll_editor_resize_request` (they were stubs). What the audit of the
+drop paths found: CLAP and VST2 hand their release to `defer_to_main` when
+dropped off the main thread, and a VST3 plugin with an editor open, which used
+to be leaked whole (every COM object and the module), now does too: `Plugin`
+wraps its `Parts`, and its `Drop` hands them to the main thread. So whatever
+`Editor::collect` retires closes on the main thread, for every format.
 
 **As built (the typed cause, step 4's, done early).** The cause of a death is
 `tutti_plugin_types::PluginFailure`, latched by the bridge where it notices

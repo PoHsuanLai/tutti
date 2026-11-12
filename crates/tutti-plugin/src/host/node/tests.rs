@@ -496,7 +496,7 @@ fn handle_open_editor_errors_for_missing_plugin() {
         handle
             .open_editor(
                 &main_thread(),
-                tutti_fixtures::StandInWindow,
+                tutti_fixtures::StandInWindow.handle(),
                 tutti_plugin_types::ContentScale::IDENTITY
             )
             .is_err()

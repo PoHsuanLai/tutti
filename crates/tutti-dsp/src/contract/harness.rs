@@ -39,18 +39,38 @@ pub fn built<D: FamilyCase>(
     (k, model)
 }
 
-/// The input and output widths of `d`.
-#[must_use]
-pub fn widths<D: Family>(d: &D) -> (usize, usize) {
-    let channels = d.channels();
-    (channels.input_width(), channels.output_width())
+/// The channel widths of a family: what [`render`] feeds and reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Widths {
+    /// The input channels.
+    pub inputs: usize,
+    /// The output channels.
+    pub outputs: usize,
+    /// The key channels: 0 for a family with no key.
+    pub key: usize,
 }
 
-/// Renders `input` (the same signal on every input channel) through `k` in
-/// blocks of `block`, one `Vec` per output channel.
+/// The input, output and key widths of `d`.
+#[must_use]
+pub fn widths<D: Family>(d: &D) -> Widths {
+    let channels = d.channels();
+    Widths {
+        inputs: channels.input_width(),
+        outputs: channels.output_width(),
+        key: channels.key_width(),
+    }
+}
+
+/// Renders `input` (the same signal on every input channel, and on every key channel of
+/// a keyed family: it is keyed by itself) through `k` in blocks of `block`, one `Vec`
+/// per output channel.
 pub fn render<R: Recurrence>(
     k: &mut Realized<R>,
-    (inputs, outputs): (usize, usize),
+    Widths {
+        inputs,
+        outputs,
+        key,
+    }: Widths,
     input: &[f32],
     block: usize,
 ) -> Vec<Vec<f32>> {
@@ -59,8 +79,9 @@ pub fn render<R: Recurrence>(
     while start < input.len() {
         let end = (start + block).min(input.len());
         let ins: Vec<&[f32]> = vec![&input[start..end]; inputs];
+        let keys: Vec<&[f32]> = vec![&input[start..end]; key];
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[start..end]).collect();
-        k.process(&Feed::new(&ins), &mut outs, end - start);
+        k.process(&Feed::new(&ins).with_key(&keys), &mut outs, end - start);
         start = end;
     }
     out

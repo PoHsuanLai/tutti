@@ -227,12 +227,13 @@ fn cases() -> Vec<Case> {
         )
     }
     fn comp(w: usize) -> CompressorNode {
-        CompressorNode::with_channels(
+        CompressorNode::with_bus(
+            BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("at most one bus wide"),
             Db::new(-20.0),
             CompressionRatio::new(8.0),
             Seconds::new(0.001),
             Seconds::new(0.05),
-            w as u8,
         )
     }
     fn gate(w: usize) -> GateNode {
@@ -366,7 +367,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_threshold(Db::new(v));
+                    assert!(n.param_set().set(UnitParam::Threshold, v));
                 }
                 parts_of(n)
             },
@@ -470,12 +471,13 @@ fn cases() -> Vec<Case> {
 /// (its last frame per block).
 fn block_rate_cases() -> Vec<Case> {
     fn comp(w: usize) -> CompressorNode {
-        CompressorNode::with_channels(
+        CompressorNode::with_bus(
+            BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("at most one bus wide"),
             Db::new(-20.0),
             CompressionRatio::new(8.0),
             Seconds::new(0.001),
             Seconds::new(0.05),
-            w as u8,
         )
     }
     // Near the noise's peak, no hold: the gate opens and shuts all the
@@ -524,7 +526,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_ratio(CompressionRatio::new(v));
+                    assert!(n.param_set().set(UnitParam::Ratio, v));
                 }
                 parts_of(n)
             },
@@ -537,7 +539,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_attack(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::Attack, v));
                 }
                 parts_of(n)
             },
@@ -550,7 +552,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_release(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::Release, v));
                 }
                 parts_of(n)
             },
@@ -563,7 +565,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = comp(w);
                 if let Some(v) = v {
-                    n.set_makeup(Db::new(v));
+                    assert!(n.param_set().set(UnitParam::GainDb, v));
                 }
                 parts_of(n)
             },

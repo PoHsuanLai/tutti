@@ -5,7 +5,7 @@
 //! again → render (must differ, so the control is audible and the row can
 //! fail). A node's fork is `fork_fresh` (`tutti_graph::param_parts`), so every
 //! cell a control writes is checked — addressed by its `ParamSet` or not (a
-//! compressor's knee, a gate's hold) — with the fork taken as the graph takes
+//! gate's hold) — with the fork taken as the graph takes
 //! it.
 //!
 //! Units with no live cell are not rows — there is nothing to move:
@@ -38,16 +38,23 @@ fn compressor() {
         .with_soft_knee(Db(3.0))
         .with_makeup(Db(2.0))
     })
-    .control("threshold", |c| c.set_threshold(Db(-30.0)))
-    .control("ratio", |c| {
-        c.set_ratio(CompressionRatio::new_clamped(10.0))
+    .control("threshold", |c| {
+        assert!(c.param_set().set(UnitParam::Threshold, -30.0));
     })
-    .control("attack", |c| c.set_attack(Seconds(0.02)))
-    .control("release", |c| c.set_release(Seconds(0.2)))
-    .control("makeup", |c| c.set_makeup(Db(6.0)))
+    .control("ratio", |c| {
+        assert!(c.param_set().set(UnitParam::Ratio, 10.0));
+    })
+    .control("attack", |c| {
+        assert!(c.param_set().set(UnitParam::Attack, 0.02));
+    })
+    .control("release", |c| {
+        assert!(c.param_set().set(UnitParam::Release, 0.2));
+    })
+    .control("makeup", |c| {
+        assert!(c.param_set().set(UnitParam::GainDb, 6.0));
+    })
     .control("knee", |c| {
-        c.knee_width()
-            .store(9.0, std::sync::atomic::Ordering::Release)
+        assert!(c.param_set().set(UnitParam::Knee, 9.0));
     })
     .check();
 }

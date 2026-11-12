@@ -11,7 +11,11 @@ const RATE: SampleRate = SampleRate(48_000.0);
 const CHUNK: usize = 256;
 
 fn design() -> CompressorFamily {
-    CompressorFamily::new(BusTopology::STEREO)
+    CompressorFamily::new(BusTopology::STEREO, KeySource::Sidechain)
+}
+
+fn own() -> CompressorFamily {
+    CompressorFamily::new(BusTopology::STEREO, KeySource::Own)
 }
 
 fn controls(
@@ -141,9 +145,22 @@ impl RecurrenceCase for CompressorFamily {
 crate::family_contract!(design());
 crate::recurrence_contract!(design(), BlockIndependent);
 
+/// The same cases with the detector on the signal: no key bus, so the harness feeds none.
+mod own_key {
+    use super::*;
+
+    crate::family_contract!(own());
+    crate::recurrence_contract!(own(), BlockIndependent);
+}
+
 /// A prepared runner at `c`, for `chunk` frames a call.
 fn runner(c: &CompressorControls) -> Realized<CompressorRecurrence> {
     built(&design(), c, RATE).0
+}
+
+/// A prepared runner on the own-key compressor at `c`.
+fn own_runner(c: &CompressorControls) -> Realized<CompressorRecurrence> {
+    built(&own(), c, RATE).0
 }
 
 /// `audio` (one slice per channel) through `k`, keyed by `key`, with `lane` as the
@@ -396,6 +413,28 @@ fn the_key_and_not_the_signal_drives_the_detector() {
         out[0].iter().all(|&x| x == 0.9),
         "a silent key reduced a loud signal"
     );
+}
+
+/// An own key is the signal itself: the family has no key bus, and a loud signal ducks
+/// itself by the static curve while a quiet one under the threshold is not touched (which
+/// a side-chain keyed by silence would do to a loud one too).
+#[test]
+fn an_own_key_detects_the_signal_itself() {
+    assert_eq!(own().channels().key_width(), 0);
+    assert_eq!(design().channels().key_width(), 2);
+    let n = 30_000;
+    let c = controls(-20.0, 0.0, 4.0, 0.001, 0.05, 0.0);
+    for level in [-10.0f64, -30.0] {
+        let x = vec![amplitude(level); n];
+        let mut k = own_runner(&c);
+        let out = run(&mut k, &[&x, &x], &[], None);
+        let want = -curve(level, -20.0, 0.0, 4.0);
+        let got = 20.0 * (f64::from(out[0][n - 1]) / f64::from(x[0])).log10();
+        assert!(
+            (got - want).abs() < 2e-3,
+            "a signal at {level} dB: {got} dB vs {want}"
+        );
+    }
 }
 
 /// A threshold lane is read per frame: with the follower instant, each frame's gain is the

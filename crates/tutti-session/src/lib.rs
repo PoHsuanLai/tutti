@@ -68,6 +68,10 @@ mod jobs;
 mod key;
 #[cfg(feature = "midi")]
 mod midi;
+#[cfg(feature = "midi")]
+mod midi_event;
+#[cfg(feature = "midi-hardware")]
+mod midi_hardware;
 #[cfg(feature = "modulation")]
 mod modulation;
 mod node;
@@ -93,6 +97,8 @@ pub use builder::{SessionBuilder, root_width};
 pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
 pub use edge::EdgeGainError;
 pub use error::{ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result};
+#[cfg(feature = "midi")]
+pub use error::{MidiError, RouteDeclarer};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]
@@ -105,7 +111,7 @@ pub use graph::{
     ReplaceRefused, Taps,
 };
 #[cfg(feature = "midi")]
-pub use instrument::{InstrumentHandle, NotInstrument, SendError};
+pub use instrument::{InstrumentHandle, NotInstrument, SendError, SessionInstrument};
 pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
@@ -114,9 +120,13 @@ pub use key::{
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi,
-    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, UmpOut,
-    drain_receiver_through,
+    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, TakePlacement,
+    UmpOut, drain_receiver_through,
 };
+#[cfg(feature = "midi")]
+pub use midi_event::MidiEvent;
+#[cfg(feature = "midi-hardware")]
+pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]
 pub use modulation::{
     MixRef, ModRefusal, ModRouteId, ModSourceId, ModState, ModTarget, Mods, ModsView, NoAutomation,

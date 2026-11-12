@@ -214,6 +214,19 @@ impl EventTapReader {
         self.ring.pop_slice(out)
     }
 
+    /// Pops what is readable now, oldest first, one event at a time: the
+    /// events in the ring when this is called, and no more (an event the
+    /// executor writes while the iterator is read is for the next call). Each
+    /// one yielded is gone from the ring; one left unread (the iterator
+    /// dropped early) stays. Allocation-free.
+    ///
+    /// It reads the ring and nothing else: what the executor could not push is
+    /// still counted for [`take_lost`](Self::take_lost), whether or not the
+    /// ring is drained.
+    pub fn drain(&mut self) -> impl Iterator<Item = TapEvent> + '_ {
+        self.ring.pop_iter()
+    }
+
     /// Events readable now.
     #[must_use]
     pub fn available(&self) -> usize {

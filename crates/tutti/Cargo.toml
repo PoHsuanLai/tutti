@@ -219,3 +219,10 @@ test = true
 [[example]]
 name = "plugin_host"
 required-features = ["session", "clap", "export"]
+
+# Design 030 L1f-a, the MIDI acceptance program: every piece of the session's
+# MIDI together, offline and with no device. Run as a test (`test = true`).
+[[example]]
+name = "midi_all"
+required-features = ["session", "midi-hardware", "synth"]
+test = true

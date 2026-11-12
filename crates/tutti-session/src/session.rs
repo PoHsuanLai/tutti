@@ -286,55 +286,12 @@ pub enum SessionEvent {
     /// once per stretch it stays unresolved.
     #[cfg(feature = "modulation")]
     Modulation(crate::Problem),
-    /// The hardware out dropped events for want of an output: the total so
-    /// far, reported when it rises, at most once per
-    /// [`MIDI_OUT_DROP_REPORT`](crate::MIDI_OUT_DROP_REPORT) of
-    /// [`PhaseCx::now`].
+    /// A MIDI event of the session's, by area (design 030, convention 1):
+    /// a device came or went, a held input or the output was lost, a
+    /// negotiation settled, the device watch ended, or events were dropped.
+    /// See [`MidiEvent`](crate::MidiEvent).
     #[cfg(feature = "midi")]
-    MidiOutDropped(u64),
-    /// The hardware devices' event inlets dropped events because they were
-    /// full: the total so far, reported when it rises, at most once per
-    /// [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT) of
-    /// [`PhaseCx::now`]. An inlet's ring is emptied each block; it fills when
-    /// blocks stop coming (a stalled callback) or the device sends faster than
-    /// they empty it.
-    #[cfg(feature = "midi-hardware")]
-    MidiInputDropped(u64),
-    /// A MIDI device was added, removed or changed, in the order the OS
-    /// reported (design 017 §5). The session reads the devices in
-    /// `Phase::Poll`; the list at any time is
-    /// [`MidiSession::devices`](tutti_midi_hardware::MidiSession::devices).
-    #[cfg(feature = "midi-hardware")]
-    MidiDevice(tutti_midi_hardware::DeviceEvent),
-    /// A device the session held open as an input vanished: its connection
-    /// is closed and its port retired, after the [`MidiDevice`](Self::MidiDevice)
-    /// `Removed` that said so. What the device had queued is discarded; notes
-    /// it held are not released (design 017 §8.3 is not built).
-    #[cfg(feature = "midi-hardware")]
-    MidiInputLost(tutti_midi_hardware::DeviceInfo),
-    /// A device the session holds open as an input has settled its UMP Stream
-    /// negotiation (design 017 §5, M2-104 §7.1.6.1): the Endpoint it declared,
-    /// or the OS's description of it where it did not answer, and the Protocol
-    /// in use. Reported once per connection, from `Phase::Poll`; the state
-    /// stays readable as
-    /// [`MidiSession::stream`](tutti_midi_hardware::MidiSession::stream).
-    #[cfg(feature = "midi-hardware")]
-    MidiStream {
-        /// The device.
-        device: tutti_midi_hardware::DeviceId,
-        /// What is known of it (boxed: an Endpoint is large).
-        stream: Box<tutti_midi_hardware::DeviceStream>,
-    },
-    /// The device the session held open as its output vanished: the output is
-    /// closed, and what the hardware out sends is counted as dropped until a
-    /// host connects another.
-    #[cfg(feature = "midi-hardware")]
-    MidiOutputLost(tutti_midi_hardware::DeviceInfo),
-    /// The OS watch for MIDI devices ended on its own (the reason is the
-    /// message): the device list is frozen at what it last saw and no further
-    /// hot-plug is reported. Reported once.
-    #[cfg(feature = "midi-hardware")]
-    MidiWatchFailed(tutti_midi_hardware::WatchFailure),
+    Midi(crate::MidiEvent),
     /// A hosted plugin was declared dead (`tutti_plugin_host::Liveness`) with
     /// recovery off: its node was removed. Reported once. With recovery on
     /// the death is `PluginReloading`, and the node's removal
@@ -457,25 +414,7 @@ impl std::fmt::Debug for SessionEvent {
             #[cfg(feature = "modulation")]
             Self::Modulation(problem) => f.debug_tuple("Modulation").field(problem).finish(),
             #[cfg(feature = "midi")]
-            Self::MidiOutDropped(count) => f.debug_tuple("MidiOutDropped").field(count).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiInputDropped(count) => {
-                f.debug_tuple("MidiInputDropped").field(count).finish()
-            }
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiDevice(event) => f.debug_tuple("MidiDevice").field(event).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiInputLost(device) => f.debug_tuple("MidiInputLost").field(device).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiStream { device, stream } => f
-                .debug_struct("MidiStream")
-                .field("device", device)
-                .field("stream", stream)
-                .finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiWatchFailed(why) => f.debug_tuple("MidiWatchFailed").field(why).finish(),
-            #[cfg(feature = "midi-hardware")]
-            Self::MidiOutputLost(device) => f.debug_tuple("MidiOutputLost").field(device).finish(),
+            Self::Midi(event) => f.debug_tuple("Midi").field(event).finish(),
             Self::EventsDropped {
                 node,
                 port,
@@ -1111,6 +1050,8 @@ impl Session {
             graph: &mut self.graph,
             state: &mut self.midi_state,
             nodes: self.midi.as_ref(),
+            #[cfg(feature = "midi-hardware")]
+            io: self.midi_io.as_ref(),
         }
     }
 
@@ -1369,10 +1310,14 @@ impl Session {
         self.midi.as_ref()
     }
 
-    /// The OS MIDI layer, when the builder opened it
-    /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)).
-    #[cfg(feature = "midi-hardware")]
-    pub fn midi_io(&self) -> Option<&tutti_midi_hardware::MidiSession> {
+    /// The raw OS MIDI layer, when the builder opened it
+    /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)):
+    /// for a test that drives the layer under the session (a fake backend's
+    /// hot-plug, a device's ports and negotiation). A host reaches devices
+    /// through [`Midi`](crate::Midi) (`s.midi().connect_input(..)`) and the
+    /// events of `Session::update`.
+    #[cfg(all(feature = "midi-hardware", feature = "testing"))]
+    pub fn testing_midi_io(&self) -> Option<&tutti_midi_hardware::MidiSession> {
         self.midi_io.as_ref()
     }
 

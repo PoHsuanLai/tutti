@@ -24,7 +24,8 @@ impl TimedMidiEvent {
     /// have to remember whether `beat` or `event` comes first.
     #[inline]
     #[must_use]
-    pub fn new(beat: Beat, event: Ump) -> Option<Self> {
+    pub fn new(beat: Beat, event: impl Into<Ump>) -> Option<Self> {
+        let event = event.into();
         beat.get().is_finite().then_some(Self { event, beat })
     }
 

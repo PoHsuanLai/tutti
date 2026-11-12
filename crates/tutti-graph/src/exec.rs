@@ -2374,6 +2374,7 @@ impl Executor {
                                     tap,
                                     &*st.arena,
                                     &plan.audio_list[srcs.range()],
+                                    env.frame,
                                     frames,
                                 );
                             }

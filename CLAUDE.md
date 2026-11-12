@@ -77,7 +77,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
     queues and the one it replaces goes back to the control side
     (`tutti-engine/src/hearing.rs`).
   Both count what a slow reader loses (`TapReader::take_lost`, and
-  `Source::take_lost` through `Recorder::lost`).
+  `Source::take_lost` through `Recorder::lost`). A reader also keeps the graph's
+  clock: `TapReader::next_frame` is the graph frame of the next frame it hands
+  out (each block of a plan tap is stamped with its start, a lost block advances
+  it, a `pair` writer numbers its frames from zero), and `TapReader::contiguous`
+  is what can be read before the first gap, for a consumer that places every
+  frame (a take).
 - Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
   and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
   `Editor::open_event_tap` / `Graph::taps().open_event` on one event output, read

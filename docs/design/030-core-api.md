@@ -204,6 +204,15 @@ Two changes to `tutti-graph`:
 - Taps already ride the commit queue and survive edits; nothing else is
   needed.
 
+**Built** (§6 item 8, first half). The writer pushes a run (start frame, frames
+taken) into a small ring before each block's samples, so a reader that sees a
+sample sees its run; a block the lanes had no room for leaves no run, and the
+reader's clock jumps to the next run's start. `TapReader::contiguous` is the
+frames readable before that jump, so a consumer that places every frame never
+reads across a gap. A `pair` writer (an inlet's producer, the engine's heard tap)
+has no graph clock and numbers its frames from zero. An aligned tap is on the
+output's clock.
+
 ### 5.2 Where the take is placed
 
 A sample the inlet emits at graph frame `F` was played by the performer in

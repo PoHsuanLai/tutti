@@ -75,8 +75,7 @@ session.bounce(
     Bounce::project()
         .master("out/master.flac", Format::Flac { depth: IntDepth::Int16, level: FlacLevel::Standard })
         .normalize(Normalize::lufs(Db(-14.0)))
-        .stem(drums, "out/drums.flac")
-        .normalize_stems(StemGain::Shared),   // the master's gain, so stems still sum
+        .stem_with(Stem::new(drums, "out/drums.flac", flac).gain(StemGain::Shared)),   // the master's gain, so stems still sum
 )?;
 ```
 
@@ -153,7 +152,7 @@ common case.
 | Worker pool | The session's render pool, when its cost model says parallel pays. | `.serial()` forces the serial render. |
 | Dither | `Dither::Triangular` for every integer width (24-bit included); ignored by float and Vorbis targets. | `.dither(Dither::Off \| Rectangular)` |
 | Event loss | `Fail`: a dropped event fails the bounce. | `.on_event_loss(EventLossPolicy::Allow)` |
-| Normalize | None. | `.normalize(n)`, `.normalize_stems(StemGain)` |
+| Normalize | None. | `.normalize(n)`, per file stem `Stem::gain(StemGain)` |
 | Format | **Required.** `Bounce` has no default format; a missing one is `BounceError::Config(Missing)` at start, before any fork. | `.format(f)`, per-target `Stem::format(f)` |
 | Edit of the fork | None. | `.edit(PrepareEdit)`; runs on the job thread as today. |
 
@@ -958,12 +957,16 @@ format and only a file master has the file's knobs:
   `Missing(Field)` and `Field` are gone). `resample`, `dither`, `normalize` and
   `stem(node, path)` (a stem in the master's format) are methods of
   `Bounce<_, FileMaster>` alone, so a `master_buffers` bounce cannot be given a
-  normalize (a `compile_fail` doctest), and `NormalizeBuffers` is left for the one
-  case that is still a value: a `StemGain` other than `None` with a stem held in
-  memory.
-- A file stem always has its format (`Stem::new(node, path, format)`;
-  `Stem::format` is gone), so a buffer master still writes file stems. Those stems
-  are written with the default dither and no resample.
+  normalize (a `compile_fail` doctest).
+- A stem's kind is in its type: `Stem<N, FileStem>` (`Stem::new(node, path, format)`,
+  with `.gain(StemGain)`) or `Stem<N, BufferStem>` (`Stem::buffers(node)`, which has no
+  gain: a `compile_fail` doctest). `Bounce::normalize_stems`, `Stem::format` and
+  `BounceConfigError::NormalizeBuffers` are gone. A buffer master still writes file
+  stems; those are written with the default dither and no resample.
+- `FileTarget` and `BufferTarget` state their width once (`with_topology(topology)`
+  takes the `Option` no more and replaces the count), as `Spec` does, so a topology of
+  another width than the target cannot be written and the render-start refusal of it is
+  deleted. `Bounce::channels` and `Bounce::file_topology` replace each other.
 - `Produced::file` and `buffers` borrow, `into_file` and `into_buffers` own, so
   `done.stems()[0].file()` compiles (`Outcome::finished` and `into_finished` the
   same).

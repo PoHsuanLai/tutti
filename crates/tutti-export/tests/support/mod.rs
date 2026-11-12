@@ -111,16 +111,23 @@ impl ExportConfig {
         path: impl Into<PathBuf>,
         normalize: Option<Normalize>,
     ) -> FileTarget {
-        FileTarget::new(path, self.encode.format, self.encode.channels)
-            .with_topology(self.encode.topology.clone())
-            .with_resample(self.resample)
-            .with_dither(self.dither)
-            .with_normalize(normalize.map(NormalizeSpec::own))
+        let target = FileTarget::new(path, self.encode.format, self.encode.channels);
+        match &self.encode.topology {
+            Some(topology) => target.with_topology(topology.clone()),
+            None => target,
+        }
+        .with_resample(self.resample)
+        .with_dither(self.dither)
+        .with_normalize(normalize.map(NormalizeSpec::own))
     }
 
     /// The planes: `encode.channels` wide.
     pub fn buffer_target(&self) -> BufferTarget {
-        BufferTarget::new(self.encode.channels).with_topology(self.encode.topology.clone())
+        let target = BufferTarget::new(self.encode.channels);
+        match &self.encode.topology {
+            Some(topology) => target.with_topology(topology.clone()),
+            None => target,
+        }
     }
 
     pub fn buffers_job(&self) -> Result<Job> {

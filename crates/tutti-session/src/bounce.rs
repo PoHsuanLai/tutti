@@ -506,17 +506,21 @@ impl<N, M> Bounce<N, M> {
 
     /// The master file's width. Without it, the root's: a wider graph folds
     /// onto a narrower file, never truncates, and a narrowing with no placement
-    /// is an error ([`tutti_export::Error`]).
+    /// is an error ([`tutti_export::Error`]). It replaces a
+    /// [`file_topology`](Self::file_topology) named before it.
     pub fn channels(mut self, channels: ChannelLayout) -> Self {
         self.channels = Some(channels);
+        self.file_topology = None;
         self
     }
 
     /// What the master file's channels are (the WAV speaker mask, Ogg
     /// Vorbis's channel order); the engine's order for the width without it.
-    /// Its width must be the file's.
+    /// The file is as wide as the topology, so it replaces
+    /// [`channels`](Self::channels) named before it.
     pub fn file_topology(mut self, topology: ChannelTopology) -> Self {
         self.file_topology = Some(topology);
+        self.channels = None;
         self
     }
 
@@ -1769,16 +1773,23 @@ impl Session {
         let channels = channels.unwrap_or_else(|| ChannelLayout::clamped(outputs));
         let target: Target = match master.file() {
             Some(FileMaster { path, format }) => {
-                let file = FileTarget::new(path, format, channels)
-                    .with_topology(file_topology)
-                    .with_resample(resample)
-                    .with_dither(dither)
-                    .with_normalize(normalize.map(NormalizeSpec::own));
+                let file = FileTarget::new(path, format, channels);
+                let file = match file_topology {
+                    Some(topology) => file.with_topology(topology),
+                    None => file,
+                }
+                .with_resample(resample)
+                .with_dither(dither)
+                .with_normalize(normalize.map(NormalizeSpec::own));
                 file.into()
             }
             None => {
-                let planes = BufferTarget::new(channels).with_topology(file_topology);
-                planes.into()
+                let planes = BufferTarget::new(channels);
+                match file_topology {
+                    Some(topology) => planes.with_topology(topology),
+                    None => planes,
+                }
+                .into()
             }
         };
         // The stems: what each taps and where it goes, refused by name before

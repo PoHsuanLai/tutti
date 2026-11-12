@@ -1591,9 +1591,12 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `TakeError::Open` carries the codec's `Error`); `Bounce::format(..)` and
   `BounceConfigError::Missing(Field)` (and `Field`) → `Bounce::master(path, format)`; `.normalize`,
   `.dither`, `.resample` on a `master_buffers` bounce and `BounceConfigError::NormalizeBuffers` for a
-  master → unwritable (they are `Bounce<_, FileMaster>`'s; `NormalizeBuffers` stays for a
-  `StemGain` over a stem held in memory); `Stem::new(node, path)` and `Stem::format(..)` →
-  `Stem::new(node, path, format)`; `Bounce::stem` is a `FileMaster`'s (the master's format), and
+  master → unwritable (they are `Bounce<_, FileMaster>`'s); `BounceConfigError::NormalizeBuffers`
+  for a stem and `Bounce::normalize_stems(StemGain)` → `Stem<N, FileStem>::gain(StemGain)` (a
+  `Stem::buffers` stem, a `Stem<N, BufferStem>`, has none); `Stem::new(node, path)` and
+  `Stem::format(..)` → `Stem::new(node, path, format)`; `FileTarget::with_topology(Option<_>)` and
+  `BufferTarget::with_topology(Option<_>)` → `with_topology(topology)`, which replaces the width
+  (the render-start refusal of a topology of another width is deleted); `Bounce::stem` is a `FileMaster`'s (the master's format), and
   `stem_with` is any bounce's; `Produced::{file, buffers}(self)` and `Outcome::finished(self)` →
   borrowing `file`, `buffers`, `finished` and owning `into_file`, `into_buffers`, `into_finished`.
 

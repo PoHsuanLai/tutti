@@ -128,9 +128,11 @@ finding where the API produces wrong results today, not only friction.
 | C1 | **Bug**: `Wave::read` silently assumes 44.1 kHz when the container has no rate | refuse with `DecodeError`, or take the rate as an argument | S |
 | C2 | Saving a `Wave` takes a hand-built `Spec` and hand interleaving, and `Rendered` and `Wave` do not convert | `Wave::write(path, format)`, `layout`, `interleaved`, and `From<Rendered> for Wave` | M (built, step 10) |
 | C3 | `Spec` holds a `layout` and an optional `topology` that must agree. Codec constructors disagree on argument order and error type | `Spec` from a topology alone; one constructor shape | S (built, step 10) |
-| C4 | "Finite positive rate" is re-checked in four places and skipped in two. `Wave` counts in `usize` | check once at `SampleRate` construction if the unit rule allows (a distinct range); `Samples` in `Wave` | L |
+| C4 | "Finite positive rate" is re-checked in four places and skipped in two. `Wave` counts in `usize` | check once at `SampleRate` construction if the unit rule allows (a distinct range); `Samples` in `Wave` | L (deferred: plan below) |
 | E1 | `Bounce` takes `format` at runtime (`Missing(Format)`) and accepts file-only knobs (`NormalizeBuffers`) on a buffer master | `master(path, format)`; the file knobs only on `Bounce<_, FileMaster>` | M (built, step 10) |
 | E2 | Stem accessors consume `self`, so `done.stems()[0].file()` does not compile | borrowing accessors and `into_*` for the owned ones | S (built, step 10) |
+
+**C4, deferred: plan.** Surveyed at step 10 and not built, because the conversion is too wide for one PR. `SampleRate(pub f64)` is constructed with the tuple at 1283 sites in 484 files (tutti-session 86 files, tutti-nodes 71, tutti-graph 39, tutti-sampler 38, tutti-dsp 33, tutti-export 28, tutti-plugin 20, tutti-midi-runtime 18, tutti-plugin-host 16, tutti-engine 16, then the rest), most of them tests and benches. About twenty places re-check "finite and positive": `tutti-export/src/job.rs` (`is_rate`), `tutti-midi-runtime/src/clock_map.rs`, `tutti-plugin-types/src/lifecycle.rs`, `tutti-plugin-server/src/session.rs`, `tutti-dsp` (`model/reach.rs`, `stft/geometry.rs`, `filter/crossover/legacy.rs`), `tutti-measure` (`silence.rs`, `align.rs`, `tempo.rs`, `yin.rs`), `tutti-nodes/src/reverb.rs`, `tutti-types/src/value/timeline.rs`, `tutti-plugin-host` (`transport_walk.rs`, `transport_source.rs`), `tutti-plugin-ipc/src/client/audio/dispatch.rs`, `tutti-clap-host/src/instance/processor.rs`, `tutti-clap-ffi/src/plugin.rs` and `tutti-modulation/src/compile.rs`. The plan is two PRs. First, move callers to `SampleRate::new`/`of` or a named constant while the field is still public. Second, make the field private (`new -> Option`, `of`, serde through `TryFrom`, a `check_range_contract` test, the range-types gate) and delete the re-checks. The `Wave` change (`len()` and its frame counts in `Samples`) goes alongside, in the second PR.
 
 ### 3.4 Live recording and the playhead (owner-approved 2026-11-12)
 
@@ -492,7 +494,7 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      through) and lands `SamplerEvent::ClipLoaded`. The force is the `Residency` argument,
      not `.streamed()` on the clip: the choice is made in the load job, before there is a clip
      to call it on. `Recorded::clip()` is unchanged (resident).
-10. **Codec and export:** C2, C3, E1, E2 (built), then C4.
+10. **Codec and export:** C2, C3, E1, E2 built; C4 deferred after the lane (see its row).
    - C3: `Spec` has private fields and one statement of width, its topology
      (`Spec::new(format, topology, rate)`; `Spec::of_width(format, layout, rate)` is the
      engine's order for the width, unassigned where it has none, as the old `None`
@@ -515,9 +517,12 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      `Bounce<_, FileMaster>` alone, so a buffer master cannot be given them (a
      `compile_fail` doctest). A file stem always has its format
      (`Stem::new(node, path, format)`; `Stem::format` is gone), so a buffer master can still
-     write file stems; those stems take the default dither and no resample. `NormalizeBuffers`
-     stays for the one case a type does not yet rule out: a `StemGain` other than `None`
-     with a stem held in memory.
+     write file stems; those stems take the default dither and no resample. A stem's kind is
+     in its type (`Stem<N, FileStem>` has `.gain(StemGain)`, `Stem<N, BufferStem>` has none; a
+     `compile_fail` doctest), so `NormalizeBuffers` and `Bounce::normalize_stems` are gone.
+     `FileTarget` and `BufferTarget` hold one width, a count or a topology
+     (`with_topology(topology)` replaces the count), so the render-start refusal of a topology
+     of another width is deleted.
    - E2: `Produced::file` and `buffers` borrow (`Option<&Written>`, `Option<&Rendered>`),
      `into_file` and `into_buffers` own; `Outcome::finished` borrows and `into_finished`
      owns.

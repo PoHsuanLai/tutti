@@ -40,13 +40,8 @@ pub(crate) fn output_rate(target: &FileTarget, render_rate: SampleRate) -> Sampl
 fn spec(target: &FileTarget, source_rate: SampleRate) -> Spec {
     let rate = output_rate(target, source_rate);
     match target.topology() {
-        // A topology of another width than the file is the fold's to refuse,
-        // before any file is begun (`fold_from`); the file is the target's
-        // width either way.
-        Some(topology) if topology.layout() == target.channels() => {
-            Spec::new(target.format(), topology.clone(), rate)
-        }
-        _ => Spec::of_width(target.format(), target.channels(), rate),
+        Some(topology) => Spec::new(target.format(), topology.clone(), rate),
+        None => Spec::of_width(target.format(), target.channels(), rate),
     }
 }
 

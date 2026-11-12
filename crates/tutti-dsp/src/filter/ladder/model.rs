@@ -211,8 +211,12 @@ impl System for LadderModel {
         Samples::ZERO
     }
 
-    /// The linearised loop's ring: its slowest pole, `ln(eps) / ln r` frames.
+    /// The linearised loop's ring: unbounded from `k = 4` (the closed form of
+    /// `is_stable`), else its slowest pole, `ln(eps) / ln r` frames.
     fn tail(&self, floor: Db) -> Ring {
+        if !self.is_stable() {
+            return Ring::Unbounded;
+        }
         decay_ring(self.spectral_radius(), 1, floor, self.rate)
     }
 }
@@ -229,14 +233,19 @@ impl Lti for LadderModel {
         }
     }
 
-    /// The largest pole modulus of the linearisation (the roots as the iteration
-    /// found them): at or above 1 the small-signal system is unstable and the
-    /// saturator is what holds the real filter. The continuous ladder's poles
-    /// reach the imaginary axis exactly at `k = 4` and the bilinear map keeps the
-    /// circle, so at `k >= 4` the radius is at least 1 whatever the roots' rounding.
+    /// The largest pole modulus of the linearisation, as the root iteration
+    /// measured it: at or above 1 the small-signal system is unstable and the
+    /// saturator is what holds the real filter.
     fn spectral_radius(&self) -> f64 {
-        let r = self.poles().iter().map(|p| p.norm()).fold(0.0, f64::max);
-        if self.coeffs.k >= 4.0 { r.max(1.0) } else { r }
+        self.poles().iter().map(|p| p.norm()).fold(0.0, f64::max)
+    }
+
+    /// `k < 4`, in closed form: the continuous ladder `1 / ((1 + s)^4 + k)` has
+    /// its poles on the imaginary axis exactly at `k = 4`, and the bilinear map
+    /// takes that axis onto the unit circle, so the measured radius is not needed
+    /// (and its rounding cannot move the threshold).
+    fn is_stable(&self) -> bool {
+        self.coeffs.k < 4.0
     }
 
     /// Infinity: the linearisation has no bound the model can state (past the

@@ -195,12 +195,11 @@ fn the_radius_and_the_tail_are_what_the_linearised_filter_rings() {
     );
 }
 
-/// A resonance near 1 has a pole outside the unit circle in the linearisation
-/// (the loop gain `4 res` passes what the unassigned loop supports): the model says
-/// so, and `is_stable` is false: the real filter is held by the saturator.
+/// A full resonance (`k = 4`) puts the linearisation's poles on the unit circle:
+/// `is_stable` is false, the tail unbounded, and the real filter is held by the
+/// saturator. (Where the poles sit is `the_poles_cross_the_unit_circle_at_k_four`.)
 #[test]
 fn a_full_resonance_is_unstable_at_small_signal() {
-    assert!(model(LadderType::LP24, 1_000.0, 1.0).spectral_radius() >= 1.0);
     assert!(!model(LadderType::LP24, 1_000.0, 1.0).is_stable());
     assert!(model(LadderType::LP24, 1_000.0, 0.5).is_stable());
     assert!(
@@ -251,9 +250,15 @@ fn the_lp24_model_is_the_prewarped_bilinear_image_of_the_continuous_ladder() {
 /// poles are inside the unit circle for `res < 1` and the loop reaches it at 1.
 #[test]
 fn the_poles_cross_the_unit_circle_at_k_four() {
+    // The measured poles agree with the closed form: inside the circle below
+    // `k = 4`, on it at `k = 4` (the root iteration's rounding is the tolerance).
     for res in [0.9f32, 0.99, 0.999] {
-        assert!(model(LadderType::LP24, 1_000.0, res).is_stable(), "{res}");
+        let m = model(LadderType::LP24, 1_000.0, res);
+        assert!(m.is_stable(), "{res}");
+        assert!(m.spectral_radius() < 1.0, "{res}: {}", m.spectral_radius());
     }
-    let r = model(LadderType::LP24, 1_000.0, 1.0).spectral_radius();
+    let m = model(LadderType::LP24, 1_000.0, 1.0);
+    assert!(!m.is_stable());
+    let r = m.spectral_radius();
     assert!((r - 1.0).abs() < 1e-9, "{r}");
 }

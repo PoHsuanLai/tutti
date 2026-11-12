@@ -1,8 +1,6 @@
 use super::*;
 use crate::Setup;
-use crate::contract::RealizationCase;
-use crate::contract::cases::realization as cases;
-use crate::testing::flaws::{Defect, Defective};
+use crate::contract::RecurrenceCase;
 
 fn controls(room: f32, damp: f32) -> FreeverbControls {
     FreeverbControls {
@@ -11,7 +9,7 @@ fn controls(room: f32, damp: f32) -> FreeverbControls {
     }
 }
 
-impl RealizationCase for FreeverbFamily {
+impl RecurrenceCase for FreeverbFamily {
     fn probes(&self) -> Vec<FreeverbControls> {
         vec![
             controls(0.5, 0.5),
@@ -33,124 +31,7 @@ impl RealizationCase for FreeverbFamily {
     }
 }
 
-crate::realization_contract!(FreeverbFamily, Lti, reverb, BlockIndependent);
-
-fn defective(defect: Defect) -> Defective<FreeverbFamily> {
-    Defective {
-        inner: FreeverbFamily,
-        defect,
-        tweak: |_| {},
-    }
-}
-
-#[track_caller]
-fn fails(result: Result<(), String>, why: &str) {
-    let e = result.expect_err("the case should fail on the defective realization");
-    assert!(e.contains(why), "{e}");
-}
-
-/// Each case of the contract fails on a Freeverb with the defect its
-/// mutation names (the cases' mutation records, run every time).
-#[test]
-fn a_defective_realization_fails_its_case() {
-    // rt60: a loop gain 5% too high rings 39% longer.
-    let m = defective(Defect::LoopGain(1.05));
-    fails(cases::rt60(&m), "measured RT60");
-    // tail: 3% too high rings 2.4 times as long at room 0.9.
-    let m = defective(Defect::LoopGain(1.03));
-    fails(cases::tail_covers(&m), "dB");
-    // stability: a gain that never stops growing.
-    fails(cases::stability(&defective(Defect::Runaway)), "");
-    // band order: no damping, every band like the lowest.
-    let m = defective(Defect::NoDamping);
-    fails(cases::band_order(&m), "bands");
-    // arrival: a frame late, and a latency that claims a frame.
-    fails(
-        cases::arrival(&defective(Defect::LateByOne)),
-        "first output",
-    );
-    fails(
-        cases::arrival(&defective(Defect::FalseLatency)),
-        "first output",
-    );
-    // latency: one frame more than the network has.
-    fails(cases::latency(&defective(Defect::FalseLatency)), "latency");
-    // wet only: the input leaks to the output.
-    fails(
-        cases::wet_only(&defective(Defect::DryLeak)),
-        "shortest path",
-    );
-    // decorrelated: both channels alike.
-    fails(
-        cases::decorrelated(&defective(Defect::MonoOutput)),
-        "correlate",
-    );
-    // click free: a gain of 4 applied whole at the retarget.
-    fails(
-        cases::click_free(&defective(Defect::UnslewedGain(4.0))),
-        "jump",
-    );
-    // A modest step too: 1.5 times fails the 3 times allowance (measured
-    // margins of the clean realizations: Freeverb 1.98, the FDN 1.51 times the
-    // steady jump).
-    fails(
-        cases::click_free(&defective(Defect::UnslewedGain(1.5))),
-        "jump",
-    );
-    // line lengths: the longest comb 5% long (inside the RT60 tolerance).
-    let m = Defective {
-        inner: FreeverbFamily,
-        defect: Defect::None,
-        tweak: |k| k.parts_mut().2.inner.lengthen_last_comb(1722),
-    };
-    fails(cases::line_lengths(&m), "first echo");
-    // reset that does nothing; fresh that keeps the state; a gain that
-    // depends on the block.
-    fails(cases::reset(&defective(Defect::NoReset)), "reset");
-    fails(cases::fresh(&defective(Defect::FreshKeepsState)), "fresh()");
-    fails(
-        cases::block_independent(&defective(Defect::BlockDependent)),
-        "blocks of",
-    );
-}
-
-/// The `Lti` realization cases fail on a Freeverb with the defect their
-/// mutation names (and the measured figures of the clean one, with the
-/// margins, are in the cases' own docs).
-#[test]
-fn a_defective_freeverb_fails_the_lti_realization_cases() {
-    use crate::testing::flaws::Lying;
-    // linear: a saturation breaks additivity; a gain that moves with the
-    // frame is linear and breaks shift invariance.
-    fails(cases::linear(&defective(Defect::Tanh)), "additivity");
-    fails(
-        cases::linear(&defective(Defect::PeriodicGain)),
-        "shift invariance",
-    );
-    // response: the output 10% high from the second retarget on, and every
-    // comb gain 5% high.
-    fails(
-        cases::response(&defective(Defect::UnslewedGain(1.1))),
-        "impulse response's spectrum",
-    );
-    fails(
-        cases::response(&defective(Defect::LoopGain(1.05))),
-        "impulse response's spectrum",
-    );
-    // decay: every comb gain 5% high decays at 72% of the radius's rate.
-    fails(
-        cases::decay(&defective(Defect::LoopGain(1.05))),
-        "spectral radius",
-    );
-    // tail tightness: a model whose tail is twice the truth.
-    let lying = Lying {
-        inner: FreeverbFamily,
-        tail: 2.0,
-        hinf: 1.0,
-        l1: 1.0,
-    };
-    fails(cases::tail_tight(&lying), "the tail to");
-}
+crate::recurrence_contract!(FreeverbFamily, Lti, reverb, BlockIndependent);
 
 /// At the General MIDI controls `retarget` leaves the combs on exactly the
 /// coefficients a freshly built `Freeverb` starts with, bit for bit, so the
@@ -184,10 +65,10 @@ fn a_network_it_does_not_understand_is_ignored() {
     let before = realization.figures().comb;
     realization.retarget(&Network::new(rate));
     let mut flat = FreeverbFamily.member(&controls(0.9, 0.9), rate);
-    crate::testing::flaws::map_absorption(&mut flat, |_| Absorption::Gain(Amplitude(0.5)));
+    crate::testing::map_absorption(&mut flat, |_| Absorption::Gain(Amplitude(0.5)));
     realization.retarget(&flat);
     let mut unstable = FreeverbFamily.member(&controls(0.9, 0.9), rate);
-    crate::testing::flaws::map_absorption(&mut unstable, |_| Absorption::OnePole {
+    crate::testing::map_absorption(&mut unstable, |_| Absorption::OnePole {
         gain: Amplitude(1.5),
         damp: 0.2,
     });

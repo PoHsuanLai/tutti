@@ -775,7 +775,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it; `contract`, behind the off-by-default `contract`
   feature, is the one public module: the cases a `Family` and its `Realized` runner are
-  held to, `family_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
+  held to, `family_contract!` and `recurrence_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and

@@ -9,6 +9,13 @@ tempo. This design replaces it with a stretcher written as doc 024's class 6
 (multirate or time-scale), built in `tutti-dsp`, plus the pitch lock that
 drives it from the transport.
 
+**Note, 2026-11-12:** the trait sketches below predate doc 024's amendments C
+(section 2.7). `Design`, `Realization<M>`, `Effect<M>` and `Kernel` are gone (now `Family`,
+`Recurrence` and the one runner `Realized`), and `realization_contract!` / `design_contract!` are
+`recurrence_contract!` / `family_contract!`. A stretcher consumes and produces different frame
+counts, so it is doc 024 section 2.7.3's `Transducer`, not a `Recurrence`; the stretch lane
+rewrites `Retime` and these sketches on that shape when it builds them.
+
 Status: design only; nothing here is implemented. It follows the owner's
 decisions of 2026-11-07 (a trait first with an enum at most on top, in-house
 first with a listening gate, a power link with caller-declared groups,

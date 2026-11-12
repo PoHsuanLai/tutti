@@ -155,7 +155,7 @@ marked "on `main` (#367)".
 | `Ceiling { rate, max_decay, floor }` | `network/design.rs` | `max_decay` is; `rate` and `floor` are not |
 | `Bounds { lines, stages, taps, outputs, line, delay, ir, pre_delay, tail }`, `Sizes::measure`, `dominates` | `network/design.rs` | Every field but `tail` |
 | On `main`: `Realization` (non-generic; PR 1a renamed it from `Kernel`, and step 1 / PR 1b makes it `Realization<M>`), `Setup { rate, max_block }`, `Effort` | `network/realization.rs` | `Realization` names `Network` and `Bounds`; `Setup` and `Effort` are not reverb at all |
-| `design_contract!`, `DesignCase`, `Mutant`; `realization_contract!`, `RealizationCase`, `Defect` (PR 1a renamed them from `kernel_contract!`, `KernelCase`) | `contract/design.rs`, `contract/realization.rs` (a crate-root `#[cfg(test)] mod contract` since PR 1a) | Crate-private and `cfg(test)`; the cases mix generic ones (pure, bounds dominate, reset, fresh, block independence, click-free, latency, no allocation) with reverb ones (`rt60`, `band_order`, `decorrelated`, `line_lengths`, freeze) |
+| (then) `design_contract!`, `DesignCase`; `realization_contract!`, `RealizationCase` (PR 1a renamed them from `kernel_contract!`, `KernelCase`; now `family_contract!`, `FamilyCase`, `recurrence_contract!`, `RecurrenceCase`, section 2.7.6 step 3) | `contract/design.rs`, `contract/realization.rs` (a crate-root `#[cfg(test)] mod contract` since PR 1a) | Crate-private and `cfg(test)`; the cases mix generic ones (pure, bounds dominate, reset, fresh, block independence, click-free, latency, no allocation) with reverb ones (`rt60`, `band_order`, `decorrelated`, `line_lengths`, freeze) |
 | On `main`: `DesignNode<D>`, `NodeDesign`, `ControlParams` (PR 1a renamed them from `ReverbNode`, `ReverbDesign`, `ReverbParams`), `DryAlign` | `tutti-nodes/src/reverb.rs`, `dry_align.rs` | The control path, tail report, `longest`, parking, cut-to-frame, fork and dry alignment are generic; the names are not |
 | On `main`: node tests | `tutti-nodes/tests/reverb/reverb_node.rs`, `reverb_node_generic.rs` | Generic cases through a lying design |
 
@@ -480,10 +480,21 @@ For the SVF:
      └─────────────────→ (ℂ → ℂ) ──────────────┘
 ```
 
-`H_{φ(c)} = β_g(H_{a,c})`. The ladder's version of this diagram,
-`the_lp24_model_is_the_prewarped_bilinear_image_of_the_continuous_ladder`, is the test that
-caught the unit delay in its feedback path. A family whose `φ` has no closed-form reference
-(the FDN's) states the property its design guarantees instead (the decay at each band).
+`H_{φ(c)} = β_g(H_{a,c})`. Each family's diagram is a test, from a prototype written out in
+the test and not from the model's own code:
+
+| Family | Design diagram |
+|---|---|
+| SVF | `the_svf_model_is_the_prewarped_bilinear_image_of_the_analog_prototype` (`filter/svf/model/tests.rs`: all eight responses, the bell and shelves on the RBJ analog prototypes) |
+| Ladder | `the_lp24_model_is_the_prewarped_bilinear_image_of_the_continuous_ladder` (`filter/ladder/model/tests.rs`), the test that caught the unit delay in its feedback path |
+| Crossover | `the_two_bands_are_the_prewarped_bilinear_image_of_the_lr4_prototypes` (`filter/crossover/model/tests.rs`), with `the_bands_are_6_db_down_at_the_crossover_and_sum_to_an_all_pass` for the sum |
+| Freeverb, FDN | no closed-form reference: the property the design guarantees, the decay at each band, is the family contract's `rt60_matches` and `band_order` (the model's RT60 at each band is the requested one) and the recurrence contract's `rt60` and `band_order` (the render rings as the model says) |
+
+The contract states the three laws once, as `recurrence_contract!` (law 1: `latency`, `arrival`,
+and with `Lti` `response`, `decay`, `linear`, `stability`, `tail_covers`, `tail_tight`, with `reverb`
+`rt60`, `band_order` and the rest; law 2: `block_independent`, `stream_clock`, `cadence`; law 3:
+`landed`, `click_free`, `reset`, `fresh`), and the diagram of the member's own queries as
+`family_contract!`.
 
 #### 2.7.5 The code: one function per map
 
@@ -625,9 +636,16 @@ This section is the target; the code moves in steps, each a PR that changes no r
    `Option` or rebuild it, and `clear` writes s₀ in place without allocating. The contract's
    `FamilyCase::capacity` gives the runner its capacity (`()` for a family that does not grow) and
    the `Grows` group (`reach_covers_need`) runs only for a `Grows` family. `realization_contract!` and
-   `RealizationCase` keep their names until step 3.
+   `RealizationCase` kept their names until step 3.
 3. **The contract becomes the diagrams:** `family_contract!` states each family's design
-   diagram, `recurrence_contract!` laws 1 to 3.
+   diagram, `recurrence_contract!` laws 1 to 3. *Landed 2026-11-12, no render changes:*
+   `realization_contract!` and `RealizationCase` are `recurrence_contract!` and `RecurrenceCase`,
+   the macro laid out by the three laws with a doc per group, and the SVF's design diagram
+   (`the_svf_model_is_the_prewarped_bilinear_image_of_the_analog_prototype`) and the crossover's
+   (`the_two_bands_are_the_prewarped_bilinear_image_of_the_lr4_prototypes`) are added beside the
+   ladder's. The mutation scaffolding (`Mutant`, `Defective`, `Flawed`, `Lying`, `ToyFdn`, the runner's
+   test-only `Flaw`) and the tests that existed only to show a case catches a planted defect are
+   deleted, on the owner's direction.
 
 They go after the ladder fix and before the dynamics lane, so no lane is written against
 the old traits. The first lane that builds a generator on the runner (the control sources)
@@ -940,7 +958,7 @@ How each class answers through its own structure, and what it is **not**:
   a pole-zero list of order `sum of lengths`; its `spectral_radius` is the bound it
   already has (`rt60_bound`'s slowest per-frame decay times `max(||A||, 1)`,
   doc 022 "Step 1a as built") and its `l1_norm` is the L1 bound its realization
-  contract already computes (`RealizationCase::peak_bound`); its `hinf_norm` is the same
+  contract already computes (`peak_bound`, since retired: `stability` holds the render to `l1_norm`); its `hinf_norm` is the same
   figure unless the structure gives a tighter one (an orthogonal mixing matrix does not
   raise the peak). Both are *sufficient*
   bounds, stated as such, and the contract measures that the truth is under them.
@@ -1086,7 +1104,7 @@ pub trait Readout { type Value: Copy; fn take(&mut self) -> Self::Value; }
 (Q16, as built in step 1: an earlier draft moved them into the constructor). Under B1 the
 realization of every effect is the one generic `Realized<K>` (section 4.3a), so this trait is
 implemented once in production; it stays the seam the contract runs against, and the contract's
-mutants (`contract/flaws.rs`) implement it directly.
+planted-defect doubles (deleted 2026-11-12) implemented it directly.
 
 **The model is the equivalence class and the realization is one realization.** The
 trait says so by being generic over the model rather than an associated type of
@@ -1314,7 +1332,7 @@ instances `BLOCK` and `every(n)`; the FDN's private chunk clock is the instance 
 and the "normative cadence" some formats have is not a cadence at all but a trajectory whose
 anchor is data (section 4.5a). **Landed (2b0, A1 half):** `Cadence`, `Period` and `Anchor` are in
 `model/cadence.rs` with `BLOCK`, `every`, `stream`, `period`, `anchor` and `block_independent`, and
-the enum is deleted. The one reader of `Design::CADENCE` is the contract: `realization_contract!`
+the enum is deleted. The one reader of `Design::CADENCE` is the contract: `recurrence_contract!`
 runs `block_independent` and `stream_clock` iff `block_independent()`. `DesignNode` does not read
 it yet (2b).
 
@@ -1866,7 +1884,7 @@ designs (Q9 covers the inherent methods those nodes expose today, such as
 Written **once per class**, in `tutti-dsp::contract` (section 9). A realization of
 a model inherits every case of the model's class; a composite inherits the cases of
 its result class; a family adds only the cases that are its own. Doc 022's
-`design_contract!` and `realization_contract!` become a **core** every family runs and
+`design_contract!` and `realization_contract!` (now `family_contract!` and `recurrence_contract!`) become a **core** every family runs and
 **class groups** a family opts into by naming its class. Every figure is analytic
 or from the spec, never another implementation's render (CLAUDE.md, "Do not
 compare a render against another reference render in a new test"). The cases are
@@ -1878,7 +1896,7 @@ and compare it to the model's invariant.
 The generic cases already in the realization contract (on `main`), with the reverb's
 figure replaced where it was one:
 
-| Case | Figure | Mutant |
+| Case | Figure | A defect it catches |
 |---|---|---|
 | Pure | same controls give the same model; non-finite controls leave the last good ones; `design_into` under `assert_no_alloc` | read a clock |
 | Bounds dominate | `bounds()` holds `measure(design())` for every reachable control | undersize by one |
@@ -1890,7 +1908,7 @@ figure replaced where it was one:
 
 Three further cases came out of the FDN (doc 022 "Step 1c as built") and are core:
 
-| Case | Figure | Mutant |
+| Case | Figure | A defect it catches |
 |---|---|---|
 | Landed | the first `retarget` after `prepare`, `reset` or `fresh` lands at once (a realization built at a model *is* at it); later retargets ramp; `reset` and `fresh` equal a settled realization | ramp the first retarget; `reset` that keeps a half-ramped state |
 | Stream clock | a ramp's clock runs from the last reset, not from a block's edge: blocks of 1, 17, 64, 512 are bit-identical **with the controls changing** (found by `block_independent`) | restart the ramp at each block |
@@ -1908,7 +1926,7 @@ own `tests/` file.
 
 ### 6.2 Class groups
 
-| Class | Design case (no realization) | Realization case (realization against model) | Mutant pattern |
+| Class | Design case (no realization) | Realization case (realization against model) | A defect it catches |
 |---|---|---|---|
 | **`Lti`** (1; also 2 at frozen `theta`) | `spectral_radius` below 1 on the whole reachable grid and the radius is a true bound on the poles where they are cheap; `frequency_response` at the family's **figures** (`Figure`) equals the spec (LP at `fc` is -3.01 dB at Butterworth Q; a bell's centre is its gain; a shelf is half its gain at `fc`; LR4 is -6.02 dB at `fc` and the bands sum flat); `tail` non-decreasing along the family's slower pairs; order 0: `spectral_radius == 0`, `tail == 0`; `hinf_norm <= l1_norm` | **Membership:** the realization is linear (`f(a+b) = f(a)+f(b)`, `f(ka) = k f(a)`) and shift-invariant (a delayed input gives the delayed output) at the frozen setting, within rounding. **Response:** the `RealFft` of the impulse response against `frequency_response`, magnitude (and phase where declared) on a log grid. **Ring time:** the measured decay rate against `spectral_radius`, the measured time to -40, -60, -90 dB within `tail(floor)` (covers) and `tail` not above a declared slack over it (tight). **Stability and `l1_norm`:** 60 s of noise at the extreme controls finite and under `l1_norm` (the guarantee against overs). **`hinf_norm`:** the measured peak of the response grid is under `hinf_norm` and `hinf_norm` is not above a declared slack over it (what an EQ display scales to); a model that returns the default (`l1_norm`) fails the tightness case if it claims otherwise. **DC:** the measured DC gain against `dc_gain` | add a `tanh` (membership fails); detune the cutoff 2% (response fails); halve `tail` (covers); double it (tight); a pole outside the unit circle (stability) |
 | **`Controlled`** (2) | the source's `slew_bound` is slow against the period of `CADENCE`; order 0: `norm_over_theta` is the supremum over the range | (i) at the grid points the realization's frozen response **is** `design(theta(t))`'s (a response check after the segment); (ii) a step trajectory lands exactly on its frame; (iii) a trajectory crossing a block edge equals the same trajectory inside one block; (iv) a law applied in `theta`-space keeps an isometry at every frame (an energy check along a rotation); (v) a vector `theta` of `N` pieces at one offset changes in one frame | a realization that never reaches the target; a step one frame early; a ramp that restarts per block; a ramp in matrix space for a rotation (an energy dip at the midpoint); one lane offset by a frame |
@@ -1931,8 +1949,8 @@ job: it does not know or care which structure it was handed.
 ```rust
 // In the family's test module (or tutti-dsp tests for the families in tutti-dsp):
 design_contract!(SvfDesign: Lti);
-realization_contract!(SvfDesign: Lti, tolerance = ..);        // runs the Lti group over SvfDesign::Realization
-realization_contract!(Tdf2Design: Lti, tolerance = ..);       // another realization of the same model
+recurrence_contract!(SvfDesign: Lti, tolerance = ..);        // runs the Lti group over SvfDesign::Realization
+recurrence_contract!(Tdf2Design: Lti, tolerance = ..);       // another realization of the same model
 ```
 
 1. The family names its **class**. The class is a trait bound on `D::Model`, so
@@ -1946,9 +1964,11 @@ realization_contract!(Tdf2Design: Lti, tolerance = ..);       // another realiza
    fails unless the type appears in a `*_contract!` list, as
    `check-range-types` does for its rule. The plugin contract's `gaps = N`
    ratchet is the precedent for a count a reviewer must raise.
-4. Each case has a `Defect`/`Flawed` mutant run by a self-test in `tutti-dsp` (the
-   `a_defective_realization_fails_its_case` pattern of #367), so a case that cannot fail
-   cannot ship.
+4. A case is checked once, locally, when it is written (break the property in the host or
+   the plugin and see it fail). The planted-defect self-tests this item used to ask for
+   (`Defect`, `Flawed`, a `Defective` family run against every case) were deleted 2026-11-12
+   on the owner's direction: a recorded mutation is baggage, and the cases hold the render to
+   the member's own figures, from the spec.
 5. A family's own cases (`rt60`, `band_order`, `line_lengths`, freeze for the
    reverb; `sum_flat` for the crossover; the knee's quadratic for the compressor)
    are listed beside the class, not inside it.
@@ -2096,7 +2116,7 @@ fn longest(&self, io: &Io<'_>, first: usize) -> Option<Self::Controls> { /* defa
 
 and the design contract's tail case verifies the table: for each entry a
 `tail_pairs` check that the model's `tail` is non-decreasing in the declared
-direction (a wrong direction fails, which is the mutant). A family whose
+direction (a wrong direction fails). A family whose
 parameters interact (the tail is not separable) overrides `longest`, as the reverb
 does today. The node's `since`/`ring` logic is unchanged.
 
@@ -2146,7 +2166,7 @@ Layering per CLAUDE.md and `scripts/check-layout.sh` (lines 381 to 383:
 |---|---|---|---|
 | `Design`, `Realization<M>`, `Effect<M>`, `Setup`, `Channels`, `Ring`; the class traits (`System`, `Lti`, `Memoryless`, `SteadyState`, `Autonomous`, `Periodic`, `Piecewise`, `Noise`), `Fidelity`, `Readout`, `Graded`; the combinators (`Series`, `Parallel`, `SeriesN`, `Wiener`, `Hammerstein`, `GainControl`); the engineering items (`Bounds`, `Ceiling<R>`, `Effort`, `Cadence` with its anchor); `ControlSource`, `Settled`, `Controlled`; `Complex64` use | `tutti-dsp`, a neutral module (`model`), exported at the crate root | 2 | no new tutti edge; `forbid(unsafe_code)`; no atomics or `Arc`-published state; every control arrives per call |
 | The families' models and designs | `tutti-dsp` (`filter/`, `dynamics/`, `delay`, `waveshape`, `convolver`, `reverb`, `resample/`, `dither`, and by the consolidation below the smoother, the biquad, `LimiterKernel`, the vocoder parts) | 2 | pure algorithm over slices; a node file holds only the adapter (CLAUDE.md) |
-| `contract` module: core cases, class groups, `design_contract!`, `realization_contract!`, `no_alloc_contract!`, the measuring helpers, `Defect` and `Flawed` | `tutti-dsp`, behind a `contract` feature (off by default; `rand` becomes an optional dependency of it) | 2 | the precedent is `tutti-graph`'s `contract` feature (`lib.rs` lines 201 to 222; `tutti-nodes` turns it on in its dev-dependencies) |
+| `contract` module: core cases, class groups, `design_contract!`, `recurrence_contract!`, `no_alloc_contract!`, the measuring helpers | `tutti-dsp`, behind a `contract` feature (off by default; `rand` becomes an optional dependency of it) | 2 | the precedent is `tutti-graph`'s `contract` feature (`lib.rs` lines 201 to 222; `tutti-nodes` turns it on in its dev-dependencies) |
 | `Quality` | `tutti-types`, beside `RenderMode` | 1 | vocabulary only |
 | The trajectory and its laws (`Piece`, `Trajectory`, the curve shapes of row 51) | **Q25, decided (owner, 2026-11-11): a new layer-1 crate, `tutti-curve`**, built from `SegmentShape`'s laws (now `Law`), replacing `audio-automation`; `Trajectory` (breakpoints in `Beat`, each piece following a `Law`) is built, in `tutti-curve`; `Piece` is built; its generalisation over unit and time domain (step 2b0, A2) is not | 1 | none left; the model reaches the law from below `tutti-graph` |
 | The basis and metric (`Speaker` variants, `ChannelTopology::gram`, the ambisonic constructor) and `Fold` as the one order-0 map, in `f64` | `tutti-types`, where `Fold` and `ChannelTopology` are | 1 | vocabulary plus `Fold`'s apply, which CLAUDE.md already names; the dsp-side `System`/`Lti` impls are on a one-field wrapper in `tutti-dsp` |
@@ -2249,7 +2269,7 @@ Step 1a (PR 1a, renames only) did the rows it marks **done**; step 1b (PR 1b, th
 | `ReverbDesign` | `NodeDesign`: **done** |
 | `ReverbParams` | `ControlParams`: **done** |
 | `network::contract::{DesignCase, cases}` | `contract::design` (**done**: the crate-root `#[cfg(test)] mod contract`); PR 1b splits out `reverb::cases` for the reverb-only ones |
-| `network::kernel_contract::{KernelCase, Defect, Flawed}`, `kernel_contract!`, `Kernel`, `Design::kernel` | `contract::realization::{RealizationCase, Defect, Flawed}`, `realization_contract!`, `Realization` (non-generic), `Design::realization`: **done** (`network/kernel.rs` is `network/realization.rs`) |
+| `network::kernel_contract::{KernelCase, Defect, Flawed}`, `kernel_contract!`, `Kernel`, `Design::kernel` | `contract::realization::RealizationCase` (now `RecurrenceCase`), `realization_contract!` (now `recurrence_contract!`), `Realization` (non-generic), `Design::realization`: **done** (`network/kernel.rs` is `network/realization.rs`) |
 | `Network` (the model) | unchanged; `Network: System + Lti`: **done** |
 | `Ceiling` | `Ceiling<R>`; the reverb's is `Ceiling<MaxDecay>`: **done** |
 | `Bounds` (the struct) | stays the reverb's, as `FreeverbDesign::Bounds`; no longer part of the model (`network/bounds.rs`, `impl Sizes`): **done** |
@@ -2342,6 +2362,13 @@ list of `(Hook, why)`), and the `Lti` cases (`radius`, `anchors`, `norms`, `port
 `decay`, `tail_tight`). `peak_bound` is retired (`stability` holds the render to `l1_norm`). The FDN's
 workarounds (fit depth, tone probes, static probes, the 15% RT60 tolerance) are kept: the response case holds
 the realization's whole response, but the RT60 cases read the model's `rt60` and do not use it.
+
+*Superseded 2026-11-12 (step 3 of section 2.7.6).* The `cfg(test)` `flaws.rs` above (`Defect`,
+`Flawed`, `Defective`, `Mutant`, `ToyFdn`, `Scaled`, `Lying`, `Lie`), the two test-only flaws in
+the runner and every test that planted a defect to show a case catches it are deleted, on the owner's
+direction (recorded mutation tests are baggage); `ToyFdn`'s only job was to run the contract on
+itself. `RealizationCase` is `RecurrenceCase` and `realization_contract!` is `recurrence_contract!`,
+laid out by the three laws of section 2.7.4.
 
 **Findings, for the record.**
 
@@ -2512,7 +2539,7 @@ Step 2b ran as one lane of PRs; amendments B (Summary) re-cut what follows it.
 Proof for PR7: the contract macros on every kernel, block independence, and the SVF and ladder digests
 unmoved (the generic runs the same step and glide as the code it replaces, so a moved digest is a defect
 in the generic); a new contract case that a glide's midpoint between two reachable coefficient sets is
-stable (a biquad's stable region in `(a1, a2)` is a triangle, so convex), with a mutation (lerp past 1).
+stable (a biquad's stable region in `(a1, a2)` is a triangle, so convex), (a lerp past 1 must fail it).
 The FDN may move in the last bits; Freeverb moves where a control moves (its new glide), and both are
 listed in the PR.
 

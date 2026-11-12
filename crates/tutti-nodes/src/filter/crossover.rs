@@ -9,7 +9,7 @@ use tutti_types::{BusTopology, ChannelLayout, Hz, Param, SampleRate};
 #[cfg(test)]
 use tutti_types::{UnitAddr, UnitParam};
 
-use super::NodeKernel;
+use super::NodeRecurrence;
 use crate::ramp::LastGood;
 use crate::reverb::DesignNode;
 
@@ -141,7 +141,7 @@ control_set! {
     }
 }
 
-impl NodeKernel for CrossoverTree {
+impl NodeRecurrence for CrossoverTree {
     type Set = CrossoverSet;
 
     fn set(&self, _: &CrossoverControls) -> CrossoverSet {

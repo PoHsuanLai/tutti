@@ -17,7 +17,7 @@ use super::kernel::{LadderCoefficients, ladder_step};
 use super::{LadderControls, LadderModel, LadderType};
 use crate::Lerp;
 use crate::filter::real::Real;
-use crate::{ChannelKernel, Filter};
+use crate::{ChannelRecurrence, Filter};
 
 /// The [`Design`](crate::Design) of the ladder filter, `channels` wide, with state
 /// precision `F` (`f64` in the nodes, for accuracy at low cutoffs). The coefficients
@@ -25,7 +25,7 @@ use crate::{ChannelKernel, Filter};
 /// channel.
 pub type LadderDesign<F> = Filter<Ladder<F>>;
 
-/// The ladder as a [`ChannelKernel`]: `[s0, s1, s2, s3]` per channel, in state precision
+/// The ladder as a [`ChannelRecurrence`]: `[s0, s1, s2, s3]` per channel, in state precision
 /// `F`.
 #[derive(Clone, Copy, Debug)]
 pub struct Ladder<F>(PhantomData<fn() -> F>);
@@ -71,7 +71,7 @@ impl<F: Real> Lerp for LadderPoint<F> {
     }
 }
 
-impl<F: Real> ChannelKernel for Ladder<F> {
+impl<F: Real> ChannelRecurrence for Ladder<F> {
     type Controls = LadderControls;
     type Model = LadderModel;
     type Coeffs = LadderPoint<F>;

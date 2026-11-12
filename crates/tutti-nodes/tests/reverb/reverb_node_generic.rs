@@ -4,9 +4,11 @@
 //! to the realization's latency, the cut at `tail + latency` inside a block, and a
 //! block-aligned park. Every figure is the definition of a delay.
 
+use std::ops::Range;
+
 use tutti_dsp::{
-    Ceiling, Channels, Design, Effect, Effort, FirSummary, MaxDecay, Network, NetworkSizes,
-    Realization, Setup, Sizes, Stage,
+    Approach, Ceiling, Channels, Design, Effort, FirSummary, MaxDecay, Network, NetworkSizes,
+    Recurrence, Sizes, Stage, Start,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
@@ -30,53 +32,86 @@ struct Echo {
     latency: usize,
 }
 
+/// The echo's recurrence: its delay line is the state, it has no coefficients.
 #[derive(Clone, Debug)]
-struct EchoKernel {
-    line: Vec<f32>,
-    at: usize,
+struct EchoRecurrence {
     echo: Echo,
 }
 
-impl Realization<Network> for EchoKernel {
-    type Bounds = NetworkSizes;
-    fn prepare(&mut self, _: &NetworkSizes, _: &Setup) {}
-    fn retarget(&mut self, _: &Network) {}
-    fn reset(&mut self) {
-        self.line.fill(0.0);
+/// The echo's delay line.
+#[derive(Clone, Debug)]
+struct EchoLine {
+    line: Vec<f32>,
+    at: usize,
+}
+
+/// An echo has nothing to approach: no coefficient, and so always there.
+#[derive(Clone, Debug)]
+struct NoCoeffs;
+
+impl Approach for NoCoeffs {
+    type Target = ();
+    fn aim(&mut self, _: &()) {}
+    fn step(&mut self) -> bool {
+        false
     }
+    fn settle(&mut self) {}
+}
+
+impl Recurrence for EchoRecurrence {
+    type Model = Network;
+    type Bounds = NetworkSizes;
+    type Target = ();
+    type Coeffs = NoCoeffs;
+    type State = EchoLine;
+
+    const STEP: usize = 1;
+
+    fn start(&self, _: &Network) -> Start<Self> {
+        let echo = self.echo;
+        let line = vec![0.0; echo.claimed.max(echo.actual) + echo.latency + 1];
+        Start {
+            coeffs: NoCoeffs,
+            state: EchoLine { line, at: 0 },
+            target: (),
+        }
+    }
+
+    fn coefficients_into(&self, _: &Network, _: &mut ()) -> bool {
+        false
+    }
+
+    fn clear(&self, state: &mut EchoLine) {
+        state.line.fill(0.0);
+    }
+
     fn latency(&self) -> Samples {
         Samples(self.echo.latency)
     }
+
     fn effort(&self) -> Effort {
         Effort::Light
     }
-    fn fresh(&self) -> Self {
-        Self::new(self.echo)
-    }
-}
 
-impl Effect<Network> for EchoKernel {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        let n = self.line.len();
+    fn run(
+        &self,
+        _: &NoCoeffs,
+        state: &mut EchoLine,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: Range<usize>,
+        _: usize,
+    ) {
+        let n = state.line.len();
         let (first, second) = (
             self.echo.claimed + self.echo.latency,
             self.echo.actual + self.echo.latency,
         );
-        for (o, &x) in output[0].iter_mut().zip(input[0]) {
-            self.line[self.at] = x;
-            let back = |d: usize| self.line[(self.at + n - d) % n];
-            *o = back(first) + if second != first { back(second) } else { 0.0 };
-            self.at = (self.at + 1) % n;
-        }
-    }
-}
-
-impl EchoKernel {
-    fn new(echo: Echo) -> Self {
-        Self {
-            line: vec![0.0; echo.claimed.max(echo.actual) + echo.latency + 1],
-            at: 0,
-            echo,
+        for i in frames {
+            state.line[state.at] = input[0][i];
+            let back = |d: usize| state.line[(state.at + n - d) % n];
+            output[0][i] = back(first) + if second != first { back(second) } else { 0.0 };
+            state.at = (state.at + 1) % n;
         }
     }
 }
@@ -86,7 +121,7 @@ impl Design for Echo {
     type Model = Network;
     type Bounds = NetworkSizes;
     type Range = MaxDecay;
-    type Realization = EchoKernel;
+    type Recurrence = EchoRecurrence;
 
     fn channels(&self) -> Channels {
         Channels::same(BusTopology::MONO)
@@ -111,8 +146,8 @@ impl Design for Echo {
         NetworkSizes::measure(&self.design(&(), ceiling.rate()), ceiling.floor())
     }
 
-    fn realization(&self) -> EchoKernel {
-        EchoKernel::new(*self)
+    fn recurrence(&self) -> EchoRecurrence {
+        EchoRecurrence { echo: *self }
     }
 }
 

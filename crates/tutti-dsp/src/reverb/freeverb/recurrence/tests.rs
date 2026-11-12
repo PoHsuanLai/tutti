@@ -51,11 +51,11 @@ fn the_all_pass_is_the_freeverb_form_not_the_lattice() {
 /// a step in the comb's loop gain, a click.)
 #[test]
 fn a_moving_room_glides_its_combs() {
-    use crate::{Ceiling, Design, Effect, FreeverbControls, FreeverbDesign, Realization};
+    use crate::{Ceiling, Design, FreeverbControls, FreeverbDesign};
     use tutti_types::{MaxBlock, Mix};
     let rate = SampleRate(48_000.0);
     let d = FreeverbDesign;
-    let mut r = d.realization();
+    let mut r = d.realized();
     r.prepare(
         &d.bounds(&Ceiling::at(rate).unwrap()),
         &Setup {
@@ -77,8 +77,8 @@ fn a_moving_room_glides_its_combs() {
         vec![0.0f32; CHUNK],
         vec![0.0f32; CHUNK],
     );
-    let mut chunk = |r: &mut crate::Realized<FreeverbKernel>| {
-        r.process(&[&x], &mut [&mut l, &mut rr]);
+    let mut chunk = |r: &mut crate::Realized<FreeverbRecurrence>| {
+        r.process(&[&x], &mut [&mut l, &mut rr], CHUNK);
         let (_, c, _) = r.parts_mut();
         (c.feedback.now(), c.damp.now())
     };

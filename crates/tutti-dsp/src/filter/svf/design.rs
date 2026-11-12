@@ -17,7 +17,7 @@ use tutti_types::{BusTopology, SampleRate};
 use super::kernel::{SvfCoefficients, svf_step};
 use super::{SvfControls, SvfModel};
 use crate::filter::real::Real;
-use crate::{ChannelKernel, Filter};
+use crate::{ChannelRecurrence, Filter};
 
 /// The [`Design`](crate::Design) of the state-variable filter, `channels` wide, with
 /// state precision `F`.
@@ -27,7 +27,7 @@ use crate::{ChannelKernel, Filter};
 /// across the channels and only the integrator pair is per channel.
 pub type SvfDesign<F> = Filter<Svf<F>>;
 
-/// The state-variable filter as a [`ChannelKernel`]: `[ic1eq, ic2eq]` per channel, in
+/// The state-variable filter as a [`ChannelRecurrence`]: `[ic1eq, ic2eq]` per channel, in
 /// state precision `F`.
 #[derive(Clone, Copy, Debug)]
 pub struct Svf<F>(PhantomData<fn() -> F>);
@@ -40,7 +40,7 @@ impl<F> SvfDesign<F> {
     }
 }
 
-impl<F: Real> ChannelKernel for Svf<F> {
+impl<F: Real> ChannelRecurrence for Svf<F> {
     type Controls = SvfControls;
     type Model = SvfModel;
     type Coeffs = SvfCoefficients<F>;

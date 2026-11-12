@@ -9,8 +9,8 @@
 //! scipy and numpy, which know nothing of tutti. Neither side reads the other's
 //! expectation.
 //!
-//! Only tutti-dsp's public API is used: a design's model, its realization, and
-//! `Effect::process`, as a node drives them.
+//! Only tutti-dsp's public API is used: a design's model, its runner, and
+//! `Realized::process`, as a node drives them.
 //!
 //! Run: `cargo run --release -p tutti-dsp --example render_dsp_cases -- <outdir>`
 
@@ -19,9 +19,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use tutti_dsp::{
-    Ceiling, ChunkSize, CrossoverControls, CrossoverDesign, Design, Effect, LadderControls,
-    LadderDesign, LadderType, Realization, Setup, StreamingResampler, SvfControls, SvfDesign,
-    SvfType, allpass_chain, allpass_coeff,
+    Ceiling, ChunkSize, CrossoverControls, CrossoverDesign, Design, LadderControls, LadderDesign,
+    LadderType, Setup, StreamingResampler, SvfControls, SvfDesign, SvfType, allpass_chain,
+    allpass_coeff,
 };
 use tutti_fixtures::signal::write_wav_f32;
 use tutti_types::{BusTopology, Db, Drive, Hz, MaxBlock, Q, Resonance, SampleRate, Samples};
@@ -36,11 +36,8 @@ fn run<D: Design>(
     controls: &D::Controls,
     rate: SampleRate,
     input: &[f32],
-) -> Vec<Vec<f32>>
-where
-    D::Realization: Effect<D::Model>,
-{
-    let mut k = design.realization();
+) -> Vec<Vec<f32>> {
+    let mut k = design.realized();
     let ceiling = Ceiling::<D::Range>::at(rate).expect("a positive rate");
     let setup = Setup {
         rate,
@@ -58,7 +55,7 @@ where
             .iter_mut()
             .map(|c| &mut c[start..start + block.len()])
             .collect();
-        k.process(&[block], &mut outs);
+        k.process(&[block], &mut outs, block.len());
     }
     out
 }

@@ -10,7 +10,7 @@
 use tutti_dsp::{Real, Svf, SvfControls, SvfDesign, SvfType};
 use tutti_types::{ChannelLayout, Db, Hz, Q};
 
-use super::NodeKernel;
+use super::NodeRecurrence;
 use super::filter_bus;
 use crate::reverb::DesignNode;
 
@@ -151,7 +151,7 @@ control_set! {
     }
 }
 
-impl<F: Real> NodeKernel for Svf<F> {
+impl<F: Real> NodeRecurrence for Svf<F> {
     type Set = SvfSet;
 
     fn set(&self, initial: &SvfControls) -> SvfSet {

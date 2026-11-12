@@ -3,7 +3,7 @@
 
 use tutti_types::{Hz, SampleRate, Seconds};
 
-use crate::{Band, Ceiling, Design, Effect, Lti, MaxDecay, Network, NetworkSizes};
+use crate::{Band, Ceiling, Design, Lti, MaxDecay, Network, NetworkSizes};
 
 /// A hook of the contract that returns a list: a case that has nothing to run
 /// when the list is empty passes for no reason, so a design says which hooks it
@@ -80,10 +80,9 @@ pub trait DesignCase: Design {
     }
 }
 
-/// A design whose realization is measured: the controls to render at.
-pub trait RealizationCase:
-    DesignCase + Design<Realization: Effect<<Self as Design>::Model> + Clone>
-{
+/// A design whose recurrence is measured, run by [`Realized`](crate::Realized): the
+/// controls to render at.
+pub trait RealizationCase: DesignCase {
     /// The controls the measured cases run over: a few, spread across the
     /// controls' range, because each renders seconds of audio.
     fn probes(&self) -> Vec<Self::Controls>;

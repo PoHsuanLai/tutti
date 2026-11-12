@@ -16,7 +16,7 @@ ramps and the graph shape. Here they take plain typed values per call.
   `LadderCoeffs` and `LadderDesign<F>` (the Moog
   ladder, `tanh` feedback); `CrossoverDesign` and `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order
   split (the design on a 16-frame grid, the state with ramped frequency changes). The three
-  designs are one `Filter<K>` over a `ChannelKernel`, realized by `Realized<PerChannel<K>>`. `Real` is the `f32` or `f64` the state
+  designs are one `Filter<R>` over a `ChannelRecurrence`, run by `Realized<PerChannel<R>>`. `Real` is the `f32` or `f64` the state
   runs in; its transcendentals call `libm`, so results do not depend on the
   platform's C math library.
 - **Dynamics** — `EnvelopeFollower` and `GateEnvelopeFollower`; the curves
@@ -61,7 +61,7 @@ plans lazily, per scratch, on the cold path.
 ## Features
 
 - `contract` (off by default): the `contract` module, the cases a `Design` and its
-  `Realization` are held to (design 024 section 6). Test support.
+  `Realized` runner are held to (design 024 section 6). Test support.
 
 The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler` and
 `tutti-export` use it.

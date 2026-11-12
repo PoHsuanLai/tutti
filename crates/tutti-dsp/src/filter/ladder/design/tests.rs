@@ -3,8 +3,8 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{Drive, Hz, Resonance};
 
 use super::*;
+use crate::Design;
 use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
-use crate::{Design, Effect, Realization};
 
 const TYPES: [LadderType; 4] = [
     LadderType::LP12,
@@ -183,13 +183,13 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
     let model = |hz, drive| d.design(&controls(LadderType::HP12, hz, 0.3, drive), rate);
     let (old, new) = (model(500.0, 1.0), model(5_000.0, 4.0));
     for i in [7usize, 15] {
-        let mut blended = d.realization();
+        let mut blended = d.realized();
         blended.retarget(&old);
         blended.retarget(&new);
         let mut x = [0.0f32; 16];
         x[i] = 0.5;
         let mut y = [0.0f32; 16];
-        blended.process(&[&x], &mut [&mut y]);
+        blended.process(&[&x], &mut [&mut y], 16);
 
         let t = (i + 1) as f64 / 16.0;
         let (a, b) = (LadderPoint::<f64>::of(&old), LadderPoint::<f64>::of(&new));
@@ -205,16 +205,16 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
         );
         assert_eq!(y[i], want as f32, "frame {i}");
     }
-    let mut held = d.realization();
+    let mut held = d.realized();
     held.retarget(&new);
     let mut x = [0.0f32; 16];
     x[15] = 0.5;
     let (mut y, mut z) = ([0.0f32; 16], [0.0f32; 16]);
-    let mut blended = d.realization();
+    let mut blended = d.realized();
     blended.retarget(&old);
     blended.retarget(&new);
-    blended.process(&[&x], &mut [&mut y]);
-    held.process(&[&x], &mut [&mut z]);
+    blended.process(&[&x], &mut [&mut y], 16);
+    held.process(&[&x], &mut [&mut z], 16);
     assert_eq!(y[15], z[15]);
     assert_ne!(y[15], 0.0);
 }
@@ -229,15 +229,15 @@ fn the_cut_ramp_goes_on_from_where_it_was() {
     let rate = SampleRate(48_000.0);
     let model = |hz| d.design(&controls(LadderType::HP12, hz, 0.3, 1.0), rate);
     let (a, b) = (model(500.0), model(5_000.0));
-    let mut r = d.realization();
+    let mut r = d.realized();
     r.retarget(&a);
     r.retarget(&b);
-    r.process(&[&[0.0; 8]], &mut [&mut [0.0; 8]]);
+    r.process(&[&[0.0; 8]], &mut [&mut [0.0; 8]], 8);
     r.retarget(&a);
     let mut x = [0.0f32; 1];
     x[0] = 0.5;
     let mut y = [0.0f32; 1];
-    r.process(&[&x], &mut [&mut y]);
+    r.process(&[&x], &mut [&mut y], 1);
 
     let (pa, pb) = (LadderPoint::<f64>::of(&a), LadderPoint::<f64>::of(&b));
     let from = pa.lerp(&pb, 8, 16);

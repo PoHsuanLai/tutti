@@ -5,7 +5,7 @@ use tutti_types::{Db, Hz, SampleRate};
 use super::core::{check_vacuity, every};
 use super::harness::{WINDOW, built, burst, noise, rate_of, render, rms, widths};
 use super::{Hook, LtiCase, RealizationCase};
-use crate::{Complex32, Complex64, Lti, RealFft, Realization, Ring, System};
+use crate::{Complex32, Complex64, Lti, RealFft, Ring, System};
 
 /// The frames an impulse response is rendered for: up to the model's tail at
 /// -100 dB, a power of two (an FFT of the response is exact), or `None` for a

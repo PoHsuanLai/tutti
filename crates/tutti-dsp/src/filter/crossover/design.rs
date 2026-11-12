@@ -26,7 +26,7 @@ use super::legacy::check_bands;
 use super::legacy::{CrossoverError, CrossoverState, MAX_SPLITS, SOLVE_CEILING, validate};
 use super::{Crossover, CrossoverModel};
 use crate::Lerp;
-use crate::{ChannelKernel, Filter};
+use crate::{ChannelRecurrence, Filter};
 
 /// The frequencies of a crossover's splits, lowest first; the entries past the
 /// design's last split are 0 and ignored.
@@ -59,7 +59,7 @@ impl CrossoverControls {
 /// (output `band * channels + channel`).
 pub type CrossoverDesign = Filter<CrossoverTree>;
 
-/// The crossover as a [`ChannelKernel`]: a tree of `bands` bands per channel, run with
+/// The crossover as a [`ChannelRecurrence`]: a tree of `bands` bands per channel, run with
 /// the model's own coefficients.
 #[derive(Clone, Copy, Debug)]
 pub struct CrossoverTree {
@@ -84,7 +84,7 @@ impl CrossoverDesign {
     /// How many bands it makes.
     #[must_use]
     pub fn bands(&self) -> usize {
-        self.kernel().bands()
+        self.recurrence().bands()
     }
 }
 
@@ -96,7 +96,7 @@ impl CrossoverTree {
     }
 }
 
-/// A crossover's coefficients do not blend: its glide has no steps ([`ChannelKernel::STEPS`]),
+/// A crossover's coefficients do not blend: its glide has no steps ([`ChannelRecurrence::STEPS`]),
 /// so this is only ever the target.
 impl Lerp for CrossoverModel {
     fn lerp(&self, to: &Self, _: u32, _: u32) -> Self {
@@ -104,7 +104,7 @@ impl Lerp for CrossoverModel {
     }
 }
 
-impl ChannelKernel for CrossoverTree {
+impl ChannelRecurrence for CrossoverTree {
     type Controls = CrossoverControls;
     type Model = CrossoverModel;
     type Coeffs = CrossoverModel;

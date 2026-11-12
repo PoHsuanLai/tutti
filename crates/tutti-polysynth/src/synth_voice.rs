@@ -520,11 +520,11 @@ impl SynthVoice {
 
     /// Whether this voice applies its per-note (MPE) state at render time.
     ///
-    /// Test-only: production code asks [`PolySynth::mpe_enabled`], which reads
+    /// Test-only: production code asks [`PolySynth::mpe`], which reads
     /// the config the voices are built from. This observes that a runtime toggle
     /// actually reached an already-sounding voice.
     ///
-    /// [`PolySynth::mpe_enabled`]: crate::PolySynth::mpe_enabled
+    /// [`PolySynth::mpe`]: crate::PolySynth::mpe
     #[cfg(test)]
     pub(crate) fn mpe_enabled(&self) -> bool {
         self.mpe.is_enabled()

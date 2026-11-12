@@ -6,6 +6,7 @@
 //! render with another render.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use tutti_session::Stamp;
 
 use tutti_types::{Amplitude, At, Frame, Tail};
 

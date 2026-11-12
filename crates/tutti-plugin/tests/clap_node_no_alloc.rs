@@ -164,8 +164,8 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
                 tutti_fixtures::midi::wide_velocity(100),
             );
             let off = midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), note, 0);
-            sender.push(tutti_session::Stamp::NextBlock, on).unwrap();
-            sender.push(tutti_session::Stamp::NextBlock, off).unwrap();
+            sender.push(tutti_graph::Stamp::NextBlock, on).unwrap();
+            sender.push(tutti_graph::Stamp::NextBlock, off).unwrap();
         }
         let n = BLOCK;
         let t = Transport::new(true, Bpm::of(120.0), Beat(b as f64), None).with_recording(true);

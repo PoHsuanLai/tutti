@@ -152,7 +152,8 @@ fn every_stage_declares_its_own_tail() {
 #[test]
 fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     use tutti_fixtures::sf2::{Inst, Preset, bytes, generator};
-    use tutti_types::{At, InterleavedMut};
+    use tutti_session::Stamp;
+    use tutti_types::InterleavedMut;
     use tutti_ump::{
         Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
     };

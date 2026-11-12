@@ -106,6 +106,7 @@ pub(crate) struct OutputClockSource {
 }
 
 impl OutputClockSource {
+    #[cfg(feature = "device")]
     pub(crate) fn new(
         clock: tutti_engine::BlockClockReader,
         audio_latency: std::sync::Arc<dyn Fn() -> Option<Duration> + Send + Sync>,
@@ -810,6 +811,7 @@ impl MidiState {
 
     /// The hardware out is timed by `clock` from now on (a session with an
     /// audio device).
+    #[cfg(feature = "device")]
     pub(crate) fn set_output_clock(&mut self, clock: OutputClockSource) {
         self.output_clock = Some(clock);
     }

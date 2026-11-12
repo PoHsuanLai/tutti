@@ -404,32 +404,6 @@ fn after_giving_up_the_sysex_copy_is_off_and_nothing_is_sent() {
     );
 }
 
-/// Once the inquiry has given up on a silent device, the input edge stops
-/// copying its SysEx for the control side: a patch dump that arrives later
-/// reaches the graph alone, and is not kept in the stream ring for an inquiry
-/// that is over.
-#[test]
-fn a_finished_inquiry_stops_copying_sysex() {
-    use tutti_midi_device::INQUIRY_TIMEOUT;
-    let wire = midi1_wire();
-    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
-    for step in 0..6 {
-        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
-    }
-    let _ = received(&wire);
-    let ports = wire.session.ports().list_input_ports();
-    let [port] = ports.as_slice() else {
-        panic!("one open input");
-    };
-    // General MIDI System On (M1 p.52), after the inquiry is over.
-    reply_at(&wire, sysex(&[0x7E, 0x7F, 0x09, 0x01]), 6 * ms);
-    assert_eq!(
-        wire.session.ports().drain_stream(port.id).count(),
-        0,
-        "nothing is copied once the inquiry has given up"
-    );
-}
-
 /// A late reply (after the inquiry gave up) and a SysEx that is not an Identity
 /// Reply (here General MIDI System On, M1 p.52) leave the device as it was.
 #[test]

@@ -197,14 +197,14 @@ fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
     );
 }
 
-/// A chorus, its input noise on both channels, rendered for `frames`;
+/// A chorus, `input` on both channels;
 /// when `lane` is `Some(depth)`, its rate is driven by a control lane
 /// whose knob is the chorus's own rate cell and whose one layer is a
 /// constant `depth` of the rate port's 0..10 Hz span.
 fn render_chorus(
     node: ModDelayNode,
     lane: Option<f32>,
-    frames: usize,
+    input: &[f32],
 ) -> (Vec<Vec<f32>>, ParamSet) {
     let mut g = GraphBuilder::new(ChannelLayout::STEREO, ChannelLayout::STEREO);
     let (n, params) = g.add_with_controls(node);
@@ -253,47 +253,59 @@ fn render_chorus(
         );
         ed.commit().expect("the lane commits");
     }
-    let mut state = 0x1234_5678_u32;
-    let noise: Vec<f32> = (0..frames)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            0.8 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
-        .collect();
-    (r.render_input(&[&noise, &noise]), params)
+    (r.render_input(&[input, input]), params)
 }
 
-/// **A control lane modulates a chorus's rate**, around the chorus's own
-/// rate cell: a +2 Hz offset on the 1 Hz knob renders the chorus as it
-/// renders at 3 Hz, and not as it does at 1 Hz, and the cell still holds
-/// the knob (the lane sends to the port and never writes it, doc 014
-/// §4.2). The rate is a port. The claim the old
-/// `chorus_rate_route_moves_the_nodes_own_cell` made, on the lane.
+/// The ramp `x[n] = n`: through a linearly interpolated delay of `d` frames it comes out
+/// as `n - d`, exactly (a line read between two of its points is on the line), so a
+/// wet-only swept delay with no feedback shows its delay at every frame.
+fn ramp(frames: usize) -> Vec<f32> {
+    (0..frames).map(|n| n as f32).collect()
+}
+
+/// The delay, in frames, that a wet-only, feedback-free swept delay applied at frame `n`
+/// of its render of [`ramp`].
+fn delay_at(out: &[f32], n: usize) -> f32 {
+    n as f32 - out[n]
+}
+
+/// A chorus on the bus `input` with no feedback, so its output is the input delayed by
+/// the sweep alone.
+fn dry_chorus(input: BusTopology) -> ModDelayNode {
+    let n = ModDelayNode::chorus(input);
+    assert!(set(&n, UnitParam::Feedback, 0.0));
+    n
+}
+
+/// **A control lane modulates a chorus's rate**, around the chorus's own rate cell: a
+/// +2 Hz offset on the 1 Hz knob sweeps the delay at 3 Hz, and the cell still holds the
+/// knob (the lane sends to the port and never writes it, doc 014 §4.2).
+///
+/// The definition of the sweep: channel `c`'s delay is `base + depth * sin(2π (f t +
+/// φ_c))`, with the chorus's 10 ms base, 5 ms depth and a quarter cycle between the
+/// stereo channels. It is solved exactly at the stream's control points, every 16 frames
+/// from the start, which is where it is read here, through the ramp (the delay is the
+/// ramp's lag). At 3 Hz the two channels at frame 4800 sit at `sin(0.6π)` and `sin(1.1π)`
+/// of the depth; at 1 Hz they would sit at `sin(0.2π)` and `sin(0.7π)`, 87 and 128
+/// frames away.
 #[test]
 fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
-    const FRAMES: usize = 24_000;
-    let chorus = || ModDelayNode::chorus(BusTopology::STEREO);
-    let (driven, params) = render_chorus(chorus(), Some(0.2), FRAMES);
-    let at_3hz = {
-        let n = chorus();
-        assert!(set(&n, UnitParam::Rate, 3.0));
-        render_chorus(n, None, FRAMES).0
-    };
-    let at_1hz = render_chorus(chorus(), None, FRAMES).0;
-    for c in 0..2 {
-        for i in 0..FRAMES {
+    const FRAMES: usize = 4_800;
+    const RATE: f64 = 3.0;
+    let sr = 48_000.0_f64;
+    let (out, params) = render_chorus(dry_chorus(BusTopology::STEREO), Some(0.2), &ramp(FRAMES));
+    // Past the longest delay (15 ms, 720 frames) the line holds the ramp alone.
+    for (c, channel) in out.iter().enumerate() {
+        for n in (768..FRAMES).step_by(16) {
+            let phase = RATE * n as f64 / sr + 0.25 * c as f64;
+            let want = (0.010 + 0.005 * (std::f64::consts::TAU * phase).sin()) * sr;
+            let got = delay_at(channel, n);
             assert!(
-                (driven[c][i] - at_3hz[c][i]).abs() < 1e-4,
-                "channel {c} frame {i}: driven {} vs 3 Hz {}",
-                driven[c][i],
-                at_3hz[c][i]
+                (f64::from(got) - want).abs() < 0.1,
+                "channel {c} frame {n}: a delay of {got} frames, the 3 Hz sweep has {want}"
             );
         }
     }
-    assert!(
-        (0..FRAMES).any(|i| (driven[0][i] - at_1hz[0][i]).abs() > 1e-2),
-        "the lane's offset is heard"
-    );
     assert_eq!(
         params.get(UnitParam::Rate),
         Some(1.0),
@@ -618,61 +630,68 @@ fn a_phaser_driven_past_its_depth_range_stays_stable() {
     }
 }
 
-/// **A chorus's driven depth and rate get their setters' clamps.** Driven
-/// to 0.5 s of depth (range `0..=1`), past the chorus's 40 ms
-/// `depth_max`, it sounds as it does at a 40 ms knob; driven to −5 Hz
-/// (range `-10..=10`), below `set_rate`'s 0.01 Hz floor, as it does at a
-/// 0.01 Hz knob.
+/// **A chorus's depth lane past its range is held at the sweep's bound.** Driven to 0.5 s
+/// of depth, past the chorus's 40 ms `depth_max`, the delay sweeps `base ± 40 ms` exactly:
+/// at each control point it is `10 ms + 40 ms * sin(2π f t)`, floored at one frame, read
+/// through the ramp. It peaks at 50 ms (2400 frames, the whole line) only at the sine's
+/// crest; a depth held anywhere past 40 ms would sit at the line's end for a span of the
+/// cycle instead.
 #[test]
-fn a_chorus_driven_past_its_depth_and_rate_gets_the_setters_clamps() {
-    let mut state = 0x2545_f491_u32;
-    let noise: Vec<f32> = (0..24_000)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
-        })
-        .collect();
-    let chorus = |depth: f32, rate: f32| {
-        let n = ModDelayNode::chorus(BusTopology::MONO);
-        assert!(set(&n, UnitParam::Depth, depth));
-        assert!(set(&n, UnitParam::Rate, rate));
-        n
-    };
-    let close = |a: &[f32], b: &[f32], what: &str| {
-        for (i, (x, y)) in a.iter().zip(b).enumerate() {
-            assert!((x - y).abs() < 1e-5, "{what}: frame {i}: {x} vs {y}");
-        }
-    };
+fn a_chorus_depth_lane_past_its_range_is_held_at_the_sweeps_bound() {
+    const FRAMES: usize = 9_600;
+    const RATE: f64 = 10.0;
+    let sr = 48_000.0_f64;
+    let n = dry_chorus(BusTopology::MONO);
+    // 10 Hz, so the sweep turns twice in the render.
+    assert!(set(&n, UnitParam::Rate, RATE as f32));
     // Knob 5 ms plus 0.495 of a 1 s range: 0.5 s.
-    let past = render_driven(
-        chorus(0.005, 1.0),
+    let out = render_driven(
+        n,
         UnitParam::Depth,
         ParamRange::new(0.0, 1.0),
         0.495,
-        &noise,
+        &ramp(FRAMES),
     );
-    let at_max = render_driven(
-        chorus(0.04, 1.0),
-        UnitParam::Depth,
-        ParamRange::new(0.0, 1.0),
-        0.0,
-        &noise,
-    );
-    close(&past, &at_max, "depth past 40 ms");
-    // Knob 1 Hz minus 0.3 of a 20 Hz range: -5 Hz.
-    let below = render_driven(
-        chorus(0.005, 1.0),
+    // Past the line's length the line holds the ramp alone. The tolerance is a frame: the
+    // sweep runs 2.5 frames of delay per frame at its steepest, and the f32 phase drifts
+    // by some 1e-5 of a cycle over the render; a depth past 40 ms misses by hundreds.
+    let mut most = f32::MIN;
+    for n in (2_400..FRAMES).step_by(16) {
+        let phase = RATE * n as f64 / sr;
+        let want = ((0.010 + 0.040 * (std::f64::consts::TAU * phase).sin()) * sr).max(1.0);
+        let got = delay_at(&out, n);
+        most = most.max(got);
+        assert!(
+            (f64::from(got) - want).abs() < 1.0,
+            "frame {n}: a delay of {got} frames, a 40 ms sweep has {want}"
+        );
+    }
+    assert!(most <= 2_400.5, "never past the line: {most}");
+}
+
+/// **A chorus's rate lane below its range is held at the 0.01 Hz floor.** Driven to −5 Hz,
+/// the sweep runs forwards at 0.01 Hz: at frame `n` the delay is `10 ms + 5 ms *
+/// sin(2π 0.01 n / 48000)`, which half a second in is 7.5 frames past the base; a rate of
+/// 0 would hold it at the base, and −5 Hz would have swept it through whole cycles.
+#[test]
+fn a_chorus_rate_lane_below_its_range_is_held_at_the_floor() {
+    const FRAMES: usize = 24_000;
+    let sr = 48_000.0_f64;
+    // Knob 1 Hz minus 0.3 of a 20 Hz range: −5 Hz.
+    let out = render_driven(
+        dry_chorus(BusTopology::MONO),
         UnitParam::Rate,
         ParamRange::new(-10.0, 10.0),
         -0.3,
-        &noise,
+        &ramp(FRAMES),
     );
-    let at_floor = render_driven(
-        chorus(0.005, 0.01),
-        UnitParam::Rate,
-        ParamRange::new(-10.0, 10.0),
-        0.0,
-        &noise,
-    );
-    close(&below, &at_floor, "rate below 0.01 Hz");
+    for n in (768..FRAMES).step_by(16) {
+        let phase = 0.01 * n as f64 / sr;
+        let want = (0.010 + 0.005 * (std::f64::consts::TAU * phase).sin()) * sr;
+        let got = delay_at(&out, n);
+        assert!(
+            (f64::from(got) - want).abs() < 0.05,
+            "frame {n}: a delay of {got} frames, the 0.01 Hz sweep has {want}"
+        );
+    }
 }

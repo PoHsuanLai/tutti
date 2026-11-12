@@ -347,7 +347,7 @@ impl MidiClipControls {
 /// let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
 /// let clip = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on).unwrap()]);
 /// let controls = editor.insert(NodeKey(1), "clip", clip);
-/// assert_eq!(controls.event_count(), 1);
+/// assert_eq!(controls.len(), 1);
 /// ```
 pub struct MidiClipNode {
     shared: Arc<Shared>,

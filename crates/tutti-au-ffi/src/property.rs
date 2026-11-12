@@ -509,3 +509,15 @@ impl Property for ParameterClumpName {
     const ID: u32 = sys::kAudioUnitProperty_ParameterClumpName;
     type Value = crate::parameters::ClumpNameRequest;
 }
+
+/// `AudioUnitMIDIProtocol`: The `MIDIProtocolID` the unit takes its MIDI in
+/// (id 64, global scope, read). The framework converts what is sent to it.
+#[derive(Debug, Clone, Copy)]
+pub struct AudioUnitMidiProtocol;
+
+impl sealed::Sealed for AudioUnitMidiProtocol {}
+
+impl Property for AudioUnitMidiProtocol {
+    const ID: u32 = sys::kAudioUnitProperty_AudioUnitMIDIProtocol;
+    type Value = i32;
+}

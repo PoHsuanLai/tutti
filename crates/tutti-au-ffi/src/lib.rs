@@ -12,6 +12,7 @@ mod cf;
 mod component;
 mod editor;
 mod error;
+mod event_list;
 mod guard;
 mod listener;
 mod midi_out;
@@ -31,6 +32,7 @@ pub use cf::{
 pub use component::ComponentRef;
 pub use editor::{AuEditor, leaked_editor_views};
 pub use error::{Error, OsError, Result, check};
+pub use event_list::{EventList, Pushed, Wire, event_list_available};
 pub use listener::{
     AuEvent, AuParameterListener, EventAddress, emit_gesture, notify_all_parameters,
     set_parameter_notifying,

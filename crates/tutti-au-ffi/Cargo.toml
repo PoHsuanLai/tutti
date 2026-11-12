@@ -52,6 +52,10 @@ objc2 = { version = "0.6", features = ["relax-void-encoding"] }
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeometry", "NSObject"] }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# `MIDIEventListInit` and `MIDIEventListAdd`, the layout `event_list` is checked against.
+coremidi-sys = { workspace = true }
+
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
 

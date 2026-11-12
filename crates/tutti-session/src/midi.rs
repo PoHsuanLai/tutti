@@ -45,7 +45,20 @@ const DRAIN_CHUNK: usize = 256;
 pub const MIDI_INPUT_DEVICES: usize = 8;
 
 /// Events one connected device's inlet holds: the ring its thread pushes into,
-/// and as many waiting for their frame.
+/// and as many waiting for their frame. It is the one ring of the hardware
+/// input path (`DRAIN_CHUNK` above is the clock's drain, and the 256 of
+/// `SessionEvent::EventsDropped` a log of losses, neither a MIDI input ring).
+///
+/// **The figure is one second of a saturated MIDI 1.0 cable.** The hardware
+/// interface sends a byte every 320 microseconds (MIDI 1.0 Detailed
+/// Specification, Hardware: 31.25 kbaud, a start bit, 8 data bits and a stop
+/// bit), so the shortest message there is, a two-byte one under running
+/// status, comes at most every 640 microseconds: 1,563 a second. 2,048 holds
+/// that for 1.3 s, where an event waits for its frame only the lead (one block,
+/// [`input_lead`]) and a ring is emptied every block, so a full ring means a
+/// stalled graph, which the inlet reports as lost
+/// (`MidiEvent::InputsDropped`) and does not block on. A device faster than a
+/// DIN cable (USB) fills it sooner, at its own rate, for the same stall.
 #[cfg(feature = "midi-hardware")]
 pub(crate) const MIDI_INPUT_INLET_CAPACITY: tutti_graph::EventCapacity =
     tutti_graph::EventCapacity::of(2048);
@@ -1633,6 +1646,19 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use tutti_types::SampleRate;
     use tutti_ump::MidiGroup;
+
+    /// **A device's inlet holds at least a second of a saturated MIDI 1.0
+    /// cable** (MIDI 1.0 Detailed Specification, Hardware: a byte every 320
+    /// microseconds, so a two-byte message every 640 at best): the figure of
+    /// [`MIDI_INPUT_INLET_CAPACITY`], derived here from the spec's timing.
+    #[cfg(feature = "midi-hardware")]
+    #[test]
+    fn the_inlet_holds_a_second_of_a_saturated_midi1_cable() {
+        let shortest_message = Duration::from_micros(2 * 320);
+        // 1,563 messages.
+        let in_a_second = Duration::from_secs(1).as_micros() / shortest_message.as_micros() + 1;
+        assert!(u128::from(MIDI_INPUT_INLET_CAPACITY.get()) >= in_a_second);
+    }
 
     /// Counts what reached the wire. Stands in for a real OS endpoint so
     /// these tests run on every platform.

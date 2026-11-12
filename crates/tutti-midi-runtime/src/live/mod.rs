@@ -21,6 +21,7 @@ pub mod mailbox;
 pub mod mpe_ingest;
 pub(crate) mod order;
 mod route;
+mod sensing;
 
 pub use device_inlets::{
     ArrivalClock, Changes, DeviceInlets, DeviceInput, DeviceSlot, InletChange, NoFreeSlot,
@@ -33,3 +34,4 @@ pub use keys::{LIVE_INLET_CAPACITY, MidiKeys};
 pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
 pub use mpe_ingest::MpeIngest;
 pub use route::{RouteRule, compile_routes};
+pub use sensing::{ACTIVE_SENSING_JUDGE, ActiveSensing};

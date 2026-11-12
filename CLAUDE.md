@@ -145,8 +145,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   MPE state each, and the session wires a device's inlet to its slot in
   `Phase::Poll` from `DeviceInlets::take_changes`, an iterator that drains a change per step
   with no lock held across the caller's work (doc 017 E5, open question 8). A node built
-  `.following(&DeviceInlets)` restarts a slot's translator and MPE state itself when a new
-  device takes it (it compares the slot's epoch per block; no one calls it). A port's one id
+  `.following(&DeviceInlets)` watches each slot's epoch (odd while a device holds the slot) per block, and
+  when a device takes the slot or lets go of it releases what the device held (`HeldState`: Note Offs, then
+  pedal-ups and centred bends, never a channelwide CC 120/121/123, a channel being shared) and restarts the
+  slot's translator and MPE state; no one calls it. The same release ends a Group at an Active Sensing lapse
+  (`ActiveSensing`, 330 ms in the graph's frames, no OS clock) and at a System Reset (FF), which also resets
+  that Group's translator and MPE state; the node acts on an FE or FF and sends neither on. A port's one id
   is `tutti_midi_runtime::DeviceSlot` (slot index and generation; ephemeral, no serde), which
   `tutti-midi-hardware`'s `HardwareMidiInputs`, `PortInfo`, `InputProducerHandle::slot` and
   `OpenInput::slot` all use.

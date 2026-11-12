@@ -55,9 +55,7 @@
 //! }
 //! ```
 
-mod controllers;
-
-use controllers::Controllers;
+use crate::held::Controllers;
 use tutti_graph::{Event, EventWriter, Offset};
 use tutti_ump::{Address, Key, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 

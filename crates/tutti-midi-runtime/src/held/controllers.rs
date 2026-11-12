@@ -1,5 +1,8 @@
-//! The controllers a clip leaves off their normal position: the hold pedals
-//! and the pitch bend, per (protocol, Group, Channel).
+//! The controllers a source leaves off their normal position: the hold pedals
+//! and the pitch bend, per (protocol, Group, Channel). A clip's ledger writes
+//! the returns to its port ([`lift_all`](Controllers::lift_all)); a
+//! [`HeldState`](super::HeldState) hands them to a caller
+//! ([`lift_while`](Controllers::lift_while)).
 //!
 //! MIDI 1.0 Detailed Specification 4.2.1, p. 31 (Stop): "In addition to note
 //! events, any controllers not in their initialized position (pitch wheels,
@@ -28,7 +31,7 @@ const CENTRE_32: u32 = 0x8000_0000;
 
 /// Which controllers are off their normal position, low byte, and which of
 /// those a refused reset still owes, high byte (the same bits).
-pub(super) struct Controllers {
+pub(crate) struct Controllers {
     lanes: Box<[u16; LANES]>,
     /// Some lane owes a reset: a block with no debt pays in one test.
     owing: bool,
@@ -36,14 +39,14 @@ pub(super) struct Controllers {
 
 impl Controllers {
     /// Control thread: allocates.
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             lanes: Box::new([0; LANES]),
             owing: false,
         }
     }
 
-    pub(super) fn forget(&mut self) {
+    pub(crate) fn forget(&mut self) {
         self.lanes.fill(0);
         self.owing = false;
     }
@@ -54,7 +57,7 @@ impl Controllers {
 
     /// Folds in a message the port took. A controller back at its normal
     /// position is forgotten, and a new value supersedes a reset still owed.
-    pub(super) fn observe(&mut self, ump: Ump) {
+    pub(crate) fn observe(&mut self, ump: Ump) {
         let (m2, address, bit, off_normal) = match ump.decode() {
             Ok(Message::Midi1(a, Voice1::ControlChange { controller, value })) => {
                 let Some(bit) = pedal_bit(controller) else {
@@ -116,7 +119,7 @@ impl Controllers {
     /// bit order, after the notes. A message the port refuses is owed and goes
     /// out first at a later block ([`pay`](Self::pay)); once the port refuses
     /// one the rest are not tried (it is full) but each is owed and counted.
-    pub(super) fn lift_all(&mut self, out: &mut EventWriter<'_>, at: Offset) {
+    pub(crate) fn lift_all(&mut self, out: &mut EventWriter<'_>, at: Offset) {
         let mut full = false;
         for (lane, state) in self.lanes.iter_mut().enumerate() {
             for bit in 0..=BEND {
@@ -145,10 +148,42 @@ impl Controllers {
         }
     }
 
+    /// Hands `accept` the message that returns each controller that is off
+    /// (all of `group`'s, or every Group's for `None`) to its normal position,
+    /// in lane and bit order, and forgets the ones it takes (`true`). Stops at
+    /// the first `accept` refuses (`false`): that one and the rest stay held.
+    /// Returns whether every controller in scope was taken. Allocates nothing.
+    pub(crate) fn lift_while(
+        &mut self,
+        group: Option<MidiGroup>,
+        mut accept: impl FnMut(Ump) -> bool,
+    ) -> bool {
+        for (lane, state) in self.lanes.iter_mut().enumerate() {
+            if group.is_some_and(|g| (lane >> 4) & 0xf != usize::from(g.get())) {
+                continue;
+            }
+            for bit in 0..=BEND {
+                if *state & (1 << bit) == 0 {
+                    continue;
+                }
+                if !accept(Self::reset(lane, bit)) {
+                    return false;
+                }
+                *state &= !(0x101 << bit);
+            }
+        }
+        true
+    }
+
+    /// Whether any controller is off its normal position.
+    pub(crate) fn any(&self) -> bool {
+        self.lanes.iter().any(|&l| l != 0)
+    }
+
     /// Writes the resets the port refused earlier, stopping at the first it
     /// refuses again. Each attempt gives its count back, so a delayed reset
     /// nets zero.
-    pub(super) fn pay(&mut self, out: &mut EventWriter<'_>, at: Offset) {
+    pub(crate) fn pay(&mut self, out: &mut EventWriter<'_>, at: Offset) {
         if !self.owing {
             return;
         }

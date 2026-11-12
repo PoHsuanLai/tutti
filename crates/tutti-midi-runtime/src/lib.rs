@@ -9,6 +9,7 @@
 // down (`tutti_midi_file::ClipFileError`, `tutti_ump::Midi1Parser`'s refusal, `None`).
 
 mod clock_map;
+mod held;
 mod ledger;
 mod live;
 mod outbound;
@@ -18,12 +19,14 @@ mod sync;
 mod traits;
 
 pub use clock_map::{ClockMap, ClockReading, GAIN, InvalidRate, Observed, RESYNC};
+pub use held::HeldState;
 pub use ledger::{NoteLedger, Sending};
 pub use live::{
-    ArrivalClock, CHANNELLESS_PORT, Changes, DeviceInlets, DeviceInput, DeviceSlot, InletChange,
-    LIVE_INLET_CAPACITY, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY,
-    MIDI_INPUT_PORTS, MidiIngestControls, MidiIngestNode, MidiInputPorts, MidiKeys, MidiMailbox,
-    MidiReceiver, MidiSender, MpeIngest, NoFreeSlot, RouteRule, SlotCountMismatch, compile_routes,
+    ACTIVE_SENSING_JUDGE, ActiveSensing, ArrivalClock, CHANNELLESS_PORT, Changes, DeviceInlets,
+    DeviceInput, DeviceSlot, InletChange, LIVE_INLET_CAPACITY, MAILBOX_CAPACITY,
+    MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIngestControls,
+    MidiIngestNode, MidiInputPorts, MidiKeys, MidiMailbox, MidiReceiver, MidiSender, MpeIngest,
+    NoFreeSlot, RouteRule, SlotCountMismatch, compile_routes,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,

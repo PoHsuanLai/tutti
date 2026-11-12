@@ -27,12 +27,37 @@
 //! Translation runs on every event, wired or not: both stages are stateful
 //! assemblers, and skipping an event corrupts the ones after it.
 //!
-//! A slot whose device changed is restarted by the node itself: built
-//! [`following`](MidiIngestNode::following) the [`DeviceInlets`] its inputs
-//! are fed from, it compares each slot's epoch (which the inlets bump as each
-//! device takes the slot) with the one it last saw every block, and a slot that
-//! differs starts empty, translator and MPE state, so one device's half-sent
-//! run is not completed by the next.
+//! **A source that ends leaves nothing held downstream.** Each slot keeps what
+//! its device started and has not ended ([`HeldState`]: the keys down, the hold
+//! pedals down and the bends off centre, as the device sent them), and
+//! releases it as the messages that end it (Note Offs, then pedal-ups and
+//! centred bends; `HeldState`'s docs say why not All Notes Off) through the
+//! same translation as any other message, in three cases:
+//!
+//! - *The device changed or went.* Built [`following`](MidiIngestNode::following)
+//!   the [`DeviceInlets`] its inputs are fed from, the node compares each
+//!   slot's epoch (which the inlets bump as each device takes the slot and as
+//!   it lets go) with the one it last saw every block. A slot that differs
+//!   releases everything the old device held, at the block's first frame, then
+//!   starts empty, translator and MPE state, so one device's half-sent run is
+//!   not completed by the next; and a slot whose device went hears nothing
+//!   until another takes it. (The executor's edge close, `tutti-graph`'s
+//!   `held.rs`, ends the same notes when the device's inlet is taken out of the
+//!   graph; this ends them as soon as the device lets go, and the pedals and
+//!   bends the edge does not track.)
+//! - *Active Sensing lapsed* ([`ActiveSensing`], MIDI 1.0 Detailed
+//!   Specification p. 32). Once a Group has sent an Active Sensing (FE), a
+//!   message is expected from it at least every 330 ms; when none comes, the
+//!   Group's held notes and controllers are released at the frame the time ran
+//!   out. The watch counts the graph's frames, which are the arrival clock the
+//!   inlets placed each event on, so the node reads no OS clock.
+//! - *System Reset* (FF, p. 33). The Group's held state is released, its
+//!   translator state and MPE state are reset, and its watch is dropped: "turn
+//!   voices off", "reset all controllers", "clear running status" and return
+//!   to the power-up condition.
+//!
+//! The FE and the FF are the cable's own: the node acts on them and sends
+//! neither on ("under no condition should this message be echoed", p. 33).
 //!
 //! Its fork is silent: an offline render reads no wire.
 
@@ -47,10 +72,13 @@ use tutti_graph::{
 use tutti_midi_protocol::MpeMode;
 use tutti_midi_protocol::Translator;
 use tutti_rt::{ArcLend, Reader};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_types::{Frame, SampleRate, Samples};
+use tutti_ump::{Message, MidiChannel, MidiGroup, System, Ump};
 
 use super::mpe_ingest::MpeIngest;
 use super::order::{BLANK, in_offset_order, offset_of};
+use super::sensing::ActiveSensing;
+use crate::held::HeldState;
 use crate::live::device_inlets::DeviceInlets;
 
 /// The port that carries a Group's events with no channel: after its sixteen
@@ -235,6 +263,16 @@ struct Device {
     mpe: MpeIngest,
     /// The slot's epoch this state was last reset at.
     epoch: u64,
+    /// Whether a device holds the slot: an event of one that does not is not
+    /// read. Always for a node that follows no inlets.
+    present: bool,
+    /// What the device started and has not ended, as it sent it.
+    held: HeldState,
+    /// The device's Groups that have sent an Active Sensing.
+    sensing: ActiveSensing,
+    /// The Groups (bit `g` for Group `g`) whose release did not fit the
+    /// block's room: tried again at the next block's first frame.
+    owing: u16,
 }
 
 impl Device {
@@ -243,14 +281,78 @@ impl Device {
             translator: Translator::new(),
             mpe: MpeIngest::new(mode),
             epoch: 0,
+            present: true,
+            held: HeldState::new(),
+            // Built again for the real rate in `prepare`.
+            sensing: ActiveSensing::at_rate(SampleRate(48_000.0)),
+            owing: 0,
         }
     }
 
-    /// Empty, as for a device that has not sent anything.
+    /// Empty, as for a device that has not sent anything. What the old device
+    /// still holds is not forgotten: it was released first, and what did not
+    /// fit is owed.
     fn restart(&mut self, mode: MpeMode, epoch: u64) {
         self.translator.reset();
         self.mpe = MpeIngest::new(mode);
+        self.sensing.forget_all();
         self.epoch = epoch;
+        // A device holds the slot while its epoch is odd.
+        self.present = epoch % 2 == 1;
+    }
+
+    /// Releases what `group` (every Group for `None`) held, at `at`, through
+    /// the translation as the device's own messages would go, into `staging`.
+    /// What the block has no room for stays held and owed.
+    fn release(&mut self, group: Option<MidiGroup>, at: Offset, staging: &mut Staging<'_>) {
+        let Self {
+            translator,
+            mpe,
+            held,
+            owing,
+            ..
+        } = self;
+        let all = held.release(group, |raw| {
+            let Some(ev) = translator.translate(raw) else {
+                return true;
+            };
+            staging.whole(ev.is_note_off(), |send| mpe.translate(&(at, ev), send))
+        });
+        let mask = group.map_or(u16::MAX, |g| 1 << g.get());
+        if all {
+            *owing &= !mask;
+        } else {
+            *owing |= mask;
+        }
+    }
+
+    /// Ends what each Group that ran out of Active Sensing time by `now` held
+    /// (see the module docs), at the frame it ran out, in the block that
+    /// starts at `first` and is `block_len` long.
+    fn lapse(&mut self, now: Frame, first: Frame, block_len: Samples, staging: &mut Staging<'_>) {
+        while let Some((group, ran_out)) = self.sensing.next_lapse(now) {
+            let at = ran_out.since(first).map_or(0, |s| s.get());
+            let at = Offset::new(at.min(block_len.get().saturating_sub(1)), block_len)
+                .unwrap_or(Offset::ZERO);
+            self.release(Some(group), at, staging);
+        }
+    }
+
+    /// A System Reset on `group`'s cable at `at` (see the module docs).
+    fn reset_group(&mut self, group: MidiGroup, at: Offset, staging: &mut Staging<'_>) {
+        self.release(Some(group), at, staging);
+        self.translator.reset_group(group);
+        self.mpe.reset_group(group);
+        self.sensing.forget(group);
+    }
+
+    /// The release of every Group that owes one.
+    fn pay(&mut self, staging: &mut Staging<'_>) {
+        for group in MidiGroup::all() {
+            if self.owing & (1 << group.get()) != 0 {
+                self.release(Some(group), Offset::ZERO, staging);
+            }
+        }
     }
 }
 
@@ -434,6 +536,11 @@ impl Node for MidiIngestNode {
     }
 
     fn prepare(&mut self, p: &Prepare) {
+        for device in &mut self.devices {
+            // The limit is frames of this rate; a watch counted at another is
+            // dropped, and the device's next Active Sensing starts it again.
+            device.sensing = ActiveSensing::at_rate(p.sample_rate());
+        }
         let capacity = (MIDI_INPUT_DENSITY.capacity(p) as usize).max(MIDI_INPUT_EVENT_CAPACITY);
         if capacity != self.capacity {
             self.capacity = capacity;
@@ -445,15 +552,8 @@ impl Node for MidiIngestNode {
         // Before any event is translated, stated or not.
         let reset = self.adopt_mpe_request();
         let mode = self.mpe_mode;
-        if let Some(epochs) = &self.epochs {
-            for (device, epoch) in self.devices.iter_mut().zip(epochs.iter()) {
-                let epoch = epoch.load(Ordering::Acquire);
-                if epoch != device.epoch {
-                    device.restart(mode, epoch);
-                }
-            }
-        }
         let block_len = cx.env.block_len;
+        let first = cx.env.frame;
         // An event's translation goes in whole or not at all: a fan-out cut
         // partway would leave some of a zone's channels at another range.
         // A note-off may use the room past the capacity (the port's own
@@ -478,16 +578,50 @@ impl Node for MidiIngestNode {
             }
         }
         for (slot, device) in self.devices.iter_mut().enumerate() {
-            let (translator, mpe) = (&mut device.translator, &mut device.mpe);
+            // A device that took the slot or let go of it: what the one before
+            // held is ended before anything else of the slot is read.
+            if let Some(epochs) = &self.epochs {
+                let epoch = epochs[slot].load(Ordering::Acquire);
+                if epoch != device.epoch {
+                    device.release(None, Offset::ZERO, &mut staging);
+                    device.restart(mode, epoch);
+                }
+            }
+            device.pay(&mut staging);
+            if !device.present {
+                continue;
+            }
             for event in io.events(slot) {
                 let EventKind::Midi(raw) = event.kind else {
                     continue;
                 };
                 let at = event.offset;
-                if let Some(ev) = translator.translate(raw) {
+                let frame = cx.env.frame_at(at);
+                // A cable that ran out of time before this message ended its
+                // notes then, not now.
+                device.lapse(frame, first, block_len, &mut staging);
+                let message = raw.decode().ok();
+                if let Some(group) = raw.group() {
+                    let sensing =
+                        matches!(message, Some(Message::System(_, System::ActiveSensing)));
+                    device.sensing.heard(group, frame, sensing);
+                }
+                match message {
+                    // The cable's own: acted on here, sent on to no one.
+                    Some(Message::System(_, System::ActiveSensing)) => continue,
+                    Some(Message::System(group, System::Reset)) => {
+                        device.reset_group(group, at, &mut staging);
+                        continue;
+                    }
+                    _ => {}
+                }
+                device.held.observe(raw);
+                if let Some(ev) = device.translator.translate(raw) {
+                    let mpe = &mut device.mpe;
                     staging.whole(ev.is_note_off(), |send| mpe.translate(&(at, ev), send));
                 }
             }
+            device.lapse(first + block_len, first, block_len, &mut staging);
         }
         let Staging { kept, dropped, .. } = staging;
         if dropped > 0 {
@@ -523,9 +657,9 @@ struct Staging<'a> {
 
 impl Staging<'_> {
     /// Keeps everything `make` sends, or, if it does not all fit, none of it
-    /// and counts it dropped. A `note_off`'s may use the room past the
-    /// capacity.
-    fn whole(&mut self, note_off: bool, make: impl FnOnce(&mut dyn FnMut(UmpAt))) {
+    /// and counts it dropped; whether it all fit. A `note_off`'s may use the
+    /// room past the capacity.
+    fn whole(&mut self, note_off: bool, make: impl FnOnce(&mut dyn FnMut(UmpAt))) -> bool {
         let limit = if note_off {
             self.out.len()
         } else {
@@ -547,6 +681,7 @@ impl Staging<'_> {
             self.kept = start;
             self.dropped += sent;
         }
+        fits
     }
 }
 

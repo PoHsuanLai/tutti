@@ -778,6 +778,38 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
     );
 }
 
+/// **A device that is disconnected with a key held ends the key downstream,
+/// once** (MIDI 1.0 Detailed Specification p. 24: individual Note Offs): the
+/// device's input dropping gives its slot back, the ingest node releases what
+/// the device held at its next block, and the executor's close of the inlet's
+/// edge, which would send the same Note Off at the next update, arrives at a
+/// slot nobody holds and is not heard.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_disconnected_device_ends_its_held_key_once() {
+    let (mut s, fake, seen) = keyboards(4);
+    connect(&mut s, "keys");
+    roll(&s, 1_024);
+    assert!(fake.send_input(EndpointId::from_raw(1), key(0, 60), Instant::now()));
+    roll(&s, 8_192);
+    assert_eq!(note_ons(&seen).len(), 1);
+    s.testing_midi_io()
+        .expect("the OS MIDI layer")
+        .disconnect_input("keys");
+    let _ = s.update();
+    roll(&s, 8_192);
+    let offs: Vec<u8> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|&(_, e)| match e.key_event() {
+            Some(KeyEvent::Off(key)) => Some(key.note().get()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(offs, vec![60]);
+}
+
 /// **An arrival is placed on the engine's clock**: a note the OS stamps one
 /// second ahead of now sounds a second of frames on, not at the next block.
 /// An event pushed for the next block (the path of a session with no clock)

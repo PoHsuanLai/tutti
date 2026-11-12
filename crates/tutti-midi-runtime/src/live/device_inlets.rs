@@ -36,11 +36,15 @@
 //! ([`take_changes`](DeviceInlets::take_changes)): the owner adds the inlet's
 //! node to the graph and wires it to the slot's input, or takes it out.
 //!
-//! A slot that a new device takes starts over in the ingest node: each open
-//! bumps the slot's epoch, which a [`MidiIngestNode`](crate::MidiIngestNode)
-//! built [`following`](crate::MidiIngestNode::following) these inlets compares
-//! every block, so the previous device's half-sent RPN or held MPE notes are
-//! not carried into the next.
+//! A slot's **epoch** counts its comings and goings: each open and each release
+//! adds one, so it is odd while a device holds the slot and even while none
+//! does. A [`MidiIngestNode`](crate::MidiIngestNode) built
+//! [`following`](crate::MidiIngestNode::following) these inlets compares each
+//! slot's epoch every block. A change ends what the device before it started:
+//! the notes it held and the pedals and bends it left are released downstream,
+//! and its half-sent RPN and MPE state are dropped, so none is carried into the
+//! next device, and a slot whose device went (even) hears nothing until another
+//! takes it.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -140,8 +144,9 @@ pub struct DeviceInlets {
     /// What a [`DeviceInput`] gives its slot back to when it drops.
     this: Weak<DeviceInlets>,
     state: Mutex<State>,
-    /// Each slot's epoch: the generation of the device that last took it,
-    /// plus one (0 before any), for an ingest node to see a new device by.
+    /// Each slot's epoch: one more for every open and every release (0 before
+    /// any), so odd while a device holds the slot; for an ingest node to see
+    /// a device come or go by.
     epochs: Arc<[AtomicU64]>,
     capacity: EventCapacity,
     /// Nanoseconds: what each device's thread adds to an arrival's frame.
@@ -238,8 +243,9 @@ impl DeviceInlets {
         state.next_generation += 1;
         state.slots[index] = Some(generation);
         // Before the node can see the inlet: a block that reads the new epoch
-        // restarts the slot's state, and the attach follows.
-        self.epochs[index].store(generation + 1, Ordering::Release);
+        // restarts the slot's state, and the attach follows. Release pairs
+        // with the node's acquire load.
+        self.epochs[index].fetch_add(1, Ordering::Release);
         let (node, writer) = EventInletNode::pair(self.capacity);
         state
             .changes
@@ -265,6 +271,10 @@ impl DeviceInlets {
         match state.slots.get_mut(slot.index) {
             Some(held) if *held == Some(slot.generation) => {
                 *held = None;
+                // The device is gone: a node that follows the epoch releases
+                // what it started, though its inlet is still attached until the
+                // owner takes the detach.
+                self.epochs[slot.index].fetch_add(1, Ordering::Release);
                 // An inlet the graph's owner has not taken yet never reached
                 // the graph: its attach and this detach cancel, so a device
                 // that comes and goes with no owner draining leaves nothing.

@@ -24,12 +24,19 @@
 //! thread, which is what the snapshot and parameter-read jobs below need: a
 //! call off the main thread is posted to it (`tutti_plugin_types::defer_to_main`)
 //! and the caller waits, for at most two seconds, for the main thread's next
-//! tick to run it (`Phase::Collect` calls `run_deferred`). [`Session::update`]
-//! is a main-thread call, so the tick is the host's update. A host that does
-//! not call it on its main thread must call `tutti_plugin_types::run_deferred`
-//! from its main-thread loop, or those calls answer "unavailable" at the
-//! deadline (`StateError::Unavailable`, `None`, `false`). A host blocking its
-//! main thread on such a job (joining it there) gets the same.
+//! tick to run it ([`MainSession::update`](crate::MainSession::update), or
+//! `Phase::Collect` on the claiming thread, calls `run_deferred`). A host
+//! that does not call either on its main thread must call
+//! `tutti_plugin_types::run_deferred` from its main-thread loop, or those calls
+//! answer "unavailable" at the deadline (`StateError::Unavailable`, `None`,
+//! `false`). A host blocking its main thread on such a job (joining it there)
+//! gets the same.
+//!
+//! What retires a record (a removal, a crossfade to another plugin or to a
+//! native node, a reload's dead plugin) parks it in the graveyard instead of
+//! dropping it, since the drop of a plugin's last owner may tear down an
+//! editor. `MainSession::update` empties it; [`Session::retired_plugins`] counts
+//! what waits, and `Phase::Plugins` warns once when more than a handful do.
 //!
 //! # `Phase::Plugins`
 //!
@@ -109,8 +116,8 @@ use tutti_plugin_host::{
     Notice, PluginControls, PluginHandle, PluginMeter, PluginStatus, Subscription,
 };
 use tutti_plugin_types::{
-    BridgeError, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation, PluginRefresh,
-    PluginTail,
+    BridgeError, EditorSize, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation,
+    PluginRefresh, PluginTail,
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
@@ -538,6 +545,13 @@ pub enum PluginChange {
     },
     /// The plugin's bus layout changed: re-read it and rewire.
     IoChanged,
+    /// The plugin asked its editor window to take a size (a zoom control, a
+    /// collapsing panel), found while [`MainSession::update`](crate::MainSession::update)
+    /// serviced the editor. Answer with
+    /// [`EditorView::resize`](crate::EditorView::resize) after sizing the window
+    /// it lives in. The size is in the platform's own pixels, as
+    /// [`EditorSize`] says.
+    EditorWantsSize(EditorSize),
     /// A hosted plugin was declared dead
     /// (`tutti_plugin_host::Liveness`) with recovery off: its node was
     /// removed. Reported once. With recovery on the death is
@@ -623,12 +637,69 @@ fn change_of(notice: Notice) -> Option<PluginChange> {
     })
 }
 
+/// What a removal or a replacement took out of the session, held until the
+/// main thread drops it (`MainSession::update`).
+///
+/// A plugin record owns the plugin's control handle, and dropping the last
+/// owner of an in-process plugin tears its editor down, a main-thread call.
+/// `Session` is `Send` and has no main thread of its own, so whatever
+/// retires a record parks it here instead of dropping it, and the view that
+/// holds the proof empties the yard. A host that never claims the main
+/// thread (a headless one) never empties it: [`len`](Self::len) is what
+/// `Phase::Plugins` warns on past [`Graveyard::WARN_AT`].
+#[derive(Default)]
+pub(crate) struct Graveyard {
+    /// Held to be dropped: a removed plugin's record, or the handle a
+    /// crossfade replaced.
+    retired: Vec<Box<dyn std::any::Any + Send>>,
+    warned: bool,
+}
+
+impl Graveyard {
+    /// How many retired plugins a session holds before it says so.
+    pub(crate) const WARN_AT: usize = 16;
+
+    pub(crate) fn bury(&mut self, record: HostedPlugin) {
+        self.retired.push(Box::new(record));
+    }
+
+    pub(crate) fn bury_handle(&mut self, handle: PluginHandle) {
+        self.retired.push(Box::new(handle));
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.retired.len()
+    }
+
+    /// Drops everything in the yard, on the main thread. Returns how many.
+    pub(crate) fn exhume(&mut self, _main: &MainThread) -> usize {
+        let n = self.retired.len();
+        self.retired.clear();
+        self.warned = false;
+        n
+    }
+
+    /// Warns once when the yard has grown past [`WARN_AT`](Self::WARN_AT).
+    pub(crate) fn warn_if_piling(&mut self) {
+        if self.retired.len() > Self::WARN_AT && !self.warned {
+            self.warned = true;
+            tracing::warn!(
+                "{} retired plugins are waiting for the main thread: nothing has called \
+                 `Session::main(..).update()` (a host with no main thread never frees them)",
+                self.retired.len()
+            );
+        }
+    }
+}
+
 /// What the session keeps for one hosted plugin. See the module docs.
 pub(crate) struct HostedPlugin {
+    /// The editor as the view left it: what `MainSession::update` services.
+    pub(crate) editor: crate::main_session::EditorState,
     /// The plugin this is: from the load's ref, with the id the loaded plugin
     /// reports.
     plugin: PluginRef,
-    handle: PluginHandle,
+    pub(crate) handle: PluginHandle,
     controls: Option<PluginControls>,
     meter: Option<PluginMeter>,
     liveness: Liveness,
@@ -729,6 +800,7 @@ impl HostedPlugin {
     pub(crate) fn new(handle: PluginHandle, plugin: PluginRef) -> Self {
         let (notices, hearing) = hear(&handle);
         Self {
+            editor: crate::main_session::EditorState::Closed,
             plugin,
             handle,
             controls: None,
@@ -777,21 +849,26 @@ impl HostedPlugin {
     /// ([`SessionEvent::PluginParamsDue`]).
     /// The outgoing mirror's report callback was on the outgoing handle,
     /// which reports nothing here once it is gone.
+    ///
+    /// Returns the outgoing handle, for the graveyard: its drop may close the
+    /// outgoing plugin's editor.
+    #[must_use = "the outgoing handle goes to the graveyard"]
     pub(crate) fn replace(
         &mut self,
         handle: PluginHandle,
         controls: PluginControls,
         plugin: PluginRef,
-    ) {
+    ) -> PluginHandle {
         self.plugin = plugin;
-        self.adopt(handle);
+        let outgoing = self.adopt(handle);
         self.meter = Some(controls.meter());
         self.controls = Some(controls);
+        outgoing
     }
 
     /// [`replace`](Self::replace)'s handle half: everything but the
     /// controls.
-    fn adopt(&mut self, handle: PluginHandle) {
+    fn adopt(&mut self, handle: PluginHandle) -> PluginHandle {
         #[cfg(feature = "modulation")]
         if self.mirror.is_some() {
             let (mirror, read) = tutti_plugin_host::PluginParamValues::start(&handle);
@@ -801,7 +878,8 @@ impl HostedPlugin {
         }
         // What the outgoing plugin reported and nobody drained is its own.
         (self.notices, self.hearing) = hear(&handle);
-        self.handle = handle;
+        let outgoing = std::mem::replace(&mut self.handle, handle);
+        self.editor = crate::main_session::EditorState::Closed;
         self.liveness = Liveness::new();
         self.status = PluginLiveness::Healthy;
         self.told = false;
@@ -813,6 +891,7 @@ impl HostedPlugin {
         self.reload = Reload::default();
         self.snapshot_token = Arc::new(());
         self.snapshot_at = None;
+        outgoing
     }
 
     /// Takes the snapshot for the cause of a failure: the next load goes
@@ -887,6 +966,10 @@ pub struct Plugin<'a> {
 }
 
 impl<'a> Plugin<'a> {
+    pub(crate) fn new(node: NodeKey, hosted: &'a HostedPlugin) -> Self {
+        Self { node, hosted }
+    }
+
     /// The plugin's node.
     pub fn node(&self) -> NodeKey {
         self.node
@@ -1260,7 +1343,6 @@ impl Session {
         main: &MainThread,
         loaded: PluginLoaded,
     ) -> Result<NodeKey, BridgeError> {
-        crate::main_thread();
         let requested = loaded.plugin;
         let config = loaded.config;
         let Open {
@@ -1321,6 +1403,14 @@ impl Session {
             .get(&node)
             .map(|hosted| Plugin { node, hosted })
             .ok_or_else(|| crate::NoSuchNode::new(node))
+    }
+
+    /// How many retired plugins wait for the main thread to drop them: what a
+    /// removal or a replacement parked and no [`MainSession::update`](crate::MainSession::update)
+    /// has freed yet. Nonzero for good means no one calls it; the session
+    /// warns once past a few.
+    pub fn retired_plugins(&self) -> usize {
+        self.graph.graveyard.len()
     }
 
     /// Every hosted plugin, in node order.
@@ -1443,7 +1533,6 @@ impl Session {
     }
 
     fn land_reload_inner(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
-        crate::main_thread();
         let now = self.plugins_now;
         let PluginReloaded {
             node,
@@ -1835,9 +1924,7 @@ impl Session {
 
     /// `Phase::Plugins`. See the module docs.
     pub(crate) fn plugins_phase(&mut self, cx: crate::PhaseCx<'_>, out: &mut Vec<SessionEvent>) {
-        // `refresh_node_latency` collects (`Editor::set_latency`), and what
-        // it collects may be a plugin whose drop tears down an editor.
-        crate::main_thread();
+        self.graph.graveyard.warn_if_piling();
         let now = cx.now;
         self.plugins_now = now;
         let interval = self.snapshot_interval;

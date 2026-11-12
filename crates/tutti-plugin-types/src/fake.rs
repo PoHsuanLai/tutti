@@ -65,6 +65,12 @@ pub enum Call {
     RunTimer(TimerId),
     /// `Control::service_fd`.
     ServiceFd(FdId),
+    /// `EditorWindow::open_editor`.
+    OpenEditor,
+    /// `EditorWindow::close_editor`.
+    CloseEditor,
+    /// `EditorWindow::editor_idle`.
+    EditorIdle,
 }
 
 const SCOPES: [RescanScope; 4] = [
@@ -99,6 +105,9 @@ impl Call {
             Self::ServiceFd(id) => [16, u64::from(id.0 as u32), 0],
             Self::RebuildMidiMapping => [17, 0, 0],
             Self::Reset => [18, 0, 0],
+            Self::OpenEditor => [19, 0, 0],
+            Self::CloseEditor => [20, 0, 0],
+            Self::EditorIdle => [21, 0, 0],
         }
     }
 
@@ -125,6 +134,9 @@ impl Call {
             16 => Self::ServiceFd(FdId(a as u32 as i32)),
             17 => Self::RebuildMidiMapping,
             18 => Self::Reset,
+            19 => Self::OpenEditor,
+            20 => Self::CloseEditor,
+            21 => Self::EditorIdle,
             _ => return None,
         })
     }
@@ -204,6 +216,11 @@ struct Shared {
     outputs: AtomicU32,
     requests: RequestWord,
     state: Mutex<Vec<u8>>,
+    /// Whether the fake has an editor (`FakePlugin::with_editor`).
+    editor: AtomicBool,
+    /// The size the plugin asked its window to take, packed `width << 32 | height`,
+    /// until the host polls it; `0` when it has not asked.
+    resize_request: AtomicU64,
 }
 
 impl Shared {
@@ -263,6 +280,8 @@ impl FakePlugin {
             outputs: AtomicU32::new(2),
             requests: RequestWord::new(),
             state: Mutex::new(Vec::new()),
+            editor: AtomicBool::new(false),
+            resize_request: AtomicU64::new(0),
         });
         (
             Self(shared.clone()),
@@ -356,6 +375,19 @@ impl FakePlugin {
         self.0.outputs.store(u32::from(channels), Ordering::Relaxed);
     }
 
+    /// Gives the fake an editor: `open_editor` answers 640 by 480 and the
+    /// window calls are logged. The default is none.
+    pub fn with_editor(&self, has: bool) {
+        self.0.editor.store(has, Ordering::Relaxed);
+    }
+
+    /// The plugin asks its window to take `size`; the host's next
+    /// `poll_editor_resize_request` answers it, once.
+    pub fn request_editor_size(&self, size: EditorSize) {
+        let packed = (u64::from(size.width) << 32) | u64::from(size.height);
+        self.0.resize_request.store(packed, Ordering::Relaxed);
+    }
+
     /// The word the plugin's host callbacks raise, which the shell takes.
     #[must_use]
     pub fn request_word(&self) -> &RequestWord {
@@ -364,7 +396,10 @@ impl FakePlugin {
 }
 
 /// The fake, loaded.
-#[derive(Debug)]
+///
+/// `Clone`, so a test can lend it as a `MainThreadControl`: a clone shares the
+/// fake's state and call log, and copies its parameter values.
+#[derive(Debug, Clone)]
 pub struct FakeLoaded {
     shared: Arc<Shared>,
     descriptor: PluginDescriptor,
@@ -503,10 +538,10 @@ macro_rules! fake_control {
             }
         }
 
-        /// The fake has no editor.
+        /// The fake has an editor only when the test gave it one.
         impl EditorWindow for $ty {
             fn has_editor(&self, _main: &MainThread) -> bool {
-                false
+                self.shared.editor.load(Ordering::Relaxed)
             }
 
             fn open_editor(
@@ -515,14 +550,25 @@ macro_rules! fake_control {
                 _parent: WindowHandle,
                 _scale: ContentScale,
             ) -> PluginResult<EditorSize> {
-                Err(PluginError::Editor(EditorError::PluginError(
-                    "the fake plugin has no editor".into(),
-                )))
+                if !self.shared.editor.load(Ordering::Relaxed) {
+                    return Err(PluginError::Editor(EditorError::PluginError(
+                        "the fake plugin has no editor".into(),
+                    )));
+                }
+                self.shared.log.push(Call::OpenEditor);
+                Ok(EditorSize {
+                    width: 640,
+                    height: 480,
+                })
             }
 
-            fn close_editor(&mut self, _main: &MainThread) {}
+            fn close_editor(&mut self, _main: &MainThread) {
+                self.shared.log.push(Call::CloseEditor);
+            }
 
-            fn editor_idle(&mut self, _main: &MainThread) {}
+            fn editor_idle(&mut self, _main: &MainThread) {
+                self.shared.log.push(Call::EditorIdle);
+            }
 
             /// The default capabilities: this surface reports no resize support.
             fn editor_capabilities(
@@ -543,12 +589,18 @@ macro_rules! fake_control {
                 )))
             }
 
-            /// Nothing asked: this surface never queues a resize request.
+            /// What the test asked the plugin to request, once.
             fn poll_editor_resize_request(
                 &mut self,
                 _main: &crate::MainThread,
             ) -> Option<crate::EditorSize> {
-                None
+                match self.shared.resize_request.swap(0, Ordering::Relaxed) {
+                    0 => None,
+                    packed => Some(crate::EditorSize {
+                        width: (packed >> 32) as u32,
+                        height: packed as u32,
+                    }),
+                }
             }
         }
     };

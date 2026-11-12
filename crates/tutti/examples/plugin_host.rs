@@ -16,9 +16,11 @@
 //! `state().save()` and written beside the WAV.
 //!
 //! The plugin is a [`Plugin`] view (`session.plugin(node)`), and what happens to
-//! it is a [`PluginEvent`] in `update()`'s events. The editor is left out: this
-//! host is headless; opening a plugin's window is design 029 step 2's second
-//! half.
+//! it is a [`PluginEvent`] in `update()`'s events. The host's thread claims the
+//! main thread and calls `session.main(main).update()`, which services the
+//! editors it opened (`ui.plugin(node)?.editor().open(&window, scale)`, with a
+//! window of a winit or Bevy app; this host has none) and raises
+//! `PluginChange::EditorWantsSize` when one asks for a size.
 //!
 //! It is not run in CI (it needs a plugin directory and the two binaries
 //! above built); `cargo build -p tutti --features clap,export --examples`
@@ -135,7 +137,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    tail) and what happens to it (died, reloading) is one stream: the
     //    session's `SessionEvent::Plugin`, named by node. A host reads it from
     //    `update()`; there is no callback to install and none to clear.
-    for event in session.update() {
+    //    `MainSession::update` is the main thread's `update`: it also drops the
+    //    plugins the session retired and services every open editor.
+    for event in session.main(main).update() {
         if let SessionEvent::Plugin(PluginEvent { node, change, .. }) = event {
             eprintln!("{node:?}: {change:?}");
         }

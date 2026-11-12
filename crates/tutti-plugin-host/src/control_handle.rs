@@ -5,7 +5,6 @@
 //! Audio never travels through here; this is the off-RT half.
 
 use crate::{InvalidateSink, Notice, ParameterChangeSink, RefreshSink, Subscription};
-use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
 use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::MainThread;
@@ -532,26 +531,25 @@ impl PluginHandle {
     /// Embeds the plugin's editor into `parent` and returns the size the editor
     /// asked for.
     ///
-    /// Pass anything that implements [`HasWindowHandle`]: Bevy windows, winit
-    /// windows, wgpu surfaces. `scale` is that window's backing-store scale
+    /// `parent` is [`WindowHandle::from_window`] of a Bevy or winit window or a
+    /// wgpu surface. `scale` is that window's backing-store scale
     /// (`winit::Window::scale_factor`, Bevy's `Window::scale_factor`): a
     /// window handle carries none, and a plugin on Windows or X11 cannot
-    /// read it itself. Call on the main thread.
+    /// read it itself. Call on the main thread. A session's host opens an
+    /// editor through `tutti_session::EditorView::open`, which this serves.
     ///
     /// # Errors
     ///
     /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
-    /// route, an [`EditorError`] if `parent`'s window
-    /// handle is unavailable or of an unsupported platform, and otherwise any
-    /// error of [`EditorWindow::open_editor`](tutti_plugin_types::EditorWindow::open_editor).
+    /// route, and otherwise any error of
+    /// [`EditorWindow::open_editor`](tutti_plugin_types::EditorWindow::open_editor).
     pub fn open_editor(
         &self,
         main: &MainThread,
-        parent: impl HasWindowHandle,
+        parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<EditorSize, EditorError> {
         let control = self.editor_route()?;
-        let parent = WindowHandle::from_window(&parent)?;
         Self::editor_call(control, |c| c.open_editor(main, parent, scale))
     }
 

@@ -33,9 +33,6 @@ atomic_float = "1.1"
 arrayvec = "0.7"
 parking_lot = "0.12"
 tracing = "0.1"
-# Typed parent-window handle for editor embedding: the handle's `open_editor`
-# takes anything that impls `HasWindowHandle` and extracts the platform pointer.
-raw-window-handle = "0.6"
 
 [dev-dependencies]
 # The in-process node's tests and the integration suites load the reference

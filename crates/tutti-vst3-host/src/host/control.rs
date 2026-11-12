@@ -591,30 +591,32 @@ impl EditorWindow for Vst3Loaded {
         self.plugin.run_editor_loop_iteration(main);
     }
 
-    /// The default capabilities: this surface reports no resize support.
-    fn editor_capabilities(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> tutti_plugin_types::EditorCapabilities {
-        tutti_plugin_types::EditorCapabilities::default()
+    /// What the open editor's view supports, queried live (the inherent
+    /// [`Vst3Loaded::editor_capabilities`]).
+    fn editor_capabilities(&mut self, main: &MainThread) -> tutti_plugin_types::EditorCapabilities {
+        Vst3Loaded::editor_capabilities(self, main)
     }
 
-    /// Not supported here.
+    /// `IPlugView::onSize` through [`Vst3Loaded::resize_editor`]: the size the
+    /// plugin snapped to.
     fn set_editor_size(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
-        _requested: tutti_plugin_types::EditorSize,
+        main: &MainThread,
+        requested: tutti_plugin_types::EditorSize,
     ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
-        Err(tutti_plugin_types::PluginError::Editor(
-            tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
-        ))
+        Vst3Loaded::resize_editor(self, main, requested).map_err(|e| {
+            tutti_plugin_types::PluginError::Editor(tutti_plugin_types::EditorError::PluginError(
+                format!("VST3 resize_editor failed: {e}"),
+            ))
+        })
     }
 
-    /// Nothing asked: this surface never queues a resize request.
+    /// The latest `IPlugFrame::resizeView` the plugin made since the last poll
+    /// ([`Vst3Loaded::poll_editor_resize_request`]).
     fn poll_editor_resize_request(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
+        main: &MainThread,
     ) -> Option<tutti_plugin_types::EditorSize> {
-        None
+        Vst3Loaded::poll_editor_resize_request(self, main)
     }
 }

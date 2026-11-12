@@ -25,7 +25,7 @@ use winnow::token::{any, literal};
 
 use tutti_ump::{DeviceIdentity, ManufacturerId, U7, U14};
 
-use super::{DeviceId, GeneralMidi, Universal};
+use super::{GeneralMidi, Recipient, Universal};
 
 type Res<T> = winnow::ModalResult<T, ContextError>;
 
@@ -46,8 +46,8 @@ fn u14(input: &mut &[u8]) -> Res<U14> {
         .parse_next(input)
 }
 
-fn device(input: &mut &[u8]) -> Res<DeviceId> {
-    u7.map(DeviceId::new).parse_next(input)
+fn device(input: &mut &[u8]) -> Res<Recipient> {
+    u7.map(Recipient::of_byte).parse_next(input)
 }
 
 /// The manufacturer id of an Identity Reply: one byte, or `00` and two more
@@ -115,7 +115,7 @@ fn device_control(input: &mut &[u8]) -> Res<Universal> {
 }
 
 /// The addressed form: the Universal message and who it names.
-fn addressed(input: &mut &[u8]) -> Res<(DeviceId, Universal)> {
+fn addressed(input: &mut &[u8]) -> Res<(Recipient, Universal)> {
     let class = any.parse_next(input)?;
     let to = device.parse_next(input)?;
     let message = match class {
@@ -129,6 +129,6 @@ fn addressed(input: &mut &[u8]) -> Res<(DeviceId, Universal)> {
 
 /// The payload of a SysEx message (between `F0` and `F7`) as a Universal
 /// message and its device id, or `None` when no rule matches.
-pub(super) fn parse(mut payload: &[u8]) -> Option<(DeviceId, Universal)> {
+pub(super) fn parse(mut payload: &[u8]) -> Option<(Recipient, Universal)> {
     addressed.parse_next(&mut payload).ok()
 }

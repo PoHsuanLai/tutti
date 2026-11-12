@@ -2,7 +2,8 @@
 //! and the instrument's edge that reassembles, filters by device id and reads.
 
 use tutti_midi_protocol::{
-    Addressed, Addressee, DeviceId, GeneralMidi, Heard, Read, Universal, UniversalReader, read,
+    Addressed, Addressee, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient, SysexDeviceId,
+    Universal, UniversalReader, read,
 };
 use tutti_ump::{
     Address, DeviceIdentity, ManufacturerId, Message, MidiChannel, MidiGroup, NoteNumber,
@@ -29,9 +30,9 @@ fn u7s<const N: usize>(bytes: [u8; N]) -> [U7; N] {
 fn an_identity_request_is_the_inquiry_of_p40() {
     let a = heard(&[0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7]);
     assert_eq!(a.message, Universal::IdentityRequest);
-    assert!(a.device.is_all_call());
+    assert_eq!(a.to, Recipient::AllCall);
     let a = heard(&[0xF0, 0x7E, 0x05, 0x06, 0x01, 0xF7]);
-    assert_eq!(a.device, DeviceId::new(U7::of(5)));
+    assert_eq!(a.to, Recipient::Device(SysexDeviceId::of(5)));
 }
 
 /// M1 p.40: `06 02 mm ff ff dd dd ss ss ss ss`, the 14-bit family and member
@@ -146,7 +147,7 @@ fn packets(group: u8, bytes: &[u8]) -> Vec<Ump> {
 }
 
 fn reader(own: u8) -> UniversalReader {
-    UniversalReader::new(MidiGroup::of(0), DeviceId::new(U7::of(own)))
+    UniversalReader::new(MidiGroup::of(0), SysexDeviceId::of(own))
 }
 
 fn feed(reader: &mut UniversalReader, umps: impl IntoIterator<Item = Ump>) -> Vec<Heard> {
@@ -240,4 +241,25 @@ fn an_overlong_message_is_dropped_counted_and_the_next_is_read() {
     assert!(feed(&mut r, packets(0, &long)).is_empty());
     assert_eq!(r.dropped(), 1);
     assert_eq!(feed(&mut r, packets(0, &VOLUME)).len(), 1);
+}
+
+/// **A device's own id is `00` to `7E`: `7F` is the all-call** (M1 p.40), which
+/// every device answers and none has as its own, so it is refused as an id and
+/// read as `Recipient::AllCall` in a header.
+#[test]
+fn the_all_call_is_no_devices_own_id() {
+    assert_eq!(SysexDeviceId::new(U7::of(0x7F)), None);
+    assert_eq!(
+        SysexDeviceId::try_from(U7::of(0x7F)),
+        Err(NotSysexDeviceId(U7::of(0x7F)))
+    );
+    assert_eq!(
+        SysexDeviceId::new(U7::of(0x7E)).map(SysexDeviceId::get),
+        Some(U7::of(0x7E))
+    );
+    assert_eq!(Recipient::of_byte(U7::of(0x7F)), Recipient::AllCall);
+    assert_eq!(
+        Recipient::of_byte(U7::of(0x7E)),
+        Recipient::Device(SysexDeviceId::of(0x7E))
+    );
 }

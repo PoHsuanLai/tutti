@@ -6,7 +6,7 @@
 //! one message: no state, no allocation. [`UniversalReader`] is the instrument's
 //! edge: it takes every UMP of one Group, reassembles the SysEx7 packets, reads
 //! the message and answers only the ones addressed to the instrument
-//! ([`DeviceId`]).
+//! ([`SysexDeviceId`]).
 //!
 //! # What is read
 //!
@@ -27,7 +27,7 @@
 //! `7F` is the all-call: "if `<device ID>` = 7FH then the device should respond
 //! regardless of what `<device ID>` it is set to" (M1 p.40). Any other id is for
 //! the device that has it. A device with no id of its own to say is
-//! [`DeviceId::DEFAULT`]; an instrument takes the messages addressed to it or to
+//! [`SysexDeviceId::DEFAULT`]; an instrument takes the messages addressed to it or to
 //! all ([`Addressee`]). Master Volume and Balance keep the two apart, as M1
 //! p.57 requires: "received on its own ID", "received on the 'All Call' ID".
 
@@ -35,23 +35,54 @@ mod read;
 
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexMessage, SysexStep, U7, U14, Ump};
 
-/// A Universal System Exclusive device id: the 7-bit id of the device a
-/// message is for, or the all-call (`7F`).
-///
-/// Its range is the whole of [`U7`], so it has no refusing constructor.
+/// A device's own Universal System Exclusive id: `00` to `7E`. `7F` is the
+/// all-call (M1 p.40), which every device answers and none has as its own, so
+/// [`new`](Self::new) refuses it; a message's header is a [`Recipient`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DeviceId(U7);
+pub struct SysexDeviceId(U7);
 
-impl DeviceId {
-    /// The all-call, `7F`: every device answers it (M1 p.40).
-    pub const ALL_CALL: Self = Self(U7::MAX);
+/// A `7F`, which is the all-call and no device's own id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotSysexDeviceId(pub U7);
+
+impl core::fmt::Display for NotSysexDeviceId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{:#04x} is the all-call, not a device's own id",
+            self.0.get()
+        )
+    }
+}
+
+impl std::error::Error for NotSysexDeviceId {}
+
+impl SysexDeviceId {
     /// The id a device that has none set takes: `00`.
     pub const DEFAULT: Self = Self(U7::of(0));
 
-    /// The id `id`.
+    /// The id `id`, or `None` for `7F`, the all-call.
     #[must_use]
-    pub const fn new(id: U7) -> Self {
-        Self(id)
+    pub const fn new(id: U7) -> Option<Self> {
+        if id.get() == U7::MAX.get() {
+            None
+        } else {
+            Some(Self(id))
+        }
+    }
+
+    /// The id for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// When `id` is above `7E`; in a `const` that is a compile error.
+    #[must_use]
+    #[track_caller]
+    pub const fn of(id: u8) -> Self {
+        match Self::new(U7::of(id)) {
+            Some(id) => id,
+            None => panic!("7F is the all-call, not a device's own id"),
+        }
     }
 
     /// The id as its 7-bit byte.
@@ -59,11 +90,39 @@ impl DeviceId {
     pub const fn get(self) -> U7 {
         self.0
     }
+}
 
-    /// Whether this is the all-call.
+impl From<SysexDeviceId> for U7 {
+    fn from(id: SysexDeviceId) -> Self {
+        id.0
+    }
+}
+
+impl TryFrom<U7> for SysexDeviceId {
+    type Error = NotSysexDeviceId;
+
+    fn try_from(id: U7) -> Result<Self, Self::Error> {
+        Self::new(id).ok_or(NotSysexDeviceId(id))
+    }
+}
+
+/// Who a Universal message's header names: every device (`7F`) or one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Recipient {
+    /// The all-call, `7F` (M1 p.40).
+    AllCall,
+    /// The device with this id.
+    Device(SysexDeviceId),
+}
+
+impl Recipient {
+    /// The recipient a header byte names.
     #[must_use]
-    pub const fn is_all_call(self) -> bool {
-        self.0.get() == U7::MAX.get()
+    pub const fn of_byte(id: U7) -> Self {
+        match SysexDeviceId::new(id) {
+            Some(device) => Self::Device(device),
+            None => Self::AllCall,
+        }
     }
 }
 
@@ -101,11 +160,11 @@ pub enum Universal {
     MasterCoarseTuning(U7),
 }
 
-/// A Universal message and the device id it names.
+/// A Universal message and who its header names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Addressed {
-    /// The device id in the header.
-    pub device: DeviceId,
+    /// The recipient in the header.
+    pub to: Recipient,
     /// The message.
     pub message: Universal,
 }
@@ -131,7 +190,7 @@ pub enum Read {
 /// // Master Volume, all-call, 0x3FFF (lsb first).
 /// let bytes = [0xF0, 0x7F, 0x7F, 0x04, 0x01, 0x7F, 0x7F, 0xF7];
 /// let Read::Universal(heard) = read(SysexMessage::new(&bytes).unwrap()) else { panic!() };
-/// assert!(heard.device.is_all_call());
+/// assert_eq!(heard.to, tutti_midi_protocol::Recipient::AllCall);
 /// assert!(matches!(heard.message, Universal::MasterVolume(v) if v.get() == 0x3FFF));
 /// ```
 #[must_use]
@@ -139,8 +198,8 @@ pub fn read(message: SysexMessage<'_>) -> Read {
     let payload = message.payload();
     match payload.first() {
         Some(&(read::NON_REAL_TIME | read::REAL_TIME)) => read::parse(payload)
-            .map_or(Read::Unread, |(device, message)| {
-                Read::Universal(Addressed { device, message })
+            .map_or(Read::Unread, |(to, message)| {
+                Read::Universal(Addressed { to, message })
             }),
         _ => Read::Foreign,
     }
@@ -177,14 +236,14 @@ const MAX_MESSAGE: usize = 32;
 #[derive(Debug)]
 pub struct UniversalReader {
     group: MidiGroup,
-    device: DeviceId,
+    device: SysexDeviceId,
     assembler: SysexAssembler<Box<[u8]>>,
 }
 
 impl UniversalReader {
     /// A reader of `group`'s System Exclusive for the device `device`.
     #[must_use]
-    pub fn new(group: MidiGroup, device: DeviceId) -> Self {
+    pub fn new(group: MidiGroup, device: SysexDeviceId) -> Self {
         let room = SysexAssembler::room_for(MAX_MESSAGE, 1, 1);
         Self {
             group,
@@ -195,7 +254,7 @@ impl UniversalReader {
 
     /// The device id the reader answers to besides the all-call.
     #[must_use]
-    pub fn device(&self) -> DeviceId {
+    pub fn device(&self) -> SysexDeviceId {
         self.device
     }
 
@@ -212,16 +271,17 @@ impl UniversalReader {
         let SysexStep::Complete(done) = self.assembler.push(ump) else {
             return None;
         };
-        let Read::Universal(Addressed { device, message }) = read(self.assembler.message(done))
+        let Read::Universal(Addressed {
+            to: recipient,
+            message,
+        }) = read(self.assembler.message(done))
         else {
             return None;
         };
-        let to = if device.is_all_call() {
-            Addressee::All
-        } else if device == self.device {
-            Addressee::Own
-        } else {
-            return None;
+        let to = match recipient {
+            Recipient::AllCall => Addressee::All,
+            Recipient::Device(device) if device == self.device => Addressee::Own,
+            Recipient::Device(_) => return None,
         };
         Some(Heard { to, message })
     }

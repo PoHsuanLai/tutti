@@ -6,7 +6,7 @@ use core::fmt;
 use std::num::NonZeroUsize;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_midi_protocol::{DeviceId, MpeMode};
+use tutti_midi_protocol::{MpeMode, SysexDeviceId};
 use tutti_types::Adsr;
 use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
 use tutti_ump::MidiGroup;
@@ -263,8 +263,8 @@ pub struct SynthConfig {
     /// the all-call (M1 p.40): a message addressed to it, or to all, is read
     /// (Master Volume, Balance and Tuning, General MIDI System On and Off).
     /// Master Volume and Balance keep what arrives on this id apart from what
-    /// arrives on the all-call (M1 p.57). Default [`DeviceId::DEFAULT`].
-    pub device: DeviceId,
+    /// arrives on the all-call (M1 p.57). Default [`SysexDeviceId::DEFAULT`].
+    pub device: SysexDeviceId,
 }
 
 impl SynthConfig {
@@ -288,7 +288,7 @@ impl SynthConfig {
     /// This config answering to the Universal System Exclusive device id
     /// `device`.
     #[must_use]
-    pub fn with_device(mut self, device: DeviceId) -> Self {
+    pub fn with_device(mut self, device: SysexDeviceId) -> Self {
         self.device = device;
         self
     }
@@ -323,7 +323,7 @@ impl Default for SynthConfig {
             filter_mod: FilterModConfig::default(),
             mpe: MpeMode::Disabled,
             group: MidiGroup::FIRST,
-            device: DeviceId::DEFAULT,
+            device: SysexDeviceId::DEFAULT,
         }
     }
 }

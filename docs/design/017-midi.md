@@ -3381,7 +3381,7 @@ What the decoded messages are consumed by, one item each.
 - **The parser.** `tutti_midi_protocol::read(SysexMessage) -> Read` is a pure parse of one
   whole message, a `winnow` grammar in `src/universal/read.rs` (the crate's one parser
   module, listed in `check-layout`'s `WINNOW_HOMES`; no `winnow` type is in a public
-  signature). `Read::Universal(Addressed { device: DeviceId, message: Universal })` for
+  signature). `Read::Universal(Addressed { to: Recipient, message: Universal })` (`Recipient::{AllCall, Device(SysexDeviceId)}`; a `SysexDeviceId` is `00` to `7E` and refuses `7F`) for
   what is read, `Read::Unread` for another Universal sub-id or one of ours that is cut short
   or has bytes after its end, `Read::Foreign` for a manufacturer's id; none is an error, so a
   stream is never dropped for a message nobody reads. `Universal` is `#[non_exhaustive]`:
@@ -3396,7 +3396,7 @@ What the decoded messages are consumed by, one item each.
   refuse): `ALL_CALL` is `7F` ("if `<device ID>` = 7FH then the device should respond
   regardless of what `<device ID>` it is set to", M1 p.40) and `DEFAULT` is `00`. The
   receiver's own id is an instrument setting, `SynthConfig::device` /
-  `Settings::with_device`, default `DeviceId::DEFAULT`: the spec calls it the id "which
+  `Settings::with_device`, default `SysexDeviceId::DEFAULT`: the spec calls it the id "which
   matches its knob on the front panel", so it is configuration, not something to derive.
   `UniversalReader::new(group, device)` is the instrument's edge: it takes every UMP of one
   Group (M2-104 §7.7.1: any other message of the Group ends an open SysEx), reassembles with a

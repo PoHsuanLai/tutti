@@ -747,7 +747,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (a `winnow` grammar: `Read::Universal(Addressed { device, message })`, `Unread` for a Universal
   message it does not read or that is malformed, `Foreign` for a manufacturer's; never an error)
   over `Universal` (`#[non_exhaustive]`: Identity Request and Reply, General MIDI On and Off,
-  Master Volume, Balance, Fine and Coarse Tuning), and `UniversalReader::new(group, DeviceId)`,
+  Master Volume, Balance, Fine and Coarse Tuning), and `UniversalReader::new(group, SysexDeviceId)` (a device's own id, `00` to `7E`: `7F` is the all-call, a header's `Recipient::AllCall`, and no device's own),
   an instrument's edge (every UMP of one Group in, `Heard { to: Addressee::{All, Own}, message }`
   out for the all-call `7F` and its own id only, M1 p.40). MIDI-CI's decode stays
   `tutti-midi-device`'s and reads none of this.

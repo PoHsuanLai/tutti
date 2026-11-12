@@ -10,10 +10,10 @@ use std::sync::Arc;
 use support::font::{Inst, Preset, font};
 use support::rig::Rig;
 use tutti_fixtures::sf2::generator;
-use tutti_midi_protocol::DeviceId;
+use tutti_midi_protocol::SysexDeviceId;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::Settings;
-use tutti_ump::{MidiChannel, MidiGroup, SysexMessage, U7, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, SysexMessage, Ump};
 
 /// `0:0` and `0:1` are the plain sine and an octave above it; the percussion
 /// bank's `128:0` is one or the other, as `drums_up` says.
@@ -89,7 +89,7 @@ fn energy(rig: &mut Rig) -> (f32, f32) {
 #[test]
 fn master_volume_scales_every_plane_by_the_square_of_the_value() {
     let font = font_with(false);
-    let settings = Settings::new().with_device(DeviceId::new(U7::of(5)));
+    let settings = Settings::new().with_device(SysexDeviceId::of(5));
     let mut rig = Rig::with(&font, settings);
     rig.note_on(0, 69, 100);
     let (l0, r0) = energy(&mut rig);
@@ -105,7 +105,7 @@ fn master_volume_scales_every_plane_by_the_square_of_the_value() {
 #[test]
 fn only_the_all_call_and_the_units_own_id_are_heard() {
     let font = font_with(false);
-    let settings = Settings::new().with_device(DeviceId::new(U7::of(5)));
+    let settings = Settings::new().with_device(SysexDeviceId::of(5));
     let mut rig = Rig::with(&font, settings);
     rig.note_on(0, 69, 100);
     let (l0, _) = energy(&mut rig);

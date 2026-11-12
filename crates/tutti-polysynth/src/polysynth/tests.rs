@@ -3532,7 +3532,7 @@ fn rms_after(synth: &mut Hand, events: &[Ump]) -> (f32, f32) {
 /// sounding; the all-call reaches the synth whatever its own id.
 #[test]
 fn master_volume_scales_the_output_by_the_square_of_the_value() {
-    let mut s = steady(|c| c.device = tutti_midi_protocol::DeviceId::new(U7::of(5)));
+    let mut s = steady(|c| c.device = tutti_midi_protocol::SysexDeviceId::of(5));
     let (before, _) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
     assert!(before > 0.01);
     let (after, _) = rms_after(&mut s, &sysex(0, &device_control(0x7F, 0x01, 0x00, 0x40)));
@@ -3548,7 +3548,7 @@ fn master_volume_scales_the_output_by_the_square_of_the_value() {
 /// own is.
 #[test]
 fn a_message_for_another_device_id_is_not_heard() {
-    let mut s = steady(|c| c.device = tutti_midi_protocol::DeviceId::new(U7::of(5)));
+    let mut s = steady(|c| c.device = tutti_midi_protocol::SysexDeviceId::of(5));
     let (before, _) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
     let (same, _) = rms_after(&mut s, &sysex(0, &device_control(6, 0x01, 0x00, 0x00)));
     assert!((same / before - 1.0).abs() < 0.01, "device 6 is not 5");

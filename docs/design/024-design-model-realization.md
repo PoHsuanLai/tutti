@@ -367,7 +367,7 @@ traits.
 | `C` | the controls: a product of intervals of typed units | `(f_c, Q) ∈ (0, fs/2) × ℝ₊` | decay, size, damping, ... |
 | `D ⊆ C` | a **domain**: the part of `C` a node promises to reach | all of `C` | decay up to `MaxDecay` |
 | `M` | the **members**: what fixes one system | the response type and `(g, k)` | the `Network` |
-| `Θ` | the **coefficients**: the part of a member the recurrence reads per frame; an affine space when it glides | `(g, k) ∈ ℝ²` | gains, filter coefficients, delay lengths |
+| `Θ` | the **coefficients**: the part of a member the recurrence reads per frame; an affine space when it glides | `(g, k) ∈ ℝ²` | gains, filter coefficients, fractional delay lengths (read with interpolation, so affine) |
 | `X = ℝ^nᵢ`, `Y = ℝ^nₒ` | input and output frames (one value per channel at an instant) | `ℝ → ℝ` | `ℝ² → ℝ²` |
 | `S` (or `S_κ`) | the state; indexed by a capacity `κ` when its size depends on the member | `ℝ²`, two integrators | the delay lines, `S_κ` |
 | `𝒦` | the **capacities**: a lattice under `≤` (`dominates`) | a single point | line lengths |
@@ -407,8 +407,11 @@ a held control it is `T_m`). What each map is, and the condition it must meet:
   an author states: `prepare`, `reset` and `fresh` all return to it.
 - **`T` is written once.** Block independence is a theorem, not something each family
   proves: for any `K`, running `x` then `x′` from the state `x` left equals running
-  `x ++ x′`. Only `σ` can break it, by sampling controls on the host's block grid
-  (section 4.5's `Anchor`).
+  `x ++ x′`. Two maps sit on a grid and could break it: `σ`, by sampling controls on
+  the host's block grid (section 4.5's `Anchor`), and `γ`, whose steps (`STEP` frames; the
+  FDN's 32) must be counted from `s₀` on the stream, never from the start of a call. With
+  both anchored to the stream the theorem holds as written; a block-anchored `σ` is the
+  one declared exception (`Cadence::block_independent`).
 - **`H` exists iff `T_m` is linear and commutes with the delay `z⁻¹`.** Then
   `H_m(z) = C(zI − A)⁻¹B + D` for the state-space form of `K`, and every class-1 query is a
   function of `H_m`: the response `ω ↦ H_m(e^{jω})`, the spectral radius of `A`, the norms,
@@ -419,6 +422,11 @@ a held control it is `T_m`). What each map is, and the condition it must meet:
   are not affine (an impulse response swapped live, an HRIR face) glides by crossfading
   two states instead, which is a different `γ` on `Θ × Θ × [0, 1]`, not a different
   recurrence.
+- **Latency has one home per cause.** `T_m`'s own latency (a limiter's lookahead) is the
+  member's, `System::latency`. A recurrence may add latency the member does not have (a
+  partitioned convolver's block, an STFT's frame): that is `Recurrence::latency`, and it
+  means `T_m = z^{−d_K} · (the member's system)`. PDC reads the sum; law 1 of section 2.7.4
+  compares against the delayed member; a recurrence that adds none states nothing.
 - **`need` and `reach` meet one condition:** `need(φ(c, fs)) ≤ reach(D, fs)` for every
   `c ∈ D`. That is the whole correctness of `Capacity`, `Domain` and `Reach`, and a family
   whose state has one size (the SVF, the ladder, the crossover) has no `need` at all.
@@ -433,9 +441,13 @@ A processor, a generator and an instrument differ only in `X`:
 | generator | `1`, or `ℕ` (the frame's time) | LFO: `K : Θ × Phase × ℕ → ℝ × Phase`; the click, noise |
 | instrument | `E* × 1`: the events landing on this frame | `V ≫ B`: `V : E* × S_V → Cmd* × S_V` is `tutti-voicing`'s step, `B` the voice bank |
 
-So the one runner covers all three once it takes the frame count from the call, not from
+The recurrence's input is therefore its associated type (`Recurrence::Input<'a>`:
+`&[&[f32]]` for an effect, `()` for a generator, the frame range's events and the channels'
+`f32` for an instrument), and the runner takes the frame count from the call, not from
 `input[0].len()`. Events split a block at their offsets the way the cadence grid already
-does. **One shape is not a recurrence of this kind:** a multirate system (the resampler by
+does. Only the effect shape is built; the generator and instrument rows are claims, checked
+by the first lane that builds each (the control sources, then the first instrument moved onto
+the runner), and section 2.7.5's signature changes there if the claim fails. **One shape is not a recurrence of this kind:** a multirate system (the resampler by
 `L/M`, the stretcher, the formant pitch shifter) has output frame `n` depend on input up to
 `⌊nM/L⌋ + d`, so it consumes and produces different counts. It is a `Transducer` (await an
 input frame or yield an output frame), every `K` embeds in it, and it is built when the
@@ -491,9 +503,10 @@ pub trait Recurrence {
     const STEP: usize;
     fn coefficients(&self, m: &Self::Member) -> Self::Coefficients;            // κ
     fn initial(&self, setup: &Setup) -> Self::State;                           // s₀
+    type Input<'a>;               // X: `&'a [&'a [f32]]` for an effect, `()` for a generator
     fn run(&self, θ: &Self::Coefficients, s: &mut Self::State,
-           input: &[&[f32]], output: &mut [&mut [f32]], frames: Range<usize>); // K, block form
-    fn latency(&self) -> Samples { Samples::ZERO }
+           input: Self::Input<'_>, output: &mut [&mut [f32]], frames: Range<usize>); // K, block form
+    fn latency(&self) -> Samples { Samples::ZERO } // only latency the member does not have
     fn effort(&self) -> Effort { Effort::default() }
 }
 
@@ -527,7 +540,7 @@ What this changes against main:
 | `Sizes`, `Bounds`, `NetworkSizes`, `FilterSizes` | **`Capacity`**, `NetworkCapacity`; `FilterSizes` deleted | `𝒦`; a filter's capacity is a single point |
 | `Range`, `Ceiling<R>`, `bounds(&ceiling)` | **`Domain`**, **`Reach<D>`**, **`reach`** | `D ⊆ C` and the monotone map `reach` |
 | traits `Realization<M>` and `Effect<M>` | deleted; **`Realized<R>`** is the one runner, a struct | the lifecycle is derived from `s₀`, and the shape is `X`; the trait's only production implementer was `Realized<K>`, the others test doubles, which become recurrences or the runner's flaws |
-| `Realized::process` reads `input[0].len()` | the frame count is an argument | a generator has `X = 1` |
+| `Realized::process` reads `input[0].len()` | the frame count is an argument, the input an associated type | a generator has `X = 1`, an instrument `X = E*` |
 | `NodeDesign`, `DesignNode<D>`, `*Design` | **`NodeFamily`**, **`FamilyNode<F>`**, `SvfFamily`, `LadderFamily`, `CrossoverFamily`, `FreeverbFamily`, `FdnFamily` | the node over a family |
 | `design_contract!`, `DesignCase`, `realization_contract!`, `RealizationCase` | **`family_contract!`** (`φ`'s diagram), **`recurrence_contract!`** (laws 1 to 3) | the contract is the diagrams of section 2.7.4 |
 

@@ -58,9 +58,8 @@ pub enum ScheduleError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum TempoError {
-    /// The session follows a live tempo ([`Midi::follow_tempo`](crate::Midi::follow_tempo)),
-    /// which owns the published map until
-    /// [`unfollow_tempo`](crate::Midi::unfollow_tempo): a map set now would be
+    /// The session follows a live tempo (`Midi::follow_tempo`, feature
+    /// `midi`), which owns the published map until `unfollow_tempo`: a map set now would be
     /// overwritten by the next live step, and unfollowing restores the map in
     /// force when following began.
     #[error("the session follows a live tempo; unfollow_tempo first")]

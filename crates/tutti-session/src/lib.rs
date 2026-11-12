@@ -37,19 +37,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-/// With `plugin`, the main-thread check of design 015 §4.2 (a `debug_assert!`
-/// that is silent until a host claims its main thread); otherwise nothing.
-/// Called wherever a retired unit can be freed: the editor's collect, and the
-/// session's drop. These paths take no `MainThread` token, so they check.
-#[inline]
-pub(crate) fn main_thread() {
-    #[cfg(feature = "plugin")]
-    debug_assert!(
-        !tutti_plugin_types::MainThread::claimed_elsewhere(),
-        "plugin main-thread call made off the main thread"
-    );
-}
-
 #[cfg(feature = "export")]
 mod bounce;
 mod builder;
@@ -68,6 +55,8 @@ mod input;
 mod instrument;
 mod jobs;
 mod key;
+#[cfg(feature = "plugin")]
+mod main_session;
 #[cfg(feature = "midi")]
 mod midi;
 #[cfg(feature = "midi")]
@@ -132,6 +121,8 @@ pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
     Inlet, Key, MainBus, MainSink, OutPort, Outlet, Root, Weighted, Wire,
 };
+#[cfg(feature = "plugin")]
+pub use main_session::{EditorView, MainPlugin, MainSession, Opened};
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad,

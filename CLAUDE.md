@@ -1578,6 +1578,14 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `OfflineTimeline::advance(usize)` → `advance(Samples)`;
   `TransportSettings::in_preroll` (a public cell) and `is_in_preroll` → the method
   `in_preroll()` (`in_preroll_cell()` for the node that reads it);
+  A host's per-frame `PluginHandle::editor_idle` and `poll_editor_resize_request` calls, and
+  a `debug_assert!` on `MainThread::claimed_elsewhere` in `Session`'s freeing paths
+  (`crate::main_thread`, gone) → `Session::main(main).update()` (`MainSession`: the
+  graveyard, `run_deferred` and the editors it opened, `PluginChange::EditorWantsSize`;
+  `Session::update`, `commit`, `remove` and `replace` stay on `Session` and free no plugin:
+  what they retire waits in the graveyard, `Session::retired_plugins`), and
+  `PluginHandle::open_editor(.., impl HasWindowHandle)` → `open_editor(.., WindowHandle)`
+  (a host's own path is `ui.plugin(node)?.editor().open(&window, scale)` → `Opened`, and `rescale(scale)` → `EditorWindow::set_editor_scale`);
   `Session::mods()` as the editor → `mods_mut()`; `Mods::route(source, target,
   depth)` → `route(RouteSpec)`; `Mods::route_mut` and its public `RouteDecl` fields →
   `route_of(id)?` setters; `ModState::{refusal, unresolved_targets,

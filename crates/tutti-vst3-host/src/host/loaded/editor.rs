@@ -79,6 +79,19 @@ impl Vst3Loaded {
         self.plugin.take_editor_resize_request(main)
     }
 
+    /// Tells the open editor its window's scale changed. Returns whether the
+    /// view took it: `false` for a logical-pixel view (AppKit) and one without
+    /// `IPlugViewContentScaleSupport`.
+    ///
+    /// # Errors
+    ///
+    /// [`Vst3Error::EditorError`] if no editor is open.
+    pub fn rescale_editor(&mut self, main: &MainThread, scale: ContentScale) -> Result<bool> {
+        self.plugin
+            .set_editor_scale(main, scale)
+            .map_err(|_| Vst3Error::EditorError("editor not open".to_string()))
+    }
+
     /// Asks the plugin what it would snap `requested` to, without applying it.
     ///
     /// A read-only probe of `IPlugView::checkSizeConstraint`: the plugin clamps

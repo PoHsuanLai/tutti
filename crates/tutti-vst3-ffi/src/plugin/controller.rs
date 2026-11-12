@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl Plugin {
+impl Parts {
     // ── Parameters ───────────────────────────────────────────────────────────
 
     /// How many parameters the controller reports; zero without a controller.

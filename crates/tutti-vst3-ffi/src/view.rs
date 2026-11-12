@@ -290,6 +290,21 @@ impl Editor {
         detach_view(main, &self.view);
     }
 
+    /// Tells the view its window's scale changed (`setContentScaleFactor`).
+    /// Returns whether it was told: `false` for a logical-pixel view (an
+    /// `NSView` carries its scale already, see [`content_scale_for`]) and for a
+    /// view without `IPlugViewContentScaleSupport` or one that refused.
+    pub(crate) fn set_scale(&self, scale: ContentScale) -> bool {
+        let Some(factor) = content_scale_for(native_platform_type(), scale) else {
+            return false;
+        };
+        let Some(support) = self.view.cast::<IPlugViewContentScaleSupport>() else {
+            return false;
+        };
+        // SAFETY: a plain call on a live interface.
+        is_ok(unsafe { support.setContentScaleFactor(factor) })
+    }
+
     /// Whether the view says it can be resized (`kResultOk`).
     pub(crate) fn resizable(&self) -> bool {
         // SAFETY: a plain call on a live view.

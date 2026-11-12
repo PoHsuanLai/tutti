@@ -334,6 +334,10 @@ pub struct Graph {
     /// happen.
     #[cfg(feature = "plugin")]
     pub(crate) plugins: BTreeMap<NodeKey, crate::plugin::HostedPlugin>,
+    /// What a removal or a replacement took out of `plugins`, held until the
+    /// main thread drains it (`MainSession::update`).
+    #[cfg(feature = "plugin")]
+    pub(crate) graveyard: crate::plugin::Graveyard,
     /// A reader of the session's tempo map, the template each plugin and
     /// each sampler node inserted through the graph is bound with (a clone
     /// of it: the node lends the map once per block and a fork clones its
@@ -476,6 +480,8 @@ impl Graph {
             widen_refusal: None,
             #[cfg(feature = "plugin")]
             plugins: BTreeMap::new(),
+            #[cfg(feature = "plugin")]
+            graveyard: crate::plugin::Graveyard::default(),
             tempo,
         }
     }
@@ -627,8 +633,6 @@ impl Graph {
         let Some(local) = &mut self.local else {
             return;
         };
-        // The collect below frees what the local executor retired.
-        crate::main_thread();
         for _ in 0..4 {
             if self.editor.in_flight() == 0 {
                 break;
@@ -885,7 +889,10 @@ impl Graph {
                 // what the latency poll reads; nothing of the outgoing
                 // plugin's state survives (`HostedPlugin::replace`).
                 match self.plugins.get_mut(&node) {
-                    Some(hosted) => hosted.replace(handle, controls, plugin),
+                    Some(hosted) => {
+                        let outgoing = hosted.replace(handle, controls, plugin);
+                        self.graveyard.bury_handle(outgoing);
+                    }
                     None => {
                         self.plugins.insert(
                             node,
@@ -1019,7 +1026,9 @@ impl Graph {
     ) -> Result<N::Controls, ReplaceRefused<N>> {
         let controls = self.swap_unit(node, incoming, fade, curve)?;
         #[cfg(feature = "plugin")]
-        self.plugins.remove(&node);
+        if let Some(record) = self.plugins.remove(&node) {
+            self.graveyard.bury(record);
+        }
         Ok(controls)
     }
 
@@ -1529,7 +1538,9 @@ impl Graph {
             return Err(RemoveError::NoSuchNode(node));
         }
         #[cfg(feature = "plugin")]
-        self.plugins.remove(&node);
+        if let Some(record) = self.plugins.remove(&node) {
+            self.graveyard.bury(record);
+        }
         // The edges it feeds fade out first: the node stays in the editor,
         // rendering, until they have.
         self.editor.remove_declicked(node);
@@ -2928,10 +2939,10 @@ impl Graph {
 
     // --- Committing and rendering ---
 
-    /// Drain what the executor sent back, freeing retired units here: on
-    /// the main thread (`crate::main_thread`).
+    /// Drain what the executor sent back, freeing the retired units here. A
+    /// retired in-process plugin closes on the main thread whichever thread
+    /// this is (`tutti_plugin_types::defer_to_main`).
     pub(crate) fn collect(&mut self) {
-        crate::main_thread();
         self.editor.collect();
         // An edge whose declick fade has ended leaves the spec (or forgets the
         // fade); the commit that follows compiles it away.

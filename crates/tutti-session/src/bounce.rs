@@ -1943,7 +1943,8 @@ impl Session {
     /// announces Realtime when no other bounce is in flight. Returns what
     /// the render produced.
     ///
-    /// A main-thread call (design 015 §4.2).
+    /// Drops what the bounce left, here: an in-process plugin in it closes on the
+    /// main thread (`tutti_plugin_types::defer_to_main`).
     ///
     /// # Errors
     ///
@@ -1976,7 +1977,8 @@ impl Session {
     /// the mode, a re-plan). The host must run `Phase::RenderMode` after it,
     /// or the plugins stay Offline once the last bounce ends.
     ///
-    /// A main-thread call (design 015 §4.2).
+    /// Drops what the bounce left, here: an in-process plugin in it closes on the
+    /// main thread (`tutti_plugin_types::defer_to_main`).
     ///
     /// # Errors
     ///
@@ -1985,7 +1987,6 @@ impl Session {
         &mut self,
         rendered: BounceRendered<M>,
     ) -> Result<Bounced<M>, BounceError> {
-        crate::main_thread();
         let BounceRendered {
             result,
             graph,
@@ -2016,10 +2017,9 @@ impl Session {
     /// dropped return held (its fork, a hook's edit). `Phase::Collect` (each
     /// [`update`](Self::update)) and [`finish_bounce`](Self::finish_bounce)
     /// do this; a host that polls its bounces on a frame of its own calls it
-    /// there. A main-thread call: a forked in-process VST2 plugin closes
+    /// there. A forked in-process VST2 plugin closes on the main thread
     /// when dropped.
     pub fn drop_bounce_leftovers(&mut self) {
-        crate::main_thread();
         self.bounce.drop_leftovers();
     }
 

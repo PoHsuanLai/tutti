@@ -104,6 +104,14 @@ macro_rules! served_control {
                 Ok(self.link.bridge.open_floating_editor(main)?)
             }
 
+            fn set_editor_scale(
+                &mut self,
+                main: &MainThread,
+                scale: ContentScale,
+            ) -> PluginResult<()> {
+                Ok(self.link.bridge.set_editor_scale(main, scale)?)
+            }
+
             fn close_editor(&mut self, main: &MainThread) {
                 let _ = self.link.bridge.close_editor(main);
             }

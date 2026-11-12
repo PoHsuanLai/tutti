@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl Plugin {
+impl Parts {
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     /// `IHostApplication` upcast to `FUnknown`, **borrowed**: the returned
@@ -261,41 +261,14 @@ impl Plugin {
     }
 }
 
-impl Drop for Plugin {
+impl Drop for Parts {
     fn drop(&mut self) {
         // Retire first: the audio half refuses every later block, and this waits
         // out one in flight. The state is cleared under the lock, so an audio
         // thread that gets the lock later finds neither an active nor a set-up
         // plugin (and `retired`, checked again under the lock).
-        // An editor open and no main thread under us: the view cannot be
-        // detached here (a toolkit's `removed` on another thread is a crash),
-        // and `setActive(0)`/`terminate` are main-thread calls too, as is
-        // closing a module whose view is still alive. So the whole plugin is
-        // leaked: every COM object gets one extra reference that is never
-        // released, the module one extra owner, and no `terminate` runs. The
-        // run loop is purged, so nothing of it is ever called. Memory and a
-        // loaded library are the cost; the control side has no retirement path
-        // for a `Plugin` to route this to.
-        if self.editor.is_some() && MainThread::current().is_none() {
-            self.purge_run_loop();
-            eprintln!(
-                "tutti-vst3-ffi: a plugin with an open editor was dropped off the main thread; \
-                 leaking the plugin and its module rather than tear it down on this thread"
-            );
-            std::mem::forget(self.component.clone());
-            std::mem::forget(self.processor.clone());
-            if let Some(controller) = self.controller.get() {
-                std::mem::forget(controller.clone());
-            }
-            std::mem::forget(self.application.clone());
-            std::mem::forget(self.handler.clone());
-            if let Some(editor) = &self.editor {
-                std::mem::forget(editor.view.clone());
-                std::mem::forget(editor.plug_frame.clone());
-            }
-            std::mem::forget(self.module.clone());
-            return;
-        }
+        // Where an editor is open this runs on the main thread: `Plugin`'s drop hands
+        // the whole value there otherwise.
         let shared = self.shared.clone();
         let (state, was_active) = shared.teardown();
         // A plugin dropped while activated (its halves were never rejoined)

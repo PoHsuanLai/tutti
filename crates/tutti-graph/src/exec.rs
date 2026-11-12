@@ -146,6 +146,22 @@
 //! unit must tolerate (a note-off for a note that is not sounding is a
 //! no-op in MIDI).
 //!
+//! # The chase
+//!
+//! A node replaced by a commit (a crossfade, a replace, an insert at an
+//! existing key) may write the state its successor starts from
+//! ([`Node::chase`], declared with
+//! [`Shape::with_chase`](crate::Shape::with_chase)). Applying the commit calls
+//! it once, before any task of the next block runs, into a buffer sized when
+//! the plan was built, and the events are **flushed events** to the
+//! successor's first event input: offset 0 of its first block, ahead of
+//! everything else there. A successor without an event input drops them,
+//! counted, as is what the buffer refused. A fade's outgoing node is not
+//! sent anything. A replace waiting behind a running fade is not chased
+//! (its predecessor has not taken over, and delivering later would need a
+//! second path into the flushed events); it is counted,
+//! [`Executor::chase_skipped_count`].
+//!
 //! # Held keys
 //!
 //! A unit whose event outputs carry notes ([`Shape::note_events`](crate::Shape::note_events)) has the keys
@@ -699,6 +715,11 @@ struct Gone {
     /// Emptied tables to free on the control side.
     spare: Vec<Tables>,
     replaced: Vec<NodeKey>,
+    /// What each replaced node wrote for its successor (`Node::chase`):
+    /// the key, its span of `chase_events` and what its buffer refused.
+    chased: Vec<(NodeKey, std::ops::Range<usize>, u32)>,
+    /// The executor's chase buffer, lent for the commit.
+    chase_events: Vec<Event>,
 }
 
 pub(crate) enum Ring {
@@ -823,6 +844,12 @@ pub struct Executor {
     /// The held-key tables of the units a re-prepare checked out, for the
     /// resume commit to hand back.
     parked: Vec<(NodeKey, Keys)>,
+    /// Where a replaced node writes its state for its successor
+    /// (`Node::chase`), sized when a plan is built from what its nodes
+    /// declare (`Shape::chase`), so the swap never allocates it.
+    chase: Vec<Event>,
+    /// Replaces that would have chased but waited behind a running fade.
+    chase_skipped: u64,
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
@@ -914,6 +941,8 @@ impl Executor {
             suspended: false,
             next_prepare: None,
             parked: Vec::new(),
+            chase: Vec::new(),
+            chase_skipped: 0,
             reset_time: false,
             history: TransportHistory::new(),
             play: PlayState::new(ends.play),
@@ -1006,6 +1035,13 @@ impl Executor {
     /// reads the same through [`Editor::play_reading`](crate::Editor::play_reading).
     pub fn play_reading(&self) -> PlayReading {
         self.play.reading()
+    }
+
+    /// Replaces of a chasing node that were not chased because they waited
+    /// behind a crossfade already running (`Node::chase`): the successor
+    /// starts from its own state. Counted when the commit is applied.
+    pub fn chase_skipped_count(&self) -> u64 {
+        self.chase_skipped
     }
 
     /// Events refused so far: writer overflow, and delay or feedback FIFO
@@ -1170,6 +1206,37 @@ impl Executor {
             }
         }
         departed.replaced = c.delta.replace.iter().map(|(_, new)| new.key).collect();
+        // The state a replaced node hands its successor, written while it is
+        // still in the store (see `Node::chase`).
+        departed.chase_events = std::mem::take(&mut self.chase);
+        departed.chase_events.clear();
+        for (old, new) in &c.delta.replace {
+            let running = c.fades_in(new.key)
+                && self
+                    .store
+                    .get(old.idx.0 as usize)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|u| u.fade.is_some());
+            let capacity = self
+                .plan
+                .as_ref()
+                .and_then(|p| p.unit(old.key))
+                .and_then(|u| u.shape.chase);
+            if running && capacity.is_some() {
+                self.chase_skipped += 1;
+            }
+            let node = self.store.get(old.idx.0 as usize).and_then(Option::as_ref);
+            if let (false, Some(capacity), Some(u)) = (running, capacity, node) {
+                let from = departed.chase_events.len();
+                let mut out =
+                    crate::node::Chase::new(&mut departed.chase_events, capacity.get() as usize);
+                u.node.chase(&mut out);
+                let refused = out.refused();
+                departed
+                    .chased
+                    .push((new.key, from..departed.chase_events.len(), refused));
+            }
+        }
         // A retired key, or one replaced without a fade, goes whole: its
         // unit and any crossfade running or waiting there. A key replaced
         // with a fade stays, for the incoming unit to fade in over it.
@@ -1278,6 +1345,15 @@ impl Executor {
 
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed, &mut c.opened);
+        self.chase = std::mem::take(&mut departed.chase_events);
+        self.chase.clear();
+        let wanted: usize = plan
+            .units
+            .iter()
+            .filter_map(|u| u.shape.chase)
+            .map(|n| n.get() as usize)
+            .sum();
+        self.chase.reserve(wanted);
         c.spare_held.extend(departed.held.drain(..).map(|(_, k)| k));
         c.spare_held.append(&mut departed.spare);
         self.suspended = false;
@@ -1566,6 +1642,25 @@ impl Executor {
                 flushed.entry((u, at.port)).or_default().extend(events);
             }
         };
+        // What replaced nodes wrote for their successors goes first: it is
+        // the oldest, and lands at offset 0 ahead of everything else. A
+        // successor with no event input drops it, counted.
+        for (key, span, refused) in departed.chased.drain(..) {
+            let at = EventIn { node: key, port: 0 };
+            let events = &departed.chase_events[span];
+            match sink_of(at) {
+                Some(u) => {
+                    take_into(at, events.to_vec());
+                    self.dropped.at_node(u, refused);
+                }
+                None => {
+                    if let Ok(u) = plan.units.binary_search_by_key(&key, |u| u.key) {
+                        let lost = u32::try_from(events.len()).unwrap_or(u32::MAX);
+                        self.dropped.at_node(u as u32, lost.saturating_add(refused));
+                    }
+                }
+            }
+        }
         if let Some(op) = old_plan {
             for inj in old.inject.iter().filter(|i| i.live) {
                 let at = EventIn {
@@ -1932,6 +2027,8 @@ impl Executor {
                 suspended: _,
                 next_prepare: _,
                 parked: _,
+                chase: _,
+                chase_skipped: _,
                 reset_time: _,
                 history,
                 play,

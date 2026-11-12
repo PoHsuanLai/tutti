@@ -23,7 +23,9 @@ pub enum SvfType {
     LowPass,
     /// Passes above cutoff, attenuates below it at 12 dB/octave.
     HighPass,
-    /// Passes a band around cutoff; [`Q`] sets how narrow.
+    /// Passes a band around cutoff; [`Q`] sets how narrow. It is the RBJ
+    /// cookbook's constant-skirt-gain band-pass: its peak gain at cutoff is `Q`
+    /// (0 dB only at `Q = 1`), its skirts the same whatever `Q`.
     BandPass,
     /// Rejects a band around cutoff and passes everything else — the inverse of
     /// [`BandPass`](Self::BandPass). High [`Q`] gives a narrow, deep notch.

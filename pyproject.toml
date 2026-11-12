@@ -1,12 +1,13 @@
 # Python dependencies for the audio-correctness harnesses.
 #
-# Four of them, all following the same pattern: a Rust example renders audio to a
+# Five of them, all following the same pattern: a Rust example renders audio to a
 # directory, and a Python script judges it (`cargo xtask verify-audio` runs all
-# four). See
+# five). See
 #   crates/tutti-sampler/examples/README.md
 #   crates/tutti-export/examples/README.md
 #   crates/tutti-measure/examples/README.md
 #   crates/tutti-polysynth/examples/README.md
+#   crates/tutti-dsp/examples/README.md
 #
 # This is not a Python package -- nothing here is imported by anything. It exists
 # so the judges' dependencies are declared and locked in one place instead of

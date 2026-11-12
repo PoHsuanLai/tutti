@@ -7,13 +7,13 @@
 //! preset.
 
 use tutti_graph::{
-    ConstantMask, Cx, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask,
-    Status,
+    Chase, ConstantMask, Cx, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape,
+    SilenceMask, Status,
 };
 use tutti_types::ChannelLayout;
 
 use crate::SoundFontUnit;
-use crate::player::Plane;
+use crate::player::{Plane, Player};
 
 impl Node for SoundFontUnit {
     /// No audio in, five out (dry left and right, chorus send left and right,
@@ -32,6 +32,8 @@ impl Node for SoundFontUnit {
             // ends at the last note-off extends by this, and keeps the
             // release. The effects after the unit declare their own.
             .with_tail(self.shape_tail())
+            // The state it hands the unit that replaces it (`chase`).
+            .with_chase(Player::CHASE_MESSAGES as u32)
     }
 
     /// Re-rate to the prepared rate (keeping the preset), and size the
@@ -84,6 +86,19 @@ impl Node for SoundFontUnit {
 
     fn reset(&mut self) {
         self.reset_player();
+    }
+
+    /// Hands the unit that replaces this one every channel's program, bank,
+    /// effect sends, controllers, pedals, pitch wheel and registered
+    /// controllers, as MIDI 2.0 messages in the unit's Group: what a performer
+    /// set survives a swap of font. A channel left as a fresh unit has it
+    /// sends nothing, so a successor built on another program keeps it. The
+    /// sounding notes are not carried (nothing re-strikes a held key), nor the
+    /// per-note controllers or the key a portamento glides from.
+    fn chase(&self, out: &mut Chase<'_>) {
+        self.player.chase(|ump| {
+            out.push(ump);
+        });
     }
 }
 

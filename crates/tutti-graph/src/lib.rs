@@ -310,9 +310,9 @@ pub use latency::{
 pub use loss::EventLoss;
 pub use mode::{MODE_DECLICK, MixError, ModeError, NodeMix, NodeMode};
 pub use node::{
-    ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS, MAX_TRANSPORT_CHANGES,
-    Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask, Status, Transport,
-    TransportChange, TransportChangeRejected, TransportChanges,
+    Chase, ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS,
+    MAX_TRANSPORT_CHANGES, Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask,
+    Status, Transport, TransportChange, TransportChangeRejected, TransportChanges,
 };
 pub use par::Pool;
 pub use param::{

@@ -895,7 +895,7 @@ The non-engine groups are plain data in `tutti-plugin-types`: `ParamPages` (a
 list of named lists of `ParamId`), `TrackContext` (name, color, kind, index;
 filled by the application and sent through CLAP's setter, VST3's `IInfoListener`
 and AU's `ContextName`), `PresentationLatency(Samples)`, `PrefetchSupport`, and
-`IdentityAlias(Vec<PluginId>)` in `PluginDb`. Undo and dynamic ports stay in
+`IdentityAlias(Vec<PluginRef>)` in `PluginDb`. Undo and dynamic ports stay in
 `tutti-clap-host`.
 
 ## 6. Probes

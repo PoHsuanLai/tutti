@@ -18,7 +18,7 @@ pub use events::{
 };
 pub use host::{
     FactoryFlags, FactoryInfo, Library, LoadOptions, ProcessFailed, ProcessorAny, RestartOutcome,
-    Vst3Controller, Vst3Editor, Vst3Loaded, Vst3Processor, descriptor_of,
+    Vst3Controller, Vst3Editor, Vst3Loaded, Vst3Processor, class_id, descriptor_of,
 };
 pub use types::{
     AudioBuffer, BusInfo, BusType, ContentScale, EditorCapabilities, EditorSize, KeyEvent,

@@ -8,12 +8,13 @@
 //!
 //! Each plugin the graph holds (`Graph::insert_plugin`,
 //! [`Session::add_plugin`], [`Graph::host_plugin`](crate::Graph::host_plugin)) has a [`HostedPlugin`],
-//! keyed by its [`NodeKey`]: its handle, its controls (an out-of-process
-//! plugin's latency and meter cells), its liveness, whether it was told
-//! the render mode, its last snapshot, and (`modulation`) its parameter
+//! keyed by its [`NodeKey`]: the [`PluginRef`] it is, its handle, its
+//! controls (an out-of-process plugin's latency and meter cells), its
+//! liveness, whether it was told the render mode, its last good state
+//! ([`state`](HostedPlugin::state)), and (`modulation`) its parameter
 //! mirror. A crossfade to another plugin (`Graph::crossfade_plugin`,
 //! `replace_plugin`) carries the record over to the incoming plugin, with
-//! nothing of the outgoing plugin's state (its snapshot, an in-flight
+//! nothing of the outgoing plugin's state (its last good state, an in-flight
 //! snapshot job, its mirror); replacing it with a native node
 //! (`Graph::replace`, `crossfade`) or removing the node drops it.
 //!
@@ -72,9 +73,9 @@
 //!   every lane fed to it; [`SessionEvent::PluginReloading`].
 //! - **Load.** When the backoff passes, [`SessionEvent::PluginReloadDue`]
 //!   hands the host a [`PluginReload`] job: the existing [`PluginLoad`] with
-//!   the last snapshot as its state. [`Session::land_reload`] swaps the
+//!   the last good state as its state. [`Session::land_reload`] swaps the
 //!   loaded plugin in at the same node (`Graph::replace_plugin`) and keeps
-//!   the record: the snapshot, its age, the failure history.
+//!   the record: the last good state, its age, the failure history.
 //! - **Reported.** [`SessionEvent::PluginRecovered`] says whether the state
 //!   came back and how old it was; a spent budget is
 //!   [`SessionEvent::PluginGaveUp`] and the node is removed.
@@ -89,13 +90,14 @@
 //! plugin is told per `tutti_plugin_host::needs_announcement`: on a change of
 //! mode, or if it was never told.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_plugin::MainThread;
 
 use tutti_graph::NodeKey;
-use tutti_plugin::catalog::{AudioConfig, Plugin, PluginId};
+use tutti_plugin::catalog::{AudioConfig, Plugin, PluginRef, PluginState};
+use tutti_plugin::error::StateError;
 use tutti_plugin_host::{Liveness, Verdict};
 use tutti_plugin_host::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
 use tutti_plugin_types::BridgeError;
@@ -114,12 +116,44 @@ pub const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(8);
 /// Which plugin to load, and the state to restore into it.
 #[derive(Debug, Clone)]
 pub struct PluginLoadRequest {
-    /// The plugin's file.
-    pub id: PluginId,
-    /// A saved state (`AnyThread::save_state`, a [`HostedPlugin::snapshot`])
-    /// restored once it loads. A refusal is logged, and the plugin loads at
-    /// its defaults.
-    pub state: Option<Vec<u8>>,
+    plugin: PluginRef,
+    state: Option<PluginState>,
+}
+
+impl PluginLoadRequest {
+    /// A load of `plugin`: a scanned one (`PluginRef::from(&entry)`, which
+    /// picks the plugin in a bundle that exports several) or a file's first
+    /// ([`PluginRef::file`]).
+    pub fn new(plugin: PluginRef) -> Self {
+        Self {
+            plugin,
+            state: None,
+        }
+    }
+
+    /// With a saved state restored once the plugin loads
+    /// ([`StateView::save`] or [`StateView::last_good`], or a project's). A
+    /// refusal by the plugin is logged, and the plugin loads at its defaults.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::OtherPlugin`] when `state` was saved from another plugin
+    /// than the request's.
+    pub fn restoring(mut self, state: PluginState) -> Result<Self, StateError> {
+        state.check_for(&self.plugin)?;
+        self.state = Some(state);
+        Ok(self)
+    }
+
+    /// The plugin to load.
+    pub fn plugin(&self) -> &PluginRef {
+        &self.plugin
+    }
+
+    /// The state to restore into it, if one was given.
+    pub fn state(&self) -> Option<&PluginState> {
+        self.state.as_ref()
+    }
 }
 
 /// A plugin load, as a job (design 015 §4.2): `Send`, and
@@ -130,16 +164,16 @@ pub struct PluginLoadRequest {
 /// Made by [`Session::plugin_load`], at the session's rate.
 #[must_use = "a load does nothing until it is run and added"]
 pub struct PluginLoad {
-    path: PathBuf,
+    plugin: PluginRef,
     rate: SampleRate,
     config: AudioConfig,
-    state: Option<Vec<u8>>,
+    state: Option<PluginState>,
 }
 
 impl std::fmt::Debug for PluginLoad {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginLoad")
-            .field("path", &self.path)
+            .field("plugin", &self.plugin)
             .field("rate", &self.rate)
             .field("config", &self.config)
             .finish_non_exhaustive()
@@ -159,9 +193,14 @@ impl PluginLoad {
         self
     }
 
+    /// The plugin being loaded.
+    pub fn plugin(&self) -> &PluginRef {
+        &self.plugin
+    }
+
     /// The plugin's file.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.plugin.path()
     }
 
     /// Whether the plugin is hosted in process (`Plugin::opens_in_process`:
@@ -170,7 +209,7 @@ impl PluginLoad {
     /// that call for the library's init, the state restore and the
     /// parameter read.
     pub fn opens_in_process(&self) -> bool {
-        Plugin::opens_in_process(&self.path)
+        Plugin::opens_in_process(self.plugin.path())
     }
 
     /// Opens the plugin, restores the request's state, and (`modulation`)
@@ -183,7 +222,7 @@ impl PluginLoad {
     /// [`Session::add_plugin`] opens it there (a library load and an
     /// instance's init, with no subprocess to wait for).
     pub fn run(self) -> PluginLoaded {
-        let path = self.path.clone();
+        let plugin = self.plugin.clone();
         let config = self.config.clone();
         let opened = if self.opens_in_process() {
             Opened::OnMain(self)
@@ -191,7 +230,7 @@ impl PluginLoad {
             Opened::Done(Box::new(self.open(None)))
         };
         PluginLoaded {
-            path,
+            plugin,
             config,
             opened,
         }
@@ -207,9 +246,9 @@ impl PluginLoad {
         let (plugin, restore) = match Plugin::open_with_state(
             main,
             &self.config,
-            &self.path,
+            &self.plugin,
             self.rate,
-            self.state.as_deref(),
+            self.state.as_ref().map(PluginState::bytes),
         ) {
             Ok((plugin, restore)) => (Ok(plugin), restore),
             // The server died, or stopped answering, inside the step that
@@ -316,7 +355,7 @@ pub enum StateRestore {
 /// [`Session::add_plugin`] takes it on the control thread.
 #[must_use = "a loaded plugin goes into the graph with `Session::add_plugin`"]
 pub struct PluginLoaded {
-    path: PathBuf,
+    plugin: PluginRef,
     config: AudioConfig,
     opened: Opened,
 }
@@ -324,15 +363,20 @@ pub struct PluginLoaded {
 impl std::fmt::Debug for PluginLoaded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginLoaded")
-            .field("path", &self.path)
+            .field("plugin", &self.plugin)
             .finish_non_exhaustive()
     }
 }
 
 impl PluginLoaded {
+    /// The plugin that was loaded.
+    pub fn plugin(&self) -> &PluginRef {
+        &self.plugin
+    }
+
     /// The plugin's file.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.plugin.path()
     }
 
     /// Why the load failed, if it did. `None` for a plugin hosted in
@@ -366,8 +410,8 @@ pub enum PluginLiveness {
         cause: String,
     },
     /// Written off: its node was removed (recovery off, or its budget
-    /// spent). Load a replacement from its last
-    /// [`snapshot`](HostedPlugin::snapshot) to bring it back by hand.
+    /// spent). Load a replacement restoring its last good state
+    /// ([`HostedPlugin::state`]) to bring it back by hand.
     Dead {
         /// The engine's latched reason.
         cause: String,
@@ -376,6 +420,9 @@ pub enum PluginLiveness {
 
 /// What the session keeps for one hosted plugin. See the module docs.
 pub struct HostedPlugin {
+    /// The plugin this is: from the load's ref, with the id the loaded plugin
+    /// reports.
+    plugin: PluginRef,
     handle: PluginHandle,
     controls: Option<PluginControls>,
     meter: Option<PluginMeter>,
@@ -383,13 +430,13 @@ pub struct HostedPlugin {
     status: PluginLiveness,
     /// Told a render mode since it was added (or crossfaded in).
     pub(crate) told: bool,
-    snapshot: Option<Vec<u8>>,
+    snapshot: Option<PluginState>,
     /// When the snapshot's capture was asked for.
     snapshot_from: Option<Instant>,
     /// A snapshot left out of a reload ([`StateRestore::Withheld`]), kept for
-    /// the host ([`withheld_snapshot`](Self::withheld_snapshot)); later
+    /// the host ([`StateView::withheld`]); later
     /// snapshots go to `snapshot` and never replace it.
-    withheld: Option<Vec<u8>>,
+    withheld: Option<PluginState>,
     /// Until when a plugin that has just restored a state is suspected of
     /// dying of it.
     probation_until: Option<Instant>,
@@ -414,10 +461,9 @@ pub struct HostedPlugin {
     mirror_token: Arc<()>,
 }
 
-/// How a plugin was loaded: what a reload needs.
+/// How a plugin was loaded, besides which plugin it is: what a reload needs.
 #[derive(Debug, Clone)]
 struct Origin {
-    path: PathBuf,
     config: AudioConfig,
 }
 
@@ -451,7 +497,8 @@ struct Ready {
 impl std::fmt::Debug for HostedPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut d = f.debug_struct("HostedPlugin");
-        d.field("handle", &self.handle)
+        d.field("plugin", &self.plugin)
+            .field("handle", &self.handle)
             .field("controls", &self.controls)
             .field("meter", &self.meter)
             .field("liveness", &self.liveness)
@@ -470,8 +517,9 @@ impl std::fmt::Debug for HostedPlugin {
 }
 
 impl HostedPlugin {
-    pub(crate) fn new(handle: PluginHandle) -> Self {
+    pub(crate) fn new(handle: PluginHandle, plugin: PluginRef) -> Self {
         Self {
+            plugin,
             handle,
             controls: None,
             meter: None,
@@ -504,8 +552,8 @@ impl HostedPlugin {
 
     /// The incoming plugin of a crossfade at the same node: its handle and
     /// controls, a fresh debounce, and not yet told the render mode. Nothing
-    /// of the outgoing plugin's state carries over: its snapshot is cleared
-    /// (its bytes would restore the wrong plugin), a fresh snapshot token
+    /// of the outgoing plugin's state carries over: its last good state is
+    /// cleared (its bytes would restore the wrong plugin), a fresh snapshot token
     /// makes a job of the outgoing plugin still in flight land nowhere
     /// ([`Session::land_snapshot`]), and the snapshot clock restarts.
     ///
@@ -517,7 +565,13 @@ impl HostedPlugin {
     /// ([`SessionEvent::PluginParamsDue`]).
     /// The outgoing mirror's report callback was on the outgoing handle,
     /// which reports nothing here once it is gone.
-    pub(crate) fn replace(&mut self, handle: PluginHandle, controls: PluginControls) {
+    pub(crate) fn replace(
+        &mut self,
+        handle: PluginHandle,
+        controls: PluginControls,
+        plugin: PluginRef,
+    ) {
+        self.plugin = plugin;
         self.adopt(handle);
         self.meter = Some(controls.meter());
         self.controls = Some(controls);
@@ -550,8 +604,8 @@ impl HostedPlugin {
     /// Takes the snapshot for the cause of a failure: the next load goes
     /// without it, and it is not offered again.
     fn withhold_snapshot(&mut self, now: Instant) {
-        if let Some(bytes) = self.snapshot.take() {
-            self.withheld = Some(bytes);
+        if let Some(state) = self.snapshot.take() {
+            self.withheld = Some(state);
             self.reload.withheld_age = Some(
                 self.snapshot_from
                     .map_or(Duration::ZERO, |t| now.saturating_duration_since(t)),
@@ -609,19 +663,15 @@ impl HostedPlugin {
         &self.status
     }
 
-    /// The snapshot a reload left out because the plugin died loading it, or
-    /// soon after ([`StateRestore::Withheld`]): the user's last state, which a
-    /// host may still offer to load by hand. Kept until the plugin is
-    /// withheld from again or replaced by the host; the snapshots taken since
-    /// (of a plugin at its defaults) do not replace it.
-    pub fn withheld_snapshot(&self) -> Option<&[u8]> {
-        self.withheld.as_deref()
+    /// The plugin this is: its file, its format and its id.
+    pub fn plugin(&self) -> &PluginRef {
+        &self.plugin
     }
 
-    /// The last state captured while it was healthy: what a replacement
-    /// load restores ([`PluginLoadRequest::state`]).
-    pub fn snapshot(&self) -> Option<&[u8]> {
-        self.snapshot.as_deref()
+    /// The plugin's saved states: the last good one, the withheld one, and a
+    /// save now.
+    pub fn state(&self) -> StateView<'_> {
+        StateView { hosted: self }
     }
 
     /// Its parameter values (`modulation`): read at load, kept current from
@@ -640,6 +690,56 @@ impl HostedPlugin {
             m.get(tutti_plugin_types::ParamId::new(id))
                 .map(|v| v.map(|v| v.get() as f32))
         })
+    }
+}
+
+/// A hosted plugin's states ([`HostedPlugin::state`]): what the session holds
+/// of them, a save now, and a restore.
+#[derive(Debug, Clone, Copy)]
+pub struct StateView<'a> {
+    hosted: &'a HostedPlugin,
+}
+
+impl<'a> StateView<'a> {
+    /// The last state captured while the plugin was healthy: the
+    /// crash-recovery copy a reload restores, up to a snapshot interval
+    /// stale. A project is saved from [`save`](Self::save), not from this.
+    pub fn last_good(&self) -> Option<&'a PluginState> {
+        self.hosted.snapshot.as_ref()
+    }
+
+    /// The state a reload left out because the plugin died loading it, or
+    /// soon after ([`StateRestore::Withheld`]): the user's last state, which a
+    /// host may still offer to load by hand. Kept until the plugin is
+    /// withheld from again or replaced by the host; the states captured since
+    /// (of a plugin at its defaults) do not replace it.
+    pub fn withheld(&self) -> Option<&'a PluginState> {
+        self.hosted.withheld.as_ref()
+    }
+
+    /// Saves the plugin's state now, as a blocking round trip to it (ten
+    /// seconds at worst; an in-process plugin's is run by the main thread's
+    /// next tick, see the module docs).
+    ///
+    /// # Errors
+    ///
+    /// The plugin's [`StateError`]: it is gone, busy, refused, or has no state
+    /// route.
+    pub fn save(&self) -> Result<PluginState, StateError> {
+        let bytes = self.hosted.handle.any_thread().save_state()?;
+        Ok(PluginState::new(self.hosted.plugin.clone(), bytes))
+    }
+
+    /// Restores `state` into the plugin.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::OtherPlugin`] when `state` was saved from another plugin
+    /// (nothing is sent to the plugin); otherwise the plugin's own
+    /// [`StateError`].
+    pub fn restore(&self, main: &MainThread, state: &PluginState) -> Result<(), StateError> {
+        state.check_for(&self.hosted.plugin)?;
+        self.hosted.handle.load_state(main, state.bytes())
     }
 }
 
@@ -686,7 +786,7 @@ impl std::fmt::Debug for PluginSnapshot {
 #[must_use = "land it with `Session::land_snapshot`"]
 pub struct PluginSnapshotTaken {
     node: NodeKey,
-    state: Result<Vec<u8>, tutti_plugin::error::StateError>,
+    state: Result<Vec<u8>, StateError>,
     /// The record's token when the job was asked for: a crossfade to
     /// another plugin mints a new one, and the job no longer lands.
     token: Arc<()>,
@@ -862,7 +962,7 @@ impl Session {
     /// result to [`add_plugin`](Self::add_plugin).
     pub fn plugin_load(&self, request: PluginLoadRequest) -> PluginLoad {
         PluginLoad {
-            path: request.id.path().to_path_buf(),
+            plugin: request.plugin,
             rate: self.graph.prepared().sample_rate(),
             config: AudioConfig::default(),
             state: request.state,
@@ -906,7 +1006,7 @@ impl Session {
         loaded: PluginLoaded,
     ) -> Result<NodeKey, BridgeError> {
         crate::main_thread();
-        let path = loaded.path;
+        let requested = loaded.plugin;
         let config = loaded.config;
         let Open {
             plugin,
@@ -920,16 +1020,14 @@ impl Session {
         };
         let plugin = plugin?;
         let handle = plugin.handle().clone();
+        let loaded_ref = plugin.plugin().clone();
         let meter = self.click_settings.project_meter();
         let node = match plugin.into_client() {
             Ok(client) => {
                 client.controls().set_meter(meter);
                 let node = self.graph.insert_plugin(client);
                 if let Some(hosted) = self.graph.plugins.get_mut(&node) {
-                    hosted.origin = Some(Origin {
-                        path: path.clone(),
-                        config,
-                    });
+                    hosted.origin = Some(Origin { config });
                     hosted.recovery = self.recovery.map(Recovery::new);
                 }
                 node
@@ -939,7 +1037,7 @@ impl Session {
                 plugin_meter.set_meter(meter);
                 let (node, _) = self.graph.insert((*plugin).bind(self.graph.tempo.clone()));
                 let node = node.erase();
-                let mut hosted = HostedPlugin::new(handle);
+                let mut hosted = HostedPlugin::new(handle, loaded_ref);
                 hosted.meter = Some(plugin_meter);
                 self.graph.plugins.insert(node, hosted);
                 node
@@ -952,7 +1050,7 @@ impl Session {
             hosted.mirror = Some(values);
             hosted.param_read = unread;
         }
-        tracing::info!("plugin '{}' added as {node:?}", path.display());
+        tracing::info!("plugin '{}' added as {node:?}", requested.path().display());
         Ok(node)
     }
 
@@ -990,8 +1088,8 @@ impl Session {
             return false;
         }
         match state {
-            Ok(state) => {
-                hosted.snapshot = Some(state);
+            Ok(bytes) => {
+                hosted.snapshot = Some(PluginState::new(hosted.plugin.clone(), bytes));
                 hosted.snapshot_from = Some(asked);
                 true
             }
@@ -1379,17 +1477,13 @@ impl Session {
         for (node, why) in gave_up {
             // The last state worth offering a user: what was withheld, else
             // the last snapshot. The record goes with the node.
-            let snapshot = self
+            let state = self
                 .graph
                 .plugins
                 .get(&node)
                 .and_then(|h| h.withheld.clone().or_else(|| h.snapshot.clone()));
             self.remove(node);
-            out.push(SessionEvent::PluginGaveUp {
-                node,
-                why,
-                snapshot,
-            });
+            out.push(SessionEvent::PluginGaveUp { node, why, state });
         }
     }
 
@@ -1438,7 +1532,7 @@ impl Session {
         hosted.reload.due = None;
         hosted.reload.in_flight = true;
         let load = PluginLoad {
-            path: origin.path,
+            plugin: hosted.plugin.clone(),
             rate,
             config: origin.config,
             state: hosted.snapshot.clone(),
@@ -1771,7 +1865,11 @@ mod tests {
         let (node, _) = session
             .graph()
             .insert(tutti_nodes::testing::Const::mono(0.0));
-        assert!(session.graph().host_plugin(node, handle));
+        assert!(session.graph().host_plugin(
+            node,
+            handle,
+            PluginRef::file("fake.clap").expect("a plugin file")
+        ));
         let node = node.erase();
         Rig {
             session,
@@ -1851,7 +1949,12 @@ mod tests {
         let taken = std::thread::spawn(move || job.run()).join().unwrap();
         assert!(rig.session.land_snapshot(taken));
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().snapshot(),
+            rig.session
+                .plugin(rig.node)
+                .unwrap()
+                .state()
+                .last_good()
+                .map(PluginState::bytes),
             Some(&[1u8, 2, 3][..])
         );
         assert_eq!(rig.saves.load(Ordering::SeqCst), 1, "one job is one save");
@@ -1872,17 +1975,18 @@ mod tests {
     #[test]
     fn a_declined_save_keeps_the_previous_snapshot() {
         let mut rig = rig(None);
-        rig.session
-            .graph
-            .plugins
-            .get_mut(&rig.node)
-            .unwrap()
-            .snapshot = Some(vec![4, 2]);
+        let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
+        hosted.snapshot = Some(PluginState::new(hosted.plugin.clone(), vec![4, 2]));
         rig.plugins_at(0);
         let job = rig.plugins_at(1_000).pop().expect("a job at the interval");
         assert!(!rig.session.land_snapshot(job.run()), "declined");
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().snapshot(),
+            rig.session
+                .plugin(rig.node)
+                .unwrap()
+                .state()
+                .last_good()
+                .map(PluginState::bytes),
             Some(&[4u8, 2][..]),
             "a declined save must keep the last good snapshot"
         );
@@ -1972,7 +2076,12 @@ mod tests {
             .unwrap()
             .adopt(incoming);
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().snapshot(),
+            rig.session
+                .plugin(rig.node)
+                .unwrap()
+                .state()
+                .last_good()
+                .map(PluginState::bytes),
             None,
             "the outgoing plugin's snapshot is not the incoming one's"
         );
@@ -1980,13 +2089,26 @@ mod tests {
             !rig.session.land_snapshot(in_flight.run()),
             "the outgoing plugin's job must not land on the incoming plugin"
         );
-        assert_eq!(rig.session.plugin(rig.node).unwrap().snapshot(), None);
+        assert_eq!(
+            rig.session
+                .plugin(rig.node)
+                .unwrap()
+                .state()
+                .last_good()
+                .map(PluginState::bytes),
+            None
+        );
 
         assert!(rig.plugins_at(2_000).is_empty(), "its clock starts here");
         let own = rig.plugins_at(3_000).pop().expect("its own job");
         assert!(rig.session.land_snapshot(own.run()));
         assert_eq!(
-            rig.session.plugin(rig.node).unwrap().snapshot(),
+            rig.session
+                .plugin(rig.node)
+                .unwrap()
+                .state()
+                .last_good()
+                .map(PluginState::bytes),
             Some(&[9u8][..])
         );
     }

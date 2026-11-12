@@ -369,7 +369,8 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     reset_probe();
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
-        tutti_fixtures::vst2_probe(),
+        &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
+            .expect("a plugin file"),
         SampleRate::new(SAMPLE_RATE),
     )
     .expect("the probe opens");

@@ -798,7 +798,9 @@ unsafe fn answer_parameter_properties(index: i32, ptr: *mut std::os::raw::c_void
         props.large_step_integer = large;
         props.category = PROBE_PARAM_CATEGORY;
         props.num_parameters_in_category = 2;
-        write_field(&mut props.category_label, "Filter");
+        // 23 characters: all of `kVstMaxCategLabelLen` but its NUL, so a
+        // host buffer narrower than the header's truncates it.
+        write_field(&mut props.category_label, "Filter Envelope Section");
         props.display_index = 3;
         props.flags = (api::ParameterFlags::USES_INT_STEP
             | api::ParameterFlags::USES_CATEGORY

@@ -38,10 +38,11 @@ impl Load {
         Self::default()
     }
 
-    /// The plugin with this id in a file that exports several: a CLAP plugin
-    /// id, a VST3 class name, an AU descriptor id (`au.<type>.<subtype>.<manufacturer>`).
-    /// A format whose files hold one plugin refuses a
-    /// choice.
+    /// The plugin with this id in a file that exports several: the
+    /// [`PluginDescriptor::id`](crate::PluginDescriptor) the scan reports, whatever the
+    /// format: a CLAP plugin id, a VST3 class id (`vst3.<class id>`), an AU
+    /// descriptor id (`au.<type>.<subtype>.<manufacturer>`). A format whose
+    /// files hold one plugin refuses a choice.
     #[must_use]
     pub fn plugin(mut self, id: impl Into<String>) -> Self {
         self.plugin = Some(id.into());

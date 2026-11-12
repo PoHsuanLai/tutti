@@ -22,7 +22,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_nodes::testing::Const;
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::PluginForkError;
 use tutti_session::BufferMaster;
 use tutti_session::{
@@ -118,10 +118,7 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
     let probe = session
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest {
-                id: PluginId::from_path(path),
-                state: None,
-            },
+            PluginLoadRequest::new(PluginRef::file(path).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");
     session.graph().connect(probe, Root).unwrap();

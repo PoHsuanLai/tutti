@@ -665,7 +665,7 @@ impl Loaded for Vst3Loaded {
     fn rebuild(mut self, main: &MainThread) -> Result<Self, Refused<Self>> {
         let state = self.save_state(main).ok();
         let options = match self.origin.load().chosen() {
-            Some(class) => super::loaded::LoadOptions::new().class(class),
+            Some(class) => super::loaded::LoadOptions::new().class_id(class),
             None => super::loaded::LoadOptions::new(),
         };
         let mut fresh = match Vst3Loaded::load(main, self.origin.path(), options) {

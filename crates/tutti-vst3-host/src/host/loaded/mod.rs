@@ -40,6 +40,8 @@ use super::midi_mapping::{MidiCcCell, MidiCcMapping};
 mod buses;
 mod editor;
 mod lifecycle;
+
+pub use lifecycle::class_id;
 mod parameters;
 mod state;
 
@@ -102,7 +104,7 @@ impl Activation {
 /// The default loads the bundle's first audio class.
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
-    class: Option<String>,
+    class_id: Option<String>,
 }
 
 impl LoadOptions {
@@ -112,15 +114,17 @@ impl LoadOptions {
         Self::default()
     }
 
-    /// Loads the audio class with this display name from a bundle that exports
-    /// several (a name from [`Library::class_info`]).
+    /// Loads the audio class with this id from a bundle that exports several:
+    /// `vst3.<class id>`, the `id` of the class's descriptor (and of
+    /// [`class_id`] over a [`Library::class_info`]). A display
+    /// name is not an id.
     ///
     /// One VST3 bundle may export many plugins: that is the normal shape for a
     /// commercial suite, and `mda-vst3` exports 34 audio classes from one
     /// binary.
     #[must_use]
-    pub fn class(mut self, name: impl Into<String>) -> Self {
-        self.class = Some(name.into());
+    pub fn class_id(mut self, id: impl Into<String>) -> Self {
+        self.class_id = Some(id.into());
         self
     }
 }

@@ -125,6 +125,7 @@ pub use params::{HasParam, HasParams, ParamError, ParamValue, RangeError, Scalar
 pub use plugin::{
     HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
     PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore,
+    StateView,
 };
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};

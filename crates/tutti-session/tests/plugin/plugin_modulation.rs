@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use support::{clap_probe, plugin_server};
 use tutti_graph::NodeKey;
 use tutti_modulation::Lfo;
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::PluginRef;
 use tutti_plugin::handles::PluginClient;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{
@@ -67,10 +67,7 @@ fn add_probe(s: &mut Session) -> NodeKey {
     let node = s
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest {
-                id: PluginId::from_path(clap_probe()),
-                state: None,
-            },
+            PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");
     s.graph().connect(node, Root).unwrap();
@@ -284,8 +281,12 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
         "precondition: the lane feeds the outgoing plugin"
     );
 
-    let incoming = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
-        .expect("load a second instance of the reference plugin");
+    let incoming = PluginClient::new(
+        tutti_plugin::BridgeConfig::default(),
+        &PluginRef::file(clap_probe()).expect("a plugin file"),
+        RATE,
+    )
+    .expect("load a second instance of the reference plugin");
     let landed = s
         .graph()
         .crossfade_plugin(

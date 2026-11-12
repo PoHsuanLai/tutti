@@ -414,7 +414,8 @@ fn a_plugin_handed_back_by_into_client_forks() {
     let _env = ProbeEnv::new(true);
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
-        tutti_fixtures::vst2_probe(),
+        &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
+            .expect("a plugin file"),
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .expect("the probe opens");

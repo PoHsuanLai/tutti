@@ -25,7 +25,7 @@ use support::{clap_probe, plugin_server};
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::{PluginRef, PluginState};
 use tutti_plugin_host::PluginStatus;
 use tutti_session::BufferMaster;
 use tutti_session::{
@@ -75,10 +75,7 @@ fn session_built(
 fn add_probe(s: &mut Session) -> NodeKey {
     s.add_plugin_blocking(
         &main_thread(),
-        PluginLoadRequest {
-            id: PluginId::from_path(clap_probe()),
-            state: None,
-        },
+        PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
     )
     .expect("the reference CLAP plugin loads")
 }
@@ -588,7 +585,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
             }
         }
     }
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
     let total_before = s.latency();
 
     // Render into the crash, then through the recovery.
@@ -640,7 +637,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
     // The snapshot is still the node's recovery point: a second failure
     // restores it again.
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
 
     // The state came back.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -917,7 +914,14 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     );
     let (node, _) = wired_probe(&mut s);
     snapshot_now(&mut s, node);
-    let kept = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
+    let kept = s
+        .plugin(node)
+        .unwrap()
+        .state()
+        .last_good()
+        .unwrap()
+        .bytes()
+        .to_vec();
     let mut drive = Drive::new();
     drive.until(&mut s, "a second attempt", |e| {
         matches!(e, SessionEvent::PluginReloading { attempt: 2, .. })
@@ -941,7 +945,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     drive.until(&mut s, "given up", |e| {
         matches!(e, SessionEvent::PluginGaveUp { .. })
     });
-    let Some(SessionEvent::PluginGaveUp { why, snapshot, .. }) = drive
+    let Some(SessionEvent::PluginGaveUp { why, state, .. }) = drive
         .events
         .iter()
         .find(|e| matches!(e, SessionEvent::PluginGaveUp { .. }))
@@ -950,7 +954,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     };
     assert!(why.last.contains("ports differ"), "{why}");
     assert_eq!(
-        snapshot.as_deref(),
+        state.as_ref().map(PluginState::bytes),
         Some(kept.as_slice()),
         "the user's last state goes out with the event"
     );
@@ -976,7 +980,7 @@ fn snapshot_now(s: &mut Session, node: NodeKey) {
             }
         }
     }
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
 }
 
 fn recovered_state(drive: &Drive) -> Vec<tutti_session::StateRestore> {
@@ -1030,7 +1034,14 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         std::thread::sleep(Duration::from_millis(5));
     }
     snapshot_now(&mut s, node);
-    let users = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
+    let users = s
+        .plugin(node)
+        .unwrap()
+        .state()
+        .last_good()
+        .unwrap()
+        .bytes()
+        .to_vec();
     let mut drive = Drive::new();
     drive.until(&mut s, "recovered", |e| {
         matches!(e, SessionEvent::PluginRecovered { .. })
@@ -1049,20 +1060,34 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         2,
         "the attempt with the snapshot failed first"
     );
-    assert!(s.plugin(node).unwrap().snapshot().is_none());
+    assert!(s.plugin(node).unwrap().state().last_good().is_none());
     assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
     // The user's state is kept for the host, not thrown away...
     assert_eq!(
-        s.plugin(node).unwrap().withheld_snapshot(),
+        s.plugin(node)
+            .unwrap()
+            .state()
+            .withheld()
+            .map(PluginState::bytes),
         Some(users.as_slice())
     );
     // ...and the snapshots taken since, of a plugin at its defaults, do not
     // replace it.
     snapshot_now(&mut s, node);
-    let fresh = s.plugin(node).unwrap().snapshot().expect("a new snapshot");
+    let fresh = s
+        .plugin(node)
+        .unwrap()
+        .state()
+        .last_good()
+        .expect("a new snapshot")
+        .bytes();
     assert_ne!(fresh, users.as_slice(), "the plugin is at its defaults");
     assert_eq!(
-        s.plugin(node).unwrap().withheld_snapshot(),
+        s.plugin(node)
+            .unwrap()
+            .state()
+            .withheld()
+            .map(PluginState::bytes),
         Some(users.as_slice()),
         "a default-state snapshot replaced the withheld one"
     );
@@ -1307,8 +1332,8 @@ fn a_death_after_a_refused_restore_does_not_withhold_the_snapshot() {
             .all(|s| matches!(s, tutti_session::StateRestore::Refused { .. })),
         "{states:?}"
     );
-    assert!(s.plugin(node).unwrap().withheld_snapshot().is_none());
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().withheld().is_none());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
 }
 
 /// This process's main thread. Each test is its own process under nextest, so

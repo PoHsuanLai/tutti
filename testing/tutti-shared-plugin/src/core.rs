@@ -6,7 +6,15 @@
 //! # Spec
 //!
 //! Parameters, ids the same in every format: `LEVEL` 0 (default 0.5), `AUX` 1
-//! (default 0.25), `MODE` 2 (five steps, value `k / 4`, default 0).
+//! (default 0.25), `MODE` 2 (five steps, value `k / 4`, default 0), `TONE` 3
+//! (default 0.5). `TONE` is the one parameter with a plain domain of its own, a
+//! non-linear and **decreasing** map: `plain = 20000 * 1000^(-n)` for the
+//! normalized `n` (20000 at 0, 20 at 1, `20000 / sqrt(1000)` = 632.455... at the
+//! default). It changes nothing a block renders and is not in the state. A
+//! format that speaks normalized (VST3) answers that map from its plain
+//! conversion calls; one that speaks plain (CLAP) declares the range 20 to 20000
+//! with the default 632.455... and takes and reports the plain value; VST2 has
+//! no plain domain and speaks `n`.
 //!
 //! Mode, read when the plugin is prepared, and what a block renders. `tag` is
 //! `bus * 1000 + channel + 1`.
@@ -121,10 +129,28 @@ pub const LEVEL: u32 = 0;
 pub const AUX: u32 = 1;
 /// Mode selector.
 pub const MODE: u32 = 2;
+/// The parameter with a plain domain: a decreasing exponential (see the spec).
+pub const TONE: u32 = 3;
 /// Number of parameters.
-pub const PARAMS: u32 = 3;
+pub const PARAMS: u32 = 4;
 /// Parameter names, by id.
-pub const NAMES: [&str; PARAMS as usize] = ["level", "aux", "mode"];
+pub const NAMES: [&str; PARAMS as usize] = ["level", "aux", "mode", "tone"];
+/// The plain value of `TONE` at its normalized minimum, its largest.
+pub const TONE_PLAIN_MAX: f64 = 20_000.0;
+/// The plain value of `TONE` at its normalized maximum, its smallest.
+pub const TONE_PLAIN_MIN: f64 = 20.0;
+
+/// The plain value of `TONE` at normalized `n`: `20000 * 1000^(-n)`.
+pub fn tone_plain(n: f64) -> f64 {
+    TONE_PLAIN_MAX * (TONE_PLAIN_MIN / TONE_PLAIN_MAX).powf(n.clamp(0.0, 1.0))
+}
+
+/// The normalized value of a plain `TONE`, the inverse of [`tone_plain`].
+pub fn tone_normalized(plain: f64) -> f64 {
+    ((TONE_PLAIN_MAX / plain.clamp(TONE_PLAIN_MIN, TONE_PLAIN_MAX)).ln()
+        / (TONE_PLAIN_MAX / TONE_PLAIN_MIN).ln())
+    .clamp(0.0, 1.0)
+}
 /// Number of modes.
 pub const MODES: u32 = 5;
 /// The shell offers no editor view.
@@ -189,6 +215,7 @@ pub fn default_of(id: u32) -> Option<f64> {
         LEVEL => Some(0.5),
         AUX => Some(0.25),
         MODE => Some(0.0),
+        TONE => Some(0.5),
         _ => None,
     }
 }
@@ -304,6 +331,7 @@ impl Sample for f64 {
 pub struct Core {
     level: AtomicU64,
     aux: AtomicU64,
+    tone: AtomicU64,
     mode: AtomicU32,
     editor: AtomicU32,
     notice: AtomicU32,
@@ -352,6 +380,7 @@ impl Core {
         Self {
             level: AtomicU64::new(0.5f64.to_bits()),
             aux: AtomicU64::new(0.25f64.to_bits()),
+            tone: AtomicU64::new(0.5f64.to_bits()),
             mode: z(),
             editor: z(),
             notice: z(),
@@ -385,6 +414,7 @@ impl Core {
         match id {
             LEVEL => Some(f64::from_bits(self.level.load(Relaxed))),
             AUX => Some(f64::from_bits(self.aux.load(Relaxed))),
+            TONE => Some(f64::from_bits(self.tone.load(Relaxed))),
             MODE => Some(f64::from(self.mode.load(Relaxed)) / f64::from(MODES - 1)),
             _ => None,
         }
@@ -396,6 +426,7 @@ impl Core {
         match id {
             LEVEL => self.level.store(v.to_bits(), Relaxed),
             AUX => self.aux.store(v.to_bits(), Relaxed),
+            TONE => self.tone.store(v.to_bits(), Relaxed),
             MODE => self.mode.store(mode_of(v), Relaxed),
             _ => {}
         }

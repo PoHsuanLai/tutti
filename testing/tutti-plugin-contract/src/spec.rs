@@ -14,12 +14,20 @@ pub enum Param {
     Aux,
     /// The mode, read at activation.
     Mode,
+    /// The one parameter with a plain domain of its own: a decreasing
+    /// exponential, `20000 * 1000^(-n)` for the normalized `n`. It changes
+    /// nothing a block renders.
+    Tone,
 }
 
 impl Param {
     /// Every parameter the plugin lists, with its default.
-    pub const ALL: [(Param, f64); 3] =
-        [(Param::Level, 0.5), (Param::Aux, 0.25), (Param::Mode, 0.0)];
+    pub const ALL: [(Param, f64); 4] = [
+        (Param::Level, 0.5),
+        (Param::Aux, 0.25),
+        (Param::Mode, 0.0),
+        (Param::Tone, 0.5),
+    ];
 
     /// The id every format lists it under.
     #[must_use]
@@ -36,9 +44,59 @@ impl Param {
             Param::Level => "level",
             Param::Aux => "aux",
             Param::Mode => "mode",
+            Param::Tone => "tone",
         }
     }
 }
+
+/// The normalized values the conversion cases ask about.
+pub const TONE_AT: [f64; 4] = [0.0, 0.25, 0.5, 1.0];
+
+/// What a format's own conversion answers for [`Param::Tone`]. Each format's
+/// figures follow from its spec, not from the plugin: VST3 asks the
+/// controller's `normalizedParamToPlain` (`ivsteditcontroller.h:508`), whose map
+/// is the plugin's, here `20000 * 1000^(-n)`; CLAP has no normalized value
+/// (`ext/params.h` speaks plain `double`s), so its plain value is the host's
+/// position over the range the plugin declares, 20 to 20000; VST2 declares no
+/// integer range, so it has no plain value at all.
+#[derive(Clone, Copy, Debug)]
+pub struct Tone {
+    /// What the parameter list reports as the default: the plain value where
+    /// the format has one, the normalized value where it does not.
+    pub default: f64,
+    /// The declared bounds, `None` where the format declares none.
+    pub bounds: Option<(f64, f64)>,
+    /// The plain value at each of [`TONE_AT`], `None` where the format has no
+    /// plain value for the parameter.
+    pub plain: Option<[f64; 4]>,
+}
+
+/// VST3: the plugin's own curve, exact at its default, 20000 / sqrt(1000).
+pub const TONE_CURVED: Tone = Tone {
+    default: 632.455_532_033_675_8,
+    bounds: Some((20.0, 20_000.0)),
+    plain: Some([
+        20_000.0,
+        3_556.558_820_077_845_7,
+        632.455_532_033_675_8,
+        20.0,
+    ]),
+};
+
+/// CLAP: the declared range 20 to 20000 as the host's line, the plugin's own
+/// plain default.
+pub const TONE_LINEAR: Tone = Tone {
+    default: 632.455_532_033_675_8,
+    bounds: Some((20.0, 20_000.0)),
+    plain: Some([20.0, 5_015.0, 10_010.0, 20_000.0]),
+};
+
+/// VST2: normalized only.
+pub const TONE_NORMALIZED: Tone = Tone {
+    default: 0.5,
+    bounds: None,
+    plain: None,
+};
 
 /// Blocks the plugin's transcript keeps; one more overflows it.
 pub const LOG_BLOCKS: usize = 16;
@@ -124,6 +182,8 @@ pub struct Surface {
     /// `aux` to 0.75 through the host's component handler. Nothing for CLAP,
     /// which reports edits in a block's output, and for AU.
     pub edit: Option<(Param, f64)>,
+    /// What the format's conversion answers for [`Param::Tone`].
+    pub tone: Tone,
 }
 
 /// CLAP: no editor in the plugin, no `clap.render`, a callback request.
@@ -134,6 +194,7 @@ pub const CLAP: Surface = Surface {
     notices: true,
     request: Some(tutti_plugin_types::Request::Callback),
     edit: None,
+    tone: TONE_LINEAR,
 };
 
 /// VST2: no editor in the plugin, a live render mode, an automate report.
@@ -144,6 +205,7 @@ pub const VST2: Surface = Surface {
     notices: true,
     request: None,
     edit: Some((Param::Level, 0.5)),
+    tone: TONE_NORMALIZED,
 };
 
 /// VST3 from the Rust plugin: an editor once selected (where its X11 view can
@@ -156,6 +218,7 @@ pub const VST3: Surface = Surface {
     notices: true,
     request: None,
     edit: Some((Param::Aux, 0.75)),
+    tone: TONE_CURVED,
 };
 
 /// VST3 from the C++ plugin: no editor, an edit of `aux` to 0.75 on each state
@@ -167,6 +230,7 @@ pub const VST3_CPP: Surface = Surface {
     notices: true,
     request: None,
     edit: Some((Param::Aux, 0.75)),
+    tone: TONE_CURVED,
 };
 
 /// AU, from an Apple built-in unit (AUDelay): it has a Cocoa view; no plugin of
@@ -179,4 +243,5 @@ pub const AU: Surface = Surface {
     notices: false,
     request: None,
     edit: None,
+    tone: TONE_NORMALIZED,
 };

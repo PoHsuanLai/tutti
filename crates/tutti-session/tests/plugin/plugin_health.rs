@@ -38,6 +38,12 @@ impl tutti_plugin_types::AnyThread for FakeBackend {
         None
     }
     fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
+    fn parameter_plain(&self, _id: ParamId, _value: Normalized) -> Option<f64> {
+        None
+    }
+    fn parameter_normalized(&self, _id: ParamId, _plain: f64) -> Option<Normalized> {
+        None
+    }
     fn parameter_text(&self, _id: ParamId, _value: Normalized) -> Option<String> {
         None
     }

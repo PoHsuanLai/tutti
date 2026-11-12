@@ -722,6 +722,37 @@ pub(super) fn handle(
             };
             reply.send(value);
         }
+        Command::GetParameterPlain {
+            param_id,
+            value,
+            reply,
+        } => {
+            ipc::send(stream, &HostMessage::GetParameterPlain { param_id, value })?;
+            let plain = match ask(stream, inbox, owed, channels, |m| {
+                matches!(m, BridgeMessage::ParameterPlain { .. })
+            })? {
+                Some(BridgeMessage::ParameterPlain { plain }) => plain,
+                _ => None,
+            };
+            reply.send(plain);
+        }
+        Command::GetParameterNormalized {
+            param_id,
+            plain,
+            reply,
+        } => {
+            ipc::send(
+                stream,
+                &HostMessage::GetParameterNormalized { param_id, plain },
+            )?;
+            let value = match ask(stream, inbox, owed, channels, |m| {
+                matches!(m, BridgeMessage::ParameterNormalized { .. })
+            })? {
+                Some(BridgeMessage::ParameterNormalized { value }) => value,
+                _ => None,
+            };
+            reply.send(value);
+        }
     }
     Ok(())
 }

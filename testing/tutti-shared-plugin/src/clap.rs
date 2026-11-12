@@ -245,9 +245,15 @@ unsafe extern "C" fn params_info(
         *d = *s as c_char;
     }
     info.module = [0; CLAP_PATH_SIZE];
-    info.min_value = 0.0;
-    info.max_value = 1.0;
-    info.default_value = default;
+    // CLAP speaks plain: `tone` declares its own range and default.
+    let tone = index == core::TONE;
+    info.min_value = if tone { core::TONE_PLAIN_MIN } else { 0.0 };
+    info.max_value = if tone { core::TONE_PLAIN_MAX } else { 1.0 };
+    info.default_value = if tone {
+        core::tone_plain(default)
+    } else {
+        default
+    };
     true
 }
 
@@ -255,7 +261,13 @@ unsafe extern "C" fn params_value(p: *const clap_plugin, id: u32, out: *mut f64)
     // SAFETY, for this function's `unsafe` blocks: the host passes the plugin this file created (`plugin_data` is its `Inst`), valid until `destroy`. `out` is checked non-null.
     match unsafe { inst(p) }.core.param(id) {
         Some(v) if !out.is_null() => {
-            unsafe { *out = v };
+            unsafe {
+                *out = if id == core::TONE {
+                    core::tone_plain(v)
+                } else {
+                    v
+                }
+            };
             true
         }
         _ => false,
@@ -315,10 +327,16 @@ unsafe fn decode(h: *const clap_event_header) -> Option<Ev> {
     match hdr.type_ {
         CLAP_EVENT_PARAM_VALUE => {
             let e = unsafe { &*(h as *const clap_event_param_value) };
+            // `tone` arrives plain; the core holds normalized.
+            let value = if e.param_id == core::TONE {
+                core::tone_normalized(e.value)
+            } else {
+                e.value
+            };
             Some(Ev::Param {
                 id: e.param_id,
                 offset: hdr.time,
-                value: e.value,
+                value,
             })
         }
         CLAP_EVENT_NOTE_ON => {

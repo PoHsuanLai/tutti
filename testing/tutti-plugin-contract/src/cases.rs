@@ -195,13 +195,79 @@ pub fn parameters_listed<F: Format>() {
     for (info, &(param, default)) in got.iter().zip(&Param::ALL) {
         assert_eq!(info.id, param.id());
         assert_eq!(info.name, param.name(), "{param:?} name");
-        assert_eq!(info.default_value(), default, "{param:?} default");
+        if param == Param::Tone {
+            // The default is the format's own plain value where it has one,
+            // and the plugin's exact figure (not a point on a line).
+            let tone = F::SURFACE.tone;
+            assert_close(info.default_value(), tone.default, "tone default");
+            assert_eq!(info.bounds(), tone.bounds, "tone bounds");
+        } else {
+            assert_eq!(info.default_value(), default, "{param:?} default");
+        }
         assert_ne!(
             info.flag(ParamFlags::AUTOMATABLE),
             Some(false),
             "{param:?} automatable"
         );
     }
+}
+
+fn assert_close(got: f64, want: f64, what: &str) {
+    assert!(
+        (got - want).abs() <= want.abs() * 1e-12,
+        "{what}: got {got}, want {want}"
+    );
+}
+
+/// The conversion between a normalized value and the plugin's plain one is the
+/// format's own (design 029 §6.1), whatever shape the plugin gives it.
+///
+/// The figures are [`spec::Tone`]'s: VST3 answers the plugin's decreasing
+/// exponential (`20000` at 0, `20` at 1, not the line between them), CLAP the
+/// host's line over the range the plugin declares, and VST2, with no integer
+/// range, has no plain value. Each plain value converts back to the value it
+/// came from, and an id the plugin lacks has none, loaded and active.
+pub fn parameter_conversion_is_the_formats_own<F: Format>() {
+    fn check<F: Format, C: Control + ?Sized>(c: &C, when: &str) {
+        let main = main_thread();
+        let tone = F::SURFACE.tone;
+        for (i, &n) in spec::TONE_AT.iter().enumerate() {
+            let plain = c.parameter_plain(&main, Param::Tone.id(), Normalized::of(n));
+            let Some(want) = tone.plain else {
+                assert_eq!(plain, None, "tone plain at {n} ({when})");
+                assert_eq!(
+                    c.parameter_normalized(&main, Param::Tone.id(), 0.5),
+                    None,
+                    "tone normalized ({when})"
+                );
+                continue;
+            };
+            let plain = plain.unwrap_or_else(|| panic!("tone plain at {n} ({when}): none"));
+            assert_close(plain, want[i], &format!("tone plain at {n} ({when})"));
+            let back = c
+                .parameter_normalized(&main, Param::Tone.id(), plain)
+                .unwrap_or_else(|| panic!("tone normalized at {plain} ({when}): none"));
+            assert!(
+                (back.get() - n).abs() < 1e-9,
+                "tone normalized at {plain} ({when}): got {}, want {n}",
+                back.get()
+            );
+        }
+        assert_eq!(
+            c.parameter_plain(&main, spec::UNLISTED, Normalized::of(0.5)),
+            None,
+            "an unlisted id has a plain value ({when})"
+        );
+        assert_eq!(
+            c.parameter_normalized(&main, spec::UNLISTED, 0.5),
+            None,
+            "an unlisted id has a normalized value ({when})"
+        );
+    }
+    let loaded = F::load();
+    check::<F, _>(&loaded, "loaded");
+    let a = activate(loaded, BLOCK);
+    check::<F, _>(a.controller(), "active");
 }
 
 /// A parameter written loaded reads back, loaded and active.

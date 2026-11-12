@@ -22,12 +22,18 @@ runs:
         #                    RT-priority request on Linux.
         # pkg-config:        finds them.
         pkgs="libasound2-dev libdbus-1-dev pkg-config $EXTRA"
-        hash=$(echo "$pkgs" | sha256sum | cut -c1-16)
+        # The cache holds what `--download-only` fetched, and it fetches only
+        # what is not installed yet: the same list downloads less in a job that
+        # ran this action before (the JACK call after the default one) than on
+        # a fresh image. So the key names the installed packages too, and a
+        # list's cache is only ever restored into the state it was filled in.
+        # Keyed on the list alone, the JACK cache filled after the default call
+        # lacked libasound2-dev, and a job calling JACK first failed.
+        installed=$(dpkg-query -W -f='${Package}=${Version}\n' | sort | sha256sum | cut -c1-16)
+        hash=$(echo "$pkgs" | sha256sum | cut -c1-16)-$installed
         echo "list=$pkgs" >> "$GITHUB_OUTPUT"
-        # One directory per list: a job that runs this action twice (the
-        # features job adds JACK) must not save the second list's .debs under
-        # the first list's key, which left the default key holding JACK alone
-        # and failed later jobs at `-lasound`.
+        # One directory per list and state: a job that runs this action twice
+        # must not save the second call's .debs under the first call's key.
         echo "dir=$HOME/apt-debs-$hash" >> "$GITHUB_OUTPUT"
         echo "key=apt-debs-$RUNNER_OS-${ImageOS:-na}-${ImageVersion:-na}-$hash" >> "$GITHUB_OUTPUT"
     # Saves on any ref (it is a few MB and must survive); not the Rust caches'

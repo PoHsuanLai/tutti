@@ -125,12 +125,24 @@ fn endpoint_capability(object: &coremidi::Object, ump: Option<&UmpEndpointInfo>)
     }
 }
 
-/// The protocol an input port on a source with `capability` is created with:
-/// the source's own, so that CoreMIDI converts nothing.
-fn input_protocol(capability: &UmpCapability) -> CmProtocol {
-    match capability.protocol {
-        Protocol::Midi2 => CmProtocol::Midi20,
-        _ => CmProtocol::Midi10,
+/// The protocol an input port on `source` is created with, as ALSA chooses
+/// its client's version (design 017 L6d): MIDI 1.0 for a source that cannot
+/// speak the MIDI 2.0 Protocol, so CoreMIDI hands it MIDI 1.0 UMP (type 2)
+/// and the ingest node's `Translator` widens it, never the OS. A UMP Endpoint
+/// that supports MIDI 2.0 opens as MIDI 2.0 even while it is in MIDI 1.0:
+/// the session asks every Endpoint for MIDI 2.0, and a MIDI 1.0 port would
+/// have CoreMIDI narrow what it then sends natively. A source with no UMP
+/// Endpoint record (a MIDI 1.0 device, or macOS before 15) follows
+/// `kMIDIPropertyProtocolID`.
+fn input_protocol(source: &coremidi::Object, ump: Option<&UmpEndpointInfo>) -> CmProtocol {
+    let midi2 = match ump {
+        Some(ump) => ump.supports_midi2,
+        None => endpoint_capability(source, None).protocol == Protocol::Midi2,
+    };
+    if midi2 {
+        CmProtocol::Midi20
+    } else {
+        CmProtocol::Midi10
     }
 }
 
@@ -317,10 +329,8 @@ impl MidiEndpoints for CoreMidiEndpoints {
         // fragmented into UMP SysEx7 packets, which `tutti_ump::SysexAssembler`
         // (one layer up) rejoins. `tutti_ump::Midi1Parser` is for a transport
         // that delivers raw `F0 … F7` bytes.
-        let protocol = input_protocol(&endpoint_capability(
-            &source,
-            ump_of(&ump_endpoints().unwrap_or_default(), &source, true),
-        ));
+        let endpoints = ump_endpoints().unwrap_or_default();
+        let protocol = input_protocol(&source, ump_of(&endpoints, &source, true));
         let mut port = client
             .input_port_with_protocol("tutti-in", protocol, move |event_list, _ctx| {
                 // The packet's own host time, as an `Instant`: when the event

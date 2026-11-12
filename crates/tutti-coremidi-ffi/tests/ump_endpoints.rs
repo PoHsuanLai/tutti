@@ -118,6 +118,10 @@ fn an_endpoint_reads_back_its_protocol_and_blocks() {
         .expect("the registered endpoint is listed");
 
     assert_eq!(ours.protocol, 2, "created in the MIDI 2.0 Protocol");
+    assert!(
+        ours.supports_midi2,
+        "an endpoint created in the MIDI 2.0 Protocol supports it"
+    );
     assert!(ours.source_unique_id.is_some() && ours.destination_unique_id.is_some());
     let named = |name: &str| ours.blocks.iter().find(|b| b.name == name).unwrap();
     let keys = named(KEYS);

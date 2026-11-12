@@ -14,7 +14,9 @@
 use coremidi_sys::{MIDIObjectGetIntegerProperty, kMIDIPropertyUniqueID};
 use objc2::rc::autoreleasepool;
 use objc2::runtime::AnyClass;
-use objc2_core_midi::{MIDIUMPEndpoint, MIDIUMPEndpointManager, MIDIUMPFunctionBlock};
+use objc2_core_midi::{
+    MIDIUMPEndpoint, MIDIUMPEndpointManager, MIDIUMPFunctionBlock, MIDIUMPProtocolOptions,
+};
 
 /// One Function Block as CoreMIDI reports it (`MIDIUMPFunctionBlock`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +48,9 @@ pub struct UmpEndpointInfo {
     /// `MIDIProtocol`, the protocol in use: `kMIDIProtocol_1_0` is 1,
     /// `kMIDIProtocol_2_0` is 2.
     pub protocol: i32,
+    /// Whether `supportedMIDIProtocols` includes the MIDI 2.0 Protocol: the
+    /// endpoint may negotiate it later even while `protocol` is MIDI 1.0.
+    pub supports_midi2: bool,
     /// The `kMIDIPropertyUniqueID` of the endpoint's source (what a device
     /// sends from), when it has one.
     pub source_unique_id: Option<i32>,
@@ -74,9 +79,10 @@ pub fn ump_endpoints() -> Option<Vec<UmpEndpointInfo>> {
 
 fn endpoint_info(endpoint: &MIDIUMPEndpoint) -> UmpEndpointInfo {
     // SAFETY: plain getters on a live endpoint object.
-    let (protocol, source, destination, blocks) = unsafe {
+    let (protocol, supported, source, destination, blocks) = unsafe {
         (
             endpoint.MIDIProtocol().0,
+            endpoint.supportedMIDIProtocols(),
             endpoint.MIDISource(),
             endpoint.MIDIDestination(),
             endpoint.functionBlocks(),
@@ -84,6 +90,7 @@ fn endpoint_info(endpoint: &MIDIUMPEndpoint) -> UmpEndpointInfo {
     };
     UmpEndpointInfo {
         protocol,
+        supports_midi2: supported.contains(MIDIUMPProtocolOptions::MIDI2),
         source_unique_id: unique_id(source),
         destination_unique_id: unique_id(destination),
         blocks: blocks.iter().map(|b| block_info(&b)).collect(),

@@ -1,9 +1,10 @@
+use crate::VoiceWindow;
+use crate::testing::loop_frames;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tutti_types::{Beat, Bpm, SamplePosition};
 
-use crate::LoopSetting;
 use crate::streamer::StreamerPort;
 
 use super::*;
@@ -44,7 +45,7 @@ fn constant_file(value: f32) -> (tempfile::TempDir, PathBuf) {
 /// One block of the voice playing `reader` from beat 0, planar.
 fn first_block(reader: StreamReader) -> Vec<Vec<f32>> {
     let mut voice = prepared(
-        DiskVoice::from_reader(reader, Beat(0.0), None),
+        DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
         SampleRate::new(RATE),
         64,
     );
@@ -122,7 +123,7 @@ fn a_ready_reader_has_registered_its_control_before_it_is_returned() {
     );
     let ring = Arc::clone(&reader.ring);
     let mut voice = prepared(
-        DiskVoice::from_reader(reader, Beat(0.0), None),
+        DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
         SampleRate::new(RATE),
         64,
     );
@@ -334,27 +335,19 @@ fn a_loop_set_through_one_stream_leaves_the_other_unchanged() {
     let opening = streamer.open(&path, Placement::HEAD);
     let (mut b, reader_b) = settle(&mut streamer, opening).expect("the file opens");
     let loop_of = |reader: &StreamReader| reader.ring.applied().loop_;
-    let looped = |start, end| LoopSetting::On {
-        start: SamplePosition(start),
-        end: SamplePosition(end),
-        crossfade_frames: 0,
-    };
+    let looped = |start, end| Some(loop_frames(start, end, 0));
 
     // B is opened second, so a command that went to "the newest" or to "the
     // first" would be A's or B's by accident; both directions are checked.
-    a.set_loop(looped(1_000.0, 3_000.0)).expect("alive");
+    a.set_loop(looped(1_000, 3_000)).expect("alive");
     let _ = streamer.step_until_settled(1_000);
-    assert_eq!(loop_of(&reader_a), looped(1_000.0, 3_000.0));
-    assert_eq!(loop_of(&reader_b), LoopSetting::Off, "B was not asked");
+    assert_eq!(loop_of(&reader_a), looped(1_000, 3_000));
+    assert_eq!(loop_of(&reader_b), None, "B was not asked");
 
-    b.set_loop(looped(500.0, 900.0)).expect("alive");
+    b.set_loop(looped(500, 900)).expect("alive");
     let _ = streamer.step_until_settled(1_000);
-    assert_eq!(loop_of(&reader_b), looped(500.0, 900.0));
-    assert_eq!(
-        loop_of(&reader_a),
-        looped(1_000.0, 3_000.0),
-        "A is as it was"
-    );
+    assert_eq!(loop_of(&reader_b), looped(500, 900));
+    assert_eq!(loop_of(&reader_a), looped(1_000, 3_000), "A is as it was");
 }
 
 /// A command for a stream the streamer no longer holds is ignored, and
@@ -382,16 +375,12 @@ fn a_stopped_streams_handle_commands_nothing() {
     // reaching the queue looks like.
     let mut ghost = Stream::detached(id_a, StreamerPort::new(streamer.streamer_tx.clone()));
     ghost
-        .set_loop(LoopSetting::On {
-            start: SamplePosition(1_000.0),
-            end: SamplePosition(3_000.0),
-            crossfade_frames: 0,
-        })
+        .set_loop(Some(loop_frames(1_000, 3_000, 0)))
         .expect("the queue is alive: the command is sent, and ignored");
     let _ = streamer.step_until_settled(1_000);
     assert_eq!(
         reader_b.ring.applied().loop_,
-        LoopSetting::Off,
+        None,
         "a command for a closed stream reached another"
     );
     assert_eq!(streamer.driver.open_streams(), 1);

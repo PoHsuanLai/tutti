@@ -8,8 +8,8 @@ use tutti_codec::Wave;
 use tutti_types::ChannelLayout;
 
 use super::open::Opened;
-use crate::OpenError;
 use crate::voice::Direction;
+use crate::{Loop, OpenError};
 
 /// One open stream's identity: minted on the control side when the open is
 /// asked for ([`DiskStreamer::open`](crate::DiskStreamer::open)), never
@@ -74,12 +74,7 @@ pub(crate) enum StreamerCommand {
     /// crossfade, plus the fade's lead-in, read once) into the stream's ring
     /// mapping and records the loop as applied (`handle_loop`). A stream the
     /// streamer no longer holds ignores it.
-    SetStreamLoop {
-        stream: StreamId,
-        /// `(loop_start, loop_end)` in file samples.
-        range: (u64, u64),
-        crossfade_frames: usize,
-    },
+    SetStreamLoop { stream: StreamId, looped: Loop },
     /// Clear looping on a stream, so it plays through to the end without
     /// wrapping, repositioned as a loop change is. A stream the streamer no
     /// longer holds ignores it.

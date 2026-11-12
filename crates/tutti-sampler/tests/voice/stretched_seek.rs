@@ -7,6 +7,8 @@
 //! voice left ~85 ms of silence. `verify-audio`'s `seek_while_stretched` case heard
 //! it; this pins it in the suite.
 
+use tutti_sampler::VoiceWindow;
+
 use std::f32::consts::TAU;
 use std::sync::Arc;
 use tutti_fixtures::signal::rms;
@@ -14,7 +16,7 @@ use tutti_fixtures::signal::rms;
 use tutti_codec::Wave;
 use tutti_graph::contract;
 use tutti_sampler::testing::MockTransport;
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool};
 use tutti_types::{Beat, Bpm, SampleRate, StretchFactor};
 
 const SR: f64 = 48_000.0;
@@ -31,20 +33,15 @@ fn render(frames: usize, seek_at: usize) -> Vec<f32> {
         wave.push_frame(&[(TAU * 440.0 * i as f32 / SR as f32).sin()]);
     }
     handle
-        .send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(
-                    MemorySource::placed(Arc::new(wave), Beat::new(0.0), None)
-                        .expect("a placeable wave"),
-                ),
-                play: Playback {
-                    stretch: StretchFactor::new(2.0),
-                    ..Default::default()
-                },
-            }),
-            stretch: None,
-        })
+        .add(
+            SlotId(1),
+            MemorySource::placed(Arc::new(wave), VoiceWindow::from(Beat::new(0.0)))
+                .expect("a placeable wave"),
+            Playback {
+                stretch: StretchFactor::new(2.0),
+                ..Default::default()
+            },
+        )
         .expect("the command queue has room in a test");
 
     let mut out = Vec::with_capacity(frames);

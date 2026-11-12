@@ -25,11 +25,12 @@ use super::loops::{LeadIn, Mapping, RingLoop, apply_mapping, buffer_size_for_fil
 use super::metrics::Metrics;
 use super::open::{OpenError, Opened};
 use super::prefetch::RegionBuffer;
-use super::record::{Cmd, Effect, LoopAsk, Record, Streams, step};
+use super::record::{Cmd, Effect, Record, Streams, step};
 use super::status::StatusCell;
+use crate::Loop;
 use crate::nonempty;
+use crate::voice::Direction;
 use crate::voice::interp::Place;
-use crate::voice::{Direction, LoopSetting};
 use crate::voice_width;
 use tutti_types::ChannelLayout;
 
@@ -47,8 +48,8 @@ pub(super) struct Handles {
     pub seams: Seams,
 }
 
-/// The session (graph) rate, one cell shared by the control side, the streamer
-/// and every [`Status`](crate::Status) snapshot.
+/// The session (graph) rate, one cell shared by the control side and the
+/// streamer ([`DiskStreamer::sample_rate`](crate::DiskStreamer::sample_rate)).
 ///
 /// Shared rather than copied into each because a device restart moves it
 /// (`DiskStreamer::set_sample_rate`): a copy taken at build time is how a
@@ -158,16 +159,8 @@ pub(super) fn handle_command(
             let _ = step(&mut local.streams, Cmd::Close(stream));
         }
 
-        StreamerCommand::SetStreamLoop {
-            stream,
-            range,
-            crossfade_frames,
-        } => {
-            let ask = LoopAsk {
-                range,
-                crossfade_frames,
-            };
-            handle_loop(stream, Some(ask), config, local);
+        StreamerCommand::SetStreamLoop { stream, looped } => {
+            handle_loop(stream, Some(looped), config, local);
         }
         StreamerCommand::ClearStreamLoop { stream } => handle_loop(stream, None, config, local),
 
@@ -484,7 +477,7 @@ fn build_stream(
 /// loop change never decodes the whole file. A lead-in that cannot be read
 /// plays the loop hard, is logged, and is what the ring's published control
 /// says is applied (so a fork plays it hard too).
-fn handle_loop(stream: StreamId, ask: Option<LoopAsk>, config: &BufferConfig, local: &mut Local) {
+fn handle_loop(stream: StreamId, ask: Option<Loop>, config: &BufferConfig, local: &mut Local) {
     let Some(&Effect::Loop(id, ask)) = step(&mut local.streams, Cmd::Loop(stream, ask)).first()
     else {
         return;
@@ -499,7 +492,7 @@ fn handle_loop(stream: StreamId, ask: Option<LoopAsk>, config: &BufferConfig, lo
 
 /// Captures `ask` into `record`'s ring and records it as applied: the file
 /// work of [`handle_loop`].
-fn capture_loop(record: &mut Record, ask: Option<LoopAsk>, config: &BufferConfig) {
+fn capture_loop(record: &mut Record, ask: Option<Loop>, config: &BufferConfig) {
     let len = record.file_frames.get();
     let rate = record.cells.read_rate().get();
     let writer = &mut record.out;
@@ -507,24 +500,16 @@ fn capture_loop(record: &mut Record, ask: Option<LoopAsk>, config: &BufferConfig
     let channels = writer.channels();
     let mut recorded = ask;
     let ring_loop = ask.and_then(|ask| {
-        let (ring_loop, lead_in) = RingLoop::capture(
-            ask.range,
-            ask.crossfade_frames,
-            len,
-            channels,
-            &mut |at, out| writer.read_file(at, out),
-        )?;
+        let (ring_loop, lead_in) =
+            RingLoop::capture(ask, len, channels, &mut |at, out| writer.read_file(at, out))?;
         if lead_in == LeadIn::Unreadable {
             tracing::warn!(
                 "could not read the crossfade lead-in of loop {:?} in {}; \
                  the loop plays hard",
-                ask.range,
+                ask,
                 writer.file_path().display()
             );
-            recorded = Some(LoopAsk {
-                crossfade_frames: 0,
-                ..ask
-            });
+            recorded = Some(ask.hard());
         }
         Some(ring_loop)
     });
@@ -536,13 +521,7 @@ fn capture_loop(record: &mut Record, ask: Option<LoopAsk>, config: &BufferConfig
 
     // The loop as applied, published beside the map apply_mapping published
     // (or kept, when the mapping did not change).
-    writer
-        .ring()
-        .publish_loop(recorded.map_or(LoopSetting::Off, |ask| LoopSetting::On {
-            start: tutti_types::SamplePosition(ask.range.0 as f64),
-            end: tutti_types::SamplePosition(ask.range.1 as f64),
-            crossfade_frames: ask.crossfade_frames,
-        }));
+    writer.ring().publish_loop(recorded);
 }
 
 /// Turn a stream to `direction`: the driver's half of [`Effect::Direction`],

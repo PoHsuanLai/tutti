@@ -561,7 +561,7 @@ pub(crate) fn stretch_wanted(play: &Playback) -> bool {
 }
 
 /// The same question asked of a loose factor/pitch pair, for
-/// [`VoiceCommand::UpdateStretch`](crate::voice::VoiceCommand::UpdateStretch) —
+/// `VoiceCommand::UpdateStretch` —
 /// which carries the two values but no `Playback` to wrap them in.
 ///
 /// [`stretch_wanted`] delegates here so the thresholds exist once. Writing

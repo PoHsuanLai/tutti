@@ -6,7 +6,7 @@
 //!
 //! [`Unit`] is a pure frame-in → frame-out filter: it owns no source, so the
 //! caller ticks its own source and feeds each frame in. Nothing here knows
-//! what a voice is; the voices in [`voice`](crate::voice) own one per stretched
+//! what a voice is; the voices in `voice` own one per stretched
 //! voice.
 //!
 //! # Example

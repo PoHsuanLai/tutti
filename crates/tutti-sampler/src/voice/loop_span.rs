@@ -57,9 +57,150 @@
 //! A fade is never longer than the loop, and the loop's end is clamped to the
 //! file where its length is known.
 
-use super::LoopSetting;
 use std::cmp::Ordering;
-use tutti_types::SamplePosition;
+use std::ops::Range;
+use tutti_types::Samples;
+
+/// A loop over whole file frames `[start, end)`, with a crossfade into it: the
+/// one value every tier takes (a memory voice, a disk voice, a stream, a pool
+/// slot, a node's handle), checked where it is made.
+///
+/// The span is in whole frames of the file (`Samples`: a loop point between
+/// frames has no meaning, so none is writable), `start < end` and the
+/// crossfade no longer than the span, or no `Loop` exists to hand a voice. A
+/// crossfade of zero is a hard loop. Where a voice's file is shorter than the
+/// span's end, the loop plays to the file's end (the file's length is not
+/// always known where the loop is made: a stream's header is read on the
+/// streamer's thread); a loop that starts at or past the file's end plays
+/// nothing in a loop.
+///
+/// The fade is linear, over the last `crossfade` frames before `end`, and
+/// continuous at the wrap:
+///
+/// - With at least `crossfade` frames before `start`, the tail blends toward
+///   the frames leading into `start`, and the wrap lands on `start`.
+/// - With fewer (a loop from frame 0, say), the tail blends toward the loop's
+///   own head `[start, start + fade)` and the wrap lands on `start + fade`:
+///   the loop that repeats is `[start + fade, end)`, and the fade is at most
+///   half the loop's length.
+///
+/// ```
+/// # use tutti_sampler::Loop;
+/// # use tutti_types::Samples;
+/// let looped = Loop::new(Samples::new(100)..Samples::new(400))?
+///     .with_crossfade(Samples::new(32))?;
+/// assert_eq!(looped.len(), Samples::new(300));
+/// // An empty or reversed span, or a fade longer than the loop, is not a loop.
+/// assert!(Loop::new(Samples::new(400)..Samples::new(100)).is_err());
+/// assert!(looped.with_crossfade(Samples::new(301)).is_err());
+/// # Ok::<(), tutti_sampler::LoopError>(())
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Loop {
+    start: Samples,
+    end: Samples,
+    crossfade: Samples,
+}
+
+/// Why a [`Loop`] was refused where it was made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum LoopError {
+    /// The span has no frame in it: its end is not after its start.
+    #[error("a loop needs its end after its start, not {start}..{end}")]
+    EmptySpan {
+        /// The span's start, as asked.
+        start: Samples,
+        /// The span's end, as asked.
+        end: Samples,
+    },
+    /// The crossfade is longer than the loop it leads into.
+    #[error("a crossfade of {crossfade} frames does not fit a loop of {len}")]
+    CrossfadeTooLong {
+        /// The crossfade asked for.
+        crossfade: Samples,
+        /// The loop's length.
+        len: Samples,
+    },
+}
+
+impl Loop {
+    /// The hard loop over `span` (no crossfade); add one with
+    /// [`with_crossfade`](Self::with_crossfade).
+    ///
+    /// # Errors
+    ///
+    /// [`LoopError::EmptySpan`] when `span.end` is not after `span.start`.
+    pub fn new(span: Range<Samples>) -> Result<Self, LoopError> {
+        if span.end <= span.start {
+            return Err(LoopError::EmptySpan {
+                start: span.start,
+                end: span.end,
+            });
+        }
+        Ok(Self {
+            start: span.start,
+            end: span.end,
+            crossfade: Samples::ZERO,
+        })
+    }
+
+    /// This loop with a `crossfade` of that many frames into it.
+    ///
+    /// # Errors
+    ///
+    /// [`LoopError::CrossfadeTooLong`] when the crossfade is longer than the
+    /// loop.
+    pub fn with_crossfade(self, crossfade: Samples) -> Result<Self, LoopError> {
+        if crossfade > self.len() {
+            return Err(LoopError::CrossfadeTooLong {
+                crossfade,
+                len: self.len(),
+            });
+        }
+        Ok(Self { crossfade, ..self })
+    }
+
+    /// The first frame of the loop.
+    #[must_use]
+    pub fn start(self) -> Samples {
+        self.start
+    }
+
+    /// One past the loop's last frame.
+    #[must_use]
+    pub fn end(self) -> Samples {
+        self.end
+    }
+
+    /// The loop's length in frames.
+    #[must_use]
+    pub fn len(self) -> Samples {
+        Samples::new(self.end.get() - self.start.get())
+    }
+
+    /// The crossfade into the loop, as asked; zero is a hard loop.
+    #[must_use]
+    pub fn crossfade(self) -> Samples {
+        self.crossfade
+    }
+
+    /// The same loop with no crossfade.
+    #[must_use]
+    pub(crate) fn hard(self) -> Self {
+        Self {
+            crossfade: Samples::ZERO,
+            ..self
+        }
+    }
+
+    /// This loop read in a file `len` frames long: `None` when it starts at
+    /// or past the file's end.
+    #[must_use]
+    pub(crate) fn bound(self, len: usize) -> Option<LoopSpan> {
+        LoopSpan::new(self.start.get(), self.end.get(), self.crossfade.get(), len)
+    }
+}
 
 /// A loop over whole file frames `[start, end)`, with a crossfade of `fade`
 /// frames into it, wrapping to `resume`. See the module docs.
@@ -121,18 +262,9 @@ impl LoopSpan {
         })
     }
 
-    /// The loop a [`LoopSetting`] describes in a file `len` frames long, its
-    /// points taken to whole frames as the streamer takes them
-    /// (`Stream::set_loop`).
-    pub(crate) fn from_setting(setting: LoopSetting, len: usize) -> Option<Self> {
-        match setting {
-            LoopSetting::On {
-                start,
-                end,
-                crossfade_frames,
-            } => Self::new(whole_frame(start), whole_frame(end), crossfade_frames, len),
-            LoopSetting::Off => None,
-        }
+    /// The loop `setting` (if any) reads as in a file `len` frames long.
+    pub(crate) fn from_setting(setting: Option<Loop>, len: usize) -> Option<Self> {
+        setting.and_then(|l| l.bound(len))
     }
 
     /// One past the loop's last frame (clamped to the file).
@@ -267,12 +399,6 @@ impl LoopSpan {
 #[inline]
 pub(crate) fn blend(tail: f32, lead: f32, t: f32) -> f32 {
     tail * (1.0 - t) + lead * t
-}
-
-/// A loop point as a whole frame: truncated, and never below 0, as the
-/// streamer's `SetStreamLoop` takes it.
-fn whole_frame(pos: SamplePosition) -> usize {
-    pos.get().max(0.0) as usize
 }
 
 #[cfg(test)]

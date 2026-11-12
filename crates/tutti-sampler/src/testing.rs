@@ -19,6 +19,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tutti_graph::{Env, Node, Transport, TransportChanges, contract};
 use tutti_types::{Beat, Bpm, Frame, SampleRate, Samples};
 
+use crate::Loop;
+
+/// The loop over file frames `start..end` with `crossfade` frames of fade
+/// into it, for a test that has literal frames.
+///
+/// # Panics
+///
+/// On an empty span or a crossfade longer than the loop: a test's loop is a
+/// literal, and a typo in one should stop it, not play something else.
+pub fn loop_frames(start: usize, end: usize, crossfade: usize) -> Loop {
+    Loop::new(Samples::new(start)..Samples::new(end))
+        .and_then(|l| l.with_crossfade(Samples::new(crossfade)))
+        .expect("a test's loop is a literal that `Loop` accepts")
+}
+
 /// A transport a test can move between blocks, as a real one moves.
 ///
 /// Interior-mutable and shared (`Arc`), so a test can move it from inside a

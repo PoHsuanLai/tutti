@@ -25,6 +25,8 @@
 //! at all, so a regression to silence fails loudly rather than passing every
 //! comparison.
 
+use tutti_sampler::VoiceWindow;
+
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
@@ -71,7 +73,8 @@ fn rolling(frame: Frame) -> Transport {
 fn solo_voice() -> Solo<VoiceNodeHandle> {
     let voice = Voice {
         source: VoiceSource::Memory(
-            MemorySource::placed(flat_wave(48_000), Beat(0.0), None).expect("a placeable wave"),
+            MemorySource::placed(flat_wave(48_000), VoiceWindow::from(Beat(0.0)))
+                .expect("a placeable wave"),
         ),
         play: Playback::default(),
     };
@@ -328,7 +331,8 @@ fn a_voices_gain_port_reads_its_cell_as_its_base() {
 
     let voice = Voice {
         source: VoiceSource::Memory(
-            MemorySource::placed(flat_wave(64), Beat(0.0), None).expect("a placeable wave"),
+            MemorySource::placed(flat_wave(64), VoiceWindow::from(Beat(0.0)))
+                .expect("a placeable wave"),
         ),
         play: Playback {
             gain: Amplitude::new(0.25),

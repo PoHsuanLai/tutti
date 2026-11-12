@@ -25,9 +25,8 @@ use tutti_types::MaxBlock;
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
 use tutti_nodes::{LimiterControls, LimiterNode};
-use tutti_sampler::testing::settle_threaded;
-use tutti_sampler::{DiskVoice, MemorySource, Placement, StreamPhase};
-use tutti_session::{InPort, OutPort, Root, Session};
+use tutti_sampler::{DiskVoice, MemorySource, Placement, StreamPhase, VoiceWindow};
+use tutti_session::{InPort, OutPort, Root, SamplerEvent, Session, SessionEvent};
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, ChannelLayout, Db, InterleavedMut, SampleRate, Samples};
 
@@ -101,11 +100,28 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     // the stream.
     let (voice, stream) = match tier {
         Tier::Disk => {
-            let streamer = s.disk_streamer().expect("an offline session streams");
-            // The streamer opens the stream on its own thread.
-            let (stream, reader) =
-                settle_threaded(streamer.open(&path, Placement::HEAD)).expect("the stream opens");
-            let voice = DiskVoice::from_reader(reader, Beat(1.0), None);
+            // The streamer opens the stream on its own thread, and the open
+            // lands in `update()`.
+            let id = s
+                .open_stream(&path, Placement::HEAD)
+                .expect("an offline session streams");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (stream, reader) = 'opened: loop {
+                for event in s.update() {
+                    if let SessionEvent::Sampler(SamplerEvent::Opened {
+                        id: opened,
+                        stream,
+                        reader,
+                    }) = event
+                    {
+                        assert_eq!(opened, id);
+                        break 'opened (stream, reader);
+                    }
+                }
+                assert!(Instant::now() < deadline, "the stream did not open");
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat(1.0)));
             (s.graph().add(voice).0.erase(), Some(stream))
         }
         Tier::Memory => {
@@ -113,8 +129,9 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);
             }
-            let source = MemorySource::placed(std::sync::Arc::new(wave), Beat(1.0), None)
-                .expect("a placeable wave");
+            let source =
+                MemorySource::placed(std::sync::Arc::new(wave), VoiceWindow::from(Beat(1.0)))
+                    .expect("a placeable wave");
             (s.graph().add(source).0.erase(), None)
         }
     };

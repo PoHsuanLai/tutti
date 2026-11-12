@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use super::disk_voice::DiskVoice;
 use super::fault::FaultLatch;
-use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
+use super::loop_span::Loop;
+use super::memory_source::{MemorySource, VoiceWindow};
 use tutti_graph::{ForkCause, ForkMode, Node};
-use tutti_types::{Amplitude, Beat, BeatDuration, Cents, PlaybackRate, SampleRate, StretchFactor};
+use tutti_types::{Amplitude, Cents, PlaybackRate, SampleRate, StretchFactor};
 
 /// Opaque identifier for one voice slot in a [`VoicePool`](super::VoicePool).
 ///
@@ -61,7 +62,7 @@ impl From<bool> for Direction {
 /// [`Memory`](Self::Memory) indexes an `Arc<Wave>`; [`Disk`](Self::Disk) pops
 /// the streamer-fed ring, emitting silence while seeking and crossfading on
 /// refill. Every *cold* control op is a `match` on this enum — `apply_gain`,
-/// `apply_speed` and `apply_placement` (a voice's direction lives on its
+/// `apply_speed` and `apply_window` (a voice's direction lives on its
 /// `Playback`, or on its stream).
 ///
 /// # There is deliberately no `ClipReader` trait
@@ -163,15 +164,12 @@ impl VoiceSource {
         }
     }
 
-    /// Update the timeline placement window.
+    /// Update the timeline window.
     #[inline]
-    pub(crate) fn apply_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
+    pub(crate) fn apply_window(&mut self, window: VoiceWindow) {
         match self {
-            Self::Memory(s) => s.set_window(VoiceWindow {
-                start: start_beat,
-                duration,
-            }),
-            Self::Disk(s) => s.set_placement(start_beat, duration),
+            Self::Memory(s) => s.set_window(window),
+            Self::Disk(s) => s.set_window(window),
         }
     }
 }
@@ -199,7 +197,7 @@ pub struct Playback {
     /// Whether the source is read forward or reversed.
     pub direction: Direction,
     /// Loop mode and, where looping, its bounds and crossfade.
-    pub loop_: LoopSetting,
+    pub loop_: Option<Loop>,
     /// Time-stretch factor (`1.0` = no stretch), driving the phase vocoder.
     /// Pitch-independent, unlike [`speed`](Self::speed).
     pub stretch: StretchFactor,
@@ -215,7 +213,7 @@ impl Default for Playback {
             gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             direction: Direction::Forward,
-            loop_: LoopSetting::Off,
+            loop_: None,
             stretch: StretchFactor::UNITY,
             pitch: Cents::new(0.0),
         }

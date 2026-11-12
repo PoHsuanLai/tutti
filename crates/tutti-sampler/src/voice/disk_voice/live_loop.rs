@@ -19,6 +19,10 @@
 //! window and nothing else, and count the frames the live voice could not
 //! read (underruns): a reposition costs none.
 
+use crate::VoiceWindow;
+
+use crate::testing::loop_frames;
+
 use std::path::Path;
 use std::sync::Arc;
 use tutti_types::MaxBlock;
@@ -28,7 +32,7 @@ use tutti_types::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
 
 use super::DiskVoice;
 use crate::testing::{MockTransport, block};
-use crate::{ByHand, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Stream};
+use crate::{ByHand, DiskStreamer, DiskStreamerConfig, Loop, MemorySource, Stream};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -87,12 +91,8 @@ fn write_sine(path: &Path, frames: usize) {
     w.finalize().expect("writes");
 }
 
-fn loop_on(start: f64, end: f64, fade: usize) -> LoopSetting {
-    LoopSetting::On {
-        start: SamplePosition(start),
-        end: SamplePosition(end),
-        crossfade_frames: fade,
-    }
+fn loop_on(start: f64, end: f64, fade: usize) -> Option<Loop> {
+    Some(loop_frames(start as usize, end as usize, fade))
 }
 
 /// Beats at 120 BPM of `frames` at [`SR`].
@@ -103,7 +103,7 @@ fn beats(frames: f64) -> f64 {
 /// How a [`Live`] voice is set up, besides its file.
 #[derive(Clone, Copy)]
 struct Setup {
-    loop_: LoopSetting,
+    loop_: Option<Loop>,
     speed: f32,
     /// Where the clock starts (the voice is placed at beat 0); the stream is
     /// started there, so the ring holds it before the first block.
@@ -113,7 +113,7 @@ struct Setup {
 }
 
 impl Setup {
-    fn looped(loop_: LoopSetting, speed: f32) -> Self {
+    fn looped(loop_: Option<Loop>, speed: f32) -> Self {
         Self {
             loop_,
             speed,
@@ -135,7 +135,7 @@ struct Live {
 }
 
 impl Live {
-    fn new(path: &Path, loop_: LoopSetting, speed: f32) -> Self {
+    fn new(path: &Path, loop_: Option<Loop>, speed: f32) -> Self {
         Self::with(path, Setup::looped(loop_, speed))
     }
 
@@ -162,7 +162,7 @@ impl Live {
             })
             .collect();
         let (mut stream, reader) = readers.remove(0);
-        if setup.loop_ != LoopSetting::Off {
+        if setup.loop_.is_some() {
             stream.set_loop(setup.loop_).expect("the streamer is alive");
             assert!(
                 streamer.step_until_settled(1_000) < 1_000,
@@ -170,7 +170,7 @@ impl Live {
             );
         }
         let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::of(120.0));
-        let mut voice = DiskVoice::from_reader(reader, Beat(0.0), None);
+        let mut voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0)));
         voice.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
         voice.set_speed(PlaybackRate::new(setup.speed));
         Self {
@@ -204,7 +204,7 @@ impl Live {
         (0..blocks).flat_map(|_| self.block()).collect()
     }
 
-    fn loop_(&mut self, setting: LoopSetting) {
+    fn loop_(&mut self, setting: Option<Loop>) {
         self.stream
             .set_loop(setting)
             .expect("the streamer is alive");
@@ -250,11 +250,12 @@ struct Memory {
 }
 
 impl Memory {
-    fn new(wave: Arc<tutti_codec::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
+    fn new(wave: Arc<tutti_codec::Wave>, loop_: Option<Loop>, speed: f32, from: f64) -> Self {
         let clock = MockTransport::rolling(Beat::new(from), Bpm::of(120.0));
-        let mut source = MemorySource::placed(wave, Beat(0.0), None).expect("a placeable wave");
+        let mut source =
+            MemorySource::placed(wave, VoiceWindow::from(Beat(0.0))).expect("a placeable wave");
         source.set_speed(PlaybackRate::new(speed));
-        source.set_loop_setting(loop_);
+        source.set_loop(loop_);
         source.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
         Self { source, clock }
     }
@@ -302,7 +303,7 @@ fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
         what: &'static str,
         file_rate: u32,
         speed: f32,
-        loop_: LoopSetting,
+        loop_: Option<Loop>,
     }
     let cases = [
         Case {
@@ -366,10 +367,10 @@ fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
         let want =
             Memory::new(ramp_wave(case.file_rate, LEN), case.loop_, case.speed, 0.0).render(BLOCKS);
         let rate = case.speed as f64 * case.file_rate as f64 / SR;
-        let LoopSetting::On { end, .. } = case.loop_ else {
+        let Some(looped) = case.loop_ else {
             unreachable!()
         };
-        let wraps = (got.len() as f64 * rate - end.get().min(LEN as f64)) / 2_000.0;
+        let wraps = (got.len() as f64 * rate - looped.end().get().min(LEN) as f64) / 2_000.0;
         assert!(wraps > 5.0, "{}: too few wraps to say anything", case.what);
         assert!(got.iter().any(|&s| s != 0.0), "{}: silent", case.what);
         assert_same_outside(case.what, &got, &want, &[]);
@@ -466,7 +467,7 @@ fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
         live
     };
     const BLOCKS: usize = 420;
-    let mut plain = reversed(LoopSetting::Off);
+    let mut plain = reversed(None);
     let want = plain.render(BLOCKS);
     let mut looped = reversed(loop_on(3_000.0, 7_001.0, 700));
     let moves = looped.moves();
@@ -510,7 +511,7 @@ fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
     let mut want = memory.render(81);
     let edit = got.len();
     live.loop_(b);
-    memory.source.set_loop_setting(b);
+    memory.source.set_loop(b);
     got.extend(live.render(120));
     want.extend(memory.render(120));
     assert_eq!(live.underruns(), 0, "frames went unread");
@@ -545,7 +546,7 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
     enum Event {
-        Loop(LoopSetting),
+        Loop(Option<Loop>),
         Jump(f64),
         Speed(f32),
     }
@@ -555,7 +556,7 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
         (90, Event::Loop(loop_on(9_000.0, 11_001.0, 400))),
         (120, Event::Jump(beats(30_000.0))),
         (150, Event::Speed(1.5)),
-        (180, Event::Loop(LoopSetting::Off)),
+        (180, Event::Loop(None)),
         (210, Event::Jump(beats(1_000.0))),
         (240, Event::Loop(loop_on(2_000.0, 6_001.0, 0))),
     ];
@@ -573,7 +574,7 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
         match event {
             Event::Loop(setting) => {
                 live.loop_(*setting);
-                memory.source.set_loop_setting(*setting);
+                memory.source.set_loop(*setting);
             }
             Event::Jump(beat) => {
                 live.clock.set_beat(Beat::new(*beat));
@@ -617,7 +618,7 @@ fn two_changes_in_one_cycle_settle_to_the_last() {
             live.loop_(loop_on(2_000.0, 2_500.0, 0));
         }
         live.loop_(last);
-        memory.source.set_loop_setting(last);
+        memory.source.set_loop(last);
         got.extend(live.render(150));
         want.extend(memory.render(150));
         assert_eq!(live.underruns(), 0, "jump {jump}: frames went unread");
@@ -654,7 +655,7 @@ fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
     let mut got = moved.render(10);
     let mut want = memory.render(10);
     moved.loop_(far);
-    memory.source.set_loop_setting(far);
+    memory.source.set_loop(far);
     got.extend(moved.render(1));
     let at = moved.voice.inner.read.ring().applied().map.at;
     assert_eq!(at, 30_000, "the ring switched where the loops still agreed");
@@ -762,7 +763,7 @@ fn a_jump_back_behind_a_loop_edit_plays_the_new_loop() {
     let mut want = memory.render(81);
     let mut allowed = vec![(got.len(), got.len() + span)];
     live.loop_(b);
-    memory.source.set_loop_setting(b);
+    memory.source.set_loop(b);
     got.extend(live.render(20));
     want.extend(memory.render(20));
     allowed.push((got.len(), got.len() + span));
@@ -802,7 +803,7 @@ fn fades_chain_without_a_step() {
     );
     #[derive(Debug, Clone, Copy)]
     enum Event {
-        Loop(LoopSetting),
+        Loop(Option<Loop>),
         Jump(f64),
     }
     let cases = [
@@ -850,7 +851,7 @@ fn a_starved_reader_ramps_out_and_back_in() {
     // Longer than the ring's 30 s cap, so a jump near its end is outside
     // the window.
     write_sine(&path, 31 * SR as usize);
-    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
+    let mut live = Live::new(&path, None, 1.0);
     let mut got = live.render(20);
     // Far outside the window, and the streamer stalls for 50 blocks.
     live.clock.set_beat(Beat::new(beats(1_450_000.0)));
@@ -894,8 +895,8 @@ fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
-    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
-    let mut memory = Memory::new(ramp_wave(SR as u32, LEN), LoopSetting::Off, 1.0, 0.0);
+    let mut live = Live::new(&path, None, 1.0);
+    let mut memory = Memory::new(ramp_wave(SR as u32, LEN), None, 1.0, 0.0);
     let mut got = live.render(100);
     let mut want = memory.render(100);
     assert!(!live.voice.inner.read.fading(), "a fade before any seek");
@@ -931,15 +932,7 @@ fn pool_with(
     let (mut pool, handle) = crate::VoicePool::new().with_handle();
     pool.prepare(&Prepare::new(SampleRate(SR), MaxBlock::of(Samples(BLOCK))));
     handle
-        .add_streaming(
-            id,
-            crate::Voice {
-                source: crate::VoiceSource::Disk(voice),
-                play: crate::Playback::default(),
-            },
-            stream,
-            None,
-        )
+        .add_streaming(id, voice, stream, crate::Playback::default())
         .expect("the command queue has room in a test");
     (pool, handle)
 }
@@ -970,18 +963,11 @@ fn a_loop_set_through_a_pool_reaches_the_streamer_and_the_voice_loops() {
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
     let (mut streamer, stream, reader) = streaming(&path);
-    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
+    let voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0)));
     let id = crate::SlotId(1);
     let (mut pool, handle) = pool_with(id, voice, stream);
     handle
-        .send(crate::VoiceCommand::UpdateLoop {
-            id,
-            setting: LoopSetting::On {
-                start: SamplePosition(1_000.0),
-                end: SamplePosition(3_001.0),
-                crossfade_frames: 0,
-            },
-        })
+        .set_loop(id, Some(loop_frames(1_000, 3_001, 0)))
         .expect("the command queue has room in a test");
     assert!(streamer.step_until_settled(1_000) < 1_000, "the loop lands");
 
@@ -1034,16 +1020,9 @@ fn a_loop_set_on_one_pool_voice_leaves_the_other_voices_stream_alone() {
             .1
             .add_streaming(
                 id,
-                crate::Voice {
-                    source: crate::VoiceSource::Disk(DiskVoice::from_reader(
-                        reader,
-                        Beat(0.0),
-                        None,
-                    )),
-                    play: crate::Playback::default(),
-                },
+                DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
                 stream,
-                None,
+                crate::Playback::default(),
             )
             .expect("the command queue has room in a test");
     }
@@ -1051,14 +1030,14 @@ fn a_loop_set_on_one_pool_voice_leaves_the_other_voices_stream_alone() {
     let applied = |ring: &crate::streamer::SharedReader| ring.applied().loop_;
     let send = |id, setting| {
         handle
-            .send(crate::VoiceCommand::UpdateLoop { id, setting })
+            .set_loop(id, setting)
             .expect("the command queue has room in a test");
     };
 
     send(ids[0], loop_on(1_000.0, 3_001.0, 0));
     assert!(streamer.step_until_settled(1_000) < 1_000);
     assert_eq!(applied(&ring_a), loop_on(1_000.0, 3_001.0, 0));
-    assert_eq!(applied(&ring_b), LoopSetting::Off, "B was not asked");
+    assert_eq!(applied(&ring_b), None, "B was not asked");
 
     send(ids[1], loop_on(500.0, 900.0, 0));
     assert!(streamer.step_until_settled(1_000) < 1_000);
@@ -1089,7 +1068,10 @@ fn two_voices_opened_in_sequence_on_one_file_share_no_cell() {
     let open = |streamer: &mut DiskStreamer<ByHand>| {
         let opening = streamer.open(&path, crate::Placement::HEAD);
         let (stream, reader) = crate::testing::settle(streamer, opening).expect("the file opens");
-        (stream, DiskVoice::from_reader(reader, Beat(0.0), None))
+        (
+            stream,
+            DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
+        )
     };
     let (mut stream_a, mut a) = open(&mut streamer);
     let (_stream_b, mut b) = open(&mut streamer);
@@ -1136,7 +1118,7 @@ fn direction_is_published_once_and_read_from_the_lent_control() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
-    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
+    let mut live = Live::new(&path, None, 1.0);
     let lent = |live: &mut Live| live.voice.inner.read.lent_control().expect("a live voice");
 
     let forward = lent(&mut live);

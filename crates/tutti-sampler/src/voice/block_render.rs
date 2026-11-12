@@ -18,6 +18,10 @@
 //! runs (the clock's cut at a change, a jump seen on its frame), the flush at
 //! a jump, the lanes, `hermite_lanes`, `filter_lanes`, the gain and the mix.
 
+use crate::VoiceWindow;
+
+use crate::testing::loop_frames;
+
 use std::path::Path;
 use std::sync::Arc;
 use tutti_types::MaxBlock;
@@ -25,11 +29,11 @@ use tutti_types::MaxBlock;
 use tutti_codec::Wave;
 use tutti_graph::{Env, Node, Offset, Prepare, Transport, TransportChanges, contract};
 use tutti_types::{
-    Amplitude, Beat, Bpm, Cents, ChannelLayout, Frame, FrameClock, PlaybackRate, SamplePosition,
-    SampleRate, Samples, StretchFactor,
+    Amplitude, Beat, Bpm, Cents, ChannelLayout, Frame, FrameClock, PlaybackRate, SampleRate,
+    Samples, StretchFactor,
 };
 
-use super::memory_source::{LoopSetting, MemorySource};
+use super::memory_source::MemorySource;
 use super::pool::VoicePool;
 use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
 use crate::{DiskStreamer, DiskStreamerConfig};
@@ -64,8 +68,8 @@ fn write_wav(path: &Path) {
 }
 
 fn memory(w: &Arc<Wave>, start: f64) -> VoiceSource {
-    let mut s =
-        MemorySource::placed(Arc::clone(w), Beat::new(start), None).expect("a placeable wave");
+    let mut s = MemorySource::placed(Arc::clone(w), VoiceWindow::from(Beat::new(start)))
+        .expect("a placeable wave");
     s.set_render_rate(SampleRate(SR));
     VoiceSource::Memory(s)
 }
@@ -177,7 +181,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
         let reader = readers[stream]
             .take()
             .expect("each stream builds one voice");
-        let mut v = crate::DiskVoice::from_reader(reader, Beat::new(0.0), None);
+        let mut v = crate::DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)));
         v.set_render_rate(SampleRate(SR));
         v
     };
@@ -203,13 +207,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
             ),
             (
                 memory(&stereo, 0.0),
-                play(|p| {
-                    p.loop_ = LoopSetting::On {
-                        start: SamplePosition(1_000.0),
-                        end: SamplePosition(9_000.0),
-                        crossfade_frames: 256,
-                    }
-                }),
+                play(|p| p.loop_ = Some(loop_frames(1_000, 9_000, 256))),
             ),
             (
                 memory(&stereo, 0.0),

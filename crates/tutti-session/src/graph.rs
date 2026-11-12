@@ -62,10 +62,10 @@ use tutti_types::MaxBlock;
 use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Samples, Tail};
 
-use crate::key::{Bus, BusSink, InEnd, Inlet, MainSink, OutEnd, Outlet, Wire};
+use crate::key::{Bus, BusSink, Fanin, InEnd, Inlet, MainSink, OutEnd, Outlet, Wire};
 use crate::{
-    ConnectError, Connection, Edge, EdgeGainError, InPort, InletError, Key, OutPort, Root,
-    SessionNode,
+    ConnectError, Connection, Edge, EdgeGainError, EventInPort, EventOutPort, InPort, InletError,
+    Key, OutPort, ParamError, ParamValue, Root, SessionNode, TypedParamRef,
 };
 
 /// The largest block a device's graph is prepared for.
@@ -79,44 +79,6 @@ pub const LIVE_MAX_BLOCK: MaxBlock = MaxBlock::of(Samples(1024));
 /// The spec `kind` of a hosted plugin.
 #[cfg(feature = "plugin")]
 const PLUGIN_KIND: &str = "tutti-session:plugin";
-
-/// One event output: `node`'s event output `port`. From an [`NodeKey`]
-/// alone, its output 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EventSource {
-    /// The node.
-    pub node: NodeKey,
-    /// Its event output.
-    pub port: u16,
-}
-
-impl EventSource {
-    /// Names `node`'s event output `port`.
-    #[must_use]
-    pub fn new(node: impl Into<NodeKey>, port: u16) -> Self {
-        Self {
-            node: node.into(),
-            port,
-        }
-    }
-
-    /// A total order for a set of sources: by node, then port.
-    fn key(&self) -> (u64, u16) {
-        (self.node.0, self.port)
-    }
-}
-
-impl<N> From<Key<N>> for EventSource {
-    fn from(key: Key<N>) -> Self {
-        Self::new(key.erase(), 0)
-    }
-}
-
-impl From<NodeKey> for EventSource {
-    fn from(node: NodeKey) -> Self {
-        Self::new(node, 0)
-    }
-}
 
 /// Why [`Graph::replace`] did not take a node — or, as
 /// `ReplaceRefused<Box<PluginClient>>`, `Graph::replace_plugin` (feature
@@ -329,11 +291,11 @@ pub struct Graph {
     render_worker_start: Option<RenderWorkerStart>,
     /// Each sink's event input 0, by feeder: the sources each feeder feeds
     /// it. Written into the spec as their union.
-    feeds: BTreeMap<NodeKey, BTreeMap<Feeder, Vec<EventSource>>>,
+    feeds: BTreeMap<NodeKey, BTreeMap<Feeder, Vec<EventOutPort>>>,
     /// Each fed sink's event input 0: the sources on it that the feeds put
     /// there and the host did not wire itself, which are all a change of the
     /// feeds may take away. Every other edge on the input is the host's.
-    fed_edges: BTreeMap<NodeKey, Vec<EventSource>>,
+    fed_edges: BTreeMap<NodeKey, Vec<EventOutPort>>,
     /// The id the next tap takes.
     next_tap: u32,
     /// The id the next event tap takes.
@@ -341,7 +303,7 @@ pub struct Graph {
     /// Each open event tap as it was opened (its port, alignment and
     /// capacity), so [`reopen_event_taps`](Self::reopen_event_taps) can open it
     /// again.
-    event_taps: BTreeMap<EventTapId, (EventSource, TapAlign, usize)>,
+    event_taps: BTreeMap<EventTapId, (EventOut, TapAlign, usize)>,
     /// The id the next meter takes (`MASTER_METER` is taken at construction).
     next_meter: u32,
     /// The master meter's reader until a host takes it.
@@ -679,11 +641,12 @@ impl Graph {
     /// Adds `node` to the graph, unwired, through its own [`IntoNode`], and
     /// returns its handle and its controls. Its fork source goes to the
     /// editor, so an export forks it as its type says; it is prepared at the
-    /// graph's rate. Address its params with
-    /// [`set_node_params`](Self::set_node_params), or insert it with
-    /// [`add`](Self::add), which does, and keeps its reclaimer
-    /// ([`SessionNode::reclaimer`]): a node inserted here is not swept by
-    /// the reclaim phase.
+    /// graph's rate. Its params are not addressed
+    /// ([`set_param`](Self::set_param) finds none): insert a node with params
+    /// with [`add`](Self::add) (a host's own as
+    /// [`Params`](tutti_graph::Params)), which addresses them and keeps its
+    /// reclaimer ([`SessionNode::reclaimer`]): a node inserted here is not
+    /// swept by the reclaim phase.
     pub fn insert<N: IntoNode>(&mut self, node: N) -> (Key<N>, N::Controls) {
         let id = NodeKey::fresh();
         let controls = self.editor.insert(id, N::kind(), node);
@@ -1000,21 +963,11 @@ impl Graph {
             .is_some_and(|entry| entry.reclaimer.is_some())
     }
 
-    /// Addresses `node`'s params by `params` (a `ParamNode`'s controls): what
-    /// [`set_param`](Self::set_param) writes through for it, and what a fork
-    /// of it starts from. `None` takes the address away.
-    pub fn set_node_params(&mut self, node: impl Into<NodeKey>, params: Option<ParamSet>) {
-        let node = node.into();
-        if let Some(entry) = self.nodes.get_mut(&node) {
-            entry.params = params;
-        }
-    }
-
     /// Swaps the unit behind `node` for `incoming` under a `fade` along
     /// `curve` when its shape fits the running unit's, else as a plain swap
     /// on the next commit (`Editor::replace_or_swap`). Hands back its
-    /// controls; the caller addresses its params
-    /// ([`set_node_params`](Self::set_node_params)). The outgoing node's
+    /// controls; the incoming node's params are not addressed
+    /// ([`crossfade`](Self::crossfade) addresses a [`SessionNode`]'s). The outgoing node's
     /// reclaimer goes with it and the incoming node keeps none
     /// ([`crossfade`](Self::crossfade) keeps a [`SessionNode`]'s). Refused as
     /// [`ReplaceRefused::Busy`] with the node handed back while the graph
@@ -1231,44 +1184,143 @@ impl Graph {
         self.shape(node).map_or(0, |s| usize::from(s.event_in))
     }
 
-    /// Feeds `sink`'s event input `port` from exactly `sources` (fan-in
-    /// merges them by offset; the graph orders ties by source), beside what
-    /// the feeds ([`set_feed`](Self::set_feed)) feed it on input 0: the
-    /// feeds are partial, as audio's declarations are, and own only their
-    /// own sources. Touches nothing when that is what it already holds.
-    /// Event edges from a node the graph did not insert through
+    /// Whether `port` names an event output the graph has.
+    fn check_event_out(&self, port: EventOutPort) -> Result<(), ConnectError> {
+        if !self.contains(port.node()) {
+            return Err(ConnectError::NoSuchNode(port.node()));
+        }
+        let fits = port
+            .raw()
+            .is_some_and(|raw| self.shape(raw.node).is_some_and(|s| raw.port < s.event_out));
+        fits.then_some(())
+            .ok_or(ConnectError::NoSuchEventOut(port))
+    }
+
+    /// Whether `port` names an event input the graph has.
+    fn check_event_in(&self, port: EventInPort) -> Result<(), ConnectError> {
+        if !self.contains(port.node()) {
+            return Err(ConnectError::NoSuchNode(port.node()));
+        }
+        let fits = port
+            .raw()
+            .is_some_and(|raw| self.shape(raw.node).is_some_and(|s| raw.port < s.event_in));
+        fits.then_some(()).ok_or(ConnectError::NoSuchEventIn(port))
+    }
+
+    fn check_event_wire(&self, from: EventOutPort, to: EventInPort) -> Result<(), ConnectError> {
+        self.check_event_out(from)?;
+        self.check_event_in(to)?;
+        if from.node() == to.node() {
+            return Err(ConnectError::Itself(from.node()));
+        }
+        Ok(())
+    }
+
+    /// Adds the event edge `from -> to`: whether it was new. Events are
+    /// never faded. An edge a feed ([`set_feed`](Self::set_feed)) put there
+    /// becomes the caller's: it stays when the feed drops it.
+    pub(crate) fn add_event_edge(
+        &mut self,
+        from: EventOutPort,
+        to: EventInPort,
+    ) -> Result<bool, ConnectError> {
+        self.check_event_wire(from, to)?;
+        let (raw_from, raw_to) = (
+            from.raw().expect("checked: the port fits"),
+            to.raw().expect("checked: the port fits"),
+        );
+        let held = self
+            .editor
+            .spec()
+            .events
+            .get(&raw_to)
+            .is_some_and(|edges| edges.iter().any(|e| e.from() == raw_from));
+        if raw_to.port == 0
+            && let Some(ours) = self.fed_edges.get_mut(&to.node())
+        {
+            ours.retain(|s| *s != from);
+            if ours.is_empty() {
+                self.fed_edges.remove(&to.node());
+            }
+        }
+        if held {
+            return Ok(false);
+        }
+        self.editor
+            .spec_mut()
+            .connect_events(raw_to, EventEdge::Direct(raw_from));
+        self.edited = true;
+        Ok(true)
+    }
+
+    /// Takes the event edge `from -> to` out: whether it was there.
+    pub(crate) fn remove_event_edge(&mut self, from: EventOutPort, to: EventInPort) -> bool {
+        let (Some(raw_from), Some(raw_to)) = (from.raw(), to.raw()) else {
+            return false;
+        };
+        let removed = self.editor.spec_mut().disconnect_events(raw_to, raw_from);
+        if removed {
+            if let Some(ours) = self.fed_edges.get_mut(&to.node()) {
+                ours.retain(|s| *s != from);
+            }
+            self.edited = true;
+        }
+        removed
+    }
+
+    /// Feeds `to` from exactly `sources` (fan-in merges them by offset; the
+    /// graph orders ties by source), beside what the feeds
+    /// ([`set_feed`](Self::set_feed)) feed it on input 0: the feeds are
+    /// partial, as audio's declarations are, and own only their own
+    /// sources. Touches nothing when that is what it already holds. Event
+    /// edges from a node the graph did not insert through
     /// [`insert`](Self::insert) (a modulation lane on a plugin's event
     /// input) are not the caller's, and stay.
-    pub fn set_event_sources(
+    pub(crate) fn set_event_sources_of(
         &mut self,
-        sink: impl Into<NodeKey>,
-        port: u16,
-        sources: &[EventSource],
-    ) {
-        let sink = sink.into();
+        to: EventInPort,
+        sources: &[EventOutPort],
+    ) -> Result<(), ConnectError> {
+        self.check_event_in(to)?;
+        for &from in sources {
+            self.check_event_wire(from, to)?;
+        }
+        let sink = to.node();
+        let port = u16::try_from(to.index()).expect("checked: the port fits");
         if port != 0 {
             self.write_event_sources(sink, port, sources);
-            return;
+            return Ok(());
         }
         let fed = self.fed_in_graph(sink);
-        let theirs: Vec<EventSource> = fed.into_iter().filter(|s| !sources.contains(s)).collect();
+        let theirs: Vec<EventOutPort> =
+            fed.into_iter().filter(|s| !sources.contains(s)).collect();
         let mut all = sources.to_vec();
         all.extend_from_slice(&theirs);
         self.set_fed_edges(sink, theirs);
         self.write_event_sources(sink, 0, &all);
+        Ok(())
+    }
+
+    /// Takes what the caller wired out of `to`, the feeds' and a lane's
+    /// edges staying: whether anything went.
+    pub(crate) fn disconnect_all_events(&mut self, to: EventInPort) -> bool {
+        let ours = if to.index() == 0 {
+            self.fed_edges.get(&to.node()).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let hand = self
+            .event_sources_of(to)
+            .into_iter()
+            .any(|s| self.nodes.contains_key(&s.node()) && !ours.contains(&s));
+        hand && self.set_event_sources_of(to, &[]).is_ok()
     }
 
     /// Feeds `sink`'s event input `port` from exactly `sources`, but for
     /// edges from nodes the graph did not insert.
-    fn write_event_sources(&mut self, sink: NodeKey, port: u16, sources: &[EventSource]) {
+    fn write_event_sources(&mut self, sink: NodeKey, port: u16, sources: &[EventOutPort]) {
         let at = EventIn { node: sink, port };
-        let mut want: Vec<EventOut> = sources
-            .iter()
-            .map(|s| EventOut {
-                node: s.node,
-                port: s.port,
-            })
-            .collect();
+        let mut want: Vec<EventOut> = sources.iter().filter_map(|s| s.raw()).collect();
         want.sort();
         want.dedup();
         let nodes = &self.nodes;
@@ -1294,21 +1346,19 @@ impl Graph {
         self.edited = true;
     }
 
-    /// The event outputs feeding `sink`'s event input `port`, in the graph's
-    /// order: every edge the spec holds, a modulation lane's included.
-    pub fn event_sources(&self, sink: impl Into<NodeKey>, port: u16) -> Vec<EventSource> {
-        let sink = sink.into();
-        let at = EventIn { node: sink, port };
+    /// The event outputs feeding `to`, in the graph's order: every edge the
+    /// spec holds, a modulation lane's included.
+    pub(crate) fn event_sources_of(&self, to: EventInPort) -> Vec<EventOutPort> {
+        let Some(at) = to.raw() else {
+            return Vec::new();
+        };
         self.editor
             .spec()
             .events
             .get(&at)
             .into_iter()
             .flatten()
-            .map(|e| {
-                let from = e.from();
-                EventSource::new(from.node, from.port)
-            })
+            .map(|e| EventOutPort::of_raw(e.from()))
             .collect()
     }
 
@@ -1325,7 +1375,7 @@ impl Graph {
         &mut self,
         sink: impl Into<NodeKey>,
         feeder: Feeder,
-        sources: Vec<EventSource>,
+        sources: Vec<EventOutPort>,
     ) {
         let sink = sink.into();
         if sources.is_empty() {
@@ -1350,7 +1400,7 @@ impl Graph {
     }
 
     /// What `feeder` feeds `sink`: empty when nothing.
-    pub fn feed(&self, sink: impl Into<NodeKey>, feeder: Feeder) -> &[EventSource] {
+    pub fn feed(&self, sink: impl Into<NodeKey>, feeder: Feeder) -> &[EventOutPort] {
         let sink = sink.into();
         self.feeds
             .get(&sink)
@@ -1359,15 +1409,15 @@ impl Graph {
     }
 
     /// Every source any feeder feeds `sink`, sorted and without repeats.
-    pub fn fed(&self, sink: impl Into<NodeKey>) -> Vec<EventSource> {
+    pub fn fed(&self, sink: impl Into<NodeKey>) -> Vec<EventOutPort> {
         let sink = sink.into();
-        let mut all: Vec<EventSource> = self
+        let mut all: Vec<EventOutPort> = self
             .feeds
             .get(&sink)
             .into_iter()
             .flat_map(|f| f.values().flatten().copied())
             .collect();
-        all.sort_by_key(EventSource::key);
+        all.sort();
         all.dedup();
         all
     }
@@ -1401,13 +1451,13 @@ impl Graph {
         }
         let union = self.fed_in_graph(sink);
         let ours = self.fed_edges.get(&sink).cloned().unwrap_or_default();
-        let mut all: Vec<EventSource> = self
-            .event_sources(sink, 0)
+        let mut all: Vec<EventOutPort> = self
+            .event_sources_of(EventInPort::new(sink, 0))
             .into_iter()
-            .filter(|s| self.nodes.contains_key(&s.node) && !ours.contains(s))
+            .filter(|s| self.nodes.contains_key(&s.node()) && !ours.contains(s))
             .collect();
         let hand = all.len();
-        let theirs: Vec<EventSource> = union
+        let theirs: Vec<EventOutPort> = union
             .into_iter()
             .filter(|s| !all[..hand].contains(s))
             .collect();
@@ -1417,15 +1467,15 @@ impl Graph {
     }
 
     /// Every source any feeder feeds `sink` that is in the graph.
-    fn fed_in_graph(&self, sink: NodeKey) -> Vec<EventSource> {
+    fn fed_in_graph(&self, sink: NodeKey) -> Vec<EventOutPort> {
         self.fed(sink)
             .into_iter()
-            .filter(|s| self.contains(s.node))
+            .filter(|s| self.contains(s.node()))
             .collect()
     }
 
     /// Records `sources` as the edges the feeds own on `sink`'s input 0.
-    fn set_fed_edges(&mut self, sink: NodeKey, sources: Vec<EventSource>) {
+    fn set_fed_edges(&mut self, sink: NodeKey, sources: Vec<EventOutPort>) {
         if sources.is_empty() {
             self.fed_edges.remove(&sink);
         } else {
@@ -1451,14 +1501,14 @@ impl Graph {
         self.feeds.remove(&node);
         for feeds in self.feeds.values_mut() {
             for sources in feeds.values_mut() {
-                sources.retain(|s| s.node != node);
+                sources.retain(|s| s.node() != node);
             }
             feeds.retain(|_, s| !s.is_empty());
         }
         self.feeds.retain(|_, f| !f.is_empty());
         self.fed_edges.remove(&node);
         for sources in self.fed_edges.values_mut() {
-            sources.retain(|s| s.node != node);
+            sources.retain(|s| s.node() != node);
         }
         self.fed_edges.retain(|_, s| !s.is_empty());
         self.edited = true;
@@ -1527,17 +1577,40 @@ impl Graph {
         self.pump_local();
     }
 
-    /// Writes `value` to `node`'s scalar param `param`, through the node's
-    /// [`ParamSet`] (its controls, addressed with
-    /// [`set_node_params`](Self::set_node_params)): the cell it reads at the
-    /// start of its next block, and the value a fork starts from. A node
-    /// without the param takes nothing. `param` is a [`UnitAddr`] (a kind and
-    /// an index among the node's params of that kind); a bare `UnitParam` is
-    /// index 0.
-    pub fn set_param(&mut self, node: impl Into<NodeKey>, param: impl Into<UnitAddr>, value: f32) {
-        let node = node.into();
-        if let Some(params) = self.nodes.get(&node).and_then(|e| e.params.as_ref()) {
-            params.set(param, value);
+    /// Writes `value` to the param `param` names, through its node's
+    /// [`ParamSet`] (its controls, which [`add`](Self::add) addresses): the
+    /// cell it reads at the start of its next block, and the value a fork
+    /// starts from. `param` is a [`Key`]'s param method (`lp.cutoff()`) and
+    /// `value` is in the unit it carries, so a figure in the wrong unit does
+    /// not compile.
+    ///
+    /// The cell is an `f32` (a [`Seconds`] value is narrowed to one, the
+    /// `ParamSet`'s one narrowing; a switch is `0.0` or `1.0`), and a node
+    /// that guards a non-finite write keeps its last good value.
+    ///
+    /// # Errors
+    ///
+    /// [`ParamError::NoSuchNode`] when the node is not in the graph,
+    /// [`ParamError::NoSuchParam`] when it has no such param (it does not
+    /// declare it, or has none addressed: a node inserted with
+    /// [`insert`](Self::insert)); nothing is written.
+    #[must_use = "a refused write changed nothing"]
+    pub fn set_param<U: ParamValue>(
+        &mut self,
+        param: TypedParamRef<U>,
+        value: U,
+    ) -> Result<(), ParamError> {
+        let node = param.node();
+        let entry = self.nodes.get(&node).ok_or(ParamError::NoSuchNode(node))?;
+        let no_such = ParamError::NoSuchParam {
+            node,
+            addr: param.addr(),
+        };
+        let params = entry.params.as_ref().ok_or(no_such)?;
+        if params.set(param.addr(), value.to_cell()) {
+            Ok(())
+        } else {
+            Err(no_such)
         }
     }
 
@@ -1788,8 +1861,15 @@ impl Graph {
 
     /// What feeds `to`: every source of its set, in the order the graph sums
     /// them (the compiler's: by node, then port, then a global input). Empty
-    /// for a port nothing feeds, which reads silence.
-    pub fn sources(&self, to: InPort) -> Vec<OutPort> {
+    /// for a port nothing feeds, which reads silence. `to` is an [`InPort`]
+    /// (its sources are [`OutPort`]s) or an [`EventInPort`] (its sources are
+    /// [`EventOutPort`]s, every edge the graph holds there, a modulation
+    /// lane's included).
+    pub fn sources<P: Fanin>(&self, to: P) -> Vec<P::Source> {
+        to.sources(self)
+    }
+
+    pub(crate) fn channel_sources(&self, to: InPort) -> Vec<OutPort> {
         // An edge fading out is no longer a source: it is only the tail of
         // the old wiring, until its fade ends.
         self.live_edges(to)
@@ -1812,12 +1892,12 @@ impl Graph {
     ///
     /// [`ConnectError`], with nothing changed: a node or port that does not
     /// exist, or a node among its own sources.
-    pub fn set_sources(
+    pub fn set_sources<P: Fanin>(
         &mut self,
-        to: InPort,
-        from: impl IntoIterator<Item = OutPort>,
+        to: P,
+        from: impl IntoIterator<Item = P::Source>,
     ) -> Result<(), ConnectError> {
-        self.set_sources_with(to, from, false)
+        to.set_sources(self, from.into_iter().collect(), false)
     }
 
     /// [`set_sources`](Self::set_sources) with no fades: what is added steps
@@ -1828,18 +1908,18 @@ impl Graph {
     /// # Errors
     ///
     /// As [`set_sources`](Self::set_sources).
-    pub fn set_sources_hard(
+    pub fn set_sources_hard<P: Fanin>(
         &mut self,
-        to: InPort,
-        from: impl IntoIterator<Item = OutPort>,
+        to: P,
+        from: impl IntoIterator<Item = P::Source>,
     ) -> Result<(), ConnectError> {
-        self.set_sources_with(to, from, true)
+        to.set_sources(self, from.into_iter().collect(), true)
     }
 
-    fn set_sources_with(
+    pub(crate) fn set_channel_sources(
         &mut self,
         to: InPort,
-        from: impl IntoIterator<Item = OutPort>,
+        from: Vec<OutPort>,
         hard: bool,
     ) -> Result<(), ConnectError> {
         let mut want: Vec<(Source, OutPort)> = Vec::new();
@@ -1874,10 +1954,15 @@ impl Graph {
     }
 
     /// Takes every source out of `to`, their gains with them: whether it fed
-    /// anything. Each edge the plan has heard fades out
+    /// anything. (For an [`EventInPort`]: what the caller wired; a feed's
+    /// and a modulation lane's edges stay.) Each edge the plan has heard fades out
     /// ([`disconnect`](Self::disconnect)). A sink that does not exist feeds
     /// nothing.
-    pub fn disconnect_all(&mut self, to: InPort) -> bool {
+    pub fn disconnect_all<P: Fanin>(&mut self, to: P) -> bool {
+        to.disconnect_all(self)
+    }
+
+    pub(crate) fn disconnect_all_channels(&mut self, to: InPort) -> bool {
         let mut any = false;
         for id in self.live_edges(to) {
             any |= self.drop_edge(id, false);
@@ -1905,7 +1990,12 @@ impl Graph {
     ///   of the sink's ports. Into the root it folds to the topology the root
     ///   was declared with
     ///   ([`Session::declare_root_topology`](crate::Session::declare_root_topology)).
-    ///   Its lanes carry the fold's weights and no gain of their own.
+    ///   Its lanes carry the fold's weights and no gain of their own;
+    /// - an [`EventOutPort`] into an [`EventInPort`] (`key.events_out()`,
+    ///   `key.events_in()`): **an event edge**. Events merge by offset at the
+    ///   sink, and an event edge is never faded (a note-off is a message, not
+    ///   a level), so `.hard()` and [`disconnect_hard`](Self::disconnect_hard)
+    ///   change nothing for it.
     ///
     /// It **adds**: what already feeds the sink stays (the graph sums them),
     /// and an edge already connected is kept once. To replace what feeds a
@@ -2522,22 +2612,19 @@ impl Graph {
     /// [`MissingSource`] for a port that is not in the graph now.
     pub fn open_event_tap(
         &mut self,
-        source: EventSource,
+        source: EventOutPort,
         align: TapAlign,
         capacity: usize,
     ) -> Result<EventTapReader, MissingSource> {
         let id = EventTapId(self.next_event_tap);
-        let reader = self.editor.open_event_tap(
-            id,
-            EventOut {
-                node: source.node,
-                port: source.port,
-            },
-            align,
-            capacity,
-        )?;
+        let raw = source.raw().ok_or_else(|| MissingSource::EventPort {
+            node: source.node(),
+            port: u16::MAX,
+            width: self.shape(source.node()).map_or(0, |s| usize::from(s.event_out)),
+        })?;
+        let reader = self.editor.open_event_tap(id, raw, align, capacity)?;
         self.next_event_tap += 1;
-        self.event_taps.insert(id, (source, align, capacity));
+        self.event_taps.insert(id, (raw, align, capacity));
         self.edited = true;
         Ok(reader)
     }
@@ -2580,11 +2667,7 @@ impl Graph {
     /// an id that is not open, and for a tap whose node was removed since,
     /// which is dropped from the graph's list.
     pub fn reopen_event_tap(&mut self, id: EventTapId) -> Option<EventTapReader> {
-        let &(source, align, capacity) = self.event_taps.get(&id)?;
-        let port = EventOut {
-            node: source.node,
-            port: source.port,
-        };
+        let &(port, align, capacity) = self.event_taps.get(&id)?;
         self.edited = true;
         match self.editor.open_event_tap(id, port, align, capacity) {
             Ok(reader) => Some(reader),

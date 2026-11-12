@@ -338,7 +338,7 @@ impl SessionBuilder {
             // the outputs' time so MIDI leaves with the audio (doc 017, E3).
             let tap = graph
                 .open_event_tap(
-                    clock.into(),
+                    clock.events_out(),
                     tutti_graph::TapAlign::ToOutput,
                     crate::midi::MIDI_OUT_TAP_CAPACITY,
                 )

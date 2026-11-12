@@ -181,7 +181,7 @@ pub use tutti_plugin_host as plugin_host;
 /// The engine's prelude (units, `ChannelLayout`, buffer views, `Engine`,
 /// `Transport`, metering) plus the transport's motion vocabulary, and the
 /// device and sampler handles when those features are on, and the session
-/// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, the wiring (`Key`, `OutPort`, `InPort`, `Root`, `Edge`), and
+/// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, the wiring (`Key`, `OutPort`, `InPort`, `EventOutPort`, `EventInPort`, `Root`, `Edge`, and a key's typed params, `TypedParamRef`), and
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
@@ -253,8 +253,8 @@ pub mod prelude {
     pub use tutti_session::Device;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        ConnectError, Edge, HeardTapError, InPort, Key, OutPort, Phase, Root, Session,
-        SessionBuilder, SessionEvent,
+        ConnectError, Edge, EventInPort, EventOutPort, HeardTapError, InPort, Key, OutPort,
+        Phase, Root, Session, SessionBuilder, SessionEvent, TypedParamRef,
     };
 
     // What a session's calls take, by the feature that gates each (design

@@ -53,6 +53,12 @@ pub enum ConnectError {
     /// An input port that the node (or the graph's output) does not have.
     #[error("no such input port: {0:?}")]
     NoSuchInPort(crate::InPort),
+    /// An event output that the node does not have.
+    #[error("no such event output: {0:?}")]
+    NoSuchEventOut(crate::EventOutPort),
+    /// An event input that the node does not have.
+    #[error("no such event input: {0:?}")]
+    NoSuchEventIn(crate::EventInPort),
     /// A node feeds itself: a node cannot be its own source.
     #[error("{0:?} cannot feed itself")]
     Itself(tutti_graph::NodeKey),
@@ -220,6 +226,14 @@ pub enum Error {
     /// A whole-bus connection was refused ([`Graph::connect`](crate::Graph::connect)).
     #[error(transparent)]
     Connect(#[from] ConnectError),
+
+    /// A param write was refused ([`Graph::set_param`](crate::Graph::set_param)).
+    #[error(transparent)]
+    Param(#[from] crate::ParamError),
+
+    /// A modulation range was refused ([`Mods::range`](crate::Mods::range)).
+    #[error(transparent)]
+    Range(#[from] crate::RangeError),
 
     /// A bus edge was refused ([`Graph::connect`](crate::Graph::connect)).
     #[error(transparent)]

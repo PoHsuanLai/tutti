@@ -367,7 +367,7 @@ impl Session {
         }
         let graph = self.graph();
         let (queue, keys) = SharedKeys::open(graph);
-        graph.set_feed(node, Feeder::Instrument, vec![queue.into()]);
+        graph.set_feed(node, Feeder::Instrument, vec![queue.events_out()]);
         let (strip, strip_params) = graph.add(BusStripNode::new());
         graph.connect(OutPort::new(node, usize::from(main[0])), strip.input(0))?;
         graph.connect(OutPort::new(node, usize::from(main[1])), strip.input(1))?;

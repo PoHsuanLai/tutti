@@ -1136,6 +1136,21 @@ Scalars use `Param<U>`.
   and into the root it folds to the declared topology, `BusError::RootUndeclared`
   otherwise). `Graph::chain` does a main bus down a list. All refuse with
   `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **Event ports are keys' too, and params are typed** (doc 030 step 2c).
+  `key.events_out()` / `key.events_in()` are the main event ports (index 0;
+  **event input 0 is the main event input, where the chase delivers**),
+  `events_out_at(i)` / `events_in_at(i)` take an index. `connect`, `disconnect`,
+  `sources`, `set_sources` and `disconnect_all` cover the `Event` wire (never
+  faded); `set_event_sources`, `event_sources` and `EventSource` are gone, and
+  `open_event_tap(key.events_out(), ..)` takes the port. A node's params are
+  methods of its key (`lp.cutoff()`, `mb.threshold_at(1)`), a `TypedParamRef<U>`
+  that converts into `ParamRef`, generated from the node's declaration
+  (`param_session_node!`, or `declare_params!` for a host's node): `Graph::set_param(lp.cutoff(),
+  Hz(..))` is `#[must_use]` and returns `ParamError`, `Mods::range(target, a..b)`
+  takes a range of the unit (`RangeError` on min > max; `range_raw` for a plugin
+  param). A host's `ParamNode` is inserted as `Params(node)`; `set_node_params`
+  is crate-private. `ForkByClone(param node)` still compiles (Rust cannot refuse
+  it by type): use `Params`.
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
 - **The session graph declicks its wiring** (doc 030 §4, doc 013 "As built

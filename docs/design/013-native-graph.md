@@ -10649,3 +10649,15 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
      out-of-process plugins. Without a known quantum the chunk is the graph's
      `MaxBlock`. An offline fork waits for every chunk, so its chunk is its
      `MaxBlock` and its declared latency says so.
+
+### As built (event ports and typed params, doc 030 step 2c)
+
+`Key<N>` has `events_out()`, `events_in()` (port 0, the main event input:
+the chase delivers there) and `events_out_at(i)`, `events_in_at(i)`, returning
+`EventOutPort` / `EventInPort`. The sealed wire kind `Event` makes `connect`,
+`disconnect`, `sources`, `set_sources` and `disconnect_all` cover event edges
+(the last three through the sealed `Fanin`); they are never faded. A feed
+(`set_feed`) still owns its edges on input 0, and a hand-wired edge on a fed
+input stays when the feed drops it. Params: `declare_params!` states a node's
+kinds and units; `Key` methods are generated from `HasParam<const P: u16>`;
+`Params(node)` is the wrapper for a host's `ParamNode`.

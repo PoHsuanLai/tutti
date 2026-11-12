@@ -43,7 +43,7 @@ fn session() -> Session {
 fn modulate_drive(s: &mut Session, node: NodeKey) {
     let drive = ParamRef::unit(node, UnitParam::Drive);
     let mut m = s.mods();
-    m.range(drive, 0.0, 10.0);
+    m.range_raw(drive, 0.0, 10.0).unwrap();
     let offset = m.macro_(1.0);
     m.route(offset, drive, Depth(0.1)).unwrap();
     settle(s);

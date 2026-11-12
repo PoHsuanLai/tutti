@@ -24,7 +24,7 @@ use tutti_export::Produced;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, ForkBuild, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
-    NodeParts, ParamNode, ParamSet, Prepare, Shape, Status, param_parts,
+    NodeParts, ParamNode, ParamSet, Params, Prepare, Shape, Status,
 };
 use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
@@ -864,12 +864,7 @@ impl ParamNode for Level {
     }
 }
 
-impl IntoNode for Level {
-    type Controls = ParamSet;
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        param_parts(self)
-    }
-}
+tutti_session::declare_params!(Level { UnitParam::Volume => Amplitude });
 
 /// **An export does not wait for a slow fork, and is the graph as it was
 /// when it started.** A node whose fork build blocks until released (the
@@ -888,11 +883,14 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
     let mut session = session();
     let (node, cell, release, built) = slow(0.5);
     let (slow_node, _) = session.graph().insert(node);
-    let (level, params) = session
+    let (level, _) = session
         .graph()
-        .insert(Level(Param::new(Amplitude::new(0.5))));
-    session.graph().set_node_params(level, Some(params));
-    session.graph().set_param(level, UnitParam::Volume, 0.75);
+        .add(Params(Level(Param::new(Amplitude::new(0.5)))));
+    let volume = level.volume();
+    session
+        .graph()
+        .set_param(volume, Amplitude::new(0.75))
+        .unwrap();
     let (other, _) = session.graph().insert(Const::mono(9.0));
     session
         .graph()
@@ -913,7 +911,10 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
 
     // Edits after the start: none reaches the fork.
     cell.store(0.25f32.to_bits(), Ordering::SeqCst);
-    session.graph().set_param(level, UnitParam::Volume, 0.25);
+    session
+        .graph()
+        .set_param(volume, Amplitude::new(0.25))
+        .unwrap();
     session.graph().connect(other, Root).unwrap().hard();
     let _ = release.send(());
 

@@ -272,7 +272,7 @@ mod time;
 pub use builder::{GraphBuilder, Renderer, Solo};
 pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
 pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};
-pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, param_parts};
+pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, Params, param_parts};
 pub use cost::{Cost, Schedule, Work};
 pub use editor::{CommitError, Editor, Limits, MAX_ROOT_CHANNELS, MissingSource};
 pub use event::{

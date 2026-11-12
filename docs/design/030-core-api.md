@@ -141,6 +141,8 @@ finding where the API produces wrong results today, not only friction.
 
 ## 4. Design: declicked wiring
 
+**Built (core lane steps 2a, 2b, 2c).** Step 2c: event ports (`key.events_out()`, `Event` wire, `set_event_sources` and `EventSource` deleted) and typed params (T2, T3, N2; N3 partly: `Params(node)` is the way in, `ForkByClone(param node)` cannot be refused by type in Rust). `Take::record` and `Trajectory::with_range` are not yet typed.
+
 **Built (core lane step 2b).** See doc 013, "As built (declicked wiring)", for
 where the build chose: the end of a fade is reported on its own ring rather than
 in the commit box, a removed node stays until its output has faded, and a lane

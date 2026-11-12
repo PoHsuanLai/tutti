@@ -3,8 +3,10 @@
 //! its per-voice engine live in `crate::polysynth` / `crate::synth_voice`.
 
 use core::fmt;
+use std::num::NonZeroUsize;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
+use tutti_midi_protocol::MpeMode;
 use tutti_types::Adsr;
 use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
 use tutti_ump::MidiGroup;
@@ -179,41 +181,30 @@ pub struct FilterModConfig {
 
 /// Everything a [`PolySynth`](crate::PolySynth) is built from.
 ///
-/// Fill it the idiomatic way — `Default` plus struct-update — and hand it to
-/// [`PolySynth::new`](crate::PolySynth::new).
+/// Fill it the idiomatic way, `Default` plus struct update, or with the
+/// builder (`with_polyphony`, `with_group`), and hand it to
+/// [`PolySynth::new`](crate::PolySynth::new). The rate is not here: the synth
+/// renders at the rate its graph prepares it at.
 ///
 /// # Most of this is construction-only
 ///
 /// The synth keeps the config and reads parts of it per block, but the voice
 /// bank every voice renders in is built once from
 /// [`oscillator`](Self::oscillator), [`filter`](Self::filter) and
-/// [`envelope`](Self::envelope). Changing those three needs a new synth. The
-/// fields that *are* live afterwards have setters on `PolySynth`: unison detune
-/// / spread / voice count, master volume, and
-/// [`mpe_enabled`](Self::mpe_enabled). [`tuning`](Self::tuning),
-/// [`pitch_bend_range`](Self::pitch_bend_range) and
-/// [`filter_mod`](Self::filter_mod) are consulted per note or per sample but
-/// have no setter.
+/// [`envelope`](Self::envelope). Changing those three needs a new synth. Once
+/// the synth is in a graph, its live controls are its `ParamSet`: the master
+/// `Volume` and, with a unison engine, `Detune` and `StereoSpread`. Everything
+/// else here is read per note or per sample and has no control after the
+/// synth is built.
 #[derive(Debug, Clone)]
 pub struct SynthConfig {
-    /// Rate the voices are built at. `PolySynth` re-derives everything
-    /// rate-dependent when its graph prepares it (`Node::prepare`), so a host that runs at a
-    /// different rate does not need this to be right — only the LFO and
-    /// portamento step sizes are computed from it.
-    pub sample_rate: tutti_types::SampleRate,
-    /// How many notes may sound at once. Must be at least 1; there is no
-    /// upper bound. Every voice is fully constructed up front, so this is a
-    /// memory and CPU budget rather than just a ceiling — 64 voices of saw
+    /// How many notes may sound at once. At least 1 (the type refuses 0); there
+    /// is no upper bound. Every voice is fully constructed up front, so this is
+    /// a memory and CPU budget rather than just a ceiling: 64 voices of saw
     /// through a ladder filter is real work every block.
-    ///
-    /// It was capped at 16 until the per-block finished-voice list stopped
-    /// being a small vector with 16 indices inline; that inline capacity had
-    /// to bound this, because a spill would have allocated in the audio
-    /// callback. A `Vec` sized here at construction gives the same guarantee
-    /// with no bound.
-    pub max_voices: usize,
+    pub polyphony: NonZeroUsize,
     /// Poly, mono or legato. Under mono and legato only slot 0 is ever used,
-    /// whatever `max_voices` says.
+    /// whatever `polyphony` says.
     pub voice_mode: VoiceMode,
     /// The waveform every voice generates. Construction-only.
     pub oscillator: OscillatorType,
@@ -233,12 +224,12 @@ pub struct SynthConfig {
     pub portamento: Option<PortamentoConfig>,
     /// Detuned stacked sub-voices per note, or `None` for one oscillator per
     /// voice. `Some` allocates that many sub-voice lanes *per voice*, so
-    /// the real oscillator count is `max_voices * voice_count`. As with
+    /// the real oscillator count is `polyphony * voice_count`. As with
     /// portamento, a synth built with `None` has no unison engine to configure
     /// later.
     pub unison: Option<UnisonConfig>,
-    /// Which voice gets taken when all `max_voices` are busy and another note
-    /// arrives.
+    /// Which voice gets taken when all `polyphony` voices are busy and another
+    /// note arrives.
     pub allocation_strategy: AllocationStrategy,
     /// Note-number-to-frequency mapping. Consulted at every note-on and on
     /// every global pitch-bend update; defaults to 12-tone equal temperament
@@ -253,18 +244,16 @@ pub struct SynthConfig {
     /// Cutoff modulation sources. All depths default to zero, which skips the
     /// per-sample modulation work entirely.
     pub filter_mod: FilterModConfig,
-    /// Whether per-note (MPE / MIDI 2.0) expression is applied at render time.
-    /// Off by default. Per-note messages are *accepted* either way — this
-    /// decides whether the accumulated per-note bend, pressure, slide and gain
-    /// reach the audio. Live-settable via
-    /// [`PolySynth::set_mpe_enabled`](crate::PolySynth::set_mpe_enabled).
-    pub mpe_enabled: bool,
-    /// How far a full-scale *per-note* pitch bend sweeps, in [`Semitones`].
-    /// Default 48.0, the MPE convention. Independent of
-    /// [`pitch_bend_range`](Self::pitch_bend_range). Every channel starts with
-    /// it, and a channel's own per-note pitch-bend sensitivity RPN (00/07,
-    /// M2-104 section 7.4.13) replaces it for that channel alone.
-    pub mpe_pitch_bend_range: Semitones,
+    /// How the sixteen channels are occupied by MPE (RP-053) or MIDI 2.0
+    /// per-note expression: [`MpeMode::Disabled`] (the default), one or two
+    /// zones, or single-channel note rotation. Per-note messages are
+    /// *accepted* either way; this decides whether the accumulated per-note
+    /// bend, pressure, slide and gain reach the audio. The per-note pitch-bend
+    /// range of a zone is its member range (`MpeZoneConfig::member_pitch_bend_range`,
+    /// 48 semitones by default); without zones it is 48 semitones. A channel's
+    /// own per-note pitch-bend sensitivity RPN (00/07, M2-104 section 7.4.13)
+    /// replaces it for that channel alone.
+    pub mpe: MpeMode,
     /// The Group whose sixteen channels this synth plays; a message in
     /// another Group is not read. A Group is a channel space of its own (M2-104
     /// section 2.1.2, Appendix B.1), so its channels' notes, wheels, pedals and
@@ -272,11 +261,42 @@ pub struct SynthConfig {
     pub group: MidiGroup,
 }
 
+impl SynthConfig {
+    /// The polyphony of [`Default`]: 8 voices.
+    pub const DEFAULT_POLYPHONY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
+    /// This config with `polyphony` voices at most sounding at once.
+    #[must_use]
+    pub fn with_polyphony(mut self, polyphony: NonZeroUsize) -> Self {
+        self.polyphony = polyphony;
+        self
+    }
+
+    /// This config playing the channels of `group`, and no other Group's.
+    #[must_use]
+    pub fn with_group(mut self, group: MidiGroup) -> Self {
+        self.group = group;
+        self
+    }
+
+    /// What a full per-note pitch bend sweeps until a channel's own RPN 0/7
+    /// says otherwise: a zone's member range ([`mpe`](Self::mpe)), else the MPE
+    /// convention of 48 semitones.
+    pub(crate) fn per_note_bend_range(&self) -> Semitones {
+        match &self.mpe {
+            MpeMode::Zones(zones) => zones
+                .zones()
+                .next()
+                .map_or(Semitones(48.0), |z| z.member_pitch_bend_range().semitones()),
+            _ => Semitones(48.0),
+        }
+    }
+}
+
 impl Default for SynthConfig {
     fn default() -> Self {
         Self {
-            sample_rate: tutti_types::SampleRate::SR_44K1,
-            max_voices: 8,
+            polyphony: Self::DEFAULT_POLYPHONY,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::default(),
             filter: FilterType::default(),
@@ -287,8 +307,7 @@ impl Default for SynthConfig {
             tuning: Tuning::equal_temperament(),
             pitch_bend_range: Semitones(2.0),
             filter_mod: FilterModConfig::default(),
-            mpe_enabled: false,
-            mpe_pitch_bend_range: Semitones(48.0),
+            mpe: MpeMode::Disabled,
             group: MidiGroup::FIRST,
         }
     }

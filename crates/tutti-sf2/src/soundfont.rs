@@ -23,6 +23,18 @@ pub struct SoundFont {
 }
 
 impl SoundFont {
+    /// Reads the SoundFont at `path`.
+    ///
+    /// The file is read through a buffer; there is nothing to flush or close.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if the file cannot be opened, and everything
+    /// [`from_reader`](Self::from_reader) returns.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+        Self::from_reader(std::io::BufReader::new(std::fs::File::open(path)?))
+    }
+
     /// Reads a SoundFont from `reader`.
     ///
     /// # Errors
@@ -30,7 +42,8 @@ impl SoundFont {
     /// Returns [`Error`] if the stream cannot be read, is not a
     /// SoundFont 2 file, has compressed samples, or has a region that reaches
     /// outside the sample data.
-    pub fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
+    pub fn from_reader<R: Read>(mut reader: R) -> Result<Self, Error> {
+        let reader = &mut reader;
         let chunk_id = reader.read_four_cc()?;
         if chunk_id != b"RIFF" {
             return Err(Error::RiffChunkNotFound);
@@ -150,7 +163,7 @@ mod tests {
         let path = samples_dir_path().join("dummy.sf3");
         let mut file = File::open(&path).unwrap();
         assert!(matches!(
-            SoundFont::new(&mut file),
+            SoundFont::from_reader(&mut file),
             Err(Error::UnsupportedSampleFormat)
         ));
     }
@@ -161,7 +174,7 @@ mod tests {
         let path = samples_dir_path().join("test_empty_samples.sf2");
         let mut file = File::open(&path).unwrap();
         assert!(matches!(
-            SoundFont::new(&mut file),
+            SoundFont::from_reader(&mut file),
             Err(Error::SampleDataNotFound)
         ));
     }

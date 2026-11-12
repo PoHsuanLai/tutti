@@ -31,7 +31,7 @@ tutti_graph::declare_params!([] PolySynth, n {
     StereoSpread => Spread = n.unison.as_ref().map(|u| u.spread()),
 });
 
-/// The most oscillator lanes (`max_voices` × unison sub-voices) a synth
+/// The most oscillator lanes (`polyphony` × unison sub-voices) a synth
 /// may render and still declare [`Cost::Moderate`](tutti_graph::Cost).
 ///
 /// The voice bank renders each SIMD group of lanes that holds a sounding
@@ -51,7 +51,9 @@ impl PolySynth {
     /// can change only through `&mut` setters (`set_unison_voice_count`),
     /// which a node in a graph is out of reach of, so every read agrees.
     pub(crate) fn cost(&self) -> tutti_graph::Cost {
-        if self.config.max_voices * self.unison_voice_count() <= MODERATE_LANES {
+        if self.config.polyphony.get() * usize::from(self.unison_voice_count().get())
+            <= MODERATE_LANES
+        {
             tutti_graph::Cost::Moderate
         } else {
             tutti_graph::Cost::Heavy

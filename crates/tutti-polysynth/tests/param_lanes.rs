@@ -5,8 +5,6 @@
 //!
 //! A note at frame 0 into a saw synth, 120 BPM at 48 kHz.
 
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi;
@@ -18,10 +16,10 @@ use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
+use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig, UnisonVoices};
 use tutti_types::{
-    AtomicF32, Beat, BeatDuration, Bpm, Cents, Depth, PhaseIncrement, SampleRate, Samples, Seconds,
-    Spread, UnitParam,
+    Beat, BeatDuration, Bpm, Cents, Depth, PhaseIncrement, SampleRate, Samples, Seconds, Spread,
+    UnitParam,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -35,21 +33,19 @@ const LANE: NodeKey = NodeKey(3);
 /// `detune` cents and no spread.
 fn synth(unison: bool, detune: f32) -> PolySynth {
     PolySynth::new(SynthConfig {
-        sample_rate: SampleRate(RATE),
         oscillator: OscillatorType::Saw,
         envelope: Adsr {
             attack: Seconds(0.0),
             ..Default::default()
         },
         unison: unison.then_some(UnisonConfig {
-            voice_count: 3,
+            voice_count: UnisonVoices::of(3),
             detune_cents: Cents(detune),
             stereo_spread: Spread::POINT,
             phase_randomize: false,
         }),
         ..Default::default()
     })
-    .expect("synth builds")
 }
 
 /// A lane over `span` adding a constant `depth` of it.
@@ -71,12 +67,12 @@ fn constant(depth: f32) -> ControlProgram {
     ControlProgram::new(None, vec![layer], vec![]).expect("valid")
 }
 
-/// A lane on one of the synth's params: which, its range, the knob cell,
-/// and the constant depth of the range the lane adds.
+/// A lane on one of the synth's params: which, its range, and the constant
+/// depth of the range the lane adds. Its knob is the synth's own cell, which
+/// the synth's `ParamSet` hands out.
 struct Drive {
     param: UnitParam,
     range: ParamRange,
-    knob: Arc<AtomicF32>,
     depth: f32,
 }
 
@@ -84,13 +80,19 @@ struct Drive {
 /// lane on its port when given (wired before the first block, so it drives
 /// the port from frame 0: a unit's first block is not declicked).
 fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
+    render_with_knob(synth, drive).0
+}
+
+/// [`render`], and the driven param's knob as the synth's `ParamSet` holds it
+/// after the render (`None` without a lane).
+fn render_with_knob(synth: PolySynth, drive: Option<Drive>) -> ([Vec<f32>; 2], Option<f32>) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(BLOCK))));
     let note = TimedMidiEvent::new(
         Beat(0.0),
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
     );
     ed.insert(NodeKey(1), "clip", MidiClipNode::new([note]));
-    ed.insert(SYNTH, "synth", synth);
+    let params = ed.insert(SYNTH, "synth", synth);
     ed.spec_mut().connect_events(
         EventIn {
             node: SYNTH,
@@ -105,6 +107,7 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
         .topology
         .set_outputs((0..2).map(|port| Source::Node(OutPort { node: SYNTH, port })));
     ed.commit().expect("commits");
+    let driven = drive.as_ref().map(|d| d.param);
     if let Some(d) = drive {
         let at = ParamIn {
             node: SYNTH,
@@ -115,8 +118,12 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
         let range = ed
             .param_range_cell(at)
             .expect("the synth declares the param as a port");
-        let lane =
-            ControlLaneNode::for_unit(d.param, constant(d.depth), Some(d.knob.into()), Some(range));
+        let lane = ControlLaneNode::for_unit(
+            d.param,
+            constant(d.depth),
+            params.cell(d.param),
+            Some(range),
+        );
         ed.insert(LANE, "lane", lane);
         ed.spec_mut().connect_param(
             at,
@@ -134,7 +141,7 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
     let mut out = r.render(FRAMES);
     let right = out.swap_remove(1);
     let left = out.swap_remove(0);
-    [left, right]
+    ([left, right], driven.and_then(|p| params.get(p)))
 }
 
 /// **A lane drives the synth's master volume around its own cell.** The
@@ -144,19 +151,17 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
 /// sends to the port and never writes it).
 #[test]
 fn a_lane_drives_the_master_volume_around_its_cell() {
-    let plain = synth(false, 0.0);
-    plain.set_volume(0.5);
+    let mut plain = synth(false, 0.0);
+    plain.set_volume(tutti_types::Amplitude(0.5));
     let [undriven, _] = render(plain, None);
 
-    let driven_synth = synth(false, 0.0);
-    driven_synth.set_volume(0.5);
-    let knob = driven_synth.volume_atomic();
-    let [driven, _] = render(
+    let mut driven_synth = synth(false, 0.0);
+    driven_synth.set_volume(tutti_types::Amplitude(0.5));
+    let ([driven, _], knob) = render_with_knob(
         driven_synth,
         Some(Drive {
             param: UnitParam::Volume,
             range: ParamRange::new(0.0, 1.0),
-            knob: knob.clone(),
             depth: 0.25,
         }),
     );
@@ -167,11 +172,7 @@ fn a_lane_drives_the_master_volume_around_its_cell() {
             "frame {i}: driven {d} vs 1.5 x {u}"
         );
     }
-    assert_eq!(
-        knob.load(Ordering::Acquire),
-        0.5,
-        "the lane never writes the knob"
-    );
+    assert_eq!(knob, Some(0.5), "the lane never writes the knob");
 }
 
 /// **A lane drives the unison spread.** Three sub-voices at a 10-cent
@@ -184,14 +185,11 @@ fn a_lane_drives_the_unison_spread() {
     assert!(l.iter().any(|s| s.abs() > 0.05), "the note sounds");
     assert_eq!(l, r, "no spread: the channels are equal");
 
-    let s = synth(true, 10.0);
-    let knob = s.spread_atomic().expect("unison");
-    let [l, r] = render(
-        s,
+    let ([l, r], knob) = render_with_knob(
+        synth(true, 10.0),
         Some(Drive {
             param: UnitParam::StereoSpread,
             range: ParamRange::new(0.0, 1.0),
-            knob: knob.clone(),
             depth: 1.0,
         }),
     );
@@ -201,11 +199,7 @@ fn a_lane_drives_the_unison_spread() {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0, f32::max);
     assert!(apart > 0.05, "spread: the channels differ by {apart}");
-    assert_eq!(
-        knob.load(Ordering::Acquire),
-        0.0,
-        "the lane never writes the knob"
-    );
+    assert_eq!(knob, Some(0.0), "the lane never writes the knob");
 }
 
 /// **A lane drives the unison detune.** Three in-phase sub-voices at 0
@@ -214,14 +208,11 @@ fn a_lane_drives_the_unison_spread() {
 /// detune at 20 cents.
 #[test]
 fn a_lane_drives_the_unison_detune() {
-    let s = synth(true, 0.0);
-    let knob = s.detune_atomic().expect("unison");
-    let [driven, _] = render(
-        s,
+    let ([driven, _], knob) = render_with_knob(
+        synth(true, 0.0),
         Some(Drive {
             param: UnitParam::Detune,
             range: ParamRange::new(0.0, 100.0),
-            knob: knob.clone(),
             depth: 0.2,
         }),
     );
@@ -237,9 +228,5 @@ fn a_lane_drives_the_unison_detune() {
         driven.iter().zip(&at_0).any(|(d, e)| (d - e).abs() > 1e-2),
         "20 cents sounds unlike 0 cents"
     );
-    assert_eq!(
-        knob.load(Ordering::Acquire),
-        0.0,
-        "the lane never writes the knob"
-    );
+    assert_eq!(knob, Some(0.0), "the lane never writes the knob");
 }

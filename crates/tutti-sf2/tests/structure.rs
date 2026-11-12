@@ -32,7 +32,7 @@ fn chunk(file: &[u8], id: &[u8; 4]) -> usize {
 }
 
 fn load(file: Vec<u8>) -> Result<SoundFont, Error> {
-    SoundFont::new(&mut Cursor::new(file))
+    SoundFont::from_reader(&mut Cursor::new(file))
 }
 
 /// Writes a little-endian word or double word at `at`.

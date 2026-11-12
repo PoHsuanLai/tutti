@@ -189,7 +189,7 @@ impl InstrumentRegion {
     }
 
     // The addresses as signed frame counts: an offset can take one before the
-    // sample data in a defective file, which `SoundFont::new` refuses and a
+    // sample data in a defective file, which `SoundFont::from_reader` refuses and a
     // `Samples` cannot say.
     pub(crate) fn raw_sample_start(&self) -> i64 {
         i64::from(self.sample_start) + i64::from(self.start_address_offset())

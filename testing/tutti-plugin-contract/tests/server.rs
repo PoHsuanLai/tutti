@@ -15,10 +15,14 @@ use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::PluginClient;
 use tutti_plugin_contract::spec::{self, Mode, Param};
 use tutti_plugin_contract::{
-    Clap, Format, Transcript, Vst3, Vst3Cpp, bundle_of, clap_path, patch_mode, vst3_cpp_module,
-    vst3_module,
+    Active, BLOCK, Clap, Format, RATE, Render, Transcript, Vst3, Vst3Cpp, bundle_of, clap_path,
+    gesture_edits, patch_mode, prepare, select, vst3_cpp_module, vst3_module,
 };
-use tutti_plugin_types::{Normalized, ParamId};
+use tutti_plugin_ipc::{BridgeConfig as IpcConfig, BridgeEvent, Ipc, Launched};
+use tutti_plugin_types::{
+    BridgeError, BridgeResult, Control, Editor, Load, LoadStage, MainThread, Normalized, ParamEdit,
+    ParamId, SampleFormat, SampleRate,
+};
 
 fn through_server<F: Format>(path: PathBuf) {
     // SAFETY: set before any thread of this test reads it.
@@ -90,4 +94,134 @@ fn vst3_mode_and_transcript_cross_the_process_boundary() {
 #[test]
 fn vst3_cpp_mode_and_transcript_cross_the_process_boundary() {
     through_server::<Vst3Cpp>(bundle_of(&vst3_cpp_module()));
+}
+
+/// No editor in these tests: the served plugin is driven through `Ipc` alone.
+fn no_editor(_: &MainThread, path: &std::path::Path, _: &Load) -> BridgeResult<Box<dyn Editor>> {
+    Err(BridgeError::LoadFailed {
+        path: path.to_path_buf(),
+        stage: LoadStage::Opening,
+        reason: "these tests load no editor".into(),
+    })
+}
+
+/// A served plugin, active: its parameter edits are heard through the bridge's
+/// listener (`Ipc::forward_events`), as the plugin node hears them.
+fn served<F: Format>(
+    path: PathBuf,
+) -> (
+    Active<Ipc>,
+    std::sync::Arc<std::sync::Mutex<Vec<ParamEdit>>>,
+) {
+    // SAFETY: set before any thread of this test reads it.
+    unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", tutti_fixtures::plugin_server()) };
+    let Launched { ipc, .. } = Ipc::launch(
+        IpcConfig::default(),
+        path,
+        Load::new(),
+        SampleRate::new(RATE),
+        None,
+        no_editor,
+    )
+    .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&heard);
+    ipc.forward_events(Some(std::sync::Arc::new(move |event| {
+        if let BridgeEvent::ParameterChanged { edit } = event {
+            sink.lock().unwrap().push(edit);
+        }
+    })));
+    let active = Active::activate(ipc, prepare(RATE, BLOCK, SampleFormat::Float32))
+        .unwrap_or_else(|(_, why)| panic!("{}: the served plugin activates: {why:?}", F::NAME));
+    (active, heard)
+}
+
+/// A gesture the plugin makes in the server crosses the wire as the spec's four
+/// edits, in order, begin to end, each with its value: the same figures the
+/// in-process case reads ([`gesture_edits`]), here from the process the plugin
+/// lives in.
+fn a_served_gesture_arrives_in_order<F: Format>(path: PathBuf) {
+    let (mut a, heard) = served::<F>(path);
+    select::<F, _>(
+        a.controller_mut(),
+        if F::SURFACE.selects_editor {
+            spec::EDITOR_TIDY
+        } else {
+            0
+        },
+        spec::NOTICE_GESTURE_ON_LOAD,
+    );
+    // CLAP's plugin says it from `process`, so blocks run while the host waits.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while heard.lock().unwrap().len() < gesture_edits().len()
+        && std::time::Instant::now() < deadline
+    {
+        a.silent(BLOCK);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Let anything else the server would send arrive too.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    a.silent(BLOCK);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        *heard.lock().unwrap(),
+        gesture_edits(),
+        "{}: the gesture across the wire",
+        F::NAME
+    );
+}
+
+/// A parameter value keeps its width across the wire: 0.3, which an `f32`
+/// cannot hold, is read back as sent (the wire carried an `f32` before version
+/// 31, which returned 0.30000001192092896).
+fn a_served_value_keeps_its_f64_width<F: Format>(path: PathBuf) {
+    const SENT: f64 = 0.3;
+    assert_ne!(
+        f64::from(SENT as f32),
+        SENT,
+        "the value must not fit an f32, or the test cannot tell"
+    );
+    let (mut a, _) = served::<F>(path);
+    let main = tutti_fixtures::main_thread();
+    a.controller_mut()
+        .set_parameter(&main, Param::Level.id(), Normalized::of(SENT));
+    // A write lands at the next block.
+    a.silent(BLOCK);
+    let got = a.controller().parameter(&main, Param::Level.id());
+    assert_eq!(
+        got.map(Normalized::get),
+        Some(SENT),
+        "{}: the value read back",
+        F::NAME
+    );
+}
+
+#[test]
+fn clap_gesture_crosses_the_process_boundary_in_order() {
+    a_served_gesture_arrives_in_order::<Clap>(clap_path());
+}
+
+#[test]
+fn vst3_gesture_crosses_the_process_boundary_in_order() {
+    a_served_gesture_arrives_in_order::<Vst3>(bundle_of(&vst3_module()));
+}
+
+#[test]
+fn vst3_cpp_gesture_crosses_the_process_boundary_in_order() {
+    a_served_gesture_arrives_in_order::<Vst3Cpp>(bundle_of(&vst3_cpp_module()));
+}
+
+#[test]
+fn clap_value_keeps_its_f64_width_across_the_process_boundary() {
+    a_served_value_keeps_its_f64_width::<Clap>(clap_path());
+}
+
+#[test]
+fn vst3_value_keeps_its_f64_width_across_the_process_boundary() {
+    a_served_value_keeps_its_f64_width::<Vst3>(bundle_of(&vst3_module()));
+}
+
+#[test]
+fn vst3_cpp_value_keeps_its_f64_width_across_the_process_boundary() {
+    a_served_value_keeps_its_f64_width::<Vst3Cpp>(bundle_of(&vst3_cpp_module()));
 }

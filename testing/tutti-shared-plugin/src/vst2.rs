@@ -27,6 +27,15 @@ impl Params {
         if loaded && self.0.notice() == core::NOTICE_ON_LOAD {
             self.1.automate(0, 0.5);
         }
+        if loaded && self.0.notice() == core::NOTICE_GESTURE_ON_LOAD {
+            // `aux`, as the spec's gesture: begin, the two changes, end.
+            let aux = core::AUX as i32;
+            self.1.begin_edit(aux);
+            for value in core::GESTURE_VALUES {
+                self.1.automate(aux, value as f32);
+            }
+            self.1.end_edit(aux);
+        }
     }
 }
 

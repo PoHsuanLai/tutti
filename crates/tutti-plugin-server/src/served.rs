@@ -20,9 +20,9 @@ use tutti_plugin_ipc::BridgeMessage;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, AutomationMode, Event, Features, Hand, HostOp, Lifecycle, Load,
     LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MaxBlock, Normalized, Notice,
-    OutOfProcess, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo, PluginResult,
-    Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor, RenderMode, Request,
-    Sample, SampleFormat, SampleRate, Samples, Stage, State, standing,
+    OutOfProcess, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo,
+    PluginResult, Prepare, Preset, PresetId, ProcessContext, ProcessOutput, Processor, RenderMode,
+    Request, Sample, SampleFormat, SampleRate, Samples, Stage, State, standing,
 };
 
 mod any;
@@ -152,6 +152,8 @@ pub(crate) struct Served<F: OutOfProcess> {
     wiring: LoadedPlugin,
     /// What the plugin asked of the host since the last pass, reused.
     requests: Vec<Request>,
+    /// The parameter edits the plugin made since the last pass, reused.
+    edits: Vec<ParamEdit>,
     /// What the host has not yet been told.
     events: Vec<BridgeMessage>,
     /// A refusal was told since the last [`finish_refusals`](Self::finish_refusals).
@@ -247,6 +249,7 @@ impl<F: ServerSide> Served<F> {
             descriptor: PluginDescriptor::default(),
             wiring: LoadedPlugin::default(),
             requests: Vec::new(),
+            edits: Vec::new(),
             events: Vec::new(),
             refused: false,
         };
@@ -394,7 +397,6 @@ impl<F: ServerSide> Served<F> {
         let mut requests = std::mem::take(&mut self.requests);
         for pass in 0..MAX_PASSES {
             requests.clear();
-            F::before_requests(&self.lifecycle);
             if pass == 0 {
                 if let Some(control) = self.lifecycle.control() {
                     control.take_requests(main, &mut requests);
@@ -421,6 +423,23 @@ impl<F: ServerSide> Served<F> {
         }
         self.requests = requests;
         self.finish_refusals();
+    }
+
+    /// Queues what the plugin edited of its own parameters since the last pass as
+    /// [`BridgeMessage::ParameterChanged`], one per [`ParamEdit`], in the order
+    /// the plugin made them: a gesture's `Begin`, its changes and its `End`
+    /// reach the host in that order, since the wire and the host's inbox keep
+    /// the order they were queued in.
+    fn forward_edits(&mut self, main: &MainThread) {
+        let mut edits = std::mem::take(&mut self.edits);
+        edits.clear();
+        F::take_edits(&mut self.lifecycle, main, &mut edits);
+        self.events.extend(
+            edits
+                .iter()
+                .map(|&edit| BridgeMessage::ParameterChanged { edit }),
+        );
+        self.edits = edits;
     }
 
     /// Deactivates and activates at `wanted`, as a rate or mode change does.
@@ -534,6 +553,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
 
     fn poll(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
         self.serve(main);
+        self.forward_edits(main);
         std::mem::take(&mut self.events)
     }
 

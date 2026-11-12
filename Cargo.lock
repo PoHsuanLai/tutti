@@ -3900,6 +3900,7 @@ dependencies = [
  "tutti-graph",
  "tutti-plugin",
  "tutti-plugin-db",
+ "tutti-plugin-ipc",
  "tutti-plugin-types",
  "tutti-shared-plugin",
  "tutti-shared-plugin-vst3-cpp",

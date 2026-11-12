@@ -332,13 +332,14 @@ pub enum BridgeMessage {
         #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
-    /// The plugin moved one of its own parameters, typically from its editor.
+    /// The plugin edited one of its own parameters, typically from its editor:
+    /// a [`ParamEdit`](tutti_plugin_types::ParamEdit) (the parameter by the id the plugin reported, its
+    /// normalized value as an `f64`, and where in a gesture it fell). A
+    /// gesture's `Begin`, changes and `End` arrive in the order the plugin made
+    /// them.
     ParameterChanged {
-        /// The parameter, by the id the plugin reported (VST2: its index).
-        index: ParamId,
-        /// Normalized `0.0..=1.0`.
-        #[serde(with = "super::wire::normalized")]
-        value: Normalized,
+        /// The edit.
+        edit: crate::protocol::ParamEdit,
     },
     /// Plugin reported a latency change at runtime. Host updates the
     /// corresponding `PluginClient::set_latency` so the latency the node

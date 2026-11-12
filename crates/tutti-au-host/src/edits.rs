@@ -18,8 +18,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// seconds of a knob under a hand; past it the oldest are dropped and counted.
 const ROOM: usize = 4096;
 
-/// A parameter edit as the listener delivered it: the id and the plain value.
-type Edit = (u32, f32);
+/// A parameter edit as the listener delivered it, in the unit's plain values:
+/// `kAudioUnitEvent_BeginParameterChangeGesture`, a value change, and
+/// `kAudioUnitEvent_EndParameterChangeGesture`, each with the parameter's id.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Edit {
+    /// The unit took hold of the parameter.
+    Begin(u32),
+    /// The parameter took this plain value.
+    Change(u32, f32),
+    /// The unit let go of the parameter.
+    End(u32),
+}
 
 /// The queue between the listener's thread and the control side.
 #[derive(Debug, Default)]
@@ -31,13 +41,13 @@ pub(crate) struct ReportedEdits {
 impl ReportedEdits {
     /// Holds one edit, dropping the oldest (and counting it) when the queue is
     /// full, so what survives is where the knob ended up.
-    pub(crate) fn push(&self, id: u32, plain: f32) {
+    pub(crate) fn push(&self, edit: Edit) {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         if queue.len() == ROOM {
             queue.pop_front();
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
-        queue.push_back((id, plain));
+        queue.push_back(edit);
     }
 
     /// Moves every held edit, oldest first, to `out`.
@@ -62,13 +72,13 @@ mod tests {
     fn a_full_queue_keeps_the_newest_and_counts_the_rest() {
         let edits = ReportedEdits::default();
         for i in 0..ROOM + 3 {
-            edits.push(7, i as f32);
+            edits.push(Edit::Change(7, i as f32));
         }
         let mut out = Vec::new();
         edits.drain(&mut out);
         assert_eq!(out.len(), ROOM);
-        assert_eq!(out.first(), Some(&(7, 3.0)));
-        assert_eq!(out.last(), Some(&(7, (ROOM + 2) as f32)));
+        assert_eq!(out.first(), Some(&Edit::Change(7, 3.0)));
+        assert_eq!(out.last(), Some(&Edit::Change(7, (ROOM + 2) as f32)));
         assert_eq!(edits.dropped(), 3);
     }
 }

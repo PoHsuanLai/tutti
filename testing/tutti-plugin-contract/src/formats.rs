@@ -135,6 +135,9 @@ impl Format for Au {
         ("f64_carries_same_audio", NEEDS_THE_BLOB),
         ("overflowing_log_fails_the_oracle", NEEDS_THE_BLOB),
         ("process_does_not_allocate", NEEDS_THE_BLOB),
+        // The case selects the gesture notice through the blob; the AU gesture is
+        // held by `tutti-au-host`'s `a_gesture_in_the_plugins_own_editor_is_reported_in_order`.
+        ("a_gesture_is_reported_in_order", NEEDS_THE_BLOB),
         (
             "parameters_listed",
             Gap {

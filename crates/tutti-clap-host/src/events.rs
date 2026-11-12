@@ -20,20 +20,20 @@ use crate::types::{
     ClapNoteExpression, NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue,
 };
 use clap_sys::events::{
-    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_CHOKE,
-    CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
-    CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_EXPRESSION, CLAP_NOTE_EXPRESSION_PAN,
-    CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING, CLAP_NOTE_EXPRESSION_VIBRATO,
-    CLAP_NOTE_EXPRESSION_VOLUME, clap_event_header, clap_event_midi, clap_event_midi_sysex,
-    clap_event_note, clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
-    clap_event_param_value, clap_event_transport,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_DONT_RECORD, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX,
+    CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF,
+    CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+    CLAP_EVENT_PARAM_VALUE, CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_EXPRESSION,
+    CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
+    CLAP_NOTE_EXPRESSION_VIBRATO, CLAP_NOTE_EXPRESSION_VOLUME, clap_event_header, clap_event_midi,
+    clap_event_midi_sysex, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
+    clap_event_param_mod, clap_event_param_value, clap_event_transport,
 };
 use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi,
+    Normalized, ParamEdit, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi,
     note_id_to_channel_note, plugin_note_id, push_sysex, sysex_assembler, sysex_packets,
 };
 
@@ -376,6 +376,39 @@ fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(MidiChannel, No
 // process/flush entry path. Rather than invent a bogus source flag, IS_LIVE
 // stays unset until callers can supply a real live/playback origin.
 impl ClapEvent {
+    /// This event as the parameter edit a plugin reported by it, or [`None`]
+    /// for an event that is not one.
+    ///
+    /// `CLAP_EVENT_PARAM_VALUE` is a change, in the plugin's own units, so it is
+    /// normalized against `ranges` (a parameter absent from it passes through
+    /// unconverted: nothing was declared to convert against, and inventing
+    /// `0..=1` would rescale it); `CLAP_EVENT_PARAM_GESTURE_BEGIN` and `_END`
+    /// are a gesture's ends and carry no value. A value flagged
+    /// `CLAP_EVENT_DONT_RECORD` is still the parameter's value, so it is
+    /// reported, flagged ([`ParamEdit::unrecorded`]): events.h says only that such an
+    /// event "should not be recorded", for a value another recorded source
+    /// moved. `CLAP_EVENT_PARAM_MOD` is an offset on top of the value, not the
+    /// value, and is not an edit.
+    pub(crate) fn heard(&self, ranges: &[ParamBounds]) -> Option<ParamEdit> {
+        match self {
+            Self::ParamValue(v) => {
+                let normalized = match ParamBounds::find(ranges, v.param_id) {
+                    Some(b) => b.normalized(v.value),
+                    None => v.value,
+                };
+                let heard = ParamEdit::change(v.param_id.into(), Normalized::clamped(normalized));
+                Some(if v.header.flags & CLAP_EVENT_DONT_RECORD != 0 {
+                    heard.unrecorded()
+                } else {
+                    heard
+                })
+            }
+            Self::ParamGestureBegin(g) => Some(ParamEdit::Begin(g.param_id.into())),
+            Self::ParamGestureEnd(g) => Some(ParamEdit::End(g.param_id.into())),
+            _ => None,
+        }
+    }
+
     /// Borrows the common CLAP event header (time, type, space ID, flags).
     pub fn header(&self) -> &clap_event_header {
         match self {

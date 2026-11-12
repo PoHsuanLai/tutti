@@ -211,8 +211,9 @@ impl Vst3Loaded {
     /// plugin server — keeps the queue from filling with a backlog.
     ///
     /// Leaves the restart flags and pending MIDI-learn CCs alone.
-    pub fn discard_notifications(&self) -> usize {
-        let mut n = 0;
+    pub fn discard_notifications(&mut self) -> usize {
+        // What an earlier edit pass kept aside for the poll goes too.
+        let mut n = self.stashed.drain(..).count();
         while self.plugin.handler().pop_notification().is_some() {
             n += 1;
         }

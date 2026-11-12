@@ -221,7 +221,7 @@ mod tests {
     /// desync between two binaries built apart.
     #[test]
     fn typed_parameter_and_rate_fields_keep_their_wire_widths() {
-        use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};
+        use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamEdit, ParamId};
         use tutti_types::SampleRate;
 
         let set = HostMessage::SetParameter {
@@ -266,22 +266,33 @@ mod tests {
         assert_eq!(postcard::to_allocvec(&none).unwrap(), [3, 0]);
 
         let changed = BridgeMessage::ParameterChanged {
-            index: ParamId::new(7),
-            value: Normalized::of(0.5),
+            edit: ParamEdit::change(ParamId::new(7), Normalized::of(0.5)),
         };
         // variant 7 (9 until v25 removed `EditorOpened` and `EditorClosed` ahead
-        // of it), index 7, 0.5f64
+        // of it), then the `ParamEdit`: its variant (`Change` is 1), id 7, 0.5f64
+        // and the recording flag (true).
         assert_eq!(
             postcard::to_allocvec(&changed).unwrap(),
-            [7, 7, 0, 0, 0, 0, 0, 0, 224, 63]
+            [7, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]
         );
-
-        let back: BridgeMessage = postcard::from_bytes(&[7, 7, 0, 0, 0, 0, 0, 0, 224, 63]).unwrap();
+        let back: BridgeMessage =
+            postcard::from_bytes(&[7, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]).unwrap();
         assert!(matches!(
             back,
-            BridgeMessage::ParameterChanged { index, value }
-                if index == ParamId::new(7) && value == Normalized::of(0.5)
+            BridgeMessage::ParameterChanged { edit }
+                if edit == ParamEdit::change(ParamId::new(7), Normalized::of(0.5))
         ));
+
+        // A gesture's begin and end hold the id alone: no value is on the wire
+        // to read, and none is made up.
+        let begin = BridgeMessage::ParameterChanged {
+            edit: ParamEdit::Begin(ParamId::new(7)),
+        };
+        assert_eq!(postcard::to_allocvec(&begin).unwrap(), [7, 0, 7]);
+        let end = BridgeMessage::ParameterChanged {
+            edit: ParamEdit::End(ParamId::new(7)),
+        };
+        assert_eq!(postcard::to_allocvec(&end).unwrap(), [7, 2, 7]);
     }
 
     /// A wire value in `0..=1` decodes; one outside it, or NaN, fails the

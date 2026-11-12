@@ -17,7 +17,7 @@ use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AuComponentType, AutomationMode, ContentScale, Control, EditorCapabilities, EditorError,
     EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
-    ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginBus, PluginBuses,
+    ParamEdit, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginBus, PluginBuses,
     PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId,
     RenderMode, Request, RescanScope, SampleRate, WindowHandle, taken,
 };
@@ -26,6 +26,7 @@ use tutti_types::Samples;
 use crate::bus::BusDirection;
 use crate::component::{AuType, component_info};
 use crate::controller::AuController;
+use crate::edits::Edit;
 use crate::error::AuError;
 use crate::handle::AuHandle;
 use crate::instance::AuLoaded;
@@ -221,19 +222,24 @@ impl AuLoaded {
         }
     }
 
-    /// The plugin's edits since the last call, normalized against the declared
-    /// ranges, oldest first. A parameter off the table (the AU grew one the
-    /// host has not re-read) is reported as the plain value it was given, as
-    /// the read path does.
-    fn drain_edits(&self, out: &mut Vec<(ParamId, Normalized)>) {
-        let mut heard = Vec::new();
-        self.edits.drain(&mut heard);
-        out.extend(heard.into_iter().map(|(id, plain)| {
-            let normalized = match self.ranges.bounds(id) {
-                Some(bounds) => bounds.to_normalized(plain),
-                None => f64::from(plain),
-            };
-            (ParamId::from(id), Normalized::clamped(normalized))
+    /// The plugin's edits since the last call, oldest first, as [`ParamEdit`]s:
+    /// a value change normalized against the declared ranges (a parameter off
+    /// the table, which the AU grew and the host has not re-read, is reported as
+    /// the plain value it was given, as the read path does), and a gesture's
+    /// ends, which carry no value in AU.
+    fn drain_edits(&self, out: &mut Vec<ParamEdit>) {
+        let mut queued = Vec::new();
+        self.edits.drain(&mut queued);
+        out.extend(queued.into_iter().map(|edit| match edit {
+            Edit::Begin(id) => ParamEdit::Begin(ParamId::from(id)),
+            Edit::End(id) => ParamEdit::End(ParamId::from(id)),
+            Edit::Change(id, plain) => {
+                let normalized = match self.ranges.bounds(id) {
+                    Some(bounds) => bounds.to_normalized(plain),
+                    None => f64::from(plain),
+                };
+                ParamEdit::change(ParamId::from(id), Normalized::clamped(normalized))
+            }
         }));
     }
 
@@ -452,10 +458,11 @@ impl Control for AuLoaded {
         self.write_render_mode(mode.is_offline())
     }
 
-    /// The plugin's own edits (its editor moving a knob), heard through the
-    /// parameter listener `watch_properties` installs. The host's own writes are
-    /// not among them: they name the listener as their sender.
-    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+    /// The plugin's own edits (its editor moving a knob, with the gesture around
+    /// it), heard through the parameter listener `watch_properties` installs.
+    /// The host's own writes are not among them: they name the listener as their
+    /// sender.
+    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
         self.drain_edits(out);
     }
 
@@ -632,7 +639,7 @@ impl Control for AuController {
         false
     }
 
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
         Control::take_reported_edits(&mut **self, main, out);
     }
 

@@ -52,6 +52,7 @@ macro_rules! contract {
             reset_clears_the_delay_line,
             tail_reported,
             the_control_surface_answers_alike_loaded_and_active,
+            a_gesture_is_reported_in_order,
             parameters_listed,
             parameter_conversion_is_the_formats_own,
             parameter_round_trip,

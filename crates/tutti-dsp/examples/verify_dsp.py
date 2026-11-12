@@ -21,8 +21,8 @@ References, all built here from the definitions:
         H(s) = 1 / ((1 + s/wc)^4 + k)
     bilinear-transformed with prewarp at the cutoff, i.e. evaluated at
     s/wc = j tan(pi f / fs) / tan(pi fc / fs). That is a continuous-time model
-    of the feedback loop; the discrete ladder closes its loop through a state
-    (a delay), so the two differ once the resonance is up.
+    of the feedback loop; the discrete ladder closes it without a delay
+    (zero-delay feedback), so the two agree to rounding at every resonance.
   * Linkwitz-Riley crossover: LR4 = a 2nd-order Butterworth squared
     (scipy.signal.butter); its high-pass is the squared Butterworth high-pass.
     LP4 + HP4 is an all-pass (flat magnitude). A tree's band j is the high-pass
@@ -186,14 +186,7 @@ rows = []
 # design, not of the reference. They are printed as KNOWN and do not fail the run; every
 # other FAIL does. A KNOWN case that passes fails the run (a stale excuse, like a
 # contract `Gap` that no longer fails): delete its entry when the cause is removed.
-KNOWN = {
-    "ladder_lp24_4000_0.5": "the ladder closes its resonance loop through the 4th stage's state "
-    "(a one-sample delay, `u = tanh(x - k * s[3])`), not the zero-delay solve of the "
-    "continuous loop the reference models; LadderModel (tutti's own small-signal model) "
-    "agrees with the render to 0.006 dB, so the render is faithful to its model and the "
-    "model is what differs from the bilinear analog loop",
-    "ladder_lp24_1000_0.9": "same unit-delay feedback; stronger at higher resonance",
-}
+KNOWN = {}
 
 
 def record(name, mag_err, mag_f, mag_tol, ph_err=None, ph_f=None, ph_tol=None, note=""):
@@ -309,15 +302,10 @@ def main():
         elif kind == "ladder":
             h = got[0] / case["amplitude"]
             ref = ref_ladder(case, freqs)
-            if case["res"] == 0:
-                # Four bilinear one-poles, no feedback: exact to rounding.
-                judge_response(name, h, ref, freqs, 0.01, 0.1)
-            else:
-                # Continuous feedback model vs a loop closed through a state: compare
-                # below 4 * cutoff, 1 dB / 5 degrees.
-                m = freqs <= 4 * case["freq"]
-                e, ef, p, pf = compare(h[m], ref[m], freqs[m])
-                record(name, e, ef, 1.0, p, pf, 5.0, "below 4x cutoff")
+            # The loop is closed without a delay (zero-delay feedback), so the render is
+            # the bilinear image of the continuous ladder, with or without resonance:
+            # exact to rounding, 0.01 dB and 0.1 degrees over the whole band.
+            judge_response(name, h, ref, freqs, 0.01, 0.1)
         elif kind == "crossover":
             refs = ref_bands(case["splits"], freqs, rate)
             for b, (g, r) in enumerate(zip(got, refs)):

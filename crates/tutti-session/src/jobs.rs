@@ -10,6 +10,14 @@
 //! that can stop carries its own flag, and [`Landings::is_closed`] tells it
 //! when the session is gone, so it stops writing what no one will land.
 
+#![cfg_attr(
+    all(not(test), not(feature = "midi")),
+    expect(
+        dead_code,
+        reason = "the MIDI file and SoundFont loads (feature `midi`) are the spawner's first users"
+    )
+)]
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;

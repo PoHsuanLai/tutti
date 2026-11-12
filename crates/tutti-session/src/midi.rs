@@ -624,7 +624,7 @@ impl std::fmt::Debug for MidiState {
 }
 
 /// How often a rising drop count is reported at most
-/// ([`MidiEvent::OutputDropped`](crate::MidiEvent::OutputDropped)):
+/// ([`MidiEvent::OutputDropped`]):
 /// a clock running with no output drops ticks on every update.
 pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
@@ -677,7 +677,7 @@ impl MidiState {
     }
 
     /// `Phase::Poll`: steps the UMP Stream negotiation of each held input and
-    /// reports those that settled ([`MidiEvent::StreamSettled`](crate::MidiEvent::StreamSettled)), reports the
+    /// reports those that settled ([`MidiEvent::StreamSettled`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -840,7 +840,7 @@ fn follow_output_config(out: Option<&mut UmpOut>, io: Option<&tutti_midi_hardwar
 
 /// A file load a [`Midi`] started, named so the event that lands it can be
 /// matched to the call: [`Midi::load_file`] and `Midi::load_soundfont`
-/// return one, and [`MidiEvent::FileLoaded`](crate::MidiEvent::FileLoaded) and
+/// return one, and [`MidiEvent::FileLoaded`] and
 /// `SoundFontLoaded` carry it. The session mints it; it names nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MidiLoad(u64);
@@ -1372,7 +1372,7 @@ impl Midi<'_> {
     /// The output the hardware out (an event tap on the clock, aligned to the
     /// graph's outputs) drains to at each update's
     /// [`MidiOut`](crate::Phase::MidiOut) phase. `None`: its events are counted as dropped
-    /// ([`MidiEvent::OutputDropped`](crate::MidiEvent::OutputDropped)).
+    /// ([`MidiEvent::OutputDropped`]).
     ///
     /// **Whether it JR-stamps is the device's.** With the `midi-hardware`
     /// feature, each `MidiOut` phase sets the output's stamping from the

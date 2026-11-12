@@ -431,6 +431,183 @@ fn a_slot_a_new_device_takes_forgets_the_previous_devices_half_sent_run() {
     }
 }
 
+/// An ingest node that follows `inlets`, over the script's one slot.
+fn following(script: Script, inlets: &DeviceInlets) -> Ingest {
+    let Ingest {
+        node,
+        inlets: nodes,
+    } = Ingest::new(script);
+    Ingest {
+        node: node.following(inlets).expect("one slot each"),
+        inlets: nodes,
+    }
+}
+
+/// A System message of `group`.
+fn system(group: MidiGroup, message: tutti_ump::System) -> UmpAt {
+    at(0, Ump::from(Message::System(group, message)))
+}
+
+/// A short description of what a sink heard, for an assertion that reads:
+/// `(frame, what)`, `what` being `on N`, `off N`, `cc C V` or `bend V` of a
+/// MIDI 2.0 channel voice message, `other` for the rest.
+fn heard(seen: &Seen) -> Vec<(u64, String)> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .map(|&(_, frame, ump)| {
+            let what = match (ump.key_event(), ump.decode()) {
+                (Some(KeyEvent::On(k)), _) => format!("on {}", k.note().get()),
+                (Some(KeyEvent::Off(k)), _) => format!("off {}", k.note().get()),
+                (_, Ok(Message::Midi2(_, Voice2::ControlChange { controller, value }))) => {
+                    format!("cc {} {value:#x}", controller.get())
+                }
+                (_, Ok(Message::Midi2(_, Voice2::PitchBend(v)))) => format!("bend {v:#x}"),
+                _ => "other".to_string(),
+            };
+            (frame, what)
+        })
+        .collect()
+}
+
+/// **A device that lets go leaves nothing held downstream** (MIDI 1.0
+/// Detailed Specification: p. 24, all notes are turned off by individual Note
+/// Offs; A-5, a pedal down defeats them; p. 31 and RP-015, the pedals and the
+/// pitch wheel return to normal). Device 0 holds a key, the sustain pedal and
+/// a bend off centre, then drops its input: the next block's first frame
+/// carries the Note Off, the pedal-up and the centred bend, in that order,
+/// and its later events are not heard. When another device takes the slot,
+/// the same release comes first and then the new device is heard.
+#[test]
+fn a_device_that_lets_go_has_what_it_held_released() {
+    for replaced in [false, true] {
+        let inlets = DeviceInlets::new(1, EventCapacity::of(64), Duration::ZERO);
+        let device = inlets.open().expect("a free slot");
+        let bend = at(30, pitch_bend(G, MidiChannel::of(0), 0xC000_0000));
+        let wire = Script::new(vec![
+            vec![note(0, 60, 10), cc_at(20, 0, CCNumber::SUSTAIN, 127), bend],
+            vec![note(0, 61, 5)],
+        ]);
+        let (_ed, mut exec, _c, seen) =
+            ingest(following(wire, &inlets), MIDI_INPUT_PORTS as u16, 512);
+        block(&mut exec, 512);
+        assert_eq!(heard(&seen).len(), 3, "the key, the pedal, the bend");
+        seen.lock().unwrap().clear();
+        drop(device);
+        let _next = replaced.then(|| inlets.open().expect("the slot is free again"));
+        block(&mut exec, 512);
+        let mut expected = vec![
+            (512, "off 60".to_string()),
+            (512, "cc 64 0x0".to_string()),
+            (512, "bend 0x80000000".to_string()),
+        ];
+        if replaced {
+            expected.push((517, "on 61".to_string()));
+        }
+        assert_eq!(heard(&seen), expected, "replaced: {replaced}");
+    }
+}
+
+/// **Active Sensing: once an FE is seen, a message is expected within 330 ms
+/// and the cable's notes end when none comes** (MIDI 1.0 Detailed
+/// Specification p. 32). At 48 kHz the limit is 15,840 frames: an FE and a key
+/// at frame 0, silence after, and the Note Off is at frame 15,840 exactly (the
+/// frame the time ran out at, inside the block), not a block earlier; the FE
+/// itself is not sent on. A message at frame 15,000 moves the lapse a limit on
+/// from it.
+#[test]
+fn a_cable_that_goes_quiet_after_active_sensing_has_its_notes_ended() {
+    let sense = system(G, tutti_ump::System::ActiveSensing);
+    let blocks = |last: u64| (last / 512 + 2) as usize;
+    for (extra, ran_out) in [(None, 15_840u64), (Some(15_000u32), 30_840)] {
+        let mut batch = vec![sense, note(0, 60, 0)];
+        batch.extend(extra.map(|f| cc_at(f, 0, CCNumber::of(1), 1)));
+        let (_ed, mut exec, _c, seen) = ingest(
+            Ingest::new(Script::new(vec![batch])),
+            MIDI_INPUT_PORTS as u16,
+            512,
+        );
+        for _ in 0..blocks(ran_out) {
+            block(&mut exec, 512);
+        }
+        let got = heard(&seen);
+        let off = got.iter().find(|(_, w)| w == "off 60");
+        assert_eq!(off.map(|o| o.0), Some(ran_out), "{got:?}");
+        assert_eq!(
+            got.iter().filter(|(_, w)| w == "other").count(),
+            0,
+            "the FE is not sent on: {got:?}"
+        );
+    }
+}
+
+/// **A device that never sends an Active Sensing is never judged** (p. 32:
+/// "If a device never receives Active Sensing it should operate normally"):
+/// the same key and silence, no FE, and the key is still held after 40
+/// blocks.
+#[test]
+fn a_cable_with_no_active_sensing_is_never_judged_gone() {
+    let (_ed, mut exec, _c, seen) = ingest(
+        Ingest::new(Script::new(vec![vec![note(0, 60, 0)]])),
+        MIDI_INPUT_PORTS as u16,
+        512,
+    );
+    for _ in 0..40 {
+        block(&mut exec, 512);
+    }
+    assert_eq!(heard(&seen), vec![(0, "on 60".to_string())]);
+}
+
+/// **System Reset ends what the cable held, forgets its half-sent runs and is
+/// not echoed** (p. 33: turn voices off, reset all controllers, clear running
+/// status; "under no condition should this message be echoed"). A key, the
+/// sustain pedal and an RPN select on Group 1 and a key on Group 2, then an FF
+/// on Group 1 at frame 100: Group 1's key ends and its pedal lifts at frame
+/// 100, the FF is sent on to no one, the Data Entry after it completes no
+/// RPN, and Group 2's key is not touched.
+#[test]
+fn a_system_reset_ends_its_cables_notes_and_runs_and_is_not_echoed() {
+    let g2 = MidiGroup::of(1);
+    let two = MidiInputPorts::through(g2);
+    let reset = at(100, Ump::from(Message::System(G, tutti_ump::System::Reset)));
+    let other_note = at(
+        15,
+        note_on(
+            g2,
+            MidiChannel::of(0),
+            70,
+            tutti_fixtures::midi::wide_velocity(100),
+        ),
+    );
+    let wire = Script::new(vec![vec![
+        note(0, 60, 10),
+        other_note,
+        cc_at(20, 0, CCNumber::SUSTAIN, 127),
+        cc_at(30, 0, CCNumber::RPN_MSB, 0),
+        cc_at(31, 0, CCNumber::RPN_LSB, 6),
+        reset,
+        cc_at(200, 0, CCNumber::DATA_ENTRY, 10),
+        cc_at(201, 0, CCNumber::DATA_ENTRY_LSB, 0),
+    ]]);
+    let (_ed, mut exec, _c, seen) = ingest(Ingest::new(wire).hearing(two), two.count() as u16, 512);
+    block(&mut exec, 512);
+    let got = heard(&seen);
+    let after: Vec<_> = got.iter().filter(|(f, _)| *f >= 100).cloned().collect();
+    assert_eq!(
+        after,
+        vec![(100, "off 60".to_string()), (100, "cc 64 0x0".to_string())],
+        "{got:?}"
+    );
+    assert!(
+        got.contains(&(15, "on 70".to_string())),
+        "Group 2 untouched"
+    );
+    assert!(
+        !seen.lock().unwrap().iter().any(|s| is_registered(s.2)),
+        "the select did not survive the reset"
+    );
+}
+
 /// A node follows inlets with the slots it has inputs for, and refuses others.
 #[test]
 fn a_node_refuses_inlets_with_another_number_of_slots() {

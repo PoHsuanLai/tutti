@@ -191,6 +191,16 @@ impl Translator {
         *self = Self::new();
     }
 
+    /// [`reset`](Self::reset) for the sixteen channels of `group` alone: a
+    /// Group is a channel space of its own (M2-104 section 2.1.2), so a
+    /// source's reset of one cable leaves the runs of the others as they were.
+    pub fn reset_group(&mut self, group: MidiGroup) {
+        let first = group.index() * MidiChannel::COUNT as usize;
+        let fresh = Self::new();
+        let range = first..first + MidiChannel::COUNT as usize;
+        self.channels[range.clone()].copy_from_slice(&fresh.channels[range]);
+    }
+
     /// Sends every run still waiting for a trigger, as its select, CC 6 or CC
     /// 38 would have, calling `out` with the channel's address and the packet
     /// (a CC 6 with no CC 38 is sent at LSB 0, a CC 38 with no CC 6 at MSB 0).

@@ -778,6 +778,16 @@ jobs:
           submodules: recursive
       - name: Install Linux audio deps
         uses: ./.github/actions/linux-audio-deps
+      # JACK too: the umbrellas' `--all-features` line below turns on
+      # `tutti-cpal/jack`, whose `jack-sys` build script wants the headers. A
+      # second call on top of the first, as the `features` job does: the JACK
+      # list's cached .debs are what that order downloads (JACK and what the
+      # default list did not already install), so a job that asked for the JACK
+      # list alone would restore them without `libasound2-dev`.
+      - name: Install JACK headers
+        uses: ./.github/actions/linux-audio-deps
+        with:
+          extra: libjack-jackd2-dev
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -790,6 +800,15 @@ jobs:
       # with links too, and one that only breaks in a private item rots
       # unseen.
       - run: cargo doc --locked --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings --document-private-items
+      # The two umbrellas with every feature at once: a workspace build turns on
+      # only what some member's edge enables, so an item behind `plugin`,
+      # `midi-hardware` or `audio-io` and its links are documented by none of the
+      # lines above, and a redundant or broken link there reached main twice
+      # (#684, #695). Per-feature builds (`check-doc-features` below) run without
+      # `--document-private-items`.
+      - run: cargo doc --locked -p tutti-session -p tutti --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
       # `tutti_graph::contract` (doc 013 §6's harness) is behind the

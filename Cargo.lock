@@ -3837,6 +3837,7 @@ dependencies = [
  "biquad",
  "criterion",
  "libm",
+ "serde",
  "thiserror 2.0.21",
  "tutti-curve",
  "tutti-dsp",

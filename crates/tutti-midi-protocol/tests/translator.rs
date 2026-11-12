@@ -783,3 +783,32 @@ fn increment_and_decrement_stay_control_changes() {
         );
     }
 }
+
+/// **`reset_group` forgets one Group's half-sent run and no other's** (M2-104
+/// section 2.1.2: a Group is a channel space of its own). RPN 0/0 is selected
+/// on channel 0 of Groups 1 and 2; Group 2 is reset; a Data Entry then
+/// completes Group 1's run, and Group 2's finds no select to complete.
+#[test]
+fn reset_group_forgets_that_groups_selection_alone() {
+    let mut t = Translator::new();
+    let (g1, g2) = (at(0, 0), at(1, 0));
+    for a in [g1, g2] {
+        t.translate(cc_on(a, CCNumber::RPN_MSB, 0));
+        t.translate(cc_on(a, CCNumber::RPN_LSB, 0));
+    }
+    t.reset_group(MidiGroup::of(1));
+    let entry = |t: &mut Translator, a: Address| {
+        t.translate(cc_on(a, CCNumber::DATA_ENTRY, 12));
+        t.translate(cc_on(a, CCNumber::DATA_ENTRY_LSB, 0))
+    };
+    let kept = entry(&mut t, g1).map(|u| u.decode());
+    assert!(
+        matches!(kept, Some(Ok(Message::Midi2(_, Voice2::Registered { .. })))),
+        "{kept:?}"
+    );
+    let gone = entry(&mut t, g2).map(|u| u.decode());
+    assert!(
+        !matches!(gone, Some(Ok(Message::Midi2(_, Voice2::Registered { .. })))),
+        "{gone:?}"
+    );
+}

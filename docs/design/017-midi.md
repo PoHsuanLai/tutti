@@ -839,7 +839,7 @@ scheduling (`OutputPlan`) is the next part and is not.
     `BlockClockReader`) and each device's thread holds a `ClockMap` fed those
     readings (`DeviceInput`, in `tutti-midi-runtime`). It
     places each arrival `Instant` on a frame, adds the **lead** (below) and
-    pushes the event into that device's event inlet with `push_at`. The audio
+    pushes the event into that device's event inlet with `push` (a `Moment` stamp). The audio
     thread converts no time: the inlet holds each event until its block, and
     the ring's `Instant`s and `read_inputs` are gone. A reading the map rejects
     (the engine restarted and its frames began at 0 again) re-anchors it; before
@@ -866,7 +866,7 @@ scheduling (`OutputPlan`) is the next part and is not.
     `DeviceInlets::set_lead`). An event sounds exactly the lead after it
     arrived, whatever the block boundaries, and the spacing of events is the
     map's: the bound stated above, within the OS stamp's own accuracy. It is
-    late (and counted, `InletCounts::late`, `PortInfo::late`) only when the
+    late (and counted, `Losses::late` of `InletCounts::losses`, `PortInfo::losses`) only when the
     thread pushes it more than the lead after it arrived.
 - **Output.** Schedule from the event's frame, on the OS's timestamp or queue.
   Today output is flushed once per Bevy frame with no timestamp, so MIDI clock
@@ -1262,9 +1262,9 @@ as the audio inlet is.
 | Question | Decision | Reason |
 |---|---|---|
 | The node | `EventInletNode` in `tutti-graph`, an inlet implementation like `InletNode`, not a node an author adds: no inputs, one event output, `Cost::Light`, event capacity the ring's | The graph already has a node-shaped place for "something outside feeds a port". An op would need the arena to wake it with no input edge; the node needs nothing new |
-| What the producer pushes | `EventInletWriter::push(at: At, ump: Ump) -> Result<(), Refused>`. `At::NextBlock` is "as soon as possible": the next block's first frame. `At::Frame(f)` is a frame on the graph's clock. `At::Beat` is refused (`Refused::Beat`): the producer has no transport, as `TimedSender::send` has none | `At` is the type a command takes elsewhere (`MotionFsm::schedule`), and `Env::due(At)` resolves it already. The node does not invent a second rule for late or early |
-| The clock the frame is on | The graph's, as `Moment { frame, rate }`: `EventInletWriter::clock() -> Moment` reads where the node's last block ended, published by the node through a `tutti-rt` `SeqWriter` (the `TimedQueueNode` mechanism). `push_at(moment, ump)` names an instant that survives a re-prepare at another rate: the node rescales waiting events with `Frame::rescaled`. `Moment` moves to `tutti-types`, which already holds `Frame` and `SampleRate` | The frame clock counts frames at the current rate; a re-prepare moves it to the same wall time at the new rate (`timed_queue.rs` docs). A raw frame read before and sent after is wrong, a `Moment` is not |
-| A timestamp from another clock | **Not this stage.** The writer takes graph-clock frames or `At::NextBlock` only. A producer holding an OS timestamp needs `ClockMap` (§5, "Timing at the edge", built in stage 4c part 1) to give a `Moment` (`moment_at`), and calls `push_at`. A producer that has no better stamp pushes `At::NextBlock`, which is what `MidiKeys` does | `ClockMap` is pure and takes two clocks' readings. The inlet's contract does not change when it lands: it only gives producers a better `Moment` |
+| What the producer pushes | `EventInletWriter::push(at: impl Into<Stamp>, ump: Ump) -> Result<(), Refused>`. `Stamp::NextBlock` is "as soon as possible": the next block's first frame. `Stamp::Frame(f)` is a frame on the graph's clock, at the rate the node has when it takes it. `Stamp::Moment(m)` is a frame with its rate. A beat is unwritable: the producer has no transport, so the type has no beat (L1h; it was `At::Beat`, refused with `Refused::Beat`) | The node resolves a stamp with `Env::due`, as it does a command's `At`, and does not invent a second rule for late or early |
+| The clock the frame is on | The graph's, as `Moment { frame, rate }`: `EventInletWriter::clock() -> Moment` reads where the node's last block ended, published by the node through a `tutti-rt` `SeqWriter` (the `TimedQueueNode` mechanism). a `Stamp::Moment` names an instant that survives a re-prepare at another rate: the node rescales waiting events with `Frame::rescaled`. `Moment` moves to `tutti-types`, which already holds `Frame` and `SampleRate` | The frame clock counts frames at the current rate; a re-prepare moves it to the same wall time at the new rate (`timed_queue.rs` docs). A raw frame read before and sent after is wrong, a `Moment` is not |
+| A timestamp from another clock | **Not this stage.** The writer takes graph-clock frames or `Stamp::NextBlock` only. A producer holding an OS timestamp needs `ClockMap` (§5, "Timing at the edge", built in stage 4c part 1) to give a `Moment` (`moment_at`), and pushes it. A producer that has no better stamp pushes `Stamp::NextBlock`, which is what `MidiKeys` does | `ClockMap` is pure and takes two clocks' readings. The inlet's contract does not change when it lands: it only gives producers a better `Moment` |
 | What the node does with the ring | Each block: drains the ring into a waiting list sized once at open (the ring's capacity), resolves each entry with `Env::due`: `In(offset)` is emitted on that offset, `Late` is emitted at offset 0 and counted late, `NotYet` waits. Emission order is due frame, then arrival order, so a note-off sent after its note-on never overtakes it | The waiting list is `TimedQueueNode`'s, kept whole. It is scheduling, not MIDI, and every producer that names a frame needs it |
 | Priority | When the waiting list is full, the latest-due event that is not a note-off is evicted; a note-off or CC 120 or 123 is kept in preference to any other. The predicate is one function in `tutti-ump` (`Ump::is_note_off` today; the panic controllers join it there, since `tutti-ump` owns the bit positions) | The rule `TimedQueueNode` has, and the one §8 gives ports. `tutti-graph` already knows the note-off (`note_off_room`) |
 | Capacity | An event count named at open: the ring, the waiting list and the port's declared capacity are that number. The port refuses what it cannot take and the node counts it with `Io::count_lost`, so an export watching `dropped_event_count` sees it | As `MidiQueueNode` and `TimedQueueNode` today. Default 256 events, which is theirs |
@@ -1277,13 +1277,13 @@ as the audio inlet is.
 // tutti-graph
 pub struct EventInletWriter { /* ring producer, SeqReader<Reading>, counters */ }
 impl EventInletWriter {
-    pub fn push(&mut self, at: At, ump: Ump) -> Result<(), Refused>;
-    pub fn push_at(&mut self, at: Moment, ump: Ump) -> Result<(), Refused>;
-    pub fn clock(&self) -> Moment;
-    pub fn lost(&self) -> u64;
-    pub fn late(&self) -> u64;
+    pub fn push(&mut self, at: impl Into<Stamp>, ump: Ump) -> Result<(), Refused>;
+    pub fn push_all(&mut self, events: impl IntoIterator<Item = (S, Ump)>) -> usize;
+    pub fn clock(&self) -> Option<Moment>;
+    pub fn counts(&self) -> InletCounts; // `InletCounts::losses() -> Losses`
 }
-pub enum Refused { Full, Beat }
+pub enum Stamp { NextBlock, Frame(Frame), Moment(Moment) }
+pub enum Refused { Full }
 pub struct EventInletNode { /* ring consumer, waiting list, SeqWriter */ }
 impl EventInletNode {
     pub fn pair(capacity: usize) -> (Self, EventInletWriter);

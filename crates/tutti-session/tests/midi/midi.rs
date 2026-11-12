@@ -283,13 +283,6 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
         .unwrap();
     b.note_on(Frame(3_000), MidiChannel::FIRST, NoteNumber::of(64), MF)
         .unwrap();
-    assert_eq!(
-        a.send(
-            At::Beat(Beat(1.0)),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 66, MF)
-        ),
-        Err(SendError::Beat)
-    );
     roll(&s, 4_000);
     let heard = note_ons(&seen);
     assert_eq!(

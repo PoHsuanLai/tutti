@@ -258,7 +258,7 @@ mod tests {
 
     /// **A frame or a beat is the time it names**: `Frame(n)` is `At::Frame`
     /// and `Beat(b)` is `At::Beat`. (`At` has no `Moment` variant: a moment
-    /// carries its own rate and is pushed with `push_at`.)
+    /// carries its own rate and is a `Stamp::Moment`.)
     #[test]
     fn a_frame_or_a_beat_is_an_at() {
         assert_eq!(At::from(Frame(48_000)), At::Frame(Frame(48_000)));

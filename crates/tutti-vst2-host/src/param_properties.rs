@@ -591,7 +591,7 @@ mod tests {
             category: 0,
             num_parameters_in_category: 0,
             reserved: 0,
-            category_label: [0; 8],
+            category_label: [0; api::consts::MAX_CATEGORY_LABEL],
             future: [0; 16],
         }
     }

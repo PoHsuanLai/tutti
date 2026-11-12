@@ -104,7 +104,11 @@ fn bus_ref(node: u64, bus: u8) -> BusRef {
 }
 
 fn feed(source: BusSource, fold: BusFold) -> BusFeed {
-    BusFeed { source, fold }
+    BusFeed {
+        source,
+        fold,
+        fade: tutti_graph::EdgeFade::None,
+    }
 }
 
 fn from(node: u64, bus: u8) -> BusSource {

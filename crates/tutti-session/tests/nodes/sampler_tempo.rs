@@ -83,7 +83,7 @@ fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
     let (voice, _handle) = s.graph().add(pool);
     for port in 0..2 {
         s.graph()
-            .set_sources(Root::output(port), [OutPort::new(voice, port)])
+            .set_sources_hard(Root::output(port), [OutPort::new(voice, port)])
             .unwrap();
     }
     let _ = s.update();

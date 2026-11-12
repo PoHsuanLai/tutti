@@ -5997,7 +5997,8 @@ commit, like any wiring change:
   source goes with its key, so the old source's past audio is never played
   out of the new wiring (the rule `DelayKey` already states).
 - **No automatic declick of audio wiring** in `Editor` (**superseded for the
-  session graph** by [doc 030](030-core-api.md) §4, 2026-11-12: the session's
+  session graph**, built: see "As built (declicked wiring)" under Edge gain, and
+  [doc 030](030-core-api.md) §4: the session's
   `connect`/`disconnect` fade over `EDGE_DECLICK` unless `.hard()`): a source connected at
   full level steps in. A host that wants a declick wires the edge with a
   weight of `0.0` and ramps it to `1.0` (Edge gain), and ramps down before
@@ -6583,6 +6584,50 @@ Where the build chose:
   `the_base_is_the_lanes_knob_and_a_route_returns_to_it` (base 0.5, route,
   analytic figure around it, base moved while routed, route gone, base).
   `bevy-tutti` (parked) would carry the weight in `PortSources` entries.
+
+**As built (declicked wiring, doc 030 §4).** The session graph's wiring fades;
+`Editor` fades nothing unless asked. What is there:
+
+- **`EdgeFade { None, In, Out }`** is a field of `EdgeGain` and a control of the
+  lane, in the lane's cell beside the base (`Editor::set_edge_fade`; no
+  recompile once the entry exists). A lane *starts* a fade when the kind it
+  reads differs from the one it last acted on, from the weight its previous
+  block ended on (a new lane has none: `In` starts at `0.0`, `Out` at its base),
+  and runs it over `EDGE_DECLICK` (`= MODE_DECLICK`, 256 frames) counted in
+  frames across blocks: `w(j) = start + (goal - start) * j / 256`, `goal` from
+  frame 256 on. `In` goes to the base the lane reads, `Out` to `0.0` and stays
+  there. It is a new `Weight::Fade` of the existing lane, not a new op: the
+  kernels, `par.rs`'s claims and `CONSTANT` (a fading addend is not constant)
+  are the lane's, so a parallel render equals the serial one bit for bit
+  (`edge_fade::parallel_equals_serial_for_a_graph_mid_fade`) and a block mid-fade
+  allocates nothing (`rt_no_alloc::{fading_edges,parallel_fading_edges}_are_allocation_free`).
+- **The end is reported on a ring, not in the commit box.** A commit's box
+  returns only with a commit; a lane reports its ended fade when it ends. The
+  executor pushes `(EdgeId, EdgeFade)` on a fixed ring after the block (a lane
+  whose push fails offers it again next block) and `Editor::settle_fades`
+  drains it: an `Out` edge leaves the spec with its entry, an `In` edge forgets
+  the fade (and its entry, if it carries nothing else), and a stale report (the
+  edge since reconnected or re-faded) is ignored. The session calls it from
+  `Phase::Collect` and commits when it changed the spec. The delay ring of a
+  fading-out edge lives until the edge leaves the plan.
+- **Bus edges fade per lane**: `BusFeed::fade` is the feed's, the lowering gives
+  every lane of the fold an entry with it (so a lane of weight `1.0` is a
+  weighted lane while it fades), and a lane's report settles the feed.
+- **Removing a node** (`Editor::remove_declicked`): the node's output edges and
+  bus edges that a plan has heard are marked `Out` and stay with the node, which
+  keeps rendering; its input edges, event edges and params go at once; the node
+  goes in `settle_fades` when no edge leaves it. `Editor::remove` is the cut.
+- **A fork starts steady**: `Editor::fork` drops an `Out` edge and ends an `In`.
+- **Not faded:** event edges; a lane a modulation drives (its frames are the
+  param port's: a driven lane's fade is over at its first block, a hard step);
+  an edge no plan has heard (`Editor::edge_is_live`), which is removed at once.
+  The reference interpreter does not model fades (`Editor` never sets one in the
+  differential suite).
+- **Session surface:** `connect` fades in, `Connection::hard` does not;
+  `disconnect`, `disconnect_all`, `set_sources` removals and `remove` fade out,
+  `disconnect_hard` and `set_sources_hard` cut. An edge fading out is no source
+  (`sources`, `bus_sources`, `edge_gain` ignore it) and `connect` brings it back
+  from where the fade had got to.
 
 #### Bypass and mute are graph state
 

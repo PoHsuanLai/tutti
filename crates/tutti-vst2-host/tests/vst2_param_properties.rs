@@ -234,7 +234,7 @@ fn an_answering_plugin_round_trips_every_property_field() {
 
     let category = props.category.expect("probe declares USES_CATEGORY");
     assert_eq!(category.index, PROBE_PARAM_CATEGORY as u16);
-    assert_eq!(category.label, "Filter");
+    assert_eq!(category.label, "Filter Envelope Section");
     assert_eq!(category.parameter_count, 2);
 
     assert_eq!(props.display_index, Some(3));

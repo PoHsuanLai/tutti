@@ -23,7 +23,7 @@ use tutti_graph::{
     Bus, BusRole, Buses, Cost, Cx, HasParam, HasParams, InBus, IntoNode, Io, Node, NodeParts,
     OutBus, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{Latency, MaxBlock, Mix, SampleRate, Samples, Tail};
+use tutti_types::{Latency, MaxBlock, Mix, SampleRate, Samples, Seconds, Tail};
 
 use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 
@@ -38,7 +38,7 @@ use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 const UNBOUNDED: u64 = u64::MAX;
 
 /// What a [`FamilyNode`] declares of a family's ring-out, and whether it parks on it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Rings {
     /// The family says how long it still rings ([`Family::Member`]'s
     /// [`System::tail`]): the node tracks it
@@ -52,6 +52,11 @@ pub enum Rings {
     /// declares [`Tail::None`] and never parks. It runs on silent input, so a detector
     /// that must keep tracking a key sees every block.
     Silent,
+    /// It rings for at most this long, a ceiling the family knows when it is built (the
+    /// General MIDI chorus: its longest delay, since it has no feedback): the node
+    /// declares [`Tail::Finite`] of it at the prepared rate and never narrows, cuts or
+    /// parks (the graph's silence skip reads the ceiling). A ceiling errs long.
+    Ceiling(Seconds),
 }
 
 /// A [`Family`] a [`FamilyNode`] can run: the design plus the cells of its
@@ -63,8 +68,12 @@ pub trait NodeFamily: Family + 'static {
 
     /// What the node declares of the ring-out and whether it parks on it ([`Rings`]).
     /// A family that tracks it ([`Rings::Tracks`], the default) must be sampled once per
-    /// block ([`SAMPLING`](Self::SAMPLING) is [`Cadence::BLOCK`]).
-    const RINGS: Rings = Rings::Tracks;
+    /// block ([`SAMPLING`](Self::SAMPLING) is [`Cadence::BLOCK`]). It is the instance's,
+    /// not the type's: a family built with no feedback can declare a ceiling where the
+    /// same family with feedback declares none.
+    fn rings(&self) -> Rings {
+        Rings::Tracks
+    }
 
     /// The grid on which the node reads its controls and designs: one design per
     /// block (the default), or every `n` frames when a control moves inside the
@@ -329,7 +338,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         self.family
             .member_into(&controls, self.rate, &mut self.network);
         self.realization.retarget(&self.network);
-        if F::RINGS == Rings::Tracks {
+        if self.family.rings() == Rings::Tracks {
             self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
         }
         self.applied = Some(controls);
@@ -542,10 +551,11 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
         ports(self.channels)
             .with_cost(cost(self.realization.effort()))
             .with_latency(Latency::new(self.latency))
-            .with_tail(match F::RINGS {
+            .with_tail(match self.family.rings() {
                 Rings::Tracks => tail_of(self.ceiling),
                 Rings::Unknown => Tail::Unknown,
                 Rings::Silent => Tail::None,
+                Rings::Ceiling(seconds) => Tail::Finite(seconds.to_samples_ceil(self.rate)),
             })
             .with_param_addrs(addrs)
     }
@@ -585,7 +595,7 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
             self.apply(target);
         }
 
-        let cut = if F::RINGS == Rings::Tracks {
+        let cut = if self.family.rings() == Rings::Tracks {
             self.cut(&mut io)
         } else {
             size

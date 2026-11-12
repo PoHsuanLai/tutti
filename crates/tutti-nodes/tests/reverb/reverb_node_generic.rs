@@ -13,7 +13,7 @@ use tutti_dsp::{
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
-use tutti_nodes::{ControlSet, FamilyNode, NodeFamily};
+use tutti_nodes::{ControlSet, FamilyNode, NodeFamily, Rings};
 use tutti_types::MaxBlock;
 use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
@@ -30,6 +30,8 @@ struct Echo {
     claimed: usize,
     actual: usize,
     latency: usize,
+    /// A fixed ceiling to declare ([`Rings::Ceiling`]) instead of tracking the tail.
+    ceiling: Option<Seconds>,
 }
 
 /// The echo's recurrence: its delay line is the state, it has no coefficients.
@@ -174,6 +176,10 @@ impl ControlSet for NoParams {
 impl NodeFamily for Echo {
     type Set = NoParams;
 
+    fn rings(&self) -> Rings {
+        self.ceiling.map_or(Rings::Tracks, Rings::Ceiling)
+    }
+
     fn set(&self, _: &()) -> NoParams {
         NoParams
     }
@@ -220,6 +226,7 @@ fn latency_and_tail_are_declared_apart() {
         claimed: 100,
         actual: 100,
         latency: 7,
+        ceiling: None,
     };
     let mut n = node(echo);
     let shape = n.shape();
@@ -244,6 +251,7 @@ fn a_cut_inside_a_block_is_at_tail_plus_latency() {
             claimed,
             actual: claimed + 3,
             latency,
+            ceiling: None,
         }),
         frame: 0,
     };
@@ -271,6 +279,7 @@ fn a_cut_inside_a_block_is_at_tail_plus_latency() {
             claimed,
             actual: claimed + 3,
             latency,
+            ceiling: None,
         }),
         frame: 0,
     };
@@ -293,6 +302,7 @@ fn a_block_aligned_cut_parks_and_resets() {
                 claimed: 20,
                 actual: 20,
                 latency: 0,
+                ceiling: None,
             }),
             frame: 0,
         };
@@ -307,6 +317,7 @@ fn a_block_aligned_cut_parks_and_resets() {
         claimed: 20,
         actual: 300,
         latency,
+        ceiling: None,
     };
     let mut rig = Rig {
         node: node(echo),
@@ -356,6 +367,7 @@ fn the_graphs_mix_is_aligned_to_the_kernels_latency() {
                 claimed,
                 actual: claimed,
                 latency,
+                ceiling: None,
             },
             (),
         ),
@@ -389,8 +401,47 @@ fn a_design_without_cells_offers_no_ports() {
         claimed: 4,
         actual: 4,
         latency: 0,
+        ceiling: None,
     });
     assert_eq!(n.shape().params.len(), 0);
     assert_eq!(n.param_set().params().count(), 0);
     assert!(n.param_set().get(UnitParam::Wet).is_none());
+}
+
+/// A family that declares a ceiling ([`Rings::Ceiling`]) has that ceiling as its tail, in
+/// frames at the prepared rate and rounded up, and the node never narrows it or cuts: an
+/// echo that rings past the ceiling still sounds, and the node reports no narrower tail.
+#[test]
+fn a_declared_ceiling_is_the_tail_and_is_never_narrowed_or_cut() {
+    let echo = Echo {
+        claimed: 20,
+        actual: 300,
+        latency: 0,
+        ceiling: Some(Seconds(0.010_01)),
+    };
+    let mut rig = Rig {
+        node: node(echo),
+        frame: 0,
+    };
+    // 10.01 ms at 48 kHz is 480.48 frames: the ceiling rounds up.
+    assert_eq!(
+        rig.node.shape().tail,
+        tutti_types::Tail::Finite(Samples(481))
+    );
+    let mut out = Vec::new();
+    for b in 0..6 {
+        let x = if b == 0 {
+            impulse_block()
+        } else {
+            vec![0.0; BLOCK]
+        };
+        let driven = rig.block(&x);
+        assert_eq!(driven.reported_tail, None, "a ceiling is never narrowed");
+        assert_ne!(driven.status, Some(Status::Idle), "a ceiling never parks");
+        out.extend(driven.audio.into_iter().next().unwrap());
+    }
+    assert_eq!(
+        out[300], 1.0,
+        "the echo past the claim still sounds: no cut"
+    );
 }

@@ -138,6 +138,9 @@ pub enum UnitParam {
     Hold = 32,
     /// Gate range: the gain of a closed gate (`Db`, `<= 0`): a floor, not a mute.
     Range = 33,
+    /// Delay cross-feedback: how much of each channel's delayed signal feeds the other
+    /// channels' lines (`Feedback`), beside its own `Feedback`.
+    CrossFeedback = 34,
 }
 
 /// The error converting a `u16` that is not a known [`UnitParam`]
@@ -202,6 +205,7 @@ impl TryFrom<u16> for UnitParam {
             31 => StereoWidth,
             32 => Hold,
             33 => Range,
+            34 => CrossFeedback,
             other => return Err(UnitParamOutOfRange(other)),
         })
     }
@@ -651,7 +655,7 @@ mod tests {
     #[test]
     fn u16_round_trips() {
         // 21 is retired (it was `Mute`), the one gap.
-        for id in (0..=33u16).filter(|&id| id != 21) {
+        for id in (0..=34u16).filter(|&id| id != 21) {
             let p = UnitParam::try_from(id).expect("known id");
             assert_eq!(u16::from(p), id);
         }
@@ -685,7 +689,7 @@ mod tests {
         assert_eq!(UnitParam::try_from(26), Ok(UnitParam::Diffusion));
         assert_eq!(UnitParam::try_from(27), Ok(UnitParam::Freeze));
         assert_eq!(UnitParam::try_from(28), Ok(UnitParam::Azimuth));
-        assert_eq!(UnitParam::try_from(34), Err(UnitParamOutOfRange(34)));
+        assert_eq!(UnitParam::try_from(35), Err(UnitParamOutOfRange(35)));
         // Decay's three bands are indices of one kind.
         for (index, packed) in [(0u8, 0x0019u16), (1, 0x0119), (2, 0x0219)] {
             assert_eq!(UnitAddr::new(UnitParam::Decay, index).to_u16(), packed);
@@ -696,7 +700,7 @@ mod tests {
     /// (and is `AudioParam`'s `P`), so this table is the compatibility
     /// record: a renumbered or re-ordered variant fails here by name, which
     /// `u16_round_trips` (any id maps to *some* variant) cannot say.
-    const PINNED: [(UnitParam, u16); 33] = [
+    const PINNED: [(UnitParam, u16); 34] = [
         (UnitParam::Cutoff, 0),
         (UnitParam::Q, 1),
         (UnitParam::GainDb, 2),
@@ -730,6 +734,7 @@ mod tests {
         (UnitParam::StereoWidth, 31),
         (UnitParam::Hold, 32),
         (UnitParam::Range, 33),
+        (UnitParam::CrossFeedback, 34),
     ];
 
     /// **Index 0 is the plain id**, for every param: the packed form of
@@ -765,7 +770,7 @@ mod tests {
     /// stays the strict, index-free decode.
     #[test]
     fn unknown_kinds_and_indexed_ids_are_refused_by_the_right_decoder() {
-        assert_eq!(UnitAddr::try_from(0x0122), Err(UnitParamOutOfRange(0x0122)));
+        assert_eq!(UnitAddr::try_from(0x0123), Err(UnitParamOutOfRange(0x0123)));
         assert_eq!(UnitAddr::try_from(0x00FF), Err(UnitParamOutOfRange(0x00FF)));
         // 9_999 is 0x270F: kind 15 at index 39, which is a known kind.
         assert_eq!(
@@ -782,8 +787,8 @@ mod tests {
     /// decode looks at).
     #[test]
     fn the_out_of_range_error_names_the_low_byte() {
-        let e = UnitAddr::try_from(0x0122).unwrap_err();
-        assert_eq!(e.to_string(), "unknown UnitParam id: 290 (low byte 34)");
+        let e = UnitAddr::try_from(0x0123).unwrap_err();
+        assert_eq!(e.to_string(), "unknown UnitParam id: 291 (low byte 35)");
     }
 
     /// An address is equal to a bare param only at index 0, in both

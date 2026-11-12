@@ -17,7 +17,7 @@ use assert_no_alloc::AllocDisabler;
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
-use tutti_types::{ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
+use tutti_types::{BusTopology, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -107,7 +107,10 @@ fn limiter_node_wide_6ch_process_is_allocation_free() {
 #[test]
 fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
     gate(
-        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-0.3)),
+        BrickwallLimiterNode::with_bus(
+            BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
+            Db::new(-0.3),
+        ),
         1.5,
         1,
         5_000,
@@ -197,7 +200,10 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
     use tutti_graph::contract::Direct;
 
     let mut node = Direct::new(
-        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-0.3)),
+        BrickwallLimiterNode::with_bus(
+            BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
+            Db::new(-0.3),
+        ),
         SampleRate(48_000.0),
         64,
     );
@@ -233,7 +239,10 @@ fn brickwall_limiter_moving_cell_and_hostile_lane_are_allocation_free() {
     use tutti_types::UnitParam;
 
     let mut node = Direct::new(
-        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-0.3)),
+        BrickwallLimiterNode::with_bus(
+            BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
+            Db::new(-0.3),
+        ),
         SampleRate(48_000.0),
         64,
     );

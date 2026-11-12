@@ -6,7 +6,7 @@
 //! first to limit musically, the second as a safety catch.
 
 use tutti_dsp::{BrickwallControls, BrickwallFamily};
-use tutti_types::{BusTopology, ChannelLayout, Db, SampleRate};
+use tutti_types::{BusTopology, Db, SampleRate};
 
 use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
@@ -44,22 +44,15 @@ impl BrickwallLimiterNode {
     /// an output, and for musical limiting use [`LimiterNode`](super::LimiterNode).
     #[must_use]
     pub fn new(ceiling_db: impl Into<Db>) -> Self {
-        Self::with_channels(ChannelLayout::STEREO, ceiling_db)
+        Self::with_bus(BusTopology::STEREO, ceiling_db)
     }
 
-    /// An `n`-channel brickwall limiter (at least mono). The clip is stateless, so
-    /// every channel is clamped to the same (linked) ceiling.
-    /// `with_channels(ChannelLayout::STEREO, ..)` is [`new`](Self::new).
-    ///
-    /// # Panics
-    ///
-    /// Past 16 channels: a brickwall is one bus.
+    /// A brickwall limiter on the bus `input`, as wide as it. The clip is stateless,
+    /// so every channel is clamped to the same (linked) ceiling.
+    /// `with_bus(BusTopology::STEREO, ..)` is [`new`](Self::new); an `n`-channel one is
+    /// `with_bus(BusTopology::unassigned(n)?, ..)`, which refuses a width past one bus.
     #[must_use]
-    pub fn with_channels(channels: impl Into<ChannelLayout>, ceiling_db: impl Into<Db>) -> Self {
-        // At least mono: a zero-width unit would report 0 ports, which is not a limiter.
-        let width = ChannelLayout::from_count(channels.into().count().max(1));
-        let input =
-            BusTopology::unassigned(width).expect("a brickwall is at most 16 channels wide");
+    pub fn with_bus(input: BusTopology, ceiling_db: impl Into<Db>) -> Self {
         Self::live(
             BrickwallFamily::new(input),
             BrickwallControls {
@@ -80,26 +73,10 @@ const DEAD_BAND: f32 = 0.0001;
 control_set! {
     BrickwallSet(_s): BrickwallControls = BrickwallControls::DEFAULT;
     live: (all);
-    Ceiling => Db = ceiling;
+    Ceiling => Db = ceiling { fast, not_nan };
 
     fn defaults(&self) -> BrickwallControls {
         BrickwallControls::DEFAULT
-    }
-
-    /// The ceiling is the recurrence's lane: read per frame from the port, with the cell
-    /// as the base a frame nobody drives clamps at.
-    fn fast(&self) -> &'static [usize] {
-        &[0]
-    }
-
-    /// The clamp lands whole: a ramped bound would let a sample past the new ceiling.
-    fn glides(&self, _: usize) -> bool {
-        false
-    }
-
-    /// `+-inf` are ceilings (pass everything, mute); only a NaN has no level.
-    fn valid(&self, _: usize, v: f32) -> bool {
-        !v.is_nan()
     }
 
     /// Designs again only for a ceiling that moved more than [`DEAD_BAND`] in amplitude.
@@ -128,7 +105,7 @@ mod tests {
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use tutti_graph::contract::assert_param_fork;
     use tutti_graph::{Node, ParamNode};
-    use tutti_types::{Tail, UnitParam};
+    use tutti_types::{ChannelLayout, Tail, UnitParam};
 
     /// The shape declares the ceiling, a zero latency and no tail, and the width it was
     /// built for.
@@ -288,7 +265,10 @@ mod tests {
             })
             .collect();
         let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
-        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(3u16), Db::new(0.0));
+        let mut bw = BrickwallLimiterNode::with_bus(
+            BusTopology::unassigned(ChannelLayout::from(3u16)).unwrap(),
+            Db::new(0.0),
+        );
         let out = drive(&mut bw, RATE, &refs, &[Some(&fed)]);
         for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
             for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
@@ -312,8 +292,11 @@ mod tests {
     }
 
     #[test]
-    fn brickwall_with_channels_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(0.0));
+    fn brickwall_with_bus_reports_arity_and_clips_all() {
+        let mut bw = BrickwallLimiterNode::with_bus(
+            BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
+            Db::new(0.0),
+        );
         assert_eq!(bw.shape().audio_in().count(), 6);
         assert_eq!(bw.shape().audio_out().count(), 6);
         let mut out = [0.0f32; 6];

@@ -833,8 +833,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   them (shape, prepare, process, params, fork; `FamilyNode<F: NodeFamily>` is
   the one node over every reverb, filter and brickwall `Family` (`NodeFamily::RINGS` is a
   `Rings`: `Tracks` parks on the tail, `Unknown` never narrows it, `Silent` declares
-  `Tail::None`; a `ControlSet` says which controls are `fast` (read per frame into
-  `Feed.lanes`, the cell the base), which `glides` and which values are `valid`; a keyed
+  `Tail::None`; each `control_set!` row declares how its control is read, a `Control`
+  (`{ whole }`, `{ fast }`: read per frame into `Feed.lanes`, the cell the base, at most
+  `MAX_LANES` or it does not compile; `{ not_nan }`: accepts `+-inf`); a keyed
   family's key bus is read into `Feed.key`), with `FreeverbNode` and `FdnNode`
   its two reverb instances and `ReverbKind` the choice between them; a family node is
   the wet signal alone, and its dry/wet is the graph's mix, `Editor::set_mix`), and re-exports only the

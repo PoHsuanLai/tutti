@@ -629,10 +629,10 @@ impl Node for MultibandCompressorNode {
             self.render(input, output, &lanes, 0..n);
         }
 
-        // Each band's deepest reduction in the block, taken from the state.
-        let state = self.realization.state_mut();
+        // Each band's deepest reduction in the block, the recurrence's reading.
+        let reading = self.realization.take_reading();
         for (b, band) in self.bands.iter().enumerate() {
-            band.reduction.store(state.take_deepest(b));
+            band.reduction.store(reading.band(b));
         }
         Status::Modified
     }

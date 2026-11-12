@@ -20,7 +20,7 @@
 //! [`Feed`] (lane `b` is band `b`'s).
 //!
 //! The deepest reduction each band reached since the last read is in the state
-//! ([`MultibandState::take_deepest`]): a reading for a meter, which the node publishes.
+//! ([`BandReductions`], the recurrence's [`Readout`]): a reading for a meter, which the node publishes.
 
 use core::ops::Range;
 
@@ -32,8 +32,8 @@ use crate::control::COEFF_STREAM;
 use crate::filter::CrossoverState;
 use crate::{
     Approach, Cadence, ChannelRecurrence, Channels, CrossoverControls, CrossoverError,
-    CrossoverFamily, CrossoverModel, CrossoverTree, Effort, Family, Feed, Glide, Recurrence, Ring,
-    Setup, Start, Steps, System,
+    CrossoverFamily, CrossoverModel, CrossoverTree, Effort, Family, Feed, Glide, Readout,
+    Recurrence, Ring, Setup, Start, Steps, System,
 };
 
 /// The most bands.
@@ -328,7 +328,7 @@ impl Approach for MultibandCoeffs {
 }
 
 /// What a block changes: each channel's crossover sections, each band's follower and the
-/// deepest reduction each band reached since [`take_deepest`](Self::take_deepest), and the
+/// deepest reduction each band reached since the last [`Readout`] read, and the
 /// frame's scratch (one split and one sum per channel, sized to the width with the
 /// recurrence).
 #[derive(Clone, Debug)]
@@ -342,15 +342,26 @@ pub struct MultibandState {
     deepest: [f32; MAX_BANDS],
 }
 
-impl MultibandState {
-    /// Band `band`'s largest reduction since the last call, in dB and positive, and starts
-    /// the next reading from nothing: a **measurement**, for a reduction meter. It counts
-    /// only the frames the band is not fully bypassed on: a bypassed band passes none of it.
-    /// [`Db::UNITY`] (0 dB) is no reduction, and what a band past the last reads.
-    pub fn take_deepest(&mut self, band: usize) -> Db {
-        self.deepest
-            .get_mut(band)
-            .map_or(Db::UNITY, |d| Db(core::mem::take(d)))
+/// Each band's largest reduction since the last read, in dB and positive: a
+/// **measurement**, for a reduction meter, and the multiband's [`Readout`]. It counts only
+/// the frames a band is not fully bypassed on (a bypassed band passes none of it).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BandReductions([Db; MAX_BANDS]);
+
+impl BandReductions {
+    /// Band `band`'s deepest reduction: [`Db::UNITY`] (0 dB) is none, and what a band past
+    /// the last reads.
+    #[must_use]
+    pub fn band(&self, band: usize) -> Db {
+        self.0.get(band).copied().unwrap_or(Db::UNITY)
+    }
+}
+
+impl Readout for MultibandRecurrence {
+    type Reading = BandReductions;
+
+    fn take_reading(&self, state: &mut MultibandState) -> BandReductions {
+        BandReductions(core::mem::take(&mut state.deepest).map(Db))
     }
 }
 

@@ -886,8 +886,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   its `Approach` glides to it, its `run` is the per-frame math), and `Realized<R>` is the one
   runner over it, with the planar block shape `process(&Feed, output, frames)`, where
   `Feed` is the effect input (the main audio, the side-chain key channels of a
-  `Channels::keyed` family, and up to `MAX_LANES` = 2 per-frame control lanes, doc 024
-  section 2.7.3);
+  `Channels::keyed` family, and up to `MAX_LANES` = 4 per-frame control lanes (the multiband's four band thresholds), doc 024
+  section 2.7.3; a recurrence that keeps a measurement for its node implements `Readout`,
+  and `Realized::take_reading` is the one way out of a runner's state);
   the coefficients approach each new point by an `Approach` (a `Glide` of a `Lerp`
   set, or the FDN's own, a glide a field); prepared from a
   `Setup` and the recurrence's `Capacity`, moved to each member by `retarget`; a family whose

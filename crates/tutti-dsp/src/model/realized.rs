@@ -269,6 +269,18 @@ pub struct Start<R: Recurrence> {
     pub target: R::Target,
 }
 
+/// A [`Recurrence`] that keeps a **measurement** in its state for its node to read after
+/// a block (the multiband's deepest reduction per band, for its meters): the one way out
+/// of a runner's state. A recurrence with nothing to read does not implement it, and
+/// exposes nothing; the state itself never leaves the runner.
+pub trait Readout: Recurrence {
+    /// What one read hands back.
+    type Reading;
+
+    /// The reading kept in `state` since the last one, and starts the next from nothing.
+    fn take_reading(&self, state: &mut Self::State) -> Self::Reading;
+}
+
 /// The one runner: a [`Recurrence`]'s coefficients approaching the target κ asks of
 /// each new member, run a step at a time while they move and in one run once they
 /// have landed.
@@ -295,6 +307,15 @@ pub struct Realized<R: Recurrence> {
     into: usize,
 }
 
+impl<R: Readout> Realized<R> {
+    /// The recurrence's [`Reading`](Readout::Reading) since the last call, starting the
+    /// next from nothing ([`Readout::take_reading`]). Control or audio side; allocates
+    /// nothing.
+    pub fn take_reading(&mut self) -> R::Reading {
+        self.recurrence.take_reading(&mut self.state)
+    }
+}
+
 impl<R: Recurrence> Realized<R> {
     /// A runner of `recurrence`, at rest on `member`. Control side; allocates.
     #[must_use]
@@ -318,14 +339,6 @@ impl<R: Recurrence> Realized<R> {
     #[cfg(test)]
     pub(crate) fn parts_mut(&mut self) -> (&R, &mut R::Coeffs, &mut R::State) {
         (&self.recurrence, &mut self.coeffs, &mut self.state)
-    }
-
-    /// The state, for a node that takes a measurement the recurrence keeps in it (the
-    /// multiband's deepest reduction, for a meter) after a block. Writing to it other than
-    /// through what the recurrence's state offers is not supported: the runner and the
-    /// recurrence own what it holds.
-    pub fn state_mut(&mut self) -> &mut R::State {
-        &mut self.state
     }
 
     /// Sizes the runner for `setup`, from the worst case `capacity`. Control side;

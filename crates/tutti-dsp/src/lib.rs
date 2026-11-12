@@ -108,12 +108,13 @@ pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::sink::{DitherSink, DitherSpec};
 pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
-    BandSettings, BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence,
-    CompressorControls, CompressorFamily, CompressorMember, CompressorRecurrence, GAIN_GLIDE,
-    GateControls, GateFamily, GateMember, GateRecurrence, KeySource, LimiterControls, LimiterCurve,
-    LimiterFamily, LimiterMember, LimiterRecurrence, Lookahead, LookaheadError, MultibandFamily,
-    MultibandMember, MultibandRecurrence, MultibandSettings, MultibandState, amplitude_to_db,
-    compute_compressor_gain_reduction, compute_limiter_gain,
+    BandReductions, BandSettings, BrickwallControls, BrickwallFamily, BrickwallMember,
+    BrickwallRecurrence, CompressorControls, CompressorFamily, CompressorMember,
+    CompressorRecurrence, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence,
+    KeySource, LimiterControls, LimiterCurve, LimiterFamily, LimiterMember, LimiterRecurrence,
+    Lookahead, LookaheadError, MultibandFamily, MultibandMember, MultibandRecurrence,
+    MultibandSettings, MultibandState, amplitude_to_db, compute_compressor_gain_reduction,
+    compute_limiter_gain,
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{
@@ -126,8 +127,8 @@ pub use filter::{
 pub use interp::cubic_hermite;
 pub use model::{
     Anchor, Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Feed, Glide, Grows,
-    Lerp, Lti, MAX_LANES, MaxDecay, MaxDecayError, Period, Reach, Realized, Recurrence, Ring,
-    Setup, Start, Step, Steps, System, TAIL_FLOOR,
+    Lerp, Lti, MAX_LANES, MaxDecay, MaxDecayError, Period, Reach, Readout, Realized, Recurrence,
+    Ring, Setup, Start, Step, Steps, System, TAIL_FLOOR,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::swept::SweptLines;

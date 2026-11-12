@@ -24,6 +24,6 @@ pub use limiter::{
     LimiterControls, LimiterFamily, LimiterMember, LimiterRecurrence, Lookahead, LookaheadError,
 };
 pub use multiband::{
-    BandSettings, MultibandFamily, MultibandMember, MultibandRecurrence, MultibandSettings,
-    MultibandState,
+    BandReductions, BandSettings, MultibandFamily, MultibandMember, MultibandRecurrence,
+    MultibandSettings, MultibandState,
 };

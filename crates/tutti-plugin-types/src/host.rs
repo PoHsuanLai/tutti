@@ -63,6 +63,26 @@ pub trait Control: EditorWindow {
     /// ([`Edit`](crate::Edit)).
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
 
+    /// The plain value `value` stands for, in the unit
+    /// [`ParameterInfo::unit`](crate::ParameterInfo::unit) names: the
+    /// **format's** conversion, never a formula over the declared range (VST3
+    /// asks the controller's `normalizedParamToPlain`, whose shape is the
+    /// plugin's; CLAP and AU convert against their own declared range). `None`
+    /// when the parameter does not exist or the format has no plain value for
+    /// it (a VST2 parameter with no integer range).
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64>;
+
+    /// The inverse of [`parameter_plain`](Self::parameter_plain): the
+    /// [`Normalized`] value a plain one stands for, clamped onto `0..=1` where
+    /// the plain value is outside what the plugin declares. `None` as for
+    /// `parameter_plain`.
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized>;
+
     /// The plugin's display text for `value`, if it has any.
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
         let _ = (main, id, value);

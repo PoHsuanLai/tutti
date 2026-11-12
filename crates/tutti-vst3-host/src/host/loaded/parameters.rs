@@ -66,8 +66,16 @@ impl Vst3Loaded {
         let list = (0..self.parameter_count(main))
             .filter_map(|i| {
                 let info = self.parameter_info_at(main, i)?;
-                let plain = self.parameter_plain_range(main, ParamId::new(info.id()));
-                Some(build_param_info(info, plain, &groups))
+                let id = ParamId::new(info.id());
+                let plain = self.parameter_plain_range(main, id);
+                // The default is the plugin's own plain value for
+                // `defaultNormalizedValue`: exact, not a point on a line
+                // between the ends.
+                let default = self
+                    .plugin
+                    .normalized_to_plain(main, id.get(), info.default_normalized_value())
+                    .filter(|d| d.is_finite());
+                Some(build_param_info(info, plain.zip(default), &groups))
             })
             .collect::<Vec<_>>();
         // `IParameterFunctionName` is read once per unit with the function the
@@ -79,7 +87,10 @@ impl Vst3Loaded {
     }
 
     /// The plugin's own `[min, max]` for a parameter, recovered by asking its
-    /// controller to invert the normalized map at the endpoints.
+    /// controller for the plain value at the normalized endpoints. The ends are
+    /// data for display: converting any other value is the controller's own
+    /// `normalizedParamToPlain` (`Control::parameter_plain`), whatever shape
+    /// it has, never a line drawn between these two.
     ///
     /// VST3 reports no range on `ParameterInfo` — every value it exchanges is
     /// normalized `0..=1`. But `IEditController::normalizedParamToPlain` is the
@@ -371,13 +382,14 @@ fn declared_role(is_bypass: bool) -> Option<UnitParam> {
 /// Builds a shared [`ParameterInfo`] from a VST3 parameter descriptor and the
 /// plain range probed from the plugin's controller.
 ///
-/// `plain` is [`None`] when the plugin has no edit controller to ask, or when
-/// its `normalizedParamToPlain` is incoherent — see
+/// `plain` is the probed range with the plugin's plain default, and [`None`]
+/// when the plugin has no edit controller to ask, or when its
+/// `normalizedParamToPlain` is incoherent — see
 /// [`Vst3Loaded::parameter_plain_range`]. The parameter is then `Normalized`,
 /// which is what the ABI alone reports.
 pub(super) fn build_param_info(
     info: Vst3ParameterInfo,
-    plain: Option<PlainRange>,
+    plain: Option<(PlainRange, f64)>,
     groups: &HashMap<UnitId, &str>,
 ) -> ParameterInfo {
     // VST3 reports every one of these, so all six are known.
@@ -396,21 +408,10 @@ pub(super) fn build_param_info(
     reported.set(ParamFlags::HIDDEN, info.is_hidden());
     reported.set(ParamFlags::PROGRAM_CHANGE, info.is_program_change());
 
-    // `defaultNormalizedValue` is normalized even when the range is plain, so
-    // it goes through the same map as any other incoming value.
+    // `defaultNormalizedValue` is normalized; its plain value came from the
+    // controller's own map, so a non-linear or decreasing one is exact.
     let range = match plain {
-        Some(PlainRange { min, max }) => {
-            let r = ParamRange::Plain {
-                min,
-                max,
-                default: 0.0,
-            };
-            ParamRange::Plain {
-                min,
-                max,
-                default: r.to_plain(info.default_normalized_value()),
-            }
-        }
+        Some((PlainRange { min, max }, default)) => ParamRange::Plain { min, max, default },
         None => ParamRange::Normalized {
             default: info.default_normalized_value(),
         },

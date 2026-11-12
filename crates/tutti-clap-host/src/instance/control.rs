@@ -9,10 +9,9 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence, EditorSize,
-    EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamId, ParamRange,
-    ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor, PluginError,
-    PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples, TimerId,
-    WindowHandle,
+    EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamId, ParameterInfo,
+    PluginBus, PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail,
+    PresetId, RenderMode, Request, RescanScope, Samples, TimerId, WindowHandle,
 };
 
 use super::controller::ClapController;
@@ -83,18 +82,13 @@ pub fn descriptor_of(info: &PluginInfo, editor: EditorPresence) -> PluginDescrip
     }
 }
 
-/// `plain` against the parameter's declared range, `0..=1`. A parameter the
-/// plugin declares no range for is passed through rather than scaled against
-/// invented bounds, the same choice `add_param_changes` makes for an id missing
-/// from its range table.
-fn normalize(range: Option<(f64, f64)>, plain: f64) -> f64 {
-    match range {
-        Some((min, max)) => ParamRange::Plain {
-            min,
-            max,
-            default: min,
-        }
-        .to_normalized(plain),
+/// `plain` against the parameter's bounds, `0..=1`. A parameter the plugin
+/// declares no range for is passed through rather than scaled against invented
+/// bounds, the same choice `add_param_changes` makes for an id missing from its
+/// range table.
+fn normalize(bounds: Option<ParamBounds>, plain: f64) -> f64 {
+    match bounds {
+        Some(bounds) => bounds.normalized(plain),
         None => plain,
     }
 }
@@ -290,7 +284,7 @@ impl Control for ClapLoaded {
     fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
         let plain = self.plain_value(main, id.get())?;
         Some(Normalized::clamped(normalize(
-            self.parameter_range(main, id.get()),
+            self.parameter_bounds(main, id.get()),
             plain,
         )))
     }
@@ -305,6 +299,23 @@ impl Control for ClapLoaded {
         }
         let plain = denormalize(bounds, value);
         self.set_plain_value(main, id.get(), plain);
+    }
+
+    /// Plain from [`ParamBounds::plain`], which CLAP's own range owns (stepped
+    /// values on their integer). `None` for an id the plugin does not declare.
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        Some(self.parameter_bounds(main, id.get())?.plain(value.get()))
+    }
+
+    /// The inverse, [`ParamBounds::normalized`].
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        let bounds = self.parameter_bounds(main, id.get())?;
+        Some(Normalized::clamped(bounds.normalized(plain)))
     }
 
     /// The plugin's own display string. `value_to_text` takes a plain value, so
@@ -324,7 +335,7 @@ impl Control for ClapLoaded {
     ) -> Option<Normalized> {
         let plain = self.text_to_value(main, id.get(), text)?;
         Some(Normalized::clamped(normalize(
-            self.parameter_range(main, id.get()),
+            self.parameter_bounds(main, id.get()),
             plain,
         )))
     }
@@ -560,6 +571,19 @@ impl Control for ClapController {
     /// ring keeps the latest value per parameter and retries on the next tick.
     fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         self.queue_edit(id, value);
+    }
+
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        Control::parameter_plain(self.loaded(), main, id, value)
+    }
+
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        Control::parameter_normalized(self.loaded(), main, id, plain)
     }
 
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {

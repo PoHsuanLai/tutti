@@ -33,8 +33,8 @@ use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    Normalized, ParamId, ParamRange, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi,
-    note_id_for, note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
+    Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi, note_id_for,
+    note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;
@@ -111,24 +111,50 @@ impl ParamBounds {
             .map(|i| &table[i])
     }
 
+    /// The declared bounds, `None` for a degenerate span or a non-finite
+    /// bound: a malformed plugin, which no conversion invents a range for.
+    fn span(&self) -> Option<(f64, f64)> {
+        (self.min.is_finite() && self.max.is_finite() && self.max > self.min)
+            .then_some((self.min, self.max))
+    }
+
     /// `normalized` (`0..=1`) as the plugin's plain value, in `f64`, inside the
-    /// declared bounds (inverted or non-finite bounds are a malformed plugin
-    /// and never panic or produce NaN). A stepped parameter's value is rounded
-    /// to the nearest integer, so the plugin's truncation reads the step the
-    /// normalized value names.
+    /// declared bounds. CLAP has no normalized value of its own (`params.h`
+    /// speaks plain `double`s only), so the position is this crate's, linear
+    /// over `[min, max]`: the one place the mapping is written. A degenerate or
+    /// non-finite span yields `min` when that is finite and `0.0` otherwise, and
+    /// NaN is `0.0` normalized, so the result is always finite. A stepped
+    /// parameter's value is rounded to the nearest integer, so the plugin's
+    /// truncation reads the step the normalized value names.
     #[must_use]
     pub fn plain(&self, normalized: f64) -> f64 {
-        let plain = ParamRange::Plain {
-            min: self.min,
-            max: self.max,
-            default: self.min,
-        }
-        .to_plain(normalized);
-        if self.stepped && self.max > self.min {
-            plain.round().clamp(self.min, self.max)
+        let n = if normalized.is_nan() {
+            0.0
+        } else {
+            normalized.clamp(0.0, 1.0)
+        };
+        let Some((min, max)) = self.span() else {
+            return if self.min.is_finite() { self.min } else { 0.0 };
+        };
+        let plain = min + n * (max - min);
+        if self.stepped {
+            plain.round().clamp(min, max)
         } else {
             plain
         }
+    }
+
+    /// The inverse of [`plain`](Self::plain): `plain` clamped into the bounds,
+    /// as a position on `0..=1`. `0.0` for NaN and for a degenerate span.
+    #[must_use]
+    pub fn normalized(&self, plain: f64) -> f64 {
+        let Some((min, max)) = self.span() else {
+            return 0.0;
+        };
+        if plain.is_nan() {
+            return 0.0;
+        }
+        (plain.clamp(min, max) - min) / (max - min)
     }
 }
 
@@ -2943,6 +2969,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// CLAP has no normalized value, so the host's position is the line over the
+    /// declared range, and its inverse reads a plain value back to the position
+    /// it came from; the ends are the ends, and a stepped value inverts too.
+    #[test]
+    fn the_host_position_is_the_line_over_the_declared_range_and_inverts() {
+        let cutoff = ParamBounds::continuous(1, 20.0, 20_000.0);
+        assert_eq!(cutoff.plain(0.0), 20.0);
+        assert_eq!(cutoff.plain(1.0), 20_000.0);
+        assert_eq!(cutoff.plain(0.5), 10_010.0);
+        assert_eq!(cutoff.normalized(10_010.0), 0.5);
+        assert_eq!(cutoff.normalized(-5.0), 0.0, "below the range clamps");
+        assert_eq!(cutoff.normalized(1e9), 1.0, "above the range clamps");
+
+        let steps = ParamBounds::stepped(2, 0.0, 22.0);
+        for k in 0..=22u32 {
+            let n = steps.normalized(f64::from(k));
+            assert_eq!(steps.plain(n), f64::from(k), "step {k}");
+        }
+    }
+
+    /// A malformed range never makes a NaN or an infinity: the conversions are
+    /// what reach the plugin and the host's display.
+    #[test]
+    fn a_malformed_range_converts_to_finite_values() {
+        for (min, max) in [
+            (f64::NAN, 1.0),
+            (0.0, f64::INFINITY),
+            (f64::NEG_INFINITY, 1.0),
+            (3.0, 3.0),
+            (5.0, 1.0),
+        ] {
+            let bounds = ParamBounds::continuous(1, min, max);
+            for v in [0.0, 0.5, 1.0, f64::NAN] {
+                assert!(
+                    bounds.plain(v).is_finite(),
+                    "plain({v}) over [{min}, {max}]"
+                );
+                assert!(
+                    bounds.normalized(v).is_finite(),
+                    "normalized({v}) over [{min}, {max}]"
+                );
+            }
+        }
+        assert_eq!(ParamBounds::continuous(1, 3.0, 3.0).plain(0.5), 3.0);
     }
 
     /// The edit path (`add_param_edit`) steps the same way, and a range whose

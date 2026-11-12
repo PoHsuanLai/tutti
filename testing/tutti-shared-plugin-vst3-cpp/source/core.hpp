@@ -10,7 +10,18 @@
 
 namespace shared {
 
-constexpr uint32_t kLevel = 0, kAux = 1, kMode = 2, kParams = 3, kModes = 5;
+constexpr uint32_t kLevel = 0, kAux = 1, kMode = 2, kTone = 3, kParams = 4, kModes = 5;
+// `tone`'s plain domain (core.rs, "Spec"): a decreasing exponential, 20000 * 1000^(-n).
+constexpr double kTonePlainMax = 20000.0, kTonePlainMin = 20.0;
+inline double tonePlain (double n)
+{
+	return kTonePlainMax * std::pow (kTonePlainMin / kTonePlainMax, std::min (1.0, std::max (0.0, n)));
+}
+inline double toneNormalized (double plain)
+{
+	double p = std::min (kTonePlainMax, std::max (kTonePlainMin, plain));
+	return std::min (1.0, std::max (0.0, std::log (kTonePlainMax / p) / std::log (kTonePlainMax / kTonePlainMin)));
+}
 constexpr uint32_t kLatency = 137, kTail = 8191;
 constexpr uint32_t kMagic = 0x31505354; // "TSP1"
 constexpr size_t kStateHead = 24;
@@ -28,7 +39,7 @@ struct Ev { int kind; uint32_t offset; uint32_t id; double value; };
 
 struct Core
 {
-	std::atomic<double> level {0.5}, aux {0.25};
+	std::atomic<double> level {0.5}, aux {0.25}, tone {0.5};
 	std::atomic<uint32_t> mode {0}, notice {0};
 	std::atomic<uint64_t> calls {0}, frames {0};
 	std::atomic<uint32_t> prepares {0}, maxBlock {0};
@@ -51,14 +62,14 @@ struct Core
 	static bool known (uint32_t id) { return id < kParams; }
 	bool param (uint32_t id, double& v) const
 	{
-		if (id == kLevel) v = level; else if (id == kAux) v = aux;
+		if (id == kLevel) v = level; else if (id == kAux) v = aux; else if (id == kTone) v = tone;
 		else if (id == kMode) v = double (mode) / double (kModes - 1); else return false;
 		return true;
 	}
 	void setParam (uint32_t id, double v)
 	{
 		v = std::min (1.0, std::max (0.0, v));
-		if (id == kLevel) level = v; else if (id == kAux) aux = v;
+		if (id == kLevel) level = v; else if (id == kAux) aux = v; else if (id == kTone) tone = v;
 		else if (id == kMode) mode = std::min<uint32_t> (kModes - 1, uint32_t (std::lround (v * (kModes - 1))));
 	}
 	uint32_t latency () const { return mode == 1 ? kLatency : 0; }

@@ -394,6 +394,130 @@ fn parallel_crossfades_are_allocation_free() {
     crossfades_are_allocation_free_on(4);
 }
 
+/// An instrument stand-in: counts the events it receives, and writes three
+/// messages for its successor when replaced (`Node::chase`).
+struct HeldChaser(Arc<AtomicU64>);
+
+impl Node for HeldChaser {
+    fn shape(&self) -> Shape {
+        Shape::buses(Buses::NONE, Buses::unassigned(ChannelLayout::MONO))
+            .with_events(1, 0)
+            .with_chase(4)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        self.0
+            .fetch_add(io.events(0).len() as u64, Ordering::Relaxed);
+        io.output(0).fill(0.25);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn chase(&self, out: &mut tutti_graph::Chase<'_>) {
+        for i in 0..3 {
+            out.push(m1_note_on(
+                MidiChannel::FIRST,
+                NoteNumber::of(60 + i),
+                U7::of(100),
+            ));
+        }
+    }
+}
+
+/// **A chase held behind a running fade is delivered without allocating**:
+/// A fades to B, C waits behind B (the commit that queued it applied before
+/// the gate, since applying allocates by design), and inside the gate B's
+/// fade ends, C takes over and its first block carries B's three messages.
+/// The count of what C received proves the delivery ran inside the gate.
+fn a_held_chase_is_delivered_allocation_free_on(workers: usize) {
+    const KEYS: u64 = 6;
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    use_pool(&mut exec, workers);
+    let counters = || {
+        (0..KEYS)
+            .map(|_| Arc::new(AtomicU64::new(0)))
+            .collect::<Vec<_>>()
+    };
+    let (a, b, c) = (counters(), counters(), counters());
+    for k in 0..KEYS {
+        ed.insert(
+            NodeKey(k + 1),
+            "chaser",
+            Unforkable(HeldChaser(Arc::clone(&a[k as usize]))),
+        );
+    }
+    ed.spec_mut().topology.set_outputs((1..=KEYS).map(|k| {
+        Source::Node(OutPort {
+            node: NodeKey(k),
+            port: 0,
+        })
+    }));
+    ed.commit().expect("commits");
+    let mut out = vec![vec![0.0f32; 64]; KEYS as usize];
+    let transport = Transport::default();
+    let mut block = |exec: &mut tutti_graph::Executor| {
+        // An array: the gate allows no allocation, a block's slice list included.
+        let mut planes = out.iter_mut();
+        let mut slices: [&mut [f32]; KEYS as usize] =
+            std::array::from_fn(|_| planes.next().expect("one plane a key").as_mut_slice());
+        exec.process(64, &transport, &[], &mut slices);
+    };
+    block(&mut exec);
+    let fade = |n| Fade::new(Samples(n), CrossfadeCurve::EqualPower);
+    for k in 0..KEYS {
+        ed.replace(
+            NodeKey(k + 1),
+            Unforkable(HeldChaser(Arc::clone(&b[k as usize]))),
+            fade(256),
+        )
+        .expect("fits");
+    }
+    ed.commit().expect("commits");
+    block(&mut exec);
+    for k in 0..KEYS {
+        ed.replace(
+            NodeKey(k + 1),
+            Unforkable(HeldChaser(Arc::clone(&c[k as usize]))),
+            fade(256),
+        )
+        .expect("fits");
+    }
+    ed.commit().expect("commits");
+    // The commit queuing the third is applied here, outside the gate.
+    block(&mut exec);
+    for (b, c) in b.iter().zip(&c) {
+        assert_eq!(b.load(Ordering::Relaxed), 3, "A's chase reached B");
+        assert_eq!(c.load(Ordering::Relaxed), 0, "C waits behind B's fade");
+    }
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..16 {
+            block(&mut exec);
+        }
+    });
+    for seen in &c {
+        assert_eq!(
+            seen.load(Ordering::Relaxed),
+            3,
+            "C took over inside the gate and received B's chase, once"
+        );
+    }
+    assert_eq!(exec.dropped_event_count(), 0);
+}
+
+#[test]
+fn a_held_chase_is_delivered_allocation_free() {
+    a_held_chase_is_delivered_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_a_held_chase_is_delivered_allocation_free() {
+    a_held_chase_is_delivered_allocation_free_on(4);
+}
+
 /// Pushes `burst` events on the first frame of every 256-frame bar into a
 /// port declaring `cap` per block, counting what its writer refuses.
 struct Spray {

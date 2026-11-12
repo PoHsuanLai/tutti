@@ -23,7 +23,8 @@ use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
 use tutti_session::{
     EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiError, MidiEvent, MidiRouteRule,
-    NoSuchMidiRoute, PHASES, PhaseCx, SendError, Session, SessionEvent, SessionNode, UmpOut,
+    NoSuchMidiRoute, PHASES, PhaseCx, RouteDeclarer, SendError, Session, SessionEvent, SessionNode,
+    UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -419,7 +420,7 @@ fn the_routes_have_one_declarer() {
     let resolve = |k: u8| (k == 1).then_some(b);
     assert!(matches!(
         s.midi().set_routes(input, &host, None, resolve),
-        Err(MidiError::TwoRouteDeclarers(_))
+        Err(MidiError::TwoRouteDeclarers(RouteDeclarer::Session))
     ));
     assert!(fed(&s, a) && !fed(&s, b), "the refusal changed nothing");
 
@@ -428,11 +429,11 @@ fn the_routes_have_one_declarer() {
     assert!(fed(&s, b), "the host's routes apply");
     assert!(matches!(
         s.midi().route(MidiRouteRule::any_channel().to(a)),
-        Err(MidiError::TwoRouteDeclarers(_))
+        Err(MidiError::TwoRouteDeclarers(RouteDeclarer::Host))
     ));
     assert!(matches!(
         s.midi().set_route_fallback(Some(a)),
-        Err(MidiError::TwoRouteDeclarers(_))
+        Err(MidiError::TwoRouteDeclarers(RouteDeclarer::Host))
     ));
     assert!(!fed(&s, a) && fed(&s, b), "the refusals changed nothing");
 
@@ -600,24 +601,13 @@ fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
     events
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::Midi(MidiEvent::Added { device, info }) => {
-                assert_eq!(*device, info.id, "the field is the info's id");
-                Some(("added", info.name.clone()))
-            }
-            SessionEvent::Midi(MidiEvent::Removed { device, info }) => {
-                assert_eq!(*device, info.id, "the field is the info's id");
-                Some(("removed", info.name.clone()))
-            }
-            SessionEvent::Midi(MidiEvent::Changed { device, info }) => {
-                assert_eq!(*device, info.id, "the field is the info's id");
-                Some(("changed", info.name.clone()))
-            }
-            SessionEvent::Midi(MidiEvent::InputLost { device, info }) => {
-                assert_eq!(*device, info.id, "the field is the info's id");
+            SessionEvent::Midi(MidiEvent::Added { info }) => Some(("added", info.name.clone())),
+            SessionEvent::Midi(MidiEvent::Removed { info }) => Some(("removed", info.name.clone())),
+            SessionEvent::Midi(MidiEvent::Changed { info }) => Some(("changed", info.name.clone())),
+            SessionEvent::Midi(MidiEvent::InputLost { info }) => {
                 Some(("input lost", info.name.clone()))
             }
-            SessionEvent::Midi(MidiEvent::OutputLost { device, info }) => {
-                assert_eq!(*device, info.id, "the field is the info's id");
+            SessionEvent::Midi(MidiEvent::OutputLost { info }) => {
                 Some(("output lost", info.name.clone()))
             }
             _ => None,

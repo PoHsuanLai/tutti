@@ -95,9 +95,9 @@ pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
 pub use edge::EdgeGainError;
-#[cfg(feature = "midi")]
-pub use error::MidiError;
 pub use error::{ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result};
+#[cfg(feature = "midi")]
+pub use error::{MidiError, RouteDeclarer};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]

@@ -16,25 +16,19 @@ pub enum MidiEvent {
     /// list at any time is [`Midi::devices`](crate::Midi::devices).
     #[cfg(feature = "midi-hardware")]
     Added {
-        /// The device.
-        device: tutti_midi_hardware::DeviceId,
-        /// What is listed of it (`info.id == device`).
+        /// What is listed of it; `info.id` is the device.
         info: tutti_midi_hardware::DeviceInfo,
     },
     /// A MIDI device left the list; `info` is its last.
     #[cfg(feature = "midi-hardware")]
     Removed {
-        /// The device.
-        device: tutti_midi_hardware::DeviceId,
-        /// Its last listing (`info.id == device`).
+        /// Its last listing; `info.id` is the device.
         info: tutti_midi_hardware::DeviceInfo,
     },
     /// A listed device's name or direction changed; its id did not.
     #[cfg(feature = "midi-hardware")]
     Changed {
-        /// The device.
-        device: tutti_midi_hardware::DeviceId,
-        /// Its listing now (`info.id == device`).
+        /// Its listing now; `info.id` is the device.
         info: tutti_midi_hardware::DeviceInfo,
     },
     /// A device the session held open as an input vanished: its connection
@@ -43,9 +37,7 @@ pub enum MidiEvent {
     /// are not released (design 017 §8.3 is not built).
     #[cfg(feature = "midi-hardware")]
     InputLost {
-        /// The device.
-        device: tutti_midi_hardware::DeviceId,
-        /// Its last listing (`info.id == device`).
+        /// Its last listing; `info.id` is the device.
         info: tutti_midi_hardware::DeviceInfo,
     },
     /// The device the session held open as its output vanished: the output
@@ -53,9 +45,7 @@ pub enum MidiEvent {
     /// ([`OutputDropped`](Self::OutputDropped)) until a host connects another.
     #[cfg(feature = "midi-hardware")]
     OutputLost {
-        /// The device.
-        device: tutti_midi_hardware::DeviceId,
-        /// Its last listing (`info.id == device`).
+        /// Its last listing; `info.id` is the device.
         info: tutti_midi_hardware::DeviceInfo,
     },
     /// A device the session holds open as an input has settled its UMP Stream
@@ -102,11 +92,10 @@ impl MidiEvent {
     /// The event a change of the device list is.
     pub(crate) fn of_device(event: tutti_midi_hardware::DeviceEvent) -> Self {
         use tutti_midi_hardware::DeviceEvent;
-        let device = event.info().id.clone();
         match event {
-            DeviceEvent::Added(info) => Self::Added { device, info },
-            DeviceEvent::Removed(info) => Self::Removed { device, info },
-            DeviceEvent::Changed(info) => Self::Changed { device, info },
+            DeviceEvent::Added(info) => Self::Added { info },
+            DeviceEvent::Removed(info) => Self::Removed { info },
+            DeviceEvent::Changed(info) => Self::Changed { info },
         }
     }
 }

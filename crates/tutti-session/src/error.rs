@@ -195,7 +195,28 @@ pub enum MidiError {
         "the MIDI routes are declared by {0}; clear those before declaring \
          them the other way"
     )]
-    TwoRouteDeclarers(&'static str),
+    TwoRouteDeclarers(RouteDeclarer),
+}
+
+/// Who holds the hardware input's routes when the other declarer is refused
+/// ([`MidiError::TwoRouteDeclarers`]).
+#[cfg(feature = "midi")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteDeclarer {
+    /// The session's own rules: `Midi::route` and `Midi::set_route_fallback`.
+    Session,
+    /// A host's whole table: `Midi::set_routes`.
+    Host,
+}
+
+#[cfg(feature = "midi")]
+impl std::fmt::Display for RouteDeclarer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Session => "the session's own `route`",
+            Self::Host => "a host's `set_routes`",
+        })
+    }
 }
 
 #[cfg(feature = "midi")]

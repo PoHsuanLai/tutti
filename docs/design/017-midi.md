@@ -3109,14 +3109,14 @@ such as reassembled SysEx; that is decided when that code is written.
 ### L1f-a (the session's MIDI front): as built
 
 - **One event, one error.** `SessionEvent::Midi(MidiEvent)` replaced the seven `Midi*` variants
-  of the session (`#[non_exhaustive]` at both levels). A variant about one device carries its
-  `DeviceId` as a field (`Added`, `Removed`, `Changed`, `InputLost`, `OutputLost`
-  `{ device, info }`, `StreamSettled { device, stream }`); a count over every input or the
+  of the session (`#[non_exhaustive]` at both levels). A variant about one device names it once:
+  a listing carries its `DeviceInfo`, whose `id` is the device (`Added`, `Removed`, `Changed`,
+  `InputLost`, `OutputLost` `{ info }`), and `StreamSettled { device, stream }` its `DeviceId`; a count over every input or the
   output is its own variant with no device (`InputsDropped { total }`, `OutputDropped { total }`),
   and `WatchFailed` is the watch's. `Error::Midi(MidiError)` is the one MIDI error of the
   session: `Hardware`, `File`, `Send`, `NoSuchRoute` carry their cause as the `source`, beside the
   session's own refusals (`NoEventInput`, `NoMidiInput`, `NoHardware`, `NotSessionMidi`,
-  `TwoRouteDeclarers`); the calls of `Midi` return `Result<_, MidiError>` and `?` converts a
+  `TwoRouteDeclarers(RouteDeclarer)`, naming who holds the routes); the calls of `Midi` return `Result<_, MidiError>` and `?` converts a
   cause (or a `MidiError`) into the session's `Error`. The umbrella names it `tutti::midi::Error`.
 - **Hardware through `s.midi()`.** `devices()`, `connect_input`, `disconnect_input`,
   `connect_output` and `disconnect_output` take a `DeviceQuery` (`&DeviceId` or `&str`) and

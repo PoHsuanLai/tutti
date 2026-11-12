@@ -173,6 +173,8 @@ pub mod midi {
     #[cfg(feature = "session")]
     pub use tutti_session::MidiError as Error;
     #[cfg(feature = "session")]
+    pub use tutti_session::RouteDeclarer;
+    #[cfg(feature = "session")]
     pub use tutti_session::{
         InstrumentHandle, LiveInput, Midi, MidiEvent, MidiRouteRule, SendError, SessionInstrument,
         TakePlacement,

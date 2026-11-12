@@ -27,10 +27,10 @@ use tutti_midi_runtime::{
 use tutti_types::{Frame, Moment, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 
-use crate::SendError;
 use crate::graph::{Feeder, Graph};
 use crate::instrument::SharedKeys;
 use crate::{EventOutPort, MidiError, MidiEvent, MidiNodes};
+use crate::{RouteDeclarer, SendError};
 
 /// What a [`Midi`] call returns: the area's one error.
 type Result<T> = std::result::Result<T, MidiError>;
@@ -701,20 +701,13 @@ impl MidiState {
                 if io.disconnect_input(&device.id) {
                     out.push(
                         MidiEvent::InputLost {
-                            device: device.id.clone(),
                             info: device.clone(),
                         }
                         .into(),
                     );
                 }
                 if io.output().is_some_and(|open| open.id == device.id) && io.disconnect_output() {
-                    out.push(
-                        MidiEvent::OutputLost {
-                            device: device.id.clone(),
-                            info: device,
-                        }
-                        .into(),
-                    );
+                    out.push(MidiEvent::OutputLost { info: device }.into());
                 }
             }
         }
@@ -1125,7 +1118,7 @@ impl Midi<'_> {
 
     fn own_may_declare(&self) -> Result<()> {
         if self.state.host_routes {
-            Err(MidiError::TwoRouteDeclarers("a host's `set_routes`"))
+            Err(MidiError::TwoRouteDeclarers(RouteDeclarer::Host))
         } else {
             Ok(())
         }
@@ -1180,7 +1173,7 @@ impl Midi<'_> {
     ) -> Result<()> {
         let input = input.into();
         if !self.state.rules.is_empty() || self.state.fallback.is_some() {
-            return Err(MidiError::TwoRouteDeclarers("the session's own `route`"));
+            return Err(MidiError::TwoRouteDeclarers(RouteDeclarer::Session));
         }
         let rules: Vec<&MidiRouteRule<T>> = rules.into_iter().collect();
         self.state.host_routes = !rules.is_empty() || fallback.is_some();

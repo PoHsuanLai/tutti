@@ -19,9 +19,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use tutti_dsp::{
-    Ceiling, ChunkSize, CrossoverControls, CrossoverDesign, Design, LadderControls, LadderDesign,
-    LadderType, Setup, StreamingResampler, SvfControls, SvfDesign, SvfType, allpass_chain,
-    allpass_coeff,
+    ChunkSize, CrossoverControls, CrossoverFamily, Family, LadderControls, LadderFamily,
+    LadderType, Recurrence, Setup, StreamingResampler, SvfControls, SvfFamily, SvfType,
+    allpass_chain, allpass_coeff,
 };
 use tutti_fixtures::signal::write_wav_f32;
 use tutti_types::{BusTopology, Db, Drive, Hz, MaxBlock, Q, Resonance, SampleRate, Samples};
@@ -30,21 +30,20 @@ const RATE: f64 = 48_000.0;
 /// Impulse-response length: long enough that every case below has rung out.
 const IR_FRAMES: usize = 1 << 16;
 
-/// Runs `design` at `controls` over `input` (mono in), returning one plane per output.
-fn run<D: Design>(
+/// Runs `design` (a family that does not grow) at `controls` over `input` (mono in), returning one plane per output.
+fn run<D: Family<Recurrence: Recurrence<Capacity = ()>>>(
     design: &D,
     controls: &D::Controls,
     rate: SampleRate,
     input: &[f32],
 ) -> Vec<Vec<f32>> {
     let mut k = design.realized();
-    let ceiling = Ceiling::<D::Range>::at(rate).expect("a positive rate");
     let setup = Setup {
         rate,
         max_block: MaxBlock::of(Samples(512)),
     };
-    k.prepare(&design.bounds(&ceiling), &setup);
-    k.retarget(&design.design(controls, rate));
+    k.prepare(&(), &setup);
+    k.retarget(&design.member(controls, rate));
     let outputs = design.channels().output_width();
     let mut out = vec![vec![0.0f32; input.len()]; outputs];
     for (start, block) in (0..input.len())
@@ -122,8 +121,8 @@ fn svf(dir: &Path, cases: &mut Cases) {
         (SvfType::HighShelf, "highshelf", 8_000.0, 0.5, -6.0),
         (SvfType::HighShelf, "highshelf", 12_000.0, 0.707, 6.0),
     ];
-    let d64 = SvfDesign::<f64>::new(BusTopology::MONO);
-    let d32 = SvfDesign::<f32>::new(BusTopology::MONO);
+    let d64 = SvfFamily::<f64>::new(BusTopology::MONO);
+    let d32 = SvfFamily::<f32>::new(BusTopology::MONO);
     for (i, (ty, label, freq, q, gain)) in settings.into_iter().enumerate() {
         let c = SvfControls {
             ty,
@@ -145,7 +144,7 @@ fn svf(dir: &Path, cases: &mut Cases) {
 
 fn ladder(dir: &Path, cases: &mut Cases) {
     let rate = SampleRate(RATE);
-    let d = LadderDesign::<f64>::new(BusTopology::MONO);
+    let d = LadderFamily::<f64>::new(BusTopology::MONO);
     // The impulse is small so the saturator (tanh) stays in its linear region:
     // the case judges the small-signal response, and the Python half divides the
     // amplitude out.
@@ -184,7 +183,7 @@ fn crossover(dir: &Path, cases: &mut Cases) {
         ("lr4_2band", vec![1_000.0f32]),
         ("lr4_3band", vec![300.0, 3_000.0]),
     ] {
-        let d = CrossoverDesign::new(BusTopology::MONO, splits.len() + 1).expect("bands");
+        let d = CrossoverFamily::new(BusTopology::MONO, splits.len() + 1).expect("bands");
         let hz: Vec<Hz> = splits.iter().map(|&f| Hz(f)).collect();
         let c = CrossoverControls::new(&hz, rate).expect("controls");
         // One channel per band, band 0 first.

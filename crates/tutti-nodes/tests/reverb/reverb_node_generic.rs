@@ -1,4 +1,4 @@
-//! `DesignNode<D>` over a design that is not Freeverb: a test-only echo with a
+//! `FamilyNode<D>` over a design that is not Freeverb: a test-only echo with a
 //! realization latency and a tail the test can make lie. What Freeverb cannot show
 //! (it has no latency and a tail longer than a block): the graph's mix aligned
 //! to the realization's latency, the cut at `tail + latency` inside a block, and a
@@ -7,13 +7,13 @@
 use std::ops::Range;
 
 use tutti_dsp::{
-    Approach, Ceiling, Channels, Design, Effort, FirSummary, MaxDecay, Network, NetworkSizes,
-    Recurrence, Sizes, Stage, Start,
+    Approach, Capacity, Channels, Effort, Family, FirSummary, Grows, MaxDecay, Network,
+    NetworkCapacity, Reach, Recurrence, Stage, Start,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
-use tutti_nodes::{ControlSet, DesignNode, NodeDesign};
+use tutti_nodes::{ControlSet, FamilyNode, NodeFamily};
 use tutti_types::MaxBlock;
 use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
@@ -59,8 +59,8 @@ impl Approach for NoCoeffs {
 }
 
 impl Recurrence for EchoRecurrence {
-    type Model = Network;
-    type Bounds = NetworkSizes;
+    type Member = Network;
+    type Capacity = NetworkCapacity;
     type Target = ();
     type Coeffs = NoCoeffs;
     type State = EchoLine;
@@ -116,18 +116,16 @@ impl Recurrence for EchoRecurrence {
     }
 }
 
-impl Design for Echo {
+impl Family for Echo {
     type Controls = ();
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
+    type Member = Network;
     type Recurrence = EchoRecurrence;
 
     fn channels(&self) -> Channels {
         Channels::same(BusTopology::MONO)
     }
 
-    fn design_into(&self, _: &(), rate: SampleRate, out: &mut Network) {
+    fn member_into(&self, _: &(), rate: SampleRate, out: &mut Network) {
         out.clear(rate);
         let _ = out.stages.push(Stage::Fir(FirSummary {
             length: Samples(self.claimed),
@@ -142,12 +140,16 @@ impl Design for Echo {
         Network::new(rate)
     }
 
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        NetworkSizes::measure(&self.design(&(), ceiling.rate()), ceiling.floor())
-    }
-
     fn recurrence(&self) -> EchoRecurrence {
         EchoRecurrence { echo: *self }
+    }
+}
+
+impl Grows for Echo {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        NetworkCapacity::need(&self.member(&(), reach.rate()), reach.floor())
     }
 }
 
@@ -169,20 +171,24 @@ impl ControlSet for NoParams {
     fn assemble(&self, _: &[f32]) {}
 }
 
-impl NodeDesign for Echo {
+impl NodeFamily for Echo {
     type Set = NoParams;
 
     fn set(&self, _: &()) -> NoParams {
         NoParams
     }
+
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.grown(rate)
+    }
 }
 
-fn node(echo: Echo) -> DesignNode<Echo> {
-    prepared(DesignNode::live(echo, ()), SR, BLOCK)
+fn node(echo: Echo) -> FamilyNode<Echo> {
+    prepared(FamilyNode::live(echo, ()), SR, BLOCK)
 }
 
 struct Rig {
-    node: DesignNode<Echo>,
+    node: FamilyNode<Echo>,
     frame: u64,
 }
 
@@ -345,7 +351,7 @@ fn a_block_aligned_cut_parks_and_resets() {
 fn the_graphs_mix_is_aligned_to_the_kernels_latency() {
     let (claimed, latency) = (25, 7);
     let mut solo = Solo::new(
-        DesignNode::live(
+        FamilyNode::live(
             Echo {
                 claimed,
                 actual: claimed,

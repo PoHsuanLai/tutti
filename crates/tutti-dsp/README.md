@@ -11,10 +11,10 @@ built on this crate's FFT, windows and `StftGeometry` (whose refusals are `Error
 `tutti-nodes` wraps each of these in a graph node that owns the params, the
 ramps and the graph shape. Here they take plain typed values per call.
 
-- **Filters** — `SvfCoeffs` and `SvfDesign<F>` (Simper's trapezoidal
+- **Filters** — `SvfCoeffs` and `SvfFamily<F>` (Simper's trapezoidal
   state-variable filter, eight responses by `SvfType`);
-  `LadderCoeffs` and `LadderDesign<F>` (the Moog
-  ladder, `tanh` feedback); `CrossoverDesign` and `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order
+  `LadderCoeffs` and `LadderFamily<F>` (the Moog
+  ladder, `tanh` feedback); `CrossoverFamily` and `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order
   split (the design on a 16-frame grid, the state with ramped frequency changes). The three
   designs are one `Filter<R>` over a `ChannelRecurrence`, run by `Realized<PerChannel<R>>`. `Real` is the `f32` or `f64` the state
   runs in; its transcendentals call `libm`, so results do not depend on the
@@ -31,8 +31,8 @@ ramps and the graph shape. Here they take plain typed values per call.
   `COEFF_INTERVAL` samples and interpolated between).
 - **Waveshaping** — `ShapeKind`, six memoryless curves with block kernels.
 - **Reverb** — the reverb model of design 022, a `Network` with analytic queries
-  (RT60, tail, stability, densities), and two designs over it: `FreeverbDesign` and
-  `FdnDesign`, the feedback delay network.
+  (RT60, tail, stability, densities), and two families over it: `FreeverbFamily` and
+  `FdnFamily`, the feedback delay network.
 - **Spatial** — vector base amplitude panning (`SpeakerLayout`, `VbapKernel`) and the
   HRTF binaural convolver (`HrtfBinaural`).
 - **Resampling and dither** — `FftResampler` and `StreamingResampler` for export, and
@@ -60,7 +60,7 @@ plans lazily, per scratch, on the cold path.
 
 ## Features
 
-- `contract` (off by default): the `contract` module, the cases a `Design` and its
+- `contract` (off by default): the `contract` module, the cases a `Family` and its
   `Realized` runner are held to (design 024 section 6). Test support.
 
 The `tutti` crate re-exports this one as `tutti::dsp` behind its `dsp` feature. `tutti-nodes`, `tutti-sampler` and

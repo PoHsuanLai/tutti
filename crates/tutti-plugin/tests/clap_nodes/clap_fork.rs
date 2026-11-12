@@ -615,7 +615,7 @@ fn render_to_buffers(
         tutti_export::Output::master(tutti_export::BufferTarget::new(config.1)),
         &mut tutti_export::Control::none(),
     )
-    .map(|outcome| outcome.map(|produced| produced.buffers().expect("a buffers output")))
+    .map(|outcome| outcome.map(|produced| produced.into_buffers().expect("a buffers output")))
 }
 
 /// Export the plugin through `tutti_export` exactly as an export does: fork

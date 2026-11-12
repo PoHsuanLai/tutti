@@ -37,7 +37,8 @@ pub struct TransportSettings {
     pub(crate) map_generation: Arc<AtomicU64>,
     /// The playhead, in beats. Written by `TransportClock` via its position
     /// writeback (and by a locate, which moves the readout at once); read by
-    /// the UI and by pull-based sources through [`beat`](Self::beat).
+    /// pull-based sources through [`beat`](Self::beat) (an app reads the
+    /// session's playhead).
     ///
     /// Crate-private, as is [`segment_generation`](Self::segment_generation):
     /// only the transport's one audio side
@@ -179,8 +180,10 @@ impl TransportSettings {
         TempoReader::new(&self.tempo_map)
     }
 
-    /// The playhead as last published by the clock.
-    pub fn beat(&self) -> Beat {
+    /// The playhead as last published by the clock: the transport's own read
+    /// (its [`Timeline`](super::Timeline)). An app reads the session's
+    /// playhead, which carries the beat with the play state and the frame.
+    pub(crate) fn beat(&self) -> Beat {
         Beat(self.beat.load(Ordering::Acquire))
     }
 

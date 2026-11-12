@@ -13,8 +13,8 @@ use tutti_tempo::TempoMap;
 use tutti_transport::{FadeOut, MotionEvent, QueueFull, ScheduleFull, Transport};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, Samples};
 
-use crate::HeardTapError;
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
+use crate::{HeardTapError, RemoveError};
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
 ///
@@ -626,7 +626,7 @@ pub enum RootTopologyStatus {
 /// [`render_frame`](Self::render_frame), [`Graph::set_sample_rate`]), and
 /// dropping the session. [`update`](Self::update) and the
 /// [`Commit`](Phase::Commit) and [`AfterCommit`](Phase::AfterCommit) phases
-/// check it too. Editing the graph (an insert, [`remove`](Self::remove), a
+/// check it too. Editing the graph (an add, [`remove`](Self::remove), a
 /// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```
@@ -640,7 +640,7 @@ pub enum RootTopologyStatus {
 ///     .outputs_floor(1)
 ///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
-/// let (dc, _) = session.graph().insert(Const::mono(0.5));
+/// let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
 /// session.graph().set_sources_hard(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
 /// session.update();
 ///
@@ -1062,13 +1062,20 @@ impl Session {
     /// `modulation`), and, when it is a clip or live input of the
     /// session's (`midi`, feature `midi`), that. A clip or live input
     /// feeding `node` stays, to be re-aimed (`Midi::retarget`) or removed.
-    pub fn remove(&mut self, node: impl Into<NodeKey>) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`RemoveError::NoSuchNode`] when `node` is not in the graph (removed
+    /// already, or never added); nothing changes, the session's declarations
+    /// on it included.
+    pub fn remove(&mut self, node: impl Into<NodeKey>) -> Result<(), RemoveError> {
         let node = node.into();
+        self.graph.remove(node)?;
         #[cfg(feature = "modulation")]
         self.mods.own.forget_node(node);
         #[cfg(feature = "midi")]
         self.midi_state.forget_node(node);
-        self.graph.remove(node)
+        Ok(())
     }
 
     /// The session's own modulation declarations, to edit (design 015
@@ -1269,12 +1276,21 @@ impl Session {
         })
     }
 
-    /// Closes the tap [`open_heard_tap`](Self::open_heard_tap) opened. The
-    /// reader keeps what it was written.
-    pub fn close_heard_tap(&self) {
-        if let Some((taps, _)) = &self.heard {
-            taps.close();
-        }
+    /// Closes the tap [`open_heard_tap`](Self::open_heard_tap) opened, now
+    /// rather than at the [`Reclaim`](Phase::Reclaim) phase that follows a
+    /// dropped reader. The reader keeps what it was written.
+    ///
+    /// # Errors
+    ///
+    /// [`HeardTapError::Detached`] on a session without an engine;
+    /// [`HeardTapError::NotOpen`] when no heard tap is open (never opened, or
+    /// closed already); nothing changes.
+    pub fn close_heard_tap(&self) -> Result<(), HeardTapError> {
+        let (taps, _) = self.heard.as_ref().ok_or(HeardTapError::Detached)?;
+        taps.close().map_err(|e| match e {
+            tutti_engine::HeardTapError::NotOpen => HeardTapError::NotOpen,
+            _ => HeardTapError::Busy,
+        })
     }
 
     /// The master meter: the level of each graph output channel, one

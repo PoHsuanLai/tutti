@@ -200,7 +200,7 @@ fn set_sources_and_remove_fade_what_leaves() {
         let want = (0.0 + (1.0 - f) * 1.0) + r * 2.0;
         assert_eq!(g.to_bits(), want.to_bits(), "frame {j}");
     }
-    assert!(s.remove(b));
+    s.remove(b).unwrap();
     assert!(!s.graph_ref().contains(b), "gone to its owner at once");
     let _ = s.update();
     let tail = frames(&mut s, SPAN + 64);

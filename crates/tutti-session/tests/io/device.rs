@@ -42,7 +42,7 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
         .into_parts();
     let (dc, _) = session
         .graph()
-        .insert(tutti_nodes::testing::Const::mono(0.5));
+        .add(ForkByClone(tutti_nodes::testing::Const::mono(0.5)));
     session
         .graph()
         .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])

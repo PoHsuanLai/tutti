@@ -1,8 +1,7 @@
 //! Typed keys, ports and the one wiring vocabulary of the session's
 //! [`Graph`] (doc 013, "The session graph's surface").
 //!
-//! - [`Key<N>`] is a node's identity with its type: [`Graph::add`] and
-//!   [`Graph::insert`] return one, and every call that takes a node takes
+//! - [`Key<N>`] is a node's identity with its type: [`Graph::add`] returns one, and every call that takes a node takes
 //!   `impl Into<NodeKey>`, so a [`Key`] and an erased [`NodeKey`] both work.
 //! - [`OutPort`] and [`InPort`] name one channel: a node's output or input
 //!   port (`key.out(0)`, `key.input(1)`), a global input channel
@@ -28,8 +27,7 @@ mod sealed {
 }
 use sealed::Sealed;
 
-/// A node's key, with the node's type: the handle [`Graph::add`] and
-/// [`Graph::insert`] return.
+/// A node's key, with the node's type: the handle [`Graph::add`] returns.
 ///
 /// It is a [`NodeKey`] and nothing more at run time (`Copy`, `Eq`, `Hash`),
 /// so a key can be kept, compared and sent anywhere a node is taken

@@ -3,6 +3,7 @@
 //!
 //! Every figure is analytic: constants of exactly representable values.
 
+use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{ConnectError, OutPort, Root, Session};
@@ -40,8 +41,10 @@ fn feed_root(s: &mut Session, node: NodeKey) {
 #[test]
 fn connect_wires_each_channel_to_its_own() {
     let mut s = offline();
-    let (src, _) = s.graph().insert(Const::frame(&[0.25, 0.5]));
-    let (through, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
+    let (src, _) = s.graph().add(ForkByClone(Const::frame(&[0.25, 0.5])));
+    let (through, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
     s.graph()
         .connect(src, through)
         .expect("both are stereo")
@@ -54,9 +57,13 @@ fn connect_wires_each_channel_to_its_own() {
 #[test]
 fn chain_connects_each_node_to_the_next() {
     let mut s = offline();
-    let (src, _) = s.graph().insert(Const::frame(&[0.25, 0.5]));
-    let (a, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    let (b, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
+    let (src, _) = s.graph().add(ForkByClone(Const::frame(&[0.25, 0.5])));
+    let (a, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
+    let (b, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
     s.graph()
         .chain([src.erase(), a.erase(), b.erase()])
         .expect("all stereo");
@@ -74,9 +81,11 @@ fn chain_connects_each_node_to_the_next() {
 #[test]
 fn connect_adds_to_what_feeds_the_input() {
     let mut s = offline();
-    let (one, _) = s.graph().insert(Const::frame(&[0.25, 0.125]));
-    let (two, _) = s.graph().insert(Const::frame(&[0.5, 0.25]));
-    let (sink, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
+    let (one, _) = s.graph().add(ForkByClone(Const::frame(&[0.25, 0.125])));
+    let (two, _) = s.graph().add(ForkByClone(Const::frame(&[0.5, 0.25])));
+    let (sink, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
     s.graph().connect(one, sink).unwrap().hard();
     s.graph().connect(two, sink).unwrap().hard();
     feed_root(&mut s, sink.erase());
@@ -89,10 +98,14 @@ fn connect_adds_to_what_feeds_the_input() {
 #[test]
 fn a_width_mismatch_is_refused_and_stores_nothing() {
     let mut s = offline();
-    let (mono, _) = s.graph().insert(Const::mono(0.5));
-    let (stereo, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    let (more, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    let (narrow, _) = s.graph().insert(Through::mono());
+    let (mono, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
+    let (stereo, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
+    let (more, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
+    let (narrow, _) = s.graph().add(ForkByClone(Through::mono()));
     let _ = s.update();
     let err = s.graph().connect(mono, stereo).unwrap_err();
     assert_eq!(
@@ -120,13 +133,17 @@ fn a_width_mismatch_is_refused_and_stores_nothing() {
 #[test]
 fn a_node_that_is_not_there_or_feeds_itself_is_refused() {
     let mut s = offline();
-    let (a, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
+    let (a, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
     assert_eq!(
         s.graph().connect(a, a).err(),
         Some(ConnectError::Itself(a.erase()))
     );
-    let (gone, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    s.graph().remove(gone);
+    let (gone, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
+    s.graph().remove(gone).unwrap();
     assert_eq!(
         s.graph().connect(a, gone).err(),
         Some(ConnectError::NoSuchNode(gone.erase()))

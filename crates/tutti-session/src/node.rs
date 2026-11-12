@@ -1,5 +1,5 @@
-//! [`SessionNode`], the trait every insert path takes, and the engine's own
-//! nodes as ones.
+//! [`SessionNode`], the trait [`Graph::add`](crate::Graph::add), the graph's one
+//! way in, takes, and the engine's own nodes as ones.
 
 use tutti_graph::{ForkByClone, IntoNode, Node, ParamNode, ParamSet, Params, Unforkable};
 
@@ -150,6 +150,24 @@ param_session_node!(
 
 #[cfg(feature = "convolution")]
 param_session_node!(tutti_nodes::ConvolverNode);
+
+/// An audio inlet as a graph node: no controls (the writer is the producer's),
+/// no params. Its fork is refused ([`Graph::open_inlet`](crate::Graph::open_inlet)).
+impl SessionNode for tutti_graph::InletNode {}
+
+/// An event inlet as a graph node: no controls (the writer is the producer's),
+/// no params; its fork is silent
+/// ([`Graph::open_event_inlet`](crate::Graph::open_event_inlet)).
+impl SessionNode for tutti_graph::EventInletNode {}
+
+/// The metronome as a graph node: its settings are shared through the
+/// transport, no controls and no params.
+impl SessionNode for tutti_nodes::ClickNode {}
+
+/// The MIDI clock as a graph node: its controls are the clock's master side
+/// (read by the session), no params.
+#[cfg(feature = "midi")]
+impl SessionNode for tutti_midi_runtime::ClockNode {}
 
 /// An automation lane as a graph node: no controls, the beat read from its
 /// block's `Env`.

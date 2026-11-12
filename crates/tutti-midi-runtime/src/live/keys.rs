@@ -10,13 +10,13 @@
 
 use std::ops::{Deref, DerefMut};
 
-use tutti_graph::{EventInletWriter, Refused};
+use tutti_graph::{EventCapacity, EventInletWriter, Refused};
 use tutti_types::At;
 use tutti_ump::{Address, Message, MidiChannel, NoteNumber, Ump, Voice2};
 
 /// The ring a live input's inlet is opened with, in events (it is also the
 /// waiting list's size and the port's declared capacity).
-pub const LIVE_INLET_CAPACITY: usize = 256;
+pub const LIVE_INLET_CAPACITY: EventCapacity = EventCapacity::of(256);
 
 /// An [`EventInletWriter`] with the key helpers. One producer, as the writer
 /// is: share it behind a lock on the control side if it must be `Clone`.

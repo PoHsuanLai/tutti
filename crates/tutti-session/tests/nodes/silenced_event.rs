@@ -111,7 +111,7 @@ fn a_meter_reset_is_no_event_and_restarts_the_count() {
 #[test]
 fn over_budget_alone_is_no_event() {
     let mut s = offline();
-    let (slow, _) = s.graph().insert(ForkByClone(Slow));
+    let (slow, _) = s.graph().add(ForkByClone(Slow));
     s.graph()
         .set_sources(Root::output(0), [OutPort::new(slow, 0)])
         .unwrap();

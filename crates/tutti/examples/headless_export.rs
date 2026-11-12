@@ -27,11 +27,11 @@ use tutti::prelude::*;
 const RATE: SampleRate = SampleRate(48_000.0);
 
 /// A detached session whose outputs hear `node`, one second of a project.
-fn session_with(node: impl tutti::graph::IntoNode) -> Session {
+fn session_with(node: impl tutti::graph::Node + Clone + Send + 'static) -> Session {
     let mut session = Session::builder()
         .build_detached(RATE)
         .expect("a detached session builds");
-    let (node, _) = session.graph().insert(node);
+    let (node, _) = session.graph().add(tutti::graph::ForkByClone(node));
     session.graph().connect(node, Root).unwrap();
     session
 }

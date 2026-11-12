@@ -2,7 +2,8 @@
 
 use thiserror::Error;
 
-/// Why [`Session::open_heard_tap`](crate::Session::open_heard_tap) refused.
+/// Why [`Session::open_heard_tap`](crate::Session::open_heard_tap) or
+/// [`Session::close_heard_tap`](crate::Session::close_heard_tap) refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum HeardTapError {
@@ -17,6 +18,21 @@ pub enum HeardTapError {
     /// The audio thread has not yet taken the last installs.
     #[error("the audio thread has not yet taken the last tap installs")]
     Backpressure,
+    /// No heard tap is open to close (none was opened, it was closed, or its
+    /// dropped reader was reclaimed).
+    #[error("no heard tap is open")]
+    NotOpen,
+}
+
+/// Why [`Graph::remove`](crate::Graph::remove) (or
+/// [`Session::remove`](crate::Session::remove)) refused: what was not there.
+/// Nothing is changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum RemoveError {
+    /// The node is not in the graph: removed already, or never added.
+    #[error("{0:?} is not in the graph")]
+    NoSuchNode(tutti_graph::NodeKey),
 }
 
 /// Why [`Graph::open_inlet`](crate::Graph::open_inlet) refused.

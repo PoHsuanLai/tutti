@@ -119,7 +119,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let voice = {
         let source =
             MemorySource::placed(Arc::new(wave), Beat(3.0), None).expect("a placeable wave");
-        let (node, _params) = session.graph().insert(source);
+        let (node, _params) = session.graph().add(source);
         session.graph().connect(node, Root).unwrap();
         node
     };
@@ -130,7 +130,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         }
         let source =
             MemorySource::placed(Arc::new(wave), Beat(0.0), None).expect("a placeable wave");
-        session.graph().insert(source).0
+        session.graph().add(source).0
     };
 
     let planes = render_stem(&mut session, on(2.5, &timeline(90.0)), voice.erase());
@@ -261,12 +261,9 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
             MemorySource::placed(Arc::new(wave), Beat(3.0), None).expect("a placeable wave"),
         ));
         let graph = session.graph();
-        let (bare, _) = graph.insert(bare);
+        let (bare, _) = graph.add(bare);
         graph.connect(bare, Root).unwrap();
-        (
-            graph.insert(wrapped).0.erase(),
-            graph.insert(memory).0.erase(),
-        )
+        (graph.add(wrapped).0.erase(), graph.add(memory).0.erase())
     };
 
     let master = render(&mut session, on(3.0, &timeline(90.0)));
@@ -314,7 +311,7 @@ fn a_node_export_of_a_disk_voice_plays_its_file() {
     let mut session = session();
     let voice = {
         let voice = node_of(VoiceSource::Disk(disk_voice(reader, 1.0)));
-        session.graph().insert(voice).0
+        session.graph().add(voice).0
     };
     let planes = render_stem(&mut session, on(1.0, &timeline(120.0)), voice.erase());
     assert!(
@@ -342,7 +339,7 @@ fn a_disk_voice_at_another_rate_exports_resampled() {
     let mut session = session();
     {
         let voice = disk_voice(reader, 1.0);
-        let (node, _) = session.graph().insert(voice);
+        let (node, _) = session.graph().add(voice);
         session.graph().connect(node, Root).unwrap();
     }
     let planes = render(&mut session, on(2.0, &timeline(120.0)));
@@ -391,7 +388,7 @@ fn live_disk_playback_is_untouched_while_its_voice_exports() {
     let live_clock = timeline(120.0);
 
     let mut session = session();
-    let (node, _) = session.graph().insert(disk_voice(reader, 0.0));
+    let (node, _) = session.graph().add(disk_voice(reader, 0.0));
     session.graph().connect(node, Root).unwrap();
     session.render_frame(&mut [0.0, 0.0]);
     let mut live = session.graph().take_audio_side();
@@ -481,7 +478,7 @@ fn an_export_leaves_nothing_open_behind_it() {
     let mut session = session();
     {
         let voice = disk_voice(reader, 0.0);
-        let (node, _) = session.graph().insert(voice);
+        let (node, _) = session.graph().add(voice);
         session.graph().connect(node, Root).unwrap();
     }
     let before = open_handles(&path);
@@ -509,7 +506,7 @@ fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
     let mut session = session();
     let clip = {
         let voice = disk_voice(reader, 0.0);
-        let (node, _) = session.graph().insert(voice);
+        let (node, _) = session.graph().add(voice);
         session.graph().connect(node, Root).unwrap();
         node
     };

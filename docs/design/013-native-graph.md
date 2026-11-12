@@ -10505,7 +10505,7 @@ and `Graph::chain` over node keys, shaped as the first piece of it).
 plumbing and the failure rule are the next lane.** What is there:
 
 - `Key<N>` (`Copy`, a `NodeKey` with `PhantomData<fn() -> N>`, `Key::erase`,
-  `From<Key<N>> for NodeKey`); `Graph::add` and `insert` return `(Key<N>,
+  `From<Key<N>> for NodeKey`); `Graph::add` returns `(Key<N>,
   N::Controls)`, and every `Graph` and `Session` method that takes a node takes
   `impl Into<NodeKey>`.
 - `OutPort` and `InPort` are the session's own values (a node's port or a global
@@ -10687,3 +10687,32 @@ input stays when the feed drops it. Params: a node declares them once, next to i
 its `HasParam<const P: u16>` impls (the unit taken from the cell's type), its
 `ParamSet` and its shape's param ports; `Key` methods are generated from
 `HasParam`; `Params(node)` is the wrapper for a host's `ParamNode`.
+
+### As built (removal, doc 030 step 2d)
+
+Every removal is a `Result` that names what was not there, and a refusal changes
+nothing. `Graph::remove` and `Session::remove` return `RemoveError::NoSuchNode`
+(the session's also forgets its own declarations on the node, but only after the
+graph has said the node was there); `Session::remove_instrument` and
+`GeneralMidi::remove` remove every part that is there and name the first that was
+not. `Graph::close_tap`, `close_event_tap` and `close_meter` (and the editor's)
+return `CloseError::{Tap, EventTap, Meter}`, `Session::close_heard_tap` returns
+`HeardTapError::NotOpen` (or `Detached`), `Mods::remove_source` and
+`remove_route` return `NoSuchModSource` and `NoSuchModRoute`, and
+`Midi::unroute` returns `NoSuchMidiRoute`. The explicit closes stay: a reader's
+`Drop` closes its tap or meter at the next `Reclaim` phase (`reap_*`), and the
+explicit close is the same close now, with the reader still held. Nothing was
+deleted as a duplicate.
+
+`Graph::add` is the one way a node enters: it takes a `SessionNode`, so a node's
+params are addressed, its reclaimer kept and its tempo reader bound, and a node
+that is only an `IntoNode` does not compile there (a host's own is wrapped in
+`ForkByClone` or `Unforkable`, is a `Params`, or implements `SessionNode`; the
+audio and event inlets, the metronome and the MIDI clock now do). The
+unaddressed insert is `pub(crate)` (`place`, for a bound plugin). `replace`
+still takes an `IntoNode` and addresses nothing of the incoming node: that is
+what `crossfade` is for.
+
+An event inlet's capacity is an `EventCapacity` (`tutti_graph`, 1 to `u32::MAX`,
+the shape of CLAUDE.md's range-checked values), so `open_event_inlet` and
+`EventInletNode::pair` no longer panic; `LIVE_INLET_CAPACITY` is one.

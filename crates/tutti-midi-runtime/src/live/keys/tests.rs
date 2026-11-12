@@ -67,7 +67,7 @@ fn a_note_on_at_velocity_zero_stays_a_note_on() {
 #[test]
 fn a_full_ring_refuses_through_the_helper() {
     let (_d, mut keys) = rig();
-    for _ in 0..LIVE_INLET_CAPACITY {
+    for _ in 0..LIVE_INLET_CAPACITY.slots() {
         keys.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 1)
             .unwrap();
     }

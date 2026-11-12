@@ -416,6 +416,11 @@ impl LiveInput {
     }
 }
 
+/// What [`Midi::unroute`] found missing: the rule `id` named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no MIDI route {0:?}")]
+pub struct NoSuchMidiRoute(pub MidiRouteId);
+
 /// An id [`Midi::route`] returns, for [`Midi::unroute`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MidiRouteId(u64);
@@ -810,7 +815,7 @@ fn wire_inlets(
             InletChange::Detach { slot } => {
                 if let Some(key) = inlet_keys.get_mut(slot).and_then(Option::take) {
                     let _ = graph.set_sources(crate::EventInPort::new(nodes.input, slot), []); // a slot with no port has no source to take out
-                    graph.remove(key);
+                    let _ = graph.remove(key); // a host that removed the inlet itself leaves nothing to take
                 }
             }
         }
@@ -1007,14 +1012,20 @@ impl Midi<'_> {
         Ok(id)
     }
 
-    /// Removes a rule [`route`](Self::route) added. `false` when there is
-    /// none.
-    pub fn unroute(&mut self, id: MidiRouteId) -> bool {
-        let had = self.state.rules.remove(&id).is_some();
-        if had && let Ok(input) = self.input() {
+    /// Removes a rule [`route`](Self::route) added.
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchMidiRoute`] when there is no rule `id` (removed already, or
+    /// never added); nothing changes.
+    pub fn unroute(&mut self, id: MidiRouteId) -> std::result::Result<(), NoSuchMidiRoute> {
+        if self.state.rules.remove(&id).is_none() {
+            return Err(NoSuchMidiRoute(id));
+        }
+        if let Ok(input) = self.input() {
             self.compile_own(input);
         }
-        had
+        Ok(())
     }
 
     /// Where an event matching no rule goes, if anywhere: every port no

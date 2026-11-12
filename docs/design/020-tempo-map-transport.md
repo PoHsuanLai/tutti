@@ -480,8 +480,9 @@ not change, and the `Env` holds no earlier tempo, so the voice reads the map:
   `Clock::observe_with`; a fork clones the reader on the control side.
   `tutti-session` binds what it takes in `Graph::add` and `Graph::crossfade`
   through `SessionNode::bind_tempo` (default: the node as it is), the graph's
-  template reader being the plugins' too; a node inserted with the bare
-  `Graph::insert` is unbound and behaves as a constant tempo, as it always did.
+  template reader being the plugins' too; a node the graph puts in without
+  `SessionNode` (a bound plugin, a `replace`d node) is unbound and behaves as a
+  constant tempo, as it always did.
   The lend is the engine's own block start, and a map published between the
   engine's lend and the node's in one block is seen by the node a block early:
   a one-block seam on a map swap, not a position error.

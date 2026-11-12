@@ -22,6 +22,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
+use tutti_graph::ForkByClone;
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
 use tutti_sampler::testing::settle_threaded;
@@ -82,8 +83,8 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
         .expect("builds");
 
     // The latent path, on output 2.
-    let (src, _) = s.graph().insert(Const::mono(1.0));
-    let (eff, _) = s.graph().insert(LimiterNode::with_channels(
+    let (src, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
+    let (eff, _) = s.graph().add(LimiterNode::with_channels(
         ChannelLayout::MONO,
         Db(-1.0),
         Db(-0.3),
@@ -105,7 +106,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             let (stream, reader) =
                 settle_threaded(streamer.open(&path, Placement::HEAD)).expect("the stream opens");
             let voice = DiskVoice::from_reader(reader, Beat(1.0), None);
-            (s.graph().insert(voice).0.erase(), Some(stream))
+            (s.graph().add(voice).0.erase(), Some(stream))
         }
         Tier::Memory => {
             let mut wave = tutti_codec::Wave::new(2, tutti_nodes::SampleRate::new(RATE));
@@ -114,7 +115,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             }
             let source = MemorySource::placed(std::sync::Arc::new(wave), Beat(1.0), None)
                 .expect("a placeable wave");
-            (s.graph().insert(source).0.erase(), None)
+            (s.graph().add(source).0.erase(), None)
         }
     };
     s.graph()

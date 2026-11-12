@@ -93,7 +93,7 @@ finding where the API produces wrong results today, not only friction.
 | S4 | `InstrumentHandle` and `LiveInput` duplicate `note_on`/`note_off`/`send`/`send_at`/`clock`/`dropped` over `SharedKeys`. `note_on` takes a bare `u16` velocity | one shared keys handle (with the MIDI plan's `MidiKeys`), and a velocity type | S-M |
 | S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M |
 | S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S |
-| S7 | Removal is spelled `remove`, `remove_instrument`, `GeneralMidi::remove`, `unroute` and `close_*`, returning `bool` or `()`. `insert` against `add` is a trap (`insert` skips the reclaim sweep). `open_event_inlet` panics on a bad capacity | one `remove(key)` on typed keys, returning `Result`; `insert` folded into `add`; a checked capacity | S-M |
+| S7 | Removal is spelled `remove`, `remove_instrument`, `GeneralMidi::remove`, `unroute` and `close_*`, returning `bool` or `()`. `insert` against `add` is a trap (`insert` skips the reclaim sweep). `open_event_inlet` panics on a bad capacity | one `remove(key)` on typed keys, returning `Result`; `insert` folded into `add`; a checked capacity | S-M (built, 2d) |
 | S8 | The heard tap's `Backpressure` is a transient error mixed in with permanent ones. `LoadMeter::take` is `Clone`, so two readers split the peaks. tutti-cpal lists devices five ways | split the error; one reader, not `Clone`; one listing | S |
 
 ### 3.2 Transport, tempo, modulation
@@ -289,7 +289,11 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      one, where a chase delivers) and typed params (T2, T3, N2). N3 is partial:
      `Params(node)` is the way in, but Rust cannot refuse `ForkByClone(param
      node)` by type. `Take::record` and `Trajectory::with_range` are not typed yet.
-   - 2d: removal (S7).
+   - 2d (built): removal (S7). Every removal and close is a `Result` naming what
+     was not there (`RemoveError`, `CloseError`, `HeardTapError::NotOpen`,
+     `NoSuchModSource`, `NoSuchModRoute`, `NoSuchMidiRoute`); `Graph::add`
+     (a `SessionNode`) is the one way a node enters; `open_event_inlet` takes an
+     `EventCapacity`. Doc 013, "As built (removal)".
 3. **Node authoring:** N1, N4.
    - N1 (built, pulled before 2d): a node's params are declared once, next to
      its `Param<U>` cells, by `tutti_graph::declare_params!`, which writes the

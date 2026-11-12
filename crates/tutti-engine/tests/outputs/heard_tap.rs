@@ -139,7 +139,7 @@ fn a_tap_flows_from_the_next_call_and_stops_at_a_close() {
     let mut got = vec![0.0f32; 128];
     tap.pop_into(&mut got);
     assert_eq!(got, second);
-    taps.close();
+    taps.close().unwrap();
     render(&engine, 64, 2, false);
     assert_eq!(
         tap.available(),
@@ -250,7 +250,7 @@ fn opening_and_closing_while_rendering_never_frees_on_the_audio_thread() {
                     drop(tap);
                 }
                 taps.reclaim();
-                taps.close();
+                taps.close().ok(); // the reclaim above may have closed it
             }
             opened
         });
@@ -279,7 +279,7 @@ fn a_close_is_not_lost_to_a_full_install_queue() {
         last = Some(taps.open(layout, Samples(256)).expect("room for four"));
     }
     let last = last.expect("opened");
-    taps.close();
+    taps.close().unwrap();
     render(&engine, 64, 2, false);
     assert_eq!(
         last.available(),

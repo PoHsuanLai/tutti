@@ -137,7 +137,7 @@ fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
     settle(&mut s);
     figure(&mut s, -0.25, "clamped to the range");
 
-    s.mods().remove_route(route);
+    s.mods().remove_route(route).unwrap();
     settle(&mut s);
     figure(&mut s, -0.25, "the route gone: the base the knob left");
 }
@@ -182,7 +182,7 @@ fn the_base_is_the_lanes_knob_and_a_route_returns_to_it() {
     figure(&mut s, 1.25, "the base moved while routed");
     assert_eq!(edge.gain(s.graph_ref()), Some(Amplitude::new(0.25)));
 
-    s.mods().remove_route(route);
+    s.mods().remove_route(route).unwrap();
     settle(&mut s);
     figure(&mut s, 0.25, "the route gone: the base, not unity");
 }

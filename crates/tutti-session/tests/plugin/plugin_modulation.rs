@@ -315,7 +315,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     );
     assert!(s.graph_ref().contains(lane), "while its plugin is");
 
-    s.remove(node);
+    s.remove(node).unwrap();
     drive.update(&mut s);
     drive.update(&mut s);
     assert!(

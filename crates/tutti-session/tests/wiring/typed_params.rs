@@ -4,7 +4,9 @@
 //! own `ParamNode` is inserted as `Params(node)` with no hand-written
 //! `SessionNode`.
 
-use tutti_graph::{Cx, Io, Node, ParamNode, ParamSet, Params, Prepare, Shape, Status};
+use tutti_graph::{
+    CrossfadeCurve, Cx, Io, Node, ParamNode, ParamSet, Params, Prepare, Shape, Status, Unforkable,
+};
 use tutti_nodes::{CompressorNode, SvfFilterNode, SvfType};
 use tutti_session::{ParamError, Session};
 use tutti_types::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Seconds, UnitAddr, UnitParam};
@@ -64,8 +66,9 @@ fn set_param_writes_the_cell_the_key_names() {
 }
 
 /// **A write that reaches nothing is refused, saying which**: a node that is
-/// not in the graph, and a node with no such param addressed (one inserted
-/// with `insert`, whose params nothing addresses). Nothing is written.
+/// not in the graph, and a node with no such param addressed (one swapped in
+/// by `replace`, which addresses nothing of the incoming node). Nothing is
+/// written.
 #[test]
 fn set_param_refuses_a_missing_node_and_a_missing_param() {
     let mut s = detached();
@@ -74,11 +77,24 @@ fn set_param_refuses_a_missing_node_and_a_missing_param() {
         Hz(1_000.0),
         Q(0.7),
     ));
-    let (bare, _) = s.graph().insert(SvfFilterNode::<f32>::new(
+    let (bare, _) = s.graph().add(SvfFilterNode::<f32>::new(
         SvfType::LowPass,
         Hz(1_000.0),
         Q(0.7),
     ));
+    // `replace` swaps the node in and addresses nothing of the incoming one.
+    s.graph()
+        .replace(
+            bare,
+            Unforkable(SvfFilterNode::<f32>::new(
+                SvfType::LowPass,
+                Hz(1_000.0),
+                Q(0.7),
+            )),
+            Seconds(0.0),
+            CrossfadeCurve::EqualPower,
+        )
+        .unwrap_or_else(|_| panic!("a detached graph swaps at once"));
     assert_eq!(
         s.graph().set_param(bare.cutoff(), Hz(5.0)),
         Err(ParamError::NoSuchParam {
@@ -88,7 +104,7 @@ fn set_param_refuses_a_missing_node_and_a_missing_param() {
     );
 
     let cutoff = lp.cutoff();
-    s.graph().remove(lp);
+    s.graph().remove(lp).unwrap();
     assert_eq!(
         s.graph().set_param(cutoff, Hz(5.0)),
         Err(ParamError::NoSuchNode(lp.erase()))

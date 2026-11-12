@@ -29,6 +29,7 @@ use tutti_graph::{
 use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::BufferMaster;
+use tutti_session::SessionNode;
 use tutti_session::{
     Bounce, BounceConfigError, BounceError, BounceLatency, ExportClock, InPort, OutPort,
     PreparedGraph, Range, Root, Session, Stem,
@@ -126,8 +127,8 @@ fn refused(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> Boun
 /// two cannot pass for each other. Returns the filter's key.
 fn chain(session: &mut Session) -> NodeKey {
     let graph = session.graph();
-    let (osc, _) = graph.insert(Osc::saw(Hz(110.0)));
-    let (filter, _params) = graph.insert(SvfFilterNode::<f64>::new(
+    let (osc, _) = graph.add(ForkByClone(Osc::saw(Hz(110.0))));
+    let (filter, _params) = graph.add(SvfFilterNode::<f64>::new(
         SvfType::LowPass,
         Hz(800.0),
         Q(1.0),
@@ -279,7 +280,7 @@ impl Node for Late {
 #[test]
 fn latency_and_tail_come_from_the_graph() {
     let mut session = session();
-    let (late, _) = session.graph().insert(ForkByClone(Late { pos: 0 }));
+    let (late, _) = session.graph().add(ForkByClone(Late { pos: 0 }));
     session.graph().connect(late, Root).unwrap().hard();
     let seconds = 0.01;
     let frames = (seconds * RATE) as usize;
@@ -296,7 +297,7 @@ fn latency_and_tail_come_from_the_graph() {
     assert!(planes[0].iter().all(|&s| s == 1.0), "a step from frame 0");
 
     let mut session = self::session();
-    let (unknown, _) = session.graph().insert(Counter {
+    let (unknown, _) = session.graph().add(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
     session.graph().connect(unknown, Root).unwrap().hard();
@@ -321,7 +322,7 @@ fn latency_and_tail_come_from_the_graph() {
 #[test]
 fn the_trim_is_read_after_the_prepare_hook() {
     let mut session = session();
-    let (dc, _) = session.graph().insert(Const::mono(0.5));
+    let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
     session.graph().connect(dc, Root).unwrap().hard();
     let request = buffers(0.01).latency(BounceLatency::Graph).edit(Box::new(
         |prepared: PreparedGraph<'_>| {
@@ -350,7 +351,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
 #[test]
 fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
     let mut session = session();
-    let (dc, _) = session.graph().insert(Const::mono(0.5));
+    let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
     session.graph().connect(dc, Root).unwrap().hard();
     let request = buffers(0.01).edit(Box::new(|prepared: PreparedGraph<'_>| {
         let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
@@ -371,7 +372,7 @@ fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
 #[test]
 fn a_graph_with_no_outputs_says_so() {
     let mut session = session_with_outputs(0);
-    let (node, _) = session.graph().insert(Osc::sine(Hz(220.0)));
+    let (node, _) = session.graph().add(ForkByClone(Osc::sine(Hz(220.0))));
     for with_stem in [false, true] {
         let bounce = if with_stem {
             buffers(0.01).stem_with(Stem::buffers(node.erase()))
@@ -395,11 +396,11 @@ fn a_graph_with_no_outputs_says_so() {
 #[test]
 fn an_unrenderable_stem_is_refused_by_name() {
     let mut session = session();
-    let (wired, _) = session.graph().insert(Const::mono(0.5));
+    let (wired, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
     session.graph().connect(wired, Root).unwrap().hard();
     // `Sink::mono()` consumes one channel and produces nothing.
-    let (orphan, _) = session.graph().insert(Sink::mono());
-    let (loose, _) = session.graph().insert(Const::mono(0.25));
+    let (orphan, _) = session.graph().add(ForkByClone(Sink::mono()));
+    let (loose, _) = session.graph().add(ForkByClone(Const::mono(0.25)));
     let gone = NodeKey::fresh();
     let refusal =
         |session: &mut Session, stem: Stem| match refused(session, buffers(0.01).stem_with(stem)) {
@@ -443,7 +444,7 @@ fn an_unrenderable_stem_is_refused_by_name() {
 /// hook's edit is told apart from by its level.
 fn graph_with_one_node_on() -> (Session, NodeKey) {
     let mut session = session();
-    let (node, _) = session.graph().insert(Const::mono(0.5));
+    let (node, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
     session.graph().connect(node, Root).unwrap().hard();
     (session, node.erase())
 }
@@ -586,6 +587,8 @@ impl ForkSource for CounterFork {
     }
 }
 
+impl SessionNode for Counter {}
+
 impl IntoNode for Counter {
     type Controls = ();
     fn into_parts(self) -> NodeParts<()> {
@@ -625,7 +628,7 @@ impl Node for Counter {
 #[test]
 fn live_playback_continues_unaffected_while_an_export_renders() {
     let mut session = session();
-    let (node, _) = session.graph().insert(Counter {
+    let (node, _) = session.graph().add(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
     session.graph().connect(node, Root).unwrap().hard();
@@ -690,8 +693,8 @@ impl Node for Mic {
 #[test]
 fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
     let mut session = session();
-    let (_mic, _) = session.graph().insert(tutti_graph::Unforkable(Mic));
-    let (dc, _) = session.graph().insert(Const::mono(0.25));
+    let (_mic, _) = session.graph().add(tutti_graph::Unforkable(Mic));
+    let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.25)));
     session.graph().connect(dc, Root).unwrap().hard();
     let planes = render(&mut session, buffers(0.01));
     assert!(planes[0].iter().all(|&s| s == 0.25));
@@ -704,8 +707,8 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
 #[test]
 fn an_unforkable_node_refuses_the_export_by_key() {
     let mut session = session();
-    let (mic, _) = session.graph().insert(tutti_graph::Unforkable(Mic));
-    let (osc, _) = session.graph().insert(Osc::sine(Hz(220.0)));
+    let (mic, _) = session.graph().add(tutti_graph::Unforkable(Mic));
+    let (osc, _) = session.graph().add(ForkByClone(Osc::sine(Hz(220.0))));
     session
         .graph()
         .set_sources_hard(Root::output(0), [OutPort::new(mic, 0)])
@@ -805,6 +808,8 @@ impl ForkSource for SlowFork {
     }
 }
 
+impl SessionNode for Slow {}
+
 impl IntoNode for Slow {
     type Controls = ();
     fn into_parts(self) -> NodeParts<()> {
@@ -880,7 +885,7 @@ tutti_graph::declare_params!([] Level, n { Volume => Amplitude = &n.0 });
 fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
     let mut session = session();
     let (node, cell, release, built) = slow(0.5);
-    let (slow_node, _) = session.graph().insert(node);
+    let (slow_node, _) = session.graph().add(node);
     let (level, _) = session
         .graph()
         .add(Params(Level(Param::new(Amplitude::new(0.5)))));
@@ -889,7 +894,7 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
         .graph()
         .set_param(volume, Amplitude::new(0.75))
         .unwrap();
-    let (other, _) = session.graph().insert(Const::mono(9.0));
+    let (other, _) = session.graph().add(ForkByClone(Const::mono(9.0)));
     session
         .graph()
         .set_sources_hard(Root::output(0), [OutPort::new(slow_node, 0)])
@@ -997,6 +1002,8 @@ impl ForkSource for PinnedFork {
 /// `threads`.
 struct PinnedNode(Arc<Threads>);
 
+impl SessionNode for PinnedNode {}
+
 impl IntoNode for PinnedNode {
     type Controls = ();
     fn into_parts(self) -> NodeParts<()> {
@@ -1030,9 +1037,9 @@ fn all_main(what: &str, at: &Mutex<Vec<ThreadId>>) {
 fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
     let mut session = session();
     let threads = Arc::<Threads>::default();
-    let (pinned, _) = session.graph().insert(PinnedNode(Arc::clone(&threads)));
+    let (pinned, _) = session.graph().add(PinnedNode(Arc::clone(&threads)));
     let (node, _cell, release, _built) = slow(0.5);
-    let (slow_node, _) = session.graph().insert(node);
+    let (slow_node, _) = session.graph().add(node);
     session
         .graph()
         .set_sources_hard(Root::output(0), [OutPort::new(slow_node, 0)])
@@ -1072,7 +1079,7 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
 fn a_dropped_export_job_drops_its_fork_on_the_main_thread() {
     let mut session = session();
     let threads = Arc::<Threads>::default();
-    let (pinned, _) = session.graph().insert(PinnedNode(Arc::clone(&threads)));
+    let (pinned, _) = session.graph().add(PinnedNode(Arc::clone(&threads)));
     session
         .graph()
         .set_sources_hard(Root::output(0), [OutPort::new(pinned, 0)])
@@ -1137,6 +1144,8 @@ impl ForkSource for BrokenFork {
     }
 }
 
+impl SessionNode for Broken {}
+
 impl IntoNode for Broken {
     type Controls = ();
     fn into_parts(self) -> NodeParts<()> {
@@ -1156,8 +1165,8 @@ impl IntoNode for Broken {
 fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
     let mut session = session();
     let threads = Arc::<Threads>::default();
-    let (pinned, _) = session.graph().insert(PinnedNode(Arc::clone(&threads)));
-    let (broken, _) = session.graph().insert(Broken);
+    let (pinned, _) = session.graph().add(PinnedNode(Arc::clone(&threads)));
+    let (broken, _) = session.graph().add(Broken);
     session
         .graph()
         .set_sources_hard(Root::output(0), [OutPort::new(pinned, 0)])
@@ -1214,7 +1223,7 @@ fn witnessed(drops: &Arc<Mutex<Vec<ThreadId>>>) -> Bounce<NodeKey, BufferMaster>
 fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     // A build that fails.
     let mut session = session();
-    let (broken, _) = session.graph().insert(Broken);
+    let (broken, _) = session.graph().add(Broken);
     session.graph().connect(broken, Root).unwrap().hard();
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
@@ -1231,7 +1240,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
 
     // A job dropped before it ran.
     let mut session = self::session();
-    let (dc, _) = session.graph().insert(Const::mono(0.5));
+    let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
     session.graph().connect(dc, Root).unwrap().hard();
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session

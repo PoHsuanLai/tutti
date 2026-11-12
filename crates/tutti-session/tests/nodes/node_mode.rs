@@ -57,8 +57,8 @@ fn rig() -> Rig {
         )
         .expect("builds");
     let g = s.graph();
-    let (a, _) = g.insert(Const::mono(A));
-    let (halve, _) = g.insert(ForkByClone(Halve));
+    let (a, _) = g.add(ForkByClone(Const::mono(A)));
+    let (halve, _) = g.add(ForkByClone(Halve));
     g.set_sources_hard(InPort::new(halve, 0), [OutPort::new(a, 0)])
         .unwrap();
     g.set_sources_hard(Root::output(0), [OutPort::new(halve, 0)])
@@ -148,7 +148,7 @@ fn a_missing_node_is_refused() {
     assert_eq!(r.s.graph_ref().mode(stranger), NodeMode::Active);
 
     r.s.graph().set_mode(r.halve, NodeMode::Muted).unwrap();
-    assert!(r.s.graph().remove(r.halve));
+    r.s.graph().remove(r.halve).unwrap();
     assert_eq!(
         r.s.graph().set_mode(r.halve, NodeMode::Bypassed),
         Err(ModeError::NoSuchNode { node: r.halve })

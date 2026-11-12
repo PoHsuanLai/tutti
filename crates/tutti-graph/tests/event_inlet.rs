@@ -16,10 +16,10 @@ use common::{Kind, TestNode};
 use tutti_fixtures::midi::{m1_cc, m1_note_off, m1_note_on};
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{
-    Edge, Editor, Env, EventEdge, EventIn, EventInletNode, EventInletWriter, EventKind, EventOut,
-    EventTapId, EventTapReader, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked,
-    InPort, IntoNode, Node, NodeKey, NodeParts, OutPort, PlayClock, Prepare, Refused, Source,
-    TapAlign, TapEvent, Transport, TransportChanges,
+    Edge, Editor, Env, EventCapacity, EventEdge, EventIn, EventInletNode, EventInletWriter,
+    EventKind, EventOut, EventTapId, EventTapReader, Executor, ForkCause, ForkMode, ForkSource,
+    ForkTarget, Forked, InPort, IntoNode, Node, NodeKey, NodeParts, OutPort, PlayClock, Prepare,
+    Refused, Source, TapAlign, TapEvent, Transport, TransportChanges,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{At, Frame, Moment, SampleRate, Samples};
@@ -51,8 +51,8 @@ fn cc(controller: u32) -> Ump {
 
 type Rig = (Direct<EventInletNode>, EventInletWriter);
 
-fn rig(capacity: usize) -> Rig {
-    let (node, tx) = EventInletNode::pair(capacity);
+fn rig(capacity: u32) -> Rig {
+    let (node, tx) = EventInletNode::pair(EventCapacity::of(capacity));
     (Direct::new(node, R48, 64), tx)
 }
 
@@ -114,7 +114,7 @@ fn an_event_lands_on_its_frame_across_block_sizes() {
         frames.sort_unstable();
         frames.dedup();
         frames.retain(|&f| f < 1_100);
-        let (node, mut tx) = EventInletNode::pair(64);
+        let (node, mut tx) = EventInletNode::pair(EventCapacity::of(64));
         let mut d = Direct::new(node, R48, size);
         for (k, &f) in frames.iter().enumerate().rev() {
             tx.push(At::Frame(Frame(f)), note(k as u32)).unwrap();
@@ -321,7 +321,7 @@ fn a_note_on_never_displaces_a_waiting_note_off() {
 #[test]
 fn a_port_narrower_than_the_burst_counts_refused() {
     let burst = HAND_EVENT_CAPACITY + 476;
-    let (mut d, mut tx) = rig(burst);
+    let (mut d, mut tx) = rig(u32::try_from(burst).unwrap());
     for k in 0..burst {
         tx.push(At::NextBlock, note((k % 100) as u32)).unwrap();
     }
@@ -480,7 +480,7 @@ fn graph(
     }
     let mut writers = Vec::new();
     for k in 1..=u64::from(n) {
-        let (node, writer) = EventInletNode::pair(256);
+        let (node, writer) = EventInletNode::pair(EventCapacity::of(256));
         ed.insert(NodeKey(k), "inlet", node);
         writers.push(writer);
     }

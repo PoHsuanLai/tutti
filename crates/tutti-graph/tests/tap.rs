@@ -7,7 +7,7 @@ use tutti_graph::testing as common;
 
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
-use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_graph::{CloseError, Edge, InPort, OutPort, Source};
 use tutti_graph::{
     Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, MissingSource,
     Node, NodeParts, Op, TapReader, Transport,
@@ -338,7 +338,7 @@ fn a_closed_tap_leaves_no_op() {
         "a raw tap is one op, whatever its width"
     );
 
-    r.ed.close_tap(tap.id());
+    r.ed.close_tap(tap.id()).unwrap();
     commit(&mut r);
     assert_eq!(
         ops(&r),
@@ -375,7 +375,7 @@ fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
     assert_eq!(tap.take_lost().get(), 150);
     assert_eq!(tap.available().get(), 150);
     assert_eq!(tap.take_lost().get(), 0, "reading clears");
-    r.ed.close_tap(tap.id());
+    r.ed.close_tap(tap.id()).unwrap();
     commit(&mut r);
     block(&mut r, 100, 300);
     assert_eq!(
@@ -542,18 +542,26 @@ fn removing_a_tapped_node_silences_its_lane() {
     );
 }
 
-/// Closing a tap twice, or one that never opened, is a no-op: the plan stays
-/// the graph's own.
+/// Closing a tap twice, or one that never opened, is refused by name and
+/// changes nothing: the plan stays the graph's own.
 #[test]
-fn closing_a_tap_twice_is_a_no_op() {
+fn closing_a_tap_twice_is_refused_by_name() {
     let mut r = rig(1, false);
     let tap =
         r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(8))
             .expect("the sources exist");
     commit(&mut r);
-    r.ed.close_tap(tap.id());
-    r.ed.close_tap(tap.id());
-    r.ed.close_tap(TapId(99));
+    r.ed.close_tap(tap.id()).unwrap();
+    assert_eq!(
+        r.ed.close_tap(tap.id()),
+        Err(CloseError::Tap(tap.id())),
+        "a closed tap is not open"
+    );
+    assert_eq!(
+        r.ed.close_tap(TapId(99)),
+        Err(CloseError::Tap(TapId(99))),
+        "a tap never opened is not open"
+    );
     commit(&mut r);
     let plan = r.ed.base().expect("plan");
     assert!(!plan.ops().iter().any(|o| matches!(o, Op::Tap { .. })));

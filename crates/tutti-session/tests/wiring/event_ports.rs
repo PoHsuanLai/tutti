@@ -41,8 +41,8 @@ fn detached() -> Session {
 fn an_event_edge_is_connected_read_back_and_disconnected() {
     let mut s = detached();
     let g = s.graph();
-    let (src, _) = g.insert(ForkByClone(Events::<0, 2>));
-    let (sink, _) = g.insert(ForkByClone(Events::<1, 0>));
+    let (src, _) = g.add(ForkByClone(Events::<0, 2>));
+    let (sink, _) = g.add(ForkByClone(Events::<1, 0>));
 
     let connection = g.connect(src.events_out(), sink.events_in()).unwrap();
     assert!(
@@ -70,8 +70,8 @@ fn an_event_edge_is_connected_read_back_and_disconnected() {
 fn event_port_zero_is_the_main_port_and_an_index_names_another() {
     let mut s = detached();
     let g = s.graph();
-    let (src, _) = g.insert(ForkByClone(Events::<0, 1>));
-    let (sink, _) = g.insert(ForkByClone(Events::<2, 0>));
+    let (src, _) = g.add(ForkByClone(Events::<0, 1>));
+    let (sink, _) = g.add(ForkByClone(Events::<2, 0>));
     assert_eq!(sink.events_in(), sink.events_in_at(0));
     assert_eq!(src.events_out(), src.events_out_at(0));
     assert_eq!(sink.events_in().index(), 0);
@@ -90,11 +90,11 @@ fn event_port_zero_is_the_main_port_and_an_index_names_another() {
 fn a_missing_event_port_is_refused_and_stores_nothing() {
     let mut s = detached();
     let g = s.graph();
-    let (src, _) = g.insert(ForkByClone(Events::<0, 1>));
-    let (sink, _) = g.insert(ForkByClone(Events::<1, 0>));
-    let (both, _) = g.insert(ForkByClone(Events::<1, 1>));
-    let (gone, _) = g.insert(ForkByClone(Events::<1, 1>));
-    g.remove(gone);
+    let (src, _) = g.add(ForkByClone(Events::<0, 1>));
+    let (sink, _) = g.add(ForkByClone(Events::<1, 0>));
+    let (both, _) = g.add(ForkByClone(Events::<1, 1>));
+    let (gone, _) = g.add(ForkByClone(Events::<1, 1>));
+    g.remove(gone).unwrap();
     let _ = s.update();
     let g = s.graph();
 
@@ -129,9 +129,9 @@ fn a_missing_event_port_is_refused_and_stores_nothing() {
 fn set_sources_and_disconnect_all_cover_event_inputs() {
     let mut s = detached();
     let g = s.graph();
-    let (a, _) = g.insert(ForkByClone(Events::<0, 1>));
-    let (b, _) = g.insert(ForkByClone(Events::<0, 1>));
-    let (sink, _) = g.insert(ForkByClone(Events::<1, 0>));
+    let (a, _) = g.add(ForkByClone(Events::<0, 1>));
+    let (b, _) = g.add(ForkByClone(Events::<0, 1>));
+    let (sink, _) = g.add(ForkByClone(Events::<1, 0>));
     let input = sink.events_in();
 
     g.set_sources(input, [a.events_out(), b.events_out()])

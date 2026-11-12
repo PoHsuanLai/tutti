@@ -6,7 +6,7 @@
 //!
 //! | `Graph` | the editor |
 //! |---|---|
-//! | `insert` | `Editor::insert` of the node's own [`IntoNode`] at a [`NodeKey`] minted by `NodeKey::fresh`, its controls handed back |
+//! | `add` | `Editor::insert` of the node's own [`IntoNode`] at a [`NodeKey`] minted by `NodeKey::fresh`, its controls handed back, its params and reclaimer kept ([`SessionNode`]) |
 //! | `set_source`, `set_sources`, `add_source`, `remove_source`, the `output` forms, `widen_outputs` | written into `editor.spec_mut()` (a port holds a set of sources, which the graph sums) |
 //! | `set_param` | the node's [`ParamSet`], when it has one |
 //! | `replace`, `crossfade` | `Editor::replace_or_swap` with a [`Fade`]: a plain swap when there is nothing to fade from |
@@ -46,15 +46,16 @@ use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{BusRef, BusSource, Buses, EdgeFade, EdgeGain};
 use tutti_graph::{
+    CloseError, EventCapacity, EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec,
+    TapAlign, TapId,
+};
+use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, EventTapReader, Executor, Fade,
     GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, MixError, ModeError, NodeMode,
     ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, TapWriter, Transport,
 };
 use tutti_graph::{
     Edge as RawEdge, EdgeId, InPort as RawIn, NodeKey, OutPort as RawOut, Sink, Source,
-};
-use tutti_graph::{
-    EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec, TapAlign, TapId,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -65,7 +66,7 @@ use tutti_types::{Samples, Tail};
 use crate::key::{Bus, BusSink, Fanin, InEnd, Inlet, MainSink, OutEnd, Outlet, Wire};
 use crate::{
     ConnectError, Connection, Edge, EdgeGainError, EventInPort, EventOutPort, InPort, InletError,
-    Key, OutPort, ParamError, ParamUnit, Root, SessionNode, TypedParamRef,
+    Key, OutPort, ParamError, ParamUnit, RemoveError, Root, SessionNode, TypedParamRef,
 };
 
 /// The largest block a device's graph is prepared for.
@@ -272,7 +273,7 @@ pub(crate) enum Retried {
 ///
 /// # Why opaque
 ///
-/// Every method is named in graph terms (insert a node, connect two ports,
+/// Every method is named in graph terms (add a node, connect two ports,
 /// replace a node under a fade) and takes a node as `impl Into<NodeKey>` and
 /// ports as [`OutPort`] and [`InPort`], never a runtime type. There is no access to the
 /// `Editor`: the edit/commit boundary stays visible.
@@ -638,16 +639,29 @@ impl Graph {
 
     // --- Nodes ---
 
-    /// Adds `node` to the graph, unwired, through its own [`IntoNode`], and
-    /// returns its handle and its controls. Its fork source goes to the
+    /// Adds `node` to the graph, unwired, and returns its handle and its
+    /// controls: **the one way a node enters**. Its fork source goes to the
     /// editor, so an export forks it as its type says; it is prepared at the
-    /// graph's rate. Its params are not addressed
-    /// ([`set_param`](Self::set_param) finds none): insert a node with params
-    /// with [`add`](Self::add) (a host's own as
-    /// [`Params`](tutti_graph::Params)), which addresses them and keeps its
-    /// reclaimer ([`SessionNode::reclaimer`]): a node inserted here is not
-    /// swept by the reclaim phase.
-    pub fn insert<N: IntoNode>(&mut self, node: N) -> (Key<N>, N::Controls) {
+    /// graph's rate. What the node says of its controls is kept
+    /// ([`SessionNode`]): its params are addressed
+    /// ([`SessionNode::params`], so [`set_param`](Self::set_param) and control-rate
+    /// modulation find them), its reclaimer is swept by the session's
+    /// [`Reclaim`](crate::Phase::Reclaim) phase ([`SessionNode::reclaimer`]), and
+    /// it reads the session's tempo map ([`SessionNode::bind_tempo`]). A node
+    /// that is only an [`IntoNode`] does not compile here: a host's own is
+    /// wrapped as [`ForkByClone`](tutti_graph::ForkByClone) or
+    /// [`Unforkable`](tutti_graph::Unforkable), or is a
+    /// [`Params`](tutti_graph::Params), or implements [`SessionNode`].
+    pub fn add<N: SessionNode>(&mut self, node: N) -> (Key<N>, N::Controls) {
+        let (key, controls) = self.place(node.bind_tempo(&self.tempo));
+        self.address::<N>(key.erase(), &controls);
+        (key, controls)
+    }
+
+    /// Puts `node` in the editor under a fresh key, with nothing addressed and
+    /// nothing to sweep: [`add`](Self::add)'s first half, for the nodes that
+    /// are not a [`SessionNode`] (a bound plugin).
+    pub(crate) fn place<N: IntoNode>(&mut self, node: N) -> (Key<N>, N::Controls) {
         let id = NodeKey::fresh();
         let controls = self.editor.insert(id, N::kind(), node);
         self.nodes.insert(
@@ -713,17 +727,17 @@ impl Graph {
                 graph,
             });
         }
-        Ok(self.insert(InletNode::new(ring)).0)
+        Ok(self.add(InletNode::new(ring)).0)
     }
 
     /// Opens an event inlet: MIDI a thread of your own pushes into the graph,
-    /// each event on its frame. A ring of `capacity` events is read by an
+    /// each event on its frame. A ring of [`capacity`](EventCapacity) events is read by an
     /// [`EventInletNode`] (unwired; its one event output feeds what you
     /// connect it to, like any node), and the writer is the producer's end:
     /// [`push`](EventInletWriter::push) for an [`At`](tutti_types::At) from one
     /// thread. The inverse of [`open_event_tap`](Self::open_event_tap). `capacity`
     /// is the ring, the waiting list and the port's declared event capacity
-    /// (the old queues' default was 256).
+    /// (a live input's is `tutti_midi_runtime::LIVE_INLET_CAPACITY`, 256).
     ///
     /// Nothing blocks and what does not fit is counted, each in its own count
     /// on the writer ([`lost`](EventInletWriter::lost),
@@ -740,11 +754,10 @@ impl Graph {
     /// Several producers are several inlets, merged by the graph's event
     /// fan-in. A handle that must be `Clone` shares the writer behind a lock of
     /// its own, taken on control threads only.
-    ///
-    /// # Panics
-    ///
-    /// If `capacity` is 0 or does not fit a `u32`.
-    pub fn open_event_inlet(&mut self, capacity: usize) -> (Key<EventInletNode>, EventInletWriter) {
+    pub fn open_event_inlet(
+        &mut self,
+        capacity: EventCapacity,
+    ) -> (Key<EventInletNode>, EventInletWriter) {
         let (node, writer) = EventInletNode::pair(capacity);
         (self.add_event_inlet(node), writer)
     }
@@ -753,16 +766,7 @@ impl Graph {
     /// layer already built ([`EventInletNode::pair`]), for a producer
     /// that must hold its writer before the graph sees the node.
     pub fn add_event_inlet(&mut self, node: EventInletNode) -> Key<EventInletNode> {
-        self.insert(node).0
-    }
-
-    /// [`insert`](Self::insert) a [`SessionNode`], its params addressed by
-    /// [`SessionNode::params`] and its reclaimer kept
-    /// ([`SessionNode::reclaimer`]).
-    pub fn add<N: SessionNode>(&mut self, node: N) -> (Key<N>, N::Controls) {
-        let (key, controls) = self.insert(node.bind_tempo(&self.tempo));
-        self.address::<N>(key.erase(), &controls);
-        (key, controls)
+        self.add(node).0
     }
 
     /// Keeps what a [`SessionNode`] says of its controls under `node`: its
@@ -1280,8 +1284,8 @@ impl Graph {
     /// ([`set_feed`](Self::set_feed)) feed it on input 0: the feeds are
     /// partial, as audio's declarations are, and own only their own
     /// sources. Touches nothing when that is what it already holds. Event
-    /// edges from a node the graph did not insert through
-    /// [`insert`](Self::insert) (a modulation lane on a plugin's event
+    /// edges from a node the graph did not add through
+    /// [`add`](Self::add) (a modulation lane on a plugin's event
     /// input) are not the caller's, and stay.
     pub(crate) fn set_event_sources_of(
         &mut self,
@@ -1493,11 +1497,18 @@ impl Graph {
     /// afterwards, so a sink still naming it is left silent rather than
     /// dangling, and the feeds into and from it go.
     ///
-    /// Returns whether it was there; removing a node twice is a no-op.
-    pub fn remove(&mut self, node: impl Into<NodeKey>) -> bool {
+    /// The graph's one removal for a node, whatever it is (a plugin, an inlet,
+    /// a clip). The edges fade out first (a declicked removal): the node stays
+    /// in the editor, rendering, until they have.
+    ///
+    /// # Errors
+    ///
+    /// [`RemoveError::NoSuchNode`] when `node` is not in the graph (removed
+    /// already, or never added); nothing changes.
+    pub fn remove(&mut self, node: impl Into<NodeKey>) -> Result<(), RemoveError> {
         let node = node.into();
         if self.nodes.remove(&node).is_none() {
-            return false;
+            return Err(RemoveError::NoSuchNode(node));
         }
         #[cfg(feature = "plugin")]
         self.plugins.remove(&node);
@@ -1518,7 +1529,7 @@ impl Graph {
         }
         self.fed_edges.retain(|_, s| !s.is_empty());
         self.edited = true;
-        true
+        Ok(())
     }
 
     /// How many nodes the graph holds.
@@ -1598,8 +1609,8 @@ impl Graph {
     ///
     /// [`ParamError::NoSuchNode`] when the node is not in the graph,
     /// [`ParamError::NoSuchParam`] when it has no such param (it does not
-    /// declare it, or has none addressed: a node inserted with
-    /// [`insert`](Self::insert)); nothing is written.
+    /// declare it, or has none addressed: a bound plugin, or a node
+    /// [`replace`](Self::replace)d in); nothing is written.
     #[must_use = "a refused write changed nothing"]
     pub fn set_param<U: ParamUnit>(
         &mut self,
@@ -2569,10 +2580,18 @@ impl Graph {
     }
 
     /// Closes a tap: its ops leave the plan at the next commit and the ring
-    /// is freed on this side. Closing a closed tap does nothing.
-    pub fn close_tap(&mut self, id: TapId) {
-        self.editor.close_tap(id);
+    /// is freed on this side. Dropping the reader closes it at the next
+    /// [`Reclaim`](crate::Phase::Reclaim) phase; this closes it now, with the
+    /// reader still held.
+    ///
+    /// # Errors
+    ///
+    /// [`CloseError::Tap`] when no tap `id` is open (closed already, or never
+    /// opened); nothing changes.
+    pub fn close_tap(&mut self, id: TapId) -> Result<(), CloseError> {
+        self.editor.close_tap(id)?;
         self.edited = true;
+        Ok(())
     }
 
     /// Closes the taps whose readers were dropped, and returns how many.
@@ -2638,11 +2657,19 @@ impl Graph {
     }
 
     /// Closes an event tap: its op leaves the plan at the next commit and the
-    /// ring is freed on this side. Closing a closed tap does nothing.
-    pub fn close_event_tap(&mut self, id: EventTapId) {
+    /// ring is freed on this side. Dropping the reader closes it at the next
+    /// [`Reclaim`](crate::Phase::Reclaim) phase; this closes it now, with the
+    /// reader still held.
+    ///
+    /// # Errors
+    ///
+    /// [`CloseError::EventTap`] when no event tap `id` is open; nothing
+    /// changes.
+    pub fn close_event_tap(&mut self, id: EventTapId) -> Result<(), CloseError> {
+        self.editor.close_event_tap(id)?;
         self.event_taps.remove(&id);
-        self.editor.close_event_tap(id);
         self.edited = true;
+        Ok(())
     }
 
     /// Opens every event tap again, at the rate the graph is prepared at now,
@@ -2681,7 +2708,8 @@ impl Graph {
             Ok(reader) => Some(reader),
             Err(_) => {
                 self.event_taps.remove(&id);
-                self.editor.close_event_tap(id);
+                // Open a moment ago, so there is a tap to close.
+                let _ = self.editor.close_event_tap(id);
                 None
             }
         }
@@ -2774,10 +2802,17 @@ impl Graph {
     }
 
     /// Closes a meter: its op leaves the plan at the next commit and its
-    /// cells are freed on this side. Closing a closed meter does nothing.
-    pub fn close_meter(&mut self, id: MeterId) {
-        self.editor.close_meter(id);
+    /// cells are freed on this side. Dropping the reader closes it at the
+    /// next [`Reclaim`](crate::Phase::Reclaim) phase; this closes it now, with
+    /// the reader still held.
+    ///
+    /// # Errors
+    ///
+    /// [`CloseError::Meter`] when no meter `id` is open; nothing changes.
+    pub fn close_meter(&mut self, id: MeterId) -> Result<(), CloseError> {
+        self.editor.close_meter(id)?;
         self.edited = true;
+        Ok(())
     }
 
     /// Closes the meters whose readers were dropped, and returns how many.

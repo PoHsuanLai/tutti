@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::Const;
 use tutti_plugin_host::Liveness;
@@ -96,7 +97,7 @@ fn session_with(cause: Option<&str>) -> (Session, NodeKey) {
         .outputs_floor(2)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
-    let (node, _) = s.graph().insert(Const::mono(0.0));
+    let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
     assert!(s.graph().host_plugin(
         node,
         handle_with(cause),
@@ -148,7 +149,7 @@ fn a_non_plugin_node_never_marks_the_graph_edited() {
         .outputs_floor(2)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
-    s.graph().insert(Const::mono(0.0));
+    s.graph().add(ForkByClone(Const::mono(0.0)));
     s.commit();
     assert!(!s.graph_ref().is_edited(), "precondition: committed");
     let t0 = Instant::now();

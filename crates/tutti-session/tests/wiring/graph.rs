@@ -16,8 +16,8 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::{Const, Osc, Through};
 use tutti_session::{
-    Crossfade, CrossfadeRefused, EventInPort, Feeder, InPort, OutPort, Root, Session, SessionEvent,
-    SessionNode, root_width,
+    Crossfade, CrossfadeRefused, EventInPort, Feeder, InPort, OutPort, RemoveError, Root, Session,
+    SessionEvent, SessionNode, root_width,
 };
 use tutti_types::{ChannelLayout, Drive, Hz, InterleavedMut, SampleRate, Samples, Seconds};
 use tutti_types::{Latency, Param, UnitParam};
@@ -185,8 +185,8 @@ fn every_source_reads_back_as_written() {
         .build_detached(RATE)
         .expect("builds");
     let graph = s.graph();
-    let (stereo, _) = graph.insert(Const::frame(&[1.0, 2.0]));
-    let (sink, _) = graph.insert(Through::mono());
+    let (stereo, _) = graph.add(ForkByClone(Const::frame(&[1.0, 2.0])));
+    let (sink, _) = graph.add(ForkByClone(Through::mono()));
     for source in [
         OutPort::new(stereo, 1),
         OutPort::new(stereo, 0),
@@ -209,8 +209,8 @@ fn every_source_reads_back_as_written() {
 fn every_setter_stores_silence_as_the_empty_set() {
     let mut s = detached(2);
     let graph = s.graph();
-    let (sink, _) = graph.insert(Through::mono());
-    let (src, _) = graph.insert(Const::frame(&[1.0, 2.0]));
+    let (sink, _) = graph.add(ForkByClone(Through::mono()));
+    let (src, _) = graph.add(ForkByClone(Const::frame(&[1.0, 2.0])));
     assert!(graph.planned_compensation().is_some(), "fresh root");
 
     graph
@@ -243,13 +243,33 @@ fn every_setter_stores_silence_as_the_empty_set() {
 /// `remove` says whether the node was there, so removing a node twice is a
 /// no-op rather than a panic.
 #[test]
-fn removing_a_node_twice_is_a_no_op() {
+fn removing_a_node_twice_names_what_was_not_there() {
     let mut s = detached(1);
-    let (node, _) = s.graph().insert(Const::mono(1.0));
+    let (node, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
     assert!(s.graph_ref().contains(node));
-    assert!(s.remove(node));
+    assert_eq!(s.remove(node), Ok(()));
     assert!(!s.graph_ref().contains(node));
-    assert!(!s.remove(node));
+    assert_eq!(
+        s.remove(node),
+        Err(RemoveError::NoSuchNode(node.erase())),
+        "the session's remove names the node that is gone"
+    );
+    assert_eq!(
+        s.graph().remove(node),
+        Err(RemoveError::NoSuchNode(node.erase())),
+        "so does the graph's"
+    );
+}
+
+/// A node that was never in the graph is refused by name, and the refusal
+/// changes nothing: the graph is not marked edited.
+#[test]
+fn removing_a_stranger_changes_nothing() {
+    let mut s = detached(1);
+    let _ = s.update();
+    let stranger = tutti_graph::NodeKey(u64::MAX);
+    assert_eq!(s.remove(stranger), Err(RemoveError::NoSuchNode(stranger)));
+    assert!(!s.graph_ref().is_edited(), "nothing was edited");
 }
 
 /// `root_width` is `max(project, device)` clamped to
@@ -314,7 +334,7 @@ fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
 #[test]
 fn an_edit_between_updates_is_committed_by_the_next() {
     let mut s = detached(1);
-    let (a, _) = s.graph().insert(Const::mono(1.0));
+    let (a, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
         .unwrap();
@@ -325,7 +345,7 @@ fn an_edit_between_updates_is_committed_by_the_next() {
         .sent_plan()
         .expect("the first update sent a plan");
 
-    let (b, _) = s.graph().insert(Const::mono(2.0));
+    let (b, _) = s.graph().add(ForkByClone(Const::mono(2.0)));
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(b, 0)])
         .unwrap();
@@ -345,7 +365,7 @@ fn an_edit_between_updates_is_committed_by_the_next() {
 #[test]
 fn an_update_with_no_edit_sends_no_plan() {
     let mut s = detached(1);
-    let (a, _) = s.graph().insert(Const::mono(1.0));
+    let (a, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
         .unwrap();
@@ -371,7 +391,7 @@ fn an_update_with_no_edit_sends_no_plan() {
 fn a_crossfade_on_a_removed_node_is_refused_naming_it() {
     let mut s = detached(1);
     let (knob, _) = s.graph().add(Params(Knob::new()));
-    s.graph().remove(knob);
+    s.graph().remove(knob).unwrap();
     let refused = s
         .graph()
         .crossfade(
@@ -524,10 +544,10 @@ fn every_param_write_path_reaches_a_fork() {
 fn move_feeds_moves_every_feeders_sources() {
     let mut s = detached(1);
     let g = s.graph();
-    let (old, _) = g.insert(ForkByClone(Events::<1, 0>));
-    let (new, _) = g.insert(ForkByClone(Events::<1, 0>));
-    let (clip, _) = g.insert(ForkByClone(Events::<0, 1>));
-    let (route, _) = g.insert(ForkByClone(Events::<0, 1>));
+    let (old, _) = g.add(ForkByClone(Events::<1, 0>));
+    let (new, _) = g.add(ForkByClone(Events::<1, 0>));
+    let (clip, _) = g.add(ForkByClone(Events::<0, 1>));
+    let (route, _) = g.add(ForkByClone(Events::<0, 1>));
     g.set_feed(old, Feeder::Sequencer, vec![clip.events_out()]);
     g.set_feed(old, Feeder::Routes, vec![route.events_out()]);
     let both = {
@@ -674,7 +694,7 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
     // The test thread is the process's main thread.
     let _main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
     let mut s = detached(1);
-    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
     let _ = s.update();
 
     let (s, removed) = std::thread::spawn(move || {
@@ -684,8 +704,9 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
     })
     .join()
     .expect("the session comes back");
-    assert!(
+    assert_eq!(
         removed.expect("a removal off the main thread does not assert"),
+        Ok(()),
         "the node was in the graph"
     );
 
@@ -720,7 +741,7 @@ fn an_update_frees_what_a_block_held_across_a_replacement() {
     use tutti_types::{Beat, MeterChange, MeterMap, TimeSignature};
 
     let mut s = detached(1);
-    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
         .unwrap();
@@ -906,7 +927,7 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
 
     let (other, third) = s.graph().add(Published::new());
     let _ = s.update();
-    assert!(s.remove(other));
+    s.remove(other).unwrap();
     assert_eq!(
         Arc::strong_count(&third.token),
         1,

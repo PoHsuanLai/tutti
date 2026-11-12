@@ -94,7 +94,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
   `push(At, Ump)` or `push_at(Moment, Ump)`, held on `Env::due` until its frame
   (late lands at offset 0 and is counted), `Graph::open_event_inlet` /
-  `add_event_inlet` (`tutti-session`). No rate to refuse: a `Moment` carries
+  `add_event_inlet` (`tutti-session`; the capacity is an `EventCapacity`, 1 to
+  `u32::MAX`, so neither it nor `EventInletNode::pair` panics). No rate to refuse: a `Moment` carries
   its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
   over any other event; four counts (`lost`, `evicted`, `refused`, `late`);
   its fork is silent, unlike the audio inlet's. A producer holding an OS time gets
@@ -1131,7 +1132,7 @@ Scalars use `Param<U>`.
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
 - **The session graph has typed keys and one wiring vocabulary** (doc 013, "The
-  session graph's surface"). `Graph::add`/`insert` return a `Key<N>` (a `Copy`
+  session graph's surface"). `Graph::add` (the one way a node enters) returns a `Key<N>` (a `Copy`
   `NodeKey` with its node type; every call that takes a node takes
   `impl Into<NodeKey>`, `Key::erase` gives the plain key). Ports come from keys:
   `key.out(i)` is an `OutPort`, `key.input(i)` an `InPort`; the root is `Root`
@@ -1144,6 +1145,14 @@ Scalars use `Param<U>`.
   and into the root it folds to the declared topology, `BusError::RootUndeclared`
   otherwise). `Graph::chain` does a main bus down a list. All refuse with
   `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **Removal is a `#[must_use]` `Result` that names what was not there** (doc 030
+  step 2d, doc 013 "As built (removal)"): `Graph::remove` / `Session::remove`
+  (`RemoveError`, declicked), `close_tap` / `close_event_tap` / `close_meter`
+  (`CloseError`), `close_heard_tap` (`HeardTapError::NotOpen`), the session's
+  modulation `remove_source` / `remove_route` and `Midi::unroute`; never a `bool`.
+  A refusal changes nothing. **`Graph::add` is the one way a node enters** and
+  takes a `SessionNode`, so a node with params cannot be added unaddressed; the
+  unaddressed insert is private.
 - **Event ports are keys' too, and params are typed** (doc 030 step 2c).
   `key.events_out()` / `key.events_in()` are the main event ports (index 0;
   **event input 0 is the main event input, where the chase delivers**),
@@ -1213,8 +1222,8 @@ Scalars use `Param<U>`.
   system that runs a phase in its set. Node removal is an
   `On<Remove, AudioNode>` observer.
 - Every spawn path takes a `SessionNode`: `spawn_audio_node`,
-  `insert_audio_node`, `crossfade_audio_node` (and `Graph::insert` /
-  `replace`, reached through `AudioGraphRes::graph`, take its `IntoNode`). A host's plain node goes in as
+  `insert_audio_node`, `crossfade_audio_node` (and `Graph::add` /
+  `replace`, reached through `AudioGraphRes::graph`). A host's plain node goes in as
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with

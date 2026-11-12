@@ -13,6 +13,7 @@
 use std::f64::consts::{PI, TAU};
 use tutti_types::MaxBlock;
 
+use tutti_graph::ForkByClone;
 #[cfg(feature = "modulation")]
 use tutti_modulation::Lfo;
 use tutti_nodes::testing::Osc;
@@ -62,8 +63,12 @@ fn rig() -> (Session, Key<MultibandCompressorNode>, MultibandControls) {
         )
         .expect("builds");
     let g = s.graph();
-    let (low, _) = g.insert(Osc::sine(Hz(LOW as f32)).with_amplitude(Amplitude(A as f32)));
-    let (high, _) = g.insert(Osc::sine(Hz(HIGH as f32)).with_amplitude(Amplitude(A as f32)));
+    let (low, _) = g.add(ForkByClone(
+        Osc::sine(Hz(LOW as f32)).with_amplitude(Amplitude(A as f32)),
+    ));
+    let (high, _) = g.add(ForkByClone(
+        Osc::sine(Hz(HIGH as f32)).with_amplitude(Amplitude(A as f32)),
+    ));
     let (mb, controls) = g.add(MultibandCompressorNode::new(ChannelLayout::STEREO, 2).unwrap());
     g.set_sources(InPort::new(mb, 0), [OutPort::new(low, 0)])
         .unwrap();

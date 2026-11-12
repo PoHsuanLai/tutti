@@ -47,7 +47,7 @@ const INSTALLS: usize = 4;
 /// An install: a writer, or `None` to close.
 type Install = Option<Box<TapWriter>>;
 
-/// Why [`HeardTaps::open`] refused.
+/// Why [`HeardTaps::open`] or [`HeardTaps::close`] refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum HeardTapError {
@@ -59,6 +59,10 @@ pub enum HeardTapError {
     /// rendering). Try again once it has.
     #[error("the audio thread has not yet taken the last tap installs")]
     Backpressure,
+    /// [`HeardTaps::close`] found no tap open (none was opened, or it was
+    /// closed, or its dropped reader was reclaimed).
+    #[error("no output tap is open")]
+    NotOpen,
 }
 
 /// The control side of the engine's after-the-fader tap: cheap to clone,
@@ -177,14 +181,21 @@ impl HeardTaps {
     }
 
     /// Closes the tap from the next call of the engine's render on. The
-    /// reader keeps what it was written. Does nothing if none is open.
-    pub fn close(&self) {
+    /// reader keeps what it was written.
+    ///
+    /// # Errors
+    ///
+    /// [`HeardTapError::NotOpen`] when no tap is open; nothing is sent.
+    pub fn close(&self) -> Result<(), HeardTapError> {
         let mut c = self.control();
         c.settle();
-        c.reader = None;
+        if c.reader.take().is_none() {
+            return Err(HeardTapError::NotOpen);
+        }
         // A full queue means the audio thread is behind: the close stays owed
         // and goes out on the next open, close or [`reclaim`](Self::reclaim).
         c.send_close();
+        Ok(())
     }
 
     /// Frees the writers the audio thread retired, and closes the tap if its

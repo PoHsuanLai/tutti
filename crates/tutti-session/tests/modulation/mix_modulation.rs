@@ -80,8 +80,8 @@ fn render(s: &mut Session, blocks: usize) -> Vec<f32> {
 /// `Const(A) -> Halve -> output 0`; the node and the render's blend at `m`.
 fn rig(s: &mut Session) -> NodeKey {
     let g = s.graph();
-    let (a, _) = g.insert(Const::mono(A));
-    let (halve, _) = g.insert(ForkByClone(Halve));
+    let (a, _) = g.add(ForkByClone(Const::mono(A)));
+    let (halve, _) = g.add(ForkByClone(Halve));
     g.set_sources(InPort::new(halve, 0), [OutPort::new(a, 0)])
         .unwrap();
     g.set_sources(Root::output(0), [OutPort::new(halve, 0)])
@@ -154,7 +154,7 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
         "the knob is the mix"
     );
 
-    s.mods().remove_route(route);
+    s.mods().remove_route(route).unwrap();
     settle(&mut s);
     figure(&mut s, 0.875, "the route gone: the base the knob left");
 }
@@ -183,7 +183,7 @@ fn a_removed_node_takes_its_mix_route_with_it() {
     let source = m.macro_(0.5);
     m.route(source, mix, Depth(0.5)).unwrap();
     settle(&mut s);
-    assert!(s.remove(node));
+    s.remove(node).unwrap();
     // Nothing is left declared on the node: no refusal, nothing unresolved.
     settle(&mut s);
 }
@@ -219,8 +219,8 @@ impl Node for Spread {
 fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
     let mut s = offline();
     let g = s.graph();
-    let (a, _) = g.insert(Const::mono(A));
-    let (spread, _) = g.insert(ForkByClone(Spread));
+    let (a, _) = g.add(ForkByClone(Const::mono(A)));
+    let (spread, _) = g.add(ForkByClone(Spread));
     g.set_sources(InPort::new(spread, 0), [OutPort::new(a, 0)])
         .unwrap();
     g.set_sources(Root::output(0), [OutPort::new(spread, 0)])

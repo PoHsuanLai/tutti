@@ -249,7 +249,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
         })
         .expect("synth builds");
         let (synth, _) = s.graph().add(synth);
-        let (hold, _) = s.graph().insert(Unforkable(Hold {
+        let (hold, _) = s.graph().add(Unforkable(Hold {
             base: 36 + i as u8,
             notes: NOTES,
             sent: 0,
@@ -301,7 +301,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
                 },
             );
         }
-        let (pool, _) = s.graph().insert(pool);
+        let (pool, _) = s.graph().add(pool);
         strips.push(pool.erase());
     }
 

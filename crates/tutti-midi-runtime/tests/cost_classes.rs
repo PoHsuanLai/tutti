@@ -12,8 +12,8 @@ mod common;
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
-    Cost, Cx, Editor, EventEdge, EventIn, EventInletNode, EventKind, EventOut, Executor,
-    ForkByClone, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
+    Cost, Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode, EventKind, EventOut,
+    Executor, ForkByClone, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{ClockNode, HarmonyNode, MidiClipNode, MidiIngestNode, TimedMidiEvent};
@@ -184,7 +184,10 @@ fn every_midi_node_is_light() {
     assert_eq!(clip(0).shape().cost, Cost::Light);
     assert_eq!(HarmonyNode::new([]).shape().cost, Cost::Light);
     assert_eq!(ClockNode::new().shape().cost, Cost::Light);
-    assert_eq!(EventInletNode::pair(8).0.shape().cost, Cost::Light);
+    assert_eq!(
+        EventInletNode::pair(EventCapacity::of(8)).0.shape().cost,
+        Cost::Light
+    );
     assert_eq!(MidiIngestNode::new(1).shape().cost, Cost::Light);
 }
 

@@ -1035,7 +1035,7 @@ impl Session {
             Err(plugin) => {
                 let plugin_meter = plugin.meter();
                 plugin_meter.set_meter(meter);
-                let (node, _) = self.graph.insert((*plugin).bind(self.graph.tempo.clone()));
+                let (node, _) = self.graph.place((*plugin).bind(self.graph.tempo.clone()));
                 let node = node.erase();
                 let mut hosted = HostedPlugin::new(handle, loaded_ref);
                 hosted.meter = Some(plugin_meter);
@@ -1482,7 +1482,7 @@ impl Session {
                 .plugins
                 .get(&node)
                 .and_then(|h| h.withheld.clone().or_else(|| h.snapshot.clone()));
-            self.remove(node);
+            let _ = self.remove(node); // gone already is as good as removed
             out.push(SessionEvent::PluginGaveUp { node, why, state });
         }
     }
@@ -1715,7 +1715,7 @@ impl Session {
             }
         }
         for (node, cause) in dead {
-            self.remove(node);
+            let _ = self.remove(node); // gone already is as good as removed
             out.push(SessionEvent::PluginDied { node, cause });
         }
         self.finish_gave_up(gave_up, out);
@@ -1862,9 +1862,12 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        let (node, _) = session
-            .graph()
-            .insert(tutti_nodes::testing::Const::mono(0.0));
+        let (node, _) =
+            session
+                .graph()
+                .add(tutti_graph::ForkByClone(tutti_nodes::testing::Const::mono(
+                    0.0,
+                )));
         assert!(session.graph().host_plugin(
             node,
             handle,

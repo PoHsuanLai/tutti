@@ -153,8 +153,8 @@ The ordered bootstrap in `build_on`, step by step:
 `GraphRuntime` provides, all Bevy-free but for `bevy_log` (`runtime.rs:243`,
 `:590`, `:905`, `:929`), which becomes `tracing` (§4.1):
 
-- `insert`, `insert_plugin`, `replace_plugin`, `replace` (with
-  `ReplaceRefused`) and `remove`;
+- `add`, `insert_plugin`, `replace_plugin`, `replace` (with
+  `ReplaceRefused`) and `remove` (a `Result`: `RemoveError::NoSuchNode`);
 - `set_sources` on an `EventInPort` (was `set_event_sources`), which keeps other owners' edges;
 - `set_source`, `set_output_source`, `set_outputs_from`, `widen_outputs`;
 - `set_param_mod`, `clear_param_mod`, `param_mod`;
@@ -529,8 +529,8 @@ device.stop(); device.start()?;
 **Add and wire nodes.**
 
 ```rust
-let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
-let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
+let (pad, _) = s.graph().add(PolySynth::new(SynthConfig::default())?);
+let (filter, _) = s.graph().add(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
 s.graph().connect(pad.out(0), filter.input(0))?;
 s.graph().connect(filter, Root)?;
 s.graph().crossfade(filter, other_filter, Seconds(0.005))?;  // retried by update() while Busy
@@ -884,9 +884,9 @@ The other host ids stay in the host: `ExportError::NotForkable` names an
 use tutti::prelude::*;
 
 let (mut s, _device) = Session::builder().build_device(DeviceSelector::Default)?;
-let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
-let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
-let (kick_bus, _) = s.graph().insert(BusStripNode::new());
+let (filter, _) = s.graph().add(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
+let (pad, _) = s.graph().add(PolySynth::new(SynthConfig::default())?);
+let (kick_bus, _) = s.graph().add(BusStripNode::new());
 s.graph().connect(pad.out(0), filter.input(0))?;
 s.graph().connect(filter, Root)?;
 
@@ -1625,7 +1625,7 @@ Where the code differs from the text above:
   `route`/`set_route_fallback` or a host's `set_routes`, the other refused
   with `Error::TwoRouteDeclarers`. `set_routes` returns a `Result`.
 - **The §5.1 example** uses `build_offline` and `Graph::add`, not a
-  device and `insert`, and an LFO and a follower on an SVF.
+  device and `add`, and an LFO and a follower on an SVF.
 
 As in §9.4, building `GraphReconcileSystems` from `PHASES` waits for
 `Phase::Plugins` (§9.6) and is §9.7's; Bevy's device poll is not modulation

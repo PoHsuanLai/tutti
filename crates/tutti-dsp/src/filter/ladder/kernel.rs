@@ -45,7 +45,7 @@ pub enum LadderType {
 /// from this function rather than a copy of it. The recurrence they feed is
 /// the ladder node's: four one-pole stages each `v = G*(in - s); lp = v + s;
 /// s = lp + v` with `G = g / (1 + g)`, whose input is `u = tanh(u_lin)` for the
-/// delay-free loop's solution `u_lin = (x - k*S) / (1 + k*G^4)` (see [`ladder_step`]).
+/// delay-free loop's solution `u_lin = (x - k*S) / (1 + k*G^4)` (the kernel's `ladder_step`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LadderCoeffs {
     /// Prewarped integrator gain, `tan(pi * fc / sr)`.

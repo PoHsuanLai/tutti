@@ -657,10 +657,14 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
 
     // The restart an `audioMasterIOChanged` asks for resumes the plugin, which settles its
     // latency there (the probe's late latency): the figure read after it is 300.
-    probe_call(&loaded.path, b"tutti_vst2_probe_set_late_latency\0", |sym| {
-        let f: extern "C" fn(i32) = unsafe { std::mem::transmute(*sym) };
-        f(300);
-    });
+    probe_call(
+        &loaded.path,
+        b"tutti_vst2_probe_set_late_latency\0",
+        |sym| {
+            let f: extern "C" fn(i32) = unsafe { std::mem::transmute(*sym) };
+            f(300);
+        },
+    );
     let answered = probe_call(&loaded.path, b"tutti_vst2_probe_fire_io_changed\0", |sym| {
         let f: extern "C" fn(i32, i32) -> isize = unsafe { std::mem::transmute(*sym) };
         f(300, 2)

@@ -27,9 +27,7 @@ use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::NodeKey;
-use tutti_graph::{
-    Editor, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport,
-};
+use tutti_graph::{Editor, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport};
 use tutti_graph::{OutPort, Source};
 use tutti_plugin::{PresetId, RenderMode};
 use tutti_plugin_host::PluginHandle;

@@ -59,7 +59,11 @@ impl TuningFrequency {
         }
     }
 
-    /// The word with raw `raw`; panics above 21 bits. For a literal.
+    /// The word with raw `raw`. For a literal.
+    ///
+    /// # Panics
+    ///
+    /// Above 21 bits.
     #[must_use]
     pub const fn of(raw: u32) -> Self {
         match Self::new(raw) {
@@ -366,6 +370,8 @@ impl OctaveOffsets {
 ///
 /// A message that has no bank byte on the wire (the original Bulk Tuning Dump,
 /// Request and Single Note Tuning Change) has `bank: None`.
+// Copy, and read on the audio thread: boxing the table or the changes would allocate there.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TuningMessage {
     /// Bulk Tuning Dump Request (`08 00`) or its bank form (`08 03`): "the

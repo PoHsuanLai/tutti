@@ -231,9 +231,11 @@ pub struct SynthConfig {
     /// Which voice gets taken when all `polyphony` voices are busy and another
     /// note arrives.
     pub allocation_strategy: AllocationStrategy,
-    /// Note-number-to-frequency mapping. Consulted at every note-on and on
-    /// every global pitch-bend update; defaults to 12-tone equal temperament
-    /// with A4 = 440 Hz.
+    /// The scale the synth starts with: stored as tuning program 0 of bank 0
+    /// (the MIDI Tuning Standard's table, [`Tuning::table`]), which every channel
+    /// plays until a Tuning Program or Bank Select says otherwise. The note
+    /// logic keeps every later change to it; defaults to 12-tone equal
+    /// temperament with A4 = 440 Hz.
     pub tuning: Tuning,
     /// How far a full-scale channel pitch bend sweeps, in [`Semitones`],
     /// applied symmetrically either side of the note: each channel's default,

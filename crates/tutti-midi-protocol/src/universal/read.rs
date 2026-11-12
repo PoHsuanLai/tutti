@@ -354,6 +354,8 @@ fn addressed(input: &mut &[u8]) -> Res<(Recipient, Universal, Option<U7>)> {
 }
 
 /// What one Universal payload is.
+// Copy, and read on the audio thread: boxing the table or the changes would allocate there.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Parsed {
     /// A message that matched, with a checksum that held or that it has none.
     Message(Recipient, Universal),

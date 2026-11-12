@@ -871,6 +871,14 @@ impl Voicing {
     ///   (RP-003); Off is the instrument's own initialized mode, the
     ///   [`Rules::bend_range`] it was built with. A [`Command::Retune`] follows for
     ///   every channel.
+    /// - **The MIDI Tuning Standard** (`08`; tables: [`TuningCapacity`]): a Single Note
+    ///   Tuning Change and a dump store into the tuning program they name (bank 0 when
+    ///   the message has no bank byte); a real-time change (and Scale/Octave Tuning, per
+    ///   channel mask) answers a [`Command::Tune`] for each sounding note whose key now
+    ///   sounds elsewhere, a non-real-time one and a dump tell no voice. A program or bank
+    ///   the core has no room for is ignored and counted ([`tuning_refused`](Self::tuning_refused)).
+    ///   A Bulk Tuning Dump Request is answered with nothing: an instrument has no SysEx
+    ///   output to reply on.
     /// - Identity Request and Reply are the device inquiry's (M1 p.40), a message
     ///   on a wire the instrument does not own: no command.
     pub fn universal(&mut self, heard: Heard) -> &[Command] {

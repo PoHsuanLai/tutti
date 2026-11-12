@@ -143,6 +143,8 @@ pub enum GeneralMidi {
 /// A Universal message this crate reads. Fields are the wire's values, in the
 /// type that holds them; what a value means (a curve, a displacement) is the
 /// consumer's.
+// Copy, and read on the audio thread: boxing the table or the changes would allocate there.
+#[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Universal {
@@ -188,6 +190,8 @@ pub struct BadChecksum {
 }
 
 /// What [`read()`](fn@read) made of one SysEx message.
+// Copy, and read on the audio thread: boxing the table or the changes would allocate there.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Read {
     /// A Universal message this crate reads.

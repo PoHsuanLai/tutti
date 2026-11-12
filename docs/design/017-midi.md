@@ -3391,7 +3391,7 @@ What the decoded messages are consumed by, one item each.
   M1 p.57), Master Fine Tuning (`04 03`) and Master Coarse Tuning (`04 04 00 msb`, CA-025).
   MIDI-CI (`7E dev 0D`) is Universal too and is `Unread` here: the CI codec's decode is
   untouched, and L8's move to `winnow` can reuse the header rules (`7E`/`7F`, device id).
-  **Not read:** GM2 System On (`09 03`, L10(d): it needs the GM2 differences) and MTS (part 2).
+  **Not read:** GM2 System On (`09 03`, L10(d): it needs the GM2 differences); MTS is part 2, below.
 - **The device id.** `DeviceId` wraps a `U7` (its range is the whole raw, so `new` does not
   refuse): `ALL_CALL` is `7F` ("if `<device ID>` = 7FH then the device should respond
   regardless of what `<device ID>` it is set to", M1 p.40) and `DEFAULT` is `00`. The
@@ -3437,7 +3437,95 @@ What the decoded messages are consumed by, one item each.
 - **System Reset (FF).** Nothing new: the ingest node already acts on it per Group (L6(f):
   releases held state, resets the translator, does not echo it, M1 p.33), and what reaches an
   instrument is the Note Offs and pedal-ups it made. An instrument has no output to echo to.
-- **Part 2, not built:** the MIDI Tuning Standard (bulk dump, single note change, scale/octave
-  forms, RPN 3 and 4) into the tuning table. It needs `PolySynth`'s `Tuning` (a construction
-  value read at every note-on) to become state the core's commands can change, and the
-  SoundFont's `tune`; the master tuning above is the semitone offset that composes with it.
+- **Part 2: the MIDI Tuning Standard** (below).
+
+### L7b: the MIDI Tuning Standard: as built (part 2)
+
+The spec is "MIDI Tuning Updated Specification" (the original messages, CA-020 bank and dump
+extensions, CA-021/RP-020 Scale/Octave), the only oracle.
+
+- **The parser.** `Universal::Tuning(TuningMessage)`, in the same `winnow` grammar
+  (`universal/read.rs`, rules `tuning(Timing)`, `frequency`, `key_changes`, `channel_mask`,
+  `octave_offsets`); the types are `tuning.rs`'s. `DumpRequest { bank: Option<U7>, program }` (`08 00`,
+  `08 03`), `KeyDump { bank, program, name, table: KeyTable }` (`08 01`, `08 04`),
+  `OctaveDump { bank, program, name, offsets }` (`08 05`, `08 06`), `NoteChange { timing, bank,
+  program, changes }` (`08 02` real time, `08 07` in both) and `OctaveTuning { timing, channels,
+  offsets }` (`08 08`, `08 09` in both). `bank: None` is a message with no bank byte. `Timing` is the
+  header's (`7F` real time, `7E` non-real time): CA-020 says the real-time bank form "WILL affect
+  currently sounding notes" and the non-real-time one "will NOT". `08 02` has no non-real-time form
+  in the spec, so under `7E` it is `Unread`.
+- **Frequency data.** `TuningFrequency` is the 21-bit word, `semitone << 14 | fraction`, the fraction
+  most significant byte first (every other 14-bit field of the Universal messages is least
+  significant first; MTS's are not, its examples `44 7F 7F` and `45 00 01` fix it). It follows the range
+  table: `new(u32) -> Option` refusing above 21 bits, `of`, `get`, `TryFrom<u32>`
+  (`NotFrequencyData`), no `Default`. `NO_CHANGE` (`7F 7F 7F`) is a value of it, `is_no_change` and
+  `pitch() -> Option<Semitones>` (`None` for it); `TOP` is `7F 7F 7E`; `nearest(Semitones)` is the
+  named saturation (NaN is note 0, never "no change"), which `Tuning::table` uses. `KeyTable::set`
+  keeps what is stored for a "no change" word: "it should make no change to its stored frequency data
+  for that MIDI key number". `OctaveOffsets` keeps the wire form (`Cents([U7; 12])`: a cent a step, `40`
+  is 0; `Fine([U14; 12])`: `40 00` is 0, "200 cents divided by 16,384"), and `offset(class) ->
+  Cents`. `ChannelMask` is the three channel bytes as one `u16` (`ff` bits 0 and 1 are channels 15 and
+  16, `gg` channels 8 to 14, `hh` 1 to 7); a message with a reserved bit of `ff` set ("must be set to
+  0") is `Unread`. A `KeyChanges` holds at most 127 changes (`ll` is a data byte) in a fixed array, so
+  a `Universal` is about a kilobyte, `Copy`, and reading one allocates nothing; the reader's message
+  room grew to 528 bytes (a 127-change message with a bank is 517).
+- **The checksum.** The Dump messages (`08 04`, `05`, `06`) carry "the XOR of the bytes between
+  `F0` and the checksum, AND 7F"; the original Bulk Tuning Dump (`08 01`) does not have it checked:
+  "it is now recommended that receivers may ignore the checksum in that message". A dump that fails
+  is `Read::BadChecksum(BadChecksum { to, expected, found })`, neither the message nor `Unread`. The
+  spec says nothing of what a receiver does with one, so the choice is ours: it is not applied. A
+  half-trusted table would retune every note, and the sender can send it again. `UniversalReader`
+  counts it (`corrupt()`) only when it was for the all-call or its own id.
+- **The tables and their capacity.** `Voicing` keeps `Tunings` (`tuning.rs`): `banks x programs`
+  `KeyTable`s (512 bytes each), allocated once in `new`. The spec asks for "128 tuning memory
+  locations (programs)" as "a maximum value", allows "any lesser number", and says a Tuning Program or
+  Bank number "for which it has no Program or Bank [...] should ignore that message". So the capacity
+  is `Rules::tuning: TuningCapacity` (`new(banks, programs) -> Option`, each 1 to 128; default one bank
+  of all 128, 64 KiB), a message for a bank or program beyond it changes nothing and is counted in
+  `Voicing::tuning_refused()`, and a host's `Voicing::store_tuning` answers `NoSuchTuning` instead.
+  Every program starts as equal temperament (RP-020), and a message with no bank byte is for bank 0.
+  The tables survive `reset` and General MIDI On (they are stored programs, not controllers); a
+  channel's selection and Scale/Octave offsets do not (the channels return to program 0 of bank 0, no
+  offsets, RP-020's default).
+- **A key's tuning is per voice, not per channel.** The first sketch had `pitch()` read it, but
+  `pitch()` is a channel's (the wheel, RPN 1 and 2, the master tuning: one `Retune` a channel), and
+  a key's tuning differs by key. So a key's tuning is its offset from equal temperament in semitones
+  (the table word's pitch minus the key, plus the channel's Scale/Octave offset for the key's pitch
+  class), told to a voice as `Command::Start::tune`, `Retarget::tune` (a legato or glide move to
+  another key), `Glide::from_tune` (a glide leaves its source key as that key sounds) and
+  `Command::Tune { id, tune }`; the channel's `Retune` stays and the two add, and nothing is in Hz, so
+  A440 is the master tuning's alone. An absolute per-note Pitch (M2-104 7.4.15) carries no key tuning.
+  The percussion channel (`Rules::percussion`) takes none, as it takes no master tuning.
+- **Real time against non-real time.** Real-time messages (`08 02`, `08 07` under `7F`, `08 08` and
+  `08 09` under `7F`) re-tune the sounding notes they reach, once, with a `Command::Tune` for each
+  note whose tuning moved (no cut, no new attack: "without glitching, forced Note-Offs,
+  re-triggering"); the non-real-time forms and every dump are setup messages: they change what the next
+  Note On has and tell no sounding voice (CA-020: "it is assumed that the message will be ignored for
+  notes that are already sounding"). Tuning Program and Bank Select (RPN 3 and 4) "takes effect
+  immediately": they retune the channel's sounding notes. The spec's "tt = 1-128" is its numbering;
+  the data MSB is the program or bank, 0 to 127, as CA-020 says of the dump messages. Data
+  Increment and Decrement (CC 96 and 97) are not read, as for every RPN (M2-104 D.3.3); a Relative
+  Registered Controller steps the program through `ChannelState::registered_word`, saturating.
+  `registered_word` and the chase now carry RPN 3 and 4, so a node swap keeps a channel's selection
+  (`ChannelState::CHASE_MESSAGES` is 21); the tables and Scale/Octave offsets are System Exclusive
+  and are not chased, like the master values.
+- **Scale/Octave.** The offsets are per channel, replace the channel's last ones ("each message that
+  is received will offset from the original preset, not from the modified tuning") and add to the
+  channel's program. A Scale/Octave Tuning Dump (`08 05`, `08 06`) is stored as equal temperament
+  plus the twelve offsets, as a key table in the program it names, so a channel that selects the
+  program hears it.
+- **The instruments.** `PolySynth` and `SoundFontUnit` apply the commands only. `PolySynth` had a
+  `Tuning` read at every note-on (`fractional_note_to_freq`, a geometric interpolation of its table,
+  whose result in an unequal scale differed from a bend's: the 3.9-cent defect its bend test
+  records); that was the second tuning path. It is gone: a voice's pitch is `key_freq(note, tune)`,
+  equal temperament over A4 = 440 Hz plus the voice's `tune` (`SynthVoice::set_tune`, set by `Start`,
+  `Retarget` and `Gate::Tune`), and `SynthConfig::tuning` stays as the construction-time scale, built
+  into the initial table (`Tuning::table`, each key's frequency as frequency data, to its 0.0061
+  cents) stored as program 0 of bank 0, which every channel plays until it selects another. The
+  SoundFont voice adds `tune` to its key's pitch (`Voice::tune`, set by `Start`, `Retarget` and
+  `Tune`) and to the glide's offset; its percussion channel is the core's.
+- **Not built.** The reply to a Bulk Tuning Dump Request: it is parsed
+  (`TuningMessage::DumpRequest`) and answered with nothing, since an instrument has no SysEx output;
+  the responder is L8's. Data Increment and Decrement. A per-program tuning name is parsed
+  (`TuningName`) and not kept. A switchable "instantaneous/next-note-on" option the spec's comments
+  suggest: the real-time messages are instantaneous and the non-real-time ones are not.

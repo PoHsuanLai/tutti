@@ -171,7 +171,7 @@ pub trait OutOfProcess: Loaded {
 ```
 
 `Load` is what a load needs: which plugin of a file that exports several (a
-CLAP plugin id, a VST3 class name; VST2 refuses a choice). The rest of what the
+CLAP plugin id, a VST3 class name; a VST2 shell's sub-plugin is `vst2.<uniqueID>`, doc 029 step 6a). The rest of what the
 server's loaders take today belongs to later calls since 016's split: the
 rate, block and sample format are the activation's `Prepare`, and a state to
 restore before activation is `Control::load_state` on the `Loaded`. The loads

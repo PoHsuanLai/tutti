@@ -13,14 +13,14 @@ use crate::host::{AudioHost, DeviceHost};
 use crate::roster::{DeviceId, Direction};
 
 /// What [`DeviceListing::poll`] found.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Listed {
     /// The worker has not answered.
     Pending,
     /// The host's output devices.
     Devices(Vec<DeviceId>),
     /// The enumeration failed, or its thread ended without an answer.
-    Failed(String),
+    Failed(Error),
 }
 
 /// A thread enumerating a host's output devices once.
@@ -78,11 +78,9 @@ impl DeviceListing {
         }
         let listed = match self.result.try_recv() {
             Ok(Ok(devices)) => Listed::Devices(devices),
-            Ok(Err(e)) => Listed::Failed(e.to_string()),
+            Ok(Err(e)) => Listed::Failed(e),
             Err(TryRecvError::Empty) => return Listed::Pending,
-            Err(TryRecvError::Disconnected) => {
-                Listed::Failed("the device listing thread ended without an answer".into())
-            }
+            Err(TryRecvError::Disconnected) => Listed::Failed(Error::ListingEnded),
         };
         self.done = true;
         listed
@@ -105,7 +103,7 @@ mod tests {
             Ok(DeviceId::list(["A"]))
         })
         .unwrap();
-        assert_eq!(listing.poll(), Listed::Pending);
+        assert!(matches!(listing.poll(), Listed::Pending));
         release.send(()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         let listed = loop {
@@ -117,8 +115,14 @@ mod tests {
                 other => break other,
             }
         };
-        assert_eq!(listed, Listed::Devices(DeviceId::list(["A"])));
-        assert_eq!(listing.poll(), Listed::Pending, "the answer is taken once");
+        assert!(
+            matches!(&listed, Listed::Devices(d) if *d == DeviceId::list(["A"])),
+            "{listed:?}"
+        );
+        assert!(
+            matches!(listing.poll(), Listed::Pending),
+            "the answer is taken once"
+        );
     }
 
     /// A worker that panics is a failure, not a pending that never ends.
@@ -135,7 +139,10 @@ mod tests {
                 other => break other,
             }
         };
-        assert!(matches!(listed, Listed::Failed(_)), "{listed:?}");
+        assert!(
+            matches!(listed, Listed::Failed(Error::ListingEnded)),
+            "{listed:?}"
+        );
     }
 
     /// Dropping a listing whose worker never answers does not wait for it,

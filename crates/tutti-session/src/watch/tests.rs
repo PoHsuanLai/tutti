@@ -394,7 +394,9 @@ fn a_listing_that_does_not_answer_is_reported_slow_once() {
     let (early, over) = listing.poll(base + LISTING_WARNING - Duration::from_millis(1));
     assert!(early.is_none() && !over);
     let (slow, over) = listing.poll(base + LISTING_WARNING);
-    assert!(matches!(slow, Some(SessionEvent::OutputsListSlow(w)) if w == LISTING_WARNING));
+    assert!(
+        matches!(slow, Some(SessionEvent::Device(DeviceEvent::OutputsListSlow(w))) if w == LISTING_WARNING)
+    );
     assert!(!over, "still waiting");
     let (again, over) = listing.poll(base + LISTING_WARNING * 2);
     assert!(again.is_none() && !over, "reported once");
@@ -404,7 +406,9 @@ fn a_listing_that_does_not_answer_is_reported_slow_once() {
     loop {
         let (event, over) = listing.poll(base + LISTING_WARNING * 3);
         if over {
-            assert!(matches!(event, Some(SessionEvent::OutputsListed(d)) if d.is_empty()));
+            assert!(
+                matches!(event, Some(SessionEvent::Device(DeviceEvent::OutputsListed(d))) if d.is_empty())
+            );
             break;
         }
         assert!(Instant::now() < deadline, "no answer");

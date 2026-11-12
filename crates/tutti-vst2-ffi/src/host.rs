@@ -367,6 +367,15 @@ pub struct MidiChannelCounts {
     pub outputs: Option<u8>,
 }
 
+/// One sub-plugin of a **shell** plugin: what `effShellGetNextPlugin` answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellPlugin {
+    /// The sub-plugin's `uniqueID`, which a host answers `audioMasterCurrentId` with to load it.
+    pub id: i32,
+    /// The name the shell gave it.
+    pub name: String,
+}
+
 /// A loaded VST plugin, and the main-thread handle on it.
 ///
 /// This is the one owner of the plugin. It sends `effClose` when it drops, and everything
@@ -1015,6 +1024,38 @@ impl PluginInstance {
         }
     }
 
+    /// The sub-plugins of a shell (`effGetPlugCategory` is `kPlugCategShell`), by walking
+    /// `effShellGetNextPlugin` until it answers 0 (`aeffectx.h`: "[return value]: next
+    /// plugin's uniqueID"). The walk is capped at `MAX_SHELL_PLUGINS` and stops at a
+    /// repeated id, so a plugin that never answers 0 cannot hold the caller forever. A plugin
+    /// that is not a shell answers 0 at once and gives none.
+    pub fn shell_plugins(&self, _main: &MainThread) -> Vec<ShellPlugin> {
+        let mut found: Vec<ShellPlugin> = Vec::new();
+        while found.len() < MAX_SHELL_PLUGINS {
+            // As `read_string_param`: the spec's size is a floor, real plugins write more.
+            let mut buf = vec![0u8; MIN_STRING_BUFFER];
+            let answer = self.dispatch(
+                plugin::OpCode::ShellGetNextPlugin,
+                0,
+                0,
+                buf.as_mut_ptr() as *mut c_void,
+                0.0,
+            );
+            let Some(id) = i32::try_from(answer).ok().filter(|id| *id != 0) else {
+                break;
+            };
+            if found.iter().any(|p| p.id == id) {
+                break;
+            }
+            let name = String::from_utf8_lossy(&buf)
+                .chars()
+                .take_while(|c| *c != '\0')
+                .collect();
+            found.push(ShellPlugin { id, name });
+        }
+        found
+    }
+
     fn entry(&self) -> RenderEntry {
         RenderEntry {
             effect: self.core.get_effect(),
@@ -1471,6 +1512,9 @@ fn truncated_c_str(string: &str, max_len: usize) -> &str {
 
 /// The least room a string the plugin writes gets, whatever the spec's length is.
 const MIN_STRING_BUFFER: usize = 256;
+
+/// The most sub-plugins [`PluginInstance::shell_plugins`] reads from one shell.
+const MAX_SHELL_PLUGINS: usize = 4096;
 
 trait Dispatch {
     fn get_effect(&self) -> *mut AEffect;

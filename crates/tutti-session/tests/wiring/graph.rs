@@ -27,7 +27,7 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// A detached session `outputs` wide at 48 kHz: the executor on this side.
 fn detached(outputs: usize) -> Session {
     Session::builder()
-        .outputs_floor(outputs)
+        .outputs_floor(ChannelLayout::clamped(outputs))
         .build_detached(RATE)
         .expect("builds")
 }
@@ -183,8 +183,8 @@ impl<const IN: u16, const OUT: u16> Node for Events<IN, OUT> {
 #[test]
 fn every_source_reads_back_as_written() {
     let mut s = Session::builder()
-        .inputs(1)
-        .outputs_floor(2)
+        .inputs(ChannelLayout::MONO)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("builds");
     let graph = s.graph();
@@ -297,40 +297,40 @@ fn removing_a_stranger_changes_nothing() {
 /// (Moved from `bevy-tutti`'s `engine::build`.)
 #[test]
 fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
-    let cases: &[(usize, ChannelLayout, usize, &str)] = &[
+    let cases: &[(ChannelLayout, ChannelLayout, usize, &str)] = &[
         (
-            2,
+            ChannelLayout::STEREO,
             ChannelLayout::from(6u16),
             6,
             "a wider device widens the root: a stereo project on a 5.1 device \
              must render all six, or the top four are permanently silent",
         ),
         (
-            6,
+            ChannelLayout::from_count(6),
             ChannelLayout::STEREO,
             6,
             "a wider project is kept and folded, not clamped",
         ),
         (
-            0,
+            ChannelLayout::EMPTY,
             ChannelLayout::from(6u16),
             6,
             "an unset project width falls through to the device",
         ),
         (
-            0,
+            ChannelLayout::EMPTY,
             ChannelLayout::STEREO,
             2,
             "an unset project width falls through to the device",
         ),
         (
-            64,
+            ChannelLayout::from_count(64),
             ChannelLayout::from(32u16),
             MAX_ROOT_CHANNELS,
             "nothing exceeds the render scratch",
         ),
         (
-            0,
+            ChannelLayout::EMPTY,
             ChannelLayout::EMPTY,
             1,
             "the root is never zero wide: a zero-output root would render \
@@ -341,7 +341,8 @@ fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
         assert_eq!(
             root_width(project, device),
             expected,
-            "root_width({project}, {} channels): {why}",
+            "root_width({} channels, {} channels): {why}",
+            project.count(),
             device.count()
         );
     }
@@ -969,20 +970,13 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
     assert_eq!(third.cell.retired_len(), 1, "a removed node is not swept");
 }
 
-/// A global input count no layout holds is refused when the session is built,
-/// not wrapped into a narrow one.
+/// The widest global input a layout holds builds: the count is a
+/// `ChannelLayout`, so one no layout holds cannot be written.
 #[test]
-fn an_input_count_past_a_layout_is_refused() {
-    let Err(err) = Session::builder().inputs(65_538).build_detached(RATE) else {
-        panic!("a session with 65 538 inputs must be refused");
-    };
-    assert!(matches!(
-        err,
-        tutti_session::Error::Output(tutti_types::FoldError::TooWide(65_538))
-    ));
+fn the_widest_input_layout_builds() {
     assert!(
         Session::builder()
-            .inputs(usize::from(u16::MAX))
+            .inputs(ChannelLayout::from_count(u16::MAX))
             .build_detached(RATE)
             .is_ok()
     );

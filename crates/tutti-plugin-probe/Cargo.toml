@@ -21,16 +21,19 @@ name = "plugin-probe"
 path = "src/main.rs"
 
 [features]
-default = ["clap", "vst3", "vst2"]
+default = ["clap", "vst3", "vst2", "au"]
 clap = ["dep:tutti-clap-host"]
 vst3 = ["dep:tutti-vst3-host"]
 vst2 = ["dep:tutti-vst2-host"]
+# Audio Units: macOS only (the host crate is empty elsewhere).
+au = ["dep:tutti-au-host"]
 
 [dependencies]
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["probe-wire"] }
 tutti-clap-host = { path = "../tutti-clap-host", optional = true }
 tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
 tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
+tutti-au-host = { path = "../tutti-au-host", optional = true }
 
 [lib]
 name = "tutti_plugin_probe"
@@ -41,6 +44,8 @@ path = "src/lib.rs"
 # binary, and `libloading` to read what it recorded.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
+# `tests/vst2_shell.rs`: a VST2 file of two plugins.
+tutti-vst2-shell-plugin = { path = "../../testing/tutti-vst2-shell-plugin" }
 libloading = "0.8"
 tutti-vst2-host = { path = "../tutti-vst2-host" }
 tutti-types = { path = "../tutti-types" }

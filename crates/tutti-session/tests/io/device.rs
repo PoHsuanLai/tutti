@@ -13,8 +13,8 @@ use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{
-    Backoff, DevicePolicy, DeviceRestart, InPort, OutPort, Phase, PhaseCx, Root, Session,
-    SessionEvent,
+    Backoff, DeviceEvent, DevicePolicy, DeviceRestart, InPort, OutPort, Phase, PhaseCx,
+    RestartOutcome, Root, Session, SessionEvent, Workers,
 };
 use tutti_types::{ChannelLayout, Db, Hz, MaxBlock, SampleRate, Samples};
 
@@ -140,7 +140,7 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     assert!(at48 > Samples(0), "a lookahead to compensate");
 
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(96_000.0), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(96_000.0), driver, None)
         .expect("restarts");
     assert!(!old.is_open() && new.is_open(), "on the new device");
     assert_eq!(
@@ -200,7 +200,7 @@ fn wants(events: &[SessionEvent]) -> Vec<DeviceSelector> {
     events
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::RestartWanted(r) => Some(r.device.clone()),
+            SessionEvent::Device(DeviceEvent::RestartWanted(r)) => Some(r.device.clone()),
             _ => None,
         })
         .collect()
@@ -244,14 +244,14 @@ fn the_watch_reports_what_the_host_lists() {
         matches!(
             events.as_slice(),
             [
-                SessionEvent::DeviceAppeared {
+                SessionEvent::Device(DeviceEvent::Appeared {
                     direction: Direction::Output,
                     ..
-                },
-                SessionEvent::DefaultChanged {
+                }),
+                SessionEvent::Device(DeviceEvent::DefaultChanged {
                     direction: Direction::Output,
                     ..
-                },
+                }),
             ]
         ),
         "{events:?}"
@@ -262,7 +262,7 @@ fn the_watch_reports_what_the_host_lists() {
     assert!(
         matches!(
             events.as_slice(),
-            [SessionEvent::DeviceAppeared { id, .. }, SessionEvent::DefaultChanged { .. }] if id.name() == "B"
+            [SessionEvent::Device(DeviceEvent::Appeared { id, .. }), SessionEvent::Device(DeviceEvent::DefaultChanged { .. })] if id.name() == "B"
         ),
         "{events:?}"
     );
@@ -273,7 +273,7 @@ fn the_watch_reports_what_the_host_lists() {
     assert!(
         matches!(
             events.as_slice(),
-            [SessionEvent::DeviceLost { id, .. }] if id.name() == "A"
+            [SessionEvent::Device(DeviceEvent::Lost { id, .. })] if id.name() == "A"
         ),
         "{events:?}"
     );
@@ -306,11 +306,11 @@ fn following_the_default_restarts_and_reports_the_rate() {
     // The host runs it (here on a device-free driver at 48 kHz).
     let (driver, new) = ManualStreamDriver::new();
     session
-        .restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {})
+        .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
     assert!(new.is_open());
     let events = poll(&mut session, base, 110);
-    let [SessionEvent::DeviceRestarted(r)] = events.as_slice() else {
+    let [SessionEvent::Device(DeviceEvent::Restarted(r))] = events.as_slice() else {
         panic!("{events:?}");
     };
     assert!(r.rate_changed());
@@ -322,10 +322,10 @@ fn following_the_default_restarts_and_reports_the_rate() {
     // Another restart at the same rate is not a rate change.
     let (driver, _s) = ManualStreamDriver::new();
     session
-        .restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {})
+        .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
     let events = poll(&mut session, base, 120);
-    let [SessionEvent::DeviceRestarted(r)] = events.as_slice() else {
+    let [SessionEvent::Device(DeviceEvent::Restarted(r))] = events.as_slice() else {
         panic!("{events:?}");
     };
     assert!(!r.rate_changed());
@@ -387,7 +387,7 @@ fn a_disconnect_fault_asks_for_a_restart_once() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::DeviceFault(_)))
+            .any(|e| matches!(e, SessionEvent::Device(DeviceEvent::Fault(_))))
     );
     assert_eq!(wants(&events), [DeviceSelector::Default]);
     assert!(
@@ -457,7 +457,6 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
         spec_at(96_000.0),
         driver,
         Some(MaxBlock::of(Samples(16_384))),
-        |_| {},
     );
     assert!(err.is_err());
     assert_eq!(
@@ -470,7 +469,7 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::RestartFailed(_))),
+            .any(|e| matches!(e, SessionEvent::Device(DeviceEvent::RestartFailed(_)))),
         "{events:?}"
     );
     assert!(wants(&events).is_empty(), "inside the backoff");
@@ -484,12 +483,11 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
 #[test]
 fn a_restart_that_stopped_the_stream_is_retried() {
     let (driver, _stream) = ManualStreamDriver::new();
-    let (mut session, mut device) = Session::builder()
+    let mut live = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap()
-        .into_parts();
+        .unwrap();
     let fake = Fake::default();
-    session.watch_devices(
+    live.session_mut().watch_devices(
         fake.clone(),
         policy(),
         DeviceSelector::Default,
@@ -497,32 +495,32 @@ fn a_restart_that_stopped_the_stream_is_retried() {
     );
     let base = Instant::now();
     fake.show(&["A", "B"], Some("A"));
-    poll(&mut session, base, 0);
+    poll(live.session_mut(), base, 0);
     fake.show(&["A", "B"], Some("B"));
-    assert_eq!(wants(&poll(&mut session, base, 100)).len(), 1);
+    assert_eq!(wants(&poll(live.session_mut(), base, 100)).len(), 1);
 
     // This device-free session has no card to resolve: the restart stops the
     // stream and then fails, leaving the old spec.
-    let err = session.restart(&mut device, DeviceRestart::default());
+    let err = live.restart(DeviceRestart::default());
     assert!(err.is_err());
-    assert!(!device.is_running(), "stopped");
+    assert!(!live.device().is_running(), "stopped");
     assert_eq!(
-        device.spec().sample_rate,
+        live.device().spec().sample_rate,
         SampleRate(48_000.0),
         "old spec kept"
     );
-    assert_eq!(device.graph_rate(), SampleRate(48_000.0));
-    let events = poll(&mut session, base, 150);
+    assert_eq!(live.device().graph_rate(), SampleRate(48_000.0));
+    let events = poll(live.session_mut(), base, 150);
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::RestartFailed(_))),
+            .any(|e| matches!(e, SessionEvent::Device(DeviceEvent::RestartFailed(_)))),
         "{events:?}"
     );
 
     // The default goes back to A, which the dead stream was on.
     fake.show(&["A", "B"], Some("A"));
-    assert_eq!(wants(&poll(&mut session, base, 700)).len(), 1);
+    assert_eq!(wants(&poll(live.session_mut(), base, 700)).len(), 1);
 }
 
 /// **A stale `RestartWanted` cannot override an explicit choice.** The
@@ -531,12 +529,11 @@ fn a_restart_that_stopped_the_stream_is_retried() {
 #[test]
 fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
     let (driver, _stream) = ManualStreamDriver::new();
-    let (mut session, mut device) = Session::builder()
+    let mut live = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
-        .unwrap()
-        .into_parts();
+        .unwrap();
     let fake = Fake::default();
-    session.watch_devices(
+    live.session_mut().watch_devices(
         fake.clone(),
         policy(),
         DeviceSelector::Default,
@@ -544,25 +541,31 @@ fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
     );
     let base = Instant::now();
     fake.show(&["A", "X"], Some("A"));
-    poll(&mut session, base, 0);
+    poll(live.session_mut(), base, 0);
     fake.show(&["A", "X"], Some("X"));
-    let wanted = poll(&mut session, base, 100);
+    let wanted = poll(live.session_mut(), base, 100);
     let [DeviceSelector::Default] = wants(&wanted).as_slice() else {
         panic!("{wanted:?}");
     };
     // The host chooses X first (this device-free engine cannot open it, but
     // the choice is made).
-    let _ = session.restart(
-        &mut device,
-        DeviceRestart {
-            device: DeviceSelector::named("X"),
-            max_block: None,
-        },
+    let _ = live.restart(DeviceRestart::to(DeviceSelector::named("X")));
+    // The policy's own request, as the event carried it, is stale now.
+    let [stale] = wanted
+        .into_iter()
+        .filter_map(|e| match e {
+            SessionEvent::Device(DeviceEvent::RestartWanted(r)) => Some(r),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("one request");
+    assert!(
+        live.restart(stale).unwrap() == RestartOutcome::Stale,
+        "a stale request is dropped, not run"
     );
-    let stale = DeviceRestart::default();
-    assert!(!session.restart_wanted(&mut device, stale, |_| {}).unwrap());
     assert_eq!(
-        session.watch_devices_want(),
+        live.session().watch_devices_want(),
         Some(DeviceSelector::named("X")),
         "the choice stands"
     );
@@ -581,25 +584,25 @@ fn a_fault_after_a_restart_is_reported_again() {
     let base = Instant::now();
     let (driver, second) = ManualStreamDriver::new();
     session
-        .restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {})
+        .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
     second.fail(StreamError::DeviceNotAvailable);
     let events = poll(&mut session, base, 0);
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::DeviceFault(_)))
+            .any(|e| matches!(e, SessionEvent::Device(DeviceEvent::Fault(_))))
     );
     let (driver, third) = ManualStreamDriver::new();
     session
-        .restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {})
+        .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
     third.fail(StreamError::DeviceNotAvailable);
     let events = poll(&mut session, base, 20);
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::DeviceFault(_))),
+            .any(|e| matches!(e, SessionEvent::Device(DeviceEvent::Fault(_)))),
         "{events:?}"
     );
 }
@@ -661,7 +664,7 @@ fn a_stalled_backend_run_becomes_a_lost_stream() {
     };
     stream.fail(backend());
     let events = poll(&mut session, base, 10);
-    assert!(events.iter().any(|e| matches!(e, SessionEvent::DeviceFault(f) if f.kind == tutti_cpal::StreamFaultKind::Backend)));
+    assert!(events.iter().any(|e| matches!(e, SessionEvent::Device(DeviceEvent::Fault(f)) if f.kind == tutti_cpal::StreamFaultKind::Backend)));
     assert!(
         wants(&events).is_empty(),
         "a backend error alone is not a loss"
@@ -670,7 +673,7 @@ fn a_stalled_backend_run_becomes_a_lost_stream() {
     std::thread::sleep(Duration::from_millis(600));
     stream.fail(backend());
     let events = poll(&mut session, base, 700);
-    assert!(events.iter().any(|e| matches!(e, SessionEvent::DeviceFault(f) if f.kind == tutti_cpal::StreamFaultKind::Disconnected)), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, SessionEvent::Device(DeviceEvent::Fault(f)) if f.kind == tutti_cpal::StreamFaultKind::Disconnected)), "{events:?}");
     assert_eq!(wants(&events), [DeviceSelector::Default]);
 }
 
@@ -682,7 +685,7 @@ fn the_render_worker_start_hook_runs_once_per_live_helper() {
     let hook = Arc::clone(&seen);
     let (driver, _stream) = ManualStreamDriver::new();
     let (_session, _device) = Session::builder()
-        .render_workers(4)
+        .render_workers(Workers::of(4))
         .render_worker_start(move |i| hook.lock().unwrap().push(i))
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
@@ -690,6 +693,30 @@ fn the_render_worker_start_hook_runs_once_per_live_helper() {
     assert_eq!(indices_after(&seen, 3), [1, 2, 3]);
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(seen.lock().unwrap().len(), 3, "once per helper");
+}
+
+/// **`Workers::PerCore` reaches the live pool as one participant per core the
+/// OS reports**: the hook runs once for each helper, indices `1..cores`, and
+/// not at all on a one-core box (no pool).
+#[test]
+fn per_core_workers_start_a_helper_for_every_core_but_the_callbacks() {
+    let cores = Workers::PerCore.threads();
+    assert_eq!(
+        cores,
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let hook = Arc::clone(&seen);
+    let (driver, _stream) = ManualStreamDriver::new();
+    let _live = Session::builder()
+        .render_workers(Workers::PerCore)
+        .render_worker_start(move |i| hook.lock().unwrap().push(i))
+        .build_device_on(spec_at(48_000.0), driver)
+        .expect("builds with no device");
+    let helpers: Vec<usize> = (1..cores).collect();
+    assert_eq!(indices_after(&seen, helpers.len()), helpers);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(seen.lock().unwrap().len(), helpers.len(), "once per helper");
 }
 
 /// Wait (bounded) until `seen` holds `n` indices, then return them sorted.
@@ -726,7 +753,7 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
         tutti_cpal::cpal::SampleFormat::F32,
     );
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, six, driver, None, |_| {})
+    s.restart_on(&mut device, six, driver, None)
         .expect("restarts");
     new.render_block(64).expect("open");
     assert_eq!(across.available(), Samples(0), "the old width gets nothing");
@@ -798,18 +825,19 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
 
     let (driver, _new) = ManualStreamDriver::new();
     session
-        .restart_on(&mut device, wide(44_100.0), driver, None, |_| {})
+        .restart_on(&mut device, wide(44_100.0), driver, None)
         .expect("another six-wide device takes it");
     assert_eq!(session.graph_ref().outputs(), 4, "the device is no floor");
 
     let (driver, _stereo) = ManualStreamDriver::new();
-    let refused = session.restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {});
+    let refused = session.restart_on(&mut device, spec_at(48_000.0), driver, None);
     assert!(
         matches!(
-            refused,
-            Err(tutti_session::Error::Output(
-                tutti_types::FoldError::Unplaced { channel: 2, .. }
-            ))
+            &refused,
+            Err(e) if matches!(
+                e.error(),
+                tutti_session::Error::Output(tutti_types::FoldError::Unplaced { channel: 2, .. })
+            )
         ),
         "{refused:?}"
     );
@@ -839,9 +867,7 @@ fn a_refused_declaration_is_retried_on_a_restart() {
         tutti_cpal::cpal::SampleFormat::F32,
     );
     let (driver, _new) = ManualStreamDriver::new();
-    session
-        .restart_on(&mut device, wide, driver, None, |_| {})
-        .unwrap();
+    session.restart_on(&mut device, wide, driver, None).unwrap();
     assert_eq!(session.root_topology_status(), RootTopologyStatus::Applied);
     assert_eq!(session.root_topology(), Some(&buses));
     assert_eq!(session.graph_ref().outputs(), 4);

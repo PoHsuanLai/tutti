@@ -46,8 +46,8 @@ fn session() -> Session {
 
 fn session_with_outputs(outputs: usize) -> Session {
     let mut session = Session::builder()
-        .inputs(0)
-        .outputs_floor(outputs)
+        .inputs(ChannelLayout::EMPTY)
+        .outputs_floor(ChannelLayout::clamped(outputs))
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     session.graph().set_sample_rate(SampleRate(RATE));

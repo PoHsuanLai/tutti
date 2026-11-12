@@ -570,6 +570,8 @@ pub(crate) struct MidiState {
     rules: BTreeMap<MidiRouteId, MidiRouteRule>,
     fallback: Option<NodeKey>,
     minted: u64,
+    /// The last load id minted ([`MidiLoad`]).
+    loads: u64,
     /// The sinks the last route compile fed.
     routed: BTreeSet<NodeKey>,
     /// Whether a host's last `set_routes` declared any rule or fallback:
@@ -622,7 +624,7 @@ impl std::fmt::Debug for MidiState {
 }
 
 /// How often a rising drop count is reported at most
-/// ([`MidiEvent::OutputDropped`](crate::MidiEvent::OutputDropped)):
+/// ([`MidiEvent::OutputDropped`]):
 /// a clock running with no output drops ticks on every update.
 pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
@@ -675,7 +677,7 @@ impl MidiState {
     }
 
     /// `Phase::Poll`: steps the UMP Stream negotiation of each held input and
-    /// reports those that settled ([`MidiEvent::StreamSettled`](crate::MidiEvent::StreamSettled)), reports the
+    /// reports those that settled ([`MidiEvent::StreamSettled`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -836,6 +838,13 @@ fn follow_output_config(out: Option<&mut UmpOut>, io: Option<&tutti_midi_hardwar
     }
 }
 
+/// A file load a [`Midi`] started, named so the event that lands it can be
+/// matched to the call: [`Midi::load_file`] and `Midi::load_soundfont`
+/// return one, and [`MidiEvent::FileLoaded`] and
+/// `SoundFontLoaded` carry it. The session mints it; it names nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MidiLoad(u64);
+
 /// The session's MIDI (design 015 §4.3): live inputs, clips, the hardware
 /// input's routes and the hardware out. [`Session::midi`](crate::Session::midi)
 /// hands it out; what it edits goes out with the next update's commit.
@@ -844,6 +853,7 @@ pub struct Midi<'a> {
     pub(crate) graph: &'a mut Graph,
     pub(crate) state: &'a mut MidiState,
     pub(crate) nodes: Option<&'a MidiNodes>,
+    pub(crate) jobs: &'a mut crate::jobs::Jobs,
     /// The OS MIDI layer, when the builder opened it.
     #[cfg(feature = "midi-hardware")]
     pub(crate) io: Option<&'a tutti_midi_hardware::MidiSession>,
@@ -897,6 +907,67 @@ fn wire_inlets(
 }
 
 impl Midi<'_> {
+    fn next_load(&mut self) -> MidiLoad {
+        self.state.loads += 1;
+        MidiLoad(self.state.loads)
+    }
+
+    /// Reads the MIDI file at `path` on the session's spawner. Returns at
+    /// once; the result lands as [`MidiEvent::FileLoaded`] with the returned
+    /// id in a later [`Session::update`](crate::Session::update), on the
+    /// thread that calls `update()`. A file that cannot be read lands as
+    /// [`MidiError::File`], a job that did not finish as [`MidiError::Job`].
+    #[must_use = "the id matches the event that lands the load"]
+    pub fn load_file(&mut self, path: impl Into<std::path::PathBuf>) -> MidiLoad {
+        let load = self.next_load();
+        let path = path.into();
+        self.jobs.submit(
+            move || tutti_midi_file::MidiFile::read(path),
+            move |_, done, events| {
+                let file = match done {
+                    Ok(read) => read.map_err(MidiError::from),
+                    Err(failed) => Err(failed.into()),
+                };
+                events.push(MidiEvent::FileLoaded { load, file }.into());
+            },
+        );
+        load
+    }
+
+    /// Opens the SoundFont at `path` and builds a unit from it with
+    /// `settings`, on the session's spawner. Returns at once; the result
+    /// lands as [`MidiEvent::SoundFontLoaded`] with the returned id in a later
+    /// [`Session::update`](crate::Session::update), on the thread that calls
+    /// `update()`. The host adds the unit (`add_instrument`,
+    /// `add_general_midi`) when it lands.
+    #[must_use = "the id matches the event that lands the load"]
+    #[cfg(feature = "soundfont")]
+    pub fn load_soundfont(
+        &mut self,
+        path: impl Into<std::path::PathBuf>,
+        settings: tutti_soundfont::Settings,
+    ) -> MidiLoad {
+        let load = self.next_load();
+        let path = path.into();
+        self.jobs.submit(
+            move || -> Result<Box<tutti_soundfont::SoundFontUnit>> {
+                let font = tutti_sf2::SoundFont::open(path)?;
+                Ok(Box::new(tutti_soundfont::SoundFontUnit::new(
+                    std::sync::Arc::new(font),
+                    settings,
+                )?))
+            },
+            move |_, done, events| {
+                let unit = match done {
+                    Ok(built) => built,
+                    Err(failed) => Err(failed.into()),
+                };
+                events.push(MidiEvent::SoundFontLoaded { load, unit }.into());
+            },
+        );
+        load
+    }
+
     /// `target`, if it takes MIDI: it is in the graph with an event input.
     fn takes_midi(&self, target: NodeKey) -> Result<()> {
         if self.graph.node_event_inputs(target).is_ok_and(|n| n > 0) {
@@ -1303,7 +1374,7 @@ impl Midi<'_> {
     /// The output the hardware out (an event tap on the clock, aligned to the
     /// graph's outputs) drains to at each update's
     /// [`MidiOut`](crate::Phase::MidiOut) phase. `None`: its events are counted as dropped
-    /// ([`MidiEvent::OutputDropped`](crate::MidiEvent::OutputDropped)).
+    /// ([`MidiEvent::OutputDropped`]).
     ///
     /// **Whether it JR-stamps is the device's.** With the `midi-hardware`
     /// feature, each `MidiOut` phase sets the output's stamping from the

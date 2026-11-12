@@ -151,6 +151,10 @@ pub(crate) struct HostState {
     /// [`take_size_request`](Self::take_size_request), because the host window is not
     /// reachable from the plugin's thread.
     size_request: AtomicU64,
+    /// What `audioMasterCurrentId` answers: the `uniqueID` of the sub-plugin of a shell to
+    /// create, `0` when the load names none (and for a plugin that is no shell, which
+    /// never asks).
+    current_id: i32,
 }
 
 impl HostState {
@@ -171,6 +175,7 @@ impl HostState {
         time_info: TransportReader,
         block_size: usize,
         default_sample_rate: f64,
+        current_id: i32,
     ) -> Self {
         Self {
             param_tx,
@@ -183,6 +188,7 @@ impl HostState {
             offline: std::sync::atomic::AtomicBool::new(false),
             requests: RequestWord::new(),
             size_request: AtomicU64::new(0),
+            current_id,
         }
     }
 
@@ -352,8 +358,10 @@ impl Host for HostState {
         }
     }
 
+    /// `audioMasterCurrentId`: the sub-plugin a shell is to create, which it asks during
+    /// `VSTPluginMain` (`aeffect.h`: "current unique identifier on shell plug-in").
     fn get_plugin_id(&self) -> i32 {
-        0x44415749 // 'DAWI'
+        self.current_id
     }
 
     fn idle(&self) {}
@@ -480,9 +488,11 @@ impl Host for HostState {
     /// `Yes` also for `sizeWindow` (the host honours
     /// [`size_window`](Self::size_window) through the editor's resize slot).
     ///
+    /// `Yes` for `supportShell` and `shellCategory`: the host walks a shell's
+    /// sub-plugins (`effShellGetNextPlugin`) and answers `audioMasterCurrentId`.
+    ///
     /// `No`, because the host does not do it: `supplyIdle`
-    /// (`audioMasterIdle` is not routed to anything), `supportShell` and
-    /// `shellCategory` (no shell-plugin id enumeration). Everything else is
+    /// (`audioMasterIdle` is not routed to anything). Everything else is
     /// `Maybe`, VST 2.4's "don't know".
     ///
     /// The strings and the reference set are JUCE's host `canDo` answers
@@ -495,8 +505,10 @@ impl Host for HostState {
             | "sendVstTimeInfo"
             | "receiveVstEvents"
             | "receiveVstMidiEvent"
-            | "sizeWindow" => Supported::Yes,
-            "supplyIdle" | "supportShell" | "shellCategory" => Supported::No,
+            | "sizeWindow"
+            | "supportShell"
+            | "shellCategory" => Supported::Yes,
+            "supplyIdle" => Supported::No,
             _ => Supported::Maybe,
         }
     }
@@ -535,6 +547,7 @@ mod tests {
             time_info,
             512,
             default_sample_rate,
+            0,
         )
     }
 
@@ -659,13 +672,30 @@ mod tests {
             "receiveVstEvents",
             "receiveVstMidiEvent",
             "sizeWindow",
+            "supportShell",
+            "shellCategory",
         ] {
             assert_eq!(host.can_do(yes), Supported::Yes, "{yes}");
         }
-        for no in ["supplyIdle", "supportShell", "shellCategory"] {
-            assert_eq!(host.can_do(no), Supported::No, "{no}");
-        }
+        assert_eq!(host.can_do("supplyIdle"), Supported::No, "supplyIdle");
         assert_eq!(host.can_do("somethingNew"), Supported::Maybe);
+    }
+
+    /// `audioMasterCurrentId` answers the sub-plugin the load chose, and `0` (a shell's
+    /// "no particular id") when it chose none (`aeffect.h`, JUCE's `shellUIDToCreate`).
+    #[test]
+    fn current_id_is_the_chosen_sub_plugin_and_zero_when_none() {
+        let none = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert_eq!(none.get_plugin_id(), 0);
+        let chosen = HostState::new(
+            Arc::new(ArrayQueue::new(PARAM_QUEUE_CAPACITY)),
+            Arc::new(ArrayQueue::new(MIDI_OUT_QUEUE_CAPACITY)),
+            TransportWriter::new().reader(),
+            512,
+            48_000.0,
+            0x5348_414C,
+        );
+        assert_eq!(chosen.get_plugin_id(), 0x5348_414C);
     }
 
     /// A plugin polls this callback to decide whether it may spend more per

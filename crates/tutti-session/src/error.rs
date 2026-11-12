@@ -157,6 +157,21 @@ pub enum MidiError {
     #[error("MIDI file: {0}")]
     File(#[from] tutti_midi_file::Error),
 
+    /// A session job did not finish ([`Midi::load_file`](crate::Midi::load_file),
+    /// `Midi::load_soundfont`): its work panicked, or the spawner dropped it.
+    #[error("MIDI load: {0}")]
+    Job(#[from] crate::JobFailed),
+
+    /// A SoundFont file could not be read.
+    #[cfg(feature = "soundfont")]
+    #[error("SoundFont file: {0}")]
+    SoundFont(#[from] tutti_sf2::Error),
+
+    /// A SoundFont unit could not be built from the font and its settings.
+    #[cfg(feature = "soundfont")]
+    #[error("SoundFont instrument: {0}")]
+    Instrument(#[from] tutti_soundfont::Error),
+
     /// A message was not queued ([`SendError::Full`](crate::SendError::Full)).
     #[error("MIDI send: {0}")]
     Send(#[from] crate::SendError),
@@ -264,6 +279,21 @@ pub enum Error {
     /// lose a channel). Wraps `tutti_types::FoldError`.
     #[error("the graph root cannot be placed on the output: {0}")]
     Output(#[from] tutti_types::FoldError),
+
+    /// A device restart was refused or failed
+    /// ([`LiveSession::restart`](crate::LiveSession::restart)).
+    #[cfg(feature = "device")]
+    #[error(transparent)]
+    Restart(#[from] crate::RestartError),
+
+    /// An inlet refused its producer's ring ([`Graph::add_inlet`](crate::Graph::add_inlet)).
+    #[error(transparent)]
+    Inlet(#[from] InletError),
+
+    /// A swap of one node for another was refused
+    /// ([`Graph::crossfade`](crate::Graph::crossfade)).
+    #[error(transparent)]
+    Crossfade(#[from] crate::CrossfadeRefused),
 
     /// The graph refused a re-prepare: a device restart asked for a block
     /// past the engine's capacity, came while another re-prepare was between

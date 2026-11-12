@@ -8,6 +8,7 @@ mod driver_seam;
 mod error;
 mod faults;
 mod host;
+mod latency;
 mod listing;
 mod output;
 mod owner;
@@ -26,6 +27,7 @@ pub use driver_seam::{
 pub use error::{Error, Result};
 pub use faults::{StreamFault, StreamFaultKind, StreamFaults};
 pub use host::{AudioHost, DeviceHost, DeviceSelector, available_hosts};
+pub use latency::StreamLatency;
 pub use listing::{DeviceListing, Listed};
 pub use output::{AudioCallbackState, AudioEngine, MAX_FRAMES, process_audio};
 pub use poller::{DevicePoller, MIN_POLL_INTERVAL};
@@ -38,4 +40,4 @@ pub use roster::{DeviceChange, DeviceId, DeviceRoster, Direction, Snapshot, Snap
 pub use cpal;
 
 #[cfg(feature = "capture")]
-pub use mic::MicIn;
+pub use mic::{MONITOR_RING_FRAMES, MicConfig, MicIn};

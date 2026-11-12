@@ -17,10 +17,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
-/// The version of the file layout [`save`] writes and [`load`] reads. 2: a
+/// The version of the file layout [`save`] writes and [`load`] reads. 3: a
+/// file's row lists every plugin it holds (a probe used to read a file's first
+/// plugin only, so a row of version 2 is incomplete for a file that holds
+/// several and, being up to date by its time, would never be probed again); 2: a
 /// bus's speakers name a channel with no speaker `Unassigned` (was
 /// `Discrete`).
-const VERSION: u64 = 2;
+const VERSION: u64 = 3;
 
 #[derive(Serialize)]
 struct Out<'a> {

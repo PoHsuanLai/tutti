@@ -22,7 +22,7 @@ const RATE: SampleRate = SampleRate(44_100.0);
 
 fn detached() -> Session {
     Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("builds")
 }

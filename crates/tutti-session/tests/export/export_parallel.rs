@@ -4,7 +4,7 @@
 //! The graph is a fan-out: eight independent branches (each a sine of its own
 //! frequency with its own phase, Heavy because they declare no cost) summed in
 //! a fixed order by one node. Exported to memory with
-//! `render_workers(1)` (no pool: the caller alone) and `render_workers(4)`
+//! `Workers::SERIAL` (no pool: the caller alone) and `Workers::of(4)`
 //! (the export's own pool), the planes must be the same bits.
 //!
 //! The no-allocation gate of the parallel path is not applied here, on
@@ -23,7 +23,9 @@ use tutti_session::Root;
 
 use tutti_export::{Produced, Rendered};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{Bounce, BounceTail, ExportClock, InPort, OutPort, Range, Session, Stem};
+use tutti_session::{
+    Bounce, BounceTail, ExportClock, InPort, OutPort, Range, Session, Stem, Workers,
+};
 use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples, Seconds};
 
@@ -99,7 +101,7 @@ impl Node for Sum {
 
 /// The fan-out exported to memory on a session with `workers`, and the number
 /// of distinct threads that ran a branch.
-fn export(workers: usize) -> (Rendered, usize) {
+fn export(workers: Workers) -> (Rendered, usize) {
     let (mut targets, ran_on) = export_with(workers, &[]);
     (targets.swap_remove(0), ran_on)
 }
@@ -107,7 +109,7 @@ fn export(workers: usize) -> (Rendered, usize) {
 /// [`export`] with a stem for each of `stems` (indices into the branches, and
 /// `BRANCHES` for the sum): the master's planes first and then each stem's,
 /// and the number of distinct threads that ran a branch.
-fn export_with(workers: usize, stems: &[usize]) -> (Vec<Rendered>, usize) {
+fn export_with(workers: Workers, stems: &[usize]) -> (Vec<Rendered>, usize) {
     let mut session = Session::builder()
         .render_workers(workers)
         .build_detached(RATE)
@@ -159,8 +161,8 @@ fn export_with(workers: usize, stems: &[usize]) -> (Vec<Rendered>, usize) {
 /// parallel render: with no pool, `ran_on` is 1 for both.
 #[test]
 fn a_parallel_export_is_bit_identical_to_the_serial_one() {
-    let (serial, serial_threads) = export(1);
-    let (parallel, parallel_threads) = export(4);
+    let (serial, serial_threads) = export(Workers::SERIAL);
+    let (parallel, parallel_threads) = export(Workers::of(4));
 
     assert_eq!(serial_threads, 1, "one worker renders on the caller alone");
     assert!(
@@ -194,8 +196,8 @@ fn a_parallel_export_is_bit_identical_to_the_serial_one() {
 #[test]
 fn the_stems_of_a_parallel_export_are_bit_identical_to_the_serial_ones() {
     let stems = [1, 6, BRANCHES];
-    let (serial, serial_threads) = export_with(1, &stems);
-    let (parallel, parallel_threads) = export_with(4, &stems);
+    let (serial, serial_threads) = export_with(Workers::SERIAL, &stems);
+    let (parallel, parallel_threads) = export_with(Workers::of(4), &stems);
     assert_eq!(serial_threads, 1, "one worker renders on the caller alone");
     assert!(
         parallel_threads > 1,

@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 use tutti_session::Root;
+use tutti_types::ChannelLayout;
 
 use tutti_plugin::catalog::PluginRef;
 use tutti_session::{PluginLoadRequest, Session};
@@ -53,7 +54,7 @@ fn read_capture() -> ProcessCapture {
 #[test]
 fn an_in_process_vst2_plugin_is_given_the_project_meter() {
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("a detached session builds");
     s.click_settings()

@@ -18,7 +18,7 @@
 //! use tutti_session::{Root, Session};
 //!
 //! let mut s = Session::builder()
-//!     .outputs_floor(1)
+//!     .outputs_floor(ChannelLayout::MONO)
 //!     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(512)))
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
@@ -62,6 +62,8 @@ mod fork;
 #[cfg(feature = "soundfont")]
 mod general_midi;
 mod graph;
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod input;
 #[cfg(feature = "midi")]
 mod instrument;
 mod jobs;
@@ -92,9 +94,12 @@ pub use bounce::{
     BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, ExportClock, Field,
     FileMaster, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
-pub use builder::{SessionBuilder, root_width};
+pub use builder::{SessionBuilder, Workers, root_width};
 #[cfg(feature = "device")]
-pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
+pub use device::{
+    Device, DeviceEvent, DeviceLatency, DeviceRestart, DeviceRestarted, LiveSession, RestartError,
+    RestartOutcome,
+};
 pub use edge::EdgeGainError;
 pub use error::{ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result};
 #[cfg(feature = "midi")]
@@ -110,6 +115,8 @@ pub use graph::{
     Committed, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph, LIVE_MAX_BLOCK, Meters,
     ReplaceRefused, Taps,
 };
+#[cfg(all(feature = "device", feature = "audio-io"))]
+pub use input::{Input, InputConfig, InputOpener, OpenedInput};
 #[cfg(feature = "midi")]
 pub use instrument::{InstrumentHandle, NotInstrument, SendError, SessionInstrument};
 pub use jobs::{Job, JobFailed};
@@ -119,7 +126,7 @@ pub use key::{
 };
 #[cfg(feature = "midi")]
 pub use midi::{
-    LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi,
+    LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad,
     MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, TakePlacement,
     UmpOut, drain_receiver_through,
 };

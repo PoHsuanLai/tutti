@@ -20,7 +20,7 @@ use tutti_types::{Db, SampleRate, Samples};
 #[test]
 fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate(48_000.0))
         .expect("builds");
     let (dry, _) = s.graph().add(ForkByClone(Const::mono(1.0)));

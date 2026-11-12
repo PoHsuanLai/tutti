@@ -12,7 +12,7 @@
 //! `1 / ((1 + s/wc)^4 + k)` under the bilinear map prewarped at the cutoff, with
 //! the resonance where the continuous model puts it.
 
-use crate::Real;
+use crate::{Lanes, Real};
 use tutti_types::{Hz, Resonance, SampleRate};
 
 /// Which tap of the four-stage ladder is taken as the output, and so what
@@ -109,6 +109,13 @@ impl<F: Real> LadderCoefficients<F> {
             k: self.k + (to.k - self.k) * t,
         }
     }
+
+    /// [`ladder_step`] at these coefficients, `input` driven by `drive` and
+    /// saturated by `tanh`.
+    #[inline(always)]
+    pub(crate) fn step(&self, ty: LadderType, s: &mut [F; 4], input: F, drive: F) -> F {
+        ladder_step(self.g1, self.k, ty, s, input * drive, F::tanh)
+    }
 }
 
 /// One channel's four-stage step over its stage words `s`, the resonance loop
@@ -122,21 +129,24 @@ impl<F: Real> LadderCoefficients<F> {
 /// is applied to that solution, `u = tanh(u_lin)`: the standard cheap nonlinear
 /// zero-delay form, exact for small signals (where `tanh x = x`, so the response
 /// is the continuous ladder's bilinear image) and a saturating limit past the knee.
+///
+/// `x` is the driven input (`input * drive`); `saturate` is the nonlinearity on the
+/// solved loop input: `tanh` for a filter node, the lane bank's rational
+/// approximation of it for the polysynth. Written once over [`Lanes`].
 #[inline(always)]
-pub(crate) fn ladder_step<F: Real>(
-    c: &LadderCoefficients<F>,
+pub fn ladder_step<L: Lanes>(
+    g1: L,
+    k: L,
     ty: LadderType,
-    s: &mut [F; 4],
-    input: F,
-    drive: F,
-) -> F {
-    let x = input * drive;
-    let g1 = c.g1;
+    s: &mut [L; 4],
+    x: L,
+    saturate: impl Fn(L) -> L,
+) -> L {
     let g2 = g1 * g1;
     let g4 = g2 * g2;
-    let one = F::from_f64(1.0);
+    let one = L::from_f32(1.0);
     let tail = (one - g1) * (g1 * (g1 * (g1 * s[0] + s[1]) + s[2]) + s[3]);
-    let u = ((x - c.k * tail) / (one + c.k * g4)).tanh();
+    let u = saturate((x - k * tail) / (one + k * g4));
 
     let v1 = g1 * (u - s[0]);
     let lp1 = v1 + s[0];
@@ -159,7 +169,7 @@ pub(crate) fn ladder_step<F: Real>(
         LadderType::LP24 => lp4,
         LadderType::HP12 => u - lp1 - lp1 + lp2,
         LadderType::HP24 => {
-            u - lp1 * F::from_f64(4.0) + lp2 * F::from_f64(6.0) - lp3 * F::from_f64(4.0) + lp4
+            u - lp1 * L::from_f32(4.0) + lp2 * L::from_f32(6.0) - lp3 * L::from_f32(4.0) + lp4
         }
     }
 }

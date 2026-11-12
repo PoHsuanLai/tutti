@@ -14,7 +14,7 @@ use core::marker::PhantomData;
 
 use tutti_types::{BusTopology, SampleRate};
 
-use super::kernel::{SvfCoefficients, svf_step};
+use super::kernel::SvfCoefficients;
 use super::{SvfControls, SvfModel};
 use crate::filter::real::Real;
 use crate::{ChannelKernel, Filter};
@@ -63,7 +63,7 @@ impl<F: Real> ChannelKernel for Svf<F> {
 
     #[inline(always)]
     fn tick(c: &SvfCoefficients<F>, s: &mut [F; 2], x: f32) -> [f32; 1] {
-        [svf_step(c, s, F::from_f32(x)).to_f32()]
+        [c.step(s, F::from_f32(x)).to_f32()]
     }
 }
 

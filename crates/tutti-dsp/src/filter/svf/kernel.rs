@@ -5,7 +5,7 @@
 //! switching type is as cheap as any parameter change.
 
 use crate::Lerp;
-use crate::Real;
+use crate::{Lanes, Real};
 use tutti_types::{Db, Hz, Q, SampleRate};
 
 /// Which response the state-variable filter presents.
@@ -209,15 +209,32 @@ impl<F: Real> Lerp for SvfCoefficients<F> {
 /// stores stay adjacent. Measured, splitting them cost 26% at width 6 — an
 /// across-channel layout only pays once a channel-inner loop is explicitly
 /// vectorised, which this one is not.
+///
+/// `a` is `[a1, a2, a3]` and `m` the output taps `[m0, m1, m2]` (the input, band and
+/// low), as [`SvfCoeffs`] solves them. Written once over [`Lanes`], so the
+/// polysynth's lane bank runs this step on eight voices at a time.
 #[inline(always)]
-pub(crate) fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
-    let two = F::from_f64(2.0);
+pub fn svf_step<L: Lanes>(a: [L; 3], m: [L; 3], s: &mut [L; 2], v0: L) -> L {
+    let two = L::from_f32(2.0);
     let [ic1eq, ic2eq] = *s;
     let v3 = v0 - ic2eq;
-    let v1 = c.a1 * ic1eq + c.a2 * v3;
-    let v2 = ic2eq + c.a2 * ic1eq + c.a3 * v3;
+    let v1 = a[0] * ic1eq + a[1] * v3;
+    let v2 = ic2eq + a[1] * ic1eq + a[2] * v3;
     *s = [two * v1 - ic1eq, two * v2 - ic2eq];
-    c.m0 * v0 + c.m1 * v1 + c.m2 * v2
+    m[0] * v0 + m[1] * v1 + m[2] * v2
+}
+
+impl<F: Real> SvfCoefficients<F> {
+    /// [`svf_step`] at these coefficients.
+    #[inline(always)]
+    pub(crate) fn step(&self, s: &mut [F; 2], v0: F) -> F {
+        svf_step(
+            [self.a1, self.a2, self.a3],
+            [self.m0, self.m1, self.m2],
+            s,
+            v0,
+        )
+    }
 }
 
 #[cfg(test)]

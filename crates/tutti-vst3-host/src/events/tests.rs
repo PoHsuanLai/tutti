@@ -22,7 +22,7 @@ fn raw(words: &[u32]) -> UmpAt {
 
 /// The `noteId` the spec gives `(channel, note)`: `channel * 128 + note`
 /// (`tutti_ump::NoteId`), read from the spec's type rather than from
-/// `note_id_for`, the code under test.
+/// `plugin_note_id`, the code under test.
 fn spec_note_id(channel: u8, note: u8) -> i32 {
     i32::try_from(NoteId::from_channel_note(MidiChannel::of(channel), NoteNumber::of(note)).raw())
         .unwrap()

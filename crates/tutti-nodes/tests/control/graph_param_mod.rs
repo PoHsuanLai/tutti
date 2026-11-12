@@ -34,7 +34,7 @@ use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayControls,
     DelayNode, DistortionNode, GateControls, GateNode, InterpolationMode, KeySource,
     LadderFilterNode, LadderType, LimiterControls, LimiterNode, Lookahead, MaxDelay, ModDelayNode,
-    PhaserNode, ShapeKind, SvfFilterNode, SvfType,
+    PhaserControls, PhaserNode, ShapeKind, Stages, Stagger, SvfFilterNode, SvfType, SweepRange,
 };
 use tutti_types::{
     Amplitude, AtomicF32, BeatDuration, BusTopology, ChannelLayout, CompressionRatio, Db, Depth,
@@ -194,6 +194,19 @@ fn render_mix(node: NodeParts<()>, mix: MixIs) -> Vec<Vec<f32>> {
     let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
     let refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
     r.render_input(&refs)
+}
+
+/// A phaser of `w` channels, four stages, at its default sweep and controls.
+fn phaser_of_width(w: usize) -> PhaserNode {
+    PhaserNode::new(
+        BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+            .expect("at most one bus wide"),
+        Stages::of(4),
+        SweepRange::DEFAULT,
+        Stagger::NONE,
+        PhaserControls::DEFAULT,
+    )
+    .expect("a step fits any width")
 }
 
 /// A node's parts, its controls dropped.
@@ -528,10 +541,7 @@ fn block_rate_cases() -> Vec<Case> {
         )
     }
     fn phaser(w: usize) -> PhaserNode {
-        PhaserNode::with_channels(
-            ChannelLayout::try_from(w).expect("a test width is small"),
-            4,
-        )
+        phaser_of_width(w)
     }
     #[allow(unused_mut)]
     let mut cases = vec![
@@ -720,7 +730,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_rate(Hz::new(v));
+                    assert!(n.param_set().set(UnitParam::Rate, v));
                 }
                 parts_of(n)
             },
@@ -733,7 +743,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_depth(Depth::clamped(v));
+                    assert!(n.param_set().set(UnitParam::Depth, v));
                 }
                 parts_of(n)
             },
@@ -851,12 +861,7 @@ fn mix_cases() -> Vec<MixCase> {
         },
         MixCase {
             name: "phaser mix",
-            make: |w| {
-                parts_of(PhaserNode::with_channels(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
-                    4,
-                ))
-            },
+            make: |w| parts_of(phaser_of_width(w)),
         },
     ];
     // The convolver joins only with its feature: the cases are rebound, not

@@ -50,8 +50,9 @@
 //!   [`InterpolationMode`]; the feedback delay as a family ([`DelayFamily`], run by
 //!   [`DelayRecurrence`], a [`Grows`] family over a [`MaxDelay`], its cross-feedback a
 //!   checked [`Routing`], its time and feedback lanes of the [`Feed`]); the chorus and flanger as a family ([`ModDelayFamily`], run by [`ModDelayRecurrence`], a [`Grows`] family over a
-//!   [`MaxDelay`], its [`Sweep`] and [`Stagger`] checked, its LFO state on the stream's clock); the phaser's
-//!   all-pass chain ([`allpass_chain`]).
+//!   [`MaxDelay`], its [`Sweep`] and [`Stagger`] checked, its LFO state on the stream's clock); the phaser
+//!   as a family ([`PhaserFamily`], run by [`PhaserRecurrence`]: its [`Stages`] and [`SweepRange`]
+//!   checked, the same stream grid and clock, [`allpass_chain`] and [`allpass_coeff`] its pure pieces).
 //! - **Spatial** (`spatial/`): VBAP ([`SpeakerLayout`], Pulkki's pairs and triplets and
 //!   the gain solve over them, [`SpeakerGeometryError`]; [`VbapKernel`] and
 //!   [`VbapGains`], a block's gains and one channel ramped between two) and the HRTF
@@ -105,7 +106,7 @@ mod stft;
 mod testing;
 
 pub use balance::balance_gains;
-pub use control::{COEFF_CADENCE, COEFF_INTERVAL, LANES, Ramp};
+pub use control::{COEFF_INTERVAL, LANES, Ramp};
 pub use convolver::{Convolver, IrSpectra};
 pub use delay::{
     ChannelTimes, ChannelTimesError, DELAY_SLEW, DelayCapacity, DelayControls, DelayFamily,
@@ -141,6 +142,10 @@ pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::mod_delay::{
     MAX_MOD_DELAY_CHANNELS, MIN_RATE, ModDelayCapacity, ModDelayControls, ModDelayFamily,
     ModDelayMember, ModDelayRecurrence,
+};
+pub use modulation::phaser::{
+    MAX_PHASER_CHANNELS, PhaserControls, PhaserFamily, PhaserMember, PhaserRecurrence, Stages,
+    StagesError, SweepRange, SweepRangeError,
 };
 pub use modulation::sweep::{Stagger, StaggerError, Sweep, SweepError};
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};

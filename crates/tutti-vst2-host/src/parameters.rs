@@ -256,38 +256,38 @@ impl Vst2Loaded {
         let label = self.instance.get_parameter_label(id);
         let measures = declared_measures(&label, &range);
 
-        SharedParameterInfo {
-            // The one format that addresses by position. `id` is bounded by
-            // `numParams`, so it is an index by construction — see `param_index`.
-            id: ParamId::new(id as u32),
-            name: self.instance.get_parameter_name(id),
-            unit: label,
-            range,
-            steps,
-            // Asked per parameter: `effCanBeAutomated` takes the index, so
-            // there is no whole-plugin answer to cache.
-            flags: if self.instance.can_be_automated(id) {
-                ParamFlags::AUTOMATABLE
-            } else {
-                ParamFlags::empty()
-            },
-            known: ParamFlags::AUTOMATABLE,
-            // `effGetParameterProperties` carries the category under
-            // `SUPPORTS_DISPLAY_CATEGORY`. The "numbered from 1, so 0 means uncategorised"
-            // rule is already applied in the decoder — `category` is `None` for
-            // a zero index — so there is no sentinel left to check here. A
-            // category with an empty label yields no group, which is the same
-            // flat list by a shorter route.
-            group: props
-                .as_ref()
-                .and_then(|q| q.category.as_ref())
-                .map(|c| c.label.clone())
-                .unwrap_or_default(),
-            measures,
-            // VST2 declares no role: it has no bypass flag on a parameter
-            // and no function names.
-            role: None,
-        }
+        // The one format that addresses by position. `id` is bounded by
+        // `numParams`, so it is an index by construction (see `param_index`).
+        //
+        // Flags are asked per parameter: `effCanBeAutomated` takes the index,
+        // so there is no whole-plugin answer to cache.
+        let flags = if self.instance.can_be_automated(id) {
+            ParamFlags::AUTOMATABLE
+        } else {
+            ParamFlags::empty()
+        };
+        // `effGetParameterProperties` carries the category under
+        // `SUPPORTS_DISPLAY_CATEGORY`. The "numbered from 1, so 0 means
+        // uncategorised" rule is already applied in the decoder, so there is no
+        // sentinel left to check here. A category with an empty label yields no
+        // group, the same flat list by a shorter route.
+        let group = props
+            .as_ref()
+            .and_then(|q| q.category.as_ref())
+            .map(|c| c.label.clone())
+            .unwrap_or_default();
+        // VST2 declares no role: it has no bypass flag on a parameter and no
+        // function names.
+        SharedParameterInfo::new(
+            ParamId::new(id as u32),
+            self.instance.get_parameter_name(id),
+        )
+        .with_unit(label)
+        .with_range(range)
+        .with_steps(steps)
+        .with_flags(ParamFlags::AUTOMATABLE, flags)
+        .with_group(group)
+        .with_measures(measures)
     }
 
     /// Returns the descriptor for one parameter, or `None` if `id` addresses no

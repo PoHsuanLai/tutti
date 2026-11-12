@@ -62,8 +62,8 @@ impl tutti_plugin_types::AnyThread for FakeBackend {
     fn set_automation_mode(
         &self,
         _mode: tutti_plugin_types::AutomationMode,
-    ) -> Result<(), tutti_plugin_types::EditorError> {
-        Err(tutti_plugin_types::EditorError::PluginCrashed)
+    ) -> Result<(), tutti_plugin_types::AutomationModeError> {
+        Err(tutti_plugin_types::AutomationModeError::PluginDead)
     }
 }
 

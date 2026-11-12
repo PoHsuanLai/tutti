@@ -213,7 +213,9 @@ pub use tutti_plugin as plugin;
 
 /// The format-generic half of plugin hosting (`tutti-plugin-host`): the
 /// `PluginHandle` control surface, the node's controls, the host policy over a
-/// handle (`Liveness`, `PluginParamValues`) and the in-process node. Feature
+/// handle (`Liveness`, `PluginParamValues`) and the in-process node. It is the layer
+/// the session's views are built on: a host reads and sets a hosted plugin's
+/// parameters through `Session::plugin(node)?.params()`, not through the handle. Feature
 /// `plugin`.
 #[cfg(feature = "plugin")]
 pub use tutti_plugin_host as plugin_host;
@@ -227,7 +229,7 @@ pub use tutti_plugin_host as plugin_host;
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` and `RouteSpec` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest`, `Plugin` (the view `Session::plugin` lends), `MainSession` (`Session::main`, the main-thread view), `MainPlugin`, `EditorView`, `Opened`, `PluginEvent`, `PluginChange`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
+/// `PluginLoadRequest`, `Plugin` (the view `Session::plugin` lends), `MainSession` (`Session::main`, the main-thread view), `MainPlugin`, `EditorView`, `Opened`, `PluginEvent`, `PluginChange`, `Params`, `TypedParam`, `ParamGesture`, `PluginParamError`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
 /// `Normalized` (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
 /// `Message`, `Ump`, `NoteNumber`, `NoteVelocity`, `TimedMidiEvent`, `MidiRouteRule` and
@@ -328,8 +330,9 @@ pub mod prelude {
     };
     #[cfg(all(feature = "session", feature = "plugin"))]
     pub use tutti_session::{
-        EditorView, MainPlugin, MainSession, Opened, Plugin, PluginChange, PluginEvent,
-        PluginLoadRequest, PortCounts, RecoveryFailure, ReloadCause,
+        EditorView, MainPlugin, MainSession, Opened, ParamGesture, Params, Plugin, PluginChange,
+        PluginEvent, PluginLoadRequest, PluginParamError, PortCounts, RecoveryFailure, ReloadCause,
+        TypedParam,
     };
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::{ParamRef, RouteSpec};

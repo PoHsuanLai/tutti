@@ -316,7 +316,7 @@ impl Session {
                     p.plugin()
                         .parameters(main)
                         .into_iter()
-                        .find(|info| info.id == param_id)
+                        .find(|info| info.id() == param_id)
                 });
                 Ok(BridgeMessage::ParameterInfoResponse { info }.into())
             }
@@ -1648,7 +1648,7 @@ mod tests {
         match reply {
             BridgeMessage::ParameterList { parameters } => {
                 assert!(!parameters.is_empty(), "need at least one parameter");
-                parameters[0].id
+                parameters[0].id()
             }
             other => panic!("expected ParameterList, got {other:?}"),
         }
@@ -1698,7 +1698,7 @@ mod tests {
         match reply {
             BridgeMessage::ParameterInfoResponse { info } => {
                 let info = info.expect("info should exist");
-                assert_eq!(info.id, param_id);
+                assert_eq!(info.id(), param_id);
             }
             other => panic!("expected ParameterInfoResponse, got {other:?}"),
         }

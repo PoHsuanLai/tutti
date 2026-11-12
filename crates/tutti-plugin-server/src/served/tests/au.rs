@@ -474,13 +474,12 @@ fn direct_parameter_path_is_normalized_end_to_end() {
         .parameters(&main)
         .into_iter()
         .find(|p| {
-            p.range
-                .bounds()
+            p.bounds()
                 .is_some_and(|(min, max)| min >= 10.0 && max >= 20_000.0)
         })
         .expect("AUDelay declares a wide-range cutoff");
-    let (min, max) = cutoff.range.bounds().expect("a plain range");
-    let addr = cutoff.id;
+    let (min, max) = cutoff.bounds().expect("a plain range");
+    let addr = cutoff.id();
 
     au.set_parameter(&main, addr, Normalized::of(1.0));
     let plain = tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), addr.get())
@@ -530,12 +529,11 @@ fn param_automation_denormalizes_and_reads_back_normalized() {
         .parameters(&main_thread())
         .into_iter()
         .find(|p| {
-            p.range.bounds().is_some_and(|(_, max)| max > 2.0)
+            p.bounds().is_some_and(|(_, max)| max > 2.0)
                 && p.flag(ParamFlags::READ_ONLY) == Some(false)
         })
         .expect("AUDelay should expose a wide-range writable parameter");
     let (min, max) = target
-        .range
         .bounds()
         .expect("AU declares a plain range for every parameter");
 
@@ -545,7 +543,7 @@ fn param_automation_denormalizes_and_reads_back_normalized() {
         (0.5f64, min + 0.5 * (max - min)),
     ] {
         let mut changes = ParameterChanges::new();
-        let mut queue = ParameterQueue::with_capacity(target.id, 1);
+        let mut queue = ParameterQueue::with_capacity(target.id(), 1);
         queue.add_point(0, normalized);
         changes.add_queue(queue);
         run(&mut au, 64, None, Some(&changes)).expect("process should succeed");
@@ -560,25 +558,25 @@ fn param_automation_denormalizes_and_reads_back_normalized() {
         // through it would assert the identity of two conversions and pass
         // even if both were wrong.
         let native = f64::from(
-            tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), target.id.get())
+            tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), target.id().get())
                 .expect("param is readable"),
         );
         assert!(
             (native - expected).abs() <= tolerance,
             "param {} ('{}'): normalized {normalized} should reach the AU as \
                  {expected} in native units, got {native} (range [{min}, {max}])",
-            target.id,
-            target.name,
+            target.id(),
+            target.name(),
         );
 
         // And the read path inverts it.
-        let read_back = au.normalized(&main_thread(), target.id);
+        let read_back = au.normalized(&main_thread(), target.id());
         assert!(
             (read_back - normalized).abs() <= 1e-4,
             "param {} ('{}'): should read back as the normalized {normalized}, \
                  got {read_back}",
-            target.id,
-            target.name,
+            target.id(),
+            target.name(),
         );
     }
 }
@@ -602,34 +600,34 @@ fn au_parameter_text_denormalizes_and_reports_absence_honestly() {
     let target = au
         .parameters(&main)
         .into_iter()
-        .find(|p| p.range.bounds().is_some_and(|(_, max)| max > 2.0))
+        .find(|p| p.bounds().is_some_and(|(_, max)| max > 2.0))
         .expect("AUDelay should expose a wide-range parameter");
-    let (min, max) = target.range.bounds().expect("AU declares a plain range");
+    let (min, max) = target.bounds().expect("AU declares a plain range");
 
     // The write path lands full scale on `max`, not on the raw `1.0`.
-    au.set_parameter(&main, target.id, Normalized::of(1.0));
-    let after = tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), target.id.get())
+    au.set_parameter(&main, target.id(), Normalized::of(1.0));
+    let after = tutti_au_host::parameters::get(au.loaded_ref().unwrap().unit(), target.id().get())
         .expect("param is readable");
     let tolerance = (max - min).abs() * 1e-4;
     assert!(
         (f64::from(after) - max).abs() <= tolerance,
         "param {} ('{}'): normalized 1.0 must denormalize to {max}, got {after}",
-        target.id,
-        target.name,
+        target.id(),
+        target.name(),
     );
 
     // The AU is asked, and declines.
     assert_eq!(
-        au.parameter_text(&main, target.id, Normalized::of(1.0)),
+        au.parameter_text(&main, target.id(), Normalized::of(1.0)),
         None,
         "param {} ('{}'): no Apple AU implements ParameterStringFromValue. \
              A Some() here means macOS gained the property: re-measure and \
              tighten this into a real round-trip rather than relaxing it.",
-        target.id,
-        target.name,
+        target.id(),
+        target.name(),
     );
     assert_eq!(
-        au.parameter_value_from_text(&main, target.id, "1000 Hz"),
+        au.parameter_value_from_text(&main, target.id(), "1000 Hz"),
         None,
         "nor ParameterValueFromString: a fabricated number here would be \
              written into the user's preset",

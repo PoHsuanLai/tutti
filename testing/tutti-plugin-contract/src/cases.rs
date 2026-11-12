@@ -190,11 +190,11 @@ pub fn tail_reported<F: Format>() {
 /// flag carries none, and VST2 has no steps.
 pub fn parameters_listed<F: Format>() {
     let mut got = F::load().parameters(&main_thread());
-    got.sort_by_key(|p| p.id.get());
+    got.sort_by_key(|p| p.id().get());
     assert_eq!(got.len(), Param::ALL.len(), "the listed parameters");
     for (info, &(param, default)) in got.iter().zip(&Param::ALL) {
-        assert_eq!(info.id, param.id());
-        assert_eq!(info.name, param.name(), "{param:?} name");
+        assert_eq!(info.id(), param.id());
+        assert_eq!(info.name(), param.name(), "{param:?} name");
         if param == Param::Tone {
             // The default is the format's own plain value where it has one,
             // and the plugin's exact figure (not a point on a line).

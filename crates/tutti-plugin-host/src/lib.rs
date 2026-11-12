@@ -42,7 +42,7 @@ pub use meter::PluginMeter;
 pub use node::{InProcClient, PluginNode, client_over, load_client, load_client_restoring};
 pub use param_delivery::{DeliveryCounters, ParamDelivery, ParamDeliveryStats};
 pub use param_input::take as take_param_input;
-pub use param_values::{ParamRead, PluginParamValues};
+pub use param_values::{ParamRead, ParamReporter, ParamSnapshot, PluginParamValues};
 pub use render_mode::needs_announcement;
 pub use segment_points::SegmentPoints;
 pub use transport_source::{

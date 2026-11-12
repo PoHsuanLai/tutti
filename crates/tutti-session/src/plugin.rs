@@ -11,8 +11,8 @@
 //! keyed by its [`NodeKey`] and lent as a [`Plugin`] ([`Session::plugin`]): the [`PluginRef`] it is, its handle, its
 //! controls (an out-of-process plugin's latency and meter cells), its
 //! liveness, whether it was told the render mode, its last good state
-//! ([`state`](Plugin::state)), and (`modulation`) its parameter
-//! mirror. A crossfade to another plugin (`Graph::crossfade_plugin`,
+//! ([`state`](Plugin::state)), and its parameter mirror
+//! ([`params`](Plugin::params)). A crossfade to another plugin (`Graph::crossfade_plugin`,
 //! `replace_plugin`) carries the record over to the incoming plugin, with
 //! nothing of the outgoing plugin's state (its last good state, an in-flight
 //! snapshot job, its mirror); replacing it with a native node
@@ -55,10 +55,11 @@
 //!   (`PluginControls::declared_latency`) is handed to the graph when it
 //!   moved (`Graph::refresh_node_latency`):
 //!   [`PluginChange::LatencyChanged`].
-//! - **GUI edits** (`modulation`). The values the plugin reported go into
-//!   its mirror, and into the knob of the lane on that parameter when it
-//!   has one (doc 014 §8.2). A mirror rebuilt by a crossfade to another
-//!   plugin is read as a job the host places:
+//! - **Parameters.** The values the plugin reported (or the host set) go into
+//!   its mirror, and (`modulation`) into the knob of the lane on that
+//!   parameter when it has one (doc 014 §8.2). A mirror rebuilt by a crossfade
+//!   to another plugin, or by a rescan the plugin announced, is read as a job
+//!   the host places:
 //!   [`SessionEvent::PluginParamsDue`],
 //!   whose [`run`](PluginParamRead::run) makes one round trip per
 //!   parameter, landed with [`Session::land_params`]. Until then the
@@ -122,8 +123,8 @@ use tutti_plugin_types::{
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{
-    GiveUp, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure, RecoveryPolicy,
-    ReloadCause, Session, SessionEvent,
+    GiveUp, Params, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure,
+    RecoveryPolicy, ReloadCause, Session, SessionEvent,
 };
 
 /// How often a healthy plugin's state is captured, by default: 8 s, the
@@ -319,7 +320,6 @@ impl PluginLoad {
                 plugin.handle().name()
             );
         }
-        #[cfg(feature = "modulation")]
         let mirror = plugin.as_ref().ok().map(|plugin| {
             let (mut values, read) = tutti_plugin_host::PluginParamValues::start(plugin.handle());
             // A read the plugin did not answer (its list unavailable) leaves
@@ -337,7 +337,6 @@ impl PluginLoad {
         Open {
             plugin,
             restore,
-            #[cfg(feature = "modulation")]
             mirror,
         }
     }
@@ -345,20 +344,17 @@ impl PluginLoad {
 
 /// A new plugin's parameter mirror, and the read that still has to fill it
 /// when the load-time read was not answered.
-#[cfg(feature = "modulation")]
 struct Mirror {
     values: tutti_plugin_host::PluginParamValues,
     /// Becomes the hosted record's `param_read`, to be run as a job.
     unread: Option<tutti_plugin_host::ParamRead>,
 }
 
-/// An opened plugin (or why it did not open) and (`modulation`) its
-/// parameter values.
+/// An opened plugin (or why it did not open) and its parameter mirror.
 struct Open {
     plugin: Result<HostPlugin, BridgeError>,
     /// The state restore, if one was asked for: the plugin's refusal, as text.
     restore: Option<Result<(), String>>,
-    #[cfg(feature = "modulation")]
     mirror: Option<Mirror>,
 }
 
@@ -368,7 +364,6 @@ impl Open {
         Self {
             plugin: Err(why),
             restore: None,
-            #[cfg(feature = "modulation")]
             mirror: None,
         }
     }
@@ -607,7 +602,12 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// What a plugin reported, waiting for the next `Phase::Plugins`.
-type Notices = Arc<Mutex<Vec<Notice>>>;
+pub(crate) type Notices = Arc<Mutex<Vec<Notice>>>;
+
+/// Queues `notice` as if the plugin had reported it.
+pub(crate) fn queue(notices: &Notices, notice: Notice) {
+    locked(notices).push(notice);
+}
 
 /// A queue for what `handle` reports and the subscription that fills it.
 fn hear(handle: &PluginHandle) -> (Notices, Subscription) {
@@ -660,6 +660,7 @@ impl Graveyard {
     pub(crate) const WARN_AT: usize = 16;
 
     pub(crate) fn bury(&mut self, record: HostedPlugin) {
+        record.gate.end();
         self.retired.push(Box::new(record));
     }
 
@@ -728,19 +729,55 @@ pub(crate) struct HostedPlugin {
     snapshot_at: Option<Instant>,
     /// What the plugin reported since the last `Phase::Plugins`, heard on
     /// whichever thread the plugin reports from.
-    notices: Notices,
+    pub(crate) notices: Notices,
     /// The handle's subscription that fills `notices`; replaced with the handle.
     hearing: Subscription,
-    #[cfg(feature = "modulation")]
-    mirror: Option<tutti_plugin_host::PluginParamValues>,
-    /// The read that fills a mirror a crossfade rebuilt, until
+    /// What the plugin declares and the value of each parameter
+    /// ([`Plugin::params`]).
+    pub(crate) mirror: tutti_plugin_host::PluginParamValues,
+    /// What a gesture asks before it sends: is this still the plugin, and does
+    /// it still declare the parameter. Ended when the record retires or the
+    /// plugin is replaced.
+    pub(crate) gate: Gate,
+    /// The read that fills the mirror (a crossfade rebuilt it, the load's read
+    /// was not answered, or the plugin announced a rescan), until
     /// `Phase::Plugins` hands it to the host as a job.
-    #[cfg(feature = "modulation")]
     param_read: Option<tutti_plugin_host::ParamRead>,
-    /// Held by that job: a later crossfade mints a new one, and the
-    /// earlier read lands nowhere.
-    #[cfg(feature = "modulation")]
+    /// Held by that job: a later read mints a new one, and the earlier read
+    /// lands nowhere.
     mirror_token: Arc<()>,
+}
+
+/// The part of a plugin's record a [`ParamGesture`](crate::ParamGesture) keeps:
+/// whether the plugin it began on is still the one at the node, and which
+/// parameters it declares now. Shared (`Arc`) because a gesture spans frames
+/// and cannot borrow the session; the session ends it when the record retires or
+/// the plugin is replaced, and refreshes the ids when a read lands.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Gate(Arc<Mutex<GateState>>);
+
+#[derive(Debug, Default)]
+struct GateState {
+    ended: bool,
+    declared: std::collections::HashSet<ParamId>,
+}
+
+impl Gate {
+    /// The plugin is gone: removed or replaced.
+    pub(crate) fn end(&self) {
+        locked(&self.0).ended = true;
+    }
+
+    /// The ids the mirror declares now (a read landed).
+    pub(crate) fn declare(&self, mirror: &tutti_plugin_host::PluginParamValues) {
+        locked(&self.0).declared = mirror.descriptors().iter().map(|p| p.id()).collect();
+    }
+
+    /// Whether the plugin is still there and declares `id`.
+    pub(crate) fn holds(&self, id: ParamId) -> bool {
+        let state = locked(&self.0);
+        !state.ended && state.declared.contains(&id)
+    }
 }
 
 /// How a plugin was loaded, besides which plugin it is: what a reload needs.
@@ -770,7 +807,6 @@ struct Reload {
 struct Ready {
     client: Box<tutti_plugin::handles::PluginClient>,
     restore: StateRestore,
-    #[cfg(feature = "modulation")]
     mirror: Option<Mirror>,
 }
 
@@ -789,7 +825,6 @@ impl std::fmt::Debug for HostedPlugin {
             .field("hearing", &self.hearing)
             .field("recovery", &self.recovery)
             .field("reload_due", &self.reload.due);
-        #[cfg(feature = "modulation")]
         d.field("mirror", &self.mirror)
             .field("param_read", &self.param_read)
             .field("mirror_token", &self.mirror_token);
@@ -800,6 +835,7 @@ impl std::fmt::Debug for HostedPlugin {
 impl HostedPlugin {
     pub(crate) fn new(handle: PluginHandle, plugin: PluginRef) -> Self {
         let (notices, hearing) = hear(&handle);
+        let (mirror, read) = tutti_plugin_host::PluginParamValues::start(&handle);
         Self {
             editor_open: false,
             plugin,
@@ -820,11 +856,9 @@ impl HostedPlugin {
             snapshot_at: None,
             notices,
             hearing,
-            #[cfg(feature = "modulation")]
-            mirror: None,
-            #[cfg(feature = "modulation")]
-            param_read: None,
-            #[cfg(feature = "modulation")]
+            mirror,
+            gate: Gate::default(),
+            param_read: Some(read),
             mirror_token: Arc::new(()),
         }
     }
@@ -870,13 +904,13 @@ impl HostedPlugin {
     /// [`replace`](Self::replace)'s handle half: everything but the
     /// controls.
     fn adopt(&mut self, handle: PluginHandle) -> PluginHandle {
-        #[cfg(feature = "modulation")]
-        if self.mirror.is_some() {
-            let (mirror, read) = tutti_plugin_host::PluginParamValues::start(&handle);
-            self.mirror = Some(mirror);
-            self.param_read = Some(read);
-            self.mirror_token = Arc::new(());
-        }
+        let (mirror, read) = tutti_plugin_host::PluginParamValues::start(&handle);
+        self.mirror = mirror;
+        self.param_read = Some(read);
+        self.mirror_token = Arc::new(());
+        // A gesture on the outgoing plugin ends here: it is not this one.
+        self.gate.end();
+        self.gate = Gate::default();
         // What the outgoing plugin reported and nobody drained is its own.
         (self.notices, self.hearing) = hear(&handle);
         let outgoing = std::mem::replace(&mut self.handle, handle);
@@ -943,14 +977,21 @@ impl HostedPlugin {
     }
 
     /// Parameter `id`'s value, as a modulation lane's knob starts at it:
-    /// `None` while not read, `Some(None)` for one it does not list (or
-    /// with no mirror: no knob to start from).
-    #[cfg(feature = "modulation")]
+    /// `None` while not read, `Some(None)` for one it does not list.
+    #[cfg(any(test, feature = "modulation"))]
     pub(crate) fn param_value(&self, id: u32) -> Option<Option<f32>> {
-        self.mirror.as_ref().map_or(Some(None), |m| {
-            m.get(tutti_plugin_types::ParamId::new(id))
-                .map(|v| v.map(|v| v.get() as f32))
-        })
+        self.mirror
+            .get(tutti_plugin_types::ParamId::new(id))
+            .map(|v| v.map(|v| v.get() as f32))
+    }
+
+    /// Asks for the parameters to be read again (the plugin announced a
+    /// rescan): a fresh read, handed to the host at the next
+    /// `Phase::Plugins`, and a fresh token, so a read still in flight lands
+    /// nowhere.
+    fn reread_params(&mut self) {
+        self.param_read = Some(tutti_plugin_host::ParamRead::of(&self.handle));
+        self.mirror_token = Arc::new(());
     }
 }
 
@@ -1023,11 +1064,11 @@ impl<'a> Plugin<'a> {
         self.hosted.meter.as_ref()
     }
 
-    /// Its parameter values (`modulation`): read at load, kept current from
-    /// what it reports; `None` for a plugin added without the read.
-    #[cfg(feature = "modulation")]
-    pub fn param_values(&self) -> Option<&'a tutti_plugin_host::PluginParamValues> {
-        self.hosted.mirror.as_ref()
+    /// The plugin's parameters: what it declares, read at load and again when
+    /// it announces a rescan, and the value of each, kept current from what the
+    /// plugin reports and the host sets (design 029 section 2.3).
+    pub fn params(&self) -> Params<'a> {
+        Params::new(self.node, self.hosted)
     }
 }
 
@@ -1218,7 +1259,6 @@ impl PluginReloaded {
 /// thread and lands the result with [`Session::land_params`]. Dropped unrun,
 /// the mirror stays not ready (a lane on the plugin keeps waiting) until the
 /// next crossfade.
-#[cfg(feature = "modulation")]
 #[must_use = "a parameter read does nothing until it is run and landed"]
 pub struct PluginParamRead {
     node: NodeKey,
@@ -1227,7 +1267,6 @@ pub struct PluginParamRead {
     token: Arc<()>,
 }
 
-#[cfg(feature = "modulation")]
 impl PluginParamRead {
     /// The plugin's node.
     pub fn node(&self) -> NodeKey {
@@ -1248,7 +1287,6 @@ impl PluginParamRead {
     }
 }
 
-#[cfg(feature = "modulation")]
 impl std::fmt::Debug for PluginParamRead {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginParamRead")
@@ -1258,21 +1296,16 @@ impl std::fmt::Debug for PluginParamRead {
 }
 
 /// A finished [`PluginParamRead`], for [`Session::land_params`].
-#[cfg(feature = "modulation")]
 #[must_use = "land it with `Session::land_params`"]
 #[derive(Debug)]
 pub struct PluginParamsRead {
     node: NodeKey,
     /// The values read, or the read itself given back to be run again.
-    values: Result<
-        std::collections::HashMap<tutti_plugin_types::ParamId, tutti_plugin_types::Normalized>,
-        Box<tutti_plugin_host::ParamRead>,
-    >,
+    values: Result<tutti_plugin_host::ParamSnapshot, Box<tutti_plugin_host::ParamRead>>,
     /// The record's mirror token when the job was asked for.
     token: Arc<()>,
 }
 
-#[cfg(feature = "modulation")]
 impl PluginParamsRead {
     /// The plugin's node.
     pub fn node(&self) -> NodeKey {
@@ -1349,7 +1382,6 @@ impl Session {
         let Open {
             plugin,
             restore: _,
-            #[cfg(feature = "modulation")]
             mirror,
         } = match loaded.opened {
             Opened::Done(open) => *open,
@@ -1381,12 +1413,12 @@ impl Session {
                 node
             }
         };
-        #[cfg(feature = "modulation")]
         if let Some(hosted) = self.graph.plugins.get_mut(&node)
             && let Some(Mirror { values, unread }) = mirror
         {
-            hosted.mirror = Some(values);
+            hosted.mirror = values;
             hosted.param_read = unread;
+            hosted.gate.declare(&hosted.mirror);
         }
         tracing::info!("plugin '{}' added as {node:?}", requested.path().display());
         Ok(node)
@@ -1464,7 +1496,6 @@ impl Session {
     /// not land either: the mirror stays not ready, the read goes back to the
     /// plugin's record, and the next `Phase::Plugins` hands it out again as
     /// [`SessionEvent::PluginParamsDue`].
-    #[cfg(feature = "modulation")]
     pub fn land_params(&mut self, read: PluginParamsRead) -> bool {
         let PluginParamsRead {
             node,
@@ -1480,12 +1511,10 @@ impl Session {
             );
             return false;
         }
-        let Some(mirror) = hosted.mirror.as_mut() else {
-            return false;
-        };
         match values {
             Ok(values) => {
-                mirror.land(values);
+                hosted.mirror.land(values);
+                hosted.gate.declare(&hosted.mirror);
                 true
             }
             Err(read) => {
@@ -1560,7 +1589,6 @@ impl Session {
         let Open {
             plugin,
             restore,
-            #[cfg(feature = "modulation")]
             mirror,
         } = opened;
         let client = match plugin.map(HostPlugin::into_client) {
@@ -1606,7 +1634,6 @@ impl Session {
         let ready = Ready {
             client,
             restore,
-            #[cfg(feature = "modulation")]
             mirror,
         };
         self.install_reload(node, ready, now, &mut out);
@@ -1625,7 +1652,6 @@ impl Session {
         let Ready {
             client,
             restore,
-            #[cfg(feature = "modulation")]
             mirror,
         } = ready;
         // Dead already (a state that kills it, say): not recovered.
@@ -1686,8 +1712,6 @@ impl Session {
         let recovery = hosted.recovery.take();
         let latency_before = hosted.reload.latency_before;
         let withheld = hosted.reload.withheld_age;
-        #[cfg(feature = "modulation")]
-        let old_mirror = hosted.mirror.take();
         let attempts = recovery.as_ref().map_or(1, Recovery::failures);
         match self.graph.replace_plugin(
             node,
@@ -1702,14 +1726,9 @@ impl Session {
                     hosted.snapshot = snapshot;
                     hosted.withheld = withheld_bytes;
                     hosted.recovery = recovery;
-                    #[cfg(feature = "modulation")]
-                    {
-                        hosted.mirror = old_mirror;
-                    }
                     hosted.reload.ready = Some(Ready {
                         client,
                         restore,
-                        #[cfg(feature = "modulation")]
                         mirror,
                     });
                 }
@@ -1721,10 +1740,6 @@ impl Session {
                     hosted.snapshot = snapshot;
                     hosted.withheld = withheld_bytes;
                     hosted.recovery = recovery;
-                    #[cfg(feature = "modulation")]
-                    {
-                        hosted.mirror = old_mirror;
-                    }
                 }
                 let mut gave_up = Vec::new();
                 let cause = RecoveryFailure::ReplacementRefused { source: refused };
@@ -1744,28 +1759,22 @@ impl Session {
         if let Some(recovery) = hosted.recovery.as_mut() {
             recovery.step(RecoveryEvent::Loaded, now);
         }
-        #[cfg(feature = "modulation")]
-        {
-            let (values, unread) = match mirror {
-                Some(Mirror { values, unread }) => (Some(values), unread),
-                None => (None, None),
-            };
-            hosted.param_read = unread;
+        // The replacement's own read, after the restore, is the mirror: the
+        // swap built an unread one, and nothing of the old plugin's values
+        // carries over (they are the values read at load, which the restored
+        // state has replaced; writing them back would undo the restore and
+        // bypass the lanes that own those parameters).
+        //
+        // A modulation lane on a parameter needs no seeding here: the swap
+        // moved the node's generation, so the reconciler rebuilds the lane (a
+        // new node, its knob starting at this mirror's value) and the old
+        // lane, with whatever GUI value its knob held, goes with the old unit.
+        // The new lane's first value is the restored one.
+        if let Some(Mirror { values, unread }) = mirror {
             hosted.mirror = values;
-            // The old mirror is dropped, and its values with it: it holds
-            // the values read at load, which the restored state has
-            // replaced, and (except for in-process VST2) only the edits the
-            // plugin reports. Writing them back would undo the restore and
-            // bypass the lanes that own those parameters. The new plugin's
-            // own read, after the restore, is the mirror.
-            //
-            // A modulation lane on a parameter needs no seeding here: the
-            // swap moved the node's generation, so the reconciler rebuilds
-            // the lane (a new node, its knob starting at this mirror's
-            // value) and the old lane, with whatever GUI value its knob
-            // held, goes with the old unit. The new lane's first value is
-            // the restored one.
-            drop(old_mirror);
+            hosted.param_read = unread;
+            hosted.mirror_token = Arc::new(());
+            hosted.gate.declare(&hosted.mirror);
         }
         let restore = match (restore, withheld) {
             (StateRestore::NoSnapshot, Some(age)) => StateRestore::Withheld { age },
@@ -1942,6 +1951,16 @@ impl Session {
             // What the plugin reported since the last update, in the order
             // it reported it.
             let heard = std::mem::take(&mut *locked(&hosted.notices));
+            // A rescan the plugin announced re-reads what it declares and the
+            // value of each, as a job below.
+            if heard.iter().any(|notice| {
+                matches!(
+                    notice,
+                    Notice::Refresh(PluginRefresh::ParamValues | PluginRefresh::ParamTitles)
+                )
+            }) {
+                hosted.reread_params();
+            }
             out.extend(
                 heard
                     .into_iter()
@@ -2069,7 +2088,6 @@ impl Session {
                 }
             });
 
-            #[cfg(feature = "modulation")]
             if let Some(read) = hosted.param_read.take() {
                 out.push(SessionEvent::PluginParamsDue(PluginParamRead {
                     node,
@@ -2078,14 +2096,13 @@ impl Session {
                 }));
             }
             #[cfg(feature = "modulation")]
-            if let Some(mirror) = hosted.mirror.as_mut() {
-                let state = &self.mods.state;
-                mirror.drain_edits(|id, value| {
-                    if let Some(target) = state.plugin_target(node, id.get()) {
-                        state.set_knob(target, value.get() as f32);
-                    }
-                });
-            }
+            let state = &self.mods.state;
+            hosted.mirror.drain_edits(|_id, _value| {
+                #[cfg(feature = "modulation")]
+                if let Some(target) = state.plugin_target(node, _id.get()) {
+                    state.set_knob(target, _value.get() as f32);
+                }
+            });
 
             if let Some(declared) = declared
                 && self.graph.refresh_node_latency(node, declared)
@@ -2204,8 +2221,8 @@ mod tests {
         fn set_automation_mode(
             &self,
             _mode: tutti_plugin_types::AutomationMode,
-        ) -> Result<(), tutti_plugin_types::EditorError> {
-            Err(tutti_plugin_types::EditorError::PluginCrashed)
+        ) -> Result<(), tutti_plugin_types::AutomationModeError> {
+            Err(tutti_plugin_types::AutomationModeError::PluginDead)
         }
     }
 
@@ -2524,7 +2541,6 @@ mod tests {
     /// handle, which `PluginParamValues::start` also gives the mirror's
     /// report callback; a fake's reports cannot be fired from outside
     /// `tutti-plugin`, so the callback is not asserted here.
-    #[cfg(feature = "modulation")]
     #[test]
     fn a_crossfade_to_another_plugin_rebuilds_the_mirror() {
         let param = ParamId::new(3);
@@ -2533,7 +2549,7 @@ mod tests {
         let (mut mirror, read) = tutti_plugin_host::PluginParamValues::start(&outgoing);
         mirror.land(read.run().expect("the read lands"));
         let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
-        hosted.mirror = Some(mirror);
+        hosted.mirror = mirror;
         assert_eq!(hosted.param_value(3), Some(Some(0.25)), "precondition");
 
         let (incoming, _) = fake_handle(None, vec![(param, 0.75)]);
@@ -2592,7 +2608,6 @@ mod tests {
     /// mirror stays not ready), the next phase emits `PluginParamsDue` for the
     /// same plugin once more, and once the list answers the re-run read lands
     /// the values.
-    #[cfg(feature = "modulation")]
     #[test]
     fn a_read_whose_parameter_list_is_unavailable_is_handed_out_again() {
         let param = ParamId::new(3);
@@ -2601,7 +2616,7 @@ mod tests {
         let (mut mirror, read) = tutti_plugin_host::PluginParamValues::start(&outgoing);
         mirror.land(read.run().expect("the read lands"));
         let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
-        hosted.mirror = Some(mirror);
+        hosted.mirror = mirror;
 
         let unlisted = Arc::new(AtomicBool::new(true));
         let incoming = PluginHandle::from_backend(

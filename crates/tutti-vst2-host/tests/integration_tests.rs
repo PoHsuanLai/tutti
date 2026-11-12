@@ -1083,7 +1083,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     let instance = load_probe();
 
     let before = instance.loaded().parameter_list();
-    let defaults: Vec<f64> = before.iter().map(|p| p.range.default_value()).collect();
+    let defaults: Vec<f64> = before.iter().map(|p| p.range().default_value()).collect();
     assert!(
         defaults.iter().any(|&d| d != 0.0),
         "every default came back 0.0, so this test could not detect the bug \
@@ -1092,18 +1092,22 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 
     // Move every parameter well away from where it started.
     for p in &before {
-        assert!(instance.loaded().write_parameter(p.id, Normalized::of(0.9)));
+        assert!(
+            instance
+                .loaded()
+                .write_parameter(p.id(), Normalized::of(0.9))
+        );
     }
 
     let after = instance.loaded().parameter_list();
     for (i, p) in after.iter().enumerate() {
         assert_eq!(
-            p.range.default_value(),
+            p.range().default_value(),
             defaults[i],
             "param {} reported default {} after the value moved to 0.9; the \
              default must not follow the live value",
-            p.id,
-            p.range.default_value()
+            p.id(),
+            p.range().default_value()
         );
     }
     // And the live value really did move, so the assertion above is not
@@ -1128,9 +1132,9 @@ fn parameter_count_and_names() {
     assert_eq!(params.len(), 4, "the probe declares four parameters");
     for param in &params {
         assert!(
-            !param.name.is_empty(),
+            !param.name().is_empty(),
             "param {:?} has empty name",
-            param.id
+            param.id()
         );
     }
 }
@@ -1171,8 +1175,8 @@ fn parameter_info_lookup() {
         .loaded()
         .parameter_info(pid(0))
         .expect("param 0 should exist");
-    assert_eq!(info.id, pid(0));
-    assert!(!info.name.is_empty());
+    assert_eq!(info.id(), pid(0));
+    assert!(!info.name().is_empty());
     assert!(
         instance.loaded().parameter_info(pid(99_999)).is_none(),
         "an out-of-range index must not be serviced"

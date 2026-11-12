@@ -31,7 +31,7 @@
 use bitflags::bitflags;
 use tutti_types::UnitParam;
 
-use crate::{FromPlain, ParamUnit};
+use crate::{ParamUnit, PlainUnit};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -421,25 +421,25 @@ impl std::fmt::Display for ParamId {
 pub struct ParameterInfo {
     /// How this parameter is addressed: the plugin's handle for VST3, CLAP and
     /// AU, its position for VST2. Opaque either way; see [`ParamId`].
-    pub id: ParamId,
+    id: ParamId,
     /// The plugin's display name for this parameter, unqualified by its group.
     /// Not unique — see [`qualified_name`](Self::qualified_name).
-    pub name: String,
+    name: String,
     /// Display unit (`"dB"`, `"Hz"`, …). Empty when the format carries none —
     /// CLAP has no unit string at all.
-    pub unit: String,
+    unit: String,
     /// What the plugin declared about the value range, including the case where
     /// it declared nothing. Read through [`bounds`](Self::bounds) and
     /// [`default_value`](Self::default_value) rather than matching.
-    pub range: ParamRange,
+    range: ParamRange,
     /// How many positions the parameter has, distinguishing "continuous" from
     /// "the format never said". Read through [`step_count`](Self::step_count).
-    pub steps: ParamSteps,
+    steps: ParamSteps,
     /// Capability bits. Read through [`flag`](Self::flag), not directly, so an
     /// unreported capability cannot be mistaken for a reported `false`.
-    pub flags: ParamFlags,
+    flags: ParamFlags,
     /// Which bits of [`flags`](Self::flags) the format actually reported.
-    pub known: ParamFlags,
+    known: ParamFlags,
     /// The group this parameter belongs to, as a display label. Empty when the
     /// plugin declared none.
     ///
@@ -456,7 +456,7 @@ pub struct ParameterInfo {
     /// no second state to keep. The group *id* is deliberately absent — AU
     /// clump 3, VST2 category 3 and VST3 unit 3 are unrelated numbers, and a
     /// bare number that does not say which model it belongs to is a mistake.
-    pub group: String,
+    group: String,
     /// What the number measures, only where the format declared it exactly and
     /// the declared range fits it. `None` is the common case, and the flat
     /// [`unit`](Self::unit) string is still there. Read a value in tutti's own
@@ -467,12 +467,12 @@ pub struct ParameterInfo {
     /// derive already reads a missing `Option` field as `None`,
     /// unlike
     /// [`role`](Self::role), whose custom serde needs its own `default`.
-    pub measures: Option<ParamUnit>,
+    measures: Option<ParamUnit>,
     /// The tutti role this parameter plays, only where the format declared the
     /// role itself (a bypass flag, AU's pan unit, VST3's `DryWetMix` function
     /// name), never from a name. Its `serde(default)` is load-bearing: `with` turns off serde's implicit missing-`Option` default.
     #[cfg_attr(feature = "serde", serde(default, with = "role_serde"))]
-    pub role: Option<UnitParam>,
+    role: Option<UnitParam>,
 }
 
 /// `UnitParam` has no serde of its own, and its persisted form is its stable
@@ -531,6 +531,72 @@ impl ParameterInfo {
         self
     }
 
+    /// Sets the display unit string (`"dB"`, `"Hz"`), as the format wrote it.
+    #[must_use]
+    pub fn with_unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = unit.into();
+        self
+    }
+
+    /// How this parameter is addressed: the plugin's handle for VST3, CLAP and
+    /// AU, its position for VST2. Opaque either way; see [`ParamId`].
+    #[must_use]
+    pub const fn id(&self) -> ParamId {
+        self.id
+    }
+
+    /// The plugin's display name for this parameter, unqualified by its group.
+    /// Not unique; see [`qualified_name`](Self::qualified_name).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The display unit (`"dB"`, `"Hz"`), empty when the format carries none
+    /// (CLAP has no unit string at all).
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// The group this parameter belongs to, as a display label; empty when the
+    /// plugin declared none.
+    #[must_use]
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// What the number measures, only where the format declared it exactly and
+    /// the declared range fits it ([`with_measures`](Self::with_measures)).
+    /// `None` is the common case. Read a value in tutti's own unit through
+    /// [`typed`](Self::typed).
+    #[must_use]
+    pub const fn measures(&self) -> Option<ParamUnit> {
+        self.measures
+    }
+
+    /// The tutti role this parameter plays, only where the format declared the
+    /// role itself.
+    #[must_use]
+    pub const fn role(&self) -> Option<UnitParam> {
+        self.role
+    }
+
+    /// What the plugin declared about the value range, including the case
+    /// where it declared nothing. A coverage report matches on it; a consumer
+    /// reads [`bounds`](Self::bounds) and [`default_value`](Self::default_value).
+    #[must_use]
+    pub const fn range(&self) -> ParamRange {
+        self.range
+    }
+
+    /// How many positions the parameter has, distinguishing "continuous" from
+    /// "the format never said". A consumer reads [`step_count`](Self::step_count).
+    #[must_use]
+    pub const fn steps(&self) -> ParamSteps {
+        self.steps
+    }
+
     /// Sets the role the format declared for this parameter.
     #[must_use]
     pub fn with_role(mut self, role: Option<UnitParam>) -> Self {
@@ -560,7 +626,7 @@ impl ParameterInfo {
     /// assert_eq!(wet.typed::<Seconds>(25.0), None);
     /// ```
     #[must_use]
-    pub fn typed<U: FromPlain>(&self, plain: f64) -> Option<U> {
+    pub fn typed<U: PlainUnit>(&self, plain: f64) -> Option<U> {
         if !matches!(self.range, ParamRange::Plain { .. }) || !plain.is_finite() {
             return None;
         }
@@ -571,6 +637,13 @@ impl ParameterInfo {
     #[must_use]
     pub fn with_group(mut self, group: impl Into<String>) -> Self {
         self.group = group.into();
+        self
+    }
+
+    /// Sets the range exactly as a format host built it.
+    #[must_use]
+    pub fn with_range(mut self, range: ParamRange) -> Self {
+        self.range = range;
         self
     }
 

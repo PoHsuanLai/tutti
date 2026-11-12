@@ -1606,6 +1606,27 @@ read the `Cargo.toml`, grep for the type, run the probe.
   what they retire waits in the graveyard, `Session::retired_plugins`), and
   `PluginHandle::open_editor(.., impl HasWindowHandle)` → `open_editor(.., WindowHandle)`
   (a host's own path is `ui.plugin(node)?.editor().open(&window, scale)` → `Opened`, and `rescale(scale)` → `EditorWindow::set_editor_scale`);
+  A host's `session.plugin(node)?.handle().any_thread().parameter_descriptors()`,
+  `parameter_value`, `set_parameter_value`, `parameter_text`, `parameter_value_from_text`,
+  `parameter_plain` and `parameter_normalized` (doc 029 step 3) →
+  `session.plugin(node)?.params()` (`Params`: `get(id)? -> Param`, `typed::<U>(id)? ->
+  TypedParam<U>`, `iter`; `Param::{normalized, set, text, set_text, plain, set_plain, edit}`,
+  `edit()` a `ParamGesture` guard that ends on drop, `Param::target` the modulation `ParamRef`;
+  the errors are `PluginParamError`, the descriptors the session's own, read at load and again
+  on a rescan through `PluginParamsDue`; `AnyThread` and `PluginHandle` stay the low layer
+  and are not in the prelude), `Plugin::param_values()` → deleted (`params().get(id)?.normalized()`;
+  `PluginParamValues` holds the descriptors too, and a read is a `ParamSnapshot`),
+  `ParameterInfo`'s public fields (`id`, `name`, `unit`, `range`, `steps`, `flags`, `known`, `group`,
+  `measures`, `role`) → private, read through `id()`, `name()`, `unit()`, `range()`, `steps()`,
+  `group()`, `measures()`, `role()`, `flag(f)` and built with `ParameterInfo::new(..).with_unit` /
+  `with_range` / `with_plain_range` / `with_steps` / `with_flags` / `with_group` / `with_measures` /
+  `with_role` (a format host never builds a struct literal), `tutti_plugin_types::FromPlain` →
+  `PlainUnit` (`reads`, `from_plain`, `to_plain`), `AnyThread::set_automation_mode`,
+  `PluginHandle::set_automation_mode` and their `Result<(), EditorError>` →
+  `Result<(), AutomationModeError>` (`Unsupported { format }`, `Dropped`, `PluginDead`; a host
+  calls `params().set_automation_mode(mode)`), `SessionEvent::PluginParamsDue`,
+  `PluginParamRead`, `PluginParamsRead` and `Session::land_params` lose their `modulation`
+  gate (the mirror is every plugin's);
   `Session::mods()` as the editor → `mods_mut()`; `Mods::route(source, target,
   depth)` → `route(RouteSpec)`; `Mods::route_mut` and its public `RouteDecl` fields →
   `route_of(id)?` setters; `ModState::{refusal, unresolved_targets,

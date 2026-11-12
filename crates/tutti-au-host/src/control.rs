@@ -300,40 +300,35 @@ impl Control for AuLoaded {
                 };
                 // AUv2 advertises IsWritable and nothing else. Writability is
                 // not automatability, so only READ_ONLY is known.
-                ParameterInfo {
-                    // `AudioUnitParameterID`: AU's opaque plugin-chosen handle.
-                    id: p.id.into(),
-                    name: p.name,
-                    unit: p.unit.to_string(),
-                    range: ParamRange::Plain {
+                // `p.clump` is `None` unless the AU set
+                // `kAudioUnitParameterFlag_HasClump`, so an AU that declared no
+                // clump cannot arrive here as clump 0. A clump the AU declines
+                // to name yields no group rather than a numeric placeholder.
+                let group = p
+                    .clump
+                    .and_then(|c| clump_names.get(&c))
+                    .cloned()
+                    .unwrap_or_default();
+                let flags = if p.writable {
+                    ParamFlags::empty()
+                } else {
+                    ParamFlags::READ_ONLY
+                };
+                // `AudioUnitParameterID` is AU's opaque plugin-chosen handle.
+                ParameterInfo::new(p.id.into(), p.name)
+                    .with_unit(p.unit.to_string())
+                    .with_range(ParamRange::Plain {
                         min: p.range.min as f64,
                         max: p.range.max as f64,
                         default: p.range.default as f64,
-                    },
-                    steps,
-                    flags: if p.writable {
-                        ParamFlags::empty()
-                    } else {
-                        ParamFlags::READ_ONLY
-                    },
-                    known: ParamFlags::READ_ONLY,
-                    // `p.clump` is `None` unless the AU set
-                    // `kAudioUnitParameterFlag_HasClump`, so an AU that declared
-                    // no clump cannot arrive here as clump 0. A clump the AU
-                    // declines to name yields no group rather than a numeric
-                    // placeholder.
-                    group: p
-                        .clump
-                        .and_then(|c| clump_names.get(&c))
-                        .cloned()
-                        .unwrap_or_default(),
-                    measures: None,
-                    role: None,
-                }
-                // The unit code is a closed enumeration, so it types the
-                // parameter exactly (doc 023 section 5.2).
-                .with_measures(crate::unit_measures(p.unit_code))
-                .with_role(crate::unit_role(p.unit_code))
+                    })
+                    .with_steps(steps)
+                    .with_flags(ParamFlags::READ_ONLY, flags)
+                    .with_group(group)
+                    // The unit code is a closed enumeration, so it types the
+                    // parameter exactly (doc 023 section 5.2).
+                    .with_measures(crate::unit_measures(p.unit_code))
+                    .with_role(crate::unit_role(p.unit_code))
             })
             .collect()
     }

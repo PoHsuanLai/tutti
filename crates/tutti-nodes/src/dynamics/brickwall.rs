@@ -90,7 +90,9 @@ control_set! {
 impl NodeFamily for BrickwallFamily {
     type Set = BrickwallSet;
 
-    const RINGS: Rings = Rings::Silent;
+    fn rings(&self) -> Rings {
+        Rings::Silent
+    }
 
     fn set(&self, _: &BrickwallControls) -> BrickwallSet {
         BrickwallSet

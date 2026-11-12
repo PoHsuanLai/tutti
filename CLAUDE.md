@@ -927,9 +927,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork; `FamilyNode<F: NodeFamily>` is
-  the one node over every reverb, filter and brickwall `Family` (`NodeFamily::RINGS` is a
-  `Rings`: `Tracks` parks on the tail, `Unknown` never narrows it, `Silent` declares
-  `Tail::None`; each `control_set!` row declares how its control is read, a `Control`
+  the one node over every reverb, filter and brickwall `Family` (`NodeFamily::rings(&self)`, the
+  instance's, is a `Rings`: `Tracks` parks on the tail, `Unknown` never narrows it, `Silent` declares
+  `Tail::None`, `Ceiling(TailCeiling)`, a checked finite non-negative time, declares a fixed finite ceiling and never narrows or parks; each `control_set!` row declares how its control is read, a `Control`
   (`{ whole }`, `{ fast }`: read per frame into `Feed.lanes`, the cell the base, at most
   `MAX_LANES` or it does not compile; `{ not_nan }`: accepts `+-inf`); a keyed
   family's key bus is read into `Feed.key`), with `FreeverbNode` and `FdnNode`

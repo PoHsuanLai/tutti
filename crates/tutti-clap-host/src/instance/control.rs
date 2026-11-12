@@ -18,6 +18,7 @@ use tutti_plugin_types::{
 use super::controller::ClapController;
 use super::lifecycle::plugin_error;
 use super::{ClapLoaded, polling::WorkRan};
+use crate::events::ParamBounds;
 use crate::types::{AudioPortFlags, PluginInfo};
 
 /// What the two editor answers mean for the three capability bits.
@@ -98,15 +99,11 @@ fn normalize(range: Option<(f64, f64)>, plain: f64) -> f64 {
     }
 }
 
-/// The inverse of [`normalize`].
-fn denormalize(range: Option<(f64, f64)>, value: Normalized) -> f64 {
-    match range {
-        Some((min, max)) => ParamRange::Plain {
-            min,
-            max,
-            default: min,
-        }
-        .to_plain(value.get()),
+/// The inverse of [`normalize`]: the plain value, in `f64`, with a stepped
+/// parameter on its integer step.
+fn denormalize(bounds: Option<ParamBounds>, value: Normalized) -> f64 {
+    match bounds {
+        Some(bounds) => bounds.plain(value.get()),
         None => value.get(),
     }
 }
@@ -216,10 +213,18 @@ impl ClapLoaded {
     /// Returns which scans it ran.
     pub(crate) fn take_requests_with(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         clock: impl FnOnce() -> Instant,
         out: &mut Vec<Request>,
     ) -> WorkRan {
+        // `gui.closed` is `[thread-safe]` and the plugin may raise it from its
+        // own window thread, while `gui.destroy` is the main thread's: this
+        // pass is where it is acknowledged (`ext/gui.h`: "the host must call
+        // clap_plugin_gui->destroy()"), so a floating editor the user closed
+        // is destroyed and the next open starts clean.
+        if self.host_state.take(&self.host_state.gui.closed) {
+            self.destroy_editor(main);
+        }
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
         let (ran, due_timers) = self.due_work(clock);
         out.extend(due_timers.into_iter().map(|id| Request::Timer(TimerId(id))));
@@ -293,14 +298,19 @@ impl Control for ClapLoaded {
     /// Applied now, as a flushed `PARAM_VALUE` event. CLAP events carry the
     /// plain value, so the declared range denormalizes it.
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        let plain = denormalize(self.parameter_range(main, id.get()), value);
+        let bounds = self.parameter_bounds(main, id.get());
+        // A read-only parameter "can't be changed by the host" (`params.h`).
+        if bounds.is_some_and(|b| b.read_only) {
+            return;
+        }
+        let plain = denormalize(bounds, value);
         self.set_plain_value(main, id.get(), plain);
     }
 
     /// The plugin's own display string. `value_to_text` takes a plain value, so
     /// the same range conversion `set_parameter` applies is applied here.
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        let plain = denormalize(self.parameter_range(main, id.get()), value);
+        let plain = denormalize(self.parameter_bounds(main, id.get()), value);
         self.value_to_text(main, id.get(), plain)
     }
 

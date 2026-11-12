@@ -113,15 +113,16 @@ pub struct Surface {
     /// activation (VST3) or the plugin has no render extension (the shared
     /// CLAP shell exports none).
     pub render_mode_live: bool,
-    /// Whether the shell reads the notice byte ([`NOTICE_ON_LOAD`]): CLAP and
-    /// VST2, which tell the host something on each state load.
+    /// Whether the shell reads the notice byte ([`NOTICE_ON_LOAD`]): CLAP, VST2
+    /// and VST3, which tell the host something on each state load.
     pub notices: bool,
     /// The request a notice raises, as `take_requests` reports it: CLAP's
     /// `request_callback`. Nothing for every other format.
     pub request: Option<tutti_plugin_types::Request>,
     /// The edit a notice reports outside a block, as `take_reported_edits`
-    /// reads it: VST2's `audioMasterAutomate(0, 0.5)`. Nothing for every other
-    /// format (CLAP and VST3 report edits in a block's output).
+    /// reads it: VST2's `audioMasterAutomate(0, 0.5)`, VST3's `performEdit` of
+    /// `aux` to 0.75 through the host's component handler. Nothing for CLAP,
+    /// which reports edits in a block's output, and for AU.
     pub edit: Option<(Param, f64)>,
 }
 
@@ -146,24 +147,26 @@ pub const VST2: Surface = Surface {
 };
 
 /// VST3 from the Rust plugin: an editor once selected (where its X11 view can
-/// embed), the mode read at activation, nothing raised.
+/// embed), the mode read at activation, an edit of `aux` to 0.75 on each state
+/// load.
 pub const VST3: Surface = Surface {
     selects_editor: true,
     has_editor: cfg!(all(unix, not(target_os = "macos"))),
     render_mode_live: false,
-    notices: false,
+    notices: true,
     request: None,
-    edit: None,
+    edit: Some((Param::Aux, 0.75)),
 };
 
-/// VST3 from the C++ plugin: no editor, nothing raised.
+/// VST3 from the C++ plugin: no editor, an edit of `aux` to 0.75 on each state
+/// load.
 pub const VST3_CPP: Surface = Surface {
     selects_editor: false,
     has_editor: false,
     render_mode_live: false,
-    notices: false,
+    notices: true,
     request: None,
-    edit: None,
+    edit: Some((Param::Aux, 0.75)),
 };
 
 /// AU, from an Apple built-in unit (AUDelay): it has a Cocoa view; no plugin of

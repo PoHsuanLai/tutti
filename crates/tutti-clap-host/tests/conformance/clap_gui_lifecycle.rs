@@ -34,7 +34,7 @@ use tutti_clap_test_plugin::{
     GuiCapture, GuiMode,
 };
 use tutti_fixtures::StandInWindow;
-use tutti_plugin_types::EditorWindow;
+use tutti_plugin_types::{Control, EditorWindow};
 
 /// Serializes whole scenarios — set mode → reset → load → drive → read — so one
 /// test cannot observe another's calls or run against another's selected
@@ -1037,6 +1037,41 @@ fn open_floating_editor_runs_the_spec_sequence() {
         "`create` must be called with is_floating = true — an embedded create \
          on a floating-only plugin is the call it already refuses"
     );
+}
+
+/// A floating window the user closed is destroyed by the host's next main-thread
+/// pass, and the editor can then be opened again.
+///
+/// `ext/gui.h`: on `gui.closed(was_destroyed = true)` "the host must call
+/// clap_plugin_gui->destroy() to acknowledge the gui destruction". The host used
+/// to record the callback and never act, so `create` stayed unbalanced and every
+/// later open failed with `AlreadyCreated`.
+#[test]
+fn a_closed_floating_editor_is_destroyed_by_the_main_thread_pass_and_reopens() {
+    let probe = Probe::acquire(GuiMode::FloatingOnly);
+    let mut loaded = probe.load();
+    loaded
+        .open_floating_editor_with(&main_thread(), Some(StandInWindow.handle()), TEST_TITLE)
+        .expect("opens");
+
+    probe.command(GUI_CMD_CLOSED_AND_DESTROYED);
+    probe.run_command();
+    assert_eq!(probe.capture().create_balance, 1, "not yet acknowledged");
+
+    let mut requests = Vec::new();
+    Control::take_requests(&mut loaded, &main_thread(), &mut requests);
+
+    let cap = probe.capture();
+    assert!(
+        calls(&cap).contains(&GUI_CALL_DESTROY),
+        "the host must acknowledge `gui.closed` with `gui.destroy`"
+    );
+    assert_eq!(cap.create_balance, 0, "the gui `create` made is released");
+
+    loaded
+        .open_floating_editor_with(&main_thread(), Some(StandInWindow.handle()), TEST_TITLE)
+        .expect("the editor opens again after the user closed it");
+    assert_eq!(probe.capture().create_balance, 1);
 }
 
 /// The floating path asks the *floating* question, and only that one.

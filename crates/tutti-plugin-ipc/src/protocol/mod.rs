@@ -51,7 +51,11 @@ pub(crate) mod wire;
 ///   descriptor id), which the server hands its format's
 ///   `OutOfProcess::load_served`. Before it a file always loaded its first
 ///   plugin.
-pub const PROTOCOL_VERSION: u32 = 28;
+/// - **Version 29** added `seconds` to the transport's `LoopRegion` (the loop's
+///   bounds in seconds from the project's tempo map, which CLAP's
+///   `loop_start_seconds` / `loop_end_seconds` carry), a field of every
+///   `TransportInfo` on the wire.
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

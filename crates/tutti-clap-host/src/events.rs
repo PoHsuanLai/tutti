@@ -33,8 +33,8 @@ use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi, note_id_for,
-    note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
+    Normalized, ParamId, ParamRange, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi,
+    note_id_for, note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;
@@ -47,6 +47,91 @@ use tutti_ump::{
     SysexStep, U7, Ump, Voice1, Voice2,
 };
 use tutti_voicing::{NoteControl, NoteEvent, PerNoteState};
+
+/// One parameter's declared plain range and whether it is stepped: what a
+/// normalized host value is denormalized against (`clap_param_info`'s
+/// `min_value`, `max_value` and `CLAP_PARAM_IS_STEPPED`).
+///
+/// The bounds stay `f64`, as the plugin declares them. A stepped parameter's
+/// value is an integer (`params.h`: "the double value is converted to integer
+/// using a cast"), so [`plain`](Self::plain) lands on the step the normalized
+/// value names: a bare `min + n * (max - min)` gives `k - epsilon` for some
+/// `k / steps`, which the plugin's cast then takes to the previous step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamBounds {
+    /// The parameter's `clap_id`.
+    pub id: u32,
+    /// `min_value`.
+    pub min: f64,
+    /// `max_value`.
+    pub max: f64,
+    /// `CLAP_PARAM_IS_STEPPED`.
+    pub stepped: bool,
+    /// `CLAP_PARAM_IS_READONLY`: "the parameter can't be changed by the host",
+    /// so no value is ever written to it.
+    pub read_only: bool,
+}
+
+impl ParamBounds {
+    /// A continuous parameter.
+    #[must_use]
+    pub const fn continuous(id: u32, min: f64, max: f64) -> Self {
+        Self {
+            id,
+            min,
+            max,
+            stepped: false,
+            read_only: false,
+        }
+    }
+
+    /// A `CLAP_PARAM_IS_STEPPED` parameter.
+    #[must_use]
+    pub const fn stepped(id: u32, min: f64, max: f64) -> Self {
+        Self {
+            id,
+            min,
+            max,
+            stepped: true,
+            read_only: false,
+        }
+    }
+
+    /// This parameter, read-only (`CLAP_PARAM_IS_READONLY`).
+    #[must_use]
+    pub const fn with_read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    /// The entry for `id` in a table sorted by id.
+    pub(crate) fn find(table: &[Self], id: u32) -> Option<&Self> {
+        table
+            .binary_search_by_key(&id, |b| b.id)
+            .ok()
+            .map(|i| &table[i])
+    }
+
+    /// `normalized` (`0..=1`) as the plugin's plain value, in `f64`, inside the
+    /// declared bounds (inverted or non-finite bounds are a malformed plugin
+    /// and never panic or produce NaN). A stepped parameter's value is rounded
+    /// to the nearest integer, so the plugin's truncation reads the step the
+    /// normalized value names.
+    #[must_use]
+    pub fn plain(&self, normalized: f64) -> f64 {
+        let plain = ParamRange::Plain {
+            min: self.min,
+            max: self.max,
+            default: self.min,
+        }
+        .to_plain(normalized);
+        if self.stepped && self.max > self.min {
+            plain.round().clamp(self.min, self.max)
+        } else {
+            plain
+        }
+    }
+}
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.
@@ -744,6 +829,14 @@ pub struct InputEventList {
     ports: usize,
     /// Bit `n` is set when note port `n` takes the MIDI dialect only.
     midi_ports: u16,
+    /// Bit `n` is set when note port `n` declares the MIDI dialect at all
+    /// (`supported_dialects & CLAP_NOTE_DIALECT_MIDI`), so it may be sent
+    /// `clap_event_midi`: every port until
+    /// [`set_midi_capable_ports`](Self::set_midi_capable_ports) says otherwise.
+    midi_capable: u16,
+    /// MIDI messages left unsent because their port declares no MIDI dialect:
+    /// see [`midi_refused`](Self::midi_refused).
+    midi_refused: u64,
     /// Messages of a Group the plugin has no note port for: see
     /// [`groups_dropped`](Self::groups_dropped).
     groups_dropped: u64,
@@ -767,6 +860,8 @@ impl InputEventList {
             narrower: Narrower::new(),
             ports: 1,
             midi_ports: 0,
+            midi_capable: u16::MAX,
+            midi_refused: 0,
             groups_dropped: 0,
             sysex: SysexAssembler::new(Box::default(), 0, 0),
         }
@@ -822,6 +917,29 @@ impl InputEventList {
         self.narrower.reset();
     }
 
+    /// Sets which input note ports declare the MIDI dialect, one entry each
+    /// (`note-ports.h`: `CLAP_NOTE_DIALECT_MIDI`, "uses clap_event_midi").
+    /// `clap_event_midi` and `clap_event_midi_sysex` go only to such a port:
+    /// to any other, a controller, bend, program change, pressure, system
+    /// message or SysEx is dropped and counted
+    /// ([`midi_refused`](Self::midi_refused)). A port past the end of the
+    /// list does not; before this is called every port does. Takes effect for
+    /// events added after.
+    pub fn set_midi_capable_ports(&mut self, capable: &[bool]) {
+        self.midi_capable = capable
+            .iter()
+            .take(usize::from(tutti_ump::MidiGroup::COUNT))
+            .enumerate()
+            .fold(0, |mask, (port, &yes)| mask | (u16::from(yes) << port));
+    }
+
+    /// MIDI messages dropped since the list was built because the note port
+    /// they belong to declares no MIDI dialect
+    /// ([`set_midi_capable_ports`](Self::set_midi_capable_ports)).
+    pub fn midi_refused(&self) -> u64 {
+        self.midi_refused
+    }
+
     /// Whether notes to the first input note port go out as `clap_event_midi`:
     /// see [`set_midi_notes`](Self::set_midi_notes).
     pub fn supports_midi_notes(&self) -> bool {
@@ -853,6 +971,8 @@ impl InputEventList {
             narrower: Narrower::new(),
             ports: 1,
             midi_ports: 0,
+            midi_capable: u16::MAX,
+            midi_refused: 0,
             groups_dropped: 0,
             sysex: SysexAssembler::new(Box::default(), 0, 0),
         }
@@ -1011,6 +1131,17 @@ impl InputEventList {
             }
             SysexStep::Held => {}
             SysexStep::Complete(message) => {
+                // The SysEx goes to its Group's note port, as every channel
+                // message does, and only if that port declares the MIDI dialect.
+                let port = ump.group().map_or(0, |g| u16::from(g.get()));
+                if usize::from(port) >= self.ports {
+                    self.groups_dropped += 1;
+                    return self;
+                }
+                if self.midi_capable >> port & 1 == 0 {
+                    self.midi_refused += 1;
+                    return self;
+                }
                 let bytes = self.sysex.message(message).bytes();
                 #[allow(
                     clippy::cast_possible_truncation,
@@ -1025,7 +1156,7 @@ impl InputEventList {
                         type_: CLAP_EVENT_MIDI_SYSEX,
                         flags: 0,
                     },
-                    port_index: 0,
+                    port_index: port,
                     // The reassembler's buffer never grows and nothing in it
                     // moves until `clear` (`SysexAssembler::begin_block`),
                     // which empties `events` in the same call.
@@ -1164,6 +1295,11 @@ impl InputEventList {
     /// `bytes` as MIDI events on `port`, all or none; `false` when they did not
     /// fit.
     fn push_bytes(&mut self, time: u32, port: u16, bytes: &[[u8; 3]]) -> bool {
+        // `clap_event_midi` only to a port that declared the MIDI dialect.
+        if self.midi_capable >> port & 1 == 0 {
+            self.midi_refused += bytes.len() as u64;
+            return false;
+        }
         if self.midi_room() < bytes.len() {
             self.midi_dropped += bytes.len() as u64;
             return false;
@@ -1317,38 +1453,24 @@ impl InputEventList {
     pub fn add_param_changes(
         &mut self,
         changes: &ParameterChanges,
-        ranges: &[(u32, f32, f32)],
+        ranges: &[ParamBounds],
         plugin_claims_params: bool,
     ) -> &mut Self {
         let mut pushed = 0usize;
         for queue in &changes.queues {
             let param_id = queue.param_id.get();
-            let range = ranges
-                .binary_search_by_key(&param_id, |&(id, _, _)| id)
-                .ok()
-                .map(|i| &ranges[i]);
+            let range = ParamBounds::find(ranges, param_id);
             if range.is_none() && plugin_claims_params {
+                continue;
+            }
+            // `params.h`: a read-only parameter "can't be changed by the host".
+            if range.is_some_and(|b| b.read_only) {
                 continue;
             }
             let mut pushed_here = false;
             for point in &queue.points {
                 let value = match range {
-                    Some(&(_, min, max)) => {
-                        // CLAP normalizes automation to f64 `0..=1`; the plain
-                        // range is f32, so the product is computed in f32.
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            reason = "normalized 0..=1 from CLAP; the plain range is f32"
-                        )]
-                        let normalized = point.value.get() as f32;
-                        let plain = min + normalized * (max - min);
-                        // `f32::clamp` panics when `lo > hi`, and `min`/`max`
-                        // come straight from the plugin's own reported
-                        // `min_value`/`max_value` (lifecycle.rs:93). A plugin
-                        // reporting inverted bounds is malformed, but it must
-                        // not panic the audio thread — order the bounds first.
-                        plain.clamp(min.min(max), min.max(max)) as f64
-                    }
+                    Some(bounds) => bounds.plain(point.value.get()),
                     None => point.value.get(),
                 };
                 let event = ClapEvent::param_value(
@@ -1392,25 +1514,15 @@ impl InputEventList {
         &mut self,
         param_id: u32,
         value: f64,
-        ranges: &[(u32, f32, f32)],
+        ranges: &[ParamBounds],
         plugin_claims_params: bool,
     ) -> &mut Self {
-        let range = ranges
-            .binary_search_by_key(&param_id, |&(id, _, _)| id)
-            .ok()
-            .map(|i| &ranges[i]);
+        let range = ParamBounds::find(ranges, param_id);
+        if range.is_some_and(|b| b.read_only) {
+            return self;
+        }
         let plain = match range {
-            Some(&(_, min, max)) => {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "normalized 0..=1; the plain range is f32"
-                )]
-                let normalized = value as f32;
-                let plain = min + normalized * (max - min);
-                // Ordered bounds: the plugin's own `min`/`max` may be inverted,
-                // and `f32::clamp` panics when `lo > hi`.
-                plain.clamp(min.min(max), min.max(max)) as f64
-            }
+            Some(bounds) => bounds.plain(value),
             // No table entry and the plugin claims parameters: the table is
             // short, and raw `0..1` into an unknown range is silent and audible.
             None if plugin_claims_params => return self,
@@ -2253,7 +2365,11 @@ mod tests {
     /// denormalizes against its own parameter's range.
     #[test]
     fn add_param_changes_finds_each_range_in_a_sorted_list() {
-        let ranges = [(1, 0.0, 1.0), (5, 0.0, 10.0), (9, 100.0, 1100.0)];
+        let ranges = [
+            ParamBounds::continuous(1, 0.0, 1.0),
+            ParamBounds::continuous(5, 0.0, 10.0),
+            ParamBounds::continuous(9, 100.0, 1100.0),
+        ];
         let mut changes = ParameterChanges::reserved(2, 1);
         changes.add_change(9u32.into(), 0, 0.5);
         changes.add_change(5u32.into(), 1, 0.25);
@@ -2805,8 +2921,47 @@ mod tests {
         let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(9u32.into(), 0, 0.25);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 100.0, 1100.0)], true);
+        list.add_param_changes(&changes, &[ParamBounds::continuous(9, 100.0, 1100.0)], true);
         assert!((first_param_value(&list) - 350.0).abs() < 1e-6);
+    }
+
+    /// `params.h`: a `CLAP_PARAM_IS_STEPPED` value is cast to an integer by the
+    /// plugin (trunc). Step `k` of `n` is normalized `k / n`; denormalized
+    /// naively that is `k - epsilon` for some `(k, n)` (13 of 22 in `f32`, 15 of
+    /// 22 in `f64`), which the cast takes to step `k - 1`. Every step of every
+    /// span up to 199 must reach the plugin as a value whose cast is `k`.
+    #[test]
+    fn a_stepped_parameter_reaches_the_plugin_on_the_step_the_host_named() {
+        for n in 2..=199u32 {
+            let bounds = [ParamBounds::stepped(9, 0.0, f64::from(n))];
+            for k in 0..=n {
+                let mut changes = ParameterChanges::reserved(1, 1);
+                changes.add_change(9u32.into(), 0, f64::from(k) / f64::from(n));
+                let mut list = InputEventList::new();
+                list.add_param_changes(&changes, &bounds, true);
+                assert_eq!(
+                    first_param_value(&list).trunc(),
+                    f64::from(k),
+                    "step {k} of {n}"
+                );
+            }
+        }
+    }
+
+    /// The edit path (`add_param_edit`) steps the same way, and a range whose
+    /// top step needs more than 24 bits is not narrowed to `f32`.
+    #[test]
+    fn a_stepped_edit_is_computed_in_f64_from_the_plugins_own_range() {
+        let bounds = [ParamBounds::stepped(4, 0.0, 22.0)];
+        let mut list = InputEventList::new();
+        list.add_param_edit(4, 13.0 / 22.0, &bounds, true);
+        assert_eq!(first_param_value(&list).trunc(), 13.0);
+
+        // 0..=16_777_217 is not representable in f32 at the top step.
+        let wide = [ParamBounds::stepped(5, 0.0, 16_777_217.0)];
+        let mut list = InputEventList::new();
+        list.add_param_edit(5, 1.0, &wide, true);
+        assert_eq!(first_param_value(&list), 16_777_217.0);
     }
 
     #[test]
@@ -2815,7 +2970,7 @@ mod tests {
         let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(9u32.into(), 0, 1.5);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 0.0, 10.0)], true);
+        list.add_param_changes(&changes, &[ParamBounds::continuous(9, 0.0, 10.0)], true);
         assert!((first_param_value(&list) - 10.0).abs() < 1e-6);
     }
 
@@ -2827,7 +2982,7 @@ mod tests {
         let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(9u32.into(), 0, 0.5);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 10.0, 0.0)], true);
+        list.add_param_changes(&changes, &[ParamBounds::continuous(9, 10.0, 0.0)], true);
         let v = first_param_value(&list);
         assert!((0.0..=10.0).contains(&v), "value {v} escaped the range");
     }
@@ -2841,6 +2996,75 @@ mod tests {
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
         assert!((first_param_value(&list) - 0.42).abs() < 1e-6);
+    }
+
+    // --- MIDI only to a port that declares the MIDI dialect (note-ports.h) ---
+
+    fn cc_message(group: u8) -> UmpAt {
+        (
+            Offset::new(0, Samples(64)).expect("inside the block"),
+            Message::Midi1(
+                Address::new(MidiGroup::new(group).unwrap(), MidiChannel::FIRST),
+                Voice1::ControlChange {
+                    controller: CCNumber::of(1),
+                    value: U7::of(64),
+                },
+            )
+            .into(),
+        )
+    }
+
+    /// `note-ports.h`: `clap_event_midi` is for a port that declares
+    /// `CLAP_NOTE_DIALECT_MIDI`. A controller for a port that does not is
+    /// dropped and counted, and a port that does still gets its own.
+    #[test]
+    fn a_controller_is_not_sent_to_a_port_without_the_midi_dialect() {
+        let mut list = InputEventList::new();
+        list.set_note_ports(&[false, false]);
+        list.set_midi_capable_ports(&[false, true]);
+
+        list.add_midi(&cc_message(0));
+        assert!(list.events().is_empty(), "port 0 declared no MIDI");
+        assert_eq!(list.midi_refused(), 1);
+
+        list.add_midi(&cc_message(1));
+        assert_eq!(list.events().len(), 1);
+        assert!(matches!(
+            &list.events()[0],
+            ClapEvent::Midi(m) if m.port_index == 1
+        ));
+    }
+
+    /// `events.h`: a SysEx event names its `port_index`. It goes to the note
+    /// port of its Group, as every channel message does, and not to port 0; and
+    /// not at all to a port that declares no MIDI dialect.
+    #[test]
+    fn sysex_goes_to_its_groups_port_when_that_port_takes_midi() {
+        let sysex = |group: u8| -> UmpAt {
+            let payload = [U7::of(0x7E), U7::of(0x09), U7::of(0x01)];
+            let packets = tutti_ump::sysex7_packets(MidiGroup::new(group).unwrap(), &payload);
+            let ump = packets.into_iter().next().expect("one packet");
+            (Offset::new(0, Samples(64)).expect("inside the block"), ump)
+        };
+        let mut list = InputEventList::new();
+        list.reserve_sysex();
+        list.set_note_ports(&[false, false]);
+        list.set_midi_capable_ports(&[false, true]);
+
+        list.add_midi(&sysex(1));
+        let sent: Vec<u16> = list
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                ClapEvent::MidiSysex { inner, .. } => Some(inner.port_index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [1], "Group 1's SysEx is for port 1");
+
+        list.add_midi(&sysex(0));
+        assert_eq!(list.events().len(), 1, "port 0 declared no MIDI");
+        assert_eq!(list.midi_refused(), 1);
     }
 
     // --- event time is bounded to the block ---

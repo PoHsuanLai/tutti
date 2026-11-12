@@ -235,8 +235,10 @@ pub struct ProcessIo<'a> {
     pub input_events: &'a ComWrapper<EventList>,
     /// The events the plugin writes.
     pub output_events: &'a ComWrapper<EventList>,
-    /// The parameter changes the plugin reads; `None` for none.
-    pub input_params: Option<&'a ComWrapper<ParameterChangesImpl>>,
+    /// The parameter changes the plugin reads. A block with none passes an
+    /// empty list, never null: `inputParameterChanges` is not annotated
+    /// optional in `ProcessData` (ivstaudioprocessor.h).
+    pub input_params: &'a ComWrapper<ParameterChangesImpl>,
     /// The parameter changes the plugin writes.
     pub output_params: &'a ComWrapper<ParameterChangesImpl>,
     /// The transport and time.
@@ -317,9 +319,7 @@ impl AudioSide {
             numOutputs: num_outputs,
             inputs: io.inputs.finish(),
             outputs: io.outputs.finish(),
-            inputParameterChanges: io
-                .input_params
-                .map_or(std::ptr::null_mut(), param_changes_ptr),
+            inputParameterChanges: param_changes_ptr(io.input_params),
             outputParameterChanges: param_changes_ptr(io.output_params),
             inputEvents: event_list_ptr(io.input_events),
             outputEvents: event_list_ptr(io.output_events),
@@ -341,6 +341,68 @@ impl AudioSide {
         let result = check(unsafe { processor.process(&mut data) });
         drop(state);
         result
+    }
+}
+
+/// What a parameter flush is handed: the changes alone, with the process mode.
+pub struct FlushIo<'a> {
+    /// `kRealtime`, `kPrefetch` or `kOffline`, as the blocks go in.
+    pub mode: ProcessMode,
+    /// The parameter changes to deliver.
+    pub input_params: &'a ComWrapper<ParameterChangesImpl>,
+    /// The parameter changes the plugin writes, which a flush ignores.
+    pub output_params: &'a ComWrapper<ParameterChangesImpl>,
+}
+
+impl AudioSide {
+    /// `IAudioProcessor::process` with no audio, to deliver parameter changes
+    /// to a plugin that is active but not processing (the portal's FAQ,
+    /// "Processing": the host "can call process without buffers (numInputs and
+    /// numOutputs are zeroed)... to flush parameters"). `numSamples` is 0, no
+    /// bus is passed, and no event list or process context is: a flush carries
+    /// nothing else, and the lists a block filled still hold that block's.
+    ///
+    /// Same claim and refusals as [`process`](Self::process).
+    ///
+    /// # Errors
+    ///
+    /// [`Vst3Error::NotInitialized`] if the plugin is gone, not active or not set
+    /// up, or a control thread holds the claim; otherwise the plugin's refusal.
+    pub fn flush(&mut self, io: FlushIo<'_>) -> Result<(), Vst3Error> {
+        let state = self.shared.try_enter().ok_or(Vst3Error::NotInitialized)?;
+        let setup = match (state.active, state.setup) {
+            (true, Some(setup)) => setup,
+            _ => return Err(Vst3Error::NotInitialized),
+        };
+        let mut data = ProcessData {
+            processMode: io.mode.to_vst3(),
+            symbolicSampleSize: setup.symbolic_size,
+            numSamples: 0,
+            numInputs: 0,
+            numOutputs: 0,
+            inputs: std::ptr::null_mut(),
+            outputs: std::ptr::null_mut(),
+            inputParameterChanges: param_changes_ptr(io.input_params),
+            outputParameterChanges: param_changes_ptr(io.output_params),
+            inputEvents: std::ptr::null_mut(),
+            outputEvents: std::ptr::null_mut(),
+            processContext: std::ptr::null_mut(),
+        };
+        // SAFETY: the claim is held and the plugin is not retired (`try_enter`).
+        let processor = unsafe { self.shared.processor() }.ok_or(Vst3Error::NotInitialized)?;
+        // SAFETY: `data` holds no bus, event list or context, and the two
+        // parameter lists are `io`'s borrows, alive for the call.
+        let result = check(unsafe { processor.process(&mut data) });
+        drop(state);
+        result
+    }
+}
+
+impl std::fmt::Debug for FlushIo<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlushIo")
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
     }
 }
 
@@ -422,6 +484,7 @@ mod tests {
         output: BusBuffers,
         in_events: ComWrapper<EventList>,
         out_events: ComWrapper<EventList>,
+        in_params: ComWrapper<ParameterChangesImpl>,
         out_params: ComWrapper<ParameterChangesImpl>,
     }
 
@@ -449,6 +512,7 @@ mod tests {
             output: BusBuffers::new(width, &[2], ChannelLayout::from(2u16), BLOCK).unwrap(),
             in_events: EventList::input(),
             out_events: EventList::output(),
+            in_params: ParameterChangesImpl::with_queues(1, 16, PointPool::default()),
             out_params: ParameterChangesImpl::with_queues(1, 16, PointPool::default()),
         }
     }
@@ -474,7 +538,7 @@ mod tests {
                 outputs: self.output.bind_outputs_f32(&mut outs)?,
                 input_events: &self.in_events,
                 output_events: &self.out_events,
-                input_params: None,
+                input_params: &self.in_params,
                 output_params: &self.out_params,
                 context: &mut context,
                 setup: &setup,
@@ -555,7 +619,7 @@ mod tests {
             outputs: rig.output.bind_outputs_f64(&mut outs).unwrap(),
             input_events: &rig.in_events,
             output_events: &rig.out_events,
-            input_params: None,
+            input_params: &rig.in_params,
             output_params: &rig.out_params,
             context: &mut context,
             setup: &setup,

@@ -21,6 +21,13 @@ pub enum Kind {
     /// A control change: its controller number is the `id`, its value the
     /// `value`. Recorded, never acted on.
     Control,
+    /// A VST3 data event (`kMidiSysEx`): the `id` is its first byte, the
+    /// `value` its size in bytes. Recorded, never acted on.
+    Data,
+    /// A VST3 process call whose `inputParameterChanges` was null (offset 0).
+    NullParams,
+    /// A VST3 process call with `numSamples == 0`, a parameter flush (offset 0).
+    Flush,
 }
 
 /// An event as the plugin received it.
@@ -175,6 +182,9 @@ impl Transcript {
                     2 => Kind::NoteOn,
                     3 => Kind::NoteOff,
                     4 => Kind::Control,
+                    5 => Kind::Data,
+                    6 => Kind::NullParams,
+                    7 => Kind::Flush,
                     other => panic!("the transcript holds event kind {other}"),
                 };
                 let id = c.u64() as u32;

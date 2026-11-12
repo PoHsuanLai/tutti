@@ -18,6 +18,11 @@
 //!   Range, the portamento and legato switches), one for each channel, read
 //!   from [`Voicing::channel`]. Legato and Portamento Control are the note
 //!   logic's and reach the instrument as a [`Glide`] on a [`Command`].
+//! - [`Voicing::universal`]: the Universal System Exclusive messages an
+//!   instrument reads (Master Volume and Balance, Master Fine and Coarse
+//!   Tuning, General MIDI System On and Off), read by
+//!   [`UniversalReader`](tutti_midi_protocol::UniversalReader) at the
+//!   instrument's edge; [`MasterGain`] is the gain they set.
 //! - [`Holds`]: the note gate (key, sustain, sostenuto) as a state machine.
 //! - [`Controller`]: which channel-mode controllers mean the same to every
 //!   instrument.
@@ -31,6 +36,7 @@
 mod channel;
 mod controller;
 mod holds;
+mod master;
 mod per_note;
 mod phase;
 mod voicing;
@@ -38,6 +44,7 @@ mod voicing;
 pub use channel::{ChannelState, DEFAULT_MODULATION_RANGE};
 pub use controller::{Controller, Effect, Stop};
 pub use holds::{Holds, Release};
+pub use master::MasterGain;
 pub use per_note::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 pub use phase::Phase;
 pub use voicing::{

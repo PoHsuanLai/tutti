@@ -3496,3 +3496,173 @@ fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
     s.tick(&[], &mut out);
     assert!((freq(&s) / key_freq(66) - 1.0).abs() < 1e-3, "{}", freq(&s));
 }
+
+// ---- Universal System Exclusive (MIDI L7b) ----
+
+/// The SysEx7 packets of the framed message `bytes` on `group`.
+fn sysex(group: u8, bytes: &[u8]) -> Vec<Ump> {
+    tutti_ump::SysexMessage::new(bytes)
+        .expect("a framed message")
+        .packets(MidiGroup::of(group))
+        .collect()
+}
+
+/// A Universal Real Time Device Control message to `device`.
+fn device_control(device: u8, sub_id: u8, lsb: u8, msb: u8) -> Vec<u8> {
+    vec![0xF0, 0x7F, device, 0x04, sub_id, lsb, msb, 0xF7]
+}
+
+/// The RMS of each output channel over the last of two blocks of 4410 frames
+/// (a tenth of a second: a whole number of cycles of a 440 Hz sine) after
+/// `events`, the note being at its sustain.
+fn rms_after(synth: &mut Hand, events: &[Ump]) -> (f32, f32) {
+    queue_midi(synth, events);
+    let (mut left, mut right) = (vec![0.0; 4410], vec![0.0; 4410]);
+    for _ in 0..2 {
+        synth.render_planar(&mut left, &mut right);
+    }
+    (
+        tutti_fixtures::signal::rms(&left),
+        tutti_fixtures::signal::rms(&right),
+    )
+}
+
+/// M1 p.57 and GM2 section 4.1: Master Volume `00 40` (8192 of 16383) is a
+/// device-wide gain of its square, a quarter, on the sound of a note already
+/// sounding; the all-call reaches the synth whatever its own id.
+#[test]
+fn master_volume_scales_the_output_by_the_square_of_the_value() {
+    let mut s = steady(|c| c.device = tutti_midi_protocol::SysexDeviceId::of(5));
+    let (before, _) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
+    assert!(before > 0.01);
+    let (after, _) = rms_after(&mut s, &sysex(0, &device_control(0x7F, 0x01, 0x00, 0x40)));
+    let expected = (8192.0_f32 / 16383.0).powi(2);
+    assert!(
+        (after / before - expected).abs() < 0.01,
+        "{} against {expected}",
+        after / before
+    );
+}
+
+/// M1 p.40: a message for another device id is not this synth's, and one for its
+/// own is.
+#[test]
+fn a_message_for_another_device_id_is_not_heard() {
+    let mut s = steady(|c| c.device = tutti_midi_protocol::SysexDeviceId::of(5));
+    let (before, _) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
+    let (same, _) = rms_after(&mut s, &sysex(0, &device_control(6, 0x01, 0x00, 0x00)));
+    assert!((same / before - 1.0).abs() < 0.01, "device 6 is not 5");
+    let (off, _) = rms_after(&mut s, &sysex(0, &device_control(5, 0x01, 0x00, 0x00)));
+    assert!(off < before * 0.001, "its own id turns the volume off");
+}
+
+/// M1 p.57: Master Balance `00 00` is hard left: the right side is gone and the
+/// left is as it was.
+#[test]
+fn master_balance_hard_left_silences_the_right_side_only() {
+    let mut s = steady(|_| {});
+    let (l0, r0) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
+    assert!(
+        l0 > 0.01 && r0 > 0.01,
+        "a centred note sounds on both sides"
+    );
+    let (l, r) = rms_after(&mut s, &sysex(0, &device_control(0x7F, 0x02, 0x00, 0x00)));
+    assert!((l / l0 - 1.0).abs() < 0.01);
+    assert!(r < r0 * 0.001);
+}
+
+/// A volume that changes while a note sounds does not step the output: the
+/// largest sample-to-sample change is no more than the sine's own slope.
+#[test]
+fn a_master_volume_change_ramps_and_does_not_click() {
+    let mut s = steady(|_| {});
+    let (before, _) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
+    let (mut left, mut right) = (vec![0.0; 256], vec![0.0; 256]);
+    s.render_planar(&mut left, &mut right);
+    // The sample before the message, then the block that carries it.
+    let mut heard = vec![*left.last().unwrap()];
+    queue_midi(&mut s, &sysex(0, &device_control(0x7F, 0x01, 0x00, 0x00)));
+    s.render_planar(&mut left, &mut right);
+    heard.extend_from_slice(&left);
+    let step = heard
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    // A 440 Hz sine of peak `before * sqrt 2` at 44.1 kHz moves at most
+    // 2 pi 440 / 44100 of its peak a frame.
+    let slope = 2.0 * std::f32::consts::PI * 440.0 / 44_100.0 * before * 2.0_f32.sqrt();
+    assert!(step < slope * 1.5, "{step} against {slope}");
+    assert!(
+        heard.iter().take(16).any(|s| s.abs() > 0.0) && heard.last().unwrap().abs() < 1e-3,
+        "and the volume did go to off"
+    );
+}
+
+/// CA-025: Master Coarse Tuning `00 4C` is +12 semitones: a note sounding
+/// moves an octave, and one struck afterwards starts there.
+#[test]
+fn master_coarse_tuning_moves_sounding_and_later_notes() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &[ev_note_on(0, 69, 100)]);
+    s.tick(&[], &mut out);
+    assert!((s.voices[0].sounding_freq().get() - 440.0).abs() < 0.01);
+    queue_midi(&mut s, &sysex(0, &device_control(0x7F, 0x04, 0x00, 0x4C)));
+    s.tick(&[], &mut out);
+    assert!((s.voices[0].sounding_freq().get() - 880.0).abs() < 0.05);
+    queue_midi(&mut s, &[ev_note_on(1, 57, 100)]);
+    s.tick(&[], &mut out);
+    let struck = s
+        .voices
+        .iter()
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1));
+    assert!((struck.unwrap().sounding_freq().get() - 440.0).abs() < 0.05);
+}
+
+/// CA-025: Master Fine Tuning `00 00` is -100 cents.
+#[test]
+fn master_fine_tuning_is_a_hundred_over_8192_cents_a_step() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(
+        &mut s,
+        &[ev_note_on(0, 69, 100)]
+            .into_iter()
+            .chain(sysex(0, &device_control(0x7F, 0x03, 0x00, 0x00)))
+            .collect::<Vec<_>>(),
+    );
+    s.tick(&[], &mut out);
+    let cents = tutti_types::Cents::from_pitch_ratio(s.voices[0].sounding_freq().get() / 440.0);
+    assert!((cents.get() + 100.0).abs() < 0.5, "{cents:?}");
+}
+
+/// M1 p.52 and GM2 section 4.9: General MIDI System On mutes every sounding
+/// note and returns the channels to the General MIDI defaults, including the
+/// master tuning.
+#[test]
+fn general_midi_on_cuts_the_voices_and_resets_the_tuning() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &sysex(0, &device_control(0x7F, 0x04, 0x00, 0x4C)));
+    queue_midi(&mut s, &[ev_note_on(0, 60, 100), ev_note_on(1, 62, 100)]);
+    s.tick(&[], &mut out);
+    assert_eq!(s.active_voice_count(), 2);
+    queue_midi(&mut s, &sysex(0, &[0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7]));
+    s.tick(&[], &mut out);
+    assert_eq!(s.active_voice_count(), 0, "every note is muted");
+    queue_midi(&mut s, &[ev_note_on(0, 69, 100)]);
+    s.tick(&[], &mut out);
+    assert!(
+        (s.voices[0].sounding_freq().get() - 440.0).abs() < 0.05,
+        "the master tuning is back at A440"
+    );
+}
+
+/// A message on another Group is that Group's: this synth plays the first.
+#[test]
+fn another_groups_sysex_is_not_this_synths() {
+    let mut s = steady(|_| {});
+    let (before, _) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
+    let (same, _) = rms_after(&mut s, &sysex(1, &device_control(0x7F, 0x01, 0x00, 0x00)));
+    assert!((same / before - 1.0).abs() < 0.01);
+}

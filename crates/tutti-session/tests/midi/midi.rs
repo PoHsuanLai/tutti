@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
+use tutti_session::Stamp;
 use tutti_types::MaxBlock;
 
 use std::time::{Duration, Instant};
@@ -16,9 +17,7 @@ use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, 
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_transport::MotionEvent;
-use tutti_types::{
-    At, Beat, BeatDuration, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples,
-};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
@@ -253,7 +252,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     assert_eq!(fed, want);
 
     live.send(
-        At::NextBlock,
+        Stamp::NextBlock,
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, MF),
     )
     .unwrap();
@@ -282,24 +281,12 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
     assert_eq!(a.node, b.node, "one inlet");
     let _ = s.update();
 
-    a.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), MF)
+    a.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), MF)
         .unwrap();
-    b.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(62), MF)
+    b.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(62), MF)
         .unwrap();
-    b.note_on(
-        At::Frame(Frame(3_000)),
-        MidiChannel::FIRST,
-        NoteNumber::of(64),
-        MF,
-    )
-    .unwrap();
-    assert_eq!(
-        a.send(
-            At::Beat(Beat(1.0)),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 66, MF)
-        ),
-        Err(SendError::Beat)
-    );
+    b.note_on(Frame(3_000), MidiChannel::FIRST, NoteNumber::of(64), MF)
+        .unwrap();
     roll(&s, 4_000);
     let heard = note_ons(&seen);
     assert_eq!(
@@ -310,11 +297,11 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
     assert_eq!(heard[2].0, 3_000);
 
     for _ in 0..LIVE_INLET_CAPACITY.slots() {
-        a.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
+        a.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
             .unwrap();
     }
     assert_eq!(
-        b.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
+        b.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
         Err(SendError::Full)
     );
 }

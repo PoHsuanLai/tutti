@@ -38,7 +38,11 @@ fn id_of(devices: &Devices, name: &str) -> DeviceId {
 
 fn ports() -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 16, std::time::Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(16),
+            std::time::Duration::ZERO,
+        ),
     )))
 }
 

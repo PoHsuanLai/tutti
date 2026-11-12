@@ -15,8 +15,12 @@ fn note(n: u8) -> Ump {
 
 /// A rig over `slots` inlets with `lead`, whose clock has read once (frame 0 at
 /// `origin`), so an arrival can be placed.
-fn rig(slots: usize, capacity: usize, lead: Duration) -> (Arc<HardwareMidiInputs>, Rig) {
-    let inlets = Arc::new(DeviceInlets::new(slots, capacity, lead));
+fn rig(slots: usize, capacity: u32, lead: Duration) -> (Arc<HardwareMidiInputs>, Rig) {
+    let inlets = Arc::new(DeviceInlets::new(
+        slots,
+        tutti_graph::EventCapacity::of(capacity),
+        lead,
+    ));
     let manager = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let mut rig = Rig::over(&inlets, now());
     rig.run(1);
@@ -124,7 +128,7 @@ fn arrivals_keep_their_spacing_and_the_lead_is_added_to_each() {
 
 /// **An event that arrives after its frame has begun is late, not lost**: it
 /// sounds at the first frame of the next block and is counted
-/// ([`InletCounts::late`](tutti_graph::InletCounts::late)).
+/// ([`Losses::late`](tutti_graph::Losses::late)).
 #[test]
 fn an_arrival_past_its_block_is_emitted_late_and_counted() {
     let (manager, mut rig) = rig(1, 64, Duration::ZERO);
@@ -139,7 +143,11 @@ fn an_arrival_past_its_block_is_emitted_late_and_counted() {
         "the next block's first frame"
     );
     let info = manager.port_info(port.port_id()).unwrap();
-    assert_eq!((info.late, info.dropped), (1, 0), "late, not lost");
+    assert_eq!(
+        (info.losses.late, info.losses.dropped()),
+        (1, 0),
+        "late, not lost"
+    );
 }
 
 /// **An inactive port discards what its driver pushes**: nothing reaches the
@@ -158,7 +166,7 @@ fn an_inactive_port_discards_its_events() {
     assert!(port.push(note(61), rig.time_of(120)));
     rig.run(4);
     assert_eq!(rig.take(), vec![(0, 120, note(61))]);
-    assert_eq!(manager.dropped_events(), 0);
+    assert_eq!(manager.losses().dropped(), 0);
 }
 
 /// Concurrent creators each land their port: none is lost to another's open,
@@ -317,8 +325,8 @@ fn a_full_inlet_counts_what_it_drops() {
     let id = handle.port_id();
     let taken = (0..10).filter(|_| handle.push(noop(), now())).count();
     assert_eq!(taken, 4);
-    assert_eq!(manager.port_info(id).map(|p| p.dropped), Some(6));
-    assert_eq!(manager.dropped_events(), 6);
+    assert_eq!(manager.port_info(id).map(|p| p.losses.lost), Some(6));
+    assert_eq!(manager.losses().lost, 6);
     assert!(manager.remove_input_port(id));
-    assert_eq!(manager.dropped_events(), 6, "a removed port's drops stay");
+    assert_eq!(manager.losses().lost, 6, "a removed port's drops stay");
 }

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
 mod common;
-use tutti_graph::UmpAt;
+use tutti_graph::{Stamp, UmpAt};
 
 use tutti_fixtures::midi::{
     continue_msg, m1_cc, note_off, note_on, pitch_bend, registered_rpn, song_position, start,
@@ -25,7 +25,7 @@ use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIngestNode,
     MidiInputPorts,
 };
-use tutti_types::{At, Beat, Bpm, Frame, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, Frame, SampleRate, Samples};
 use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
 
 /// The note a channel voice message addresses, either protocol.
@@ -183,7 +183,7 @@ impl Ingest {
                 for (block, batch) in script.0.iter().enumerate() {
                     for &(offset, ump) in batch {
                         let frame = Frame(512 * block as u64 + u64::from(offset.get()));
-                        writer.push(At::Frame(frame), ump).expect("room");
+                        writer.push(Stamp::Frame(frame), ump).expect("room");
                     }
                 }
                 inlet
@@ -624,7 +624,7 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     );
     assert_eq!(seen.len(), 508);
     assert!(seen.iter().any(|s| s.0 == 1 && note_of(s.2) == Some(61)));
-    assert_eq!(controls.dropped_events(), 7);
+    assert_eq!(controls.losses().refused, 7);
 }
 
 /// **A note-off has room when a block is full of other messages.** 504
@@ -656,7 +656,7 @@ fn a_note_off_has_room_past_the_capacity() {
     assert_eq!(seen.iter().filter(|s| s.2.is_note_off()).count(), 4);
     // The run went out too: the block is full of other messages.
     assert_eq!(seen.len(), 504 + 7 + 4);
-    assert_eq!(controls.dropped_events(), 0);
+    assert_eq!(controls.losses().refused, 0);
 }
 
 /// **An input node's fork reads no wire.**
@@ -690,7 +690,7 @@ fn an_event_tap_hands_midi_back_and_counts_drops() {
         // block `k`.
         for i in 0..256u64 {
             let frame = Frame(512 * k + 7 + i / 128);
-            keys.push(At::Frame(frame), note(0, 60, 0).1).unwrap();
+            keys.push(Stamp::Frame(frame), note(0, 60, 0).1).unwrap();
         }
         exec.process(512, &Transport::default(), &[], &mut []);
     }
@@ -775,7 +775,7 @@ fn a_clock_flood_past_the_port_capacity_is_counted() {
             frame += len;
         }
         let sent = seen.lock().unwrap().len();
-        (sent, clock.dropped_events())
+        (sent, clock.losses().refused)
     };
 
     let (whole, none) = run(&[LONG / 4; 4]);
@@ -868,7 +868,7 @@ fn a_short_loop_in_a_long_block_is_counted_past_the_cap() {
             host.advance(Samples(len), region);
         }
         let sent = seen.lock().unwrap().len();
-        (sent, clock.dropped_events())
+        (sent, clock.losses().refused)
     };
 
     let (cut, none) = run(1_024);

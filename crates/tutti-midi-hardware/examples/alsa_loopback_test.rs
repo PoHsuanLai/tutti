@@ -40,7 +40,11 @@ fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware
 
 fn main() {
     // One inlet slot, 256 events, each event placed 20 ms after it arrived.
-    let inlets = Arc::new(DeviceInlets::new(1, 256, Duration::from_millis(20)));
+    let inlets = Arc::new(DeviceInlets::new(
+        1,
+        tutti_graph::EventCapacity::of(256),
+        Duration::from_millis(20),
+    ));
     let pm = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     // The graph's side: the engine's part, played on the wall clock.
     let mut graph = Listener::over(&inlets);

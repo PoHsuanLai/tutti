@@ -121,9 +121,7 @@ impl Rig {
     /// engine's clock.
     pub fn at(&mut self, frame: usize, ump: Ump) {
         let moment = self.clock_of(frame);
-        self.handle
-            .send_at(moment, ump)
-            .expect("the queue has room");
+        self.handle.send(moment, ump).expect("the queue has room");
     }
 
     /// First frame at or after `from` whose left or right sample is above

@@ -11,10 +11,10 @@
 
 use tutti_fixtures::midi::{key_of, m1_note_on};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_graph::{EventCapacity, EventInletNode, EventTapReader, Refused, TapAlign, TapEvent};
-use tutti_session::{OutPort, Root, Session};
+use tutti_graph::{EventCapacity, EventInletNode, EventTapReader, TapAlign, TapEvent};
+use tutti_session::{Losses, OutPort, Root, Session, Stamp};
 use tutti_types::ChannelLayout;
-use tutti_types::{At, Frame, SampleRate};
+use tutti_types::{Frame, SampleRate};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
 
 fn session() -> Session {
@@ -73,20 +73,16 @@ fn pushed_events_come_out_at_their_frames() {
         .expect("the port exists");
     let _ = s.update();
 
-    writer.push(At::Frame(Frame(10)), note(1)).unwrap();
-    writer.push(At::Frame(Frame(300)), note(2)).unwrap();
-    writer.push(At::NextBlock, note(3)).unwrap();
-    prebuilt.push(At::Frame(Frame(10)), note(9)).unwrap();
+    writer.push(Frame(10), note(1)).unwrap();
+    writer.push(Frame(300), note(2)).unwrap();
+    writer.push(Stamp::NextBlock, note(3)).unwrap();
+    prebuilt.push(Frame(10), note(9)).unwrap();
     frames(400, &mut s);
     let first = drain(&mut tap);
     assert_eq!(first.len(), 3);
     assert!(first.contains(&(10, 1)) && first.contains(&(300, 2)));
     assert_eq!(drain(&mut tap2), [(10, 9)], "the other inlet's own events");
-    assert_eq!(
-        writer.push(At::Beat(tutti_types::Beat(1.0)), note(4)),
-        Err(Refused::Beat)
-    );
-    assert_eq!((writer.lost(), writer.late(), writer.evicted()), (0, 0, 0));
+    assert_eq!(writer.counts().losses(), Losses::NONE);
 }
 
 /// A node that hears one event port and makes a sound of it, so an inlet wired
@@ -122,7 +118,7 @@ fn an_export_fork_is_accepted_and_silent() {
         .set_sources_hard(Root::output(0), [OutPort::new(hear, 0)])
         .unwrap();
     let _ = s.update();
-    writer.push(At::NextBlock, note(1)).unwrap();
+    writer.push(Stamp::NextBlock, note(1)).unwrap();
     let mut fork = s.graph_ref().testing().fork_live().expect("an inlet forks");
     let mut out = [0.0f32];
     let mut live = 0.0f32;
@@ -154,7 +150,7 @@ fn an_event_edge_is_cut_with_one_commit_and_not_faded() {
         .unwrap();
     let _ = s.update();
 
-    writer.push(At::NextBlock, note(1)).unwrap();
+    writer.push(Stamp::NextBlock, note(1)).unwrap();
     let mut out = [0.0f32];
     s.render_frame(&mut out);
     assert_eq!(out[0], 1.0, "wired: the push is heard");
@@ -181,7 +177,7 @@ fn an_event_edge_is_cut_with_one_commit_and_not_faded() {
         "no commit collects a fade that ended"
     );
 
-    writer.push(At::NextBlock, note(2)).unwrap();
+    writer.push(Stamp::NextBlock, note(2)).unwrap();
     let mut heard = 0.0;
     for _ in 0..64 {
         s.render_frame(&mut out);

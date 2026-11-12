@@ -7781,7 +7781,9 @@ the four lanes above, the graph's own surface is:
   and gets no op), and not in a fork. The reference interpreter knows no taps,
   audio or event, so the serial/pooled comparison and analytic figures hold it
   (`tests/event_tap.rs`). The **event inlet is built** too (E2): `EventInletNode` over a `ringbuf` ring,
-  a waiting list on `Env::due`, a silent fork, `Moment` in `tutti-types`.
+  a waiting list on `Env::due`, a silent fork, `Moment` in `tutti-types`. A push
+  is stamped with a `Stamp` (`NextBlock`, `Frame`, `Moment`; no beat), and its
+  losses are one `Losses` value (events, `InletCounts::losses`).
   It is the MIDI lanes' work (doc 017 owns the event side); this document
   records only that it belongs to the graph.
 

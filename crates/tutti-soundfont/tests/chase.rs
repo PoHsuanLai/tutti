@@ -7,16 +7,16 @@
 use std::sync::{Arc, Mutex};
 
 use tutti_fixtures::midi;
-use tutti_graph::NodeKey;
 use tutti_graph::{
     Buses, Chase, CrossfadeCurve, Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode,
     EventInletWriter, EventKind, EventOut, Executor, Fade, Io, Node, OutPort, Prepare, Shape,
     Source, Status, Transport, Unforkable,
 };
+use tutti_graph::{NodeKey, Stamp};
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::{At, ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
 use tutti_ump::{Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2};
 
 const BLOCK: usize = 256;
@@ -82,7 +82,7 @@ impl Rig {
 
     fn send(&mut self, messages: &[Ump]) {
         for &m in messages {
-            self.tx.push(At::NextBlock, m).expect("room");
+            self.tx.push(Stamp::NextBlock, m).expect("room");
         }
     }
 

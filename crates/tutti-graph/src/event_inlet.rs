@@ -8,15 +8,20 @@
 //! `tutti-session`'s `Graph::open_event_inlet` makes the pair and inserts the
 //! node.
 //!
-//! The node does scheduling and no MIDI. Each event is pushed for a time, an
-//! [`At`], and the node holds it until the block that contains it, then emits
-//! it on its offset in that block ([`Env::due`](crate::Env::due)): [`At::NextBlock`] is the next
-//! block's first frame, an [`At::Frame`] is a frame of the graph's clock, and
-//! [`At::Beat`] is refused, because the producer has no transport and a beat
-//! may never come, which leaves the waiting list's bound unclear. An event
-//! whose frame has already passed lands at offset 0 of the block it is found in
-//! and is counted late ([`EventInletWriter::late`]); it is not dropped, as
-//! no late command is.
+//! The node does scheduling and no MIDI. Each event is pushed for a time, a
+//! [`Stamp`], and the node holds it until the block that contains it, then
+//! emits it on its offset in that block ([`Env::due`](crate::Env::due)):
+//! [`Stamp::NextBlock`] is the next block's first frame, a [`Stamp::Frame`] is
+//! a frame of the graph's clock and a [`Stamp::Moment`] is a frame with the
+//! rate it was counted at. There is no beat. The node could resolve one
+//! against its block's transport, as `Env::due` does, but a beat the transport
+//! never reaches (it is stopped, a loop skips it, a locate jumps past it) would
+//! hold its slot in the bounded waiting list for good, and a frame stamp has no
+//! such case: the clock always reaches it. Musical time is the transport's and
+//! a clip's, which read it every block (`MotionFsm::schedule` for a command,
+//! the MIDI clip for events). So the type has no way to say a beat. An event whose frame has already passed
+//! lands at offset 0 of the block it is found in and is counted late
+//! ([`Losses::late`]); it is not dropped, as no late command is.
 //!
 //! Events leave in the order they are due; those due together (a late one, a
 //! `NextBlock`, the same frame) leave in the order they were pushed, so a
@@ -29,34 +34,31 @@
 //! another rate moves it to the same wall-clock time at the new one, so it is
 //! not the number of frames rendered. A [`Moment`] is a frame with the rate it
 //! was counted at, and [`EventInletWriter::clock`] reads one: where the node's
-//! last block ended. An event pushed for a moment
-//! ([`push_at`](EventInletWriter::push_at)) names that instant whatever the
-//! rate has become since: the node rescales it on arrival, and rescales every
-//! event still waiting when it is prepared at another rate, with the
-//! executor's own arithmetic ([`Frame::rescaled`]). A frame pushed with
-//! [`push`](EventInletWriter::push) is taken to be at the rate the node last
-//! published. There is no resampling and so no rate to refuse: the rate is the
-//! stamp's.
+//! last block ended. An event pushed for a moment names that instant whatever
+//! the rate has become since: the node rescales it on arrival, and rescales
+//! every event still waiting when it is prepared at another rate, with the
+//! executor's own arithmetic ([`Frame::rescaled`]). A bare [`Frame`] carries
+//! no rate and is counted at the rate the node has when it takes the event
+//! from the ring, so a producer whose frames may straddle a re-prepare pushes a
+//! `Moment`. There is no resampling and so no rate to refuse.
 //!
 //! # What is counted
 //!
 //! The ring and the waiting list are sized once, at the capacity named when the
 //! inlet is made, and so is the port's declared event capacity; nothing
-//! allocates after that and nothing blocks. What does not fit is counted, each
-//! in its own count, read from the writer's side:
+//! allocates after that and nothing blocks. What does not fit is counted, as
+//! [`Losses`], read from [`InletCounts::losses`]:
 //!
-//! - [`lost`](EventInletWriter::lost): refused at the ring because it was full
-//!   (the writer counts it and `push` answers [`Refused::Full`]);
-//! - [`evicted`](EventInletWriter::evicted): dropped from the waiting list
-//!   because more events wait than it holds. The latest-due event that may be
-//!   lost goes; a note-off or a panic controller
-//!   ([`Ump::is_panic_controller`]) is kept in preference to any other, so a
-//!   note that began does not hang;
-//! - [`refused`](EventInletWriter::refused): the port refused an event
+//! - `lost`: refused at the ring because it was full (the writer counts it and
+//!   `push` answers [`Refused::Full`]);
+//! - `evicted`: dropped from the waiting list because more events wait than it
+//!   holds. The latest-due event that may be lost goes; a note-off or a panic
+//!   controller ([`Ump::is_panic_controller`]) is kept in preference to any
+//!   other, so a note that began does not hang;
+//! - `refused`: the port refused an event
 //!   ([`EventWriter::push`](crate::EventWriter::push)). The executor counts it
-//!   in `dropped_event_count` too, so an export watching that sees it.
-//!
-//! [`late`](EventInletWriter::late) is a count, not a loss.
+//!   in `dropped_event_count` too, so an export watching that sees it;
+//! - `late`: a count, not a loss.
 //!
 //! # One producer
 //!
@@ -100,32 +102,61 @@ use tutti_ump::Ump;
 
 use crate::cost::Cost;
 use crate::event::Event;
+use crate::event_losses::Losses;
 use crate::fork::{ForkCause, ForkMode, ForkSource, Forked};
 use crate::io::Io;
 use crate::node::{Cx, IntoNode, Node, NodeParts, Prepare, Shape, Status};
 use crate::time::Due;
 
 /// Why [`EventInletWriter::push`] did not queue.
+///
+/// One variant: a stamp cannot name a beat any more, so the ring being full is
+/// the only way left. It stays an enum so the reason reads at the call site
+/// (`Err(Refused::Full)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
     /// The ring is full: the event was dropped and counted
-    /// ([`EventInletWriter::lost`]).
+    /// ([`Losses::lost`]).
     Full,
-    /// [`At::Beat`]: resolving a beat needs the transport, which a producer
-    /// does not have.
-    Beat,
 }
 
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Full => f.write_str("the event inlet's ring is full"),
-            Self::Beat => f.write_str("a beat cannot be resolved from a producer's push"),
         }
     }
 }
 
 impl std::error::Error for Refused {}
+
+/// When a pushed event is due, as the producer names it.
+///
+/// There is no beat: see the module docs. A [`Frame`] and a [`Moment`] convert
+/// into one (`push(Frame(10), ump)`, `push(clock.after(n), ump)`), so a call
+/// site names the clock it means.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Stamp {
+    /// The next block's first frame.
+    NextBlock,
+    /// A frame of the graph's clock, at the rate the node has when it takes
+    /// the event.
+    Frame(Frame),
+    /// A frame and the rate it was counted at.
+    Moment(Moment),
+}
+
+impl From<Frame> for Stamp {
+    fn from(frame: Frame) -> Self {
+        Self::Frame(frame)
+    }
+}
+
+impl From<Moment> for Stamp {
+    fn from(moment: Moment) -> Self {
+        Self::Moment(moment)
+    }
+}
 
 /// What the node publishes at the end of each block and at each prepare: where
 /// its clock stands.
@@ -141,9 +172,10 @@ struct Reading {
 enum When {
     /// The next block's first frame.
     NextBlock,
-    /// `frame`, counted at `rate`; a `rate` of 0 names none (the node had not
-    /// published one) and is taken to be the node's.
-    Frame { frame: u64, rate: f64 },
+    /// `frame`, at the node's rate when it takes the event.
+    Frame(u64),
+    /// `frame`, counted at `rate`.
+    Moment { frame: u64, rate: f64 },
 }
 
 /// A pushed event, in the ring.
@@ -169,36 +201,26 @@ struct Counts {
     refused: AtomicU64,
 }
 
-/// A cloneable view of an inlet's four counts, for a thread that does not hold
-/// the writer (the control side, while a driver thread pushes): the same
-/// cumulative figures as [`EventInletWriter::lost`], [`evicted`](Self::evicted),
-/// [`refused`](Self::refused) and [`late`](Self::late).
+/// A cloneable view of an inlet's counts, for a thread that does not hold the
+/// writer (the control side, while a driver thread pushes).
 #[derive(Clone, Debug)]
 pub struct InletCounts(Arc<Counts>);
 
 impl InletCounts {
-    /// As [`EventInletWriter::lost`].
+    /// Everything the inlet has lost, cumulative, in events.
+    ///
+    /// `lost`: pushes the ring refused because it was full; `evicted`: events
+    /// dropped from the waiting list for room; `refused`: events the port
+    /// refused; `late`: events emitted at offset 0 for being past their frame.
     #[must_use]
-    pub fn lost(&self) -> u64 {
-        self.0.lost.load(Ordering::Relaxed)
-    }
-
-    /// As [`EventInletWriter::evicted`].
-    #[must_use]
-    pub fn evicted(&self) -> u64 {
-        self.0.evicted.load(Ordering::Relaxed)
-    }
-
-    /// As [`EventInletWriter::refused`].
-    #[must_use]
-    pub fn refused(&self) -> u64 {
-        self.0.refused.load(Ordering::Relaxed)
-    }
-
-    /// As [`EventInletWriter::late`].
-    #[must_use]
-    pub fn late(&self) -> u64 {
-        self.0.late.load(Ordering::Relaxed)
+    pub fn losses(&self) -> Losses {
+        let c = &*self.0;
+        Losses {
+            lost: c.lost.load(Ordering::Relaxed),
+            evicted: c.evicted.load(Ordering::Relaxed),
+            refused: c.refused.load(Ordering::Relaxed),
+            late: c.late.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -231,7 +253,7 @@ impl EventInletWriter {
     ///
     /// It is the instant the node last reached: while the graph is suspended
     /// for a re-prepare the node does not run and this stands still, and an
-    /// event pushed for it ([`push_at`](Self::push_at)) or for a later moment
+    /// event pushed for it or for a later moment
     /// still names the right wall-clock instant, because the node rescales it.
     #[must_use]
     pub fn clock(&self) -> Option<Moment> {
@@ -239,87 +261,51 @@ impl EventInletWriter {
             .map(|r| Moment::new(Frame(r.frame), SampleRate(r.rate)))
     }
 
-    /// Queues `ump` for `at`; an [`At::Frame`] is taken to be counted at the
-    /// rate the node last published. A caller that read the clock earlier
-    /// should push for that reading ([`push_at`](Self::push_at)): the rate may
-    /// have moved between the read and this call.
+    /// Queues `ump` for `at`: [`Stamp::NextBlock`], a [`Frame`] or a
+    /// [`Moment`] (the last names an instant whatever rate the node runs at
+    /// when it takes it; a bare frame is at that rate).
     ///
     /// # Errors
     ///
-    /// [`Refused::Beat`] for [`At::Beat`]; [`Refused::Full`] when the ring is
-    /// full (the event is dropped and counted in [`lost`](Self::lost); dropping
-    /// a note-off whose note-on landed leaves a note stuck, so a caller must
-    /// report it).
-    pub fn push(&mut self, at: At, ump: Ump) -> Result<(), Refused> {
-        let when = match at {
-            At::NextBlock => When::NextBlock,
-            At::Frame(f) => When::Frame {
-                frame: f.get(),
-                rate: self.reading().map_or(0.0, |r| r.rate),
+    /// [`Refused::Full`] when the ring is full (the event is dropped and
+    /// counted in [`Losses::lost`]; dropping a note-off whose note-on landed
+    /// leaves a note stuck, so a caller must report it).
+    pub fn push(&mut self, at: impl Into<Stamp>, ump: Ump) -> Result<(), Refused> {
+        let when = match at.into() {
+            Stamp::NextBlock => When::NextBlock,
+            Stamp::Frame(f) => When::Frame(f.get()),
+            Stamp::Moment(m) => When::Moment {
+                frame: m.frame().get(),
+                rate: m.rate().get(),
             },
-            At::Beat(_) => return Err(Refused::Beat),
         };
-        self.queue(when, ump)
-    }
-
-    /// Queues `ump` for the instant `at` names, at whatever rate the node runs
-    /// at when it takes it.
-    ///
-    /// # Errors
-    ///
-    /// [`Refused::Full`], as [`push`](Self::push).
-    pub fn push_at(&mut self, at: Moment, ump: Ump) -> Result<(), Refused> {
-        self.queue(
-            When::Frame {
-                frame: at.frame().get(),
-                rate: at.rate().get(),
-            },
-            ump,
-        )
-    }
-
-    fn queue(&mut self, when: When, ump: Ump) -> Result<(), Refused> {
         self.ring.try_push(Pushed { when, ump }).map_err(|_| {
             self.counts.lost.fetch_add(1, Ordering::Relaxed);
             Refused::Full
         })
     }
 
+    /// Queues every `(stamp, ump)` in order, each as [`push`](Self::push)
+    /// does, and answers how many the ring took. A refused one is counted as
+    /// lost like any other and the rest are still tried, so the count a
+    /// caller reads stays one per event.
+    pub fn push_all<S: Into<Stamp>>(
+        &mut self,
+        events: impl IntoIterator<Item = (S, Ump)>,
+    ) -> usize {
+        events
+            .into_iter()
+            .map(|(at, ump)| self.push(at, ump))
+            .filter(Result::is_ok)
+            .count()
+    }
+
     /// The counts as a view that outlives the writer's thread: read them from
-    /// the control side while another thread pushes.
+    /// the control side while another thread pushes. The writer has no getters
+    /// of its own: the view is the one place that answers.
     #[must_use]
     pub fn counts(&self) -> InletCounts {
         InletCounts(Arc::clone(&self.counts))
-    }
-
-    /// How many events the ring refused because it was full: each
-    /// [`push`](Self::push) that answered [`Refused::Full`]. Cumulative.
-    #[must_use]
-    pub fn lost(&self) -> u64 {
-        self.counts.lost.load(Ordering::Relaxed)
-    }
-
-    /// How many events the node dropped from its waiting list for want of room
-    /// to hold them until their frame: the latest that may be lost (never a
-    /// note-off or a panic while anything else waits; see the module docs).
-    /// Only events for frames far ahead are lost this way; one that is due
-    /// always gets through. Cumulative.
-    #[must_use]
-    pub fn evicted(&self) -> u64 {
-        self.counts.evicted.load(Ordering::Relaxed)
-    }
-
-    /// How many events the node's port refused. Cumulative.
-    #[must_use]
-    pub fn refused(&self) -> u64 {
-        self.counts.refused.load(Ordering::Relaxed)
-    }
-
-    /// How many events were found already past and emitted at offset 0 of the
-    /// block they were found in: late, not lost. Cumulative.
-    #[must_use]
-    pub fn late(&self) -> u64 {
-        self.counts.late.load(Ordering::Relaxed)
     }
 }
 
@@ -411,14 +397,13 @@ impl From<EventCapacity> for u32 {
 /// # Examples
 ///
 /// ```
-/// use tutti_graph::{EventCapacity, EventInletNode};
-/// use tutti_types::At;
+/// use tutti_graph::{EventCapacity, EventInletNode, Stamp};
 /// use tutti_fixtures::midi::m1_note_on;
 /// use tutti_ump::{MidiChannel, NoteNumber, U7};
 ///
 /// let (node, mut writer) = EventInletNode::pair(EventCapacity::of(256));
 /// let note_on = m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
-/// writer.push(At::NextBlock, note_on).unwrap(); // from any one thread
+/// writer.push(Stamp::NextBlock, note_on).unwrap(); // from any one thread
 /// assert_eq!(node.capacity(), EventCapacity::of(256));
 /// ```
 pub struct EventInletNode {
@@ -576,7 +561,15 @@ impl Node for EventInletNode {
             };
             let frame = match pushed.when {
                 When::NextBlock => start.get(),
-                When::Frame { frame, rate } => {
+                When::Frame(frame) => {
+                    if env.due(At::Frame(Frame(frame))) == Due::Late {
+                        self.counts.late.fetch_add(1, Ordering::Relaxed);
+                        start.get()
+                    } else {
+                        frame
+                    }
+                }
+                When::Moment { frame, rate } => {
                     let frame = if rate > 0.0 && (rate - self.rate).abs() > f64::EPSILON {
                         Frame(frame)
                             .rescaled(SampleRate(rate), SampleRate(self.rate))

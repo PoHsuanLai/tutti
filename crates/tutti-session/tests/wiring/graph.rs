@@ -827,10 +827,8 @@ struct PublishedControls {
     token: Arc<()>,
 }
 
-impl PublishedControls {
-    /// The cell's `reclaim`, as an engine node's controls have one. (A
-    /// method, so the reclaimer's closure captures the whole controls,
-    /// token included, and not the `cell` field alone.)
+/// The cell's `reclaim`, as an engine node's controls have one.
+impl tutti_rt::Reclaim for PublishedControls {
     fn reclaim(&self) -> usize {
         self.cell.reclaim()
     }
@@ -878,8 +876,7 @@ impl IntoNode for Published {
 
 impl SessionNode for Published {
     fn reclaimer(controls: &PublishedControls) -> Option<tutti_session::Reclaimer> {
-        let controls = controls.clone();
-        Some(tutti_session::Reclaimer::new(move || controls.reclaim()))
+        Some(tutti_session::Reclaimer::of(controls))
     }
 }
 

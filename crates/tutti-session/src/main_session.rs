@@ -65,6 +65,7 @@ use tutti_plugin_types::{
 };
 
 use crate::plugin::HostedPlugin;
+use crate::plugin_diagnostics::Figures;
 use crate::{NoSuchNode, PluginChange, PluginEvent, Session, SessionEvent};
 
 /// A session and the proof that the caller is on the main thread. Made by
@@ -150,11 +151,17 @@ impl MainSession<'_> {
     pub fn plugin(&mut self, node: impl Into<NodeKey>) -> Result<MainPlugin<'_>, NoSuchNode> {
         let node = node.into();
         let main = self.main;
+        let figures = self.session.graph.plugin_figures(node);
         self.session
             .graph
             .plugins
             .get_mut(&node)
-            .map(|hosted| MainPlugin { node, hosted, main })
+            .map(|hosted| MainPlugin {
+                node,
+                hosted,
+                main,
+                figures,
+            })
             .ok_or_else(|| NoSuchNode::new(node))
     }
 }
@@ -166,6 +173,7 @@ pub struct MainPlugin<'a> {
     node: NodeKey,
     hosted: &'a mut HostedPlugin,
     main: MainThread,
+    figures: Figures,
 }
 
 impl MainPlugin<'_> {
@@ -176,7 +184,7 @@ impl MainPlugin<'_> {
 
     /// The read-only view of the same plugin.
     pub fn view(&self) -> crate::Plugin<'_> {
-        crate::Plugin::new(self.node, self.hosted)
+        crate::Plugin::new(self.node, self.hosted, self.figures)
     }
 
     /// The plugin's presets: a list to load from, or a file to load

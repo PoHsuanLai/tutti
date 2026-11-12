@@ -1,5 +1,5 @@
 //! A plugin host, end to end (design 029): scan, pick, load, wire, play,
-//! set a parameter, save the state, read its health and presets, bounce.
+//! set a parameter, save the state, read its health, diagnostics and presets, bounce.
 //!
 //! ```text
 //! cargo build -p tutti-plugin-server -p tutti-plugin-probe
@@ -158,6 +158,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    or loads them from files (`File`, CLAP), and refuses a plugin with
     //    none (`PresetError::Unsupported`).
     eprintln!("health: {:?}", hosted.health());
+    //    Diagnostics are the corner of the plugin's panel: its server (none in
+    //    process), its dropouts, what it lost, and the latency the graph
+    //    compensates for it, the same whichever hosting runs it. `buses()` hands
+    //    out the graph's bus handles: a sidechain is
+    //    `session.graph().connect(kick.bus_out(0), sidechain)`.
+    let diagnostics = hosted.diagnostics();
+    eprintln!(
+        "server {:?}, latency {:?}, lost MIDI {:?}, sidechain: {}",
+        diagnostics.server_pid(),
+        diagnostics.latency(),
+        diagnostics.midi_in(),
+        hosted.buses().sidechain().is_some()
+    );
     {
         let mut ui = session.main(main);
         match ui.plugin(node)?.presets() {

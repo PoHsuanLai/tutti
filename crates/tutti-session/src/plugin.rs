@@ -114,7 +114,7 @@ use tutti_plugin::catalog::{
 use tutti_plugin::error::StateError;
 use tutti_plugin_host::{Liveness, Verdict};
 use tutti_plugin_host::{
-    Notice, PluginControls, PluginHandle, PluginMeter, PluginStatus, Subscription,
+    NodeControls, Notice, PluginControls, PluginHandle, PluginStatus, Subscription,
 };
 use tutti_plugin_types::{
     BridgeError, EditorSize, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation,
@@ -122,9 +122,10 @@ use tutti_plugin_types::{
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
+use crate::plugin_diagnostics::Figures;
 use crate::{
-    GiveUp, Key, Params, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure,
-    RecoveryPolicy, ReloadCause, Session, SessionEvent,
+    Diagnostics, GiveUp, Key, Params, PluginBuses, PortCounts, Recovery, RecoveryAction,
+    RecoveryEvent, RecoveryFailure, RecoveryPolicy, ReloadCause, Session, SessionEvent,
 };
 
 /// How often a healthy plugin's state is captured, by default: 8 s, the
@@ -735,8 +736,10 @@ pub(crate) struct HostedPlugin {
     /// reports.
     plugin: PluginRef,
     pub(crate) handle: PluginHandle,
-    controls: Option<PluginControls>,
-    meter: Option<PluginMeter>,
+    pub(crate) controls: Option<PluginControls>,
+    /// What the node counts and holds (its meter cell and delivery counters):
+    /// every plugin the session added; `None` for one the host inserted itself.
+    pub(crate) node: Option<NodeControls>,
     liveness: Liveness,
     status: PluginLiveness,
     /// Told a render mode since it was added (or crossfaded in).
@@ -849,7 +852,7 @@ impl std::fmt::Debug for HostedPlugin {
         d.field("plugin", &self.plugin)
             .field("handle", &self.handle)
             .field("controls", &self.controls)
-            .field("meter", &self.meter)
+            .field("node", &self.node)
             .field("liveness", &self.liveness)
             .field("status", &self.status)
             .field("told", &self.told)
@@ -874,7 +877,7 @@ impl HostedPlugin {
             plugin,
             handle,
             controls: None,
-            meter: None,
+            node: None,
             liveness: Liveness::new(),
             status: PluginLiveness::Healthy,
             told: false,
@@ -897,7 +900,7 @@ impl HostedPlugin {
     }
 
     pub(crate) fn with_controls(mut self, controls: PluginControls) -> Self {
-        self.meter = Some(controls.meter());
+        self.node = Some((*controls).clone());
         self.controls = Some(controls);
         self
     }
@@ -929,7 +932,7 @@ impl HostedPlugin {
     ) -> PluginHandle {
         self.plugin = plugin;
         let outgoing = self.adopt(handle);
-        self.meter = Some(controls.meter());
+        self.node = Some((*controls).clone());
         self.controls = Some(controls);
         outgoing
     }
@@ -1003,12 +1006,6 @@ impl HostedPlugin {
         ));
     }
 
-    /// The node's meter cell, either backend's; `None` for a plugin the
-    /// host inserted itself ([`Graph::host_plugin`](crate::Graph::host_plugin)).
-    pub(crate) fn meter(&self) -> Option<&PluginMeter> {
-        self.meter.as_ref()
-    }
-
     /// Parameter `id`'s value, as a modulation lane's knob starts at it:
     /// `None` while not read, `Some(None)` for one it does not list.
     #[cfg(any(test, feature = "modulation"))]
@@ -1072,11 +1069,16 @@ impl Key<PluginNode> {
 pub struct Plugin<'a> {
     node: NodeKey,
     hosted: &'a HostedPlugin,
+    figures: Figures,
 }
 
 impl<'a> Plugin<'a> {
-    pub(crate) fn new(node: NodeKey, hosted: &'a HostedPlugin) -> Self {
-        Self { node, hosted }
+    pub(crate) fn new(node: NodeKey, hosted: &'a HostedPlugin, figures: Figures) -> Self {
+        Self {
+            node,
+            hosted,
+            figures,
+        }
     }
 
     /// The plugin's node.
@@ -1129,23 +1131,39 @@ impl<'a> Plugin<'a> {
         }
     }
 
-    /// The plugin's control surface: editor, parameters, presets. Design 029
-    /// steps 2 to 4 replace it with the views of this one; until then it is
-    /// the low layer, as it was.
+    /// The plugin's diagnostics: its server, its dropouts and losses, and the
+    /// latency and tail the graph holds for it (design 029 section 2.7).
+    pub fn diagnostics(&self) -> Diagnostics<'a> {
+        Diagnostics::new(self.hosted, self.figures)
+    }
+
+    /// The plugin's buses as the graph's bus handles, to wire with
+    /// `Graph::connect` (design 029 section 3.5).
+    pub fn buses(&self) -> PluginBuses<'a> {
+        PluginBuses::new(self.node, self.hosted)
+    }
+
+    /// The plugin's control handle, the low layer the views are built on
+    /// (feature `testing`: a host uses the views).
+    #[cfg(feature = "testing")]
     pub fn handle(&self) -> &'a PluginHandle {
         &self.hosted.handle
     }
 
     /// An out-of-process plugin's controls (its latency, tail and meter cells,
-    /// shared with its node); `None` for a plugin hosted in process.
+    /// shared with its node); `None` for a plugin hosted in process (feature
+    /// `testing`: a host reads [`diagnostics`](Self::diagnostics)).
+    #[cfg(feature = "testing")]
     pub fn controls(&self) -> Option<&'a PluginControls> {
         self.hosted.controls.as_ref()
     }
 
-    /// The node's meter cell, either backend's; `None` for a plugin the host
-    /// inserted itself ([`Graph::host_plugin`](crate::Graph::host_plugin)).
-    pub fn meter(&self) -> Option<&'a PluginMeter> {
-        self.hosted.meter.as_ref()
+    /// The node's project-meter cell, either hosting's; `None` for a plugin the
+    /// host inserted itself (feature `testing`: a host reads
+    /// [`diagnostics`](Self::diagnostics)).
+    #[cfg(feature = "testing")]
+    pub fn meter(&self) -> Option<tutti_plugin_host::PluginMeter> {
+        self.hosted.node.as_ref().map(NodeControls::meter)
     }
 
     /// The plugin's parameters: what it declares, read at load and again when
@@ -1487,11 +1505,11 @@ impl Session {
                 key
             }
             Err(plugin) => {
-                let plugin_meter = plugin.meter();
-                plugin_meter.set_meter(meter);
+                let node_controls = plugin.node_controls();
+                node_controls.set_meter(meter);
                 let (node, _) = self.graph.place((*plugin).bind(self.graph.tempo.clone()));
                 let mut hosted = HostedPlugin::new(handle, loaded_ref);
-                hosted.meter = Some(plugin_meter);
+                hosted.node = Some(node_controls);
                 self.graph.plugins.insert(node.erase(), hosted);
                 Key::new(node.erase())
             }
@@ -1518,7 +1536,7 @@ impl Session {
         self.graph
             .plugins
             .get(&node)
-            .map(|hosted| Plugin { node, hosted })
+            .map(|hosted| Plugin::new(node, hosted, self.graph.plugin_figures(node)))
             .ok_or_else(|| crate::NoSuchNode::new(node))
     }
 
@@ -1535,7 +1553,7 @@ impl Session {
         self.graph
             .plugins
             .iter()
-            .map(|(&node, hosted)| Plugin { node, hosted })
+            .map(|(&node, hosted)| Plugin::new(node, hosted, self.graph.plugin_figures(node)))
     }
 
     /// Lands a finished snapshot: the plugin's last snapshot becomes it. A
@@ -2226,7 +2244,7 @@ impl Session {
                 // `false` means the plugin declined (a CLAP plugin without
                 // `clap.render`): it renders the same either way, so there is
                 // nothing to retry.
-                let _ = hosted.handle.set_render_mode(wanted);
+                let _ = hosted.handle.any_thread().set_render_mode(wanted);
                 hosted.told = true;
             }
             self.render_mode.announced = wanted;

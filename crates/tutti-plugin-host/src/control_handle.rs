@@ -145,7 +145,7 @@ impl PluginStatus {
 /// Call these per frame.
 ///
 /// **Fire-and-forget.** [`AnyThread::set_parameter_value`],
-/// [`set_render_mode`](Self::set_render_mode) and
+/// [`AnyThread::set_render_mode`] and
 /// [`set_automation_mode`](Self::set_automation_mode) push onto a lock-free
 /// queue and return without waiting. A knob turn must never stall a UI, so
 /// these deliberately have no reply to wait for — and therefore no way to
@@ -301,22 +301,6 @@ impl PluginHandle {
         let report =
             tutti_plugin_types::FeatureReport::new(self.loaded.probed, self.loaded.features);
         PresetSupport::from_report(&report)
-    }
-
-    /// Tells the plugin whether it is rendering under realtime pressure.
-    ///
-    /// Set this **before** a bounce pulls blocks: a plugin may spend more per
-    /// block once it knows there is no deadline, and three of the four formats
-    /// can only take the change while deactivated.
-    ///
-    /// `false` when the plugin declined (or, in-process off the main thread,
-    /// the main thread did not answer in time). Those collapse deliberately —
-    /// both mean the render is unchanged — and a caller that needs to tell them
-    /// apart reads [`Features::RENDER_MODE`](tutti_plugin_types::Features) on
-    /// [`loaded`](Self::loaded).
-    #[must_use = "a false return means the render mode was not applied"]
-    pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
-        self.any_thread.set_render_mode(mode)
     }
 
     // ---- Meta -------------------------------------------------------------

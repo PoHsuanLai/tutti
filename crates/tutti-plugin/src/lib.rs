@@ -26,7 +26,7 @@ pub use tutti_plugin_types::{MainThread, NotMainThread};
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
 pub use tutti_plugin_types::AutomationMode;
-// Likewise for `PluginHandle::set_render_mode` / `Plugin::set_render_mode`.
+// Likewise for `Plugin::set_render_mode` (a plugin loaded by itself, before a session hosts it).
 pub use tutti_plugin_types::RenderMode;
 // `PluginHandle::loaded()` hands back a `LoadedPlugin` whose `features` field is
 // this type, so a consumer that reads a capability bit — e.g. deciding whether

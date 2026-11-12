@@ -2,15 +2,15 @@
 //! what the format can do with them, a list that loads by id, a file that
 //! loads by path, and the three typed answers of a load.
 //!
-//! CLAP over the reference plugin in a real `plugin-server` (it takes a preset
+//! CLAP over the reference plugin in a real `plugin-server` (with `TUTTI_CLAP_PROBE_PRESET_LOAD=1` it takes a preset
 //! file with the suffix `.tutti-preset` and sets its Cutoff, observed through
 //! its saved state); VST2 over the reference plugin in process, whose program
 //! count the environment sets.
 
 use tutti_plugin::catalog::PluginRef;
-use tutti_plugin_types::{MainThread, PresetError, PresetId};
+use tutti_plugin_types::{MainThread, PresetError};
 use tutti_session::{PluginLoadRequest, PresetKind, Session};
-use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate};
 
 fn main_thread() -> MainThread {
     MainThread::claim().expect("one test, one process")
@@ -21,11 +21,16 @@ mod clap {
     use super::*;
     use crate::support::{clap_probe, plugin_server};
     use tutti_graph::NodeKey;
+    use tutti_types::{MaxBlock, Samples};
 
     fn loaded() -> (Session, NodeKey) {
         // SAFETY: nextest runs each test in its own process, and this is set
         // before the first server is spawned, from the test's own thread.
-        unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server()) };
+        unsafe {
+            std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server());
+            // The reference plugin answers `clap.preset-load` only when asked.
+            std::env::set_var("TUTTI_CLAP_PROBE_PRESET_LOAD", "1");
+        }
         let mut s = Session::builder()
             .build_offline(
                 SampleRate(48_000.0),
@@ -96,6 +101,7 @@ mod clap {
 mod vst2 {
     use super::*;
     use tutti_fixtures::ScopedEnv;
+    use tutti_plugin_types::PresetId;
 
     fn probe_with(programs: &str) -> (Session, tutti_graph::NodeKey, ScopedEnv) {
         let mut env = ScopedEnv::new();

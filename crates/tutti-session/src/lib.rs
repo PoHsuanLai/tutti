@@ -72,6 +72,8 @@ mod params;
 #[cfg(feature = "plugin")]
 mod plugin;
 #[cfg(feature = "plugin")]
+mod plugin_diagnostics;
+#[cfg(feature = "plugin")]
 mod plugin_params;
 #[cfg(feature = "plugin")]
 mod plugin_presets;
@@ -156,6 +158,8 @@ pub use plugin::{
     PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore, StateView,
 };
 
+#[cfg(feature = "plugin")]
+pub use plugin_diagnostics::{Diagnostics, PluginBuses};
 #[cfg(feature = "plugin")]
 pub use plugin_params::{Param, ParamGesture, Params, PluginParamError, TypedParam};
 #[cfg(feature = "plugin")]

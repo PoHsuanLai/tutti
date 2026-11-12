@@ -1078,7 +1078,7 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
     let pid = s
         .plugin(node)
         .unwrap()
-        .handle()
+        .diagnostics()
         .server_pid()
         .expect("an out-of-process plugin has a server");
 
@@ -1160,7 +1160,7 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
     while Instant::now() < until {
         drive.step(&mut s);
     }
-    let counts = s.plugin(node).unwrap().handle().block_counts();
+    let counts = s.plugin(node).unwrap().diagnostics().block_counts();
     assert!(
         counts.abandoned > 16,
         "{counts:?}: the plugin is not slow enough"

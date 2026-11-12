@@ -67,3 +67,8 @@ mod vst2_params;
 // process) and a file that loads by path (CLAP, in a real `plugin-server`).
 #[cfg(any(feature = "clap", feature = "vst2"))]
 mod plugin_presets;
+// Diagnostics and buses (design 029 step 4): the counts either hosting reads the
+// same way, a sidechain wired through the plugin's bus handles, a server named
+// and ended.
+#[cfg(any(feature = "clap", feature = "vst2"))]
+mod plugin_diagnostics;

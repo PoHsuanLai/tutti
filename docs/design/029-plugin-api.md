@@ -274,7 +274,7 @@ what it replaces; no deprecated twin is kept.
 | 1 (built) | **Identity and state.** `PluginRef` from `&PluginEntry`; the load passes the plugin id; `PluginState` and `StateError::OtherPlugin`; one `state()` view with `last_good()`, `withheld()`, `save()` and `restore()`; the acceptance example `crates/tutti/examples/plugin_host.rs` (scan, load, wire, MIDI, parameters, editor, save, bounce), which each later step rewrites to its shape | `PluginId` as a path; `snapshot()`; `Load::new()` in the open | the second plugin of the CLAP test bundle loads by its entry; a state restored into another plugin is refused |
 | 2 (view and events built; main-thread view and editor servicing open) | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
 | 3 (built) | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
-| 4 (4a built: presets, health) | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
+| 4 (4a and 4b built, but for the items 4b lists as not done) | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
 | 5 | **The spawner.** `spawn_with`, `Job`; jobs landed in `update()` | `land_snapshot`, `land_params`, `land_reload` as public calls; the `*Due` events | a reload completes with no host code but `update()` |
 | 6 | **The catalog and the facade.** `Catalog::open_db`, `scan()`; `Plugins::open` removed; the probe lists every plugin of a bundle (`FileState::Probed` already holds several); 021 step 6's `Hosting` as a `PluginRef` field (`Auto`, `InProcess`, `OutOfProcess`) | `with_fresh_scan`, `Plugins::open`, `Backend` | a blacklisted plugin is refused at load, not at open |
 
@@ -502,12 +502,59 @@ reading: the verdicts that remove the node (recovery off, or its budget spent)
 remove the record in the update that reaches them, so no view can hold it and
 the events (`PluginChange::{Died, GaveUp}`) are where they are seen. The
 session's debounce enum, `PluginLiveness`, is crate-private. The reference CLAP
-plugin gained `clap.preset-load` (a file ending `.tutti-preset` sets Cutoff to
+plugin gained `clap.preset-load`, answered only with `TUTTI_CLAP_PROBE_PRESET_LOAD=1` (a file ending `.tutti-preset` sets Cutoff to
 350, any other location is declined) so the CLAP half runs headless; the
 test observes it through the plugin's saved state. Tests:
 `plugin_presets.rs` (CLAP `load_file` accepted and refused; VST2 list loads by
 id, no programs is `Unsupported`), `plugin.rs`'s
 `a_killed_server_reads_died_then_reloading` and `plugin_health.rs`.
+
+**As built (step 4b, diagnostics, modes, buses).** `Plugin::diagnostics() ->
+Diagnostics<'_>` (`tutti-session`'s `plugin_diagnostics` module) is the corner of
+a plugin's panel, and reads the same in either hosting: `server_pid()` (`None`
+in process), `block_counts()`, `missed_chunks()` (0 in process, which has no
+pipeline to be late), `latency()` and `tail()` (the figures the graph holds for
+the node at the last update: out of process the latency is the plugin's report
+plus one chunk of the pipeline), `follows_project_meter()` (false only for a
+plugin the host inserted itself) and `terminate(TerminationReason)`, which is
+the old handle call and ends the server (the plugin then reads
+`PluginHealth::Died { cause: Terminated { .. } }`). The counts are
+`tutti_graph::Losses`, in events, as the MIDI inlets' are: `midi_in()` is what
+never reached the plugin (all `lost`; `refused` stays 0 because the plugin node
+has one event input, so no event is addressed to a Group with no port yet: that
+count arrives with plugin MIDI by Group), `parameter_points()` is the host's
+points the node dropped (`lost` a full queue's grid points, `evicted` the
+points that replaced the last of a full queue, `refused` points for a parameter
+it has no slot for) and `parameter_edits()` the plugin's edits the host did not
+hear (`lost`). Chunks deferred a chunk are chunks, not events, and have no
+field. The old `controls()` (`None` in process) and `meter()` (`None` for a
+hand-inserted plugin) are gone from the view; their one accessor is
+`diagnostics()`. *Modes:* `PluginHandle::set_render_mode` is deleted; the
+session's `Phase::RenderMode` calls the backend's `AnyThread::set_render_mode`,
+and a host asks the session (`Session::render_mode`). *Buses:*
+`Plugin::buses() -> PluginBuses<'_>` hands out the graph's handles from the
+plugin's own bus order (which is the node's: `main_input()`, `sidechain()`,
+`input(i)`, `output(i)`, `input_count()`, `output_count()`), as `BusRef` and
+`BusSource`, the ones `key.bus_in(i)` and `key.bus_out(i)` name:
+`connect(kick.bus_out(0), comp.buses().sidechain().unwrap())`. No format marks
+a bus a sidechain (they say "aux"), so `sidechain()` is the first input bus past
+the main one; a plugin with none answers `None`. The graph tracks `MAX_BUSES`
+per side, and a handle past it is `None`. *`Plugin::handle()`* is not on the
+read view of a host any more: it, `controls()` and `meter()` are behind
+`tutti-session`'s `testing` feature (what only the session's own tests drive: a
+plugin's latency cell, the project-meter cell's reclaim, an editor's idle
+tick), since the views now cover what a host used it for (parameters, state,
+presets, health, diagnostics, the editor); `PluginHandle` stays the layer the
+views are built on. The reference CLAP plugin gained
+`TUTTI_CLAP_PROBE_PORT_LAYOUT` (every server's port layout, as the existing
+`..._RESTART_PORT_LAYOUT` is a replacement's), which the sidechain test uses
+(stereo main and a mono aux input). Tests: `plugin_diagnostics.rs` (lost MIDI
+as `Losses` in process, the server named and ended, the latency and tail as the
+graph holds them, a sidechain wired through the handle and a bus past the
+plugin's own refused). Not done in this step: a VST3 aux bus's activation
+follows what the graph wires (the node does not learn which ports are wired, so
+it stays a `kDefaultActive` wish), VST3 `tresult` and AU `OSStatus` typed into
+the diagnostics, and §6.3's transport items.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 
@@ -725,7 +772,7 @@ The latent violations (no known plugin breaks on them) go into the same PRs as t
 | AU's 20 contract gaps are one missing AU shared plugin, not AU limits; the two `f32` round trips want a per-format tolerance, not a gap | AU completeness (the fixture is an in-process registered `AUAudioUnit` subclass) |
 | AU input as UMP (`MusicDeviceMIDIEventList`, `HostMIDIProtocol` / `AudioUnitMIDIProtocol`, the Group in each packet); the legacy path keeps the `Narrower`; v2 has no cable routing | AU MIDI input parity (done: `initialize` reads `AudioUnitMIDIProtocol` before `AudioUnitInitialize`; `HostMIDIProtocol` is not written, since writing it breaks withdrawing the legacy output callback (macOS 26.6) and is the output lane's, with the event-list callback; a unit that says MIDI 2.0 gets UMP unchanged, one list per protocol, timestamps are frame offsets, the list built in a buffer reserved at activation (`tutti_au_ffi::EventList`); MIDI 1.0 or no answer keeps `midi1` and `MusicDeviceMIDIEvent`, Group 0 only, other Groups and unnarrowable messages counted. Not covered: no installed Apple unit answers the protocol property, so the UMP path is tested over a sink and the call on AUSampler, not end to end through a unit that takes MIDI 2.0; waits for the AU shared plugin) |
 | Project time computed from beats at one tempo (`transport_source.rs`), not from the `TempoMap`; VST2 extrapolates a split block's transport at the block's first tempo | a transport PR beside step 4 |
-| A VST3 aux bus without `kDefaultActive` stays inactive though the graph wires it | step 4 (buses as graph handles activate what is wired) |
+| A VST3 aux bus without `kDefaultActive` stays inactive though the graph wires it | step 4 (buses as graph handles activate what is wired): the handles are built (4b), the activation is not: the node does not learn which ports are wired |
 | VST3 editor: the served editor's run loop not pumped on Linux, in-process resize stubbed, no content-scale update after open | step 2 (`update()` services every editor) |
 | AUv3 | after AU completeness (§6.4) |
 | A note is `(Group, NoteId)` at the port edge (Group N is port or bus N), so `NoteId` keeps `channel * 128 + note` and gains no Group; the legacy note-expression route lacks port, channel and key | plugin MIDI out by Group |

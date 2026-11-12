@@ -951,7 +951,9 @@ pub unsafe fn get_extension(id: &CStr) -> *const std::ffi::c_void {
     if id == clap_sys::ext::state_context::CLAP_EXT_STATE_CONTEXT {
         return &STATE_CONTEXT_EXT as *const _ as *const std::ffi::c_void;
     }
-    if id == clap_sys::ext::preset_load::CLAP_EXT_PRESET_LOAD {
+    if id == clap_sys::ext::preset_load::CLAP_EXT_PRESET_LOAD
+        && PRESET_LOAD_ENABLED.load(Ordering::SeqCst)
+    {
         return &PRESET_LOAD_EXT as *const _ as *const std::ffi::c_void;
     }
     ptr::null()
@@ -960,6 +962,12 @@ pub unsafe fn get_extension(id: &CStr) -> *const std::ffi::c_void {
 // ---------------------------------------------------------------------------
 // `clap.preset-load`.
 // ---------------------------------------------------------------------------
+
+/// Whether the plugin answers `clap.preset-load`: off unless
+/// `TUTTI_CLAP_PROBE_PRESET_LOAD=1` is in the environment, so the suites that
+/// need a plugin without the extension (a missing extension is not a refusal)
+/// keep theirs. Set once, by `configure`.
+pub static PRESET_LOAD_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// The extension of a file this plugin takes as a preset.
 pub const PRESET_FILE_SUFFIX: &str = ".tutti-preset";

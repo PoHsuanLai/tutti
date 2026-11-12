@@ -802,7 +802,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Family`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
   `SvfFamily<F>`, `LadderFamily<F>` and `CrossoverFamily` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
-  written once), the dynamics curves, followers and kernels, the partitioned
+  written once), the dynamics curves, followers and kernels and the brickwall clipper
+  (`BrickwallFamily`, `BrickwallRecurrence`: the first dynamics family on the model, its
+  ceiling a fast lane), the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the
@@ -819,7 +821,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   and a stability test, all bounds stated as such); a `Recurrence` is one
   realization of a member (its `coefficients_into` writes the coefficient point a member asks for,
   its `Approach` glides to it, its `run` is the per-frame math), and `Realized<R>` is the one
-  runner over it, with the planar block shape `process(input, output, frames)`;
+  runner over it, with the planar block shape `process(&Feed, output, frames)`, where
+  `Feed` is the effect input (the main audio, the side-chain key channels of a
+  `Channels::keyed` family, and up to `MAX_LANES` = 2 per-frame control lanes, doc 024
+  section 2.7.3);
   the coefficients approach each new point by an `Approach` (a `Glide` of a `Lerp`
   set, or the FDN's own, a glide a field); prepared from a
   `Setup` and the recurrence's `Capacity`, moved to each member by `retarget`; a family whose
@@ -835,7 +840,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork; `FamilyNode<F: NodeFamily>` is
-  the one node over every reverb and filter `Family`, with `FreeverbNode` and `FdnNode`
+  the one node over every reverb, filter and brickwall `Family` (`NodeFamily::RINGS` is a
+  `Rings`: `Tracks` parks on the tail, `Unknown` never narrows it, `Silent` declares
+  `Tail::None`; each `control_set!` row declares how its control is read, a `Control`
+  (`{ whole }`, `{ fast }`: read per frame into `Feed.lanes`, the cell the base, at most
+  `MAX_LANES` or it does not compile; `{ not_nan }`: accepts `+-inf`); a keyed
+  family's key bus is read into `Feed.key`), with `FreeverbNode` and `FdnNode`
   its two reverb instances and `ReverbKind` the choice between them; a family node is
   the wet signal alone, and its dry/wet is the graph's mix, `Editor::set_mix`), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,

@@ -47,7 +47,7 @@
 
 use vst::api;
 
-use tutti_plugin_types::{MainThread, ParamId};
+use tutti_plugin_types::{MainThread, Normalized, ParamId, ParamMapping};
 
 use crate::loaded::Vst2Loaded;
 
@@ -142,6 +142,33 @@ impl IntegerRange {
         }
         let span = (self.max as i64) - (self.min as i64);
         Some((span / step as i64) as u32)
+    }
+}
+
+/// VST2's only plain domain is the integer range of `effGetParameterProperties`
+/// (`minInteger`..`maxInteger`, `aeffectx.h:449`), and the header fixes no map
+/// between the float and the range. VST2's convention is the line between the
+/// ends, written once here and running backwards for a range the plugin
+/// declares inverted. A range of one point is that point, and its position is
+/// `0.0`.
+impl ParamMapping for IntegerRange {
+    fn plain(&self, value: Normalized) -> f64 {
+        let (min, max) = (f64::from(self.min), f64::from(self.max));
+        if max == min {
+            min
+        } else {
+            min + value.get() * (max - min)
+        }
+    }
+
+    /// `plain` clamped into the range, as a position. NaN is `0.0`.
+    fn normalized(&self, plain: f64) -> Normalized {
+        let (min, max) = (f64::from(self.min), f64::from(self.max));
+        if max == min || plain.is_nan() {
+            return Normalized::of(0.0);
+        }
+        let plain = plain.clamp(min.min(max), min.max(max));
+        Normalized::clamped((plain - min) / (max - min))
     }
 }
 

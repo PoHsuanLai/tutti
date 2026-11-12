@@ -54,7 +54,7 @@ fn run<D: Family<Recurrence: Recurrence<Capacity = ()>>>(
             .iter_mut()
             .map(|c| &mut c[start..start + block.len()])
             .collect();
-        k.process(&[block], &mut outs, block.len());
+        k.process(&tutti_dsp::Feed::new(&[block]), &mut outs, block.len());
     }
     out
 }

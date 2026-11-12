@@ -444,12 +444,19 @@ A processor, a generator and an instrument differ only in `X`:
 | instrument | `E* × 1`: the events landing on this frame | `V ≫ B`: `V : E* × S_V → Cmd* × S_V` is `tutti-voicing`'s step, `B` the voice bank |
 
 The recurrence's input is therefore its associated type (`Recurrence::Input<'a>`:
-`&[&[f32]]` for an effect, `()` for a generator, the frame range's events and the channels'
+an effect's input for an effect, `()` for a generator, the frame range's events and the channels'
 `f32` for an instrument), and the runner takes the frame count from the call, not from
 `input[0].len()`. Events split a block at their offsets the way the cadence grid already
-does. Only the effect shape is built; the generator and instrument rows are claims, checked
-by the first lane that builds each (the control sources, then the first instrument moved onto
-the runner), and section 2.7.5's signature changes there if the claim fails. **One shape is not a recurrence of this kind:** a multirate system (the resampler by
+does. **The effect shape is built, as the concrete struct `Feed<'a>`** (`tutti-dsp/src/model/feed.rs`):
+`audio` (the main channels), `key` (the side-chain key channels of a family that declared
+`Channels::keyed`; empty otherwise) and `lanes: [Option<&'a [f32]>; MAX_LANES]` (`MAX_LANES = 2`: the controls the recurrence reads
+**per frame** beside the audio, `None` where nothing drives one). `Recurrence::run` and
+`Realized::process` take a `&Feed`; a filter or a reverb is fed `Feed::new(audio)`, with no
+key and no lane, so the move is render neutral by construction. The associated type `Input<'a>`
+is not built: it waits for the first generator, and the generator and instrument rows are
+claims checked by the first lane that builds each (the control sources, then the first
+instrument moved onto the runner), whose `Input<'a>` an effect then names `Feed`; section
+2.7.5's signature changes there if the claim fails. **One shape is not a recurrence of this kind:** a multirate system (the resampler by
 `L/M`, the stretcher, the formant pitch shifter) has output frame `n` depend on input up to
 `⌊nM/L⌋ + d`, so it consumes and produces different counts. It is a `Transducer` (await an
 input frame or yield an output frame), every `K` embeds in it, and it is built when the
@@ -531,11 +538,11 @@ pub trait Recurrence: Clone + Debug + Send + 'static {
     fn coefficients_into(&self, m: &Self::Member, t: &mut Self::Target) -> bool;         // κ, in place
     fn clear(&self, s: &mut Self::State);                                                // s₀ again
     fn run(&self, c: &Self::Coeffs, s: &mut Self::State,
-           input: &[&[f32]], output: &mut [&mut [f32]], frames: Range<usize>, into: usize); // K
+           feed: &Feed<'_>, output: &mut [&mut [f32]], frames: Range<usize>, into: usize); // K
     fn latency(&self) -> Samples { Samples::ZERO } // only latency the member does not have
     fn effort(&self) -> Effort { Effort::Heavy }
-    // Not built yet: `type Input<'a>` (X: `&'a [&'a [f32]]` for an effect, `()` for a
-    // generator). `run` takes the effect shape, and the frame count is an argument of the runner.
+    // Not built yet: `type Input<'a>` (X: `Feed<'a>` for an effect, `()` for a generator).
+    // `run` takes the effect shape, `Feed`, and the frame count is an argument of the runner.
 }
 
 // γ — the glide of the coefficients in flight toward the target κ wrote.
@@ -601,7 +608,7 @@ What this changes against main:
 | `Sizes`, `Bounds`, `NetworkSizes`, `FilterSizes`; `Sizes::measure` | **`Capacity`** (`Recurrence::Capacity`, `need`), `NetworkCapacity`; `FilterSizes` deleted, a filter's capacity is `()` | `𝒦`; a filter's capacity is a single point |
 | `Range`, `Ceiling<R>` (`range()`), `bounds(&ceiling)` | **`Domain`**, **`Reach<D>`** (`domain()`), **`Grows::reach`** | `D ⊆ C` and the monotone map `reach` |
 | traits `Realization<M>` and `Effect<M>` | deleted (step 1); **`Realized<R>`** is the one runner, a struct with inherent `prepare`, `retarget`, `reset`, `latency`, `effort`, `fresh` and `process` | the lifecycle is derived from `s₀`, and the shape is `X`; the trait's only production implementer was `Realized<K>`, the others test doubles, which are recurrences (`GainRecurrence`, `EchoRecurrence`, `Unrun`, `Lie`), a wrapper recurrence (`Flawed`) or the runner's flaws |
-| `Realized::process` reads `input[0].len()` | the frame count is an argument (step 1); the input an associated type `Input<'a>` (not built yet: the effect shape only) | a generator has `X = 1`, an instrument `X = E*` |
+| `Realized::process` reads `input[0].len()` | the frame count is an argument (step 1); the input the effect shape `Feed<'a>` (audio, side-chain key, per-frame lanes; the associated type `Input<'a>` is not built: it waits for the first generator) | a generator has `X = 1`, an instrument `X = E*` |
 | `Design::Realization`, `Design::realization()` | `Family::Recurrence`, `Family::recurrence()`, and the provided `Family::realized()` (the runner at the blank) | step 1 |
 | `NodeDesign`, `DesignNode<D>`, `*Design` | **`NodeFamily`** (which also states the node's `capacity`), **`FamilyNode<F>`**, `SvfFamily`, `LadderFamily`, `CrossoverFamily`, `FreeverbFamily`, `FdnFamily` | the node over a family (step 2) |
 | `design_contract!`, `DesignCase`, `realization_contract!`, `RealizationCase` | **`family_contract!`** (`φ`'s diagram), **`recurrence_contract!`** (laws 1 to 3) | the contract is the diagrams of section 2.7.4 |
@@ -688,7 +695,7 @@ like, per CLAUDE.md "Unit types").
 | 5 | 4 | **Compressor** (`dynamics/compressor.rs`, `curves.rs`; `CompressorNode`) | `CompressorKernel` (envelope + `EnvelopeFollower`), `CompressorBlock { threshold, knee, ratio, makeup_from, makeup_to }`. Typed: `Db`, `CompressionRatio`, `Seconds` | **Fits** | Design: `(threshold, knee, ratio, makeup, attack, release, rate)` to `GainControl<Wiener<Follower, GainMap>>` (section 4.9): a follower (`Lti`, one pole per direction) then the gain map (`Memoryless`, memoryless) multiplying the input. Queries: `SteadyState` (the gain map seen through the follower's DC gain; the map is `compute_compressor_gain_reduction`, `In = Db`, `Out = Db`: zero below `threshold - knee/2`, the quadratic over the knee, slope `1 - 1/ratio` above), time constants (step response reaches 63% in `attack`), `tail` zero (silent in, silent out; the node declares no tail, `compressor.rs` line 443), `latency` zero. `Readout`: `CompressorKernel::gain_reduction_db` exists |
 | 6 | 4 + E | **Gate** (`dynamics/gate.rs`; `GateNode`) | `GateKernel`, `GateEnvelopeFollower`, `GateBlock`. Typed: `Db`, `Seconds` | **Partly** | Class 4 plus event logic. Fits: the settled curve is a step (`gate_gain_at`: range below the threshold, unity above), so `Memoryless` is degenerate; attack and release are the smoother's time constants; `Readout`: `is_open`/`gate_level` exist. Does not: the **hold** is a timer (`GateEnvelopeFollower::step(gate_open: bool)`), an unassigned state machine (class E) that no `Lti` or `Memoryless` query describes; it is an inherent query |
 | 7 | 4 | **Lookahead limiter** (`dynamics/limiter.rs`, `curves.rs`; `LimiterNode`) | `LookaheadRing`, `MonotonicMinDeque` for the window minimum, `LimiterCurve`. The per-frame recursion (linked peak, curve gain, instant attack, `smooth_envelope` release, `push_gain`) is in the node, `tutti-nodes/src/dynamics/limiter.rs` `process` (~362-440), where the compressor and gate already have dsp kernels (`CompressorKernel`, `GateKernel`). Typed: `Db`, `Seconds` | **Partly** | Class 4 with a delay and a windowed minimum. Fits: `Memoryless` (`LimiterCurve::gain`: gain `ceiling - threshold` up to the threshold, `ceiling/peak` past it, so output `<= ceiling`), `latency` = the lookahead (the node declares it, `limiter.rs` line 340), `tail` zero, `Readout` gain reduction. Does not: the detector is a sliding-window minimum (`MonotonicMinDeque`), a nonlinear operator that is not an LTI smoother, so the Wiener decomposition holds for steady input only and the attack is the lookahead by construction The recursion is the one part of a dynamics family not yet a pure algorithm over slices, which CLAUDE.md puts in `tutti-dsp`: a `LimiterKernel` takes it there (section 9, consolidation 9), and the node keeps the `Param` and lane reads, as `CompressorNode` does |
-| 8 | 3 | **Brickwall clip** (`limiter.rs` `brickwall_clip`; `BrickwallLimiterNode`) | one `clamp` | **Fits** | A memoryless `Memoryless` over amplitude (`In = Out = f32`), `latency` and `tail` zero. Trivial, and the same trait as the waveshaper (row 17) |
+| 8 | 3 | **Brickwall clip** (`dynamics/brickwall.rs` `BrickwallFamily`; `BrickwallLimiterNode = FamilyNode<BrickwallFamily>`, built on a checked `BusTopology` by `with_bus`, so a width past one bus is refused by the caller's `BusTopology::unassigned(w)?`, never a panic) | one `clamp` | **Fits** (as built, 2026-11-12) | A memoryless clip over amplitude (`In = Out = f32`), `latency` and `tail` zero (`BrickwallMember`, a `System`; class traits are not built, so `apply(x) = clamp(x, -c, c)` is an inherent query the design diagram reads). The family's one control, the ceiling in dB, is a **fast lane** (`Feed.lanes[0]`, its row's `fast` flag), the member's ceiling the base for a frame nobody drives (and for a NaN frame). `Cadence::BLOCK` (no slow control to sample), `Effort::Light`, `Rings::Silent`, `Recurrence::Coeffs = Glide<f32>.by(0)`: the ceiling lands whole, since a glided bound would let a sample past the new one. its row's `not_nan` flag accepts `+-inf` (pass everything, mute) and refuses only NaN, a fast control lands whole, and `moved` keeps the node's dead band (1e-4 in amplitude). Contract: `family_contract!` and `recurrence_contract!` (no `BlockIndependent` group: the grid is the block's, and the clip is memoryless, which `the_render_is_the_clamp_at_any_block` states from the definition at 1, 17, 64 and 512), and a design diagram `y = clamp(x, -c, c)`, odd, idempotent, `|y| <= c`. The same trait as the waveshaper (row 17) |
 | 9 | 4 (comp.) | **Multiband compressor** (`MultibandCompressorNode`) | crossover plus a `CompressorKernel` per band | **Partly** | A composite: `Series<Crossover, bands>` of the crossover model (row 3) and one compressor model per band (section 4.9). Per-band `Memoryless` and `Readout` (`gain_reduction_db(band)` exists). The summed `frequency_response` is not a single model query (it is signal dependent). Fits as a model that holds sub-models |
 | 10 | 4 | **Envelope followers** (`dynamics/envelope.rs`; `EnvelopeFollowerNode` in `signal/follower.rs`) | `EnvelopeFollower`, `GateEnvelopeFollower`; the node outputs a control signal | **Partly** | A building block of rows 5 to 7, whose attack and release are their time-constant queries. The node is a measurement with a control output: its model is the two coefficients and a step response, with no response or curve to query |
 | 11 | 1 (2) | **Delay line** (`delay.rs`; `DelayLineNode`) | `DelayLine::read_sample` with `InterpolationMode`, a per-channel `Ramp` of the time. Typed: `Seconds`, `Feedback`, `Mix` | **Fits** | Design: `(time, feedback, mix, interpolation, rate)` to a model of delay in fractional frames and loop gain. Queries: `Bounds` (the maximum delay, a build parameter, `delay.rs`), `tail` (`time x trips to the floor`, as the all-pass term of doc 022 section 3.1), stability (`|feedback| < 1`, `Feedback::MAX_STABLE`), `frequency_response` (the comb `1/(1 - g z^-D)` for the frozen setting), `latency` zero (musical delay is not latency). The interpolation's droop is a term of `Fidelity` |
@@ -1434,10 +1441,14 @@ follow from the play clock:
 `compressor.rs` line 469, `limiter.rs` line 365). `every(1)` per-frame would pay
 the node's per-segment overhead on every frame, which is exactly the fixed shape
 the owner warned against. So per-frame lanes are not a `Cadence` (the limit of `every`, one frame, is a lane). Under B1 the
-answer (Q3, to confirm in the dynamics lane) is that a per-frame lane is an **input of the kernel's
-`run`**, not a coefficient: the kernel declares which of its controls it reads per frame, and
-`Realized<K>` hands their frames to `run` beside the audio. That is the old `Driven<M>` proposal
-without a second realization shape.
+answer (Q3, **resolved 2026-11-12, as built for the brickwall**) is that a per-frame lane is an **input of the recurrence's
+`run`**, not a coefficient: `Feed.lanes`. The family's `ControlSet::fast` names the controls read
+per frame; `Params::read` and `Params::driven` skip them (the cell is the base the member is designed at, and a frame
+nobody drives uses that member), and `FamilyNode` hands `io.param(k).frames()` of each to `Feed.lanes`
+in `fast` order. Every other control is **slow** and stays on the stream grid
+(`NodeFamily::SAMPLING`, `retarget`), which is also where a driven slow control becomes
+block independent (it is no longer sampled at the block's last frame). That is the old `Driven<M>`
+proposal without a second realization shape.
 
 
 ### 4.5a Trajectory: `theta(t)` as a signal with a law
@@ -1816,6 +1827,19 @@ pub struct DesignNode<D: NodeDesign> { /* design, realization, params: Params<D:
     model: Box<D::Model>, longest: Box<D::Model>, applied, current, ceiling, rate,
     channels, ring, since, silent */ }
 ```
+
+**As built (2026-11-12, the dynamics lane's first PR, the brickwall).** `NodeDesign` is `NodeFamily` and
+`DesignNode` is `FamilyNode`; `PARKS: bool` is `const RINGS: Rings`, `Rings { Tracks, Unknown, Silent }`
+(`Tracks` is the old `PARKS = true`, `Unknown` the old `false`, `Silent` declares `Tail::None` and never
+parks: a memoryless or gain-only family whose detector must see every block). `ControlSet` gained
+`control(k) -> Control`, how the reader takes control `k`: a `ControlRead` (`Glide`, the default; `Whole`, a moved cell
+lands without a ramp; `Fast`, read per frame into `Feed.lanes` in row order, section 2.7.3 and Q3, the cell the
+base) and a `ControlValid` (`Finite`, the default; `NotNan`, which `LastGood` applies). A control is declared once, by
+its `control_set!` row (`Ceiling => Db = ceiling { fast, not_nan }`): the macro writes `control` from the same rows
+as the addresses, so the two cannot disagree, a flag that is not one of `whole`, `fast`, `not_nan` does not
+compile, and more fast rows than `MAX_LANES` fail a `const` assertion (core's review of #676: the first draft had
+three index-keyed methods, `fast`, `glides`, `valid`, which nothing tied to the addresses or to the lane count), and `MAX_CONTROLS` is 16. `Channels::keyed(input)` gives a family a
+`Sidechain` bus the input's width after Main, which `FamilyNode` reads into `Feed.key`; no family declares it yet.
 
 `Blend` leaves (B2): a node's dry/wet is the graph's mix (`Graph::set_mix`, doc 013 M4; the convolver,
 delay, chorus/flanger and phaser went wet-only in #542, the reverbs in PR9). A modulated dry/wet is a route
@@ -2600,7 +2624,7 @@ text is not rewritten.
 |---|---|---|
 | Q1 | Is `System` (latency and tail) the base of every processor class, with `Autonomous` outside it? | Yes. Every node declares both in `Shape`; the park logic needs only these. A generator has no input to end, so it is not `System` and its node reports a tail only when it has an audio input |
 | Q2 | Name the shared concept `Model`? | Keep the word in prose (doc 022's and the owner's); in code the class traits are the names (`Lti`, `Memoryless`), and `Design::Model` is the associated type |
-| Q3 | Per-frame control lanes (the dynamics' threshold and ceiling): `Cadence::Frame`, a second realization shape `Driven<M>`, or leave those nodes hand-written? | Decide in step 4 against the code. Order of preference: `Driven<M>` (the node picks per block, `Frames` vs `Base`); else the three nodes keep their `process` and adopt `Design`, the class traits and the contract only. Not `Cadence::Frame`: it is the fixed shape the owner warned against |
+| Q3 | Per-frame control lanes (the dynamics' threshold and ceiling): `Cadence::Frame`, a second realization shape `Driven<M>`, or leave those nodes hand-written? | **Resolved 2026-11-12 (owner's autonomy grant), built for the brickwall (the lane's first user).** The hybrid: the fast controls (a threshold, a ceiling) enter `Recurrence::run` as `Feed.lanes` (section 2.7.3), declared by `ControlSet::fast` and handed by `FamilyNode` from the port's frames; every slow control rides `NodeFamily::SAMPLING` on the stream grid with `retarget`. Not `Cadence::Frame` (it would pay the grid's per-segment overhead, about 5 to 8 times the kernel, on every frame), and not hand-written nodes (they forfeit the stream grid, `LastGood` and the contract). The compressor, gate and limiter follow in their lanes |
 | Q4 | **Resolved by the composition algebra.** The curve of a series EQ chain | A parametric EQ is one design whose model is `SeriesN<SvfModel, N>`, with an exact product `frequency_response`. A chain of separate graph nodes is the application's product of each node's `Describe::curve`. No `Chain` model (section 4.9) |
 | Q5 | Class-coverage gate: a script or a macro? | A script (`check-contract-coverage.sh`), as `check-range-types`. A macro cannot see every `impl` |
 | Q6 | Contract as a `tutti-dsp` feature or a `testing/` crate? | The feature (the owner's direction, and the dev-cycle argument of section 9) |

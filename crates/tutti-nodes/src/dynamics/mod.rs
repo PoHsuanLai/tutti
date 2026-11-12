@@ -14,6 +14,7 @@
 
 mod utils;
 
+mod brickwall;
 mod compressor;
 mod gate;
 mod limiter;
@@ -21,7 +22,8 @@ mod multiband;
 
 mod params;
 
+pub use brickwall::BrickwallLimiterNode;
 pub use compressor::CompressorNode;
 pub use gate::GateNode;
-pub use limiter::{BrickwallLimiterNode, LimiterNode};
+pub use limiter::LimiterNode;
 pub use multiband::{BAND_PARAMS, MultibandCompressorNode, MultibandControls};

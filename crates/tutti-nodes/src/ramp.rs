@@ -41,6 +41,12 @@ impl LastGood {
         })
     }
 
+    /// Starts at `initial` if `valid`, else at `fallback`: a control that accepts more
+    /// than the finite values says so (`ControlSet::valid`).
+    pub(crate) fn new_if(initial: f32, fallback: f32, valid: bool) -> Self {
+        Self(if valid { initial } else { fallback })
+    }
+
     /// Starts at a finite constant.
     pub(crate) fn fixed(initial: f32) -> Self {
         Self(initial)
@@ -49,7 +55,15 @@ impl LastGood {
     /// `value` if finite (and remembered), otherwise the last finite value.
     #[inline]
     pub(crate) fn read(&mut self, value: f32) -> f32 {
-        if value.is_finite() {
+        self.read_if(value, value.is_finite())
+    }
+
+    /// `value` if `valid` (and remembered), otherwise the last valid value: for a
+    /// control whose valid values are not the finite ones (a ceiling accepts
+    /// `+-inf`, `ControlSet::valid`).
+    #[inline]
+    pub(crate) fn read_if(&mut self, value: f32, valid: bool) -> f32 {
+        if valid {
             self.0 = value;
         }
         self.0

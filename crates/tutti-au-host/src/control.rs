@@ -17,9 +17,9 @@ use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AuComponentType, AutomationMode, ContentScale, Control, EditorCapabilities, EditorError,
     EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
-    ParamEdit, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginBus, PluginBuses,
-    PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId,
-    RenderMode, Request, RescanScope, SampleRate, WindowHandle, taken,
+    ParamEdit, ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
+    PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
+    PresetId, RenderMode, Request, RescanScope, SampleRate, WindowHandle, taken,
 };
 use tutti_types::Samples;
 
@@ -203,9 +203,19 @@ impl AuLoaded {
         }
     }
 
+    /// A plain value the unit reported, as a position: through the declared
+    /// range, or, for a parameter off the table, as the plain value it was
+    /// given.
+    fn normalize(&self, id: u32, plain: f32) -> Normalized {
+        match self.ranges.bounds(id) {
+            Some(bounds) => bounds.normalized(f64::from(plain)),
+            None => Normalized::clamped(f64::from(plain)),
+        }
+    }
+
     fn denormalize(&self, id: ParamId, value: Normalized) -> f32 {
         match self.ranges.bounds(id.get()) {
-            Some(bounds) => bounds.to_plain(value.get()),
+            Some(bounds) => bounds.plain(value) as f32,
             None => value.get() as f32,
         }
     }
@@ -234,11 +244,7 @@ impl AuLoaded {
             Edit::Begin(id) => ParamEdit::Begin(ParamId::from(id)),
             Edit::End(id) => ParamEdit::End(ParamId::from(id)),
             Edit::Change(id, plain) => {
-                let normalized = match self.ranges.bounds(id) {
-                    Some(bounds) => bounds.to_normalized(plain),
-                    None => f64::from(plain),
-                };
-                ParamEdit::change(ParamId::from(id), Normalized::clamped(normalized))
+                ParamEdit::change(ParamId::from(id), self.normalize(id, plain))
             }
         }));
     }
@@ -332,34 +338,28 @@ impl Control for AuLoaded {
             .collect()
     }
 
-    /// Plain, in the AU's own units: `ParamBounds::to_plain` over the
+    /// Plain, in the AU's own units: `ParamBounds`'s [`ParamMapping`] over the
     /// declared range (see it for why the display curves do not apply). `None`
     /// for an id the AU never declared.
     fn parameter_plain(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
-        let bounds = self.ranges.bounds(id.get())?;
-        Some(f64::from(bounds.to_plain(value.get())))
+        Some(self.ranges.bounds(id.get())?.plain(value))
     }
 
-    /// The inverse, `ParamBounds::to_normalized` (`f32`, the AU's own width).
+    /// The inverse, [`ParamMapping::normalized`].
     fn parameter_normalized(
         &self,
         _main: &MainThread,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
-        let bounds = self.ranges.bounds(id.get())?;
-        Some(Normalized::clamped(bounds.to_normalized(plain as f32)))
+        Some(self.ranges.bounds(id.get())?.normalized(plain))
     }
 
     /// Normalized `0..=1`: `AudioUnitGetParameter` answers in plain units, so
     /// the declared range maps it back. `None` for an id the AU refuses.
     fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
         let plain = parameters::get(self.unit(), id.get()).ok()?;
-        let normalized = match self.ranges.bounds(id.get()) {
-            Some(bounds) => bounds.to_normalized(plain),
-            None => f64::from(plain),
-        };
-        Some(Normalized::clamped(normalized))
+        Some(self.normalize(id.get(), plain))
     }
 
     /// Applied now (`AudioUnitSetParameter` is callable from any thread, so an
@@ -391,11 +391,7 @@ impl Control for AuLoaded {
         text: &str,
     ) -> Option<Normalized> {
         let plain = parameters::value_from_string(self.unit(), id.get(), text)?;
-        let normalized = match self.ranges.bounds(id.get()) {
-            Some(bounds) => bounds.to_normalized(plain),
-            None => f64::from(plain),
-        };
-        Some(Normalized::clamped(normalized))
+        Some(self.normalize(id.get(), plain))
     }
 
     fn save_state(&mut self, _main: &MainThread) -> PluginResult<Vec<u8>> {

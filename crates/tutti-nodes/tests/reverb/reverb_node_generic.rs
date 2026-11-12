@@ -7,7 +7,7 @@
 use std::ops::Range;
 
 use tutti_dsp::{
-    Approach, Capacity, Channels, Effort, Family, FirSummary, Grows, MaxDecay, Network,
+    Approach, Capacity, Channels, Effort, Family, Feed, FirSummary, Grows, MaxDecay, Network,
     NetworkCapacity, Reach, Recurrence, Stage, Start,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
@@ -97,7 +97,7 @@ impl Recurrence for EchoRecurrence {
         &self,
         _: &NoCoeffs,
         state: &mut EchoLine,
-        input: &[&[f32]],
+        feed: &Feed<'_>,
         output: &mut [&mut [f32]],
         frames: Range<usize>,
         _: usize,
@@ -108,7 +108,7 @@ impl Recurrence for EchoRecurrence {
             self.echo.actual + self.echo.latency,
         );
         for i in frames {
-            state.line[state.at] = input[0][i];
+            state.line[state.at] = feed.audio[0][i];
             let back = |d: usize| state.line[(state.at + n - d) % n];
             output[0][i] = back(first) + if second != first { back(second) } else { 0.0 };
             state.at = (state.at + 1) % n;

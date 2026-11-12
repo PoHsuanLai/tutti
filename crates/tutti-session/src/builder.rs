@@ -732,6 +732,8 @@ impl SessionBuilder {
         session.load = engine.take_load_meter();
         session.heard = Some((engine.heard_taps(), spec.channels));
         session.clock = Some(engine.block_clock());
+        #[cfg(feature = "audio-io")]
+        session.inputs.set_output_latency(audio_engine.latency());
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(engine));
         start(&mut audio_engine, Arc::clone(&state))?;
         #[cfg(feature = "audio-io")]

@@ -220,6 +220,10 @@ pub enum SessionEvent {
     /// restart wanted, done or failed ([`DeviceEvent`](crate::DeviceEvent)).
     #[cfg(feature = "device")]
     Device(crate::DeviceEvent),
+    /// A take of the session's: its first frame arrived, it ended, or it
+    /// failed ([`TakeEvent`](crate::TakeEvent)).
+    #[cfg(all(feature = "device", feature = "audio-io"))]
+    Take(crate::TakeEvent),
     /// A modulation problem (design 015 §4.7), the one type
     /// [`ModState::problems`](crate::ModState::problems) lists. Reported
     /// once: a refusal when it starts or changes (the problems list holds it
@@ -330,6 +334,8 @@ impl std::fmt::Debug for SessionEvent {
                 .finish(),
             #[cfg(feature = "device")]
             Self::Device(event) => f.debug_tuple("Device").field(event).finish(),
+            #[cfg(all(feature = "device", feature = "audio-io"))]
+            Self::Take(event) => f.debug_tuple("Take").field(event).finish(),
             #[cfg(feature = "modulation")]
             Self::Modulation(problem) => f.debug_tuple("Modulation").field(problem).finish(),
             #[cfg(feature = "midi")]

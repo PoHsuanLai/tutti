@@ -33,9 +33,9 @@ use tutti_modulation::{
 use tutti_nodes::automation::{Breakpoint, RecordMode, Trajectory};
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    AudioSide, MixRef, ModInput, ModKeys, ModRefusal, ModRouteId, ModTarget, NoSuchModRoute,
-    NoSuchModSource, OutPort, PHASES, ParamRef, PhaseCx, Problem, Root, RouteSpec, Session,
-    SessionEvent, Take, TargetName, declare_targets,
+    AudioSide, AutomationTake, MixRef, ModInput, ModKeys, ModRefusal, ModRouteId, ModTarget,
+    NoSuchModRoute, NoSuchModSource, OutPort, PHASES, ParamRef, PhaseCx, Problem, Root, RouteSpec,
+    Session, SessionEvent, TargetName, declare_targets,
 };
 use tutti_types::{
     Amplitude, Beat, Bpm, ChannelLayout, Depth, Drive, Hz, SampleRate, Samples, Seconds, UnitParam,
@@ -456,8 +456,11 @@ fn a_take_suspends_the_automation_then_restores_it() {
     );
 
     let mut m = s.mods_mut();
-    m.record(cutoff, Take::record(RecordMode::Touch, 0.0, 1_000.0))
-        .unwrap();
+    m.record(
+        cutoff,
+        AutomationTake::record(RecordMode::Touch, 0.0, 1_000.0),
+    )
+    .unwrap();
     m.take_mut(cutoff)
         .expect("the take is open")
         .recorder_mut()

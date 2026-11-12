@@ -32,6 +32,10 @@ rustfft = { version = "6.4", default-features = false }
 # transcendentals, so results do not depend on the platform's C math library.
 libm = "0.2.15"
 
+# `f32x8`, so the filter steps written over `Lanes` run eight voices of the
+# polysynth's lane bank at a time (`filter/real.rs`). Same version as `Cargo.lock`'s.
+wide = { version = "1.6", default-features = false }
+
 # The `Error` enum's Display/Error impls.
 thiserror.workspace = true
 

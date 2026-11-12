@@ -757,7 +757,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, libm and thiserror, and `rand` under the `contract` feature only), keeps every
+  rustfft, libm, `wide` (the `f32x8` lanes its filter steps run over: `Lanes`, which the
+  polysynth's lane bank calls `svf_step` and `ladder_step` with, so there is one copy of
+  each) and thiserror, and `rand` under the `contract` feature only), keeps every
   module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it; `contract`, behind the off-by-default `contract`
   feature, is the one public module: the cases a `Design` and its `Realization` are

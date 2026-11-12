@@ -76,7 +76,7 @@ impl Splits {
 /// is at most the graph's 64 ports ([`CrossoverNode::new`] refuses more). The
 /// bands are not delayed and the node adds no
 /// latency; the sum of the bands has flat magnitude and the phase of the
-/// crossovers' all-pass (see [`Crossover`](tutti_dsp::Crossover) for why, and for
+/// crossovers' all-pass (see [`CrossoverModel`](tutti_dsp::CrossoverModel) for why, and for
 /// what "not linear-phase" means for the bands). Its tail is
 /// [`Tail::Unknown`](tutti_types::Tail::Unknown), as the other IIR filters': the
 /// sections ring after the input stops, and it never parks.

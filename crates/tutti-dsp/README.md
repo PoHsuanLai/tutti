@@ -14,12 +14,12 @@ ramps and the graph shape. Here they take plain typed values per call.
 - **Filters** — `SvfCoeffs` and `SvfFamily<F>` (Simper's trapezoidal
   state-variable filter, eight responses by `SvfType`);
   `LadderCoeffs` and `LadderFamily<F>` (the Moog
-  ladder, `tanh` feedback); `CrossoverFamily` and `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order
-  split (the design on a 16-frame grid, the state with ramped frequency changes). The three
+  ladder, `tanh` feedback); `CrossoverFamily`, a 2 to 6 band Linkwitz-Riley 4th-order
+  split (the design on a 16-frame grid, landing whole). The three
   designs are one `Filter<R>` over a `ChannelRecurrence`, run by `Realized<PerChannel<R>>`. `Real` is the `f32` or `f64` the state
   runs in; its transcendentals call `libm`, so results do not depend on the
   platform's C math library.
-- **Dynamics** — `EnvelopeFollower`; the curves
+- **Dynamics** — the curves
   `compute_compressor_gain_reduction`, `compute_limiter_gain` and
   `LimiterCurve`; the compressor and the noise gate as families (`CompressorFamily` and
   `GateFamily`, each on a typed `KeySource`, a side-chain bus or the signal itself, run by
@@ -27,7 +27,9 @@ ramps and the graph shape. Here they take plain typed values per call.
   and the range gliding over `GAIN_GLIDE`); the lookahead limiter (`LimiterFamily`, run by
   `LimiterRecurrence`: threshold and ceiling per-frame lanes, every coefficient landing
   whole, the lookahead its member's latency); the brickwall clipper (`BrickwallFamily`); and
-  `CompressorKernel` (the multiband's bands'), whose `gain` takes a `CompressorBlock`.
+  the multiband compressor (`MultibandFamily`, run by `MultibandRecurrence`: a crossover tree
+  per channel and the compressor's one frame step per band, each band's makeup, bypass and
+  solo gliding over `GAIN_GLIDE`).
 - **Convolution** — `Convolver`, a uniform or non-uniform partitioned FFT
   convolution over an IR's shared, read-only `IrSpectra`.
 - **Delay** — `DelayLine`, a fractional-read ring with an `InterpolationMode`,

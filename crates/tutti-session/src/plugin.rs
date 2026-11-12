@@ -109,12 +109,14 @@ use tutti_plugin_host::{
     Notice, PluginControls, PluginHandle, PluginMeter, PluginStatus, Subscription,
 };
 use tutti_plugin_types::{
-    BridgeError, Normalized, ParamEdit, ParamId, PluginInvalidation, PluginRefresh, PluginTail,
+    BridgeError, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation, PluginRefresh,
+    PluginTail,
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{
-    GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy, Session, SessionEvent,
+    GiveUp, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure, RecoveryPolicy,
+    ReloadCause, Session, SessionEvent,
 };
 
 /// How often a healthy plugin's state is captured, by default: 8 s, the
@@ -444,7 +446,7 @@ impl PluginLoaded {
 
 /// What the session believes about a plugin's liveness: the debounce
 /// between the engine's latched `PluginStatus` and a node removed.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum PluginLiveness {
     /// Answering normally.
     #[default]
@@ -459,14 +461,14 @@ pub enum PluginLiveness {
     /// [`PluginChange::GaveUp`].
     Recovering {
         /// Why it needs a replacement.
-        cause: String,
+        cause: ReloadCause,
     },
     /// Written off: its node was removed (recovery off, or its budget
     /// spent). Load a replacement restoring its last good state
     /// ([`Plugin::state`]) to bring it back by hand.
     Dead {
         /// The engine's latched reason.
-        cause: String,
+        cause: PluginFailure,
     },
 }
 
@@ -479,7 +481,7 @@ pub enum PluginLiveness {
 /// recovery), so a host reads one place. There is no callback slot to install
 /// or clear; a host that needs a push from the thread that hears the plugin
 /// subscribes to its handle (`PluginHandle::subscribe`, the low layer).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PluginEvent {
     /// The plugin's node. After a [`PluginChange::Died`] with recovery off, or
@@ -490,7 +492,7 @@ pub struct PluginEvent {
 }
 
 /// What changed in a hosted plugin ([`PluginEvent::change`]).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum PluginChange {
     /// The plugin took hold of a parameter (its editor, or its own gesture):
@@ -543,7 +545,7 @@ pub enum PluginChange {
     /// [`GaveUp`](Self::GaveUp).
     Died {
         /// The engine's latched reason.
-        cause: String,
+        cause: PluginFailure,
     },
     /// A hosted plugin died or hung and recovery is on
     /// ([`RecoveryPolicy`]): its node stays in the
@@ -551,8 +553,8 @@ pub enum PluginChange {
     /// attempt.
     Reloading {
         /// Why it needs a replacement: the engine's latched cause, or a failed
-        /// attempt's reason.
-        cause: String,
+        /// attempt's.
+        cause: ReloadCause,
         /// Failures within the budget's window so far, this one included.
         attempt: u32,
         /// The wait before the load is handed out.
@@ -678,8 +680,6 @@ struct Origin {
 /// A recovering plugin's reload, between its death and its replacement.
 #[derive(Default)]
 struct Reload {
-    /// Why the plugin needs a replacement.
-    cause: String,
     /// When to hand the load out.
     due: Option<Instant>,
     /// Held by the job in flight; a new one per job, so a late landing of an
@@ -832,7 +832,7 @@ impl HostedPlugin {
     /// Records a scheduled reload and tells the host. The node stays.
     fn begin_reload(
         &mut self,
-        cause: String,
+        cause: ReloadCause,
         now: Instant,
         delay: Duration,
         attempt: u32,
@@ -842,7 +842,6 @@ impl HostedPlugin {
         self.status = PluginLiveness::Recovering {
             cause: cause.clone(),
         };
-        self.reload.cause = cause.clone();
         self.reload.due = Some(now + delay);
         self.reload.in_flight = false;
         // A job of an earlier attempt lands nowhere.
@@ -1479,7 +1478,7 @@ impl Session {
             Ok(Err(_in_process)) => {
                 self.fail_reload(
                     node,
-                    "the replacement opened in process".into(),
+                    RecoveryFailure::ReplacementInProcess,
                     now,
                     &mut out,
                     &mut gave_up,
@@ -1496,7 +1495,15 @@ impl Session {
                 {
                     hosted.withhold_snapshot(now);
                 }
-                self.fail_reload(node, e.to_string(), now, &mut out, &mut gave_up);
+                self.fail_reload(
+                    node,
+                    RecoveryFailure::ReloadFailed {
+                        source: Arc::new(e),
+                    },
+                    now,
+                    &mut out,
+                    &mut gave_up,
+                );
                 self.finish_gave_up(gave_up, &mut out);
                 return out;
             }
@@ -1540,12 +1547,16 @@ impl Session {
             {
                 hosted.withhold_snapshot(now);
             }
-            let reason = client.handle().status().cause().map_or_else(
-                || "the replacement died before it was installed".to_string(),
-                str::to_string,
-            );
+            let cause = RecoveryFailure::ReplacementDied {
+                cause: client
+                    .handle()
+                    .status()
+                    .cause()
+                    .cloned()
+                    .unwrap_or(PluginFailure::Unreported),
+            };
             let mut gave_up = Vec::new();
-            self.fail_reload(node, reason, now, out, &mut gave_up);
+            self.fail_reload(node, cause, now, out, &mut gave_up);
             self.finish_gave_up(gave_up, out);
             return;
         }
@@ -1557,29 +1568,19 @@ impl Session {
         // server.
         let got = client.declared_shape();
         if let Some(was) = self.graph.shape(node) {
-            let ports = |s: &tutti_graph::Shape| {
-                (
-                    s.audio_in().count(),
-                    s.audio_out().count(),
-                    s.event_in,
-                    s.event_out,
-                )
+            let counts = |s: &tutti_graph::Shape| PortCounts {
+                audio_in: usize::from(s.audio_in().count()),
+                audio_out: usize::from(s.audio_out().count()),
+                event_in: usize::from(s.event_in),
+                event_out: usize::from(s.event_out),
             };
-            if ports(&was) != ports(&got) {
-                let reason = format!(
-                    "the replacement's ports differ from the node's: {} audio in, {} out, {} \
-                     event in, {} out, where the node has {}, {}, {}, {}",
-                    got.audio_in().count(),
-                    got.audio_out().count(),
-                    got.event_in,
-                    got.event_out,
-                    was.audio_in().count(),
-                    was.audio_out().count(),
-                    was.event_in,
-                    was.event_out,
-                );
+            if counts(&was) != counts(&got) {
+                let cause = RecoveryFailure::ReplacementPorts {
+                    got: counts(&got),
+                    was: counts(&was),
+                };
                 let mut gave_up = Vec::new();
-                self.fail_reload(node, reason, now, out, &mut gave_up);
+                self.fail_reload(node, cause, now, out, &mut gave_up);
                 self.finish_gave_up(gave_up, out);
                 return;
             }
@@ -1636,7 +1637,8 @@ impl Session {
                     }
                 }
                 let mut gave_up = Vec::new();
-                self.fail_reload(node, refused.to_string(), now, out, &mut gave_up);
+                let cause = RecoveryFailure::ReplacementRefused { source: refused };
+                self.fail_reload(node, cause, now, out, &mut gave_up);
                 self.finish_gave_up(gave_up, out);
                 return;
             }
@@ -1701,7 +1703,7 @@ impl Session {
     fn fail_reload(
         &mut self,
         node: NodeKey,
-        reason: String,
+        cause: RecoveryFailure,
         now: Instant,
         out: &mut Vec<SessionEvent>,
         gave_up: &mut Vec<(NodeKey, GiveUp)>,
@@ -1715,11 +1717,11 @@ impl Session {
         };
         let action = recovery.step(
             RecoveryEvent::LoadFailed {
-                reason: reason.clone(),
+                cause: cause.clone(),
             },
             now,
         );
-        self.apply_failure(node, action, reason, now, out, gave_up);
+        self.apply_failure(node, action, ReloadCause::Attempt(cause), now, out, gave_up);
     }
 
     /// Carries out the answer to a failed attempt.
@@ -1727,7 +1729,7 @@ impl Session {
         &mut self,
         node: NodeKey,
         action: RecoveryAction,
-        reason: String,
+        reason: ReloadCause,
         now: Instant,
         out: &mut Vec<SessionEvent>,
         gave_up: &mut Vec<(NodeKey, GiveUp)>,
@@ -1783,17 +1785,21 @@ impl Session {
             // The token is the job's alone while it is out: sole owner means
             // the job was dropped.
             if Arc::strong_count(&hosted.reload.token) == 1 {
-                self.fail_reload(node, "the reload job was dropped".into(), now, out, gave_up);
+                self.fail_reload(node, RecoveryFailure::ReloadDropped, now, out, gave_up);
                 return;
             }
         }
-        let tick = hosted
+        let (tick, load_timeout) = hosted
             .recovery
             .as_mut()
-            .map_or(RecoveryAction::Wait, |r| r.step(RecoveryEvent::Tick, now));
-        if tick != RecoveryAction::Wait {
+            .map_or((RecoveryAction::Wait, Duration::ZERO), |r| {
+                (r.step(RecoveryEvent::Tick, now), r.policy().load_timeout)
+            });
+        if !matches!(tick, RecoveryAction::Wait) {
             // The attempt ran out of time.
-            let reason = "the reload timed out".to_string();
+            let reason = ReloadCause::Attempt(RecoveryFailure::ReloadTimedOut {
+                after: load_timeout,
+            });
             self.apply_failure(node, tick, reason, now, out, gave_up);
             return;
         }
@@ -1871,7 +1877,7 @@ impl Session {
                     // `Liveness` declares a death only on an unhealthy
                     // observation, and every unhealthy one carries the
                     // engine's latched cause.
-                    let cause = cause.unwrap_or_default();
+                    let cause = cause.unwrap_or(PluginFailure::Unreported);
                     let latency = self.graph.node_latency(node).unwrap_or_default();
                     let hosted = self
                         .graph
@@ -1901,7 +1907,14 @@ impl Session {
                                 hosted.handle.name()
                             );
                             hosted.reload.latency_before = latency;
-                            hosted.begin_reload(cause, now, delay, attempt, node, out);
+                            hosted.begin_reload(
+                                ReloadCause::Died(cause),
+                                now,
+                                delay,
+                                attempt,
+                                node,
+                                out,
+                            );
                             continue;
                         }
                         Some(RecoveryAction::GiveUp(why)) => {
@@ -1930,7 +1943,7 @@ impl Session {
             // ended here, and dies by the path above.
             if cause.is_none()
                 && let Some(recovery) = hosted.recovery.as_mut()
-                && let RecoveryAction::Terminate { cause } = recovery.step(
+                && let RecoveryAction::Terminate { reason } = recovery.step(
                     {
                         let counts = hosted.handle.block_counts();
                         RecoveryEvent::Starved {
@@ -1942,10 +1955,10 @@ impl Session {
                 )
             {
                 tracing::error!(
-                    "plugin '{}' ({node:?}): {cause}; ending its server",
+                    "plugin '{}' ({node:?}): {reason}; ending its server",
                     hosted.handle.name()
                 );
-                hosted.handle.terminate(&cause);
+                hosted.handle.terminate(reason);
             }
 
             // The figure its node declares now, onto the graph when it moved.
@@ -1953,7 +1966,7 @@ impl Session {
                 .controls
                 .as_ref()
                 .map(PluginControls::declared_latency);
-            let healthy = hosted.status == PluginLiveness::Healthy;
+            let healthy = matches!(hosted.status, PluginLiveness::Healthy);
             let due = healthy && Arc::strong_count(&hosted.snapshot_token) == 1 && {
                 let since = *hosted.snapshot_at.get_or_insert(now);
                 now.saturating_duration_since(since) >= interval
@@ -2112,8 +2125,8 @@ mod tests {
         fn is_crashed(&self) -> bool {
             self.dead.load(Ordering::SeqCst)
         }
-        fn crash_cause(&self) -> Option<String> {
-            self.is_crashed().then(|| "stream closed".to_string())
+        fn crash_cause(&self) -> Option<PluginFailure> {
+            self.is_crashed().then_some(PluginFailure::StreamClosed)
         }
         fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
             None
@@ -2121,7 +2134,7 @@ mod tests {
         fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
             tutti_plugin_types::BlockCounts::default()
         }
-        fn terminate(&self, _cause: &str) {}
+        fn terminate(&self, _reason: tutti_plugin_types::TerminationReason) {}
     }
 
     struct Rig {

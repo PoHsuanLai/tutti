@@ -1,5 +1,6 @@
 use super::*;
-use crate::{Complex32, Crossover, RealFft};
+use crate::filter::crossover::CrossoverState;
+use crate::{Complex32, RealFft};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -99,17 +100,17 @@ fn the_two_bands_are_the_prewarped_bilinear_image_of_the_lr4_prototypes() {
 }
 
 /// The model's response is the running crossover's: the `RealFft` of each
-/// band's impulse response through `Crossover::split` against
+/// band's impulse response through `CrossoverState::tick` against
 /// `frequency_response`, to 1e-5 of its norm, for three bands.
 #[test]
 fn the_response_is_what_the_crossover_runs() {
     const N: usize = 1 << 15;
     let freqs = [Hz(300.0), Hz(3_000.0)];
     let m = CrossoverModel::new(&freqs, RATE).unwrap();
-    let mut xo = Crossover::new(&freqs, RATE).unwrap();
+    let mut xo = CrossoverState::default();
     let mut bands = vec![vec![0.0f32; N]; 3];
     for n in 0..N {
-        let out = xo.split(if n == 0 { 1.0 } else { 0.0 });
+        let out = xo.tick(&m, if n == 0 { 1.0 } else { 0.0 });
         for (b, v) in bands.iter_mut().zip(out) {
             b[n] = v;
         }
@@ -153,9 +154,9 @@ fn the_tail_covers_the_measured_ring_and_the_norms_bound_the_output() {
     const N: usize = 1 << 17;
     let freqs = [Hz(80.0), Hz(2_000.0)];
     let m = CrossoverModel::new(&freqs, RATE).unwrap();
-    let mut xo = Crossover::new(&freqs, RATE).unwrap();
+    let mut xo = CrossoverState::default();
     let ir: Vec<f32> = (0..N)
-        .map(|n| xo.split(if n == 0 { 1.0 } else { 0.0 })[0])
+        .map(|n| xo.tick(&m, if n == 0 { 1.0 } else { 0.0 })[0])
         .collect();
     let win = 256;
     let env: Vec<f64> = ir
@@ -179,37 +180,17 @@ fn the_tail_covers_the_measured_ring_and_the_norms_bound_the_output() {
         tail.get()
     );
 
-    let mut xo = Crossover::new(&freqs, RATE).unwrap();
+    let mut xo = CrossoverState::default();
     let mut state = 7u32;
     let mut worst = 0.0f64;
     for _ in 0..(60 * 48_000) {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let x = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
-        let out = xo.split(x);
+        let out = xo.tick(&m, x);
         worst = out[..3]
             .iter()
             .fold(worst, |m, &s| m.max(f64::from(s.abs())));
     }
     assert!(worst <= m.l1_norm(), "{worst} against {}", m.l1_norm());
     assert!(m.hinf_norm() <= m.l1_norm());
-}
-
-/// The design is separate from the state: the model of a crossover is the
-/// model built from its frequencies, before and after it has run.
-#[test]
-fn a_crossover_holds_its_model_apart_from_its_state() {
-    let freqs = [Hz(250.0), Hz(4_000.0)];
-    let mut xo = Crossover::new(&freqs, RATE).unwrap();
-    let want = CrossoverModel::new(&freqs, RATE).unwrap();
-    assert_eq!(xo.model(), &want);
-    for n in 0..1000 {
-        xo.split(if n % 7 == 0 { 0.5 } else { -0.2 });
-    }
-    assert_eq!(xo.model(), &want);
-    xo.set_frequencies(&[Hz(300.0), Hz(5_000.0)]).unwrap();
-    xo.split(0.1);
-    assert_eq!(
-        xo.model(),
-        &CrossoverModel::new(&[Hz(300.0), Hz(5_000.0)], RATE).unwrap()
-    );
 }

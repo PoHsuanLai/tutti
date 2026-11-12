@@ -28,11 +28,13 @@ use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::{PluginRef, PluginState};
 use tutti_plugin_host::PluginStatus;
+use tutti_plugin_types::{BridgeError, PluginFailure, TerminationReason};
 use tutti_session::BufferMaster;
 use tutti_session::{
     Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginLiveness,
     PluginLoadRequest, Range, Session, SessionEvent,
 };
+use tutti_session::{RecoveryFailure, ReloadCause};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -302,11 +304,13 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     };
     for (i, ms) in [0, 10, 20].into_iter().enumerate() {
         assert!(plugins_at(&mut s, ms).is_empty(), "inside the window");
-        assert_eq!(
-            s.plugin(node).unwrap().liveness(),
-            &PluginLiveness::Failing {
-                consecutive: i as u8 + 1
-            }
+        assert!(
+            matches!(
+                s.plugin(node).unwrap().liveness(),
+                PluginLiveness::Failing { consecutive } if *consecutive == i as u8 + 1
+            ),
+            "{:?}",
+            s.plugin(node).unwrap().liveness()
         );
         assert!(s.graph_ref().contains(node), "a failing plugin stays");
     }
@@ -314,8 +318,9 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     assert_eq!(died.len(), 1, "one report: {died:?}");
     assert_eq!(died[0].0, node);
     assert!(
-        !died[0].1.is_empty(),
-        "the engine's cause, not a placeholder"
+        matches!(died[0].1, PluginFailure::StreamClosed),
+        "a server that aborted closed its stream, and the cause says so: {:?}",
+        died[0].1
     );
     assert!(
         !s.graph_ref().contains(node),
@@ -675,7 +680,10 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
         "the replacement's latency"
     );
     assert!(s.graph_ref().contains(node));
-    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Healthy
+    ));
     // The snapshot is still the node's recovery point: a second failure
     // restores it again.
     assert!(s.plugin(node).unwrap().state().last_good().is_some());
@@ -786,8 +794,119 @@ fn a_plugin_that_crashes_every_time_is_given_up_on() {
     };
     assert_eq!(*at, node);
     assert_eq!(why.failures, 3);
+    assert!(
+        matches!(&why.last, ReloadCause::Died(PluginFailure::StreamClosed)),
+        "a replacement that aborts on its first block closed its stream: {:?}",
+        why.last
+    );
     assert!(!s.graph_ref().contains(node), "the node is removed");
     assert!(s.plugin(node).is_err(), "and its record");
+}
+
+/// **A reload that fails to load reports the `BridgeError` as the cause's
+/// `source`.** The plugin is loaded from a copy of the reference plugin; the
+/// copy is deleted once it is running, and its first server aborts on its
+/// 40th block. Every replacement is then asked to load a file that is gone,
+/// so each attempt fails with the server's load error: `Reloading` and
+/// `GaveUp` carry `RecoveryFailure::ReloadFailed`, with the `BridgeError`
+/// behind it, not as text.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_reload_that_fails_to_load_carries_the_bridge_error_as_its_source() {
+    use std::error::Error;
+    let copy = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("vanishing-probe.clap");
+    std::fs::copy(clap_probe(), &copy).expect("a copy of the reference plugin");
+    let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "40")], |b| {
+        b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
+            max_failures: 2,
+            backoff: Duration::from_millis(1),
+            ..Default::default()
+        }))
+    });
+    let node = s
+        .add_plugin_blocking(
+            &main_thread(),
+            PluginLoadRequest::new(PluginRef::file(&copy).expect("a plugin file")),
+        )
+        .expect("the copy loads");
+    s.graph().connect(node, Root).unwrap();
+    let _ = s.update();
+    std::fs::remove_file(&copy).expect("the copy is removed once it runs");
+
+    let mut drive = Drive::new();
+    drive.until(&mut s, "given up", |e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::GaveUp { .. },
+                ..
+            })
+        )
+    });
+    let causes: Vec<&ReloadCause> = drive
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Reloading { cause, .. },
+                ..
+            }) => Some(cause),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        matches!(
+            causes.first(),
+            Some(ReloadCause::Died(PluginFailure::StreamClosed))
+        ),
+        "the first reload is for the death: {causes:?}"
+    );
+    let failed = causes
+        .get(1)
+        .expect("a second attempt follows a failed load");
+    assert!(
+        matches!(
+            failed,
+            ReloadCause::Attempt(RecoveryFailure::ReloadFailed { .. })
+        ),
+        "{failed:?}"
+    );
+    let ReloadCause::Attempt(attempt) = failed else {
+        unreachable!()
+    };
+    let source = attempt.source().expect("a failed load has a source");
+    assert!(
+        matches!(
+            source.downcast_ref::<BridgeError>(),
+            Some(BridgeError::LoadFailed { .. })
+        ),
+        "the load's own error is the source: {source:?}"
+    );
+    let Some(SessionEvent::Plugin(PluginEvent {
+        change: PluginChange::GaveUp { why, .. },
+        ..
+    })) = drive.events.iter().find(|e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::GaveUp { .. },
+                ..
+            })
+        )
+    })
+    else {
+        unreachable!()
+    };
+    let ReloadCause::Attempt(last @ RecoveryFailure::ReloadFailed { .. }) = &why.last else {
+        panic!("the give-up carries the failed load: {:?}", why.last);
+    };
+    assert!(
+        matches!(
+            last.source().and_then(|e| e.downcast_ref::<BridgeError>()),
+            Some(BridgeError::LoadFailed { .. })
+        ),
+        "{last:?}"
+    );
 }
 
 /// **A reload job dropped unrun is a failed attempt**, and the next one is
@@ -926,7 +1045,15 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
     else {
         unreachable!()
     };
-    assert!(cause.contains("stopped answering"), "{cause}");
+    assert!(
+        matches!(
+            cause,
+            ReloadCause::Died(PluginFailure::Terminated {
+                reason: TerminationReason::Hung { .. }
+            })
+        ),
+        "{cause:?}"
+    );
     assert_eq!(
         drive.count(|e| matches!(
             e,
@@ -981,7 +1108,10 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
         )),
         0
     );
-    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Healthy
+    ));
 }
 
 /// **A replacement with other ports is a failed attempt, and the graph stays
@@ -1076,7 +1206,13 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     else {
         unreachable!()
     };
-    assert!(why.last.contains("ports differ"), "{why}");
+    assert!(
+        matches!(
+            why.last,
+            ReloadCause::Attempt(RecoveryFailure::ReplacementPorts { got, was }) if got != was
+        ),
+        "{why}"
+    );
     assert_eq!(
         state.as_ref().map(PluginState::bytes),
         Some(kept.as_slice()),
@@ -1200,7 +1336,10 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         "the attempt with the snapshot failed first"
     );
     assert!(s.plugin(node).unwrap().state().last_good().is_none());
-    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Healthy
+    ));
     // The user's state is kept for the host, not thrown away...
     assert_eq!(
         s.plugin(node)

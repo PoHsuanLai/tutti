@@ -160,7 +160,7 @@ fn a_retarget_lands_whole() {
     assert_eq!(out[0][0], (low * low * all_pass) as f32);
 }
 
-/// `CrossoverControls::new` is `Crossover::new`'s own check: it refuses what a
+/// `CrossoverControls::new` is the design's own check: it refuses what a
 /// crossover cannot run, and nothing else.
 #[test]
 fn controls_refuse_what_a_crossover_cannot_run() {

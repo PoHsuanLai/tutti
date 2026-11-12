@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tutti_fixtures::main_thread;
-use tutti_plugin_types::StateError;
+use tutti_plugin_types::{BridgeError, PluginFailure, StateError};
 use tutti_types::SampleRate;
 
 use interprocess::local_socket::{ListenerOptions, Stream, traits::Listener as _};
@@ -523,6 +523,20 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
 
 // ── The cause, and who hears about it ────────────────────────────────────────
 
+/// Whether `cause` is what a peer that closes the connection leaves: the EOF
+/// as `StreamClosed`, or a reset as `Io` over the I/O `BridgeError`.
+fn is_closed_stream(cause: Option<&PluginFailure>) -> bool {
+    use std::error::Error;
+    match cause {
+        Some(PluginFailure::StreamClosed) => true,
+        Some(io @ PluginFailure::Io { .. }) => matches!(
+            io.source().and_then(|s| s.downcast_ref::<BridgeError>()),
+            Some(BridgeError::Io(_))
+        ),
+        _ => false,
+    }
+}
+
 /// A mid-session death latches *why*, not just *that*.
 ///
 /// The cause has to be captured where the failure is noticed: `BridgeError` is
@@ -530,16 +544,16 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
 /// that polls afterwards could otherwise only report a placeholder, identical
 /// for every death alike.
 ///
-/// Asserts non-emptiness rather than an exact string: the message comes from
-/// the transport and differs across platforms ("connection reset", "broken
-/// pipe"). Pinning the text would make this a test of the OS.
+/// Asserts the cause's kind, not its text: a closed stream reads as
+/// `StreamClosed` (EOF) or, where the OS reports a reset instead, `Io` with
+/// the `BridgeError` as its `source`. Pinning the text would make this a test
+/// of the OS.
 #[test]
 fn a_crash_latches_a_cause_that_outlives_the_call() {
     let mock = MockServer::start("cause-latch", |_| Action::Die);
 
-    assert_eq!(
-        mock.bridge.crash_cause(),
-        None,
+    assert!(
+        mock.bridge.crash_cause().is_none(),
         "a bridge reported a cause before anything went wrong"
     );
 
@@ -551,7 +565,7 @@ fn a_crash_latches_a_cause_that_outlives_the_call() {
 
     let cause = mock.bridge.crash_cause();
     assert!(
-        cause.as_deref().is_some_and(|c| !c.is_empty()),
+        is_closed_stream(cause.as_ref()),
         "a crashed bridge reported no cause ({cause:?}); the reason is gone \
          once the failing call returns, so latching it at the detection site \
          is the only chance to keep it"
@@ -581,7 +595,7 @@ fn a_listener_hears_the_crash_with_its_cause() {
 
     let mock = MockServer::start("crash-event", |_| Action::Die);
 
-    let heard: Arc<PlMutex<Vec<String>>> = Arc::new(PlMutex::new(Vec::new()));
+    let heard: Arc<PlMutex<Vec<PluginFailure>>> = Arc::new(PlMutex::new(Vec::new()));
     let sink = Arc::clone(&heard);
     mock.bridge.set_listener(Some(Arc::new(move |ev| {
         if let crate::client::audio::BridgeEvent::Crashed { cause } = ev {
@@ -612,8 +626,9 @@ fn a_listener_hears_the_crash_with_its_cause() {
          host with duplicates of one death"
     );
     assert!(
-        !seen[0].is_empty(),
-        "the crash notification carried an empty cause"
+        is_closed_stream(Some(&seen[0])),
+        "the crash notification carried {:?}, not a closed stream",
+        seen[0]
     );
 }
 

@@ -37,10 +37,34 @@
 //! # Notice
 //!
 //! The third byte of the mode word (`mode | editor << 8 | notice << 16`) is the
-//! notice behaviour: `NOTICE_NONE`, or `NOTICE_ON_LOAD`, which makes the CLAP
-//! and VST2 shells tell the host something on every state load, so a host's
-//! read of what a plugin asked for has a witness in either state. A blob with a
-//! notice byte is the Rust shells' only: the C++ plugin refuses it.
+//! notice behaviour: `NOTICE_NONE`, or `NOTICE_ON_LOAD`, which makes every
+//! shell but the AU tell the host something on every state load, so a host's
+//! read of what a plugin asked for has a witness in either state: CLAP a
+//! `request_callback`, VST2 `audioMasterAutomate(0, 0.5)`, VST3 an edit of
+//! `aux` to 0.75 (`beginEdit`, `performEdit`, `endEdit` through the host's
+//! `IComponentHandler`, from the controller's `setComponentState`, or from the
+//! component's `setState` in the combined Rust shell). The C++ VST3 plugin takes
+//! the notice byte and refuses the editor byte.
+//!
+//! # VST3 controllers and flushes
+//!
+//! Only the VST3 shells do these, and both cores must (one spec):
+//!
+//! - **`IMidiMapping`**, event bus 0, channel 0: controller 74 drives `level`;
+//!   every other (bus, channel, controller) is unmapped (`kResultFalse`). The
+//!   mapped controller reaches the plugin as a parameter point, the unmapped
+//!   ones are not heard (VST3 has no event for them).
+//! - **`outputParameterChanges`**: a note on of key `k` on channel 15 writes the
+//!   point `aux = k / 127` at the note's offset into the block's
+//!   `outputParameterChanges`, as a processor-driven parameter (a meter, a preset
+//!   change) does. The processor's own `aux` does not move: the point is the
+//!   report, and the host applies it to the controller.
+//! - **A data event** (`kMidiSysEx`) in the input list is recorded as kind 5.
+//! - **A null `inputParameterChanges`** is recorded as kind 6, at offset 0, once
+//!   per process call that carried one.
+//! - **A process call with `numSamples == 0`** is a parameter flush: kind 7 at
+//!   offset 0, the call's parameter points are recorded (kind 1) and applied at
+//!   once, and no block is counted (`calls` stays), nothing is rendered.
 //!
 //! # State
 //!
@@ -75,8 +99,10 @@
 //! counts what it did not keep.
 //!
 //! An event is `kind << 32 | offset` (u64; kind 1 parameter, 2 note on, 3 note
-//! off, 4 control change), the parameter id, key or controller number (u64), the
-//! value (f64; a control change's value, 0 to 127). A control change is
+//! off, 4 control change, 5 data event, 6 null parameter list, 7 flush), the
+//! parameter id, key or controller number (u64; a data event's first byte, 0
+//! for 6 and 7), the value (f64; a control change's value, 0 to 127; a data
+//! event's size in bytes, 0 for 6 and 7). A control change is
 //! recorded and has no effect on the output: the plugin is a black box to the
 //! host, and the transcript is how a test sees that the host delivered one, and
 //! where (a format delivers it as an event: CLAP and VST2 do; VST3 carries a
@@ -191,6 +217,12 @@ pub enum Ev {
         controller: u8,
         value: u8,
     },
+    /// A VST3 data event (`kMidiSysEx`): recorded, never acted on.
+    Data { offset: u32, first: u8, size: u32 },
+    /// A VST3 process call whose `inputParameterChanges` was null.
+    NullParams,
+    /// A VST3 process call with `numSamples == 0`.
+    Flush,
 }
 
 impl Ev {
@@ -199,7 +231,9 @@ impl Ev {
             Ev::Param { offset, .. }
             | Ev::NoteOn { offset, .. }
             | Ev::NoteOff { offset, .. }
-            | Ev::Control { offset, .. } => offset,
+            | Ev::Control { offset, .. }
+            | Ev::Data { offset, .. } => offset,
+            Ev::NullParams | Ev::Flush => 0,
         }
     }
 }
@@ -430,12 +464,35 @@ impl Core {
                 controller,
                 value,
             } => self.log(4, offset, u32::from(controller), f64::from(value)),
+            Ev::Data {
+                offset,
+                first,
+                size,
+            } => self.log(5, offset, u32::from(first), f64::from(size)),
+            Ev::NullParams => self.log(6, 0, 0, 0.0),
+            // Logged by `flush`, which is not a block's event.
+            Ev::Flush => {}
         }
         if dsp.events.len() < MAX_EVENTS {
             dsp.events.push(ev);
         } else {
             self.overflow.store(1, Relaxed);
         }
+    }
+
+    /// A VST3 parameter flush (a process call with `numSamples == 0`): records
+    /// it, applies the parameter points queued since the last block at once and
+    /// forgets the points. No block is counted and nothing is rendered. Never
+    /// allocates.
+    pub fn flush(&self, dsp: &mut Dsp) {
+        self.log(7, 0, 0, 0.0);
+        dsp.events.retain(|ev| match *ev {
+            Ev::Param { id, value, .. } => {
+                self.set_param(id, value);
+                false
+            }
+            _ => true,
+        });
     }
 
     /// Records a parameter value the host set outside a block's event list, at
@@ -529,7 +586,7 @@ impl Core {
                     }
                 }
                 // Recorded when it arrived; the output ignores it.
-                Ev::Control { .. } => {}
+                Ev::Control { .. } | Ev::Data { .. } | Ev::NullParams | Ev::Flush => {}
             }
         }
         self.render(dsp, pos, frames, bus, ins, outs);

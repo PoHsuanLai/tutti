@@ -993,3 +993,69 @@ fn a_drop_off_the_main_thread_is_destroyed_on_the_main_threads_next_tick() {
     assert_eq!(tutti_plugin_types::run_deferred(&main), 0, "once");
     switch_u32(b"tutti_test_plugin_set_gui_mode\0", 0);
 }
+
+/// The entry's `(inits, deinits)` the reference image has seen.
+fn entry_calls() -> (u32, u32) {
+    let (mut inits, mut deinits) = (0u32, 0u32);
+    // SAFETY: `tutti_test_plugin_entry_calls` is `#[no_mangle] pub unsafe
+    // extern "C" fn(*mut u32, *mut u32)` in the reference plugin; both are
+    // valid locals.
+    unsafe {
+        let f: libloading::Symbol<unsafe extern "C" fn(*mut u32, *mut u32)> = library()
+            .get(b"tutti_test_plugin_entry_calls\0")
+            .expect("entry counters");
+        f(&mut inits, &mut deinits);
+    }
+    (inits, deinits)
+}
+
+/// `entry.h`: `deinit` answers `init` when the library is finished with, and a
+/// second `init` is legal only after it. A probe-then-load (open, read the
+/// descriptors, drop, open again) must read init, deinit, init, deinit on the
+/// plugin's entry, and two overlapping bundles share one pair. The reference
+/// image stays mapped through `library()`, so its counters see every call.
+#[test]
+fn the_entry_is_deinitialised_when_the_last_bundle_closes() {
+    let _g = lock();
+    library();
+    let (i0, d0) = entry_calls();
+
+    let probe = Bundle::open(Path::new(probe_path()), None).expect("opens");
+    assert_eq!(entry_calls(), (i0 + 1, d0));
+    drop(probe);
+    assert_eq!(entry_calls(), (i0 + 1, d0 + 1), "a probe's drop deinits");
+
+    let first = Bundle::open(Path::new(probe_path()), None).expect("opens");
+    let second = Bundle::open(Path::new(probe_path()), None).expect("opens");
+    assert_eq!(entry_calls(), (i0 + 2, d0 + 1), "one init for both");
+    drop(first);
+    assert_eq!(entry_calls(), (i0 + 2, d0 + 1), "one bundle still open");
+    drop(second);
+    assert_eq!(entry_calls(), (i0 + 2, d0 + 2));
+}
+
+/// A plugin whose `init` succeeded and whose factory is then missing is
+/// deinitialised on the host's error path: `init` is paired with `deinit` on
+/// every path out of `open`.
+#[test]
+fn an_open_that_fails_after_init_deinitialises_the_entry() {
+    let _g = lock();
+    library();
+    let set = |refused: u32| {
+        // SAFETY: `tutti_test_plugin_set_factory_refused` is `#[no_mangle] pub
+        // unsafe extern "C" fn(u32)` in the reference plugin.
+        unsafe {
+            let f: libloading::Symbol<unsafe extern "C" fn(u32)> = library()
+                .get(b"tutti_test_plugin_set_factory_refused\0")
+                .expect("factory switch");
+            f(refused);
+        }
+    };
+    let (i0, d0) = entry_calls();
+
+    set(1);
+    let opened = Bundle::open(Path::new(probe_path()), None);
+    set(0);
+    assert!(opened.is_err(), "a missing factory is refused");
+    assert_eq!(entry_calls(), (i0 + 1, d0 + 1));
+}

@@ -69,6 +69,7 @@ struct ProbeControls {
     reset_delay: unsafe extern "C" fn(),
     last_render_mode: unsafe extern "C" fn() -> u32,
     set_preferred_dialect: unsafe extern "C" fn(u32),
+    set_port0_dialects: unsafe extern "C" fn(u32),
 }
 
 impl ProbeControls {
@@ -91,8 +92,12 @@ impl ProbeControls {
             let set_preferred_dialect = *lib
                 .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_preferred_dialect\0")
                 .expect("set_preferred_dialect symbol present");
+            let set_port0_dialects = *lib
+                .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_port0_dialects\0")
+                .expect("set_port0_dialects symbol present");
             Self {
                 _lib: lib,
+                set_port0_dialects,
                 set_port_layout,
                 set_render_mode,
                 reset_delay,
@@ -116,6 +121,9 @@ impl ProbeControls {
     }
     fn set_preferred_dialect(&self, raw: u32) {
         unsafe { (self.set_preferred_dialect)(raw) }
+    }
+    fn set_port0_dialects(&self, raw: u32) {
+        unsafe { (self.set_port0_dialects)(raw) }
     }
 }
 
@@ -168,6 +176,7 @@ impl Drop for ProbeSession<'_> {
         self.controls.reset_delay();
         self.controls
             .set_preferred_dialect(PREFERRED_DIALECT_DEFAULT);
+        self.controls.set_port0_dialects(PREFERRED_DIALECT_DEFAULT);
     }
 }
 
@@ -794,6 +803,28 @@ fn notes_follow_the_input_note_ports_dialect() {
         .set_preferred_dialect(CLAP_NOTE_DIALECT_MIDI);
     active.reactivate().expect("reactivates");
     assert!(active.sends_midi_notes());
+}
+
+/// `note-ports.h`: `clap_event_midi` goes only to a note port that declares
+/// `CLAP_NOTE_DIALECT_MIDI`. The host reads each port's declaration at
+/// activation: the probe's port 0 takes CLAP and MIDI and its port 1 MIDI only,
+/// and with port 0 declaring CLAP alone, port 0 is not one MIDI may be sent to.
+#[test]
+fn midi_goes_only_to_note_ports_that_declare_the_midi_dialect() {
+    use clap_sys::ext::note_ports::CLAP_NOTE_DIALECT_CLAP;
+
+    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
+    assert_eq!(
+        session.load().midi_capable_ports(&main_thread()),
+        [true, true]
+    );
+
+    session.controls.set_port0_dialects(CLAP_NOTE_DIALECT_CLAP);
+    assert_eq!(
+        session.load().midi_capable_ports(&main_thread()),
+        [false, true],
+        "port 0 declared no MIDI dialect"
+    );
 }
 
 /// `clap.render` must actually reach the plugin. The probe records the mode

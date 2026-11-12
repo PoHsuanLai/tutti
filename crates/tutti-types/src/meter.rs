@@ -406,9 +406,12 @@ impl core::fmt::Display for TimeSignature {
 unit! {
     /// A bar's position on the timeline.
     ///
-    /// **1-based**: bar 1 is the first bar, which is what every display, every plugin
-    /// ABI (CLAP's `bar_number`), and every musician means. Bar 0 and below are legal
-    /// and describe pre-roll — a count-in sits at negative beats.
+    /// **1-based**: bar 1 is the first bar, which is what every display and every
+    /// musician means. Bar 0 and below are legal and describe pre-roll — a count-in
+    /// sits at negative beats.
+    ///
+    /// CLAP's `bar_number` is **0-based** ("bar at song pos 0 has the number 0",
+    /// `events.h`), so a host converts at that edge with [`index`](Self::index).
     ///
     /// A position, not a count: `BarNumber + BarNumber` has no meaning without an
     /// origin, exactly as `Beat + Beat` does not. Subtracting two gives a

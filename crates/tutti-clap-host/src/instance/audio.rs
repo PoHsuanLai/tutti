@@ -481,7 +481,15 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
     if is_usable(transport.position.beats) {
         flags |= CLAP_TRANSPORT_HAS_BEATS_TIMELINE;
     }
-    if is_usable(transport.position.seconds.get()) {
+    // The seconds timeline covers the loop's seconds too: with a loop active
+    // and no exact seconds for it, the flag is not claimed.
+    let loop_seconds = match transport.loop_region.seconds {
+        Some((a, b)) if is_usable(a.get()) && is_usable(b.get()) => Some((a, b)),
+        _ => None,
+    };
+    if is_usable(transport.position.seconds.get())
+        && (!transport.state.cycle_active || loop_seconds.is_some())
+    {
         flags |= CLAP_TRANSPORT_HAS_SECONDS_TIMELINE;
     }
 
@@ -518,10 +526,21 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
         },
         loop_start_beats: (transport.loop_region.start_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
         loop_end_beats: (transport.loop_region.end_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
-        loop_start_seconds: 0,
-        loop_end_seconds: 0,
+        loop_start_seconds: loop_seconds
+            .map_or(0, |(a, _)| (a.get() * CLAP_SECTIME_FACTOR as f64) as i64),
+        loop_end_seconds: loop_seconds
+            .map_or(0, |(_, b)| (b.get() * CLAP_SECTIME_FACTOR as f64) as i64),
         bar_start: (transport.bar.start_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
-        bar_number: transport.bar.number.into(),
+        // CLAP's bar at song position 0 is number 0 (`events.h`); `BarNumber`
+        // is 1-based. Saturating: an `i64` far outside `i32` is no bar a plugin
+        // could use.
+        bar_number: i32::try_from(transport.bar.number.index()).unwrap_or(
+            if transport.bar.number.index() < 0 {
+                i32::MIN
+            } else {
+                i32::MAX
+            },
+        ),
         // `.into()` rather than `as u16`: a cast would wrap a negative
         // numerator to 65535. `BeatsPerBar`/`NoteValue` are validated on
         // construction, so the conversion is total and lossless.
@@ -589,6 +608,46 @@ mod tests {
         t.timing.tempo_inc = 0.002;
         t.timing.tempo = 0.0;
         assert_eq!(build_clap_transport(&t).tempo_inc, 0.0);
+    }
+
+    /// `events.h`: "bar at song pos 0 has the number 0". `BarNumber` is 1-based,
+    /// so the first bar is sent as 0 and bar `n` as `n - 1`; a transport
+    /// nobody described is at the first bar.
+    #[test]
+    fn the_bar_at_song_position_zero_is_number_zero() {
+        use tutti_types::BarNumber;
+        assert_eq!(build_clap_transport(&TransportInfo::new()).bar_number, 0);
+        let third = TransportInfo::new().with_bar(8.0, BarNumber::new(3));
+        assert_eq!(build_clap_transport(&third).bar_number, 2);
+        // Pre-roll: the bar before the first is -1.
+        let pickup = TransportInfo::new().with_bar(-4.0, BarNumber::new(0));
+        assert_eq!(build_clap_transport(&pickup).bar_number, -1);
+    }
+
+    /// `events.h`: `loop_start_seconds` / `loop_end_seconds` are the seconds
+    /// counterparts of the loop's beats, in `CLAP_SECTIME_FACTOR` fixed point.
+    /// With a loop active they carry the loop's bounds; when the producer knew
+    /// no seconds for an active loop the seconds timeline is not claimed.
+    #[test]
+    fn an_active_loop_carries_its_seconds() {
+        use tutti_types::Seconds;
+        let looped = TransportInfo::new()
+            .with_position_beats(1.0, Seconds(0.5))
+            .with_loop(true, 2.0, 8.0)
+            .with_loop_seconds(Seconds(1.0), Seconds(4.5));
+        let ev = build_clap_transport(&looped);
+        assert_ne!(ev.flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, 0);
+        assert_eq!(ev.loop_start_seconds, CLAP_SECTIME_FACTOR);
+        assert_eq!(ev.loop_end_seconds, CLAP_SECTIME_FACTOR * 9 / 2);
+
+        let unknown = TransportInfo::new()
+            .with_position_beats(1.0, Seconds(0.5))
+            .with_loop(true, 2.0, 8.0);
+        assert_eq!(
+            build_clap_transport(&unknown).flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
+            0,
+            "no exact loop seconds, no seconds claim"
+        );
     }
 
     /// The time signature is the one unconditional claim, and legitimately so:

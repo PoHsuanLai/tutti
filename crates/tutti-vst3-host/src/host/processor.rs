@@ -8,8 +8,8 @@ use tutti_graph::UmpAt;
 use vst3::Steinberg::Vst::ProcessSetup;
 
 use tutti_plugin_types::{
-    AudioBufferMut, Edit, EditDrain, Normalized, ParamId, PluginError, PluginIo, PluginResult,
-    Processor, RtMidiEvents,
+    AudioBufferMut, Edit, EditDrain, EditSink, Normalized, ParamId, PluginError, PluginIo,
+    PluginResult, Processor, RtMidiEvents,
 };
 use tutti_rt::DrainBeat;
 use tutti_types::{ChannelLayout, SampleRate};
@@ -19,7 +19,9 @@ use crate::types::{
     AudioBuffer, ParameterChanges, ProcessContextRequirements, ProcessMode, ProcessOutputRef,
     TransportInfo, Vst3Sample, to_process_context,
 };
-use tutti_vst3_ffi::{AudioSide, BusBuffers, Busy, EventList, ParameterChangesImpl, ProcessIo};
+use tutti_vst3_ffi::{
+    AudioSide, BusBuffers, Busy, EventList, FlushIo, ParameterChangesImpl, ProcessIo,
+};
 
 use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{CcRoute, midi_to_mapped_controller, stage_input_events};
@@ -191,6 +193,9 @@ pub struct Vst3Processor<T: Vst3Sample> {
     /// the plugin does not implement the interface.
     context_requirements: Option<ProcessContextRequirements>,
     drain: EditDrain,
+    /// The plugin's `outputParameterChanges` on their way to the Controller:
+    /// the last point of each emitted parameter, per block.
+    reports: EditSink,
     /// Counts the drains, for the Controller's record of what a block has taken.
     beat: DrainBeat,
     /// The writes taken for the block in hand, latest per parameter, and what
@@ -222,6 +227,7 @@ pub(super) struct ProcessorParts {
     pub audio_side: AudioSide,
     pub context_requirements: Option<ProcessContextRequirements>,
     pub drain: EditDrain,
+    pub reports: EditSink,
     pub beat: DrainBeat,
     pub carried: Vec<(ParamId, Normalized)>,
 }
@@ -234,6 +240,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             audio_side,
             context_requirements,
             drain,
+            reports,
             beat,
             mut carried,
         } = parts;
@@ -245,6 +252,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             audio_side,
             context_requirements,
             drain,
+            reports,
             beat,
             pending: carried,
             edits_dropped: 0,
@@ -413,7 +421,6 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         // block is silence, nothing is emitted, and the skip is counted
         // (`lists_busy`). The controller's writes wait in `pending`.
         let input_params = effective_params.filter(|pc| !pc.is_empty());
-        let have_input_params = input_params.is_some() || !self.pending.is_empty();
         let staged = (|| {
             let mut staging = self.audio.input.param_changes.try_begin().ok_or(Busy)?;
             if let Some(changes) = input_params {
@@ -466,7 +473,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             outputs,
             input_events: &self.audio.input.events,
             output_events: &self.audio.output.events,
-            input_params: have_input_params.then_some(&self.audio.input.param_changes),
+            input_params: &self.audio.input.param_changes,
             output_params: &self.audio.output.param_changes,
             context: &mut process_context,
             setup: &setup,
@@ -478,7 +485,82 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         }
 
         self.audio.output.drain_emitted();
+        self.report_emitted();
         Ok(self.audio.output.emitted_ref())
+    }
+
+    /// Hands the Controller what the plugin put in `outputParameterChanges`:
+    /// the last value of each parameter this block, to be applied there with
+    /// `setParamNormalized` on the main thread
+    /// ([`flush_edits`](tutti_plugin_types::Control::flush_edits)). The portal's
+    /// "Processor and Controller" section has the host transmit them; a meter,
+    /// a processor-driven parameter or a program change reaches the controller
+    /// no other way. A full ring drops the value (counted in the ring); the
+    /// next block's value for the parameter replaces it. Never allocates.
+    fn report_emitted(&mut self) {
+        for queue in &self.audio.output.emitted_param_changes.queues {
+            if let Some(point) = queue.points.last() {
+                let _ = self.reports.send(Edit::Param {
+                    id: queue.param_id,
+                    value: Normalized::clamped(point.value.get()),
+                });
+            }
+        }
+    }
+
+    /// Delivers parameter changes to a plugin that is active but not
+    /// processing, with a `process` call that carries no audio: `numSamples`
+    /// is 0 and no bus is passed, only the parameter list (the portal's FAQ,
+    /// "Processing": "the host must flush parameter changes periodically ... by
+    /// sending them to the processor via the process call (with audio buffer
+    /// set to nullptr)").
+    ///
+    /// It runs only while [`is_processing`](Self::is_processing) is false (after
+    /// [`stop`](Self::stop), and so also from the stop that
+    /// [`reset`](tutti_plugin_types::Processor::reset) makes): it takes what
+    /// the Controller queued and calls `process` once if there is any. A call
+    /// while processing does nothing, since the next block carries the writes.
+    /// The plugin is not told `setProcessing(true)`: it was stopped on
+    /// purpose, and the next real block starts it.
+    ///
+    /// Whoever holds the Processor while nothing renders calls this (the
+    /// control side between a stop and a rejoin, or the graph node's `stop`
+    /// path); [`stop`](Self::stop) itself does not, so that a stop stays one
+    /// call. Returns whether a flush call was made.
+    ///
+    /// # Errors
+    ///
+    /// [`ProcessFailed`] when the plugin refuses the call; the changes are
+    /// then lost, as for a refused block.
+    pub fn flush_parameters(&mut self) -> std::result::Result<bool, ProcessFailed> {
+        if self.processing {
+            return Ok(false);
+        }
+        self.drain_ring();
+        if self.pending.is_empty() {
+            return Ok(false);
+        }
+        let Some(mut staging) = self.audio.input.param_changes.try_begin() else {
+            return Ok(false);
+        };
+        for &(id, value) in &self.pending {
+            if staging.prepend(id, value).is_err() {
+                return Ok(false);
+            }
+        }
+        drop(staging);
+        if self.audio.output.param_changes.try_begin().is_none() {
+            return Ok(false);
+        }
+        self.pending.clear();
+        let result = self.audio_side.flush(FlushIo {
+            mode: self.audio.config.block_mode,
+            input_params: &self.audio.input.param_changes,
+            output_params: &self.audio.output.param_changes,
+        });
+        result
+            .map(|()| true)
+            .map_err(|error| ProcessFailed { error })
     }
 
     /// Feed incoming MIDI CC controllers to the MIDI-learn capture (for
@@ -579,6 +661,16 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// [`sysex_dropped`](Self::sysex_dropped).
     pub fn groups_dropped(&self) -> u64 {
         self.audio.input.stager.groups_dropped()
+    }
+
+    /// MIDI messages not handed to the plugin since this Processor was built
+    /// because VST3 has no event for them: a controller, channel pressure,
+    /// pitch bend, program change, RPN or NRPN that no `IMidiMapping`
+    /// parameter took, and a System message. Each is dropped whole and
+    /// counted: `DataEvent` has the one type `kMidiSysEx`, so the bytes are
+    /// never sent as one (ivstevents.h).
+    pub fn unsendable_dropped(&self) -> u64 {
+        self.audio.input.stager.unsendable_dropped()
     }
 
     /// Events the plugin emitted through `addEvent` that its output list
@@ -684,6 +776,18 @@ impl ProcessorAny {
         match self {
             Self::F32(p) => p.take_edits(out),
             Self::F64(p) => p.take_edits(out),
+        }
+    }
+
+    /// [`Vst3Processor::flush_parameters`].
+    ///
+    /// # Errors
+    ///
+    /// [`ProcessFailed`] when the plugin refuses the call.
+    pub fn flush_parameters(&mut self) -> std::result::Result<bool, ProcessFailed> {
+        match self {
+            Self::F32(p) => p.flush_parameters(),
+            Self::F64(p) => p.flush_parameters(),
         }
     }
 

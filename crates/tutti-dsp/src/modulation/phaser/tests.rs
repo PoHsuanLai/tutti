@@ -167,6 +167,10 @@ impl LtiCase for PhaserFamily {
 /// closed form to cut a tail at) are not run; the two that do not need one, `linear` and
 /// `stability`, are run directly, and the response is held against the render by
 /// `the_frozen_member_is_the_renders_impulse_response`.
+///
+/// Until delay lane PR 5: there the contract reads `System::tail()` itself and does not
+/// apply a finite-tail case to an `Unbounded` member, and the phaser goes back through the
+/// `Lti` group (`response` from the contract, not a side test).
 macro_rules! phaser_contract {
     () => {
         crate::family_contract!(design(), Lti);
@@ -396,27 +400,15 @@ fn the_frozen_member_is_the_renders_impulse_response() {
 }
 
 /// The roots `w_k` of `(1 + c w)^N - g w (c + w)^N`, the closed loop's characteristic
-/// polynomial in `w = z^-1`, by Durand-Kerner: the poles are `1 / w_k`. (Well conditioned for a
-/// few stages and a coefficient away from `-1`: a long chain on a very low centre has its
-/// roots in a cluster the iteration does not resolve, which is not what is under test.)
+/// polynomial in `w = z^-1`, by Durand-Kerner: the poles are `1 / w_k`.
 fn closed_loop_poles(c: f64, g: f64, n: usize) -> Vec<Complex64> {
-    let binom = |n: usize, k: usize| -> f64 {
-        (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
-    };
-    // Coefficients, lowest power first.
-    let mut p = vec![0.0f64; n + 2];
-    for k in 0..=n {
-        p[k] += binom(n, k) * c.powi(k as i32);
-        // `-g w (c + w)^N`: the term `w^(k+1)` has `binom(n, k) c^(n-k)`.
-        p[k + 1] -= g * binom(n, k) * c.powi((n - k) as i32);
-    }
+    // `(1 + c w)^N - g w (c + w)^N`, degree `N + 1`, its leading coefficient `-g`. It is
+    // evaluated in this factored form, not from expanded coefficients: near `c = +-1` the
+    // `N` roots crowd around `-1/c`, and the binomial expansion cancels there.
     let degree = n + 1;
-    let lead = p[degree];
-    let eval = |z: Complex64| -> Complex64 {
-        p.iter()
-            .rev()
-            .fold(Complex64::new(0.0, 0.0), |a, &k| a * z + k)
-            / lead
+    let one = Complex64::new(1.0, 0.0);
+    let eval = |w: Complex64| -> Complex64 {
+        ((one + w * c).powu(n as u32) - w * g * (w + c).powu(n as u32)) / -g
     };
     let mut roots: Vec<Complex64> = (0..degree)
         .map(|i| Complex64::from_polar(1.5, 0.4 + std::f64::consts::TAU * i as f64 / degree as f64))
@@ -443,9 +435,11 @@ fn closed_loop_poles(c: f64, g: f64, n: usize) -> Vec<Complex64> {
 #[test]
 fn the_spectral_radius_bounds_the_closed_loop_poles_and_is_exact_at_the_closed_forms() {
     let sr = RATE.get();
-    for stages in [2usize, 3, 5] {
-        for hz in [200.0f32, 1_500.0, 9_000.0, 19_000.0] {
-            for g in [0.0f32, 0.3, 0.8, 0.99] {
+    for stages in [2usize, 3, 5, 8, 12] {
+        for hz in [
+            50.0f32, 200.0, 1_500.0, 6_000.0, 9_000.0, 15_000.0, 19_000.0,
+        ] {
+            for g in [0.0f32, 0.1, 0.3, 0.5, 0.8, 0.95, 0.99] {
                 let f = family(1, stages, range(hz, hz), Stagger::NONE);
                 let m = f.member(&controls(1.0, 0.0, g), RATE);
                 let bound = m.spectral_radius();
@@ -663,14 +657,15 @@ fn run(k: &mut Realized<PhaserRecurrence>, audio: &[Vec<f32>], block: usize) -> 
     out
 }
 
-/// A silent channel stays silent whatever its neighbours carry: each channel's all-pass
-/// state is its own, and the feedback is its own output's. And the channels with the same
+/// A silent channel stays silent, exactly 0.0, whatever its neighbours carry (full-scale
+/// noise, the whole sweep, the most feedback): each channel's all-pass state is its own,
+/// and the feedback is its own output's. And the channels with the same
 /// stagger share a sweep, so equal inputs give equal outputs (a full-cycle stagger of
 /// channel 4 is channel 0's).
 #[test]
 fn a_silent_channel_stays_silent_and_each_channel_keeps_its_own_state() {
     let f = PhaserFamily::new(bus(6), Stages::of(6), range(300.0, 3_000.0), step(0.25)).unwrap();
-    let (mut k, _) = built(&f, &controls(2.0, 1.0, 0.8), RATE);
+    let (mut k, _) = built(&f, &controls(2.0, 1.0, 0.99), RATE);
     let x = noise(5, 4_096, 1.0);
     let audio = [
         x.clone(),

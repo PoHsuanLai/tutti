@@ -368,6 +368,9 @@ impl PhaserMember {
     /// on a circle `|w| = r` (`w = z^-1`, `1 < r < 1/|c|`; at `r = 1` the all-pass is 1),
     /// the largest radius `r` at which that is under 1: by the maximum principle the loop
     /// `g w A(w) = 1` has no root in `|w| <= r`, so every pole is inside `|z| < 1/r`.
+    ///
+    /// The bisection runs a fixed 80 halvings, so the query always ends, and returns `1/lo`,
+    /// `lo` the end of the final bracket known to satisfy the condition: the safe side.
     fn pole_bound(&self) -> f64 {
         let (g, c) = (
             f64::from(self.feedback),
@@ -441,9 +444,10 @@ impl Lti for PhaserMember {
         }
     }
 
-    /// A sufficient bound under 1 for every feedback under 1, from the maximum principle on
-    /// the loop `g z^-1 A(z) = 1` (`pole_bound` states it): the `stages`
-    /// poles of `A` are at `-c` at no feedback. It says the loop is stable and how far from
+    /// An **upper bound** on the true spectral radius, strictly under 1 for every feedback
+    /// under 1: a sufficient bound from the maximum principle on the loop `g z^-1 A(z) = 1`
+    /// (`pole_bound` states it). It is exact with no feedback (the `stages` poles of `A`,
+    /// at `-c`) and at `c = 0` (the loop is `1 - g z^-(N+1)`, radius `g^(1/(N+1))`). It says the loop is stable and how far from
     /// the circle at least; it is no rate to cut a tail at (the bound is loose near a
     /// coefficient of `+-1`), which is why the tail is [`Ring::Unbounded`].
     fn spectral_radius(&self) -> f64 {

@@ -137,7 +137,7 @@ fn a_queued_placement_moves_a_live_voice() {
         "silent before the move — the playhead is outside the window"
     );
 
-    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
+    handle.set_window(VoiceWindow::span(Beat(10.0), BeatDuration(1.0)));
 
     assert!(
         peak(&mut node, 10.0) > 0.5,
@@ -182,7 +182,7 @@ fn a_command_reaches_a_node_across_a_commit() {
         "still silent: nothing was sent"
     );
 
-    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
+    handle.set_window(VoiceWindow::span(Beat(10.0), BeatDuration(1.0)));
 
     assert!(
         render_peak(&mut exec, 10.0) > 0.5,
@@ -218,7 +218,7 @@ fn a_fork_steals_no_commands() {
         .expect("a memory voice forks");
     fork.apply_pending();
 
-    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
+    handle.set_window(VoiceWindow::span(Beat(10.0), BeatDuration(1.0)));
 
     // The fork renders first, and must take nothing.
     let _ = render_peak(&mut fork, 10.0);
@@ -262,7 +262,7 @@ fn a_placement_sent_after_the_insert_reaches_a_fork() {
         .expect("forks");
     before.apply_pending();
 
-    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
+    handle.set_window(VoiceWindow::span(Beat(10.0), BeatDuration(1.0)));
 
     let (_after_ed, mut after) = ed
         .fork(ForkTarget::Master, ForkMode::Live, prepare)
@@ -288,15 +288,15 @@ fn a_placement_sent_after_the_insert_reaches_a_fork() {
 #[test]
 fn the_latest_placement_wins() {
     let (mut first_only, first_handle) = node_at(0.0).with_handle();
-    first_handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
+    first_handle.set_window(VoiceWindow::span(Beat(10.0), BeatDuration(1.0)));
     assert!(
         peak(&mut first_only, 10.0) > 0.5,
         "the first window alone sounds at beat 10"
     );
 
     let (mut node, handle) = node_at(0.0).with_handle();
-    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
-    handle.set_placement(Beat(20.0), Some(BeatDuration(1.0)));
+    handle.set_window(VoiceWindow::span(Beat(10.0), BeatDuration(1.0)));
+    handle.set_window(VoiceWindow::span(Beat(20.0), BeatDuration(1.0)));
     assert!(
         peak(&mut node, 10.0) < 1e-6,
         "the first move was replaced before the block: beat 10 is outside the \

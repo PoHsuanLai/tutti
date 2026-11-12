@@ -23,8 +23,7 @@ use tutti_graph::{
     NodeParts, Prepare, Shape, Status,
 };
 use tutti_types::{
-    Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate, ReadRate, SamplePosition,
-    SampleRate, SrcRatio, Tail,
+    Amplitude, ChannelLayout, PlaybackRate, ReadRate, SamplePosition, SampleRate, SrcRatio, Tail,
 };
 
 use super::clock::{BlockClock, Clock};
@@ -127,21 +126,6 @@ impl DiskSource {
         }
     }
 
-    /// Publishes a new output gain (NaN or infinite: silence), to the stream's `Cells` (see `tutti_nodes`'
-    /// crate docs for why a control is never a field).
-    pub fn set_gain(&self, gain: Amplitude) {
-        if let Some(ref state) = self.shared_state {
-            state.set_gain(gain);
-        }
-    }
-
-    /// The current output gain; unity with no shared state.
-    pub fn gain(&self) -> Amplitude {
-        self.shared_state
-            .as_ref()
-            .map_or(Amplitude::new(1.0), |s| s.gain())
-    }
-
     /// Output width — this unit's `outputs()`.
     pub fn channels(&self) -> ChannelLayout {
         self.channels
@@ -197,12 +181,12 @@ pub struct DiskVoiceConfig {
     pub file_sample_rate: SampleRate,
 }
 
-/// A [`DiskSource`]'s stream, placed on the timeline.
+/// A `DiskSource`'s stream, placed on the timeline.
 ///
 /// A timeline clip must sound only while the playhead is inside its
 /// `[start, start + duration)` window, and there play the file frame the
 /// transport puts the playhead on. This does exactly what the memory tier's
-/// placed read does — the same gate ([`window_position`](super::interp::window_position))
+/// placed read does — the same gate (`window_position`)
 /// placed and stepped the same way (`interp::place`), from the block's `Env`
 /// — and reads the ring at the position that gives, so live, forked and
 /// in-memory voices of one clip play the same samples at the same frame.
@@ -386,7 +370,11 @@ impl DiskVoice {
     /// the ECS/streamer side; this only binds the already-built unit to a
     /// timeline window. `shared_state` must be the same `Cells` the `inner`
     /// unit holds.
-    pub fn new(inner: DiskSource, shared_state: Arc<Cells>, config: DiskVoiceConfig) -> Self {
+    pub(crate) fn new(
+        inner: DiskSource,
+        shared_state: Arc<Cells>,
+        config: DiskVoiceConfig,
+    ) -> Self {
         Self {
             inner,
             shared_state,
@@ -402,12 +390,11 @@ impl DiskVoice {
     }
 
     /// Builds the voice that plays a stream, placed on the timeline at
-    /// `start_beat` for `duration` (the transport it reads is its block's,
-    /// from the graph). The reader is the stream's one, moved in: it is the
+    /// `window` (the transport it reads is its block's, from the graph). The reader is the stream's one, moved in: it is the
     /// reply of the open ([`DiskStreamer::open`](crate::DiskStreamer::open)),
     /// so it cannot be built into a second voice.
     ///
-    /// `start_beat` and `duration` are musical time; the gate converts them to
+    /// The window is musical time; the gate converts them to
     /// file frames using the file's own rate ([`StreamReader::file_rate`], the
     /// rate the streamer recorded when it opened the stream), so a session
     /// rate that moves later (a device restart) leaves the gate's frames where
@@ -421,11 +408,7 @@ impl DiskVoice {
     /// `DiskVoice::fork_copy`.
     ///
     /// Control thread; the returned voice is then moved into the graph.
-    pub fn from_reader(
-        reader: StreamReader,
-        start_beat: tutti_types::Beat,
-        duration: Option<tutti_types::BeatDuration>,
-    ) -> Self {
+    pub fn from_reader(reader: StreamReader, window: VoiceWindow) -> Self {
         let StreamReader {
             ring,
             reader,
@@ -442,10 +425,7 @@ impl DiskVoice {
             inner,
             cells,
             DiskVoiceConfig {
-                window: VoiceWindow {
-                    start: start_beat,
-                    duration,
-                },
+                window,
                 file_sample_rate: file_rate,
             },
         );
@@ -521,7 +501,7 @@ impl DiskVoice {
     /// The loop a fork plays: the loop the stream had applied when it was
     /// forked (tests). `None` live, or for a fork with no file.
     #[cfg(test)]
-    pub(crate) fn forked_loop(&self) -> Option<super::memory_source::LoopSetting> {
+    pub(crate) fn forked_loop(&self) -> Option<Option<super::Loop>> {
         self.offline
             .as_ref()?
             .read
@@ -549,14 +529,9 @@ impl DiskVoice {
         self.shared_state.set_stretch_rate(rate);
     }
 
-    /// Moves the voice's window to `[start_beat, start_beat + duration)`, or to
-    /// the whole source when `duration` is `None`. The next frame reads at the
-    /// new window.
-    pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
-        self.window = VoiceWindow {
-            start: start_beat,
-            duration,
-        };
+    /// Moves the voice's window. The next frame reads at the new window.
+    pub fn set_window(&mut self, window: VoiceWindow) {
+        self.window = window;
     }
 
     /// Publishes a new output gain (a NaN or infinite one is silence). `&self`: the write lands in the shared

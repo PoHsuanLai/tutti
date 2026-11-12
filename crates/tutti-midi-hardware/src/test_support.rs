@@ -61,7 +61,7 @@ pub struct FakeBackend {
 type Producers = Arc<Mutex<Vec<(EndpointId, InputProducerHandle)>>>;
 
 /// The packets handed to the fake sinks, by the device they were sent to.
-type SentLog = Arc<Mutex<Vec<(EndpointId, tutti_ump::Ump)>>>;
+type SentLog = Arc<Mutex<Vec<(EndpointId, tutti_ump::Ump, tutti_midi_runtime::SendAt)>>>;
 
 /// The fake OS's device lists, and the channel into each running watch.
 #[derive(Debug, Default)]
@@ -138,9 +138,21 @@ impl FakeCounters {
     /// oldest first: what the fake device received on the wire.
     pub fn take_sent(&self, id: EndpointId) -> Vec<tutti_ump::Ump> {
         let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
-        let (mine, rest) = log.drain(..).partition(|(device, _)| *device == id);
+        let (mine, rest) = log.drain(..).partition(|(device, ..)| *device == id);
         *log = rest;
-        mine.into_iter().map(|(_, ump)| ump).collect()
+        mine.into_iter().map(|(_, ump, _)| ump).collect()
+    }
+
+    /// [`take_sent`](Self::take_sent), each packet with the time the sink was
+    /// told to send it at.
+    pub fn take_sent_timed(
+        &self,
+        id: EndpointId,
+    ) -> Vec<(tutti_ump::Ump, tutti_midi_runtime::SendAt)> {
+        let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mine, rest) = log.drain(..).partition(|(device, ..)| *device == id);
+        *log = rest;
+        mine.into_iter().map(|(_, ump, at)| (ump, at)).collect()
     }
 
     /// Events handed to the sink so far.
@@ -287,12 +299,16 @@ impl DeviceOut for FakeSink {}
 
 impl MidiOut for FakeSink {
     fn queue(&self, events: &[UmpAt]) -> usize {
+        self.queue_timed(&tutti_midi_runtime::Outgoing::now_batch(events))
+    }
+
+    fn queue_timed(&self, events: &[tutti_midi_runtime::Outgoing]) -> usize {
         self.sent.fetch_add(events.len(), Ordering::SeqCst);
         let taken = self.accepts.min(events.len());
         self.log
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .extend(events.iter().take(taken).map(|(_, ump)| (self.id, *ump)));
+            .extend(events.iter().take(taken).map(|e| (self.id, e.ump, e.send)));
         taken
     }
 }

@@ -191,6 +191,40 @@ fn sending_reaches_a_connected_output() {
     assert_eq!(sent.load(Ordering::SeqCst), 2);
 }
 
+/// **A send time reaches the device's sink with its packet.** Two events, one
+/// `Now` and one `At` an instant, through the session's `send_timed` and the
+/// output's wire conversion: the sink is told each one's time, and a plain
+/// `send` is `Now` throughout.
+#[test]
+fn a_send_time_reaches_the_sink_with_its_packet() {
+    use tutti_midi_runtime::{Outgoing, SendAt};
+    let (backend, counters) = FakeBackend::build_accepting(usize::MAX);
+    let s = MidiSession::open_over(backend, inlets()).unwrap();
+    s.connect_output("synth a").unwrap();
+    let raw = EndpointId::from_raw(10);
+    let t = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let (at, ump) = note();
+    let events = [
+        Outgoing {
+            at,
+            send: SendAt::Now,
+            ump,
+        },
+        Outgoing {
+            at,
+            send: SendAt::At(t),
+            ump,
+        },
+    ];
+    assert_eq!(s.send_timed(&events), 2);
+    assert_eq!(
+        counters.take_sent_timed(raw),
+        [(ump, SendAt::Now), (ump, SendAt::At(t))]
+    );
+    assert_eq!(s.send(&[note()]), 1);
+    assert_eq!(counters.take_sent_timed(raw), [(ump, SendAt::Now)]);
+}
+
 /// A connected device that refuses everything must report `0`, not
 /// `events.len()`.
 ///

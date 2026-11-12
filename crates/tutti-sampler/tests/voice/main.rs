@@ -3,6 +3,7 @@
 mod block_length_invariance;
 mod frame_exact_entry;
 mod gain;
+mod loops_and_handles;
 mod reverse_and_loop;
 mod stretched_seek;
 mod tier_parity;

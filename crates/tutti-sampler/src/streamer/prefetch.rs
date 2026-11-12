@@ -57,8 +57,8 @@ use tutti_codec::FileIn;
 
 use super::command::StreamId;
 use super::loops::{Arrangement, Content, Mapping, RingControl, RingMap};
+use crate::Loop;
 use crate::nonempty;
-use crate::voice::LoopSetting;
 
 /// Frames a ring keeps behind where its reader plays: the taps a position
 /// reads behind itself, and a little slack.
@@ -168,7 +168,7 @@ impl Ring {
     /// Streamer: publish `loop_` as the loop the stream runs, beside the map
     /// and direction already published. Nothing is published when it is the
     /// loop already there.
-    pub(crate) fn publish_loop(&self, loop_: LoopSetting) {
+    pub(crate) fn publish_loop(&self, loop_: Option<Loop>) {
         let now = self.control.current();
         if now.loop_ == loop_ {
             return;
@@ -458,7 +458,7 @@ impl RegionBuffer {
             fade_frames,
             control: Arc::new(ArcLend::new(RingControl::new(
                 RingMap::plain(arrangement, 0),
-                LoopSetting::Off,
+                None,
             ))),
         });
         let writer = RegionOut {

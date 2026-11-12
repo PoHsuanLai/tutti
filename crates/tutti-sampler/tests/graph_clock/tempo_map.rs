@@ -28,13 +28,15 @@
 //! that of the map's, plus the ramp wave's `f32` rounding (0.02 frames at the
 //! largest source frame read here).
 
+use tutti_sampler::VoiceWindow;
+
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, NodeKey, OutPort, Prepare, Source};
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool};
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::{Beat, BeatDuration, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -119,16 +121,16 @@ fn render(
     ));
     match voice {
         Some((start, duration)) => {
-            let source = MemorySource::placed(wave, Beat(start), duration.map(BeatDuration::new))
-                .expect("a placeable wave");
-            let mut pool = VoicePool::new().with_tempo(transport.settings().tempo_reader());
-            pool.insert_voice(
-                SlotId(1),
-                Voice {
-                    source: VoiceSource::Memory(source),
-                    play: Playback::default(),
+            let source = MemorySource::placed(
+                wave,
+                match duration {
+                    Some(d) => VoiceWindow::span(Beat(start), BeatDuration::new(d)),
+                    None => VoiceWindow::from(Beat(start)),
                 },
-            );
+            )
+            .expect("a placeable wave");
+            let mut pool = VoicePool::new().with_tempo(transport.settings().tempo_reader());
+            pool.insert(SlotId(1), source, Playback::default());
             ed.insert(NodeKey(1), "voice", pool);
         }
         // Free-running: a node of its own, from its first frame, at its own

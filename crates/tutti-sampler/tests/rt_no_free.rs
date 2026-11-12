@@ -8,6 +8,10 @@
 //! while a thread-local flag is up, so the drain's frees are counted and
 //! nothing else's (the test harness's own threads included).
 
+use tutti_sampler::VoiceWindow;
+
+use tutti_sampler::testing::loop_frames;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
@@ -17,10 +21,9 @@ use tutti_graph::contract::Direct;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
-    ByHand, DiskStreamer, DiskVoice, LoopSetting, MemorySource, Placement, Playback, SlotId,
-    Stream, Voice, VoiceCommand, VoicePool, VoiceSource,
+    ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, SlotId, Stream, VoicePool,
 };
-use tutti_types::{Beat, Bpm, SamplePosition, SampleRate, Samples, StretchFactor};
+use tutti_types::{Beat, Bpm, SampleRate, Samples, StretchFactor};
 
 thread_local! {
     static WATCHING: Cell<bool> = const { Cell::new(false) };
@@ -82,24 +85,19 @@ fn the_add_voice_drain_frees_nothing() {
     let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
     let env = t.env(64, SampleRate(48_000.0));
     let voice = || {
-        Box::new(Voice {
-            source: VoiceSource::Memory(
-                MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
-                    .expect("a placeable wave"),
-            ),
-            play: Playback {
+        (
+            MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
+                .expect("a placeable wave"),
+            Playback {
                 stretch: StretchFactor::new(2.0),
                 ..Playback::default()
             },
-        })
+        )
     };
     for id in [1, 2, 1] {
+        let (source, play) = voice();
         handle
-            .send(VoiceCommand::AddVoice {
-                id: SlotId(id),
-                voice: voice(),
-                stretch: None,
-            })
+            .add(SlotId(id), source, play)
             .expect("the command queue has room");
     }
     let frees = frees_during(|| {
@@ -199,11 +197,7 @@ fn a_block_that_ends_after_a_publish_frees_nothing() {
     let none = || Samples::new(0)..Samples::new(0);
     let block = reader.block(Samples::new(0), [none(), none()]);
     stream
-        .set_loop(LoopSetting::On {
-            start: SamplePosition::new(1_000.0),
-            end: SamplePosition::new(3_000.0),
-            crossfade_frames: 0,
-        })
+        .set_loop(Some(loop_frames(1_000, 3_000, 0)))
         .expect("the streamer lives");
     let _ = streamer.step_once();
 
@@ -225,23 +219,18 @@ fn a_block_that_ends_after_a_publish_frees_nothing() {
 /// closed, so the voice's reader is the ring's **last holder**: its drop
 /// frees the ring wherever it happens.
 fn pool_holding_the_last_holder(
-    streamer: &mut DiskStreamer<ByHand>,
+    streamer: DiskStreamer<ByHand>,
     stream: Stream,
     reader: tutti_sampler::StreamReader,
 ) -> (VoicePool, tutti_sampler::VoicePoolHandle) {
     let (pool, handle) = VoicePool::new().with_handle();
+    let voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)));
     handle
-        .send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(Voice {
-                source: VoiceSource::Disk(DiskVoice::from_reader(reader, Beat::new(0.0), None)),
-                play: Playback::default(),
-            }),
-            stretch: None,
-        })
+        .add_streaming(SlotId(1), voice, stream, Playback::default())
         .expect("room");
-    drop(stream);
-    let _ = streamer.step_once();
+    // The streamer is gone: its side of the ring goes with it, and the voice
+    // (whose handle keeps only the stream's control side) holds the ring last.
+    drop(streamer);
     (pool, handle)
 }
 
@@ -252,15 +241,15 @@ fn pool_holding_the_last_holder(
 /// no, a disk voice's drop is on the control thread.
 #[test]
 fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
-    let (_dir, mut streamer, stream, reader) = stream();
-    let (pool, handle) = pool_holding_the_last_holder(&mut streamer, stream, reader);
+    let (_dir, streamer, stream, reader) = stream();
+    let (pool, handle) = pool_holding_the_last_holder(streamer, stream, reader);
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
     let env = t.env(64, SampleRate(48_000.0));
     rig.block_in(&env);
     assert_eq!(rig.node.voice_count(), 1, "setup: the voice is in");
 
-    handle.send(VoiceCommand::Remove(SlotId(1))).expect("room");
+    handle.remove(SlotId(1)).expect("room");
     let (frees, _) = watch(|| {
         rig.block_in(&env);
     });
@@ -292,8 +281,8 @@ fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
 /// replaced slot is retired.
 #[test]
 fn a_removed_disk_voice_on_a_full_retirement_channel_frees_its_ring_in_the_callback() {
-    let (_dir, mut streamer, stream, reader) = stream();
-    let (pool, handle) = pool_holding_the_last_holder(&mut streamer, stream, reader);
+    let (_dir, streamer, stream, reader) = stream();
+    let (pool, handle) = pool_holding_the_last_holder(streamer, stream, reader);
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
     let env = t.env(64, SampleRate(48_000.0));
@@ -304,24 +293,15 @@ fn a_removed_disk_voice_on_a_full_retirement_channel_frees_its_ring_in_the_callb
         &vec![0.5f32; 480],
     ));
     let memory = || {
-        Box::new(Voice {
-            source: VoiceSource::Memory(
-                MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
-                    .expect("a placeable wave"),
-            ),
-            play: Playback::default(),
-        })
+        MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave")
     };
     // 65 adds at one id: the first makes the slot, the next 64 each retire the
     // one before. Two drains: a drain takes at most 64 commands.
     for batch in [33, 32] {
         for _ in 0..batch {
             handle
-                .send(VoiceCommand::AddVoice {
-                    id: SlotId(2),
-                    voice: memory(),
-                    stretch: None,
-                })
+                .add(SlotId(2), memory(), Playback::default())
                 .expect("room");
         }
         rig.block_in(&env);
@@ -332,7 +312,7 @@ fn a_removed_disk_voice_on_a_full_retirement_channel_frees_its_ring_in_the_callb
         "setup: the channel took every retirement, and is now full"
     );
 
-    handle.send(VoiceCommand::Remove(SlotId(1))).expect("room");
+    handle.remove(SlotId(1)).expect("room");
     let (frees, biggest) = watch(|| {
         rig.block_in(&env);
     });

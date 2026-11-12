@@ -41,6 +41,14 @@ impl Pairing {
         }
         crate::stamp::arrival(self.os, self.host, self.base.duration(host_time))
     }
+
+    /// The host time to stamp a packet that is to leave at `at`: the one place
+    /// an `Instant` becomes CoreMIDI's clock, by this pairing's reading of both
+    /// ([`crate::stamp::departure`]). An instant the host clock cannot hold is 0,
+    /// "now".
+    pub(super) fn host_time_of(&self, at: Instant) -> u64 {
+        crate::stamp::departure(self.os, self.host, at).map_or(0, |host| self.base.ticks(host))
+    }
 }
 
 #[cfg(test)]

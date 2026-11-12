@@ -125,7 +125,7 @@ use tutti_fixtures::midi;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::{BusStripNode, ConvolverNode, LimiterControls, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
 use tutti_session::{InPort, OutPort, Root, Session, Workers};
 use tutti_transport::MotionEvent;
 use tutti_types::{
@@ -270,32 +270,28 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     for t in 0..SAMPLER_TRACKS {
         let mut pool = VoicePool::new();
         for v in 0..SAMPLER_VOICES {
-            pool.insert_voice(
+            pool.insert(
                 SlotId(v as u128 + 1),
-                Voice {
-                    source: VoiceSource::Memory(
-                        MemorySource::placed(Arc::clone(&tone), Beat(0.0), None)
-                            .expect("a placeable wave"),
-                    ),
-                    play: {
-                        let k = (t * SAMPLER_VOICES + v) as f32;
-                        let interval = Cents::new(-350.0 + 25.0 * k + 3.0);
-                        let play = Playback {
-                            gain: Amplitude(0.1),
-                            ..Default::default()
-                        };
-                        if variant.vocoder() {
-                            Playback {
-                                pitch: interval,
-                                ..play
-                            }
-                        } else {
-                            Playback {
-                                speed: PlaybackRate::new_clamped(interval.to_pitch_ratio()),
-                                ..play
-                            }
+                MemorySource::placed(Arc::clone(&tone), VoiceWindow::from(Beat(0.0)))
+                    .expect("a placeable wave"),
+                {
+                    let k = (t * SAMPLER_VOICES + v) as f32;
+                    let interval = Cents::new(-350.0 + 25.0 * k + 3.0);
+                    let play = Playback {
+                        gain: Amplitude(0.1),
+                        ..Default::default()
+                    };
+                    if variant.vocoder() {
+                        Playback {
+                            pitch: interval,
+                            ..play
                         }
-                    },
+                    } else {
+                        Playback {
+                            speed: PlaybackRate::new_clamped(interval.to_pitch_ratio()),
+                            ..play
+                        }
+                    }
                 },
             );
         }

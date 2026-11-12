@@ -33,9 +33,9 @@ use std::sync::Arc;
 use super::prefetch::RegionOut;
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
+use crate::Loop;
 use crate::nonempty;
 use crate::voice::Direction;
-use crate::voice::LoopSetting;
 use crate::voice::interp::{split_position, tap_indices};
 use crate::voice::loop_span::{LoopSpan, blend};
 
@@ -244,13 +244,13 @@ pub(crate) struct RingControl {
     /// The direction the stream plays in.
     pub(crate) direction: Direction,
     /// The loop the stream runs, as applied.
-    pub(crate) loop_: LoopSetting,
+    pub(crate) loop_: Option<Loop>,
 }
 
 impl RingControl {
     /// A control reading by `map`, running `loop_`; its direction is the
     /// map's newest arrangement's.
-    pub(crate) fn new(map: RingMap, loop_: LoopSetting) -> Self {
+    pub(crate) fn new(map: RingMap, loop_: Option<Loop>) -> Self {
         let direction = Direction::from(map.after.reverse());
         Self {
             map,
@@ -287,7 +287,7 @@ pub(crate) enum LeadIn {
 }
 
 impl RingLoop {
-    /// The loop `[range.0, range.1)` with a `crossfade_frames` fade, on a file
+    /// The loop `looped` with its fade, on a file
     /// `len` frames long (its end clamped to the file, as every tier clamps
     /// it), writing a ring `channels` wide, reading only the frames it needs
     /// through `read` (`read(frame, out)` fills `out` from file frame `frame`
@@ -299,19 +299,17 @@ impl RingLoop {
     /// loop hard ([`LeadIn::Unreadable`]): its span is rebuilt with no fade,
     /// so the ring is never written with a fade toward silence.
     pub(crate) fn capture(
-        range: (u64, u64),
-        crossfade_frames: usize,
+        looped: Loop,
         len: usize,
         channels: impl Into<ChannelLayout>,
         read: &mut dyn FnMut(usize, &mut [f32]) -> bool,
     ) -> Option<(Self, LeadIn)> {
         let ch = nonempty(channels.into()).count() as usize;
-        let (start, end) = (range.0 as usize, range.1 as usize);
-        let mut span = LoopSpan::new(start, end, crossfade_frames, len)?;
+        let mut span = looped.bound(len)?;
         let mut lead_in = vec![0.0f32; span.fade() * ch];
         let mut outcome = LeadIn::Read;
         if span.fade() > 0 && !read(span.resume() - span.fade(), &mut lead_in) {
-            span = LoopSpan::new(start, end, 0, len)?;
+            span = looped.hard().bound(len)?;
             lead_in.clear();
             outcome = LeadIn::Unreadable;
         }
@@ -812,7 +810,8 @@ mod tests {
     fn ring_loop(wave: &Wave, range: (u64, u64), fade: usize) -> RingLoop {
         let reads = std::cell::Cell::new(0);
         let mut read = reader(wave, 1, &reads);
-        let captured = RingLoop::capture(range, fade, wave.len(), 1u16, &mut read);
+        let looped = crate::testing::loop_frames(range.0 as usize, range.1 as usize, fade);
+        let captured = RingLoop::capture(looped, wave.len(), 1u16, &mut read);
         captured.expect("a loop").0
     }
 
@@ -826,7 +825,7 @@ mod tests {
         out
     }
 
-    fn looped(wave: &Wave, range: (u64, u64), fade: usize) -> Mapping {
+    fn loop_frames(wave: &Wave, range: (u64, u64), fade: usize) -> Mapping {
         Mapping {
             reverse: false,
             len: Some(Samples::new(wave.len())),
@@ -845,14 +844,18 @@ mod tests {
         let wave = make_mono_wave(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let lead_in = |range, fade| ring_loop(&wave, range, fade).lead_in.to_vec();
         assert_eq!(lead_in((5, 9), 2), [3.0, 4.0]);
-        assert_eq!(ring_loop(&wave, (5, 7), 4).span().fade(), 2);
         assert_eq!(ring_loop(&wave, (2, 9), 4).span().fade(), 3);
         assert_eq!(lead_in((2, 9), 4), [2.0, 3.0, 4.0]);
         assert_eq!(ring_loop(&wave, (0, 9), 4).span().fade(), 4);
         assert_eq!(lead_in((0, 9), 4), [0.0, 1.0, 2.0, 3.0]);
         assert!(lead_in((0, 9), 0).is_empty());
-        let (blind, outcome) =
-            RingLoop::capture((5, 9), 2, 10, 1u16, &mut |_, _| false).expect("a loop");
+        let (blind, outcome) = RingLoop::capture(
+            crate::testing::loop_frames(5, 9, 2),
+            10,
+            1u16,
+            &mut |_, _| false,
+        )
+        .expect("a loop");
         assert_eq!(
             (blind.span().fade(), blind.lead_in.len(), outcome),
             (0, 0, LeadIn::Unreadable)
@@ -869,7 +872,7 @@ mod tests {
     #[test]
     fn a_fill_writes_the_looped_sequence() {
         let wave = make_mono_wave(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
-        let lead = looped(&wave, (5, 9), 2);
+        let lead = loop_frames(&wave, (5, 9), 2);
         let blended = |tail: f32, lead: f32, k: f32| tail * (1.0 - k / 3.0) + lead * (k / 3.0);
         let (b7, b8) = (blended(7.0, 3.0, 1.0), blended(8.0, 4.0, 2.0));
         assert_eq!(
@@ -880,7 +883,7 @@ mod tests {
         assert_eq!(fill(&lead, &wave, 11, 4, 1), [b7, b8, 5.0, 6.0]);
 
         // Head mode: `[1, 9)` fading 3 into its own head resumes at 4.
-        let head = looped(&wave, (1, 9), 3);
+        let head = loop_frames(&wave, (1, 9), 3);
         let b = |tail: f32, lead: f32, k: f32| tail * (1.0 - k / 4.0) + lead * (k / 4.0);
         assert_eq!(
             fill(&head, &wave, 5, 8, 1),
@@ -926,8 +929,7 @@ mod tests {
         let reads = std::cell::Cell::new(0);
         let mut read = reader(&wave, CH, &reads);
         let captured = RingLoop::capture(
-            (0, 100),
-            0,
+            crate::testing::loop_frames(0, 100, 0),
             100,
             ChannelLayout::try_from(CH).expect("a test width is small"),
             &mut read,
@@ -984,9 +986,9 @@ mod tests {
         }
         let wave = Arc::new(w);
         let mappings = [
-            looped(&wave, (1_000, 2_001), 300),
-            looped(&wave, (0, 1_201), 300),
-            looped(&wave, (500, 900), 0),
+            loop_frames(&wave, (1_000, 2_001), 300),
+            loop_frames(&wave, (0, 1_201), 300),
+            loop_frames(&wave, (500, 900), 0),
             Mapping::plain(Samples::new(len)),
             Mapping {
                 reverse: true,
@@ -1038,14 +1040,17 @@ mod tests {
     #[test]
     fn mappings_part_where_their_slots_first_differ() {
         let wave = make_mono_wave(&(0..100).map(|i| i as f32).collect::<Vec<_>>());
-        let a = looped(&wave, (20, 60), 0);
-        assert_eq!(a.parts_from(&looped(&wave, (20, 60), 0), 0, 1_000), None);
+        let a = loop_frames(&wave, (20, 60), 0);
         assert_eq!(
-            a.parts_from(&looped(&wave, (20, 70), 0), 0, 1_000),
+            a.parts_from(&loop_frames(&wave, (20, 60), 0), 0, 1_000),
+            None
+        );
+        assert_eq!(
+            a.parts_from(&loop_frames(&wave, (20, 70), 0), 0, 1_000),
             Some(60)
         );
         assert_eq!(
-            a.parts_from(&looped(&wave, (20, 60), 8), 0, 1_000),
+            a.parts_from(&loop_frames(&wave, (20, 60), 8), 0, 1_000),
             Some(52)
         );
         let reversed = Mapping {
@@ -1130,7 +1135,7 @@ mod tests {
         });
         let edit = apply_mapping(
             &mut writer,
-            looped(&wave, (1_000, 3_000), 0),
+            loop_frames(&wave, (1_000, 3_000), 0),
             Samples::new(64),
             1.0,
         );
@@ -1161,7 +1166,7 @@ mod tests {
         });
         let edit = apply_mapping(
             &mut writer,
-            looped(&wave, (1_000, 3_000), 0),
+            loop_frames(&wave, (1_000, 3_000), 0),
             Samples::new(64),
             1.0,
         );

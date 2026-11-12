@@ -34,8 +34,8 @@
 //! when the device is opened, and what the UMP Stream negotiation settled
 //! (`MidiSession::poll`) after it.
 
-use tutti_graph::UmpAt;
 use tutti_midi_protocol::Narrower;
+use tutti_midi_runtime::Outgoing;
 use tutti_ump::{Message, Protocol, StreamConfig, Ump, Utility, parse_exact};
 
 /// One device output's wire form: its configuration, the [`Narrower`] that
@@ -46,7 +46,7 @@ pub(crate) struct Wire {
     config: StreamConfig,
     narrower: Narrower,
     /// The batch as it goes to the device.
-    out: Vec<UmpAt>,
+    out: Vec<Outgoing>,
     /// For each input event, how many of `out` it had produced once it was
     /// done: what turns the device's count back into the caller's.
     ends: Vec<usize>,
@@ -84,16 +84,20 @@ impl Wire {
 
     /// Converts `events` into the batch for the device, which
     /// [`batch`](Self::batch) reads.
-    pub(crate) fn convert(&mut self, events: &[UmpAt]) {
+    pub(crate) fn convert(&mut self, events: &[Outgoing]) {
         self.out.clear();
         self.ends.clear();
         let narrows = self.narrows();
         let jr = self.config.rx_jr;
-        for &(at, ump) in events {
+        for &Outgoing { at, send, ump } in events {
             match ump.message_type() {
                 0 => {
                     if let Some(kept) = utility(ump, jr) {
-                        self.out.push((at, kept));
+                        self.out.push(Outgoing {
+                            at,
+                            send,
+                            ump: kept,
+                        });
                     }
                 }
                 4 if narrows => {
@@ -101,19 +105,23 @@ impl Wire {
                         let out = &mut self.out;
                         self.narrower.feed(message, |bytes| {
                             if let Some(packet) = parse_exact(address.group, bytes.as_slice()) {
-                                out.push((at, Ump::from(packet)));
+                                out.push(Outgoing {
+                                    at,
+                                    send,
+                                    ump: Ump::from(packet),
+                                });
                             }
                         });
                     }
                 }
-                _ => self.out.push((at, ump)),
+                _ => self.out.push(Outgoing { at, send, ump }),
             }
             self.ends.push(self.out.len());
         }
     }
 
     /// The batch [`convert`](Self::convert) made.
-    pub(crate) fn batch(&self) -> &[UmpAt] {
+    pub(crate) fn batch(&self) -> &[Outgoing] {
         &self.out
     }
 

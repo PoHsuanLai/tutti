@@ -84,6 +84,8 @@ mod plugin;
 mod recorder;
 #[cfg(feature = "plugin")]
 mod recovery;
+#[cfg(feature = "sampler")]
+mod sampler;
 mod session;
 #[cfg(all(feature = "device", feature = "audio-io"))]
 mod take;
@@ -129,8 +131,8 @@ pub use key::{
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad,
-    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, TakePlacement,
-    UmpOut, drain_receiver_through,
+    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, OutputTiming,
+    TakePlacement, UmpOut, drain_receiver_through,
 };
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;
@@ -157,6 +159,8 @@ pub use plugin::{PluginParamRead, PluginParamsRead};
 pub use recorder::{Finite, IDLE_PARK, Live, PumpLoop, PumpPass, Recorder, RecorderError};
 #[cfg(feature = "plugin")]
 pub use recovery::{GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy};
+#[cfg(feature = "sampler")]
+pub use sampler::{Residency, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerLoad};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]

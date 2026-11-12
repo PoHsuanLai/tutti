@@ -20,6 +20,10 @@
 //! its buffers built once), each block under the `Env` of a transport that
 //! moves a block at a time, as a host's does (see [`Rig`]).
 
+use tutti_sampler::VoiceWindow;
+
+use tutti_sampler::testing::loop_frames;
+
 use std::f32::consts::TAU;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -29,11 +33,11 @@ use tutti_codec::Wave;
 use tutti_graph::contract::Direct;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
-    ByHand, DiskStreamer, DiskStreamerConfig, DiskVoice, LoopSetting, MemorySource, Open,
-    Placement, Playback, SlotId, StepOutcome, Stream, Voice, VoiceCommand, VoiceNode, VoicePool,
+    ByHand, DiskStreamer, DiskStreamerConfig, DiskVoice, Loop, MemorySource, Open, Placement,
+    Playback, SlotId, StepOutcome, Stream, Voice, VoiceNode, VoicePool, VoicePoolHandle,
     VoiceSource,
 };
-use tutti_types::{Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor};
+use tutti_types::{Beat, Bpm, Cents, PlaybackRate, SampleRate, StretchFactor};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -107,28 +111,25 @@ fn pool_with(n: usize, stretch: f32, cents: f32) -> Rig {
     let wave = tone(440.0, 48_000 * 4);
 
     for i in 0..n {
-        let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+        let source = MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
             .expect("a placeable wave");
         handle
-            .send(VoiceCommand::AddVoice {
-                id: SlotId(i as u128 + 1),
-                voice: Box::new(Voice {
-                    source: VoiceSource::Memory(source),
-                    play: Playback {
-                        stretch: StretchFactor::new(stretch),
-                        // Every voice gets the SAME pitch, deliberately.
-                        // `Cents(0)` is a resampler *bypass*: detuning each
-                        // voice by `i` cents would put voice 0 on the fast
-                        // path and voices 1..n on the pitch-shifting one, and
-                        // `voices/plain` would price the shifter (1.37 µs for
-                        // one voice, 144 µs for eight). `voices/pitch` is
-                        // where the shifter is priced.
-                        pitch: Cents::new(cents),
-                        ..Default::default()
-                    },
-                }),
-                stretch: None,
-            })
+            .add(
+                SlotId(i as u128 + 1),
+                source,
+                Playback {
+                    stretch: StretchFactor::new(stretch),
+                    // Every voice gets the SAME pitch, deliberately.
+                    // `Cents(0)` is a resampler *bypass*: detuning each
+                    // voice by `i` cents would put voice 0 on the fast
+                    // path and voices 1..n on the pitch-shifting one, and
+                    // `voices/plain` would price the shifter (1.37 µs for
+                    // one voice, 144 µs for eight). `voices/pitch` is
+                    // where the shifter is priced.
+                    pitch: Cents::new(cents),
+                    ..Default::default()
+                },
+            )
             .expect("the command queue has room");
     }
 
@@ -219,9 +220,16 @@ enum Tier {
 /// prefilled whole), so the measurement never waits on, or steps, a streamer.
 struct Pool64 {
     rig: Rig,
-    /// Keeps the disk tier's streams (and their rings) alive.
-    _streamer: Option<(DiskStreamer<ByHand>, Vec<Stream>)>,
+    /// Keeps the disk tier's streamer and the handle that owns its streams (and
+    /// so their rings) alive.
+    _streamer: Option<(DiskStreamer<ByHand>, VoicePoolHandle)>,
     _dir: tempfile::TempDir,
+}
+
+/// A voice the pool bench adds: a memory source, or a disk voice with its stream.
+enum Built {
+    Memory(MemorySource),
+    Disk(DiskVoice, Stream),
 }
 
 /// The stereo tone every `pool64` voice reads, sample `i`.
@@ -241,7 +249,7 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
 /// window starts.
 #[derive(Clone, Copy)]
 struct Knobs {
-    loop_: LoopSetting,
+    loop_: Option<Loop>,
     /// Past [`WRAP_BEATS`], the window is never reached: every voice is
     /// resident and silent.
     start: Beat,
@@ -250,7 +258,7 @@ struct Knobs {
 impl Default for Knobs {
     fn default() -> Self {
         Self {
-            loop_: LoopSetting::Off,
+            loop_: None,
             start: Beat::new(0.0),
         }
     }
@@ -259,11 +267,9 @@ impl Default for Knobs {
 /// A one-second loop with a 256-frame crossfade, inside every `pool64`
 /// file: the transport reaches its end, and wraps through it, before the
 /// rig winds back.
-const LOOP: LoopSetting = LoopSetting::On {
-    start: SamplePosition(12_000.0),
-    end: SamplePosition(60_000.0),
-    crossfade_frames: 256,
-};
+fn looped() -> Option<Loop> {
+    Some(loop_frames(12_000, 60_000, 256))
+}
 
 /// [`pool64`] driven in `block`-frame blocks (the pool prepared for them).
 fn pool_blocks(tier: Tier, n: usize, speed: f32, stretch: f32, block: usize) -> Pool64 {
@@ -284,7 +290,7 @@ fn pool_knobs(
     let frames = (SR * FILE_SECS) as usize;
     let (pool, handle) = VoicePool::new().with_handle();
     let mut streamer = None;
-    let sources: Vec<VoiceSource> = match tier {
+    let sources: Vec<Built> = match tier {
         Tier::Memory => {
             let mut wave = Wave::new(2, SampleRate::new(SR));
             for i in 0..frames {
@@ -293,8 +299,8 @@ fn pool_knobs(
             let wave = Arc::new(wave);
             (0..n)
                 .map(|_| {
-                    VoiceSource::Memory(
-                        MemorySource::placed(Arc::clone(&wave), knobs.start, None)
+                    Built::Memory(
+                        MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(knobs.start))
                             .expect("a placeable wave"),
                     )
                 })
@@ -322,45 +328,45 @@ fn pool_knobs(
                     break;
                 }
             }
-            let (streams, voices): (Vec<_>, Vec<_>) = openings
+            let voices = openings
                 .into_iter()
                 .map(|opening| {
                     let Open::Ready(stream, reader) = opening.poll() else {
                         panic!("a primed stream answers its open");
                     };
-                    (
+                    Built::Disk(
+                        DiskVoice::from_reader(reader, VoiceWindow::from(knobs.start)),
                         stream,
-                        VoiceSource::Disk(DiskVoice::from_reader(reader, knobs.start, None)),
                     )
                 })
-                .unzip();
-            streamer = Some((s, streams));
+                .collect();
+            streamer = Some(s);
             voices
         }
     };
-    for (i, source) in sources.into_iter().enumerate() {
-        handle
-            .send(VoiceCommand::AddVoice {
-                id: SlotId(i as u128 + 1),
-                voice: Box::new(Voice {
-                    source,
-                    play: Playback {
-                        speed: PlaybackRate::new(speed),
-                        stretch: StretchFactor::new(stretch),
-                        loop_: knobs.loop_,
-                        ..Default::default()
-                    },
-                }),
-                // Built on this (control) thread, as `VoicePoolHandle::send`
-                // builds one for a real host.
-                stretch: None,
-            })
-            .expect("the command queue has room");
+    for (i, built) in sources.into_iter().enumerate() {
+        let id = SlotId(i as u128 + 1);
+        let play = Playback {
+            speed: PlaybackRate::new(speed),
+            stretch: StretchFactor::new(stretch),
+            loop_: knobs.loop_,
+            ..Default::default()
+        };
+        // The handle builds the stretch filter, on this (control) thread, as it
+        // does for a real host.
+        match built {
+            Built::Memory(source) => handle
+                .add(id, source, play)
+                .expect("the command queue has room"),
+            Built::Disk(voice, stream) => handle
+                .add_streaming(id, voice, stream, play)
+                .expect("the command queue has room"),
+        }
     }
     // The rig prepares the pool, which re-rates every voice it holds.
     let mut p = Pool64 {
         rig: Rig::with_block(pool, block),
-        _streamer: streamer,
+        _streamer: streamer.map(|s| (s, handle)),
         _dir: dir,
     };
     // Drain the adds, then run past the vocoder's fill-up (a 2048 window at
@@ -414,7 +420,7 @@ fn bench_pool64(c: &mut Criterion) {
         ..Knobs::default()
     };
     let looped = Knobs {
-        loop_: LOOP,
+        loop_: looped(),
         ..Knobs::default()
     };
     let knobbed: &[(&str, Tier, f32, Knobs)] = &[
@@ -470,8 +476,9 @@ impl Clips {
         let wave = Arc::new(wave);
         let nodes = (0..n)
             .map(|_| {
-                let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
-                    .expect("a placeable wave");
+                let source =
+                    MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
+                        .expect("a placeable wave");
                 let node = VoiceNode::new(Voice {
                     source: VoiceSource::Memory(source),
                     play: Playback::default(),
@@ -532,7 +539,7 @@ fn bench_sources(c: &mut Criterion) {
     let wave = Arc::new(wave);
     let mut nodes: Vec<Direct<MemorySource>> = (0..64)
         .map(|_| {
-            let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+            let source = MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
                 .expect("a placeable wave");
             Direct::new(source, SampleRate(SR), BLOCK)
         })

@@ -13,6 +13,8 @@
 //! was swapped" would pass vacuously the day the position derives from
 //! somewhere else.
 
+use tutti_sampler::VoiceWindow;
+
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
@@ -23,9 +25,7 @@ use tutti_graph::{
     Status, Transport,
 };
 use tutti_graph::{OutPort, Source};
-use tutti_sampler::{
-    MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
-};
+use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceNode, VoicePool, VoiceSource};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(44_100.0);
@@ -40,7 +40,7 @@ fn ramp_wave() -> Arc<Wave> {
 }
 
 fn placed() -> MemorySource {
-    MemorySource::placed(ramp_wave(), Beat::new(0.0), None).expect("a placeable wave")
+    MemorySource::placed(ramp_wave(), VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave")
 }
 
 fn voice() -> Voice {
@@ -106,11 +106,7 @@ fn a_forked_pool_steals_no_commands_from_the_live_one() {
 
     // The live handle still feeds the ORIGINAL pool.
     handle
-        .send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(voice()),
-            stretch: None,
-        })
+        .add(SlotId(1), placed(), Playback::default())
         .expect("the command queue has room in a test");
 
     assert!(

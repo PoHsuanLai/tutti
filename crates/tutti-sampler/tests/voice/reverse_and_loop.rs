@@ -19,15 +19,14 @@
 //! The one exception is the crossfade seam test, which needs a signal whose
 //! discontinuity is audible; it uses two constants so the seam is a step.
 
+use tutti_sampler::testing::loop_frames;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_codec::Wave;
 use tutti_graph::{Env, Node, TransportChanges, contract};
-use tutti_sampler::{
-    Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool,
-    VoiceSource,
-};
+use tutti_sampler::{Direction, MemorySource, MemorySourceConfig, Playback, SlotId, VoicePool};
 use tutti_types::{
     Amplitude, Beat, Bpm, ChannelLayout, Frame, SamplePosition, SampleRate, Samples,
 };
@@ -140,15 +139,13 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
     .expect("a placeable wave");
 
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                direction,
-                gain: Amplitude::new(1.0),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            direction,
+            gain: Amplitude::new(1.0),
+            ..Default::default()
         },
     );
     (pool, clock)
@@ -388,11 +385,7 @@ fn loop_is_continuous(len: usize, start: f64, end: f64, fade: usize) {
             },
         )
         .expect("a placeable wave");
-        source.set_loop_setting(LoopSetting::On {
-            start: SamplePosition(start),
-            end: SamplePosition(end),
-            crossfade_frames: fade,
-        });
+        source.set_loop(Some(loop_frames(start as usize, end as usize, fade)));
         let mut out = Vec::new();
         for _ in 0..150 {
             out.extend(clock.block(&mut source).swap_remove(0));
@@ -427,11 +420,7 @@ fn looping_source(wave: Arc<Wave>, start: f64, end: f64, xfade: usize) -> Memory
         },
     )
     .expect("a placeable wave");
-    source.set_loop_setting(LoopSetting::On {
-        start: SamplePosition(start),
-        end: SamplePosition(end),
-        crossfade_frames: xfade,
-    });
+    source.set_loop(Some(loop_frames(start as usize, end as usize, xfade)));
     source.trigger_at(SamplePosition(start));
     source.play();
     source
@@ -594,22 +583,16 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
         },
     )
     .expect("a placeable wave");
-    source.set_loop_setting(LoopSetting::On {
-        start: SamplePosition(500.0),
-        end: SamplePosition(2500.0),
-        crossfade_frames: 0,
-    });
+    source.set_loop(Some(loop_frames(500, 2500, 0)));
 
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                direction: Direction::Reverse,
-                gain: Amplitude::new(1.0),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            direction: Direction::Reverse,
+            gain: Amplitude::new(1.0),
+            ..Default::default()
         },
     );
 
@@ -630,7 +613,7 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
 
 /// A one-shot source stops at the end rather than looping or reading past it.
 ///
-/// The `LoopSetting::Off` arm of the same wrap logic. Its failure mode is the
+/// The `None` arm of the same wrap logic. Its failure mode is the
 /// mirror of a broken loop: instead of wrapping it should clear `playing` and
 /// hold position at the end.
 #[test]
@@ -683,11 +666,7 @@ fn reverse_and_loop_work_at_mono_width() {
         },
     )
     .expect("a placeable wave");
-    source.set_loop_setting(LoopSetting::On {
-        start: SamplePosition(200.0),
-        end: SamplePosition(1200.0),
-        crossfade_frames: 64,
-    });
+    source.set_loop(Some(loop_frames(200, 1200, 64)));
     source.trigger_at(SamplePosition(200.0));
     source.play();
 

@@ -188,6 +188,7 @@ fn buffers_healthy(streams: &Streams) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::loop_frames;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -308,14 +309,10 @@ mod tests {
         let _ = step(&mut cycle.local.streams, Cmd::Open(Box::new(record)));
 
         let mut control = ring.control_reader();
-        let applied = crate::voice::LoopSetting::On {
-            start: tutti_types::SamplePosition(0.0),
-            end: tutti_types::SamplePosition(64.0),
-            crossfade_frames: 0,
-        };
+        let applied = Some(loop_frames(0, 64, 0));
         {
             let held = control.lend();
-            assert_eq!(held.loop_, crate::voice::LoopSetting::Off);
+            assert_eq!(held.loop_, None);
             ring.publish_loop(applied);
         }
         assert_eq!(ring.applied().loop_, applied, "the loop is published");

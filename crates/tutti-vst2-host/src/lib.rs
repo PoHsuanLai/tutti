@@ -34,8 +34,9 @@ pub use processor::Vst2Processor;
 // CC→parameter mapping query at all — see the module docs for the opcode
 // evidence — so this is the whole of its parameter/MIDI metadata surface.
 pub use param_properties::{
-    FloatSteps, IntegerRange, MAX_MIDI_KEY, MidiKeyName, MidiProgram, MidiProgramCategory,
-    NUM_MIDI_CHANNELS, ParameterCategory, ParameterProperties, ParameterPropertyFlags,
+    FloatSteps, IntegerRange, IntegerSteps, MAX_MIDI_KEY, MidiKeyName, MidiProgram,
+    MidiProgramCategory, NUM_MIDI_CHANNELS, ParameterCategory, ParameterProperties,
+    ParameterPropertyFlags,
 };
 pub use types::{
     ChannelLayout, EditorSize, MidiEventVec, ParameterInfo, PluginInfo, Samples, TimeSignature,

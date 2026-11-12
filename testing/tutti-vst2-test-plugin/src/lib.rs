@@ -692,6 +692,10 @@ const EFF_GET_MIDI_KEY_NAME: i32 = 66;
 /// plugin. Any other index answers with only the float-step group set.
 pub const PROBE_INT_STEP_PARAM: i32 = 1;
 
+/// The parameter index the probe declares `kVstParameterIsSwitch` for, with a
+/// poison integer range left in the fields the flag does not validate.
+pub const PROBE_SWITCH_PARAM: i32 = 2;
+
 /// Integer range the probe reports for [`PROBE_INT_STEP_PARAM`]. Chosen as a
 /// MIDI-ish 0..127 with a 12-step coarse increment so a wrong field pairing
 /// (min/max swapped, step read from large_step) yields visibly wrong numbers.
@@ -798,10 +802,15 @@ unsafe fn answer_parameter_properties(index: i32, ptr: *mut std::os::raw::c_void
         // host buffer narrower than the header's truncates it.
         write_field(&mut props.category_label, "Filter Envelope Section");
         props.display_index = 3;
-        props.flags = (api::ParameterFlags::USES_INT_STEP
-            | api::ParameterFlags::USES_CATEGORY
-            | api::ParameterFlags::USES_INDEX)
+        props.flags = (api::ParameterFlags::USES_INTEGER_MIN_MAX
+            | api::ParameterFlags::USES_INT_STEP
+            | api::ParameterFlags::SUPPORTS_DISPLAY_CATEGORY
+            | api::ParameterFlags::SUPPORTS_DISPLAY_INDEX)
             .bits();
+    } else if index == PROBE_SWITCH_PARAM {
+        props.min_integer = 999;
+        props.max_integer = -999;
+        props.flags = api::ParameterFlags::IS_SWITCH.bits();
     } else {
         // Deliberately leave the integer fields at values a host must NOT
         // read: the flag says they are invalid, and a host that ignores the

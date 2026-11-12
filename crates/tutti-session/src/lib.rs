@@ -115,8 +115,9 @@ pub use midi::{
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    MixRef, ModRefusal, ModState, ModTarget, Mods, NoSuchModRoute, NoSuchModSource, ParamRef,
-    Ranged, RouteError, Take, UNRESOLVED_WARNING, declare_targets,
+    MixRef, ModRefusal, ModRouteId, ModSourceId, ModState, ModTarget, Mods, ModsView, NoAutomation,
+    NoSuchModRoute, NoSuchModSource, ParamRef, Problem, Ranged, RouteError, RouteInfo, RouteMut,
+    RouteSpec, SourceInfo, SourceName, Take, TargetName, UNRESOLVED_WARNING, declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
 pub use params::{ParamError, RangeError, TypedParamRef};

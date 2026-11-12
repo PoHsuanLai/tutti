@@ -55,13 +55,13 @@ pub enum AllocationStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum VoiceMode {
-    /// Polyphonic: notes sound simultaneously up to `max_voices`, then the
+    /// Polyphonic: notes sound simultaneously up to the polyphony, then the
     /// [`AllocationStrategy`] decides. The default.
     #[default]
     Poly,
     /// Monophonic: one note at a time on a channel. A new note releases the
     /// sounding one and retriggers the envelope from attack. Only slot 0 is
-    /// used, however large `max_voices` is.
+    /// used, however large the polyphony is.
     Mono,
     /// Monophonic with legato: a new note while one is already sounding takes
     /// over the same voice without retriggering the envelope, so the note

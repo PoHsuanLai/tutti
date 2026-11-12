@@ -13,9 +13,19 @@ use tutti_graph::UmpAt;
 
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{Event, Offset};
+use tutti_midi_protocol::{MpeMode, MpeZoneConfig, MpeZones};
 use tutti_polysynth::PolySynth;
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::Ump;
+
+/// MPE's lower zone as RP-053 allows it with no upper zone: master channel 0
+/// and every other channel its member, with the default bend ranges.
+pub fn lower_zone() -> MpeMode {
+    MpeMode::Zones(
+        MpeZones::new(MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS), None)
+            .expect("a lower zone alone is a layout"),
+    )
+}
 
 /// The block length a [`Hand`] renders: 64 frames.
 pub const BLOCK: usize = 64;

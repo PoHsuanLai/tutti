@@ -20,6 +20,7 @@
 //! bound on `max_voices` (only 0 is refused).
 
 use assert_no_alloc::AllocDisabler;
+use std::num::NonZeroUsize;
 use tutti_types::MaxBlock;
 mod support;
 
@@ -52,15 +53,11 @@ fn note_off(channel: u8, note: u8) -> Ump {
 fn polysynth_process_idle_is_allocation_free() {
     // No active voices — process should still tick through allocator
     // bookkeeping and the MIDI inbox poll.
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: 8,
-            oscillator: OscillatorType::Saw,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(8).unwrap(),
+        oscillator: OscillatorType::Saw,
+        ..Default::default()
+    }));
 
     for _ in 0..16 {
         synth.block(64);
@@ -75,20 +72,16 @@ fn polysynth_process_idle_is_allocation_free() {
 
 #[test]
 fn polysynth_process_with_active_voices_is_allocation_free() {
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: 8,
-            oscillator: OscillatorType::Saw,
-            filter: FilterType::Svf {
-                cutoff: Hz(2_000.0),
-                q: Q(0.707),
-                mode: tutti_polysynth::SvfMode::Lowpass,
-            },
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(8).unwrap(),
+        oscillator: OscillatorType::Saw,
+        filter: FilterType::Svf {
+            cutoff: Hz(2_000.0),
+            q: Q(0.707),
+            mode: tutti_polysynth::SvfMode::Lowpass,
+        },
+        ..Default::default()
+    }));
 
     // Trigger 4 sustained voices before entering the gate.
     synth.queue_midi(&[
@@ -113,15 +106,11 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
 /// whole block, cut from the control grid at its edge.
 #[test]
 fn polysynth_one_frame_blocks_with_active_voices_are_allocation_free() {
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: 8,
-            oscillator: OscillatorType::Triangle,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(8).unwrap(),
+        oscillator: OscillatorType::Triangle,
+        ..Default::default()
+    }));
 
     synth.queue_midi(&[note_on(0, 60, 90), note_on(0, 64, 90), note_on(0, 67, 90)]);
 
@@ -140,15 +129,11 @@ fn polysynth_one_frame_blocks_with_active_voices_are_allocation_free() {
 fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     // Sub-buffer split path: events on the event input so the block walks
     // the event-driven boundaries.
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: 8,
-            oscillator: OscillatorType::Saw,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(8).unwrap(),
+        oscillator: OscillatorType::Saw,
+        ..Default::default()
+    }));
 
     // Warm up the voice pool + finished-indices list at full size.
     synth.queue_midi(&[
@@ -185,15 +170,11 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 /// `decode` refuses and a message the synth has no use for, inside the gate.
 #[test]
 fn polysynth_every_decoded_message_is_allocation_free() {
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: 8,
-            mpe_enabled: true,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(8).unwrap(),
+        mpe: support::lower_zone(),
+        ..Default::default()
+    }));
     let address = Address {
         group: MidiGroup::FIRST,
         channel: MidiChannel::of(1),
@@ -344,15 +325,11 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
     // Large enough that the buffer under test is certainly on the heap.
     const MAX_VOICES: usize = 64;
 
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: MAX_VOICES,
-            oscillator: OscillatorType::Saw,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(MAX_VOICES).unwrap(),
+        oscillator: OscillatorType::Saw,
+        ..Default::default()
+    }));
 
     // Distinct pitches so the allocator assigns a separate voice to each
     // rather than retriggering one slot.
@@ -409,12 +386,10 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 
     let build = || {
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: MAX_VOICES,
+            polyphony: NonZeroUsize::new(MAX_VOICES).unwrap(),
             oscillator: OscillatorType::Saw,
             ..Default::default()
         })
-        .unwrap()
     };
 
     let notes: Vec<Ump> = (0..MAX_VOICES)
@@ -475,15 +450,11 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 /// instance, and so the thread, before opening the gate.
 #[test]
 fn a_first_block_on_a_cold_thread_is_allocation_free() {
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            sample_rate: tutti_types::SampleRate::new(48_000.0),
-            max_voices: 8,
-            oscillator: OscillatorType::Saw,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(8).unwrap(),
+        oscillator: OscillatorType::Saw,
+        ..Default::default()
+    }));
 
     assert_no_alloc::assert_no_alloc(|| {
         synth.block(64);
@@ -520,12 +491,10 @@ fn a_clip_into_a_synth_is_allocation_free() {
         NodeKey(2),
         "synth",
         PolySynth::new(SynthConfig {
-            sample_rate: SampleRate(48_000.0),
-            max_voices: 8,
+            polyphony: NonZeroUsize::new(8).unwrap(),
             oscillator: OscillatorType::Saw,
             ..Default::default()
-        })
-        .unwrap(),
+        }),
     );
     ed.spec_mut().connect_events(
         EventIn {
@@ -585,20 +554,16 @@ fn mono_and_legato_event_paths_are_allocation_free() {
         tutti_polysynth::VoiceMode::Mono,
         tutti_polysynth::VoiceMode::Legato,
     ] {
-        let mut synth = Hand::new(
-            PolySynth::new(SynthConfig {
-                sample_rate: tutti_types::SampleRate::new(48_000.0),
-                max_voices: 4,
-                voice_mode: mode,
-                oscillator: OscillatorType::Saw,
-                portamento: Some(tutti_polysynth::PortamentoConfig {
-                    mode: tutti_polysynth::PortamentoMode::Always,
-                    ..Default::default()
-                }),
+        let mut synth = Hand::new(PolySynth::new(SynthConfig {
+            polyphony: NonZeroUsize::new(4).unwrap(),
+            voice_mode: mode,
+            oscillator: OscillatorType::Saw,
+            portamento: Some(tutti_polysynth::PortamentoConfig {
+                mode: tutti_polysynth::PortamentoMode::Always,
                 ..Default::default()
-            })
-            .unwrap(),
-        );
+            }),
+            ..Default::default()
+        }));
         for _ in 0..8 {
             synth.block(64);
         }

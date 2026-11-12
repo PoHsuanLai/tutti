@@ -53,6 +53,12 @@ impl Hand {
         }
     }
 
+    /// The unit, with the state it has, out of its harness: a new `Hand` over
+    /// it prepares it again (at another rate, say).
+    pub fn into_unit(self) -> SoundFontUnit {
+        *self.direct.node
+    }
+
     /// Play `events` in the next block, each on its first frame.
     /// Allocation-free up to `HAND_EVENT_CAPACITY` a block.
     pub fn queue_midi(&mut self, events: &[Ump]) {

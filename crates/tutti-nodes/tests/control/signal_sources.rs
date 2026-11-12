@@ -349,7 +349,7 @@ fn lane_to_probe(
         id: LayerId(1),
         source: SourceId(source),
         amount: Amount {
-            depth: Depth(depth),
+            depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },

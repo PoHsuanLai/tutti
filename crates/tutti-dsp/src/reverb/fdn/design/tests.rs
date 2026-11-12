@@ -56,7 +56,7 @@ impl FamilyCase for FdnFamily {
                 size: Mix(rng.gen_range(0.0..=1.0)),
                 diffusion: Mix(rng.gen_range(0.0..=1.0)),
                 pre_delay: Seconds(rng.gen_range(0.0..=0.5)),
-                modulation: Depth(rng.gen_range(-1.0..=1.0)),
+                modulation: Depth::of(rng.gen_range(-1.0..=1.0)),
                 rate: Hz(rng.gen_range(0.05..=5.0)),
                 width: StereoWidth(rng.gen_range(0.0..=2.0)),
                 wet: Db(rng.gen_range(-60.0..=12.0)),
@@ -75,7 +75,7 @@ impl FamilyCase for FdnFamily {
                 size: Mix(v),
                 diffusion: Mix(v),
                 pre_delay: Seconds::from_f32(v),
-                modulation: Depth(v),
+                modulation: Depth::clamped(v),
                 rate: Hz(v),
                 width: StereoWidth(v),
                 wet: Db(v),
@@ -180,9 +180,9 @@ impl ReverbCase for FdnFamily {
 
     fn pre_delay_pairs(&self) -> Vec<(FdnControls, FdnControls, Seconds)> {
         vec![(
-            with(|c| c.modulation = Depth(0.0)),
+            with(|c| c.modulation = Depth::of(0.0)),
             with(|c| {
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
                 c.pre_delay = Seconds(0.1);
             }),
             Seconds(0.1),
@@ -206,11 +206,11 @@ impl ReverbCase for FdnFamily {
                 (
                     with(|c| {
                         c.size = Mix(a);
-                        c.modulation = Depth(0.0);
+                        c.modulation = Depth::of(0.0);
                     }),
                     with(|c| {
                         c.size = Mix(b);
-                        c.modulation = Depth(0.0);
+                        c.modulation = Depth::of(0.0);
                     }),
                 )
             })
@@ -247,7 +247,7 @@ impl RecurrenceCase for FdnFamily {
                 c.decay = [Seconds(3.0), Seconds(3.5), Seconds(1.5)];
                 c.diffusion = Mix(1.0);
                 c.pre_delay = Seconds(0.05);
-                c.modulation = Depth(0.5);
+                c.modulation = Depth::of(0.5);
             }),
             with(|c| {
                 c.decay = [Seconds(1.0), Seconds(1.5), Seconds(0.5)];
@@ -256,7 +256,7 @@ impl RecurrenceCase for FdnFamily {
             }),
             with(|c| {
                 c.diffusion = Mix(0.0);
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
             }),
         ]
     }
@@ -265,7 +265,7 @@ impl RecurrenceCase for FdnFamily {
         self.probes()
             .into_iter()
             .map(|c| FdnControls {
-                modulation: Depth(0.0),
+                modulation: Depth::of(0.0),
                 pre_delay: Seconds(0.02),
                 ..c
             })
@@ -276,7 +276,7 @@ impl RecurrenceCase for FdnFamily {
         let hard = |f: fn(&mut FdnControls)| {
             with(|c| {
                 c.size = Mix(1.0);
-                c.modulation = Depth(1.0);
+                c.modulation = Depth::of(1.0);
                 c.rate = Hz(5.0);
                 f(c)
             })
@@ -458,7 +458,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
         &with(|c| {
             c.decay = [Seconds(2.0); 3];
             c.diffusion = Mix(0.0);
-            c.modulation = Depth(0.0);
+            c.modulation = Depth::of(0.0);
             c.pre_delay = Seconds(0.0);
             c.width = StereoWidth(1.0);
         }),
@@ -519,7 +519,7 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
             &with(|c| {
                 c.diffusion = Mix(diffusion);
                 c.freeze = freeze;
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
             }),
             rate,
         )
@@ -568,7 +568,7 @@ fn the_bounds_dominate_where_rounding_matters() {
             size: Mix(1.0),
             diffusion: Mix(k as f32 / 100.0),
             pre_delay: MAX_PRE_DELAY,
-            modulation: Depth(1.0),
+            modulation: Depth::of(1.0),
             ..FdnControls::DEFAULT
         };
         let tail = d.member(&c, rate).tail(reach.floor());

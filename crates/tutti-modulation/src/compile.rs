@@ -53,7 +53,8 @@ pub const RATE_ANCHOR_MARGIN: Samples = Samples(12_288);
 const ANCHOR_REUSE_MIN: Samples = Samples(8_192);
 
 /// A source's key: the host's identity for it (a Bevy host: the entity's
-/// bits). Only compared.
+/// bits). Only compared. The session's own declarations name a source with a
+/// minted `ModSourceId` instead, and a host's keys are for `ModInput`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SourceKey(pub u64);
 
@@ -371,9 +372,6 @@ pub enum CompileError {
     BadSource(SourceKey),
     /// An LFO declared with a rate anchor: anchors are the compiler's.
     AnchorDeclared(SourceKey),
-    /// A route with a depth that is not finite (an infinite depth makes
-    /// `inf · 0` a NaN in the value rule).
-    BadRoute(RouteKey),
     /// A target range with a NaN bound.
     NanRange(TargetKey),
     /// An automation curve that is not frozen (its `Curve::frozen` returns
@@ -437,7 +435,6 @@ impl fmt::Display for CompileError {
             Self::AnchorDeclared(k) => {
                 write!(f, "source {}: a rate anchor is the compiler's to set", k.0)
             }
-            Self::BadRoute(k) => write!(f, "route {}: a NaN depth", k.0),
             Self::NanRange(k) => write!(f, "target {k:?}: a NaN range bound"),
             Self::LiveCurve(k) => write!(f, "target {k:?}: an automation curve not frozen"),
             Self::TooManyLayers { target, count } => write!(
@@ -520,9 +517,6 @@ pub fn compile(
     for (&key, route) in &routes {
         if !sources.contains_key(&route.source) {
             return Err(CompileError::UnknownSource { route: key });
-        }
-        if !route.depth.get().is_finite() {
-            return Err(CompileError::BadRoute(key));
         }
     }
     for (&key, t) in &targets {

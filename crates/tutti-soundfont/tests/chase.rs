@@ -26,11 +26,11 @@ const G: MidiGroup = MidiGroup::FIRST;
 fn font() -> Arc<SoundFont> {
     let mut file = std::fs::File::open(tutti_fixtures::asset("soundfonts/TimGM6mb.sf2"))
         .expect("the test soundfont");
-    Arc::new(SoundFont::new(&mut file).expect("parses"))
+    Arc::new(SoundFont::from_reader(&mut file).expect("parses"))
 }
 
 fn unit() -> SoundFontUnit {
-    SoundFontUnit::new(font(), &Settings::new(RATE)).expect("builds")
+    SoundFontUnit::new(font(), Settings::new()).expect("builds")
 }
 
 fn cc(channel: u8, controller: u8, value: u8) -> Ump {
@@ -203,7 +203,7 @@ fn a_font_swapped_for_a_polysynth_keeps_its_controllers() {
         let mut rig = Rig::new(unit());
         rig.send(&volume.map(|v| cc(0, 7, v)).into_iter().collect::<Vec<_>>());
         rig.block();
-        let synth = PolySynth::new(SynthConfig::default()).expect("builds");
+        let synth = PolySynth::new(SynthConfig::default());
         rig.swap(synth);
         rig.send(&[note_on()]);
         let peak = rig.block();

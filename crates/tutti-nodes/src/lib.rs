@@ -77,7 +77,7 @@ pub use tutti_types::{
 // convolver load — is the host's, and deliberately outside this workspace.
 
 mod click;
-pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
+pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode, VolumeOutOfRange};
 
 mod lfo;
 // The `Modulator` trait the modulation node runs, and its impl for

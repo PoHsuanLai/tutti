@@ -138,7 +138,7 @@ fn rules(polyphony: usize) -> Rules {
 }
 
 /// The player. Its voices are built against a rate and cannot be re-rated in
-/// place: [`with_sample_rate`](Self::with_sample_rate) builds another.
+/// place: [`rerated`](Self::rerated) builds another.
 #[derive(Debug, Clone)]
 pub(crate) struct Player {
     font: Arc<SoundFont>,
@@ -165,23 +165,23 @@ impl Player {
     /// The channel General MIDI plays percussion on.
     pub(crate) const PERCUSSION_CHANNEL: MidiChannel = MidiChannel::of(9);
 
-    /// Builds a player over `font`. Allocates the voices.
+    /// The rate a player renders at until its graph prepares it: the voices
+    /// are built against a rate, and the unit's `prepare` re-rates them.
+    pub(crate) const INITIAL_RATE: SampleRate = SampleRate::SR_44K1;
+
+    /// Builds a player over `font` at [`INITIAL_RATE`](Self::INITIAL_RATE).
+    /// Allocates the voices.
     ///
     /// # Errors
     ///
     /// [`Error::NoPlayablePreset`] when no preset of the font has a MIDI bank
-    /// and program (SF2 2.04 section 7.2),
-    /// [`Error::SampleRateOutOfRange`] outside 16 to 192 kHz and
-    /// [`Error::PolyphonyOutOfRange`] for more than [`Settings::MAX_POLYPHONY`]
-    /// voices (none is not representable: the polyphony is a `NonZeroUsize`).
-    pub(crate) fn new(font: &Arc<SoundFont>, settings: &Settings) -> Result<Self> {
-        let render = Render::new(settings.sample_rate());
-        if !RATES.contains(&render.hz()) {
-            return Err(Error::SampleRateOutOfRange(settings.sample_rate()));
-        }
-        if settings.polyphony().get() > Settings::MAX_POLYPHONY {
-            return Err(Error::PolyphonyOutOfRange(settings.polyphony().get()));
-        }
+    /// and program (SF2 2.04 section 7.2).
+    pub(crate) fn new(font: &Arc<SoundFont>, settings: Settings) -> Result<Self> {
+        Self::at(font, settings, Render::new(Self::INITIAL_RATE))
+    }
+
+    /// Builds a player over `font` on the grid `render`.
+    fn at(font: &Arc<SoundFont>, settings: Settings, render: Render) -> Result<Self> {
         let polyphony = settings.polyphony().get();
 
         let mut presets: HashMap<i32, usize> = HashMap::new();
@@ -223,7 +223,7 @@ impl Player {
         Ok(Self {
             font: Arc::clone(font),
             render,
-            settings: *settings,
+            settings,
             presets,
             default_preset,
             channels,
@@ -317,6 +317,18 @@ impl Player {
     /// (M1 p.13).
     pub(crate) fn program_change(&mut self, channel: MidiChannel, program: U7) {
         self.channels[channel.index()].program_change(program);
+    }
+
+    /// Selects `preset` on `channel`: its bank and its program. `None` when the
+    /// preset has no MIDI bank and program (SF2 2.04 section 7.2).
+    pub(crate) fn select(
+        &mut self,
+        channel: MidiChannel,
+        preset: &tutti_sf2::Preset,
+    ) -> Option<()> {
+        let (bank, program) = (preset.bank()?, preset.patch()?);
+        self.channels[channel.index()].select(bank, program);
+        Some(())
     }
 
     /// Hands a note or pedal message to the core, and carries out what it
@@ -509,18 +521,20 @@ impl Player {
     /// per-channel state (bank, patch, controllers, pitch bend), with no voice
     /// sounding. Allocates.
     ///
-    /// # Errors
-    ///
-    /// [`Error::SampleRateOutOfRange`] if `sample_rate` is outside 16 to
-    /// 192 kHz.
-    pub(crate) fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
-        let mut player = Self::new(&self.font, &self.settings.with_sample_rate(sample_rate))?;
+    /// `None` if `sample_rate` is outside 16 to 192 kHz.
+    pub(crate) fn rerated(&self, sample_rate: SampleRate) -> Option<Self> {
+        let render = Render::new(sample_rate);
+        if !RATES.contains(&render.hz()) {
+            return None;
+        }
+        // The font has a playable preset, or `self` was not built.
+        let mut player = Self::at(&self.font, self.settings, render).ok()?;
         player.channels = self.channels.clone();
         // The core's channel state (wheel, sensitivity); its notes are not
         // the new player's, which has no voice.
         player.voicing = self.voicing.clone();
         player.voicing.forget_notes();
-        Ok(player)
+        Some(player)
     }
 
     /// The longest the player can keep sounding once its last key is up: the

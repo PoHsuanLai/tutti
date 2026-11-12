@@ -40,13 +40,13 @@ fn each_lfo_constructor_is_its_shape_at_one_hertz() {
     }
 }
 
-/// `rate` is a beat clock with the phase; `hz` is a seconds clock with
-/// the phase and no anchor; `seed` reaches the wave. The last of `rate`
-/// and `hz` wins.
+/// A `rate` of beats is a beat clock with the phase; a `rate` of `Hz` is a
+/// seconds clock with the phase and no anchor; `seed` reaches the wave. The
+/// last `rate` wins.
 #[test]
 fn an_lfos_clock_and_seed_are_pinned_field_by_field() {
     let beats = Lfo::saw()
-        .hz(Hz(4.0))
+        .rate(Hz(4.0))
         .rate(BeatDuration(0.5))
         .phase(PhaseIncrement(0.25))
         .seed(7);
@@ -63,7 +63,7 @@ fn an_lfos_clock_and_seed_are_pinned_field_by_field() {
 
     let seconds = Lfo::sine()
         .rate(BeatDuration(2.0))
-        .hz(Hz(3.0))
+        .rate(Hz(3.0))
         .phase(PhaseIncrement(0.5));
     let (_, _, clock) = lfo_parts(seconds.into());
     assert_eq!(

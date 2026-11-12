@@ -128,10 +128,10 @@ fn lfo() {
     IsolateRow::new("LfoNode (sine, 3 Hz)", || {
         LfoNode::new(LfoShape::Sine)
             .with_frequency(Hz(3.0))
-            .with_depth(Depth::new_clamped(0.8))
+            .with_depth(Depth::clamped(0.8))
     })
     .control("frequency", |l| l.set_frequency(Hz(5.0)))
-    .control("depth", |l| l.set_depth(Depth::new_clamped(0.3)))
+    .control("depth", |l| l.set_depth(Depth::clamped(0.3)))
     .control("phase offset", |l| l.set_phase_offset(PhaseIncrement(0.25)))
     .check();
 }
@@ -157,7 +157,7 @@ fn phaser() {
         p
     })
     .control("rate", |p| p.set_rate(Hz(3.0)))
-    .control("depth", |p| p.set_depth(Depth::new_clamped(0.2)))
+    .control("depth", |p| p.set_depth(Depth::clamped(0.2)))
     .control("feedback", |p| p.set_feedback(Feedback::new(0.7_f32)))
     .check();
 }

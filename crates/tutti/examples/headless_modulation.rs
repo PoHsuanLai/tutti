@@ -101,26 +101,32 @@ fn main() -> Result<(), tutti::Error> {
 
     let cutoff = filter.cutoff();
     let resonance = filter.q();
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range(cutoff, Hz(100.0)..Hz(4_000.0))?;
     m.range(resonance, Q(0.5)..Q(8.0))?;
-    let wobble = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let sweep = m.route(wobble, cutoff, Depth(0.2))?;
+    let wobble = m.lfo(Lfo::sine().rate(Hz(2.0)));
+    let sweep = m.route(RouteSpec::new(wobble, cutoff, Depth::of(0.2)))?;
     let hits = m.follower(Follower::default(), kick);
-    m.route(hits, resonance, Depth(0.5))?;
+    m.route(RouteSpec::new(hits, resonance, Depth::of(0.5)))?;
 
     // The nodes commit on the first update, the lanes on the re-apply after
     // it (their targets resolve once the filter is in a plan).
     report(s.update());
-    assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
-    assert!(s.mod_state().unresolved_targets().is_empty());
+    assert_eq!(
+        s.mod_state().problems().next(),
+        None,
+        "the declarations apply"
+    );
     println!("LFO depth 0.2, kick on the resonance:");
     play(&mut s, 20);
 
     // A depth edit: the LFO's lane republishes its program, keeping phase.
     // No plan is sent.
     let sent = s.graph().sent_plan();
-    s.mods().route_mut(sweep).expect("the route").depth = Depth(0.45);
+    s.mods_mut()
+        .route_of(sweep)
+        .expect("the route")
+        .set_depth(Depth::of(0.45));
     report(s.update());
     assert!(
         sent.zip(s.graph().sent_plan())

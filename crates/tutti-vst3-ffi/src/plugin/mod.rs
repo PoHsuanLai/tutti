@@ -215,12 +215,12 @@ pub struct Parts {
     module: Arc<Module>,
 }
 
-/// The guard `Plugin::scoped` returns.
+/// The guard `Parts::scoped` returns.
 #[cfg(target_os = "linux")]
 pub(super) struct CallScope(
     #[allow(dead_code, reason = "held for its drop")] crate::com::OwnedScope,
 );
-/// The guard [`Plugin::scoped`] returns: nothing to scope off Linux.
+/// The guard [`Parts::scoped`] returns: nothing to scope off Linux.
 #[cfg(not(target_os = "linux"))]
 pub(super) struct CallScope;
 

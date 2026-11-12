@@ -140,7 +140,7 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
     assert_eq!(s.latency(), old_latency, "the 44.1 kHz figure is published");
 
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect("restarts");
     assert!(!old.is_open() && new.is_open(), "on the new device");
     assert_eq!(
@@ -226,12 +226,11 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
             spec_at(NEW),
             driver,
             Some(MaxBlock::of(Samples(16_384))),
-            |_| {},
         )
         .expect_err("past the capacity");
     assert!(
         matches!(
-            err,
+            err.error(),
             Error::Reprepare(tutti_graph::CommitError::BlockTooLong {
                 max_block: 16_384,
                 limit: 8_192
@@ -252,7 +251,6 @@ fn a_restart_past_the_block_capacity_is_refused_and_keeps_playing() {
         spec_with(NEW, 6),
         driver,
         Some(MaxBlock::of(Samples(2_048))),
-        |_| {},
     )
     .expect("at a block the engine holds");
     assert!(new.is_open());
@@ -272,7 +270,7 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
     assert_eq!(s.graph_ref().outputs(), 2);
 
     let (driver, surround) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_with(NEW, 6), driver, None, |_| {})
+    s.restart_on(&mut device, spec_with(NEW, 6), driver, None)
         .expect("restarts");
     assert_eq!(
         s.graph_ref().outputs(),
@@ -292,7 +290,7 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
     );
 
     let (driver, stereo) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect("restarts");
     assert_eq!(s.graph_ref().outputs(), 6);
     assert_eq!(device.spec().channels, ChannelLayout::STEREO);
@@ -320,7 +318,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
         .set_sources(InPort::new(lim, 0), [OutPort::new(loop_back, 0)])
         .unwrap();
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect_err("the graph no longer compiles");
     assert!(!old.is_open() && !new.is_open(), "left stopped");
     assert_eq!(device.graph_rate(), SampleRate(OLD));
@@ -333,7 +331,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     s.graph().remove(loop_back).unwrap();
     let _ = s.update();
     let (driver, back) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(OLD), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(OLD), driver, None)
         .expect("recovers");
     assert!(back.is_open());
     let out = play(&mut s, &back, 441, 20);
@@ -354,7 +352,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
 fn a_crossfade_after_the_restart_lands_at_once() {
     let (mut s, mut device, _old, osc, _) = engine();
     let (driver, new) = ManualStreamDriver::new();
-    s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
+    s.restart_on(&mut device, spec_at(NEW), driver, None)
         .expect("restarts");
     let landed = s
         .graph()

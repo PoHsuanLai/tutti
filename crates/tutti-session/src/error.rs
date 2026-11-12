@@ -162,6 +162,21 @@ pub enum Error {
     #[error("the graph root cannot be placed on the output: {0}")]
     Output(#[from] tutti_types::FoldError),
 
+    /// A device restart was refused or failed
+    /// ([`LiveSession::restart`](crate::LiveSession::restart)).
+    #[cfg(feature = "device")]
+    #[error(transparent)]
+    Restart(#[from] crate::RestartError),
+
+    /// An inlet refused its producer's ring ([`Graph::add_inlet`](crate::Graph::add_inlet)).
+    #[error(transparent)]
+    Inlet(#[from] InletError),
+
+    /// A swap of one node for another was refused
+    /// ([`Graph::crossfade`](crate::Graph::crossfade)).
+    #[error(transparent)]
+    Crossfade(#[from] crate::CrossfadeRefused),
+
     /// The graph refused a re-prepare: a device restart asked for a block
     /// past the engine's capacity, came while another re-prepare was between
     /// its halves, or met a graph that no longer compiles at the new block.

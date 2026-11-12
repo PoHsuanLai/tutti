@@ -56,7 +56,7 @@ pub enum Phase {
     /// The hardware out (an event tap on the clock)
     /// drained to the output (feature `midi`; `Midi::set_hardware_out`).
     MidiOut,
-    /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
+    /// The device's faults, as `DeviceEvent::Fault` (feature `device`).
     Poll,
     /// Frees, here, what the audio thread let go of in every cell the
     /// session publishes to (`ArcLend::reclaim`): the project meter and the
@@ -214,67 +214,10 @@ pub enum SessionEvent {
     /// A [`LoadMeter::reset`](tutti_metering::LoadMeter::reset) between
     /// updates restarts the count without an event.
     BlocksSilenced(u64),
-    /// The audio backend reported a fault (a device unplugged mid-session):
-    /// the most recent one since the last poll.
+    /// The sound card or its devices: a fault, a device that came or went, a
+    /// restart wanted, done or failed ([`DeviceEvent`]).
     #[cfg(feature = "device")]
-    DeviceFault(tutti_cpal::StreamFault),
-    /// A device is no longer listed by the host (a [`DeviceWatch`](crate::DeviceWatch)
-    /// is running; design 018). The stream's own loss is
-    /// [`DeviceFault`](Self::DeviceFault).
-    #[cfg(feature = "device")]
-    DeviceLost {
-        /// Which way it played or captured.
-        direction: tutti_cpal::Direction,
-        /// The device.
-        id: tutti_cpal::DeviceId,
-    },
-    /// A device is listed that was not (the first look lists them all).
-    #[cfg(feature = "device")]
-    DeviceAppeared {
-        /// Which way it plays or captures.
-        direction: tutti_cpal::Direction,
-        /// The device.
-        id: tutti_cpal::DeviceId,
-    },
-    /// The host's default device moved; `None`: there is none now.
-    #[cfg(feature = "device")]
-    DefaultChanged {
-        /// Which direction's default.
-        direction: tutti_cpal::Direction,
-        /// The new default.
-        id: Option<tutti_cpal::DeviceId>,
-    },
-    /// The device policy wants the stream restarted: run it with
-    /// [`Session::restart_wanted`](crate::Session::restart_wanted) (a
-    /// headless host) or the adapter's restart. The outcome is reported by
-    /// the next update, and tells the policy, which waits out its backoff
-    /// before it asks again.
-    #[cfg(feature = "device")]
-    RestartWanted(crate::DeviceRestart),
-    /// A restart moved the stream. A host that holds a capture stream at the
-    /// graph's rate (`MicIn`) reopens it when
-    /// [`rate_changed`](crate::DeviceRestarted::rate_changed): the session
-    /// does not hold it.
-    #[cfg(feature = "device")]
-    DeviceRestarted(crate::DeviceRestarted),
-    /// The listing started with [`Session::list_outputs`] answered: the
-    /// host's output devices, in enumeration order. Reported once.
-    #[cfg(feature = "device")]
-    OutputsListed(Vec<tutti_cpal::DeviceId>),
-    /// The listing started with [`Session::list_outputs`] failed (the
-    /// message is the error's). Reported once.
-    #[cfg(feature = "device")]
-    OutputsListFailed(String),
-    /// The listing started with [`Session::list_outputs`] has not answered
-    /// after [`LISTING_WARNING`](crate::LISTING_WARNING) of
-    /// [`PhaseCx::now`]: the host's enumeration is stuck or slow. Reported
-    /// once; the listing goes on waiting.
-    #[cfg(feature = "device")]
-    OutputsListSlow(std::time::Duration),
-    /// A restart was refused or failed (the message is the error's). See
-    /// [`Session::restart`](crate::Session::restart) for the stream's state.
-    #[cfg(feature = "device")]
-    RestartFailed(String),
+    Device(crate::DeviceEvent),
     /// A modulation problem (design 015 §4.7), the one type
     /// [`ModState::problems`](crate::ModState::problems) lists. Reported
     /// once: a refusal when it starts or changes (the problems list holds it
@@ -427,31 +370,7 @@ impl std::fmt::Debug for SessionEvent {
                 .field("refused", refused)
                 .finish(),
             #[cfg(feature = "device")]
-            Self::DeviceFault(fault) => f.debug_tuple("DeviceFault").field(fault).finish(),
-            #[cfg(feature = "device")]
-            Self::DeviceLost { direction, id } => f
-                .debug_struct("DeviceLost")
-                .field("direction", direction)
-                .field("id", id)
-                .finish(),
-            #[cfg(feature = "device")]
-            Self::DeviceAppeared { direction, id } => f
-                .debug_struct("DeviceAppeared")
-                .field("direction", direction)
-                .field("id", id)
-                .finish(),
-            #[cfg(feature = "device")]
-            Self::DefaultChanged { direction, id } => f
-                .debug_struct("DefaultChanged")
-                .field("direction", direction)
-                .field("id", id)
-                .finish(),
-            #[cfg(feature = "device")]
-            Self::RestartWanted(request) => f.debug_tuple("RestartWanted").field(request).finish(),
-            #[cfg(feature = "device")]
-            Self::DeviceRestarted(r) => f.debug_tuple("DeviceRestarted").field(r).finish(),
-            #[cfg(feature = "device")]
-            Self::RestartFailed(why) => f.debug_tuple("RestartFailed").field(why).finish(),
+            Self::Device(event) => f.debug_tuple("Device").field(event).finish(),
             #[cfg(feature = "modulation")]
             Self::Modulation(problem) => f.debug_tuple("Modulation").field(problem).finish(),
             #[cfg(feature = "midi")]
@@ -486,14 +405,6 @@ impl std::fmt::Debug for SessionEvent {
                 .field("count", count)
                 .field("recovered", recovered)
                 .finish(),
-            #[cfg(feature = "device")]
-            Self::OutputsListed(ids) => f.debug_tuple("OutputsListed").field(ids).finish(),
-            #[cfg(feature = "device")]
-            Self::OutputsListFailed(why) => f.debug_tuple("OutputsListFailed").field(why).finish(),
-            #[cfg(feature = "device")]
-            Self::OutputsListSlow(waited) => {
-                f.debug_tuple("OutputsListSlow").field(waited).finish()
-            }
             Self::BlocksSilenced(count) => f.debug_tuple("BlocksSilenced").field(count).finish(),
             Self::EventsDroppedElsewhere(count) => f
                 .debug_tuple("EventsDroppedElsewhere")
@@ -621,7 +532,7 @@ pub enum RootTopologyStatus {
 ///
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
-///     .outputs_floor(1)
+///     .outputs_floor(ChannelLayout::MONO)
 ///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
@@ -691,6 +602,9 @@ pub struct Session {
     /// A listing was started by [`Session::list_outputs_once`].
     #[cfg(feature = "device")]
     pub(crate) outputs_listed: bool,
+    /// The capture inputs added ([`Session::add_input`]) and the host they open on.
+    #[cfg(all(feature = "device", feature = "audio-io"))]
+    pub(crate) inputs: crate::input::Inputs,
     /// How often a healthy plugin's state is captured.
     #[cfg(feature = "plugin")]
     pub(crate) snapshot_interval: std::time::Duration,

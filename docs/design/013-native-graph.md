@@ -492,10 +492,12 @@ the two drift. Nothing corrects it: a producer ahead finds the ring full and
 its writer refuses whole frames, counting them; one behind leaves it empty and
 the node writes silence. Neither side blocks. What the session can check it
 checks once, at open: `Graph::open_inlet(width, capacity, producer_rate)` (and
-`add_inlet` over a ring the producer already built, as `tutti-cpal`'s
-`MicIn::open_with_monitor` does) refuses a producer rate that is not the
-graph's with `InletError::RateMismatch`. A re-prepare to another rate later is
-not checked.
+`add_inlet` over an `InletRing` the producer already built, which carries the
+rate it fills it at, as `tutti-cpal`'s `MicIn::open_with_monitor` does) refuses
+a producer rate that is not the graph's with `InletError::RateMismatch`. A
+re-prepare to another rate later is not checked by the inlet: the session's
+`add_input` reopens the capture at the new rate after a restart, into the same
+node.
 
 #### Meters: level metering as an op in the plan
 
@@ -10310,7 +10312,7 @@ by width alone.
   (`FoldError::Unnamed`) rather than guess. A `Wave` built from a count is SMPTE
   where the engine has an order and `Unassigned` elsewhere. The mic is a
   `TapReader`/`TapWriter` pair (whole frames, any width), delivers the inputs it
-  was opened with (`MicIn::open_inputs`, `Fold::select`) as `Unassigned`, and
+  was opened with (`MicConfig::inputs`, `Fold::select`) as `Unassigned`, and
   `InletNode` is as wide as its ring. The sampler places a mono source with
   `MonoSpread`, the lone-centre rule: the centre of a 6, 8 or 12-wide memory
   voice (a 12-wide one is placed as an 8-wide frame, the most the sampler

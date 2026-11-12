@@ -16,7 +16,7 @@ const GHOST: NodeKey = NodeKey(u64::MAX);
 
 fn detached() -> Session {
     Session::builder()
-        .outputs_floor(1)
+        .outputs_floor(ChannelLayout::MONO)
         .build_detached(RATE)
         .expect("builds")
 }

@@ -29,8 +29,8 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// A detached stereo session at the render's rate.
 fn session() -> Session {
     Session::builder()
-        .inputs(0)
-        .outputs_floor(2)
+        .inputs(ChannelLayout::EMPTY)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("a detached session builds")
 }

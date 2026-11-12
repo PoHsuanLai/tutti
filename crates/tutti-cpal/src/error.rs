@@ -91,7 +91,7 @@ pub enum Error {
     /// The inputs asked of a capture device cannot be selected: none were
     /// named, or one is past the device's last.
     ///
-    /// Returned by `MicIn::open_inputs` (feature `capture`).
+    /// Returned by `MicIn::open` (feature `capture`).
     #[error("cannot select those inputs: {0}")]
     Inputs(#[from] tutti_types::FoldError),
 
@@ -103,6 +103,11 @@ pub enum Error {
     /// the engine first to replace it.
     #[error("the audio stream is already running; stop it before starting another")]
     AlreadyRunning,
+
+    /// A [`DeviceListing`](crate::DeviceListing)'s thread ended without an
+    /// answer (it panicked), so there is none to wait for.
+    #[error("the device listing thread ended without an answer")]
+    ListingEnded,
 
     /// I/O failure while reading or writing audio data.
     #[error(transparent)]

@@ -90,14 +90,14 @@ fn a_declared_surround_root_folds_by_the_surround_rules() {
 /// quad: as before this existed.
 #[test]
 fn an_undeclared_root_is_as_it_was() {
-    let mut s = offline(Session::builder().outputs_floor(4), 6).unwrap();
+    let mut s = offline(Session::builder().outputs_floor(ChannelLayout::QUAD), 6).unwrap();
     assert_eq!(s.root_topology(), None);
     assert_eq!(s.graph_ref().outputs(), 6, "the device floors the root");
     feed(&mut s, &[0.1, 0.2, 0.3, 0.4]);
     assert_eq!(heard(&mut s, 6), [0.1, 0.2, 0.3, 0.4, 0.0, 0.0]);
 
     // A project of four on a stereo device is quad, folded at -3 dB.
-    let mut quad = offline(Session::builder().outputs_floor(4), 2).unwrap();
+    let mut quad = offline(Session::builder().outputs_floor(ChannelLayout::QUAD), 2).unwrap();
     assert_eq!(quad.graph_ref().outputs(), 4);
     feed(&mut quad, &[0.1, 0.2, 0.3, 0.4]);
     assert_eq!(heard(&mut quad, 2), [0.1 + M3DB * 0.3, 0.2 + M3DB * 0.4]);

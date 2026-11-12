@@ -316,7 +316,7 @@ fn an_offline_render_feeds_the_master_meter() {
     assert_eq!(r[0].frames, Samples(128));
 
     let mut detached = Session::builder()
-        .outputs_floor(1)
+        .outputs_floor(ChannelLayout::MONO)
         .build_detached(SampleRate(RATE))
         .expect("builds");
     let mut meter = detached.take_master_meter().expect("declared at the build");
@@ -634,7 +634,7 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
 #[test]
 fn a_detached_render_feeds_a_tap() {
     let mut s = Session::builder()
-        .outputs_floor(1)
+        .outputs_floor(ChannelLayout::MONO)
         .build_detached(SampleRate(RATE))
         .expect("builds");
     let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
@@ -890,11 +890,13 @@ fn a_dropped_heard_reader_frees_the_tap() {
 #[test]
 fn a_project_the_device_cannot_take_is_refused_at_build() {
     let build = |floor: usize, device: u16| {
-        Session::builder().outputs_floor(floor).build_offline(
-            SampleRate(RATE),
-            ChannelLayout::from(device),
-            MaxBlock::of(Samples(256)),
-        )
+        Session::builder()
+            .outputs_floor(ChannelLayout::clamped(floor))
+            .build_offline(
+                SampleRate(RATE),
+                ChannelLayout::from(device),
+                MaxBlock::of(Samples(256)),
+            )
     };
     assert!(matches!(
         build(6, 5),

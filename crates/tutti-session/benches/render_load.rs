@@ -40,8 +40,8 @@
 //!
 //! Each configuration renders 1 s to warm up (notes attack, voices start),
 //! then 10 s measured, block by block, at 64 and 128 frames, serial
-//! (`render_workers(1)`) and on a pool of one thread per core
-//! (`render_workers(0)`).
+//! (`Workers::SERIAL`) and on a pool of one thread per core
+//! (`Workers::PerCore`).
 //!
 //! # Where the spikes land
 //!
@@ -126,7 +126,7 @@ use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unf
 use tutti_nodes::{BusStripNode, ConvolverNode, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-use tutti_session::{InPort, OutPort, Root, Session};
+use tutti_session::{InPort, OutPort, Root, Session, Workers};
 use tutti_transport::MotionEvent;
 use tutti_types::{
     Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MaxBlock, PlaybackRate,
@@ -223,7 +223,7 @@ fn add_stereo(
 
 /// The scene the module docs describe, on `workers` render threads, its
 /// transport rolling.
-fn scene(block: usize, workers: usize, variant: Variant) -> Session {
+fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     let mut s = Session::builder()
         .render_workers(workers)
         .build_offline(
@@ -376,7 +376,7 @@ struct Figures {
     peak_out: f32,
 }
 
-fn measure(block: usize, workers: usize, variant: Variant) -> Figures {
+fn measure(block: usize, workers: Workers, variant: Variant) -> Figures {
     let s = scene(block, workers, variant);
     let meter = s.load_meter().expect("an offline engine");
     let mut out = vec![0.0f32; block * 2];
@@ -456,7 +456,7 @@ fn main() {
     );
     for variant in VARIANTS {
         for block in [64usize, 128] {
-            for (label, workers) in [("1", 1usize), ("cores", 0)] {
+            for (label, workers) in [("1", Workers::SERIAL), ("cores", Workers::PerCore)] {
                 let f = measure(block, workers, variant);
                 // A silent render would measure nothing worth reading.
                 assert!(f.peak_out > 0.0, "the scene sounds");

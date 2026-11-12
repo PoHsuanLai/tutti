@@ -12,7 +12,7 @@ use tutti_cpal::{
     Listed, Snapshot, SnapshotSource,
 };
 
-use crate::{DeviceRestart, SessionEvent};
+use crate::{DeviceEvent, DeviceRestart, SessionEvent};
 
 /// How the retries of one device are spaced.
 ///
@@ -230,10 +230,7 @@ impl Follow {
         }
         self.strikes += 1;
         self.not_before = Some(now + self.policy.backoff.wait(self.strikes));
-        Some(DeviceRestart {
-            device,
-            max_block: None,
-        })
+        Some(DeviceRestart::wanted(device))
     }
 
     fn goal(&self, view: &Snapshot) -> Option<DeviceSelector> {
@@ -296,7 +293,7 @@ impl DeviceWatch {
     }
 
     /// Watches for a stream that never started: [`poll`](Self::poll) says
-    /// ([`SessionEvent::RestartWanted`]) when `want` is worth another try
+    /// ([`DeviceEvent::RestartWanted`]) when `want` is worth another try
     /// (with `retry_startup` on).
     pub fn without_stream(
         source: impl SnapshotSource + Send + 'static,
@@ -347,8 +344,8 @@ impl DeviceWatch {
         self.poll(now, events);
         let at = events
             .iter()
-            .position(|e| matches!(e, SessionEvent::RestartWanted(_)))?;
-        let SessionEvent::RestartWanted(request) = events.remove(at) else {
+            .position(|e| matches!(e, SessionEvent::Device(DeviceEvent::RestartWanted(_))))?;
+        let SessionEvent::Device(DeviceEvent::RestartWanted(request)) = events.remove(at) else {
             return None;
         };
         let result = start(request.device);
@@ -386,29 +383,27 @@ impl DeviceWatch {
         if let Some(snapshot) = self.source.poll() {
             self.looked = true;
             for change in self.roster.apply(snapshot) {
-                out.push(match change {
+                out.push(SessionEvent::Device(match change {
                     DeviceChange::Appeared(direction, id) => {
-                        SessionEvent::DeviceAppeared { direction, id }
+                        DeviceEvent::Appeared { direction, id }
                     }
-                    DeviceChange::Vanished(direction, id) => {
-                        SessionEvent::DeviceLost { direction, id }
-                    }
+                    DeviceChange::Vanished(direction, id) => DeviceEvent::Lost { direction, id },
                     DeviceChange::DefaultChanged(direction, id) => {
-                        SessionEvent::DefaultChanged { direction, id }
+                        DeviceEvent::DefaultChanged { direction, id }
                     }
-                });
+                }));
             }
         }
         if self.looked
             && let Some(request) = self.note(FollowEvent::Look, now)
         {
-            out.push(SessionEvent::RestartWanted(request));
+            out.push(SessionEvent::Device(DeviceEvent::RestartWanted(request)));
         }
     }
 }
 
 /// How long a listing of the output devices may wait before the session
-/// reports it slow ([`SessionEvent::OutputsListSlow`]): a healthy host
+/// reports it slow ([`DeviceEvent::OutputsListSlow`]): a healthy host
 /// answers in milliseconds, and one that has not in this long is likely stuck.
 pub const LISTING_WARNING: Duration = Duration::from_secs(5);
 
@@ -434,14 +429,23 @@ impl OutputListing {
     /// The event this poll has, and whether the listing is over.
     pub(crate) fn poll(&mut self, now: Instant) -> (Option<SessionEvent>, bool) {
         match self.listing.poll() {
-            Listed::Devices(devices) => (Some(SessionEvent::OutputsListed(devices)), true),
-            Listed::Failed(why) => (Some(SessionEvent::OutputsListFailed(why)), true),
+            Listed::Devices(devices) => (
+                Some(SessionEvent::Device(DeviceEvent::OutputsListed(devices))),
+                true,
+            ),
+            Listed::Failed(why) => (
+                Some(SessionEvent::Device(DeviceEvent::OutputsListFailed(why))),
+                true,
+            ),
             Listed::Pending => {
                 let since = *self.since.get_or_insert(now);
                 let waited = now.saturating_duration_since(since);
                 let slow = waited >= LISTING_WARNING && !self.warned;
                 self.warned |= slow;
-                (slow.then_some(SessionEvent::OutputsListSlow(waited)), false)
+                (
+                    slow.then_some(SessionEvent::Device(DeviceEvent::OutputsListSlow(waited))),
+                    false,
+                )
             }
         }
     }

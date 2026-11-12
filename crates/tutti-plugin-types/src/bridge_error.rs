@@ -50,6 +50,20 @@ pub enum BridgeError {
         format: &'static str,
     },
 
+    /// The plugin's format cannot be hosted in this process by this build: the
+    /// format's host is not compiled in (its cargo feature is off). Asked for
+    /// with `Hosting::InProcess`; refused before anything is loaded.
+    #[error(
+        "{path} is a {format} plugin, and this build has no host for {format} in the \
+         host's own process (enable the format's feature of `tutti-plugin`)"
+    )]
+    NotInProcess {
+        /// The plugin file.
+        path: PathBuf,
+        /// The format's name, as a user knows it.
+        format: &'static str,
+    },
+
     /// The plugin returned a format-defined failure code.
     #[error("Plugin error at {stage}: code {code:#x}")]
     FormatCode {
@@ -98,10 +112,11 @@ pub enum BridgeError {
 
     /// The catalog records this plugin as having brought a scan down.
     ///
-    /// Only `tutti-plugin`'s `Plugins::open` returns this —
-    /// `Plugin::open` has no catalog and so no
-    /// crash history. `reason` lets a host say *which* plugin misbehaved and
-    /// offer to load it anyway through `Plugin::open`.
+    /// Only a load that names the catalog (`PluginLoad::with_catalog`, which
+    /// asks `Catalog::check`) returns this: `Plugin::open` has no catalog and
+    /// so no crash history. `reason` lets a host say *which* plugin misbehaved
+    /// and offer to load it anyway, with a load that does not name the
+    /// catalog.
     ///
     /// False positives are expected: the scanner's dead-man's pedal fires on a
     /// force-quit, a power loss, or an OOM kill as readily as on a real crash.
@@ -109,7 +124,7 @@ pub enum BridgeError {
     /// re-admits the plugin without the host doing anything.
     #[error("Plugin at {path} is blacklisted: {reason}")]
     Blacklisted {
-        /// The plugin the catalog refuses to open.
+        /// The plugin the catalog refuses to load.
         path: std::path::PathBuf,
         /// Why it was blacklisted, so a host can offer to load it anyway.
         reason: String,

@@ -58,8 +58,8 @@ let _controls = editor.insert(NodeKey(1), "plugin", plugin.bind(tempo));
 A host that does not already know the path discovers one first — see
 [`catalog`], whose [`probe_record`](catalog::probe_record) pairs with
 `tutti_plugin_db::discover` and needs no feature flag, and
-whose [`Plugins`](catalog::Plugins) adds incremental rescan and crash recovery on
-top.
+whose [`Catalog`](catalog::Catalog) adds incremental rescan and crash recovery on
+top, and says what is blacklisted (the session's load asks it).
 
 ## Architecture
 
@@ -106,7 +106,7 @@ plugin's format.
 
 - [`catalog`] — discovering, persisting and loading plugins:
   [`Plugin`](catalog::Plugin) (one loaded plugin),
-  [`Plugins`](catalog::Plugins) (catalog with incremental rescan and crash
+  [`Catalog`](catalog::Catalog) (catalog with incremental rescan and crash
   recovery), [`probe_record`](catalog::probe_record) (the stateless probe),
   and the [`PluginDescriptor`](catalog::PluginDescriptor) identity type. The
   scanner, the catalog traits and their records are `tutti-plugin-db`'s.
@@ -131,9 +131,9 @@ Without any feature, VST3, CLAP, AU and VST2 plugins all load in the
 subprocess, with no editor support.
 
 - `json` — `tutti_plugin_db::{save, load}`, the versioned JSON database file,
-  and `Plugins::load` and `Plugins::save`. One ready-made store, not the shape
+  and `Catalog::open_db` and `Catalog::save`. One ready-made store, not the shape
   of the API: build a `tutti_plugin_db::PluginDb` from your own store and pass
-  it to `Plugins::with_db`, or use `tutti_plugin_db::discover` with
+  it to `Catalog::with_db`, or use `tutti_plugin_db::discover` with
   [`probe_record`](catalog::probe_record).
 - `vst3`, `clap`, `au` — editor support for that format. Loads the plugin
   library a second time in the *host* process for editor rendering only; audio
@@ -144,6 +144,11 @@ subprocess, with no editor support.
   instance, so the two cannot live in separate processes; with this feature,
   [`Plugin::open`](catalog::Plugin::open) hosts `.vst` plugins in the host
   process.
+
+Where a plugin runs is its ref's [`Hosting`](catalog::Hosting): `Auto` (the
+default) serves CLAP, VST3 and AU and hosts VST2 in process; `InProcess` hosts a
+CLAP, VST3 or AU plugin in the host process too (with that format's feature),
+and `OutOfProcess` on VST2 is refused.
 
 ## Capability model
 

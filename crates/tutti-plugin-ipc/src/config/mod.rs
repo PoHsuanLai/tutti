@@ -10,7 +10,7 @@
 //!   timeout, sample format. One drives a single plugin-server connection;
 //!   `AudioConfig::to_bridge_config` derives it.
 //!
-//! Nothing here constructs a `tutti-plugin`'s `Plugins`. Config is a
+//! Nothing here constructs a `tutti-plugin`'s `Catalog`. Config is a
 //! leaf: it describes, the host layer builds.
 
 pub mod bridge;

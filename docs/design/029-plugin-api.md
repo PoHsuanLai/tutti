@@ -276,7 +276,7 @@ path-only open is left.
 
 **As built (step 6a).** The probe lists every plugin of a file, in every format,
 and the catalog holds them all; `Catalog::open_db`, `scan()`, the removal of
-`Plugins::open`, `with_fresh_scan` and `Backend`, and `Hosting` are 6b.
+`Plugins::open`, `with_fresh_scan` and `Backend`, and `Hosting` are 6b (below).
 - **The wire.** `ProbeOutcome::Described` carries a `Vec<PluginDescriptor>` (never
   empty: a file with no plugin is a `Failed`), and the result file's magic is
   version 3 (a version 2 file, one descriptor, is refused by its magic).
@@ -315,6 +315,51 @@ and the catalog holds them all; `Catalog::open_db`, `scan()`, the removal of
   `vst2_shell` loads and refuses by id. Not covered: an AU bundle of several
   units (the AU probe is checked on macOS against the installed bundles); a
   VST3 factory with a class that cannot be created.
+
+**As built (step 6b).**
+- **The catalog.** `Plugins` is `Catalog` (`tutti_plugin::catalog::Catalog`,
+  in the prelude with `Hosting`). `Catalog::open_db(config)` reads the JSON
+  file (feature `json`; `with_db` and `empty` stay for a host's own store),
+  `scan() -> Result<ScanResult, ScanBusy>` is the blocking scan (was
+  `rescan`), `spawn_scan` and `poll_scan` the background one. `PluginDb` is
+  still the one owner of rows: the catalog changes one only through
+  `PluginDb::apply` and its `blacklist` and `unblacklist`.
+  `with_fresh_scan`, `Plugins::open` and `Plugins::load` are gone, no twin.
+- **The catalog opens nothing.** Its one refusal is `Catalog::check(&PluginRef)
+  -> Result<(), BridgeError>` (`Blacklisted` with the recorded reason; the check
+  is mtime-aware, so a changed file is re-admitted). The load asks it:
+  `PluginLoad::with_catalog(&catalog)` takes the catalog's `AudioConfig` and
+  its verdict (asked now, the catalog not borrowed past the call, so the load
+  stays `Send`), and `run()` answers a refusal as the load's failure, before
+  any server or library. A load that names no catalog consults no blacklist,
+  which is how a host offers to load a plugin anyway; `Plugin::open` stays the
+  file API and consults none.
+- **`Hosting`** (`Auto`, `InProcess`, `OutOfProcess`; not 021's draft names
+  `Local` and `Isolated`) is a field of `PluginRef` (`with_hosting`,
+  `hosting`; serde with `default`), not part of the plugin's identity
+  (`is_same_plugin` ignores it: a state saved from one restores into the other).
+  `Auto` is the format's default (021 Q3): **CLAP, VST3 and AU out of process,
+  VST2 in process**. `InProcess` hosts CLAP, VST3 and AU in the host's process
+  too, through the generic `InProcClient<F>` (it needs the main thread and the
+  format's `tutti-plugin` feature; AU on macOS). `Plugin::hosting_of(&PluginRef)`
+  resolves it, `Plugin::hosting()` reports it, and the private `Backend` enum is
+  `Placed`, one arm per in-process format beside the served client.
+  `PluginLoad::opens_in_process` follows the resolved hosting.
+- **Refusals are the load's, typed and early.** VST2 asked for `OutOfProcess` is
+  `BridgeError::NotOutOfProcess`, not moved in process; a format this build has
+  no in-process host for (VST2 included, with `vst2` off, even for `Auto`) is the
+  new `BridgeError::NotInProcess`. Both come before a server is looked for.
+  `Auto` never moves a blacklisted plugin in process (021 Q11): it stays served,
+  and the catalog's check refuses.
+- **Tests.** The step's test is `tutti-session`'s `plugin_hosting`: a blacklisted
+  plugin is refused at load with its reason (no server could be found, so the
+  refusal is not a failed launch), admitted by a load with no catalog and once
+  unblacklisted. `tutti-plugin`'s `hosting` suite loads the reference CLAP
+  plugin as `Auto`, `OutOfProcess` (a server pid) and `InProcess` (none; the main
+  thread demanded), VST2 as `Auto` in process and `OutOfProcess` refused, and
+  `scan()` over a directory that gains a file between two scans counts only the
+  new one. Not covered: VST3 and AU in process through `Plugin` (the contract's
+  `hostings` run both formats in process; AU is checked on macOS).
 
 ### Lane order
 

@@ -142,6 +142,25 @@ impl CompressorMember {
     }
 }
 
+impl CompressorMember {
+    /// The member for `c` at `rate`: a non-finite control is the default's, a knee and
+    /// the times are floored at 0 and a ratio at 1.
+    pub(crate) fn designed(c: &CompressorControls, rate: SampleRate) -> Self {
+        let d = CompressorControls::DEFAULT;
+        // A NaN time reads as 0 (`max` ignores it), instant; an infinite one holds the
+        // follower (a coefficient of 0), as `Seconds::one_pole_coeff` says.
+        Self {
+            threshold: Db(finite_or(c.threshold.get(), d.threshold.get())),
+            knee: Db(finite_or(c.knee.get(), d.knee.get()).max(0.0)),
+            ratio: CompressionRatio::new_clamped(finite_or(c.ratio.get(), d.ratio.get())),
+            attack: Seconds(c.attack.get().max(0.0)),
+            release: Seconds(c.release.get().max(0.0)),
+            makeup: Db(finite_or(c.makeup.get(), d.makeup.get())),
+            rate,
+        }
+    }
+}
+
 impl System for CompressorMember {
     fn latency(&self) -> Samples {
         Samples::ZERO
@@ -199,18 +218,7 @@ impl Family for CompressorFamily {
     /// The controls, made runnable: a non-finite one is the default's, a knee and the
     /// times are floored at 0 and a ratio at 1.
     fn member_into(&self, c: &CompressorControls, rate: SampleRate, out: &mut CompressorMember) {
-        let d = CompressorControls::DEFAULT;
-        *out = CompressorMember {
-            threshold: Db(finite_or(c.threshold.get(), d.threshold.get())),
-            knee: Db(finite_or(c.knee.get(), d.knee.get()).max(0.0)),
-            ratio: CompressionRatio::new_clamped(finite_or(c.ratio.get(), d.ratio.get())),
-            attack: Seconds(c.attack.get().max(0.0)),
-            release: Seconds(c.release.get().max(0.0)),
-            makeup: Db(finite_or(c.makeup.get(), d.makeup.get())),
-            rate,
-        };
-        // A NaN time reads as 0 (`max` ignores it), instant; an infinite one holds the
-        // follower (a coefficient of 0), as `Seconds::one_pole_coeff` says.
+        *out = CompressorMember::designed(c, rate);
     }
 
     fn recurrence(&self) -> CompressorRecurrence {
@@ -229,6 +237,58 @@ pub struct Detector {
     attack: f32,
     /// The one-pole coefficient while the reduction falls.
     release: f32,
+}
+
+impl Detector {
+    /// The figures member `m` asks for: its controls, and the times as coefficients at
+    /// its rate.
+    pub(crate) fn of(m: &CompressorMember) -> Self {
+        Self {
+            threshold: m.threshold,
+            knee: m.knee,
+            ratio: m.ratio,
+            attack: m.attack.one_pole_coeff(m.rate),
+            release: m.release.one_pole_coeff(m.rate),
+        }
+    }
+
+    /// The figures of a compressor that does nothing, for a target to start from.
+    pub(crate) const NEUTRAL: Self = Self {
+        threshold: Db(0.0),
+        knee: Db(0.0),
+        ratio: CompressionRatio::UNITY,
+        attack: 0.0,
+        release: 0.0,
+    };
+
+    /// The threshold, in dB.
+    pub(crate) fn threshold(&self) -> Db {
+        self.threshold
+    }
+
+    /// One frame of the compressor: the key's `level` (an amplitude) in dB, the static
+    /// curve at `threshold`, the one-pole follower `reduction` on it (the attack
+    /// coefficient while it rises, the release while it falls) and the linear gain
+    /// `-reduction + makeup_db`. The one copy of the compressor's frame, run by
+    /// [`CompressorRecurrence`] and by each band of the multiband.
+    #[inline]
+    pub(crate) fn frame(
+        &self,
+        reduction: &mut f32,
+        level: f32,
+        threshold: Db,
+        makeup_db: f32,
+    ) -> f32 {
+        let input_db = amplitude_to_db(Amplitude::new(level));
+        let target = compute_compressor_gain_reduction(input_db, threshold, self.ratio, self.knee);
+        let coeff = if target.get() > *reduction {
+            self.attack
+        } else {
+            self.release
+        };
+        *reduction = Smoother::toward(*reduction, target.get(), coeff);
+        Db::new(-*reduction + makeup_db).to_amplitude().get()
+    }
 }
 
 /// The coefficient point of a compressor: the [`Detector`], which lands whole, and the
@@ -311,13 +371,7 @@ impl Recurrence for CompressorRecurrence {
 
     fn start(&self, member: &CompressorMember) -> Start<Self> {
         let mut target = CompressorTarget {
-            detector: Detector {
-                threshold: Db(0.0),
-                knee: Db(0.0),
-                ratio: CompressionRatio::UNITY,
-                attack: 0.0,
-                release: 0.0,
-            },
+            detector: Detector::NEUTRAL,
             makeup: Db(0.0),
         };
         self.coefficients_into(member, &mut target);
@@ -351,13 +405,7 @@ impl Recurrence for CompressorRecurrence {
     }
 
     fn coefficients_into(&self, m: &CompressorMember, target: &mut CompressorTarget) -> bool {
-        target.detector = Detector {
-            threshold: m.threshold,
-            knee: m.knee,
-            ratio: m.ratio,
-            attack: m.attack.one_pole_coeff(m.rate),
-            release: m.release.one_pole_coeff(m.rate),
-        };
+        target.detector = Detector::of(m);
         target.makeup = m.makeup;
         true
     }
@@ -381,19 +429,11 @@ impl Recurrence for CompressorRecurrence {
         let gains = &mut state.gains[frames.clone()];
         for (g, i) in gains.iter_mut().zip(frames.clone()) {
             let level = detected.iter().fold(0.0f32, |m, ch| m.max(ch[i].abs()));
-            let input_db = amplitude_to_db(Amplitude::new(level));
             let threshold = feed.lanes[0]
                 .map(|lane| Db(lane[i]))
                 .filter(|t| t.get().is_finite())
                 .unwrap_or(d.threshold);
-            let target = compute_compressor_gain_reduction(input_db, threshold, d.ratio, d.knee);
-            let coeff = if target.get() > state.reduction {
-                d.attack
-            } else {
-                d.release
-            };
-            state.reduction = Smoother::toward(state.reduction, target.get(), coeff);
-            *g = Db::new(-state.reduction + makeup).to_amplitude().get();
+            *g = d.frame(&mut state.reduction, level, threshold, makeup);
         }
         let gains = &state.gains[frames.clone()];
         for (out, input) in output.iter_mut().zip(feed.audio) {

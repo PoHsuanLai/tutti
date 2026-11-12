@@ -11,20 +11,19 @@
 //! in the render at most 16 frames after it was sampled and the render does not
 //! depend on how audio is split into blocks. **Unlike them its coefficients do not
 //! ramp over the segment**: a retarget lands whole (`STEPS = 0`) and the segment runs on the set
-//! it solved, stair by stair. That is what the crossover has always done (it held
-//! its coefficients per 16-chunk), and the interpolation is better left out for
-//! what the tree is: the bands sum to an all-pass only while each split's low-pass,
-//! high-pass and all-pass share one frequency, which a coefficient-wise blend of the
-//! three does not keep. The glide that keeps a moving split from clicking is the
-//! node's, in the frequency (in `Hz`, linear across the block, as the old render
-//! ramped them) before the model is solved from it; in theta (`tan(pi f / rate)`)
-//! the same glide would be a different curve, and nothing asks for it.
+//! it solved, stair by stair. The interpolation is better left out for what the tree is: the
+//! bands sum to an all-pass only while each split's low-pass, high-pass and all-pass share one
+//! frequency, which a coefficient-wise blend of the three does not keep. A moving split
+//! therefore moves in 16-frame stairs, and a host that wants it glided (in `Hz`, say) moves
+//! the controls it hands the family.
 
 use tutti_types::{BusTopology, Hz, SampleRate};
 
-use super::legacy::check_bands;
-use super::legacy::{CrossoverError, CrossoverState, MAX_SPLITS, SOLVE_CEILING, validate};
-use super::{Crossover, CrossoverModel};
+use super::CrossoverModel;
+use super::CrossoverState;
+use super::bands::{
+    CrossoverError, MAX_BANDS, MAX_SPLITS, MIN_BANDS, SOLVE_CEILING, check_bands, validate,
+};
 use crate::Lerp;
 use crate::{ChannelRecurrence, Filter};
 
@@ -42,7 +41,7 @@ impl CrossoverControls {
     ///
     /// # Errors
     ///
-    /// [`CrossoverError`] as [`Crossover::new`](crate::Crossover::new): a band
+    /// [`CrossoverError`]: a band
     /// count outside 2 to 6, a rate that is not finite and positive, or
     /// frequencies that are not finite, above 0, strictly increasing and below
     /// Nyquist.
@@ -67,6 +66,12 @@ pub struct CrossoverTree {
 }
 
 impl CrossoverFamily {
+    /// The fewest bands.
+    pub const MIN_BANDS: usize = MIN_BANDS;
+
+    /// The most bands.
+    pub const MAX_BANDS: usize = MAX_BANDS;
+
     /// A crossover of `bands` bands on the bus `input`, each band where it is.
     ///
     /// # Errors
@@ -74,10 +79,10 @@ impl CrossoverFamily {
     /// [`CrossoverError::Bands`] outside 2 to 6, and [`CrossoverError::Channels`]
     /// for no channels.
     pub fn new(input: BusTopology, bands: usize) -> Result<Self, CrossoverError> {
-        check_bands(bands)?;
+        let tree = CrossoverTree::new(bands)?;
         match input.layout().count() {
             0 => Err(CrossoverError::Channels { channels: 0 }),
-            _ => Ok(Self::over(CrossoverTree { bands }, input)),
+            _ => Ok(Self::over(tree, input)),
         }
     }
 
@@ -89,6 +94,16 @@ impl CrossoverFamily {
 }
 
 impl CrossoverTree {
+    /// A tree of `bands` bands.
+    ///
+    /// # Errors
+    ///
+    /// [`CrossoverError::Bands`] outside 2 to 6.
+    pub(crate) fn new(bands: usize) -> Result<Self, CrossoverError> {
+        check_bands(bands)?;
+        Ok(Self { bands })
+    }
+
     /// How many bands it makes.
     #[must_use]
     pub fn bands(&self) -> usize {
@@ -109,7 +124,7 @@ impl ChannelRecurrence for CrossoverTree {
     type Member = CrossoverModel;
     type Coeffs = CrossoverModel;
     type State = CrossoverState;
-    type Frame = [f32; Crossover::MAX_BANDS];
+    type Frame = [f32; MAX_BANDS];
 
     const STEPS: u32 = 0;
 
@@ -154,7 +169,7 @@ impl ChannelRecurrence for CrossoverTree {
     }
 
     #[inline]
-    fn tick(c: &CrossoverModel, s: &mut CrossoverState, x: f32) -> [f32; Crossover::MAX_BANDS] {
+    fn tick(c: &CrossoverModel, s: &mut CrossoverState, x: f32) -> [f32; MAX_BANDS] {
         s.tick(c, x)
     }
 }

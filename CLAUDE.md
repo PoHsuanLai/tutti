@@ -843,16 +843,21 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Family`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
   `SvfFamily<F>`, `LadderFamily<F>` and `CrossoverFamily` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
-  written once), the dynamics curves, followers and kernels, the brickwall clipper
+  written once), the dynamics curves, the brickwall clipper
   (`BrickwallFamily`, `BrickwallRecurrence`: the first dynamics family on the model, its
   ceiling a fast lane) the compressor (`CompressorFamily`, `CompressorRecurrence`: its threshold a fast lane,
-  its makeup gliding over `GAIN_GLIDE`; the block `CompressorKernel` stays for the
-  multiband) and the noise gate (`GateFamily`, `GateRecurrence`: threshold a fast lane, the
+  its makeup gliding over `GAIN_GLIDE`; its frame step, `Detector::frame`, is the one copy the
+  multiband's bands run too) and the noise gate (`GateFamily`, `GateRecurrence`: threshold a fast lane, the
   range gliding over `GAIN_GLIDE`), both on a typed `KeySource` (`KeySource::Sidechain`, a key bus that
   must be wired, `Channels::keyed`; `KeySource::Own`, the signal itself, `Channels::same`), the
   lookahead limiter (`LimiterFamily`, `LimiterRecurrence`: threshold and ceiling fast lanes,
   every coefficient landing whole; the lookahead a constructor constant that is the member's
-  latency, a checked `Lookahead` (above zero, at most 1 s, never clamped), `LimiterFamily::new(input, Lookahead)`) (a dynamics node is built from its named
+  latency, a checked `Lookahead` (above zero, at most 1 s, never clamped), `LimiterFamily::new(input, Lookahead)`) and the
+  multiband compressor (`MultibandFamily`, `MultibandRecurrence`: a `CrossoverState` per channel and
+  the compressor's frame step per band, each band's makeup, bypass and solo gliding over `GAIN_GLIDE`,
+  each band's deepest reduction in the state for the node's meter; `MultibandCompressorNode` stays
+  a hand-written node over `Realized<MultibandRecurrence>`, since `FamilyNode` has no room for its
+  35 cells and a band count that varies per instance) (a dynamics node is built from its named
   controls struct: `CompressorNode::new(input, key, CompressorControls { .. })`,
   `GateNode::new(input, key, GateControls { .. })`, `LimiterNode::new(input, lookahead,
   LimiterControls { .. })`, each with `mono` and `stereo` shorthands; a gate's closed floor is
@@ -922,7 +927,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   returns a measurement, `tutti-measure`); a node file holds only
   the `Node` adapter.** Where an algorithm needs a `Param<U>` read, an atomic or
   a non-finite guard (`LastGood`), the node reads and guards it and hands the
-  algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
+  algorithm plain values (the compressor's `Detector::frame` takes the level, the threshold and
+  the makeup).
   A loop that indexes the graph's `Inputs`/`Outputs`, or reads a `Param` cell,
   stays in the node.
 - `tutti-curve` depends on `tutti-types` alone (no `libm`: the laws evaluate with

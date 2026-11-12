@@ -10,9 +10,10 @@ mod real;
 mod svf;
 
 pub use biquad::{Biquad, DirectForm1};
+pub(crate) use crossover::CrossoverState;
 pub use crossover::{
-    Crossover, CrossoverControls, CrossoverError, CrossoverFamily, CrossoverModel, CrossoverTree,
-    MAX_SPLITS, SOLVE_CEILING, fit_to_rate,
+    CrossoverControls, CrossoverError, CrossoverFamily, CrossoverModel, CrossoverTree, MAX_SPLITS,
+    SOLVE_CEILING, fit_to_rate,
 };
 pub use ladder::{
     Ladder, LadderCoefficients, LadderCoeffs, LadderControls, LadderFamily, LadderModel,

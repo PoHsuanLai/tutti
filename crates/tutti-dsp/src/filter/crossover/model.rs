@@ -1,16 +1,16 @@
 //! The Linkwitz-Riley crossover as a model: [`CrossoverModel`], the design
 //! (the splits' coefficients at a rate), separated from the state that runs it
-//! ([`Crossover`](crate::Crossover)).
+//! (`CrossoverState`).
 //!
 //! A band of an `n`-split tree is `HP^2` of every earlier split, `LP^2` of its
-//! own and the all-pass of every later one (see `legacy.rs`), so each band's
+//! own and the all-pass of every later one (see `state.rs`), so each band's
 //! response is the product of those, in closed form.
 
 use core::f64::consts::{FRAC_1_SQRT_2, PI};
 
 use tutti_types::{Db, Hz, SampleRate, Samples};
 
-use super::legacy::{CrossoverError, MAX_SPLITS, SOLVE_CEILING, validate};
+use super::bands::{CrossoverError, MAX_SPLITS, SOLVE_CEILING, validate};
 use crate::filter::biquad::{Biquad, decay_ring, section_l1};
 use crate::{Complex64, Lti, Ring, System};
 
@@ -79,7 +79,7 @@ impl CrossoverModel {
     ///
     /// # Errors
     ///
-    /// [`CrossoverError`] as [`Crossover::new`](crate::Crossover::new): a band count
+    /// [`CrossoverError`]: a band count
     /// outside 2 to 6, a rate that is not finite and positive, or frequencies that
     /// are not finite, above 0, strictly increasing and below Nyquist.
     pub fn new(frequencies: &[Hz], rate: impl Into<SampleRate>) -> Result<Self, CrossoverError> {

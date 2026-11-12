@@ -320,6 +320,14 @@ impl<R: Recurrence> Realized<R> {
         (&self.recurrence, &mut self.coeffs, &mut self.state)
     }
 
+    /// The state, for a node that takes a measurement the recurrence keeps in it (the
+    /// multiband's deepest reduction, for a meter) after a block. Writing to it other than
+    /// through what the recurrence's state offers is not supported: the runner and the
+    /// recurrence own what it holds.
+    pub fn state_mut(&mut self) -> &mut R::State {
+        &mut self.state
+    }
+
     /// Sizes the runner for `setup`, from the worst case `capacity`. Control side;
     /// allocates. A runner never inspects a member to allocate.
     pub fn prepare(&mut self, capacity: &R::Capacity, setup: &Setup) {

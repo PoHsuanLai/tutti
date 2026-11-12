@@ -1,19 +1,30 @@
 //! [`MultibandCompressorNode`]: a compressor per band of a Linkwitz-Riley
 //! crossover, summed.
+//!
+//! The algorithm is `tutti-dsp`'s ([`MultibandFamily`], run by [`MultibandRecurrence`]);
+//! this file holds the cells and how a block reads them. It is **hand-written** over
+//! [`Realized`] and not a [`FamilyNode`](crate::FamilyNode): a `FamilyNode` takes its cells
+//! from a [`ControlSet`](crate::ControlSet) of at most `MAX_PARAM_PORTS` (32) rows with
+//! `&'static` addresses, and this node has 27 modulatable params at four bands, the band
+//! count varies per instance and its bypass and solo cells have no port.
 
 use std::fmt;
-
+use std::ops::Range;
 use std::sync::Arc;
+
+use tutti_dsp::{
+    BandSettings, CompressorControls, CrossoverControls, CrossoverError, Family, Feed,
+    MultibandFamily, MultibandMember, MultibandRecurrence, MultibandSettings, Realized, Setup,
+};
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, MAX_PARAM_PORTS, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape,
     Status,
 };
-use tutti_types::{AtomicF32, CompressionRatio, Db, Hz, Param, SampleRate, Seconds, Tail};
-use tutti_types::{ChannelLayout, UnitAddr, UnitParam};
+use tutti_types::{AtomicF32, CompressionRatio, Db, Hz, MAX_BUS_CHANNELS, Param, SampleRate};
+use tutti_types::{BusTopology, ChannelLayout, Seconds, Tail, UnitAddr, UnitParam};
 
-use super::compressor_core::CompressorCore;
 use crate::filter::Splits;
-use tutti_dsp::{Crossover, CrossoverError};
+use crate::ramp::LastGood;
 
 /// The crossover frequencies a band count starts with.
 fn default_crossovers(bands: usize) -> &'static [Hz] {
@@ -56,7 +67,12 @@ const PER_BAND: usize = BAND_PARAMS.len();
 const MAX_PORTS: usize = MultibandCompressorNode::MAX_BANDS * PER_BAND + MAX_CROSSOVERS;
 const _: () = assert!(MAX_PORTS <= MAX_PARAM_PORTS);
 
-/// The make-up gain's place in [`BAND_PARAMS`].
+/// Where each of a band's params is in [`BAND_PARAMS`].
+const THRESHOLD: usize = 0;
+const KNEE: usize = 1;
+const RATIO: usize = 2;
+const ATTACK: usize = 3;
+const RELEASE: usize = 4;
 const MAKEUP: usize = 5;
 
 /// A toggle cell's value: `>= 0.5` is on (so a NaN is off), as
@@ -138,21 +154,106 @@ impl MultibandControls {
     }
 }
 
-/// One band's compressor and its running state.
+/// One band's cells.
 #[derive(Clone, Debug)]
 struct Band {
-    core: CompressorCore,
+    threshold: Param<Db>,
+    knee: Param<Db>,
+    ratio: Param<CompressionRatio>,
+    attack: Param<Seconds>,
+    release: Param<Seconds>,
+    makeup: Param<Db>,
     /// `>= 0.5` bypasses the band ([`UnitParam::Bypass`]).
     bypass: Arc<AtomicF32>,
     /// `>= 0.5` solos the band ([`UnitParam::Solo`]).
     solo: Arc<AtomicF32>,
     reduction: Param<Db>,
-    /// The bypass weight (1 bypassed, 0 compressing) the previous block ended
-    /// on; `None` until the first block.
-    bypassed: Option<f32>,
-    /// The audibility (1 sounding, 0 muted by another band's solo) the
-    /// previous block ended on; `None` until the first block.
-    audible: Option<f32>,
+    /// Last finite threshold, knee, ratio, makeup, attack and release. Every one of
+    /// them reaches the envelope follower, a recursive state that a single NaN or ±∞
+    /// leaves NaN for good, so a non-finite write reads as unchanged (see [`LastGood`]).
+    good: [LastGood; PER_BAND],
+}
+
+impl Band {
+    fn new() -> Self {
+        Self {
+            threshold: Param::new(DEFAULT_THRESHOLD),
+            knee: Param::new(Db(0.0)),
+            ratio: Param::new(DEFAULT_RATIO),
+            attack: Param::new(DEFAULT_ATTACK),
+            release: Param::new(DEFAULT_RELEASE),
+            makeup: Param::new(Db(0.0)),
+            bypass: Arc::new(AtomicF32::new(0.0)),
+            solo: Arc::new(AtomicF32::new(0.0)),
+            reduction: Param::new(Db::UNITY),
+            good: [
+                LastGood::new(DEFAULT_THRESHOLD.get(), 0.0),
+                LastGood::fixed(0.0),
+                LastGood::new(DEFAULT_RATIO.get(), CompressionRatio::UNITY.get()),
+                LastGood::new(DEFAULT_ATTACK.to_f32(), 0.0),
+                LastGood::new(DEFAULT_RELEASE.to_f32(), 0.0),
+                LastGood::fixed(0.0),
+            ],
+        }
+    }
+
+    /// Stops sharing every cell, keeping the values (and the meter, which starts again).
+    fn detach(&mut self) {
+        self.threshold.detach();
+        self.knee.detach();
+        self.ratio.detach();
+        self.attack.detach();
+        self.release.detach();
+        self.makeup.detach();
+        self.bypass = Arc::new(AtomicF32::new(
+            self.bypass.load(core::sync::atomic::Ordering::Acquire),
+        ));
+        self.solo = Arc::new(AtomicF32::new(
+            self.solo.load(core::sync::atomic::Ordering::Acquire),
+        ));
+        self.reduction = Param::new(Db::UNITY);
+    }
+
+    /// The band's settings at frame `at` of the block: the cells, or the values the
+    /// graph drives on the band's ports (the threshold is read per frame by the
+    /// recurrence, so its cell is the base it falls back to). A non-finite value reads as
+    /// the last finite one.
+    fn read(&mut self, lanes: &[Option<&[f32]>; PER_BAND], at: usize) -> BandSettings {
+        let driven = |k: usize| lanes[k].map(|lane| lane[at]);
+        let mut take = |k: usize, cell: f32| self.good[k].read(driven(k).unwrap_or(cell));
+        let knee = take(KNEE, self.knee.load().get());
+        let ratio = take(RATIO, self.ratio.load().get());
+        let attack = take(ATTACK, self.attack.load().to_f32());
+        let release = take(RELEASE, self.release.load().to_f32());
+        let makeup = take(MAKEUP, self.makeup.load().get());
+        // The threshold's lane is the recurrence's own; only the base is read here.
+        let threshold = self.good[THRESHOLD].read(self.threshold.load().get());
+        BandSettings {
+            compressor: CompressorControls {
+                threshold: Db(threshold),
+                knee: Db(knee),
+                ratio: CompressionRatio(ratio),
+                attack: Seconds::from_f32(attack),
+                release: Seconds::from_f32(release),
+                makeup: Db(makeup),
+            },
+            bypass: is_on(&self.bypass),
+            solo: is_on(&self.solo),
+        }
+    }
+}
+
+/// What the graph drives on the node's param ports for a block, by band and param, and
+/// by crossover: `None` for a port nothing drives.
+struct Lanes<'a> {
+    band: [[Option<&'a [f32]>; PER_BAND]; MultibandCompressorNode::MAX_BANDS],
+    cutoff: [Option<&'a [f32]>; MAX_CROSSOVERS],
+}
+
+impl Lanes<'_> {
+    fn driven(&self) -> bool {
+        self.cutoff.iter().any(Option::is_some) || self.band.iter().flatten().any(Option::is_some)
+    }
 }
 
 /// A multiband compressor: a Linkwitz-Riley 4th-order crossover splits the
@@ -167,7 +268,7 @@ struct Band {
 /// # Crossover and phase
 ///
 /// The split is IIR and **not linear-phase**: the bands share one phase
-/// response (see [`Crossover`]), which rotates with frequency, and their sum
+/// response (see [`CrossoverModel`](tutti_dsp::CrossoverModel)), which rotates with frequency, and their sum
 /// is allpass (flat magnitude, phase rotating through each crossover). With every band at unity ratio and 0 dB makeup the
 /// output has the input's magnitude at every frequency. The node adds no
 /// latency.
@@ -191,36 +292,47 @@ struct Band {
 ///
 /// That is `bands * 6 + (bands - 1)` param ports the graph can modulate (27
 /// at 4 bands, under `MAX_PARAM_PORTS`), in the order of [`BAND_PARAMS`] band
-/// by band and then the crossovers. The threshold is read per sample; the
-/// rest once per block, with the make-up, the crossover frequencies and a
-/// solo's mute ramped across it. A non-finite write reads as unchanged. The
-/// crossovers follow [`CrossoverNode`](crate::CrossoverNode)'s rules: a set
-/// not strictly increasing is refused as a whole, after each frequency is
-/// fitted under the rate (so `[30000, 25000]` at 48 kHz is clamped into order
-/// and accepted).
+/// by band and then the crossovers. **The threshold is read per frame** when the
+/// graph drives it (lane `b` of the recurrence's [`Feed`], band `b`'s; the cell is the base a
+/// frame nobody drives or a non-finite one falls back to). **Every other control is on the
+/// stream grid** (16 frames from the last reset, [`Family::CADENCE`]): a cell write or a
+/// driven port is sampled at the grid's solve frame, so it reaches the render within 16
+/// frames and the render does not depend on how the stream is cut into blocks. The
+/// detectors and the crossover land whole (the follower smooths the one, and a blend of a
+/// split's sections would not sum to an all-pass), and each make-up glides over
+/// [`GAIN_GLIDE`](tutti_dsp::GAIN_GLIDE), 5 ms. A non-finite write reads as unchanged. The
+/// crossovers follow [`CrossoverNode`](crate::CrossoverNode)'s rules, with one
+/// difference: a set not strictly increasing is refused as a whole, after each frequency
+/// is fitted under the rate (so `[30000, 25000]` at 48 kHz is clamped into order and
+/// accepted), and the last good set stands.
 ///
 /// The toggles are cells with no port, as [`BusStripNode`](crate::BusStripNode)'s
 /// mute is: they are a block-rate on/off a lane would only flap, and with
 /// them the ports would pass the graph's 32. A bypass blends the band to
-/// unity across a block and the compressor keeps running meanwhile, so
+/// unity over 5 ms and the compressor keeps running meanwhile, so
 /// releasing it resumes from a warm detector. While any band is soloed the
-/// output is the sum of the soloed bands only; the others are muted (ramped
-/// across a block) but keep metering.
+/// output is the sum of the soloed bands only; the others are muted (over 5 ms) but
+/// keep metering.
 ///
 /// The gain reduction of each band is a measurement:
 /// [`gain_reduction_db`](Self::gain_reduction_db), or
-/// [`MultibandControls::gain_reduction_db`] once inserted.
+/// [`MultibandControls::gain_reduction_db`] once inserted: the band's deepest reduction
+/// in the last block.
 pub struct MultibandCompressorNode {
     layout: ChannelLayout,
+    family: MultibandFamily,
+    realization: Realized<MultibandRecurrence>,
     bands: Vec<Band>,
     splits: Splits,
-    filters: Vec<Crossover>,
-    /// Every channel's bands as [`Crossover::split_block`] writes them,
-    /// `max_block * bands` per channel.
-    split: Vec<f32>,
-    /// The per-frame level, then gain, of the band being run.
-    gains: Vec<f32>,
-    max_block: usize,
+    /// The last set of crossover frequencies that was valid.
+    crossover: CrossoverControls,
+    /// The member the realization was last retargeted to: designed in place.
+    member: Box<MultibandMember>,
+    /// The settings `member` is the design of.
+    applied: Option<MultibandSettings>,
+    rate: SampleRate,
+    /// Frames rendered since the last reset: where the stream grid's points fall.
+    position: u64,
 }
 
 impl fmt::Debug for MultibandCompressorNode {
@@ -234,9 +346,9 @@ impl fmt::Debug for MultibandCompressorNode {
 
 impl MultibandCompressorNode {
     /// The fewest bands.
-    pub const MIN_BANDS: usize = 2;
+    pub const MIN_BANDS: usize = MultibandFamily::MIN_BANDS;
     /// The most bands.
-    pub const MAX_BANDS: usize = 4;
+    pub const MAX_BANDS: usize = MultibandFamily::MAX_BANDS;
 
     /// A compressor of `bands` bands over `layout`.
     ///
@@ -249,44 +361,30 @@ impl MultibandCompressorNode {
     ///
     /// [`CrossoverError::Bands`] if `bands` is not 2 to 4;
     /// [`CrossoverError::Channels`] if `layout` has no channels or more than
-    /// the graph has ports for.
+    /// a bus holds (16).
     pub fn new(layout: ChannelLayout, bands: usize) -> Result<Self, CrossoverError> {
-        if !(Self::MIN_BANDS..=Self::MAX_BANDS).contains(&bands) {
-            return Err(CrossoverError::Bands {
-                bands,
-                min: Self::MIN_BANDS,
-                max: Self::MAX_BANDS,
-            });
-        }
         let channels = usize::from(layout.count());
-        if channels == 0 || channels > tutti_graph::MAX_PORTS {
-            return Err(CrossoverError::Channels { channels });
-        }
+        // The width is the family's input, a bus that names no speaker (as the node's
+        // shape does): a width past one bus has none.
+        let input = BusTopology::unassigned(layout).ok_or(CrossoverError::Channels { channels })?;
+        let family = MultibandFamily::new(input, bands)?;
+        let rate = SampleRate::DEFAULT;
         let defaults = default_crossovers(bands);
-        let proto = Crossover::new(defaults, SampleRate::DEFAULT)?;
-        Ok(Self {
+        let crossover = CrossoverControls::new(defaults, rate)?;
+        let mut node = Self {
             layout,
-            bands: (0..bands)
-                .map(|_| Band {
-                    core: CompressorCore::new(
-                        DEFAULT_THRESHOLD,
-                        DEFAULT_RATIO,
-                        DEFAULT_ATTACK,
-                        DEFAULT_RELEASE,
-                    ),
-                    bypass: Arc::new(AtomicF32::new(0.0)),
-                    solo: Arc::new(AtomicF32::new(0.0)),
-                    reduction: Param::new(Db::UNITY),
-                    bypassed: None,
-                    audible: None,
-                })
-                .collect(),
+            realization: family.realized(),
+            member: Box::new(family.blank(rate)),
+            family,
+            bands: (0..bands).map(|_| Band::new()).collect(),
             splits: Splits::new(defaults),
-            filters: vec![proto; channels],
-            split: Vec::new(),
-            gains: Vec::new(),
-            max_block: 0,
-        })
+            crossover,
+            applied: None,
+            rate,
+            position: 0,
+        };
+        node.retune(rate, tutti_types::MaxBlock::of(tutti_types::Samples(1)));
+        Ok(node)
     }
 
     /// How many bands there are.
@@ -310,6 +408,123 @@ impl MultibandCompressorNode {
             .get(band)
             .map_or(Db::UNITY, |b| b.reduction.load())
     }
+
+    /// Prepares the realization for `rate` and blocks of up to `max_block`.
+    fn retune(&mut self, rate: SampleRate, max_block: tutti_types::MaxBlock) {
+        self.rate = if rate.get().is_finite() && rate.get() > 0.0 {
+            rate
+        } else {
+            SampleRate::DEFAULT
+        };
+        self.realization.prepare(
+            &(),
+            &Setup {
+                rate: self.rate,
+                max_block,
+            },
+        );
+        self.applied = None;
+        self.clear();
+    }
+
+    /// Back to silence, the meters at unity.
+    fn clear(&mut self) {
+        self.realization.reset();
+        self.position = 0;
+        for b in &mut self.bands {
+            b.reduction.store(Db::UNITY);
+        }
+    }
+
+    /// The settings at frame `at` of the block.
+    fn read(&mut self, lanes: &Lanes<'_>, at: usize) -> MultibandSettings {
+        let nb = self.bands.len();
+        // `read` fits every entry to the rate, so only a set that is out of order or not
+        // above 0 is refused, and the last good one stands.
+        let targets = self
+            .splits
+            .read(self.rate, |i| lanes.cutoff[i].map(|l| l[at]));
+        if let Ok(set) = CrossoverControls::new(&targets[..nb - 1], self.rate) {
+            self.crossover = set;
+        }
+        let mut settings = MultibandSettings {
+            crossover: self.crossover,
+            bands: [BandSettings::DEFAULT; Self::MAX_BANDS],
+        };
+        for (b, band) in self.bands.iter_mut().enumerate() {
+            settings.bands[b] = band.read(&lanes.band[b], at);
+        }
+        settings
+    }
+
+    /// Designs `settings` into the node's member and retargets the realization.
+    fn apply(&mut self, settings: MultibandSettings) {
+        self.family
+            .member_into(&settings, self.rate, &mut self.member);
+        self.realization.retarget(&self.member);
+        self.applied = Some(settings);
+    }
+
+    /// Renders `frames` of the block through the realization, each band's threshold lane
+    /// cut to them.
+    fn render(
+        &mut self,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        lanes: &Lanes<'_>,
+        frames: Range<usize>,
+    ) {
+        if frames.is_empty() {
+            return;
+        }
+        let mut audio: [&[f32]; MAX_BUS_CHANNELS] = [&[]; MAX_BUS_CHANNELS];
+        for (slot, ch) in audio.iter_mut().zip(input) {
+            *slot = &ch[frames.clone()];
+        }
+        let mut out: [&mut [f32]; MAX_BUS_CHANNELS] = std::array::from_fn(|_| Default::default());
+        for (slot, ch) in out.iter_mut().zip(output.iter_mut()) {
+            *slot = &mut ch[frames.clone()];
+        }
+        let width = input.len();
+        let mut feed = Feed::new(&audio[..width]);
+        for (b, lane) in lanes.band.iter().enumerate().take(self.bands.len()) {
+            if let Some(lane) = lane[THRESHOLD] {
+                feed = feed.with_lane(b, &lane[frames.clone()]);
+            }
+        }
+        self.realization
+            .process(&feed, &mut out[..width], frames.len());
+    }
+
+    /// Renders the block one step of the stream grid at a time, the block beginning at
+    /// stream frame `position`: each step that begins a segment reads the controls at its
+    /// solve frame, and one that moved designs and retargets before it renders. The steps
+    /// that did not move render together, in one call, with the member held; the rest of
+    /// a segment an earlier block began is rendered with the member that block set.
+    fn render_steps(
+        &mut self,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        lanes: &Lanes<'_>,
+        position: u64,
+    ) {
+        let size = input[0].len();
+        let cadence = <MultibandFamily as Family>::CADENCE;
+        let mut held = 0;
+        for step in cadence
+            .steps(position, size, self.applied.is_none())
+            .filter(|step| step.grid_point)
+        {
+            let target = self.read(lanes, step.solve_at);
+            if self.applied.as_ref() != Some(&target) {
+                self.render(input, output, lanes, held..step.frames.start);
+                self.apply(target);
+                self.render(input, output, lanes, step.frames.clone());
+                held = step.frames.end;
+            }
+        }
+        self.render(input, output, lanes, held..size);
+    }
 }
 
 // The params, band by band in the order of `BAND_PARAMS`, then a toggle pair
@@ -318,12 +533,12 @@ impl MultibandCompressorNode {
 // `GainDb`.
 tutti_graph::declare_params!([] MultibandCompressorNode, n {
     [b in 0..n.bands.len()] {
-        Threshold => Db = &n.bands[b].core.threshold.threshold,
-        Knee => Db = &n.bands[b].core.threshold.knee,
-        Ratio => CompressionRatio = &n.bands[b].core.ratio,
-        Attack => Seconds = &n.bands[b].core.timing.attack,
-        Release => Seconds = &n.bands[b].core.timing.release,
-        GainDb => Db = &n.bands[b].core.makeup_db;
+        Threshold => Db = &n.bands[b].threshold,
+        Knee => Db = &n.bands[b].knee,
+        Ratio => CompressionRatio = &n.bands[b].ratio,
+        Attack => Seconds = &n.bands[b].attack,
+        Release => Seconds = &n.bands[b].release,
+        GainDb => Db = &n.bands[b].makeup;
         Bypass => bool = &n.bands[b].bypass,
         Solo => bool = &n.bands[b].solo,
     },
@@ -347,149 +562,83 @@ impl Node for MultibandCompressorNode {
     }
 
     fn prepare(&mut self, p: &Prepare) {
-        let targets = self.splits.read(p.sample_rate(), |_| None);
-        let splits = self.bands.len() - 1;
-        for f in &mut self.filters {
-            f.set_sample_rate(p.sample_rate());
-            // Taken whole by the `reset` below, so the first block does not
-            // ramp in from the constructor's frequencies.
-            let _ = f.set_frequencies(&targets[..splits]);
-        }
-        for b in &mut self.bands {
-            b.core.set_sample_rate(p.sample_rate());
-        }
-        self.max_block = p.max_block().get();
-        self.gains = vec![0.0; self.max_block];
-        self.split = vec![0.0; self.filters.len() * self.bands.len() * self.max_block];
-        Node::reset(self);
+        self.retune(p.sample_rate(), p.max_block());
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let n = io.frames();
-        let ch = self.filters.len();
+        if n == 0 {
+            return Status::Modified;
+        }
+        let position = self.position;
+        self.position += n as u64;
+
+        // What the graph drives on each port, taken before the split of `io`.
         let nb = self.bands.len();
-        let mut cutoff = [None; MAX_CROSSOVERS];
-        for (i, c) in cutoff.iter_mut().enumerate().take(nb - 1) {
+        let mut lanes = Lanes {
+            band: [[None; PER_BAND]; Self::MAX_BANDS],
+            cutoff: [None; MAX_CROSSOVERS],
+        };
+        for (i, c) in lanes.cutoff.iter_mut().enumerate().take(nb - 1) {
             *c = self
                 .declared_param_at::<{ UnitParam::Cutoff as u16 }>(&io, i as u8)
-                .last_frame();
+                .frames();
         }
-        let targets = self
-            .splits
-            .read(self.filters[0].sample_rate(), |i| cutoff[i]);
-        // What the graph drives on each band's ports, taken before the split
-        // of `io`: the threshold's frames, and the others' last frame.
-        let mut driven = [[None; PER_BAND]; Self::MAX_BANDS];
-        let mut threshold_fed = [None; Self::MAX_BANDS];
         for b in 0..nb {
             let band = b as u8;
-            threshold_fed[b] = self
-                .declared_param_at::<{ UnitParam::Threshold as u16 }>(&io, band)
-                .frames();
-            // In the order of `BAND_PARAMS`; the threshold is read per sample.
-            driven[b] = [
-                None,
+            // In the order of `BAND_PARAMS`.
+            lanes.band[b] = [
+                self.declared_param_at::<{ UnitParam::Threshold as u16 }>(&io, band)
+                    .frames(),
                 self.declared_param_at::<{ UnitParam::Knee as u16 }>(&io, band)
-                    .last_frame(),
+                    .frames(),
                 self.declared_param_at::<{ UnitParam::Ratio as u16 }>(&io, band)
-                    .last_frame(),
+                    .frames(),
                 self.declared_param_at::<{ UnitParam::Attack as u16 }>(&io, band)
-                    .last_frame(),
+                    .frames(),
                 self.declared_param_at::<{ UnitParam::Release as u16 }>(&io, band)
-                    .last_frame(),
+                    .frames(),
                 self.declared_param_at::<{ UnitParam::GainDb as u16 }>(&io, band)
-                    .last_frame(),
+                    .frames(),
             ];
         }
+
         let (inputs, mut outputs) = io.split();
+        let width = inputs.len();
+        let mut input: [&[f32]; MAX_BUS_CHANNELS] = [&[]; MAX_BUS_CHANNELS];
+        for (c, slot) in input.iter_mut().enumerate().take(width) {
+            *slot = &inputs.get(c)[..n];
+        }
+        let mut output: [&mut [f32]; MAX_BUS_CHANNELS] =
+            std::array::from_fn(|_| Default::default());
+        for (slot, ch) in output.iter_mut().zip(outputs.iter_mut()) {
+            *slot = &mut ch[..n];
+        }
+        let (input, output) = (&input[..width], &mut output[..width]);
 
-        let stride = nb * self.max_block;
-        for (c, filter) in self.filters.iter_mut().enumerate() {
-            // `read` fitted every entry to the rate, so only a set that is
-            // out of order or not above 0 is refused, and it keeps the last
-            // good one.
-            let _ = filter.set_frequencies(&targets[..nb - 1]);
-            filter.split_block(&inputs.get(c)[..n], &mut self.split[c * stride..][..nb * n]);
+        // The controls at the block's last frame, and whether the member moves inside the
+        // block: a driven port, or a cell that moved (it lands at the next grid point).
+        let target = self.read(&lanes, n - 1);
+        let moved = self.applied.as_ref().is_some_and(|a| *a != target);
+        if lanes.driven() || moved {
+            self.render_steps(input, output, &lanes, position);
+        } else {
+            if self.applied.is_none() {
+                self.apply(target);
+            }
+            self.render(input, output, &lanes, 0..n);
         }
 
-        // Each flag once, so a write mid-block cannot split the bands'
-        // view of who is soloed.
-        let mut solo = [false; Self::MAX_BANDS];
-        let mut bypass = [false; Self::MAX_BANDS];
+        // Each band's deepest reduction in the block, taken from the state.
+        let state = self.realization.state_mut();
         for (b, band) in self.bands.iter().enumerate() {
-            solo[b] = is_on(&band.solo);
-            bypass[b] = is_on(&band.bypass);
-        }
-        let any_solo = solo.iter().any(|&s| s);
-        for c in 0..ch {
-            outputs.get(c)[..n].fill(0.0);
-        }
-        let gains = &mut self.gains[..n];
-        for (b, band) in self.bands.iter_mut().enumerate() {
-            let audible_to = if any_solo && !solo[b] { 0.0 } else { 1.0 };
-            let audible_from = band.audible.replace(audible_to).unwrap_or(audible_to);
-            let bypass_to = if bypass[b] { 1.0 } else { 0.0 };
-            let bypass_from = band.bypassed.replace(bypass_to).unwrap_or(bypass_to);
-
-            // One reduction per frame from the band's loudest channel. The
-            // compressor runs while bypassed too, so a release finds it warm.
-            gains.fill(0.0);
-            for c in 0..ch {
-                let x = &self.split[c * stride + b * n..][..n];
-                for (level, &s) in gains.iter_mut().zip(x) {
-                    *level = level.max(s.abs());
-                }
-            }
-            let d = driven[b];
-            band.core.update_coefficients([d[3], d[4]]);
-            let block = band.core.begin_block([d[1], d[2], d[MAKEUP]]);
-            let mut deepest = 0.0f32;
-            for (i, g) in gains.iter_mut().enumerate() {
-                let threshold = threshold_fed[b].map(|v| Db(v[i]));
-                *g = band.core.gain(&block, i, n, *g, threshold);
-                deepest = deepest.max(band.core.gain_reduction_db().get());
-            }
-            let held = bypass_from == 1.0 && bypass_to == 1.0;
-            band.reduction
-                .store(if held { Db::UNITY } else { Db(deepest) });
-
-            if bypass_from != 0.0 || bypass_to != 0.0 {
-                // Blend toward unity (makeup included) as the bypass takes hold.
-                for (i, g) in gains.iter_mut().enumerate() {
-                    let t = (i + 1) as f32 / n as f32;
-                    let w = bypass_from + (bypass_to - bypass_from) * t;
-                    *g = *g * (1.0 - w) + w;
-                }
-            }
-            if audible_from == 0.0 && audible_to == 0.0 {
-                continue;
-            }
-            if audible_from != audible_to {
-                for (i, g) in gains.iter_mut().enumerate() {
-                    let t = (i + 1) as f32 / n as f32;
-                    *g *= audible_from + (audible_to - audible_from) * t;
-                }
-            }
-            for c in 0..ch {
-                let x = &self.split[c * stride + b * n..][..n];
-                for ((y, &x), &g) in outputs.get(c)[..n].iter_mut().zip(x).zip(gains.iter()) {
-                    *y += x * g;
-                }
-            }
+            band.reduction.store(state.take_deepest(b));
         }
         Status::Modified
     }
 
     fn reset(&mut self) {
-        for f in &mut self.filters {
-            f.reset();
-        }
-        for b in &mut self.bands {
-            b.core.reset();
-            b.audible = None;
-            b.bypassed = None;
-            b.reduction.store(Db::UNITY);
-        }
+        self.clear();
     }
 
     fn param_base(&self, port: usize) -> Option<f32> {
@@ -497,18 +646,21 @@ impl Node for MultibandCompressorNode {
     }
 }
 
-/// Shares the control cells (the template a fork is taken from); the filter
-/// and detector state is copied.
+/// Shares the control cells (the template a fork is taken from); the realization
+/// is a copy with its state empty.
 impl Clone for MultibandCompressorNode {
     fn clone(&self) -> Self {
         Self {
             layout: self.layout,
+            family: self.family,
+            realization: self.realization.fresh(),
             bands: self.bands.clone(),
             splits: self.splits.clone(),
-            filters: self.filters.clone(),
-            split: self.split.clone(),
-            gains: self.gains.clone(),
-            max_block: self.max_block,
+            crossover: self.crossover,
+            member: self.member.clone(),
+            applied: self.applied,
+            rate: self.rate,
+            position: 0,
         }
     }
 }
@@ -525,16 +677,9 @@ impl ParamNode for MultibandCompressorNode {
         let mut fork = self.clone();
         fork.splits.detach();
         for b in &mut fork.bands {
-            b.core.detach();
-            b.bypass = Arc::new(AtomicF32::new(
-                b.bypass.load(core::sync::atomic::Ordering::Acquire),
-            ));
-            b.solo = Arc::new(AtomicF32::new(
-                b.solo.load(core::sync::atomic::Ordering::Acquire),
-            ));
-            b.reduction = Param::new(Db::UNITY);
+            b.detach();
         }
-        Node::reset(&mut fork);
+        fork.clear();
         fork
     }
 }
@@ -573,6 +718,8 @@ mod tests {
     /// Whole periods of every 5 Hz-grid tone, and of 3 kHz (16 samples).
     const WINDOW: usize = 9_600;
     const SETTLE: usize = 24_000;
+    /// Frames a 5 ms glide takes at 48 kHz.
+    const GLIDE: usize = 240;
     /// The crossover's own flatness tolerance (f32 rounding, summed over up
     /// to four bands).
     const TOL: f64 = 1e-6;
@@ -811,17 +958,16 @@ mod tests {
         assert!((meter - reduction).abs() < 1e-3, "{meter} vs {reduction}");
     }
 
-    /// Toggling bypass on a band reducing 12 dB steps no more than one ramp
-    /// step per frame, both ways, and the compressor stays warm.
+    /// Toggling the bypass glides the band to unity over 5 ms (240 frames at 48 kHz), and the
+    /// compressor keeps running meanwhile.
     ///
-    /// DC 0.5 through band 0 at -30 dB, 2:1 is reduced by
-    /// `(-6.02 + 30) / 2 = 11.99 dB` to 0.1253. Bypassing ramps the next
-    /// 64-frame block up to 0.5 in 64 equal steps of `0.375 / 64`, so its first
-    /// frame is within 1.5 steps of 0.1253; releasing it ramps back down to the
+    /// DC 0.5 through band 0 at -30 dB, 2:1 is reduced by `(30 - 6.02) / 2` dB: 0.1253
+    /// before the bypass. Bypassed, the output climbs to 0.5 in 240 equal steps, so the
+    /// first frame is within 1.5 steps of 0.1253; releasing it ramps back down to the
     /// *running* detector's gain (0.1253 again, to 1e-3: a detector reset by
     /// the bypass would end near 0.5).
     #[test]
-    fn toggling_bypass_ramps_and_keeps_the_compressor_warm() {
+    fn toggling_bypass_glides_and_keeps_the_compressor_warm() {
         let (n, c) = node(2);
         let b0 = c.band(0);
         b0.set_threshold(-30.0);
@@ -831,41 +977,43 @@ mod tests {
         let mut n = prepared(n);
         render_chunked(&mut n, &[vec![0.5f32; SETTLE]], 512);
         let reduced = 0.5 * libm::pow(10.0, -(30.0 + 20.0 * libm::log10(0.5)) / 2.0 / 20.0);
-        let step = (0.5 - reduced) / 64.0;
+        let step = (0.5 - reduced) / GLIDE as f64;
 
         b0.set_bypass(true);
-        let up = render_chunked(&mut n, &[vec![0.5f32; 64]], 64).remove(0);
+        let up = render_chunked(&mut n, &[vec![0.5f32; GLIDE]], 64).remove(0);
         assert!(
             (up[0] as f64 - reduced).abs() <= 1.5 * step,
             "first {}",
             up[0]
         );
-        assert!((up[63] - 0.5).abs() < 1e-6, "last {}", up[63]);
+        assert!((up[GLIDE - 1] - 0.5).abs() < 1e-6, "last {}", up[GLIDE - 1]);
         assert!(up.windows(2).all(|w| w[1] >= w[0]), "monotone rise");
         // Held bypassed for a while, then released.
         render_chunked(&mut n, &[vec![0.5f32; 4_800]], 512);
         assert_eq!(n.gain_reduction_db(0), Db::UNITY);
         b0.set_bypass(false);
-        let down = render_chunked(&mut n, &[vec![0.5f32; 64]], 64).remove(0);
+        let down = render_chunked(&mut n, &[vec![0.5f32; GLIDE]], 64).remove(0);
         assert!(
             (down[0] - 0.5).abs() as f64 <= 1.5 * step,
             "first {}",
             down[0]
         );
         assert!(
-            (down[63] as f64 - reduced).abs() < 1e-3,
+            (down[GLIDE - 1] as f64 - reduced).abs() < 1e-3,
             "last {}",
-            down[63]
+            down[GLIDE - 1]
         );
         assert!(down.windows(2).all(|w| w[1] <= w[0]), "monotone fall");
     }
 
-    /// The meter holds the largest reduction of the block, not its last frame.
+    /// The meter holds the largest reduction of the block, not what was reached since the
+    /// start.
     ///
     /// DC 0.5 reduced 10.48 dB (-20 dB, 4:1), then a block of silence with a
     /// 1 ms release: band 0's level (the low-pass's slow tail) starts the
-    /// block near 0.5 and the follower falls across it, so the first frames
-    /// hold nearly the full reduction and the last does not.
+    /// block near 0.5 and the follower falls across it, so the first block's
+    /// largest reduction is nearly the full one, and the blocks after it, with the
+    /// follower released, read nearly none.
     #[test]
     fn the_meter_holds_the_blocks_largest_reduction() {
         let (n, c) = node(2);
@@ -877,10 +1025,11 @@ mod tests {
         let mut n = prepared(n);
         render_chunked(&mut n, &[vec![0.5f32; SETTLE]], 512);
         render_chunked(&mut n, &[vec![0.0f32; 64]], 64);
-        let last = n.bands[0].core.gain_reduction_db();
-        let meter = n.gain_reduction_db(0);
-        assert!(meter > Db(10.0), "{meter:?}");
-        assert!(last < meter - Db(1.0), "last {last:?} vs meter {meter:?}");
+        let first = n.gain_reduction_db(0);
+        assert!(first > Db(10.0), "{first:?}");
+        render_chunked(&mut n, &[vec![0.0f32; 4_096]], 64);
+        let later = n.gain_reduction_db(0);
+        assert!(later < Db(1.0), "the meter still holds {later:?}");
     }
 
     /// Two soloed bands are both heard, and the bands being phase-aligned, their
@@ -912,7 +1061,7 @@ mod tests {
         );
     }
 
-    /// Releasing a solo brings the muted bands back across the block, rising.
+    /// Releasing a solo brings the muted bands back over 5 ms, rising.
     #[test]
     fn un_soloing_ramps_the_bands_back() {
         let (n, c) = node(2);
@@ -921,9 +1070,9 @@ mod tests {
         let mut n = prepared(n);
         render_chunked(&mut n, &[vec![0.5f32; SETTLE]], 512);
         c.band(1).set_solo(false);
-        let y = render_chunked(&mut n, &[vec![0.5f32; 64]], 64).remove(0);
-        assert!(y[0].abs() <= 1.5 * 0.5 / 64.0, "first {}", y[0]);
-        assert!((y[63] - 0.5).abs() < 1e-6, "last {}", y[63]);
+        let y = render_chunked(&mut n, &[vec![0.5f32; GLIDE]], 64).remove(0);
+        assert!(y[0].abs() <= 1.5 * 0.5 / GLIDE as f32, "first {}", y[0]);
+        assert!((y[GLIDE - 1] - 0.5).abs() < 1e-6, "last {}", y[GLIDE - 1]);
         assert!(y.windows(2).all(|w| w[1] >= w[0]), "monotone rise");
     }
 
@@ -955,23 +1104,22 @@ mod tests {
     /// A crossover above the prepare rate's limit does not freeze the others.
     ///
     /// Four bands at 22.05 kHz with the top crossover at 15 kHz (over
-    /// Nyquist): it is held under the rate, and moving the lowest crossover
-    /// still reaches the filter: a DC of 0.5 stays in band 0 whatever the split,
-    /// so the check is on the filter's target.
+    /// Nyquist): it is held under the rate (fitted, not refused), and moving the lowest
+    /// crossover still reaches the filter: band 0 soloed at unity is `1 / (1 + x^4)` of a
+    /// tone, which at the split itself is a half.
     #[test]
     fn a_crossover_above_the_rate_does_not_freeze_the_others() {
         let (n, c) = node(4);
+        unity(&c);
+        c.band(0).set_solo(true);
         c.set_crossover(2, Hz(15_000.0));
         let mut n = tutti_graph::contract::prepared(n, SampleRate(22_050.0), 1024);
         c.set_crossover(0, Hz(150.0));
-        render_chunked(&mut n, &[vec![0.0f32; 64]], 64);
-        let f = &n.filters[0];
-        assert_eq!(f.frequency(0), Some(Hz(150.0)));
-        let top = f.frequency(2).unwrap().get();
-        assert!(
-            top > 1_000.0 && f64::from(top) <= 0.499 * 22_050.0 + 1e-2,
-            "{top}"
-        );
+        // 150 Hz at 22.05 kHz is 147 samples a period.
+        let x = sine(150.0, 22_050.0, 12_000 + 5_880);
+        let out = render_chunked(&mut n, &[x], 512);
+        let amp = amplitude_at(&out[0][12_000..], 150.0, 22_050.0);
+        assert!((amp - 0.5).abs() < TOL, "{amp}");
     }
 
     /// A soloed band is all that is heard: the output is that band's
@@ -1007,22 +1155,26 @@ mod tests {
         assert!((mean(&out[0][SETTLE..]) - 0.5).abs() < TOL);
     }
 
-    /// Soloing mutes the other bands across the block, not at its edge.
+    /// Soloing mutes the other bands over 5 ms, not at once.
     ///
-    /// DC through band 0, then band 1 soloed: the next 64-frame block falls
-    /// from the old level to 0 in 64 equal steps, so its first frame is
-    /// within a step and a half of 0.5 and its last is 0.
+    /// DC through band 0, then band 1 soloed: the next 240 frames fall
+    /// from the old level to 0 in 240 equal steps, so the first frame is
+    /// within a step and a half of 0.5 and the last is 0.
     #[test]
-    fn a_solo_ramps_the_mute() {
+    fn a_solo_glides_the_mute() {
         let (n, c) = node(2);
         unity(&c);
         let mut n = prepared(n);
         let settle = vec![0.5f32; SETTLE];
         render_chunked(&mut n, &[settle], 512);
         c.band(1).set_solo(true);
-        let y = render_chunked(&mut n, &[vec![0.5f32; 64]], 64).remove(0);
-        assert!((y[0] - 0.5).abs() <= 1.5 * 0.5 / 64.0, "first {}", y[0]);
-        assert!(y[63].abs() < 1e-6, "last {}", y[63]);
+        let y = render_chunked(&mut n, &[vec![0.5f32; GLIDE]], 64).remove(0);
+        assert!(
+            (y[0] - 0.5).abs() <= 1.5 * 0.5 / GLIDE as f32,
+            "first {}",
+            y[0]
+        );
+        assert!(y[GLIDE - 1].abs() < 1e-6, "last {}", y[GLIDE - 1]);
         assert!(y.windows(2).all(|w| w[1] <= w[0]), "monotone fall");
     }
 
@@ -1410,26 +1562,39 @@ mod tests {
     /// Crossover writes that are out of order, not above 0 or not finite are
     /// refused as a whole and the last good set stands; a consistent set
     /// lands.
+    ///
+    /// Band 0 soloed at unity is half of a tone at its split (120 Hz), and nearly all of
+    /// it once the split is at 5 kHz.
     #[test]
     fn a_bad_crossover_set_is_held_until_consistent() {
         let (n, c) = node(4);
+        unity(&c);
+        c.band(0).set_solo(true);
         let mut n = prepared(n);
-        let held = |n: &mut MultibandCompressorNode| {
-            render_chunked(n, &[vec![0.0f32; 64]], 64);
-            [0, 1, 2].map(|i| n.filters[0].frequency(i).unwrap().get())
+        // 120 Hz is 400 samples a period: 4000 frames is ten of them.
+        let x = sine(120.0, FS, 4_000);
+        let amp = |n: &mut MultibandCompressorNode| {
+            render_chunked(n, std::slice::from_ref(&x), 500);
+            amplitude_at(
+                &render_chunked(n, std::slice::from_ref(&x), 500)[0],
+                120.0,
+                FS,
+            )
         };
         for bad in [5_000.0, -1.0, 0.0, f32::NAN] {
             c.set_crossover(0, Hz(bad));
-            assert_eq!(held(&mut n), [120.0, 1_000.0, 6_000.0], "{bad}");
+            let a = amp(&mut n);
+            assert!((a - 0.5).abs() < 2e-3, "{bad}: {a}");
         }
         // Written top-down with a block between: the set stays out of order
-        // (`[0, 1000, 9000]`, then `[0, 8000, 9000]`) until the last write.
+        // (the lowest cell still reads 0) until the last write.
         c.set_crossover(2, Hz(9_000.0));
-        assert_eq!(held(&mut n), [120.0, 1_000.0, 6_000.0]);
+        assert!((amp(&mut n) - 0.5).abs() < 2e-3);
         c.set_crossover(1, Hz(8_000.0));
-        assert_eq!(held(&mut n), [120.0, 1_000.0, 6_000.0]);
+        assert!((amp(&mut n) - 0.5).abs() < 2e-3);
         c.set_crossover(0, Hz(5_000.0));
-        assert_eq!(held(&mut n), [5_000.0, 8_000.0, 9_000.0]);
+        let a = amp(&mut n);
+        assert!(a > 0.99, "the consistent set landed: {a}");
     }
 
     /// The typed toggles write the band's own cell and read it back; past the
@@ -1474,6 +1639,68 @@ mod tests {
         let want = x4 / (1.0 + x4) * libm::pow(10.0, 6.0 / 20.0);
         let amp = amplitude_at(&y[SETTLE..], 10_000.0, FS);
         assert!((amp - want).abs() < 1e-5, "{amp} vs {want}");
+    }
+
+    /// A driven threshold port is read per frame by its own band: band 0's port, driven to
+    /// -30 dB over a cell at 0 dB (nothing to reduce), reduces band 0 by the static curve;
+    /// band 1's port, driven alike, leaves band 0 alone.
+    ///
+    /// DC 0.5 is all band 0, at 4:1 over -30 dB: `(-6.02 + 30) * 3/4` dB.
+    #[test]
+    fn a_driven_threshold_port_is_read_per_frame_by_its_band() {
+        let meter_driving = |port: usize| {
+            let (n, c) = node(2);
+            for b in 0..2 {
+                c.band(b).set_threshold(0.0);
+                c.band(b).set_ratio(4.0);
+                c.band(b).set_attack(0.001);
+                c.band(b).set_release(0.001);
+            }
+            let mut n = prepared(n);
+            let lane = [-30.0f32; 512];
+            let mut params: Vec<Option<&[f32]>> = vec![None; port + 1];
+            for _ in 0..SETTLE / 512 {
+                params[port] = Some(&lane);
+                drive(&mut n, RATE, &[&[0.5f32; 512]], &params);
+            }
+            n.gain_reduction_db(0)
+        };
+        let reduction = (20.0 * libm::log10(0.5) + 30.0) * 0.75;
+        let driven = f64::from(meter_driving(0).get());
+        assert!((driven - reduction).abs() < 0.01, "{driven} vs {reduction}");
+        let other = meter_driving(PER_BAND);
+        assert!(other < Db(1e-3), "band 1's port reduced band 0: {other:?}");
+    }
+
+    /// A driven control is sampled at the stream grid's solve frame, not at the block's last
+    /// frame: a ratio port that steps from 1 to 8 at frame 128 of a 256-frame block leaves
+    /// the first 128 frames unreduced (the grid point at 128 is the first to read the 8), and
+    /// the last is reduced.
+    ///
+    /// Band 0 at -30 dB over a settled DC of 0.5, with a 1 ms attack: a block-end read would
+    /// have the ratio at 8 from frame 0.
+    #[test]
+    fn a_driven_control_is_sampled_on_the_grid_not_at_the_blocks_end() {
+        let (n, c) = node(2);
+        c.band(0).set_threshold(-30.0);
+        c.band(0).set_ratio(1.0);
+        c.band(0).set_attack(0.001);
+        c.band(0).set_release(0.001);
+        let mut n = prepared(n);
+        // 24000 frames: the block that follows begins on a grid point.
+        render_chunked(&mut n, &[vec![0.5f32; SETTLE]], 512);
+        let port = 2;
+        let mut lane = [1.0f32; 256];
+        lane[128..].fill(8.0);
+        let mut params: Vec<Option<&[f32]>> = vec![None; port + 1];
+        params[port] = Some(&lane);
+        let y = drive(&mut n, RATE, &[&[0.5f32; 256]], &params).remove(0);
+        assert!(
+            y[..128].iter().all(|s| (s - 0.5).abs() < 1e-6),
+            "reduced before the step: {}",
+            y[..128].iter().fold(0.5f32, |m, s| m.min(*s))
+        );
+        assert!(y[255] < 0.3, "not reduced after it: {}", y[255]);
     }
 
     /// A driven crossover port moves its crossover: port `bands * 6` is

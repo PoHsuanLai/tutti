@@ -10718,3 +10718,26 @@ waits.
 An event inlet's capacity is an `EventCapacity` (`tutti_graph`, 1 to `u32::MAX`,
 the shape of CLAUDE.md's range-checked values), so `open_event_inlet` and
 `EventInletNode::pair` no longer panic; `LIVE_INLET_CAPACITY` is one.
+
+### As built (node authoring, doc 030 step 3b)
+
+A node reads a driven param through its `declare_params!` declaration, not by a
+port index. The macro adds `declared_param::<{ UnitParam::K as u16 }>(&io)` and
+`declared_param_at::<..>(&io, index)` (for a group's rows) to the node: each
+resolves the kind to the port of the row that names it, counting only the rows
+that are ports (a row after a `;`, or an `Option` cell that is `None`, is no
+port and reads `ParamInput::Base`), and hands back `io.param(port)`. The bound
+`Self: HasParam<P>` (`HasParams<P>` for the indexed form) is what refuses a kind
+the node does not declare at compile time. The walk is a handful of loads over
+the rows, once per call, so a node reads each param once per block. Reordering,
+inserting or removing a row moves the reads with it; a bare `io.param(<index>)`
+in a node that declares params is the thing to grep for. `ParamInput::last_frame`
+is the block-rate read (the value on the block's last frame, where a block-rate
+cell's own ramp ends), and replaces the nodes' `block_driven(io, k)` helpers.
+
+`ForkByClone(param'd node)` is still accepted: refusing it by type needs a
+negative bound, and a sealed marker the macro implements can be demanded of a
+type but not forbidden of one. `Params(node)` is the documented way in, and no
+runtime check stands in for the type. The crate docs of `tutti-graph` carry the
+node-writing guide (the shortest node, `Shape`, a param'd node, events,
+`Status` and `report_tail`, what not to do), every example a doctest.

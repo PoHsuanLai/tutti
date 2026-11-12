@@ -8,9 +8,9 @@ use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::AtomicF32;
 use tutti_types::Tail;
+use tutti_types::UnitParam;
 
 use super::shared::{LfoDrive, LinearMod};
-use crate::ramp::block_driven;
 use tutti_dsp::{COEFF_CADENCE, Ramp, allpass_chain, allpass_coeff, sweep_hz};
 use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Phase, PhaseIncrement, SampleRate};
 
@@ -79,8 +79,8 @@ struct PhaserControls {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]), `N` in and `N` out, with no latency.
-/// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`](tutti_types::UnitParam::Rate)),
-/// depth ([`UnitParam::Depth`](tutti_types::UnitParam::Depth)) and feedback ([`UnitParam::Feedback`](tutti_types::UnitParam::Feedback)); a fork starts from the values last set through it.
+/// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`]),
+/// depth ([`UnitParam::Depth`]) and feedback ([`UnitParam::Feedback`]); a fork starts from the values last set through it.
 /// The graph prepares it at the device rate before its first block. Its tail
 /// is [`Tail::Unknown`] (the feedback recirculates), so it is never skipped.
 pub struct PhaserNode {
@@ -359,7 +359,7 @@ impl PhaserNode {
 // The params a [`PhaserNode`] lets the graph modulate, in port order: all
 // three of its controls. Each is block-rate in the node (read once per
 // block and ramped across it), so a driven port is read the same way
-// (`block_driven`).
+// (`ParamInput::last_frame`).
 tutti_graph::declare_params!([] PhaserNode, n {
     Rate => Hz = &n.lfo.rate,
     // A fraction of the sweep.
@@ -390,7 +390,14 @@ impl Node for PhaserNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let driven = [0, 1, 2].map(|k| block_driven(&io, k));
+        let driven = [
+            self.declared_param::<{ UnitParam::Rate as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Depth as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Feedback as u16 }>(&io)
+                .last_frame(),
+        ];
         let (inputs, mut outputs) = io.split();
         // One call in a graph, whose blocks fit the scratch; a longer block
         // driven by hand renders in scratch-sized pieces.

@@ -25,10 +25,15 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
   `reset`: declared latency and tail in the shape). A node with params is a
-  `Node` + `ParamNode`, inserted through `param_parts`, its params declared
-  once with `tutti_graph::declare_params!` next to its `Param<U>` fields (the
-  `ParamSet`, the shape's ports and the key's units come from it); a plain one is
-  inserted `ForkByClone` or `Unforkable`. An internal filter that is never a
+  `Node` + `ParamNode`, inserted as `Params(node)` (never `ForkByClone`: it
+  compiles and forks onto the live cell, and no type can refuse it), its params
+  declared once with `tutti_graph::declare_params!` next to its `Param<U>` fields
+  (the `ParamSet`, the shape's ports and the key's units come from it), and
+  **`process` reads a driven param through the declaration**
+  (`self.declared_param::<{ UnitParam::Cutoff as u16 }>(&io)`, `declared_param_at`
+  for a group's index), never `io.param(<port index>)`; a plain node is
+  inserted `ForkByClone` or `Unforkable`. `tutti-graph`'s crate docs ("Writing a
+  node") are the guide, every example a running doctest. An internal filter that is never a
   graph node (the sampler's `stretch::Unit`) has plain methods, not a trait.
 - Do not compare a render against another reference render in a new test:
   pin an analytic figure, an invariant of the render, or (for samples that

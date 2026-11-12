@@ -11,11 +11,11 @@
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::Tail;
+use tutti_types::UnitParam;
 use tutti_types::{AtomicF32, AtomicF64};
 use tutti_types::{ChannelLayout, Feedback, Hz, Phase, PhaseIncrement, SampleRate, Seconds};
 
 use super::shared::{LfoDrive, TimeMod};
-use crate::ramp::block_driven;
 use tutti_dsp::{COEFF_INTERVAL, Ramp};
 use tutti_dsp::{DelayLine, SweptLines};
 
@@ -176,8 +176,8 @@ struct ModDelayControls {
 /// A graph node ([`IntoNode`]), `N` in and `N` out, with zero latency: the
 /// modulated delay is the effect's sound, not processing latency, and PDC would
 /// otherwise delay every other path by the base delay. Inserted, its controls
-/// are a [`ParamSet`] over rate ([`UnitParam::Rate`](tutti_types::UnitParam::Rate)), depth
-/// ([`UnitParam::Depth`](tutti_types::UnitParam::Depth)) and feedback ([`UnitParam::Feedback`](tutti_types::UnitParam::Feedback)); a fork starts from the values last set through it. The
+/// are a [`ParamSet`] over rate ([`UnitParam::Rate`]), depth
+/// ([`UnitParam::Depth`]) and feedback ([`UnitParam::Feedback`]); a fork starts from the values last set through it. The
 /// graph prepares it at the device rate, which sizes the lines, before its
 /// first block.
 ///
@@ -427,7 +427,7 @@ impl ModDelayNode {
 // The params a [`ModDelayNode`] lets the graph modulate, in port order:
 // all three of its controls. Each is block-rate in the node (read once per
 // block and ramped across it), so a driven port is read the same way
-// (`block_driven`).
+// (`ParamInput::last_frame`).
 tutti_graph::declare_params!([] ModDelayNode, n {
     Rate => Hz = &n.lfo.rate,
     // The swing, in seconds.
@@ -458,7 +458,14 @@ impl Node for ModDelayNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let driven = [0, 1, 2].map(|k| block_driven(&io, k));
+        let driven = [
+            self.declared_param::<{ UnitParam::Rate as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Depth as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Feedback as u16 }>(&io)
+                .last_frame(),
+        ];
         let (inputs, mut outputs) = io.split();
         // A graph never hands a block past its `MaxBlock`, which the scratch
         // is sized for, so this is one call; a node driven by hand with a

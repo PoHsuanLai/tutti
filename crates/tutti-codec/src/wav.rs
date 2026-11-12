@@ -18,11 +18,11 @@
 
 mod mask;
 
-use crate::error::{Error, Result, SpecError};
+use crate::error::{Error, Result};
 use crate::pcm::{Pcm, Sample};
 use crate::spec::Spec;
 use crate::writer::FormatWriter;
-use mask::{channel_mask, default_channel_mask};
+use mask::channel_mask;
 use std::io::{Seek, SeekFrom, Write};
 use tutti_types::{ChannelLayout, Interleaved};
 
@@ -62,7 +62,7 @@ struct Header {
 
 impl Header {
     fn new(spec: &Spec, pcm: Pcm, rate: u32, mask: u32) -> Self {
-        let channels = spec.layout.count();
+        let channels = spec.layout().count();
         let sample_bytes = pcm.bits().div_ceil(8);
         let extensible = channels > 2 || pcm.bits() > 16;
         let float = pcm == Pcm::Float32;
@@ -145,26 +145,16 @@ impl<W: Write + Seek> WavWriter<W> {
     /// As [`Encoder::create`](crate::Encoder::create).
     pub fn create(spec: &Spec, pcm: Pcm, mut sink: W) -> Result<Self> {
         let rate = spec.header_rate()?.get();
-        let mask = match &spec.topology {
-            Some(t) if t.layout() != spec.layout => {
-                return Err(SpecError::TopologyWidth {
-                    topology: t.layout(),
-                    file: spec.layout,
-                }
-                .into());
-            }
-            Some(t) => channel_mask(t),
-            None => default_channel_mask(spec.layout),
-        };
+        let mask = channel_mask(spec.topology());
         let header = Header::new(spec, pcm, rate, mask);
         sink.write_all(&header.bytes)?;
         Ok(Self {
             sink: Some(sink),
             pcm,
-            layout: spec.layout,
+            layout: spec.layout(),
             header,
             frames: 0,
-            max_frames: max_data_frames(spec.layout, pcm),
+            max_frames: max_data_frames(spec.layout(), pcm),
             bytes: Vec::new(),
         })
     }

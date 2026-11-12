@@ -120,8 +120,8 @@ let rendered = render_one(
     &mut Control::none(),
 )
 .expect("a 0.5 s stereo render")
-.finished()
-.and_then(Produced::buffers)
+.into_finished()
+.and_then(Produced::into_buffers)
 .expect("nothing cancels it");
 assert_eq!(rendered.channels(), 2);
 assert_eq!(rendered.frames().get(), 24_000);
@@ -148,10 +148,10 @@ let produced = render(
     &mut Control::none(),
 )
 .expect("flac and wav encode")
-.finished()
+.into_finished()
 .expect("nothing cancels it");
 for output in produced {
-    let written = output.file().expect("a file output");
+    let written = output.into_file().expect("a file output");
     assert!(written.bytes > 0, "a finalized export reports its size on disk");
 }
 ```

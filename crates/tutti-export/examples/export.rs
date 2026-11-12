@@ -87,8 +87,8 @@ fn main() -> tutti_export::Result<()> {
         Output::master(target),
         &mut Control::none(),
     )?
-    .finished()
-    .and_then(Produced::file)
+    .into_finished()
+    .and_then(Produced::into_file)
     .expect("nothing cancels a control with no token");
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
 
@@ -123,10 +123,10 @@ fn main() -> tutti_export::Result<()> {
         outputs,
         &mut Control::none(),
     )?
-    .finished()
+    .into_finished()
     .expect("nothing cancels a control with no token");
     for p in produced {
-        let w = p.file().expect("a file output");
+        let w = p.into_file().expect("a file output");
         println!("wrote {} ({} bytes)", w.path.display(), w.bytes);
     }
 
@@ -143,8 +143,8 @@ fn main() -> tutti_export::Result<()> {
         Output::master(BufferTarget::new(ChannelLayout::QUAD)),
         &mut Control::none(),
     )?
-    .finished()
-    .and_then(Produced::buffers)
+    .into_finished()
+    .and_then(Produced::into_buffers)
     .expect("nothing cancels a control with no token");
     let peaks: Vec<f32> = quad
         .planes()
@@ -177,8 +177,8 @@ fn main() -> tutti_export::Result<()> {
         Output::master(normalized),
         &mut Control::none(),
     )?
-    .finished()
-    .and_then(Produced::file)
+    .into_finished()
+    .and_then(Produced::into_file)
     .expect("nothing cancels a control with no token");
     println!(
         "normalize: gain {:.2} dB, measured {:.2} LUFS before",
@@ -198,8 +198,8 @@ fn main() -> tutti_export::Result<()> {
         Output::master(BufferTarget::new(ChannelLayout::STEREO)),
         &mut Control::none(),
     )?
-    .finished()
-    .and_then(Produced::buffers)
+    .into_finished()
+    .and_then(Produced::into_buffers)
     .expect("nothing cancels a control with no token");
     let cfg = LoudnessConfig::new(audio.sample_rate(), ChannelLayout::STEREO);
     let flat = audio.interleaved();

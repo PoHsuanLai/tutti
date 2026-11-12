@@ -172,23 +172,19 @@ impl Default for BounceTail {
     }
 }
 
-/// What a bounce needs and was not given ([`BounceConfigError::Missing`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Field {
-    /// The [`Format`] of a file target.
-    Format,
-}
-
 /// A bounce that has not chosen its master yet: [`Bounce::project`]'s.
 /// It does not start; [`Bounce::master`] or [`Bounce::master_buffers`] choose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoMaster;
 
-/// A master into a file ([`Bounce::master`]); [`Bounced::master`] is its
+/// A master into a file ([`Bounce::master`]): where it goes and the format it
+/// is written as, so a file master always has both. [`Bounced::master`] is its
 /// [`Written`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileMaster(PathBuf);
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileMaster {
+    path: PathBuf,
+    format: Format,
+}
 
 /// A master into memory ([`Bounce::master_buffers`]); [`Bounced::master`] is
 /// its [`Rendered`].
@@ -209,9 +205,9 @@ pub trait Master: sealed::Sealed + Sized + 'static {
     /// What the master is once rendered.
     type Result: std::fmt::Debug + Send;
 
-    /// The file's path, or `None` for memory.
+    /// The file master, or `None` for memory.
     #[doc(hidden)]
-    fn path(self) -> Option<PathBuf>;
+    fn file(self) -> Option<FileMaster>;
 
     /// The master's result out of what the pipeline produced for it.
     #[doc(hidden)]
@@ -221,8 +217,8 @@ pub trait Master: sealed::Sealed + Sized + 'static {
 impl Master for FileMaster {
     type Result = Written;
 
-    fn path(self) -> Option<PathBuf> {
-        Some(self.0)
+    fn file(self) -> Option<FileMaster> {
+        Some(self)
     }
 
     fn result(produced: Produced) -> Written {
@@ -237,7 +233,7 @@ impl Master for FileMaster {
 impl Master for BufferMaster {
     type Result = Rendered;
 
-    fn path(self) -> Option<PathBuf> {
+    fn file(self) -> Option<FileMaster> {
         None
     }
 
@@ -262,9 +258,8 @@ impl Master for BufferMaster {
 /// # fn go(session: &mut Session, drums: NodeKey) -> Result<(), tutti_session::BounceError> {
 /// let done = session.bounce(
 ///     Bounce::project()
-///         .format(Format::Wav(Pcm::Int24))
 ///         .range(Range::Beats(Beat(0.0), Beat(16.0)))
-///         .master("out/master.wav")
+///         .master("out/master.wav", Format::Wav(Pcm::Int24))
 ///         .stem(drums, "out/drums.wav"),
 /// )?;
 /// # let _ = done;
@@ -277,10 +272,8 @@ impl Master for BufferMaster {
 /// starts.
 #[must_use = "a bounce renders nothing until the session starts it"]
 pub struct Bounce<N = NodeKey, M = NoMaster> {
-    format: Option<Format>,
     master: M,
-    stems: Vec<Stem<N>>,
-    normalize_stems: StemGain,
+    stems: Vec<AnyStem<N>>,
     range: Option<Range>,
     until: Option<Beat>,
     clock: Option<ExportClock>,
@@ -301,15 +294,13 @@ pub struct Bounce<N = NodeKey, M = NoMaster> {
 impl<N> Bounce<N, NoMaster> {
     /// A bounce of the project's mix, with nothing chosen: a master
     /// ([`master`](Self::master) or [`master_buffers`](Self::master_buffers),
-    /// without which it does not start), a format for a file master, and a range when no loop is set. Name nodes as
+    /// without which it does not start) and a range when no loop is set. Name nodes as
     /// stems with [`stem`](Self::stem); `N` is what names one (a [`NodeKey`],
     /// or a host's own handle for it: [`try_map`](Self::try_map) resolves them).
     pub fn project() -> Self {
         Self {
-            format: None,
             master: NoMaster,
             stems: Vec::new(),
-            normalize_stems: StemGain::None,
             range: None,
             until: None,
             clock: None,
@@ -328,16 +319,33 @@ impl<N> Bounce<N, NoMaster> {
         }
     }
 
-    /// The master into a file at `path`: written beside it and renamed over it
-    /// when the bounce finishes, so a cancelled or failed bounce leaves what
-    /// was at the path as it was. [`Bounced::master`] is a [`Written`], and a
-    /// [`format`](Self::format) is required.
-    pub fn master(self, path: impl Into<PathBuf>) -> Bounce<N, FileMaster> {
-        self.with_master(FileMaster(path.into()))
+    /// The master into a file at `path` as `format`: written beside it and
+    /// renamed over it when the bounce finishes, so a cancelled or failed
+    /// bounce leaves what was at the path as it was. [`Bounced::master`] is a
+    /// [`Written`]. A file master is the one that has a rate conversion, a
+    /// dither and a normalize ([`resample`](Bounce::resample),
+    /// [`dither`](Bounce::dither), [`normalize`](Bounce::normalize)), which
+    /// only a file honours: a [`master_buffers`](Self::master_buffers) bounce
+    /// cannot be given them.
+    pub fn master(self, path: impl Into<PathBuf>, format: Format) -> Bounce<N, FileMaster> {
+        self.with_master(FileMaster {
+            path: path.into(),
+            format,
+        })
     }
 
     /// The master into memory, one plane per channel: [`Bounced::master`] is
-    /// a [`Rendered`]. Nothing is encoded, resampled, dithered or normalized.
+    /// a [`Rendered`]. Nothing is encoded, resampled, dithered or normalized,
+    /// and the bounce has no way to ask for any of them:
+    ///
+    /// ```compile_fail,E0599
+    /// # use tutti_session::Bounce;
+    /// # use tutti_export::Normalize;
+    /// # use tutti_types::Db;
+    /// let _ = Bounce::<tutti_graph::NodeKey>::project()
+    ///     .master_buffers()
+    ///     .normalize(Normalize::Peak { target: Db(-1.0) });
+    /// ```
     pub fn master_buffers(self) -> Bounce<N, BufferMaster> {
         self.with_master(BufferMaster)
     }
@@ -347,10 +355,8 @@ impl<N, M> Bounce<N, M> {
     /// The same bounce with another master.
     fn with_master<M2>(self, master: M2) -> Bounce<N, M2> {
         let Self {
-            format,
             master: _,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -368,10 +374,8 @@ impl<N, M> Bounce<N, M> {
             edit,
         } = self;
         Bounce {
-            format,
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -390,27 +394,10 @@ impl<N, M> Bounce<N, M> {
         }
     }
 
-    /// Also writes `node`'s own outputs into a file at `path`, in the same
-    /// pass as the master: see [`Stem`] ([`stem_with`](Self::stem_with) for one
-    /// that places its channels or states its own format).
-    ///
-    /// A stem is the node's output as it leaves the node, aligned with the
-    /// master (what a bus or the master applies downstream is not in it), at
-    /// the node's own width.
-    pub fn stem(self, node: N, path: impl Into<PathBuf>) -> Self {
-        self.stem_with(Stem::new(node, path))
-    }
-
-    /// Also writes the [`Stem`] it describes.
-    pub fn stem_with(mut self, stem: Stem<N>) -> Self {
-        self.stems.push(stem);
-        self
-    }
-
-    /// How the stems are normalized: [`StemGain::None`] (as rendered) without
-    /// it. The master's own normalize is [`normalize`](Self::normalize).
-    pub fn normalize_stems(mut self, gain: StemGain) -> Self {
-        self.normalize_stems = gain;
+    /// Also writes the [`Stem`] it describes: a file stem
+    /// ([`Stem::new`]) or one held in memory ([`Stem::buffers`]).
+    pub fn stem_with(mut self, stem: impl Into<AnyStem<N>>) -> Self {
+        self.stems.push(stem.into());
         self
     }
 
@@ -424,10 +411,8 @@ impl<N, M> Bounce<N, M> {
     /// What `f` returns for the first node it refuses.
     pub fn try_map<N2, E>(self, mut f: impl FnMut(N) -> Result<N2, E>) -> Result<Bounce<N2, M>, E> {
         let Self {
-            format,
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -449,10 +434,8 @@ impl<N, M> Bounce<N, M> {
             .map(|stem| stem.try_map(&mut f))
             .collect::<Result<Vec<_>, E>>()?;
         Ok(Bounce {
-            format,
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -469,13 +452,6 @@ impl<N, M> Bounce<N, M> {
             normalize,
             edit,
         })
-    }
-
-    /// The file format of the master: required for a file master, and
-    /// ignored by [`master_buffers`](Self::master_buffers).
-    pub fn format(mut self, format: Format) -> Self {
-        self.format = Some(format);
-        self
     }
 
     /// The span to render. Without it the transport's loop is rendered, and
@@ -509,12 +485,6 @@ impl<N, M> Bounce<N, M> {
         self
     }
 
-    /// Writes the file at another rate than the render's.
-    pub fn resample(mut self, resample: Resample) -> Self {
-        self.resample = Some(resample);
-        self
-    }
-
     /// What to trim from the head; see [`BounceLatency`].
     pub fn latency(mut self, latency: BounceLatency) -> Self {
         self.latency = latency;
@@ -536,30 +506,27 @@ impl<N, M> Bounce<N, M> {
 
     /// The master file's width. Without it, the root's: a wider graph folds
     /// onto a narrower file, never truncates, and a narrowing with no placement
-    /// is an error ([`tutti_export::Error`]).
+    /// is an error ([`tutti_export::Error`]). It replaces a
+    /// [`file_topology`](Self::file_topology) named before it.
     pub fn channels(mut self, channels: ChannelLayout) -> Self {
         self.channels = Some(channels);
+        self.file_topology = None;
         self
     }
 
     /// What the master file's channels are (the WAV speaker mask, Ogg
     /// Vorbis's channel order); the engine's order for the width without it.
-    /// Its width must be the file's.
+    /// The file is as wide as the topology, so it replaces
+    /// [`channels`](Self::channels) named before it.
     pub fn file_topology(mut self, topology: ChannelTopology) -> Self {
         self.file_topology = Some(topology);
+        self.channels = None;
         self
     }
 
     /// Renders on one thread, without the session's worker pool.
     pub fn serial(mut self) -> Self {
         self.serial = true;
-        self
-    }
-
-    /// The dither applied when quantizing to an integer width: triangular
-    /// without it. `None` adds none. A float width and Ogg Vorbis ignore it.
-    pub fn dither(mut self, dither: Option<DitherShape>) -> Self {
-        self.dither = dither;
         self
     }
 
@@ -570,14 +537,6 @@ impl<N, M> Bounce<N, M> {
         self
     }
 
-    /// Normalizes the master file to `normalize`: the render is kept, measured
-    /// and written with the gain, never rendered twice. A file target only
-    /// ([`BounceConfigError::NormalizeBuffers`]).
-    pub fn normalize(mut self, normalize: Normalize) -> Self {
-        self.normalize = Some(normalize);
-        self
-    }
-
     /// Edits the forked graph before it renders: see [`PrepareEdit`].
     pub fn edit(mut self, edit: PrepareEdit) -> Self {
         self.edit = Some(edit);
@@ -585,13 +544,48 @@ impl<N, M> Bounce<N, M> {
     }
 }
 
+/// What only a file honours: a rate conversion, a dither, a normalize, and the
+/// stems that share the master's format.
+impl<N> Bounce<N, FileMaster> {
+    /// Also writes `node`'s own outputs into a file at `path` in the master's
+    /// format, in the same pass as the master: see [`Stem`]
+    /// ([`stem_with`](Self::stem_with) for one that places its channels or
+    /// states its own format).
+    ///
+    /// A stem is the node's output as it leaves the node, aligned with the
+    /// master (what a bus or the master applies downstream is not in it), at
+    /// the node's own width.
+    pub fn stem(self, node: N, path: impl Into<PathBuf>) -> Self {
+        let format = self.master.format;
+        self.stem_with(Stem::new(node, path, format))
+    }
+
+    /// Writes the files at another rate than the render's.
+    pub fn resample(mut self, resample: Resample) -> Self {
+        self.resample = Some(resample);
+        self
+    }
+
+    /// The dither applied when quantizing to an integer width: triangular
+    /// without it. `None` adds none. A float width and Ogg Vorbis ignore it.
+    pub fn dither(mut self, dither: Option<DitherShape>) -> Self {
+        self.dither = dither;
+        self
+    }
+
+    /// Normalizes the master file to `normalize`: the render is kept, measured
+    /// and written with the gain, never rendered twice.
+    pub fn normalize(mut self, normalize: Normalize) -> Self {
+        self.normalize = Some(normalize);
+        self
+    }
+}
+
 impl<N: std::fmt::Debug, M: std::fmt::Debug> std::fmt::Debug for Bounce<N, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Bounce")
-            .field("format", &self.format)
             .field("master", &self.master)
             .field("stems", &self.stems)
-            .field("normalize_stems", &self.normalize_stems)
             .field("range", &self.range)
             .field("until", &self.until)
             .field("clock", &self.clock)
@@ -611,15 +605,23 @@ impl<N: std::fmt::Debug, M: std::fmt::Debug> std::fmt::Debug for Bounce<N, M> {
     }
 }
 
-/// Where a stem goes.
+/// A stem written to a file ([`Stem::new`]): where, as what, and how its gain is
+/// chosen.
 #[derive(Debug, Clone, PartialEq)]
-enum StemTo {
-    File(PathBuf),
-    Buffers,
+pub struct FileStem {
+    path: PathBuf,
+    format: Format,
+    gain: StemGain,
 }
 
+/// A stem held in memory ([`Stem::buffers`]): planes, which are not measured, so
+/// it has no gain to choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferStem;
+
 /// One node's own output, written beside the master in the same pass (doc 019
-/// section 7): `N` names the node ([`NodeKey`] by default).
+/// section 7): `N` names the node ([`NodeKey`] by default), and `K` is where it
+/// goes ([`FileStem`] by default, or [`BufferStem`]).
 ///
 /// A stem is what the node produces, read where it leaves the node and
 /// delayed to the time the master leaves the plan (so every stem and the
@@ -635,50 +637,113 @@ enum StemTo {
 /// - [`layout`](Self::layout) is the file's width, when it is not the tapped
 ///   one: the channels are folded onto it from their topology, and a fold
 ///   that cannot place them refuses the bounce when it renders (nothing is
-///   truncated);
-/// - [`format`](Self::format) is the file's format, in place of the bounce's.
+///   truncated).
+///
+/// Only a file stem has a gain ([`gain`](Stem::gain)): a stem held in memory is
+/// not measured, so it cannot be asked for one.
+///
+/// ```compile_fail,E0599
+/// # use tutti_session::{Stem, StemGain};
+/// # use tutti_graph::NodeKey;
+/// # fn go(node: NodeKey) {
+/// let _ = Stem::buffers(node).gain(StemGain::Shared);
+/// # }
+/// ```
 ///
 /// The master's root declaration is never applied to a stem: it describes the
 /// graph's output bus, not a node's output.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Stem<N = NodeKey> {
+pub struct Stem<N = NodeKey, K = FileStem> {
     node: N,
-    to: StemTo,
     channels: Option<Vec<u16>>,
     layout: Option<ChannelLayout>,
     topology: Option<ChannelTopology>,
-    format: Option<Format>,
+    kind: K,
 }
 
-impl<N> Stem<N> {
-    /// `node`'s output into a file at `path`: written beside it and renamed
-    /// over it when the bounce finishes, as the master is.
-    pub fn new(node: N, path: impl Into<PathBuf>) -> Self {
-        Self::to(node, StemTo::File(path.into()))
+/// Where a stem goes, once the kind is erased for the bounce to hold.
+#[derive(Debug, Clone, PartialEq)]
+enum StemTo {
+    File(FileStem),
+    Buffers,
+}
+
+/// A [`Stem`] of either kind, as [`Bounce::stem_with`] takes it (made with
+/// `.into()`, which the call does).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnyStem<N = NodeKey>(Stem<N, StemTo>);
+
+impl<N> From<Stem<N, FileStem>> for AnyStem<N> {
+    fn from(stem: Stem<N, FileStem>) -> Self {
+        Self(stem.with_kind(StemTo::File))
+    }
+}
+
+impl<N> From<Stem<N, BufferStem>> for AnyStem<N> {
+    fn from(stem: Stem<N, BufferStem>) -> Self {
+        Self(stem.with_kind(|BufferStem| StemTo::Buffers))
+    }
+}
+
+impl<N> Stem<N, FileStem> {
+    /// `node`'s output into a file at `path` as `format`: written beside it
+    /// and renamed over it when the bounce finishes, as the master is. A file
+    /// stem always has its format; [`Bounce::stem`] of a file master gives it
+    /// the master's. Its gain is [`StemGain::None`] until [`gain`](Self::gain).
+    pub fn new(node: N, path: impl Into<PathBuf>, format: Format) -> Self {
+        Self::of(
+            node,
+            FileStem {
+                path: path.into(),
+                format,
+                gain: StemGain::None,
+            },
+        )
     }
 
+    /// How this stem is normalized: as rendered without it.
+    #[must_use]
+    pub fn gain(mut self, gain: StemGain) -> Self {
+        self.kind.gain = gain;
+        self
+    }
+}
+
+impl<N> Stem<N, BufferStem> {
     /// `node`'s output into memory ([`Bounced::stems`] is
     /// [`Produced::Buffers`]), one plane per channel, at the render's rate:
     /// nothing is encoded, resampled, dithered or normalized, as for
     /// [`Bounce::master_buffers`].
     pub fn buffers(node: N) -> Self {
-        Self::to(node, StemTo::Buffers)
+        Self::of(node, BufferStem)
     }
+}
 
-    fn to(node: N, to: StemTo) -> Self {
+impl<N, K> Stem<N, K> {
+    fn of(node: N, kind: K) -> Self {
         Self {
             node,
-            to,
             channels: None,
             layout: None,
             topology: None,
-            format: None,
+            kind,
+        }
+    }
+
+    fn with_kind<K2>(self, f: impl FnOnce(K) -> K2) -> Stem<N, K2> {
+        Stem {
+            node: self.node,
+            channels: self.channels,
+            layout: self.layout,
+            topology: self.topology,
+            kind: f(self.kind),
         }
     }
 
     /// Taps only these output channels of the node, in this order, in place
     /// of all of them. A channel the node has not is
     /// [`BounceConfigError::StemChannelMissing`].
+    #[must_use]
     pub fn channels(mut self, channels: impl IntoIterator<Item = u16>) -> Self {
         self.channels = Some(channels.into_iter().collect());
         self
@@ -686,21 +751,16 @@ impl<N> Stem<N> {
 
     /// What the tapped channels are, in lane order. Its width must be the
     /// number tapped (a stem whose width differs is refused when it renders).
+    #[must_use]
     pub fn topology(mut self, topology: ChannelTopology) -> Self {
         self.topology = Some(topology);
         self
     }
 
     /// The file's width, when it is not the tapped one.
+    #[must_use]
     pub fn layout(mut self, layout: ChannelLayout) -> Self {
         self.layout = Some(layout);
-        self
-    }
-
-    /// The file's format, in place of the bounce's (ignored by
-    /// [`buffers`](Self::buffers)).
-    pub fn format(mut self, format: Format) -> Self {
-        self.format = Some(format);
         self
     }
 
@@ -715,42 +775,44 @@ impl<N> Stem<N> {
     /// # Errors
     ///
     /// What `f` returns.
-    pub fn try_map<M, E>(self, f: impl FnOnce(N) -> Result<M, E>) -> Result<Stem<M>, E> {
+    pub fn try_map<M, E>(self, f: impl FnOnce(N) -> Result<M, E>) -> Result<Stem<M, K>, E> {
         let Self {
             node,
-            to,
             channels,
             layout,
             topology,
-            format,
+            kind,
         } = self;
         Ok(Stem {
             node: f(node)?,
-            to,
             channels,
             layout,
             topology,
-            format,
+            kind,
         })
     }
 }
 
-/// How a bounce's stems are normalized ([`Bounce::normalize_stems`]). A stem
-/// held in memory is never normalized, so a bounce with one and a gain other
-/// than [`None`](Self::None) is [`BounceConfigError::NormalizeBuffers`].
+impl<N> AnyStem<N> {
+    fn try_map<M, E>(self, f: impl FnOnce(N) -> Result<M, E>) -> Result<AnyStem<M>, E> {
+        self.0.try_map(f).map(AnyStem)
+    }
+}
+
+/// How a file stem is normalized ([`Stem::gain`]).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub enum StemGain {
     /// As rendered: what a DAW that adds its own gain wants.
     #[default]
     None,
-    /// Each stem takes the gain the master was measured to need
+    /// The stem takes the gain the master was measured to need
     /// ([`Bounce::normalize`], required), so stems that sum to the master
     /// still do. Right only while the master is the plain sum of the stems;
     /// with processing on the master bus, the sum is the caller's to keep.
     Shared,
-    /// Each stem is measured and normalized on its own. Breaks the balance
-    /// between them, by design: independent stem libraries.
+    /// The stem is measured and normalized on its own. Breaks the balance
+    /// between stems, by design: independent stem libraries.
     Each(Normalize),
 }
 
@@ -771,7 +833,26 @@ impl<M: Master> Bounced<M> {
         &self.master
     }
 
-    /// The stems' results, in the order the bounce named them.
+    /// The stems' results, in the order the bounce named them. Borrowed, so a
+    /// stem is read in place; [`into_parts`](Self::into_parts) owns them.
+    ///
+    /// ```no_run
+    /// # use tutti_session::{Bounce, Session, Stem};
+    /// # use tutti_graph::NodeKey;
+    /// # fn go(session: &mut Session, drums: NodeKey) -> Result<(), tutti_session::BounceError> {
+    /// let done = session.bounce(
+    ///     Bounce::project()
+    ///         .until(tutti_types::Beat(4.0))
+    ///         .master_buffers()
+    ///         .stem_with(Stem::buffers(drums)),
+    /// )?;
+    /// // Neither call consumes `done`.
+    /// let planes = done.stems()[0].buffers().map(|r| r.channels());
+    /// let on_disk = done.stems()[0].file();
+    /// # let _ = (planes, on_disk);
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
     pub fn stems(&self) -> &[Produced] {
         &self.stems
@@ -894,15 +975,12 @@ impl tutti_transport::Timeline for Stopped {
 }
 
 /// What a bounce refuses that no render would: a request that names no
-/// target, format or span, a graph with nothing to render, and an edit that
+/// span, a graph with nothing to render, and an edit that
 /// left the fork unusable. The pipeline's own refusals are
 /// [`tutti_export::Error`] ([`BounceError::Export`]).
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum BounceConfigError {
-    /// The bounce does not say something it needs.
-    #[error("the bounce names no {0:?}")]
-    Missing(Field),
     /// The graph has no outputs to render.
     #[error("the graph has no outputs to render")]
     GraphHasNoOutputs,
@@ -952,11 +1030,6 @@ pub enum BounceConfigError {
     /// positive, or more frames than [`tutti_export::MAX_FRAMES`].
     #[error("the render cannot be a job: {0}")]
     Job(JobError),
-    /// A normalize was asked of a target held in memory (the master, or a
-    /// stem under a [`StemGain`] other than `None`), which is not measured:
-    /// ask a file, or apply a gain to the planes.
-    #[error("a target held in memory cannot be normalized")]
-    NormalizeBuffers,
     /// A prepare hook left the forked graph in a state that cannot commit.
     #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
     PrepareHookUncommittable(CommitError),
@@ -1653,7 +1726,7 @@ impl Session {
     /// # Errors
     ///
     /// [`BounceError::InFlight`] while another bounce's token lives;
-    /// [`BounceError::Config`] for a request that names no format or
+    /// [`BounceError::Config`] for a request that names no
     /// range, whose range keeps no frame, or for a graph with no outputs (all
     /// before anything is forked); [`BounceError::NotForkable`] and
     /// [`BounceError::Fork`] for a node the fork cannot copy.
@@ -1665,10 +1738,8 @@ impl Session {
             return Err(BounceError::InFlight);
         }
         let Bounce {
-            format,
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -1700,22 +1771,25 @@ impl Session {
         let (start, length) = span(range, looped, &map, rate)?;
 
         let channels = channels.unwrap_or_else(|| ChannelLayout::clamped(outputs));
-        let target: Target = match master.path() {
-            Some(path) => {
-                let format = format.ok_or(BounceConfigError::Missing(Field::Format))?;
-                let file = FileTarget::new(path, format, channels)
-                    .with_topology(file_topology)
-                    .with_resample(resample)
-                    .with_dither(dither)
-                    .with_normalize(normalize.map(NormalizeSpec::own));
+        let target: Target = match master.file() {
+            Some(FileMaster { path, format }) => {
+                let file = FileTarget::new(path, format, channels);
+                let file = match file_topology {
+                    Some(topology) => file.with_topology(topology),
+                    None => file,
+                }
+                .with_resample(resample)
+                .with_dither(dither)
+                .with_normalize(normalize.map(NormalizeSpec::own));
                 file.into()
             }
             None => {
-                if normalize.is_some() {
-                    return Err(BounceConfigError::NormalizeBuffers.into());
+                let planes = BufferTarget::new(channels);
+                match file_topology {
+                    Some(topology) => planes.with_topology(topology),
+                    None => planes,
                 }
-                let planes = BufferTarget::new(channels).with_topology(file_topology);
-                planes.into()
+                .into()
             }
         };
         // The stems: what each taps and where it goes, refused by name before
@@ -1724,12 +1798,11 @@ impl Session {
         for stem in stems {
             let Stem {
                 node,
-                to,
                 channels: tapped,
                 layout,
                 topology,
-                format: own_format,
-            } = stem;
+                kind,
+            } = stem.0;
             if !self.graph.contains(node) {
                 return Err(BounceConfigError::StemNotInGraph { node }.into());
             }
@@ -1751,12 +1824,9 @@ impl Session {
             let placement =
                 Placement::new(topology.unwrap_or_else(|| ChannelTopology::for_width(lanes)));
             let layout = layout.unwrap_or(lanes);
-            let target: Target = match to {
-                StemTo::File(path) => {
-                    let format = own_format
-                        .or(format)
-                        .ok_or(BounceConfigError::Missing(Field::Format))?;
-                    let gain = match normalize_stems {
+            let target: Target = match kind {
+                StemTo::File(FileStem { path, format, gain }) => {
+                    let gain = match gain {
                         StemGain::None => None,
                         StemGain::Each(n) => Some(NormalizeSpec::own(n)),
                         StemGain::Shared => Some(NormalizeSpec::from_output(
@@ -1770,12 +1840,7 @@ impl Session {
                         .with_normalize(gain)
                         .into()
                 }
-                StemTo::Buffers => {
-                    if normalize_stems != StemGain::None {
-                        return Err(BounceConfigError::NormalizeBuffers.into());
-                    }
-                    BufferTarget::new(layout).into()
-                }
+                StemTo::Buffers => BufferTarget::new(layout).into(),
             };
             taps.push(StemTap {
                 node,
@@ -2135,9 +2200,8 @@ mod tests {
     }
 
     /// **Nothing is guessed, and nothing is half-started.** A bounce with no
-    /// range, loop or end, no format for a file, or a normalize on
-    /// memory is refused by name before anything is forked: no token is held
-    /// after.
+    /// range, loop or end is refused by name before anything is forked: no
+    /// token is held after.
     #[test]
     fn a_bounce_that_misses_what_it_needs_is_refused_before_it_forks() {
         let mut session = session();
@@ -2150,20 +2214,6 @@ mod tests {
         assert_eq!(
             refused(&mut session, Bounce::project().master_buffers()),
             BounceConfigError::NoRange
-        );
-        assert_eq!(
-            refused(
-                &mut session,
-                Bounce::project().until(Beat(1.0)).master("x.wav")
-            ),
-            BounceConfigError::Missing(Field::Format)
-        );
-        assert_eq!(
-            refused(
-                &mut session,
-                short().normalize(Normalize::peak(tutti_types::Db(-1.0)))
-            ),
-            BounceConfigError::NormalizeBuffers
         );
         assert!(!session.bounce_in_flight());
     }

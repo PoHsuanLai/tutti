@@ -151,12 +151,12 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
     );
 
     let sink = FileOut::create(
-        &path,
-        &Spec::new(
+        &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
             SampleRate(48_000.0),
         ),
+        &path,
     )
     .expect("sink opens");
 
@@ -228,12 +228,12 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
     let (mut graph, reader) = graph_tap(2 * 512);
     let src = reader;
     let sink = FileOut::create(
-        &path,
-        &Spec::new(
+        &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
             SampleRate(48_000.0),
         ),
+        &path,
     )
     .expect("sink opens");
 
@@ -280,12 +280,12 @@ fn a_gap_in_a_take_is_counted_and_the_file_closes_up_over_it() {
     let (mut graph, reader) = graph_tap(512);
     let src = reader;
     let sink = FileOut::create(
-        &path,
-        &Spec::new(
+        &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
             SampleRate(48_000.0),
         ),
+        &path,
     )
     .expect("sink opens");
     let mut pump = PumpLoop::new(src, sink, Samples(1024)).expect("pairs");

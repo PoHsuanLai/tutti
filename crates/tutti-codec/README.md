@@ -11,18 +11,20 @@ or a streaming `FileIn`.
   `Vorbis { quality: Quality }`. FLAC at float and Ogg at a sample width are not
   expressible. Each variant exists only with its feature (`encode-wav`, `encode-aiff`, `encode-flac`,
   `encode-vorbis`), none on by default.
-- `Spec` is what a file is written as: the format, the width, the rate and the
-  speaker order.
+- `Spec` is what a file is written as: the format, the speakers (the topology,
+  which is also the width) and the rate. `Spec::of_width` takes a width and
+  states the engine's order for it.
 - `Encoder` is `create(spec, sink)`, a fallible `write(block)` and `finish()`.
   `Encoder::create_file` writes beside the path and moves the file into place
   on `finish`; dropping the encoder first removes it, and so does `finish` after a
   failed `write`.
 - `FileOut` is the file sink, `FileIn`'s mirror: a `Sink` over an
-  `Encoder`, created from a path and a `Spec`, for any `Format` the build can
+  `Encoder`, created from a `Spec` and a path, for any `Format` the build can
   write. It keeps whole frames only, latches the first write error (later
   writes are skipped and return `SinkFailed`) and `finalize` returns that
   error, else the result of `finish`. It writes in place rather than staged,
   because a recording cut short is worth keeping.
+- `Wave::write(path, format)` saves a `Wave` at its own rate and topology.
 - Decoding is plain functions and types of our own, no trait: `Wave::read`
   decodes a file into a `Wave` (a resident, planar sample buffer),
   `Wave::topology` and `FileIn::topology` say which speaker each channel feeds,

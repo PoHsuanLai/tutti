@@ -397,15 +397,15 @@ impl MicIn {
         &self,
         path: impl AsRef<std::path::Path>,
         format: Format,
-    ) -> std::io::Result<FileOut> {
+    ) -> tutti_codec::Result<FileOut> {
         // Read off `Source::layout` rather than hard-coded, so this pairing
         // cannot drift from what `pull` actually hands back; a sink built
         // from a *different* width than the source reports is exactly what
         // `Recorder::start` refuses, and this helper exists to be the pairing
         // that always passes.
         FileOut::create(
+            &Spec::of_width(format, Source::layout(self), self.sample_rate),
             path,
-            &Spec::new(format, Source::layout(self), self.sample_rate),
         )
     }
 }

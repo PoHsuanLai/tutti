@@ -70,7 +70,7 @@ fn a_writer_that_lost_a_frame_fails_promptly() {
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let spec = Spec::new(
+        let spec = Spec::of_width(
             crate::Format::Flac {
                 depth: IntDepth::Int16,
                 level: FlacLevel::Standard,

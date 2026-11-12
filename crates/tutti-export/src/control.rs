@@ -119,7 +119,16 @@ pub enum Outcome<T> {
 impl<T> Outcome<T> {
     /// What the render produced, or `None` if it was cancelled.
     #[must_use]
-    pub fn finished(self) -> Option<T> {
+    pub fn finished(&self) -> Option<&T> {
+        match self {
+            Self::Finished(t) => Some(t),
+            Self::Cancelled => None,
+        }
+    }
+
+    /// What the render produced, owned, or `None` if it was cancelled.
+    #[must_use]
+    pub fn into_finished(self) -> Option<T> {
         match self {
             Self::Finished(t) => Some(t),
             Self::Cancelled => None,

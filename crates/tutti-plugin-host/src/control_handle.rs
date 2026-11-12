@@ -71,7 +71,7 @@ fn editor_error(error: PluginError) -> EditorError {
 /// that is merely misbehaving is a judgement made by counting failed calls, and
 /// how many failures over how long is the host's policy, not the engine's. See
 /// [`PluginHandle::status`] for why `Alive` must not be read as "healthy".
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum PluginStatus {
     /// The bridge is up. **Not** a promise the plugin is behaving — only that
     /// it has not died in a way the engine can see.

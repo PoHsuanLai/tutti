@@ -182,18 +182,6 @@ impl std::error::Error for PluginFailure {
     }
 }
 
-/// Two failures are equal when they are the same kind and read the same: the
-/// errors held as `source` (an `io::Error` among them) are not comparable, so
-/// their text is.
-impl PartialEq for PluginFailure {
-    fn eq(&self, other: &Self) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
-            && self.to_string() == other.to_string()
-    }
-}
-
-impl Eq for PluginFailure {}
-
 impl PluginFailure {
     /// The failure a call on the control stream ended with, from the error it
     /// returned: the one place a stream's [`BridgeError`] becomes a cause.

@@ -213,11 +213,11 @@ fn a_crash_is_not_declared_until_the_debounce_elapses() {
         let (mut s, node) = session_with(Some(PluginFailure::StreamClosed));
         let died = observe(&mut s, frames);
         assert!(died.is_empty(), "at {frames} observation(s): {died:?}");
-        assert_eq!(
-            s.plugin(node).expect("hosted").liveness(),
-            &PluginLiveness::Failing {
-                consecutive: frames as u8
-            },
+        assert!(
+            matches!(
+                s.plugin(node).expect("hosted").liveness(),
+                PluginLiveness::Failing { consecutive } if *consecutive == frames as u8
+            ),
             "at {frames} observation(s) the plugin is failing, not dead"
         );
         assert!(
@@ -248,10 +248,10 @@ fn a_live_plugin_is_never_declared_dead() {
     let (mut s, node) = session_with(None);
     let died = observe(&mut s, Liveness::DEATHS as usize + 5);
     assert!(died.is_empty(), "{died:?}");
-    assert_eq!(
+    assert!(matches!(
         s.plugin(node).expect("hosted").liveness(),
-        &PluginLiveness::Healthy
-    );
+        PluginLiveness::Healthy
+    ));
     assert!(s.graph_ref().contains(node), "a healthy plugin stays wired");
 }
 
@@ -326,22 +326,17 @@ fn a_plugins_own_edit_arrives_as_param_changed() {
         .inspect(|e| assert_eq!(e.node, node))
         .map(|e| e.change.clone())
         .collect();
-    assert_eq!(
-        changes,
-        [
-            PluginChange::GestureBegan { id },
-            PluginChange::ParamChanged {
-                id,
-                value,
-                recorded: true
-            },
-            PluginChange::ParamChanged {
-                id,
-                value,
-                recorded: false
-            },
-            PluginChange::GestureEnded { id },
-        ]
+    assert!(
+        matches!(
+            changes.as_slice(),
+            [
+                PluginChange::GestureBegan { id: a },
+                PluginChange::ParamChanged { id: b, value: v1, recorded: true },
+                PluginChange::ParamChanged { id: c, value: v2, recorded: false },
+                PluginChange::GestureEnded { id: d },
+            ] if [*a, *b, *c, *d] == [id; 4] && *v1 == value && *v2 == value
+        ),
+        "{changes:?}"
     );
     assert!(plugin_events(&mut s).is_empty(), "each is reported once");
 }
@@ -370,15 +365,18 @@ fn a_plugins_refreshes_and_invalidations_arrive_in_the_stream() {
         .into_iter()
         .map(|e| e.change)
         .collect();
-    assert_eq!(
-        changes,
-        [
-            PluginChange::ParamsRescanned,
-            PluginChange::ParamTitlesChanged,
-            PluginChange::TailChanged {
-                tail: PluginTail::Unbounded
-            },
-            PluginChange::IoChanged,
-        ]
+    assert!(
+        matches!(
+            changes.as_slice(),
+            [
+                PluginChange::ParamsRescanned,
+                PluginChange::ParamTitlesChanged,
+                PluginChange::TailChanged {
+                    tail: PluginTail::Unbounded
+                },
+                PluginChange::IoChanged,
+            ]
+        ),
+        "{changes:?}"
     );
 }

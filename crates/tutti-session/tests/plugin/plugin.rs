@@ -303,11 +303,13 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     };
     for (i, ms) in [0, 10, 20].into_iter().enumerate() {
         assert!(plugins_at(&mut s, ms).is_empty(), "inside the window");
-        assert_eq!(
-            s.plugin(node).unwrap().liveness(),
-            &PluginLiveness::Failing {
-                consecutive: i as u8 + 1
-            }
+        assert!(
+            matches!(
+                s.plugin(node).unwrap().liveness(),
+                PluginLiveness::Failing { consecutive } if *consecutive == i as u8 + 1
+            ),
+            "{:?}",
+            s.plugin(node).unwrap().liveness()
         );
         assert!(s.graph_ref().contains(node), "a failing plugin stays");
     }
@@ -677,7 +679,10 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
         "the replacement's latency"
     );
     assert!(s.graph_ref().contains(node));
-    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Healthy
+    ));
     // The snapshot is still the node's recovery point: a second failure
     // restores it again.
     assert!(s.plugin(node).unwrap().state().last_good().is_some());
@@ -1093,7 +1098,10 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
         )),
         0
     );
-    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Healthy
+    ));
 }
 
 /// **A replacement with other ports is a failed attempt, and the graph stays
@@ -1315,7 +1323,10 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         "the attempt with the snapshot failed first"
     );
     assert!(s.plugin(node).unwrap().state().last_good().is_none());
-    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Healthy
+    ));
     // The user's state is kept for the host, not thrown away...
     assert_eq!(
         s.plugin(node)

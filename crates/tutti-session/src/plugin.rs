@@ -445,7 +445,7 @@ impl PluginLoaded {
 
 /// What the session believes about a plugin's liveness: the debounce
 /// between the engine's latched `PluginStatus` and a node removed.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum PluginLiveness {
     /// Answering normally.
     #[default]
@@ -480,7 +480,7 @@ pub enum PluginLiveness {
 /// recovery), so a host reads one place. There is no callback slot to install
 /// or clear; a host that needs a push from the thread that hears the plugin
 /// subscribes to its handle (`PluginHandle::subscribe`, the low layer).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PluginEvent {
     /// The plugin's node. After a [`PluginChange::Died`] with recovery off, or
@@ -491,7 +491,7 @@ pub struct PluginEvent {
 }
 
 /// What changed in a hosted plugin ([`PluginEvent::change`]).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum PluginChange {
     /// The plugin took hold of a parameter (its editor, or its own gesture):

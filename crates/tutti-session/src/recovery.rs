@@ -87,7 +87,7 @@ impl Default for RecoveryPolicy {
 }
 
 /// What the session observed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum RecoveryEvent {
     /// The plugin was declared dead, with the engine's latched cause.
     Died {
@@ -113,7 +113,7 @@ pub enum RecoveryEvent {
 }
 
 /// What the session does next.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum RecoveryAction {
     /// Nothing.
     Wait,
@@ -137,7 +137,7 @@ pub enum RecoveryAction {
 }
 
 /// Why recovery stopped.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct GiveUp {
     /// Failures within the window, including this one.
     pub failures: u32,
@@ -360,6 +360,39 @@ mod tests {
 
     const S: Duration = Duration::from_secs(1);
 
+    /// Whether two actions are the same decision: a failure's cause is not
+    /// compared here (a test that cares matches it).
+    fn action_eq(a: &RecoveryAction, b: &RecoveryAction) -> bool {
+        match (a, b) {
+            (RecoveryAction::Wait, RecoveryAction::Wait) => true,
+            (RecoveryAction::Terminate { reason: a }, RecoveryAction::Terminate { reason: b }) => {
+                a == b
+            }
+            (
+                RecoveryAction::Reload { delay, attempt },
+                RecoveryAction::Reload {
+                    delay: d,
+                    attempt: n,
+                },
+            ) => delay == d && attempt == n,
+            (RecoveryAction::GiveUp(a), RecoveryAction::GiveUp(b)) => {
+                a.failures == b.failures && a.window == b.window
+            }
+            _ => false,
+        }
+    }
+
+    macro_rules! assert_action {
+        ($left:expr, $right:expr $(,)?) => {{
+            let (left, right) = (&$left, &$right);
+            assert!(action_eq(left, right), "{left:?} != {right:?}");
+        }};
+        ($left:expr, $right:expr, $($msg:tt)+) => {{
+            let (left, right) = (&$left, &$right);
+            assert!(action_eq(left, right), "{left:?} != {right:?}: {}", format!($($msg)+));
+        }};
+    }
+
     fn policy() -> RecoveryPolicy {
         RecoveryPolicy {
             max_failures: 3,
@@ -408,12 +441,12 @@ mod tests {
     fn a_death_reloads_and_a_load_returns_to_running() {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
-        assert_eq!(r.step(died(), t0), reload(250, 1));
+        assert_action!(r.step(died(), t0), reload(250, 1));
         assert!(r.is_reloading());
-        assert_eq!(r.step(RecoveryEvent::Loaded, t0 + S), RecoveryAction::Wait);
+        assert_action!(r.step(RecoveryEvent::Loaded, t0 + S), RecoveryAction::Wait);
         assert!(!r.is_reloading());
         // Dying again later is the second failure in the window.
-        assert_eq!(r.step(died(), t0 + 2 * S), reload(500, 2));
+        assert_action!(r.step(died(), t0 + 2 * S), reload(500, 2));
     }
 
     /// The wait doubles with each failure in the window, up to the cap.
@@ -440,17 +473,22 @@ mod tests {
     fn a_plugin_that_fails_every_load_is_given_up_on() {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
-        assert_eq!(r.step(died(), t0), reload(250, 1));
-        assert_eq!(r.step(failed(1), t0 + S), reload(500, 2));
-        assert_eq!(r.step(failed(2), t0 + 2 * S), reload(1000, 3));
+        assert_action!(r.step(died(), t0), reload(250, 1));
+        assert_action!(r.step(failed(1), t0 + S), reload(500, 2));
+        assert_action!(r.step(failed(2), t0 + 2 * S), reload(1000, 3));
         let RecoveryAction::GiveUp(why) = r.step(failed(3), t0 + 3 * S) else {
             panic!("the fourth failure in the window gives up");
         };
         assert_eq!(why.failures, 4);
-        assert_eq!(why.last, reload_timed_out(3));
+        assert!(
+            matches!(why.last, PluginFailure::ReloadTimedOut { after }
+                if after == Duration::from_millis(3)),
+            "{:?}",
+            why.last
+        );
         assert!(r.has_given_up());
-        assert_eq!(r.step(died(), t0 + 4 * S), RecoveryAction::Wait);
-        assert_eq!(
+        assert_action!(r.step(died(), t0 + 4 * S), RecoveryAction::Wait);
+        assert_action!(
             r.step(RecoveryEvent::Loaded, t0 + 5 * S),
             RecoveryAction::Wait
         );
@@ -464,8 +502,8 @@ mod tests {
         let mut r = Recovery::new(policy());
         for i in 0..20u32 {
             let now = t0 + 61 * S * i;
-            assert_eq!(r.step(died(), now), reload(250, 1), "death {i}");
-            assert_eq!(r.step(RecoveryEvent::Loaded, now + S), RecoveryAction::Wait);
+            assert_action!(r.step(died(), now), reload(250, 1), "death {i}");
+            assert_action!(r.step(RecoveryEvent::Loaded, now + S), RecoveryAction::Wait);
         }
     }
 
@@ -477,11 +515,11 @@ mod tests {
         r.step(died(), t0);
         let started = r.reload_started().expect("reloading");
         assert_eq!(started, t0 + Duration::from_millis(250));
-        assert_eq!(
+        assert_action!(
             r.step(RecoveryEvent::Tick, started + 29 * S),
             RecoveryAction::Wait
         );
-        assert_eq!(
+        assert_action!(
             r.step(RecoveryEvent::Tick, started + 30 * S),
             reload(500, 2)
         );
@@ -502,29 +540,29 @@ mod tests {
     fn a_hang_needs_blocks_and_time() {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
-        assert_eq!(
+        assert_action!(
             starved(&mut r, t0, 100, 5),
             RecoveryAction::Wait,
             "baseline"
         );
-        assert_eq!(
+        assert_action!(
             starved(&mut r, t0 + S, 200, 5),
             RecoveryAction::Wait,
             "starts"
         );
-        assert_eq!(
+        assert_action!(
             starved(&mut r, t0 + 4 * S, 300, 5),
             RecoveryAction::Wait,
             "3 s"
         );
         assert!(terminates(starved(&mut r, t0 + 6 * S, 400, 5)), "5 s");
-        assert_eq!(
+        assert_action!(
             starved(&mut r, t0 + 7 * S, 500, 5),
             RecoveryAction::Wait,
             "once"
         );
         // Its death then follows the ordinary path.
-        assert_eq!(r.step(died(), t0 + 8 * S), reload(250, 1));
+        assert_action!(r.step(died(), t0 + 8 * S), reload(250, 1));
     }
 
     /// Few blocks over a long time is not a hang, and neither is a long run
@@ -535,12 +573,12 @@ mod tests {
         let mut r = Recovery::new(policy());
         for i in 0..20u64 {
             let at = t0 + i as u32 * S;
-            assert_eq!(starved(&mut r, at, i.min(15), 5), RecoveryAction::Wait);
+            assert_action!(starved(&mut r, at, i.min(15), 5), RecoveryAction::Wait);
         }
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 0, 5), RecoveryAction::Wait);
-        assert_eq!(starved(&mut r, t0 + S, 5_000, 5), RecoveryAction::Wait);
-        assert_eq!(starved(&mut r, t0 + 2 * S, 9_000, 5), RecoveryAction::Wait);
+        assert_action!(starved(&mut r, t0, 0, 5), RecoveryAction::Wait);
+        assert_action!(starved(&mut r, t0 + S, 5_000, 5), RecoveryAction::Wait);
+        assert_action!(starved(&mut r, t0 + 2 * S, 9_000, 5), RecoveryAction::Wait);
     }
 
     /// **A count that stands still is not a hang.** The device stopped or
@@ -552,21 +590,21 @@ mod tests {
     fn a_count_that_stands_still_is_not_a_hang() {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 10, 5), RecoveryAction::Wait);
-        assert_eq!(
+        assert_action!(starved(&mut r, t0, 10, 5), RecoveryAction::Wait);
+        assert_action!(
             starved(&mut r, t0 + S, 40, 5),
             RecoveryAction::Wait,
             "growing"
         );
         for i in 2..60 {
-            assert_eq!(
+            assert_action!(
                 starved(&mut r, t0 + i * S, 40, 5),
                 RecoveryAction::Wait,
                 "frozen at {i} s"
             );
         }
         // The device comes back and the plugin does answer.
-        assert_eq!(starved(&mut r, t0 + 61 * S, 41, 6), RecoveryAction::Wait);
+        assert_action!(starved(&mut r, t0 + 61 * S, 41, 6), RecoveryAction::Wait);
     }
 
     /// **Observed faster than blocks are abandoned.** A frame every 16 ms
@@ -599,7 +637,7 @@ mod tests {
         let mut r = Recovery::new(policy());
         // 20 blocks lost, a reply, again, for a minute.
         for i in 0..60u64 {
-            assert_eq!(
+            assert_action!(
                 starved(&mut r, t0 + i as u32 * S, 20 * i, i),
                 RecoveryAction::Wait,
                 "i {i}"
@@ -607,18 +645,18 @@ mod tests {
         }
         // A reply between two readings 6 s apart: 20 then 30 abandoned.
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 20, 1), RecoveryAction::Wait);
-        assert_eq!(
+        assert_action!(starved(&mut r, t0, 20, 1), RecoveryAction::Wait);
+        assert_action!(
             starved(&mut r, t0 + 6 * S, 30, 2),
             RecoveryAction::Wait,
             "answered"
         );
-        assert_eq!(
+        assert_action!(
             starved(&mut r, t0 + 7 * S, 40, 2),
             RecoveryAction::Wait,
             "fresh"
         );
-        assert_eq!(
+        assert_action!(
             starved(&mut r, t0 + 11 * S, 90, 2),
             RecoveryAction::Wait,
             "4 s"
@@ -689,7 +727,7 @@ mod tests {
                     RecoveryAction::Wait => {}
                 }
                 if was_over {
-                    assert_eq!(action, RecoveryAction::Wait);
+                    assert_action!(action, RecoveryAction::Wait);
                     assert!(r.has_given_up());
                 }
             }

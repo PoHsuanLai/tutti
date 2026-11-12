@@ -46,7 +46,7 @@ impl ResyncKind {
 /// the host should fire.
 ///
 /// Not `Copy`, following [`PluginInvalidation`], which it wraps.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ResyncClass {
     /// Re-read a cached view; nothing the graph holds is wrong.
     Refresh(PluginRefresh),
@@ -78,7 +78,7 @@ pub enum PluginRefresh {
 /// **Not `Copy`**, because [`Crashed`](Self::Crashed) carries an owned cause.
 /// `Clone` is enough: every consumer takes this by value through
 /// `Fn(PluginInvalidation)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum PluginInvalidation {
     /// The plugin reported new processing latency. Carries the new value; the
     /// node's own atomic is already updated live, but compensation delays across

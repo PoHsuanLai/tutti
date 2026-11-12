@@ -4,6 +4,7 @@
 //! comment, then the words. Nothing here calls the codec to produce an
 //! expected value.
 
+use tutti_ump::ManufacturerId;
 use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,
     CCNumber, ChordBass, ChordName, ChordPitch, ChordType, Data128, DeltaTicks, DeviceIdentity,
@@ -224,7 +225,7 @@ fn mixed_data_set() {
                 chunk_bytes: 0x20,
                 chunks: 2,
                 chunk: 1,
-                manufacturer: 0x8213,
+                manufacturer: ManufacturerId::of(0x8213),
                 device: 0xFFFF,
                 sub_id_1: 0x0102,
                 sub_id_2: 0x0304,
@@ -704,7 +705,7 @@ fn stream_identity_and_names() {
     pin(
         [0xF002_0000, 0x0000_206B, 0x0102_0304, 0x0506_0708],
         Message::Stream(Stream::DeviceIdentity(DeviceIdentity {
-            manufacturer: [u7(0x00), u7(0x20), u7(0x6B)],
+            manufacturer: ManufacturerId::of(0xA06B),
             family: [u7(1), u7(2)],
             model: [u7(3), u7(4)],
             revision: b([5, 6, 7, 8]),

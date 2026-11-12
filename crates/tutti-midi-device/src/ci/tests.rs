@@ -1,5 +1,6 @@
 use super::*;
 use tutti_ump::DeviceIdentity;
+use tutti_ump::ManufacturerId;
 
 fn muid(raw: u32) -> Muid {
     Muid::new(raw).expect("a valid MUID")
@@ -42,7 +43,7 @@ fn header() -> CiHeader {
 fn sample() -> DiscoveryData {
     DiscoveryData::new(
         DeviceIdentity {
-            manufacturer: [0x00, 0x21, 0x09].map(U7::of),
+            manufacturer: ManufacturerId::of(0xA109),
             family: [0x34, 0x24].map(U7::of),
             model: [0x55, 0x00].map(U7::of),
             revision: [1, 2, 3, 4].map(U7::of),

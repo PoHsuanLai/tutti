@@ -50,6 +50,7 @@ mod decode;
 mod encode;
 mod field;
 mod flex_text;
+mod manufacturer;
 mod message;
 mod midi1;
 mod midi_channel;
@@ -64,7 +65,10 @@ pub use field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, OutOfRange, Pitch, SharpsFlats,
     U4, U7, U14,
 };
-pub use flex_text::{FlexTextPackets, flex_text_packets};
+pub use flex_text::{
+    FlexText, FlexTextAssembler, FlexTextPackets, FlexTextStep, flex_text_packets,
+};
+pub use manufacturer::{ManufacturerId, NotManufacturerId};
 pub use message::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,
     ChordBass, ChordName, ChordPitch, ChordType, Data128, DeviceIdentity, Direction,

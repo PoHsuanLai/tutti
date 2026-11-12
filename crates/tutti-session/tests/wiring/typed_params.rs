@@ -18,7 +18,8 @@ fn detached() -> Session {
 
 /// **A key's param method names the param it is called for, at the address
 /// the node declares it at**, whatever the node: the kind is the method's,
-/// the index 0 (or the one asked for), and the node is the key's.
+/// the index 0, and the node is the key's. (An index other than 0 is a
+/// node's `_at` method, held in `modulation/indexed_params.rs`.)
 #[test]
 fn a_keys_param_methods_name_their_kind_and_index() {
     let mut s = detached();
@@ -32,11 +33,6 @@ fn a_keys_param_methods_name_their_kind_and_index() {
     assert_eq!(cutoff.addr(), UnitAddr::first(UnitParam::Cutoff));
     assert_eq!(lp.q().addr(), UnitAddr::first(UnitParam::Q));
     assert_eq!(lp.gain_db().addr(), UnitAddr::first(UnitParam::GainDb));
-    assert_eq!(
-        cutoff.at(2).addr(),
-        UnitAddr::new(UnitParam::Cutoff, 2),
-        "the indexed form of the same kind"
-    );
 }
 
 /// **A write through a key's param reaches the node's cell, in its unit**:
@@ -73,7 +69,7 @@ fn set_param_writes_the_cell_the_key_names() {
 #[test]
 fn set_param_refuses_a_missing_node_and_a_missing_param() {
     let mut s = detached();
-    let (lp, controls) = s.graph().add(SvfFilterNode::<f32>::new(
+    let (lp, _) = s.graph().add(SvfFilterNode::<f32>::new(
         SvfType::LowPass,
         Hz(1_000.0),
         Q(0.7),
@@ -90,15 +86,6 @@ fn set_param_refuses_a_missing_node_and_a_missing_param() {
             addr: UnitAddr::first(UnitParam::Cutoff)
         })
     );
-    // The index the filter lacks.
-    assert_eq!(
-        s.graph().set_param(lp.cutoff().at(1), Hz(5.0)),
-        Err(ParamError::NoSuchParam {
-            node: lp.erase(),
-            addr: UnitAddr::new(UnitParam::Cutoff, 1)
-        })
-    );
-    assert_eq!(controls.get(UnitParam::Cutoff), Some(1_000.0), "unwritten");
 
     let cutoff = lp.cutoff();
     s.graph().remove(lp);

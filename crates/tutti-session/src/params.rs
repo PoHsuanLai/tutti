@@ -43,10 +43,10 @@ pub struct TypedParamRef<U> {
 }
 
 impl<U> TypedParamRef<U> {
-    /// `addr` on `node`, whose value is in `U`. A [`Key`]'s param methods
-    /// are the way to make one that the node's declaration checked.
+    /// `addr` on `node`, whose value is in `U`. Only a [`Key`]'s param
+    /// methods make one, so the unit is always the one the node declares.
     #[must_use]
-    pub fn new(node: impl Into<NodeKey>, addr: UnitAddr) -> Self {
+    pub(crate) fn new(node: impl Into<NodeKey>, addr: UnitAddr) -> Self {
         Self {
             node: node.into(),
             addr,
@@ -64,17 +64,6 @@ impl<U> TypedParamRef<U> {
     #[must_use]
     pub const fn addr(self) -> UnitAddr {
         self.addr
-    }
-
-    /// The same kind of param at `index` among the node's params of that
-    /// kind (`ParamRef::unit_at`).
-    #[must_use]
-    pub const fn at(self, index: u8) -> Self {
-        Self {
-            node: self.node,
-            addr: UnitAddr::new(self.addr.param, index),
-            unit: PhantomData,
-        }
     }
 }
 

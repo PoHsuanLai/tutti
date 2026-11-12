@@ -33,7 +33,9 @@ pub trait NodeRecurrence: ChannelRecurrence {
 impl<R: NodeRecurrence> NodeFamily for Filter<R> {
     type Set = R::Set;
 
-    const RINGS: Rings = Rings::Unknown;
+    fn rings(&self) -> Rings {
+        Rings::Unknown
+    }
     const SAMPLING: Cadence = <Self as Family>::CADENCE;
 
     fn set(&self, initial: &R::Controls) -> R::Set {

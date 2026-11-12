@@ -10,7 +10,10 @@
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi::{cc, key_of, note_off, note_on, pitch_bend};
+use tutti_fixtures::midi::{
+    cc, channel_pressure, key_of, note_off, note_on, per_note_controller, pitch_bend,
+    program_change, registered_rpn, relative_registered_controller,
+};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
@@ -19,7 +22,7 @@ use tutti_graph::{
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, U7, U14, Voice1};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Rpn, U7, U14, Voice1};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;
@@ -829,10 +832,13 @@ fn a_loop_wrap_lifts_the_pedal_after_the_note_off() {
     );
 }
 
-/// **A seek lifts the pedal and centres the bend where the jump happens.**
-/// Playback seeks to beat 2 at frame 200 of a 512-frame block, with the
-/// pedal down and the bend off centre: both are returned at frame 200, after
-/// the note-off, and not again by the next block.
+/// **A seek lifts the pedal and centres the bend where the jump happens,
+/// then chases them to where the timeline holds them.** Playback seeks to
+/// beat 4 at frame 200 of a 512-frame block, with the pedal down and the
+/// bend off centre: both are returned at frame 200, after the note-off; the
+/// clip set both before beat 4, so the chase sends them again after the
+/// return (the note is not restarted), and the next block, continuing from
+/// where playback is, sends nothing.
 #[test]
 fn a_seek_returns_the_controllers_where_the_jump_happens() {
     let clip = MidiClipNode::new([
@@ -846,7 +852,7 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
         .push(Offset::new(200, Samples(512)).unwrap(), rolling(96_000))
         .unwrap();
     exec.process_with_changes(512, &rolling(0), &changes, &[], &mut []);
-    exec.process(512, &rolling(96_512), &[], &mut []);
+    exec.process(512, &rolling(96_312), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
@@ -856,6 +862,8 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
             (200, off(60)),
             (200, pedal(0, CCNumber::SUSTAIN, 0)),
             (200, bend(0, CENTRE)),
+            (200, pedal(0, CCNumber::SUSTAIN, DOWN)),
+            (200, bend(0, 0x7000_0000)),
         ]
     );
 }
@@ -962,4 +970,69 @@ fn a_midi_1_pedal_and_bend_are_returned_in_midi_1() {
         .map(|&(_, u)| u)
         .collect();
     assert_eq!(late, vec![m1_pedal(CCNumber::SUSTAIN, 0), m1_bend(0x2000)]);
+}
+
+// ---------------------------------------------------------------------------
+// The chase: playback that starts away from the clip's start hears the
+// channel state the clip set before that beat.
+// ---------------------------------------------------------------------------
+
+/// **A render that starts mid-clip (a bounce's first block, a start from a
+/// locate) first sends, for each state the clip set before its beat, the
+/// last value that set it**, by group and channel, each channel's program
+/// first, then its registered controllers, its controllers, its pressure
+/// and its bend. Notes, per-note controllers and relative controllers are
+/// not chased; a state set after the beat is not chased; an event on the
+/// start beat itself is played once, by the walk, after the chase.
+#[test]
+fn a_render_that_starts_mid_clip_starts_from_the_timelines_state() {
+    let (g, c0, c1) = (MidiGroup::FIRST, MidiChannel::FIRST, MidiChannel::of(1));
+    let volume = |ch, v| cc(g, ch, CCNumber::VOLUME, v);
+    let range = registered_rpn(g, c0, Rpn::PITCH_BEND_SENSITIVITY, 0x1800_0000);
+    let clip = MidiClipNode::new([
+        at(10, program_change(g, c0, 5, None)),
+        at(20, volume(c0, 0x1000_0000)),
+        at(30, on(60)),
+        at(35, per_note_controller(g, c0, 60, 3, 0x4000_0000, true)),
+        at(40, volume(c0, 0x2000_0000)),
+        at(45, relative_registered_controller(g, c0, 0, 0, 0x100)),
+        at(50, range),
+        at(60, bend(0, 0x7000_0000)),
+        at(70, channel_pressure(g, c0, 0x3000_0000)),
+        at(80, volume(c1, 0x5000_0000)),
+        at(96_000, volume(c0, 0x6000_0000)),
+        at(100_000, volume(c0, 0x7000_0000)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(96_000), &[], &mut []);
+    let got: Vec<Ump> = seen.lock().unwrap().iter().map(|&(_, u)| u).collect();
+    assert!(
+        seen.lock().unwrap().iter().all(|&(f, _)| f == 0),
+        "all on the first frame"
+    );
+    assert_eq!(
+        got,
+        vec![
+            program_change(g, c0, 5, None),
+            range,
+            volume(c0, 0x2000_0000),
+            channel_pressure(g, c0, 0x3000_0000),
+            bend(0, 0x7000_0000),
+            volume(c1, 0x5000_0000),
+            volume(c0, 0x6000_0000),
+        ]
+    );
+}
+
+/// **A render that starts at the clip's start chases nothing**: no state was
+/// set before beat 0, so the first block holds only what the walk plays.
+#[test]
+fn a_render_from_the_start_chases_nothing() {
+    let clip = MidiClipNode::new([at(0, bend(0, 0x7000_0000)), at(10, on(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(0, bend(0, 0x7000_0000)), (10, on(60))]
+    );
 }

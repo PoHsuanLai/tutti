@@ -12,7 +12,9 @@ use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_types::Samples;
-use tutti_ump::{Address, Attribute, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, Ump, Voice2};
+use tutti_ump::{
+    Address, Attribute, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity, Rpn, Ump, Voice2,
+};
 
 const BLOCK: usize = 1_000;
 
@@ -70,7 +72,7 @@ fn note_on_pitched(group: MidiGroup, channel: MidiChannel, key: u8, pitch: f64) 
         Address { group, channel },
         Voice2::NoteOn {
             note: NoteNumber::of(key),
-            velocity: fx::MID_VELOCITY,
+            velocity: NoteVelocity::new(fx::MID_VELOCITY),
             attribute: Attribute::Pitch((pitch * 512.0) as u16),
         },
     ))

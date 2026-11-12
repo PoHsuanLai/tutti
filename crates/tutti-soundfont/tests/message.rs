@@ -14,8 +14,8 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 use tutti_ump::{
-    Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, RegisteredPerNoteController,
-    U7, U14, Ump, Voice1, Voice2,
+    Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
+    RegisteredPerNoteController, U7, U14, Ump, Voice1, Voice2,
 };
 
 fn load_test_soundfont() -> Arc<SoundFont> {
@@ -63,7 +63,7 @@ fn m2(voice: Voice2) -> Ump {
 fn note_on_2(n: u8, velocity: u16) -> Ump {
     m2(Voice2::NoteOn {
         note: NoteNumber::of(n),
-        velocity,
+        velocity: NoteVelocity::new(velocity),
         attribute: Attribute::None,
     })
 }
@@ -229,7 +229,7 @@ fn a_bend_reaches_the_synth_at_its_value() {
     };
     let key = m2(Voice2::NoteOn {
         note: NoteNumber::of(48),
-        velocity: 0xC000,
+        velocity: NoteVelocity::new(0xC000),
         attribute: Attribute::None,
     });
     let still = period(&sustained(&[key]), 200, 500);
@@ -277,7 +277,7 @@ fn a_full_bend_spans_the_registered_sensitivity() {
     };
     let key = m2(Voice2::NoteOn {
         note: NoteNumber::of(55),
-        velocity: 0xC000,
+        velocity: NoteVelocity::new(0xC000),
         attribute: Attribute::None,
     });
     let full = m2(Voice2::PitchBend(u32::MAX));
@@ -315,7 +315,7 @@ fn a_re_rated_unit_keeps_the_bend_and_its_range() {
     let rate = SampleRate(48_000.0);
     let key = m2(Voice2::NoteOn {
         note: NoteNumber::of(55),
-        velocity: 0xC000,
+        velocity: NoteVelocity::new(0xC000),
         attribute: Attribute::None,
     });
     let sensitivity = m2(Voice2::Registered {
@@ -467,7 +467,7 @@ fn a_unit_plays_its_own_groups_channels_only() {
             },
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity: 0xFFFF,
+                velocity: NoteVelocity::new(0xFFFF),
                 attribute: Attribute::None,
             },
         ))

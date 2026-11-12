@@ -27,12 +27,6 @@ pub(crate) const fn upscale(value: u32, src: u32, dst: u32) -> u32 {
     out
 }
 
-/// A 7-bit velocity as the 16-bit field of a Note On or Note Off.
-#[inline]
-pub(crate) const fn velocity(v: u8) -> u16 {
-    upscale(v as u32, 7, 16) as u16
-}
-
 /// A 7-bit controller or pressure value as 32 bits.
 #[inline]
 pub(crate) const fn value(v: u8) -> u32 {

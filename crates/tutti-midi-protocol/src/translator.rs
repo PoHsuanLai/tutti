@@ -2,9 +2,10 @@
 //! [`Translator`] an input edge runs once.
 
 use crate::scale;
-use crate::voice::widen;
+use crate::voice::{widen, widen_velocity};
 use tutti_ump::{
-    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2,
+    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteVelocity, U7, Ump,
+    Voice1, Voice2,
 };
 
 /// The byte that, in both halves of a parameter number, is the Null Function.
@@ -277,12 +278,14 @@ impl Channel {
     /// cleared ("After the standard Note On or Note Off message has been
     /// parsed, the lower 7 bits of the receiver's 14-bit velocity register
     /// should be cleared", CA-031).
-    fn velocity(&mut self, high: U7) -> u16 {
+    fn velocity(&mut self, high: U7) -> NoteVelocity {
         match self.velocity_low.take() {
-            Some(low) => {
-                scale::upscale((u32::from(high.get()) << 7) | u32::from(low.get()), 14, 16) as u16
-            }
-            None => scale::velocity(high.get()),
+            Some(low) => NoteVelocity::new(scale::upscale(
+                (u32::from(high.get()) << 7) | u32::from(low.get()),
+                14,
+                16,
+            ) as u16),
+            None => widen_velocity(high),
         }
     }
 }

@@ -21,8 +21,8 @@ use tutti_graph::Offset;
 use tutti_midi_hardware::{DeviceInlets, MidiSession};
 use tutti_midi_protocol::channel_voice;
 use tutti_ump::{
-    Address, Attribute, CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump,
-    Voice2,
+    Address, Attribute, CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber,
+    NoteVelocity, Ump, Voice2,
 };
 
 /// Whether `ev` starts a note, in either protocol.
@@ -105,10 +105,10 @@ fn main() {
         // Velocity is the full 16-bit MIDI 2.0 value; `u16::MAX` ~= velocity 127.
         voice(Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity: 0xC800,
+            velocity: NoteVelocity::new(0xC800),
             attribute: Attribute::None,
         }),
-        &|v| matches!(v, Voice2::NoteOn { note, velocity, .. } if note.get() == 60 && velocity > 0),
+        &|v| matches!(v, Voice2::NoteOn { note, velocity, .. } if note.get() == 60 && velocity > NoteVelocity::MIN),
     );
 
     println!("\n=== Test 2: Note Off ===");
@@ -116,7 +116,7 @@ fn main() {
         "note-off",
         voice(Voice2::NoteOff {
             note: NoteNumber::of(60),
-            velocity: 0x4000,
+            velocity: NoteVelocity::new(0x4000),
             attribute: Attribute::None,
         }),
         &|v| matches!(v, Voice2::NoteOff { note, .. } if note.get() == 60),

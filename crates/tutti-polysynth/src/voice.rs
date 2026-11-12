@@ -12,7 +12,7 @@ use crate::note_id::PerNoteMap;
 use tutti_midi_protocol::{MpeZones, u16_to_unit_f32, unit_f32_to_u16};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
-use tutti_ump::{MidiChannel, NoteId, NoteNumber};
+use tutti_ump::{MidiChannel, NoteId, NoteNumber, NoteVelocity};
 use tutti_voicing::{
     ChannelState, Command, Glide, Mode, NoteControl, Order, Patch, Rules, Steal, VoiceSpec, Voicing,
 };
@@ -516,7 +516,7 @@ impl VoiceAllocator {
         let v16 = unit_f32_to_u16(velocity).max(1);
         let on = Voice2::NoteOn {
             note,
-            velocity: v16,
+            velocity: NoteVelocity::new(v16),
             attribute,
         };
         self.run(channel, &on, Some((id, velocity)))
@@ -532,7 +532,7 @@ impl VoiceAllocator {
             .expect("a voice id is made from a channel and a note");
         let off = Voice2::NoteOff {
             note,
-            velocity: 0,
+            velocity: NoteVelocity::MIN,
             attribute: tutti_ump::Attribute::None,
         };
         let before = self.gates.len();

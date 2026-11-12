@@ -17,7 +17,7 @@ use tutti_midi_runtime::{
 };
 use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, Frame, FrameClock, Moment, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump};
 
 mod common;
 
@@ -105,7 +105,7 @@ fn the_border_nodes_process_without_allocating() {
                 Stamp::NextBlock,
                 MidiChannel::FIRST,
                 NoteNumber::of(60),
-                0xC800,
+                NoteVelocity::new(0xC800),
             )
             .unwrap();
             let at = Beat(f64::from(b) * 512.0 / 24_000.0);

@@ -8,8 +8,8 @@ use tutti_midi_file::{
 };
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{
-    Address, DeltaTicks, Flex, Message, MidiChannel, MidiGroup, NoteNumber, Stream, U7, Ump,
-    Utility, Voice1,
+    Address, DeltaTicks, Flex, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Stream,
+    U7, Ump, Utility, Voice1,
 };
 
 const TPQ: u16 = 96;
@@ -100,7 +100,7 @@ fn a_clip_reads_at_absolute_ticks() {
     let notes: Vec<_> = file.tracks()[0].notes();
     assert_eq!(notes.len(), 1);
     assert_eq!((notes[0].start, notes[0].end), (Tick(0), Tick(96)));
-    assert_eq!(notes[0].velocity, 0xABCD);
+    assert_eq!(notes[0].velocity, NoteVelocity::new(0xABCD));
 }
 
 /// **The clip's length is the Delta Clockstamp before End of Clip**, so a clip

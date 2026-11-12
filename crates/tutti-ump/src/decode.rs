@@ -27,7 +27,7 @@ use crate::message::{
     StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System, TimeSignature, UiHint,
     UmpVersion, Unknown, Utility, Voice1, Voice2,
 };
-use crate::{CCNumber, ManufacturerId, MidiChannel, MidiGroup, Ump};
+use crate::{CCNumber, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump};
 
 impl Ump {
     /// Decodes this packet into the [`Message`] it holds.
@@ -317,12 +317,12 @@ fn voice2(w: [u32; 4]) -> Option<Voice2> {
         }),
         0x8 => Some(Voice2::NoteOff {
             note: note(w0, 1),
-            velocity: (data >> 16) as u16,
+            velocity: NoteVelocity::new((data >> 16) as u16),
             attribute: attribute(index, data as u16),
         }),
         0x9 => Some(Voice2::NoteOn {
             note: note(w0, 1),
-            velocity: (data >> 16) as u16,
+            velocity: NoteVelocity::new((data >> 16) as u16),
             attribute: attribute(index, data as u16),
         }),
         0xA => Some(Voice2::PolyPressure {

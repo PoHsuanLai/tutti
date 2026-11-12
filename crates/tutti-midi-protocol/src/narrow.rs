@@ -1,6 +1,6 @@
 //! The downscale of M2-115 section 3.4: a plain right shift.
 
-use tutti_ump::{U7, U14};
+use tutti_ump::{NoteVelocity, U7, U14};
 
 /// A 16-bit Note On or Note Off velocity as 7 bits: the top 7 bits.
 ///
@@ -8,9 +8,9 @@ use tutti_ump::{U7, U14};
 /// Note Off. A caller that sends a Note On on must not send that 0.
 #[inline]
 #[must_use]
-pub fn narrow_velocity(velocity: u16) -> U7 {
+pub fn narrow_velocity(velocity: NoteVelocity) -> U7 {
     // `>> 9` leaves 7 bits: the mask removes nothing.
-    U7::masked((velocity >> 9) as u8)
+    U7::masked((velocity.get() >> 9) as u8)
 }
 
 /// A 32-bit controller or pressure value as 7 bits: the top 7 bits.

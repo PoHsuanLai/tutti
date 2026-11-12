@@ -221,7 +221,7 @@ fn voice2(a: Address, v: Voice2) -> [u32; 4] {
                 0x8,
                 u32::from(note.get()),
                 kind,
-                (u32::from(velocity) << 16) | d,
+                (u32::from(velocity.get()) << 16) | d,
             )
         }
         Voice2::NoteOn {
@@ -234,7 +234,7 @@ fn voice2(a: Address, v: Voice2) -> [u32; 4] {
                 0x9,
                 u32::from(note.get()),
                 kind,
-                (u32::from(velocity) << 16) | d,
+                (u32::from(velocity.get()) << 16) | d,
             )
         }
         Voice2::PolyPressure { note, value } => (0xA, u32::from(note.get()), 0, value),

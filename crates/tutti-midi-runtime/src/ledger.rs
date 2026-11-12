@@ -57,7 +57,9 @@
 
 use crate::held::Controllers;
 use tutti_graph::{Event, EventWriter, Offset};
-use tutti_ump::{Address, Key, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
+use tutti_ump::{
+    Address, Key, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Ump, Voice2,
+};
 
 /// A note's place on the wire: its Group, Channel and Note Number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -73,7 +75,7 @@ impl NoteKey {
             group: self.group,
             channel: self.channel,
         };
-        let off = Voice2::note_off(self.note, 0);
+        let off = Voice2::note_off(self.note, NoteVelocity::MIN);
         Event::midi(at, Ump::from(Message::Midi2(address, off)))
     }
 }

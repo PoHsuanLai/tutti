@@ -88,8 +88,7 @@ fn brickwall_limiter() {
         BrickwallLimiterNode::new(Db(-3.0))
     })
     .control("ceiling", |l| {
-        l.ceiling()
-            .store(-9.0, std::sync::atomic::Ordering::Release)
+        assert!(l.param_set().set(UnitParam::Ceiling, -9.0));
     })
     .check();
 }

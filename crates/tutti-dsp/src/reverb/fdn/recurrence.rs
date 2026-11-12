@@ -43,7 +43,7 @@ use core::ops::Range;
 
 use super::design::CROSSOVER;
 use crate::reverb::network::{Absorption, Band, Matrix, Network, NetworkCapacity, Stage};
-use crate::{Approach, Effort, Glide, Recurrence, Setup, Start, Steps};
+use crate::{Approach, Effort, Feed, Glide, Recurrence, Setup, Start, Steps};
 
 /// The frames between control updates: every ramp advances once a chunk.
 pub(crate) const CHUNK: usize = 32;
@@ -587,11 +587,12 @@ impl Recurrence for FdnRecurrence {
         &self,
         c: &FdnCoeffs,
         s: &mut FdnState,
-        input: &[&[f32]],
+        feed: &Feed<'_>,
         output: &mut [&mut [f32]],
         frames: Range<usize>,
         into: usize,
     ) {
+        let input = feed.audio;
         let n = c.n;
         if n == 0 {
             output

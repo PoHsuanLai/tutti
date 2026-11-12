@@ -416,13 +416,10 @@ fn cases() -> Vec<Case> {
             name: "brickwall ceiling",
             param: UnitParam::Ceiling,
             make: |w, v| {
-                let mut n = BrickwallLimiterNode::with_channels(
+                let n = BrickwallLimiterNode::with_channels(
                     ChannelLayout::try_from(w).expect("a test width is small"),
-                    Db::new(0.0),
+                    Db::new(v.unwrap_or(0.0)),
                 );
-                if let Some(v) = v {
-                    n.set_ceiling(Db::new(v));
-                }
                 parts_of(n)
             },
             lo: -12.0,

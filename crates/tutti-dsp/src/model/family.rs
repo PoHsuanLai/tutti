@@ -15,6 +15,7 @@ pub struct Channels {
     input: BusTopology,
     output: BusTopology,
     bands: u8,
+    keyed: bool,
 }
 
 impl Channels {
@@ -31,6 +32,18 @@ impl Channels {
             input,
             output,
             bands: 1,
+            keyed: false,
+        }
+    }
+
+    /// One output bus where the input is, and a side-chain **key** bus of the input's
+    /// width after the main one: a compressor's or a gate's. The runner receives the
+    /// key channels in [`Feed::key`](crate::Feed::key).
+    #[must_use]
+    pub const fn keyed(input: BusTopology) -> Self {
+        Self {
+            keyed: true,
+            ..Self::new(input, input)
         }
     }
 
@@ -45,6 +58,7 @@ impl Channels {
             input,
             output: input,
             bands,
+            keyed: false,
         })
     }
 
@@ -52,6 +66,24 @@ impl Channels {
     #[must_use]
     pub const fn input(&self) -> BusTopology {
         self.input
+    }
+
+    /// The side-chain key bus: the input's width with no speaker named (a key is a
+    /// level to read, not a placement), or `None` for a family with no key
+    /// ([`keyed`](Self::keyed)).
+    #[must_use]
+    pub const fn key(&self) -> Option<BusTopology> {
+        if self.keyed {
+            BusTopology::unassigned(self.input.layout())
+        } else {
+            None
+        }
+    }
+
+    /// The key's channels: the input's width when [`keyed`](Self::keyed), else 0.
+    #[must_use]
+    pub const fn key_width(&self) -> usize {
+        if self.keyed { self.input_width() } else { 0 }
     }
 
     /// One band of the output.
@@ -178,5 +210,23 @@ mod tests {
         assert_eq!(Channels::bands(stereo, 0), None);
         let same = Channels::same(stereo);
         assert_eq!((same.band_count(), same.output_width()), (1, 2));
+        assert_eq!((same.key(), same.key_width()), (None, 0));
+    }
+
+    /// A keyed family has the input's width again as its key, and one output bus: its
+    /// output is not repeated and its input is the main bus alone.
+    #[test]
+    fn a_keyed_family_has_a_key_the_width_of_its_input() {
+        let keyed = Channels::keyed(BusTopology::STEREO);
+        assert_eq!(
+            keyed.key(),
+            BusTopology::unassigned(BusTopology::STEREO.layout())
+        );
+        assert!(keyed.key().is_some());
+        assert_eq!(
+            (keyed.input_width(), keyed.key_width(), keyed.output_width()),
+            (2, 2, 2)
+        );
+        assert_eq!(keyed.band_count(), 1);
     }
 }

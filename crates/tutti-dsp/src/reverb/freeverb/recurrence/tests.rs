@@ -78,7 +78,7 @@ fn a_moving_room_glides_its_combs() {
         vec![0.0f32; CHUNK],
     );
     let mut chunk = |r: &mut crate::Realized<FreeverbRecurrence>| {
-        r.process(&[&x], &mut [&mut l, &mut rr], CHUNK);
+        r.process(&crate::Feed::new(&[&x]), &mut [&mut l, &mut rr], CHUNK);
         let (_, c, _) = r.parts_mut();
         (c.feedback.now(), c.damp.now())
     };

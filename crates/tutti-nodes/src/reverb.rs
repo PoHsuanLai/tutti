@@ -16,12 +16,12 @@
 use core::ops::Range as Frames;
 
 use tutti_dsp::{
-    Cadence, Capacity, Channels, Effort, Family, FreeverbControls, FreeverbFamily, Grows,
+    Cadence, Capacity, Channels, Effort, Family, Feed, FreeverbControls, FreeverbFamily, Grows,
     MAX_CHANNELS, NetworkCapacity, Reach, Realized, Recurrence, Ring, Setup, System, TAIL_FLOOR,
 };
 use tutti_graph::{
-    Bus, BusRole, Buses, Cost, Cx, HasParam, HasParams, IntoNode, Io, Node, NodeParts, OutBus,
-    ParamNode, ParamSet, Prepare, Shape, Status,
+    Bus, BusRole, Buses, Cost, Cx, HasParam, HasParams, InBus, IntoNode, Io, Node, NodeParts,
+    OutBus, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::{Latency, MaxBlock, Mix, SampleRate, Samples, Tail};
 
@@ -37,6 +37,23 @@ use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 /// A tail of this many frames never ends.
 const UNBOUNDED: u64 = u64::MAX;
 
+/// What a [`FamilyNode`] declares of a family's ring-out, and whether it parks on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rings {
+    /// The family says how long it still rings ([`Family::Member`]'s
+    /// [`System::tail`]): the node tracks it
+    /// ([`Io::report_tail`]), cuts the realization off past it and goes idle. Only a family
+    /// sampled once per block ([`NodeFamily::SAMPLING`] is [`Cadence::BLOCK`]) parks.
+    Tracks,
+    /// It rings, but for how long is a numeric search too dear to repeat per block (a
+    /// filter): the node declares [`Tail::Unknown`] and never narrows or parks.
+    Unknown,
+    /// It does not ring (a memoryless clip, a gain whose state is only a gain): the node
+    /// declares [`Tail::None`] and never parks. It runs on silent input, so a detector
+    /// that must keep tracking a key sees every block.
+    Silent,
+}
+
 /// A [`Family`] a [`FamilyNode`] can run: the design plus the cells of its
 /// controls.
 pub trait NodeFamily: Family + 'static {
@@ -44,13 +61,10 @@ pub trait NodeFamily: Family + 'static {
     /// the `f32`s the ports carry.
     type Set: ControlSet<Controls = Self::Controls>;
 
-    /// Whether the node parks: it tracks how long the model still rings
-    /// ([`Io::report_tail`]), cuts the realization off past it and goes idle. A
-    /// design that does not declares [`Tail::Unknown`] and never narrows or parks
-    /// (a filter: its ring-out is a numeric search, too dear to repeat per block).
-    /// Only a design sampled once per block ([`SAMPLING`](Self::SAMPLING) is
-    /// [`Cadence::BLOCK`]) parks.
-    const PARKS: bool = true;
+    /// What the node declares of the ring-out and whether it parks on it ([`Rings`]).
+    /// A family that tracks it ([`Rings::Tracks`], the default) must be sampled once per
+    /// block ([`SAMPLING`](Self::SAMPLING) is [`Cadence::BLOCK`]).
+    const RINGS: Rings = Rings::Tracks;
 
     /// The grid on which the node reads its controls and designs: one design per
     /// block (the default), or every `n` frames when a control moves inside the
@@ -180,6 +194,8 @@ pub struct FamilyNode<F: NodeFamily> {
     channels: Channels,
     /// The output bus, every band of it.
     out: OutBus,
+    /// The side-chain key bus of a keyed family ([`Channels::keyed`]).
+    key: Option<InBus>,
     /// Frames of ring-out after the last non-silent input frame that the
     /// settings in force since may still need.
     ring: u64,
@@ -225,9 +241,11 @@ impl<F: NodeFamily> FamilyNode<F> {
     fn build(family: F, controls: F::Controls, mode: Mode<F::Controls>) -> Self {
         let rate = SampleRate::DEFAULT;
         let channels = family.channels();
-        let out = ports(channels)
-            .output_bus(0)
-            .expect("a design has an output");
+        let shape = ports(channels);
+        let out = shape.output_bus(0).expect("a design has an output");
+        let key = channels
+            .key()
+            .map(|_| shape.input_bus(1).expect("a keyed design's key is bus 1"));
         let realization = family.realized();
         let params = Params::new(family.set(&controls), &controls);
         let (network, longest) = (Box::new(family.blank(rate)), Box::new(family.blank(rate)));
@@ -244,6 +262,7 @@ impl<F: NodeFamily> FamilyNode<F> {
             rate,
             channels,
             out,
+            key,
             ring: 0,
             since: UNBOUNDED,
             silent: true,
@@ -294,7 +313,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         self.family
             .member_into(&controls, self.rate, &mut self.network);
         self.realization.retarget(&self.network);
-        if F::PARKS {
+        if F::RINGS == Rings::Tracks {
             self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
         }
         self.applied = Some(controls);
@@ -362,16 +381,27 @@ impl<F: NodeFamily> FamilyNode<F> {
         live.min(size as u64) as usize
     }
 
-    /// Renders `frames` of the block through the realization.
+    /// Renders `frames` of the block through the realization: the main input, the
+    /// key bus of a keyed family and the lanes of the controls the family reads per frame
+    /// ([`ControlSet::fast`]), each cut to `frames`.
     fn render(&mut self, io: &mut Io<'_>, frames: Frames<usize>) {
         if frames.is_empty() {
             return;
         }
         let inputs = self.channels.input_width();
+        let lanes = self.params.lanes(io);
         let (ins, mut outs) = io.split();
         let mut input: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
         for (c, slot) in input.iter_mut().enumerate().take(inputs) {
             *slot = &ins.get(c)[frames.clone()];
+        }
+        let mut key: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+        let mut keys = 0;
+        if let Some(bus) = self.key {
+            for (slot, ch) in key.iter_mut().zip(ins.bus(bus).channels()) {
+                *slot = &ch[frames.clone()];
+                keys += 1;
+            }
         }
         let mut output: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|_| Default::default());
         let channels = outs.bus(self.out).into_channels();
@@ -379,8 +409,14 @@ impl<F: NodeFamily> FamilyNode<F> {
             *slot = &mut ch[frames.clone()];
         }
         let width = self.channels.output_width();
+        let mut feed = Feed::new(&input[..inputs]).with_key(&key[..keys]);
+        for (i, lane) in lanes.iter().enumerate() {
+            if let Some(lane) = lane {
+                feed = feed.with_lane(i, &lane[frames.clone()]);
+            }
+        }
         self.realization
-            .process(&input[..inputs], &mut output[..width], frames.len());
+            .process(&feed, &mut output[..width], frames.len());
     }
 
     /// Renders the block one step of the sampling grid at a time, the block
@@ -467,16 +503,20 @@ fn cost(effort: Effort) -> Cost {
     }
 }
 
-/// A design's ports: its input bus, and its outputs as one main bus of its
-/// bands (one, but for a split).
+/// A design's ports: its input bus (and, when it is keyed, the side-chain key bus after
+/// it, as wide), and its outputs as one main bus of its bands (one, but for a split).
 fn ports(channels: Channels) -> Shape {
     let bands = u8::try_from(channels.band_count()).expect("a design's bands fit a bus");
     let output =
         Bus::banded(channels.output(), BusRole::Main, bands).expect("a design has an output band");
-    Shape::buses(
-        Buses::main(channels.input()),
-        Buses::NONE.with(output).expect("one bus"),
-    )
+    let main = Buses::main(channels.input());
+    let inputs = match channels.key() {
+        None => main,
+        Some(key) => main
+            .with(Bus::new(key, BusRole::Sidechain))
+            .expect("a main bus and a key are two buses"),
+    };
+    Shape::buses(inputs, Buses::NONE.with(output).expect("one bus"))
 }
 
 impl<F: NodeFamily> Node for FamilyNode<F> {
@@ -488,10 +528,10 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
         ports(self.channels)
             .with_cost(cost(self.realization.effort()))
             .with_latency(Latency::new(self.realization.latency()))
-            .with_tail(if F::PARKS {
-                tail_of(self.ceiling)
-            } else {
-                Tail::Unknown
+            .with_tail(match F::RINGS {
+                Rings::Tracks => tail_of(self.ceiling),
+                Rings::Unknown => Tail::Unknown,
+                Rings::Silent => Tail::None,
             })
             .with_param_addrs(addrs)
     }
@@ -531,7 +571,11 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
             self.apply(target);
         }
 
-        let cut = if F::PARKS { self.cut(&mut io) } else { size };
+        let cut = if F::RINGS == Rings::Tracks {
+            self.cut(&mut io)
+        } else {
+            size
+        };
 
         // Past its tail the room is cut off and parked: its state is below the
         // floor, and the input has been silent for longer than the realization's
@@ -592,6 +636,7 @@ impl<F: NodeFamily> Clone for FamilyNode<F> {
             rate: self.rate,
             channels: self.channels,
             out: self.out,
+            key: self.key,
             ring: 0,
             since: UNBOUNDED,
             silent: true,

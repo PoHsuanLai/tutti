@@ -189,10 +189,9 @@ fn limiter_node_burst_and_release_are_allocation_free() {
     );
 }
 
-/// The brickwall with its ceiling port fed a per-frame ramp (the path that
-/// writes each frame's linear ceiling into channel 0 and clips it last),
-/// 6 channels, 1 000 blocks under `assert_no_alloc`. `Direct` feeds the
-/// port, which `BlockRig` cannot.
+/// The brickwall with its ceiling port fed a per-frame ramp (the `Feed` lane the
+/// recurrence reads each frame), 6 channels, 1 000 blocks under `assert_no_alloc`.
+/// `Direct` feeds the port, which `BlockRig` cannot.
 #[test]
 fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
     use tutti_graph::contract::Direct;
@@ -218,6 +217,40 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
     );
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
+            node.block();
+        }
+    });
+}
+
+/// The brickwall's lane path with the cell moving too, and a lane carrying every
+/// value the clip must survive (NaN, `+-inf`, a mute): each block writes the cell to a
+/// new ceiling through the `ParamSet` (a new design, retargeted on the audio thread),
+/// 2 000 blocks under `assert_no_alloc`.
+#[test]
+fn brickwall_limiter_moving_cell_and_hostile_lane_are_allocation_free() {
+    use tutti_graph::ParamNode;
+    use tutti_graph::contract::Direct;
+    use tutti_types::UnitParam;
+
+    let mut node = Direct::new(
+        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-0.3)),
+        SampleRate(48_000.0),
+        64,
+    );
+    for c in node.inputs_mut() {
+        for (i, x) in c.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 1.5 } else { -1.5 };
+        }
+    }
+    let mut lane: Vec<f32> = (0..64).map(|i| -12.0 + 0.1875 * i as f32).collect();
+    (lane[3], lane[4], lane[5], lane[6]) = (f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN);
+    node.feed(0, Some(&lane));
+    let set = node.node.param_set();
+    node.block();
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 0..2_000 {
+            let db = -20.0 + (b % 40) as f32 * 0.5;
+            assert!(set.set(UnitParam::Ceiling, if b % 7 == 0 { f32::NAN } else { db }));
             node.block();
         }
     });

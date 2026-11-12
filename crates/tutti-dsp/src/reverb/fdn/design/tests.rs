@@ -485,7 +485,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
             x[0] = 1.0;
         }
         let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
-        k.process(&[&x], &mut [&mut l, &mut r], 64);
+        k.process(&crate::Feed::new(&[&x]), &mut [&mut l, &mut r], 64);
         sum += l.iter().map(|&v| f64::from(v)).sum::<f64>();
     }
     assert!(
@@ -531,7 +531,11 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
             .collect();
         for chunk in x.chunks(64) {
             let (mut l, mut r) = (vec![0.0f32; chunk.len()], vec![0.0f32; chunk.len()]);
-            k.process(&[chunk], &mut [&mut l, &mut r], chunk.len());
+            k.process(
+                &crate::Feed::new(&[chunk]),
+                &mut [&mut l, &mut r],
+                chunk.len(),
+            );
         }
     };
     k.retarget(&at(0.0, false));

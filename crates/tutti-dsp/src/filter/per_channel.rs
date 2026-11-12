@@ -13,7 +13,9 @@ use core::ops::Range;
 use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 
 use crate::control::{COEFF_STREAM, lane_group};
-use crate::{Cadence, Channels, Effort, Family, Glide, LANES, Lerp, Recurrence, Start, System};
+use crate::{
+    Cadence, Channels, Effort, Family, Feed, Glide, LANES, Lerp, Recurrence, Start, System,
+};
 
 /// The most outputs one input channel makes: a crossover's bands.
 const MAX_OUTPUTS: usize = 6;
@@ -203,11 +205,12 @@ impl<C: ChannelRecurrence> Recurrence for PerChannel<C> {
         &self,
         coeffs: &Glide<C::Coeffs>,
         state: &mut Vec<C::State>,
-        input: &[&[f32]],
+        feed: &Feed<'_>,
         output: &mut [&mut [f32]],
         frames: Range<usize>,
         _: usize,
     ) {
+        let input = feed.audio;
         let c = coeffs.now();
         if frames.len() == 1 {
             // A step of a glide: no inner loop to run a group over.

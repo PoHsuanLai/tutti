@@ -7,18 +7,24 @@
 //! the solve frame when a lane drives it, else a glide from the controls last
 //! designed to the cell's value, each read through [`LastGood`]. Sanitising
 //! (floors, clamps, whole-set validation) is the design's, never the reader's.
+//!
+//! A control the family reads **per frame** is [`fast`](ControlSet::fast): the
+//! recurrence takes its port's frames from the [`Feed`](tutti_dsp::Feed) lanes
+//! (`Params::lanes`), and the reader sees only its cell, the base the member is
+//! designed at.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-use tutti_dsp::Ramp;
+use tutti_dsp::{MAX_LANES, Ramp};
 use tutti_graph::{Io, ParamSetBuilder};
 use tutti_types::{AtomicF32, SampleRate, UnitAddr};
 
 use crate::ramp::LastGood;
 
-/// The most controls a family has.
-const MAX_CONTROLS: usize = 12;
+/// The most controls a family has: the compressor's six, the gate's five and the
+/// limiter's three fit with room.
+const MAX_CONTROLS: usize = 16;
 
 /// A family's controls as a list of `f32` cells.
 pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
@@ -43,6 +49,33 @@ pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
     /// in the block. Only a design that parks asks; the default is the highest.
     fn longest(&self, _lowest: &Self::Controls, highest: &Self::Controls) -> Self::Controls {
         *highest
+    }
+
+    /// The controls the recurrence reads **per frame**, by index into
+    /// [`addrs`](Self::addrs), at most [`MAX_LANES`], in the order of the
+    /// [`Feed`](tutti_dsp::Feed) lanes they fill: lane `i` is the port of
+    /// `fast()[i]`, in the port's own unit.
+    ///
+    /// The reader does not read these from the ports (`Params::read` and
+    /// `Params::driven` skip them): the cell is the base, the member is designed at it,
+    /// and a frame nobody drives is clamped at that member. Empty by default.
+    fn fast(&self) -> &'static [usize] {
+        &[]
+    }
+
+    /// Whether control `k` glides from the controls last designed to its cell's
+    /// value across the block when it moves. True by default; a control whose
+    /// glide is the recurrence's own (a detector's, a whole-landing ceiling) is not
+    /// ramped by the reader.
+    fn glides(&self, _k: usize) -> bool {
+        true
+    }
+
+    /// Whether `v` is a value control `k` can take: what is not is read as the last
+    /// one that was (`LastGood`). Finite by default; a ceiling in dB is valid at
+    /// `+-inf` and refuses only NaN.
+    fn valid(&self, _k: usize, v: f32) -> bool {
+        v.is_finite()
     }
 
     /// Whether `target` is far enough from `applied`, the controls the model was last
@@ -189,8 +222,9 @@ impl<S: ControlSet> Params<S> {
         set.flatten(&set.defaults(), &mut fallback[..n]);
         let (mut cells, mut good) = (Vec::with_capacity(n), Vec::with_capacity(n));
         for k in 0..n {
-            let mut g = LastGood::new(value[k], fallback[k]);
-            cells.push(Arc::new(AtomicF32::new(g.read(value[k]))));
+            let ok = set.valid(k, value[k]);
+            let mut g = LastGood::new_if(value[k], fallback[k], ok);
+            cells.push(Arc::new(AtomicF32::new(g.read_if(value[k], ok))));
             good.push(g);
         }
         Self { set, cells, good }
@@ -238,23 +272,37 @@ impl<S: ControlSet> Params<S> {
     }
 
     /// The controls at `at.frame`: each cell, or the value its port carries when the
-    /// graph modulates it, read through [`LastGood`] so a non-finite write reads as
-    /// unchanged.
+    /// graph modulates it, read through [`LastGood`] so a value the control refuses
+    /// ([`ControlSet::valid`]: non-finite by default) reads as unchanged. A
+    /// [`fast`](ControlSet::fast) control is its cell whatever its port carries, and one
+    /// that does not [`glide`](ControlSet::glides) is not ramped.
     pub(crate) fn read(&mut self, io: &Io<'_>, at: At<S::Controls>) -> S::Controls {
         let n = self.cells.len();
         let mut from = [0.0; MAX_CONTROLS];
         if let Some(applied) = &at.applied {
             self.set.flatten(applied, &mut from[..n]);
         }
+        let fast = self.set.fast();
         let mut value = [0.0; MAX_CONTROLS];
         for (k, v) in value[..n].iter_mut().enumerate() {
-            *v = match io.param(k).frames() {
-                Some(lane) => self.good[k].read(lane[at.frame]),
+            let lane = if fast.contains(&k) {
+                None
+            } else {
+                io.param(k).frames()
+            };
+            *v = match lane {
+                Some(lane) => {
+                    let x = lane[at.frame];
+                    self.good[k].read_if(x, self.set.valid(k, x))
+                }
                 None => {
-                    let to = self.good[k].read(self.cells[k].load(Relaxed));
+                    let x = self.cells[k].load(Relaxed);
+                    let to = self.good[k].read_if(x, self.set.valid(k, x));
                     match at.applied {
-                        Some(_) => Ramp::new(from[k], to, at.block).at(at.frame),
-                        None => to,
+                        Some(_) if self.set.glides(k) => {
+                            Ramp::new(from[k], to, at.block).at(at.frame)
+                        }
+                        _ => to,
                     }
                 }
             };
@@ -265,7 +313,20 @@ impl<S: ControlSet> Params<S> {
     /// Whether a port drives a control, so the controls can differ between the frames
     /// of the block.
     pub(crate) fn driven(&self, io: &Io<'_>) -> bool {
-        (0..self.cells.len()).any(|k| io.param(k).frames().is_some())
+        let fast = self.set.fast();
+        (0..self.cells.len()).any(|k| !fast.contains(&k) && io.param(k).frames().is_some())
+    }
+
+    /// The per-frame lanes of the [`fast`](ControlSet::fast) controls, for the
+    /// [`Feed`](tutti_dsp::Feed): the port's frames in the port's own unit, `None` where
+    /// nothing drives it. They are the block's, so a caller slices them by the frames it
+    /// renders.
+    pub(crate) fn lanes<'a>(&self, io: &Io<'a>) -> [Option<&'a [f32]>; MAX_LANES] {
+        let mut lanes = [None; MAX_LANES];
+        for (lane, &k) in lanes.iter_mut().zip(self.set.fast()) {
+            *lane = io.param(k).frames();
+        }
+        lanes
     }
 
     /// The controls that ring longest among the values a modulated port takes anywhere

@@ -191,7 +191,7 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
         let mut x = [0.0f32; 16];
         x[i] = 0.5;
         let mut y = [0.0f32; 16];
-        blended.process(&[&x], &mut [&mut y], 16);
+        blended.process(&crate::Feed::new(&[&x]), &mut [&mut y], 16);
 
         let t = (i + 1) as f64 / 16.0;
         let (a, b) = (LadderPoint::<f64>::of(&old), LadderPoint::<f64>::of(&new));
@@ -215,8 +215,8 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
     let mut blended = d.realized();
     blended.retarget(&old);
     blended.retarget(&new);
-    blended.process(&[&x], &mut [&mut y], 16);
-    held.process(&[&x], &mut [&mut z], 16);
+    blended.process(&crate::Feed::new(&[&x]), &mut [&mut y], 16);
+    held.process(&crate::Feed::new(&[&x]), &mut [&mut z], 16);
     assert_eq!(y[15], z[15]);
     assert_ne!(y[15], 0.0);
 }
@@ -234,12 +234,12 @@ fn the_cut_ramp_goes_on_from_where_it_was() {
     let mut r = d.realized();
     r.retarget(&a);
     r.retarget(&b);
-    r.process(&[&[0.0; 8]], &mut [&mut [0.0; 8]], 8);
+    r.process(&crate::Feed::new(&[&[0.0; 8]]), &mut [&mut [0.0; 8]], 8);
     r.retarget(&a);
     let mut x = [0.0f32; 1];
     x[0] = 0.5;
     let mut y = [0.0f32; 1];
-    r.process(&[&x], &mut [&mut y], 1);
+    r.process(&crate::Feed::new(&[&x]), &mut [&mut y], 1);
 
     let (pa, pb) = (LadderPoint::<f64>::of(&a), LadderPoint::<f64>::of(&b));
     let from = pa.lerp(&pb, 8, 16);

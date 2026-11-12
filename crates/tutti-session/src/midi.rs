@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use tutti_graph::UmpAt;
 
 use tutti_graph::{EventTapId, EventTapReader, Losses, NodeKey, Offset, Stamp, TapEvent};
+use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{
     MidiClipControls, MidiClipNode, MidiInputPorts, MidiReceiver, RouteRule, TimedMidiEvent,
     compile_routes,
@@ -29,7 +30,10 @@ use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 use crate::SendError;
 use crate::graph::{Feeder, Graph};
 use crate::instrument::SharedKeys;
-use crate::{Error, EventOutPort, MidiNodes, Result};
+use crate::{EventOutPort, MidiError, MidiEvent, MidiNodes};
+
+/// What a [`Midi`] call returns: the area's one error.
+type Result<T> = std::result::Result<T, MidiError>;
 
 /// Max events drained per chunk into the stack buffer: one frame of clock at
 /// any sane tempo is a handful of events, so this is generous headroom.
@@ -367,7 +371,11 @@ impl LiveInput {
     ///
     /// [`SendError::Full`] when the ring is full (a note-off dropped there
     /// leaves a note stuck).
-    pub fn send(&self, at: impl Into<Stamp>, ump: Ump) -> std::result::Result<(), SendError> {
+    pub fn send(
+        &self,
+        at: impl Into<Stamp>,
+        ump: impl Into<Ump>,
+    ) -> std::result::Result<(), SendError> {
         self.keys.send(at, ump)
     }
 
@@ -414,6 +422,42 @@ impl LiveInput {
 #[error("no MIDI route {0:?}")]
 pub struct NoSuchMidiRoute(pub MidiRouteId);
 
+/// Where a take's events belong on the timeline (doc 030 §5.2): the figure
+/// [`Midi::record`]'s readers are placed by. A note played at graph frame `F`
+/// was answered by output the device played `output` after it was rendered, and
+/// reached the graph `input` plus the inlet's `lead` after it was played, so
+/// it was meant for `F - (input + output + lead) + trim`.
+///
+/// A pure function of the figures a host reads (the device's reported
+/// latencies, the inlet's lead) and sets (the trim); the session keeps none of
+/// them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TakePlacement {
+    /// How long a played event took to reach the graph (the device's input latency).
+    pub input: Samples,
+    /// How long the graph's output took to be heard (the device's output latency).
+    pub output: Samples,
+    /// The inlet's fixed lead: the distance a hardware event is placed after it arrived.
+    pub lead: Samples,
+    /// The user's manual trim for a device that misreports, added after.
+    pub trim: Samples,
+}
+
+impl TakePlacement {
+    /// The frame an event the tap read at `frame` was played for, at 0 where the
+    /// compensation reaches before the start of the clock.
+    #[must_use]
+    pub fn place(self, frame: Frame) -> Frame {
+        let back = self
+            .input
+            .0
+            .saturating_add(self.output.0)
+            .saturating_add(self.lead.0);
+        let back = u64::try_from(back).unwrap_or(u64::MAX);
+        Frame::new(frame.get().saturating_sub(back)) + self.trim
+    }
+}
+
 /// An id [`Midi::route`] returns, for [`Midi::unroute`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MidiRouteId(u64);
@@ -429,7 +473,15 @@ pub struct MidiRouteId(u64);
 ///
 /// Several rules may name the same channel; every matching rule's targets
 /// receive the event.
+///
+/// **Persisting a rule** (feature `serde`): a [`NodeKey`] names a node of one
+/// session and means nothing in the next, so a rule that is saved is keyed by
+/// the app's own stable id, `MidiRouteRule<AppId>` (`AppId: Serialize`), and
+/// the app maps it to a key when it loads: [`set_routes`](Midi::set_routes)
+/// takes the rules keyed by `T` and a `resolve` from `T` to a node, which is
+/// where the app's table lives. `MidiRouteRule<NodeKey>` itself has no serde.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MidiRouteRule<T = NodeKey> {
     /// Group filter: `None` matches every Group the input hears, `Some(g)`
     /// only Group `g`.
@@ -479,10 +531,12 @@ impl<T> MidiRouteRule<T> {
         self
     }
 
-    /// Adds a destination.
+    /// Adds a destination: a `T`, or anything that converts into one (a
+    /// session's own rule takes a graph [`Key`](crate::Key) as it takes a
+    /// [`NodeKey`]).
     #[must_use]
-    pub fn to(mut self, target: T) -> Self {
-        self.targets.push(target);
+    pub fn to(mut self, target: impl Into<T>) -> Self {
+        self.targets.push(target.into());
         self
     }
 
@@ -521,7 +575,9 @@ pub(crate) struct MidiState {
     /// Whether a host's last `set_routes` declared any rule or fallback:
     /// the routes are then the host's, and the session's own are refused.
     host_routes: bool,
-    out: Option<UmpOut>,
+    pub(crate) out: Option<UmpOut>,
+    /// The session's one MPE mode ([`Midi::set_mpe`]).
+    mpe: MpeMode,
     /// The hardware out's tap on the clock, which `Phase::MidiOut` drains;
     /// `None` when the session has no engine MIDI (or the clock left).
     hardware_tap: Option<EventTapReader>,
@@ -566,13 +622,13 @@ impl std::fmt::Debug for MidiState {
 }
 
 /// How often a rising drop count is reported at most
-/// ([`SessionEvent::MidiOutDropped`](crate::SessionEvent::MidiOutDropped)):
+/// ([`MidiEvent::OutputDropped`](crate::MidiEvent::OutputDropped)):
 /// a clock running with no output drops ticks on every update.
 pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
 /// How often a rising count of events the hardware inputs' inlets dropped is
 /// reported at most
-/// (`SessionEvent::MidiInputDropped`, feature `midi-hardware`):
+/// ([`MidiEvent::InputsDropped`](crate::MidiEvent::InputsDropped), feature `midi-hardware`):
 /// a stalled audio callback with a busy controller drops on every update.
 pub const MIDI_INPUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
@@ -598,6 +654,17 @@ impl MidiState {
         }
     }
 
+    /// The state with the session's MPE mode as the builder declared it.
+    pub(crate) fn with_mpe(mut self, mpe: MpeMode) -> Self {
+        self.mpe = mpe;
+        self
+    }
+
+    /// The session's MPE mode.
+    pub(crate) fn mpe(&self) -> &MpeMode {
+        &self.mpe
+    }
+
     /// `node` left the graph: a clip or live input of the session's own is
     /// forgotten (the graph took it out of every feed), and a routed sink
     /// is no longer one.
@@ -608,7 +675,7 @@ impl MidiState {
     }
 
     /// `Phase::Poll`: steps the UMP Stream negotiation of each held input and
-    /// reports those that settled (`SessionEvent::MidiStream`), reports the
+    /// reports those that settled ([`MidiEvent::StreamSettled`](crate::MidiEvent::StreamSettled)), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -627,25 +694,40 @@ impl MidiState {
         let Some(io) = io else { return false };
         let events = self.device_events.as_ref();
         for event in events.into_iter().flat_map(|events| events.try_iter()) {
-            out.push(crate::SessionEvent::MidiDevice(event.clone()));
+            out.push(MidiEvent::of_device(event.clone()).into());
             if let tutti_midi_hardware::DeviceEvent::Removed(device) = event {
                 // Held ones are closed here, not left to fail on a dead
                 // handle: the port goes and the lists agree.
                 if io.disconnect_input(&device.id) {
-                    out.push(crate::SessionEvent::MidiInputLost(device.clone()));
+                    out.push(
+                        MidiEvent::InputLost {
+                            device: device.id.clone(),
+                            info: device.clone(),
+                        }
+                        .into(),
+                    );
                 }
                 if io.output().is_some_and(|open| open.id == device.id) && io.disconnect_output() {
-                    out.push(crate::SessionEvent::MidiOutputLost(device));
+                    out.push(
+                        MidiEvent::OutputLost {
+                            device: device.id.clone(),
+                            info: device,
+                        }
+                        .into(),
+                    );
                 }
             }
         }
         // The devices' UMP Stream negotiations take their step at `now`: the
         // session's control tick is their timer.
         for (device, stream) in io.poll(now) {
-            out.push(crate::SessionEvent::MidiStream {
-                device,
-                stream: Box::new(stream),
-            });
+            out.push(
+                MidiEvent::StreamSettled {
+                    device,
+                    stream: Box::new(stream),
+                }
+                .into(),
+            );
         }
         // What the poll settled or changed is heard by the output at once: the
         // `MidiOut` phase that drains next stamps by it.
@@ -655,7 +737,7 @@ impl MidiState {
             && let Some(why) = events.and_then(tutti_midi_hardware::DeviceEvents::failure)
         {
             self.watch_failure_reported = true;
-            out.push(crate::SessionEvent::MidiWatchFailed(why));
+            out.push(MidiEvent::WatchFailed(why).into());
         }
         let total = io.ports().losses().dropped();
         let due = self
@@ -664,7 +746,7 @@ impl MidiState {
         if total != self.input_drops_seen && due {
             self.input_drops_seen = total;
             self.input_reported_at = Some(now);
-            out.push(crate::SessionEvent::MidiInputDropped(total));
+            out.push(MidiEvent::InputsDropped { total }.into());
         }
         wired
     }
@@ -747,7 +829,7 @@ impl MidiState {
         if count != self.drops_seen && due {
             self.drops_seen = count;
             self.reported_at = Some(now);
-            out.push(crate::SessionEvent::MidiOutDropped(count));
+            out.push(MidiEvent::OutputDropped { total: count }.into());
         }
     }
 }
@@ -769,6 +851,9 @@ pub struct Midi<'a> {
     pub(crate) graph: &'a mut Graph,
     pub(crate) state: &'a mut MidiState,
     pub(crate) nodes: Option<&'a MidiNodes>,
+    /// The OS MIDI layer, when the builder opened it.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) io: Option<&'a tutti_midi_hardware::MidiSession>,
 }
 
 /// Applies the devices' inlet changes: an inlet added to the graph and
@@ -824,7 +909,7 @@ impl Midi<'_> {
         if self.graph.node_event_inputs(target).is_ok_and(|n| n > 0) {
             Ok(())
         } else {
-            Err(Error::NoEventInput(target))
+            Err(MidiError::NoEventInput(target))
         }
     }
 
@@ -836,7 +921,7 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoEventInput`] when `target` is not in the graph or takes
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI.
     pub fn live_input(&mut self, target: impl Into<NodeKey>) -> Result<LiveInput> {
         let target = target.into();
@@ -877,7 +962,7 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoEventInput`] when `target` is not in the graph or takes
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI.
     pub fn play_clip(
         &mut self,
@@ -949,8 +1034,8 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoEventInput`] when `target` is not in the graph or takes
-    /// no MIDI; [`Error::NotSessionMidi`] when `node` is not a clip or live
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
+    /// no MIDI; [`MidiError::NotSessionMidi`] when `node` is not a clip or live
     /// input of this session's.
     pub fn retarget(&mut self, node: impl Into<NodeKey>, target: impl Into<NodeKey>) -> Result<()> {
         let node = node.into();
@@ -967,7 +1052,7 @@ impl Midi<'_> {
                 Feeder::LiveInput,
             )
         } else {
-            return Err(Error::NotSessionMidi(node));
+            return Err(MidiError::NotSessionMidi(node));
         };
         if old != target
             && self
@@ -993,8 +1078,8 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoMidiInput`] on a session with no MIDI input node (one
-    /// built detached); [`Error::TwoRouteDeclarers`] while a host's
+    /// [`MidiError::NoMidiInput`] on a session with no MIDI input node (one
+    /// built detached); [`MidiError::TwoRouteDeclarers`] while a host's
     /// `set_routes` declares the routes.
     pub fn route(&mut self, rule: MidiRouteRule) -> Result<MidiRouteId> {
         let input = self.input()?;
@@ -1010,11 +1095,11 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`NoSuchMidiRoute`] when there is no rule `id` (removed already, or
+    /// [`MidiError::NoSuchRoute`] ([`NoSuchMidiRoute`]) when there is no rule `id` (removed already, or
     /// never added); nothing changes.
-    pub fn unroute(&mut self, id: MidiRouteId) -> std::result::Result<(), NoSuchMidiRoute> {
+    pub fn unroute(&mut self, id: MidiRouteId) -> Result<()> {
         if self.state.rules.remove(&id).is_none() {
-            return Err(NoSuchMidiRoute(id));
+            return Err(NoSuchMidiRoute(id).into());
         }
         if let Ok(input) = self.input() {
             self.compile_own(input);
@@ -1027,27 +1112,27 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoMidiInput`] on a session with no MIDI input node;
-    /// [`Error::TwoRouteDeclarers`] while a host's
+    /// [`MidiError::NoMidiInput`] on a session with no MIDI input node;
+    /// [`MidiError::TwoRouteDeclarers`] while a host's
     /// [`set_routes`](Self::set_routes) declares the routes.
-    pub fn set_route_fallback(&mut self, fallback: Option<NodeKey>) -> Result<()> {
+    pub fn set_route_fallback(&mut self, fallback: Option<impl Into<NodeKey>>) -> Result<()> {
         let input = self.input()?;
         self.own_may_declare()?;
-        self.state.fallback = fallback;
+        self.state.fallback = fallback.map(Into::into);
         self.compile_own(input);
         Ok(())
     }
 
     fn own_may_declare(&self) -> Result<()> {
         if self.state.host_routes {
-            Err(Error::TwoRouteDeclarers("a host's `set_routes`"))
+            Err(MidiError::TwoRouteDeclarers("a host's `set_routes`"))
         } else {
             Ok(())
         }
     }
 
     fn input(&self) -> Result<NodeKey> {
-        self.nodes.map(|n| n.input).ok_or(Error::NoMidiInput)
+        self.nodes.map(|n| n.input).ok_or(MidiError::NoMidiInput)
     }
 
     /// The layout of the input's ports; the first Group's with no input,
@@ -1083,7 +1168,7 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::TwoRouteDeclarers`] while the session's own rules or
+    /// [`MidiError::TwoRouteDeclarers`] while the session's own rules or
     /// fallback are declared ([`unroute`](Self::unroute) them first).
     /// Nothing is changed.
     pub fn set_routes<'r, T: Copy + Ord + 'r>(
@@ -1095,7 +1180,7 @@ impl Midi<'_> {
     ) -> Result<()> {
         let input = input.into();
         if !self.state.rules.is_empty() || self.state.fallback.is_some() {
-            return Err(Error::TwoRouteDeclarers("the session's own `route`"));
+            return Err(MidiError::TwoRouteDeclarers("the session's own `route`"));
         }
         let rules: Vec<&MidiRouteRule<T>> = rules.into_iter().collect();
         self.state.host_routes = !rules.is_empty() || fallback.is_some();
@@ -1144,12 +1229,88 @@ impl Midi<'_> {
         }
     }
 
+    // --- MPE ---
+
+    /// The session's one MPE mode: how the hardware input is ingested and how a
+    /// synth added through [`Session::add_instrument`](crate::Session::add_instrument)
+    /// occupies the channels. Begins as the builder's
+    /// ([`SessionBuilder::mpe_mode`](crate::SessionBuilder::mpe_mode)),
+    /// `Disabled` by default.
+    #[must_use]
+    pub fn mpe(&self) -> MpeMode {
+        *self.state.mpe()
+    }
+
+    /// Sets the session's MPE mode, once for everything that follows it.
+    ///
+    /// - The hardware input ingests classic MPE in `mode` from the next block
+    ///   ([`MidiIngestControls::set_mpe_mode`](tutti_midi_runtime::MidiIngestControls::set_mpe_mode)),
+    ///   on a session that has the input node.
+    /// - A synth added after this through
+    ///   [`Session::add_instrument`](crate::Session::add_instrument) is built
+    ///   in `mode`: **the session's mode wins over the synth's own
+    ///   `SynthConfig::mpe`**, so the ingest and the voices cannot disagree.
+    ///   A synth already in the graph keeps the mode it was added with (a
+    ///   node in a graph cannot be reached from here); add it again to move
+    ///   it. A synth inserted with `Graph::add` is the caller's own and keeps
+    ///   its config.
+    pub fn set_mpe(&mut self, mode: MpeMode) {
+        self.state.mpe = mode;
+        if let Some(nodes) = self.nodes {
+            nodes.input_controls.set_mpe_mode(mode);
+        }
+    }
+
+    // --- Recording a take ---
+
+    /// Records what is played into `target`: an event tap on the event output
+    /// of its live input ([`live_input`](Self::live_input), opened when it has
+    /// none), which every note sent through the live input passes. A reader of
+    /// `capacity` events (a non-note-off is refused once that many are held, a
+    /// note-off is kept up to [`note_off_room`](tutti_graph::note_off_room) of
+    /// it; both counted by [`EventTapReader::take_lost`]).
+    ///
+    /// Read it with [`EventTapReader::drain`] from a thread of your own. Each
+    /// event's [`frame`](TapEvent::frame) is the frame of the graph's clock it
+    /// was due on, as it left the inlet and before the target heard it; where
+    /// a take places it on the timeline is
+    /// [`TakePlacement::place`] (doc 030 §5.2: the frame minus the input and
+    /// output latency and the inlet's lead, plus the user's trim).
+    ///
+    /// The tap is on the **live input**: notes a hardware input routes straight
+    /// to `target` ([`route`](Self::route)) do not pass it. To record a
+    /// hardware player, send what its device pushes through the live input, or
+    /// tap the ingest node's port with `Graph::taps`.
+    ///
+    /// The tap is closed when its reader is dropped (the next
+    /// [`Reclaim`](crate::Phase::Reclaim) phase) or with
+    /// `Graph::taps().close_event`. A re-prepare at another rate reopens the
+    /// session's own taps only (the hardware out's); reopen this one with
+    /// `Graph::taps().reopen_event`.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes no MIDI.
+    pub fn record(
+        &mut self,
+        target: impl Into<NodeKey>,
+        capacity: tutti_graph::EventCapacity,
+    ) -> Result<EventTapReader> {
+        let live = self.live_input(target)?;
+        let source = EventOutPort::new(live.node, 0);
+        self.graph
+            .taps()
+            .open_event(source, tutti_graph::TapAlign::Raw, capacity.get() as usize)
+            // The live input was just found or opened in this graph, with its port.
+            .map_err(|_| MidiError::NoEventInput(live.node))
+    }
+
     // --- Hardware out ---
 
     /// The output the hardware out (an event tap on the clock, aligned to the
     /// graph's outputs) drains to at each update's
     /// [`MidiOut`](crate::Phase::MidiOut) phase. `None`: its events are counted as dropped
-    /// ([`SessionEvent::MidiOutDropped`](crate::SessionEvent::MidiOutDropped)).
+    /// ([`MidiEvent::OutputDropped`](crate::MidiEvent::OutputDropped)).
     ///
     /// **Whether it JR-stamps is the device's.** With the `midi-hardware`
     /// feature, each `MidiOut` phase sets the output's stamping from the

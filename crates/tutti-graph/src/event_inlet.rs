@@ -261,7 +261,8 @@ impl EventInletWriter {
             .map(|r| Moment::new(Frame(r.frame), SampleRate(r.rate)))
     }
 
-    /// Queues `ump` for `at`: [`Stamp::NextBlock`], a [`Frame`] or a
+    /// Queues `ump` (an [`Ump`], or a decoded `tutti_ump::Message`, which
+    /// converts into one) for `at`: [`Stamp::NextBlock`], a [`Frame`] or a
     /// [`Moment`] (the last names an instant whatever rate the node runs at
     /// when it takes it; a bare frame is at that rate).
     ///
@@ -270,7 +271,8 @@ impl EventInletWriter {
     /// [`Refused::Full`] when the ring is full (the event is dropped and
     /// counted in [`Losses::lost`]; dropping a note-off whose note-on landed
     /// leaves a note stuck, so a caller must report it).
-    pub fn push(&mut self, at: impl Into<Stamp>, ump: Ump) -> Result<(), Refused> {
+    pub fn push(&mut self, at: impl Into<Stamp>, ump: impl Into<Ump>) -> Result<(), Refused> {
+        let ump = ump.into();
         let when = match at.into() {
             Stamp::NextBlock => When::NextBlock,
             Stamp::Frame(f) => When::Frame(f.get()),
@@ -289,9 +291,9 @@ impl EventInletWriter {
     /// does, and answers how many the ring took. A refused one is counted as
     /// lost like any other and the rest are still tried, so the count a
     /// caller reads stays one per event.
-    pub fn push_all<S: Into<Stamp>>(
+    pub fn push_all<S: Into<Stamp>, U: Into<Ump>>(
         &mut self,
-        events: impl IntoIterator<Item = (S, Ump)>,
+        events: impl IntoIterator<Item = (S, U)>,
     ) -> usize {
         events
             .into_iter()

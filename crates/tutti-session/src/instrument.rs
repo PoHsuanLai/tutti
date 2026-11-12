@@ -111,7 +111,7 @@ impl SharedKeys {
         self.keys().clock()
     }
 
-    pub(crate) fn send(&self, at: impl Into<Stamp>, ump: Ump) -> Result<(), SendError> {
+    pub(crate) fn send(&self, at: impl Into<Stamp>, ump: impl Into<Ump>) -> Result<(), SendError> {
         Ok(self.keys().push(at, ump)?)
     }
 
@@ -201,7 +201,7 @@ impl InstrumentHandle {
     /// # Errors
     ///
     /// [`SendError::Full`] when the queue is full.
-    pub fn send(&self, at: impl Into<Stamp>, ump: Ump) -> Result<(), SendError> {
+    pub fn send(&self, at: impl Into<Stamp>, ump: impl Into<Ump>) -> Result<(), SendError> {
         self.keys.send(at, ump)
     }
 
@@ -258,7 +258,9 @@ impl InstrumentHandle {
 }
 
 impl Session {
-    /// Adds `instrument` to the graph and makes it playable.
+    /// Adds `instrument` to the graph and makes it playable. A synth is built
+    /// in the session's MPE mode ([`Midi::set_mpe`](crate::Midi::set_mpe)),
+    /// which wins over its own configuration.
     ///
     /// # Errors
     ///
@@ -270,6 +272,8 @@ impl Session {
         instrument: I,
     ) -> Result<(InstrumentHandle, I::Controls), crate::Error> {
         let main = instrument.main_outputs();
+        // The session's MPE mode, over whatever the instrument was configured with.
+        let instrument = instrument.bind_mpe(*self.midi_state.mpe());
         let (node, controls) = self.graph().add(instrument);
         let node = node.erase();
         match self.instrument_at(node, main) {

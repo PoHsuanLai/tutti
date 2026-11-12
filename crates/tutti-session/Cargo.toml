@@ -41,6 +41,7 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # where it saw those.
 tracing = "0.1"
 thiserror.workspace = true
+serde = { version = "1", optional = true, features = ["derive"] }
 
 # The sound card. Off: offline only, and no ALSA headers needed.
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
@@ -85,6 +86,9 @@ midi = [
     "dep:tutti-midi-file",
 ]
 midi-hardware = ["midi", "dep:tutti-midi-hardware"]
+# `serde` for `MidiRouteRule<T>` (keyed by the app's own stable id, not a
+# `NodeKey`): its Group and channel are `tutti-ump`'s, with its `serde`.
+serde = ["midi", "dep:serde", "tutti-ump/serde"]
 sampler = ["dep:tutti-sampler"]
 soundfont = ["midi", "dep:tutti-soundfont"]
 synth = ["dep:tutti-polysynth"]

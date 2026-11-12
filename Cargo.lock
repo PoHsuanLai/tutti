@@ -4125,6 +4125,7 @@ dependencies = [
  "assert_no_alloc",
  "hound",
  "libloading 0.8.9",
+ "serde",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",

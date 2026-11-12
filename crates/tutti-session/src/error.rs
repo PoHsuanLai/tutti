@@ -138,6 +138,88 @@ pub enum ConnectError {
     Bus(#[from] tutti_graph::BusError),
 }
 
+/// Why a MIDI call of the session failed (design 030, convention 2: one error
+/// for the area, each cause carried as its source). `tutti::midi::Error` in
+/// the umbrella; the session's own [`Error::Midi`] holds it, and every cause
+/// below converts into both with `?`.
+#[cfg(feature = "midi")]
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum MidiError {
+    /// The OS port layer failed: enumeration, opening a device or its
+    /// watch. Only a session with `midi-hardware` has a fallible MIDI step of
+    /// this kind.
+    #[cfg(feature = "midi-hardware")]
+    #[error("MIDI hardware: {0}")]
+    Hardware(#[from] tutti_midi_hardware::Error),
+
+    /// A MIDI file could not be read, built or written.
+    #[error("MIDI file: {0}")]
+    File(#[from] tutti_midi_file::Error),
+
+    /// A message was not queued ([`SendError::Full`]).
+    #[error("MIDI send: {0}")]
+    Send(#[from] crate::SendError),
+
+    /// There is no such route rule ([`Midi::unroute`](crate::Midi::unroute)).
+    #[error(transparent)]
+    NoSuchRoute(#[from] crate::NoSuchMidiRoute),
+
+    /// A MIDI call named a target that is not in the graph, or takes no
+    /// MIDI (it has no event input): `Midi::play_clip`, `Midi::live_input`,
+    /// `Midi::retarget`, `Midi::record`.
+    #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
+    NoEventInput(tutti_graph::NodeKey),
+
+    /// A route rule on a session with no MIDI input node (one built
+    /// detached).
+    #[error("the session has no MIDI input node to route")]
+    NoMidiInput,
+
+    /// A hardware call on a session with no OS MIDI layer
+    /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)
+    /// was not asked for).
+    #[cfg(feature = "midi-hardware")]
+    #[error("the session has no OS MIDI layer; build it with `midi_hardware()`")]
+    NoHardware,
+
+    /// `Midi::retarget` named a node that is not a clip or live input of
+    /// the session's.
+    #[error("{0:?} is not a clip or live input of this session's")]
+    NotSessionMidi(tutti_graph::NodeKey),
+
+    /// The hardware input's routes have one declarer: the session's own
+    /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
+    /// (`Midi::set_routes`), not both at once.
+    #[error(
+        "the MIDI routes are declared by {0}; clear those before declaring \
+         them the other way"
+    )]
+    TwoRouteDeclarers(&'static str),
+}
+
+#[cfg(feature = "midi")]
+macro_rules! midi_cause_into_error {
+    ($($(#[$m:meta])* $ty:ty),* $(,)?) => {$(
+        $(#[$m])*
+        impl From<$ty> for Error {
+            fn from(e: $ty) -> Self {
+                Self::Midi(e.into())
+            }
+        }
+    )*};
+}
+
+// `?` on a cause reaches the session's one `Error` in a step.
+#[cfg(feature = "midi")]
+midi_cause_into_error!(
+    #[cfg(feature = "midi-hardware")]
+    tutti_midi_hardware::Error,
+    tutti_midi_file::Error,
+    crate::SendError,
+    crate::NoSuchMidiRoute,
+);
+
 /// Every subsystem's error, so `?` propagates across crate boundaries.
 ///
 /// Each variant wraps a subsystem error via `#[from]`. Device failures arrive
@@ -181,20 +263,13 @@ pub enum Error {
     #[error(transparent)]
     Device(#[from] tutti_cpal::Error),
 
-    /// MIDI subsystem failure. Wraps `tutti_midi_hardware::Error`, and is
-    /// therefore gated on **`midi-hardware`** rather than `midi`: the error
-    /// type comes from the OS port layer, and the software-only build has no
-    /// fallible MIDI step.
-    #[cfg(feature = "midi-hardware")]
-    #[error("MIDI: {0}")]
-    Midi(#[from] tutti_midi_hardware::Error),
-
-    /// A MIDI call named a target that is not in the graph, or takes no
-    /// MIDI (it has no event input): `Midi::play_clip`, `Midi::live_input`,
-    /// `Midi::retarget`.
+    /// A MIDI failure of any kind: the OS port layer, a file, a send, a
+    /// route, or a target that takes no MIDI. One variant for the area
+    /// (design 030, convention 2); [`MidiError`] says which, each with its
+    /// own error as the source.
     #[cfg(feature = "midi")]
-    #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
-    NoEventInput(tutti_graph::NodeKey),
+    #[error(transparent)]
+    Midi(#[from] MidiError),
 
     /// [`Session::instrument`](crate::Session::instrument) (or
     /// `add_instrument`, `instrument_plugin`) was given a node that cannot be
@@ -207,28 +282,6 @@ pub enum Error {
         /// Why not.
         why: crate::NotInstrument,
     },
-
-    /// A route rule on a session with no MIDI input node (one built
-    /// detached).
-    #[cfg(feature = "midi")]
-    #[error("the session has no MIDI input node to route")]
-    NoMidiInput,
-
-    /// `Midi::retarget` named a node that is not a clip or live input of
-    /// the session's.
-    #[cfg(feature = "midi")]
-    #[error("{0:?} is not a clip or live input of this session's")]
-    NotSessionMidi(tutti_graph::NodeKey),
-
-    /// The hardware input's routes have one declarer: the session's own
-    /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
-    /// (`Midi::set_routes`), not both at once.
-    #[cfg(feature = "midi")]
-    #[error(
-        "the MIDI routes are declared by {0}; clear those before declaring \
-         them the other way"
-    )]
-    TwoRouteDeclarers(&'static str),
 
     /// SoundFont subsystem failure. Wraps `tutti_soundfont::Error`. (The
     /// polyphonic synth has none: a `PolySynth` is built infallibly.)

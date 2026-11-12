@@ -57,6 +57,22 @@ pub trait SessionNode: IntoNode + Send + 'static {
         let _ = tempo;
         self
     }
+
+    /// The node built to occupy the channels in the session's MPE mode
+    /// ([`Midi::set_mpe`](crate::Midi::set_mpe)), which
+    /// [`Session::add_instrument`](crate::Session::add_instrument) applies
+    /// before the node goes in. The identity, the default, for a node that has
+    /// no MPE setting: the synth overrides it, and the session's mode wins
+    /// over its `SynthConfig::mpe`.
+    #[cfg(feature = "midi")]
+    #[must_use]
+    fn bind_mpe(self, mode: tutti_midi_protocol::MpeMode) -> Self
+    where
+        Self: Sized,
+    {
+        let _ = mode;
+        self
+    }
 }
 
 /// A node's control-side reclaim, kept by the graph
@@ -210,11 +226,22 @@ impl SessionNode for tutti_soundfont::SoundFontUnit {}
 // HRTF blend, as a `ParamSet`.
 param_session_node!(tutti_nodes::VbapPannerNode, tutti_nodes::HrtfBinauralNode);
 
-// The synth as a graph node: one MIDI event input, and its live params
-// (master volume, unison detune and spread) as a `ParamSet`, so a param
-// write reaches it and a fork of it starts from what was set.
+/// The synth as a graph node: one MIDI event input, and its live params
+/// (master volume, unison detune and spread) as a `ParamSet`, so a param
+/// write reaches it and a fork of it starts from what was set. It follows the
+/// session's MPE mode ([`SessionNode::bind_mpe`]).
 #[cfg(feature = "synth")]
-param_session_node!(tutti_polysynth::PolySynth);
+impl SessionNode for tutti_polysynth::PolySynth {
+    fn params(controls: &ParamSet) -> Option<ParamSet> {
+        Some(controls.clone())
+    }
+
+    #[cfg(feature = "midi")]
+    fn bind_mpe(mut self, mode: tutti_midi_protocol::MpeMode) -> Self {
+        self.set_mpe(mode);
+        self
+    }
+}
 
 /// A voice as a graph node: its params (the gain) addressed by its set, so a
 /// param write reaches the cell the node reads and a fork starts from the

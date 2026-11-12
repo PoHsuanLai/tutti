@@ -22,8 +22,8 @@ use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
 use tutti_session::{
-    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, NoSuchMidiRoute,
-    PHASES, PhaseCx, SendError, Session, SessionEvent, SessionNode, UmpOut,
+    EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiError, MidiEvent, MidiRouteRule,
+    NoSuchMidiRoute, PHASES, PhaseCx, SendError, Session, SessionEvent, SessionNode, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -196,12 +196,12 @@ fn a_target_without_an_event_input_takes_no_clip() {
         )));
     assert!(matches!(
         s.midi().play_clip(dc, std::iter::empty::<TimedMidiEvent>()),
-        Err(Error::NoEventInput(n)) if n == dc.erase()
+        Err(MidiError::NoEventInput(n)) if n == dc.erase()
     ));
     s.remove(dc).unwrap();
     assert!(matches!(
         s.midi().live_input(dc),
-        Err(Error::NoEventInput(_))
+        Err(MidiError::NoEventInput(_))
     ));
 }
 
@@ -327,9 +327,11 @@ fn route_rules_wire_the_hardware_input() {
     assert_eq!(ports(&s, b), vec![2, CHANNELLESS_PORT as u16]);
 
     s.midi().unroute(all).unwrap();
-    assert_eq!(
-        s.midi().unroute(all),
-        Err(NoSuchMidiRoute(all)),
+    assert!(
+        matches!(
+            s.midi().unroute(all),
+            Err(MidiError::NoSuchRoute(NoSuchMidiRoute(id))) if id == all
+        ),
         "a removed rule is not there"
     );
     assert_eq!(ports(&s, a), Vec::<u16>::new(), "unrouted");
@@ -417,7 +419,7 @@ fn the_routes_have_one_declarer() {
     let resolve = |k: u8| (k == 1).then_some(b);
     assert!(matches!(
         s.midi().set_routes(input, &host, None, resolve),
-        Err(Error::TwoRouteDeclarers(_))
+        Err(MidiError::TwoRouteDeclarers(_))
     ));
     assert!(fed(&s, a) && !fed(&s, b), "the refusal changed nothing");
 
@@ -426,11 +428,11 @@ fn the_routes_have_one_declarer() {
     assert!(fed(&s, b), "the host's routes apply");
     assert!(matches!(
         s.midi().route(MidiRouteRule::any_channel().to(a)),
-        Err(Error::TwoRouteDeclarers(_))
+        Err(MidiError::TwoRouteDeclarers(_))
     ));
     assert!(matches!(
         s.midi().set_route_fallback(Some(a)),
-        Err(Error::TwoRouteDeclarers(_))
+        Err(MidiError::TwoRouteDeclarers(_))
     ));
     assert!(!fed(&s, a) && fed(&s, b), "the refusals changed nothing");
 
@@ -482,7 +484,7 @@ fn the_hardware_out_drains_with_stamping_off() {
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::MidiOutDropped(_)))
+            .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::OutputDropped { .. })))
     );
 
     let mut s = clocked();
@@ -492,13 +494,13 @@ fn the_hardware_out_drains_with_stamping_off() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::MidiOutDropped(n) if *n == dropped)),
+            .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::OutputDropped { total }) if *total == dropped)),
         "{events:?}"
     );
     assert!(
         !s.update()
             .iter()
-            .any(|e| matches!(e, SessionEvent::MidiOutDropped(_))),
+            .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::OutputDropped { .. }))),
         "reported when the count rises, not every update"
     );
 }
@@ -516,7 +518,7 @@ fn dropped_ticks_are_reported_at_most_once_a_second() {
         events
             .iter()
             .filter_map(|e| match e {
-                SessionEvent::MidiOutDropped(n) => Some(*n),
+                SessionEvent::Midi(MidiEvent::OutputDropped { total }) => Some(*total),
                 _ => None,
             })
             .collect()
@@ -592,18 +594,32 @@ fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounte
     (s, fake)
 }
 
-/// The `MidiDevice` events of an update, as `(kind, device name)`.
+/// The device events of an update, as `(kind, device name)`.
 #[cfg(feature = "midi-hardware")]
 fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
-    use tutti_midi_hardware::DeviceEvent;
     events
         .iter()
         .filter_map(|e| match e {
-            SessionEvent::MidiDevice(DeviceEvent::Added(d)) => Some(("added", d.name.clone())),
-            SessionEvent::MidiDevice(DeviceEvent::Removed(d)) => Some(("removed", d.name.clone())),
-            SessionEvent::MidiDevice(DeviceEvent::Changed(d)) => Some(("changed", d.name.clone())),
-            SessionEvent::MidiInputLost(d) => Some(("input lost", d.name.clone())),
-            SessionEvent::MidiOutputLost(d) => Some(("output lost", d.name.clone())),
+            SessionEvent::Midi(MidiEvent::Added { device, info }) => {
+                assert_eq!(*device, info.id, "the field is the info's id");
+                Some(("added", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::Removed { device, info }) => {
+                assert_eq!(*device, info.id, "the field is the info's id");
+                Some(("removed", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::Changed { device, info }) => {
+                assert_eq!(*device, info.id, "the field is the info's id");
+                Some(("changed", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::InputLost { device, info }) => {
+                assert_eq!(*device, info.id, "the field is the info's id");
+                Some(("input lost", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::OutputLost { device, info }) => {
+                assert_eq!(*device, info.id, "the field is the info's id");
+                Some(("output lost", info.name.clone()))
+            }
             _ => None,
         })
         .collect()
@@ -649,7 +665,7 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
-    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     io.connect_input("keys").expect("connects");
     assert_eq!(io.connected_input_names(), ["Keys"]);
     assert_eq!(io.ports().list_input_ports().len(), 1);
@@ -709,7 +725,7 @@ fn keyboards(
 /// Connects `name`, and updates: the `Poll` phase wires the new inlet.
 #[cfg(feature = "midi-hardware")]
 fn connect(s: &mut Session, name: &str) {
-    s.midi_io()
+    s.testing_midi_io()
         .expect("the OS MIDI layer")
         .connect_input(name)
         .expect("connects");
@@ -757,7 +773,7 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
     notes.sort_unstable();
     assert_eq!(notes, vec![60, 64], "both devices are heard");
 
-    s.midi_io()
+    s.testing_midi_io()
         .expect("the OS MIDI layer")
         .disconnect_input("keys");
     let _ = s.update();
@@ -798,7 +814,7 @@ fn a_devices_arrival_is_placed_on_the_engines_clock() {
 
 /// **A device whose inlet overflows is reported**: 3,000 events pushed before
 /// any block reads them against an inlet of 2,048 lose 952, and the next update
-/// reports `MidiInputDropped` with that total, once.
+/// reports `InputsDropped` with that total, once.
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_device_whose_inlet_overflows_is_reported() {
@@ -815,7 +831,7 @@ fn a_device_whose_inlet_overflows_is_reported() {
         events
             .into_iter()
             .filter_map(|e| match e {
-                SessionEvent::MidiInputDropped(total) => Some(total),
+                SessionEvent::Midi(MidiEvent::InputsDropped { total }) => Some(total),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -832,7 +848,7 @@ fn a_device_whose_inlet_overflows_is_reported() {
 fn a_device_past_the_slots_is_refused() {
     let (mut s, fake, seen) = keyboards(1);
     connect(&mut s, "keys");
-    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     let refused = io.connect_input("pads").unwrap_err();
     assert!(
         matches!(refused, tutti_midi_hardware::Error::NoFreeSlot(_)),
@@ -852,7 +868,7 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
-    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     io.connect_output("synth").expect("connects");
     assert!(io.output().is_some());
 
@@ -877,7 +893,7 @@ fn a_dead_device_watch_is_reported_once() {
         events
             .iter()
             .filter_map(|e| match e {
-                SessionEvent::MidiWatchFailed(why) => Some(why.to_string()),
+                SessionEvent::Midi(MidiEvent::WatchFailed(why)) => Some(why.to_string()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -901,7 +917,7 @@ fn a_remembered_device_resolves_through_the_session() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
-    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     let saved = io.devices().list().remove(0);
     assert_eq!(
         io.devices().resolve(&saved),
@@ -921,7 +937,7 @@ fn another_devices_removal_leaves_a_held_input_open() {
     plug(&fake, 2, "Pads", PortDirection::Input);
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
-    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     io.connect_input("keys").expect("connects");
     io.connect_output("synth").expect("connects");
 
@@ -1039,7 +1055,7 @@ fn a_port_that_loses_events_is_reported() {
 /// update that follows the connect sends the Endpoint Discovery on the
 /// device's output, the device (here the fake's, answering as an Endpoint
 /// does) replies into the input, and a later update reports
-/// `SessionEvent::MidiStream` once, with the Protocol in use.
+/// `MidiEvent::StreamSettled` once, with the Protocol in use.
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
@@ -1049,7 +1065,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
-    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     io.connect_input("wire").expect("connects");
 
     let mut device = Endpoint::new(Capabilities {
@@ -1061,7 +1077,9 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     let mut settled = Vec::new();
     for _ in 0..20 {
         settled.extend(s.update().into_iter().filter_map(|e| match e {
-            SessionEvent::MidiStream { device, stream } => Some((device, *stream)),
+            SessionEvent::Midi(MidiEvent::StreamSettled { device, stream }) => {
+                Some((device, *stream))
+            }
             _ => None,
         }));
         let mut answers: Vec<Ump> = Vec::new();
@@ -1075,7 +1093,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
         }
     }
     let [(id, stream)] = settled.as_slice() else {
-        panic!("one MidiStream event expected, got {settled:?}");
+        panic!("one StreamSettled event expected, got {settled:?}");
     };
     assert_eq!(
         io.inputs()
@@ -1106,7 +1124,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     plug(&fake, 7, "Dev", PortDirection::Duplex);
     let _ = s.update();
     let raw = EndpointId::from_raw(7);
-    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let io = s.testing_midi_io().expect("the OS MIDI layer").clone();
     io.connect_input("dev").expect("connects");
     io.connect_output("dev").expect("connects");
     s.midi()
@@ -1126,7 +1144,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
         let events = update_at(&mut s, now);
         settled |= events
             .iter()
-            .any(|e| matches!(e, SessionEvent::MidiStream { .. }));
+            .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::StreamSettled { .. })));
         let mut answers = Vec::new();
         for ump in fake.take_sent(raw) {
             if let Ok(message @ Message::Stream(_)) = ump.decode() {

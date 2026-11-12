@@ -80,7 +80,7 @@ device = ["dep:tutti-cpal"]
 # taps without a microphone (`bevy-tutti`'s `AudioPump`) takes it alone.
 record = ["dep:tutti-dsp"]
 # The live I/O edge: `record`, and with `device`, the mic capture too.
-audio-io = ["record", "tutti-cpal?/capture"]
+audio-io = ["record", "tutti-cpal?/capture", "tutti-codec/encode-wav"]
 modulation = ["dep:tutti-modulation"]
 midi = [
     "dep:tutti-midi-protocol",
@@ -91,7 +91,7 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 # `serde` for `MidiRouteRule<T>` (keyed by the app's own stable id, not a
 # `NodeKey`): its Group and channel are `tutti-ump`'s, with its `serde`.
 serde = ["midi", "dep:serde", "tutti-ump/serde"]
-sampler = ["dep:tutti-sampler"]
+sampler = ["dep:tutti-sampler", "tutti-codec/decode-wav"]
 soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2"]
 synth = ["dep:tutti-polysynth"]
 convolution = ["tutti-nodes/convolution"]

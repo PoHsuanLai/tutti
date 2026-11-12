@@ -297,7 +297,9 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};
     #[cfg(all(feature = "session", feature = "device", feature = "audio-io"))]
-    pub use tutti_session::{Input, InputConfig};
+    pub use tutti_session::{
+        Input, InputConfig, Punch, Recorded, Take, TakeError, TakeEvent, TakeTarget, Trim,
+    };
 
     // What a session's calls take, by the feature that gates each (design
     // 015 §5): a modulation target, an export, a plugin load, a MIDI file.

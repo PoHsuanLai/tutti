@@ -26,3 +26,6 @@ mod recorder_thread;
 mod tap_close;
 #[cfg(feature = "record")]
 mod tap_to_wav_roundtrip;
+// Takes: a recording placed on the graph's clock, punched, and reported.
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod takes;

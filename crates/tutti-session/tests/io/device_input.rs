@@ -71,6 +71,7 @@ impl InputOpener for Capture {
         Ok(OpenedInput {
             ring,
             keep: Box::new(Stream(Arc::clone(&self.0))) as Box<dyn Any + Send>,
+            lead: Samples(0),
         })
     }
 }

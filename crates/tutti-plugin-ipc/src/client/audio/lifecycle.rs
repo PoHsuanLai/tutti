@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_plugin_types::PluginFailure;
 use tutti_types::SampleRate;
 
 #[derive(Clone)]
@@ -24,7 +25,7 @@ pub(super) struct Lifecycle {
     /// cause, so the *first* failure is kept rather than the last. A stream
     /// death cascades into follow-on errors, and the first one is the
     /// diagnosis.
-    cause: Arc<Mutex<Option<String>>>,
+    cause: Arc<Mutex<Option<PluginFailure>>>,
     /// The sample rate the plugin refused and why, while it is refused. Not a
     /// crash: the plugin stays loaded and is retried at every later rate
     /// change, which clears this when it takes one.
@@ -91,7 +92,7 @@ impl Lifecycle {
     ///
     /// `None` while healthy. A crashed bridge always has one — every
     /// `mark_crashed` call site passes a reason.
-    pub(super) fn crash_cause(&self) -> Option<String> {
+    pub(super) fn crash_cause(&self) -> Option<PluginFailure> {
         self.cause.lock().ok().and_then(|c| c.clone())
     }
 
@@ -100,9 +101,9 @@ impl Lifecycle {
     /// The first cause wins: a connection-level failure ends every in-flight
     /// request, so the follow-on errors describe the consequence rather than
     /// the fault.
-    pub(super) fn mark_crashed(&self, cause: impl Into<String>) {
+    pub(super) fn mark_crashed(&self, cause: PluginFailure) {
         if let Ok(mut slot) = self.cause.lock() {
-            slot.get_or_insert_with(|| cause.into());
+            slot.get_or_insert(cause);
         }
         self.crashed.store(true, Ordering::Release);
     }
@@ -125,11 +126,17 @@ mod tests {
     fn a_cause_appears_exactly_when_the_bridge_crashes() {
         let life = Lifecycle::new();
         assert!(!life.is_crashed());
-        assert_eq!(life.crash_cause(), None, "a healthy bridge has no cause");
+        assert!(
+            life.crash_cause().is_none(),
+            "a healthy bridge has no cause"
+        );
 
-        life.mark_crashed("socket closed");
+        life.mark_crashed(PluginFailure::StreamClosed);
         assert!(life.is_crashed());
-        assert_eq!(life.crash_cause().as_deref(), Some("socket closed"));
+        assert!(matches!(
+            life.crash_cause(),
+            Some(PluginFailure::StreamClosed)
+        ));
     }
 
     /// The first cause is kept, not the last.
@@ -141,11 +148,10 @@ mod tests {
     #[test]
     fn the_first_cause_survives_later_ones() {
         let life = Lifecycle::new();
-        life.mark_crashed("connection reset");
-        life.mark_crashed("request cancelled");
-        assert_eq!(
-            life.crash_cause().as_deref(),
-            Some("connection reset"),
+        life.mark_crashed(PluginFailure::StreamClosed);
+        life.mark_crashed(PluginFailure::Unreported);
+        assert!(
+            matches!(life.crash_cause(), Some(PluginFailure::StreamClosed)),
             "the follow-on error must not overwrite the fault that caused it"
         );
     }
@@ -161,7 +167,7 @@ mod tests {
         life.request_shutdown();
         assert!(!life.is_running());
         assert!(!life.is_crashed(), "a clean shutdown is not a crash");
-        assert_eq!(life.crash_cause(), None);
+        assert!(life.crash_cause().is_none());
     }
 
     /// **The audio thread's flag follows the refusal**, set with it and

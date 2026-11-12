@@ -29,6 +29,10 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 
 [dev-dependencies]
+# `check_range_contract` for `OutputOffset`, whose serde shape the test writes
+# (`Seconds` serialises under `tutti-types`' `serde`).
+serde = "1"
+tutti-types = { path = "../tutti-types", default-features = false, features = ["serde"] }
 # The graph's by-hand node driver, `tutti_graph::contract::Direct`.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 assert_no_alloc = { version = "1", default-features = false }

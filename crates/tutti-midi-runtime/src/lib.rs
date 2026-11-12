@@ -12,6 +12,7 @@ mod clock_map;
 mod ledger;
 mod live;
 mod outbound;
+mod output_plan;
 mod schedule;
 mod sync;
 mod traits;
@@ -27,6 +28,10 @@ pub use live::{
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
     JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream,
+};
+pub use output_plan::{
+    MAX_OUTPUT_AHEAD, MAX_OUTPUT_LATENCY, OffsetOutOfRange, Outgoing, OutputLatency, OutputOffset,
+    OutputPlan, OutputTerms, Placement, SendAt,
 };
 pub use schedule::{
     CLIP_EVENT_DENSITY, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode, MidiClipControls,

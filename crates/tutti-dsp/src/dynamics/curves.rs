@@ -5,33 +5,6 @@
 
 use tutti_types::{Amplitude, CompressionRatio, Db};
 
-/// Whether [`ramp_db`] returns `to` itself at frame `i`: a held value, or the
-/// block's last frame.
-#[inline]
-pub(crate) fn ramp_is_at_end(from: Db, to: Db, i: usize, n: usize) -> bool {
-    from == to || i + 1 >= n
-}
-
-/// The value at frame `i` of an `n`-frame linear ramp from `from` to `to`, in
-/// dB.
-///
-/// Frame `i` sits `(i + 1) / n` of the way along, so the block's **last frame
-/// is exactly `to`** — returned directly rather than computed, because
-/// `from + (to - from) * 1.0` can round past `to`, and the next block starts
-/// from `to`. A held value (`from == to`) returns `to` bit for bit at every
-/// frame, which is what keeps a node whose controls never move identical to
-/// one that read them per sample. A block of one (`n == 1`) takes the new
-/// value at once.
-#[inline]
-pub fn ramp_db(from: Db, to: Db, i: usize, n: usize) -> Db {
-    if ramp_is_at_end(from, to, i, n) {
-        to
-    } else {
-        let t = (i + 1) as f32 / n as f32;
-        Db(from.get() + (to.get() - from.get()) * t)
-    }
-}
-
 /// Amplitude as decibels, for the dynamics detectors.
 ///
 /// **This is where the dynamics floor is applied.** `Db::from_amplitude` gives

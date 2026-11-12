@@ -798,13 +798,13 @@ sounding until the node that tracks notes exists.
 
 ### Timing at the edge
 
-**Stage 4c, part 1: the clock map and the timestamped input. Built.** Output
-scheduling (`OutputPlan`) is the next part and is not.
+**Stage 4c, part 1: the clock map and the timestamped input. Built.** **Part 2,
+output scheduling (`OutputPlan`), is built** (below, "Output").
 
 - **The clock map.** `ClockMap` (`tutti-midi-runtime`: it needs `tutti-types`'
   `Frame`, `SampleRate` and `Moment`, and `tutti-midi-device` is a layer too low
   for them) converts an OS time to a frame (`frame_at`, `moment_at`) and a frame to
-  an OS time (`os_at`, which `OutputPlan` needs). It is pure and holds no clock:
+  an OS time (`os_at`, which `OutputPlan` reads). It is pure and holds no clock:
   it is built from one `ClockReading`, the OS instant and the graph's frame at the
   same moment, and takes more as values (`observe`). The OS time is a
   `std::time::Instant`, the OS's monotonic clock on every target, so the map is
@@ -887,11 +887,48 @@ scheduling (`OutputPlan`) is the next part and is not.
     map's: the bound stated above, within the OS stamp's own accuracy. It is
     late (and counted, `Losses::late` of `InletCounts::losses`, `PortInfo::losses`) only when the
     thread pushes it more than the lead after it arrived.
-- **Output.** Schedule from the event's frame, on the OS's timestamp or queue.
-  Today output is flushed once per Bevy frame with no timestamp, so MIDI clock
-  leaves in bursts, and a headless `Session` does no better. This is the largest
-  timing defect that users can hear from external gear. `ClockMap::os_at` is the
-  conversion it needs; the plan is the next part of stage 4c.
+- **Output. Built (L6e).** A hardware out's events are sent at the time their
+  frame is heard, scheduled by the OS, not flushed when the host runs
+  `Phase::MidiOut` (that was the largest timing defect a user could hear from
+  external gear: MIDI clock left in bursts). `OutputPlan` (`tutti-midi-runtime`,
+  beside `ClockMap`) is pure and reads no clock: `place(frame, map, now)` is
+  `SendAt::Now` or `SendAt::At(Instant)` or `Placement::TooFar`, where
+  **send time = `ClockMap::os_at(frame)` + the audio output's latency - the MIDI
+  device's latency + the user's offset.**
+  - **Terms.** `OutputTerms { audio_output: Option<Duration>, latency: OutputLatency }`;
+    `OutputLatency { device: Duration, offset: OutputOffset }` is per output
+    (`Midi::set_output_latency`, `output_latency`); `OutputOffset` is a
+    range-checked `Seconds`, signed, at most `MAX_OUTPUT_LATENCY` (1 s) either way,
+    and a device latency is bound by the same second (`OutputLatency::new -> Option`).
+    The audio output's latency is the device's (`StreamLatency`), **read on every
+    drain** and `None` until the stream's first callback reports (and again after
+    a restart): it is not turned into zero. `Midi::output_terms()` returns the
+    terms with `is_complete()`; while incomplete, events leave **early by the
+    unreported audio latency**. `None` on a session with no audio device, which
+    schedules nothing (every event `Now`, as offline).
+  - **Bounds.** A send time at or before now is `Now`; a frame the clock cannot
+    place (no block reading yet) is `Now`; one more than `MAX_OUTPUT_AHEAD` (2 s)
+    ahead is refused and **counted with the other output drops**
+    (`MidiOutDrops::count`, `MidiEvent::OutputDropped`), never queued without
+    bound.
+  - **One clock.** Every send time is an `Instant` from the plan to the sink
+    (`MidiOut::queue_timed(&[Outgoing])`, an `Outgoing` being the batch offset, its
+    `SendAt` and the packet; a sink with no wire clock takes the default, which
+    ignores the time). The session builds the `ClockMap` from the engine's block
+    clock (`tutti_rt::monotonic_ns`, paired with `Instant` once per process,
+    `arrival_clock`'s pairing) on each drain. Each backend converts an `Instant`
+    to its own clock in one function over `stamp::departure` (the inverse of
+    `arrival`): CoreMIDI to mach host time (`Pairing::host_time_of`, read afresh with
+    each send), ALSA to its queue's real time (`Sender::queue_time`, paired when
+    the output opens; the output's own started queue, `Client::start_queue`,
+    and `send_to_subscribers_at`).
+  - **JR.** Stamping still reads the batch's spacing (`UmpOut::send_frames` rebases
+    onto offsets for the stamper), and a stamp is sent with its event. Scheduling
+    and JR are independent: a device that takes JR gets both, consistent.
+  - **Not built.** Measuring a device's MIDI latency (it is declared or the
+    user's), re-pairing the ALSA queue on drift (the pairing is at open), a
+    per-output offset when a session holds several outputs (it has one), and the
+    mailbox path's frames (a host's own sends are `Now`).
 
 ### MIDI-CI
 
@@ -1068,7 +1105,7 @@ Every MIDI feature has four layers:
 | Device detection | `DeviceTable` |
 | Connection steps | `Connection` |
 | OS time to frame | `ClockMap` |
-| Output scheduling | `OutputPlan` |
+| Output scheduling | `OutputPlan` (built) |
 | Held notes and controllers | `HeldState` |
 | Recording into clips | `ClipBuilder` |
 | Chase on seek | `MidiClipNode`'s chase table (private, built with the clip) |

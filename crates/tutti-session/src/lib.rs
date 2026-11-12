@@ -133,8 +133,8 @@ pub use key::{
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad,
-    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, TakePlacement,
-    UmpOut, drain_receiver_through,
+    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, OutputTiming,
+    TakePlacement, UmpOut, drain_receiver_through,
 };
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;
@@ -160,7 +160,10 @@ pub use plugin::{PluginParamRead, PluginParamsRead};
 #[cfg(feature = "record")]
 pub use recorder::{Finite, IDLE_PARK, Live, PumpLoop, PumpPass, Recorder, RecorderError};
 #[cfg(feature = "plugin")]
-pub use recovery::{GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy};
+pub use recovery::{
+    GiveUp, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure, RecoveryPolicy,
+    ReloadCause,
+};
 #[cfg(feature = "sampler")]
 pub use sampler::{Residency, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerLoad};
 #[cfg(feature = "midi")]

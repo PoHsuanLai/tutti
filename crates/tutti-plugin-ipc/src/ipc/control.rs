@@ -9,8 +9,8 @@
 use tutti_plugin_types::{
     AnyThread, AutomationMode, BlockCounts, ContentScale, Control, Delivered, EditorCapabilities,
     EditorError, EditorPresence, EditorSize, EditorWindow, Health, LoadedPlugin, MainThread,
-    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult, Preset,
-    PresetId, RenderMode, Request, SampleRate, StateError, WindowHandle,
+    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure, PluginResult,
+    Preset, PresetId, RenderMode, Request, SampleRate, StateError, TerminationReason, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -250,7 +250,7 @@ impl Health for IpcController {
         self.link.bridge.is_crashed()
     }
 
-    fn crash_cause(&self) -> Option<String> {
+    fn crash_cause(&self) -> Option<PluginFailure> {
         self.link.bridge.crash_cause()
     }
 
@@ -262,10 +262,12 @@ impl Health for IpcController {
         self.link.bridge.block_counts()
     }
 
-    fn terminate(&self, cause: &str) {
+    fn terminate(&self, reason: TerminationReason) {
         // The cause first: the kill makes the bridge thread read an EOF, and
         // the first cause latched wins.
-        self.link.bridge.mark_crashed(cause);
+        self.link
+            .bridge
+            .mark_crashed(PluginFailure::Terminated { reason });
         self.link.guard.terminate();
     }
 }

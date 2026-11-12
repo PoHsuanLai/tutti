@@ -918,7 +918,102 @@ fn an_output_with_a_poisoned_lock_still_sends() {
     let id = super::enumerate::pack_id(target.0.id(), 0);
     let output = super::output::connect(id).expect("the output to open");
     output.poison();
-    output.send_ump(&[0x2090_3C64]).expect("the send to go");
+    output
+        .send_ump_at(&[0x2090_3C64], tutti_midi_runtime::SendAt::Now)
+        .expect("the send to go");
+}
+
+/// The next note message (type `0x2`) that reaches `device`'s port, polling
+/// for up to `patience`; the sequencer's own notices about the subscription
+/// (Stream messages) pass by.
+fn next_note(device: &Virtual, patience: Duration) -> Option<(u32, Instant)> {
+    let deadline = Instant::now() + patience;
+    while Instant::now() < deadline {
+        match device.0.read_event() {
+            Ok(tutti_alsa_ffi::Read::Event(e)) if e.ump[0] >> 28 == 2 => {
+                return Some((e.ump[0], Instant::now()));
+            }
+            Ok(tutti_alsa_ffi::Read::Event(_)) => {}
+            _ => std::thread::sleep(Duration::from_micros(500)),
+        }
+    }
+    None
+}
+
+/// When the first note reaches `device`'s port, as an `Instant`.
+fn arrival_at(device: &Virtual, patience: Duration) -> Option<Instant> {
+    next_note(device, patience).map(|(_, at)| at)
+}
+
+/// **The sequencer holds a scheduled event until its time.** Against the real
+/// kernel: an event sent `At` 100 ms ahead is not at the subscriber 50 ms
+/// after the call, and arrives no earlier than the `Instant` the send asked
+/// for (less the pairing's few ms of slack) and soon after it; one sent
+/// `Now` is there at once. The bounds are generous because the kernel
+/// schedules it; what they cannot be is both of these without a queue.
+#[test]
+fn a_scheduled_event_arrives_at_its_time_and_now_at_once() {
+    let target = plug(&unique("scheduled"));
+    let id = super::enumerate::pack_id(target.0.id(), 0);
+    let output = super::output::connect(id).expect("the output to open");
+    let slack = Duration::from_millis(10);
+
+    let asked = Instant::now() + Duration::from_millis(100);
+    output
+        .send_ump_at(&[0x2090_3C64], tutti_midi_runtime::SendAt::At(asked))
+        .expect("the scheduled send to go");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        next_note(&target, Duration::ZERO).is_none(),
+        "50 ms into a 100 ms wait the event was already delivered"
+    );
+    let arrived = arrival_at(&target, Duration::from_millis(500)).expect("the event to arrive");
+    assert!(
+        arrived + slack >= asked,
+        "arrived {:?} before the instant it asked for",
+        asked - arrived
+    );
+    assert!(
+        arrived <= asked + Duration::from_millis(100),
+        "arrived {:?} after the instant it asked for",
+        arrived - asked
+    );
+
+    let sent = Instant::now();
+    output
+        .send_ump_at(&[0x2090_3C64], tutti_midi_runtime::SendAt::Now)
+        .expect("the direct send to go");
+    let arrived = arrival_at(&target, Duration::from_millis(500)).expect("the event to arrive");
+    assert!(
+        arrived - sent < Duration::from_millis(50),
+        "a `Now` took {:?}",
+        arrived - sent
+    );
+}
+
+/// **A time already past is delivered at once**, and a run of events keeps its
+/// order: scheduled out of order, they arrive by time.
+#[test]
+fn events_are_delivered_by_their_times_and_a_past_time_at_once() {
+    let target = plug(&unique("ordered"));
+    let id = super::enumerate::pack_id(target.0.id(), 0);
+    let output = super::output::connect(id).expect("the output to open");
+    let now = Instant::now();
+    let late = now + Duration::from_millis(80);
+    let early = now + Duration::from_millis(40);
+    let first = [0x2090_3C64];
+    let second = [0x2090_3D64];
+    let third = [0x2090_3E64];
+    use tutti_midi_runtime::SendAt;
+    output.send_ump_at(&first, SendAt::At(late)).unwrap();
+    output.send_ump_at(&second, SendAt::At(early)).unwrap();
+    output
+        .send_ump_at(&third, SendAt::At(now - Duration::from_millis(500)))
+        .unwrap();
+    let got: Vec<u32> = (0..3)
+        .map_while(|_| next_note(&target, Duration::from_millis(500)).map(|(w, _)| w))
+        .collect();
+    assert_eq!(got, [third[0], second[0], first[0]]);
 }
 
 /// A device named `name` that publishes a UMP Endpoint in `protocol` with a

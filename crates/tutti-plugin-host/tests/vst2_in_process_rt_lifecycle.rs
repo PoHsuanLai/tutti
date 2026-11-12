@@ -683,12 +683,16 @@ fn an_io_change_reaches_a_subscriber_and_the_shape() {
 
     let seen = seen.lock().unwrap();
     assert!(
-        seen.contains(&PluginInvalidation::Latency {
-            samples: tutti_types::Samples(300)
-        }),
+        seen.iter().any(|n| matches!(
+            n,
+            PluginInvalidation::Latency { samples } if *samples == tutti_types::Samples(300)
+        )),
         "{seen:?}"
     );
-    assert!(seen.contains(&PluginInvalidation::Io), "{seen:?}");
+    assert!(
+        seen.iter().any(|n| matches!(n, PluginInvalidation::Io)),
+        "{seen:?}"
+    );
     assert_eq!(loaded.unit.shape().latency.samples().get(), 300);
 }
 

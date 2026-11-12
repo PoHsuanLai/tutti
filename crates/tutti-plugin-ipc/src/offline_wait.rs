@@ -5,6 +5,7 @@ use crate::ProcessGuard;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
+use tutti_plugin_types::PluginFailure;
 use tutti_types::{SampleRate, Samples};
 
 /// An offline fork's wait for the server: the per-block budget, and the
@@ -22,7 +23,7 @@ pub struct OfflineWait {
     /// Latched when a block first misses `budget`.
     gave_up: AtomicBool,
     /// Latched, with its exit status, when the server was found dead.
-    died: Mutex<Option<String>>,
+    died: Mutex<Option<PluginFailure>>,
     /// Latched when the fork's plugin was found refusing its rate.
     refusal: Mutex<Option<(SampleRate, String)>>,
     /// The latency the fork's graph was compiled against, recorded once the
@@ -91,15 +92,15 @@ impl OfflineWait {
     }
 
     /// The latched death of the server (a cause or its exit status), if any.
-    pub fn death(&self) -> Option<String> {
+    pub fn death(&self) -> Option<PluginFailure> {
         lock(&self.died).clone()
     }
 
     /// Latch a crash the bridge reported, unless a death is latched already.
-    pub fn latch_crash(&self, cause: Option<String>) {
+    pub fn latch_crash(&self, cause: Option<PluginFailure>) {
         let mut died = lock(&self.died);
         if died.is_none() {
-            *died = Some(cause.unwrap_or_else(|| "no cause latched".to_string()));
+            *died = Some(cause.unwrap_or(PluginFailure::Unreported));
         }
     }
 
@@ -125,7 +126,7 @@ impl OfflineWait {
         }
         let status = self.server.upgrade().and_then(|s| s.exited());
         if let Some(status) = status {
-            *died = Some(format!("plugin-server exited: {status}"));
+            *died = Some(PluginFailure::ServerExited { status });
         }
         died.is_some()
     }

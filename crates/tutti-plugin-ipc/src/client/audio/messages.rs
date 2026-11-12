@@ -7,7 +7,7 @@ use crate::protocol::{
     NoteExpressionTextChanges, ParamEdit, ParamId, ParameterChanges, ParameterInfo, PluginTail,
     Preset, PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
-use tutti_plugin_types::{ResyncKind, StateError};
+use tutti_plugin_types::{PluginFailure, ResyncKind, StateError};
 use tutti_types::SampleRate;
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
@@ -208,11 +208,10 @@ pub enum BridgeEvent {
     /// fires once, from the site that noticed, and is terminal: the engine
     /// offers no relaunch, so recovery means loading a fresh plugin.
     ///
-    /// `cause` is a message rather than a `BridgeError` because that type is
-    /// not `Clone` and the reason has to outlive the call that produced it.
-    /// Stringifying at the detection site is what makes the cause available at
-    /// all — a host that asks later gets the real reason instead of a
-    /// placeholder.
+    /// `cause` holds the `BridgeError` that ended the stream behind an `Arc`
+    /// (that type is not `Clone`, and the reason has to outlive the call that
+    /// produced it), reached as the failure's `source`. A host that asks later
+    /// gets the real reason instead of a placeholder.
     ///
     /// **May arrive with no listener.** Two of the three crash sites run before
     /// `set_listener`, so a subscriber is not guaranteed to see this. The
@@ -221,7 +220,7 @@ pub enum BridgeEvent {
     /// how it learns *reliably*.
     Crashed {
         /// What the site that noticed saw.
-        cause: String,
+        cause: PluginFailure,
     },
 }
 

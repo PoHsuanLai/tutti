@@ -48,6 +48,14 @@ impl Timebase {
         let nanos = u128::from(ticks) * u128::from(self.numer) / u128::from(self.denom);
         Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
     }
+
+    /// `duration` as ticks of host time, rounded down: the inverse of
+    /// [`duration`](Self::duration), saturating at `u64::MAX`.
+    #[must_use]
+    pub fn ticks(self, duration: Duration) -> u64 {
+        let ticks = duration.as_nanos() * u128::from(self.denom) / u128::from(self.numer.max(1));
+        u64::try_from(ticks).unwrap_or(u64::MAX)
+    }
 }
 
 /// The host clock now, in ticks. Allocation-free, so it runs in CoreMIDI's
@@ -71,6 +79,17 @@ mod tests {
         assert_eq!(base.duration(3), Duration::from_nanos(125));
         // An uptime of years of ticks does not overflow the product.
         assert!(base.duration(u64::MAX) > Duration::from_secs(1 << 30));
+    }
+
+    // `ticks` inverts `duration` at Apple Silicon's base: a second is 24 000 000
+    // ticks, 125 ns is 3, and a duration saturates rather than wraps.
+    #[test]
+    fn ticks_invert_duration() {
+        let base = Timebase::new(125, 3).unwrap();
+        assert_eq!(base.ticks(Duration::from_secs(1)), 24_000_000);
+        assert_eq!(base.ticks(Duration::from_nanos(125)), 3);
+        assert_eq!(base.ticks(base.duration(123_456_789)), 123_456_789);
+        assert_eq!(base.ticks(Duration::MAX), u64::MAX);
     }
 
     // A base with no denominator cannot be built, so `duration` never divides by

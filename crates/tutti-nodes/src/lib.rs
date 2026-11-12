@@ -20,14 +20,14 @@
 //!   [`SvfCoeffs::new`](tutti_dsp::SvfCoeffs::new) and
 //!   [`LadderCoeffs::new`](tutti_dsp::LadderCoeffs::new); [`Real`], the
 //!   `f32`/`f64` state type.
-//! - Crossover: [`Crossover`](tutti_dsp::Crossover), a 2 to 6 band Linkwitz-Riley 4th-order split
-//!   (a plain struct, `f64` state, ramped frequency changes), and
-//!   [`CrossoverNode`] over it, each crossover frequency an indexed
-//!   [`Cutoff`](tutti_types::UnitParam::Cutoff) param, with [`CrossoverError`].
+//! - Crossover: [`CrossoverNode`], over `tutti_dsp::CrossoverFamily`, a 2 to 6 band
+//!   Linkwitz-Riley 4th-order split (`f64` state, solved on the stream's 16-frame grid), each
+//!   crossover frequency an indexed [`Cutoff`](tutti_types::UnitParam::Cutoff) param, with
+//!   [`CrossoverError`].
 //! - Delay: [`DelayLineNode`] over `tutti_dsp::DelayLine`, with [`InterpolationMode`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
 //!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
-//!   bands over a [`Crossover`](tutti_dsp::Crossover), every setting an indexed param: see
+//!   bands over a Linkwitz-Riley crossover, every setting an indexed param: see
 //!   [`BAND_PARAMS`]) with its [`MultibandControls`].
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
@@ -49,7 +49,7 @@
 //!
 //! [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
 
-// The fallible constructions are the crossover's (`Crossover::new`,
+// The fallible constructions are the crossover's (`CrossoverControls::new`,
 // `CrossoverNode::new`, `MultibandCompressorNode::new`), all `CrossoverError`;
 // the rest of this crate has no `Error` type.
 
@@ -104,7 +104,7 @@ pub use tutti_dsp::ShapeKind;
 mod filter;
 pub use filter::{CrossoverNode, EqBandNode, LadderFilterNode, NodeRecurrence, SvfFilterNode};
 // The types in the filter nodes' signatures stay reachable from here; the
-// algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
+// algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `CrossoverModel`) are
 // `tutti-dsp`'s only.
 pub use tutti_dsp::{
     CrossoverControls, CrossoverError, LadderControls, LadderType, Real, SvfControls, SvfType,

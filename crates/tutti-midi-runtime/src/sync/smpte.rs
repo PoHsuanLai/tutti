@@ -7,7 +7,7 @@
 /// SMPTE frame rate for MTC/LTC.
 ///
 /// The discriminants are not MTC's wire values: they are the encoding the
-/// clock master keeps in an atomic (`from_u8` reads it back). MTC's two-bit
+/// clock master keeps in an atomic (`TryFrom<u8>` reads it back). MTC's two-bit
 /// rate field in the last quarter-frame is 0 for 24, 1 for 25, 2 for 30
 /// drop-frame and 3 for 30 non-drop, and has no 29.97 non-drop; the one
 /// mapping of it is in the MTC decoder and the clock master's encoder.
@@ -36,29 +36,40 @@ pub enum SmpteFrameRate {
     Fps30 = 4,
 }
 
-impl SmpteFrameRate {
-    /// Decodes a discriminant back into a rate, falling back to
-    /// [`Fps2997Df`](Self::Fps2997Df) for an out-of-range value.
-    ///
-    /// # Panics
-    ///
-    /// Debug builds assert `val <= 4`. Release builds take the fallback silently,
-    /// on the grounds that a malformed byte from a device should not kill the
-    /// transport — but a caller constructing this value itself has a bug, which
-    /// is what the assert is there to catch.
-    #[must_use]
-    pub fn from_u8(val: u8) -> Self {
-        debug_assert!(val <= 4, "invalid SmpteFrameRate discriminant: {val}");
+/// A byte that is none of [`SmpteFrameRate`]'s discriminants (0 to 4): what
+/// `SmpteFrameRate::try_from` refuses, carrying the byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownFrameRate(pub u8);
+
+impl core::fmt::Display for UnknownFrameRate {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{} is not an SMPTE frame rate discriminant (0 to 4)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownFrameRate {}
+
+impl TryFrom<u8> for SmpteFrameRate {
+    type Error = UnknownFrameRate;
+
+    /// Reads a discriminant (`rate as u8`) back into a rate.
+    fn try_from(val: u8) -> Result<Self, UnknownFrameRate> {
         match val {
-            0 => Self::Fps24,
-            1 => Self::Fps25,
-            2 => Self::Fps2997Df,
-            3 => Self::Fps2997Ndf,
-            4 => Self::Fps30,
-            _ => Self::Fps2997Df,
+            0 => Ok(Self::Fps24),
+            1 => Ok(Self::Fps25),
+            2 => Ok(Self::Fps2997Df),
+            3 => Ok(Self::Fps2997Ndf),
+            4 => Ok(Self::Fps30),
+            raw => Err(UnknownFrameRate(raw)),
         }
     }
+}
 
+impl SmpteFrameRate {
     /// Frames per second, as the exact rational the standard specifies.
     ///
     /// **`f64`, deliberately, and not a unit type.** The 29.97 rates are
@@ -111,3 +122,6 @@ impl SmpteFrameRate {
         matches!(self, Self::Fps2997Df)
     }
 }
+
+#[cfg(test)]
+mod tests;

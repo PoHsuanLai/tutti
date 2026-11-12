@@ -9,7 +9,7 @@
 //! on the audio thread, by a [`ClockNode`](crate::ClockNode), and stamps each
 //! event it emits with a sample-accurate [`Offset`], so receiving gear
 //! locks tightly instead of chasing frame-quantised jitter. The node sends
-//! them out of an event port; tap it (`Graph::open_event_tap`)
+//! them out of an event port; tap it (`Graph::taps().open_event`)
 //! for a hardware pump to drain.
 //!
 //! **The tempo is the published map's** (doc 020, stage 5): the engine hands
@@ -144,13 +144,15 @@ impl ClockMaster {
         Message::System(self.group, message).into()
     }
 
-    /// A clock master placing events at `sample_rate`. Starts **disabled**;
-    /// call [`set_enabled`](Self::set_enabled) once a hardware output is
+    /// A clock master sending on `group` (every event it emits is addressed
+    /// to it: a clock is the Group's, M2-104 §7.6) and placing events at
+    /// `sample_rate`. Starts **disabled**; call
+    /// [`set_enabled`](Self::set_enabled) once a hardware output is
     /// connected.
-    pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
+    pub fn new(group: MidiGroup, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             sample_rate: AtomicF64::new(sample_rate.into().get()),
-            group: MidiGroup::FIRST,
+            group,
             enabled: AtomicBool::new(false),
             send_mtc: AtomicBool::new(false),
             dropped: AtomicU64::new(0),
@@ -228,7 +230,9 @@ impl ClockMaster {
 
     /// The MTC frame rate in force.
     fn fps(&self) -> SmpteFrameRate {
-        SmpteFrameRate::from_u8(self.mtc_fps.load(Ordering::Acquire))
+        // The atomic is only ever stored a rate's own discriminant
+        // ([`set_mtc_fps`](Self::set_mtc_fps)), so the default is unreachable.
+        SmpteFrameRate::try_from(self.mtc_fps.load(Ordering::Acquire)).unwrap_or_default()
     }
 
     /// Frames from the MTC grid segment's first frame to quarter-frame `k`,
@@ -264,6 +268,12 @@ impl ClockMaster {
         self.mtc.frames.store(0, Ordering::Release);
         self.mtc.lead.store(0.0, Ordering::Release);
         self.mtc.align.store(true, Ordering::Release);
+    }
+
+    /// The Group every event is sent on.
+    #[must_use]
+    pub fn group(&self) -> MidiGroup {
+        self.group
     }
 
     /// The rate [`tick`](Self::tick) places events at.

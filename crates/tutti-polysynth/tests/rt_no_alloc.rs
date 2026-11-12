@@ -480,7 +480,7 @@ fn a_clip_into_a_synth_is_allocation_free() {
         } else {
             note_off(0, 48 + ((i - 1) % 24) as u8)
         };
-        TimedMidiEvent::new(Beat((i * 37) as f64 / 24_000.0), event)
+        TimedMidiEvent::new(Beat((i * 37) as f64 / 24_000.0), event).unwrap()
     }));
     let (mut ed, mut exec) = Editor::new(Prepare::new(
         SampleRate(48_000.0),

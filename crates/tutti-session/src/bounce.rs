@@ -1736,7 +1736,10 @@ impl Session {
             if !self.graph.reaches_outputs(node) {
                 return Err(BounceConfigError::StemNotAudible { node }.into());
             }
-            let width = self.graph.node_outputs(node);
+            let width = self
+                .graph
+                .node_outputs(node)
+                .map_err(|_| BounceConfigError::StemNotInGraph { node })?;
             let ports = tapped.unwrap_or_else(|| (0..width as u16).collect());
             if ports.is_empty() {
                 return Err(BounceConfigError::StemChannelMissing { node, channel: 0 }.into());
@@ -2279,7 +2282,7 @@ mod tests {
             .set_sources(InPort::new(lim, 0), [crate::OutPort::new(dc, 0)])
             .unwrap();
         session.graph().connect(lim, Root).unwrap();
-        assert_eq!(session.graph_ref().node_latency(lim), Samples(LATENCY));
+        assert_eq!(session.graph_ref().node_latency(lim), Ok(Samples(LATENCY)));
 
         let request = || {
             Bounce::project()

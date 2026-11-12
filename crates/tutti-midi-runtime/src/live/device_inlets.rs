@@ -29,15 +29,22 @@
 //! # Slots
 //!
 //! The node has a fixed number of event inputs, so a device takes one of
-//! `slots` ([`DeviceInlets::open`]), and gives it back
-//! ([`close`](DeviceInlets::close)). The graph is edited by its owner, on the
-//! control thread; a device connects from any thread. The two meet in a list
-//! of changes ([`take_changes`](DeviceInlets::take_changes)): the owner adds
-//! the inlet's node to the graph and wires it to the slot's input, or takes it
-//! out.
+//! `slots` ([`DeviceInlets::open`]), and gives it back by dropping its
+//! [`DeviceInput`]: the slot is the device's for as long as the input lives.
+//! The graph is edited by its owner, on the control thread; a device connects
+//! from any thread. The two meet in a list of changes
+//! ([`take_changes`](DeviceInlets::take_changes)): the owner adds the inlet's
+//! node to the graph and wires it to the slot's input, or takes it out.
+//!
+//! A slot that a new device takes starts over in the ingest node: each open
+//! bumps the slot's epoch, which a [`MidiIngestNode`](crate::MidiIngestNode)
+//! built [`following`](crate::MidiIngestNode::following) these inlets compares
+//! every block, so the previous device's half-sent RPN or held MPE notes are
+//! not carried into the next.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use tutti_graph::{EventCapacity, EventInletNode, EventInletWriter, InletCounts, Stamp};
@@ -56,9 +63,12 @@ use crate::clock_map::{ClockMap, ClockReading, Observed};
 /// allocation-free.
 pub type ArrivalClock = Arc<dyn Fn() -> Option<(Instant, Moment)> + Send + Sync>;
 
-/// Which of a [`DeviceInlets`]' slots a device holds: its index, and which
-/// device to take the slot it is, so a stale slot (its device closed, the slot
-/// reused) names nothing.
+/// Which of a [`DeviceInlets`]' slots a device holds, and so the one identity
+/// of an input port: its index, and which device to take the slot it is, so a
+/// stale slot (its device gone, the slot reused) names nothing.
+///
+/// Ephemeral: it names a connection of this run, so it has no serde (a saved
+/// device is a `DeviceId`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeviceSlot {
     index: usize,
@@ -66,10 +76,19 @@ pub struct DeviceSlot {
 }
 
 impl DeviceSlot {
-    /// The slot's index: the event input of the ingest node it feeds.
+    /// The slot's index: the event input of the ingest node it feeds. Unique
+    /// among the slots held at one time, and reused after a device lets go
+    /// of it; compare `DeviceSlot`s, not indices, to tell devices apart.
     #[must_use]
     pub fn index(self) -> usize {
         self.index
+    }
+
+    /// Which device to take this slot it is: unique for the inlets' life,
+    /// increasing in the order devices opened.
+    #[must_use]
+    pub fn generation(self) -> u64 {
+        self.generation
     }
 }
 
@@ -100,7 +119,7 @@ pub enum InletChange {
         /// The inlet the device pushes into.
         node: EventInletNode,
     },
-    /// The device closed `slot`: take its inlet out.
+    /// The device let go of `slot`: take its inlet out.
     Detach {
         /// The slot's index.
         slot: usize,
@@ -112,13 +131,18 @@ struct State {
     /// The generation of the device holding each slot, `None` when free.
     slots: Vec<Option<u64>>,
     next_generation: u64,
-    changes: Vec<InletChange>,
+    changes: VecDeque<InletChange>,
 }
 
 /// The hardware devices' event inlets, shared between the threads that connect
 /// devices and the owner of the graph. See the module docs.
 pub struct DeviceInlets {
+    /// What a [`DeviceInput`] gives its slot back to when it drops.
+    this: Weak<DeviceInlets>,
     state: Mutex<State>,
+    /// Each slot's epoch: the generation of the device that last took it,
+    /// plus one (0 before any), for an ingest node to see a new device by.
+    epochs: Arc<[AtomicU64]>,
     capacity: EventCapacity,
     /// Nanoseconds: what each device's thread adds to an arrival's frame.
     lead: Arc<AtomicU64>,
@@ -141,16 +165,24 @@ impl DeviceInlets {
     /// `capacity` events, and `lead` the time each arrival is placed after its
     /// mapped frame (see the module docs).
     #[must_use]
-    pub fn new(slots: usize, capacity: EventCapacity, lead: Duration) -> Self {
-        Self {
+    pub fn new(slots: usize, capacity: EventCapacity, lead: Duration) -> Arc<Self> {
+        let slots = slots.max(1);
+        Arc::new_cyclic(|this| Self {
+            this: Weak::clone(this),
             state: Mutex::new(State {
-                slots: vec![None; slots.max(1)],
+                slots: vec![None; slots],
                 ..State::default()
             }),
+            epochs: (0..slots).map(|_| AtomicU64::new(0)).collect(),
             capacity,
             lead: Arc::new(AtomicU64::new(nanos(lead))),
             clock: Arc::new(ArcLend::new(None)),
-        }
+        })
+    }
+
+    /// The slots' epochs, for a node that follows them.
+    pub(crate) fn epochs(&self) -> Arc<[AtomicU64]> {
+        Arc::clone(&self.epochs)
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -189,6 +221,8 @@ impl DeviceInlets {
     /// [`take_changes`](Self::take_changes). Control side: allocates the
     /// inlet's ring and waiting list.
     ///
+    /// The slot is the device's until the returned [`DeviceInput`] drops.
+    ///
     /// # Errors
     ///
     /// [`NoFreeSlot`] when every slot is held.
@@ -203,14 +237,18 @@ impl DeviceInlets {
         let generation = state.next_generation;
         state.next_generation += 1;
         state.slots[index] = Some(generation);
+        // Before the node can see the inlet: a block that reads the new epoch
+        // restarts the slot's state, and the attach follows.
+        self.epochs[index].store(generation + 1, Ordering::Release);
         let (node, writer) = EventInletNode::pair(self.capacity);
         state
             .changes
-            .push(InletChange::Attach { slot: index, node });
+            .push_back(InletChange::Attach { slot: index, node });
         Ok(DeviceInput {
             slot: DeviceSlot { index, generation },
             counts: writer.counts(),
             writer,
+            inlets: Weak::clone(&self.this),
             clock: self.clock.reader(),
             lead: Arc::clone(&self.lead),
             seen: None,
@@ -218,13 +256,11 @@ impl DeviceInlets {
         })
     }
 
-    /// Frees `slot` for the next device and queues the inlet's removal.
-    /// `false`, changing nothing, for a slot not held (already closed,
-    /// whether or not another device took it since). The device's thread may
-    /// still push: its events go to a ring nothing reads. An inlet still
-    /// waiting in [`take_changes`](Self::take_changes) is dropped with its
-    /// attach.
-    pub fn close(&self, slot: DeviceSlot) -> bool {
+    /// Frees `slot` for the next device and queues the inlet's removal; what
+    /// a [`DeviceInput`]'s drop does. A slot not held (a device that took it
+    /// since) is left alone. An inlet still waiting in
+    /// [`take_changes`](Self::take_changes) is dropped with its attach.
+    fn release(&self, slot: DeviceSlot) {
         let mut state = self.state();
         match state.slots.get_mut(slot.index) {
             Some(held) if *held == Some(slot.generation) => {
@@ -239,18 +275,40 @@ impl DeviceInlets {
                     Some(at) => {
                         state.changes.remove(at);
                     }
-                    None => state.changes.push(InletChange::Detach { slot: slot.index }),
+                    None => state
+                        .changes
+                        .push_back(InletChange::Detach { slot: slot.index }),
                 }
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
 
     /// The changes since the last call, in order, for the graph's owner to
-    /// apply. Control side.
-    pub fn take_changes(&self) -> Vec<InletChange> {
-        std::mem::take(&mut self.state().changes)
+    /// apply: an iterator that drains the list as it goes, so what the owner
+    /// does not take stays queued for its next call. **No lock is held while
+    /// the caller runs**: each step takes the next change under the lock and
+    /// lets it go before returning it, so applying a change may open or drop
+    /// a [`DeviceInput`] without deadlock (and a change queued meanwhile is
+    /// yielded by the same iterator). Control side.
+    pub fn take_changes(&self) -> Changes<'_> {
+        Changes { inlets: self }
+    }
+}
+
+/// The changes [`DeviceInlets::take_changes`] drains: one per step, oldest
+/// first, until none is queued.
+#[derive(Debug)]
+#[must_use = "an unread change stays queued: the iterator does nothing until it is read"]
+pub struct Changes<'a> {
+    inlets: &'a DeviceInlets,
+}
+
+impl Iterator for Changes<'_> {
+    type Item = InletChange;
+
+    fn next(&mut self) -> Option<InletChange> {
+        self.inlets.state().changes.pop_front()
     }
 }
 
@@ -262,10 +320,18 @@ fn nanos(d: Duration) -> u64 {
 /// Owned by the device's thread: `Send`, not `Clone`, and
 /// [`push`](Self::push) takes `&mut self`. Nothing here blocks, locks or
 /// allocates.
+///
+/// **Dropping it gives the slot back** and queues the inlet's removal
+/// ([`DeviceInlets::take_changes`]): the slot is held exactly as long as the
+/// input lives, so there is nothing to close. The drop takes the inlets' lock,
+/// so it is for the device's own thread or the control side, never a driver
+/// callback's hot path.
 pub struct DeviceInput {
     slot: DeviceSlot,
     writer: EventInletWriter,
     counts: InletCounts,
+    /// The inlets to give the slot back to; nothing if they are gone.
+    inlets: Weak<DeviceInlets>,
     clock: Reader<Option<ArrivalClock>>,
     lead: Arc<AtomicU64>,
     /// The latest reading the map was fed.
@@ -281,8 +347,16 @@ impl std::fmt::Debug for DeviceInput {
     }
 }
 
+impl Drop for DeviceInput {
+    fn drop(&mut self) {
+        if let Some(inlets) = self.inlets.upgrade() {
+            inlets.release(self.slot);
+        }
+    }
+}
+
 impl DeviceInput {
-    /// The slot this device holds: what [`DeviceInlets::close`] takes.
+    /// The slot this device holds, until it drops.
     #[must_use]
     pub fn slot(&self) -> DeviceSlot {
         self.slot
@@ -335,7 +409,7 @@ impl DeviceInput {
         let rebuild = match self.map.as_mut() {
             None => true,
             Some(map) => {
-                (map.rate() != at.rate() && !map.set_rate(at.rate()))
+                (map.rate() != at.rate() && map.set_rate(at.rate()).is_err())
                     || map.observe(reading) == Observed::Rejected
             }
         };

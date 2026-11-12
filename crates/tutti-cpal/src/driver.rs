@@ -14,35 +14,6 @@ use std::sync::Arc;
 use crate::Result;
 use crate::host::DeviceSelector;
 use crate::output::{AudioCallbackState, AudioEngine};
-use crate::roster::DeviceId;
-
-/// One enumerated audio device.
-///
-/// Returned by [`AudioEngine::output_devices`] and
-/// [`DeviceHost::output_devices`](crate::DeviceHost::output_devices) /
-/// [`input_devices`](crate::DeviceHost::input_devices).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceInfo {
-    /// The identity [`DeviceSelector::Id`] takes.
-    pub id: DeviceId,
-}
-
-impl DeviceInfo {
-    /// The device's human-readable name, as the OS reports it. Empty if the
-    /// host failed to name it.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        self.id.name()
-    }
-
-    /// Devices for `names`, in enumeration order.
-    pub(crate) fn list(names: impl IntoIterator<Item = String>) -> Vec<DeviceInfo> {
-        DeviceId::list(names)
-            .into_iter()
-            .map(|id| DeviceInfo { id })
-            .collect()
-    }
-}
 
 /// Access to the engine while its stream is stopped, handed to a restart hook.
 ///

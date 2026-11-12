@@ -8,7 +8,9 @@
 //! demultiplexed the stream, call [`tick`](MidiClockDecoder::tick) /
 //! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
 
-use tutti_types::Bpm;
+use std::time::{Duration, Instant};
+
+use tutti_types::{Beat, Bpm};
 use tutti_ump::{Message, System, Ump};
 
 const TEMPO_WINDOW: usize = 24;
@@ -32,8 +34,8 @@ pub enum ClockTransportState {
 pub struct MidiClockDecoder {
     tick_count: u64,
     transport: ClockTransportState,
-    last_timestamp_us: Option<u64>,
-    interval_buf: [u64; TEMPO_WINDOW],
+    last_tick: Option<Instant>,
+    interval_buf: [Duration; TEMPO_WINDOW],
     interval_idx: usize,
     interval_count: usize,
     derived_tempo: Option<Bpm>,
@@ -49,8 +51,8 @@ impl MidiClockDecoder {
         Self {
             tick_count: 0,
             transport: ClockTransportState::Stopped,
-            last_timestamp_us: None,
-            interval_buf: [0; TEMPO_WINDOW],
+            last_tick: None,
+            interval_buf: [Duration::ZERO; TEMPO_WINDOW],
             interval_idx: 0,
             interval_count: 0,
             derived_tempo: None,
@@ -62,16 +64,16 @@ impl MidiClockDecoder {
     /// [`MtcDecoder::feed`](crate::MtcDecoder::feed), so you can route raw
     /// input packets straight in without demultiplexing the stream yourself.
     ///
-    /// Recognises Timing Clock (0xF8, uses `timestamp_us` for tempo), Song
+    /// Recognises Timing Clock (0xF8, uses `at` for tempo), Song
     /// Position Pointer (0xF2), Start (0xFA), Continue (0xFB), and Stop (0xFC).
     /// Any other packet is ignored.
     /// Returns `true` if the packet was a recognised transport message.
-    pub fn feed(&mut self, ump: &Ump, timestamp_us: u64) -> bool {
+    pub fn feed(&mut self, ump: &Ump, at: Instant) -> bool {
         let Ok(Message::System(_, system)) = (*ump).decode() else {
             return false;
         };
         match system {
-            System::TimingClock => self.tick(timestamp_us),
+            System::TimingClock => self.tick(at),
             System::SongPosition(position) => self.song_position_msg(position.get()),
             System::Start => self.start_msg(),
             System::Continue => self.continue_msg(),
@@ -81,16 +83,18 @@ impl MidiClockDecoder {
         true
     }
 
-    /// Processes a timing clock message (0xF8). Call with the host timestamp in microseconds.
-    pub fn tick(&mut self, timestamp_us: u64) {
+    /// Processes a timing clock message (0xF8) that arrived at `at`, the
+    /// instant the OS delivered it. The tempo is measured from the spacing of
+    /// these, so they must be arrival times, not a count.
+    pub fn tick(&mut self, at: Instant) {
         if self.transport == ClockTransportState::Playing {
             self.tick_count += 1;
         }
 
-        if let Some(last) = self.last_timestamp_us
-            && timestamp_us > last
+        if let Some(last) = self.last_tick
+            && at > last
         {
-            let interval = timestamp_us - last;
+            let interval = at - last;
             self.interval_buf[self.interval_idx] = interval;
             self.interval_idx = (self.interval_idx + 1) % TEMPO_WINDOW;
             if self.interval_count < TEMPO_WINDOW {
@@ -99,7 +103,7 @@ impl MidiClockDecoder {
             self.update_tempo();
         }
 
-        self.last_timestamp_us = Some(timestamp_us);
+        self.last_tick = Some(at);
     }
 
     /// Handles MIDI Start (0xFA).
@@ -131,8 +135,8 @@ impl MidiClockDecoder {
     }
 
     /// Current position in beats (based on tick count at 24 PPQN).
-    pub fn beat_position(&self) -> f64 {
-        self.tick_count as f64 / f64::from(System::TIMING_CLOCKS_PER_QUARTER)
+    pub fn beat_position(&self) -> Beat {
+        Beat::new(self.tick_count as f64 / f64::from(System::TIMING_CLOCKS_PER_QUARTER))
     }
 
     /// Whether the decoded transport is currently running.
@@ -148,8 +152,8 @@ impl MidiClockDecoder {
     pub fn reset(&mut self) {
         self.tick_count = 0;
         self.transport = ClockTransportState::Stopped;
-        self.last_timestamp_us = None;
-        self.interval_buf = [0; TEMPO_WINDOW];
+        self.last_tick = None;
+        self.interval_buf = [Duration::ZERO; TEMPO_WINDOW];
         self.interval_idx = 0;
         self.interval_count = 0;
         self.derived_tempo = None;
@@ -159,13 +163,13 @@ impl MidiClockDecoder {
         if self.interval_count < 2 {
             return;
         }
-        let sum: u64 = self.interval_buf[..self.interval_count].iter().sum();
-        let avg_us = sum as f64 / self.interval_count as f64;
-        if avg_us > 0.0 {
-            // avg_us = microseconds per tick
-            // beats_per_second = 1_000_000 / (avg_us * PPQN)
+        let sum: Duration = self.interval_buf[..self.interval_count].iter().sum();
+        let avg = sum.as_secs_f64() / self.interval_count as f64;
+        if avg > 0.0 {
+            // avg = seconds per tick
+            // beats_per_second = 1 / (avg * PPQN)
             // BPM = beats_per_second * 60
-            let bpm = 60_000_000.0 / (avg_us * f64::from(System::TIMING_CLOCKS_PER_QUARTER));
+            let bpm = 60.0 / (avg * f64::from(System::TIMING_CLOCKS_PER_QUARTER));
             if (20.0..=300.0).contains(&bpm) {
                 self.derived_tempo = Bpm::new(bpm);
             }

@@ -164,7 +164,11 @@ fn a_params_wrapped_node_is_addressed_and_forks_from_its_values() {
     s.render_frame(&mut live);
     assert_eq!(live, [440.0], "the live node reads it");
 
-    let mut fork = s.graph_ref().fork_live().expect("a Params node forks");
+    let mut fork = s
+        .graph_ref()
+        .testing()
+        .fork_live()
+        .expect("a Params node forks");
     s.graph().set_param(mine.cutoff(), Hz(880.0)).unwrap();
     let mut forked = [0.0f32];
     fork.tick(&[], &mut forked);

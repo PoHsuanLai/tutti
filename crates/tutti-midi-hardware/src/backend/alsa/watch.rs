@@ -418,7 +418,7 @@ impl Announce {
         match self.polls.wait(timeout)? {
             Wait::Timeout => Ok(Woken::Timeout),
             Wait::Stopped => Ok(Woken::Stopped),
-            Wait::Broken => Err(Error::MidiPort("the sequencer descriptor failed".into())),
+            Wait::Broken => Err(Error::port("the sequencer descriptor failed")),
             Wait::Ready => Ok(Woken::Announced(self.drain())),
         }
     }

@@ -2,49 +2,19 @@
 //! one pushes into.
 //!
 //! The list is control-side state: the audio thread reads nothing here. A port
-//! is a slot of the shared [`DeviceInlets`]; opening one takes the slot and
-//! returns the [`InputProducerHandle`] the driver thread pushes through, and
-//! removing it gives the slot back.
+//! is a slot of the shared [`DeviceInlets`], named by its [`DeviceSlot`] (the
+//! one id: the slot's index and which device took it, so a stale id names
+//! nothing); opening one takes the slot and returns the [`InputProducerHandle`]
+//! the driver thread pushes through, which holds the slot until it drops.
+//! Removing the port retires its entry in this list.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tutti_graph::Losses;
-use tutti_midi_runtime::{DeviceInlets, NoFreeSlot};
+use tutti_midi_runtime::{DeviceInlets, DeviceSlot, NoFreeSlot};
 
-use super::async_port::{HardwareMidiInput, InputProducerHandle};
-
-/// One port's identity: its slot in the manager, and which of the ports ever
-/// created there it is.
-///
-/// A removed port's slot is reused by the next port created, so the slot
-/// alone does not name a port: an id kept past its port's removal would
-/// otherwise reach whichever port took the slot. The generation tells them
-/// apart. Every method taking a `PortId` checks both, and a stale id (its port
-/// removed, whether or not the slot was reused) matches nothing: it removes
-/// nothing, toggles nothing, and reads as no port.
-///
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PortId {
-    index: usize,
-    generation: u64,
-}
-
-impl PortId {
-    /// The slot this port occupies. Unique among the ports open at one time,
-    /// and reused after the port is removed; compare `PortId`s, not slots, to
-    /// tell ports apart.
-    #[must_use]
-    pub fn index(self) -> usize {
-        self.index
-    }
-
-    /// Which port created in this manager this is: unique for the manager's
-    /// life, increasing in creation order.
-    #[must_use]
-    pub fn generation(self) -> u64 {
-        self.generation
-    }
-}
+use super::async_port::{HardwareMidiInput, InputProducerHandle, StreamDrain};
 
 /// A snapshot view of one port, computed on demand from the underlying
 /// `HardwareMidiInput`. The port is the single source of truth for `name` and
@@ -54,7 +24,7 @@ impl PortId {
 pub struct PortInfo {
     /// The port's identity, and the key every other method on
     /// [`HardwareMidiInputs`] takes.
-    pub id: PortId,
+    pub id: DeviceSlot,
     /// The endpoint name the port was created with — for an open connection,
     /// the name the OS reported for that device.
     pub name: String,
@@ -74,9 +44,9 @@ pub struct PortInfo {
 }
 
 impl PortInfo {
-    fn of(port: &HardwareMidiInput) -> Self {
+    fn of(id: DeviceSlot, port: &HardwareMidiInput) -> Self {
         Self {
-            id: port.id(),
+            id,
             name: port.name().to_string(),
             active: port.is_active(),
             losses: port.losses(),
@@ -92,8 +62,9 @@ impl PortInfo {
 /// [`InputProducerHandle`] it returns from the driver's own thread; each port
 /// is an event inlet of the [`DeviceInlets`] the list was built over, which the
 /// graph's owner wires to the ingest node. When the connection closes,
-/// [`remove_input_port`](Self::remove_input_port) retires the port and frees
-/// its slot for the next one, so hot-plug cycles do not grow the set.
+/// [`remove_input_port`](Self::remove_input_port) retires the port, and
+/// dropping the handle gave its slot back, so hot-plug cycles do not grow the
+/// set.
 ///
 /// Cheap to share: hold it in an `Arc` and hand clones to the session.
 pub struct HardwareMidiInputs {
@@ -104,13 +75,8 @@ pub struct HardwareMidiInputs {
     retired: Mutex<Losses>,
 }
 
-/// The port list: one slot per index, `None` where a port was removed and no
-/// new one has taken its place yet.
-#[derive(Default)]
-struct Ports {
-    slots: Vec<Option<Arc<HardwareMidiInput>>>,
-    next_generation: u64,
-}
+/// The port list, keyed by the slot each port holds (in index order).
+type Ports = BTreeMap<DeviceSlot, Arc<HardwareMidiInput>>;
 
 impl HardwareMidiInputs {
     /// A list with no ports, each port an inlet of `inlets`.
@@ -118,7 +84,7 @@ impl HardwareMidiInputs {
     pub fn new(inlets: Arc<DeviceInlets>) -> Self {
         Self {
             inlets,
-            ports: Mutex::new(Ports::default()),
+            ports: Mutex::new(Ports::new()),
             retired: Mutex::new(Losses::NONE),
         }
     }
@@ -141,32 +107,27 @@ impl HardwareMidiInputs {
     /// enough to fill it. Control side.
     #[must_use]
     pub fn losses(&self) -> Losses {
-        let live: Losses = self
-            .ports()
-            .slots
-            .iter()
-            .flatten()
-            .map(|p| p.losses())
-            .sum();
+        let live: Losses = self.ports().values().map(|p| p.losses()).sum();
         live + *self.retired.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Creates an input port named `name` and returns the **only** producer
-    /// handle for it; [`InputProducerHandle::port_id`] is its identity.
+    /// handle for it; [`InputProducerHandle::slot`] is its identity.
     ///
-    /// The port takes the lowest free index (one a removed port left), or the
-    /// next one past the end, a generation no port before it had, and a slot
-    /// of the inlets. It starts **active**. Control side: it allocates the
-    /// inlet. Safe to call from several threads at once.
+    /// The port takes the lowest free slot of the inlets, a generation no
+    /// port before it had, and starts **active**. Control side: it allocates
+    /// the inlet. Safe to call from several threads at once.
     ///
     /// There is no other way to reach a port's producer: give the handle to the
-    /// one thread that pushes. Dropping it leaves the port fed by nothing;
-    /// [`remove_input_port`](Self::remove_input_port) retires it.
+    /// one thread that pushes. **The slot is the handle's: dropping it frees
+    /// the slot** (and queues the inlet's removal), but leaves the port's entry
+    /// in the list until [`remove_input_port`](Self::remove_input_port)
+    /// retires it, and the entry then reads as a port fed by nothing.
     ///
     /// # Errors
     ///
     /// [`NoFreeSlot`] when every slot of the inlets is held: no port is made.
-    #[must_use = "the handle is the port's only producer; dropping it leaves the port fed by nothing"]
+    #[must_use = "the handle is the port's only producer, and holds its slot: dropping it leaves the port fed by nothing"]
     pub fn open_input_port(
         &self,
         name: impl Into<String>,
@@ -174,93 +135,63 @@ impl HardwareMidiInputs {
         let name = name.into();
         let mut ports = self.ports();
         let input = self.inlets.open()?;
-        let index = ports
-            .slots
-            .iter()
-            .position(Option::is_none)
-            .unwrap_or(ports.slots.len());
-        let id = PortId {
-            index,
-            generation: ports.next_generation,
-        };
-        ports.next_generation += 1;
-        let (port, handle) = HardwareMidiInput::new(name, input, id);
-        let port = Some(Arc::new(port));
-        match ports.slots.get_mut(index) {
-            Some(slot) => *slot = port,
-            None => ports.slots.push(port),
-        }
+        let slot = input.slot();
+        let (port, handle) = HardwareMidiInput::new(name, input);
+        ports.insert(slot, Arc::new(port));
         Ok(handle)
     }
 
-    /// Retires the port `id` names, freeing its slot for the next
-    /// [`open_input_port`](Self::open_input_port). Returns `false`, and
-    /// changes nothing, when `id` names no live port: one already removed,
-    /// including one whose index a newer port has taken.
+    /// Retires the port `id` names. Returns `false`, and changes nothing, when
+    /// `id` names no live port: one already removed, including one whose
+    /// index a newer port has taken.
     ///
     /// Events still in its inlet are discarded with it. Close the port's driver
-    /// connection first, so nothing is still pushing; a handle that outlives
-    /// the port is harmless, and whatever it pushes is lost. Control side.
-    pub fn remove_input_port(&self, id: PortId) -> bool {
-        let mut ports = self.ports();
-        let removed = match ports.slots.get_mut(id.index) {
-            Some(slot) if slot.as_ref().is_some_and(|port| port.id() == id) => slot.take(),
-            _ => None,
-        };
-        // Trailing empty slots go too, so the list shrinks back once the
-        // last port is gone rather than keeping its high-water mark.
-        while ports.slots.last().is_some_and(Option::is_none) {
-            ports.slots.pop();
-        }
+    /// connection first (drop its [`InputProducerHandle`], which frees the
+    /// slot), so nothing is still pushing; a handle that outlives the port is
+    /// harmless, and whatever it pushes is lost. Control side.
+    pub fn remove_input_port(&self, id: DeviceSlot) -> bool {
+        let removed = self.ports().remove(&id);
         match removed {
             Some(port) => {
                 *self.retired.lock().unwrap_or_else(PoisonError::into_inner) += port.losses();
-                self.inlets.close(port.slot());
                 true
             }
             None => false,
         }
     }
 
-    /// How many indices the list holds, live or free: bounded by the most
-    /// ports ever open at once.
+    /// How many ports the list holds.
     #[cfg(test)]
-    pub(crate) fn slot_count(&self) -> usize {
-        self.ports().slots.len()
+    pub(crate) fn port_count(&self) -> usize {
+        self.ports().len()
     }
 
     /// The live port `id` names, if any: a stale id names none.
-    fn port(&self, id: PortId) -> Option<Arc<HardwareMidiInput>> {
-        self.ports()
-            .slots
-            .get(id.index)
-            .and_then(Option::clone)
-            .filter(|port| port.id() == id)
+    fn port(&self, id: DeviceSlot) -> Option<Arc<HardwareMidiInput>> {
+        self.ports().get(&id).cloned()
     }
 
     /// A snapshot of one port, or `None` when `id` names no live port.
-    pub fn port_info(&self, id: PortId) -> Option<PortInfo> {
-        self.port(id).map(|port| PortInfo::of(&port))
+    pub fn port_info(&self, id: DeviceSlot) -> Option<PortInfo> {
+        self.port(id).map(|port| PortInfo::of(id, &port))
     }
 
     /// Every input port, in index order.
     pub fn list_input_ports(&self) -> Vec<PortInfo> {
         self.ports()
-            .slots
             .iter()
-            .flatten()
-            .map(|port| PortInfo::of(port))
+            .map(|(id, port)| PortInfo::of(*id, port))
             .collect()
     }
 
-    /// Hands `take` every UMP Stream message the port `id` names has held since
-    /// the last call, oldest first: what the device said about itself
-    /// (`InputProducerHandle::push` keeps them out of the inlet). Nothing for
-    /// a stale id. Control side.
-    pub fn drain_stream(&self, id: PortId, take: impl FnMut(tutti_ump::Ump)) {
-        if let Some(port) = self.port(id) {
-            port.drain_stream(take);
-        }
+    /// The UMP Stream messages the port `id` names has held since the last
+    /// read, oldest first, taken as the iterator is read: what the device said
+    /// about itself (`InputProducerHandle::push` keeps them out of the inlet).
+    /// Nothing for a stale id. **No lock is held between steps**, so the
+    /// caller may do what it likes with each message. Control side, one reader
+    /// at a time.
+    pub fn drain_stream(&self, id: DeviceSlot) -> StreamDrain {
+        StreamDrain::new(self.port(id))
     }
 
     /// Sets whether the port `id` names delivers. Returns `false`, and changes
@@ -268,7 +199,7 @@ impl HardwareMidiInputs {
     ///
     /// An inactive port discards what the driver pushes: nothing is queued
     /// while it is paused, so there is no burst when it is active again.
-    pub fn set_port_active(&self, id: PortId, active: bool) -> bool {
+    pub fn set_port_active(&self, id: DeviceSlot, active: bool) -> bool {
         match self.port(id) {
             Some(port) => {
                 port.set_active(active);
@@ -279,7 +210,7 @@ impl HardwareMidiInputs {
     }
 
     /// Whether the port `id` names delivers. `false` for a stale id.
-    pub fn is_port_active(&self, id: PortId) -> bool {
+    pub fn is_port_active(&self, id: DeviceSlot) -> bool {
         self.port(id).is_some_and(|port| port.is_active())
     }
 }
@@ -287,10 +218,7 @@ impl HardwareMidiInputs {
 impl core::fmt::Debug for HardwareMidiInputs {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HardwareMidiInputs")
-            .field(
-                "num_input_ports",
-                &self.ports().slots.iter().filter(|p| p.is_some()).count(),
-            )
+            .field("num_input_ports", &self.ports().len())
             .finish_non_exhaustive()
     }
 }

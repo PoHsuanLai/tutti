@@ -136,18 +136,21 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
         "1 kHz at 44.1 kHz"
     );
     assert!((t.settings().beat().get() - 2.0).abs() < 1e-9, "one second");
-    let old_latency = s.graph_ref().node_latency(lim);
+    let old_latency = s.graph_ref().node_latency(lim).unwrap();
     assert_eq!(s.latency(), old_latency, "the 44.1 kHz figure is published");
 
     let (driver, new) = ManualStreamDriver::new();
     s.restart_on(&mut device, spec_at(NEW), driver, None, |_| {})
         .expect("restarts");
     assert!(!old.is_open() && new.is_open(), "on the new device");
-    assert_eq!(s.graph_ref().prepared().sample_rate(), SampleRate(NEW));
+    assert_eq!(
+        s.graph_ref().testing().prepared().sample_rate(),
+        SampleRate(NEW)
+    );
     assert_eq!(t.sample_rate(), SampleRate(NEW), "the transport's rate");
     // Before the first block: the re-prepare finished inside the hook, and
     // the figures a disk source pre-rolls by are the new rate's.
-    let new_latency = s.graph_ref().node_latency(lim);
+    let new_latency = s.graph_ref().node_latency(lim).unwrap();
     assert_ne!(new_latency, old_latency, "the lookahead moved in samples");
     assert_eq!(
         s.latency(),
@@ -199,7 +202,7 @@ fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
         period(&after[4_800..])
     );
 
-    let new_latency = s.graph_ref().node_latency(lim);
+    let new_latency = s.graph_ref().node_latency(lim).unwrap();
     assert_ne!(new_latency, old_latency, "the lookahead moved in samples");
     assert_eq!(s.latency(), new_latency);
     assert_eq!(
@@ -366,9 +369,9 @@ fn a_crossfade_after_the_restart_lands_at_once() {
         matches!(landed, Crossfade::Landed(_)),
         "nothing waits: the re-prepare is done"
     );
-    assert_eq!(s.graph_ref().waiting_crossfades(), 0);
+    assert_eq!(s.graph_ref().testing().waiting_crossfades(), 0);
     let out = play(&mut s, &new, 480, 50);
-    assert_eq!(s.graph_ref().waiting_crossfades(), 0);
+    assert_eq!(s.graph_ref().testing().waiting_crossfades(), 0);
     assert!(
         (period(&out[4_800..]) - 24.0).abs() < 0.01,
         "2 kHz at 48 kHz, measured {}",

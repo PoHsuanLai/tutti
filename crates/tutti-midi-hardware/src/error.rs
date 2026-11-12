@@ -16,9 +16,17 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// Opening, configuring or connecting a port failed, with the backend's own
-    /// description. Raised directly by the CoreMIDI and ALSA backends.
-    #[error("MIDI port error: {0}")]
-    MidiPort(String),
+    /// description and, when there was one, the error under it
+    /// ([`source`](std::error::Error::source)). Raised directly by the CoreMIDI
+    /// and ALSA backends; made with [`Error::port`] and [`Error::port_from`].
+    #[error("MIDI port error: {what}")]
+    MidiPort {
+        /// What failed, in words.
+        what: String,
+        /// The error under it, if the failure came from one.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 
     /// No device is present under this id: what a stale id resolves to.
     #[error("no MIDI device {0}")]
@@ -34,14 +42,30 @@ pub enum Error {
         direction: tutti_midi_device::PortDirection,
     },
 
-    /// No present device has a name containing this text.
-    #[error("no MIDI device named like '{0}'")]
-    NoDeviceNamed(String),
+    /// No present device has a name containing this text. Carries the names it
+    /// searched (the devices of the direction asked for), so a typo shows what
+    /// was there.
+    #[error("no MIDI device named like '{name}' (searched: {})", .searched.join(", "))]
+    NoDeviceNamed {
+        /// The text that matched nothing.
+        name: String,
+        /// The names of the devices it was matched against; empty when none
+        /// was present.
+        searched: Vec<String>,
+    },
 
     /// The named device could not be driven, with the backend's own
-    /// description.
-    #[error("MIDI device error: {0}")]
-    MidiDevice(String),
+    /// description and, when there was one, the error under it
+    /// ([`source`](std::error::Error::source)). Made with [`Error::device`]
+    /// and [`Error::device_from`].
+    #[error("MIDI device error: {what}")]
+    MidiDevice {
+        /// What failed, in words.
+        what: String,
+        /// The error under it, if the failure came from one.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 
     /// A CoreMIDI call returned a non-zero `OSStatus`.
     #[error("CoreMIDI error: {operation} ({status})")]
@@ -90,6 +114,50 @@ pub enum Error {
     // depend on).
 }
 
+impl Error {
+    /// A [`MidiPort`](Self::MidiPort) error with no error under it.
+    #[must_use]
+    pub fn port(what: impl Into<String>) -> Self {
+        Self::MidiPort {
+            what: what.into(),
+            source: None,
+        }
+    }
+
+    /// A [`MidiPort`](Self::MidiPort) error caused by `source`.
+    #[must_use]
+    pub fn port_from(
+        what: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::MidiPort {
+            what: what.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// A [`MidiDevice`](Self::MidiDevice) error with no error under it.
+    #[must_use]
+    pub fn device(what: impl Into<String>) -> Self {
+        Self::MidiDevice {
+            what: what.into(),
+            source: None,
+        }
+    }
+
+    /// A [`MidiDevice`](Self::MidiDevice) error caused by `source`.
+    #[must_use]
+    pub fn device_from(
+        what: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::MidiDevice {
+            what: what.into(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
 /// The crate's result type: [`Error`](enum@Error) on the failure side.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -112,3 +180,6 @@ impl From<tutti_coremidi_ffi::Error> for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

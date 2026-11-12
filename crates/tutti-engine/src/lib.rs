@@ -11,7 +11,7 @@ mod hearing;
 mod output;
 pub use block_clock::{BlockClockReader, BlockReading};
 pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError};
-pub use hearing::{HeardTapError, HeardTaps};
+pub use hearing::{HeardOpen, HeardTapError, HeardTaps};
 pub use output::OutputControl;
 
 /// What a host driving the engine names, in one import.

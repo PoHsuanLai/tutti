@@ -43,11 +43,13 @@ fn note(number: u8, start: Beat, duration: BeatDuration) -> Vec<TimedMidiEvent> 
         TimedMidiEvent::new(
             start,
             note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, u16::MAX),
-        ),
+        )
+        .unwrap(),
         TimedMidiEvent::new(
             start + duration,
             note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
-        ),
+        )
+        .unwrap(),
     ]
 }
 

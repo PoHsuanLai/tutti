@@ -294,7 +294,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
     ) -> Result<Box<dyn InputConnection>> {
         let client = self.client()?;
         let source = Self::find_source(id)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI source with id {}", id.raw())))?;
+            .ok_or_else(|| Error::device(format!("no MIDI source with id {}", id.raw())))?;
 
         // No byte parser on this path, deliberately. The port opens with
         // `Protocol::Midi20`, so CoreMIDI delivers UMP words — a MIDI-1.0
@@ -312,7 +312,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
                     // One CoreMIDI packet is a packed word stream of several
                     // concatenated UMP messages.
                     for event in split_stream(packet.data()) {
-                        if !producer.push(event, arrived) {
+                        if producer.push(event, arrived) == crate::Pushed::Full {
                             tracing::debug!("MIDI input ring full, dropping event");
                         }
                     }
@@ -334,9 +334,8 @@ impl MidiEndpoints for CoreMidiEndpoints {
 
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         let client = self.client()?;
-        let destination = Self::find_destination(id).ok_or_else(|| {
-            Error::MidiDevice(format!("no MIDI destination with id {}", id.raw()))
-        })?;
+        let destination = Self::find_destination(id)
+            .ok_or_else(|| Error::device(format!("no MIDI destination with id {}", id.raw())))?;
 
         let port = client
             .output_port("tutti-out")

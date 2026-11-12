@@ -18,15 +18,15 @@ use tutti_midi_device::{
     DeviceEvent, DeviceId, DeviceInfo, DeviceTable, EndpointId, Identity, OsChange, OsDevice,
     PortDirection, Resolved,
 };
-use tutti_midi_runtime::MidiOut;
+use tutti_midi_runtime::{DeviceSlot, MidiOut};
 use tutti_ump::StreamConfig;
 
+use crate::HardwareMidiInputs;
 use crate::backend;
 use crate::capability::{EndpointInfo, UmpCapability};
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use crate::wire::Wire;
-use crate::{HardwareMidiInputs, PortId};
 
 /// Why a device watch ended on its own.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -419,7 +419,7 @@ impl Devices {
         let producer = ports.open_input_port(info.name.as_str())?;
         let mut input = OpenInput {
             connection: None,
-            port: producer.port_id(),
+            port: producer.slot(),
             ports: Arc::clone(ports),
             info,
         };
@@ -531,9 +531,9 @@ impl DeviceEvents {
     }
 
     /// The changes queued now, oldest first, taking each as it is iterated.
-    /// Never blocks.
-    pub fn try_iter(&self) -> impl Iterator<Item = DeviceEvent> + '_ {
-        std::iter::from_fn(|| self.queue.inbox().events.pop_front())
+    /// Never blocks. `for event in &events` is the same.
+    pub fn try_iter(&self) -> Pending<'_> {
+        Pending { events: self }
     }
 
     /// The oldest change, waiting up to `timeout` for one.
@@ -570,18 +570,44 @@ impl DeviceEvents {
     }
 }
 
+/// The changes of a [`DeviceEvents`] queued now, taken as they are read:
+/// [`DeviceEvents::try_iter`], and `&DeviceEvents`' `IntoIterator`.
+#[derive(Debug)]
+pub struct Pending<'a> {
+    events: &'a DeviceEvents,
+}
+
+impl Iterator for Pending<'_> {
+    type Item = DeviceEvent;
+
+    fn next(&mut self) -> Option<DeviceEvent> {
+        self.events.queue.inbox().events.pop_front()
+    }
+}
+
+impl<'a> IntoIterator for &'a DeviceEvents {
+    type Item = DeviceEvent;
+    type IntoIter = Pending<'a>;
+
+    fn into_iter(self) -> Pending<'a> {
+        self.try_iter()
+    }
+}
+
 /// An input held open: the OS connection to a device, and the ring port its
 /// events land in.
 ///
 /// Dropping it closes both, connection first, so nothing is still pushing into
-/// a ring that is being retired. Drop it on a control thread only: closing the
-/// connection joins the backend's thread and retiring the port publishes. A device that leaves does not close it: the
+/// a ring that is being retired (the connection's end of the port, its
+/// producer handle, gives the slot back as it drops). Drop it on a control
+/// thread only: closing the connection joins the backend's thread and retiring
+/// the port publishes. A device that leaves does not close it: the
 /// holder learns from a [`DeviceEvent::Removed`] naming [`id`](Self::id) and
 /// drops it (the session does, in `Phase::Poll`).
 pub struct OpenInput {
     /// `None` only while [`Devices::open_input`] is still opening it.
     connection: Option<Box<dyn InputConnection>>,
-    port: PortId,
+    port: DeviceSlot,
     ports: Arc<HardwareMidiInputs>,
     info: DeviceInfo,
 }
@@ -616,9 +642,10 @@ impl OpenInput {
         self.connection.as_ref().is_some_and(|c| c.is_alive())
     }
 
-    /// The port its events land in, for the list's `set_port_active`.
+    /// The port its events land in (its slot), for the list's
+    /// `set_port_active`.
     #[must_use]
-    pub fn port_id(&self) -> PortId {
+    pub fn slot(&self) -> DeviceSlot {
         self.port
     }
 }

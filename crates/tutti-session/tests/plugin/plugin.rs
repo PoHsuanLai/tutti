@@ -551,7 +551,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     );
     let (node, _) = wired_probe(&mut s);
     // The graph's figure for the node: the probe's own and the pipeline's.
-    let base = s.graph_ref().node_latency(node);
+    let base = s.graph_ref().node_latency(node).unwrap();
     let id = gain_param(&s, node);
 
     // A value worth restoring, and a snapshot of it.

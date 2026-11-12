@@ -36,17 +36,17 @@ pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};
 pub use devices::{
-    ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, RecvTimeoutError, SeedError,
+    ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, Pending, RecvTimeoutError, SeedError,
     WatchFailure,
 };
 pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
-pub use port::{HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};
-pub use session::MidiSession;
+pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, Pushed, StreamDrain};
+pub use session::{DeviceQuery, MidiSession, OutputInfo};
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{
-    Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId, FunctionBlock, Identity,
-    OsChange, OsDevice, PortDirection, Resolved,
+    BindPolicy, Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId,
+    FunctionBlock, Identity, OsChange, OsDevice, PortDirection, Resolved,
 };
 
 #[cfg(target_os = "macos")]
@@ -61,8 +61,8 @@ pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 // file codec fails: a `.mid` reader needs no port, and no port needs it.
 
 pub use tutti_midi_runtime::{
-    DeviceInlets, MidiIngestNode, MidiMailbox, MidiOut, MidiReceiver, MidiSender, NoFreeSlot,
-    TimedMidiEvent,
+    DeviceInlets, DeviceSlot, MidiIngestNode, MidiMailbox, MidiOut, MidiReceiver, MidiSender,
+    NoFreeSlot, TimedMidiEvent,
 };
 
 // --- Standard MIDI File codec: NOT here ---

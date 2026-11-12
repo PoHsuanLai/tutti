@@ -96,11 +96,13 @@ fn note(number: u8, start: Beat, duration: BeatDuration) -> [TimedMidiEvent; 2] 
         TimedMidiEvent::new(
             start,
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, MF),
-        ),
+        )
+        .unwrap(),
         TimedMidiEvent::new(
             start + duration,
             midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
-        ),
+        )
+        .unwrap(),
     ]
 }
 
@@ -130,7 +132,12 @@ fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
 
 /// The nodes the last plan sent holds.
 fn plan_nodes(s: &Session) -> usize {
-    s.graph_ref().sent_plan().expect("a plan").order().len()
+    s.graph_ref()
+        .testing()
+        .sent_plan()
+        .expect("a plan")
+        .order()
+        .len()
 }
 
 /// **A clip lands its note on its frame**: a third of a beat in at 120 BPM
@@ -141,24 +148,6 @@ fn a_clip_plays_its_note_on_its_frame() {
     let (synth, seen) = tap(&mut s);
     s.midi()
         .play_clip(synth, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
-        .expect("the tap takes MIDI");
-    let _ = s.update();
-    roll(&s, 9_000);
-    assert_eq!(note_ons(&seen), vec![(8_000, 60)]);
-}
-
-/// **A clip takes `(Beat, Ump)` pairs as they are** (what a file's
-/// `timeline()` yields): the pair's beat is the event's beat, so a note a
-/// third of a beat in lands on frame 8 000 at 120 BPM / 48 kHz, as the
-/// `TimedMidiEvent` form does.
-#[test]
-fn a_clip_plays_beat_and_packet_pairs() {
-    let mut s = offline();
-    let (synth, seen) = tap(&mut s);
-    let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, MF);
-    let off = midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0);
-    s.midi()
-        .play_clip(synth, [(Beat(1.0 / 3.0), on), (Beat(4.0 / 3.0), off)])
         .expect("the tap takes MIDI");
     let _ = s.update();
     roll(&s, 9_000);
@@ -240,7 +229,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     let _ = s.update();
     assert_eq!(s.midi().clip(new), Some(clip), "the same clip");
     assert_eq!(s.midi().live_input(new).unwrap().node, live.node);
-    let mut fed = s.graph_ref().sources(EventInPort::new(new, 0));
+    let mut fed = s.graph_ref().sources(EventInPort::new(new, 0)).unwrap();
     fed.sort_by_key(|e| e.node());
     let mut want = vec![EventOutPort::new(clip, 0), EventOutPort::new(live.node, 0)];
     want.sort_by_key(|e| e.node());
@@ -575,11 +564,14 @@ fn the_sessions_midi_nodes_keep_their_reclaimers() {
         .midi()
         .play_clip(synth, note(60, Beat(0.0), BeatDuration(1.0)))
         .expect("the tap takes MIDI");
-    assert!(s.graph_ref().keeps_reclaimer(clip), "the clip's");
+    assert!(s.graph_ref().testing().keeps_reclaimer(clip), "the clip's");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
-    assert!(s.graph_ref().keeps_reclaimer(input), "the live input's");
     assert!(
-        !s.graph_ref().keeps_reclaimer(synth),
+        s.graph_ref().testing().keeps_reclaimer(input),
+        "the live input's"
+    );
+    assert!(
+        !s.graph_ref().testing().keeps_reclaimer(synth),
         "a tap publishes nothing"
     );
 }
@@ -658,7 +650,7 @@ fn a_held_input_that_vanishes_is_retired_and_reported() {
     plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input_by_name("keys").expect("connects");
+    io.connect_input("keys").expect("connects");
     assert_eq!(io.connected_input_names(), ["Keys"]);
     assert_eq!(io.ports().list_input_ports().len(), 1);
 
@@ -719,7 +711,7 @@ fn keyboards(
 fn connect(s: &mut Session, name: &str) {
     s.midi_io()
         .expect("the OS MIDI layer")
-        .connect_input_by_name(name)
+        .connect_input(name)
         .expect("connects");
     let _ = s.update();
 }
@@ -767,7 +759,7 @@ fn two_devices_are_two_inlets_and_one_leaving_takes_only_its_own() {
 
     s.midi_io()
         .expect("the OS MIDI layer")
-        .disconnect_input_by_name("keys");
+        .disconnect_input("keys");
     let _ = s.update();
     assert_eq!(
         plan_nodes(&s),
@@ -841,7 +833,7 @@ fn a_device_past_the_slots_is_refused() {
     let (mut s, fake, seen) = keyboards(1);
     connect(&mut s, "keys");
     let io = s.midi_io().expect("the OS MIDI layer").clone();
-    let refused = io.connect_input_by_name("pads").unwrap_err();
+    let refused = io.connect_input("pads").unwrap_err();
     assert!(
         matches!(refused, tutti_midi_hardware::Error::NoFreeSlot(_)),
         "{refused:?}"
@@ -861,8 +853,8 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
-    io.connect_output_by_name("synth").expect("connects");
-    assert!(io.is_output_connected());
+    io.connect_output("synth").expect("connects");
+    assert!(io.output().is_some());
 
     fake.unplug(EndpointId::from_raw(10));
     assert_eq!(
@@ -872,7 +864,7 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
             ("output lost", "Synth".to_string())
         ]
     );
-    assert!(!io.is_output_connected());
+    assert!(io.output().is_none());
 }
 
 /// **A watch that dies is reported once**, with its reason: the list is frozen
@@ -930,8 +922,8 @@ fn another_devices_removal_leaves_a_held_input_open() {
     plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input_by_name("keys").expect("connects");
-    io.connect_output_by_name("synth").expect("connects");
+    io.connect_input("keys").expect("connects");
+    io.connect_output("synth").expect("connects");
 
     fake.unplug(EndpointId::from_raw(2));
     assert_eq!(
@@ -940,7 +932,7 @@ fn another_devices_removal_leaves_a_held_input_open() {
     );
     assert_eq!(io.connected_input_names(), ["Keys"]);
     assert_eq!(io.ports().list_input_ports().len(), 1);
-    assert!(io.is_output_connected());
+    assert!(io.output().is_some());
 }
 
 /// **The feeds are partial, as audio's declarations are: an edge a host
@@ -975,7 +967,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .unwrap();
     let _ = s.update();
     assert_eq!(
-        sorted(s.graph_ref().sources(input(synth))),
+        sorted(s.graph_ref().sources(input(synth)).unwrap()),
         sorted(vec![hand.events_out(), EventOutPort::new(clip, 0)]),
         "the sequencer's clip joins the hand-wired one"
     );
@@ -989,14 +981,14 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .set_sources(input(synth), [hand2.events_out()])
         .unwrap();
     assert_eq!(
-        sorted(s.graph_ref().sources(input(synth))),
+        sorted(s.graph_ref().sources(input(synth)).unwrap()),
         sorted(vec![hand2.events_out(), EventOutPort::new(clip, 0)]),
         "the host's call sets its own edges, beside the feed's"
     );
 
     s.midi().retarget(clip, other).unwrap();
     assert_eq!(
-        s.graph_ref().sources(input(synth)),
+        s.graph_ref().sources(input(synth)).unwrap(),
         vec![hand2.events_out()],
         "the feed's edge goes, the host's stays"
     );
@@ -1021,6 +1013,7 @@ fn a_port_that_loses_events_is_reported() {
                 MF,
             ),
         )
+        .unwrap()
     });
     s.midi().play_clip(synth, chord).expect("takes MIDI");
     let _ = s.update();
@@ -1057,7 +1050,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input_by_name("wire").expect("connects");
+    io.connect_input("wire").expect("connects");
 
     let mut device = Endpoint::new(Capabilities {
         midi1: true,
@@ -1114,8 +1107,8 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     let _ = s.update();
     let raw = EndpointId::from_raw(7);
     let io = s.midi_io().expect("the OS MIDI layer").clone();
-    io.connect_input_by_name("dev").expect("connects");
-    io.connect_output_by_name("dev").expect("connects");
+    io.connect_input("dev").expect("connects");
+    io.connect_output("dev").expect("connects");
     s.midi()
         .set_hardware_out(Some(UmpOut::new(Box::new(io.clone()), SampleRate(RATE))));
 

@@ -281,17 +281,16 @@ impl SessionBuilder {
             // One event inlet for each device, which its thread pushes into
             // for the frame the engine's block clock puts its arrival on: a
             // block later, so no event is late (the lead, doc 017 E5).
-            let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
+            let inlets = tutti_midi_runtime::DeviceInlets::new(
                 self.midi_devices,
                 crate::midi::MIDI_INPUT_INLET_CAPACITY,
                 crate::midi::input_lead(quantum.unwrap_or(max_block).samples(), rate),
-            ));
-            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(inlets));
+            );
             let io = match backend {
                 Some(MidiBackend(backend)) => {
-                    tutti_midi_hardware::MidiSession::open_over(backend, ports)?
+                    tutti_midi_hardware::MidiSession::open_over(backend, inlets)?
                 }
-                None => tutti_midi_hardware::MidiSession::open(ports)?,
+                None => tutti_midi_hardware::MidiSession::open(inlets)?,
             };
             // Subscribed before anything can plug in unseen: `Phase::Poll`
             // is this subscription's only reader.
@@ -327,16 +326,29 @@ impl SessionBuilder {
         let midi = {
             // One event input for each device slot; the session wires a
             // device's inlet to its slot as the device connects.
-            let (input, input_controls) = graph.add(
-                tutti_midi_runtime::MidiIngestNode::new(self.midi_devices)
-                    .hearing(self.midi_ports)
-                    .with_mpe(self.mpe_mode),
-            );
-            let (clock, clock_master) = graph.add(tutti_midi_runtime::ClockNode::new());
+            let ingest = tutti_midi_runtime::MidiIngestNode::new(self.midi_devices)
+                .hearing(self.midi_ports)
+                .with_mpe(self.mpe_mode);
+            // A slot a new device takes starts over in the node, with no call
+            // from here: it follows the inlets' epochs. Both are built from
+            // `midi_devices`, so their slot counts agree.
+            #[cfg(feature = "midi-hardware")]
+            let ingest = match &midi_io {
+                Some(io) => ingest
+                    .following(io.ports().inlets())
+                    .expect("the ingest node and the inlets are built with one slot count"),
+                None => ingest,
+            };
+            let (input, input_controls) = graph.add(ingest);
+            let (clock, clock_master) = graph.add(tutti_midi_runtime::ClockNode::new(
+                tutti_ump::MidiGroup::FIRST,
+                rate,
+            ));
             // The hardware out: a tap on the clock's event output, aligned to
             // the outputs' time so MIDI leaves with the audio (doc 017, E3).
             let tap = graph
-                .open_event_tap(
+                .taps()
+                .open_event(
                     clock.events_out(),
                     tutti_graph::TapAlign::ToOutput,
                     crate::midi::MIDI_OUT_TAP_CAPACITY,
@@ -379,7 +391,7 @@ impl SessionBuilder {
     fn session(
         &self,
         parts: Parts,
-        engine: Option<tutti_engine::Engine>,
+        mut engine: Option<tutti_engine::Engine>,
         streamer: bool,
     ) -> Result<Session> {
         #[cfg(feature = "sampler")]
@@ -393,10 +405,13 @@ impl SessionBuilder {
         };
         #[cfg(not(feature = "sampler"))]
         let _ = streamer;
+        let load = engine
+            .as_mut()
+            .and_then(tutti_engine::Engine::take_load_meter);
         Ok(Session {
             graph: parts.graph,
             transport: parts.transport,
-            load: engine.as_ref().map(|e| e.load_meter().clone()),
+            load,
             heard: None,
             root_request: self.root.clone(),
             root_refusal: None,
@@ -478,7 +493,7 @@ impl SessionBuilder {
 
     /// A session with no engine: the executor stays on this side, every
     /// commit is applied at once, and [`Session::render_frame`] renders it
-    /// (or [`Graph::take_audio_side`] hands it to a test). No metronome and
+    /// (or `Graph::take_audio_side`, behind the `testing` feature, hands it to a test). No metronome and
     /// no MIDI nodes are inserted, and no disk streamer is started: the
     /// graph is exactly `outputs_floor` wide (a declared
     /// [`root_topology`](Self::root_topology)'s width, if there is one), empty,
@@ -583,11 +598,11 @@ impl SessionBuilder {
         let root = self.root_width(spec.channels);
         self.check_placement(root, spec.channels)?;
         let mut parts = self.parts(spec.sample_rate, LIVE_MAX_BLOCK, spec.quantum, root)?;
-        let engine = parts.graph.engine(&parts.transport)?;
+        let mut engine = parts.graph.engine(&parts.transport)?;
         Self::clock_midi(&parts, &engine);
         self.declare(&mut parts.graph, spec.channels)?;
         let mut session = self.session(parts, None, true)?;
-        session.load = Some(engine.load_meter().clone());
+        session.load = engine.take_load_meter();
         session.heard = Some((engine.heard_taps(), spec.channels));
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(engine));
         start(&mut audio_engine, Arc::clone(&state))?;

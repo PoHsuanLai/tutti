@@ -237,8 +237,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
     let mut sends = Vec::new();
     for i in 0..SYNTHS {
         let synth = PolySynth::new(SynthConfig {
-            sample_rate: SampleRate(RATE),
-            max_voices: NOTES,
+            polyphony: std::num::NonZeroUsize::new(NOTES).expect("at least one voice"),
             oscillator: OscillatorType::Saw,
             filter: FilterType::Moog {
                 cutoff: Hz(1_200.0),
@@ -246,8 +245,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
             },
             envelope: Adsr::new(Seconds(0.005), Seconds(0.2), Amplitude(0.7), Seconds(0.3)),
             ..Default::default()
-        })
-        .expect("synth builds");
+        });
         let (synth, _) = s.graph().add(synth);
         let (hold, _) = s.graph().add(Unforkable(Hold {
             base: 36 + i as u8,
@@ -380,7 +378,7 @@ struct Figures {
 
 fn measure(block: usize, workers: usize, variant: Variant) -> Figures {
     let s = scene(block, workers, variant);
-    let meter = s.load_meter().expect("an offline engine").clone();
+    let meter = s.load_meter().expect("an offline engine");
     let mut out = vec![0.0f32; block * 2];
     let blocks = |span: Seconds| span.to_samples(SampleRate(RATE)).get().div_ceil(block);
     let warm = blocks(WARM);

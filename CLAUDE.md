@@ -54,19 +54,22 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
 - Copying audio out of the graph is a **tap**, read through one `TapReader`
   (it is a `Source` as it is: `impl Source for TapReader`), and there are two
   kinds:
-  - **The plan tap** (`Graph::open_tap`, `open_output_tap`; opening refuses a
+  - **The plan tap** (`Graph::taps().open`, `.open_output`: taps and meters are
+    two facets of the session graph, `g.taps()` and `g.meters()`; opening refuses a
     source that does not exist then with `MissingSource`, and a lane whose port
     goes missing later reads silence, never failing a commit): `Topology.taps`,
     one `Op::Tap` per tap in the plan, any port and width, aligned by the
     compiler or raw (`TapSpec::Ports`), or the outputs form
-    (`TapSpec::Outputs`, `open_output_tap`: each output channel post-sum and
+    (`TapSpec::Outputs`, `Taps::open_output`: each output channel post-sum and
     aligned, so a fan-in channel is heard whole, and it follows re-wiring), a `ringbuf` ring per lane written together (the lanes
     cannot tear), the writer riding the commit queue. A closed tap compiles to
     no op; a fork carries none. It sees the graph's signal **before the
     engine's declick fader** and the fold to the device width, so a
     transport-gated source steps at a stop.
   - **The heard tap** (`Session::open_heard_tap`, the default for recording
-    what the output sounds like): `Engine` writes each chunk of its output
+    what the output sounds like; it is the session's, not `g.taps()`'s, since the
+    writer lives in the engine's output buffer. An audio thread that is behind is
+    `HeardOpen::Retry`, an outcome and not a `HeardTapError`): `Engine` writes each chunk of its output
     buffer after the fader, every device channel, from `process` and
     `process_segment` (a device callback and an offline `render`, silence for
     a refused block); an export forks without the engine and never writes to
@@ -77,7 +80,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `Source::take_lost` through `Recorder::lost`).
 - Copying **events** out of the graph is an **event tap** (doc 017, "Event tap
   and event inlet"): `Op::EventTap`, `Topology.event_taps`, opened by
-  `Editor::open_event_tap` / `Graph::open_event_tap` on one event output, read
+  `Editor::open_event_tap` / `Graph::taps().open_event` on one event output, read
   through `EventTapReader` (its own type, not a `TapReader`: no lanes, no
   layout). MIDI only, each event a `TapEvent { frame, ump }` on the graph's
   absolute clock (a `u64`, after any `TapAlign` delay), the ring `note_off_room`
@@ -85,8 +88,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   in events (`take_lost`). A port that goes missing later reads nothing and
   counts nothing; a closed tap compiles to no op and a fork carries none. Its
   frames are on the rate the reader was opened at (`EventTapReader::rate`), so
-  whoever re-prepares at another rate reopens its own (`Graph::reopen_event_tap`, one id;
-  `reopen_event_taps` replaces every reader, a caller's too). The session's hardware MIDI
+  whoever re-prepares at another rate reopens its own (`Taps::reopen_event`, one id;
+  `reopen_events` replaces every reader, a caller's too). The session's hardware MIDI
   out is such a tap, on the clock node, `ToOutput`, drained in `Phase::MidiOut`.
 - Copying audio into the graph is an **inlet**, the inverse of the tap:
   `InletNode` (`tutti-graph`) copies a ring (`TapReader::pair`)
@@ -113,10 +116,19 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `tutti_engine::BlockClockReader`, a `tutti-rt` sequence cell; the session
   turns it into the runtime's `ArrivalClock`), the device's thread holds a `ClockMap` fed those
   readings, places each arrival on a frame plus a fixed lead (one block) and
-  pushes it with `push` (a `Moment` stamp); the audio thread converts no time. The graph side
+  pushes it with `push` (a `Moment` stamp); the audio thread converts no time. A
+  `DeviceInput` **holds its slot until it drops** (the drop gives it back and queues the
+  inlet's removal: nothing closes a slot by hand; `DeviceInlets::new` returns the `Arc` the
+  inputs give the slot back to). The graph side
   is `MidiIngestNode`, one event input per device slot with a translator and
   MPE state each, and the session wires a device's inlet to its slot in
-  `Phase::Poll` (doc 017 E5, open question 8).
+  `Phase::Poll` from `DeviceInlets::take_changes`, an iterator that drains a change per step
+  with no lock held across the caller's work (doc 017 E5, open question 8). A node built
+  `.following(&DeviceInlets)` restarts a slot's translator and MPE state itself when a new
+  device takes it (it compares the slot's epoch per block; no one calls it). A port's one id
+  is `tutti_midi_runtime::DeviceSlot` (slot index and generation; ephemeral, no serde), which
+  `tutti-midi-hardware`'s `HardwareMidiInputs`, `PortInfo`, `InputProducerHandle::slot` and
+  `OpenInput::slot` all use.
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or
@@ -151,7 +163,8 @@ serial one.
   parallel. Share through an edge, or make it one node.
   A node's state for its successor travels the same way: `Node::chase`
   (declared by `Shape::with_chase`) is a port write the executor makes once, at
-  the swap (doc 013, "Nodes communicate only through ports").
+  the swap, and behind a running fade holds until that fade ends, then delivers
+  with no allocation (doc 013, "Nodes communicate only through ports").
 - **Op code is written once**, generic over `AudioSlots`/`EventSlots`
   (`tutti-graph/src/slots.rs`). Do not add an op path that reaches the arena,
   the event slots, a unit, a ring or an output except through them or a
@@ -172,7 +185,9 @@ serial one.
   one consumer (`&mut self`, not `Clone`) and a second consumer opens a
   second meter. Opening refuses a source that does not exist then (`MissingSource`); a lane whose port goes missing later reads silence.
   Ballistics are the reader's.
-  `LoadMeter` stays in `Engine`: it times the block and is not audio.
+  `LoadMeter` stays in `Engine`: it times the block and is not audio. Like a level
+  meter it has one reader (`take(&mut self)`, not `Clone`; `Engine::take_load_meter`
+  hands it over, `peek` reads without taking).
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
@@ -688,7 +703,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Extend<Ump>` and allocates nothing, `Connection` (`new` returns `(Self, Action)`, the first `Action::Send`) is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
+  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` (an iterator over the devices that settled) from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which answers `Pushed::{Sent, Diverted, Full}` and also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with
@@ -960,6 +975,14 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`cargo xtask check-layout` holds it per crate, like symphonia in `tutti-codec`). A test builds files from
   `tests/support`'s encoder written from the spec, not from the crate's own writer.
   `MidiFile::to_clip` (doc 017 stage 6c) converts a format 0 or 1 SMF to a Clip File, its meta events to Flex Data (M2-116 section 3.3, Appendix B) and everything with no UMP form returned beside the clip as `Converted::dropped`, never lost silently.
+- `tutti-midi-hardware`'s `MidiSession::open(inlets)` owns its `HardwareMidiInputs`
+  (`ports()` reads it); `connect_input`, `disconnect_input` and `connect_output` take a
+  `DeviceQuery` (`From<&DeviceId>`, `From<&str>`: a name is a case-insensitive substring, the
+  lowest id wins), `output() -> Option<OutputInfo>` reads the open output, a name that matches
+  nothing is `Error::NoDeviceNamed { name, searched }`, and `Error::{MidiPort, MidiDevice}`
+  keep the error under them as `source` (`Error::{port, port_from, device, device_from}`).
+  `Resolved::bind(BindPolicy)` takes a saved device unasked and `Resolved::into_candidates`
+  lists what an app asks about.
 - `tutti-midi-hardware` keeps every module private but `test_support` (CI runs the
   per-module path gate on it) and re-exports none of `tutti-midi-runtime`'s sync
   types: `MidiClockDecoder`, `MtcDecoder` and `SmpteTimecode` are the runtime's.
@@ -1177,9 +1200,18 @@ Scalars use `Param<U>`.
   and into the root it folds to the declared topology, `BusError::RootUndeclared`
   otherwise). `Graph::chain` does a main bus down a list. All refuse with
   `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **One failure rule** (doc 013, "The session graph's surface"): a `Graph` or
+  `Session` call that names a key or port that does not exist fails at the call with
+  a named error (`ConnectError`, `NoSuchNode`, `MissingSource`, `RemoveError`), never
+  later at the commit and never as a default (a count of 0, `Mix::WET`); a port that
+  goes missing after a successful call still reads silence. A feed (`set_feed`) and a
+  modulation declaration are declarations, resolved when their nodes exist, and are
+  the exception. What only the session drives (`take_audio_side`, `AudioSide`, the
+  sent plan, `Graph::testing()`) is behind tutti-session's off-by-default `testing`
+  feature, which its own tests turn on through a dev-dependency on itself.
 - **Removal is a `#[must_use]` `Result` that names what was not there** (doc 030
   step 2d, doc 013 "As built (removal)"): `Graph::remove` / `Session::remove`
-  (`RemoveError`, declicked), `close_tap` / `close_event_tap` / `close_meter`
+  (`RemoveError`, declicked), `Taps::close` / `close_event` and `Meters::close`
   (`CloseError`), `close_heard_tap` (`HeardTapError::NotOpen`), the session's
   modulation `remove_source` / `remove_route` and `Midi::unroute`; never a `bool`.
   A refusal changes nothing. **`Graph::add` is the one way a node enters** and
@@ -1191,7 +1223,7 @@ Scalars use `Param<U>`.
   `events_out_at(i)` / `events_in_at(i)` take an index. `connect`, `disconnect`,
   `sources`, `set_sources` and `disconnect_all` cover the `Event` wire (never
   faded); `set_event_sources`, `event_sources` and `EventSource` are gone, and
-  `open_event_tap(key.events_out(), ..)` takes the port. A node's params are
+  `taps().open_event(key.events_out(), ..)` takes the port. A node's params are
   methods of its key (`lp.cutoff()`, `mb.threshold_at(1)`), a `TypedParamRef<U>`
   that converts into `ParamRef`, generated from the node's own declaration of
   its params (`tutti_graph::declare_params!` next to its `Param<U>` cells, doc 030
@@ -1383,7 +1415,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `EventInletWriter::push_at` and `push(At, ..)` → `push(impl Into<Stamp>, ..)` (`At::Beat` and `Refused::Beat` and `SendError::Beat` are unwritable), `InstrumentHandle::send_at` and `LiveInput::send_at` → `send` with a `Moment`, `EventInletWriter::{lost, evicted, refused, late}` and `InletCounts::{lost, evicted, refused, late}` → `InletCounts::losses() -> Losses`, `MidiIngestControls::dropped_events` and `ClockMaster::dropped_events` → `losses()` (all `refused`), `HardwareMidiInputs::dropped_events` and `PortInfo::{dropped, late}` → `losses()` / `PortInfo::losses`, `InstrumentHandle::dropped` and `LiveInput::dropped` → `losses()`, `MidiKeys::new(writer)` → `MidiKeys::new(writer, MidiGroup)`, `Reclaimer::new(closure)` → `Reclaimer::of(&controls)` over `tutti_rt::Reclaim` (the inherent `reclaim` of `MidiClipControls`, `HarmonyControls`, `MidiIngestControls` and `VoiceNodeHandle` is that trait's), `tutti_polysynth::{Error, Result}` and `tutti_session::Error::Synth` → deleted (`PolySynth::new` is infallible: `SynthConfig::polyphony` is a `NonZeroUsize`), `SynthConfig::{sample_rate, max_voices, mpe_enabled, mpe_pitch_bend_range}` → deleted (the rate is `Node::prepare`'s), `polyphony` and `mpe: MpeMode` (a zone's member range is the per-note range), `PolySynth::{volume_atomic, detune_atomic, spread_atomic}` and `UnisonEngine`'s → the synth's `ParamSet` (`ParamSet::cell`), `PolySynth::{mpe_enabled, set_mpe_enabled}` → `mpe` / `set_mpe(MpeMode)`, `set_volume(f32)`, `set_unison_stereo_spread(f32)`, `set_unison_voice_count(u8)` and `UnisonConfig::voice_count: u8` → `Amplitude`, `Spread` and `UnisonVoices` (1 to 16, refused not clamped), `tutti_sf2::SoundFont::new(&mut R)` → `SoundFont::from_reader(R)` / `SoundFont::open(path)`, `Settings::new(rate)`, `Settings::with_sample_rate` and `Settings::{MAX_POLYPHONY, DEFAULT_POLYPHONY}` → `Settings::new()` and `Polyphony::{MAX, DEFAULT}` (`Polyphony::new -> Option`), `SoundFontUnit::{with_preset, with_sample_rate}` → `select(channel, &Preset)` and `prepare`, `tutti_soundfont::Error::{Io, SampleRateOutOfRange, PolyphonyOutOfRange}` → deleted (`Error::UnplayablePreset` is `select`'s), `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `DeviceInlets::close` and a hand-called slot close → `DeviceInput`'s drop, `MidiIngestControls::restart_slot` → deleted (`MidiIngestNode::following(&DeviceInlets)` restarts a slot by epoch), `DeviceInlets::take_changes() -> Vec` → a draining `Changes` iterator, `tutti_midi_hardware::PortId` and its `port_id()` → `tutti_midi_runtime::DeviceSlot` and `slot()`, `HardwareMidiInputs::drain_stream(id, closure)` → `drain_stream(id) -> StreamDrain`, `MidiSession::open(Arc<HardwareMidiInputs>)` and `open_over(backend, ports)` → `open(Arc<DeviceInlets>)` and `open_over(backend, inlets)`, `MidiSession::{connect_input_by_name, disconnect_input_by_name, connect_output_by_name}` → `connect_input`, `disconnect_input`, `connect_output` over a `DeviceQuery`, `MidiSession::{is_output_connected, output_device_name, output_device, output_config}` → `output() -> Option<OutputInfo>`, `InputProducerHandle::push -> bool` → `Pushed`, `MidiSession::poll -> Vec` → an iterator, `Error::NoDeviceNamed(String)`, `Error::MidiPort(String)` and `Error::MidiDevice(String)` → struct variants (`searched`; `what` and `source`), `DeviceEvents::try_iter -> impl Iterator` → `Pending` (and `for e in &events`), `MtcDecoder::feed(u8)` → `feed(&Ump)`, `MidiClockDecoder::{feed, tick}(.., u64 microseconds)` → an `Instant`, `MidiClockDecoder::beat_position() -> f64` → `Beat`, `SmpteFrameRate::from_u8` → `TryFrom<u8>` (`UnknownFrameRate`), `ClockMap::set_rate -> bool` → `Result<(), InvalidRate>`, `ClockMaster::new(rate)` and `ClockNode::new()` (a zero-rate master, and `Default`) → `new(MidiGroup, SampleRate)`, `tutti_midi_runtime::outbound::MpeIngest` → `live` (inbound state; still exported at the crate root), `TimedMidiEvent`'s public fields, `From<(f64, Ump)>` and `From<(Beat, Ump)>` → private fields with `beat()`/`event()` and `TimedMidiEvent::new -> Option` (a non-finite beat is refused; `Midi::play_clip` takes `TimedMidiEvent`s), `MidiClipControls::{set_events, event_count}` → `set`, `len` (and `is_empty`), `EventInletWriter::push_at` and `push(At, ..)` → `push(impl Into<Stamp>, ..)` (`At::Beat` and `Refused::Beat` and `SendError::Beat` are unwritable), `InstrumentHandle::send_at` and `LiveInput::send_at` → `send` with a `Moment`, `EventInletWriter::{lost, evicted, refused, late}` and `InletCounts::{lost, evicted, refused, late}` → `InletCounts::losses() -> Losses`, `MidiIngestControls::dropped_events` and `ClockMaster::dropped_events` → `losses()` (all `refused`), `HardwareMidiInputs::dropped_events` and `PortInfo::{dropped, late}` → `losses()` / `PortInfo::losses`, `InstrumentHandle::dropped` and `LiveInput::dropped` → `losses()`, `MidiKeys::new(writer)` → `MidiKeys::new(writer, MidiGroup)`, `Reclaimer::new(closure)` → `Reclaimer::of(&controls)` over `tutti_rt::Reclaim` (the inherent `reclaim` of `MidiClipControls`, `HarmonyControls`, `MidiIngestControls` and `VoiceNodeHandle` is that trait's), `tutti_polysynth::{Error, Result}` and `tutti_session::Error::Synth` → deleted (`PolySynth::new` is infallible: `SynthConfig::polyphony` is a `NonZeroUsize`), `SynthConfig::{sample_rate, max_voices, mpe_enabled, mpe_pitch_bend_range}` → deleted (the rate is `Node::prepare`'s), `polyphony` and `mpe: MpeMode` (a zone's member range is the per-note range), `PolySynth::{volume_atomic, detune_atomic, spread_atomic}` and `UnisonEngine`'s → the synth's `ParamSet` (`ParamSet::cell`), `PolySynth::{mpe_enabled, set_mpe_enabled}` → `mpe` / `set_mpe(MpeMode)`, `set_volume(f32)`, `set_unison_stereo_spread(f32)`, `set_unison_voice_count(u8)` and `UnisonConfig::voice_count: u8` → `Amplitude`, `Spread` and `UnisonVoices` (1 to 16, refused not clamped), `tutti_sf2::SoundFont::new(&mut R)` → `SoundFont::from_reader(R)` / `SoundFont::open(path)`, `Settings::new(rate)`, `Settings::with_sample_rate` and `Settings::{MAX_POLYPHONY, DEFAULT_POLYPHONY}` → `Settings::new()` and `Polyphony::{MAX, DEFAULT}` (`Polyphony::new -> Option`), `SoundFontUnit::{with_preset, with_sample_rate}` → `select(channel, &Preset)` and `prepare`, `tutti_soundfont::Error::{Io, SampleRateOutOfRange, PolyphonyOutOfRange}` → deleted (`Error::UnplayablePreset` is `select`'s), `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output

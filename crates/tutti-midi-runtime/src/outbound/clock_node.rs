@@ -5,7 +5,7 @@
 //! (`Env::segments`), so a start, a stop or a locate inside a block sends its
 //! Start, Stop or Song Position on its own frame, and the ticks after it
 //! follow the transport from there. Tap its port
-//! (`Graph::open_event_tap`) for a hardware pump to drain.
+//! (`Graph::taps().open_event`) for a hardware pump to drain.
 //!
 //! The master is shared: the node's controls are the same `Arc<ClockMaster>`,
 //! through which a control thread enables it and picks MTC. `prepare` gives
@@ -22,6 +22,7 @@ use tutti_graph::{
 };
 use tutti_rt::RtVec;
 use tutti_types::SampleRate;
+use tutti_ump::MidiGroup;
 
 use super::clock_master::ClockMaster;
 use crate::live::order::{in_offset_order, offset_of};
@@ -48,9 +49,10 @@ pub const CLOCK_EVENT_CAPACITY: usize = 256;
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::ClockNode;
+/// use tutti_ump::MidiGroup;
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
-/// let clock = editor.insert(NodeKey(1), "clock", ClockNode::new());
+/// let clock = editor.insert(NodeKey(1), "clock", ClockNode::new(MidiGroup::FIRST, SampleRate(48_000.0)));
 /// clock.set_enabled(true);
 /// ```
 #[derive(Debug)]
@@ -63,19 +65,14 @@ pub struct ClockNode {
 }
 
 impl ClockNode {
-    /// A node with a disabled master; `prepare` sets its rate.
+    /// A node with a disabled master that sends its clock on `group`, placing
+    /// events at `sample_rate` until `prepare` gives it the graph's.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(group: MidiGroup, sample_rate: SampleRate) -> Self {
         Self {
-            master: Arc::new(ClockMaster::new(SampleRate(0.0))),
+            master: Arc::new(ClockMaster::new(group, sample_rate)),
             pending: RtVec::new(),
         }
-    }
-}
-
-impl Default for ClockNode {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -130,12 +127,18 @@ impl Node for ClockNode {
 }
 
 /// A [`ClockNode`]'s fork: a node over a master of its own, disabled, that
-/// nothing can reach to enable.
-struct SilentClock;
+/// nothing can reach to enable, on the same group.
+struct SilentClock {
+    group: MidiGroup,
+    sample_rate: SampleRate,
+}
 
 impl ForkSource for SilentClock {
     fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
-        Ok(Forked::new(Box::new(ClockNode::new())))
+        Ok(Forked::new(Box::new(ClockNode::new(
+            self.group,
+            self.sample_rate,
+        ))))
     }
 }
 
@@ -145,10 +148,14 @@ impl IntoNode for ClockNode {
 
     fn into_parts(self) -> NodeParts<Arc<ClockMaster>> {
         let controls = Arc::clone(&self.master);
+        let fork = SilentClock {
+            group: self.master.group(),
+            sample_rate: self.master.sample_rate(),
+        };
         NodeParts {
             node: Box::new(self),
             controls,
-            fork: Some(Box::new(SilentClock)),
+            fork: Some(Box::new(fork)),
         }
     }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool as StdAtomicBool;
 use tutti_graph::UmpAt;
 use tutti_types::Bpm;
-use tutti_ump::{Message, System};
+use tutti_ump::{Message, MidiGroup, System};
 
 /// The System message a packet carries.
 fn system(ump: Ump) -> Option<System> {
@@ -82,7 +82,7 @@ fn master(
 ) -> (Rig, Arc<TestTransport>, crate::MidiReceiver) {
     let transport = Arc::new(TestTransport::new(tempo));
     let (out, receiver) = crate::MidiMailbox::with_capacity(4096);
-    let cm = ClockMaster::new(sample_rate);
+    let cm = ClockMaster::new(MidiGroup::FIRST, sample_rate);
     cm.set_enabled(true);
     let rig = Rig {
         cm,
@@ -501,7 +501,8 @@ fn generated_clock_round_trips_through_decoder() {
 
     let block = 256usize;
     let beats_per_sample = 120.0 / 60.0 / sr;
-    let us_per_sample = 1_000_000.0 / sr;
+    let ns_per_sample = 1_000_000_000.0 / sr;
+    let origin = std::time::Instant::now();
     let mut beat = 0.0f64;
     let mut sample_clock = 0u64;
 
@@ -511,8 +512,11 @@ fn generated_clock_round_trips_through_decoder() {
         transport.set_beat(beat);
         cm.tick(block);
         for ev in drain_all(&cons) {
-            let ts_us = ((sample_clock + ev.0.get() as u64) as f64 * us_per_sample) as u64;
-            decoder.feed(&ev.1, ts_us);
+            let at = origin
+                + std::time::Duration::from_nanos(
+                    ((sample_clock + ev.0.get() as u64) as f64 * ns_per_sample) as u64,
+                );
+            decoder.feed(&ev.1, at);
         }
         beat += block as f64 * beats_per_sample;
         sample_clock += block as u64;
@@ -546,13 +550,9 @@ fn mtc_quarter_frames_round_trip_to_a_timecode() {
         cm.tick(block);
         for ev in drain_all(&cons) {
             if is_status(&ev, 0xF1) {
-                // The quarter-frame data byte is the 2nd wire byte; decode
-                // via the message view's TimeCode.
-                if let Some(System::TimeCode(code)) = system(ev.1) {
-                    decoder.feed(code.get());
-                    if decoder.timecode().is_some() {
-                        got_tc = true;
-                    }
+                assert!(decoder.feed(&ev.1), "a quarter-frame is recognised");
+                if decoder.timecode().is_some() {
+                    got_tc = true;
                 }
             }
         }
@@ -588,7 +588,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
         if code >> 4 == 0 {
             piece0_at = (start + *at as f64) / rate;
         }
-        decoder.feed(code);
+        assert!(decoder.feed(&ev.1));
         if code >> 4 != 7 {
             continue;
         }
@@ -947,4 +947,33 @@ fn a_song_position_is_in_sixteenths_and_saturates() {
     assert_eq!(at(0x3FFF as f64 / 4.0), 0x3FFF);
     assert_eq!(at(1e9), 0x3FFF);
     assert_eq!(at(f64::INFINITY), 0x3FFF);
+}
+
+/// **A master sends on the Group it was built with**: Start, Timing Clocks,
+/// Song Position and MTC quarter-frames all carry that Group, not the first.
+#[test]
+fn every_event_goes_out_on_the_masters_group() {
+    let group = MidiGroup::masked(5);
+    let cm = ClockMaster::new(group, SampleRate::new(48_000.0));
+    cm.set_enabled(true);
+    cm.set_send_mtc(true);
+    let transport = TestTransport::new(Bpm::of(120.0));
+    transport.set_beat(8.0);
+    transport.set_playing(true);
+    let mut events = Vec::new();
+    cm.tick(&transport.now(), Samples(4096), &mut |e| events.push(e));
+    let statuses: std::collections::BTreeSet<u8> = events
+        .iter()
+        .map(|(_, ump)| ((ump.0[0] >> 16) & 0xFF) as u8)
+        .collect();
+    for status in [0xF1, 0xF2, 0xF8, 0xFB] {
+        assert!(
+            statuses.contains(&status),
+            "{status:#x} not sent: {statuses:x?}"
+        );
+    }
+    assert_eq!(cm.group(), group);
+    for (_, ump) in &events {
+        assert_eq!(ump.group(), Some(group), "{ump:?}");
+    }
 }

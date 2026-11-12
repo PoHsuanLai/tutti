@@ -379,8 +379,8 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
 - **The value.** `Topology.taps: BTreeMap<TapId, TapSpec>`; `TapSpec { sources:
   Vec<Source>, align: TapAlign }`, one lane a source, any ports, any width.
   **Opening checks, committing does not.** `Editor::open_tap` (and
-  `open_meter`; the session's `open_tap`, `open_output_tap`, `open_meter`,
-  `open_node_meter`) returns `Err(MissingSource)` for a source that does not
+  `open_meter`; the session's `Taps::open`, `open_output` and `Meters::open`,
+  `open_node`) returns `Err(MissingSource)` for a source that does not
   exist in the spec as edited at that moment (a key no node has, a port past
   the node's width, a global input past the graph's), naming it, and opens
   nothing: a typo'd source would otherwise record silence for good with no
@@ -469,8 +469,8 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   new width.
 - **`ToOutput` aligns to the outputs' time.** A source that departs later than
   every output cannot be delayed to it and is read as it leaves, as `Raw`.
-- **The consumers.** `tutti-session`'s `Graph::open_tap` and
-  `Graph::open_output_tap` (a `TapSpec::Outputs`: it follows the outputs when
+- **The consumers.** `tutti-session`'s `Taps::open` and
+  `Taps::open_output` (`g.taps()`; a `TapSpec::Outputs`: it follows the outputs when
   they are re-wired and hears a fan-in channel post-sum), and the `TapReader` itself as a `Source` (`impl Source for
   TapReader`, as wide as the tap; there is no adapter type). Offline and
   headless sessions feed them: the op runs wherever the plan runs.
@@ -524,7 +524,7 @@ block and is not audio.
   a mode.
 - **One op per meter.** Its lanes are folded in one op, so a reader sees
   each block's lanes together and the claim is one decision. A track is a
-  meter on a node's output ports (`Graph::open_node_meter`); the master is
+  meter on a node's output ports (`Meters::open_node`, `g.meters()`); the master is
   `MeterSpec::Outputs`, a lane per output channel, **per channel and before
   the engine's fold to the device and its declick**. The fader is declick
   only; there is no master volume and no stereo fold in the meter (a reader
@@ -582,7 +582,8 @@ block and is not audio.
 - **Off until enabled.** The reader's switch makes the op skip its pass, so
   an unwatched meter costs a load a block. `Graph` declares the session's master
   meter at construction and enables it, so `Session::take_master_meter` readers
-  measure from the start; `Session::master_meter` / `take_master_meter` hand
+  measure from the start; `Session::master_meter` / `take_master_meter` (and
+  `Meters::master` / `take_master`) hand
   out the one reader. A track meter is opened off.
 - **Reclaim.** A dropped reader leaves its meter in the plan measuring for
   nobody; `Graph::reap_meters` (the session's `Reclaim` phase) closes it and the
@@ -3780,10 +3781,16 @@ Decisions:
    input drops them and what the buffer refused is dropped too: both are
    counted (`Executor::dropped_event_count`). During a crossfade only the
    incoming node is chased (the outgoing one is not sent anything); a
-   replace that waits behind a crossfade already running is not chased (its
-   predecessor has not taken over, and delivering at the takeover would
-   need a second path into the flushed events): it is counted
-   (`Executor::chase_skipped_count`); a re-prepare keeps its units and a mode
+   replace that waits behind a crossfade already running is chased too, a
+   block after that fade ends: the unit fading in writes when the replace is
+   applied, the queued crossfade holds the events (allocated with the apply
+   that already allocates), the new plan state keeps an injection for the
+   successor sized for them, and `end_fades` delivers them at its takeover as
+   flushed events (offset 0, ahead of what is there), with no allocation. What
+   the buffer refused and what a successor with no event input cannot take
+   are counted as dropped; a queued replace that a later one supersedes, or a
+   cut, takes its held events with it. (`chase_skipped_count` is gone: nothing
+   is skipped.) A re-prepare keeps its units and a mode
    change swaps nothing, so neither chases; a fork does not, its copy
    carries the state. What the two instruments write is in doc 017, "L4d".
 7. **The caller spins, then yields** while it waits on a helper (on the
@@ -7827,7 +7834,7 @@ fourth.
   is the notes it started: it ends them (note-off on the frame) when
   playback stops, jumps by more than half a frame from where the last
   segment left off, wraps its loop, or the clip is replaced
-  (`MidiClipControls::set_events`, through `RtPublish`). A note-off the port
+  (`MidiClipControls::set`, through `RtPublish`). A note-off the port
   refuses stays owed and goes out the next block.
 - **`PolySynth: Node + IntoNode`**: one MIDI event input, stereo out, the
   release as its tail, `Resolution::Sample`; a native fork source. The
@@ -7859,7 +7866,7 @@ fourth.
   synth, a SoundFont player or a plugin inserted as a graph node) plays
   through the session's clip for that target (`Midi::play_clip`, a
   `MidiClipNode` wired to its event input through the session's feeds;
-  `SequencedClips`), edited in place with `set_events`; a target with no
+  `SequencedClips`), edited in place with `set`; a target with no
   event input takes no MIDI. Found in review and fixed: removing a clip node (the last
   install gone, or the target off the event path) sends an all-notes-off
   through the target's port, as the port path does; a loop that wraps exactly
@@ -10503,8 +10510,8 @@ own plumbing on the same type as `connect`. This section is the target; two
 lanes reach it after the umbrella's prelude lane (which added `Graph::connect`
 and `Graph::chain` over node keys, shaped as the first piece of it).
 
-**Built (lane 2a): typed keys, ports and the one vocabulary; the facets, the
-plumbing and the failure rule are the next lane.** What is there:
+**Built (lane 2a): typed keys, ports and the one vocabulary** (the facets, the
+plumbing and the failure rule are "Built (lane 2b)", below). What is there:
 
 - `Key<N>` (`Copy`, a `NodeKey` with `PhantomData<fn() -> N>`, `Key::erase`,
   `From<Key<N>> for NodeKey`); `Graph::add` returns `(Key<N>,
@@ -10536,7 +10543,7 @@ plumbing and the failure rule are the next lane.** What is there:
   `set_outputs_from(_ports)` and `root_bus_sources`.
 - Every one of these refuses with `ConnectError` (a missing node or port, a node
   fed by itself) where it used to panic or store a dangling edge; the failure
-  rule for the rest of `Graph` is the next lane's.
+  rule for the rest of `Graph` is lane 2b's, below.
 
 - **Typed ports.** `OutPort` and `InPort` are values made from a node's key
   (`lp.out(0)`, `verb.input(1)`; with typed keys, `Key<N>`, the node's own
@@ -10571,6 +10578,39 @@ plumbing and the failure rule are the next lane.** What is there:
 `Silence`, together, since all three reshape the same calls. Second, the
 facets, the plumbing and the failure rule. The parked `bevy-tutti` is not
 updated; un-parking ports it.
+
+**Built (lane 2b): the facets, the plumbing and the failure rule.**
+
+- **Facets.** `g.taps()` is `Taps<'_>` (`open`, `open_output`, `close`,
+  `open_event`, `close_event`, `reopen_event`, `reopen_events`) and `g.meters()`
+  is `Meters<'_>` (`open`, `open_node`, `close`, `master`, `take_master`); each
+  borrows the graph `&mut` for the call and marks it edited, and keeps the
+  editor's return types and errors. The **heard tap is not a facet**: its
+  writer is in the engine's output buffer, after the declick fader, which the
+  graph does not own, so it stays `Session::open_heard_tap`. A busy audio
+  thread is the outcome `HeardOpen::Retry` there, not a `HeardTapError` (which
+  keeps the refusals for good: `Detached`, `Busy`, `NotOpen`).
+- **Plumbing.** `take_audio_side`, `AudioSide` (`tick`, `render`,
+  `set_transport`) and `Graph::testing()` (`prepared`, `is_repreparing`,
+  `sent_plan`, `commits_sent`, `sent_compensation`, `fork_live`,
+  `keeps_reclaimer`, `waiting_crossfades`, `planned_compensation`) are behind
+  tutti-session's off-by-default `testing` feature, on for the crate's own
+  tests through a dev-dependency on itself (as `tutti-graph`'s). `prepared`,
+  `is_repreparing`, `sent_compensation` and `refresh_node_latency` are
+  `pub(crate)`.
+- **The failure rule.** A query (`node_inputs`, `node_outputs`,
+  `node_event_inputs`, `node_latency`, `node_tail`, `buses`, `mode`, `mix`,
+  `declares_param`, `param_mod`, `sources`, `bus_sources`) is a `Result` with
+  `NoSuchNode` (`ConnectError` for a port), and so is each removal of a wire
+  (`disconnect`, `disconnect_hard` and `disconnect_all` are
+  `Result<bool, ConnectError>`: `Ok(false)` is an edge that is not there);
+  `set_param_mod` refuses a node or source that is not there as the commit
+  would (`GraphInvalid::UnknownParamNode`), and `replace`, `replace_plugin` and
+  `crossfade` check the node before the re-prepare's `Busy`, so a missing node
+  is never parked for a retry that can only fail. A feed (`set_feed`) and a
+  modulation declaration stay declarations that resolve when their nodes exist.
+  `open_tap` no longer drops a port whose index does not fit a `u16`: it is
+  `MissingSource`.
 
 ## Decisions for the owner
 

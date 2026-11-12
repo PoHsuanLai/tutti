@@ -221,12 +221,12 @@ fn a_refusal_is_a_status_not_a_log_line() {
 fn declaring_the_same_topology_again_changes_nothing() {
     let mut s = offline(Session::builder().root_topology(buses(4)), 6).unwrap();
     let _ = s.update();
-    let sent = s.graph_ref().commits_sent();
+    let sent = s.graph_ref().testing().commits_sent();
     s.declare_root_topology(Some(buses(4))).unwrap();
     let _ = s.update();
     let _ = s.update();
     assert_eq!(s.root_topology(), Some(&buses(4)));
-    assert_eq!(s.graph_ref().commits_sent(), sent);
+    assert_eq!(s.graph_ref().testing().commits_sent(), sent);
     assert_eq!(s.root_topology_status(), RootTopologyStatus::Applied);
 }
 

@@ -7,6 +7,7 @@ mod declick;
 mod edge_gain;
 mod engine;
 mod event_ports;
+mod failure_rule;
 mod fan_in;
 mod graph;
 mod latency_removal;

@@ -90,11 +90,15 @@ pub struct LoadRecorder {
     cells: Arc<Cells>,
 }
 
-/// The reading half of the DSP-load meter: any thread, any number of clones,
-/// and none can record. A host gets it with `Engine::load_meter` and polls
-/// [`take`](Self::take). Always on.
+/// The reading half of the DSP-load meter: one reader, which cannot record. A
+/// host takes it from the engine (`Engine::take_load_meter`) and polls
+/// [`take`](Self::take), which reports the peak since the last take and so
+/// has one consumer: `&mut self`, and the meter is not `Clone`. Another
+/// observer that only reads uses [`peek`](Self::peek) on the engine's own
+/// (`Engine::load_meter`) before it is taken. Always on.
 ///
-/// A reader cannot record, and the recorder cannot be duplicated:
+/// A reader cannot record, the recorder cannot be duplicated, and the reader
+/// cannot be either:
 ///
 /// ```compile_fail
 /// let (_rec, meter) = tutti_metering::LoadMeter::pair();
@@ -105,7 +109,12 @@ pub struct LoadRecorder {
 /// let (rec, _meter) = tutti_metering::LoadMeter::pair();
 /// let _second = rec.clone();
 /// ```
-#[derive(Clone, Debug)]
+///
+/// ```compile_fail
+/// let (_rec, meter) = tutti_metering::LoadMeter::pair();
+/// let _second = meter.clone();
+/// ```
+#[derive(Debug)]
 pub struct LoadMeter {
     cells: Arc<Cells>,
 }
@@ -127,10 +136,10 @@ impl LoadMeter {
     /// largest load since this one. A UI polling at frame rate sees every
     /// spike once.
     ///
-    /// The reset is the meter's, not the caller's: every clone shares one
-    /// peak, so two consumers that both `take` split the spikes between
-    /// them. One owner takes; any other reads with [`peek`](Self::peek).
-    pub fn take(&self) -> LoadReading {
+    /// The reset is the meter's, not the caller's, and there is one reader: a
+    /// second consumer that also took would split the spikes with it. A
+    /// reader that only watches uses [`peek`](Self::peek).
+    pub fn take(&mut self) -> LoadReading {
         self.reading(f32::from_bits(self.cells.peak.swap(0, Ordering::Relaxed)))
     }
 
@@ -229,7 +238,7 @@ mod tests {
     /// block's own load.
     #[test]
     fn only_a_block_past_its_budget_counts_as_over() {
-        let (mut rec, m) = LoadMeter::pair();
+        let (mut rec, mut m) = LoadMeter::pair();
         rec.record(at(0.5), BLOCK);
         rec.record(at(1.0), BLOCK);
         rec.record(at(2.5), BLOCK);
@@ -243,7 +252,7 @@ mod tests {
     /// it: a spike between two polls shows exactly once.
     #[test]
     fn a_take_reports_the_peak_since_the_last_and_resets_it() {
-        let (mut rec, m) = LoadMeter::pair();
+        let (mut rec, mut m) = LoadMeter::pair();
         rec.record(at(0.4), BLOCK);
         rec.record(at(3.0), BLOCK);
         rec.record(at(0.2), BLOCK);
@@ -260,7 +269,7 @@ mod tests {
     fn the_mean_converges_to_a_constant_load_at_its_time_constant() {
         for frames in [64.0f64, 1024.0] {
             let block = Seconds(frames / 48_000.0);
-            let (mut rec, m) = LoadMeter::pair();
+            let (mut rec, mut m) = LoadMeter::pair();
             rec.record(Seconds(block.0 * 0.2), block);
             assert!((m.take().mean - 0.2).abs() < 1e-6, "seeded");
             let blocks = (5.0 * LOAD_MEAN_TIME_CONSTANT.0 / block.0).ceil() as usize;
@@ -271,7 +280,7 @@ mod tests {
             let bound = 0.6 * (-5.0f32).exp() + 1e-4;
             assert!((mean - 0.8).abs() <= bound, "{frames}: {mean}");
             // And not already there a time constant in: it is smoothed.
-            let (mut rec, m) = LoadMeter::pair();
+            let (mut rec, mut m) = LoadMeter::pair();
             rec.record(Seconds(block.0 * 0.2), block);
             let one = (LOAD_MEAN_TIME_CONSTANT.0 / block.0).floor() as usize;
             for _ in 0..one {
@@ -286,7 +295,7 @@ mod tests {
     /// mean. A block with no budget records nothing.
     #[test]
     fn a_reset_restarts_the_counts_and_the_mean() {
-        let (mut rec, m) = LoadMeter::pair();
+        let (mut rec, mut m) = LoadMeter::pair();
         for _ in 0..10 {
             rec.record(at(0.1), BLOCK);
         }
@@ -306,7 +315,7 @@ mod tests {
     /// reader steals no spike.
     #[test]
     fn a_peek_leaves_the_peak_for_the_take() {
-        let (mut rec, m) = LoadMeter::pair();
+        let (mut rec, mut m) = LoadMeter::pair();
         rec.record(at(2.0), BLOCK);
         assert!((m.peek().peak - 2.0).abs() < 1e-4);
         assert!((m.take().peak - 2.0).abs() < 1e-4, "still there");
@@ -318,7 +327,7 @@ mod tests {
     /// it, and after the next block.
     #[test]
     fn an_infinite_load_leaves_the_mean_finite() {
-        let (mut rec, m) = LoadMeter::pair();
+        let (mut rec, mut m) = LoadMeter::pair();
         rec.record(at(0.5), BLOCK);
         rec.record(Seconds(1.0), Seconds(1e-45));
         rec.record(at(0.5), BLOCK);

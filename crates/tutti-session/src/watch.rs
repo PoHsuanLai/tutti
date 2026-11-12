@@ -434,12 +434,7 @@ impl OutputListing {
     /// The event this poll has, and whether the listing is over.
     pub(crate) fn poll(&mut self, now: Instant) -> (Option<SessionEvent>, bool) {
         match self.listing.poll() {
-            Listed::Devices(devices) => (
-                Some(SessionEvent::OutputsListed(
-                    devices.into_iter().map(|d| d.id).collect(),
-                )),
-                true,
-            ),
+            Listed::Devices(devices) => (Some(SessionEvent::OutputsListed(devices)), true),
             Listed::Failed(why) => (Some(SessionEvent::OutputsListFailed(why)), true),
             Listed::Pending => {
                 let since = *self.since.get_or_insert(now);

@@ -79,7 +79,14 @@ fn the_border_nodes_process_without_allocating() {
     let (inlet, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     ed.insert(NodeKey(2), "keys", inlet);
     let mut keys = MidiKeys::new(writer, MidiGroup::FIRST);
-    let clock = ed.insert(NodeKey(3), "clock", ClockNode::new());
+    let clock = ed.insert(
+        NodeKey(3),
+        "clock",
+        ClockNode::new(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_types::SampleRate(48_000.0),
+        ),
+    );
     let mut out = common::sink(&mut ed, 0, &[(1, 0), (1, 3), (2, 0), (3, 0)]);
     clock.set_enabled(true);
     ed.commit().unwrap();
@@ -287,8 +294,8 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
         NodeKey(1),
         "clip",
         MidiClipNode::new([
-            TimedMidiEvent::new(beat(1_010.0), note_on(0, 60)),
-            TimedMidiEvent::new(beat(1_040.0), note_on(0, 64)),
+            TimedMidiEvent::new(beat(1_010.0), note_on(0, 60)).unwrap(),
+            TimedMidiEvent::new(beat(1_040.0), note_on(0, 64)).unwrap(),
             // Held across every wrap, so each wrap lifts the pedal and
             // centres the bend.
             TimedMidiEvent::new(
@@ -299,11 +306,13 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
                     tutti_ump::CCNumber::SUSTAIN,
                     u32::MAX,
                 ),
-            ),
+            )
+            .unwrap(),
             TimedMidiEvent::new(
                 beat(1_030.0),
                 midi::pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 0xA000_0000),
-            ),
+            )
+            .unwrap(),
         ]),
     );
     ed.insert(
@@ -368,17 +377,17 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     };
     let mut events = Vec::new();
     for i in 0..300 {
-        events.push(TimedMidiEvent::new(beat(10.0), note(i)));
-        events.push(TimedMidiEvent::new(beat(500.0), off(i)));
+        events.push(TimedMidiEvent::new(beat(10.0), note(i)).unwrap());
+        events.push(TimedMidiEvent::new(beat(500.0), off(i)).unwrap());
     }
     // 200 notes that start where 200 others end, in one block.
     for i in 300..500 {
-        events.push(TimedMidiEvent::new(beat(1_000.0), note(i - 300 + 1_000)));
-        events.push(TimedMidiEvent::new(beat(1_100.0), off(i - 300 + 1_000)));
+        events.push(TimedMidiEvent::new(beat(1_000.0), note(i - 300 + 1_000)).unwrap());
+        events.push(TimedMidiEvent::new(beat(1_100.0), off(i - 300 + 1_000)).unwrap());
     }
     for i in 0..200 {
-        events.push(TimedMidiEvent::new(beat(1_040.0), note(i + 2_000)));
-        events.push(TimedMidiEvent::new(beat(1_041.0), off(i + 2_000)));
+        events.push(TimedMidiEvent::new(beat(1_040.0), note(i + 2_000)).unwrap());
+        events.push(TimedMidiEvent::new(beat(1_041.0), off(i + 2_000)).unwrap());
     }
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), MaxBlock::of(Samples(64))));
     ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
@@ -433,8 +442,9 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
             TimedMidiEvent::new(
                 beat(u64::from(i)),
                 tutti_fixtures::midi::note_on(g, c, n, tutti_fixtures::midi::MID_VELOCITY),
-            ),
-            TimedMidiEvent::new(beat(4_000), note_off(g, c, n, 0)),
+            )
+            .unwrap(),
+            TimedMidiEvent::new(beat(4_000), note_off(g, c, n, 0)).unwrap(),
         ]
     });
     let (mut ed, mut exec) = Editor::new(Prepare::new(

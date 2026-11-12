@@ -205,7 +205,7 @@ pub(super) fn start(sink: ChangeSink, snapshot: fn() -> Vec<OsDevice>) -> Result
     let hub = match hub() {
         Ok(hub) => hub,
         Err(why) => {
-            sink.fail(crate::Error::MidiPort(why));
+            sink.fail(crate::Error::port(why));
             return Ok(Box::new(NoWatch));
         }
     };

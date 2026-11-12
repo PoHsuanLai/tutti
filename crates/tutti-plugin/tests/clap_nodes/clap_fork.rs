@@ -745,8 +745,9 @@ fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) 
         // Notes 0..100 on channel 0, 100..200 on channel 1.
         let (g, c, key) = (MidiGroup::FIRST, MidiChannel::of(k / 100), k % 100);
         [
-            TimedMidiEvent::new(Beat(on as f64 / 24_000.0), midi::note_on(g, c, key, 0xFFFF)),
-            TimedMidiEvent::new(Beat(off as f64 / 24_000.0), midi::note_off(g, c, key, 0)),
+            TimedMidiEvent::new(Beat(on as f64 / 24_000.0), midi::note_on(g, c, key, 0xFFFF))
+                .unwrap(),
+            TimedMidiEvent::new(Beat(off as f64 / 24_000.0), midi::note_off(g, c, key, 0)).unwrap(),
         ]
     });
     let clip = NodeKey(1);
@@ -842,7 +843,8 @@ fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
         MidiClipNode::new([TimedMidiEvent::new(
             Beat(frame as f64 / 24_000.0),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
-        )]),
+        )
+        .unwrap()]),
     );
     live.spec_mut().connect_events(
         EventIn {
@@ -951,7 +953,8 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
         MidiClipNode::new([TimedMidiEvent::new(
             Beat(NOTE_FRAME as f64 / 24_000.0),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
-        )]),
+        )
+        .unwrap()]),
     );
     let _controls = live.insert(
         key,
@@ -1049,7 +1052,9 @@ fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
         live.insert(
             clip,
             "clip",
-            MidiClipNode::new([TimedMidiEvent::new(Beat(NOTE_FRAME as f64 / 24_000.0), on)]),
+            MidiClipNode::new([
+                TimedMidiEvent::new(Beat(NOTE_FRAME as f64 / 24_000.0), on).unwrap()
+            ]),
         );
         let _controls = live.insert(
             key,

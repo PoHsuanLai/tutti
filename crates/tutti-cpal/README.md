@@ -17,11 +17,12 @@ the same types from a Bevy plugin.
 List the output devices:
 
 ```rust,no_run
-use tutti_cpal::AudioEngine;
+use tutti_cpal::{AudioHost, DeviceHost, Direction};
 
 # fn main() -> tutti_cpal::Result<()> {
-for device in AudioEngine::output_devices()? {
-    println!("{}: {}", device.id, device.name());
+let snapshot = DeviceHost::open(AudioHost::Default)?.snapshot()?;
+for device in snapshot.devices(Direction::Output) {
+    println!("{}: {}", device, device.name());
 }
 # Ok(())
 # }

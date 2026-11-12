@@ -58,11 +58,13 @@ fn note(number: u8, velocity: u16) -> [TimedMidiEvent; 2] {
         TimedMidiEvent::new(
             Beat(0.0),
             note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
-        ),
+        )
+        .unwrap(),
         TimedMidiEvent::new(
             Beat(0.0) + BeatDuration(1.0),
             note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
-        ),
+        )
+        .unwrap(),
     ]
 }
 

@@ -41,6 +41,14 @@ macro_rules! served_control {
                 let _ = self.link.bridge.set_parameter_rt(id, value);
             }
 
+            fn parameter_plain(&self, id: ParamId, value: Normalized) -> Option<f64> {
+                self.link.bridge.parameter_plain(id, value)
+            }
+
+            fn parameter_normalized(&self, id: ParamId, plain: f64) -> Option<Normalized> {
+                self.link.bridge.parameter_normalized(id, plain)
+            }
+
             fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
                 self.link.bridge.parameter_text(id, value)
             }
@@ -140,6 +148,24 @@ macro_rules! served_control {
 
             fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
                 AnyThread::set_parameter_value(self, id, value);
+            }
+
+            fn parameter_plain(
+                &self,
+                _main: &MainThread,
+                id: ParamId,
+                value: Normalized,
+            ) -> Option<f64> {
+                AnyThread::parameter_plain(self, id, value)
+            }
+
+            fn parameter_normalized(
+                &self,
+                _main: &MainThread,
+                id: ParamId,
+                plain: f64,
+            ) -> Option<Normalized> {
+                AnyThread::parameter_normalized(self, id, plain)
             }
 
             fn parameter_text(

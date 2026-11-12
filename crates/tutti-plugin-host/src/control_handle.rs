@@ -812,6 +812,22 @@ mod tests {
             None
         }
         fn set_parameter(&mut self, _main: &MainThread, _id: ParamId, _value: Normalized) {}
+        fn parameter_plain(
+            &self,
+            _main: &MainThread,
+            _id: ParamId,
+            _value: Normalized,
+        ) -> Option<f64> {
+            None
+        }
+        fn parameter_normalized(
+            &self,
+            _main: &MainThread,
+            _id: ParamId,
+            _plain: f64,
+        ) -> Option<Normalized> {
+            None
+        }
         fn save_state(&mut self, _main: &MainThread) -> tutti_plugin_types::PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
@@ -849,6 +865,12 @@ mod tests {
                 None
             }
             fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
+            fn parameter_plain(&self, _id: ParamId, _value: Normalized) -> Option<f64> {
+                None
+            }
+            fn parameter_normalized(&self, _id: ParamId, _plain: f64) -> Option<Normalized> {
+                None
+            }
             fn parameter_text(&self, _id: ParamId, _value: Normalized) -> Option<String> {
                 None
             }

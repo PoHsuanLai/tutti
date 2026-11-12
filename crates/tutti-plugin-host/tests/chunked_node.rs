@@ -147,6 +147,17 @@ macro_rules! rec_control {
                 None
             }
             fn set_parameter(&mut self, _: &MainThread, _: ParamId, _: Normalized) {}
+            fn parameter_plain(&self, _: &MainThread, _: ParamId, _: Normalized) -> Option<f64> {
+                None
+            }
+            fn parameter_normalized(
+                &self,
+                _: &MainThread,
+                _: ParamId,
+                _: f64,
+            ) -> Option<Normalized> {
+                None
+            }
             fn save_state(&mut self, _: &MainThread) -> PluginResult<Vec<u8>> {
                 Ok(Vec::new())
             }

@@ -44,8 +44,10 @@ to substitute when a format declares no range; [`ParamSteps`] separates
 
 Representable is not the same as unavoidable, though. A consumer should read a
 parameter through [`ParameterInfo`]'s own accessors ([`bounds`], [`default_value`],
-[`step_count`], [`flag`], [`to_plain`]) — the variants exist for the host that
-must produce them, not as the reading path.
+[`step_count`], [`flag`]) — the variants exist for the host that
+must produce them, not as the reading path. A range is data for display: the
+plain value of a normalized one is the format's answer
+([`AnyThread::parameter_plain`]), never a formula over `bounds`.
 
 ## Example
 
@@ -53,9 +55,7 @@ Two format hosts describe one parameter each. The shapes differ where the ABIs
 differ, and the reading path is the same for both:
 
 ```rust
-use tutti_plugin_types::{
-    Normalized, ParamFlags, ParamId, ParamSteps, ParameterInfo,
-};
+use tutti_plugin_types::{ParamFlags, ParamId, ParamSteps, ParameterInfo};
 
 // VST3/CLAP/AU: a plugin-chosen handle, often a hash of the name. Not an
 // index, not dense, not ordered.
@@ -80,8 +80,9 @@ assert_eq!(mix.flag(ParamFlags::AUTOMATABLE), None); // unreported, not `false`
 assert_eq!(cutoff.id, ParamId::new(0x8000_0001));
 assert_eq!(mix.id.get(), 3);
 
-// The seam speaks normalized `0..=1`; `to_plain` maps onto the declared range.
-assert_eq!(cutoff.to_plain(Normalized::of(1.0).get()), 20_000.0);
+// The seam speaks normalized `0..=1`; what a value is in the plugin's own unit
+// is asked of the format (`AnyThread::parameter_plain`), not computed here.
+assert_eq!(cutoff.default_value(), 440.0);
 ```
 
 ## `Normalized::clamped` is silent; `Normalized::new` refuses
@@ -161,4 +162,4 @@ MIT OR Apache-2.0
 [`default_value`]: crate::ParameterInfo::default_value
 [`step_count`]: crate::ParameterInfo::step_count
 [`flag`]: crate::ParameterInfo::flag
-[`to_plain`]: crate::ParameterInfo::to_plain
+[`AnyThread::parameter_plain`]: crate::AnyThread::parameter_plain

@@ -425,6 +425,24 @@ macro_rules! fake_control {
                 self.values.iter().find(|(k, _)| *k == id).map(|&(_, v)| v)
             }
 
+            fn parameter_plain(
+                &self,
+                _main: &MainThread,
+                _id: ParamId,
+                value: Normalized,
+            ) -> Option<f64> {
+                Some(value.get())
+            }
+
+            fn parameter_normalized(
+                &self,
+                _main: &MainThread,
+                _id: ParamId,
+                plain: f64,
+            ) -> Option<Normalized> {
+                Normalized::new(plain)
+            }
+
             fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
                 self.shared.log.push(Call::SetParameter(id));
                 set_value(&mut self.values, id, value);

@@ -304,13 +304,17 @@ A sixth pass read the format-generic layer against all four. The reports, with e
 
 The audit asked for no format-specific case in the shared types. What it found are three places where the shared layer **flattened** something and got it wrong. Fixing them removes special cases:
 
-1. **Value conversion belongs to the format.**
-   - `ParamRange::Plain` treats every plain range as linear. As a result, `Normalized` means the plugin's own value for VST3 and VST2, but a position tutti invented for CLAP and AU.
-   - The consequences:
-     - A CLAP stepped parameter lands one step low, because the host computes it in `f32` and never truncates as the spec says.
-     - A VST3 parameter with a non-linear `normalizedParamToPlain` gets a wrong plain value and default, and a decreasing map runs backwards.
-     - AU's log and exponential display curves are ignored.
-   - The fix: each format converts between plain and normalized itself, and the linear assumption goes. Step 3's `TypedParam<U>` is built on that conversion, not on a range.
+1. **Value conversion belongs to the format.** Built.
+   - The problem was that `ParamRange::Plain` treated every plain range as linear. `Normalized` was the plugin's own value for VST3 and VST2 and a position tutti invented for CLAP and AU. A CLAP stepped parameter landed one step low (fixed by #652), a VST3 parameter with a non-linear `normalizedParamToPlain` got a wrong plain value and default, and a decreasing map ran backwards.
+   - What is built: `Control::parameter_plain` and `parameter_normalized` (and `AnyThread`'s, for the handle), plain as `f64`, `None` for a parameter the format has no plain value for. A consumer asks the format and never computes from a range. `ParamRange::to_plain`, `to_normalized` and `ParameterInfo`'s twins are deleted; `ParamRange` and `bounds()` stay as data for display and for `ParameterInfo::typed`.
+   - Per format:
+     - **VST3** asks the controller's `normalizedParamToPlain` and `plainParamToNormalized`, whatever their shape. The listed default is `normalizedParamToPlain(defaultNormalizedValue)`, exact; `min` is the smaller of the plain values at 0 and 1, so a decreasing map has its `min` at normalized 1.
+     - **CLAP** converts in its own `ParamBounds` (`tutti-clap-host`), the one place the line over the declared `f64` range is written, with the stepped rounding of #652. CLAP has no normalized value, so the line is the host's and is the format's answer.
+     - **AU** converts in its own `ParamBounds` (`tutti-au-host`), linear over `[min, max]`. The display-curve flags are **display scales**: the header gives them no formula, so they stay `DisplayCurve` hints and do not bend the position. The platform's own curve, `AUParameterValueFromLinear` (keyed on the unit), is not called; if a consumer needs AU's slider position, that call is the next step, and the mapping changes in one place.
+     - **VST2** has a plain value only from an integer range (`minInteger` to `maxInteger`), the line between the ends (the header fixes no map; an inverted range runs backwards); without one, `None`.
+   - **Served:** the conversion is a control-thread query answered by the server's format, so it is two requests, `GetParameterPlain` and `GetParameterNormalized`, with replies carrying `Option<f64>` and `Option<Normalized>`. `PROTOCOL_VERSION` is 30. Closed-form data was not shipped: it would serve CLAP and AU but not VST3, whose map is a function in the plugin.
+   - The shared test plugin has a fourth parameter, `tone`, a decreasing exponential (`20000 * 1000^(-n)`); the contract's `parameter_conversion_is_the_formats_own` holds each format to its figures in `spec::Tone`, loaded, active and through the server.
+   - Step 3's `TypedParam<U>` sits on `parameter_plain`, not on a range.
 2. **A parameter edit is one shared event:** `ParamEdit { id, value, gesture }`, with the gesture `Begin`, `Change` or `End`.
    - CLAP's gesture events and `DONT_RECORD`, VST3's `beginEdit`/`performEdit`/`endEdit`, VST2's `audioMasterBeginEdit`/`EndEdit`, and AU's parameter listener all become it.
    - The served wire carries it. Today it forwards no edit made in a plugin's own editor for VST3 in process or for AU, and no gesture at all.

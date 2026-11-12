@@ -911,24 +911,15 @@ pub trait PluginParameters: Send + Sync {
     /// If `preset_chunks` is set to true in plugin info, this should load a preset from the given
     /// chunk data.
     ///
-    /// Returns whether the chunk was **accepted** — VST 2.4 has `effSetChunk`
-    /// return `1` on success, and a plugin handed a truncated blob, a foreign
-    /// one, or a format version it no longer reads is expected to reject it.
-    /// This used to be `()`, so a host could not tell a refusal from a restore.
-    ///
-    /// Plugin authors: the default returns `true`, so a plugin that stores
-    /// whatever it is given keeps compiling unchanged. Return `false` only to
-    /// *reject*; a plugin without chunk support never receives this call.
-    fn load_preset_data(&self, data: &[u8]) -> bool {
-        true
-    }
+    /// There is nothing to return: `aeffect.h` documents no return value for `effSetChunk`,
+    /// so a host cannot read a refusal from it, and the dispatcher answers 0, as a JUCE
+    /// plugin does after a successful load. A plugin handed a blob it cannot read keeps its
+    /// state and says nothing.
+    fn load_preset_data(&self, data: &[u8]) {}
 
     /// If `preset_chunks` is set to true in plugin info, this should load a preset bank from the
-    /// given chunk data. Returns whether the chunk was accepted — see
-    /// [`load_preset_data`](Self::load_preset_data).
-    fn load_bank_data(&self, data: &[u8]) -> bool {
-        true
-    }
+    /// given chunk data. See [`load_preset_data`](Self::load_preset_data).
+    fn load_bank_data(&self, data: &[u8]) {}
 }
 
 struct DummyPluginParameters;

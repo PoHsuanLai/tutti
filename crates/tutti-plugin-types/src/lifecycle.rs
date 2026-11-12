@@ -191,7 +191,14 @@ impl RestartRules {
         io: true,
         latency: true,
     };
-    /// VST2 and AU: none, they re-read.
+    /// VST2: I/O. `audioMasterIOChanged` is the plugin's one notice for its pins, latency and
+    /// tail, and the pins are baked into the activation's buffers, so it restarts; the
+    /// latency and the tail it also announces are read again after the restart.
+    pub const VST2: Self = Self {
+        io: true,
+        latency: false,
+    };
+    /// AU: none, it re-reads.
     pub const NONE: Self = Self {
         io: false,
         latency: false,

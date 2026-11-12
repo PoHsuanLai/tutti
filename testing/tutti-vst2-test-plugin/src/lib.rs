@@ -200,24 +200,16 @@ impl PluginParameters for ProbeParameters {
         self.chunk.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
-    fn load_bank_data(&self, data: &[u8]) -> bool {
-        // Reject an empty blob rather than storing it: `effSetChunk` returns
-        // 1 on success, and the probe needs at least one input whose refusal
-        // a host can be seen ignoring. The switch refuses every blob, for a
-        // test whose second instance must refuse what the first one saved.
-        if data.is_empty() || switches::refuse_chunk_load() {
-            return false;
-        }
+    fn load_bank_data(&self, data: &[u8]) {
         *self.chunk.lock().unwrap_or_else(|p| p.into_inner()) = data.to_vec();
-        true
     }
 
     fn get_preset_data(&self) -> Vec<u8> {
         self.get_bank_data()
     }
 
-    fn load_preset_data(&self, data: &[u8]) -> bool {
-        self.load_bank_data(data)
+    fn load_preset_data(&self, data: &[u8]) {
+        self.load_bank_data(data);
     }
 }
 
@@ -673,6 +665,10 @@ const EFF_SET_SAMPLE_RATE: i32 = 10;
 const EFF_SET_BLOCK_SIZE: i32 = 11;
 const EFF_MAINS_CHANGED: i32 = 12;
 const EFF_EDIT_IDLE: i32 = 19;
+/// `effSetProgram` and `effSetChunk`: recorded so a test sees the order the host sent them in
+/// (the program before the chunk), before the plugin acts on either.
+const EFF_SET_PROGRAM: i32 = 2;
+const EFF_SET_CHUNK: i32 = 24;
 const EFF_START_PROCESS: i32 = 71;
 const EFF_STOP_PROCESS: i32 = 72;
 const EFF_SET_PROCESS_PRECISION: i32 = 77;
@@ -930,8 +926,13 @@ extern "C" fn probe_dispatch(
             | EFF_START_PROCESS
             | EFF_STOP_PROCESS
             | EFF_SET_PROCESS_PRECISION
+            | EFF_SET_PROGRAM
     ) {
         switches::record_lifecycle(opcode, value);
+    }
+    // For a chunk the trace holds the `[index]` (0 bank, 1 program), not the size.
+    if opcode == EFF_SET_CHUNK {
+        switches::record_lifecycle(opcode, index as isize);
     }
 
     if opcode == EFF_GET_TAIL_SIZE

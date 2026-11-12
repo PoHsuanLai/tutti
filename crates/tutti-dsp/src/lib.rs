@@ -24,13 +24,11 @@
 //!   are the engineering that schedules it.
 //! - **Filters** (`filter/`): the SVF ([`SvfFamily`], [`SvfModel`], [`SvfType`]), the
 //!   ladder ([`LadderFamily`], [`LadderModel`], [`LadderType`]) and the Linkwitz-Riley
-//!   crossover ([`CrossoverFamily`], [`CrossoverModel`]; [`Crossover`], the block
-//!   processor the multiband node still runs), each a [`ChannelRecurrence`] under the one
+//!   crossover ([`CrossoverFamily`], [`CrossoverModel`]), each a [`ChannelRecurrence`] under the one
 //!   [`Filter`] family, run by [`PerChannel`]; [`Real`], the `f32` or `f64` their state
 //!   runs in, and the [`Biquad`] section they share.
-//! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`]; the
-//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`CompressorKernel`],
-//!   the multiband's bands'; the lookahead limiter as a family ([`LimiterFamily`], run by
+//! - **Dynamics** (`dynamics/`): the
+//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); the lookahead limiter as a family ([`LimiterFamily`], run by
 //!   [`LimiterRecurrence`], its threshold and ceiling lanes of the [`Feed`], its lookahead
 //!   the member's latency); the brickwall clipper as a family
 //!   ([`BrickwallFamily`], run by [`BrickwallRecurrence`], its ceiling a per-frame lane of
@@ -38,6 +36,9 @@
 //!   [`CompressorRecurrence`], keyed, its threshold a lane, its makeup gliding over
 //!   [`GAIN_GLIDE`]) and the noise gate ([`GateFamily`], run by [`GateRecurrence`], its
 //!   range gliding likewise). Both read a [`KeySource`]: a side-chain bus or the signal itself.
+//!   The multiband compressor is a family too ([`MultibandFamily`], run by
+//!   [`MultibandRecurrence`]): a crossover tree per channel and the compressor's frame step per
+//!   band, each band's makeup, bypass and solo gliding over [`GAIN_GLIDE`].
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
@@ -107,26 +108,27 @@ pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dither::sink::{DitherSink, DitherSpec};
 pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
-    BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence, CompressorBlock,
-    CompressorControls, CompressorFamily, CompressorKernel, CompressorMember, CompressorRecurrence,
-    EnvelopeFollower, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence, KeySource,
-    LimiterControls, LimiterCurve, LimiterFamily, LimiterMember, LimiterRecurrence, Lookahead,
-    LookaheadError, amplitude_to_db, compute_compressor_gain_reduction, compute_limiter_gain,
-    ramp_db,
+    BandReductions, BandSettings, BrickwallControls, BrickwallFamily, BrickwallMember,
+    BrickwallRecurrence, CompressorControls, CompressorFamily, CompressorMember,
+    CompressorRecurrence, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence,
+    KeySource, LimiterControls, LimiterCurve, LimiterFamily, LimiterMember, LimiterRecurrence,
+    Lookahead, LookaheadError, MultibandFamily, MultibandMember, MultibandRecurrence,
+    MultibandSettings, MultibandState, amplitude_to_db, compute_compressor_gain_reduction,
+    compute_limiter_gain,
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{
-    Biquad, ChannelRecurrence, Crossover, CrossoverControls, CrossoverError, CrossoverFamily,
-    CrossoverModel, CrossoverTree, DirectForm1, Filter, Ladder, LadderCoefficients, LadderCoeffs,
-    LadderControls, LadderFamily, LadderModel, LadderType, Lanes, MAX_SPLITS, PerChannel, Real,
-    SOLVE_CEILING, Svf, SvfCoefficients, SvfCoeffs, SvfControls, SvfFamily, SvfModel, SvfType,
-    fit_to_rate, ladder_step, svf_step,
+    Biquad, ChannelRecurrence, CrossoverControls, CrossoverError, CrossoverFamily, CrossoverModel,
+    CrossoverTree, DirectForm1, Filter, Ladder, LadderCoefficients, LadderCoeffs, LadderControls,
+    LadderFamily, LadderModel, LadderType, Lanes, MAX_SPLITS, PerChannel, Real, SOLVE_CEILING, Svf,
+    SvfCoefficients, SvfCoeffs, SvfControls, SvfFamily, SvfModel, SvfType, fit_to_rate,
+    ladder_step, svf_step,
 };
 pub use interp::cubic_hermite;
 pub use model::{
     Anchor, Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Feed, Glide, Grows,
-    Lerp, Lti, MAX_LANES, MaxDecay, MaxDecayError, Period, Reach, Realized, Recurrence, Ring,
-    Setup, Start, Step, Steps, System, TAIL_FLOOR,
+    Lerp, Lti, MAX_LANES, MaxDecay, MaxDecayError, Period, Reach, Readout, Realized, Recurrence,
+    Ring, Setup, Start, Step, Steps, System, TAIL_FLOOR,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::swept::SweptLines;

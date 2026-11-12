@@ -23,6 +23,6 @@ pub use family::{Channels, Family, Grows};
 pub use feed::{Feed, MAX_LANES};
 pub use lti::Lti;
 pub use reach::{Domain, MaxDecay, MaxDecayError, Reach, TAIL_FLOOR};
-pub use realized::{Approach, Glide, Lerp, Realized, Recurrence, Start, Steps};
+pub use realized::{Approach, Glide, Lerp, Readout, Realized, Recurrence, Start, Steps};
 pub use setup::{Effort, Setup};
 pub use system::{Ring, System};

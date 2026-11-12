@@ -238,7 +238,10 @@ fn the_meter_of_band_1_follows_its_threshold() {
 ///
 /// The lane steps every 32 frames, so `g1` is within 0.2 dB (2.4%) of the
 /// sine; the tolerance is 4%, and the swing (a 24 dB span) is asserted
-/// whole.
+/// whole. A make-up is sampled on the 16-frame grid and glides over 5 ms
+/// (`GAIN_GLIDE`), re-aimed at each grid point: that is a first-order lag of
+/// time constant 5 ms, so the swing is the sine through it, `1 / sqrt(1 +
+/// (w tau)^2)` of its depth and `atan(w tau)` late (0.992 and 0.125 rad at 4 Hz).
 #[cfg(feature = "modulation")]
 #[test]
 fn a_route_to_band_1_modulates_band_1_only() {
@@ -278,7 +281,8 @@ fn a_route_to_band_1_modulates_band_1_only() {
         let rms2 = w.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>() / 8.0;
         let a = (2.0 * rms2).sqrt();
         let t = (k * 8 + 4) as f64 / RATE;
-        let db = 12.0 * (TAU * 4.0 * t).sin();
+        let (w_tau, depth) = (TAU * 4.0 * 0.005, 12.0);
+        let db = depth * (TAU * 4.0 * t - w_tau.atan()).sin() / (1.0 + w_tau * w_tau).sqrt();
         let want = A * (lp1 + hp1 * gain(db));
         assert!(
             (a - want).abs() < 0.04 * want,

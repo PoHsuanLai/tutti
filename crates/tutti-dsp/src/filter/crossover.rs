@@ -1,11 +1,12 @@
 //! The Linkwitz-Riley crossover: its model, its design over [`Filter`](super::Filter) (the
-//! band tree as a kernel), and the block processor `Crossover` the multiband node still runs
-//! (`legacy`, deleted when the dynamics lane moves it onto the design).
+//! band tree as a kernel) and the state that runs the tree (`state`).
 
+mod bands;
 mod design;
-mod legacy;
 mod model;
+mod state;
 
+pub use bands::{CrossoverError, MAX_SPLITS, SOLVE_CEILING, fit_to_rate};
 pub use design::{CrossoverControls, CrossoverFamily, CrossoverTree};
-pub use legacy::{Crossover, CrossoverError, MAX_SPLITS, SOLVE_CEILING, fit_to_rate};
 pub use model::CrossoverModel;
+pub(crate) use state::CrossoverState;

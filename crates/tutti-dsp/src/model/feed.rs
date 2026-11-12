@@ -2,8 +2,9 @@
 
 /// The most per-frame control lanes a [`Feed`] carries.
 ///
-/// Two serve the dynamics: a limiter's threshold and ceiling are the widest.
-pub const MAX_LANES: usize = 2;
+/// Four serve the dynamics: a multiband's thresholds, one a band at the most, are the
+/// widest (a limiter's threshold and ceiling are two).
+pub const MAX_LANES: usize = 4;
 
 /// The input of an effect's [`Recurrence::run`](crate::Recurrence::run) and of
 /// [`Realized::process`](crate::Realized::process): the effect shape `X` of design 024

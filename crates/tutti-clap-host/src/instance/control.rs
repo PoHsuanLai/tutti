@@ -213,10 +213,18 @@ impl ClapLoaded {
     /// Returns which scans it ran.
     pub(crate) fn take_requests_with(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         clock: impl FnOnce() -> Instant,
         out: &mut Vec<Request>,
     ) -> WorkRan {
+        // `gui.closed` is `[thread-safe]` and the plugin may raise it from its
+        // own window thread, while `gui.destroy` is the main thread's: this
+        // pass is where it is acknowledged (`ext/gui.h`: "the host must call
+        // clap_plugin_gui->destroy()"), so a floating editor the user closed
+        // is destroyed and the next open starts clean.
+        if self.host_state.take(&self.host_state.gui.closed) {
+            self.destroy_editor(main);
+        }
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
         let (ran, due_timers) = self.due_work(clock);
         out.extend(due_timers.into_iter().map(|id| Request::Timer(TimerId(id))));

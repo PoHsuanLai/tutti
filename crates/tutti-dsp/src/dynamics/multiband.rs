@@ -256,6 +256,7 @@ impl Family for MultibandFamily {
     fn recurrence(&self) -> MultibandRecurrence {
         MultibandRecurrence {
             width: usize::from(self.input.layout().count()),
+            bands: self.bands(),
         }
     }
 }
@@ -344,16 +345,25 @@ pub struct MultibandState {
 
 /// Each band's largest reduction since the last read, in dB and positive: a
 /// **measurement**, for a reduction meter, and the multiband's [`Readout`]. It counts only
-/// the frames a band is not fully bypassed on (a bypassed band passes none of it).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct BandReductions([Db; MAX_BANDS]);
+/// the frames a band is not fully bypassed on (a bypassed band passes none of it). It
+/// carries the family's band count, so a reader cannot ask about a band that is not there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandReductions {
+    deepest: [Db; MAX_BANDS],
+    bands: usize,
+}
 
 impl BandReductions {
-    /// Band `band`'s deepest reduction: [`Db::UNITY`] (0 dB) is none, and what a band past
-    /// the last reads.
+    /// Band `band`'s deepest reduction ([`Db::UNITY`], 0 dB, is none), or `None` past the
+    /// last band.
     #[must_use]
-    pub fn band(&self, band: usize) -> Db {
-        self.0.get(band).copied().unwrap_or(Db::UNITY)
+    pub fn band(&self, band: usize) -> Option<Db> {
+        self.deepest[..self.bands].get(band).copied()
+    }
+
+    /// Every band's deepest reduction, in band order: exactly the family's bands.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Db> + '_ {
+        self.deepest[..self.bands].iter().copied()
     }
 }
 
@@ -361,7 +371,10 @@ impl Readout for MultibandRecurrence {
     type Reading = BandReductions;
 
     fn take_reading(&self, state: &mut MultibandState) -> BandReductions {
-        BandReductions(core::mem::take(&mut state.deepest).map(Db))
+        BandReductions {
+            deepest: core::mem::take(&mut state.deepest).map(Db),
+            bands: self.bands,
+        }
     }
 }
 
@@ -379,6 +392,8 @@ impl Readout for MultibandRecurrence {
 #[derive(Clone, Copy, Debug)]
 pub struct MultibandRecurrence {
     width: usize,
+    /// The family's band count, which a [`BandReductions`] reading carries.
+    bands: usize,
 }
 
 impl Recurrence for MultibandRecurrence {

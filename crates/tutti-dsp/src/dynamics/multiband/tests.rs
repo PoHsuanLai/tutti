@@ -323,12 +323,12 @@ fn a_loud_band_follows_the_static_curve_and_a_quiet_band_is_left_alone() {
     assert!((amp - 0.01).abs() < 2e-5, "the quiet band is {amp}");
     // The meter over the window: band 0 sits on the curve, the others reduce nothing.
     let reading = k.take_reading();
-    let deepest = f64::from(reading.band(0).get());
+    let deepest = f64::from(reading.band(0).unwrap().get());
     assert!(
         (deepest - reduction).abs() < 1e-3,
         "{deepest} vs {reduction}"
     );
-    assert!(reading.band(1).get() < 1e-3 && reading.band(2).get() < 1e-3);
+    assert!(reading.band(1).unwrap().get() < 1e-3 && reading.band(2).unwrap().get() < 1e-3);
 }
 
 /// A bypassed band passes unreduced and without makeup, and meters nothing; releasing the
@@ -343,7 +343,7 @@ fn a_bypassed_band_passes_unprocessed() {
     let x = vec![0.5f32; SETTLE + 9_600];
     let out = run(&mut k, &[&x], &[]);
     assert!((mean(&out[0][SETTLE..]) - 0.5).abs() < 1e-6);
-    assert_eq!(k.take_reading().band(0), Db::UNITY);
+    assert_eq!(k.take_reading().band(0).unwrap(), Db::UNITY);
     set.bands[0].bypass = false;
     k.retarget(&f.member(&set, RATE));
     let out = run(&mut k, &[&x], &[]);
@@ -509,7 +509,7 @@ fn a_bands_follower_closes_one_minus_one_over_e_in_one_attack() {
         &[&vec![0.5f32; frames]],
         &[Some(&vec![-30.0f32; frames])],
     );
-    let reached = f64::from(k.take_reading().band(0).get());
+    let reached = f64::from(k.take_reading().band(0).unwrap().get());
     let curve = hard(db(0.5), -30.0, 8.0);
     let want = curve * (1.0 - 1.0 / core::f64::consts::E);
     assert!((reached - want).abs() < 2e-3 * curve, "{reached} vs {want}");
@@ -529,14 +529,14 @@ fn the_meter_reports_the_deepest_reduction_since_the_last_read() {
     run(&mut k, &[&vec![0.5f32; 4_800]], &[]);
     run(&mut k, &[&vec![0.0f32; 4_800]], &[]);
     let curve = hard(db(0.5), -30.0, 8.0);
-    let both = f64::from(k.take_reading().band(0).get());
+    let both = f64::from(k.take_reading().band(0).unwrap().get());
     assert!((both - curve).abs() < 1e-3, "{both} vs {curve}");
-    assert_eq!(k.take_reading().band(0), Db::UNITY);
+    assert_eq!(k.take_reading().band(0).unwrap(), Db::UNITY);
     // The follower released during the silence: nothing is held over from before the read.
     run(&mut k, &[&vec![0.0f32; 4_800]], &[]);
-    assert!(k.take_reading().band(0).get() < 1e-3);
+    assert!(k.take_reading().band(0).unwrap().get() < 1e-3);
     // Past the last band there is nothing to read.
-    assert_eq!(k.take_reading().band(7), Db::UNITY);
+    assert_eq!(k.take_reading().band(3), None);
 }
 
 /// Each band reads its own threshold lane per frame: driving band 0's lane low reduces
@@ -555,12 +555,12 @@ fn a_band_reads_its_own_threshold_lane() {
     run(&mut k, &[&x], &[Some(&low)]);
     let curve = hard(db(0.5), -30.0, 4.0);
     let reading = k.take_reading();
-    let d0 = f64::from(reading.band(0).get());
+    let d0 = f64::from(reading.band(0).unwrap().get());
     assert!((d0 - curve).abs() < 0.05, "{d0} vs {curve}");
-    assert!(reading.band(1).get() < 1e-3 && reading.band(2).get() < 1e-3);
+    assert!(reading.band(1).unwrap().get() < 1e-3 && reading.band(2).unwrap().get() < 1e-3);
     // A lane that is NaN reads as the member's threshold (0 dB): nothing to reduce.
     let nan = vec![f32::NAN; len];
     let mut k = runner(&f, &set);
     run(&mut k, &[&x], &[Some(&nan)]);
-    assert_eq!(k.take_reading().band(0), Db::UNITY);
+    assert_eq!(k.take_reading().band(0).unwrap(), Db::UNITY);
 }

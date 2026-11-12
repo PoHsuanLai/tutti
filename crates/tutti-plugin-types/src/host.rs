@@ -24,6 +24,7 @@
 
 use std::num::NonZeroUsize;
 
+use crate::ParamEdit;
 use crate::{
     AudioBufferMut, AutomationMode, EditorWindow, LoadedPlugin, Normalized, ParamId, ParameterInfo,
     PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext,
@@ -190,11 +191,21 @@ pub trait Control: EditorWindow {
         false
     }
 
-    /// Appends the parameter edits the plugin reported outside a block (its own
-    /// editor moving a knob), oldest first, to `out`. Only VST2 reports them
-    /// this way; CLAP and VST3 report them in the block's [`ProcessOutput`] and
-    /// push nothing here.
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+    /// Appends the parameter edits the plugin reported of its own accord (its
+    /// editor moving a knob, its own automation), oldest first, to `out`: each
+    /// a [`ParamEdit`], so a gesture's `Begin`, its changes and its `End` come
+    /// in the order the plugin made them (doc 029 section 6.1).
+    ///
+    /// Every format reports them here: VST2's `audioMasterBeginEdit`,
+    /// `audioMasterAutomate` and `audioMasterEndEdit`, VST3's `beginEdit`,
+    /// `performEdit` and `endEdit` through the host's component handler (and
+    /// what the processor wrote to `outputParameterChanges`), CLAP's gesture
+    /// and value events from `process` or `params.flush`, AU's parameter
+    /// listener. A plugin's echo of a value the host just set is not an edit.
+    ///
+    /// A served plugin (`Ipc`) reports none here: its server forwards them over
+    /// the wire, and the bridge's listener hears each as it arrives.
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
         let _ = (main, out);
     }
 

@@ -72,7 +72,6 @@ fn render_stem(session: &mut Session, bounce: Bounce<NodeKey, BufferMaster>) -> 
 /// A saw with an instant attack, built at the live graph's rate.
 fn poly() -> PolySynth {
     PolySynth::new(SynthConfig {
-        sample_rate: SampleRate(RATE),
         oscillator: OscillatorType::Saw,
         envelope: Adsr {
             attack: Seconds(0.0),
@@ -80,7 +79,6 @@ fn poly() -> PolySynth {
         },
         ..Default::default()
     })
-    .expect("the synth builds")
 }
 
 /// The repo's committed test soundfont.
@@ -92,13 +90,13 @@ fn font() -> Arc<SoundFont> {
             path.display()
         )
     });
-    Arc::new(SoundFont::new(&mut file).expect("the test soundfont parses"))
+    Arc::new(SoundFont::from_reader(&mut file).expect("the test soundfont parses"))
 }
 
-/// A SoundFont unit at `rate`, on [`PRESET`].
-fn sf2(font: &Arc<SoundFont>, rate: f64) -> SoundFontUnit {
-    let settings = Settings::new(SampleRate(rate));
-    let mut unit = SoundFontUnit::new(Arc::clone(font), &settings).expect("the unit builds");
+/// A SoundFont unit on [`PRESET`].
+fn sf2(font: &Arc<SoundFont>) -> SoundFontUnit {
+    let settings = Settings::new();
+    let mut unit = SoundFontUnit::new(Arc::clone(font), settings).expect("the unit builds");
     unit.program_change(MidiChannel::FIRST, PRESET);
     unit
 }
@@ -291,10 +289,10 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
 fn an_exported_soundfont_plays_its_clip() {
     let font = font();
     for rate in [RATE, 2.0 * RATE] {
-        let (mut session, synth) = session_with(sf2(&font, RATE));
+        let (mut session, synth) = session_with(sf2(&font));
         install_clip(&mut session, synth);
         let planes = render(&mut session, request(rate));
-        let reference = reference(sf2(&font, rate), rate);
+        let reference = reference(sf2(&font), rate);
         assert_note_at_beat_1("SoundFontUnit", rate, &planes, &reference);
         assert_live_untouched(&mut session);
     }

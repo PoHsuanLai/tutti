@@ -7,6 +7,7 @@
 //! modulated must interpolate between taps or it steps audibly.
 
 use std::sync::Arc;
+use tutti_types::UnitParam;
 use tutti_types::{AtomicF32, AtomicF64};
 
 use tutti_graph::{
@@ -64,8 +65,8 @@ struct DelayControls {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over feedback ([`UnitParam::Feedback`](tutti_types::UnitParam::Feedback)) and channel 0's delay time
-/// ([`UnitParam::DelayTime`](tutti_types::UnitParam::DelayTime), the modulation's base too); a fork of it starts from the values last set
+/// over feedback ([`UnitParam::Feedback`]) and channel 0's delay time
+/// ([`UnitParam::DelayTime`], the modulation's base too); a fork of it starts from the values last set
 /// through that set, and every other cell at its value when forked. The graph
 /// prepares it at the device rate, which sizes the lines, before its first
 /// block. Its tail is [`Tail::Unknown`]: a recirculating line rings for as
@@ -592,7 +593,12 @@ impl Node for DelayLineNode {
         if size == 0 {
             return Status::Modified;
         }
-        let (fb, dt) = (io.param(0).frames(), io.param(1).frames());
+        let (fb, dt) = (
+            self.declared_param::<{ UnitParam::Feedback as u16 }>(&io)
+                .frames(),
+            self.declared_param::<{ UnitParam::DelayTime as u16 }>(&io)
+                .frames(),
+        );
         let (inputs, mut outputs) = io.split();
         self.render(size, &inputs, &mut outputs, fb, dt);
         Status::Modified

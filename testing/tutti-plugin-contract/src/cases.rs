@@ -10,7 +10,7 @@ use tutti_plugin_types::{
     ParameterChanges, PluginBus, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor,
     Reopen, SampleFormat, Samples, TransportChange, TransportInfo,
 };
-use tutti_plugin_types::{ParamId, RenderMode, Request};
+use tutti_plugin_types::{ParamEdit, RenderMode, Request};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::spec::{self, Mode, Param};
@@ -467,7 +467,7 @@ struct Surfaced {
     has_editor: bool,
     render_mode_live: bool,
     requests: Vec<Request>,
-    edits: Vec<(ParamId, Normalized)>,
+    edits: Vec<ParamEdit>,
 }
 
 /// Reads the surface: the editor, the render mode, and what the plugin raises
@@ -521,14 +521,47 @@ pub fn the_control_surface_answers_alike_loaded_and_active<F: Format>() {
         has_editor: spec.has_editor,
         render_mode_live: spec.render_mode_live,
         requests: spec.request.into_iter().collect(),
-        edits: spec
-            .edit
-            .into_iter()
-            .map(|(param, value)| (param.id(), Normalized::clamped(value)))
-            .collect(),
+        edits: spec.edits.iter().map(|e| e.expected()).collect(),
     };
     assert_eq!(on_loaded, expected, "loaded");
     assert_eq!(on_active, expected, "active");
+}
+
+/// The gesture notice's edits ([`spec::GESTURE`]) as a host reads them.
+#[must_use]
+pub fn gesture_edits() -> Vec<ParamEdit> {
+    spec::GESTURE.iter().map(|e| e.expected()).collect()
+}
+
+/// A gesture the plugin makes of its own accord is reported in the order it
+/// made it, as the spec's four edits ([`spec::GESTURE`]): the begin, the two
+/// changes with their values, the end, each for `aux`, and each to be recorded.
+/// CLAP's plugin says it in the first block after the state load (its output
+/// events); the others at the load, and a block after it adds nothing.
+pub fn a_gesture_is_reported_in_order<F: Format>() {
+    let mut a = active_in::<F>(Mode::Tag);
+    let main = main_thread();
+    let mut setup = Vec::new();
+    a.controller_mut().take_reported_edits(&main, &mut setup);
+    select::<F, _>(
+        a.controller_mut(),
+        if F::SURFACE.selects_editor {
+            spec::EDITOR_TIDY
+        } else {
+            0
+        },
+        spec::NOTICE_GESTURE_ON_LOAD,
+    );
+    a.silent(BLOCK);
+    let mut got = Vec::new();
+    a.controller_mut().take_reported_edits(&main, &mut got);
+    assert_eq!(got, gesture_edits(), "the gesture, in order");
+
+    // One load is one gesture: nothing more arrives from a quiet block.
+    a.silent(BLOCK);
+    let mut more = Vec::new();
+    a.controller_mut().take_reported_edits(&main, &mut more);
+    assert_eq!(more, [], "the gesture is reported once");
 }
 
 /// State round-trips what the plugin persists.

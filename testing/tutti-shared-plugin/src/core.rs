@@ -54,6 +54,18 @@
 //! component's `setState` in the combined Rust shell). The C++ VST3 plugin takes
 //! the notice byte and refuses the editor byte.
 //!
+//! `NOTICE_GESTURE_ON_LOAD` makes every shell but the AU report one **gesture**
+//! on `aux` on every state load, which a host reads as four edits in this order:
+//! the gesture's begin, a change to 0.375, a change to 0.625, the gesture's end.
+//! The begin and the end carry no value in any format. VST2 reports
+//! `audioMasterBeginEdit(1)`, `audioMasterAutomate(1, 0.375)`,
+//! `audioMasterAutomate(1, 0.625)`, `audioMasterEndEdit(1)` from `setChunk`;
+//! VST3 `beginEdit`, `performEdit` twice and `endEdit` through the handler, as
+//! `NOTICE_ON_LOAD` does; CLAP the output events `PARAM_GESTURE_BEGIN`,
+//! `PARAM_VALUE` twice and `PARAM_GESTURE_END`, at frame 0 of the first `process`
+//! or `params.flush` after the load, since CLAP has no other way for a plugin
+//! to say it. The plugin's own `aux` does not move: the report is the witness.
+//!
 //! # VST3 controllers and flushes
 //!
 //! Only the VST3 shells do these, and both cores must (one spec):
@@ -173,8 +185,14 @@ pub const NOTICE_NONE: u32 = 0;
 /// CLAP `request_callback`, VST2 `audioMasterAutomate(0, 0.5)`. The VST3 shells
 /// raise none.
 pub const NOTICE_ON_LOAD: u32 = 1;
+/// Every state load reports one gesture on `aux` (core, "Notice"): its begin,
+/// a change to [`GESTURE_VALUES`]`[0]`, a change to `[1]`, its end.
+pub const NOTICE_GESTURE_ON_LOAD: u32 = 2;
+/// The values the gesture notice's two changes report, in order (both exact in
+/// an `f32`, which VST2 carries).
+pub const GESTURE_VALUES: [f64; 2] = [0.375, 0.625];
 /// Number of notice behaviours.
-pub const NOTICES: u32 = 2;
+pub const NOTICES: u32 = 3;
 /// Latency of the Delay mode, in frames.
 pub const LATENCY: u32 = 137;
 /// Reported tail, in frames.
@@ -335,6 +353,7 @@ pub struct Core {
     mode: AtomicU32,
     editor: AtomicU32,
     notice: AtomicU32,
+    gesture_due: AtomicU32,
     calls: AtomicU64,
     frames: AtomicU64,
     prepares: AtomicU32,
@@ -384,6 +403,7 @@ impl Core {
             mode: z(),
             editor: z(),
             notice: z(),
+            gesture_due: z(),
             calls: AtomicU64::new(0),
             frames: AtomicU64::new(0),
             prepares: z(),
@@ -407,6 +427,13 @@ impl Core {
     /// The notice behaviour a state load selected (`NOTICE_*`).
     pub fn notice(&self) -> u32 {
         self.notice.load(Relaxed)
+    }
+
+    /// Whether a state load selected [`NOTICE_GESTURE_ON_LOAD`] and its gesture
+    /// has not been reported yet; takes the report, so one load is one gesture.
+    /// For a shell (CLAP) that can say it only from `process` or a flush.
+    pub fn take_gesture(&self) -> bool {
+        self.gesture_due.swap(0, Relaxed) != 0
     }
 
     /// A parameter's normalized value, `None` for an id the plugin lacks.
@@ -747,6 +774,8 @@ impl Core {
         self.mode.store(mode, Relaxed);
         self.editor.store(editor, Relaxed);
         self.notice.store(notice, Relaxed);
+        self.gesture_due
+            .store(u32::from(notice == NOTICE_GESTURE_ON_LOAD), Relaxed);
         self.set_param(LEVEL, level);
         self.set_param(AUX, aux);
         Ok(())

@@ -1,4 +1,4 @@
-//! The contract: cases every [`Design`](crate::Design) and its
+//! The contract: cases every [`Family`](crate::Family) and its
 //! [`Realized`](crate::Realized) runner are held to (design 024 section 6).
 //!
 //! Written once per class of system, behind the `contract` feature (off by
@@ -6,18 +6,21 @@
 //! the crate: everything else is exported at the root, and this module is a
 //! harness a family's own tests run, so it has paths of its own.
 //!
-//! A family implements [`DesignCase`] (the controls to sweep) and, for the
-//! measured cases, [`RealizationCase`]. The cases come in **groups**, a family
+//! A family implements [`FamilyCase`] (the controls to sweep) and, for the
+//! measured cases, [`RecurrenceCase`]. The cases come in **groups**, a family
 //! opts into by naming them:
 //!
-//! - **core**, for every family: the bounds dominate every design, a design is
-//!   pure, the realization declares the model's latency and places its first
-//!   sound where the model says, a reset or a fresh realization renders as a
+//! - **core**, for every family: a member is pure in its controls, the runner
+//!   declares the member's latency and places its first sound where the member
+//!   says, a reset or a fresh realization renders as a
 //!   freshly built one, a
 //!   retarget does not click, the first retarget lands at once
 //!   (`landed`) and no hook
 //!   is left empty without saying why (`vacuity`);
-//! - **`BlockIndependent`**, for a design whose `CADENCE` is
+//! - **`Grows`**, for a [`Grows`](crate::Grows) family and only for one (a filter's
+//!   capacity is `()`, which has no figure to cover): `reach` covers the `need` of
+//!   every member (`reach_covers_need`);
+//! - **`BlockIndependent`**, for a family whose `CADENCE` is
 //!   `block_independent()` (and only for one: `cadence` fails both ways): blocks
 //!   of any length render alike (`block_independent`), also while the controls
 //!   move (`stream_clock`);
@@ -31,18 +34,22 @@
 //!   reverb has and a filter does not.
 //!
 //! ```text
-//! design_contract!(MyDesign, Lti);            // the design cases
-//! realization_contract!(MyDesign, Lti);       // the measured cases
+//! family_contract!(MyFamily, Lti);            // the family cases
+//! recurrence_contract!(MyFamily, Lti);        // the measured cases
 //! ```
 //!
 //! Each macro makes one `#[test]` per case. Every figure is analytic or from the
 //! spec, never another implementation's render. Each case is a plain function
-//! from a design to a `Result` ([`cases`]), so a test can hand it a deliberately
-//! broken design and assert it fails: the mutation record of a case is a test.
-//! The broken designs themselves (`Defect`, `Flawed`, `Defective`, `Mutant`,
-//! `ToyFdn`) are this crate's own tests'.
+//! from a family to a `Result` ([`cases`]).
 //!
-//! Allocation-freedom of `design`, `retarget` and `process` needs a counting
+//! `recurrence_contract!` states the three laws of design 024 section 2.7.4, and
+//! the macro is laid out by them: the recurrence **realizes the member** (what a
+//! render does is what the member's queries say), the **block form is the frame
+//! form** (cutting the input into blocks changes nothing), and the **glide lands**
+//! (a retarget approaches without a click and rests on the member). `family_contract!`
+//! is the diagram of the member's own queries.
+//!
+//! Allocation-freedom of `member`, `retarget` and `process` needs a counting
 //! global allocator, which `unsafe` forbids in this `forbid(unsafe_code)` crate:
 //! `tests/network_alloc.rs` runs it.
 
@@ -51,29 +58,39 @@
 #![allow(clippy::missing_errors_doc)]
 
 mod core;
-mod design_case;
+mod family_case;
 mod harness;
 mod lti;
 mod macros;
 mod reverb;
 
-pub use design_case::{DesignCase, Figure, Hook, LtiCase, RealizationCase, ReverbCase};
+pub use family_case::{FamilyCase, Figure, Hook, LtiCase, RecurrenceCase, ReverbCase};
 pub use harness::{
     Burst, MAX_BLOCK, WINDOW, built, burst, energy, noise, render, rms, setup, widths,
 };
 
 /// The cases, one function each, by level and group.
 ///
-/// `design` cases need only a design; `realization` cases render it.
+/// `design` cases need only a family; `realization` cases render it.
 pub mod cases {
-    /// The design cases (no realization, no audio).
+    /// The family cases (no runner, no audio).
     pub mod design {
         pub use crate::contract::core::design::*;
         pub use crate::contract::lti::design::*;
         pub use crate::contract::reverb::design::*;
     }
 
-    /// The realization cases, measured on the output.
+    /// The recurrence cases, measured on the output, by the three laws of design
+    /// 024 section 2.7.4:
+    ///
+    /// 1. the recurrence **realizes the member**: `latency`, `arrival`, `vacuity`,
+    ///    and with `Lti` `tail_covers`, `tail_tight`, `stability`, `linear`,
+    ///    `response`, `decay`, and with `reverb` `rt60`, `band_order`, `wet_only`,
+    ///    `decorrelated`, `line_lengths`, `pre_delay`, `size`, `diffusion`,
+    ///    `freeze`, `width`, `wet_gain`, `reverb_vacuity`;
+    /// 2. the **block form is the frame form**: `cadence`, `block_independent`,
+    ///    `stream_clock`;
+    /// 3. the **glide lands**: `landed`, `click_free`, `reset`, `fresh`.
     pub mod realization {
         pub use crate::contract::core::realization::*;
         pub use crate::contract::lti::realization::*;

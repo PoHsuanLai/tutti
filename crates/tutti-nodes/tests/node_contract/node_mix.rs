@@ -17,13 +17,13 @@
 //! Each render is preceded by one block of silence, the block the mix's ramp from
 //! the unit's `WET` start lands on, and only the frames after it are compared.
 
-use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
+use tutti_dsp::{FdnControls, FdnFamily, FreeverbControls, FreeverbFamily};
 use tutti_fixtures::noise;
 use tutti_fixtures::signal::bits;
 use tutti_graph::contract::drive;
 use tutti_graph::{IntoNode, Prepare, Solo};
 use tutti_nodes::{
-    CompressorNode, CrossoverNode, DelayLineNode, DesignNode, GateNode, ModDelayNode, PhaserNode,
+    CompressorNode, CrossoverNode, DelayLineNode, FamilyNode, GateNode, ModDelayNode, PhaserNode,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
@@ -239,21 +239,21 @@ fn the_chorus_flanger_and_phaser_are_blended_by_the_graph() {
 fn the_reverbs_are_blended_by_the_graph() {
     check_io(
         "freeverb (General MIDI room)",
-        &|| DesignNode::fixed(FreeverbDesign, FreeverbControls::GENERAL_MIDI),
+        &|| FamilyNode::fixed(FreeverbFamily, FreeverbControls::GENERAL_MIDI),
         1,
         2,
         0,
     );
     check_io(
         "freeverb (live)",
-        &|| DesignNode::live(FreeverbDesign, FreeverbControls::GENERAL_MIDI),
+        &|| FamilyNode::live(FreeverbFamily, FreeverbControls::GENERAL_MIDI),
         1,
         2,
         0,
     );
     check_io(
         "fdn",
-        &|| DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT),
+        &|| FamilyNode::live(FdnFamily::default(), FdnControls::DEFAULT),
         1,
         2,
         0,

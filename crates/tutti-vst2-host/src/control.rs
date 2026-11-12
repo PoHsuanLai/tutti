@@ -5,11 +5,12 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin,
-    Normalized, ParamId, ParameterInfo, PluginBus, PluginClass, PluginDescriptor, PluginError,
-    PluginResult, Preset, PresetId, RenderMode, Request, WindowHandle,
+    Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginClass, PluginDescriptor,
+    PluginError, PluginResult, Preset, PresetId, RenderMode, Request, WindowHandle,
 };
 
 use crate::error::Vst2Error;
+use crate::host::ParameterChange;
 use crate::loaded::Vst2Loaded;
 use crate::types::PluginInfo;
 
@@ -226,16 +227,23 @@ impl Control for Vst2Loaded {
         true
     }
 
-    /// The reports of `audioMasterAutomate` (the plugin's own editor moving a
-    /// knob), oldest first. A report naming a negative index names no
+    /// The reports of `audioMasterBeginEdit`, `audioMasterAutomate` and
+    /// `audioMasterEndEdit` (the plugin's own editor moving a knob), oldest
+    /// first, as [`ParamEdit`]s. A report naming a negative index names no
     /// parameter and is dropped. The queue the reports arrive in drops rather
     /// than growing when nobody drains it:
     /// [`dropped_param_changes`](Vst2Loaded::dropped_param_changes) counts them.
-    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
-        while let Some((index, value)) = self.param_rx.pop() {
-            if let Ok(index) = u32::try_from(index) {
-                out.push((ParamId::new(index), Normalized::clamped(f64::from(value))));
-            }
+    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
+        while let Some(report) = self.param_rx.pop() {
+            let id = |index: i32| u32::try_from(index).ok().map(ParamId::new);
+            let edit = match report {
+                ParameterChange::Begin(i) => id(i).map(ParamEdit::Begin),
+                ParameterChange::End(i) => id(i).map(ParamEdit::End),
+                ParameterChange::Automate(i, value) => {
+                    id(i).map(|id| ParamEdit::change(id, Normalized::clamped(f64::from(value))))
+                }
+            };
+            out.extend(edit);
         }
     }
 

@@ -103,12 +103,12 @@ finding where the API produces wrong results today, not only friction.
 | T1 | **Bug**: a route onto a target with no `range()` is accepted. The next apply refuses with `CompileError::UndeclaredTarget` and freezes *all* modulation, reported only by an event | the range is part of the route: `route(src, target.within(lo..hi), depth)`, or a typestate target that has a range | M-L |
 | T2 | `Mods::range`, `Take::record`, `Trajectory::with_range` and `Graph::set_param` take bare `f32` for params that have units. Min > max is not refused | unit-typed targets from `Key<N>` param methods; a checked range | M |
 | T3 | `Graph::set_param` returns `()` and ignores a missing node or param, although `ParamSet::set` returns `bool`. `set_node_params` is plumbing a user can forget | `Result` and `#[must_use]`; the plumbing made `pub(crate)` | S-M |
-| T4 | A route cannot be found again. `RouteKey`/`SourceKey` are opaque with public `u64`s, there is no `routes()` or `routes_to(target)`, and edits are `route_mut` plus public fields. `route` hard-codes polarity and the curve | private minted keys; iterators; a route builder (`.polarity(..).curve(Law::..)`) | M |
-| T5 | "Why is nothing modulating" has three channels (`ModState::refusal`, `unresolved_*`, a `SessionEvent`), and the errors name opaque keys | one `problems()` iterator whose `Display` names the node and the param | M |
+| T4 | A route cannot be found again. `RouteKey`/`SourceKey` are opaque with public `u64`s, there is no `routes()` or `routes_to(target)`, and edits are `route_mut` plus public fields. `route` hard-codes polarity and the curve | private minted keys; iterators; a route builder (`.polarity(..).curve(Law::..)`) | M (built, step 4) |
+| T5 | "Why is nothing modulating" has three channels (`ModState::refusal`, `unresolved_*`, a `SessionEvent`), and the errors name opaque keys | one `problems()` iterator whose `Display` names the node and the param | M (built, step 4) |
 | T6 | `TempoMap` has 8 queries, each doubled by a `_with(&mut Cursor)` twin, and `rate` is passed on every call. `TempoPoint` has no constructors. `tempo::Shape` clashes with `graph::Shape` | a `TempoView` holding rate and cursor; `TempoPoint::{step, ramp_time, ramp_beats}`; a rename; a builder where a trailing ramp cannot be written | M |
 | T7 | **Bug**: `Law::PowerIn/PowerOut/PowerInOut/Exp(f32)` silently fall back to linear, or clamp, on NaN, p <= 0 or \|k\| > 64 | `Exponent` and `Curvature` range-checked types (`new -> Option`) | S-M |
 | T8 | `LoopRange::new` returns `Option` with no reason, and the session has no loop call | `TryFrom<Range<Beat>>` with a reason; `Session::set_loop` | S |
-| T9 | `Depth` has a public field, and `-1..1` is unchecked. `ProjectMeter::set_meter`/`ClickSettings::set_meter` take a bare `Arc` where `set_tempo_map` takes `Into`. `OfflineTimeline::advance` takes `usize`. `in_preroll` is a public cell. Click volume clamps. `Lfo::rate` takes beats only. `Mods::record` returns an unmarked `bool`. `Session::mods()` marks the session edited even for a read | each to the conventions; a read view `mods()` and an edit `mods_mut()` | S |
+| T9 | `Depth` has a public field, and `-1..1` is unchecked. `ProjectMeter::set_meter`/`ClickSettings::set_meter` take a bare `Arc` where `set_tempo_map` takes `Into`. `OfflineTimeline::advance` takes `usize`. `in_preroll` is a public cell. Click volume clamps. `Lfo::rate` takes beats only. `Mods::record` returns an unmarked `bool`. `Session::mods()` marks the session edited even for a read | each to the conventions; a read view `mods()` and an edit `mods_mut()` | S (built, step 4) |
 | T10 | Name clashes: `graph::Transport` and `transport::Transport`, modulation `Wave` and codec `Wave`, `UnitParam::Depth` and `Depth` | rename the less used side (`TransportPosition`, `Waveform`) | S |
 
 ### 3.3 Sampler, codec, export, custom nodes
@@ -294,7 +294,7 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      `NoSuchModSource`, `NoSuchModRoute`, `NoSuchMidiRoute`); `Graph::add`
      (a `SessionNode`) is the one way a node enters; `open_event_inlet` takes an
      `EventCapacity`. Doc 013, "As built (removal)".
-3. **Node authoring:** N1, N4.
+3. **Node authoring** (3b, built): N1's rest, N3, N4.
    - N1 (built, pulled before 2d): a node's params are declared once, next to
      its `Param<U>` cells, by `tutti_graph::declare_params!`, which writes the
      `HasParam`/`HasParams` impls (the unit is the cell's, checked), the
@@ -304,8 +304,44 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      session's `ParamValue`) and `Scalar` moved to `tutti-graph`; the session's
      `declare_params!` table, `Declared` and the `*_PARAMS` lists are gone. The
      port order a node's `process` reads (`Io::param(k)`) is the declaration's
-     row order; a node that indexes by position still does so by hand.
-4. **Modulation:** T4, T5, T9 (T1's typed range landed in 2c).
+     row order.
+   - N1's rest (3b, built): `process` reads a driven param through the
+     declaration too: the macro writes `declared_param::<{ UnitParam::K as u16
+     }>(&io)` and `declared_param_at::<..>(&io, index)` (a `ParamInput`; a kind
+     the node does not declare does not compile, and a row after a `;` or an
+     absent `Option` cell reads `Base`), which resolve the kind to its port by
+     walking the rows, once per call. Every engine node moved to it; the
+     `block_driven(io, k)` helpers are `ParamInput::last_frame`. Associated
+     port consts were weighed and left: an `Option` row makes a port's index a
+     runtime fact, so a const would be wrong for the node that has it absent.
+   - N3 (3b, as far as types reach): no bound refuses `ForkByClone(param
+     node)`. It would need "`N` declares no params", a negative bound; a
+     sealed marker the macro implements can be required but not forbidden. The
+     rule stays documented (`Params`, CLAUDE.md) and no runtime check was added.
+   - N4 (3b, built): `tutti-graph`'s crate docs have "Writing a node": the
+     shortest node, `Shape`, a param'd node, events in and out, `Status` and
+     `report_tail`, and what not to do, every example a doctest.
+4. **Modulation** (built): T4, T5, T9 (T1's typed range landed in 2c).
+   - T4: a source and a route are named by `ModSourceId` and `ModRouteId`,
+     minted by `Mods` and never built; `Session::mods()` reads (`ModsView`:
+     `routes()`, `routes_to(target)`, `sources()`), `mods_mut()` edits; a route
+     is declared by `RouteSpec::new(source, target, depth).polarity(..).curve(..)`
+     and edited by `route_of(id)?`'s setters, so `route_mut` and the public
+     fields are gone. `tutti_modulation::{SourceKey, RouteKey}` stay the
+     compiler's and a host's own minting.
+   - T5: `ModState::problems()` is the one place: a `Problem` (`Refused`,
+     `Unresolved`, `Unfed`) whose `Display` names the node and the param, and
+     the event carries the same value (`SessionEvent::Modulation`).
+     `ModState::refusal`, `unresolved_targets`, `unresolved_sources` and the two
+     modulation events are gone.
+   - T9: `Depth` is range-checked (hand-written; `new -> Option`, `of`,
+     `clamped`, serde through `try_from`; no `+` or `*`, which could leave the
+     range) and the compiler's `BadRoute` refusal went with the NaN it
+     refused; `ProjectMeter::set_meter` and `ClickSettings::set_meter` take
+     `impl Into<Arc<MeterMap>>`; `OfflineTimeline::advance` takes `Samples`;
+     `in_preroll` is a method; `ClickSettings::set_volume` returns
+     `Result<(), VolumeOutOfRange>`; `Lfo::rate` takes a `BeatDuration` or an
+     `Hz` (`hz` is gone); `Mods::record` and `set_source` are `Result`s.
 5. **Graph surface 2** (doc 013): facets, plumbing, the failure rule; S8.
    Then the deferred chase injection: preallocate the inject capacity of each
    chasing unit, so that a chase whose takeover is delayed by a fade is delivered

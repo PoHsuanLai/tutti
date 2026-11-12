@@ -29,7 +29,7 @@ use tutti_au_ffi::property::{Latency, ParameterList, TailTime};
 use tutti_au_ffi::{AuEvent, AuParameterListener, EventAddress, Property, Unit};
 use tutti_plugin_types::{Request, RequestWord, RescanScope};
 
-use crate::edits::ReportedEdits;
+use crate::edits::{Edit, ReportedEdits};
 
 /// A live property-change registration on the AU, raising bits of the word it
 /// was made with.
@@ -68,11 +68,11 @@ impl PropertyWatch {
     /// from the unit's, so watching it would report an I/O change after every
     /// activation.
     ///
-    /// A parameter's value change is delivered to `edits` in plain units. Only
-    /// the value is subscribed: the begin and end of a gesture have no carrier
-    /// in the shared vocabulary yet (the `ParamEdit` event of design 029
-    /// section 6.1), and a subscription whose events are discarded would only
-    /// cost a delivery each.
+    /// A parameter's value change, and the begin and end of a gesture on it
+    /// (`kAudioUnitEvent_BeginParameterChangeGesture` and
+    /// `kAudioUnitEvent_EndParameterChangeGesture`, AudioUnitUtilities.h), are
+    /// delivered to `edits` in plain units, in the order the listener's serial
+    /// queue received them.
     pub(crate) fn install(
         unit: &Unit,
         requests: Arc<RequestWord>,
@@ -96,10 +96,15 @@ impl PropertyWatch {
                 request.raise(&requests);
             }
             AuEvent::ParameterChanged { id, address, value } if address == EventAddress::GLOBAL => {
-                edits.push(id, value)
+                edits.push(Edit::Change(id, value))
             }
-            // Gestures are not subscribed, and a parameter off the global
-            // scope is not one this host lists.
+            AuEvent::BeginGesture { id, address } if address == EventAddress::GLOBAL => {
+                edits.push(Edit::Begin(id))
+            }
+            AuEvent::EndGesture { id, address } if address == EventAddress::GLOBAL => {
+                edits.push(Edit::End(id))
+            }
+            // A parameter off the global scope is not one this host lists.
             _ => {}
         })
         .ok()?;
@@ -116,8 +121,8 @@ impl PropertyWatch {
         Some(watch)
     }
 
-    /// Subscribes the value changes of every parameter in `ids` not yet
-    /// watched. The registration has no wildcard, so a list that grew needs
+    /// Subscribes the value changes and gestures of every parameter in `ids` not
+    /// yet watched. The registration has no wildcard, so a list that grew needs
     /// this again. One that the AU refuses is left unwatched: its edits are
     /// not heard, which is no worse than before.
     pub(crate) fn watch_parameters(&mut self, ids: impl IntoIterator<Item = u32>) {
@@ -128,6 +133,8 @@ impl PropertyWatch {
                     .watch_parameter(id, EventAddress::GLOBAL)
                     .is_ok()
             {
+                // A unit that refuses the gestures still has its values heard.
+                let _ = self.listener.watch_gestures(id, EventAddress::GLOBAL);
                 self.watched.insert(at, id);
             }
         }

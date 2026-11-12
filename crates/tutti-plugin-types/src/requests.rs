@@ -13,7 +13,7 @@
 
 use tutti_rt::{EditReader, EditWriter, RequestBit, RequestWord, RingFull, edit_ring};
 
-use crate::{Normalized, ParamId, Request, RescanScope};
+use crate::{Normalized, ParamEdit, ParamId, Request, RescanScope};
 
 const RESTART: RequestBit = RequestBit::of(0);
 const IO_CHANGED: RequestBit = RequestBit::of(1);
@@ -92,10 +92,20 @@ pub enum Edit {
     /// replaced the values they were written against. A drain applies none of
     /// the writes that precede it, which the ring's order makes exact.
     Reset,
+    /// A parameter edit the plugin reported, on its way from the audio thread
+    /// to the control side: a ring the other way round carries it (a format
+    /// whose plugin reports from `process` and `params.flush` ends it here, and
+    /// the Controller's `take_reported_edits` reads it).
+    Reported(ParamEdit),
 }
 
 const PARAM_TAG: u64 = 1;
 const RESET_TAG: u64 = 2;
+const BEGIN_TAG: u64 = 3;
+const CHANGE_TAG: u64 = 4;
+const END_TAG: u64 = 5;
+/// Set in a reported edit's tag when it is not to be recorded.
+const UNRECORDED: u64 = 0x100;
 
 impl Edit {
     pub(crate) fn encode(self) -> [u64; 2] {
@@ -104,6 +114,22 @@ impl Edit {
                 [PARAM_TAG << 32 | u64::from(id.get()), value.get().to_bits()]
             }
             Self::Reset => [RESET_TAG << 32, 0],
+            Self::Reported(edit) => {
+                let (tag, id, value) = match edit {
+                    ParamEdit::Begin(id) => (BEGIN_TAG, id, 0),
+                    ParamEdit::Change { id, value, record } => (
+                        if record {
+                            CHANGE_TAG
+                        } else {
+                            CHANGE_TAG | UNRECORDED
+                        },
+                        id,
+                        value.get().to_bits(),
+                    ),
+                    ParamEdit::End(id) => (END_TAG, id, 0),
+                };
+                [tag << 32 | u64::from(id.get()), value]
+            }
         }
     }
 
@@ -114,7 +140,24 @@ impl Edit {
                 value: Normalized::clamped(f64::from_bits(raw[1])),
             }),
             RESET_TAG => Some(Self::Reset),
-            _ => None,
+            tag => {
+                let id = ParamId::new(raw[0] as u32);
+                Some(Self::Reported(match tag {
+                    BEGIN_TAG => ParamEdit::Begin(id),
+                    END_TAG => ParamEdit::End(id),
+                    CHANGE_TAG => ParamEdit::Change {
+                        id,
+                        value: Normalized::clamped(f64::from_bits(raw[1])),
+                        record: true,
+                    },
+                    t if t == CHANGE_TAG | UNRECORDED => ParamEdit::Change {
+                        id,
+                        value: Normalized::clamped(f64::from_bits(raw[1])),
+                        record: false,
+                    },
+                    _ => return None,
+                }))
+            }
         }
     }
 }
@@ -253,6 +296,27 @@ mod tests {
         let mut got = Vec::new();
         drain.drain(|e| got.push(e));
         assert_eq!(got, [a, Edit::Reset, a]);
+        assert_eq!(drain.undecodable(), 0);
+    }
+
+    /// A reported edit survives the ring in order: each gesture end, a change
+    /// with its value to the bit, and the flag of one not to be recorded.
+    #[test]
+    fn reported_edits_round_trip_in_order() {
+        let (mut sink, mut drain) = edits(8);
+        let id = ParamId::new(u32::MAX);
+        let sent = [
+            Edit::Reported(ParamEdit::Begin(id)),
+            Edit::Reported(ParamEdit::change(id, Normalized::of(0.3))),
+            Edit::Reported(ParamEdit::change(ParamId::new(2), Normalized::of(0.7)).unrecorded()),
+            Edit::Reported(ParamEdit::End(id)),
+        ];
+        for edit in sent {
+            sink.send(edit).unwrap();
+        }
+        let mut got = Vec::new();
+        drain.drain(|e| got.push(e));
+        assert_eq!(got, sent);
         assert_eq!(drain.undecodable(), 0);
     }
 

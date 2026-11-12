@@ -26,11 +26,11 @@ fn font() -> Arc<SoundFont> {
     let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
     let mut file = std::fs::File::open(&path)
         .unwrap_or_else(|e| panic!("test soundfont missing at {}: {e}", path.display()));
-    Arc::new(SoundFont::new(&mut file).expect("parses"))
+    Arc::new(SoundFont::from_reader(&mut file).expect("parses"))
 }
 
-fn unit(rate: i32) -> SoundFontUnit {
-    SoundFontUnit::new(font(), &Settings::new(SampleRate::from(rate as u32))).expect("builds")
+fn unit() -> SoundFontUnit {
+    SoundFontUnit::new(font(), Settings::new()).expect("builds")
 }
 
 /// A clip playing middle C at `frame` into the unit, both at key 1 and 2,
@@ -89,26 +89,14 @@ fn onset(out: &[f32]) -> Option<usize> {
 #[test]
 fn a_clip_note_sounds_on_its_frame() {
     let lead = {
-        let (ed, exec) = graph(unit(48_000), 48_000.0, 0);
+        let (ed, exec) = graph(unit(), 48_000.0, 0);
         onset(&render(ed, exec, 48_000.0, BLOCK)).expect("a note at frame 0 sounds")
     };
-    let (ed, exec) = graph(unit(48_000), 48_000.0, 1_000);
+    let (ed, exec) = graph(unit(), 48_000.0, 1_000);
     assert_eq!(
         onset(&render(ed, exec, 48_000.0, 4_096)),
         Some(1_000 + lead)
     );
-}
-
-/// **The node follows its graph's rate.** A unit built at 44.1 kHz in a
-/// graph prepared at 48 kHz renders what a unit built at 48 kHz does.
-#[test]
-fn the_node_follows_its_graphs_rate() {
-    let (ed, exec) = graph(unit(44_100), 48_000.0, 0);
-    let rerated = render(ed, exec, 48_000.0, 4_096);
-    let (ed, exec) = graph(unit(48_000), 48_000.0, 0);
-    let native = render(ed, exec, 48_000.0, 4_096);
-    assert!(onset(&native).is_some(), "the note sounds");
-    assert_eq!(rerated, native);
 }
 
 /// **A forked graph plays the clip**, on its render's `Env`, from frame
@@ -116,10 +104,10 @@ fn the_node_follows_its_graphs_rate() {
 #[test]
 fn a_forked_graph_plays_the_clip() {
     let lead = {
-        let (ed, exec) = graph(unit(48_000), 48_000.0, 0);
+        let (ed, exec) = graph(unit(), 48_000.0, 0);
         onset(&render(ed, exec, 48_000.0, BLOCK)).expect("a note at frame 0 sounds")
     };
-    let (live, _exec) = graph(unit(48_000), 48_000.0, 1_000);
+    let (live, _exec) = graph(unit(), 48_000.0, 1_000);
     let prepare = *live.prepare();
     let (fork, fork_exec) = live
         .fork(ForkTarget::Master, ForkMode::Offline, prepare)

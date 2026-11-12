@@ -8,7 +8,7 @@ use super::*;
 //   Amplitude  [0, inf)   scalable      a gain multiplier
 //   Mix        [0, 1]     NOT scalable  a blend position between two signals
 //   Feedback   [0, 0.99]  NOT scalable  a recirculation coefficient
-//   Depth      [-1, 1]    signed, additive, scalable
+//   Depth      [-1, 1]    signed, range-checked (hand-written)
 //   Drive      [0, inf)   NOT scalable  shaper-curve intensity
 //
 // `Mix` declines scaling because half of a blend position is not a blend
@@ -141,16 +141,37 @@ impl Feedback {
     }
 }
 
-unit! {
-    /// A bipolar modulation amount, `-1..1`.
-    ///
-    /// Signed on purpose: a negative depth inverts the modulator, so an LFO at
-    /// `Depth(-1.0)` is the same shape phase-flipped. That is the whole reason
-    /// this is not just an [`Amplitude`] — and the reason it is additive and
-    /// scalable while `Mix` and `Feedback` are not.
-    pub struct Depth(pub f32): Unit, Ordered, Bounded, Additive, Signed, Scalable;
-}
+/// A bipolar modulation amount, `-1..=1`.
+///
+/// Signed on purpose: a negative depth inverts the modulator, so an LFO at
+/// `Depth::INVERTED` is the same shape phase-flipped. That is the whole reason
+/// this is not just an [`Amplitude`] — and the reason it has a sign where `Mix`
+/// and `Feedback` do not.
+///
+/// **Range-checked**: [`new`](Self::new) refuses NaN, the infinities and
+/// anything outside `-1..=1`, and so do `TryFrom<f32>` and serde.
+/// [`of`](Self::of) is for a literal. [`clamped`](Self::clamped) is the one
+/// saturating constructor, for a value that arrives from a lane or a knob;
+/// [`Unit::from_raw`] is it too, since a cell holds any float.
+///
+/// ```
+/// use tutti_types::Depth;
+///
+/// assert_eq!(Depth::new(0.25).map(Depth::get), Some(0.25));
+/// assert_eq!(Depth::new(1.5), None);
+/// assert_eq!(Depth::clamped(1.5), Depth::FULL);
+/// ```
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "f32", into = "f32"))]
+#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
+#[cfg_attr(feature = "bevy", type_path = "tutti_types::value::units")]
+pub struct Depth(f32);
 
+// NOT `Additive` and NOT `Scalable`: a sum or a scaled depth can leave
+// `-1..=1`. Do the arithmetic on the raw number and call `new` (or
+// `clamped`, where saturating is meant).
 impl Depth {
     /// No modulation.
     pub const NONE: Depth = Depth(0.0);
@@ -159,13 +180,146 @@ impl Depth {
     /// Full inverted modulation.
     pub const INVERTED: Depth = Depth(-1.0);
 
-    /// Constrain into `-1..=1`.
+    /// The depth, or `None` when `raw` is NaN, infinite or outside `-1..=1`.
     #[inline]
     #[must_use]
-    pub fn new_clamped(v: f32) -> Depth {
-        Depth(v).clamp(Self::INVERTED, Self::FULL)
+    pub const fn new(raw: f32) -> Option<Depth> {
+        if raw >= -1.0 && raw <= 1.0 {
+            Some(Depth(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The depth for a literal or a constant. For a value that arrives from
+    /// outside, use [`new`](Self::new).
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is NaN or outside `-1..=1`; in a `const` that is a compile
+    /// error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: f32) -> Depth {
+        match Self::new(raw) {
+            Some(depth) => depth,
+            None => panic!("a depth is within -1..=1"),
+        }
+    }
+
+    /// `raw` constrained into `-1..=1`; NaN is [`NONE`](Self::NONE).
+    #[inline]
+    #[must_use]
+    pub const fn clamped(raw: f32) -> Depth {
+        if raw.is_nan() {
+            Depth::NONE
+        } else if raw < -1.0 {
+            Depth::INVERTED
+        } else if raw > 1.0 {
+            Depth::FULL
+        } else {
+            Depth(raw)
+        }
+    }
+
+    /// Returns the raw amount, for a boundary the unit types do not cross.
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+
+    /// Returns the smaller of the two, in this unit.
+    #[inline]
+    #[must_use]
+    pub fn min(self, other: Self) -> Self {
+        Self(self.0.min(other.0))
+    }
+
+    /// Returns the larger of the two, in this unit.
+    #[inline]
+    #[must_use]
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.max(other.0))
+    }
+
+    /// Clamps into `lo..=hi`, in this unit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `lo > hi`, matching `f32::clamp`.
+    #[inline]
+    #[must_use]
+    pub fn clamp(self, lo: Self, hi: Self) -> Self {
+        Self(self.0.clamp(lo.0, hi.0))
     }
 }
+
+impl PartialOrd for Depth {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl core::ops::Neg for Depth {
+    type Output = Self;
+    #[inline]
+    fn neg(self) -> Self {
+        Self(-self.0)
+    }
+}
+
+impl core::fmt::Display for Depth {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+/// `from_raw` saturates ([`Depth::clamped`]): a parameter cell holds any
+/// float, and a unit's `from_raw` cannot refuse.
+impl Unit for Depth {
+    type Raw = f32;
+    #[inline]
+    fn from_raw(v: f32) -> Self {
+        Self::clamped(v)
+    }
+    #[inline]
+    fn to_raw(self) -> f32 {
+        self.0
+    }
+}
+
+impl TryFrom<f32> for Depth {
+    type Error = DepthOutOfRange;
+
+    #[inline]
+    fn try_from(raw: f32) -> Result<Depth, DepthOutOfRange> {
+        Depth::new(raw).ok_or(DepthOutOfRange(raw))
+    }
+}
+
+impl From<Depth> for f32 {
+    #[inline]
+    fn from(depth: Depth) -> f32 {
+        depth.0
+    }
+}
+
+/// A raw number that is not a depth: NaN, infinite or outside `-1..=1` (see
+/// [`Depth::new`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthOutOfRange(pub f32);
+
+impl core::fmt::Display for DepthOutOfRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "a depth is within -1..=1, got {}", self.0)
+    }
+}
+
+impl core::error::Error for DepthOutOfRange {}
 
 unit! {
     /// Waveshaper drive — how hard a signal is pushed into a nonlinearity.

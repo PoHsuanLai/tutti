@@ -4,7 +4,7 @@ use tutti_types::{Db, Hz, SampleRate};
 
 use super::core::{check_vacuity, every};
 use super::harness::{WINDOW, built, burst, noise, rate_of, render, rms, widths};
-use super::{Hook, LtiCase, RealizationCase};
+use super::{Hook, LtiCase, RecurrenceCase};
 use crate::{Complex32, Complex64, Lti, RealFft, Ring, System};
 
 /// The frames an impulse response is rendered for: up to the model's tail at
@@ -19,12 +19,12 @@ fn ir_frames<M: System>(model: &M, rate: SampleRate) -> Option<usize> {
 }
 
 /// The impulse response of `d` at `controls`, one `Vec` per output, and its model.
-fn impulse<D: LtiCase + RealizationCase>(
+fn impulse<D: LtiCase + RecurrenceCase>(
     d: &D,
     controls: &D::Controls,
     rate: SampleRate,
     frames: usize,
-) -> (Vec<Vec<f32>>, D::Model) {
+) -> (Vec<Vec<f32>>, D::Member) {
     let (mut k, model) = built(d, controls, rate);
     // A retarget to the model it already holds changes nothing.
     k.retarget(&model);
@@ -41,7 +41,7 @@ pub(super) mod design {
     pub fn stable<D: LtiCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in every(d) {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 if !n.is_stable() {
                     return Err(format!(
                         "unstable at {rate:?}: spectral radius {}",
@@ -58,7 +58,7 @@ pub(super) mod design {
     pub fn radius<D: LtiCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in every(d) {
-                let r = d.design(&c, rate).spectral_radius();
+                let r = d.member(&c, rate).spectral_radius();
                 let ok = if d.marginal(&c) { r <= 1.0 } else { r < 1.0 };
                 if !ok {
                     return Err(format!("spectral radius {r} at {rate:?}"));
@@ -73,7 +73,7 @@ pub(super) mod design {
     /// design with none says so (`vacuity`).
     pub fn figures<D: LtiCase>(d: &D) -> Result<(), String> {
         for a in d.figures() {
-            let model = d.design(&a.controls, a.rate);
+            let model = d.member(&a.controls, a.rate);
             let mut g = [Complex64::new(0.0, 0.0)];
             model.frequency_response(a.output, &[a.freq], &mut g);
             let got = g[0].norm();
@@ -104,7 +104,7 @@ pub(super) mod design {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let (l1, hinf) = (model.l1_norm(), model.hinf_norm());
             if hinf > l1 * (1.0 + 1e-9) {
                 return Err(format!("hinf_norm {hinf} above l1_norm {l1}"));
@@ -152,7 +152,7 @@ pub(super) mod design {
         let channels = d.channels();
         let (i, o) = (channels.input_width(), channels.output_width());
         for c in d.reachable().into_iter().take(8) {
-            let m = d.design(&c, d.rates()[0]);
+            let m = d.member(&c, d.rates()[0]);
             if (m.inputs(), m.outputs()) != (i, o) {
                 return Err(format!(
                     "the model has {} inputs and {} outputs, the design declares {i} and {o}",
@@ -179,7 +179,7 @@ pub(super) mod realization {
     /// yet filled the lines, so the level after the input stops can exceed the
     /// level at the stop) is within the network's `tail(floor)`: what the node
     /// reports to the graph covers what the realization rings.
-    pub fn tail_covers<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn tail_covers<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
         for c in d.probes() {
@@ -235,7 +235,7 @@ pub(super) mod realization {
     /// Sixty seconds of noise at the extreme controls stays finite and under the
     /// l1 norm the model gives (the guarantee against overs: `|x| <= 1` gives
     /// `|y| <= l1_norm`), when the model is stable.
-    pub fn stability<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn stability<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let frames = (60.0 * rate.get()) as usize;
         let mut checked = 0;
@@ -266,7 +266,7 @@ pub(super) mod realization {
     /// `f(3a) = 3 f(a)`, and the input delayed by 1000 frames gives the output
     /// delayed by as many. Each to 1e-4 of the largest output, so a flush of
     /// values under 1e-6 does not count and a nonlinearity does.
-    pub fn linear<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn linear<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         const SHIFT: usize = 1000;
         let rate = rate_of(d);
         let shape = widths(d);
@@ -334,14 +334,14 @@ pub(super) mod realization {
     /// bins, the relative error over all of them (`L2`) under
     /// [`response_tolerance`](LtiCase::response_tolerance). Marginal probes and
     /// models with a tail that never ends are left out.
-    pub fn response<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn response<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
         for c in d.static_probes() {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let Some(frames) = ir_frames(&model, rate) else {
                 continue;
             };
@@ -388,7 +388,7 @@ pub(super) mod realization {
     /// rate that is at least `1 - decay_tolerance` of the rate the radius says
     /// (a radius is a bound: the system may decay faster, never slower). A finite
     /// response (radius 0) has no decay to measure and passes.
-    pub fn decay<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn decay<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         const W: usize = 4096;
         let rate = rate_of(d);
         let mut checked = 0;
@@ -399,7 +399,7 @@ pub(super) mod realization {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let radius = model.spectral_radius();
             if radius == 0.0 {
                 continue;
@@ -453,14 +453,14 @@ pub(super) mod realization {
     /// -90 dB of its loudest window, measured in windows of [`WINDOW`] frames, is not
     /// less than `1 / tail_slack` of the model's `tail` to that floor (the `tail_covers`
     /// case holds the other direction).
-    pub fn tail_tight<D: LtiCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn tail_tight<D: LtiCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let mut checked = 0;
         for c in d.static_probes() {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let Some(frames) = ir_frames(&model, rate) else {
                 continue;
             };

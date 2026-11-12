@@ -33,7 +33,7 @@ fn a_preset_outside_midis_values_is_kept_and_says_it_cannot_be_played() {
             zones: vec![vec![]],
         }],
     );
-    let font = SoundFont::new(&mut Cursor::new(file)).expect("the font loads");
+    let font = SoundFont::from_reader(&mut Cursor::new(file)).expect("the font loads");
     let seen: Vec<_> = font
         .presets()
         .iter()

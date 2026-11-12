@@ -72,7 +72,7 @@ pub struct TransportSettings {
     ///
     /// No engine-side writer sets it; a host drives it around its own
     /// count-in.
-    pub in_preroll: Arc<AtomicBool>,
+    pub(crate) in_preroll: Arc<AtomicBool>,
     /// Derived from motion by the engine's motion machine — the clock
     /// reads it to decide whether to advance. Crate-private: nothing outside
     /// can set it.
@@ -210,8 +210,16 @@ impl TransportSettings {
 
     /// Whether a count-in is running.
     #[must_use]
-    pub fn is_in_preroll(&self) -> bool {
+    pub fn in_preroll(&self) -> bool {
         self.in_preroll.load(Ordering::Acquire)
+    }
+
+    /// The count-in flag as one cell a node reads on its own thread
+    /// (`ClickNode`), set by [`set_in_preroll`](Self::set_in_preroll). Read
+    /// it with `Ordering::Acquire`; nothing else writes it.
+    #[must_use]
+    pub fn in_preroll_cell(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.in_preroll)
     }
 
     /// Mark the count-in as running or finished.

@@ -3,8 +3,8 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{Drive, Hz, Resonance};
 
 use super::*;
-use crate::Design;
-use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
+use crate::Family;
+use crate::contract::{FamilyCase, Figure, LtiCase, RecurrenceCase};
 
 const TYPES: [LadderType; 4] = [
     LadderType::LP12,
@@ -22,8 +22,8 @@ fn controls(ty: LadderType, freq: f32, res: f32, drive: f32) -> LadderControls {
     }
 }
 
-fn design() -> LadderDesign<f64> {
-    LadderDesign::new(BusTopology::MONO)
+fn design() -> LadderFamily<f64> {
+    LadderFamily::new(BusTopology::MONO)
 }
 
 // The reachable controls stay where the small-signal model is stable: the
@@ -31,7 +31,9 @@ fn design() -> LadderDesign<f64> {
 // high cutoff with a middling resonance (15 kHz at 44.1 kHz, resonance 0.5: radius
 // 1.19; 6 kHz at resonance 0.7: 1.009), and past a resonance of about 1 everywhere, where the saturator is what
 // holds the real filter (`model.rs`).
-impl DesignCase for LadderDesign<f64> {
+impl FamilyCase for LadderFamily<f64> {
+    fn capacity(&self, _: SampleRate) {}
+
     fn reachable(&self) -> Vec<LadderControls> {
         let mut all = Vec::new();
         for ty in TYPES {
@@ -86,7 +88,7 @@ impl DesignCase for LadderDesign<f64> {
 /// `drive / (1 + 4 res)` for a low-pass and 0 for a high-pass; the stages are
 /// `1/sqrt(2)` at the cutoff, so with no resonance a 12 dB type is 1/2 there and
 /// a 24 dB type 1/4.
-impl LtiCase for LadderDesign<f64> {
+impl LtiCase for LadderFamily<f64> {
     fn figures(&self) -> Vec<Figure<LadderControls>> {
         let rate = SampleRate(48_000.0);
         let at = |c: LadderControls, freq: f32, gain: f64| Figure {
@@ -124,7 +126,7 @@ impl LtiCase for LadderDesign<f64> {
     }
 }
 
-impl RealizationCase for LadderDesign<f64> {
+impl RecurrenceCase for LadderFamily<f64> {
     fn probes(&self) -> Vec<LadderControls> {
         vec![
             controls(LadderType::LP24, 1_000.0, 0.3, 1.0),
@@ -155,7 +157,7 @@ impl RealizationCase for LadderDesign<f64> {
     }
 }
 
-crate::design_contract!(design(), Lti);
+crate::family_contract!(design(), Lti);
 
 #[test]
 fn a_glides_midpoint_is_stable() {
@@ -169,7 +171,7 @@ fn a_glides_midpoint_is_stable() {
 // model's own response is held against `ladder_step` at small signal in
 // `model.rs`. Solved on the stream's 16-frame grid, so the render does not
 // depend on how audio is split: `BlockIndependent`.
-crate::realization_contract!(design(), BlockIndependent);
+crate::recurrence_contract!(design(), BlockIndependent);
 
 /// A blended call is the linear blend of the two sets, coefficients and drive
 /// alike, arriving **exactly** on the new set at its last frame: an impulse at
@@ -180,7 +182,7 @@ crate::realization_contract!(design(), BlockIndependent);
 fn a_blend_is_linear_and_arrives_on_the_new_set() {
     let d = design();
     let rate = SampleRate(48_000.0);
-    let model = |hz, drive| d.design(&controls(LadderType::HP12, hz, 0.3, drive), rate);
+    let model = |hz, drive| d.member(&controls(LadderType::HP12, hz, 0.3, drive), rate);
     let (old, new) = (model(500.0, 1.0), model(5_000.0, 4.0));
     for i in [7usize, 15] {
         let mut blended = d.realized();
@@ -227,7 +229,7 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
 fn the_cut_ramp_goes_on_from_where_it_was() {
     let d = design();
     let rate = SampleRate(48_000.0);
-    let model = |hz| d.design(&controls(LadderType::HP12, hz, 0.3, 1.0), rate);
+    let model = |hz| d.member(&controls(LadderType::HP12, hz, 0.3, 1.0), rate);
     let (a, b) = (model(500.0), model(5_000.0));
     let mut r = d.realized();
     r.retarget(&a);

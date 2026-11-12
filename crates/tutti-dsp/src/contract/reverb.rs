@@ -5,8 +5,8 @@ use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds};
 
 use super::core::{check_vacuity, every};
 use super::harness::{Burst, WINDOW, built, burst, energy, noise, rate_of, render, rms, widths};
-use super::{Hook, RealizationCase, ReverbCase};
-use crate::{Absorption, Band, Lti, Network, NetworkSizes, Ring, Stage, System};
+use super::{Hook, RecurrenceCase, ReverbCase};
+use crate::{Absorption, Band, Lti, Network, NetworkCapacity, Ring, Stage, System};
 
 fn close(a: f32, b: f32, relative: f32) -> bool {
     a == b || (a - b).abs() <= relative * a.abs().max(b.abs())
@@ -14,8 +14,8 @@ fn close(a: f32, b: f32, relative: f32) -> bool {
 
 /// The helpers the RT60 cases share.
 /// How many frames of burst plateau make `lines` trips of the longest line.
-pub(super) fn burst_frames(bounds: &NetworkSizes, lines: f32) -> usize {
-    (lines * bounds.line) as usize
+pub(super) fn burst_frames(capacity: &NetworkCapacity, lines: f32) -> usize {
+    (lines * capacity.line) as usize
 }
 
 /// The RT60 of the decay after the burst: a least squares line through the
@@ -28,13 +28,13 @@ pub(super) fn measured_rt60(
     out: &[Vec<f32>],
     b: &Burst,
     rate: SampleRate,
-    bounds: &NetworkSizes,
+    capacity: &NetworkCapacity,
     (from, to): (f64, f64),
 ) -> Result<f32, String> {
     // Windows twice the longest line, stepping by `WINDOW`: a train of echoes
     // (parallel combs) puts energy in spikes a line apart, and a window shorter
     // than that measures where the spikes fall.
-    let long = ((2.0 * bounds.line) as usize).max(4 * WINDOW);
+    let long = ((2.0 * capacity.line) as usize).max(4 * WINDOW);
     let reference = energy(out, b.plateau_end - long, long);
     if reference <= 0.0 {
         return Err("nothing sounds before the input stops".into());
@@ -98,7 +98,7 @@ pub(super) mod design {
         let mut asked = 0;
         for rate in d.rates() {
             for c in d.reachable() {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 for band in Band::ALL {
                     if let Some(want) = d.requested_rt60(&c, rate, band) {
                         asked += 1;
@@ -125,7 +125,7 @@ pub(super) mod design {
         let mut checked = 0;
         for rate in d.rates() {
             for c in d.reachable() {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 let want: Vec<Option<Seconds>> = Band::ALL
                     .iter()
                     .map(|&b| d.requested_rt60(&c, rate, b))
@@ -164,7 +164,7 @@ pub(super) mod design {
     pub fn tail_monotone<D: ReverbCase>(d: &D) -> Result<(), String> {
         let floor = Db(-60.0);
         for rate in d.rates() {
-            let tail = |c: &D::Controls, f: Db| d.design(c, rate).tail(f);
+            let tail = |c: &D::Controls, f: Db| d.member(c, rate).tail(f);
             for (a, b) in d.decay_pairs().into_iter().chain(d.size_pairs()) {
                 let (ta, tb) = (tail(&a, floor), tail(&b, floor));
                 match (ta, tb) {
@@ -202,7 +202,7 @@ pub(super) mod design {
     pub fn lossless_iff_frozen<D: ReverbCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.reachable() {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 let frozen = d.frozen(&c);
                 if n.is_lossless() != frozen {
                     return Err(format!("lossless {} but frozen {frozen}", n.is_lossless()));
@@ -224,7 +224,7 @@ pub(super) mod design {
         let at = |s: f32| Seconds::from_f32(s);
         for rate in d.rates() {
             for c in d.reachable() {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 let m = n.modal_density().get();
                 if !(m.is_finite() && m > 0.0) {
                     return Err(format!("modal density {m}"));
@@ -240,8 +240,8 @@ pub(super) mod design {
             }
             for (a, b) in d.size_pairs() {
                 let (ma, mb) = (
-                    d.design(&a, rate).modal_density(),
-                    d.design(&b, rate).modal_density(),
+                    d.member(&a, rate).modal_density(),
+                    d.member(&b, rate).modal_density(),
                 );
                 if mb.get() <= ma.get() {
                     return Err(format!("modal density {ma:?} -> {mb:?} for a bigger room"));
@@ -249,8 +249,8 @@ pub(super) mod design {
             }
             for (a, b) in d.diffusion_pairs() {
                 let (ea, eb) = (
-                    d.design(&a, rate).echo_density(at(1.0)),
-                    d.design(&b, rate).echo_density(at(1.0)),
+                    d.member(&a, rate).echo_density(at(1.0)),
+                    d.member(&b, rate).echo_density(at(1.0)),
                 );
                 if eb.get() <= ea.get() {
                     return Err(format!("echo density {ea:?} -> {eb:?} for more diffusion"));
@@ -294,7 +294,7 @@ pub(super) mod design {
         let rate = d.rates()[0];
         let mut tried = 0;
         for c in d.reachable().into_iter().step_by(17) {
-            let base = d.design(&c, rate);
+            let base = d.member(&c, rate);
             for (i, stage) in base.stages.iter().enumerate() {
                 let Stage::Fdn(f) = stage else { continue };
                 for a in hostile {
@@ -340,7 +340,7 @@ pub(super) mod design {
         }
         for rate in d.rates() {
             for c in every(d) {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 if n.has_direct_path() {
                     return Err(format!("direct path, shortest {} frames", n.min_delay()));
                 }
@@ -354,7 +354,7 @@ pub(super) mod design {
     pub fn pre_delay<D: ReverbCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.reachable() {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 let asked = d.pre_delay(&c);
                 let want = if asked.get().is_finite() && asked.get() > 0.0 {
                     Samples((asked.get() * rate.get()).round() as usize)
@@ -375,13 +375,13 @@ pub(super) mod design {
     /// Every absorption of every reachable design peaks at or under 1: the kernel
     /// rescales a band set whose response exceeds 1 anywhere (to peak at 0.9999),
     /// so a model that carried such gains would describe a loop the kernel does not
-    /// run. The design applies that scaling itself (`FdnDesign` writes the scaled
+    /// run. The design applies that scaling itself (`FdnFamily` writes the scaled
     /// gains into its network), so the network is what runs.
     pub fn no_rescale<D: ReverbCase>(d: &D) -> Result<(), String> {
         let mut checked = 0;
         for rate in d.rates() {
             for c in d.reachable() {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 for stage in n.stages.iter() {
                     let Stage::Fdn(f) = stage else { continue };
                     for line in f.lines.iter() {
@@ -426,22 +426,22 @@ pub(super) mod realization {
     /// A tone burst in each band, stopped; the energy decay after it has the RT60
     /// the network's `rt60(band)` says, within the realization's tolerance (measured
     /// from 40 to 65 dB down, where the slowest line governs).
-    pub fn rt60<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn rt60<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut measured = 0;
         for c in d.static_probes() {
             for band in Band::ALL {
                 let (mut k, network) = built(d, &c, rate);
-                let ceiling = d.ceiling(rate);
-                let frames = burst_frames(&d.bounds(&ceiling), 3.0);
+                let reach = d.reach_at(rate);
+                let frames = burst_frames(&d.reach(&reach), 3.0);
                 let b = burst(
                     d.tone(band, rate),
                     frames,
                     rt60_frames(&network, rate, d.fit_depth().1)?,
                 );
                 let out = render(&mut k, widths(d), &b.signal, 64);
-                let got = measured_rt60(&out, &b, rate, &d.bounds(&ceiling), d.fit_depth())?;
+                let got = measured_rt60(&out, &b, rate, &d.reach(&reach), d.fit_depth())?;
                 let want = network.rt60(band).to_f32();
                 measured += 1;
                 if (got - want).abs() > tol * want {
@@ -461,13 +461,13 @@ pub(super) mod realization {
     /// The measured bands fall in the order the network gives them: for every pair
     /// of bands whose network RT60s differ by more than twice the tolerance, the
     /// measured ones are ordered alike (and differ by more than the tolerance).
-    pub fn band_order<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn band_order<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut ordered = 0;
         for c in d.static_probes() {
-            let ceiling = d.ceiling(rate);
-            let frames = burst_frames(&d.bounds(&ceiling), 3.0);
+            let reach = d.reach_at(rate);
+            let frames = burst_frames(&d.reach(&reach), 3.0);
             let mut got = [0.0f32; 3];
             let mut want = [0.0f32; 3];
             for band in Band::ALL {
@@ -478,8 +478,7 @@ pub(super) mod realization {
                     rt60_frames(&network, rate, d.fit_depth().1)?,
                 );
                 let out = render(&mut k, widths(d), &b.signal, 64);
-                got[band.index()] =
-                    measured_rt60(&out, &b, rate, &d.bounds(&ceiling), d.fit_depth())?;
+                got[band.index()] = measured_rt60(&out, &b, rate, &d.reach(&reach), d.fit_depth())?;
                 want[band.index()] = network.rt60(band).to_f32();
             }
             for (i, j) in [(0, 1), (1, 2), (0, 2)] {
@@ -504,7 +503,7 @@ pub(super) mod realization {
     /// The realization is wet only: with noise in from the first frame, every output
     /// channel is exactly zero until the network's shortest path has been
     /// travelled, so none of the input reaches the output.
-    pub fn wet_only<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn wet_only<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         if !d.wet_only() {
             return Ok(());
         }
@@ -531,7 +530,7 @@ pub(super) mod realization {
     /// A stereo output is decorrelated: the zero-lag correlation of the two
     /// channels' response to noise stays under 0.3. A design with one output
     /// channel has nothing to say.
-    pub fn decorrelated<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn decorrelated<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let (_, outputs) = widths(d);
         if outputs < 2 {
             return Ok(());
@@ -564,7 +563,7 @@ pub(super) mod realization {
     /// chain of four passes the first sample at full size). Pins every line
     /// length, not only the shortest that `arrival` finds. Vacuous (an error) for
     /// a network of another shape.
-    pub fn line_lengths<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn line_lengths<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         use crate::reverb::network::Stage;
         let rate = rate_of(d);
         let mut checked = 0;
@@ -630,7 +629,7 @@ pub(super) mod realization {
     /// A pre-delay moves the first sound by exactly its frames, and `latency()`
     /// stays what it was: pre-delay is part of the wet sound, never latency.
     /// Vacuous for a design with no pre-delay control.
-    pub fn pre_delay<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn pre_delay<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (without, with, by) in d.pre_delay_pairs() {
             let (a, b) = (first_sound(d, &without, rate), first_sound(d, &with, rate));
@@ -649,7 +648,7 @@ pub(super) mod realization {
 
     /// A larger room sounds later: the first sound of `b` is after `a`'s.
     /// Vacuous for a design with no size control.
-    pub fn size<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn size<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (a, b) in d.size_pairs() {
             let (fa, fb) = (first_sound(d, &a, rate), first_sound(d, &b, rate));
@@ -663,7 +662,7 @@ pub(super) mod realization {
     /// More diffusion measures denser: in the window from 0.15 to 0.3 s of an
     /// impulse's response the denser controls fill at least 0.15 more of the
     /// frames. Vacuous for a design with no diffusion control.
-    pub fn diffusion<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn diffusion<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let (from, to) = ((0.15 * rate.get()) as usize, (0.3 * rate.get()) as usize);
         let mut x = vec![0.0f32; to + 1];
@@ -687,7 +686,7 @@ pub(super) mod realization {
     /// the lines, then the freeze; a second later the level is `L`, nine seconds
     /// later it is within 0.25 dB of it, and a second of loud noise on top
     /// leaves it there. Vacuous for a design that cannot freeze.
-    pub fn freeze<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn freeze<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let second = rate.get() as usize;
         let level = |out: &[Vec<f32>], from: usize| 10.0 * energy(out, from, second / 5).log10();
@@ -695,7 +694,7 @@ pub(super) mod realization {
             let (mut k, _) = built(d, &thawed, rate);
             let shape = widths(d);
             render(&mut k, shape, &noise(5, 3 * second, 0.5), 64);
-            k.retarget(&d.design(&frozen, rate));
+            k.retarget(&d.member(&frozen, rate));
             let held = render(&mut k, shape, &vec![0.0; 10 * second], 64);
             let (early, late) = (level(&held, second), level(&held, 9 * second));
             if !early.is_finite() || (late - early).abs() > 0.25 {
@@ -720,7 +719,7 @@ pub(super) mod realization {
     /// Width: at its natural setting the channels are decorrelated and at none
     /// they are one (correlation over 0.999). Vacuous for a design with no width
     /// control.
-    pub fn width<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn width<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let corr = |c: &D::Controls| -> f64 {
             let (mut k, _) = built(d, c, rate);
@@ -750,7 +749,7 @@ pub(super) mod realization {
     /// The wet gain scales the sound: `b` is `a` at `ratio` times the level to
     /// 2%, and exactly silent when the ratio is 0. Vacuous for a design with no
     /// wet gain.
-    pub fn wet_gain<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn wet_gain<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let x = noise(12, 1 << 14, 1.0);
         for (a, b, ratio) in d.wet_pairs() {
@@ -774,7 +773,7 @@ pub(super) mod realization {
 
     /// The reverb hooks of the realization level return something, or the design
     /// says why they cannot.
-    pub fn reverb_vacuity<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn reverb_vacuity<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         check_vacuity(
             d.vacant(),
             &[
@@ -787,7 +786,7 @@ pub(super) mod realization {
 
     /// The first frame any channel sounds for a unit impulse at frame 0 of the
     /// network `c` designs, in `frames`.
-    fn first_sound<D: RealizationCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize> {
+    fn first_sound<D: RecurrenceCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize> {
         let (mut k, network) = built(d, c, rate);
         let frames = d.musical_delay(&network) + 4000;
         let mut x = vec![0.0f32; frames];

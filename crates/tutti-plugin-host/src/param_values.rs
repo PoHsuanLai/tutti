@@ -12,11 +12,10 @@
 //! puts it on its task pool; a headless one may run it on a thread of its
 //! own, or inline when it can afford the round trips.
 //!
-//! **Reports are VST2's only, today.** Of the formats, only VST2's
-//! `audioMasterAutomate` reaches the parameter callback (in process, and
-//! through the plugin-server's `ParameterChanged`). CLAP, VST3 and AU emit no
-//! per-value report through the server (`tutti-plugin-server`'s
-//! `Plugin::poll_async_events`).
+//! **Every format reports** (doc 029 section 6.1): each plugin's own edits reach
+//! the parameter callback as [`ParamEdit`](tutti_plugin_types::ParamEdit)s, in
+//! process through `Control::take_reported_edits` and through the plugin-server
+//! as `BridgeMessage::ParameterChanged`.
 //!
 //! **An echo is not an edit.** A plugin that reports the value a host just
 //! set (from inside `setParameter`) would make that value an edit. The VST2
@@ -95,11 +94,14 @@ impl PluginParamValues {
     pub fn start(handle: &PluginHandle) -> (Self, ParamRead) {
         let edits: Edits = Arc::default();
         let queue = Arc::clone(&edits);
-        handle.on_parameter_changed(move |id, value| {
-            queue
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push((id, value));
+        // The mirror follows the changes; a gesture's ends carry no value.
+        handle.on_parameter_changed(move |edit| {
+            if let Some(value) = edit.value() {
+                queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push((edit.id(), value));
+            }
         });
         let mirror = Self {
             values: None,
@@ -318,11 +320,11 @@ mod tests {
     /// is held, not lost and not applied.
     #[test]
     fn a_reported_edit_waits_for_the_read_then_reaches_the_mirror() {
-        use tutti_plugin_types::ParamId;
+        use tutti_plugin_types::{ParamEdit, ParamId};
         let (plugin, sink) = handle(vec![(ParamId::new(1), Some(0.1))]);
         let (mut mirror, read) = PluginParamValues::start(&plugin);
 
-        sink.fire((ParamId::new(1), n(0.9)));
+        sink.fire(ParamEdit::change(ParamId::new(1), n(0.9)));
         let mut seen = Vec::new();
         mirror.drain_edits(|id, v| seen.push((id, v)));
         assert!(seen.is_empty(), "an edit before the read lands waits");

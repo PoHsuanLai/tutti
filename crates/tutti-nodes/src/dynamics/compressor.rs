@@ -5,6 +5,7 @@ use tutti_graph::{
     Cx, InBus, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::ChannelLayout;
+use tutti_types::UnitParam;
 use tutti_types::{AtomicF32, AtomicF64};
 
 use super::params::{AttackRelease, ThresholdParams};
@@ -13,7 +14,7 @@ use tutti_dsp::{CompressorBlock, CompressorKernel};
 use tutti_types::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
 use crate::buses::keyed;
-use crate::ramp::{LastGood, block_driven, clamp_finite};
+use crate::ramp::{LastGood, clamp_finite};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone, Debug)]
@@ -204,7 +205,7 @@ impl CompressorCore {
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over threshold, ratio, attack, release and makeup (as
-/// [`UnitParam::GainDb`](tutti_types::UnitParam::GainDb)), and a fork of it starts from the values last set
+/// [`UnitParam::GainDb`]), and a fork of it starts from the values last set
 /// through that set. The graph prepares it at the device rate before its
 /// first block.
 pub struct CompressorNode {
@@ -230,7 +231,7 @@ impl std::fmt::Debug for CompressorNode {
 // every param in its set. The threshold is read per sample; the ratio,
 // the times and the makeup are block-rate in the node (read once per
 // block, the makeup ramped across it), so a driven port is read the same
-// way (`block_driven`).
+// way (`ParamInput::last_frame`).
 tutti_graph::declare_params!([] CompressorNode, n {
     Threshold => Db = &n.core.threshold.threshold,
     Ratio => CompressionRatio = &n.core.ratio,
@@ -469,14 +470,24 @@ impl Node for CompressorNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        self.core
-            .update_coefficients([block_driven(&io, 2), block_driven(&io, 3)]);
-        let block = self
-            .core
-            .begin_block([None, block_driven(&io, 1), block_driven(&io, 4)]);
+        self.core.update_coefficients([
+            self.declared_param::<{ UnitParam::Attack as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Release as u16 }>(&io)
+                .last_frame(),
+        ]);
+        let block = self.core.begin_block([
+            None,
+            self.declared_param::<{ UnitParam::Ratio as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::GainDb as u16 }>(&io)
+                .last_frame(),
+        ]);
         // A modulated threshold overrides the cell per sample; the cell is
         // the base the graph's modulation rides on.
-        let threshold_fed = io.param(0).frames();
+        let threshold_fed = self
+            .declared_param::<{ UnitParam::Threshold as u16 }>(&io)
+            .frames();
         let (inputs, mut outputs) = io.split();
 
         // The detector is a recursive envelope, so it runs sample-outer into a
@@ -505,7 +516,7 @@ impl Node for CompressorNode {
 
 impl ParamNode for CompressorNode {
     /// Threshold, ratio, attack, release, and the makeup gain as
-    /// [`UnitParam::GainDb`](tutti_types::UnitParam::GainDb) (the address `set(Setting)` took it by).
+    /// [`UnitParam::GainDb`] (the address `set(Setting)` took it by).
     fn param_set(&self) -> ParamSet {
         self.declared_set()
     }

@@ -1,12 +1,12 @@
-//! A `Design::design` call allocates nothing (design 022 section 8.1, the
+//! A `Family::member` call allocates nothing (design 022 section 8.1, the
 //! "pure" case).
 //!
 //! The crate carries no `assert_no_alloc` dev-dependency (see its Cargo.toml),
 //! so this binary counts allocations with its own global allocator, per thread
-//! as `chroma_alloc.rs` does. The check is generic over a [`Design`], so a later
+//! as `chroma_alloc.rs` does. The check is generic over a [`Family`], so a later
 //! design runs it on its own controls.
 
-use tutti_dsp::{Design, FreeverbControls, FreeverbDesign};
+use tutti_dsp::{Family, FreeverbControls, FreeverbFamily, Grows};
 use tutti_fixtures::{ThreadCounting, allocations};
 use tutti_types::{Mix, SampleRate};
 
@@ -14,10 +14,10 @@ use tutti_types::{Mix, SampleRate};
 static A: ThreadCounting = ThreadCounting;
 
 /// Designing at each of `controls` allocates nothing.
-fn design_allocates_nothing<D: Design>(design: &D, controls: &[D::Controls], rate: SampleRate) {
+fn design_allocates_nothing<D: Family>(design: &D, controls: &[D::Controls], rate: SampleRate) {
     for c in controls {
         let n = allocations(|| {
-            std::hint::black_box(design.design(c, rate));
+            std::hint::black_box(design.member(c, rate));
         });
         assert_eq!(n, 0, "design allocated");
     }
@@ -37,30 +37,30 @@ fn freeverb_design_allocates_nothing() {
         })
         .collect();
     for rate in [44_100.0, 48_000.0, 192_000.0] {
-        design_allocates_nothing(&FreeverbDesign, &controls, SampleRate(rate));
+        design_allocates_nothing(&FreeverbFamily, &controls, SampleRate(rate));
         let bounds = allocations(|| {
             std::hint::black_box(
-                FreeverbDesign.bounds(&tutti_dsp::Ceiling::at(SampleRate(rate)).unwrap()),
+                FreeverbFamily.reach(&tutti_dsp::Reach::at(SampleRate(rate)).unwrap()),
             );
         });
         assert_eq!(bounds, 0, "bounds allocated");
     }
 }
 
-/// Freeverb's `design_into`, `retarget` and `process` allocate nothing, with a
+/// Freeverb's `member_into`, `retarget` and `process` allocate nothing, with a
 /// different network every block (design 022 section 8.2, "no allocation"): the
 /// node's audio-thread path, the network designed in place into one built
 /// beforehand.
 #[test]
 fn freeverb_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, FreeverbRecurrence, Network, Realized, Setup};
+    use tutti_dsp::{FreeverbRecurrence, Network, Reach, Realized, Setup};
     use tutti_types::{MaxBlock, Samples};
 
     let rate = SampleRate(48_000.0);
-    let design = FreeverbDesign;
+    let design = FreeverbFamily;
     let mut realization = design.realized();
     realization.prepare(
-        &design.bounds(&Ceiling::at(rate).unwrap()),
+        &design.reach(&Reach::at(rate).unwrap()),
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),
@@ -75,7 +75,7 @@ fn freeverb_retargets_and_renders_without_allocating() {
             damp: Mix(((block / 8) % 8) as f32 / 7.0),
         };
         let n = allocations(|| {
-            design.design_into(&c, rate, &mut network);
+            design.member_into(&c, rate, &mut network);
             realization.retarget(&network);
             realization.process(&[&input], &mut [&mut left, &mut right], 64);
         });
@@ -84,38 +84,38 @@ fn freeverb_retargets_and_renders_without_allocating() {
     let _: Realized<FreeverbRecurrence> = realization;
 }
 
-/// `design_into` builds no value of the network's size (about 56 KB): it runs
+/// `member_into` builds no value of the network's size (about 56 KB): it runs
 /// on a 96 KiB stack, as an audio thread's callback may. An unoptimised build
 /// copies a network about three times, so building one needs well over that.
 #[test]
-fn design_into_needs_no_network_sized_stack() {
+fn member_into_needs_no_network_sized_stack() {
     let rate = SampleRate(44_100.0);
     let mut network = Box::new(tutti_dsp::Network::new(rate));
     let handle = std::thread::Builder::new()
         .stack_size(96 * 1024)
         .spawn(move || {
-            FreeverbDesign.design_into(&FreeverbControls::GENERAL_MIDI, rate, &mut network);
+            FreeverbFamily.member_into(&FreeverbControls::GENERAL_MIDI, rate, &mut network);
             network.stages.len()
         })
         .unwrap();
     assert_eq!(handle.join().unwrap(), 5);
 }
 
-/// The FDN's `design_into`, `retarget` and `process` allocate nothing, with a
+/// The FDN's `member_into`, `retarget` and `process` allocate nothing, with a
 /// different network every block (a decay, a size, a diffusion, a pre-delay, a
 /// width, a wet gain and a freeze all move), after the one `prepare` that sizes
 /// the realization from the bounds. The ramps the realization starts are the work of the
 /// following blocks, which allocate nothing either.
 #[test]
 fn the_fdn_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, FdnControls, FdnDesign, Network, Setup};
+    use tutti_dsp::{FdnControls, FdnFamily, Network, Reach, Setup};
     use tutti_types::{Db, Depth, Hz, MaxBlock, Samples, Seconds, StereoWidth};
 
     let rate = SampleRate(48_000.0);
-    let design = FdnDesign::new(8, Seconds(8.0), true).unwrap();
+    let design = FdnFamily::new(8, Seconds(8.0), true).unwrap();
     let mut realization = design.realized();
     realization.prepare(
-        &design.bounds(&Ceiling::at(rate).unwrap()),
+        &design.reach(&Reach::at(rate).unwrap()),
         &Setup {
             rate,
             max_block: MaxBlock::of(Samples(64)),
@@ -135,14 +135,14 @@ fn the_fdn_retargets_and_renders_without_allocating() {
             size: Mix(k),
             diffusion: Mix(1.0 - k),
             pre_delay: Seconds::from_f32(0.05 * k),
-            modulation: Depth(k),
+            modulation: Depth::of(k),
             rate: Hz(0.1 + k),
             width: StereoWidth(2.0 * k),
             wet: Db(-12.0 * k),
             freeze: block % 11 == 0,
         };
         let n = allocations(|| {
-            design.design_into(&c, rate, &mut network);
+            design.member_into(&c, rate, &mut network);
             realization.retarget(&network);
             realization.process(&[&input], &mut [&mut left, &mut right], 64);
         });
@@ -150,16 +150,16 @@ fn the_fdn_retargets_and_renders_without_allocating() {
     }
 }
 
-/// The FDN's `design_into` runs on a 96 KiB stack, like Freeverb's.
+/// The FDN's `member_into` runs on a 96 KiB stack, like Freeverb's.
 #[test]
-fn the_fdns_design_into_needs_no_network_sized_stack() {
-    use tutti_dsp::{FdnControls, FdnDesign};
+fn the_fdns_member_into_needs_no_network_sized_stack() {
+    use tutti_dsp::{FdnControls, FdnFamily};
     let rate = SampleRate(44_100.0);
     let mut network = Box::new(tutti_dsp::Network::new(rate));
     let handle = std::thread::Builder::new()
         .stack_size(96 * 1024)
         .spawn(move || {
-            FdnDesign::default().design_into(&FdnControls::DEFAULT, rate, &mut network);
+            FdnFamily::default().member_into(&FdnControls::DEFAULT, rate, &mut network);
             network.stages.len()
         })
         .unwrap();

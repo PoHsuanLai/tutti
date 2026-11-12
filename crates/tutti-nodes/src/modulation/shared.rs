@@ -53,7 +53,7 @@ impl LfoDrive {
     /// step the drive's phase further ahead than the block.
     ///
     /// `driven` is the block's rate from the node's param port when a lane
-    /// drives it (`block_driven`), floored as `set_rate` floors it
+    /// drives it (`ParamInput::last_frame`), floored as `set_rate` floors it
     /// ([`clamp_rate`](Self::clamp_rate)); `None` reads the cell. The cell is
     /// read as written: a negative rate written straight to it runs the LFO
     /// backwards (`a_negative_rate_runs_the_phase_backwards`), and a lane's
@@ -133,7 +133,7 @@ impl LinearMod {
     ///
     /// `driven` holds the block's depth and feedback from the node's
     /// param ports where a lane drives them
-    /// (`block_driven`); `None` reads the cell.
+    /// (`ParamInput::last_frame`); `None` reads the cell.
     /// A driven feedback is clamped as the setter clamps: a lane's
     /// range is the host's, and an unstable feedback would blow up.
     #[inline]
@@ -143,9 +143,9 @@ impl LinearMod {
         // from.
         let [depth, fb] = driven;
         (
-            // `set_depth`'s clamp, at the point of use: a depth past the
+            // A driven depth is clamped into a `Depth`: a depth past the
             // unit range sweeps the all-pass past Nyquist.
-            Depth::new_clamped(self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())))
+            Depth::clamped(self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())))
                 .get(),
             self.good[1].read(fb.map_or_else(
                 || self.feedback.load().get(),
@@ -192,7 +192,7 @@ impl TimeMod {
     ///
     /// `driven` holds the block's depth and feedback from the node's
     /// param ports where a lane drives them
-    /// (`block_driven`); `None` reads the cell.
+    /// (`ParamInput::last_frame`); `None` reads the cell.
     /// A driven feedback is clamped as the setter clamps: a lane's
     /// range is the host's, and an unstable feedback would blow up.
     #[inline]

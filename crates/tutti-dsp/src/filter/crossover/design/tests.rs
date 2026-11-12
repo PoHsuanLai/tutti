@@ -2,22 +2,22 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::*;
-use crate::Design;
-use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
+use crate::Family;
+use crate::contract::{FamilyCase, Figure, LtiCase, RecurrenceCase};
 
 /// Mono, three bands: output `b` is band `b`, the model's own outputs.
-fn design() -> CrossoverDesign {
-    CrossoverDesign::new(BusTopology::MONO, 3).unwrap()
+fn design() -> CrossoverFamily {
+    CrossoverFamily::new(BusTopology::MONO, 3).unwrap()
 }
 
 /// A set is solved with every split inside `1 Hz..=SOLVE_CEILING * rate` and none
 /// below the one before, whatever the controls say.
 #[test]
-fn design_into_orders_and_caps_the_splits() {
+fn member_into_orders_and_caps_the_splits() {
     let rate = SampleRate(48_000.0);
     let mut model = design().blank(rate);
     for set in [[5_000.0, 4_000.0], [30_000.0, 25_000.0], [-1.0, f32::NAN]] {
-        design().design_into(&controls(set[0], set[1]), rate, &mut model);
+        design().member_into(&controls(set[0], set[1]), rate, &mut model);
         let [a, b, ..] = model.freqs;
         assert!(
             1.0 <= a && a <= b && b <= SOLVE_CEILING * 48_000.0,
@@ -32,7 +32,9 @@ fn controls(low: f32, high: f32) -> CrossoverControls {
     }
 }
 
-impl DesignCase for CrossoverDesign {
+impl FamilyCase for CrossoverFamily {
+    fn capacity(&self, _: SampleRate) {}
+
     fn reachable(&self) -> Vec<CrossoverControls> {
         let mut all = Vec::new();
         for low in [20.0, 100.0, 400.0, 1_500.0] {
@@ -60,7 +62,7 @@ impl DesignCase for CrossoverDesign {
 /// lower split and all-pass after it, so it is 1 at DC and a half at that split
 /// (each branch of a split is -6.02 dB there); the top band is `HP^2` of both
 /// and is 1 at Nyquist.
-impl LtiCase for CrossoverDesign {
+impl LtiCase for CrossoverFamily {
     fn figures(&self) -> Vec<Figure<CrossoverControls>> {
         let rate = SampleRate(48_000.0);
         let c = controls(500.0, 4_000.0);
@@ -93,7 +95,7 @@ impl LtiCase for CrossoverDesign {
     }
 }
 
-impl RealizationCase for CrossoverDesign {
+impl RecurrenceCase for CrossoverFamily {
     fn probes(&self) -> Vec<CrossoverControls> {
         vec![
             controls(200.0, 2_000.0),
@@ -122,7 +124,7 @@ impl RealizationCase for CrossoverDesign {
     }
 }
 
-crate::design_contract!(design(), Lti);
+crate::family_contract!(design(), Lti);
 
 // The `Lti` group on the realization: the crossover is linear and shift invariant
 // at a set of controls, and its model is multi-output (one a band), so the group's
@@ -130,7 +132,7 @@ crate::design_contract!(design(), Lti);
 // design is mono so that the realization's output channel `b` is band `b`.
 // Solved on the stream's 16-frame grid, so the render does not depend on how audio
 // is split: `BlockIndependent`.
-crate::realization_contract!(design(), BlockIndependent, Lti);
+crate::recurrence_contract!(design(), BlockIndependent, Lti);
 
 /// The first sample after a retarget is the new set's, whole: an impulse into a
 /// realization with no state answers with the product of the first coefficients of
@@ -140,8 +142,8 @@ crate::realization_contract!(design(), BlockIndependent, Lti);
 fn a_retarget_lands_whole() {
     let d = design();
     let rate = SampleRate(48_000.0);
-    let first = d.design(&controls(300.0, 3_000.0), rate);
-    let second = d.design(&controls(900.0, 5_000.0), rate);
+    let first = d.member(&controls(300.0, 3_000.0), rate);
+    let second = d.member(&controls(900.0, 5_000.0), rate);
     let mut r = d.realized();
     r.retarget(&first);
     r.process(
@@ -173,9 +175,9 @@ fn controls_refuse_what_a_crossover_cannot_run() {
 /// The design refuses a band count the tree does not have and an empty layout.
 #[test]
 fn the_design_refuses_what_it_cannot_make() {
-    assert!(CrossoverDesign::new(BusTopology::MONO, 1).is_err());
-    assert!(CrossoverDesign::new(BusTopology::MONO, 7).is_err());
-    assert!(CrossoverDesign::new(BusTopology::EMPTY, 2).is_err());
-    let wide = CrossoverDesign::new(BusTopology::STEREO, 4).unwrap();
+    assert!(CrossoverFamily::new(BusTopology::MONO, 1).is_err());
+    assert!(CrossoverFamily::new(BusTopology::MONO, 7).is_err());
+    assert!(CrossoverFamily::new(BusTopology::EMPTY, 2).is_err());
+    let wide = CrossoverFamily::new(BusTopology::STEREO, 4).unwrap();
     assert_eq!(wide.channels().output_width(), 8);
 }

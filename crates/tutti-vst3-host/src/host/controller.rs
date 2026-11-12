@@ -10,12 +10,17 @@ use tutti_rt::{DrainMark, DrainWatch};
 
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Controller, Edit, EditDrain, EditSink, EditorSize,
-    EditorWindow, Loaded, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, Prepare, Preset, PresetId, Processor, Refused,
-    RenderMode, Request, RescanScope, RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
+    EditorWindow, Loaded, LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo,
+    PluginDescriptor, PluginError, PluginResult, PluginTail, Prepare, Preset, PresetId, Processor,
+    Refused, RenderMode, Request, RescanScope, RestartRules, SampleFormat, Samples, Stuck,
+    WindowHandle,
 };
 
 use crate::types::{ProcessMode, Vst3Sample};
+
+/// Reports of the processor's `outputParameterChanges` held for
+/// `take_reported_edits` before the oldest go (a control tick drains them).
+const PROCESSOR_EDITS_ROOM: usize = 4096;
 
 use super::control::plugin_error;
 use super::instance::Staged;
@@ -65,6 +70,11 @@ pub struct Vst3Controller {
     /// per block, applied to the controller on a tick
     /// ([`flush_edits`](Control::flush_edits)).
     reports: EditDrain,
+    /// What `apply_reports` applied, for `take_reported_edits`.
+    processor_edits: Vec<ParamEdit>,
+    /// The processor's reports that were dropped for want of room in
+    /// `processor_edits`.
+    processor_edits_dropped: u64,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -121,6 +131,8 @@ impl Vst3Controller {
             handed,
             watch,
             reports,
+            processor_edits: Vec::new(),
+            processor_edits_dropped: 0,
             _not_sync: PhantomData,
         }
     }
@@ -188,6 +200,13 @@ impl Vst3Controller {
         });
         for (id, value) in reported {
             Control::set_parameter(self.loaded_mut(), main, id, value);
+            // Kept for `take_reported_edits`, up to a bound: nobody may be
+            // asking, and then the oldest go and are counted.
+            if self.processor_edits.len() == PROCESSOR_EDITS_ROOM {
+                self.processor_edits.remove(0);
+                self.processor_edits_dropped += 1;
+            }
+            self.processor_edits.push(ParamEdit::change(id, value));
         }
     }
 
@@ -352,20 +371,31 @@ impl Control for Vst3Controller {
         Control::set_render_mode(self.loaded_mut(), main, mode)
     }
 
-    /// The edits the plugin's own editor made, reported to the caller and
-    /// queued to the Processor: a plugin whose component is separate from its
-    /// controller has no other way to hear of them.
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+    /// The edits the plugin's own editor made, then what the plugin's
+    /// processor wrote to `outputParameterChanges` since the last call (each a
+    /// change with no gesture around it: the processor is not a hand on a
+    /// knob). The editor's changes are queued to the Processor too: a plugin
+    /// whose component is separate from its controller has no other way to hear
+    /// of them. What the processor reported is not: the plugin made it.
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
         let first = out.len();
         Control::take_reported_edits(self.loaded_mut(), main, out);
-        let reported = out[first..].to_vec();
+        let reported: Vec<_> = out[first..]
+            .iter()
+            .filter_map(|edit| match *edit {
+                ParamEdit::Change { id, value, .. } => Some((id, value)),
+                _ => None,
+            })
+            .collect();
         for (id, value) in reported {
             self.queue_edit(id, value);
         }
+        self.apply_reports(main);
+        out.append(&mut self.processor_edits);
     }
 
     fn dropped_reported_edits(&self) -> u64 {
-        Control::dropped_reported_edits(self.loaded())
+        Control::dropped_reported_edits(self.loaded()) + self.processor_edits_dropped
     }
 
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {

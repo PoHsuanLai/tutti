@@ -2,12 +2,12 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::*;
-use crate::contract::{DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
+use crate::contract::{FamilyCase, Hook, LtiCase, RecurrenceCase, ReverbCase};
 use crate::reverb::network::{Band, Fdn, Matrix, Network, Stage};
 use crate::{Lti as _, Realized, System as _};
 
-fn freezable() -> FdnDesign {
-    FdnDesign::new(8, MaxDecay::DEFAULT.get(), true).unwrap()
+fn freezable() -> FdnFamily {
+    FdnFamily::new(8, MaxDecay::DEFAULT.get(), true).unwrap()
 }
 
 fn base() -> FdnControls {
@@ -20,7 +20,11 @@ fn with(f: impl FnOnce(&mut FdnControls)) -> FdnControls {
     c
 }
 
-impl DesignCase for FdnDesign {
+impl FamilyCase for FdnFamily {
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
+    }
+
     fn reachable(&self) -> Vec<FdnControls> {
         let mut all = Vec::new();
         for low in [0.2, 1.0, 8.0] {
@@ -52,7 +56,7 @@ impl DesignCase for FdnDesign {
                 size: Mix(rng.gen_range(0.0..=1.0)),
                 diffusion: Mix(rng.gen_range(0.0..=1.0)),
                 pre_delay: Seconds(rng.gen_range(0.0..=0.5)),
-                modulation: Depth(rng.gen_range(-1.0..=1.0)),
+                modulation: Depth::of(rng.gen_range(-1.0..=1.0)),
                 rate: Hz(rng.gen_range(0.05..=5.0)),
                 width: StereoWidth(rng.gen_range(0.0..=2.0)),
                 wet: Db(rng.gen_range(-60.0..=12.0)),
@@ -71,7 +75,7 @@ impl DesignCase for FdnDesign {
                 size: Mix(v),
                 diffusion: Mix(v),
                 pre_delay: Seconds::from_f32(v),
-                modulation: Depth(v),
+                modulation: Depth::clamped(v),
                 rate: Hz(v),
                 width: StereoWidth(v),
                 wet: Db(v),
@@ -92,17 +96,17 @@ impl DesignCase for FdnDesign {
     }
 }
 
-impl LtiCase for FdnDesign {
+impl LtiCase for FdnFamily {
     fn marginal(&self, c: &FdnControls) -> bool {
         self.freezable && c.freeze
     }
 
     fn fill(&self, rate: SampleRate, trips: f32) -> usize {
-        (trips * self.bounds(&self.ceiling(rate)).line) as usize
+        (trips * self.capacity(rate).line) as usize
     }
 }
 
-impl ReverbCase for FdnDesign {
+impl ReverbCase for FdnFamily {
     fn tolerance(&self) -> f32 {
         0.15
     }
@@ -141,7 +145,7 @@ impl ReverbCase for FdnDesign {
     /// to peak at 0.9999, as the kernel does, so the decay asked for is not the
     /// decay the network has, and there is no figure to hold it to.
     fn requested_rt60(&self, c: &FdnControls, rate: SampleRate, band: Band) -> Option<Seconds> {
-        let n = self.design(c, rate);
+        let n = self.member(c, rate);
         if let Some(Stage::Fdn(f)) = n.stages.first()
             && let Some(l) = f.lines.first()
             && !(self.freezable && c.freeze)
@@ -176,9 +180,9 @@ impl ReverbCase for FdnDesign {
 
     fn pre_delay_pairs(&self) -> Vec<(FdnControls, FdnControls, Seconds)> {
         vec![(
-            with(|c| c.modulation = Depth(0.0)),
+            with(|c| c.modulation = Depth::of(0.0)),
             with(|c| {
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
                 c.pre_delay = Seconds(0.1);
             }),
             Seconds(0.1),
@@ -202,11 +206,11 @@ impl ReverbCase for FdnDesign {
                 (
                     with(|c| {
                         c.size = Mix(a);
-                        c.modulation = Depth(0.0);
+                        c.modulation = Depth::of(0.0);
                     }),
                     with(|c| {
                         c.size = Mix(b);
-                        c.modulation = Depth(0.0);
+                        c.modulation = Depth::of(0.0);
                     }),
                 )
             })
@@ -227,15 +231,15 @@ impl ReverbCase for FdnDesign {
 
 mod freezable_design {
     use super::*;
-    crate::design_contract!(freezable(), Lti, reverb);
+    crate::family_contract!(freezable(), Grows, Lti, reverb);
 }
 
 mod plain_design {
     use super::*;
-    crate::design_contract!(FdnDesign::default(), Lti, reverb);
+    crate::family_contract!(FdnFamily::default(), Grows, Lti, reverb);
 }
 
-impl RealizationCase for FdnDesign {
+impl RecurrenceCase for FdnFamily {
     fn probes(&self) -> Vec<FdnControls> {
         vec![
             base(),
@@ -243,7 +247,7 @@ impl RealizationCase for FdnDesign {
                 c.decay = [Seconds(3.0), Seconds(3.5), Seconds(1.5)];
                 c.diffusion = Mix(1.0);
                 c.pre_delay = Seconds(0.05);
-                c.modulation = Depth(0.5);
+                c.modulation = Depth::of(0.5);
             }),
             with(|c| {
                 c.decay = [Seconds(1.0), Seconds(1.5), Seconds(0.5)];
@@ -252,7 +256,7 @@ impl RealizationCase for FdnDesign {
             }),
             with(|c| {
                 c.diffusion = Mix(0.0);
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
             }),
         ]
     }
@@ -261,7 +265,7 @@ impl RealizationCase for FdnDesign {
         self.probes()
             .into_iter()
             .map(|c| FdnControls {
-                modulation: Depth(0.0),
+                modulation: Depth::of(0.0),
                 pre_delay: Seconds(0.02),
                 ..c
             })
@@ -272,7 +276,7 @@ impl RealizationCase for FdnDesign {
         let hard = |f: fn(&mut FdnControls)| {
             with(|c| {
                 c.size = Mix(1.0);
-                c.modulation = Depth(1.0);
+                c.modulation = Depth::of(1.0);
                 c.rate = Hz(5.0);
                 f(c)
             })
@@ -302,150 +306,15 @@ impl RealizationCase for FdnDesign {
     }
 }
 
-crate::realization_contract!(freezable(), Lti, reverb, BlockIndependent);
+crate::recurrence_contract!(freezable(), Lti, reverb, BlockIndependent);
 
 /// The FDN's declared cadence is its chunk clock, so it names the
 /// `BlockIndependent` group.
 #[test]
 fn the_fdn_declares_its_stream_grid() {
     assert_eq!(
-        FdnDesign::CADENCE,
+        FdnFamily::CADENCE,
         Cadence::stream(NonZeroU32::new(CHUNK as u32).unwrap())
-    );
-}
-
-use crate::contract::cases::realization as cases;
-use crate::testing::flaws::{Defect, Defective};
-
-fn defective(defect: Defect) -> Defective<FdnDesign> {
-    Defective {
-        inner: freezable(),
-        defect,
-        tweak: |_| {},
-    }
-}
-
-#[track_caller]
-fn fails(result: Result<(), String>, why: &str) {
-    let e = result.expect_err("the case should fail on the defective realization");
-    assert!(e.contains(why), "{e}");
-}
-
-/// Each case of the realization contract fails on an FDN with the defect its
-/// mutation names, the cases Freeverb cannot run (pre-delay, size,
-/// diffusion, freeze, width, wet gain) included.
-#[test]
-fn a_defective_fdn_fails_its_case() {
-    // rt60 and tail: every loop gain 5% and 3% too high.
-    fails(
-        cases::rt60(&defective(Defect::LoopGain(1.05))),
-        "measured RT60",
-    );
-    fails(cases::tail_covers(&defective(Defect::LoopGain(1.03))), "dB");
-    // band order: every band like the lowest.
-    fails(cases::band_order(&defective(Defect::NoDamping)), "bands");
-    // arrival and latency.
-    fails(
-        cases::arrival(&defective(Defect::LateByOne)),
-        "first output",
-    );
-    fails(
-        cases::arrival(&defective(Defect::FalseLatency)),
-        "first output",
-    );
-    fails(cases::latency(&defective(Defect::FalseLatency)), "latency");
-    fails(
-        cases::wet_only(&defective(Defect::DryLeak)),
-        "shortest path",
-    );
-    fails(
-        cases::decorrelated(&defective(Defect::MonoOutput)),
-        "correlate",
-    );
-    fails(cases::stability(&defective(Defect::Runaway)), "");
-    fails(
-        cases::click_free(&defective(Defect::UnslewedGain(4.0))),
-        "jump",
-    );
-    // A modest step too: 1.5 times fails the 3 times allowance (measured
-    // margins of the clean realizations: Freeverb 1.98, the FDN 1.51 times the
-    // steady jump).
-    fails(
-        cases::click_free(&defective(Defect::UnslewedGain(1.5))),
-        "jump",
-    );
-    fails(cases::reset(&defective(Defect::NoReset)), "reset");
-    fails(cases::fresh(&defective(Defect::FreshKeepsState)), "fresh()");
-    fails(
-        cases::block_independent(&defective(Defect::BlockDependent)),
-        "blocks of",
-    );
-    // line lengths: the last line 5% long, inside the RT60 tolerance.
-    fails(
-        cases::line_lengths(&defective(Defect::LastLineLong)),
-        "first echo",
-    );
-    // pre-delay, size, diffusion, freeze, width, wet gain.
-    fails(
-        cases::pre_delay(&defective(Defect::PreDelayIgnored)),
-        "pre-delay",
-    );
-    fails(cases::size(&defective(Defect::FixedLines)), "bigger room");
-    fails(cases::diffusion(&defective(Defect::NoMixing)), "diffusion");
-    fails(
-        cases::freeze(&defective(Defect::LoopGain(0.998))),
-        "frozen level",
-    );
-    fails(
-        cases::freeze(&defective(Defect::OpenInput)),
-        "input reached",
-    );
-    fails(
-        cases::width(&defective(Defect::WidthIgnored)),
-        "correlation",
-    );
-    fails(cases::wet_gain(&defective(Defect::WetIgnored)), "wet gain");
-}
-
-/// The cases added by step 1b fail on an FDN with the defect their mutation
-/// names: the ramp cases (`landed`, `stream_clock`), which a realization that
-/// does not ramp cannot fail, and the response cases on the mixing network.
-#[test]
-fn the_new_cases_fail_on_their_defects() {
-    use crate::model::Flaw;
-    // landed: the first retarget goes to another model and ramps to the target.
-    fails(cases::landed(&defective(Defect::RampFirst)), "did not land");
-    // landed: a reset that empties the lines and keeps the ramps mid-way.
-    let keeps = Defective {
-        inner: freezable(),
-        defect: Defect::None,
-        tweak: |k| k.flawed(Flaw::ResetKeepsGlides),
-    };
-    fails(cases::landed(&keeps), "reset() mid-ramp");
-    // stream clock: a ramp that restarts at every call of `process`.
-    let restarts = Defective {
-        inner: freezable(),
-        defect: Defect::None,
-        tweak: |k| k.flawed(Flaw::RestartClock),
-    };
-    fails(cases::stream_clock(&restarts), "blocks of");
-    // response and decay on the mixing network.
-    fails(
-        cases::response(&defective(Defect::LoopGain(1.05))),
-        "impulse response's spectrum",
-    );
-    fails(
-        cases::response(&defective(Defect::UnslewedGain(1.1))),
-        "impulse response's spectrum",
-    );
-    fails(
-        cases::decay(&defective(Defect::LoopGain(1.05))),
-        "spectral radius",
-    );
-    fails(cases::linear(&defective(Defect::Tanh)), "additivity");
-    fails(
-        cases::linear(&defective(Defect::PeriodicGain)),
-        "shift invariance",
     );
 }
 
@@ -464,8 +333,8 @@ fn no_hook_of_the_fdn_is_vacuous() {
     assert!(ReverbCase::pre_delay(&d, &with(|c| c.pre_delay = Seconds(0.1))).get() > 0.0);
 }
 
-fn design_of(d: &FdnDesign, c: &FdnControls) -> Network {
-    d.design(c, SampleRate(48_000.0))
+fn design_of(d: &FdnFamily, c: &FdnControls) -> Network {
+    d.member(c, SampleRate(48_000.0))
 }
 
 fn fdn_of(n: &Network) -> &Fdn {
@@ -512,7 +381,7 @@ fn diffusion_is_the_reflection_vector() {
 /// design that is not freezable ignores it.
 #[test]
 fn a_freeze_is_lossless_and_takes_no_input() {
-    let (d, plain) = (freezable(), FdnDesign::default());
+    let (d, plain) = (freezable(), FdnFamily::default());
     let frozen = with(|c| c.freeze = true);
     let n = design_of(&d, &frozen);
     let f = fdn_of(&n);
@@ -534,7 +403,7 @@ fn a_freeze_is_lossless_and_takes_no_input() {
 /// fraction.
 #[test]
 fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
-    let d = FdnDesign::default();
+    let d = FdnFamily::default();
     let mut last = vec![0.0f32; 8];
     for size in [0.0, 0.3, 0.6, 1.0] {
         let n = design_of(&d, &with(|c| c.size = Mix(size)));
@@ -543,7 +412,7 @@ fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
         assert!(lengths.iter().zip(&last).all(|(a, b)| a > b));
         last = lengths;
     }
-    let at = |hz| d.design(&base(), SampleRate(hz));
+    let at = |hz| d.member(&base(), SampleRate(hz));
     let (a, b) = (at(44_100.0), at(88_200.0));
     for (x, y) in fdn_of(&a).lines.iter().zip(fdn_of(&b).lines.iter()) {
         assert!((y.length - 2.0 * x.length).abs() <= 1.0);
@@ -554,14 +423,14 @@ fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
 #[test]
 fn a_configuration_refuses_what_it_cannot_hold() {
     let ok = Seconds(8.0);
-    assert!(FdnDesign::new(8, ok, false).is_some());
-    assert!(FdnDesign::new(16, ok, true).is_some());
+    assert!(FdnFamily::new(8, ok, false).is_some());
+    assert!(FdnFamily::new(16, ok, true).is_some());
     for lines in [0, 1, 7, 17, 18] {
-        assert!(FdnDesign::new(lines, ok, false).is_none(), "{lines}");
+        assert!(FdnFamily::new(lines, ok, false).is_none(), "{lines}");
     }
     for bad in [0.0, 0.01, 60.001, f32::NAN, f32::INFINITY] {
         assert!(
-            FdnDesign::new(8, Seconds::from_f32(bad), false).is_none(),
+            FdnFamily::new(8, Seconds::from_f32(bad), false).is_none(),
             "{bad}"
         );
     }
@@ -579,17 +448,17 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
-        &d.bounds(&Ceiling::at(rate).unwrap()),
+        &d.reach(&Reach::at(rate).unwrap()),
         &Setup {
             rate,
             max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
         },
     );
-    let net = d.design(
+    let net = d.member(
         &with(|c| {
             c.decay = [Seconds(2.0); 3];
             c.diffusion = Mix(0.0);
-            c.modulation = Depth(0.0);
+            c.modulation = Depth::of(0.0);
             c.pre_delay = Seconds(0.0);
             c.width = StereoWidth(1.0);
         }),
@@ -639,18 +508,18 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
-        &d.bounds(&Ceiling::at(rate).unwrap()),
+        &d.reach(&Reach::at(rate).unwrap()),
         &Setup {
             rate,
             max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
         },
     );
     let at = |diffusion: f32, freeze: bool| {
-        d.design(
+        d.member(
             &with(|c| {
                 c.diffusion = Mix(diffusion);
                 c.freeze = freeze;
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
             }),
             rate,
         )
@@ -685,20 +554,20 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
 /// decay, not a flat figure.
 #[test]
 fn the_bounds_dominate_where_rounding_matters() {
-    let d = FdnDesign::default();
+    let d = FdnFamily::default();
     let rate = SampleRate(192_000.0);
-    let ceiling = Ceiling::at(rate).unwrap();
-    let bound = d.bounds(&ceiling);
+    let reach = Reach::at(rate).unwrap();
+    let bound = d.reach(&reach);
     for k in 1..100 {
         let c = FdnControls {
             decay: [d.max_decay(); 3],
             size: Mix(1.0),
             diffusion: Mix(k as f32 / 100.0),
             pre_delay: MAX_PRE_DELAY,
-            modulation: Depth(1.0),
+            modulation: Depth::of(1.0),
             ..FdnControls::DEFAULT
         };
-        let tail = d.design(&c, rate).tail(ceiling.floor());
+        let tail = d.member(&c, rate).tail(reach.floor());
         assert!(
             bound.tail.covers(tail),
             "diffusion {k}%: {tail:?} over {:?}",

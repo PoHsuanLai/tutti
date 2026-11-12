@@ -8,7 +8,7 @@ use crate::common;
 
 use tutti_graph::Params;
 use tutti_modulation::Lfo;
-use tutti_session::{OutPort, ParamError, ParamRef, Root, Session};
+use tutti_session::{OutPort, ParamError, ParamRef, Root, RouteSpec, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::MaxBlock;
 use tutti_types::{BeatDuration, Db, Depth, ParamAddr, UnitAddr, UnitParam};
@@ -133,15 +133,18 @@ fn a_route_to_index_1_does_not_touch_index_0() {
         ParamRef::unit(node, UnitParam::Threshold),
         "index 0 is the bare param"
     );
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(band1, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    m.route(lfo, band1, Depth(0.3)).unwrap();
+    m.route(RouteSpec::new(lfo, band1, Depth::of(0.3))).unwrap();
     for _ in 0..4 {
         let _ = s.update();
     }
-    assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
-    assert_eq!(s.mod_state().unresolved_targets(), &[], "and resolve");
+    assert_eq!(
+        s.mod_state().problems().next(),
+        None,
+        "the declarations apply"
+    );
 
     // 120 BPM: one cycle per half beat is 4 Hz.
     let [a, b] = render(&mut s, 24_000);

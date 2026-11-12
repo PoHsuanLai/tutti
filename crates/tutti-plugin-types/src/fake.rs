@@ -21,9 +21,9 @@ use tutti_rt::RequestWord;
 use crate::{
     AudioBufferMut, ChannelLayout, ContentScale, Control, Controller, EditDrain, EditSink,
     EditorError, EditorSize, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThread,
-    Normalized, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError, PluginIo,
-    PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, Request, RescanScope,
-    RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
+    Normalized, ParamEdit, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError,
+    PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, Request,
+    RescanScope, RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
 };
 
 /// One call the fake received.
@@ -495,12 +495,7 @@ macro_rules! fake_control {
             }
 
             /// The fake reports no edits outside a block.
-            fn take_reported_edits(
-                &mut self,
-                _main: &MainThread,
-                _out: &mut Vec<(ParamId, Normalized)>,
-            ) {
-            }
+            fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<ParamEdit>) {}
 
             /// `0`: the fake reports edits in `ProcessOutput`, like CLAP and VST3.
             fn dropped_reported_edits(&self) -> u64 {

@@ -22,8 +22,8 @@ fn offline_session() -> Session {
 fn unit() -> SoundFontUnit {
     let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
     let mut file = std::fs::File::open(&path).expect("the test font is in the checkout");
-    let font = Arc::new(SoundFont::new(&mut file).expect("the test font parses"));
-    SoundFontUnit::new(font, &Settings::new(RATE)).expect("builds")
+    let font = Arc::new(SoundFont::from_reader(&mut file).expect("the test font parses"));
+    SoundFontUnit::new(font, Settings::new()).expect("builds")
 }
 
 /// The one source a port holds (these tests wire one).
@@ -159,7 +159,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     };
 
     let font = Arc::new(
-        SoundFont::new(&mut std::io::Cursor::new(bytes(
+        SoundFont::from_reader(&mut std::io::Cursor::new(bytes(
             &[Preset {
                 name: "p",
                 bank: 0,
@@ -173,7 +173,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
         )))
         .expect("the built font parses"),
     );
-    let unit = SoundFontUnit::new(font, &Settings::new(RATE)).expect("builds");
+    let unit = SoundFontUnit::new(font, Settings::new()).expect("builds");
     let mut session = offline_session();
     let gm = session.add_general_midi(unit).expect("a SoundFont unit");
     session
@@ -250,7 +250,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
 fn short_release_setup() -> (Session, GeneralMidi) {
     use tutti_fixtures::sf2::{Inst, Preset, bytes, generator};
     let font = Arc::new(
-        SoundFont::new(&mut std::io::Cursor::new(bytes(
+        SoundFont::from_reader(&mut std::io::Cursor::new(bytes(
             &[Preset {
                 name: "p",
                 bank: 0,
@@ -264,7 +264,7 @@ fn short_release_setup() -> (Session, GeneralMidi) {
         )))
         .expect("the built font parses"),
     );
-    let unit = SoundFontUnit::new(font, &Settings::new(RATE)).expect("builds");
+    let unit = SoundFontUnit::new(font, Settings::new()).expect("builds");
     let mut session = offline_session();
     let gm = session.add_general_midi(unit).expect("a SoundFont unit");
     for c in 0..2 {

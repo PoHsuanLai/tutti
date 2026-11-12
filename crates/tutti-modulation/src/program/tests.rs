@@ -27,7 +27,7 @@ fn at_play(play: f64, epoch: u32) -> ProgramTime {
 
 fn amount(depth: f32) -> Amount {
     Amount {
-        depth: Depth(depth),
+        depth: Depth::of(depth),
         polarity: Polarity::Bipolar,
         curve: Law::Linear,
     }
@@ -131,7 +131,7 @@ fn an_inputs_offset_is_depth_times_span_times_x() {
             id: LayerId(2),
             source: SourceId(41),
             amount: Amount {
-                depth: Depth(0.25),
+                depth: Depth::of(0.25),
                 polarity: Polarity::Unipolar,
                 curve: Law::Linear,
             },
@@ -555,7 +555,7 @@ fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
         ..layer(1, beats(4.0), LfoShape::Sine, amount(1.0))
     };
     let curved = Amount {
-        depth: Depth(0.5),
+        depth: Depth::of(0.5),
         polarity: Polarity::Bipolar,
         curve: Law::PowerIn(Exponent::of(2.0)),
     };
@@ -649,10 +649,6 @@ fn a_constant_wave_needs_no_clock() {
 #[test]
 fn new_refuses_a_nan() {
     let l = || layer(3, beats(1.0), LfoShape::Sine, amount(0.1));
-    let nan_depth = Layer {
-        amount: amount(f32::NAN),
-        ..l()
-    };
     let nan_rate = Layer {
         clock: seconds(f32::NAN),
         ..l()
@@ -673,21 +669,12 @@ fn new_refuses_a_nan() {
         }),
         ..l()
     };
-    for bad in [nan_depth, nan_rate, nan_const, nan_depth_by] {
+    for bad in [nan_rate, nan_const, nan_depth_by] {
         assert_eq!(
             ControlProgram::new(None, vec![bad], vec![]).unwrap_err(),
             ProgramError::NotANumber(LayerId(3))
         );
     }
-    let input = InputLayer {
-        id: LayerId(4),
-        source: SourceId(1),
-        amount: amount(f32::NAN),
-    };
-    assert_eq!(
-        ControlProgram::new(None, vec![], vec![input]).unwrap_err(),
-        ProgramError::NotANumber(LayerId(4))
-    );
     let p = program(vec![l()]);
     assert_eq!(p, p.clone());
 }

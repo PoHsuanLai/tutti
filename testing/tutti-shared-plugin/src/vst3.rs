@@ -122,18 +122,24 @@ const MAPPED_CONTROLLER: i16 = 74;
 const REPORTING_CHANNEL: i16 = 15;
 
 impl Plugin {
-    /// What `core::NOTICE_ON_LOAD` says a VST3 plugin does on a state load: an
-    /// edit of `aux` to 0.75 through the host's component handler.
+    /// What `core::NOTICE_ON_LOAD` and `core::NOTICE_GESTURE_ON_LOAD` say a VST3
+    /// plugin does on a state load: a gesture on `aux` through the host's
+    /// component handler, with the one value 0.75 or the two of the spec.
     fn notice(&self) {
-        if self.core.notice() != core::NOTICE_ON_LOAD {
-            return;
-        }
+        // The edit values and the shape of the gesture are the core's spec.
+        let values: &[f64] = match self.core.notice() {
+            core::NOTICE_ON_LOAD => &[0.75],
+            core::NOTICE_GESTURE_ON_LOAD => &core::GESTURE_VALUES,
+            _ => return,
+        };
         let handler = self.handler.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(h) = handler.as_ref() {
             // SAFETY: `h` is the host's handler, held since `setComponentHandler`.
             unsafe {
                 h.beginEdit(core::AUX);
-                h.performEdit(core::AUX, 0.75);
+                for &value in values {
+                    h.performEdit(core::AUX, value);
+                }
                 h.endEdit(core::AUX);
             }
         }

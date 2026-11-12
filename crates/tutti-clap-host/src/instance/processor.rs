@@ -1,9 +1,12 @@
 //! The realtime half of an activation: [`ClapProcessor`], whose sample format
 //! is a value chosen at activation, and the trait's `Processor` impl on it.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tutti_plugin_types::{
-    AudioBufferMut, Edit, EditDrain, Normalized, NoteExpressionChanges, ParamId, PluginError,
-    PluginIo, PluginResult, Processor, SampleFormat, TransportInfo as SharedTransport,
+    AudioBufferMut, Edit, EditDrain, EditSink, Normalized, NoteExpressionChanges, ParamId,
+    PluginError, PluginIo, PluginResult, Processor, SampleFormat, TransportInfo as SharedTransport,
 };
 use tutti_rt::Reader;
 
@@ -25,6 +28,8 @@ pub(crate) struct ProcessorParts {
     pub scratch: AudioScratch,
     pub ranges: Reader<RangeTable>,
     pub drain: EditDrain,
+    pub reports: EditSink,
+    pub reports_dropped: Arc<AtomicU64>,
 }
 
 /// The realtime half of an activation: it renders blocks and nothing else. Its
@@ -39,6 +44,11 @@ pub struct ClapProcessor {
     pub(crate) scratch: AudioScratch,
     pub(crate) ranges: Reader<RangeTable>,
     pub(crate) drain: EditDrain,
+    /// The plugin's own parameter edits (its output `PARAM_VALUE` and gesture
+    /// events), on their way to the Controller's `take_reported_edits`.
+    pub(crate) reports: EditSink,
+    /// What `reports` refused for want of room, which the Controller counts.
+    pub(crate) reports_dropped: Arc<AtomicU64>,
     pub(crate) audio_side: AudioSide,
     pub(crate) pool: Reader<PoolCell>,
     pub(crate) input_ports: Vec<u32>,
@@ -68,11 +78,15 @@ impl ClapProcessor {
             scratch,
             ranges,
             drain,
+            reports,
+            reports_dropped,
         } = parts;
         Self {
             scratch,
             ranges,
             drain,
+            reports,
+            reports_dropped,
             audio_side,
             pool,
             input_ports,
@@ -234,7 +248,32 @@ impl ClapProcessor {
             .map(|output| copy_process_output(output, out))
             .map_err(|e| PluginError::Block(block_reason(&e)));
         self.scratch.in_note_expressions = expressions;
+        if result.is_ok() {
+            self.report_edits();
+        }
         result
+    }
+
+    /// Queues the parameter edits the block's output events carried, in the
+    /// order the plugin pushed them, for the Controller's `take_reported_edits`.
+    ///
+    /// `CLAP_EVENT_PARAM_VALUE` is a change (plain, so normalized against the
+    /// declared bounds, as the editor instance's is), and
+    /// `CLAP_EVENT_PARAM_GESTURE_BEGIN` and `_END` its gesture. A value flagged
+    /// `CLAP_EVENT_DONT_RECORD` is reported, since a host that shows the value
+    /// follows it, with the flag, since one that records automation must not
+    /// (events.h: "should not be recorded"; the example is a value moved by a
+    /// MIDI CC that is itself recorded). Nothing here allocates.
+    fn report_edits(&mut self) {
+        let table = self.ranges.lend();
+        for event in self.scratch.output_events.events() {
+            let Some(heard) = event.heard(&table.ranges) else {
+                continue;
+            };
+            if self.reports.send(Edit::Reported(heard)).is_err() {
+                self.reports_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 

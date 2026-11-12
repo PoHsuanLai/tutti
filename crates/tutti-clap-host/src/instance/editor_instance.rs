@@ -9,13 +9,13 @@ use std::path::Path;
 
 use tutti_plugin_types::{
     ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, EditorWindow,
-    InProcess, Load, MainThread, Normalized, ParamId, PluginError, PluginResult, Request,
-    RescanScope, WindowHandle,
+    InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
+    Request, RescanScope, WindowHandle,
 };
 
 use super::ClapLoaded;
+use crate::ParamBounds;
 use crate::types::ClapParamFlags;
-use crate::{ClapEvent, ParamBounds};
 
 fn editor_error(reason: String) -> PluginError {
     PluginError::Editor(EditorError::PluginError(reason))
@@ -24,38 +24,6 @@ fn editor_error(reason: String) -> PluginError {
 /// Look up declared bounds for `id` in a table sorted by id.
 fn lookup_range(table: &[ParamBounds], id: u32) -> Option<&ParamBounds> {
     ParamBounds::find(table, id)
-}
-
-/// One editor-originated output event → the host's `(address, normalized)` pair,
-/// or [`None`] for an event that carries no authored value.
-///
-/// Only `ParamValue` does. `ParamGestureBegin`/`End` mark the start and end of a
-/// knob drag and have no value at all, so the trait's `(ParamId, f32)` pair
-/// has nowhere to put them; surfacing them would mean widening that signature
-/// for all three formats, and the only consumer would be automation touch/latch,
-/// which is not wired up. `ParamMod` is dropped for a different reason — it is a
-/// transient offset *on top of* the value rather than the value, so forwarding
-/// it to `set_parameter_rt` would write a modulation excursion into the
-/// document.
-///
-/// The conversion is plain → normalized, the exact inverse of the mirror in
-/// [`Editor::set_parameter`]: CLAP speaks the plugin's own units and
-/// `set_parameter_rt` speaks `0..=1`. A parameter absent from `ranges` passes
-/// through unconverted, matching that mirror — `ParamRange::Normalized` means
-/// there is nothing to convert against, and inventing `0..=1` would rescale a
-/// parameter the plugin never described.
-///
-/// Free function rather than a closure so the conversion is reachable without a
-/// real plugin behind an FFI boundary.
-fn param_edit_from_event(ranges: &[ParamBounds], event: ClapEvent) -> Option<(ParamId, f32)> {
-    let ClapEvent::ParamValue(v) = event else {
-        return None;
-    };
-    let normalized = match lookup_range(ranges, v.param_id) {
-        Some(b) => b.normalized(v.value),
-        None => v.value,
-    };
-    Some((v.param_id.into(), normalized as f32))
 }
 
 /// A CLAP plugin loaded for its editor alone: never activated, it shows the
@@ -157,7 +125,7 @@ impl Editor for ClapEditor {
             .map_err(|e| editor_error(format!("CLAP set_state failed: {e}")))
     }
 
-    fn poll_edits(&mut self, main: &MainThread) -> Vec<(ParamId, f32)> {
+    fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit> {
         // A CLAP editor reports its knob movements as output events on the next
         // `params.flush`, so an empty flush is how the host collects them. This
         // is the only bridge back to the audio instance in the subprocess —
@@ -172,9 +140,11 @@ impl Editor for ClapEditor {
         // what the existing `editor_idle` flush above already relies on.
         let events = self.inner.flush_params(main, vec![]);
 
+        // Each event as the edit it reports: a value normalized against the
+        // declared bounds (`ClapEvent::heard`), and a gesture's ends.
         events
-            .into_iter()
-            .filter_map(|e| param_edit_from_event(&self.param_ranges, e))
+            .iter()
+            .filter_map(|e| e.heard(&self.param_ranges))
             .collect()
     }
 
@@ -295,17 +265,23 @@ impl EditorWindow for ClapEditor {
 mod tests {
     //! What these cover, and what they cannot.
     //!
-    //! Every test here exercises [`param_edit_from_event`] — the projection —
-    //! and none exercises [`ClapEditor::poll_edits`], which
-    //! needs a real CLAP plugin behind an FFI boundary to emit output events.
+    //! Every test here exercises [`ClapEvent::heard`] — the projection — and
+    //! none exercises [`ClapEditor::poll_edits`], which needs a real CLAP plugin
+    //! behind an FFI boundary to emit output events.
     //!
     //! That gap is stated rather than left to be inferred from the test names,
     //! because it is exactly the kind a reader would assume closed: **reverting
     //! `poll_edits` to its original `Vec::new()` leaves every test
-    //! below green.** The bug this change exists to fix
-    //! is pinned at the conversion, not at the wiring, so a refactor that stops
-    //! calling the helper would not be caught here. Closing it needs an
-    //! integration test against a real plugin, beside `tests/clap_*.rs`.
+    //! below green.** The contract suite's gesture case covers the wiring in the
+    //! audio instance (`ClapProcessor::report_edits`), where the shared plugin
+    //! emits one.
+
+    use clap_sys::events::{
+        CLAP_EVENT_DONT_RECORD, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+        clap_event_header, clap_event_param_gesture,
+    };
+
+    use crate::ClapEvent;
 
     use super::*;
 
@@ -314,6 +290,10 @@ mod tests {
     /// `0..=1` bounds the plain and normalized domains coincide and every
     /// assertion below would hold with the conversion deleted.
     const CUTOFF: ParamBounds = ParamBounds::continuous(7, 20.0, 20_000.0);
+
+    fn change(id: u32, value: f64) -> Option<ParamEdit> {
+        Some(ParamEdit::change(id.into(), Normalized::of(value)))
+    }
 
     /// The editor's plain value is normalized before it leaves for the audio
     /// instance.
@@ -328,17 +308,21 @@ mod tests {
         let ranges = [CUTOFF];
         let ParamBounds { id, min, max, .. } = CUTOFF;
 
-        let at_min = param_edit_from_event(&ranges, ClapEvent::param_value(0, id, min));
-        assert_eq!(at_min, Some((id.into(), 0.0)));
-
-        let at_max = param_edit_from_event(&ranges, ClapEvent::param_value(0, id, max));
-        assert_eq!(at_max, Some((id.into(), 1.0)));
-
+        assert_eq!(
+            ClapEvent::param_value(0, id, min).heard(&ranges),
+            change(id, 0.0)
+        );
+        assert_eq!(
+            ClapEvent::param_value(0, id, max).heard(&ranges),
+            change(id, 1.0)
+        );
         // Midpoint of the declared span, which is *not* the midpoint of the
         // value: 10010 Hz is halfway between 20 and 20000 linearly, and a
         // pass-through would report 10010.0 rather than 0.5.
-        let mid = param_edit_from_event(&ranges, ClapEvent::param_value(0, id, 10_010.0));
-        assert_eq!(mid, Some((id.into(), 0.5)));
+        assert_eq!(
+            ClapEvent::param_value(0, id, 10_010.0).heard(&ranges),
+            change(id, 0.5)
+        );
     }
 
     /// Round-trip against the sibling `set_parameter` mirror, which converts the
@@ -354,11 +338,12 @@ mod tests {
             // What `set_parameter` would hand the plugin...
             let plain = CUTOFF.plain(host_value);
             // ...and what the editor reporting that same position comes back as.
-            let round_tripped =
-                param_edit_from_event(&ranges, ClapEvent::param_value(0, id, plain));
-            let (_, got) = round_tripped.expect("a PARAM_VALUE event yields an edit");
+            let heard = ClapEvent::param_value(0, id, plain)
+                .heard(&ranges)
+                .expect("a PARAM_VALUE event yields an edit");
+            let got = heard.value().expect("a change has a value").get();
             assert!(
-                (f64::from(got) - host_value).abs() < 1e-6,
+                (got - host_value).abs() < 1e-9,
                 "{host_value} round-tripped to {got}"
             );
         }
@@ -376,24 +361,68 @@ mod tests {
         // Table is non-empty and sorted, but does not contain id 99 — a miss in
         // a populated table, not the trivially-empty case.
         let ranges = [CUTOFF];
-        let edit = param_edit_from_event(&ranges, ClapEvent::param_value(0, 99, 0.5));
-        assert_eq!(edit, Some((99.into(), 0.5)));
+        assert_eq!(
+            ClapEvent::param_value(0, 99, 0.5).heard(&ranges),
+            change(99, 0.5)
+        );
     }
 
-    /// Events that carry no authored value are dropped rather than forwarded.
-    ///
-    /// The trait pair has no room for a gesture, and a note event addresses no
-    /// parameter at all; either one forwarded would call `set_parameter_rt` with
-    /// a value that means something else. (`ParamGestureBegin`/`End` are the
-    /// motivating case but have no public constructor here — `clap-sys` is not a
-    /// dependency of this crate — so the note event stands in for the
-    /// non-`ParamValue` arm they share.)
+    /// A note event addresses no parameter, so it is no edit; either one
+    /// forwarded would call `set_parameter_rt` with a value that means
+    /// something else.
     #[test]
-    fn an_event_carrying_no_param_value_is_dropped() {
+    fn an_event_that_is_not_a_parameter_edit_is_dropped() {
+        let ranges = [CUTOFF];
+        assert_eq!(ClapEvent::note_on(0, 0, 60, 1.0).heard(&ranges), None);
+    }
+
+    fn gesture(type_: u16, param_id: u32) -> clap_event_param_gesture {
+        clap_event_param_gesture {
+            header: clap_event_header {
+                size: size_of::<clap_event_param_gesture>() as u32,
+                time: 0,
+                space_id: 0,
+                type_,
+                flags: 0,
+            },
+            param_id,
+        }
+    }
+
+    /// `CLAP_EVENT_PARAM_GESTURE_BEGIN` and `_END` are a gesture's ends for
+    /// their parameter, with no value of their own.
+    #[test]
+    fn the_gesture_events_are_a_gestures_ends() {
         let ranges = [CUTOFF];
         assert_eq!(
-            param_edit_from_event(&ranges, ClapEvent::note_on(0, 0, 60, 1.0)),
-            None
+            ClapEvent::ParamGestureBegin(gesture(CLAP_EVENT_PARAM_GESTURE_BEGIN, 7)).heard(&ranges),
+            Some(ParamEdit::Begin(7.into()))
+        );
+        assert_eq!(
+            ClapEvent::ParamGestureEnd(gesture(CLAP_EVENT_PARAM_GESTURE_END, 7)).heard(&ranges),
+            Some(ParamEdit::End(7.into()))
+        );
+    }
+
+    /// A value flagged `CLAP_EVENT_DONT_RECORD` is reported with its value and
+    /// the flag, so a host that shows it follows it and one that records
+    /// automation does not record it (events.h: "should not be recorded").
+    #[test]
+    fn a_dont_record_value_is_reported_unrecorded() {
+        let ranges = [CUTOFF];
+        let mut event = ClapEvent::param_value(0, 7, 10_010.0);
+        let ClapEvent::ParamValue(v) = &mut event else {
+            unreachable!()
+        };
+        v.header.flags |= CLAP_EVENT_DONT_RECORD;
+        let heard = event.heard(&ranges).expect("a value is an edit");
+        assert!(!heard.record());
+        assert_eq!(heard.value(), Some(Normalized::of(0.5)));
+        assert!(
+            ClapEvent::param_value(0, 7, 10_010.0)
+                .heard(&ranges)
+                .expect("a value is an edit")
+                .record()
         );
     }
 }

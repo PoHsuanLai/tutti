@@ -3,6 +3,7 @@ use crate::testing::MockTransport;
 use tutti_types::Bpm;
 use tutti_types::MaxBlock;
 use tutti_types::Seconds;
+use tutti_types::UnitParam;
 
 fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
     let samples: Vec<f32> = (0..len).map(|i| (i + 1) as f32).collect();
@@ -1261,7 +1262,7 @@ fn the_fork_shares_no_gain() {
 }
 
 /// Its gain is a port, its base the cell
-/// ([`VOICE_PARAMS`](super::super::VOICE_PARAMS)).
+/// .
 #[test]
 fn the_shape_declares_its_gain() {
     let s = MemorySource::new(ramp_wave(64, 48_000.0)).expect("a placeable wave");

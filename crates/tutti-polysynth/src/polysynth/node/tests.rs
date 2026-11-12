@@ -1,7 +1,7 @@
 use crate::{PolySynth, SynthConfig};
 
 /// **The ports and their bases.** A synth declares its volume, and with
-/// a unison engine its detune and spread too ([`SYNTH_PARAMS`](super::SYNTH_PARAMS)),
+/// a unison engine its detune and spread too ,
 /// each port's base its cell.
 #[test]
 fn the_shape_declares_volume_and_the_unison_params() {
@@ -24,7 +24,14 @@ fn the_shape_declares_volume_and_the_unison_params() {
         ..SynthConfig::default()
     })
     .expect("builds");
-    assert_eq!(unison.shape().params.as_slice(), &super::SYNTH_PARAMS[..]);
+    assert_eq!(
+        unison.shape().params.as_slice(),
+        &[
+            UnitParam::Volume,
+            UnitParam::Detune,
+            UnitParam::StereoSpread
+        ][..]
+    );
     assert_eq!(unison.param_base(1), Some(12.0));
     assert_eq!(unison.param_base(2), Some(0.25));
 }

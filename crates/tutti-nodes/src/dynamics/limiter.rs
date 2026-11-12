@@ -58,7 +58,7 @@ const DEFAULT_LANE: usize = 512;
 ///
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
 /// and the threshold (both dB) are modulatable by the graph,
-/// in that port order ([`LIMITER_PARAMS`]): a per-frame value on
+/// in that port order : a per-frame value on
 /// the param port ([`Io::param`](tutti_graph::Io::param)) overrides its cell
 /// per sample. Unmodulated, the node reads its cells once per block, which
 /// is the common case; the arity never changes.
@@ -132,15 +132,20 @@ impl std::fmt::Debug for LimiterNode {
     }
 }
 
-/// The params a [`LimiterNode`] lets the graph modulate, in port order.
-/// The ceiling and threshold are read per sample; the release is
-/// block-rate in the node, so a driven port is read once per block
-/// (`block_driven`).
-pub const LIMITER_PARAMS: [UnitParam; 3] =
-    [UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release];
+// The params a [`LimiterNode`] lets the graph modulate, in port order.
+// The ceiling and threshold are read per sample; the release is
+// block-rate in the node, so a driven port is read once per block
+// (`block_driven`).
+tutti_graph::declare_params!([] LimiterNode, n {
+    Ceiling => Db = &n.ceiling_db,
+    Threshold => Db = &n.threshold_db,
+    Release => Seconds = &n.release,
+});
 
-/// The params a [`BrickwallLimiterNode`] lets the graph modulate.
-pub const BRICKWALL_PARAMS: [UnitParam; 1] = [UnitParam::Ceiling];
+// The params a [`BrickwallLimiterNode`] lets the graph modulate.
+tutti_graph::declare_params!([] BrickwallLimiterNode, n {
+    Ceiling => Db = &n.ceiling_db,
+});
 
 impl LimiterNode {
     /// Builds a stereo lookahead limiter with a 5 ms lookahead and 100 ms
@@ -325,7 +330,7 @@ impl LimiterNode {
 
 impl Node for LimiterNode {
     /// `channels` in and out, ceiling, threshold and release modulatable
-    /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
+    /// . Its latency is the lookahead ring's, at the
     /// prepared rate: the audio is delayed by the window.
     ///
     /// It has no tail. A tail excludes latency, and the ring is a pure
@@ -338,7 +343,7 @@ impl Node for LimiterNode {
             .with_cost(tutti_graph::Cost::Moderate)
             .with_latency(Latency::new(Samples(self.ring.lookahead_samples())))
             .with_tail(Tail::None)
-            .with_params(&LIMITER_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -424,23 +429,14 @@ impl Node for LimiterNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.ceiling_db.load().get()),
-            1 => Some(self.threshold_db.load().get()),
-            2 => Some(self.release.load().to_f32()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for LimiterNode {
     /// Threshold, ceiling and release.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Threshold, self.threshold())
-            .param(UnitParam::Ceiling, self.ceiling())
-            .param(UnitParam::Release, self.release_time())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with its three cells detached, its ring and envelope
@@ -495,7 +491,7 @@ impl Clone for LimiterNode {
 /// # Modulated ceiling
 ///
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling (dB)
-/// is modulatable by the graph ([`BRICKWALL_PARAMS`]): modulated → the param
+/// is modulatable by the graph : modulated → the param
 /// port overrides the ceiling cell per sample, unmodulated → bit-identical to a
 /// node nothing modulates.
 ///
@@ -602,13 +598,13 @@ fn linear_ceiling(db: Db) -> Option<f32> {
 
 impl Node for BrickwallLimiterNode {
     /// `channels` in and out, the ceiling modulatable
-    /// ([`BRICKWALL_PARAMS`]). The clip is stateless, so it has no latency
+    /// . The clip is stateless, so it has no latency
     /// and stops with its input.
     fn shape(&self) -> Shape {
         Shape::through_unassigned(self.layout)
             .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
-            .with_params(&BRICKWALL_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     /// Nothing to prepare, and the only node in this crate that can honestly

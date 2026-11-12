@@ -2,7 +2,7 @@
 //! so a source lands between the speakers nearest its direction.
 //!
 //! - [`VbapPannerNode`] pans one stereo (or mono) source across a speaker
-//!   layout; its params ([`VBAP_PANNER_PARAMS`]) move it while it renders.
+//!   layout; its params move it while it renders.
 //! - [`VbapError`] is what building a panner can fail with.
 //!
 //! A VBAP panner is parameterized by a speaker bed: its output width is the
@@ -16,4 +16,4 @@ mod node;
 mod panner;
 
 pub use error::VbapError;
-pub use node::{VBAP_PANNER_PARAMS, VbapPannerNode};
+pub use node::VbapPannerNode;

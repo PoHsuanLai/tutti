@@ -1,7 +1,7 @@
 //! The mixer strip — volume and stereo balance — as one addressable unit.
 //!
 //! A mixer bus applies two things to a summed signal: a fader and a balance.
-//! [`BusStripNode`] is both in one node, addressed by [`UnitParam`] through
+//! [`BusStripNode`] is both in one node, addressed by [`UnitParam`](tutti_types::UnitParam) through
 //! the [`ParamSet`] it is inserted with, so a host sets it with the same
 //! generic machinery it uses for a filter cutoff and needs no downcast. A
 //! strip's mute is not here: muting is graph state, `NodeMode::Muted`
@@ -9,7 +9,7 @@
 //! are graph state").
 //!
 //! Every scalar lives in a cell the node's [`ParamSet`] addresses by
-//! [`UnitParam`] — the same shape every other node in this crate uses — so a
+//! [`UnitParam`](tutti_types::UnitParam) — the same shape every other node in this crate uses — so a
 //! host has one param path to the strip, not a second set of handles beside
 //! it.
 //!
@@ -36,22 +36,25 @@ use tutti_dsp::balance_gains;
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{Amplitude, ChannelLayout, Pan, Param, Tail, UnitParam};
+use tutti_types::{Amplitude, ChannelLayout, Pan, Param, Tail};
 
-/// The params a [`BusStripNode`] lets the graph modulate, in port order.
-pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
+// The params a [`BusStripNode`] lets the graph modulate, in port order.
+tutti_graph::declare_params!([] BusStripNode, n {
+    Volume => Amplitude = &n.volume,
+    Pan => Pan = &n.pan,
+});
 
 /// A mixer strip: volume and stereo balance over `channels` audio ports.
 ///
 /// Ports are `channels` audio inputs → `channels` outputs. Volume and pan
 /// are modulatable by the graph, in that port order
-/// ([`STRIP_PARAMS`]): a per-frame value on the param port
+/// : a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) overrides its cell per sample.
 /// There is deliberately no mute: it is `NodeMode::Muted`, which the graph
 /// holds for any node.
 ///
-/// Params, by address through its [`ParamSet`]: [`UnitParam::Volume`] (linear
-/// amplitude) and [`UnitParam::Pan`] (`-1..1`). The set refuses anything
+/// Params, by address through its [`ParamSet`]: [`UnitParam::Volume`](tutti_types::UnitParam::Volume) (linear
+/// amplitude) and [`UnitParam::Pan`](tutti_types::UnitParam::Pan) (`-1..1`). The set refuses anything
 /// else, which is what lets a host push params without knowing the node type.
 ///
 /// Every control is read **once per block**; no cell is loaded per sample.
@@ -369,7 +372,7 @@ impl Default for BusStripNode {
 
 impl Node for BusStripNode {
     /// `channels` in and out, volume then pan modulatable
-    /// ([`STRIP_PARAMS`]). Volume and pan are per-frame gains, so it stops
+    /// . Volume and pan are per-frame gains, so it stops
     /// with its input.
     fn shape(&self) -> Shape {
         Shape::through_unassigned(self.layout)
@@ -380,7 +383,7 @@ impl Node for BusStripNode {
             // boundary about 0.73. `Light`, as a wrong `Light` costs little.
             .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
-            .with_params(&STRIP_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     /// Nothing is rate-dependent: the ramp is one block long, whatever the
@@ -402,21 +405,14 @@ impl Node for BusStripNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.volume.load().get()),
-            1 => Some(self.pan.load().get()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for BusStripNode {
     /// Volume and pan.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Volume, self.volume())
-            .param(UnitParam::Pan, self.pan())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with its two cells detached (at their values now), so a
@@ -446,6 +442,7 @@ mod tests {
     use super::*;
     use crate::test_support::{RATE, tick};
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_types::UnitParam;
 
     /// The strip measured as a `Light` node, at every width.
     #[test]

@@ -782,7 +782,7 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
 }
 
 /// **A bus strip's volume and pan take lanes.** The strip declares its params
-/// itself (`STRIP_PARAMS`), so a route onto either resolves to a lane on its
+/// itself, so a route onto either resolves to a lane on its
 /// port, with nothing refused.
 #[test]
 fn a_bus_strips_volume_and_pan_take_lanes() {
@@ -809,7 +809,7 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
 }
 
 /// **A chorus's rate and a phaser's mix take lanes.** The chorus declares its
-/// rate as a port (`MOD_DELAY_PARAMS`), and every node's mix is a port at the
+/// rate as a port, and every node's mix is a port at the
 /// graph's reserved address (`MixRef`), so a route onto each resolves to a
 /// lane, with nothing refused. What a lane on them sounds
 /// like is pinned where the nodes live (`tutti-nodes`'

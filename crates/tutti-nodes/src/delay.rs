@@ -12,7 +12,6 @@ use tutti_types::{AtomicF32, AtomicF64};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::UnitParam;
 use tutti_types::{ChannelLayout, Feedback, Param, SampleRate, Seconds, Tail};
 
 use crate::ramp::{LastGood, finite_or};
@@ -56,7 +55,7 @@ struct DelayControls {
 ///
 /// `N` audio inputs, `N` outputs. **Feedback** and **delay time** are
 /// modulatable by the graph, in that port order
-/// ([`DELAY_PARAMS`]): a per-frame value on the param port
+/// : a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) overrides the control, and a
 /// modulated delay time drives *every* channel through one shared value (the
 /// natural flanger/chorus control — the lines interpolate). An unmodulated
@@ -66,8 +65,8 @@ struct DelayControls {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over feedback ([`UnitParam::Feedback`]) and channel 0's delay time
-/// ([`UnitParam::DelayTime`], the modulation's base too); a fork of it starts from the values last set
+/// over feedback ([`UnitParam::Feedback`](tutti_types::UnitParam::Feedback)) and channel 0's delay time
+/// ([`UnitParam::DelayTime`](tutti_types::UnitParam::DelayTime), the modulation's base too); a fork of it starts from the values last set
 /// through that set, and every other cell at its value when forked. The graph
 /// prepares it at the device rate, which sizes the lines, before its first
 /// block. Its tail is [`Tail::Unknown`]: a recirculating line rings for as
@@ -132,9 +131,14 @@ impl std::fmt::Debug for DelayLineNode {
     }
 }
 
-/// The params a [`DelayLineNode`] lets the graph modulate, in port order.
-/// Both are read per sample.
-pub const DELAY_PARAMS: [UnitParam; 2] = [UnitParam::Feedback, UnitParam::DelayTime];
+// The params a [`DelayLineNode`] lets the graph modulate, in port order.
+// Both are read per sample.
+tutti_graph::declare_params!([] DelayLineNode, n {
+    Feedback => Feedback = &n.feedback,
+    // Channel 0's: a modulated delay time drives every channel through one
+    // shared value.
+    DelayTime => Seconds = &n.delay_time[0],
+});
 
 impl DelayLineNode {
     /// A mono delay (1 in, 1 out): a line sized for `max_delay_secs`, an
@@ -570,7 +574,7 @@ impl Node for DelayLineNode {
         let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
         Shape::through_unassigned(width)
             .with_cost(tutti_graph::Cost::Moderate)
-            .with_params(&DELAY_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
             .with_tail(Tail::Unknown)
     }
 
@@ -603,13 +607,7 @@ impl Node for DelayLineNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        // Delay time's base is the first channel's: a modulated delay time
-        // drives every channel through one shared value.
-        match k {
-            0 => Some(self.feedback.load().get()),
-            1 => Some(self.delay_time[0].load().to_f32()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
@@ -618,10 +616,7 @@ impl ParamNode for DelayLineNode {
     /// times and the cross-feedback have no address: set them through the
     /// node's own handles.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Feedback, self.feedback.as_atomic())
-            .param(UnitParam::DelayTime, self.delay_time[0].as_atomic())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with every control cell detached (at its value now), so a
@@ -672,6 +667,7 @@ impl Clone for DelayLineNode {
 mod tests {
     use super::*;
     use tutti_graph::contract::{assert_param_fork, drive, prepared};
+    use tutti_types::UnitParam;
 
     /// `node`, prepared at `sr` for blocks of up to 1024 frames.
     fn at(node: DelayLineNode, sr: f64) -> DelayLineNode {

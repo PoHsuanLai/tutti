@@ -15,21 +15,20 @@
 use tutti_graph::{
     Chase, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{BusTopology, UnitParam};
+use tutti_types::{Amplitude, BusTopology, Cents, Spread};
 use tutti_voicing::Voicing;
 
 use super::PolySynth;
 
-/// The params a [`PolySynth`] with a unison engine lets the graph
-/// modulate, in port order: master volume, unison detune and stereo
-/// spread. A synth without one declares only the volume (the first). Each
-/// is block-rate in the synth (read once per block), so a driven port is
-/// read the same way: its value on the block's last frame.
-pub const SYNTH_PARAMS: [UnitParam; 3] = [
-    UnitParam::Volume,
-    UnitParam::Detune,
-    UnitParam::StereoSpread,
-];
+// The params a `PolySynth` lets the graph modulate, in port order: master
+// volume and, with a unison engine, detune and stereo spread. Each is
+// block-rate in the synth (read once per block), so a driven port is read the
+// same way: its value on the block's last frame.
+tutti_graph::declare_params!([] PolySynth, n {
+    Volume => Amplitude = &n.master_volume,
+    Detune => Cents = n.unison.as_ref().map(|u| u.detune()),
+    StereoSpread => Spread = n.unison.as_ref().map(|u| u.spread()),
+});
 
 /// The block's value of declared param port `k` when a lane drives it: its
 /// last frame. `None`: undriven, read the cell.
@@ -72,12 +71,11 @@ impl Node for PolySynth {
     fn shape(&self) -> Shape {
         // The unison engine is built with the synth or never (`&mut`
         // setters only), so every read of the shape declares the same ports.
-        let ports = if self.unison.is_some() { 3 } else { 1 };
         Shape::source(BusTopology::STEREO)
             .with_events(1, 0)
             .with_tail(self.release_tail())
             .with_cost(self.cost())
-            .with_params(&SYNTH_PARAMS[..ports])
+            .with_param_addrs(self.declared_ports().as_slice())
             // The channel state it hands the synth that replaces it (`chase`).
             .with_chase(Voicing::CHASE_MESSAGES as u32)
     }
@@ -140,16 +138,7 @@ impl Node for PolySynth {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.master_volume.load().get()),
-            1 => self
-                .detune_atomic()
-                .map(|c| c.load(std::sync::atomic::Ordering::Acquire)),
-            2 => self
-                .spread_atomic()
-                .map(|c| c.load(std::sync::atomic::Ordering::Acquire)),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
@@ -159,14 +148,7 @@ impl ParamNode for PolySynth {
     /// (0..1): the cells the synth reads once per block, which a host
     /// writes (and a control lane takes as its knob).
     fn param_set(&self) -> ParamSet {
-        let set = ParamSet::builder().param(UnitParam::Volume, self.volume_atomic());
-        match (self.detune_atomic(), self.spread_atomic()) {
-            (Some(detune), Some(spread)) => set
-                .param(UnitParam::Detune, detune)
-                .param(UnitParam::StereoSpread, spread),
-            _ => set,
-        }
-        .build()
+        self.declared_set()
     }
 
     /// See the `fork` module docs (`src/fork.rs`).

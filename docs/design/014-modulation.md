@@ -1434,11 +1434,11 @@ differences from it:
   (`block_driven` in `tutti-nodes`' `src/ramp.rs`; the synth's and the sampler's own
   one-liners), the setter's clamp applied to a driven value as to a
   written one: `ModDelayNode` (chorus and flanger: rate, depth, feedback,
-  mix, `MOD_DELAY_PARAMS`), `PhaserNode` (the same four), the convolver's
-  mix, `PolySynth`'s volume and, with a unison engine, detune and spread
-  (`SYNTH_PARAMS`), a `VoiceNode`'s and a standalone `MemorySource`'s gain
-  (`VOICE_PARAMS`), `LfoNode`'s depth and, free-running, rate
-  (`LFO_PARAMS`; a beat-synced LFO's rate cell holds beats, which its
+  mix), `PhaserNode` (the same four), the convolver's
+  mix, `PolySynth`'s volume and, with a unison engine, detune and spread,
+  a `VoiceNode`'s and a standalone `MemorySource`'s gain,
+  `LfoNode`'s depth and, free-running, rate
+  (a beat-synced LFO's rate cell holds beats, which its
   `ParamSet` does not address either); and the rest of the compressor
   (ratio, attack, release, makeup), the gate (attack, release), the
   limiter (release), the delay (mix) and the SVF (gain). An LFO node's

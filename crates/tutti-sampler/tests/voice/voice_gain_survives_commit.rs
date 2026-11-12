@@ -210,7 +210,7 @@ fn an_unowned_param_is_ignored() {
 /// every sample of the flat wave at 0.75, the cell still holds 0.25 (the
 /// lane sends to the port and never writes it), and a knob write rides
 /// under the lane's offset (0.5 + 0.5 = 1.0). The gain is a port
-/// ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)).
+/// .
 #[test]
 fn a_lane_drives_the_voice_gain_around_its_cell() {
     let mut s = solo_voice();
@@ -321,7 +321,7 @@ fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
 }
 
 /// A voice's gain is a port, its base the cell
-/// ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)): the value a driven port
+/// : the value a driven port
 /// starts its connect crossfade from.
 #[test]
 fn a_voices_gain_port_reads_its_cell_as_its_base() {
@@ -339,7 +339,7 @@ fn a_voices_gain_port_reads_its_cell_as_its_base() {
     let node = VoiceNode::with_channels(voice, ChannelLayout::MONO);
     assert_eq!(
         node.shape().params.as_slice(),
-        &tutti_sampler::VOICE_PARAMS[..]
+        &[tutti_types::UnitParam::Volume][..]
     );
     assert_eq!(node.param_base(0), Some(0.25));
     assert_eq!(node.param_base(1), None);

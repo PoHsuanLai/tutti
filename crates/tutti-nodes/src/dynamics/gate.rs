@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tutti_graph::{
     Cx, InBus, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::ChannelLayout;
 use tutti_types::{AtomicF32, AtomicF64};
-use tutti_types::{ChannelLayout, UnitParam};
 
 use super::params::AttackRelease;
 use super::utils::{apply_gain_lane, sidechain_levels};
@@ -156,7 +156,7 @@ impl GateCore {
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
 /// (`ch..2*ch`). The threshold is modulatable by the graph
-/// ([`GATE_PARAMS`]): a per-frame threshold in [`Db`] on the param
+/// : a per-frame threshold in [`Db`] on the param
 /// port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold cell
 /// per sample. Unmodulated, the node reads its cell once per block, which is
 /// the common case; the arity never changes.
@@ -186,9 +186,12 @@ impl std::fmt::Debug for GateNode {
     }
 }
 
-/// The params a [`GateNode`] lets the graph modulate, in port order.
-pub const GATE_PARAMS: [UnitParam; 3] =
-    [UnitParam::Threshold, UnitParam::Attack, UnitParam::Release];
+// The params a [`GateNode`] lets the graph modulate, in port order.
+tutti_graph::declare_params!([] GateNode, n {
+    Threshold => Db = &n.core.threshold_db,
+    Attack => Seconds = &n.core.timing.attack,
+    Release => Seconds = &n.core.timing.release,
+});
 
 impl GateNode {
     /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
@@ -369,7 +372,7 @@ impl GateNode {
 
 impl Node for GateNode {
     /// `2 * channels` in (audio, then sidechain), `channels` out, the
-    /// threshold, attack and release modulatable ([`GATE_PARAMS`]).
+    /// threshold, attack and release modulatable .
     ///
     /// No tail: the release envelope decays after the input goes silent,
     /// but it only scales (`output = input * gain`), so a silent input is a
@@ -378,7 +381,7 @@ impl Node for GateNode {
         self.ports
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
-            .with_params(&GATE_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -414,12 +417,7 @@ impl Node for GateNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.core.threshold_db.load().get()),
-            1 => Some(self.core.timing.attack.load().to_f32()),
-            2 => Some(self.core.timing.release.load().to_f32()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
@@ -427,11 +425,7 @@ impl ParamNode for GateNode {
     /// Threshold, attack and release: the addresses `set(Setting)` took.
     /// Hold and range are reached through their cells.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Threshold, self.threshold())
-            .param(UnitParam::Attack, self.attack_time())
-            .param(UnitParam::Release, self.release_time())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with every control cell detached (hold and range too), its
@@ -476,6 +470,7 @@ mod tests {
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use core::sync::atomic::Ordering;
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_types::UnitParam;
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.

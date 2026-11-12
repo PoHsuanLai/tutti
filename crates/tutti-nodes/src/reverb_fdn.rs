@@ -2,26 +2,9 @@
 //! spawns the node of either reverb (design 022 step 1c).
 
 use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
-use tutti_types::{Db, Depth, Hz, Mix, Seconds, StereoWidth, UnitAddr, UnitParam};
+use tutti_types::{Db, Depth, Hz, Mix, Seconds, StereoWidth};
 
-use crate::params::ControlSet;
 use crate::reverb::{DesignNode, FreeverbNode, NodeDesign};
-
-/// The addresses of a freezable FDN's params, in port order after the mix; a
-/// design that cannot freeze leaves off the last.
-const ADDRS: [UnitAddr; 11] = [
-    UnitAddr::new(UnitParam::Decay, 0),
-    UnitAddr::new(UnitParam::Decay, 1),
-    UnitAddr::new(UnitParam::Decay, 2),
-    UnitAddr::first(UnitParam::RoomSize),
-    UnitAddr::first(UnitParam::Diffusion),
-    UnitAddr::first(UnitParam::DelayTime),
-    UnitAddr::first(UnitParam::Depth),
-    UnitAddr::first(UnitParam::Rate),
-    UnitAddr::first(UnitParam::StereoSpread),
-    UnitAddr::new(UnitParam::GainDb, 0),
-    UnitAddr::first(UnitParam::Freeze),
-];
 
 /// The FDN's controls: the three decays, the size (a move lands over seconds by
 /// design: half a frame per 32-frame chunk, about 6 s for the longest line going
@@ -33,46 +16,25 @@ pub struct FdnSet {
     freezable: bool,
 }
 
-impl ControlSet for FdnSet {
-    type Controls = FdnControls;
-
-    fn addrs(&self) -> &'static [UnitAddr] {
-        if self.freezable { &ADDRS } else { &ADDRS[..10] }
-    }
+// In port order after the mix; a design that cannot freeze leaves off the
+// last.
+control_set! {
+    FdnSet(s): FdnControls = FdnControls { freeze: false, ..FdnControls::DEFAULT };
+    live: (if s.freezable { 11 } else { 10 });
+    Decay[0] => Seconds = decay[0],
+    Decay[1] => Seconds = decay[1],
+    Decay[2] => Seconds = decay[2],
+    RoomSize => Mix = size,
+    Diffusion => Mix = diffusion,
+    DelayTime => Seconds = pre_delay,
+    Depth => Depth = modulation,
+    Rate => Hz = rate,
+    StereoSpread => StereoWidth = width,
+    GainDb => Db = wet,
+    Freeze => bool = freeze;
 
     fn defaults(&self) -> FdnControls {
         FdnControls::DEFAULT
-    }
-
-    fn flatten(&self, c: &FdnControls, out: &mut [f32]) {
-        let all = [
-            c.decay[0].to_f32(),
-            c.decay[1].to_f32(),
-            c.decay[2].to_f32(),
-            c.size.get(),
-            c.diffusion.get(),
-            c.pre_delay.to_f32(),
-            c.modulation.get(),
-            c.rate.get(),
-            c.width.get(),
-            c.wet.get(),
-            f32::from(u8::from(c.freeze)),
-        ];
-        out.copy_from_slice(&all[..out.len()]);
-    }
-
-    fn assemble(&self, v: &[f32]) -> FdnControls {
-        FdnControls {
-            decay: [0, 1, 2].map(|k| Seconds::from_f32(v[k])),
-            size: Mix(v[3]),
-            diffusion: Mix(v[4]),
-            pre_delay: Seconds::from_f32(v[5]),
-            modulation: Depth(v[6]),
-            rate: Hz(v[7]),
-            width: StereoWidth(v[8]),
-            wet: Db(v[9]),
-            freeze: self.freezable && v[10] >= 0.5,
-        }
     }
 }
 

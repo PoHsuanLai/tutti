@@ -854,7 +854,6 @@ impl PolySynth {
 }
 
 mod node;
-pub use node::SYNTH_PARAMS;
 
 /// The channels MPE makes zones when it is on: the lower zone, master 0 and
 /// every other channel its member (RP-053 allows 15 with no upper zone).

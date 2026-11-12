@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tutti_graph::{
     Cx, InBus, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::ChannelLayout;
 use tutti_types::{AtomicF32, AtomicF64};
-use tutti_types::{ChannelLayout, UnitParam};
 
 use super::params::{AttackRelease, ThresholdParams};
 use super::utils::{apply_gain_lane, sidechain_levels};
@@ -196,7 +196,7 @@ impl CompressorCore {
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
 /// (`ch..2*ch`). The threshold is modulatable by the graph
-/// ([`COMPRESSOR_PARAMS`]): a per-frame threshold in [`Db`] on the
+/// : a per-frame threshold in [`Db`] on the
 /// param port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold
 /// cell per sample. Unmodulated, the node reads its cell once per block,
 /// which is the common case; the arity never changes.
@@ -205,7 +205,7 @@ impl CompressorCore {
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over threshold, ratio, attack, release and makeup (as
-/// [`UnitParam::GainDb`]), and a fork of it starts from the values last set
+/// [`UnitParam::GainDb`](tutti_types::UnitParam::GainDb)), and a fork of it starts from the values last set
 /// through that set. The graph prepares it at the device rate before its
 /// first block.
 pub struct CompressorNode {
@@ -227,18 +227,19 @@ impl std::fmt::Debug for CompressorNode {
     }
 }
 
-/// The params a [`CompressorNode`] lets the graph modulate, in port order:
-/// every param in its set. The threshold is read per sample; the ratio,
-/// the times and the makeup are block-rate in the node (read once per
-/// block, the makeup ramped across it), so a driven port is read the same
-/// way (`block_driven`).
-pub const COMPRESSOR_PARAMS: [UnitParam; 5] = [
-    UnitParam::Threshold,
-    UnitParam::Ratio,
-    UnitParam::Attack,
-    UnitParam::Release,
-    UnitParam::GainDb,
-];
+// The params a [`CompressorNode`] lets the graph modulate, in port order:
+// every param in its set. The threshold is read per sample; the ratio,
+// the times and the makeup are block-rate in the node (read once per
+// block, the makeup ramped across it), so a driven port is read the same
+// way (`block_driven`).
+tutti_graph::declare_params!([] CompressorNode, n {
+    Threshold => Db = &n.core.threshold.threshold,
+    Ratio => CompressionRatio = &n.core.ratio,
+    Attack => Seconds = &n.core.timing.attack,
+    Release => Seconds = &n.core.timing.release,
+    // The make-up gain is addressed as `GainDb`.
+    GainDb => Db = &n.core.makeup_db,
+});
 
 impl CompressorNode {
     /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
@@ -450,7 +451,7 @@ impl CompressorNode {
 
 impl Node for CompressorNode {
     /// `2 * channels` in (audio, then sidechain), `channels` out, every
-    /// param modulatable ([`COMPRESSOR_PARAMS`]).
+    /// param modulatable .
     ///
     /// No tail: the release envelope decays after the input goes silent,
     /// but it only scales (`output = input * gain`), so a silent input is a
@@ -459,7 +460,7 @@ impl Node for CompressorNode {
         self.ports
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
-            .with_params(&COMPRESSOR_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -499,28 +500,15 @@ impl Node for CompressorNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.core.threshold.threshold.load().get()),
-            1 => Some(self.core.ratio.load().get()),
-            2 => Some(self.core.timing.attack.load().to_f32()),
-            3 => Some(self.core.timing.release.load().to_f32()),
-            4 => Some(self.core.makeup_db.load().get()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for CompressorNode {
     /// Threshold, ratio, attack, release, and the makeup gain as
-    /// [`UnitParam::GainDb`] (the address `set(Setting)` took it by).
+    /// [`UnitParam::GainDb`](tutti_types::UnitParam::GainDb) (the address `set(Setting)` took it by).
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Threshold, self.threshold())
-            .param(UnitParam::Ratio, self.ratio())
-            .param(UnitParam::Attack, self.attack_time())
-            .param(UnitParam::Release, self.release_time())
-            .param(UnitParam::GainDb, self.makeup_gain())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with every control cell detached (the knee too, which has no
@@ -562,6 +550,7 @@ mod tests {
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use core::sync::atomic::Ordering;
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_types::UnitParam;
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.

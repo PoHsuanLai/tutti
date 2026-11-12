@@ -33,7 +33,7 @@ pub(crate) fn tempo_in_effect(asked: Bpm, in_force: Bpm) -> Bpm {
 }
 
 /// The loop of a block's transport, as the clock takes it.
-fn loop_of(from: &tutti_graph::Transport) -> Option<tutti_types::LoopRange> {
+fn loop_of(from: &tutti_graph::TransportPosition) -> Option<tutti_types::LoopRange> {
     from.looping
         .and_then(|l| tutti_types::LoopRange::new(l.start, l.end))
 }
@@ -53,7 +53,7 @@ pub(crate) struct Control {
     /// it, and an edit reaches it as a command.
     pub loop_region: LoopRegion,
     /// Whether the session is recording, for the graph's
-    /// [`Transport::recording`](tutti_graph::Transport::recording). Read once
+    /// [`Transport::recording`](tutti_graph::TransportPosition::recording). Read once
     /// per block, like the rest; no command moves it mid-block.
     pub recording: bool,
 }
@@ -284,7 +284,7 @@ impl TransportClock {
 
     /// Take a pending seek (when `take_seek`) and `control`'s tempo, and
     /// report the transport from this frame on under `control`, as a
-    /// graph block sees it ([`tutti_graph::Transport`]). The seek is taken
+    /// graph block sees it ([`tutti_graph::TransportPosition`]). The seek is taken
     /// only at a block's start and after a motion command, the two points
     /// where the motion machine (this thread) can have requested one.
     ///
@@ -302,7 +302,7 @@ impl TransportClock {
         control: &Control,
         take_seek: bool,
         map: Option<&TempoMap>,
-    ) -> tutti_graph::Transport {
+    ) -> tutti_graph::TransportPosition {
         if take_seek {
             self.apply_pending_seek(map);
         }
@@ -313,7 +313,7 @@ impl TransportClock {
         // Counted: the frame count the beat is derived from, so the graph's
         // `Env::for_each_beat` and `Env::transport_at` continue this clock
         // with its own code.
-        tutti_graph::Transport::counted(
+        tutti_graph::TransportPosition::counted(
             !control.paused,
             self.clock.tempo(),
             self.clock.origin(),
@@ -348,7 +348,7 @@ impl TransportClock {
     pub fn advance(
         &mut self,
         frames: usize,
-        from: &tutti_graph::Transport,
+        from: &tutti_graph::TransportPosition,
         map: Option<&TempoMap>,
     ) {
         if from.playing {
@@ -371,7 +371,7 @@ impl TransportClock {
     pub fn ahead(
         &self,
         frames: usize,
-        from: &tutti_graph::Transport,
+        from: &tutti_graph::TransportPosition,
         map: Option<&TempoMap>,
         cap: usize,
     ) -> TempoAhead {
@@ -380,8 +380,13 @@ impl TransportClock {
         };
         self.walk
             .ahead(map, &self.clock, frames, loop_of(from), cap, |clock| {
-                tutti_graph::Transport::counted(true, clock.tempo(), clock.origin(), from.looping)
-                    .with_recording(from.recording())
+                tutti_graph::TransportPosition::counted(
+                    true,
+                    clock.tempo(),
+                    clock.origin(),
+                    from.looping,
+                )
+                .with_recording(from.recording())
             })
     }
 

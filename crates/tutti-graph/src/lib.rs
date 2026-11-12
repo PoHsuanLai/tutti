@@ -444,7 +444,7 @@
 //! not at event offsets (sub-chunking at an event is the node's job), not at
 //! a transport loop wrap, and not at a transport change inside the block.
 //! That keeps an out-of-process plugin's declared pipeline latency constant.
-//! A loop wrap is visible through [`Transport::looping`] and the block-start
+//! A loop wrap is visible through [`TransportPosition::looping`] and the block-start
 //! beat in [`Env`]; a start, stop or seek landing inside a block is carried
 //! by [`Env::changes`], and [`Env::transport_at`] answers "what was the
 //! transport at this frame". A node behind a latent path reads
@@ -640,7 +640,7 @@ pub use mode::{MODE_DECLICK, MixError, ModeError, NodeMix, NodeMode};
 pub use node::{
     Chase, ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS,
     MAX_TRANSPORT_CHANGES, Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask,
-    Status, Transport, TransportChange, TransportChangeRejected, TransportChanges,
+    Status, TransportChange, TransportChangeRejected, TransportChanges, TransportPosition,
 };
 pub use par::Pool;
 pub use param::{

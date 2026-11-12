@@ -51,7 +51,7 @@ use tutti_types::{ChannelLayout, Frame, Samples};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
-use crate::node::{IntoNode, NodeParts, Prepare, Shape, Transport};
+use crate::node::{IntoNode, NodeParts, Prepare, Shape, TransportPosition};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphSpec};
 
 /// One unit waiting for [`GraphBuilder::build`], with its fork source, so a
@@ -713,7 +713,7 @@ impl GraphBuilder {
 }
 
 /// What a [`Renderer`] reads the transport from, per block.
-type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
+type TransportFn = Box<dyn FnMut(Frame) -> TransportPosition + Send>;
 
 /// Drives an [`Executor`] a block at a time, for tests and offline tools:
 /// hands it the transport, silence or the given input, and collects its
@@ -733,7 +733,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 ///
 /// ```
 /// use tutti_types::MaxBlock;
-/// use tutti_graph::{ForkByClone, GraphBuilder, Prepare, Transport};
+/// use tutti_graph::{ForkByClone, GraphBuilder, Prepare, TransportPosition};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 /// # use tutti_graph::{Cx, Io, Node, Shape, Status};
 /// # #[derive(Clone)]
@@ -763,7 +763,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// // A rolling transport is a function of the block's first frame.
 /// r.set_transport_fn(|frame| {
 ///     // 120 BPM at 48 kHz: 24 000 frames a beat.
-///     Transport::new(true, Bpm::of(120.0), Beat(frame.0 as f64 / 24_000.0), None)
+///     TransportPosition::new(true, Bpm::of(120.0), Beat(frame.0 as f64 / 24_000.0), None)
 /// });
 /// assert_eq!(r.render_interleaved(2), vec![0.0; 4]); // L R L R
 /// ```
@@ -785,8 +785,8 @@ impl std::fmt::Debug for Renderer {
 }
 
 impl Renderer {
-    /// Drives `executor`, draining back into `editor`. Transport stopped at
-    /// beat zero ([`Transport::default`]); blocks at the prepared maximum.
+    /// Drives `executor`, draining back into `editor`. The transport is stopped at
+    /// beat zero ([`TransportPosition::default`]); blocks at the prepared maximum.
     ///
     /// # Panics
     ///
@@ -801,7 +801,7 @@ impl Renderer {
             editor,
             executor,
             block,
-            transport: Box::new(|_| Transport::default()),
+            transport: Box::new(|_| TransportPosition::default()),
         }
     }
 
@@ -824,7 +824,7 @@ impl Renderer {
     /// Hands every block `transport`, unchanged. It does not advance: a
     /// playing transport whose beat should move is a
     /// [`set_transport_fn`](Self::set_transport_fn).
-    pub fn set_transport(&mut self, transport: Transport) -> &mut Self {
+    pub fn set_transport(&mut self, transport: TransportPosition) -> &mut Self {
         self.transport = Box::new(move |_| transport);
         self
     }
@@ -833,7 +833,7 @@ impl Renderer {
     /// ([`Executor::frame`]).
     pub fn set_transport_fn(
         &mut self,
-        f: impl FnMut(Frame) -> Transport + Send + 'static,
+        f: impl FnMut(Frame) -> TransportPosition + Send + 'static,
     ) -> &mut Self {
         self.transport = Box::new(f);
         self

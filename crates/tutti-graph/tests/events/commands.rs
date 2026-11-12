@@ -11,7 +11,7 @@ use common::prepare;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     COMMAND_CAPACITY, Cx, Editor, EventIn, EventKind, Executor, Io, Node, ParamRamp, Prepare,
-    Reference, ScheduleError, Shape, Status, Transport, Unforkable,
+    Reference, ScheduleError, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, Samples, Tail};
@@ -134,7 +134,7 @@ impl Rig {
     }
 
     /// Render `n` frames through both; return both outputs.
-    fn block(&mut self, n: usize, transport: &Transport) -> (Vec<f32>, Vec<f32>) {
+    fn block(&mut self, n: usize, transport: &TransportPosition) -> (Vec<f32>, Vec<f32>) {
         let (mut a, mut b) = (vec![0.0; n], vec![0.0; n]);
         self.exec.process(n, transport, &[], &mut [&mut a[..]]);
         self.reference.process(n, transport, &[], &mut [&mut b[..]]);
@@ -165,7 +165,7 @@ fn a_command_lands_on_its_exact_frame_across_ragged_blocks() {
     for (i, &f) in targets.iter().enumerate() {
         rig.schedule(At::Frame(Frame(f)), tag(i as u32));
     }
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     for &n in &blocks {
         rig.block(n, &transport);
     }
@@ -196,7 +196,7 @@ fn a_scheduled_ramp_steps_the_output_on_its_frame() {
     );
     let (mut a, mut b) = (Vec::new(), Vec::new());
     for n in [64, 64] {
-        let (x, y) = rig.block(n, &Transport::default());
+        let (x, y) = rig.block(n, &TransportPosition::default());
         a.extend(x);
         b.extend(y);
     }
@@ -210,7 +210,7 @@ fn a_scheduled_ramp_steps_the_output_on_its_frame() {
 #[test]
 fn a_late_command_lands_at_the_next_block_and_is_counted() {
     let mut rig = rig();
-    let t = Transport::default();
+    let t = TransportPosition::default();
     rig.block(64, &t);
     rig.block(64, &t);
     rig.schedule(At::Frame(Frame(10)), tag(1)); // 118 frames ago
@@ -240,14 +240,14 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
     // reached where the *current* tempo puts it.
     let mut beat = 0.0f64;
     for n in [64usize; 4] {
-        let t = Transport::new(true, Bpm::of(60.0), Beat(beat), None);
+        let t = TransportPosition::new(true, Bpm::of(60.0), Beat(beat), None);
         rig.block(n, &t);
         beat += n as f64 * 60.0 / (60.0 * rate); // 60 BPM: beats per frame
         frame += n as u64;
     }
     // Jump to just before beat 1.5 at 120 BPM: 10 frames short.
     let spb = 120.0 / (60.0 * rate); // beats per frame
-    let t = Transport::new(true, Bpm::of(120.0), Beat(1.5 - 10.0 * spb), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(1.5 - 10.0 * spb), None);
     rig.block(64, &t);
     for log in [&rig.exec_log, &rig.ref_log] {
         assert_eq!(
@@ -270,7 +270,7 @@ fn a_beat_passed_in_a_refused_block_lands_late() {
     // 120 BPM at 48 kHz: a frame is 1 / 24 000 beat.
     let f = 1.0 / 24_000.0;
     let at = |frames_from_beat: f64| {
-        Transport::new(true, Bpm::of(120.0), Beat(1.5 + frames_from_beat * f), None)
+        TransportPosition::new(true, Bpm::of(120.0), Beat(1.5 + frames_from_beat * f), None)
     };
     rig.block(64, &at(-100.0));
     // Crosses beat 1.5, with no output slice for a one-output plan.
@@ -295,7 +295,7 @@ fn scheduling_back_pressures_at_capacity() {
         Err(ScheduleError::Backpressure)
     );
     // Frames 100..=163 land in the second 64-block (64..128) only up to 127.
-    let t = Transport::default();
+    let t = TransportPosition::default();
     rig.exec.process(64, &t, &[], &mut [&mut [0.0; 64][..]]);
     rig.exec.process(64, &t, &[], &mut [&mut [0.0; 64][..]]);
     assert_eq!(rig.ed.commands_outstanding(), COMMAND_CAPACITY - 28);
@@ -341,7 +341,7 @@ fn a_command_needs_a_port_and_an_orphan_is_counted() {
         })),
     );
     rig.ed.commit().expect("commits");
-    let t = Transport::default();
+    let t = TransportPosition::default();
     for _ in 0..20 {
         rig.exec.process(64, &t, &[], &mut [&mut [0.0; 64][..]]);
     }
@@ -475,7 +475,7 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
         let (mut a, mut b) = (vec![0.0; n], vec![0.0; n]);
         exec.process(
             n,
-            &Transport::default(),
+            &TransportPosition::default(),
             &[&silence[..n]],
             &mut [&mut a[..], &mut b[..]],
         );
@@ -484,7 +484,7 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
         let (mut a, mut b) = (vec![0.0; n], vec![0.0; n]);
         reference.process(
             n,
-            &Transport::default(),
+            &TransportPosition::default(),
             &[&silence[..n]],
             &mut [&mut a[..], &mut b[..]],
         );
@@ -545,7 +545,7 @@ fn a_command_waits_for_the_commit_it_was_checked_against() {
     let done = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&done);
     let audio = std::thread::spawn(move || {
-        let t = Transport::default();
+        let t = TransportPosition::default();
         while !stop.load(Ordering::Acquire) {
             exec.process(1, &t, &[], &mut []);
         }
@@ -600,7 +600,7 @@ fn a_command_waits_for_the_commit_it_was_checked_against() {
 #[test]
 fn cancel_takes_commands_back_and_frees_their_credit() {
     let mut rig = rig();
-    let stopped = Transport::default();
+    let stopped = TransportPosition::default();
     // A targeted cancel, sent before the executor has seen its command.
     let id = rig
         .ed
@@ -680,8 +680,8 @@ fn a_ramp_into_a_coarse_node_is_refused() {
 
 /// A transport at `beat`. The oracle table runs at 1440 BPM and 48 kHz:
 /// 2 000 frames a beat, so a 500-frame block is a quarter beat.
-fn at_beat(beat: f64, playing: bool, tempo: f64, looping: Option<(f64, f64)>) -> Transport {
-    Transport::new(
+fn at_beat(beat: f64, playing: bool, tempo: f64, looping: Option<(f64, f64)>) -> TransportPosition {
+    TransportPosition::new(
         playing,
         Bpm::of(tempo),
         Beat(beat),
@@ -699,7 +699,7 @@ fn at_beat(beat: f64, playing: bool, tempo: f64, looping: Option<(f64, f64)>) ->
 struct Case {
     name: &'static str,
     arrival: usize,
-    transports: Vec<Transport>,
+    transports: Vec<TransportPosition>,
     sched_at: usize,
     beat: f64,
     want: Option<(u64, bool)>,
@@ -707,14 +707,14 @@ struct Case {
 
 /// Beat 0.5 to 1.75 in quarter-beat blocks, a wrap of loop [1, 2) at frame
 /// 3 000, then 1.0 to 1.75 again.
-fn looped_from_half() -> Vec<Transport> {
+fn looped_from_half() -> Vec<TransportPosition> {
     [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 1.0, 1.25, 1.5, 1.75]
         .into_iter()
         .map(|b| at_beat(b, true, 1440.0, Some((1.0, 2.0))))
         .collect()
 }
 
-fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
+fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<TransportPosition> {
     (0..blocks)
         .map(|i| {
             at_beat(
@@ -1078,8 +1078,8 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
 
     let silence = [0.0f32; 10];
     for block in 0..14 {
-        exec.process(10, &Transport::default(), &[&silence[..]], &mut []);
-        reference.process(10, &Transport::default(), &[&silence[..]], &mut []);
+        exec.process(10, &TransportPosition::default(), &[&silence[..]], &mut []);
+        reference.process(10, &TransportPosition::default(), &[&silence[..]], &mut []);
         let want = u64::from(block >= 12); // the block holding frame 120
         assert_eq!(
             exec.unrouted_command_count(),
@@ -1108,7 +1108,7 @@ fn cancels_are_never_lost_across_threads() {
     let done = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&done);
     let audio = std::thread::spawn(move || {
-        let t = Transport::default();
+        let t = TransportPosition::default();
         let mut out = [0.0f32; 1];
         while !stop.load(Ordering::Acquire) {
             exec.process(1, &t, &[], &mut [&mut out[..]]);
@@ -1176,7 +1176,7 @@ fn a_command_id_from_another_pair_is_refused() {
         .cancel(later)
         .expect("a genuine cancel still goes through");
     for _ in 0..4 {
-        new.block(64, &Transport::default());
+        new.block(64, &TransportPosition::default());
     }
     let got: Vec<u32> = new.exec_log.lock().unwrap().iter().map(|e| e.3).collect();
     assert_eq!(got, vec![2], "its own #0 landed; its cancelled #1 did not");
@@ -1197,7 +1197,7 @@ fn a_seek_out_of_a_loop_that_lines_up_with_wraps_is_a_seek() {
     let (start, end) = (4.0, 4.0005);
     let frame_beat = 1.0 / 24_000.0;
     let at = |beat: f64| {
-        Transport::new(
+        TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(beat),

@@ -20,7 +20,7 @@ use tutti_vst2_host::Vst2Loaded;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_graph::NodeKey;
-use tutti_graph::{Editor, Prepare, Transport, Unforkable};
+use tutti_graph::{Editor, Prepare, TransportPosition, Unforkable};
 use tutti_graph::{OutPort, Source};
 use tutti_plugin_host::load_client;
 use tutti_types::{SampleRate, Samples};
@@ -47,7 +47,12 @@ fn close_count(path: &PathBuf) -> u32 {
 }
 
 fn block(exec: &mut tutti_graph::Executor, left: &mut [f32], right: &mut [f32]) {
-    exec.process(BLOCK, &Transport::default(), &[], &mut [left, right]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[],
+        &mut [left, right],
+    );
 }
 
 #[test]

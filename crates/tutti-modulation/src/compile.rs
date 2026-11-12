@@ -33,7 +33,7 @@ use tutti_types::{
 use crate::curve::Curve;
 use crate::program::{
     Amount, Clock, ControlProgram, DepthBy, InputLayer, Layer, LayerId, ProgramError, ProgramTime,
-    RateAnchor, SourceId, Wave,
+    RateAnchor, SourceId, Waveform,
 };
 use crate::shape::Polarity;
 
@@ -137,12 +137,12 @@ pub enum Source {
     /// ([`CompileError::AnchorDeclared`]).
     Lfo {
         /// One period.
-        wave: Wave,
+        wave: Waveform,
         /// The clock it runs on.
         clock: Clock,
     },
     /// A constant the user moves, a raw value (`shape` saturates past ±1).
-    /// Moving it recompiles what it reaches: a layer of [`Wave::Const`].
+    /// Moving it recompiles what it reaches: a layer of [`Waveform::Const`].
     Macro {
         /// The raw value.
         value: f32,
@@ -718,9 +718,9 @@ fn check_source(key: SourceKey, source: &Source) -> Result<(), CompileError> {
                 }
             };
             let ok_wave = match wave {
-                Wave::Shape { .. } => true,
-                Wave::Const(v) => v.is_finite(),
-                Wave::Drawn(points) => {
+                Waveform::Shape { .. } => true,
+                Waveform::Const(v) => v.is_finite(),
+                Waveform::Drawn(points) => {
                     points
                         .iter()
                         .all(|p| (0.0..1.0).contains(&p.at.get()) && p.value.is_finite())
@@ -764,13 +764,15 @@ fn signal_kind(source: &Source) -> Option<SignalKind> {
 }
 
 /// A time function's clock and wave (an LFO's own; a macro's constant).
-fn time_function(source: &Source) -> (Clock, Wave) {
+fn time_function(source: &Source) -> (Clock, Waveform) {
     match source {
         Source::Lfo { wave, clock } => (*clock, wave.clone()),
-        Source::Macro { value } => (MACRO_CLOCK, Wave::Const(*value)),
+        Source::Macro { value } => (MACRO_CLOCK, Waveform::Const(*value)),
         // Callers reach here with a time function only (signal sources are
         // input layers, and refused as depth scalers).
-        Source::Follower { .. } | Source::NoteEnvelope { .. } => (MACRO_CLOCK, Wave::Const(0.0)),
+        Source::Follower { .. } | Source::NoteEnvelope { .. } => {
+            (MACRO_CLOCK, Waveform::Const(0.0))
+        }
     }
 }
 

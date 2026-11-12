@@ -48,7 +48,7 @@ use tutti_graph::{BusRef, BusSource, Buses, EdgeFade, EdgeGain};
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, InletNode,
     InletRing, IntoNode, MeterReader, MixError, ModeError, NodeMode, ParamIn, ParamMod, ParamRange,
-    ParamSet, Prepare, TapWriter, Transport,
+    ParamSet, Prepare, TapWriter, TransportPosition,
 };
 use tutti_graph::{
     Edge as RawEdge, EdgeId, InPort as RawIn, NodeKey, OutPort as RawOut, Sink, Source,
@@ -2984,7 +2984,7 @@ impl Graph {
     }
 
     /// Render one frame on the local executor, under `transport`.
-    pub(crate) fn render_local(&mut self, transport: &Transport, output: &mut [f32]) {
+    pub(crate) fn render_local(&mut self, transport: &TransportPosition, output: &mut [f32]) {
         let local = self
             .local
             .as_mut()
@@ -3001,7 +3001,7 @@ impl Graph {
 fn render(
     exec: &mut Executor,
     scratch: &mut Vec<Vec<f32>>,
-    transport: &Transport,
+    transport: &TransportPosition,
     input: &[f32],
     output: &mut [f32],
 ) {

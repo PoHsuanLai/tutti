@@ -12,7 +12,7 @@ use tutti_fixtures::midi::m1_note_on;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node, Prepare,
-    Shape, Status, Transport, Unforkable, compile,
+    Shape, Status, TransportPosition, Unforkable, compile,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_rt::RtScope;
@@ -58,7 +58,12 @@ fn gain_graph(g: f32) -> (Editor, Executor) {
 fn dc(exec: &mut Executor, n: usize) -> Vec<f32> {
     let input = vec![1.0f32; n];
     let mut out = vec![0.0f32; n];
-    exec.process(n, &Transport::default(), &[&input[..]], &mut [&mut out[..]]);
+    exec.process(
+        n,
+        &TransportPosition::default(),
+        &[&input[..]],
+        &mut [&mut out[..]],
+    );
     out
 }
 
@@ -227,12 +232,12 @@ fn long_fades_do_not_block_commits() {
         ed.insert(k, "gain", Unforkable(gain(1.0)));
     }
     ed.commit().expect("commits");
-    exec.process(64, &Transport::default(), &[], &mut []);
+    exec.process(64, &TransportPosition::default(), &[], &mut []);
     let second = Fade::new(Samples(48_000), CrossfadeCurve::EqualAmplitude);
     for &k in &keys {
         ed.replace(k, Unforkable(gain(2.0)), second).expect("fits");
         ed.commit().expect("a running fade blocks nothing");
-        exec.process(64, &Transport::default(), &[], &mut []);
+        exec.process(64, &TransportPosition::default(), &[], &mut []);
     }
     assert_eq!(ed.fades_in_flight(), 10);
     ed.reprepare(prepare(64)).expect("nor a re-prepare");
@@ -512,7 +517,7 @@ fn events_go_to_the_incoming_unit_only() {
     ));
     let mut out = vec![0.0f32; 64];
     let mut block = |exec: &mut Executor| {
-        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+        exec.process(64, &TransportPosition::default(), &[], &mut [&mut out[..]]);
     };
     ed.schedule(At::NextBlock, to, note).expect("room");
     block(&mut exec);
@@ -675,7 +680,7 @@ fn the_reference_cuts_a_fade_on_a_latency_change() {
         let mut out = vec![0.0f32; 64];
         r.process(
             64,
-            &Transport::default(),
+            &TransportPosition::default(),
             &[&input[..]],
             &mut [&mut out[..]],
         );

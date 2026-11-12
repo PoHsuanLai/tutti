@@ -65,7 +65,7 @@
 
 use std::ops::Range;
 
-use tutti_graph::{Env, Transport};
+use tutti_graph::{Env, TransportPosition};
 use tutti_tempo::TempoMap;
 use tutti_types::{Beat, BeatDuration, Bpm, FrameClock, LoopRange, SampleRate, Samples, Seconds};
 
@@ -214,24 +214,24 @@ impl Run {
 }
 
 /// Whether `t` moves: it plays (a `Bpm` is finite and above zero).
-fn rolls(t: &Transport) -> bool {
+fn rolls(t: &TransportPosition) -> bool {
     t.playing
 }
 
 /// The loop `t` wraps at, if any.
-fn region(t: &Transport) -> Option<LoopRange> {
+fn region(t: &TransportPosition) -> Option<LoopRange> {
     t.looping.and_then(|l| LoopRange::new(l.start, l.end))
 }
 
 /// Whether the playhead, which would have been at `prev`, jumped to where
 /// `to` puts it. Only a rolling transport jumps (a stop, and a seek while
 /// stopped, do not); a loop wrap always does.
-fn breaks(prev: Next, to: &Transport, rate: SampleRate) -> bool {
+fn breaks(prev: Next, to: &TransportPosition, rate: SampleRate) -> bool {
     rolls(to) && (prev.wrapped || !continues(prev, to, rate))
 }
 
 /// Whether `to` is where the playhead would have been at `prev`.
-fn continues(prev: Next, to: &Transport, rate: SampleRate) -> bool {
+fn continues(prev: Next, to: &TransportPosition, rate: SampleRate) -> bool {
     let fpb = rate.get() * 60.0 / to.tempo.get();
     ((to.beat() - prev.beat).get() * fpb).abs() <= CONTINUES_WITHIN
 }
@@ -345,7 +345,7 @@ impl Clock {
 }
 
 /// The transport in force at block frame `frame`.
-fn env_transport_of(env: &Env, frame: usize) -> Transport {
+fn env_transport_of(env: &Env, frame: usize) -> TransportPosition {
     env.changes
         .as_slice()
         .iter()
@@ -356,7 +356,7 @@ fn env_transport_of(env: &Env, frame: usize) -> Transport {
 
 /// Where the playhead would be at the first frame after `run`, whose
 /// transport is `t`.
-fn continuation(run: &Run, t: &Transport) -> Next {
+fn continuation(run: &Run, t: &TransportPosition) -> Next {
     if !run.rolling {
         return Next {
             beat: run.clock.beat(),
@@ -464,7 +464,7 @@ pub(crate) struct Runs<'e> {
     /// The host's clock at `cur`.
     clock: FrameClock,
     /// The transport of the current segment.
-    transport: Transport,
+    transport: TransportPosition,
     generation: u64,
     /// Whether the next run starts with a jump.
     jump: bool,
@@ -558,7 +558,7 @@ mod tests {
     const FPB: f64 = 24_000.0;
     const BLOCK: usize = 64;
 
-    fn env(transport: Transport, changes: &[(usize, Transport)]) -> Env {
+    fn env(transport: TransportPosition, changes: &[(usize, TransportPosition)]) -> Env {
         let mut c = TransportChanges::NONE;
         for &(at, to) in changes {
             c.push(Offset::new(at, Samples(BLOCK)).expect("inside"), to)
@@ -574,15 +574,15 @@ mod tests {
         }
     }
 
-    fn at(playing: bool, frame: f64) -> Transport {
-        Transport::new(playing, Bpm::of(120.0), Beat(frame / FPB), None)
+    fn at(playing: bool, frame: f64) -> TransportPosition {
+        TransportPosition::new(playing, Bpm::of(120.0), Beat(frame / FPB), None)
     }
 
     /// **A tempo too slow to count frames at has no frames per beat** (the
     /// run was `Some(inf)` before the one rule).
     #[test]
     fn the_slowest_tempo_has_no_frames_per_beat() {
-        let slow = Transport::new(true, Bpm::of(f64::from_bits(1)), Beat(0.0), None);
+        let slow = TransportPosition::new(true, Bpm::of(f64::from_bits(1)), Beat(0.0), None);
         let mut clock = Clock::new();
         let run = clock.observe(&env(slow, &[])).runs().next().expect("a run");
         assert_eq!(run.frames_per_beat(), None);
@@ -679,7 +679,7 @@ mod tests {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        let t = Transport::new(true, Bpm::of(120.0), Beat(1.0 - 10.0 / FPB), looping);
+        let t = TransportPosition::new(true, Bpm::of(120.0), Beat(1.0 - 10.0 / FPB), looping);
         let mut clock = Clock::new();
         let e = env(t, &[]);
         let block = clock.observe(&e);
@@ -737,12 +737,12 @@ mod tests {
     }
 
     /// 120 BPM: a loop of one beat is 24 000 frames, and the fade 240.
-    fn looping(from: f64) -> Transport {
+    fn looping(from: f64) -> TransportPosition {
         let looping = Some(tutti_graph::LoopRange {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        Transport::new(true, Bpm::of(120.0), Beat(from / FPB), looping)
+        TransportPosition::new(true, Bpm::of(120.0), Beat(from / FPB), looping)
     }
 
     /// `(ago, len)` of the wrap crossfade at each run of the block.

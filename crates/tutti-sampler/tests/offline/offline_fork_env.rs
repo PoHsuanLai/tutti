@@ -22,7 +22,7 @@ use tutti_codec::Wave;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Executor, ForkByClone, ForkMode, ForkTarget, IntoNode, Io, Node, Prepare, Shape,
-    Status, Transport,
+    Status, TransportPosition,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceNode, VoicePool, VoiceSource};
@@ -72,19 +72,19 @@ fn graph<N: IntoNode>(node: N, width: u16) -> (Editor, Executor, N::Controls) {
 }
 
 /// The peak of 64 frames of `exec`'s graph under `transport`.
-fn peak(exec: &mut Executor, width: usize, transport: Transport) -> f32 {
+fn peak(exec: &mut Executor, width: usize, transport: TransportPosition) -> f32 {
     let mut out = vec![vec![0.0f32; 64]; width];
     let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
     exec.process(64, &transport, &[], &mut refs);
     out.iter().flatten().fold(0.0f32, |m, s| m.max(s.abs()))
 }
 
-fn rolling() -> Transport {
-    Transport::new(true, Bpm::of(120.0), Beat(0.0), None)
+fn rolling() -> TransportPosition {
+    TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None)
 }
 
-fn stopped() -> Transport {
-    Transport::new(false, Bpm::of(120.0), Beat(0.0), None)
+fn stopped() -> TransportPosition {
+    TransportPosition::new(false, Bpm::of(120.0), Beat(0.0), None)
 }
 
 /// The offline fork of `ed`'s graph (what the export takes), applied.

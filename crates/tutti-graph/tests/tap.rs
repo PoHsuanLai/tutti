@@ -10,7 +10,7 @@ use common::{Kind, TestNode, prepare};
 use tutti_graph::{CloseError, Edge, InPort, OutPort, Source};
 use tutti_graph::{
     Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, MissingSource,
-    Node, NodeParts, Op, TapReader, Transport,
+    Node, NodeParts, Op, TapReader, TransportPosition,
 };
 use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Samples};
@@ -151,7 +151,7 @@ fn block(r: &mut Rig, n: usize, frame: u64) -> Vec<Vec<f32>> {
     let input: Vec<f32> = (0..n).map(|k| input_at(frame + k as u64)).collect();
     let mut chans = vec![vec![0.0f32; n]; CHAINS as usize];
     let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let ins = [&input[..]];
     // Only the render is inside the gate: this helper's own buffers allocate.
     if r.gated {

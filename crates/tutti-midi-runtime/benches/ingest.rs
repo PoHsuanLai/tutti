@@ -20,7 +20,8 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi::{m1_cc, m1_note_off, m1_note_on};
 use tutti_graph::{
-    Editor, EventCapacity, EventEdge, EventIn, EventOut, Executor, NodeKey, Prepare, Transport,
+    Editor, EventCapacity, EventEdge, EventIn, EventOut, Executor, NodeKey, Prepare,
+    TransportPosition,
 };
 use tutti_midi_runtime::{DeviceInlets, DeviceInput, InletChange, MidiIngestNode};
 use tutti_types::MaxBlock;
@@ -85,7 +86,7 @@ fn push(device: &mut DeviceInput, wire: &[Ump]) {
 }
 
 fn block(exec: &mut Executor) {
-    exec.process(BLOCK, &Transport::default(), &[], &mut []);
+    exec.process(BLOCK, &TransportPosition::default(), &[], &mut []);
 }
 
 fn ingest(c: &mut Criterion) {

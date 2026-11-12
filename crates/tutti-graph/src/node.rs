@@ -896,7 +896,7 @@ pub struct LoopRange {
 /// own **compensated** time through [`Cx::arrival`]. Position is a [`Beat`],
 /// which is `f64`: time is one of the places the graph stays wide.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Transport {
+pub struct TransportPosition {
     /// Whether the transport is rolling.
     pub playing: bool,
     /// Tempo. A [counted](Self::counted) position's beat is derived at it.
@@ -921,7 +921,7 @@ pub struct Transport {
 }
 
 /// A transport's position at the block's first frame. See
-/// [`Transport::beat`] and [`Transport::origin`].
+/// [`TransportPosition::beat`] and [`TransportPosition::origin`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Position {
     /// A beat, with the block's first frame its own origin: a transport
@@ -933,13 +933,13 @@ enum Position {
     Counted(SegmentOrigin),
     /// A bare beat walked on ([`Env::transport_at`], the transport
     /// history): a frame count from that beat, derived like a counted one,
-    /// but not the host's, so it has no [`origin`](Transport::origin). A
+    /// but not the host's, so it has no [`origin`](TransportPosition::origin). A
     /// reader that tells the host's segments apart by their origin would
     /// otherwise see every hand-built block start a new one.
     Walked(SegmentOrigin),
 }
 
-impl Transport {
+impl TransportPosition {
     /// A transport at `beat`, the block's first frame its own origin.
     #[must_use]
     pub const fn new(playing: bool, tempo: Bpm, beat: Beat, looping: Option<LoopRange>) -> Self {
@@ -1054,7 +1054,7 @@ impl Transport {
     }
 }
 
-impl Default for Transport {
+impl Default for TransportPosition {
     /// Stopped at beat zero, 120 BPM, not looping, the block start its own
     /// origin.
     fn default() -> Self {
@@ -1089,7 +1089,7 @@ pub struct TransportChange {
     /// The transport at frame `at`. Its `beat` is the position *at* that
     /// frame, after the change (the target of a seek, the held position of a
     /// stop).
-    pub to: Transport,
+    pub to: TransportPosition,
 }
 
 /// Why [`TransportChanges::push`] refused a change.
@@ -1136,7 +1136,7 @@ impl TransportChanges {
         len: 0,
         items: [TransportChange {
             at: Offset::ZERO,
-            to: Transport::new(false, Bpm::of(120.0), Beat(0.0), None),
+            to: TransportPosition::new(false, Bpm::of(120.0), Beat(0.0), None),
         }; MAX_TRANSPORT_CHANGES],
     };
 
@@ -1150,7 +1150,11 @@ impl TransportChanges {
     /// A [`TransportChangeRejected`]: a change at [`Offset::ZERO`], one
     /// before the last change pushed, or one past
     /// [`MAX_TRANSPORT_CHANGES`]. Nothing is added.
-    pub fn push(&mut self, at: Offset, to: Transport) -> Result<(), TransportChangeRejected> {
+    pub fn push(
+        &mut self,
+        at: Offset,
+        to: TransportPosition,
+    ) -> Result<(), TransportChangeRejected> {
         if at == Offset::ZERO {
             return Err(TransportChangeRejected::AtBlockStart);
         }
@@ -1221,7 +1225,7 @@ pub struct Env {
     /// This block's length.
     pub block_len: Samples,
     /// The transport at the block's first frame.
-    pub transport: Transport,
+    pub transport: TransportPosition,
     /// Where the transport changes inside the block: a start, a stop, a
     /// seek, a tempo or loop edit landing on its frame. Empty
     /// for most blocks. The executor does not split the block at them; read
@@ -1264,7 +1268,7 @@ impl Cx<'_> {
     /// [`Env::transport_at`]. A node that reports the playhead to something
     /// aligned with its input audio (a hosted plugin, a tempo-synced effect)
     /// reads this, not the block's own time.
-    pub fn transport_at(&self, offset: Offset) -> Transport {
+    pub fn transport_at(&self, offset: Offset) -> TransportPosition {
         self.env
             .transport_before(offset, self.arrival, self.history)
     }

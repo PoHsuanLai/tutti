@@ -26,7 +26,7 @@ use tutti_graph::{
     Bus, BusRole, Buses, CrossfadeCurve, Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind,
     EventOut, Executor, ForkByClone, ForkMode, ForkTarget, GraphInvalid, GraphSpec, InPort, Io,
     ModeError, Node, NodeKey, NodeMode, Offset, OutPort, PassError, Prepare, Shape, Source, Status,
-    Topology, Transport, Unforkable, ValidGraph,
+    Topology, TransportPosition, Unforkable, ValidGraph,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, ChannelTopology, FoldError, Latency, M3DB, Samples, Speaker, Tail,
@@ -935,8 +935,12 @@ impl Solo {
         for _ in 0..blocks {
             let input: Vec<f32> = (0..len as u64).map(|i| x(self.frame + i)).collect();
             let mut o = vec![0.0f32; len];
-            self.exec
-                .process(len, &Transport::default(), &[&input], &mut [&mut o[..]]);
+            self.exec.process(
+                len,
+                &TransportPosition::default(),
+                &[&input],
+                &mut [&mut o[..]],
+            );
             all.extend(o);
             self.frame += len as u64;
         }
@@ -1336,7 +1340,7 @@ fn a_mode_stored_mid_block_lands_on_the_next_block() {
         let mut got = Vec::new();
         for _ in 0..8 {
             let mut o = vec![0.0f32; BLOCK];
-            exec.process(BLOCK, &Transport::default(), &[], &mut [&mut o[..]]);
+            exec.process(BLOCK, &TransportPosition::default(), &[], &mut [&mut o[..]]);
             got.extend(o);
         }
         assert!(
@@ -1423,9 +1427,19 @@ fn a_fork_copies_the_mode_and_starts_steady() {
     ed.collect();
     let input: Vec<f32> = (0..BLOCK as u64).map(wave).collect();
     let mut o = vec![0.0f32; BLOCK];
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
     ed.set_mode(key(1), NodeMode::Bypassed).expect("a node");
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
     assert_ne!(o[BLOCK - 1], input[BLOCK - 1], "the live graph is mid-fade");
 
     let (fed, mut fexec) = ed
@@ -1433,12 +1447,22 @@ fn a_fork_copies_the_mode_and_starts_steady() {
         .expect("forks");
     assert_eq!(fed.mode(key(1)), NodeMode::Bypassed);
     let mut f = vec![0.0f32; BLOCK];
-    fexec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut f[..]]);
+    fexec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut f[..]],
+    );
     assert_eq!(
         f.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         input.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
     );
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
     assert_ne!(o[0], input[0], "and the live graph still fades");
 }
 

@@ -19,7 +19,7 @@ use common::{Kind, Pair, TestNode, bits, input_signal, prepare};
 use tutti_graph::{
     CommitError, Cx, Edge, EdgeGain, EdgeId, Editor, Executor, ForkByClone, ForkMode, ForkTarget,
     GraphInvalid, GraphSpec, InPort, Io, Node, NodeKey, Op, OutPort, Plan, Prepare, Renderer,
-    Shape, Sink, Source, Status, Topology, Transport, Unforkable, ValidGraph, compile,
+    Shape, Sink, Source, Status, Topology, TransportPosition, Unforkable, ValidGraph, compile,
 };
 use tutti_types::{Amplitude, ChannelLayout};
 
@@ -561,8 +561,12 @@ impl Rig {
 
     fn block(&mut self) -> Vec<f32> {
         let mut out = vec![0.0f32; BLOCK];
-        self.exec
-            .process(BLOCK, &Transport::default(), &[], &mut [out.as_mut_slice()]);
+        self.exec.process(
+            BLOCK,
+            &TransportPosition::default(),
+            &[],
+            &mut [out.as_mut_slice()],
+        );
         self.ed.collect();
         out
     }
@@ -847,8 +851,12 @@ impl Mixer {
 
     fn block(&mut self) -> Vec<f32> {
         let mut out = vec![0.0f32; BLOCK];
-        self.exec
-            .process(BLOCK, &Transport::default(), &[], &mut [out.as_mut_slice()]);
+        self.exec.process(
+            BLOCK,
+            &TransportPosition::default(),
+            &[],
+            &mut [out.as_mut_slice()],
+        );
         self.ed.collect();
         out
     }

@@ -94,7 +94,9 @@ pub use device::{
     RestartOutcome,
 };
 pub use edge::EdgeGainError;
-pub use error::{ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result};
+pub use error::{
+    ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result, ScheduleError,
+};
 #[cfg(feature = "midi")]
 pub use error::{MidiError, RouteDeclarer};
 #[cfg(feature = "soundfont")]

@@ -902,7 +902,7 @@ fn a_fork_carries_params_event_capacity_and_its_own_marks() {
     let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
     fx.process(
         64,
-        &tutti_graph::Transport::default(),
+        &tutti_graph::TransportPosition::default(),
         &[],
         &mut [&mut l[..], &mut r[..]],
     );

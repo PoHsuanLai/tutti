@@ -1,15 +1,15 @@
 //! The pure modulators the audio-rate nodes run: the [`Modulator`] trait,
-//! implemented here for `tutti-modulation`'s [`Wave`].
+//! implemented here for `tutti-modulation`'s [`Waveform`].
 //!
 //! A modulator is a pure function of its clock position, in unwrapped cycles:
 //! the cycle index addresses a stepped shape's step, the fraction is the
 //! phase. That makes a random wave seekable and fork-safe (the value at a
 //! position is the same however the playhead got there), and it is why the
-//! LFO is [`Wave`] itself rather than a copy here: the node and the control
-//! lane evaluate one function ([`Wave::raw_at`]), so a random LFO is one
+//! LFO is [`Waveform`] itself rather than a copy here: the node and the control
+//! lane evaluate one function ([`Waveform::raw_at`]), so a random LFO is one
 //! sequence whichever tier runs it.
 
-use tutti_modulation::Wave;
+use tutti_modulation::Waveform;
 use tutti_types::PhaseIncrement;
 
 /// A pure `cycles -> value` function: the position, in unwrapped cycles, is
@@ -40,7 +40,7 @@ pub trait Modulator {
 
 /// The wave the control lane evaluates, at audio rate: a shape (the random
 /// ones addressed by cycle index and seed), a drawn period, or a constant.
-impl Modulator for Wave {
+impl Modulator for Waveform {
     #[inline]
     fn value(&self, cycles: f64) -> f32 {
         self.raw_at(cycles, false)
@@ -53,8 +53,8 @@ mod tests {
     use tutti_modulation::LfoShape;
     use tutti_types::Phase;
 
-    fn shape(shape: LfoShape) -> Wave {
-        Wave::Shape { shape, seed: 0 }
+    fn shape(shape: LfoShape) -> Waveform {
+        Waveform::Shape { shape, seed: 0 }
     }
 
     /// The deterministic shapes reach `Modulator::value` unaltered, at the

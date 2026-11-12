@@ -14,8 +14,8 @@ use tutti_fixtures::midi::{self, MID_VELOCITY, m1_cc, m1_note_off, m1_note_on};
 use tutti_graph::NodeSpec;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, Fade, ForkByClone,
-    ForkMode, ForkTarget, Io, Node, Offset, Prepare, Reference, Shape, Shapes, Status, Transport,
-    Unforkable,
+    ForkMode, ForkTarget, Io, Node, Offset, Prepare, Reference, Shape, Shapes, Status,
+    TransportPosition, Unforkable,
 };
 use tutti_graph::{NodeKey, Topology};
 use tutti_types::{ChannelLayout, Samples};
@@ -417,7 +417,7 @@ impl Rig {
 
     /// Render one block of `MAX` frames.
     fn block(&mut self) {
-        let t = Transport::default();
+        let t = TransportPosition::default();
         match self.mode {
             Mode::Reference => self
                 .reference
@@ -1492,7 +1492,7 @@ fn a_note_from_a_source_that_declared_none_is_caught() {
     ed.insert(NodeKey(1), "liar", Unforkable(Liar));
     ed.commit().unwrap();
     exec.apply_pending();
-    exec.process(MAX, &Transport::default(), &[], &mut []);
+    exec.process(MAX, &TransportPosition::default(), &[], &mut []);
 }
 
 /// A shape claims note events unless it says otherwise, so a node that
@@ -1568,7 +1568,12 @@ fn forked(log: &Log, blocks: usize, mid_note: bool) -> (Editor, Executor) {
     ed.collect();
     let mut out_buf = [0.0f32; MAX];
     for _ in 0..blocks {
-        exec.process(MAX, &Transport::default(), &[], &mut [&mut out_buf[..]]);
+        exec.process(
+            MAX,
+            &TransportPosition::default(),
+            &[],
+            &mut [&mut out_buf[..]],
+        );
     }
     ed.fork(ForkTarget::Master, ForkMode::Offline, prep)
         .expect("forks")
@@ -1581,7 +1586,7 @@ fn a_fork_closes_what_it_has_seen() {
     let log: Log = Arc::default();
     let (mut fed, mut fexec) = forked(&log, 0, false);
     let mut out_buf = [0.0f32; MAX];
-    let t = Transport::default();
+    let t = TransportPosition::default();
     fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
     assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![on60()]);
     fed.spec_mut().events.clear();
@@ -1609,7 +1614,7 @@ fn a_fork_does_not_close_a_key_held_at_fork_time() {
         "live heard it"
     );
     let mut out_buf = [0.0f32; MAX];
-    let t = Transport::default();
+    let t = TransportPosition::default();
     fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
     fed.spec_mut().events.clear();
     fed.commit().unwrap();
@@ -1853,7 +1858,7 @@ mod no_alloc {
         exec.apply_pending();
         ed.collect();
         assert_eq!(exec.is_parallel(), workers > 1);
-        let t = Transport::default();
+        let t = TransportPosition::default();
         let mut tog = false;
         for _ in 0..8 {
             exec.process(MAX, &t, &[], &mut []);

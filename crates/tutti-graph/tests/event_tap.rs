@@ -24,7 +24,7 @@ use tutti_graph::{CloseError, EventTapId, EventTapReader};
 use tutti_graph::{
     Cx, Edge, Editor, Event, EventOut, Executor, ForkByClone, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, InPort, IntoNode, Io, MissingSource, Node, NodeKey, NodeParts, Offset, Op,
-    OutPort, Prepare, Shape, Source, Status, TapAlign, TapEvent, Transport, note_off_room,
+    OutPort, Prepare, Shape, Source, Status, TapAlign, TapEvent, TransportPosition, note_off_room,
 };
 use tutti_types::{Frame, Latency, Samples};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
@@ -205,7 +205,7 @@ fn commit(r: &mut Rig) {
 /// Renders `total` frames in blocks of `sizes` taken in turn (the last one cut
 /// to fit), starting at the executor's current frame.
 fn render(r: &mut Rig, sizes: &[usize], total: usize) {
-    let t = Transport::default();
+    let t = TransportPosition::default();
     let (mut done, mut i) = (0, 0);
     while done < total {
         let n = sizes[i % sizes.len()].min(total - done);

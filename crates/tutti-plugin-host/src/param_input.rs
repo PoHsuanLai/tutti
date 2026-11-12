@@ -174,8 +174,8 @@ mod tests {
     use crate::DeliveryCounters;
     use std::sync::Arc;
     use tutti_graph::{
-        Env, Exponent, Law, ParamRamp, PlayClock, PlayReading, Transport, TransportChanges,
-        TransportHistory,
+        Env, Exponent, Law, ParamRamp, PlayClock, PlayReading, TransportChanges, TransportHistory,
+        TransportPosition,
     };
     use tutti_plugin_types::ParamId;
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
@@ -187,7 +187,7 @@ mod tests {
             frame: Frame(0),
             sample_rate: SampleRate(48_000.0),
             block_len: Samples(len),
-            transport: Transport::new(false, Bpm::of(120.0), Beat(0.0), None),
+            transport: TransportPosition::new(false, Bpm::of(120.0), Beat(0.0), None),
             changes: TransportChanges::NONE,
             play: PlayClock {
                 start: PlayReading {

@@ -12,7 +12,7 @@ use common::{WORKERS, bits, prepare, test_pool};
 use tutti_fixtures::midi::m1_cc;
 use tutti_graph::{
     Buses, Chase, CrossfadeCurve, Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut,
-    Executor, Fade, Io, Node, Prepare, Shape, Status, Transport, Unforkable,
+    Executor, Fade, Io, Node, Prepare, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{NodeKey, OutPort, Source};
 use tutti_types::{ChannelLayout, Samples};
@@ -168,7 +168,7 @@ fn block(exec: &mut Executor) -> Vec<f32> {
 fn blocks(exec: &mut Executor, outputs: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0; BLOCK]; outputs];
     let mut slices: Vec<&mut [f32]> = out.iter_mut().map(Vec::as_mut_slice).collect();
-    exec.process(BLOCK, &Transport::default(), &[], &mut slices);
+    exec.process(BLOCK, &TransportPosition::default(), &[], &mut slices);
     out
 }
 

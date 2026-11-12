@@ -203,7 +203,7 @@ fn inputs_three_and_four_of_sixteen_are_the_recording() {
         frame: tutti_types::Frame(0),
         sample_rate: SampleRate(48_000.0),
         block_len: Samples(3),
-        transport: tutti_graph::Transport::default(),
+        transport: tutti_graph::TransportPosition::default(),
         changes: tutti_graph::TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
     };

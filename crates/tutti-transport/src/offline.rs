@@ -259,7 +259,12 @@ impl OfflineTimeline {
     /// [`render_graph`](Self::render_graph) does: the snapshot's beat is the
     /// block's first frame, the one clip readers and samplers holding this
     /// timeline read during the block (see [`RenderClock`](super::RenderClock)).
-    pub fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+    pub fn graph_block(
+        &self,
+    ) -> (
+        tutti_graph::TransportPosition,
+        tutti_graph::TransportChanges,
+    ) {
         let head = self.lock();
         (
             self.transport(&head.clock),
@@ -269,8 +274,8 @@ impl OfflineTimeline {
 
     /// The transport of `clock`'s frame: rolling, at the tempo and segment the
     /// clock stands on, looping over this timeline's region.
-    fn transport(&self, clock: &FrameClock) -> tutti_graph::Transport {
-        tutti_graph::Transport::counted(
+    fn transport(&self, clock: &FrameClock) -> tutti_graph::TransportPosition {
+        tutti_graph::TransportPosition::counted(
             true,
             clock.tempo(),
             clock.origin(),
@@ -291,7 +296,11 @@ impl OfflineTimeline {
     fn block(
         &self,
         frames: usize,
-    ) -> (tutti_graph::Transport, tutti_graph::TransportChanges, usize) {
+    ) -> (
+        tutti_graph::TransportPosition,
+        tutti_graph::TransportChanges,
+        usize,
+    ) {
         let head = self.lock();
         let first = self.transport(&head.clock);
         if !self.stepped {
@@ -381,7 +390,12 @@ impl super::RenderClock for OfflineTimeline {
         OfflineTimeline::advance(self, frames);
     }
 
-    fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+    fn graph_block(
+        &self,
+    ) -> (
+        tutti_graph::TransportPosition,
+        tutti_graph::TransportChanges,
+    ) {
         OfflineTimeline::graph_block(self)
     }
 
@@ -426,7 +440,7 @@ impl super::RenderClock for OfflineTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_tempo::Shape;
+    use tutti_tempo::Transition;
 
     fn constant(bpm: f64) -> Arc<TempoMap> {
         Arc::new(TempoMap::constant(Bpm::of(bpm)).expect("a tempo"))
@@ -713,7 +727,7 @@ mod tests {
         assert_eq!(timeline.loop_range(), None);
     }
 
-    fn map(points: &[(f64, f64)], shape: Shape) -> Arc<TempoMap> {
+    fn map(points: &[(f64, f64)], shape: Transition) -> Arc<TempoMap> {
         use tutti_tempo::TempoPoint;
         let last = points.len() - 1;
         Arc::new(
@@ -724,7 +738,7 @@ mod tests {
                     .map(|(i, &(beat, bpm))| TempoPoint {
                         beat: Beat(beat),
                         tempo: Bpm::of(bpm),
-                        shape: if i == last { Shape::Step } else { shape },
+                        transition: if i == last { Transition::Step } else { shape },
                     }),
             )
             .expect("a map"),
@@ -747,7 +761,7 @@ mod tests {
     #[test]
     fn a_ramp_is_followed_cell_by_cell() {
         let ramp = OfflineTimeline::new(&OfflineTimelineConfig {
-            tempo_map: map(&[(0.0, 97.0), (4.0, 120.0)], Shape::RampTime),
+            tempo_map: map(&[(0.0, 97.0), (4.0, 120.0)], Transition::RampTime),
             ..config(0.0)
         });
         let (r0, r1) = (97.0 / 60.0, 120.0 / 60.0);
@@ -767,7 +781,7 @@ mod tests {
     #[test]
     fn the_timeline_reports_the_map_it_was_given() {
         use crate::Timeline;
-        let given = map(&[(0.0, 97.0), (4.0, 120.0)], Shape::RampTime);
+        let given = map(&[(0.0, 97.0), (4.0, 120.0)], Transition::RampTime);
         let t = OfflineTimeline::new(&OfflineTimelineConfig {
             tempo_map: Arc::clone(&given),
             ..config(0.0)
@@ -784,7 +798,7 @@ mod tests {
             .map(|i| (f64::from(i) * 0.001, 120.0 + f64::from(i)))
             .collect();
         let t = OfflineTimeline::new(&OfflineTimelineConfig {
-            tempo_map: map(&points, Shape::Step),
+            tempo_map: map(&points, Transition::Step),
             ..config(0.0)
         });
         let (first, changes, n) = t.block(512);
@@ -808,7 +822,7 @@ mod tests {
     #[test]
     fn a_seek_on_a_step_map_takes_the_tempo_of_its_step() {
         let t = OfflineTimeline::new(&OfflineTimelineConfig {
-            tempo_map: map(&[(0.0, 120.0), (4.0, 60.0)], Shape::Step),
+            tempo_map: map(&[(0.0, 120.0), (4.0, 60.0)], Transition::Step),
             ..config(0.0)
         });
         t.seek_to(Beat::new(4.5));

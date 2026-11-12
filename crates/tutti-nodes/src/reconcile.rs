@@ -434,7 +434,7 @@ struct SourcePlan {
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_modulation::{
 ///     Clock, Law, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
-///     Source, SourceKey, TargetDecl, TargetKey, Wave,
+///     Source, SourceKey, TargetDecl, TargetKey, Waveform,
 /// };
 /// use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
 /// use tutti_graph::NodeKey;
@@ -467,7 +467,7 @@ struct SourcePlan {
 /// let sources = [(
 ///     SourceKey(1),
 ///     Source::Lfo {
-///         wave: Wave::Shape { shape: LfoShape::Sine, seed: 0 },
+///         wave: Waveform::Shape { shape: LfoShape::Sine, seed: 0 },
 ///         clock: Clock::Seconds { rate: Hz(2.0), phase: PhaseIncrement(0.0), anchor: None },
 ///     },
 /// )];

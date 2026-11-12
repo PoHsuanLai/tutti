@@ -10,7 +10,7 @@ use tutti_fixtures::midi;
 use tutti_graph::{
     Buses, Chase, CrossfadeCurve, Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode,
     EventInletWriter, EventKind, EventOut, Executor, Fade, Io, Node, OutPort, Prepare, Shape,
-    Source, Status, Transport, Unforkable,
+    Source, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{NodeKey, Stamp};
 use tutti_polysynth::{PolySynth, SynthConfig};
@@ -91,7 +91,7 @@ impl Rig {
         let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
         self.exec.process(
             BLOCK,
-            &Transport::default(),
+            &TransportPosition::default(),
             &[],
             &mut [&mut l[..], &mut r[..]],
         );

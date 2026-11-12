@@ -10,8 +10,8 @@ use tutti_types::MaxBlock;
 use tutti_dsp::{Family, FdnControls, FdnFamily, System};
 use tutti_graph::contract::{Driven, assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
-    Env, GraphBuilder, Node, ParamIn, ParamNode, PlayClock, Prepare, Status, Transport,
-    TransportChanges,
+    Env, GraphBuilder, Node, ParamIn, ParamNode, PlayClock, Prepare, Status, TransportChanges,
+    TransportPosition,
 };
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
@@ -51,7 +51,7 @@ impl Rig {
             frame: Frame(self.frame),
             sample_rate: SR,
             block_len: Samples(input.len()),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             changes: TransportChanges::NONE,
             play: PlayClock::ZERO,
         };

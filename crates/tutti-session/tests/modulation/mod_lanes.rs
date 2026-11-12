@@ -86,7 +86,12 @@ fn settle(s: &mut Session) {
 /// `frames` frames of `channels` outputs, stopped, in `block`-frame blocks.
 fn render_n(side: &mut AudioSide, channels: usize, frames: usize, block: usize) -> Vec<Vec<f32>> {
     let mut out = vec![Vec::new(); channels];
-    side.set_transport(tutti_graph::Transport::new(false, TEMPO, Beat(0.0), None));
+    side.set_transport(tutti_graph::TransportPosition::new(
+        false,
+        TEMPO,
+        Beat(0.0),
+        None,
+    ));
     side.render(frames, block, &mut out);
     out
 }
@@ -236,7 +241,12 @@ fn an_export_is_the_live_render_on_a_native_param() {
         }
         let n = (*n).min(total - done);
         let beat = done as f64 * TEMPO.get() / 60.0 / RATE;
-        side.set_transport(tutti_graph::Transport::new(true, TEMPO, Beat(beat), None));
+        side.set_transport(tutti_graph::TransportPosition::new(
+            true,
+            TEMPO,
+            Beat(beat),
+            None,
+        ));
         side.render(n, n, &mut out);
         for (l, o) in live.iter_mut().zip(&out) {
             l.extend_from_slice(o);

@@ -11,8 +11,8 @@ use common::{Kind, TestNode, prepare};
 use tutti_graph::MAX_NODE_LATENCY;
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    CommitError, Cx, Editor, Executor, Io, Node, Prepare, Reference, Shape, Status, Transport,
-    Unforkable,
+    CommitError, Cx, Editor, Executor, Io, Node, Prepare, Reference, Shape, Status,
+    TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Latency, Samples};
@@ -124,9 +124,19 @@ fn fresh(plugin: Plugin) -> BTreeMap<NodeKey, Box<dyn Node>> {
 fn block(exec: &mut Executor, reference: &mut Reference, input: &[f32]) -> [Vec<f32>; 2] {
     let n = input.len();
     let (mut a, mut b) = (vec![0.0f32; n], vec![0.0f32; n]);
-    exec.process(n, &Transport::default(), &[input], &mut [&mut a, &mut b]);
+    exec.process(
+        n,
+        &TransportPosition::default(),
+        &[input],
+        &mut [&mut a, &mut b],
+    );
     let (mut ra, mut rb) = (vec![0.0f32; n], vec![0.0f32; n]);
-    reference.process(n, &Transport::default(), &[input], &mut [&mut ra, &mut rb]);
+    reference.process(
+        n,
+        &TransportPosition::default(),
+        &[input],
+        &mut [&mut ra, &mut rb],
+    );
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&a), bits(&ra), "executor and reference, output 0");
     assert_eq!(bits(&b), bits(&rb), "executor and reference, output 1");

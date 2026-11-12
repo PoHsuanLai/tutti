@@ -16,7 +16,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Node, Offset, ParamIn, ParamRange, ParamSegment, Prepare, Shape, Status,
-    Transport, TransportChanges,
+    TransportChanges, TransportPosition,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
@@ -376,7 +376,7 @@ fn lane_to_probe(
 fn block(
     ed: &mut Editor,
     exec: &mut Executor,
-    t: &Transport,
+    t: &TransportPosition,
     ch: &TransportChanges,
     n: usize,
 ) -> Vec<Vec<f32>> {
@@ -404,7 +404,7 @@ fn render_stopped(
     sizes: &[usize],
     total: usize,
 ) -> Vec<Vec<f32>> {
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let (mut all, mut done, mut k) = (Vec::new(), 0, 0);
     while done < total {
         let n = sizes[k % sizes.len()].min(total - done);
@@ -445,8 +445,8 @@ impl Host {
         }
     }
 
-    fn rolling(&self) -> Transport {
-        Transport::counted(true, TEMPO, self.clock.origin(), None)
+    fn rolling(&self) -> TransportPosition {
+        TransportPosition::counted(true, TEMPO, self.clock.origin(), None)
     }
 
     fn roll(&mut self, ed: &mut Editor, exec: &mut Executor, n: usize, all: &mut Vec<Vec<f32>>) {
@@ -629,7 +629,7 @@ fn a_follower_and_a_note_envelope_reset_at_play_start() {
     tap(&mut ed, 5, 6);
     ed.commit().expect("commits");
 
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let mut all = Vec::new();
     for _ in 0..3 {
         append(
@@ -917,7 +917,7 @@ fn an_export_is_the_live_render_for_signal_sources() {
     lane_to_probe(&mut ed, 6, 4, 0.5, 0.2, 7, 8);
     ed.commit().expect("commits");
 
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let mut before = Vec::new();
     for _ in 0..3 {
         append(
@@ -986,7 +986,7 @@ fn an_export_is_the_live_render_for_signal_sources() {
 fn a_fresh_note_envelope_resets_at_a_start_in_its_first_block() {
     let (mut ed, mut exec) =
         envelope_rig(128, vec![(10, note_on(60))], adsr(0.01, 0.01, 0.5, 0.01));
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let host = Host::new();
     let mut ch = TransportChanges::NONE;
     ch.push(Offset::new(50, Samples(128)).expect("in"), host.rolling())

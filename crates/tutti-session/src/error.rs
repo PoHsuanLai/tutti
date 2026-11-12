@@ -32,6 +32,28 @@ pub enum RemoveError {
     NoSuchNode(tutti_graph::NodeKey),
 }
 
+/// Why [`Session::schedule`](crate::Session::schedule) refused a transport
+/// command. Nothing is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Error)]
+#[non_exhaustive]
+pub enum ScheduleError {
+    /// The timed-command list was full; the command is handed back.
+    #[error(transparent)]
+    Full(#[from] tutti_transport::ScheduleFull),
+    /// A command that starts the transport rolling was timed at a beat while
+    /// the transport is stopped. A beat has a frame only once the transport
+    /// rolls, so the command would wait for a playback that only it can
+    /// start, and never fire. Start the transport first, or time it at a
+    /// frame or the next block.
+    #[error("{event:?} at {beat:?} cannot fire: a stopped transport never reaches a beat")]
+    BeatWhileStopped {
+        /// The beat it was timed at.
+        beat: tutti_types::Beat,
+        /// The command.
+        event: tutti_transport::MotionEvent,
+    },
+}
+
 /// A query or a control named a node the graph does not have: removed already,
 /// or never added. Nothing is changed or read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
@@ -46,6 +68,12 @@ impl NoSuchNode {
     /// The key no node has.
     pub fn node(self) -> tutti_graph::NodeKey {
         self.0
+    }
+}
+
+impl From<tutti_transport::ScheduleFull> for Error {
+    fn from(full: tutti_transport::ScheduleFull) -> Self {
+        Self::Schedule(full.into())
     }
 }
 
@@ -395,10 +423,11 @@ pub enum Error {
     #[error(transparent)]
     Transport(#[from] tutti_transport::QueueFull),
 
-    /// The transport's timed-command list was full
-    /// ([`Session::schedule`](crate::Session::schedule)).
+    /// A timed transport command was refused
+    /// ([`Session::schedule`](crate::Session::schedule)): the list was full, or
+    /// the command cannot fire.
     #[error(transparent)]
-    Schedule(#[from] tutti_transport::ScheduleFull),
+    Schedule(#[from] ScheduleError),
 
     /// A file could not be decoded (`Wave::read`, `FileIn`).
     #[error(transparent)]

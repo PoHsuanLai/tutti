@@ -105,7 +105,7 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 | `Curve`, `CurveSegment` | `tutti-modulation`, moved out of `routing` into the floor | Automation needs them without routing |
 | The compiler (`tutti_modulation::compile`) | `tutti-modulation`, ungated | Pure: no Bevy, no runtime |
 | `PlayReading` | `tutti-types` (re-exported as `tutti_graph::PlayReading`) | A value type: the compiler takes one (§7) and names no graph |
-| `Modulator` (implemented for `Wave`) | **`tutti-nodes`** (`ModulatorNode`, and `LfoNode` = `ModulatorNode<Wave>`) | The per-sample adapter is a runtime, and `tutti-modulation` has none. The wave is `tutti-modulation`'s: the node and the control lane evaluate one `Wave::raw_at`, a pure function of the unwrapped cycle position, so a beat-synced random LFO is one sequence at either rate, seekable and fork-safe. A free-running (Hz) node runs from its insert and does not restart at play, so it matches a lane's `Hz` clock (the play clock) only in frequency, seed and phase. (The node's former copies, `Lfo`, `SampleHold` and the sequential `RandomState`, are deleted.) |
+| `Modulator` (implemented for `Waveform`) | **`tutti-nodes`** (`ModulatorNode`, and `LfoNode` = `ModulatorNode<Waveform>`) | The per-sample adapter is a runtime, and `tutti-modulation` has none. The wave is `tutti-modulation`'s: the node and the control lane evaluate one `Waveform::raw_at`, a pure function of the unwrapped cycle position, so a beat-synced random LFO is one sequence at either rate, seekable and fork-safe. A free-running (Hz) node runs from its insert and does not restart at play, so it matches a lane's `Hz` clock (the play clock) only in frequency, seed and phase. (The node's former copies, `Lfo`, `SampleHold` and the sequential `RandomState`, are deleted.) |
 | `ControlLaneNode`, `LaneControls`, `EnvelopeFollowerNode`, `NoteEnvelopeNode`, `CONTROL_STEP` | `tutti-nodes` (re-exported at the root) | Graph nodes; `tutti-nodes` owns the lane |
 | The play clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |
@@ -143,11 +143,11 @@ pub struct LayerId(pub u64);
 pub struct Layer {
     pub id: LayerId,
     pub clock: Clock,
-    pub wave: Wave,
+    pub wave: Waveform,
     pub amount: Amount,
     /// Offset scaled by a second wave mapped to `[0, 1]` (depth moved by an
     /// LFO). `None`: unscaled.
-    pub depth_by: Option<(Clock, Wave)>,
+    pub depth_by: Option<(Clock, Waveform)>,
 }
 
 #[derive(Clone, Copy)]
@@ -166,7 +166,7 @@ pub enum Clock {
 pub struct RateAnchor { pub epoch: u32, pub at: Frame, pub phase: f64, pub prev_rate: Hz }
 
 #[derive(Clone)]
-pub enum Wave {
+pub enum Waveform {
     /// Closed form, raw in `[-1, 1]`. `Random`/`RandomSmooth` derive from
     /// `hash_bipolar(cycle, seed)`, so they replay after a seek and in a fork.
     Shape { shape: LfoShape, seed: u64 },
@@ -247,7 +247,7 @@ a NaN anywhere in a layer, so a program is `Eq`. `value_at` and
   scaling wave's zero crossings, which are corners as a layer's are.
   Without the amount, a depth route's own depth, polarity and curve
   (`RouteDecl`, §7) would have meant nothing.
-- **`Wave::Const(f32)`**: one raw value at every time, whatever the clock
+- **`Waveform::Const(f32)`**: one raw value at every time, whatever the clock
   (a macro). It has no corners, and a layer of it (scaled by nothing or by
   another constant, `Layer::is_constant`) does not move: the lane counts
   only moving layers when it decides whether it is steady, so a target
@@ -793,7 +793,7 @@ pub struct TargetKey { pub node: u64, pub param: ParamAddr } // ParamAddr: Ord
 
 pub enum Source {
     /// The clock carries no anchor; anchors are the compiler's.
-    Lfo { wave: Wave, clock: Clock },
+    Lfo { wave: Waveform, clock: Clock },
     /// A constant the user moves; moving it republishes what it reaches.
     Macro { value: f32 },
     Follower { attack: Seconds, release: Seconds },
@@ -859,7 +859,7 @@ open:
 - `compile` takes `rate: SampleRate`: a new anchor's phase is the old
   clock's cycles at the anchor frame, and a `Seconds` clock needs the rate
   to count them.
-- **A macro** compiles to a `Wave::Const(value)` layer on a fixed beat
+- **A macro** compiles to a `Waveform::Const(value)` layer on a fixed beat
   clock. A one-point drawn wave on a 0 Hz clock would have kept the lane on
   its grid; a constant layer has no corners and needs no clock, so a lane
   of constants is steady (§4.1).
@@ -915,7 +915,7 @@ open:
 |---|---|
 | `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `tutti_curve::Law::eval` (it was `audio-automation`'s `CurveType::interpolate`) |
 | `curve.rs` | kept, moved into the floor |
-| `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Wave` (`program.rs`); the rest deleted |
+| `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Waveform` (`program.rs`); the rest deleted |
 | `lfo.rs`, `modulator.rs` | **moved to `tutti-nodes`** (`tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use them); deleted from `tutti-modulation` with `routing`. `tutti-modulation` keeps no runtime. |
 | new `program.rs`, `compile.rs` | §4, §7 |
 | `driver.rs`, `layered.rs`, `matrix.rs`, `mod_params.rs`, `param.rs`, `router.rs`, `routing.rs`, `target.rs`, `id.rs` | deleted, with the `routing` and `std` features and `dashmap`, `arc-swap`, `atomic_float` |
@@ -1781,7 +1781,7 @@ crate builds with and without `--features bevy`.
   (`DepthBy::UNIT`) computes `(raw + 1) / 2` exactly as before, bit for
   bit for raw in [-1, 1] (a drawn depth wave beyond ±1 is now clamped); the existing `depth_by` tests changed only their construction
   syntax. A curved or bipolar amount adds its zero-crossing corners.
-- `Wave::Const` for macros, not a one-point drawn wave on a 0 Hz clock
+- `Waveform::Const` for macros, not a one-point drawn wave on a 0 Hz clock
   (§7). `ProgramError::NotANumber`: a program refuses a NaN, so it is `Eq`.
 - `Adsr::sustain` is `Amplitude` (a 0..1 level; the same type is
   polysynth's amplitude envelope): `Mix` is a blend position, `Velocity` a strike and

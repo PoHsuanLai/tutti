@@ -48,7 +48,7 @@
 //! further one is counted too and none is counted twice.
 
 use tutti_graph::{Cx, MAX_TRANSPORT_CHANGES, Offset};
-use tutti_tempo::{Cursor, TempoMap};
+use tutti_tempo::TempoView;
 use tutti_types::{Beat, Samples, Seconds, first_frame_at_or_after};
 
 use crate::transport_source::{ProjectTime, Snapshot, SteadyTime, slope, transport_info};
@@ -71,8 +71,6 @@ pub struct Call<'a, 'c> {
     pub block_ns: Option<i64>,
     /// The project's meter, for each entry's bar.
     pub meter: &'a MeterMap,
-    /// The project's tempo map.
-    pub tempo: &'a TempoMap,
 }
 
 /// Where the transport stands, from a chunk frame on, as far as the walk
@@ -133,28 +131,29 @@ impl Stretch {
     /// start: the next map point past its beat, or its loop's end, whichever
     /// the playing beat reaches first (the wrap, on a tie). `None` when it is
     /// stopped or has none ahead.
-    fn predict(&self, map: &TempoMap, cursor: &mut Cursor, rate: f64) -> Option<(usize, Kind)> {
+    fn predict(&self, view: &mut TempoView<'_>) -> Option<(usize, Kind)> {
+        let rate = view.rate().get();
         if !self.playing || !rate.is_finite() || rate <= 0.0 || !self.beat.get().is_finite() {
             return None;
         }
-        let t0 = map.seconds_at_with(self.beat, cursor).get();
-        let frames_to = |beat: Beat, cursor: &mut Cursor| {
-            let ahead = (map.seconds_at_with(beat, cursor).get() - t0) * rate;
+        let t0 = view.seconds_at(self.beat).get();
+        let frames_to = |beat: Beat, view: &mut TempoView<'_>| {
+            let ahead = (view.seconds_at(beat).get() - t0) * rate;
             // A change is on a frame after the stretch's own: one that rounds
             // onto the start was taken into it ([`Snapshot::settle`]).
             usize::try_from(first_frame_at_or_after(ahead).max(1)).ok()
         };
-        let points = map.points();
+        let points = view.map().points();
         let past = self.beat.get().max(self.told.get());
         let next = points.partition_point(|p| p.beat.get() <= past);
         let point = points
             .get(next)
-            .and_then(|p| frames_to(p.beat, cursor))
+            .and_then(|p| frames_to(p.beat, view))
             .map(|f| (self.frame + f, Kind::Point(next)));
         let wrap = self
             .looping
             .filter(|(_, end)| end.get() > self.beat.get())
-            .and_then(|(_, end)| frames_to(end, cursor))
+            .and_then(|(_, end)| frames_to(end, view))
             .map(|f| (self.frame + f, Kind::Wrap));
         match (point, wrap) {
             (Some(p), Some(w)) => Some(if w.0 <= p.0 { w } else { p }),
@@ -169,12 +168,11 @@ impl Stretch {
     /// step or a ramp's cell edge, which is not a seek, is one).
     fn continues(
         &self,
-        t: &tutti_graph::Transport,
+        t: &tutti_graph::TransportPosition,
         frame: usize,
-        map: &TempoMap,
-        cursor: &mut Cursor,
-        rate: f64,
+        view: &mut TempoView<'_>,
     ) -> bool {
+        let rate = view.rate().get();
         let looping = t.looping.map(|l| (l.start, l.end));
         if t.playing != self.playing || t.recording() != self.recording || looping != self.looping {
             return false;
@@ -184,10 +182,10 @@ impl Stretch {
             return false;
         }
         let (predicted, slack) = if self.playing && rate.is_finite() && rate > 0.0 {
-            let t0 = map.seconds_at_with(self.beat, cursor).get();
+            let t0 = view.seconds_at(self.beat).get();
             let at = Seconds(t0 + (frame - self.frame) as f64 / rate);
-            let beat = map.beat_at_seconds_with(at, cursor);
-            let per_frame = map.tempo_at_with(beat, cursor).get().max(t.tempo.get()) / 60.0 / rate;
+            let beat = view.beat_at_seconds(at);
+            let per_frame = view.tempo_at(beat).get().max(t.tempo.get()) / 60.0 / rate;
             (beat.get(), 2.0 * per_frame)
         } else {
             // Stopped: it does not move.
@@ -238,7 +236,7 @@ impl TransportWalk {
     pub fn scan(
         &mut self,
         call: &Call<'_, '_>,
-        cursor: &mut Cursor,
+        view: &mut TempoView<'_>,
         project: &mut ProjectTime,
         chunk_transport: &mut TransportInfo,
         changes: &mut TransportChanges,
@@ -249,7 +247,6 @@ impl TransportWalk {
         let Some(mut stretch) = self.stretch else {
             return 0;
         };
-        let rate = call.cx.env.sample_rate;
         let end = from + n;
         let arrival = call.cx.arrival.samples().get();
         let env = call.cx.env.changes.as_slice();
@@ -269,7 +266,7 @@ impl TransportWalk {
                 .map(|c| c.at.index() + arrival)
                 .filter(|&p| p < end);
             let start_at = check_start.then_some(from);
-            let predicted = stretch.predict(call.tempo, cursor, rate.get());
+            let predicted = stretch.predict(view);
             // Call frames; a prediction is a chunk frame, in this call once it
             // is before the call's end.
             let predicted_at = predicted
@@ -298,8 +295,7 @@ impl TransportWalk {
             let t = call.cx.transport_at(offset);
             let is_change = match source {
                 Source::Start | Source::Env => {
-                    frame > stretch.frame
-                        && !stretch.continues(&t, frame, call.tempo, cursor, rate.get())
+                    frame > stretch.frame && !stretch.continues(&t, frame, view)
                 }
                 // A prediction is a change when the engine's transport is
                 // there: a point always, a wrap only once the beat has jumped
@@ -319,10 +315,10 @@ impl TransportWalk {
             }
             // The change's own transport, with the tempo the map has there.
             let mut s = Snapshot::at(call.cx, offset, call.steady.at(p), project, call.block_ns);
-            let settled = s.settle(call.tempo, cursor);
+            let settled = s.settle(view);
             let mut next = Stretch::of(&s, settled, frame);
             if let Source::Predicted(Kind::Point(i)) = source
-                && let Some(point) = call.tempo.points().get(i)
+                && let Some(point) = view.map().points().get(i)
             {
                 next.told = point.beat;
             }
@@ -336,7 +332,7 @@ impl TransportWalk {
                 stretch = next;
                 continue;
             }
-            self.close(call.tempo, cursor, rate, frame, chunk_transport, changes);
+            self.close(view, frame, chunk_transport, changes);
             let info = transport_info(&s, call.meter);
             changes.push(TransportChange {
                 offset: u32::try_from(frame).unwrap_or(u32::MAX),
@@ -356,23 +352,19 @@ impl TransportWalk {
     /// The chunk of `chunk` frames is complete: write the last entry's slope.
     pub fn finish(
         &mut self,
-        map: &TempoMap,
-        cursor: &mut Cursor,
-        rate: tutti_types::SampleRate,
+        view: &mut TempoView<'_>,
         chunk: usize,
         chunk_transport: &mut TransportInfo,
         changes: &mut TransportChanges,
     ) {
-        self.close(map, cursor, rate, chunk, chunk_transport, changes);
+        self.close(view, chunk, chunk_transport, changes);
         self.clear();
     }
 
     /// The open entry's stretch ends at chunk frame `end`: its slope.
     fn close(
         &mut self,
-        map: &TempoMap,
-        cursor: &mut Cursor,
-        rate: tutti_types::SampleRate,
+        view: &mut TempoView<'_>,
         end: usize,
         chunk_transport: &mut TransportInfo,
         changes: &mut TransportChanges,
@@ -384,12 +376,10 @@ impl TransportWalk {
             0.0
         } else {
             slope(
-                map,
-                cursor,
+                view,
                 open.start.beat,
                 open.start.playing,
                 open.start.looping.map(|(_, end)| end),
-                rate,
                 end.saturating_sub(open.start.frame),
             )
         };

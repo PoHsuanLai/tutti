@@ -3,17 +3,18 @@
 
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use tutti_graph::NodeKey;
 use tutti_graph::PrerollTable;
 use tutti_nodes::ClickSettings;
 use tutti_tempo::TempoMap;
-use tutti_transport::{FadeOut, MotionEvent, QueueFull, ScheduleFull, Transport};
-use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, Samples};
+use tutti_transport::{FadeOut, LoopEdit, MotionEvent, QueueFull, ScheduleFull, Then, Transport};
+use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, LoopRange, Samples};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
-use crate::{HeardOpen, HeardTapError, Playhead, RemoveError};
+use crate::{HeardOpen, HeardTapError, Playhead, RemoveError, ScheduleError};
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
 ///
@@ -428,6 +429,10 @@ pub struct Session {
     /// the last update read it: the next update reports the rise
     /// ([`SessionEvent::BlocksSilenced`]).
     pub(crate) silenced_seen: u64,
+    /// Whether the last motion this session sent for the next block left the
+    /// transport rolling (a play, a rolling locate) or stopped. The control
+    /// side's own word, which the playhead (one block old) cannot give.
+    pub(crate) rolling_sent: std::sync::atomic::AtomicBool,
     #[cfg(feature = "midi")]
     pub(crate) midi: Option<MidiNodes>,
     /// Clips, live inputs, routes and the hardware out's output.
@@ -906,12 +911,16 @@ impl Session {
     /// On a session whose audio side an engine holds, or was taken
     /// (`Graph::take_audio_side`, behind the `testing` feature).
     pub fn render_frame(&mut self, output: &mut [f32]) {
-        self.render_frame_at(&tutti_graph::Transport::default(), output);
+        self.render_frame_at(&tutti_graph::TransportPosition::default(), output);
     }
 
     /// [`render_frame`](Self::render_frame) with the transport at
     /// `transport`: what plays a clip in a graph driven by hand.
-    pub fn render_frame_at(&mut self, transport: &tutti_graph::Transport, output: &mut [f32]) {
+    pub fn render_frame_at(
+        &mut self,
+        transport: &tutti_graph::TransportPosition,
+        output: &mut [f32],
+    ) {
         if self.graph.is_edited() {
             self.commit();
         }
@@ -959,7 +968,9 @@ impl Session {
     /// [`QueueFull`] when the transport's command queue is full; the event
     /// is handed back in it.
     pub fn play(&self) -> Result<(), QueueFull> {
-        self.transport.motion().try_send(MotionEvent::Play)
+        self.transport.motion().try_send(MotionEvent::Play)?;
+        self.rolling_sent.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Stops the transport where it stands, at the next block, after the
@@ -969,7 +980,11 @@ impl Session {
     ///
     /// [`QueueFull`], as [`play`](Self::play).
     pub fn stop(&self, fade: FadeOut) -> Result<(), QueueFull> {
-        self.transport.motion().try_send(MotionEvent::Stop { fade })
+        self.transport
+            .motion()
+            .try_send(MotionEvent::Stop { fade })?;
+        self.rolling_sent.store(false, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Jumps to `beat` at the next block, keeping whatever the transport was
@@ -979,7 +994,10 @@ impl Session {
     ///
     /// [`QueueFull`], as [`play`](Self::play).
     pub fn locate(&self, beat: Beat) -> Result<(), QueueFull> {
-        self.transport.motion().try_send(MotionEvent::locate(beat))
+        self.transport
+            .motion()
+            .try_send(MotionEvent::locate(beat))?;
+        Ok(())
     }
 
     /// Sends a motion `event` to take effect at `at`: a frame, a beat, or the
@@ -989,11 +1007,83 @@ impl Session {
     /// every [`MotionEvent`] (a locate that then rolls, a stop that returns
     /// to a beat) is timed the same way. The untimed verbs are `At::NextBlock`.
     ///
+    /// A beat is reached by playback: it has a frame only while the transport
+    /// rolls. A command that starts the transport rolling ([`MotionEvent::Play`],
+    /// or a locate that then rolls) timed at a beat while the transport is
+    /// stopped could only fire after the playback it starts, so it is refused
+    /// where it is made. Stopped is the control side's word: the last motion
+    /// this session sent (a `play` just before is rolling), not the playhead,
+    /// which is a block old. A command that does not start playback (a stop, a
+    /// plain locate) waits for the playback to reach its beat, as any beat
+    /// command does.
+    ///
     /// # Errors
     ///
-    /// [`ScheduleFull`] when the timed-command list is full.
-    pub fn schedule(&self, at: impl Into<At>, event: MotionEvent) -> Result<(), ScheduleFull> {
-        self.transport.motion().schedule(at.into(), event)
+    /// [`ScheduleError::Full`] when the timed-command list is full, and
+    /// [`ScheduleError::BeatWhileStopped`] for the command above.
+    pub fn schedule(&self, at: impl Into<At>, event: MotionEvent) -> Result<(), ScheduleError> {
+        let at = at.into();
+        let starts = matches!(
+            event,
+            MotionEvent::Play
+                | MotionEvent::Locate {
+                    then: Then::Roll,
+                    ..
+                }
+        );
+        // Rolling as far as the control side knows: the last motion this
+        // session sent for the next block, or what the engine last rendered
+        // (a transport started through `transport()` directly).
+        let rolling = self.rolling_sent.load(Ordering::Relaxed) || self.playhead().playing();
+        if let At::Beat(beat) = at
+            && starts
+            && !rolling
+        {
+            return Err(ScheduleError::BeatWhileStopped { beat, event });
+        }
+        self.transport.motion().schedule(at, event)?;
+        if at == At::NextBlock {
+            match event {
+                MotionEvent::Play
+                | MotionEvent::Locate {
+                    then: Then::Roll, ..
+                } => self.rolling_sent.store(true, Ordering::Relaxed),
+                MotionEvent::Stop { .. } => self.rolling_sent.store(false, Ordering::Relaxed),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Loops the transport over `range` from the next block, and arms it: the
+    /// engine owns the loop region and takes this as one edit that lands whole
+    /// ([`LoopEdit::over`]). Build the range with `LoopRange::try_from(a..b)`,
+    /// which names why a region is refused.
+    ///
+    /// A playhead already at or past the loop's end does not jump: the loop takes
+    /// effect once the playhead is inside it.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleFull`] when the timed-command list is full; the edit is handed
+    /// back in it.
+    pub fn set_loop(&self, range: LoopRange) -> Result<(), ScheduleFull> {
+        self.transport
+            .motion()
+            .schedule(At::NextBlock, LoopEdit::over(range))
+    }
+
+    /// Stops looping from the next block. The loop's bounds are kept, so
+    /// [`set_loop`](Self::set_loop) with them (or arming through the transport)
+    /// restores it ([`LoopEdit::armed`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleFull`], as [`set_loop`](Self::set_loop).
+    pub fn clear_loop(&self) -> Result<(), ScheduleFull> {
+        self.transport
+            .motion()
+            .schedule(At::NextBlock, LoopEdit::armed(false))
     }
 
     /// Sets a constant project tempo (the project's [`TempoMap`], one step).

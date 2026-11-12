@@ -11,7 +11,7 @@ use tutti_graph::testing as common;
 use common::{Kind, TestNode, prepare};
 use tutti_graph::{
     EDGE_DECLICK, Edge, EdgeFade, EdgeGain, EdgeId, Editor, Executor, NodeKey, OutPort, Sink,
-    Source, Transport, Unforkable,
+    Source, TransportPosition, Unforkable,
 };
 use tutti_types::Amplitude;
 
@@ -63,7 +63,7 @@ impl Rig {
             let mut block = vec![f32::NAN; BLOCK];
             self.exec.process(
                 BLOCK,
-                &Transport::default(),
+                &TransportPosition::default(),
                 &[],
                 &mut [block.as_mut_slice()],
             );
@@ -212,7 +212,12 @@ fn parallel_equals_serial_for_a_graph_mid_fade() {
         let mut run_blocks = |exec: &mut Executor, ed: &mut Editor, sizes: &[usize]| {
             for &n in sizes {
                 let mut block = vec![f32::NAN; n];
-                exec.process(n, &Transport::default(), &[], &mut [block.as_mut_slice()]);
+                exec.process(
+                    n,
+                    &TransportPosition::default(),
+                    &[],
+                    &mut [block.as_mut_slice()],
+                );
                 ed.collect();
                 got.extend(block.iter().map(|x| x.to_bits()));
             }

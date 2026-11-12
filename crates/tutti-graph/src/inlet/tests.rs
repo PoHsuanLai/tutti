@@ -2,7 +2,7 @@ use super::*;
 use crate::contract::{drive_input, prepared};
 use crate::event::{EventWriter, SortedEvents};
 use crate::node::{ConstantMask, Env, InPlaceMask, SilenceMask};
-use crate::{PlayClock, Transport, TransportChanges};
+use crate::{PlayClock, TransportChanges, TransportPosition};
 use tutti_types::MaxBlock;
 use tutti_types::{Frame, SampleRate};
 
@@ -22,7 +22,7 @@ fn block(node: &mut InletNode, frames: usize) -> Vec<Vec<f32>> {
         frame: Frame(0),
         sample_rate: RATE,
         block_len: Samples(frames),
-        transport: Transport::default(),
+        transport: TransportPosition::default(),
         changes: TransportChanges::NONE,
         play: PlayClock::ZERO,
     };
@@ -185,7 +185,7 @@ fn process_over(node: &mut InletNode, planes: usize, frames: usize, fill: f32) -
         frame: Frame(0),
         sample_rate: RATE,
         block_len: Samples(frames),
-        transport: Transport::default(),
+        transport: TransportPosition::default(),
         changes: TransportChanges::NONE,
         play: PlayClock::ZERO,
     };

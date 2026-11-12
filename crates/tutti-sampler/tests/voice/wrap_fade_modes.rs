@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
-use tutti_graph::{Editor, Executor, LoopRange, Prepare, Transport, WorkerPool};
+use tutti_graph::{Editor, Executor, LoopRange, Prepare, TransportPosition, WorkerPool};
 use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, Wave};
 use tutti_types::{Beat, Bpm, FrameClock, SampleRate, Samples};
@@ -100,7 +100,7 @@ fn render(exec: &mut Executor) -> Vec<Vec<u32>> {
                 start: Beat(LOOP.0),
                 end: Beat(LOOP.1),
             };
-            let t = Transport::new(true, Bpm::of(120.0), clock.beat(), Some(looping));
+            let t = TransportPosition::new(true, Bpm::of(120.0), clock.beat(), Some(looping));
             exec.process(n, &t, &[], &mut outs);
         }
         let before = clock.beat();

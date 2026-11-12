@@ -15,7 +15,7 @@ use tutti_fixtures::midi::{m1_note_off, m1_note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node,
-    Prepare, Shape, Status, Transport, note_off_room,
+    Prepare, Shape, Status, TransportPosition, note_off_room,
 };
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
@@ -152,7 +152,7 @@ fn rig(
 
 fn run(ed: &mut Editor, exec: &mut Executor, blocks: usize) -> Vec<EventLoss> {
     for _ in 0..blocks {
-        exec.process(BLOCK, &Transport::default(), &[], &mut []);
+        exec.process(BLOCK, &TransportPosition::default(), &[], &mut []);
     }
     ed.take_event_losses().collect()
 }

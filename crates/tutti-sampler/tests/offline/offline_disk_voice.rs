@@ -108,7 +108,7 @@ impl Clock {
             frame: Frame(self.frame.get()),
             sample_rate: c.sample_rate(),
             block_len: Samples(len),
-            transport: tutti_graph::Transport::counted(
+            transport: tutti_graph::TransportPosition::counted(
                 true,
                 c.tempo(),
                 c.origin(),

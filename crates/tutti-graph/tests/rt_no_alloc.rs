@@ -29,7 +29,7 @@ use tutti_fixtures::midi::m1_note_on;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Buses, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Law,
-    Node, ParamRamp, ParamSegment, Prepare, Shape, Status, Transport, Unforkable,
+    Node, ParamRamp, ParamSegment, Prepare, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, Samples, Tail};
@@ -222,7 +222,7 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
     let input = vec![0.25f32; 256];
     let mut l = vec![0.0f32; 256];
     let mut r = vec![0.0f32; 256];
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     let sizes = [256usize, 1, 7, 64, 100, 255, 33];
     // Warm up: every size once, so any lazily-sized state is sized.
     for &n in &sizes {
@@ -332,7 +332,7 @@ fn crossfades_are_allocation_free_on(workers: usize) {
     let input = vec![0.25f32; 256];
     let mut l = vec![0.0f32; 256];
     let mut r = vec![0.0f32; 256];
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     let mut block = |exec: &mut tutti_graph::Executor, n: usize| {
         exec.process(
             n,
@@ -453,7 +453,7 @@ fn a_held_chase_is_delivered_allocation_free_on(workers: usize) {
     }));
     ed.commit().expect("commits");
     let mut out = vec![vec![0.0f32; 64]; KEYS as usize];
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     let mut block = |exec: &mut tutti_graph::Executor| {
         // An array: the gate allows no allocation, a block's slice list included.
         let mut planes = out.iter_mut();
@@ -636,7 +636,7 @@ fn declared_event_capacities_are_allocation_free_on(workers: usize) {
         "both sprays reach the tally through a PDC delay"
     );
 
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     let sizes = [256usize, 1, 7, 64, 100, 255, 33];
     for &n in &sizes {
         exec.process(n, &transport, &[], &mut []);
@@ -699,7 +699,7 @@ fn losses_past_the_log_and_the_ring_are_allocation_free_on(workers: usize) {
     exec.apply_pending();
     ed.collect();
     assert_eq!(exec.is_parallel(), workers > 1);
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     // No warm-up block: the first one is the first to fill the log, and a log
     // that grows would show there.
     assert_no_alloc::assert_no_alloc(|| {
@@ -857,7 +857,7 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
 
     let input: Vec<f32> = (0..256).map(|i| (i % 13) as f32 / 13.0).collect();
     let mut out = vec![0.0f32; 256];
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     let sizes = [256usize, 1, 7, 64, 100, 255, 33];
     let mut run = |exec: &mut tutti_graph::Executor| {
         for i in 0..200 {
@@ -938,7 +938,7 @@ fn direct_driving_events_does_not_allocate() {
     use tutti_types::{Bpm, SampleRate};
 
     let rate = SampleRate(48_000.0);
-    let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut pulse = Direct::new(Pulse::new(Latency::ZERO), rate, 64);
     pulse.set_transport(rolling);
     let events: Vec<Event> = (0..64)
@@ -1002,7 +1002,7 @@ fn reporting_nodes_are_allocation_free_on(workers: usize) {
         for _ in 0..200 {
             exec.process(
                 64,
-                &Transport::default(),
+                &TransportPosition::default(),
                 &[],
                 &mut [&mut a[..], &mut b[..], &mut c[..], &mut d[..]],
             );
@@ -1097,7 +1097,7 @@ fn fan_in_is_allocation_free_on(workers: usize) {
                 let mut heard = false;
                 assert_no_alloc::assert_no_alloc(|| {
                     for _ in 0..40 {
-                        exec.process(128, &Transport::default(), &[], &mut [&mut out[..]]);
+                        exec.process(128, &TransportPosition::default(), &[], &mut [&mut out[..]]);
                         heard |= out.iter().any(|&x| x != 0.0);
                     }
                 });
@@ -1231,7 +1231,7 @@ fn weighted_fan_in_is_allocation_free_on(workers: usize, driven: bool) {
                         .expect("an edge with an entry");
                 }
                 assert_no_alloc::assert_no_alloc(|| {
-                    exec.process(128, &Transport::default(), &[], &mut [&mut out[..]]);
+                    exec.process(128, &TransportPosition::default(), &[], &mut [&mut out[..]]);
                 });
                 heard |= out.iter().any(|&x| x != 0.0);
             }
@@ -1435,7 +1435,7 @@ fn toggling_modes_are_allocation_free_on(workers: usize) {
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(
                 n,
-                &Transport::default(),
+                &TransportPosition::default(),
                 &[&input[..n]],
                 &mut [&mut out[..n]],
             );
@@ -1488,7 +1488,7 @@ fn moving_mixes_are_allocation_free_on(workers: usize) {
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(
                 n,
-                &Transport::default(),
+                &TransportPosition::default(),
                 &[&input[..n]],
                 &mut [&mut out[..n]],
             );
@@ -1582,7 +1582,7 @@ fn driven_mixes_are_allocation_free_on(workers: usize) {
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(
                 n,
-                &Transport::default(),
+                &TransportPosition::default(),
                 &[&input[..n]],
                 &mut [&mut out[..n]],
             );
@@ -1664,7 +1664,7 @@ fn fading_edges_are_allocation_free_on(workers: usize) {
         }
         let n = lens[block % lens.len()];
         assert_no_alloc::assert_no_alloc(|| {
-            exec.process(n, &Transport::default(), &[], &mut [&mut out[..n]]);
+            exec.process(n, &TransportPosition::default(), &[], &mut [&mut out[..n]]);
         });
         heard |= out[..n].iter().any(|&x| x != 0.0);
     }
@@ -1751,7 +1751,7 @@ fn a_swap_is_allocation_free_on(workers: usize) {
         })
     }));
     ed.commit().expect("commits");
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     let mut outs: [Vec<f32>; NODES as usize] = std::array::from_fn(|_| vec![0.0f32; 256]);
     let mut block = |exec: &mut tutti_graph::Executor, n: usize| {
         let [a, b, c, d] = &mut outs;

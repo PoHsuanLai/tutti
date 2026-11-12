@@ -51,7 +51,7 @@ fn run(s: &Session, frames: usize, block: usize) -> Vec<f32> {
 #[test]
 fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
     use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     use tutti_types::{Beat, Bpm};
 
     let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
@@ -70,7 +70,7 @@ fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
                 .map(|(beat, bpm)| TempoPoint {
                     beat: Beat(beat),
                     tempo: Bpm::of(bpm),
-                    shape: Shape::Step,
+                    transition: Transition::Step,
                 }),
         )
         .expect("a map");

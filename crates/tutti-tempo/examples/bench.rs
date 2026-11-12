@@ -6,7 +6,7 @@
 
 use std::hint::black_box;
 use std::time::Instant;
-use tutti_tempo::{CellGrid, Cursor, Shape, TempoMap, TempoPoint, chord_cell};
+use tutti_tempo::{CellGrid, TempoMap, TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, Frame, SampleRate, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -25,29 +25,36 @@ fn per_call(mut f: impl FnMut(u64) -> f64) -> f64 {
 fn main() {
     let grid = CellGrid::of(128);
     for n in [1usize, 100, 10_000] {
-        for shape in [Shape::Step, Shape::RampTime, Shape::RampBeats] {
+        for shape in [
+            Transition::Step,
+            Transition::RampTime,
+            Transition::RampBeats,
+        ] {
             let map = TempoMap::new((0..n).map(|i| TempoPoint {
                 beat: Beat(i as f64 * 4.0),
                 tempo: Bpm::of(80.0 + (i % 7) as f64 * 10.0),
-                shape: if i + 1 == n { Shape::Step } else { shape },
+                transition: if i + 1 == n { Transition::Step } else { shape },
             }))
             .expect("a valid map");
             let total = map
-                .frame_at_or_after(Beat(n as f64 * 4.0), RATE)
+                .view(RATE)
+                .frame_at_or_after(Beat(n as f64 * 4.0))
                 .get()
                 .max(1);
-            let mut cursor = Cursor::default();
-            let random = per_call(|i| map.beat_at_frame(Frame(i * 977 % total), RATE).get());
+            let mut view = map.view(RATE);
+            let random = per_call(|i| map.view(RATE).beat_at_frame(Frame(i * 977 % total)).get());
             let hinted = per_call(|i| {
-                map.beat_at_seconds_with(Seconds((i * 3 % total) as f64 / RATE.get()), &mut cursor)
+                view.beat_at_seconds(Seconds((i * 3 % total) as f64 / RATE.get()))
                     .get()
             });
             let inverse = per_call(|i| {
-                map.frame_at_or_after(Beat((i % (n as u64 * 4000)) as f64 / 1000.0), RATE)
+                map.view(RATE)
+                    .frame_at_or_after(Beat((i % (n as u64 * 4000)) as f64 / 1000.0))
                     .get() as f64
             });
             let cell = per_call(|i| {
-                chord_cell(&map, Frame(i * 977 % total), grid, RATE)
+                map.view(RATE)
+                    .chord_cell(Frame(i * 977 % total), grid)
                     .tempo
                     .get()
             });

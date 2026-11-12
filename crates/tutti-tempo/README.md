@@ -5,12 +5,13 @@ A tempo map for the Tutti audio engine.
 ## What this is
 
 - `TempoMap`: an immutable value built on the control side from `TempoPoint`s.
-  Each point holds its tempo until the next (`Shape::Step`) or moves to the next
+  Each point holds its tempo until the next (`Transition::Step`) or moves to the next
   one's, linear in time (`RampTime`) or linear in beats (`RampBeats`). Queries
-  convert between beats, `f64` seconds and frames; none allocates. A `Cursor`
-  hint makes the monotone case a few nanoseconds.
-- `chord_cell`, `CellGrid`, `Cell`: a map as constant-tempo cells on one fixed
-  frame grid, cut also at every point (`TempoMap::next_change`). A cell is a
+  convert between beats, `f64` seconds and frames; none allocates. A `TempoView`
+  (`TempoMap::view(rate)`) holds the rate and a lookup hint, which makes the monotone
+  case a few nanoseconds. A `TempoMapBuilder` writes a map that cannot end on a ramp.
+- `TempoView::chord_cell`, `CellGrid`, `Cell`: a map as constant-tempo cells on one fixed
+  frame grid, cut also at every point (`TempoView::next_change`). A cell is a
   pure function of the absolute frame, so it is the same at any buffer size.
 
 The constructors refuse a tempo that is not finite and positive themselves.

@@ -6,13 +6,13 @@
 //! calls the modulator only for the one pure step `cycles -> value`. The
 //! modulator itself knows nothing of transport or audio.
 //!
-//! [`LfoNode`] is `ModulatorNode<Wave>` — the concrete, monomorphized LFO node
-//! the graph builds, over the same [`Wave`] a control lane evaluates, so a
+//! [`LfoNode`] is `ModulatorNode<Waveform>` — the concrete, monomorphized LFO node
+//! the graph builds, over the same [`Waveform`] a control lane evaluates, so a
 //! beat-synced node and lane produce one sequence (a random wave included).
 //! A free-running node runs from its insert and does not restart at play.
 //! Because `M` is a concrete type param (not `Box<dyn>`), `value()` inlines.
 //!
-//! `LfoShape` and `Wave` are re-exported so `use tutti_nodes::LfoShape`
+//! `LfoShape` and `Waveform` are re-exported so `use tutti_nodes::LfoShape`
 //! resolves here.
 
 use std::sync::Arc;
@@ -26,7 +26,7 @@ use tutti_types::{Latency, Tail};
 // The waveform vocabulary is tutti-modulation's floor, re-exported so `use
 // tutti_nodes::LfoShape` resolves.
 pub use crate::modulator::Modulator;
-pub use tutti_modulation::{LfoShape, Wave};
+pub use tutti_modulation::{LfoShape, Waveform};
 
 /// Where `beat` falls on a clock `beats_per_cycle` beats a cycle, in unwrapped
 /// cycles: the cycle index a stepped shape addresses, and the phase.
@@ -88,7 +88,7 @@ impl core::fmt::Display for LfoMode {
 /// the modulator's output.
 ///
 /// **Addressable.** The value at a position is a pure function of it, so a
-/// random wave steps on the cycle index ([`Wave::raw_at`]): beat-synced, it
+/// random wave steps on the cycle index ([`Waveform::raw_at`]): beat-synced, it
 /// replays after a seek; free-running, a fork (which starts at cycle zero)
 /// replays the original's sequence from its start.
 ///
@@ -129,7 +129,7 @@ pub struct ModulatorNode<M: Modulator> {
 }
 
 /// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a
-/// [`Wave`], the one a control lane evaluates. Monomorphized, so `value()`
+/// [`Waveform`], the one a control lane evaluates. Monomorphized, so `value()`
 /// inlines.
 ///
 /// **The per-sample tier.** Reach for this when a control-rate value is too
@@ -140,9 +140,9 @@ pub struct ModulatorNode<M: Modulator> {
 ///
 /// The control-rate alternative is a `tutti_modulation::Source::Lfo` route, which a
 /// control lane evaluates into the param's port (doc 014 §5).
-pub type LfoNode = ModulatorNode<Wave>;
+pub type LfoNode = ModulatorNode<Waveform>;
 
-impl ModulatorNode<Wave> {
+impl ModulatorNode<Waveform> {
     /// Creates a free-running LFO of `shape` (seed 0) with default frequency
     /// 1.0 Hz.
     ///
@@ -151,7 +151,7 @@ impl ModulatorNode<Wave> {
     /// it.
     #[must_use]
     pub fn new(shape: LfoShape) -> Self {
-        Self::with_modulator(Wave::Shape { shape, seed: 0 })
+        Self::with_modulator(Waveform::Shape { shape, seed: 0 })
     }
 
     /// The random shapes' seed: seed 0 is the plain sequence, the one a
@@ -159,7 +159,7 @@ impl ModulatorNode<Wave> {
     /// Ignored by a wave that is not a shape.
     #[must_use]
     pub fn with_seed(mut self, seed: u64) -> Self {
-        if let Wave::Shape { seed: s, .. } = &mut self.modulator {
+        if let Waveform::Shape { seed: s, .. } = &mut self.modulator {
             *s = seed;
         }
         self
@@ -505,7 +505,7 @@ impl<M: Modulator + Clone> Clone for ModulatorNode<M> {
 mod tests {
     use super::*;
     use tutti_graph::contract::{Direct, assert_param_fork};
-    use tutti_graph::{Solo, Transport};
+    use tutti_graph::{Solo, TransportPosition};
     use tutti_types::MaxBlock;
     use tutti_types::UnitParam;
     use tutti_types::{Beat, Bpm, Samples};
@@ -546,7 +546,7 @@ mod tests {
 
     /// `n` frames of `node` through a graph at 48 kHz, each block handed
     /// `transport` as its own (advancing, when it rolls, by the block).
-    fn render_at(node: LfoNode, transport: Transport, n: usize) -> Vec<f32> {
+    fn render_at(node: LfoNode, transport: TransportPosition, n: usize) -> Vec<f32> {
         let rate = SampleRate(48_000.0);
         let mut solo = Solo::new(node, Prepare::new(rate, MaxBlock::of(Samples(256))));
         solo.renderer_mut().set_transport_fn(move |frame| {
@@ -554,13 +554,13 @@ mod tests {
             if transport.playing {
                 clock.advance(Samples(frame.get() as usize), None);
             }
-            Transport::counted(transport.playing, transport.tempo, clock.origin(), None)
+            TransportPosition::counted(transport.playing, transport.tempo, clock.origin(), None)
         });
         solo.render(n).remove(0)
     }
 
-    fn stopped_at(beat: f64) -> Transport {
-        Transport::new(false, Bpm::of(120.0), Beat(beat), None)
+    fn stopped_at(beat: f64) -> TransportPosition {
+        TransportPosition::new(false, Bpm::of(120.0), Beat(beat), None)
     }
 
     #[test]
@@ -676,7 +676,7 @@ mod tests {
     /// across blocks.
     #[test]
     fn a_rolling_transport_is_read_frame_by_frame() {
-        let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+        let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
         // 120 BPM at 48 kHz: 24 000 frames a beat, 96 000 a cycle.
         let out = render_at(
             LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration::new(4.0)),
@@ -752,8 +752,8 @@ mod tests {
         );
     }
 
-    fn random(seed: u64) -> Wave {
-        Wave::Shape {
+    fn random(seed: u64) -> Waveform {
+        Waveform::Shape {
             shape: LfoShape::Random,
             seed,
         }
@@ -771,7 +771,7 @@ mod tests {
                 .with_seed(seed)
                 .with_beat_sync(BeatDuration::new(1.0))
         };
-        let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+        let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
         // 7.5 beats at 120 BPM and 48 kHz.
         let rolled = render_at(lfo(), rolling, 180_001);
         let want = random(seed).raw_at(7.5, false);
@@ -829,7 +829,7 @@ mod tests {
         for (i, &v) in free.iter().enumerate() {
             assert_eq!(v, w.raw_at((i / 256) as f64, false), "free frame {i}");
         }
-        let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+        let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
         let synced = render_at(
             LfoNode::new(LfoShape::Random).with_beat_sync(BeatDuration::new(0.5)),
             rolling,
@@ -862,7 +862,7 @@ mod tests {
             .seed(3)
             .rate(BeatDuration(2.0))
             .phase(PhaseIncrement(0.25));
-        let wave = Wave::Shape {
+        let wave = Waveform::Shape {
             shape: LfoShape::RandomSmooth,
             seed: 3,
         };

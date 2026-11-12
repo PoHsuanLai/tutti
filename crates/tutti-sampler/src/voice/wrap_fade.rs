@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
-use tutti_graph::{Env, Node, Offset, Prepare, Transport, TransportChanges, contract};
+use tutti_graph::{Env, Node, Offset, Prepare, TransportChanges, TransportPosition, contract};
 use tutti_types::{
     Beat, BeatDuration, Bpm, ChannelLayout, Frame, FrameClock, LoopRange, SampleRate, Samples,
 };
@@ -195,16 +195,16 @@ impl Rig {
         }
     }
 
-    fn transport(&self, playing: bool) -> Transport {
+    fn transport(&self, playing: bool) -> TransportPosition {
         let looping = self.looping.map(|r| tutti_graph::LoopRange {
             start: r.start(),
             end: r.end(),
         });
-        Transport::new(playing, self.clock.tempo(), self.clock.beat(), looping)
+        TransportPosition::new(playing, self.clock.tempo(), self.clock.beat(), looping)
     }
 
     /// One block of `len` frames; `change` is a transport change inside it.
-    fn block(&mut self, len: usize, change: Option<(usize, Transport)>) -> Vec<Vec<f32>> {
+    fn block(&mut self, len: usize, change: Option<(usize, TransportPosition)>) -> Vec<Vec<f32>> {
         let mut changes = TransportChanges::NONE;
         if let Some((at, to)) = change {
             changes
@@ -236,7 +236,7 @@ impl Rig {
     ) -> Vec<Vec<f32>> {
         let mut here = self.clock;
         here.advance(Samples(at), self.looping);
-        let to = Transport::new(
+        let to = TransportPosition::new(
             true,
             Bpm::of(tempo),
             here.beat(),
@@ -459,7 +459,7 @@ fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     rig.place(1, &w, 0.0, None);
     rig.run(WRAP - 100, 1000);
     // Block of 400: the wrap is at frame 100, a seek to beat 2 at 150.
-    let to = Transport::new(true, Bpm::of(120.0), Beat(2.0), None);
+    let to = TransportPosition::new(true, Bpm::of(120.0), Beat(2.0), None);
     let out = rig.block(400, Some((150, to)));
     for k in 0..250 {
         assert_eq!(
@@ -472,12 +472,12 @@ fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     rig.run(WRAP - 100, 1000);
-    let stopped = Transport::new(false, Bpm::of(120.0), Beat(0.01), None);
+    let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(0.01), None);
     let out = rig.block(400, Some((150, stopped)));
     assert!(out[0][150..].iter().all(|&s| s == 0.0));
     // Rolling again where it stands: the loop's start alone.
     let at = rig.clock.beat();
-    let restart = Transport::new(true, Bpm::of(120.0), at, None);
+    let restart = TransportPosition::new(true, Bpm::of(120.0), at, None);
     let env = Env {
         frame: Frame(rig.frame),
         sample_rate: SampleRate(SR),

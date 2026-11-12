@@ -226,7 +226,7 @@ fn a_step_map_is_followed_without_allocating() {
     use tutti_graph::NodeKey;
     use tutti_graph::{Editor, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     use tutti_transport::MotionEvent;
     use tutti_types::{At, Beat, Bpm};
 
@@ -235,13 +235,13 @@ fn a_step_map_is_followed_without_allocating() {
             .map(|i| TempoPoint {
                 beat: Beat(f64::from(i) * 0.001),
                 tempo: Bpm::of(120.0 + f64::from(i)),
-                shape: Shape::Step,
+                transition: Transition::Step,
             })
             .collect();
         points.push(TempoPoint {
             beat: Beat(1.0),
             tempo: Bpm::of(last),
-            shape: Shape::Step,
+            transition: Transition::Step,
         });
         Arc::new(TempoMap::new(points).expect("a map"))
     };
@@ -292,18 +292,18 @@ fn a_step_map_is_followed_without_allocating() {
     }
 
     // The ramp case: 120 to `end` BPM over 2 beats, linear in time.
-    let ramp = |end: f64, shape: Shape| {
+    let ramp = |end: f64, transition: Transition| {
         Arc::new(
             TempoMap::new([
                 TempoPoint {
                     beat: Beat(0.0),
                     tempo: Bpm::of(120.0),
-                    shape,
+                    transition,
                 },
                 TempoPoint {
                     beat: Beat(2.0),
                     tempo: Bpm::of(end),
-                    shape: Shape::Step,
+                    transition: Transition::Step,
                 },
             ])
             .expect("a map"),
@@ -325,7 +325,7 @@ fn a_step_map_is_followed_without_allocating() {
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     transport
         .settings()
-        .set_tempo_map(ramp(60.0, Shape::RampTime));
+        .set_tempo_map(ramp(60.0, Transition::RampTime));
     transport
         .motion()
         .try_send(MotionEvent::play_from(Beat(0.0)))
@@ -339,9 +339,9 @@ fn a_step_map_is_followed_without_allocating() {
     );
     for round in 0..10u32 {
         let shape = if round % 2 == 0 {
-            Shape::RampTime
+            Transition::RampTime
         } else {
-            Shape::RampBeats
+            Transition::RampBeats
         };
         transport
             .settings()

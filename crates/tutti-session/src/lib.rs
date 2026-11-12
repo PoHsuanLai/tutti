@@ -93,6 +93,7 @@ pub use builder::{SessionBuilder, Workers, root_width};
 #[cfg(feature = "device")]
 pub use device::{
     Device, DeviceEvent, DeviceLatency, DeviceRestart, DeviceRestarted, LiveSession, RestartError,
+    RestartOutcome,
 };
 pub use edge::EdgeGainError;
 pub use error::{ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result};

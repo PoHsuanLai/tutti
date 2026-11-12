@@ -385,9 +385,10 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      (`InletError::RateMismatch` stays). `MicIn::open*` are one
      `open(&MicConfig, rate)` and `open_with_monitor`.
    - S2: one `DeviceRestart` value (`DeviceRestart::to(device)`, `.max_block`),
-     applied through `LiveSession::restart(request) -> Result<Option<
-     DeviceRestarted>, RestartError>` (the pair, so no foreign `Device` can be
-     passed; `None` is a stale request of the policy's, dropped). The host's
+     applied through `LiveSession::restart(request) -> Result<RestartOutcome,
+     RestartError>` (the pair, so no foreign `Device` can be passed;
+     `RestartOutcome::Stale` is a stale request of the policy's, dropped,
+     `Restarted(DeviceRestarted)` the rates before and after). The host's
      hook for what it holds itself is `LiveSession::on_restart`, set once and run
      at the end of every restart's hook, and `LiveSession::watch_devices(source,
      policy)` reads what the device was opened with and runs on. `restart_following`,

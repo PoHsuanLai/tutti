@@ -259,7 +259,7 @@ pub mod prelude {
         TypedParamRef, Workers,
     };
     #[cfg(all(feature = "session", feature = "device"))]
-    pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession};
+    pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};
     #[cfg(all(feature = "session", feature = "device", feature = "audio-io"))]
     pub use tutti_session::{Input, InputConfig};
 

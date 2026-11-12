@@ -13,8 +13,8 @@ use tutti_graph::ForkByClone;
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Osc;
 use tutti_session::{
-    Backoff, DeviceEvent, DevicePolicy, DeviceRestart, InPort, OutPort, Phase, PhaseCx, Root,
-    Session, SessionEvent, Workers,
+    Backoff, DeviceEvent, DevicePolicy, DeviceRestart, InPort, OutPort, Phase, PhaseCx,
+    RestartOutcome, Root, Session, SessionEvent, Workers,
 };
 use tutti_types::{ChannelLayout, Db, Hz, MaxBlock, SampleRate, Samples};
 
@@ -561,7 +561,7 @@ fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
         .try_into()
         .expect("one request");
     assert!(
-        live.restart(stale).unwrap().is_none(),
+        live.restart(stale).unwrap() == RestartOutcome::Stale,
         "a stale request is dropped, not run"
     );
     assert_eq!(

@@ -144,7 +144,7 @@ impl LiveSession {
     ///
     /// A request the device policy made ([`DeviceEvent::RestartWanted`]) is
     /// not a choice: it never changes what the policy follows, and it is
-    /// dropped, returning `Ok(None)`, when the host has chosen something else
+    /// dropped, returning [`RestartOutcome::Stale`], when the host has chosen something else
     /// since it was asked for (it is stale) or there is no watch. Any other
     /// request is the host's choice, and what the policy follows from then on.
     ///
@@ -169,7 +169,7 @@ impl LiveSession {
     pub fn restart(
         &mut self,
         request: DeviceRestart,
-    ) -> std::result::Result<Option<DeviceRestarted>, RestartError> {
+    ) -> std::result::Result<RestartOutcome, RestartError> {
         if request.wanted {
             let current = self
                 .session
@@ -177,7 +177,7 @@ impl LiveSession {
                 .as_ref()
                 .is_some_and(|w| *w.follow().want() == request.device);
             if !current {
-                return Ok(None);
+                return Ok(RestartOutcome::Stale);
             }
         } else {
             self.device.chosen = request.device.clone();
@@ -189,7 +189,7 @@ impl LiveSession {
             .map(|f| f as &mut dyn FnMut(&OutputSpec));
         self.session
             .run_restart(&mut self.device, request, follow)
-            .map(Some)
+            .map(RestartOutcome::Restarted)
     }
 
     /// Runs `hook` with the new spec at the end of every restart's hook, while
@@ -384,6 +384,18 @@ impl Device {
             .to_vec()
             .into_iter())
     }
+}
+
+/// What [`LiveSession::restart`] did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[must_use = "a stale request restarted nothing"]
+pub enum RestartOutcome {
+    /// The stream restarted; the rates before and after.
+    Restarted(DeviceRestarted),
+    /// A request the device policy made was dropped: the host has chosen
+    /// something else since it was asked for, or there is no watch. Nothing
+    /// moved.
+    Stale,
 }
 
 /// A restart that moved the stream ([`DeviceEvent::Restarted`]).

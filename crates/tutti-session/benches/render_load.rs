@@ -126,7 +126,7 @@ use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unf
 use tutti_nodes::{BusStripNode, ConvolverNode, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-use tutti_session::{EventSource, InPort, OutPort, Root, Session};
+use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{
     Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MaxBlock, PlaybackRate,
@@ -255,7 +255,8 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
             sent: 0,
         }));
         s.graph()
-            .set_event_sources(synth, 0, &[EventSource::new(hold, 0)]);
+            .connect(hold.events_out(), synth.events_in())
+            .unwrap();
         strips.push(synth.erase());
     }
 

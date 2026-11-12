@@ -6,11 +6,12 @@
 
 use crate::common;
 
+use tutti_graph::Params;
 use tutti_modulation::Lfo;
-use tutti_session::{OutPort, ParamRef, Root, Session};
+use tutti_session::{OutPort, ParamError, ParamRef, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::MaxBlock;
-use tutti_types::{BeatDuration, Depth, ParamAddr, UnitAddr, UnitParam};
+use tutti_types::{BeatDuration, Db, Depth, ParamAddr, UnitAddr, UnitParam};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 use common::bands::{BAND0, BAND1, Bands};
@@ -55,7 +56,7 @@ fn render(s: &mut Session, frames: usize) -> [Vec<f32>; 2] {
 #[test]
 fn set_param_writes_the_index_it_names() {
     let mut s = offline();
-    let (node, _) = s.graph().add(Bands::new(100.0, 500.0));
+    let (node, _) = s.graph().add(Params(Bands::new(100.0, 500.0)));
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(node, 0)])
         .unwrap();
@@ -67,20 +68,22 @@ fn set_param_writes_the_index_it_names() {
     let [a, b] = render(&mut s, 256);
     assert!(a.iter().all(|&x| x == 100.0) && b.iter().all(|&x| x == 500.0));
 
-    s.graph().set_param(node, BAND1, -6.0);
+    s.graph().set_param(node.threshold_at(1), Db(-6.0)).unwrap();
     let [a, b] = render(&mut s, 256);
     assert!(a.iter().all(|&x| x == 100.0), "band 0 did not move");
     assert!(b.iter().all(|&x| x == -6.0), "band 1 took the write");
 
     // A bare `UnitParam` is index 0.
-    s.graph().set_param(node, UnitParam::Threshold, -12.0);
+    s.graph().set_param(node.threshold(), Db(-12.0)).unwrap();
     let [a, b] = render(&mut s, 256);
     assert!(a.iter().all(|&x| x == -12.0));
     assert!(b.iter().all(|&x| x == -6.0));
 
     // An index the node lacks takes nothing.
-    s.graph()
-        .set_param(node, UnitAddr::new(UnitParam::Threshold, 2), 99.0);
+    assert!(matches!(
+        s.graph().set_param(node.threshold_at(2), Db(99.0)),
+        Err(ParamError::NoSuchParam { .. })
+    ));
     let [a, b] = render(&mut s, 256);
     assert!(a.iter().all(|&x| x == -12.0) && b.iter().all(|&x| x == -6.0));
 }
@@ -89,7 +92,7 @@ fn set_param_writes_the_index_it_names() {
 #[test]
 fn the_graph_declares_each_index() {
     let mut s = offline();
-    let (node, _) = s.graph().add(Bands::new(0.0, 0.0));
+    let (node, _) = s.graph().add(Params(Bands::new(0.0, 0.0)));
     let _ = s.update();
     assert!(s.graph().declares_param(node, BAND0));
     assert!(s.graph().declares_param(node, BAND1));
@@ -110,7 +113,7 @@ fn the_graph_declares_each_index() {
 #[test]
 fn a_route_to_index_1_does_not_touch_index_0() {
     let mut s = offline();
-    let (node, _) = s.graph().add(Bands::new(100.0, 500.0));
+    let (node, _) = s.graph().add(Params(Bands::new(100.0, 500.0)));
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(node, 0)])
         .unwrap();
@@ -131,7 +134,7 @@ fn a_route_to_index_1_does_not_touch_index_0() {
         "index 0 is the bare param"
     );
     let mut m = s.mods();
-    m.range(band1, 0.0, 1_000.0);
+    m.range_raw(band1, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
     m.route(lfo, band1, Depth(0.3)).unwrap();
     for _ in 0..4 {

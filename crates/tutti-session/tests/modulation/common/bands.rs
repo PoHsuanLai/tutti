@@ -3,16 +3,13 @@
 //! [`Bands`] addresses a `Threshold` at index 0 and another at index 1, each a
 //! cell of its own, and writes what port 0 reads to output 0 and what port
 //! 1 reads to output 1 (the port's frames under modulation, the knob
-//! without it). It is a [`SessionNode`] whose controls are its `ParamSet`.
+//! without it). It is a `ParamNode`, inserted as `Params(Bands::new(..))`.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tutti_graph::{
-    Cx, IntoNode, Io, Node, NodeParts, ParamInput, ParamNode, ParamSet, Prepare, Shape, Status,
-};
-use tutti_session::SessionNode;
-use tutti_types::{AtomicF32, ChannelLayout};
+use tutti_graph::{Cx, Io, Node, ParamInput, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::{AtomicF32, ChannelLayout, Db};
 use tutti_types::{UnitAddr, UnitParam};
 
 /// `Threshold` of band 0 and of band 1.
@@ -77,16 +74,4 @@ impl ParamNode for Bands {
     }
 }
 
-impl IntoNode for Bands {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-impl SessionNode for Bands {
-    fn params(controls: &ParamSet) -> Option<ParamSet> {
-        Some(controls.clone())
-    }
-}
+tutti_session::declare_params!(Bands { UnitParam::Threshold => [Db] });

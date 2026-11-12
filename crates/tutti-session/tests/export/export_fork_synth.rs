@@ -23,7 +23,7 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
-use tutti_types::{Beat, Bpm, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{Amplitude, Beat, Bpm, SampleRate, Samples, Seconds, UnitParam};
 use tutti_ump::{MidiChannel, MidiGroup, U7, Ump};
 
 const RATE: f64 = 48_000.0;
@@ -258,7 +258,10 @@ fn a_param_on_a_synth_reaches_it_and_its_fork() {
         session.graph().connect(synth, Root).unwrap();
         let _ = session.update();
         if let Some(v) = volume {
-            session.graph().set_param(synth, UnitParam::Volume, v);
+            session
+                .graph()
+                .set_param(synth.volume(), Amplitude::new(v))
+                .unwrap();
             let _ = session.update();
             assert_eq!(
                 controls.get(UnitParam::Volume),

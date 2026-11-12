@@ -155,7 +155,7 @@ The ordered bootstrap in `build_on`, step by step:
 
 - `insert`, `insert_plugin`, `replace_plugin`, `replace` (with
   `ReplaceRefused`) and `remove`;
-- `set_event_sources`, which keeps other owners' edges;
+- `set_sources` on an `EventInPort` (was `set_event_sources`), which keeps other owners' edges;
 - `set_source`, `set_output_source`, `set_outputs_from`, `widen_outputs`;
 - `set_param_mod`, `clear_param_mod`, `param_mod`;
 - `latency_plan`, `planned_compensation`, `sent_compensation`,

@@ -17,7 +17,9 @@ use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::{Normalized, ParamId};
-use tutti_session::{Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent};
+use tutti_session::{
+    EventInPort, Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent,
+};
 use tutti_types::{ChannelLayout, Depth, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -107,8 +109,8 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     let (p0, p1) = (ParamRef::plugin(node, 0), ParamRef::plugin(node, 1));
     {
         let mut m = s.mods();
-        m.range(p0, 0.0, 1.0);
-        m.range(p1, 0.0, 1.0);
+        m.range_raw(p0, 0.0, 1.0).unwrap();
+        m.range_raw(p1, 0.0, 1.0).unwrap();
         let zero = m.macro_(0.0);
         m.route(zero, p0, Depth(1.0)).unwrap();
         m.route(zero, p1, Depth(1.0)).unwrap();
@@ -173,15 +175,15 @@ impl Node for EventSource1 {
 /// `+0.25` on a knob of 0), on its one event input. A MIDI source is then
 /// declared on that input (`Feeder::Declared`) and taken away again: each
 /// rewrite of the port's declared sources leaves the lane's edge where it was
-/// (`Graph::set_event_sources` keeps the edges it did not make), so
-/// `event_sources` still lists the lane and the plugin still reads `0.25`.
+/// (`Graph::set_sources` keeps the edges it did not make), so
+/// `sources` still lists the lane and the plugin still reads `0.25`.
 #[test]
 fn a_plugins_midi_rewiring_keeps_its_lanes() {
     let (mut s, node) = session_with_probe();
     let p0 = ParamRef::plugin(node, 0);
     {
         let mut m = s.mods();
-        m.range(p0, 0.0, 1.0);
+        m.range_raw(p0, 0.0, 1.0).unwrap();
         let offset = m.macro_(1.0);
         m.route(offset, p0, Depth(0.25)).unwrap();
     }
@@ -208,9 +210,9 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
         side.render(1_024, 128, &mut out);
         let mut sources: Vec<_> = s
             .graph_ref()
-            .event_sources(node, 0)
+            .sources(EventInPort::new(node, 0))
             .into_iter()
-            .map(|e| e.node)
+            .map(|e| e.node())
             .collect();
         sources.sort();
         assert_eq!(sources, want, "{what}: the port's sources");
@@ -222,7 +224,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     };
     check(&mut s, &[lane], "before");
     s.graph()
-        .set_feed(node, Feeder::Declared, vec![clip.into()]);
+        .set_feed(node, Feeder::Declared, vec![clip.events_out()]);
     check(&mut s, &[lane, clip.erase()], "a MIDI source added");
     s.graph().set_feed(node, Feeder::Declared, Vec::new());
     check(&mut s, &[lane], "the MIDI source removed");
@@ -243,7 +245,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
     let p0 = ParamRef::plugin(node, 0);
     {
         let mut m = s.mods();
-        m.range(p0, 0.0, 1.0);
+        m.range_raw(p0, 0.0, 1.0).unwrap();
         let offset = m.macro_(1.0);
         m.route(offset, p0, Depth(0.25)).unwrap();
     }

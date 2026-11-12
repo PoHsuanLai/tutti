@@ -32,9 +32,9 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
-use tutti_session::{AudioSide, InPort, OutPort, Root, Session};
+use tutti_session::{AudioSide, InPort, Key, OutPort, Root, Session};
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds};
 
 const RATE: f64 = 48_000.0;
 
@@ -60,7 +60,7 @@ struct Scene {
     session: Session,
     side: AudioSide,
     filter: NodeKey,
-    drive: NodeKey,
+    drive: Key<DistortionNode>,
 }
 
 /// A saw through a low-pass and a waveshaper on the left channel, the same
@@ -105,7 +105,7 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
         session,
         side,
         filter: filter.erase(),
-        drive: drive.erase(),
+        drive,
     }
 }
 
@@ -207,7 +207,8 @@ fn a_param_write_lands_on_the_next_blocks_first_frame() {
     let before = render(&mut s.side, 2_048, 256);
     s.session
         .graph()
-        .set_param(s.drive, UnitParam::Drive, Drive(6.0).0);
+        .set_param(s.drive.drive(), Drive(6.0))
+        .unwrap();
     let _ = s.session.update();
     let after = render(&mut s.side, 2_048, 256);
 
@@ -360,7 +361,7 @@ fn pdc_is_the_compilers() {
     let mut s = scene(true);
     assert_eq!(
         s.session.graph().sources(Root::output(0)),
-        [OutPort::new(s.drive, 0)],
+        [s.drive.out(0)],
         "nothing is spliced in; the plan delays the channel"
     );
     assert!(

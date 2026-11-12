@@ -32,8 +32,8 @@ pub enum Phase {
     Collect,
     /// Hosted plugins' health, latency, parameter edits and state
     /// snapshots (feature `plugin`): a dead plugin's node is removed
-    /// (`SessionEvent::PluginDied`), a moved latency handed to the graph
-    /// (`SessionEvent::PluginLatencyChanged`), a due snapshot handed to the
+    /// (`PluginChange::Died`), a moved latency handed to the graph
+    /// (`PluginChange::LatencyChanged`), a due snapshot handed to the
     /// host as a job (`SessionEvent::PluginSnapshotDue`).
     Plugins,
     /// The plugins' render mode (features `plugin` and `export`): Offline
@@ -235,26 +235,12 @@ pub enum SessionEvent {
     /// See [`MidiEvent`](crate::MidiEvent).
     #[cfg(feature = "midi")]
     Midi(crate::MidiEvent),
-    /// A hosted plugin was declared dead (`tutti_plugin_host::Liveness`) with
-    /// recovery off: its node was removed. Reported once. With recovery on
-    /// the death is `PluginReloading`, and the node's removal
-    /// `PluginGaveUp`.
+    /// A hosted plugin's event, by area (design 029 section 3.3, design 030
+    /// convention 1): what the plugin reported (its own edit of a parameter, a
+    /// new tail) and every transition of its life (died, reloading, recovered,
+    /// gave up). See [`PluginEvent`](crate::PluginEvent).
     #[cfg(feature = "plugin")]
-    PluginDied {
-        /// The node it was at, now removed.
-        node: NodeKey,
-        /// The engine's latched reason.
-        cause: String,
-    },
-    /// A hosted plugin's declared latency moved, and the graph took it: the
-    /// next commit compensates it.
-    #[cfg(feature = "plugin")]
-    PluginLatencyChanged {
-        /// The plugin's node.
-        node: NodeKey,
-        /// Its latency now.
-        latency: Samples,
-    },
+    Plugin(crate::PluginEvent),
     /// A healthy plugin's state is due a snapshot: run the job off the
     /// control thread and land it with
     /// [`Session::land_snapshot`](crate::Session::land_snapshot).
@@ -266,52 +252,12 @@ pub enum SessionEvent {
     /// mirror is not ready.
     #[cfg(all(feature = "plugin", feature = "modulation"))]
     PluginParamsDue(crate::PluginParamRead),
-    /// A hosted plugin died or hung and recovery is on
-    /// ([`RecoveryPolicy`](crate::RecoveryPolicy)): its node stays in the
-    /// graph, silent, and a replacement loads after `delay`. Reported once
-    /// per attempt.
-    #[cfg(feature = "plugin")]
-    PluginReloading {
-        /// The plugin's node, kept.
-        node: NodeKey,
-        /// Why it needs a replacement: the engine's latched cause, or a
-        /// failed attempt's reason.
-        cause: String,
-        /// Failures within the budget's window so far, this one included.
-        attempt: u32,
-        /// The wait before the load is handed out.
-        delay: std::time::Duration,
-    },
     /// A replacement plugin is due its load: run the job off the control
     /// thread and land it with
     /// [`Session::land_reload`](crate::Session::land_reload). A job dropped
     /// unrun counts as a failed attempt.
     #[cfg(feature = "plugin")]
     PluginReloadDue(crate::PluginReload),
-    /// A replacement is in the graph at the same node, with the same wiring.
-    #[cfg(feature = "plugin")]
-    PluginRecovered {
-        /// The plugin's node.
-        node: NodeKey,
-        /// Whether its state came back, and from how long before.
-        state: crate::StateRestore,
-        /// The node's latency before the failure and now. PDC follows at
-        /// the next commit.
-        latency: (Samples, Samples),
-        /// Attempts it took.
-        attempts: u32,
-    },
-    /// Recovery stopped: the failures spent the budget. The node is removed.
-    #[cfg(feature = "plugin")]
-    PluginGaveUp {
-        /// The node it was at, now removed.
-        node: NodeKey,
-        /// Why.
-        why: crate::GiveUp,
-        /// The last state worth keeping, for a host that offers the user a
-        /// manual reload: the state a reload withheld, else the last good one.
-        state: Option<tutti_plugin::catalog::PluginState>,
-    },
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -352,56 +298,13 @@ impl std::fmt::Debug for SessionEvent {
                 .field(count)
                 .finish(),
             #[cfg(feature = "plugin")]
-            Self::PluginDied { node, cause } => f
-                .debug_struct("PluginDied")
-                .field("node", node)
-                .field("cause", cause)
-                .finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginLatencyChanged { node, latency } => f
-                .debug_struct("PluginLatencyChanged")
-                .field("node", node)
-                .field("latency", latency)
-                .finish(),
+            Self::Plugin(event) => f.debug_tuple("Plugin").field(event).finish(),
             #[cfg(feature = "plugin")]
             Self::PluginSnapshotDue(job) => f.debug_tuple("PluginSnapshotDue").field(job).finish(),
             #[cfg(all(feature = "plugin", feature = "modulation"))]
             Self::PluginParamsDue(job) => f.debug_tuple("PluginParamsDue").field(job).finish(),
             #[cfg(feature = "plugin")]
-            Self::PluginReloading {
-                node,
-                cause,
-                attempt,
-                delay,
-            } => f
-                .debug_struct("PluginReloading")
-                .field("node", node)
-                .field("cause", cause)
-                .field("attempt", attempt)
-                .field("delay", delay)
-                .finish(),
-            #[cfg(feature = "plugin")]
             Self::PluginReloadDue(job) => f.debug_tuple("PluginReloadDue").field(job).finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginRecovered {
-                node,
-                state,
-                latency,
-                attempts,
-            } => f
-                .debug_struct("PluginRecovered")
-                .field("node", node)
-                .field("state", state)
-                .field("latency", latency)
-                .field("attempts", attempts)
-                .finish(),
-            #[cfg(feature = "plugin")]
-            Self::PluginGaveUp { node, why, state } => f
-                .debug_struct("PluginGaveUp")
-                .field("node", node)
-                .field("why", why)
-                .field("state_bytes", &state.as_ref().map(|s| s.bytes().len()))
-                .finish(),
         }
     }
 }
@@ -559,6 +462,10 @@ pub struct Session {
     /// measured at.
     #[cfg(feature = "plugin")]
     pub(crate) plugins_now: Instant,
+    /// The hosts that asked to hear every plugin event
+    /// ([`Session::subscribe`]).
+    #[cfg(feature = "plugin")]
+    pub(crate) plugin_subscribers: crate::plugin::PluginSubscribers,
     /// The render mode last announced.
     #[cfg(feature = "plugin")]
     pub(crate) render_mode: crate::plugin::RenderModeState,

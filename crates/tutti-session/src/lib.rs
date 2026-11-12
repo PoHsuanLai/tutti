@@ -144,9 +144,9 @@ pub use node::{Reclaimer, SessionNode};
 pub use params::{ParamError, RangeError, TypedParamRef};
 #[cfg(feature = "plugin")]
 pub use plugin::{
-    HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
-    PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore,
-    StateView,
+    Plugin, PluginChange, PluginEvent, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded,
+    PluginReload, PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL,
+    StateRestore, StateView,
 };
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};
@@ -174,6 +174,8 @@ pub use tutti_graph::{
 pub use tutti_graph::{
     CloseError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
 };
+#[cfg(feature = "plugin")]
+pub use tutti_plugin_host::Subscription;
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]

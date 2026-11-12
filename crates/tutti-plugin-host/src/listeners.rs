@@ -2,7 +2,7 @@
 //!
 //! The bridge thread pushes `BridgeEvent`s into these through
 //! `PluginClient`'s installed listener; `PluginHandle` users register
-//! callbacks through `on_parameter_changed` / `on_refresh` / `on_invalidate`.
+//! callbacks through [`PluginHandle::subscribe`](crate::PluginHandle::subscribe).
 //!
 //! The plugin→host notifications split **by consequence**, one
 //! [`Listener`] each:
@@ -13,8 +13,8 @@
 //! - [`InvalidateSink`]: the plugin changed structurally
 //!   ([`PluginInvalidation`], incl. latency); rewire + re-plan PDC.
 //!
-//! Each holds a single callback (last writer wins). That keeps the API
-//! trivial: higher layers that want fan-out can wrap the callback.
+//! Each fans out to its subscribers, each ended by dropping its
+//! [`Subscription`]; there is no slot to replace and nothing to clear.
 
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -22,17 +22,74 @@ use std::sync::Arc;
 use tutti_plugin_types::ParamEdit;
 use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
-/// A one-slot callback for one kind of plugin notification, `A`.
+/// A fan-out of callbacks for one kind of plugin notification, `A`.
 ///
-/// Cloneable and shared: the side that hears the plugin holds one end and the
-/// host installs the callback through the other. Setting a second callback
-/// replaces the first rather than fanning out. (Not called `Sink`:
+/// Cloneable and shared: the side that hears the plugin holds one end and
+/// feeds it with [`fire`](Self::fire), and every subscriber hears each
+/// notification until its [`Subscription`] drops. (Not called `Sink`:
 /// `tutti_types::Sink` is the engine's audio edge.)
 pub struct Listener<A> {
-    inner: Arc<Mutex<Option<Callback<A>>>>,
+    inner: Arc<Mutex<Subscribers<A>>>,
 }
 
 type Callback<A> = Arc<dyn Fn(A) + Send + Sync>;
+
+struct Subscribers<A> {
+    next: u64,
+    list: Vec<(u64, Callback<A>)>,
+}
+
+/// A callback's registration with a [`Listener`]: it hears notifications until
+/// this drops.
+#[must_use = "a dropped subscription unsubscribes"]
+pub struct Subscription {
+    // Type-erased: removes the callback from the listener it came from.
+    unsubscribe: Option<Box<dyn FnOnce() + Send + Sync>>,
+}
+
+impl Subscription {
+    /// A subscription that runs `unsubscribe` when it drops.
+    pub fn from_fn(unsubscribe: impl FnOnce() + Send + Sync + 'static) -> Self {
+        Self {
+            unsubscribe: Some(Box::new(unsubscribe)),
+        }
+    }
+
+    /// One subscription that ends all of `parts` when it drops.
+    pub fn all(parts: impl IntoIterator<Item = Subscription>) -> Self {
+        let parts: Vec<Subscription> = parts.into_iter().collect();
+        Self {
+            unsubscribe: Some(Box::new(move || drop(parts))),
+        }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(f) = self.unsubscribe.take() {
+            f();
+        }
+    }
+}
+
+impl std::fmt::Debug for Subscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subscription").finish_non_exhaustive()
+    }
+}
+
+/// What a plugin reported, through whichever of the three listeners heard it
+/// ([`PluginHandle::subscribe`](crate::PluginHandle::subscribe)).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Notice {
+    /// The plugin edited one of its own parameters.
+    Param(ParamEdit),
+    /// A cached view of the plugin is stale (re-read it).
+    Refresh(PluginRefresh),
+    /// The plugin changed structurally (latency, tail, buses, a reload).
+    Invalidate(PluginInvalidation),
+}
 
 /// A plugin-initiated parameter edit: a [`ParamEdit`] (the parameter, its value
 /// and where in a gesture it fell).
@@ -58,7 +115,10 @@ impl<A> Clone for Listener<A> {
 impl<A> Default for Listener<A> {
     fn default() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(None)),
+            inner: Arc::new(Mutex::new(Subscribers {
+                next: 0,
+                list: Vec::new(),
+            })),
         }
     }
 }
@@ -69,7 +129,7 @@ impl<A> std::fmt::Debug for Listener<A> {
     }
 }
 
-impl<A> Listener<A> {
+impl<A: Clone> Listener<A> {
     /// An empty listener, which drops every notification until a callback is
     /// installed.
     #[must_use]
@@ -77,25 +137,39 @@ impl<A> Listener<A> {
         Self::default()
     }
 
-    /// Installs `f`, replacing any callback installed before.
-    pub(crate) fn set<F: Fn(A) + Send + Sync + 'static>(&self, f: F) {
-        *self.inner.lock() = Some(Arc::new(f));
+    /// Registers `f`, which hears every notification fired until the returned
+    /// [`Subscription`] drops. Any number may be registered at once.
+    pub(crate) fn subscribe<F: Fn(A) + Send + Sync + 'static>(&self, f: F) -> Subscription
+    where
+        A: 'static,
+    {
+        let mut inner = self.inner.lock();
+        let id = inner.next;
+        inner.next += 1;
+        inner.list.push((id, Arc::new(f)));
+        let shared = Arc::clone(&self.inner);
+        Subscription {
+            unsubscribe: Some(Box::new(move || {
+                shared.lock().list.retain(|(n, _)| *n != id);
+            })),
+        }
     }
 
-    /// Removes the callback.
-    pub(crate) fn clear(&self) {
-        *self.inner.lock() = None;
-    }
-
-    /// Calls the callback with `event`, if one is installed. The callback
-    /// runs outside the lock (its `Arc` is cloned out), so it may install a
-    /// new callback from inside.
+    /// Calls every subscriber with `event`. The callbacks run outside the lock
+    /// (their `Arc`s are cloned out), so one may subscribe or unsubscribe from
+    /// inside.
     ///
     /// Public for `tutti-plugin`'s bridge thread, which feeds a served plugin's notifications in.
     pub fn fire(&self, event: A) {
-        let cb = self.inner.lock().clone();
-        if let Some(cb) = cb {
-            cb(event);
+        let callbacks: Vec<Callback<A>> = self
+            .inner
+            .lock()
+            .list
+            .iter()
+            .map(|(_, cb)| Arc::clone(cb))
+            .collect();
+        for cb in callbacks {
+            cb(event.clone());
         }
     }
 }
@@ -105,36 +179,48 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    fn counter(listener: &Listener<u32>, add: u32) -> Arc<AtomicU32> {
+    fn counter(listener: &Listener<u32>, add: u32) -> (Arc<AtomicU32>, Subscription) {
         let seen = Arc::new(AtomicU32::new(0));
         let s = Arc::clone(&seen);
-        listener.set(move |n| {
+        let sub = listener.subscribe(move |n| {
             s.fetch_add(n * add, Ordering::Relaxed);
         });
-        seen
+        (seen, sub)
     }
 
+    /// Every subscriber hears each notification, through every clone of the
+    /// listener, until its own subscription drops; a second subscriber does
+    /// not replace the first.
     #[test]
-    fn the_last_callback_set_hears_every_clone_until_cleared() {
+    fn every_subscriber_hears_every_clone_until_its_subscription_drops() {
         let listener = Listener::<u32>::new();
-        // Taken before any callback: it must still hear the one set later.
         let other = listener.clone();
-        listener.fire(1); // nothing installed: dropped
-        let first = counter(&listener, 1);
+        listener.fire(1); // nobody subscribed: dropped
+        let (first, first_sub) = counter(&listener, 1);
         other.fire(2);
-        assert_eq!(first.load(Ordering::Relaxed), 2, "a clone shares the slot");
-        let second = counter(&listener, 10);
+        assert_eq!(first.load(Ordering::Relaxed), 2, "a clone shares the list");
+        let (second, second_sub) = counter(&listener, 10);
         listener.fire(3);
         assert_eq!(
             (
                 first.load(Ordering::Relaxed),
                 second.load(Ordering::Relaxed)
             ),
-            (2, 30),
-            "the second callback replaced the first"
+            (5, 30),
+            "both hear it"
         );
-        listener.clear();
+        drop(first_sub);
         listener.fire(4);
-        assert_eq!(second.load(Ordering::Relaxed), 30, "cleared");
+        assert_eq!(
+            (
+                first.load(Ordering::Relaxed),
+                second.load(Ordering::Relaxed)
+            ),
+            (5, 70),
+            "the dropped one stopped, the other did not"
+        );
+        drop(second_sub);
+        listener.fire(5);
+        assert_eq!(second.load(Ordering::Relaxed), 70);
     }
 }

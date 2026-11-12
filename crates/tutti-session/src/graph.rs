@@ -333,7 +333,7 @@ pub struct Graph {
     /// crossfade to another plugin and a removal update them where they
     /// happen.
     #[cfg(feature = "plugin")]
-    pub(crate) plugins: BTreeMap<NodeKey, crate::HostedPlugin>,
+    pub(crate) plugins: BTreeMap<NodeKey, crate::plugin::HostedPlugin>,
     /// A reader of the session's tempo map, the template each plugin and
     /// each sampler node inserted through the graph is bound with (a clone
     /// of it: the node lends the map once per block and a fork clones its
@@ -794,7 +794,7 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> NodeKey {
         let node = NodeKey::fresh();
-        let hosted = crate::HostedPlugin::new(client.handle(), client.plugin().clone())
+        let hosted = crate::plugin::HostedPlugin::new(client.handle(), client.plugin().clone())
             .with_controls(client.controls());
         let tempo = self.tempo.clone();
         let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind(tempo));
@@ -819,7 +819,7 @@ impl Graph {
     ///
     /// `plugin` is which plugin it is, which the handle does not know (the
     /// file it came from): the one the host opened, and the ref its states
-    /// are saved under ([`HostedPlugin::state`](crate::HostedPlugin::state)).
+    /// are saved under ([`Plugin::state`](crate::Plugin::state)).
     ///
     /// A host that binds a plugin itself (`PluginClient::bind`) gives it a
     /// reader of the session's tempo map, `session.transport().settings
@@ -837,7 +837,7 @@ impl Graph {
             return false;
         }
         self.plugins
-            .insert(node, crate::HostedPlugin::new(handle, plugin));
+            .insert(node, crate::plugin::HostedPlugin::new(handle, plugin));
         true
     }
 
@@ -889,7 +889,8 @@ impl Graph {
                     None => {
                         self.plugins.insert(
                             node,
-                            crate::HostedPlugin::new(handle, plugin).with_controls(controls),
+                            crate::plugin::HostedPlugin::new(handle, plugin)
+                                .with_controls(controls),
                         );
                     }
                 }
@@ -968,7 +969,7 @@ impl Graph {
             + self
                 .plugins
                 .values()
-                .filter_map(crate::HostedPlugin::meter)
+                .filter_map(crate::plugin::HostedPlugin::meter)
                 .map(tutti_plugin_host::PluginMeter::reclaim)
                 .sum::<usize>();
         pinned
@@ -3035,12 +3036,12 @@ pub trait ModKeys {
 /// target's key names its node, a native target's knob is that node's
 /// `Param` cell, a plugin target feeds the node's event input 0 and starts at
 /// the plugin's mirrored value (the session's record of it,
-/// `HostedPlugin::param_values`).
+/// `Plugin::param_values`).
 #[cfg(feature = "modulation")]
 struct ModHostOver<'a> {
     nodes: &'a BTreeMap<NodeKey, Entry>,
     #[cfg(feature = "plugin")]
-    plugins: &'a BTreeMap<NodeKey, crate::HostedPlugin>,
+    plugins: &'a BTreeMap<NodeKey, crate::plugin::HostedPlugin>,
     keys: &'a dyn ModKeys,
     /// Each plugin target the apply resolved, by node and parameter: where
     /// `Phase::Plugins` writes a GUI edit (`ModState::plugin_target`).

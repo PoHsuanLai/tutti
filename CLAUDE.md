@@ -1552,6 +1552,18 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `Transport::motion()` (and the session's `play`, `stop`, `locate`, `schedule`, `set_tempo`). `bevy-tutti`'s `ExportRequest`,
   `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
 
+- **Dead plugin-event and callback names** (doc 029 step 2): `SessionEvent::{PluginDied,
+  PluginLatencyChanged, PluginReloading, PluginRecovered, PluginGaveUp}` →
+  `SessionEvent::Plugin(PluginEvent { node, change, .. })` with `PluginChange::{Died, LatencyChanged,
+  Reloading, Recovered, GaveUp}` (the three `*Due` job events stay until step 5);
+  `PluginHandle::{on_parameter_changed, on_refresh, on_invalidate, clear_parameter_callback,
+  clear_refresh_callback, clear_invalidate_callback}` → `PluginHandle::subscribe(f) -> Subscription`
+  (the low layer; a host subscribes to the session: `Session::subscribe`, or reads
+  `SessionEvent::Plugin`); `Listener::{set, clear}` (one slot, last writer wins) → `Listener::subscribe`
+  (a fan-out); `HostedPlugin` (public) → the `Plugin<'_>` view of `Session::plugin(node) ->
+  Result<Plugin<'_>, NoSuchNode>` (`Option<&HostedPlugin>` before), `Session::plugins()` yielding
+  `Plugin<'_>`.
+
 ## Consumers: the pin that must stay in step
 
 Consumers pin this repo as a git dependency. Keep **the bevy 0.19 line** in step

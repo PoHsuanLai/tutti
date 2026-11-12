@@ -15,8 +15,10 @@
 //! note; the plugin's first parameter is set; its state is saved with
 //! `state().save()` and written beside the WAV.
 //!
-//! The editor is left out: this host is headless. Opening a plugin's window
-//! is design 029 step 2.
+//! The plugin is a [`Plugin`] view (`session.plugin(node)`), and what happens to
+//! it is a [`PluginEvent`] in `update()`'s events. The editor is left out: this
+//! host is headless; opening a plugin's window is design 029 step 2's second
+//! half.
 //!
 //! It is not run in CI (it needs a plugin directory and the two binaries
 //! above built); `cargo build -p tutti --features clap,export --examples`
@@ -102,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 6. Set a parameter: the first one it lists, to the middle of its range.
-    let hosted = session.plugin(node).ok_or("the plugin is hosted")?;
+    let hosted = session.plugin(node)?;
     let first: Option<ParamId> = hosted
         .handle()
         .any_thread()
@@ -129,9 +131,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_path.display()
     );
 
-    // 8. Bounce four beats to a 24-bit WAV. The plugin hears Offline while it
+    // 8. Events. What the plugin reports (its own edit of a parameter, a new
+    //    tail) and what happens to it (died, reloading) is one stream: the
+    //    session's `SessionEvent::Plugin`, named by node. A host reads it from
+    //    `update()`; there is no callback to install and none to clear.
+    for event in session.update() {
+        if let SessionEvent::Plugin(PluginEvent { node, change, .. }) = event {
+            eprintln!("{node:?}: {change:?}");
+        }
+    }
+
+    // 9. Bounce four beats to a 24-bit WAV. The plugin hears Offline while it
     //    renders and Realtime after.
-    let _ = session.update();
     let job = session.bounce_start(
         Bounce::project()
             .range(Range::Beats(Beat(0.0), Beat(4.0)))

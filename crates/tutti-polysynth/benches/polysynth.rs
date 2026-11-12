@@ -7,10 +7,10 @@
 //!
 //! # Two traps
 //!
-//! **`max_voices` must be raised with the note count.** It defaults to 8, so
+//! **`polyphony` must be raised with the note count.** It defaults to 8, so
 //! holding 16, 32 or 64 notes against the default steals back down to 8 and
 //! every case above 8 would measure *identically*. Each case here sets
-//! `max_voices` to its own note count. `max_voices` has no upper bound; the
+//! `polyphony` to its own note count. `polyphony` has no upper bound; the
 //! axis stops at 16 because that is where the numbers in `docs/archive/benchmarks.md`
 //! were taken and the scaling is linear — extend it if you need a figure past
 //! there, rather than extrapolating.

@@ -7,8 +7,8 @@ square, triangle, sine or noise oscillators through a Moog-style ladder or a
 state-variable filter, with an ADSR envelope, unison, portamento, alternative
 tunings and MPE / MIDI 2.0 per-note expression.
 
-`PolySynth` is the synth: a graph node (`tutti_graph::Node`) built from a
-`SynthConfig`, with no audio input, stereo output and one MIDI event input.
+`PolySynth` is the synth: a graph node (`tutti_graph::Node`) built, infallibly,
+from a `SynthConfig`, with no audio input, stereo output and one MIDI event input.
 Wire a clip node, a keyboard's event inlet (`tutti_graph::EventInletNode`) or the hardware input node (all
 `tutti-midi-runtime`) to the event input; each event is applied on its own
 frame. The rest of the crate is configuration: `SynthConfig` with its
@@ -18,12 +18,16 @@ allocation (`VoiceMode`, `AllocationStrategy`); `UnisonConfig`;
 
 Inserted into a graph, the synth hands back a `tutti_graph::ParamSet` over its
 live params by `UnitParam`: the master `Volume` and, with a unison engine,
-`Detune` and `StereoSpread`. A fork of the graph (an offline export) starts
-from the values last set through it.
+`Detune` and `StereoSpread`. That set is the synth's only control once it is in
+a graph (a modulation lane's knob is its cell; there are no cell handles on the
+synth). A fork of the graph (an offline export) starts from the values last set
+through it. The rate is the graph's too: `SynthConfig` carries none, and
+`prepare` sets it.
 
 ## Quick start
 
 ```rust
+use std::num::NonZeroUsize;
 use tutti_types::MaxBlock;
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SynthConfig,
@@ -36,7 +40,7 @@ use tutti_graph::{Editor, Prepare};
 // `Moog` takes `Resonance`; the `Svf` variant takes `Q` instead.
 let synth = PolySynth::new(SynthConfig {
     oscillator: OscillatorType::Saw,
-    max_voices: 8,
+    polyphony: NonZeroUsize::new(8).unwrap(),
     filter: FilterType::Moog {
         cutoff: Hz(2000.0),
         resonance: Resonance(0.7),
@@ -48,7 +52,7 @@ let synth = PolySynth::new(SynthConfig {
         release: Seconds(0.3),
     },
     ..Default::default()
-})?;
+});
 
 // Into the graph: no audio input, stereo out, one MIDI event input (wire a
 // clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
@@ -61,7 +65,6 @@ editor.commit().expect("a one-node graph commits");
 
 // Its controls: the live params, by address.
 assert!(params.set(UnitParam::Volume, 0.8));
-# Ok::<(), tutti_polysynth::Error>(())
 ```
 
 ## What is fixed at construction
@@ -71,11 +74,19 @@ type and envelope, so those need a new synth to change: build a new
 `PolySynth` and replace the node. The filter's cutoff (and a ladder's
 resonance) are modulated live by `FilterModConfig`, CC74, CC71 and MPE slide.
 
-Live setters exist for the master volume, unison detune, stereo spread and
-sub-voice count, and MPE enablement.
+Nothing else on a synth that is in a graph is live but its `ParamSet`: the
+master volume, and with a unison engine the detune and stereo spread. Before
+insertion, `&mut self` setters take typed values (`set_volume(Amplitude)`,
+`set_unison_detune`, `set_unison_stereo_spread(Spread)`,
+`set_unison_voice_count(UnisonVoices)`, `set_unison_config`, `set_mpe(MpeMode)`),
+and a node cannot be reached by them once it is inserted.
 
-`max_voices` must be at least 1 and has no upper bound. Every voice is built
-up front, so it is a memory and CPU budget.
+`SynthConfig::polyphony` is a `NonZeroUsize` (a synth of no voices cannot be
+written) with no upper bound. Every voice is built up front, so it is a memory
+and CPU budget. `SynthConfig::with_polyphony` and `with_group` are the builder
+the SoundFont unit's `Settings` has too. A unison stack is `UnisonVoices`, 1 to
+16, and MPE is `MpeMode` (`mpe`): disabled, zones, or single-channel rotation;
+a zone's member bend range is the per-note bend range.
 
 ## Real-time behaviour
 

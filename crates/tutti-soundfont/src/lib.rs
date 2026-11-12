@@ -69,6 +69,7 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// fan-in (the setup's fader holds all three as sources); `tutti-session`'s `Session::add_general_midi` wires all of
 /// that. A send with nothing to send is reported silent in the block's status
 /// (`Status::Masked`), and a unit with no voice sounding is `Status::Idle`. Build it with [`new`](Self::new), pick a preset with
+/// [`select`](Self::select) (a preset's bank and program) or
 /// [`program_change`](Self::program_change), then insert it into a graph
 /// (it implements `tutti_graph::Node` and `tutti_graph::IntoNode`, with no
 /// controls) and wire a clip or a keyboard queue to its event input. Events

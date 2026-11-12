@@ -96,7 +96,7 @@ impl From<UnisonVoices> for u8 {
 /// Stacked, detuned copies of a single note — the "supersaw" thickener.
 ///
 /// Every field here multiplies the cost of *each* voice: a synth with
-/// `max_voices: 8` and `voice_count: 7` runs 56 oscillator lanes. The
+/// `polyphony: 8` and `voice_count: 7` runs 56 oscillator lanes. The
 /// sub-voices are summed to a constant-power total, so raising
 /// [`voice_count`](Self::voice_count) thickens the tone without raising the
 /// level.

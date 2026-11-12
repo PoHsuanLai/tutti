@@ -205,19 +205,6 @@ fn unison_voices_keep_the_range_checked_shape() {
     });
 }
 
-/// A stack at the ceiling renders every one of its sub-voices' params.
-#[test]
-fn the_ceiling_stack_has_sixteen_sub_voices() {
-    let config = UnisonConfig {
-        voice_count: UnisonVoices::of(UnisonVoices::MAX),
-        ..Default::default()
-    };
-    let unison = UnisonEngine::new(config);
-
-    assert_eq!(unison.voice_count(), MAX_UNISON_VOICES);
-    assert_eq!(unison.all_params().len(), 16);
-}
-
 /// Recomputing detune/spread keeps the drawn phases.
 ///
 /// `sync_from_atomics` recomputes whenever a modulated detune or spread

@@ -9,7 +9,7 @@ use std::num::NonZeroUsize;
 use tutti_curve::Law;
 use tutti_fixtures::midi;
 use tutti_midi_protocol::{
-    MpeMode, MpeZoneConfig, MpeZones, bend_u32_to_signed_f32, u16_to_unit_f32,
+    MpeMode, MpeZoneConfig, MpeZones, PitchBendSensitivity, bend_u32_to_signed_f32, u16_to_unit_f32,
 };
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
@@ -1167,6 +1167,64 @@ fn test_mpe_per_voice_pitch_bend() {
         "the other note should be untouched, got {}",
         voice_ch2.per_note_bend()
     );
+}
+
+/// **A zone's member bend range is the per-note default** (RP-053): a full
+/// per-note bend on a synth whose zone says 12 semitones sweeps 12 semitones,
+/// not the 48 of a zone with the default member range.
+#[test]
+fn a_zones_member_range_sets_the_per_note_bend_range() {
+    let swept = |member_semitones: u8| {
+        let zone = MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS)
+            .unwrap()
+            .with_member_pitch_bend_range(PitchBendSensitivity::of(member_semitones));
+        let mut synth = synth(SynthConfig {
+            oscillator: OscillatorType::Sine,
+            mpe: MpeMode::Zones(MpeZones::new(Some(zone), None).unwrap()),
+            ..Default::default()
+        });
+        queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, u32::MAX);
+        queue_midi(&mut synth, &[bend]);
+        synth.tick(&[], &mut output);
+        synth
+            .voices
+            .iter()
+            .find(|v| v.is_active())
+            .unwrap()
+            .per_note_bend()
+            .get()
+    };
+    assert!((swept(12) - 12.0).abs() < 0.01, "{}", swept(12));
+    assert!((swept(48) - 48.0).abs() < 0.01, "{}", swept(48));
+}
+
+/// Without zones the per-note range is the MPE convention, 48 semitones:
+/// single-channel rotation has no member range to name.
+#[test]
+fn without_zones_the_per_note_bend_range_is_48_semitones() {
+    let mut synth = synth(SynthConfig {
+        oscillator: OscillatorType::Sine,
+        mpe: MpeMode::SingleChannelRotation {
+            channel: MidiChannel::of(1),
+        },
+        ..Default::default()
+    });
+    queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
+    let mut output = [0.0f32; 2];
+    synth.tick(&[], &mut output);
+    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, u32::MAX);
+    queue_midi(&mut synth, &[bend]);
+    synth.tick(&[], &mut output);
+    let bent = synth
+        .voices
+        .iter()
+        .find(|v| v.is_active())
+        .unwrap()
+        .per_note_bend();
+    assert!((bent.get() - 48.0).abs() < 0.01, "{bent}");
 }
 
 #[test]
@@ -3041,10 +3099,7 @@ fn a_synth_plays_its_own_groups_channels_only() {
     first.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(first.active_voice_count(), 1);
 
-    let mut second = synth(SynthConfig {
-        group: group2,
-        ..SynthConfig::default()
-    });
+    let mut second = synth(SynthConfig::default().with_group(group2));
     second.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(second.active_voice_count(), 0, "Group 1 is not Group 2's");
     second.apply_midi(note(group2));

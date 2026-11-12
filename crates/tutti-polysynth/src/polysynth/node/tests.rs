@@ -35,3 +35,28 @@ fn the_shape_declares_volume_and_the_unison_params() {
     assert_eq!(unison.param_base(1), Some(12.0));
     assert_eq!(unison.param_base(2), Some(0.25));
 }
+
+/// **The tail follows the rate the graph prepares the synth at**, not a
+/// rate the config named: a 0.5 s release is 24 000 frames at 48 kHz and
+/// 48 000 at 96 kHz.
+#[test]
+fn the_release_tail_is_in_frames_at_the_prepared_rate() {
+    use tutti_graph::{Node, Prepare};
+    use tutti_types::{MaxBlock, SampleRate, Samples, Tail};
+
+    let mut synth = PolySynth::new(SynthConfig {
+        envelope: tutti_types::Adsr {
+            release: tutti_types::Seconds(0.5),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    for (rate, frames) in [(48_000.0, 24_000), (96_000.0, 48_000)] {
+        synth.prepare(&Prepare::new(SampleRate(rate), MaxBlock::of(Samples(64))));
+        assert_eq!(
+            synth.shape().tail,
+            Tail::Finite(Samples(frames)),
+            "at {rate} Hz"
+        );
+    }
+}

@@ -9,7 +9,92 @@
 
 use std::path::{Path, PathBuf};
 use tutti_plugin_db::{PluginEntry, PluginFormat, format_from_path};
-use tutti_plugin_types::Load;
+use tutti_plugin_types::{BridgeError, BridgeResult, Load};
+
+/// Where a plugin runs: in the host's own process or in a `plugin-server`
+/// process. A choice made per plugin, as a [`PluginRef`] field
+/// ([`PluginRef::with_hosting`]); everything a loaded plugin offers is the same
+/// either way (design 029 principle 4).
+///
+/// The default, [`Auto`](Self::Auto), is the format's own (design 021 Q3):
+/// CLAP, VST3 and AU run [out of process](Self::OutOfProcess), which isolates a
+/// crash and keeps the plugin out of the host's address space; VST2 runs [in
+/// process](Self::InProcess), the only way it can run, since its `AEffect`
+/// fuses the editor and the audio instance. `Auto` never moves a plugin the
+/// catalog has blacklisted into the host's process (021 Q11): a blacklisted
+/// plugin is refused at the load, whatever the hosting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Hosting {
+    /// The format's default: out of process, except VST2, which is in process.
+    #[default]
+    Auto,
+    /// In the host's process: no isolation, no IPC copy, and the editor is the
+    /// audio instance. The load needs the main thread
+    /// ([`MainThread`](tutti_plugin_types::MainThread)). Refused with
+    /// [`BridgeError::NotInProcess`]
+    /// when this build has no host for the format (its `tutti-plugin` feature
+    /// is off).
+    InProcess,
+    /// In a `plugin-server` process, with its editor here. Refused with
+    /// [`BridgeError::NotOutOfProcess`]
+    /// for VST2, which cannot be served.
+    OutOfProcess,
+}
+
+impl Hosting {
+    /// Where a load of the `format` plugin at `path` runs: `InProcess` or
+    /// `OutOfProcess`, never `Auto`.
+    ///
+    /// # Errors
+    ///
+    /// [`BridgeError::NotOutOfProcess`] for a VST2 plugin asked to be served;
+    /// [`BridgeError::NotInProcess`] for a format this build has no in-process
+    /// host for (VST2 included, with its `vst2` feature off).
+    pub(crate) fn resolve(self, path: &Path, format: PluginFormat) -> BridgeResult<Self> {
+        let name = format_name(format);
+        match (self, format) {
+            (Self::OutOfProcess, PluginFormat::Vst2) => Err(BridgeError::NotOutOfProcess {
+                path: path.to_path_buf(),
+                format: name,
+            }),
+            (Self::OutOfProcess, _) => Ok(Self::OutOfProcess),
+            (Self::InProcess, _) | (Self::Auto, PluginFormat::Vst2) => {
+                if in_process_built(format) {
+                    Ok(Self::InProcess)
+                } else {
+                    Err(BridgeError::NotInProcess {
+                        path: path.to_path_buf(),
+                        format: name,
+                    })
+                }
+            }
+            (Self::Auto, _) => Ok(Self::OutOfProcess),
+        }
+    }
+}
+
+/// The format as a user knows it.
+fn format_name(format: PluginFormat) -> &'static str {
+    match format {
+        PluginFormat::Vst3 => "VST3",
+        PluginFormat::Vst2 => "VST2",
+        PluginFormat::Clap => "CLAP",
+        PluginFormat::AudioUnit => "AU",
+        _ => "plugin",
+    }
+}
+
+/// Whether this build holds the format's host for loading in this process.
+fn in_process_built(format: PluginFormat) -> bool {
+    match format {
+        PluginFormat::Vst2 => cfg!(feature = "vst2"),
+        PluginFormat::Clap => cfg!(feature = "clap"),
+        PluginFormat::Vst3 => cfg!(feature = "vst3"),
+        PluginFormat::AudioUnit => cfg!(all(feature = "au", target_os = "macos")),
+        _ => false,
+    }
+}
 
 /// One plugin: the file it is in, its format, and its id in that file.
 ///
@@ -25,6 +110,10 @@ pub struct PluginRef {
     format: PluginFormat,
     /// The descriptor id; `None`: the file's first plugin.
     id: Option<String>,
+    /// Where it runs. Not part of which plugin it is
+    /// ([`is_same_plugin`](Self::is_same_plugin)).
+    #[cfg_attr(feature = "serde", serde(default))]
+    hosting: Hosting,
 }
 
 impl PluginRef {
@@ -42,7 +131,23 @@ impl PluginRef {
             path,
             format,
             id: None,
+            hosting: Hosting::Auto,
         })
+    }
+
+    /// This plugin, hosted as `hosting` ([`Hosting::Auto`] is what a ref starts
+    /// with). Whether the format can be hosted that way is decided at the load.
+    #[must_use]
+    pub fn with_hosting(mut self, hosting: Hosting) -> Self {
+        self.hosting = hosting;
+        self
+    }
+
+    /// Where the plugin is to run, as asked: [`Hosting::Auto`] until
+    /// [`with_hosting`](Self::with_hosting) says otherwise.
+    #[must_use]
+    pub fn hosting(&self) -> Hosting {
+        self.hosting
     }
 
     /// The file that holds the plugin.
@@ -99,12 +204,18 @@ impl PluginRef {
             path: path.to_path_buf(),
             format: format_from_path(path)?,
             id: Some(descriptor_id.to_owned()),
+            hosting: Hosting::Auto,
         })
     }
 
     /// This ref with the id the loaded plugin reports, if it had none (an
     /// in-process load, which has no client to ask).
-    #[cfg(feature = "vst2")]
+    #[cfg(any(
+        feature = "vst2",
+        feature = "clap",
+        feature = "vst3",
+        all(feature = "au", target_os = "macos")
+    ))]
     pub(crate) fn identified(&self, descriptor_id: &str) -> Self {
         Self {
             id: self.id.clone().or_else(|| Some(descriptor_id.to_owned())),
@@ -128,6 +239,7 @@ impl From<&PluginEntry<'_>> for PluginRef {
             path: entry.path.to_path_buf(),
             format: entry.format,
             id: Some(entry.descriptor.id.clone()),
+            hosting: Hosting::Auto,
         }
     }
 }
@@ -200,7 +312,90 @@ mod tests {
             path: path.into(),
             format,
             id: id.map(Into::into),
+            hosting: Hosting::Auto,
         }
+    }
+
+    /// **`Auto` is the format's default** (design 021 Q3): CLAP, VST3 and AU
+    /// are served, whatever the build holds.
+    #[test]
+    fn auto_serves_every_format_but_vst2() {
+        for format in [
+            PluginFormat::Clap,
+            PluginFormat::Vst3,
+            PluginFormat::AudioUnit,
+        ] {
+            let path = Path::new("P");
+            assert_eq!(
+                Hosting::Auto.resolve(path, format).unwrap(),
+                Hosting::OutOfProcess,
+                "{format:?}"
+            );
+        }
+    }
+
+    /// **VST2 cannot be served, and is not quietly hosted here instead.**
+    #[test]
+    fn vst2_asked_for_out_of_process_is_refused() {
+        let err = Hosting::OutOfProcess
+            .resolve(Path::new("P.vst"), PluginFormat::Vst2)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            BridgeError::NotOutOfProcess { format: "VST2", .. }
+        ));
+    }
+
+    /// **A hosting the build has no host for is refused, typed**: the format's
+    /// feature decides, for `Auto` on VST2 as for an explicit `InProcess`.
+    #[cfg(not(feature = "vst2"))]
+    #[test]
+    fn vst2_in_process_needs_its_feature() {
+        for hosting in [Hosting::Auto, Hosting::InProcess] {
+            let err = hosting
+                .resolve(Path::new("P.vst"), PluginFormat::Vst2)
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                BridgeError::NotInProcess { format: "VST2", .. }
+            ));
+        }
+    }
+
+    #[cfg(not(feature = "clap"))]
+    #[test]
+    fn clap_in_process_needs_its_feature() {
+        let err = Hosting::InProcess
+            .resolve(Path::new("P.clap"), PluginFormat::Clap)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            BridgeError::NotInProcess { format: "CLAP", .. }
+        ));
+    }
+
+    #[cfg(feature = "clap")]
+    #[test]
+    fn clap_in_process_is_admitted_with_its_feature() {
+        assert_eq!(
+            Hosting::InProcess
+                .resolve(Path::new("P.clap"), PluginFormat::Clap)
+                .unwrap(),
+            Hosting::InProcess
+        );
+    }
+
+    /// **Where a plugin runs is not which plugin it is**: refs that differ
+    /// only by hosting name one plugin (a state saved from one restores into
+    /// the other), though they are not equal values.
+    #[test]
+    fn hosting_is_not_identity() {
+        let served = entry_ref("/p/A.clap", PluginFormat::Clap, Some("a"));
+        let here = served.clone().with_hosting(Hosting::InProcess);
+        assert!(served.is_same_plugin(&here));
+        assert_ne!(served, here);
+        assert_eq!(here.hosting(), Hosting::InProcess);
+        assert_eq!(served.hosting(), Hosting::Auto);
     }
 
     /// **The load chooses the plugin's id, in every format** (a VST2 shell

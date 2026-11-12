@@ -220,8 +220,8 @@ pub use tutti_plugin_host as plugin_host;
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` and `RouteSpec` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest`, `PluginRef`, `PluginState`, `ParamId` and `Normalized`
-/// (`plugin`), and, under `midi`, the names a
+/// `PluginLoadRequest`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
+/// `Normalized` (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
 /// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`, `MidiRouteRule` and
 /// `MidiEvent`; `MidiChannel` and `MidiGroup` are always in, `Stamp` and
@@ -304,7 +304,7 @@ pub mod prelude {
     #[cfg(feature = "midi")]
     pub use tutti_midi_runtime::TimedMidiEvent;
     #[cfg(feature = "plugin")]
-    pub use tutti_plugin::catalog::{PluginRef, PluginState};
+    pub use tutti_plugin::catalog::{Catalog, Hosting, PluginRef, PluginState};
     #[cfg(feature = "plugin")]
     pub use tutti_plugin::{Normalized, ParamId};
     #[cfg(all(feature = "session", feature = "plugin"))]

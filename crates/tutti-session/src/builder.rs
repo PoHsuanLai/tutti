@@ -318,8 +318,7 @@ impl SessionBuilder {
         // block's `Env`, and the count-in flag off the transport (read only).
         // It is not wired to the output: what it feeds is the host's
         // declaration, like every other node's.
-        let (click, _settings) =
-            graph.insert(ClickNode::new(&transport, Arc::clone(&click_settings)));
+        let (click, _settings) = graph.add(ClickNode::new(&transport, Arc::clone(&click_settings)));
 
         // The engine's MIDI as graph nodes: the hardware input's ingest (translating,
         // and ingesting MPE in the builder's mode), the clock (off until a
@@ -333,7 +332,7 @@ impl SessionBuilder {
                     .hearing(self.midi_ports)
                     .with_mpe(self.mpe_mode),
             );
-            let (clock, clock_master) = graph.insert(tutti_midi_runtime::ClockNode::new());
+            let (clock, clock_master) = graph.add(tutti_midi_runtime::ClockNode::new());
             // The hardware out: a tap on the clock's event output, aligned to
             // the outputs' time so MIDI leaves with the audio (doc 017, E3).
             let tap = graph

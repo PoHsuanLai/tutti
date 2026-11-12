@@ -1204,7 +1204,7 @@ impl Editor {
     pub fn open_event_tap(&mut self, id: EventTapId, source: EventOut,
                           align: TapAlign, capacity: usize)
         -> Result<EventTapReader, MissingSource>;
-    pub fn close_event_tap(&mut self, id: EventTapId);
+    pub fn close_event_tap(&mut self, id: EventTapId) -> Result<(), CloseError>;
 }
 
 // tutti-session
@@ -1291,8 +1291,8 @@ impl EventInletNode {
 
 // tutti-session
 impl Graph {
-    pub fn open_event_inlet(&mut self, capacity: usize) -> (NodeKey, EventInletWriter);
-    pub fn add_event_inlet(&mut self, node: EventInletNode) -> NodeKey;   // a ring the producer's layer built first
+    pub fn open_event_inlet(&mut self, capacity: EventCapacity) -> (Key<EventInletNode>, EventInletWriter);
+    pub fn add_event_inlet(&mut self, node: EventInletNode) -> Key<EventInletNode>;   // a ring the producer's layer built first
 }
 ```
 

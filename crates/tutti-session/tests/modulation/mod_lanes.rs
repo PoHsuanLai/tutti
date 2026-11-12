@@ -33,8 +33,8 @@ use tutti_modulation::{
 use tutti_nodes::automation::{Breakpoint, RecordMode, Trajectory};
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    AudioSide, MixRef, ModInput, ModKeys, ModRefusal, ModTarget, OutPort, PHASES, ParamRef,
-    PhaseCx, Root, Session, SessionEvent, Take, declare_targets,
+    AudioSide, MixRef, ModInput, ModKeys, ModRefusal, ModTarget, NoSuchModRoute, NoSuchModSource,
+    OutPort, PHASES, ParamRef, PhaseCx, Root, Session, SessionEvent, Take, declare_targets,
 };
 use tutti_types::{
     Amplitude, Beat, Bpm, ChannelLayout, Depth, Drive, Hz, SampleRate, Samples, Seconds, UnitParam,
@@ -297,7 +297,12 @@ fn a_removed_source_leaves_no_node_and_no_layer() {
         "precondition: it reads the follower"
     );
 
-    assert!(s.mods().remove_source(follower));
+    s.mods().remove_source(follower).unwrap();
+    assert_eq!(
+        s.mods().remove_source(follower),
+        Err(NoSuchModSource(follower)),
+        "a removed source is not there"
+    );
     settle(&mut s);
     render(&mut side, 1_024, 128);
 
@@ -522,7 +527,12 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
     let out = render(&mut side, 1_024, 128);
     assert_eq!(*out[0].last().unwrap(), 600.0);
 
-    assert!(s.mods().remove_route(route));
+    s.mods().remove_route(route).unwrap();
+    assert_eq!(
+        s.mods().remove_route(route),
+        Err(NoSuchModRoute(route)),
+        "a removed route is not there"
+    );
     settle(&mut s);
     assert_eq!(s.mod_state().refusal(), None);
 }
@@ -745,7 +755,7 @@ fn two_routes_on_one_param_sum_and_removing_one_takes_its_share() {
     settle(&mut s);
     assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "both routes");
 
-    assert!(s.mods().remove_route(second));
+    s.mods().remove_route(second).unwrap();
     settle(&mut s);
     assert_holds(&render(&mut side, 1_024, 128)[0], 600.0, "one removed");
 
@@ -775,7 +785,7 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
         "the route has its lane"
     );
 
-    assert!(s.mods().remove_route(route));
+    s.mods().remove_route(route).unwrap();
     settle(&mut s);
     assert_holds(&render(&mut side, 1_024, 128)[0], 500.0, "no route left");
     assert!(s.mod_state().lane(cutoff.key()).is_none(), "and no lane");

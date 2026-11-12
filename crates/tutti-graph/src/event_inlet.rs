@@ -87,6 +87,7 @@
 //! that looks complete and is not.) [`reset`](Node::reset) keeps the ring and
 //! the waiting list: a note-off waiting must still arrive.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -322,6 +323,84 @@ impl EventInletWriter {
     }
 }
 
+/// How many events an [`EventInletNode`] holds: its ring, its waiting list and
+/// its port's declared event capacity, one count. At least 1 (an inlet that
+/// held no event is not built), and a `u32` because a port's capacity is one.
+///
+/// `new` refuses 0 and never clamps; `of` is for a literal or a constant and
+/// panics on 0. The raw is the count as a `u32`.
+///
+/// ```
+/// use tutti_graph::EventCapacity;
+///
+/// assert_eq!(EventCapacity::new(256).map(EventCapacity::get), Some(256));
+/// assert_eq!(EventCapacity::new(0), None);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EventCapacity(NonZeroU32);
+
+/// The count [`EventCapacity`] refused: 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventCapacityError(pub u32);
+
+impl std::fmt::Display for EventCapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "an event inlet holds at least one event, not {}", self.0)
+    }
+}
+
+impl std::error::Error for EventCapacityError {}
+
+impl EventCapacity {
+    /// The capacity of `events`; `None` for 0.
+    #[must_use]
+    pub const fn new(events: u32) -> Option<Self> {
+        match NonZeroU32::new(events) {
+            Some(n) => Some(Self(n)),
+            None => None,
+        }
+    }
+
+    /// [`new`](Self::new) for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If `events` is 0.
+    #[must_use]
+    pub const fn of(events: u32) -> Self {
+        match Self::new(events) {
+            Some(c) => c,
+            None => panic!("an event inlet holds at least one event"),
+        }
+    }
+
+    /// The count of events.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    /// The count as a length, for sizing a ring.
+    #[must_use]
+    pub const fn slots(self) -> usize {
+        self.0.get() as usize
+    }
+}
+
+impl TryFrom<u32> for EventCapacity {
+    type Error = EventCapacityError;
+
+    fn try_from(events: u32) -> Result<Self, EventCapacityError> {
+        Self::new(events).ok_or(EventCapacityError(events))
+    }
+}
+
+impl From<EventCapacity> for u32 {
+    fn from(capacity: EventCapacity) -> u32 {
+        capacity.get()
+    }
+}
+
 /// A node that copies a ring a thread of your own fills onto one event output,
 /// each event on its frame: no inputs, one event output. See the module docs.
 ///
@@ -332,21 +411,21 @@ impl EventInletWriter {
 /// # Examples
 ///
 /// ```
-/// use tutti_graph::EventInletNode;
+/// use tutti_graph::{EventCapacity, EventInletNode};
 /// use tutti_types::At;
 /// use tutti_fixtures::midi::m1_note_on;
 /// use tutti_ump::{MidiChannel, NoteNumber, U7};
 ///
-/// let (node, mut writer) = EventInletNode::pair(256);
+/// let (node, mut writer) = EventInletNode::pair(EventCapacity::of(256));
 /// let note_on = m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
 /// writer.push(At::NextBlock, note_on).unwrap(); // from any one thread
-/// assert_eq!(node.capacity(), 256);
+/// assert_eq!(node.capacity(), EventCapacity::of(256));
 /// ```
 pub struct EventInletNode {
     ring: HeapCons<Pushed>,
     counts: Arc<Counts>,
     clock: SeqWriter<Reading>,
-    capacity: usize,
+    capacity: EventCapacity,
     /// The rate the node is prepared at, and every frame below is counted at;
     /// 0 before the first prepare.
     rate: f64,
@@ -367,20 +446,10 @@ impl std::fmt::Debug for EventInletNode {
 impl EventInletNode {
     /// A node over a new ring of `capacity` events, and the writer the producer
     /// fills it with. The ring, the waiting list and the port's declared
-    /// capacity are all `capacity` events (a count of events, a bare `usize` as
-    /// [`Shape::with_event_capacity`] takes one: no unit covers it). Allocates;
-    /// control side.
-    ///
-    /// # Panics
-    ///
-    /// If `capacity` is 0 or does not fit a `u32` (a port's capacity is one).
+    /// capacity are all `capacity` events. Allocates; control side.
     #[must_use = "the writer is the only way to fill the ring"]
-    pub fn pair(capacity: usize) -> (Self, EventInletWriter) {
-        assert!(
-            capacity > 0 && u32::try_from(capacity).is_ok(),
-            "an event inlet holds 1 to u32::MAX events, not {capacity}"
-        );
-        let (producer, consumer) = HeapRb::<Pushed>::new(capacity).split();
+    pub fn pair(capacity: EventCapacity) -> (Self, EventInletWriter) {
+        let (producer, consumer) = HeapRb::<Pushed>::new(capacity.slots()).split();
         let counts = Arc::new(Counts::default());
         let clock = SeqWriter::new();
         let writer = EventInletWriter {
@@ -395,7 +464,7 @@ impl EventInletNode {
             capacity,
             rate: 0.0,
             next: 0,
-            waiting: Vec::with_capacity(capacity),
+            waiting: Vec::with_capacity(capacity.slots()),
         };
         (node, writer)
     }
@@ -403,7 +472,7 @@ impl EventInletNode {
     /// The ring's capacity in events, which is also how many may wait for their
     /// frame and the port's declared capacity.
     #[must_use]
-    pub fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> EventCapacity {
         self.capacity
     }
 
@@ -427,7 +496,7 @@ impl EventInletNode {
     ///   panic go, the latest of them (the new one or the last waiting). That
     ///   takes a full list of note-offs and panics waiting at once.
     fn keep(&mut self, ump: Ump, frame: u64) {
-        if self.waiting.len() == self.capacity {
+        if self.waiting.len() == self.capacity.slots() {
             self.counts.evicted.fetch_add(1, Ordering::Relaxed);
             let lost = self.waiting.iter().rposition(|w| !must_arrive(w.ump));
             match lost {
@@ -462,7 +531,7 @@ impl Node for EventInletNode {
         Shape::EMPTY
             .with_events(0, 1)
             // `pair` checked that it fits.
-            .with_event_capacity(self.capacity as u32)
+            .with_event_capacity(self.capacity.get())
             // Event-only: a ring drain, work per event, nothing per frame.
             .with_cost(Cost::Light)
     }
@@ -501,7 +570,7 @@ impl Node for EventInletNode {
         // sorts by arrival among those: `partition_point` with `<=` puts an
         // equal one last. At most a ring's worth, so a producer cannot hold the
         // block here.
-        for _ in 0..self.capacity {
+        for _ in 0..self.capacity.slots() {
             let Some(pushed) = self.ring.try_pop() else {
                 break;
             };
@@ -554,7 +623,7 @@ impl Node for EventInletNode {
 
 /// An [`EventInletNode`]'s fork: the same port, nothing queued, no writer.
 struct SilentInlet {
-    capacity: usize,
+    capacity: EventCapacity,
 }
 
 impl ForkSource for SilentInlet {
@@ -575,5 +644,42 @@ impl IntoNode for EventInletNode {
             controls: (),
             fork: Some(Box::new(SilentInlet { capacity })),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{Deserialize, Serialize};
+    use tutti_fixtures::{RangeContract, check_range_contract};
+
+    use super::*;
+
+    // The shape `check_range_contract` checks is serde's; `EventCapacity` has
+    // none in the library (nothing persists one), so the check runs on the same
+    // `try_from` shape written here.
+    impl Serialize for EventCapacity {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            self.get().serialize(s)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for EventCapacity {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            Self::try_from(u32::deserialize(d)?).map_err(serde::de::Error::custom)
+        }
+    }
+
+    /// `EventCapacity` keeps the range-checked shape of CLAUDE.md: `new` refuses
+    /// 0 and never clamps, `TryFrom` agrees and carries the refused raw, `of`
+    /// panics on it.
+    #[test]
+    fn an_event_capacity_keeps_the_range_checked_shape() {
+        check_range_contract(&RangeContract {
+            new: EventCapacity::new,
+            get: EventCapacity::get,
+            of: Some(EventCapacity::of),
+            valid: &[1, 256, u32::MAX],
+            invalid: &[0],
+        });
     }
 }

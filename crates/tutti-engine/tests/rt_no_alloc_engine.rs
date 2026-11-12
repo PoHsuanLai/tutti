@@ -418,7 +418,7 @@ fn the_heard_tap_is_allocation_free() {
             engine.process(&mut InterleavedMut::new(&mut output, layout));
         }
     });
-    taps.close();
+    taps.close().unwrap();
     assert_no_alloc::assert_no_alloc(|| {
         engine.process(&mut InterleavedMut::new(&mut output, layout));
     });

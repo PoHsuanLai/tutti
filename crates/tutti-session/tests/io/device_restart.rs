@@ -309,7 +309,7 @@ fn a_restart_onto_a_wider_device_widens_the_root() {
 #[test]
 fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     let (mut s, mut device, old, osc, lim) = engine();
-    let (loop_back, ()) = s.graph().insert(Through::mono());
+    let (loop_back, ()) = s.graph().add(ForkByClone(Through::mono()));
     s.graph()
         .set_sources(InPort::new(loop_back, 0), [OutPort::new(lim, 0)])
         .unwrap();
@@ -327,7 +327,7 @@ fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
     s.graph()
         .set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
         .unwrap();
-    s.graph().remove(loop_back);
+    s.graph().remove(loop_back).unwrap();
     let _ = s.update();
     let (driver, back) = ManualStreamDriver::new();
     s.restart_on(&mut device, spec_at(OLD), driver, None, |_| {})

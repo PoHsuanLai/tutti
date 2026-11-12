@@ -20,7 +20,7 @@ use tutti_nodes::{BusStripNode, FreeverbNode, ModDelayConfig, ModDelayNode};
 use tutti_soundfont::SoundFontUnit;
 use tutti_types::{Amplitude, ChannelLayout, UnitParam};
 
-use crate::{InstrumentHandle, Key, OutPort, Session};
+use crate::{InstrumentHandle, Key, OutPort, RemoveError, Session};
 
 /// A SoundFont unit wired to its chorus and reverb, and what they sum to.
 ///
@@ -78,17 +78,25 @@ impl GeneralMidi {
     }
 
     /// Takes the whole setup out of the graph: the unit with its queue and
-    /// strip, the chorus, the reverb and the fader.
-    pub fn remove(self, session: &mut Session) {
-        session.remove_instrument(&self.instrument);
+    /// strip, the chorus, the reverb and the fader. Every part that is there
+    /// goes.
+    ///
+    /// # Errors
+    ///
+    /// [`RemoveError::NoSuchNode`] naming the first part that was not in the
+    /// graph (the setup was removed already, or one part was removed by hand).
+    pub fn remove(self, session: &mut Session) -> Result<(), RemoveError> {
+        let mut first = session.remove_instrument(&self.instrument);
         for node in [
             self.instrument.node(),
             self.chorus.erase(),
             self.reverb.erase(),
             self.strip.erase(),
         ] {
-            session.remove(node);
+            let removed = session.remove(node);
+            first = first.and(removed);
         }
+        first
     }
 }
 
@@ -113,11 +121,11 @@ impl Session {
         let (instrument, ()) = self.add_instrument(unit)?;
         let unit = instrument.node();
         let graph = self.graph();
-        let (chorus, _) = graph.insert(ModDelayNode::new(
+        let (chorus, _) = graph.add(ModDelayNode::new(
             ChannelLayout::STEREO,
             ModDelayConfig::GENERAL_MIDI_CHORUS,
         ));
-        let (reverb, _) = graph.insert(FreeverbNode::general_midi());
+        let (reverb, _) = graph.add(FreeverbNode::general_midi());
         let (strip, strip_params) = graph.add(BusStripNode::new());
         // The unit's outputs: dry L/R, chorus send L/R, reverb send.
         graph.connect(OutPort::new(unit, 2), chorus.input(0))?;

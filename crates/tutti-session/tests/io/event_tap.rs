@@ -10,7 +10,7 @@
 use tutti_graph::{
     Cx, Event, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign, TapEvent, Unforkable,
 };
-use tutti_session::{EventOutPort, Session};
+use tutti_session::{CloseError, EventOutPort, Session};
 use tutti_types::{Frame, SampleRate};
 use tutti_ump::Ump;
 
@@ -41,7 +41,7 @@ fn session() -> (Session, EventOutPort) {
         .outputs_floor(1)
         .build_detached(SampleRate(48_000.0))
         .expect("builds");
-    let (key, ()) = s.graph().insert(Unforkable(Every4));
+    let (key, ()) = s.graph().add(Unforkable(Every4));
     (s, key.events_out())
 }
 
@@ -125,7 +125,12 @@ fn closing_the_tap_stops_the_copy() {
         .expect("the port exists");
     frames(6, &mut s);
     assert_eq!(tap_ops(&s), 1);
-    s.graph().close_event_tap(tap.id());
+    s.graph().close_event_tap(tap.id()).unwrap();
+    assert_eq!(
+        s.graph().close_event_tap(tap.id()),
+        Err(CloseError::EventTap(tap.id())),
+        "a closed event tap is not open"
+    );
     frames(8, &mut s);
     assert_eq!(drain(&mut tap), vec![0, 4], "only what rendered while open");
     assert_eq!(tap_ops(&s), 0);

@@ -94,7 +94,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             per_cycle: BeatDuration(0.25),
             phase: PhaseIncrement(0.0),
         },
-        wave: Waveform::Transition {
+        wave: Waveform::Shape {
             shape: LfoShape::Sine,
             seed: 0,
         },

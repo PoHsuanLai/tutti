@@ -419,10 +419,10 @@ fn event_echo(out: &[f32]) -> Vec<[f64; 5]> {
 /// to 60 over four more (2 s), then a step.
 fn two_ramps() -> tutti_transport::TempoReader {
     use tutti_tempo::{TempoMap, TempoPoint, Transition};
-    let point = |beat: f64, bpm: f64, shape| TempoPoint {
+    let point = |beat: f64, bpm: f64, transition| TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
-        shape,
+        transition,
     };
     let map = TempoMap::new([
         point(0.0, 120.0, Transition::RampTime),

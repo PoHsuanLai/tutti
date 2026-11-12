@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::{MainThread, Normalized, ParamId};
 use tutti_session::{PluginLoadRequest, Session};
 use tutti_types::SampleRate;
@@ -31,13 +31,13 @@ fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
     let node = session
         .add_plugin_blocking(
             &main,
-            PluginLoadRequest {
-                id: PluginId::from_path(tutti_fixtures::cdylib(
+            PluginLoadRequest::new(
+                PluginRef::file(tutti_fixtures::cdylib(
                     "tutti_vst2_test_plugin",
                     "tutti-vst2-test-plugin",
-                )),
-                state: None,
-            },
+                ))
+                .expect("a plugin file"),
+            ),
         )
         .expect("the in-process VST2 loads");
     let handle = session.plugin(node).expect("hosted").handle().clone();

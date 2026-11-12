@@ -23,7 +23,7 @@ use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
 use tutti_cpal::{ManualStreamDriver, OutputSpec};
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::PluginRef;
 use tutti_plugin::handles::PluginClient;
 use tutti_session::{
     Crossfade, OutPort, PHASES, Phase, PhaseCx, PluginLoadRequest, Root, Session, SessionEvent,
@@ -57,10 +57,7 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
     let node = s
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest {
-                id: PluginId::from_path(clap_probe()),
-                state: None,
-            },
+            PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");
     s.graph()
@@ -161,8 +158,12 @@ fn a_crossfaded_plugins_latency_is_the_incoming_ones() {
     let node = add_probe_on_outputs(&mut s);
     let outgoing = s.graph_ref().node_latency(node);
 
-    let incoming = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
-        .expect("load a second instance of the reference plugin");
+    let incoming = PluginClient::new(
+        tutti_plugin::BridgeConfig::default(),
+        &PluginRef::file(clap_probe()).expect("a plugin file"),
+        RATE,
+    )
+    .expect("load a second instance of the reference plugin");
     incoming.set_latency(Samples(INCOMING));
     let controls = incoming.controls();
     let landed = s
@@ -222,8 +223,12 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
         .expect("builds with no device")
         .into_parts();
 
-    let client = PluginClient::new(tutti_plugin::BridgeConfig::default(), clap_probe(), RATE)
-        .expect("the reference plugin loads");
+    let client = PluginClient::new(
+        tutti_plugin::BridgeConfig::default(),
+        &PluginRef::file(clap_probe()).expect("a plugin file"),
+        RATE,
+    )
+    .expect("the reference plugin loads");
     let node = s.graph().insert_plugin(Box::new(client));
     s.graph()
         .set_sources(Root::output(0), [OutPort::new(node, 0)])

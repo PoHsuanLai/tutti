@@ -14,7 +14,7 @@ impl InProcess for Vst3Loaded {
     fn load_in_process(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
         let module = native_module_path(path, ModuleKind::Vst3)?;
         let options = match load.chosen() {
-            Some(name) => LoadOptions::new().class(name),
+            Some(id) => LoadOptions::new().class_id(id),
             None => LoadOptions::new(),
         };
         Vst3Loaded::load(main, &module, options).map_err(plugin_error)

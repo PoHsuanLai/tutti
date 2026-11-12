@@ -211,3 +211,11 @@ required-features = ["session", "modulation"]
 name = "plugin_midi_export"
 required-features = ["session", "clap", "export"]
 test = true
+
+# Design 029 step 1, the acceptance example: scan a plugin directory, pick a
+# plugin by name, load it into a session, wire, play, set a parameter, save
+# its state and bounce. It needs a plugin directory, `plugin-server` and
+# `plugin-probe` built, so CI compiles it and does not run it.
+[[example]]
+name = "plugin_host"
+required-features = ["session", "clap", "export"]

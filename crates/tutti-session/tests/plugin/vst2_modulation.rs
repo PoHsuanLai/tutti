@@ -15,7 +15,7 @@ use tutti_session::Root;
 
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent};
 use tutti_types::{ChannelLayout, Depth, SampleRate};
@@ -42,10 +42,7 @@ fn session_with_probe() -> (Session, NodeKey) {
     let node = s
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest {
-                id: PluginId::from_path(vst2_probe()),
-                state: None,
-            },
+            PluginLoadRequest::new(PluginRef::file(vst2_probe()).expect("a plugin file")),
         )
         .expect("the in-process VST2 loads");
     s.graph().connect(node, Root).unwrap();

@@ -25,6 +25,10 @@ default = []
 # `PluginDb` from your own store.
 json = ["tutti-plugin-db/json"]
 
+# `PluginRef` and `PluginState` derive `Serialize` and `Deserialize`: a project
+# file keeps them.
+serde = ["dep:serde"]
+
 # In-process GUI support (loads plugin library in host for editor only)
 vst3 = ["dep:tutti-vst3-host"]
 clap = ["dep:tutti-clap-host"]
@@ -68,6 +72,8 @@ tutti-plugin-db = { path = "../tutti-plugin-db" }
 
 # Logging
 tracing = "0.1"
+
+serde = { version = "1", features = ["derive"], optional = true }
 
 # In-process plugin GUI (optional — loads plugin library for editor only).
 # `tutti-vst2-host` is different: it owns the audio path too (single in-process

@@ -117,7 +117,7 @@ fn handle_with_mock_server(
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         buffer,
-        std::path::PathBuf::from("test.vst3"),
+        tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )
@@ -219,7 +219,7 @@ fn handle_with_multi_reply_server(
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         buffer,
-        std::path::PathBuf::from("test.vst3"),
+        tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         crate::format::gui::load_gui_instance,
         SampleRate(48_000.0),
     )

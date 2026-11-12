@@ -9,10 +9,10 @@ use crate::transport::shm::AudioSlab;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use tutti_plugin_types::Editor;
 use tutti_plugin_types::{BridgeResult, Delivered, EditorError, StateError};
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
+use tutti_plugin_types::{Editor, Load, Origin};
 use tutti_types::SampleRate;
 
 /// Gives the audio instance the editor instance's state when the user changed
@@ -57,7 +57,9 @@ fn pull_editor_state(
 /// in-process on first `open_editor` call.
 pub struct PluginBridge {
     audio: AudioBridge,
-    plugin_path: PathBuf,
+    /// The file and the plugin in it, which the editor-only instance loads
+    /// (the one the audio instance is).
+    origin: Origin,
     /// Loads the in-process editor instance on the first open: the host's
     /// table of formats, which this crate does not depend on.
     load_editor: EditorLoader,
@@ -74,16 +76,17 @@ pub struct PluginBridge {
 impl std::fmt::Debug for PluginBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginBridge")
-            .field("plugin_path", &self.plugin_path)
+            .field("plugin_path", &self.origin.path())
             .field("audio", &self.audio)
             .finish_non_exhaustive()
     }
 }
 
-/// Loads the editor-only instance of the plugin at a path, in this process
-/// (`OutOfProcess::load_editor` for the path's format). The host passes its
-/// own: which formats it was built with is the host's, not the bridge's.
-pub type EditorLoader = fn(&MainThread, &Path) -> BridgeResult<Box<dyn Editor>>;
+/// Loads the editor-only instance of the plugin `load` chooses in the file at
+/// a path, in this process (`OutOfProcess::load_editor` for the path's
+/// format). The host passes its own: which formats it was built with is the
+/// host's, not the bridge's.
+pub type EditorLoader = fn(&MainThread, &Path, &Load) -> BridgeResult<Box<dyn Editor>>;
 
 /// How many parameter writes wait for the next editor idle. A full ring drops
 /// the newest: the mirror is cosmetic, and the audio command is authoritative.
@@ -180,14 +183,14 @@ impl PluginBridge {
     pub fn new(
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
-        plugin_path: PathBuf,
+        origin: Origin,
         load_editor: EditorLoader,
         sample_rate: SampleRate,
     ) -> BridgeResult<(Arc<Self>, BridgeThread)> {
         let (audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
         let bridge = Arc::new(Self {
             audio,
-            plugin_path,
+            origin,
             load_editor,
             gui: Mutex::new(None),
             baseline: Mutex::new(None),
@@ -205,7 +208,7 @@ impl PluginBridge {
     pub(crate) fn new_with_state_progress_timeout(
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
-        plugin_path: PathBuf,
+        origin: Origin,
         load_editor: EditorLoader,
         sample_rate: SampleRate,
         state_progress_timeout: std::time::Duration,
@@ -214,7 +217,7 @@ impl PluginBridge {
         audio.set_state_progress_timeout(state_progress_timeout);
         let bridge = Arc::new(Self {
             audio,
-            plugin_path,
+            origin,
             load_editor,
             gui: Mutex::new(None),
             baseline: Mutex::new(None),
@@ -402,9 +405,10 @@ impl PluginBridge {
             Some(gui) => Ok(gui),
             empty => {
                 tracing::info!("[bridge] lazy-loading the in-process GUI");
-                let instance = (self.load_editor)(main, &self.plugin_path).map_err(|e| {
-                    EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
-                })?;
+                let instance = (self.load_editor)(main, self.origin.path(), self.origin.load())
+                    .map_err(|e| {
+                        EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
+                    })?;
                 Ok(empty.insert(instance))
             }
         }
@@ -430,7 +434,7 @@ impl PluginBridge {
 
         tracing::info!(
             "[bridge] open_editor: acquiring GUI lock for {}",
-            self.plugin_path.display()
+            self.origin.path().display()
         );
         let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
 

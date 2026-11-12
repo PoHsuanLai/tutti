@@ -30,6 +30,9 @@ pub use tutti_plugin_types::Features;
 // `PluginHandle::presets` hands back these, and `load_preset` takes one, so a
 // caller must be able to name them without depending on tutti-plugin-types.
 pub use tutti_plugin_types::{FeatureReport, Preset, PresetId, PresetSupport};
+// `AnyThread::parameter_descriptors` lists `ParamId`s, and
+// `set_parameter_value` takes a `Normalized`.
+pub use tutti_plugin_types::{Normalized, ParamId};
 
 /// Discovering, persisting, and loading plugins.
 ///
@@ -70,7 +73,8 @@ pub mod catalog {
     pub use tutti_plugin_types::{Helper, Locator};
     // Named in `Plugin::role` and `Plugins::iter`.
     pub use crate::host::plugin::{BoundPlugin, Plugin};
-    pub use crate::host::plugins::{PluginId, Plugins};
+    pub use crate::host::plugin_ref::{PluginRef, PluginState};
+    pub use crate::host::plugins::Plugins;
     pub use tutti_plugin_ipc::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
     pub use tutti_plugin_types::{PluginDescriptor, PluginRole};
 }

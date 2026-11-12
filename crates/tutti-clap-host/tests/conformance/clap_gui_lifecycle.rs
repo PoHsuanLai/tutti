@@ -402,6 +402,42 @@ fn open_editor_runs_the_spec_embed_sequence() {
     );
 }
 
+/// **A live rescale reaches the plugin as `gui.set_scale`, through `Control`'s
+/// `EditorWindow`, as it does through the editor-only instance**: the hosting
+/// must not change what the call does. On a logical-pixel api (Cocoa) the call
+/// is withheld and answers the typed refusal; on a physical-pixel api the plugin
+/// is sent the new factor after the one it opened at.
+#[test]
+fn set_editor_scale_reaches_the_plugin_on_a_physical_pixel_api_only() {
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let mut loaded = probe.load();
+    loaded
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::IDENTITY,
+        )
+        .expect("embeddable plugin opens");
+
+    let answer = loaded.set_editor_scale(&main_thread(), ContentScale::new(3.0).expect("a scale"));
+    let cap = probe.capture();
+    if PLATFORM_USES_LOGICAL_PIXELS {
+        assert!(
+            matches!(
+                answer,
+                Err(tutti_plugin_types::PluginError::Editor(
+                    tutti_plugin_types::EditorError::ScaleUnsupported
+                ))
+            ),
+            "a logical-pixel window takes no scale: {answer:?}"
+        );
+        assert_eq!(cap.last_scale, 0.0, "and the plugin was sent none");
+    } else {
+        assert!(answer.is_ok(), "the plugin took the scale: {answer:?}");
+        assert_eq!(cap.last_scale, 3.0, "the plugin was sent the new factor");
+    }
+}
+
 /// `ext/gui.h:56-57` on `cocoa`, and `:59-60` on `uikit`: "uses
 /// logical size, don't call clap_plugin_gui->set_scale()". `set_scale` itself
 /// repeats it at `:141`. A logical-pixel api has already folded the display's

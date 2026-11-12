@@ -3,7 +3,7 @@
 use super::*;
 use tutti_plugin_types::MainThread;
 
-impl Plugin {
+impl Parts {
     // ── The editor ───────────────────────────────────────────────────────────
 
     pub(super) fn create_view(&self) -> Option<ComPtr<IPlugView>> {
@@ -72,7 +72,7 @@ impl Plugin {
     /// [`close_editor`](Self::close_editor), and for `Drop`, which has no
     /// token: it passes what [`MainThread::current`] finds. An editor is
     /// detached on the main thread only. `Drop` never gets here off the main
-    /// thread with an editor open (it leaks the whole plugin first, see
+    /// thread with an editor open (it hands the whole plugin to the main thread first, see
     /// [`Plugin`]'s `Drop`), so the `None` arm is only the last guard: it leaks
     /// the view rather than call it off its thread. The run loop is purged
     /// either way, so nothing of it is ever called.
@@ -150,6 +150,25 @@ impl Plugin {
             .as_ref()
             .ok_or(Vst3Error::NotInitialized)?
             .resize(requested)
+    }
+
+    /// Tells the open editor its window's scale changed; whether the view took
+    /// it (see `Editor::set_scale`).
+    ///
+    /// # Errors
+    ///
+    /// [`Vst3Error::NotInitialized`] with no editor open.
+    pub fn set_editor_scale(
+        &self,
+        main: &MainThread,
+        scale: ContentScale,
+    ) -> Result<bool, Vst3Error> {
+        let _scope = self.scoped(main);
+        Ok(self
+            .editor
+            .as_ref()
+            .ok_or(Vst3Error::NotInitialized)?
+            .set_scale(scale))
     }
 
     /// Delivers a key press to the open editor; `true` if it was consumed.

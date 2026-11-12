@@ -505,31 +505,45 @@ impl EditorWindow for ClapLoaded {
     /// requests that belong to it.
     fn editor_idle(&mut self, _main: &MainThread) {}
 
-    /// The default capabilities: this surface reports no resize support.
-    fn editor_capabilities(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> tutti_plugin_types::EditorCapabilities {
-        tutti_plugin_types::EditorCapabilities::default()
+    /// What the open editor supports (the inherent [`ClapLoaded::editor_capabilities`]):
+    /// the same answer the editor-only instance gives, whatever hosts the plugin.
+    fn editor_capabilities(&mut self, main: &MainThread) -> tutti_plugin_types::EditorCapabilities {
+        ClapLoaded::editor_capabilities(self, main)
     }
 
-    /// Not supported here.
+    /// `gui.set_scale` through [`ClapLoaded::rescale_editor`]; a logical-pixel
+    /// window, a plugin with no `set_scale` or one that refused is
+    /// [`ScaleUnsupported`](tutti_plugin_types::EditorError::ScaleUnsupported).
+    fn set_editor_scale(
+        &mut self,
+        main: &MainThread,
+        scale: tutti_plugin_types::ContentScale,
+    ) -> tutti_plugin_types::PluginResult<()> {
+        match ClapLoaded::rescale_editor(self, main, scale) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(tutti_plugin_types::PluginError::Editor(
+                tutti_plugin_types::EditorError::ScaleUnsupported,
+            )),
+            Err(e) => Err(plugin_error(e)),
+        }
+    }
+
+    /// `gui.adjust_size` and `gui.set_size` through [`ClapLoaded::resize_editor`].
     fn set_editor_size(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
-        _requested: tutti_plugin_types::EditorSize,
+        main: &MainThread,
+        requested: tutti_plugin_types::EditorSize,
     ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
-        Err(tutti_plugin_types::PluginError::Editor(
-            tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
-        ))
+        ClapLoaded::resize_editor(self, main, requested).map_err(plugin_error)
     }
 
-    /// Nothing asked: this surface never queues a resize request.
+    /// The plugin's pending `gui.request_resize`, once
+    /// ([`ClapLoaded::take_editor_resize_request`]).
     fn poll_editor_resize_request(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
+        _main: &MainThread,
     ) -> Option<tutti_plugin_types::EditorSize> {
-        None
+        ClapLoaded::take_editor_resize_request(self)
     }
 }
 

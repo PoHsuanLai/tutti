@@ -713,48 +713,33 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     );
 }
 
-/// **The main-thread guard sits where a unit is freed, not on an edit**
-/// (design 015 §4.2). A removal frees nothing, so a session owned by another
-/// thread may remove a node (Bevy removes a clip's node from a parallel
-/// system); the free happens at a collect, here a detached commit's, and
-/// that is what asserts. Debug builds with `plugin` only: the guard is a
-/// `debug_assert!` behind that feature.
+/// **A removal, a commit and an update are any thread's** (design 029 section
+/// 3.2): no path of `Session` frees a plugin, so none asserts the main thread.
+/// What a plugin's removal retires waits in the graveyard for `MainSession`
+/// (`tests/plugin/main_view.rs`), and a format hands its in-process release to
+/// the main thread; the session's own paths run wherever the session is.
 ///
-/// The session goes back to this thread to be dropped: its drop asserts too.
-#[cfg(all(feature = "plugin", debug_assertions))]
+/// The session is driven from another thread after the process's main thread has
+/// been claimed here, and goes back to be dropped.
+#[cfg(feature = "plugin")]
 #[test]
-fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    // The test thread is the process's main thread.
+fn a_removal_a_commit_and_an_update_run_on_any_thread() {
+    // The test thread is the process's main thread; the work below is not on it.
     let _main = tutti_plugin_types::MainThread::claim().expect("one test, one process");
     let mut s = detached(1);
     let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
     let _ = s.update();
 
-    let (s, removed) = std::thread::spawn(move || {
+    let (s, driven) = std::thread::spawn(move || {
         let mut s = s;
-        let removed = catch_unwind(AssertUnwindSafe(|| s.remove(dc)));
+        let removed = s.remove(dc);
+        s.commit();
+        let _ = s.update();
         (s, removed)
     })
     .join()
-    .expect("the session comes back");
-    assert_eq!(
-        removed.expect("a removal off the main thread does not assert"),
-        Ok(()),
-        "the node was in the graph"
-    );
-
-    let (s, panicked) = std::thread::spawn(move || {
-        let mut s = s;
-        let freed = catch_unwind(AssertUnwindSafe(|| {
-            s.commit();
-        }));
-        (s, freed.is_err())
-    })
-    .join()
-    .expect("the session comes back");
-    assert!(panicked, "a commit off the main thread frees, and asserts");
+    .expect("none of removing, committing and updating off the main thread panics");
+    assert_eq!(driven, Ok(()), "the node was in the graph");
     drop(s);
 }
 

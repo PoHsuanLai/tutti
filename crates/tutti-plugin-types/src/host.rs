@@ -604,6 +604,10 @@ impl<W: Wraps> EditorWindow for W {
         self.plugin_mut().open_floating_editor(main)
     }
 
+    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+        self.plugin_mut().set_editor_scale(main, scale)
+    }
+
     fn close_editor(&mut self, main: &MainThread) {
         self.plugin_mut().close_editor(main);
     }

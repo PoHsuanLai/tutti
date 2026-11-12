@@ -364,21 +364,16 @@ pub enum RootTopologyStatus {
 /// `Device`, feature `device`), or detached (the executor stays on
 /// this side: [`render_frame`](Self::render_frame)).
 ///
-/// `Send`, not `Sync`: one control thread owns it. With `plugin` on, every
-/// path that frees a retired unit checks the main thread (a `debug_assert!`
-/// on `tutti_plugin_types::MainThread::claimed_elsewhere`, silent until a host
-/// claims its main thread), because what it frees may be an in-process plugin
-/// whose `Drop` tears down an editor. These paths take no `MainThread` token (a
-/// headless session has no main thread to be handed); the entries that open an
-/// in-process plugin do (`add_plugin`, `land_reload`). A unit is freed only
-/// when the executor hands it back, at the editor's collect, so the check is
-/// there: the [`Collect`](Phase::Collect) phase, a commit (on a detached
-/// session, which applies and collects at once: [`commit`](Self::commit),
-/// [`render_frame`](Self::render_frame), [`Graph::set_sample_rate`]), and
-/// dropping the session. [`update`](Self::update) and the
-/// [`Commit`](Phase::Commit) and [`AfterCommit`](Phase::AfterCommit) phases
-/// check it too. Editing the graph (an add, [`remove`](Self::remove), a
-/// wire) frees nothing and may run on any thread that owns the session.
+/// `Send`, not `Sync`: one control thread owns it, whichever thread that is.
+/// Nothing the session frees needs the main thread: a plugin a removal, a
+/// replacement or a crossfade retires is parked in a graveyard, which the main
+/// thread empties (`MainSession::update`, with `plugin`), and a format closes an
+/// in-process plugin that is released off the main thread there
+/// (`tutti_plugin_types::defer_to_main`). A host that never claims a main
+/// thread keeps the parked plugins until it does, and the session says so once
+/// (`Session::retired_plugins`). What does need the main thread (an editor,
+/// loading an in-process plugin, restoring state) takes the proof
+/// (`MainThread`), or is the view's (`Session::main`).
 ///
 /// ```
 /// use tutti_types::MaxBlock;
@@ -598,10 +593,11 @@ impl Session {
     /// Runs every phase in [`PHASES`] order at `Instant::now()` with the
     /// session's own declarations, and returns what it found.
     ///
-    /// A main-thread call (see the type docs).
+    /// With `plugin`, a host that has the main thread calls
+    /// `MainSession::update` instead, which also drops the retired plugins and
+    /// services the editors (see the type docs).
     #[must_use = "the events carry faults and dropouts (a refused commit, a plugin that died, a lost block): handle them, or bind `let _events` with a reason"]
     pub fn update(&mut self) -> Vec<SessionEvent> {
-        crate::main_thread();
         let mut out = Vec::new();
         let cx = PhaseCx::at(Instant::now());
         for &phase in PHASES {
@@ -617,7 +613,6 @@ impl Session {
         let _ = cx;
         match phase {
             Phase::Collect => {
-                crate::main_thread();
                 // First, so what a job landed is in the graph this update commits.
                 self.land_jobs(out);
                 // Before the collect, as a frame's spawns run before its
@@ -657,7 +652,6 @@ impl Session {
                 self.resumed |= repreparing && !self.graph.is_repreparing();
             }
             Phase::Commit => {
-                crate::main_thread();
                 let sent = self.graph.is_edited() && self.commit() == Committed::Sent;
                 if !sent && self.resumed {
                     self.publish_sent();
@@ -671,7 +665,6 @@ impl Session {
                     .modulation_phase(&mut self.graph, cx.mods, cx.now, out)
             }
             Phase::AfterCommit => {
-                crate::main_thread();
                 #[cfg(feature = "modulation")]
                 {
                     // The re-apply's commit, as the update's own: published
@@ -1250,11 +1243,5 @@ impl Session {
     #[cfg(feature = "sampler")]
     pub fn take_disk_streamer(&mut self) -> Option<tutti_sampler::DiskStreamer> {
         self.disk_streamer.take()
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        crate::main_thread();
     }
 }

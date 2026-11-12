@@ -168,8 +168,10 @@ impl<F: InProcess> Reopen for F {
 /// editor-only instance). Every method is a main-thread call, which the
 /// `&MainThread` proves.
 ///
-/// Every method is required but [`open_floating_editor`](Self::open_floating_editor),
-/// so an implementation states its answer to each rather than inheriting one.
+/// Every method is required but [`open_floating_editor`](Self::open_floating_editor)
+/// and [`set_editor_scale`](Self::set_editor_scale), whose default is a typed
+/// refusal, so an implementation states its answer to each other rather than
+/// inheriting one.
 pub trait EditorWindow {
     /// Whether the plugin has an editor it can embed or open.
     fn has_editor(&self, main: &MainThread) -> bool;
@@ -201,6 +203,24 @@ pub trait EditorWindow {
         Err(PluginError::Editor(EditorError::PluginError(
             "this plugin format has no floating-window editor".into(),
         )))
+    }
+
+    /// Tells the open editor its window's backing-store scale changed (it moved
+    /// to another monitor), without closing it: CLAP's `gui.set_scale` and VST3's
+    /// `IPlugViewContentScaleSupport::setContentScaleFactor`.
+    ///
+    /// Defaulted to a refusal, [`EditorError::ScaleUnsupported`], as
+    /// [`open_floating_editor`](Self::open_floating_editor) is: VST2 takes the
+    /// scale only at open, and AU and every logical-pixel window (Cocoa) are
+    /// scaled by the OS, so for them there is nothing to tell.
+    ///
+    /// # Errors
+    ///
+    /// [`EditorError::ScaleUnsupported`] as above, and any other refusal of the
+    /// plugin or of a missing editor.
+    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+        let _ = (main, scale);
+        Err(PluginError::Editor(EditorError::ScaleUnsupported))
     }
 
     /// Closes the editor. The plugin stays loaded. Nothing happens when no

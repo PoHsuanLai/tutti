@@ -1,7 +1,7 @@
 //! The feed-forward [`CompressorNode`] with an external side-chain, soft knee and
 //! makeup gain.
 
-use tutti_dsp::{CompressorControls, CompressorFamily, Key};
+use tutti_dsp::{CompressorControls, CompressorFamily, KeySource};
 use tutti_graph::ParamNode;
 use tutti_types::{BusTopology, CompressionRatio, Db, SampleRate, Seconds, UnitParam};
 
@@ -23,7 +23,7 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 ///
 /// # The key
 ///
-/// The detector listens to a [`Key`], chosen when the node is built. `mono`, `stereo` and
+/// The detector listens to a [`KeySource`], chosen when the node is built. `mono`, `stereo` and
 /// `with_bus` have a **side-chain** key, a second bus after the audio inputs, **and it must
 /// be wired**: the graph feeds an unconnected input silence, which compresses nothing, so
 /// a compressor whose key nobody wired does nothing. Wire it with a bus edge, for example
@@ -113,7 +113,14 @@ impl CompressorNode {
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
-        Self::keyed(Key::Sidechain, input, threshold_db, ratio, attack, release)
+        Self::keyed(
+            KeySource::Sidechain,
+            input,
+            threshold_db,
+            ratio,
+            attack,
+            release,
+        )
     }
 
     /// A compressor on the bus `input` whose detector listens to **its own signal**: no key
@@ -128,11 +135,11 @@ impl CompressorNode {
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
-        Self::keyed(Key::Own, input, threshold_db, ratio, attack, release)
+        Self::keyed(KeySource::Own, input, threshold_db, ratio, attack, release)
     }
 
     fn keyed(
-        key: Key,
+        key: KeySource,
         input: BusTopology,
         threshold_db: impl Into<Db>,
         ratio: impl Into<CompressionRatio>,

@@ -11,11 +11,11 @@ const RATE: SampleRate = SampleRate(48_000.0);
 const CHUNK: usize = 256;
 
 fn design() -> GateFamily {
-    GateFamily::new(BusTopology::STEREO, Key::Sidechain)
+    GateFamily::new(BusTopology::STEREO, KeySource::Sidechain)
 }
 
 fn own() -> GateFamily {
-    GateFamily::new(BusTopology::STEREO, Key::Own)
+    GateFamily::new(BusTopology::STEREO, KeySource::Own)
 }
 
 fn controls(threshold: f32, attack: f64, hold: f64, release: f64, range: f32) -> GateControls {

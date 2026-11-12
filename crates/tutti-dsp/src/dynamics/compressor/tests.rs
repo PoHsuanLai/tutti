@@ -11,11 +11,11 @@ const RATE: SampleRate = SampleRate(48_000.0);
 const CHUNK: usize = 256;
 
 fn design() -> CompressorFamily {
-    CompressorFamily::new(BusTopology::STEREO, Key::Sidechain)
+    CompressorFamily::new(BusTopology::STEREO, KeySource::Sidechain)
 }
 
 fn own() -> CompressorFamily {
-    CompressorFamily::new(BusTopology::STEREO, Key::Own)
+    CompressorFamily::new(BusTopology::STEREO, KeySource::Own)
 }
 
 fn controls(

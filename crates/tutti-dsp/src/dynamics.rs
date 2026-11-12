@@ -7,7 +7,7 @@ mod compressor_kernel;
 mod curves;
 mod envelope;
 mod gate;
-mod key;
+mod key_source;
 mod limiter;
 mod lookahead;
 mod window;
@@ -22,6 +22,6 @@ pub use curves::{
 };
 pub use envelope::EnvelopeFollower;
 pub use gate::{GateControls, GateFamily, GateMember, GateRecurrence};
-pub use key::Key;
+pub use key_source::KeySource;
 pub use limiter::{LimiterBlock, LimiterKernel};
 pub use lookahead::{LookaheadRing, fold_peak};

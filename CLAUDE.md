@@ -821,8 +821,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   ceiling a fast lane) the compressor (`CompressorFamily`, `CompressorRecurrence`: its threshold a fast lane,
   its makeup gliding over `GAIN_GLIDE`; the block `CompressorKernel` stays for the
   multiband) and the noise gate (`GateFamily`, `GateRecurrence`: threshold a fast lane, the
-  range gliding over `GAIN_GLIDE`), both on a typed `Key` (`Key::Sidechain`, a key bus that
-  must be wired, `Channels::keyed`; `Key::Own`, the signal itself, `Channels::same`), the partitioned
+  range gliding over `GAIN_GLIDE`), both on a typed `KeySource` (`KeySource::Sidechain`, a key bus that
+  must be wired, `Channels::keyed`; `KeySource::Own`, the signal itself, `Channels::same`), the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the

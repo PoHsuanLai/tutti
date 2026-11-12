@@ -1,4 +1,4 @@
-//! [`Key`]: where a keyed dynamics family's detector listens.
+//! [`KeySource`]: where a keyed dynamics family's detector listens.
 
 use tutti_types::BusTopology;
 
@@ -16,14 +16,14 @@ use crate::{Channels, Feed};
 /// - [`Own`](Self::Own): no key bus ([`Channels::same`]). The detector reads the signal
 ///   itself, as an ordinary compressor or gate does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Key {
+pub enum KeySource {
     /// The detector reads a side-chain bus, as wide as the signal.
     Sidechain,
     /// The detector reads the signal itself; the family has no key bus.
     Own,
 }
 
-impl Key {
+impl KeySource {
     /// The channels of a family on `input` with this key: audio and a key bus of the same
     /// width for a [`Sidechain`](Self::Sidechain), the audio alone for [`Own`](Self::Own).
     #[must_use]

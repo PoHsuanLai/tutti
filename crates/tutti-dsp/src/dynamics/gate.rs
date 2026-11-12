@@ -1,7 +1,7 @@
 //! [`GateFamily`]: the noise gate as a [`Family`] (design 024 section 3, row 6).
 //!
 //! A gate reads a **key**: the side-chain as wide as the signal (an unwired one is
-//! silence and holds the gate closed) or the signal itself, as the family's [`Key`] says.
+//! silence and holds the gate closed) or the signal itself, as the family's [`KeySource`] says.
 //! It finds the key's level (the loudest channel at each frame), decides *open* when the
 //! level is at or over the threshold, and runs a follower on that decision: an attack
 //! toward 1 while open, a hold of whole frames after the level falls, then a release toward
@@ -22,7 +22,7 @@ use tutti_types::{Amplitude, BusTopology, Db, SampleRate, Samples, Seconds};
 
 use super::compressor::GAIN_GLIDE;
 use super::curves::{amplitude_to_db, gate_gain_at};
-use super::key::Key;
+use super::key_source::KeySource;
 use crate::control::COEFF_STREAM;
 use crate::smoother::Smoother;
 use crate::{
@@ -194,20 +194,20 @@ impl System for GateMember {
     }
 }
 
-/// The [`Family`] of the noise gate, `input` wide, its detector on the [`Key`] it is
+/// The [`Family`] of the noise gate, `input` wide, its detector on the [`KeySource`] it is
 /// given. One open/closed decision is made from the loudest key channel and one gain is
 /// applied to every channel.
 #[derive(Clone, Copy, Debug)]
 pub struct GateFamily {
     input: BusTopology,
-    key: Key,
+    key: KeySource,
 }
 
 impl GateFamily {
     /// A gate on the bus `input` whose detector reads `key`, and one output bus where the
-    /// input is. A [`Key::Sidechain`] is a second bus as wide as the input.
+    /// input is. A [`KeySource::Sidechain`] is a second bus as wide as the input.
     #[must_use]
-    pub const fn new(input: BusTopology, key: Key) -> Self {
+    pub const fn new(input: BusTopology, key: KeySource) -> Self {
         Self { input, key }
     }
 }
@@ -309,7 +309,7 @@ pub struct GateState {
 
 /// The [`Recurrence`] of a [`GateFamily`].
 ///
-/// K, per frame: the key's level (the loudest channel of the [`Key`]'s source, the
+/// K, per frame: the key's level (the loudest channel of the [`KeySource`]'s source, the
 /// side-chain or the signal; a NaN reads as quiet), the decision *open* (against the
 /// member's linear threshold, or, when lane 0 of the [`Feed`] is finite at the frame,
 /// against that threshold in dB: the level in dB, floored at [`Db::FLOOR`], at or over
@@ -323,7 +323,7 @@ pub struct GateState {
 /// the member's threshold.
 #[derive(Clone, Copy, Debug)]
 pub struct GateRecurrence {
-    key: Key,
+    key: KeySource,
 }
 
 impl Recurrence for GateRecurrence {

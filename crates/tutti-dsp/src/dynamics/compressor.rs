@@ -2,7 +2,7 @@
 //! section 3, row 5).
 //!
 //! A compressor reads a **key**: the side-chain as wide as the signal (an unwired one is
-//! silence and compresses nothing) or the signal itself, as the family's [`Key`] says. It
+//! silence and compresses nothing) or the signal itself, as the family's [`KeySource`] says. It
 //! finds its level (the loudest key channel at
 //! each frame), turns the level over the threshold into a reduction by the static
 //! curve, smooths that reduction with an attack and a release, and multiplies **every**
@@ -22,7 +22,7 @@ use core::ops::Range;
 use tutti_types::{Amplitude, BusTopology, CompressionRatio, Db, SampleRate, Samples, Seconds};
 
 use super::curves::{amplitude_to_db, compute_compressor_gain_reduction};
-use super::key::Key;
+use super::key_source::KeySource;
 use crate::control::COEFF_STREAM;
 use crate::smoother::Smoother;
 use crate::{
@@ -152,19 +152,19 @@ impl System for CompressorMember {
     }
 }
 
-/// The [`Family`] of the compressor, `input` wide, its detector on the [`Key`] it is
+/// The [`Family`] of the compressor, `input` wide, its detector on the [`KeySource`] it is
 /// given. One gain is computed from the loudest key channel and applied to every channel.
 #[derive(Clone, Copy, Debug)]
 pub struct CompressorFamily {
     input: BusTopology,
-    key: Key,
+    key: KeySource,
 }
 
 impl CompressorFamily {
     /// A compressor on the bus `input` whose detector reads `key`, and one output bus
-    /// where the input is. A [`Key::Sidechain`] is a second bus as wide as the input.
+    /// where the input is. A [`KeySource::Sidechain`] is a second bus as wide as the input.
     #[must_use]
-    pub const fn new(input: BusTopology, key: Key) -> Self {
+    pub const fn new(input: BusTopology, key: KeySource) -> Self {
         Self { input, key }
     }
 }
@@ -285,7 +285,7 @@ pub struct CompressorState {
 
 /// The [`Recurrence`] of a [`CompressorFamily`].
 ///
-/// K, per frame: the key's level (the loudest channel of the [`Key`]'s source, the
+/// K, per frame: the key's level (the loudest channel of the [`KeySource`]'s source, the
 /// side-chain or the signal; a NaN reads as quiet) in dB
 /// (floored at [`Db::FLOOR`]), the static curve at the threshold (lane 0 of the
 /// [`Feed`] when it is finite, else the member's), the one-pole follower on the
@@ -297,7 +297,7 @@ pub struct CompressorState {
 /// to the member's threshold.
 #[derive(Clone, Copy, Debug)]
 pub struct CompressorRecurrence {
-    key: Key,
+    key: KeySource,
 }
 
 impl Recurrence for CompressorRecurrence {

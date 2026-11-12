@@ -1,7 +1,7 @@
 //! The noise gate [`GateNode`]: closes below a threshold, keyed from a side-chain or from
 //! its own signal.
 
-use tutti_dsp::{GateControls, GateFamily, Key};
+use tutti_dsp::{GateControls, GateFamily, KeySource};
 use tutti_graph::ParamNode;
 use tutti_types::{BusTopology, Db, SampleRate, Seconds, UnitParam};
 
@@ -16,7 +16,7 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 ///
 /// # The key
 ///
-/// The detector listens to a [`Key`], chosen when the node is built:
+/// The detector listens to a [`KeySource`], chosen when the node is built:
 ///
 /// - [`mono`](Self::mono), [`stereo`](Self::stereo) and [`with_bus`](Self::with_bus) have a
 ///   **side-chain** key: a second bus, as wide as the signal, after the audio inputs.
@@ -106,7 +106,14 @@ impl GateNode {
         hold: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
-        Self::keyed(Key::Sidechain, input, threshold_db, attack, hold, release)
+        Self::keyed(
+            KeySource::Sidechain,
+            input,
+            threshold_db,
+            attack,
+            hold,
+            release,
+        )
     }
 
     /// A gate on the bus `input` whose detector listens to **its own signal**: no key bus,
@@ -121,11 +128,11 @@ impl GateNode {
         hold: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
-        Self::keyed(Key::Own, input, threshold_db, attack, hold, release)
+        Self::keyed(KeySource::Own, input, threshold_db, attack, hold, release)
     }
 
     fn keyed(
-        key: Key,
+        key: KeySource,
         input: BusTopology,
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,

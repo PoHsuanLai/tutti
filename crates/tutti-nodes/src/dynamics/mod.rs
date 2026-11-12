@@ -9,7 +9,7 @@
 //! family model (`FamilyNode` over `CompressorFamily`, `GateFamily` and `BrickwallFamily`,
 //! which hold the recurrence); the limiter and the multiband are still hand-written.
 //!
-//! [`CompressorNode`] and [`GateNode`] take a typed [`Key`](tutti_dsp::Key): an
+//! [`CompressorNode`] and [`GateNode`] take a typed [`KeySource`](tutti_dsp::KeySource): an
 //! **external sidechain** (their level detector reads separate inputs, so the signal
 //! being measured need not be the signal being shaped) or their own signal. [`MultibandCompressorNode`] runs one compressor core per
 //! band of a [`Crossover`](tutti_dsp::Crossover), each detecting on its own band.

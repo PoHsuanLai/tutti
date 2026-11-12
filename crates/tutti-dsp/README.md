@@ -22,7 +22,7 @@ ramps and the graph shape. Here they take plain typed values per call.
 - **Dynamics** — `EnvelopeFollower`; the curves
   `compute_compressor_gain_reduction`, `compute_limiter_gain` and
   `LimiterCurve`; the compressor and the noise gate as families (`CompressorFamily` and
-  `GateFamily`, each on a typed `Key`, a side-chain bus or the signal itself, run by
+  `GateFamily`, each on a typed `KeySource`, a side-chain bus or the signal itself, run by
   `CompressorRecurrence` and `GateRecurrence`; the threshold a per-frame lane, the makeup
   and the range gliding over `GAIN_GLIDE`); the brickwall clipper (`BrickwallFamily`);
   `CompressorKernel` (the multiband's bands'), whose `gain` takes a `CompressorBlock`; and

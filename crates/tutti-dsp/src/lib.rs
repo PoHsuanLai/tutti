@@ -36,7 +36,7 @@
 //!   the [`Feed`]); and the compressor ([`CompressorFamily`], run by
 //!   [`CompressorRecurrence`], keyed, its threshold a lane, its makeup gliding over
 //!   [`GAIN_GLIDE`]) and the noise gate ([`GateFamily`], run by [`GateRecurrence`], its
-//!   range gliding likewise). Both read a [`Key`]: a side-chain bus or the signal itself.
+//!   range gliding likewise). Both read a [`KeySource`]: a side-chain bus or the signal itself.
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
@@ -108,7 +108,7 @@ pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
     BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence, CompressorBlock,
     CompressorControls, CompressorFamily, CompressorKernel, CompressorMember, CompressorRecurrence,
-    EnvelopeFollower, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence, Key,
+    EnvelopeFollower, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence, KeySource,
     LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
     compute_compressor_gain_reduction, compute_limiter_gain, fold_peak, ramp_db,
 };

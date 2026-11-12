@@ -120,6 +120,14 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   is `MidiIngestNode`, one event input per device slot with a translator and
   MPE state each, and the session wires a device's inlet to its slot in
   `Phase::Poll` (doc 017 E5, open question 8).
+- **The playhead is one read** (doc 030 R2): `Session::playhead() -> Playhead`
+  (`tutti-engine`) is the block clock's one `tutti-rt` sequence cell, written once
+  per render call from the transport of the call's first frame, so `beat`,
+  `frame`, `seconds` and `playing` are one instant; `at` is that call's
+  `tutti_rt::monotonic_ns`. `Playhead::beat_now(now)` extrapolates at the tempo
+  in force, clamped to one call's length past `at`. An app reads this, not
+  `TransportSettings::beat` or `MotionFsm::is_playing` (crate-private; the
+  transport's own `Timeline` reads stay for code that is the transport's).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or

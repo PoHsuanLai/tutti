@@ -25,7 +25,9 @@
 
 use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_graph::contract_tests;
-use tutti_nodes::{CrossoverNode, DelayLineNode, LimiterNode, MultibandCompressorNode};
+use tutti_nodes::{
+    CrossoverNode, DelayLineNode, LimiterControls, LimiterNode, MultibandCompressorNode,
+};
 use tutti_types::{ChannelLayout, Db, Feedback, Hz, Samples, Seconds};
 
 fn impulse(port: u16) -> Excite {
@@ -40,11 +42,11 @@ fn limiter_row() -> Row {
     Row::new(
         "LimiterNode (mono, 5 ms lookahead)",
         || {
-            Box::new(LimiterNode::with_channels(
-                ChannelLayout::MONO,
-                Db(-3.0),
-                Db(-0.3),
-            ))
+            Box::new(LimiterNode::mono(LimiterControls {
+                threshold: Db(-3.0),
+                ceiling: Db(-0.3),
+                ..LimiterControls::DEFAULT
+            }))
         },
         impulse(0),
         Detect::Threshold(0.0),
@@ -57,7 +59,13 @@ fn limiter_row() -> Row {
 fn stereo_limiter_row() -> Row {
     Row::new(
         "LimiterNode (stereo, right channel)",
-        || Box::new(LimiterNode::new(Db(-3.0), Db(-0.3))),
+        || {
+            Box::new(LimiterNode::stereo(LimiterControls {
+                threshold: Db(-3.0),
+                ceiling: Db(-0.3),
+                ..LimiterControls::DEFAULT
+            }))
+        },
         impulse(1),
         Detect::Threshold(0.0),
     )

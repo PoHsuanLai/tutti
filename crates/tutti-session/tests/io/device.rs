@@ -10,8 +10,8 @@ use tutti_cpal::{
     DeviceId, DeviceSelector, Direction, ManualStreamDriver, OutputSpec, Snapshot, SnapshotSource,
 };
 use tutti_graph::ForkByClone;
-use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Osc;
+use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{
     Backoff, DevicePolicy, DeviceRestart, InPort, OutPort, Phase, PhaseCx, Root, Session,
     SessionEvent,
@@ -100,11 +100,11 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
         .expect("builds with no device")
         .into_parts();
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
-    let (lim, _) = s.graph().add(LimiterNode::with_channels(
-        ChannelLayout::MONO,
-        Db(0.0),
-        Db(0.0),
-    ));
+    let (lim, _) = s.graph().add(LimiterNode::mono(LimiterControls {
+        threshold: Db(0.0),
+        ceiling: Db(0.0),
+        ..LimiterControls::DEFAULT
+    }));
     s.graph()
         .set_sources_hard(InPort::new(lim, 0), [OutPort::new(osc, 0)])
         .unwrap();

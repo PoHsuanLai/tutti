@@ -140,7 +140,9 @@ pub trait Family: Clone + Send {
     fn channels(&self) -> Channels;
 
     /// An empty member at `rate`: what [`member_into`](Self::member_into) writes
-    /// into.
+    /// into. Its [`latency`](System::latency) is the one the node declares to the graph
+    /// (with what the recurrence adds), so a member's latency must be the blank's whatever
+    /// the controls: the contract's `latency` case holds every member to it.
     fn blank(&self, rate: SampleRate) -> Self::Member;
 
     /// φ: writes the member for `controls` at `rate` into `out`, replacing all of

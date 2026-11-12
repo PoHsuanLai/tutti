@@ -24,9 +24,10 @@ ramps and the graph shape. Here they take plain typed values per call.
   `LimiterCurve`; the compressor and the noise gate as families (`CompressorFamily` and
   `GateFamily`, each on a typed `KeySource`, a side-chain bus or the signal itself, run by
   `CompressorRecurrence` and `GateRecurrence`; the threshold a per-frame lane, the makeup
-  and the range gliding over `GAIN_GLIDE`); the brickwall clipper (`BrickwallFamily`);
-  `CompressorKernel` (the multiband's bands'), whose `gain` takes a `CompressorBlock`; and
-  `LookaheadRing`, the limiter's delay with its sliding gain minimum.
+  and the range gliding over `GAIN_GLIDE`); the lookahead limiter (`LimiterFamily`, run by
+  `LimiterRecurrence`: threshold and ceiling per-frame lanes, every coefficient landing
+  whole, the lookahead its member's latency); the brickwall clipper (`BrickwallFamily`); and
+  `CompressorKernel` (the multiband's bands'), whose `gain` takes a `CompressorBlock`.
 - **Convolution** — `Convolver`, a uniform or non-uniform partitioned FFT
   convolution over an IR's shared, read-only `IrSpectra`.
 - **Delay** — `DelayLine`, a fractional-read ring with an `InterpolationMode`,

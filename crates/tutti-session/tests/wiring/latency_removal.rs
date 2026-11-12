@@ -12,10 +12,10 @@
 //! latency-bearing left the published latency is nothing at all.
 
 use tutti_graph::ForkByClone;
-use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
+use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{InPort, OutPort, Root, Session};
-use tutti_types::{ChannelLayout, Db, SampleRate, Samples};
+use tutti_types::{Db, SampleRate, Samples};
 
 #[test]
 fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
@@ -25,11 +25,11 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
         .expect("builds");
     let (dry, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
     let (src, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
-    let (lim, _) = s.graph().add(LimiterNode::with_channels(
-        ChannelLayout::MONO,
-        Db(-1.0),
-        Db(-0.3),
-    ));
+    let (lim, _) = s.graph().add(LimiterNode::mono(LimiterControls {
+        threshold: Db(-1.0),
+        ceiling: Db(-0.3),
+        ..LimiterControls::DEFAULT
+    }));
     s.graph()
         .set_sources_hard(InPort::new(lim, 0), [OutPort::new(src, 0)])
         .unwrap();

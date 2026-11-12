@@ -8,7 +8,8 @@ use tutti_types::MaxBlock;
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
-    BrickwallLimiterNode, BusStripNode, DelayLineNode, EqBandNode, LimiterNode, SvfType,
+    BrickwallLimiterNode, BusStripNode, DelayLineNode, EqBandNode, LimiterControls, LimiterNode,
+    SvfType,
 };
 use tutti_types::{
     AtomicF32, Db, Feedback, Hz, ParamCell, Q, SampleRate, Samples, Seconds, UnitParam,
@@ -130,11 +131,16 @@ fn the_limiters_and_the_eq_band_hold_off_non_finite_controls() {
         }
     }
     check("limiter", || {
-        let n = LimiterNode::new(Db(-6.0), Db(-1.0));
+        let n = LimiterNode::stereo(LimiterControls {
+            threshold: Db(-6.0),
+            ceiling: Db(-1.0),
+            ..LimiterControls::DEFAULT
+        });
+        let cell = |kind| n.param_set().cell(kind).unwrap();
         let cells = vec![
-            ("threshold", n.threshold().into(), -12.0),
-            ("ceiling", n.ceiling().into(), -3.0),
-            ("release", n.release_time().into(), 0.2),
+            ("threshold", cell(UnitParam::Threshold), -12.0),
+            ("ceiling", cell(UnitParam::Ceiling), -3.0),
+            ("release", cell(UnitParam::Release), 0.2),
         ];
         (Box::new(n), cells)
     });

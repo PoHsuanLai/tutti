@@ -15,8 +15,8 @@
 use tutti_cpal::{ManualStream, ManualStreamDriver, OutputSpec};
 use tutti_graph::NodeKey;
 use tutti_graph::{CrossfadeCurve, ForkByClone};
-use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::{Osc, Through};
+use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{Crossfade, Error, InPort, OutPort, Root, Session};
 use tutti_transport::{MotionEvent, Timeline};
 use tutti_types::{At, ChannelLayout, Db, Frame, Hz, MaxBlock, SampleRate, Samples, Seconds};
@@ -52,11 +52,11 @@ fn engine() -> (
         .expect("builds with no device")
         .into_parts();
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
-    let (lim, _) = s.graph().add(LimiterNode::with_channels(
-        ChannelLayout::MONO,
-        Db(0.0),
-        Db(0.0),
-    ));
+    let (lim, _) = s.graph().add(LimiterNode::mono(LimiterControls {
+        threshold: Db(0.0),
+        ceiling: Db(0.0),
+        ..LimiterControls::DEFAULT
+    }));
     s.graph()
         .set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
         .unwrap();

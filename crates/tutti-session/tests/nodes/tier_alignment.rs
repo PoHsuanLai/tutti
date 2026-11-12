@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
 use tutti_graph::ForkByClone;
-use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
+use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_sampler::testing::settle_threaded;
 use tutti_sampler::{DiskVoice, MemorySource, Placement, StreamPhase};
 use tutti_session::{InPort, OutPort, Root, Session};
@@ -84,11 +84,11 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
 
     // The latent path, on output 2.
     let (src, _) = s.graph().add(ForkByClone(Const::mono(1.0)));
-    let (eff, _) = s.graph().add(LimiterNode::with_channels(
-        ChannelLayout::MONO,
-        Db(-1.0),
-        Db(-0.3),
-    ));
+    let (eff, _) = s.graph().add(LimiterNode::mono(LimiterControls {
+        threshold: Db(-1.0),
+        ceiling: Db(-0.3),
+        ..LimiterControls::DEFAULT
+    }));
     s.graph()
         .set_sources(InPort::new(eff, 0), [OutPort::new(src, 0)])
         .unwrap();

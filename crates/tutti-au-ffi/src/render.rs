@@ -8,7 +8,7 @@ use tutti_plugin_types::ChannelLayout;
 
 use coreaudio_sys::{AudioBuffer, AudioBufferList, AudioTimeStamp, AudioUnitRenderActionFlags};
 
-use crate::callback::with_state;
+use crate::callback::with_state_mut;
 use crate::error::{Error, Result, check};
 use crate::property::{Element, LastRenderError, Scope, SetRenderCallback};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
@@ -433,7 +433,7 @@ unsafe extern "C" fn au_input_render_callback(
     // registered (null once withdrawn), and `io_data` is the unit's own list for
     // this pull, checked for null below.
     unsafe {
-        with_state::<RenderScratch, _>(
+        with_state_mut::<RenderScratch, _>(
             "the input render callback",
             in_ref_con,
             -1,
@@ -448,11 +448,24 @@ unsafe extern "C" fn au_input_render_callback(
     }
 }
 
+/// Serves the staged input into the unit's buffer list.
+///
+/// A buffer with a non-null `mData` is filled in place. One with a **null**
+/// `mData` is the unit asking the callback to supply the pointers
+/// (`AUComponent.h`, `AudioUnitRender`: "if the mData pointers are null, then
+/// the audio unit can provide pointers to its own buffers"; the callback is the
+/// same contract seen from the provider's side), so it is pointed at this
+/// block's staged channel, which outlives the render. Answering a null buffer
+/// with zero bytes and `noErr` made the unit hear silence with no error.
+/// An interleaved list (`mNumberChannels` above one) cannot be pointed at a
+/// planar channel; the stream format this crate sets is planar, so it is
+/// answered with no data rather than a wrong layout.
+///
 /// # Safety
 /// `io_data` is a valid buffer list whose buffers' `mData` hold
-/// `mDataByteSize` bytes.
+/// `mDataByteSize` bytes where it is non-null.
 unsafe fn fill_input(
-    scratch: &RenderScratch,
+    scratch: &mut RenderScratch,
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> i32 {
@@ -461,7 +474,16 @@ unsafe fn fill_input(
     // SAFETY: the caller's contract on `io_data`.
     for (ch, buf) in unsafe { iter_buffers_mut(io_data) }.enumerate() {
         if buf.mData.is_null() {
-            buf.mDataByteSize = 0;
+            let planar = buf.mNumberChannels <= 1;
+            match scratch.inputs.get_mut(ch) {
+                Some(src) if planar => {
+                    let frames = requested.min(src.len());
+                    buf.mNumberChannels = 1;
+                    buf.mData = src.as_mut_ptr().cast::<c_void>();
+                    buf.mDataByteSize = (frames * std::mem::size_of::<f32>()) as u32;
+                }
+                _ => buf.mDataByteSize = 0,
+            }
             continue;
         }
         let per_channel = (buf.mNumberChannels as usize).max(1);
@@ -1105,6 +1127,41 @@ mod tests {
         )
     }
 
+    /// A buffer the unit hands over with a null `mData` is pointed at the staged
+    /// channel, and what it then reads is the staged audio at the requested size
+    /// (`AUComponent.h`: with null pointers the provider supplies its own
+    /// buffers). The previous answer was zero bytes and `noErr`: silence.
+    #[test]
+    fn a_null_input_buffer_is_supplied_from_the_staged_channel() {
+        let mut scratch = stereo_scratch(8);
+        let l = [0.25f32, -0.5, 0.75, -1.0];
+        let r = [1.0f32, 0.5, -0.25, 0.125];
+        scratch.stage_input(&[&l[..], &r[..]], 4);
+
+        let mut list = RenderBufferList::new(ChannelLayout::STEREO);
+        let mut spare = vec![vec![0.0f32; 4]; 2];
+        let abl = list.bind(&mut spare, 4);
+        // SAFETY: `abl` is the live, bound list of two buffers `bind` returned.
+        for buf in unsafe { iter_buffers_mut(abl) } {
+            buf.mData = std::ptr::null_mut();
+            buf.mDataByteSize = 4 * 4;
+        }
+
+        // SAFETY: `abl` is a valid list; its `mData` are null, which is the case.
+        let status = unsafe { fill_input(&mut scratch, 4, abl) };
+        assert_eq!(status, 0);
+
+        // SAFETY: as above; the buffers now point into the scratch, which is live.
+        let buffers: Vec<_> = unsafe { iter_buffers_mut(abl) }.collect();
+        for (buf, want) in buffers.iter().zip([&l, &r]) {
+            assert!(!buf.mData.is_null(), "the unit was left with no pointer");
+            assert_eq!(buf.mDataByteSize, 4 * 4, "four frames of f32");
+            // SAFETY: `mData` points at the scratch channel, 4 f32 long at least.
+            let got = unsafe { std::slice::from_raw_parts(buf.mData as *const f32, 4) };
+            assert_eq!(got, want);
+        }
+    }
+
     /// The f64 staging pair must carry a block through unchanged apart from the
     /// f32 narrowing the AU forces.
     ///
@@ -1359,10 +1416,13 @@ mod tests {
         }
     }
 
-    /// A null `mData` must be skipped, not dereferenced.
+    /// A null `mData` is never dereferenced: the callback supplies its own
+    /// pointer, the staged channel, for the frames asked (`AUComponent.h`, the
+    /// null-pointer arm of `AudioUnitRender`). The byte size is the 32 frames
+    /// asked, not the 256 bytes the caller's header carried, and not zero.
     #[test]
     fn render_callback_survives_a_null_buffer() {
-        let scratch = RenderScratch::new(
+        let mut scratch = RenderScratch::new(
             BusLayout {
                 inputs: ChannelLayout::STEREO,
                 outputs: ChannelLayout::STEREO,
@@ -1377,7 +1437,7 @@ mod tests {
             // SAFETY: the buffer lists and pointers are the test scaffolding's own, live
             // for the call and described truthfully (or deliberately malformed in the
             // ways the callback must survive).
-            unsafe { render_input(&scratch as *const RenderScratch as *mut c_void, 64, abl) };
+            unsafe { render_input(&mut scratch as *mut RenderScratch as *mut c_void, 32, abl) };
         assert_eq!(status, 0);
         // SAFETY: the buffer lists and pointers are the test scaffolding's own, live
         // for the call and described truthfully (or deliberately malformed in the
@@ -1385,10 +1445,11 @@ mod tests {
         unsafe {
             let b = &raw const (*abl).mBuffers[0];
             assert_eq!(
-                (*b).mDataByteSize,
-                0,
-                "a null buffer must report zero bytes written, not the requested size"
+                (*b).mData as *const f32,
+                scratch.inputs[0].as_ptr(),
+                "the unit must be pointed at the staged channel"
             );
+            assert_eq!((*b).mDataByteSize, 32 * 4, "the frames asked, as bytes");
         }
     }
 

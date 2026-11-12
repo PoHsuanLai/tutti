@@ -87,13 +87,16 @@ fn format_name(format: PluginFormat) -> &'static str {
 
 /// Whether this build holds the format's host for loading in this process.
 fn in_process_built(format: PluginFormat) -> bool {
-    match format {
-        PluginFormat::Vst2 => cfg!(feature = "vst2"),
-        PluginFormat::Clap => cfg!(feature = "clap"),
-        PluginFormat::Vst3 => cfg!(feature = "vst3"),
-        PluginFormat::AudioUnit => cfg!(all(feature = "au", target_os = "macos")),
-        _ => false,
-    }
+    let built = [
+        (PluginFormat::Vst2, cfg!(feature = "vst2")),
+        (PluginFormat::Clap, cfg!(feature = "clap")),
+        (PluginFormat::Vst3, cfg!(feature = "vst3")),
+        (
+            PluginFormat::AudioUnit,
+            cfg!(all(feature = "au", target_os = "macos")),
+        ),
+    ];
+    built.iter().any(|&(has, on)| has == format && on)
 }
 
 /// One plugin: the file it is in, its format, and its id in that file.

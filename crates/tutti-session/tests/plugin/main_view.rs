@@ -96,11 +96,13 @@ fn session_with_editor() -> (Session, NodeKey, FakePlugin) {
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
-    assert!(s.graph().host_plugin(
-        node,
-        handle,
-        tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
-    ));
+    s.graph()
+        .host_plugin(
+            node,
+            handle,
+            tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
+        )
+        .expect("the node is in the graph");
     s.commit();
     (s, node.erase(), fake)
 }

@@ -123,7 +123,7 @@ use tutti_plugin_types::{
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{
-    GiveUp, Params, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure,
+    GiveUp, Key, Params, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure,
     RecoveryPolicy, ReloadCause, Session, SessionEvent,
 };
 
@@ -995,6 +995,38 @@ impl HostedPlugin {
     }
 }
 
+/// The type of a hosted plugin's [`Key`]: what [`Session::add_plugin`],
+/// [`Graph::insert_plugin`](crate::Graph::insert_plugin) and
+/// [`Graph::host_plugin`](crate::Graph::host_plugin) return, so a plugin's
+/// ports and parameters are methods of its key as a native node's are.
+///
+/// A marker only: no value of it exists, and every plugin format, in or out
+/// of process, is a `Key<PluginNode>`. It names the *kind* of node, as
+/// [`Key::erase`] names none; the view of the plugin is [`Plugin`].
+/// With `modulation`, `key.param(id)` is a plugin parameter's
+/// `ParamRef` (see `Key::param`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginNode {}
+
+#[cfg(feature = "modulation")]
+impl Key<PluginNode> {
+    /// Parameter `id` of the plugin, as the reference a modulation route or an
+    /// automation lane targets (feature `modulation`): the same one
+    /// [`Param::target`](crate::Param::target) gives and a native node's param
+    /// method does, so a route names a plugin's parameter and a native one
+    /// through one type.
+    ///
+    /// A plain value, like a native param's: it borrows no session and checks
+    /// nothing. An id the plugin does not declare is refused where the
+    /// reference is resolved (a route's resolution, `Mods`'s
+    /// [`Problem`](crate::Problem)), as [`ParamRef::plugin`](crate::ParamRef::plugin)'s
+    /// is; [`Plugin::params`] resolves one now.
+    #[must_use]
+    pub fn param(self, id: ParamId) -> crate::ParamRef {
+        crate::ParamRef::plugin(self, id.get())
+    }
+}
+
 /// A hosted plugin, lent by [`Session::plugin`]: its identity, and the
 /// surfaces the session holds for it (design 029 section 3.1).
 ///
@@ -1351,7 +1383,7 @@ impl Session {
         &mut self,
         main: &MainThread,
         request: PluginLoadRequest,
-    ) -> Result<NodeKey, BridgeError> {
+    ) -> Result<Key<PluginNode>, BridgeError> {
         let done = self.plugin_load(request).run();
         self.add_plugin(main, done)
     }
@@ -1376,7 +1408,7 @@ impl Session {
         &mut self,
         main: &MainThread,
         loaded: PluginLoaded,
-    ) -> Result<NodeKey, BridgeError> {
+    ) -> Result<Key<PluginNode>, BridgeError> {
         let requested = loaded.plugin;
         let config = loaded.config;
         let Open {
@@ -1392,27 +1424,27 @@ impl Session {
         let handle = plugin.handle().clone();
         let loaded_ref = plugin.plugin().clone();
         let meter = self.click_settings.project_meter();
-        let node = match plugin.into_client() {
+        let key = match plugin.into_client() {
             Ok(client) => {
                 client.controls().set_meter(meter);
-                let node = self.graph.insert_plugin(client);
-                if let Some(hosted) = self.graph.plugins.get_mut(&node) {
+                let key = self.graph.insert_plugin(client);
+                if let Some(hosted) = self.graph.plugins.get_mut(&key.erase()) {
                     hosted.origin = Some(Origin { config });
                     hosted.recovery = self.recovery.map(Recovery::new);
                 }
-                node
+                key
             }
             Err(plugin) => {
                 let plugin_meter = plugin.meter();
                 plugin_meter.set_meter(meter);
                 let (node, _) = self.graph.place((*plugin).bind(self.graph.tempo.clone()));
-                let node = node.erase();
                 let mut hosted = HostedPlugin::new(handle, loaded_ref);
                 hosted.meter = Some(plugin_meter);
-                self.graph.plugins.insert(node, hosted);
-                node
+                self.graph.plugins.insert(node.erase(), hosted);
+                Key::new(node.erase())
             }
         };
+        let node = key.erase();
         if let Some(hosted) = self.graph.plugins.get_mut(&node)
             && let Some(Mirror { values, unread }) = mirror
         {
@@ -1421,7 +1453,7 @@ impl Session {
             hosted.gate.declare(&hosted.mirror);
         }
         tracing::info!("plugin '{}' added as {node:?}", requested.path().display());
-        Ok(node)
+        Ok(key)
     }
 
     /// The plugin hosted at `node`.
@@ -2278,11 +2310,14 @@ mod tests {
                 .add(tutti_graph::ForkByClone(tutti_nodes::testing::Const::mono(
                     0.0,
                 )));
-        assert!(session.graph().host_plugin(
-            node,
-            handle,
-            PluginRef::file("fake.clap").expect("a plugin file")
-        ));
+        session
+            .graph()
+            .host_plugin(
+                node,
+                handle,
+                PluginRef::file("fake.clap").expect("a plugin file"),
+            )
+            .expect("the node is in the graph");
         let node = node.erase();
         Rig {
             session,

@@ -304,7 +304,7 @@ impl<'a> Param<'a> {
     #[cfg(feature = "modulation")]
     #[must_use]
     pub fn target(&self) -> crate::ParamRef {
-        crate::ParamRef::plugin(self.params.node, self.id().get())
+        crate::Key::<crate::PluginNode>::new(self.params.node).param(self.id())
     }
 
     fn writable(&self) -> Result<(), PluginParamError> {

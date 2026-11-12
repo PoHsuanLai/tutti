@@ -65,7 +65,7 @@ fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
         .set_sources(Root::output(0), [OutPort::new(node, 0)])
         .unwrap();
     let _ = s.update();
-    node
+    node.erase()
 }
 
 /// **The graph plans PDC against a plugin's declared latency, and a change
@@ -235,7 +235,7 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
         RATE,
     )
     .expect("the reference plugin loads");
-    let node = s.graph().insert_plugin(Box::new(client));
+    let node = s.graph().insert_plugin(Box::new(client)).erase();
     s.graph()
         .set_sources(Root::output(0), [OutPort::new(node, 0)])
         .unwrap();

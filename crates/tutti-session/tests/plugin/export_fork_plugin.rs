@@ -123,7 +123,7 @@ fn session_with_probe_at(mode: u32, path: std::path::PathBuf) -> (Session, NodeK
         .expect("the reference CLAP plugin loads");
     session.graph().connect(probe, Root).unwrap();
     let _ = session.update();
-    (session, probe)
+    (session, probe.erase())
 }
 
 /// [`session_with_probe_at`] over the reference plugin.

@@ -30,7 +30,7 @@ fn render(s: &Session, frames: usize) {
 #[test]
 fn locate_play_and_stop_move_the_playhead_on_the_set_tempo() {
     let s = offline();
-    s.set_tempo(Bpm::of(60.0));
+    s.set_tempo(Bpm::of(60.0)).expect("not following");
     s.locate(Beat(2.0)).unwrap();
     s.play().unwrap();
     render(&s, 48_000);
@@ -50,7 +50,7 @@ fn locate_play_and_stop_move_the_playhead_on_the_set_tempo() {
 #[test]
 fn a_scheduled_play_starts_on_its_frame() {
     let s = offline();
-    s.set_tempo(Bpm::of(60.0));
+    s.set_tempo(Bpm::of(60.0)).expect("not following");
     s.schedule(Frame(24_000), MotionEvent::Play).unwrap();
     render(&s, 48_000);
     let beat = s.transport().beat().get();
@@ -62,7 +62,7 @@ fn a_scheduled_play_starts_on_its_frame() {
 #[test]
 fn a_stop_scheduled_at_a_beat_halts_there() {
     let s = offline();
-    s.set_tempo(Bpm::of(60.0));
+    s.set_tempo(Bpm::of(60.0)).expect("not following");
     s.schedule(Beat(1.0), MotionEvent::stop_unfaded()).unwrap();
     s.play().unwrap();
     render(&s, 3_000);
@@ -79,7 +79,7 @@ fn a_stop_scheduled_at_a_beat_halts_there() {
 #[test]
 fn the_playhead_is_one_read_of_the_last_block() {
     let s = offline();
-    s.set_tempo(Bpm::of(60.0));
+    s.set_tempo(Bpm::of(60.0)).expect("not following");
     s.locate(Beat(2.0)).unwrap();
     s.play().unwrap();
     render(&s, 2_000);
@@ -127,7 +127,7 @@ fn a_detached_session_reads_a_resting_playhead() {
 #[test]
 fn set_loop_wraps_a_rolling_render_at_the_loops_end() {
     let looped = offline();
-    looped.set_tempo(Bpm::of(60.0));
+    looped.set_tempo(Bpm::of(60.0)).expect("not following");
     looped
         .set_loop(LoopRange::try_from(Beat(0.0)..Beat(1.0)).unwrap())
         .unwrap();
@@ -137,7 +137,7 @@ fn set_loop_wraps_a_rolling_render_at_the_loops_end() {
     assert!((beat - 0.5).abs() < 1e-3, "looped: {beat}");
 
     let free = offline();
-    free.set_tempo(Bpm::of(60.0));
+    free.set_tempo(Bpm::of(60.0)).expect("not following");
     free.play().unwrap();
     render(&free, 72_000);
     let beat = free.transport().beat().get();
@@ -150,7 +150,7 @@ fn set_loop_wraps_a_rolling_render_at_the_loops_end() {
 #[test]
 fn clear_loop_stops_wrapping_and_keeps_the_bounds() {
     let s = offline();
-    s.set_tempo(Bpm::of(60.0));
+    s.set_tempo(Bpm::of(60.0)).expect("not following");
     let range = LoopRange::try_from(Beat(0.0)..Beat(1.0)).unwrap();
     s.set_loop(range).unwrap();
     s.play().unwrap();
@@ -174,7 +174,7 @@ fn clear_loop_stops_wrapping_and_keeps_the_bounds() {
 #[test]
 fn a_play_at_a_beat_on_a_stopped_transport_is_refused() {
     let s = offline();
-    s.set_tempo(Bpm::of(60.0));
+    s.set_tempo(Bpm::of(60.0)).expect("not following");
 
     // What the refusal is for: the transport itself accepts it, and it never fires.
     s.transport()
@@ -220,7 +220,7 @@ fn a_play_at_a_beat_on_a_stopped_transport_is_refused() {
 #[test]
 fn a_play_at_a_beat_right_after_play_is_taken_and_fires() {
     let s = offline();
-    s.set_tempo(Bpm::of(60.0));
+    s.set_tempo(Bpm::of(60.0)).expect("not following");
     s.play().unwrap();
     s.schedule(Beat(1.0), MotionEvent::Play).unwrap();
     // The play and the timed play, neither applied yet.

@@ -53,7 +53,7 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
         ChannelLayout::STEREO,
         MaxBlock::of(Samples(512)),
     )?;
-    s.set_tempo(Bpm::of(120.0));
+    s.set_tempo(Bpm::of(120.0)).expect("not following");
 
     // The sampler: the same mono wave on beats 0 and 4, each a node as it
     // stands, placed at stereo to join the stereo chain.

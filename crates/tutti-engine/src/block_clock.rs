@@ -149,6 +149,15 @@ impl Playhead {
         self.playing
     }
 
+    /// The call's length in frames: how far the transport advances from
+    /// [`seconds`](Self::seconds) to the next call's first frame while it
+    /// [`playing`](Self::playing). What a control-side edit that lands at the
+    /// next block places itself by.
+    #[must_use]
+    pub fn span(&self) -> Samples {
+        self.span
+    }
+
     /// The tempo in force at the call's first frame: the rate
     /// [`beat_now`](Self::beat_now) extrapolates at.
     #[must_use]

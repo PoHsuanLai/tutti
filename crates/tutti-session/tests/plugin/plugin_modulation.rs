@@ -19,6 +19,7 @@
 
 use crate::support;
 use tutti_session::Root;
+use tutti_session::{PluginChange, PluginEvent};
 
 use std::time::{Duration, Instant};
 
@@ -115,8 +116,14 @@ impl Drive {
     fn told_of(&mut self, events: &[SessionEvent]) {
         for event in events {
             match event {
-                SessionEvent::PluginReloading { .. } => self.told.push("reloading"),
-                SessionEvent::PluginRecovered { .. } => self.told.push("recovered"),
+                SessionEvent::Plugin(PluginEvent {
+                    change: PluginChange::Reloading { .. },
+                    ..
+                }) => self.told.push("reloading"),
+                SessionEvent::Plugin(PluginEvent {
+                    change: PluginChange::Recovered { .. },
+                    ..
+                }) => self.told.push("recovered"),
                 _ => {}
             }
         }
@@ -143,6 +150,7 @@ fn wait_for_values(drive: &mut Drive, s: &mut Session, node: NodeKey) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !s
         .plugin(node)
+        .ok()
         .and_then(|p| p.param_values())
         .is_some_and(|m| m.is_ready())
     {
@@ -307,6 +315,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     // Rebuilt by the crossfade: not ready until the job is run and landed.
     assert!(
         !s.plugin(node)
+            .ok()
             .and_then(|p| p.param_values())
             .is_some_and(|m| m.is_ready()),
         "the incoming plugin's mirror starts unread"

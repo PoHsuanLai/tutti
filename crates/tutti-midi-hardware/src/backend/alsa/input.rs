@@ -12,7 +12,8 @@ use crate::endpoints::InputConnection;
 use crate::error::Result;
 use crate::{InputProducerHandle, Pushed};
 use tutti_alsa_ffi::{
-    CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC, Wait,
+    CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpVersion,
+    Wait,
 };
 use tutti_midi_device::EndpointId;
 use tutti_ump::split_stream;
@@ -97,6 +98,23 @@ pub(super) fn not_minted(id: EndpointId) -> crate::error::Error {
     crate::error::Error::port(format!("{id:?} is not an ALSA endpoint id"))
 }
 
+/// The UMP version an input on a source with this UMP Endpoint record (`None`
+/// for a legacy client) is opened at.
+///
+/// A source that can only speak MIDI 1.0 (a legacy client, or an Endpoint whose
+/// record offers no MIDI 2.0 Protocol) is opened as MIDI 1.0, so it arrives as
+/// type 2 and the kernel converts nothing. An Endpoint that offers MIDI 2.0 is
+/// opened as MIDI 2.0 even while it is in MIDI 1.0, because the session asks it
+/// for the MIDI 2.0 Protocol and the client's version is fixed for the pump's
+/// life: a MIDI 1.0 client would have the kernel narrow what the device then
+/// sends natively.
+pub(super) fn version_for(endpoint: Option<&tutti_alsa_ffi::UmpEndpoint>) -> UmpVersion {
+    match endpoint {
+        Some(e) if e.protocol_caps & tutti_alsa_ffi::PROTO_MIDI2 != 0 => UmpVersion::Midi2,
+        _ => UmpVersion::Midi1,
+    }
+}
+
 /// Opens `id` for input and starts pumping its events into `producer`.
 ///
 /// The pump runs on its own thread and stops when the returned connection is
@@ -114,7 +132,14 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     // Non-blocking, so the pump reads until the queue is empty and then waits in
     // `poll`, which the stop descriptor can interrupt. One client per connection
     // — see `client::open`.
-    let seq = super::client::open("tutti-in", true)?;
+    let seq = super::client::open("tutti-in", true, UmpVersion::Midi2)?;
+    // What the source can speak decides what this client is delivered: a MIDI
+    // 1.0 source arrives as MIDI 1.0 UMP (type 2) and the ingest node's
+    // `Translator` widens it, so the kernel never converts it (design 017 L6d).
+    // The record is read on the open client, and the version is set before the
+    // port exists and before the subscription, so no event is delivered at the
+    // other one.
+    seq.set_ump_version(version_for(seq.ump_endpoint(src_client).as_ref()))?;
     let port = seq.open_port(
         "tutti-in",
         // Not subscribable by others: the engine's pump is not a device, and a

@@ -11,10 +11,10 @@
 //! when the session is gone, so it stops writing what no one will land.
 
 #![cfg_attr(
-    all(not(test), not(feature = "midi")),
+    not(any(test, feature = "midi", all(feature = "device", feature = "audio-io"))),
     expect(
         dead_code,
-        reason = "the MIDI file and SoundFont loads (feature `midi`) are the spawner's first users"
+        reason = "the MIDI file and SoundFont loads (feature `midi`) and the take's pump (features `device` and `audio-io`) are the spawner's users"
     )
 )]
 
@@ -87,10 +87,10 @@ pub enum JobFailed {
 /// and never fails the work: after the session is gone a message is
 /// returned to the sender and dropped.
 #[cfg_attr(
-    not(test),
+    not(any(test, all(feature = "device", feature = "audio-io"))),
     expect(
         dead_code,
-        reason = "the take's pump (doc 030 step 8) is its first user"
+        reason = "the take's pump (features `device` and `audio-io`) is the streaming half's user"
     )
 )]
 pub(crate) struct Landings<M> {
@@ -108,10 +108,10 @@ impl<M: Send + 'static> Landings<M> {
     ///
     /// The message back, when the session is gone.
     #[cfg_attr(
-        not(test),
+        not(any(test, all(feature = "device", feature = "audio-io"))),
         expect(
             dead_code,
-            reason = "the take's pump (doc 030 step 8) is its first user"
+            reason = "the take's pump (features `device` and `audio-io`) is the streaming half's user"
         )
     )]
     pub(crate) fn send(&self, message: M) -> Result<(), M> {
@@ -131,10 +131,10 @@ impl<M: Send + 'static> Landings<M> {
     /// The session is gone: nothing sent will land, and the job's result
     /// will not either.
     #[cfg_attr(
-        not(test),
+        not(any(test, all(feature = "device", feature = "audio-io"))),
         expect(
             dead_code,
-            reason = "the take's pump (doc 030 step 8) is its first user"
+            reason = "the take's pump (features `device` and `audio-io`) is the streaming half's user"
         )
     )]
     pub(crate) fn is_closed(&self) -> bool {
@@ -160,10 +160,10 @@ struct JobId(u64);
 /// What crosses from a worker to the control thread.
 enum Arrival {
     #[cfg_attr(
-        not(test),
+        not(any(test, all(feature = "device", feature = "audio-io"))),
         expect(
             dead_code,
-            reason = "the take's pump (doc 030 step 8) is its first user"
+            reason = "the take's pump (features `device` and `audio-io`) is the streaming half's user"
         )
     )]
     Message(JobId, Box<dyn Any + Send>),
@@ -250,6 +250,13 @@ impl Jobs {
     /// main thread, such as a plugin reload taking `MainThread::current()`,
     /// relies on `update()` running on the claiming thread, as a plugin host's
     /// does.
+    #[cfg_attr(
+        not(any(test, feature = "midi")),
+        expect(
+            dead_code,
+            reason = "the MIDI loads (feature `midi`) are the one-result jobs' users"
+        )
+    )]
     pub(crate) fn submit<R, W, L>(&mut self, work: W, land: L)
     where
         R: Send + 'static,

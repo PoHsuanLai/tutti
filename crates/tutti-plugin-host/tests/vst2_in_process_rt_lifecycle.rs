@@ -638,11 +638,11 @@ fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
 }
 
 /// A plugin's `audioMasterIOChanged` restarts it and reaches the host's
-/// `PluginHandle::on_invalidate` as its new latency and an I/O change, on the
+/// `PluginHandle::subscribe` as its new latency and an I/O change, on the
 /// next editor pump (the main-thread tick an in-process plugin has), and the
 /// node's shape declares the new latency.
 #[test]
-fn an_io_change_reaches_on_invalidate_and_the_shape() {
+fn an_io_change_reaches_a_subscriber_and_the_shape() {
     use std::sync::{Arc, Mutex};
     use tutti_graph::Node as _;
     use tutti_plugin_types::PluginInvalidation;
@@ -651,9 +651,11 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     let loaded = load();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    loaded
-        .handle
-        .on_invalidate(move |e| sink.lock().unwrap().push(e));
+    let _subscription = loaded.handle.subscribe(move |n| {
+        if let tutti_plugin_host::Notice::Invalidate(e) = n {
+            sink.lock().unwrap().push(e);
+        }
+    });
 
     // The restart an `audioMasterIOChanged` asks for resumes the plugin, which settles its
     // latency there (the probe's late latency): the figure read after it is 300.

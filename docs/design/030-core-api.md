@@ -8,7 +8,7 @@ tempo, modulation, the sampler, the codec, export, and writing a custom node.
 session's plan (lanes L1e to L1h) does it for MIDI. The three share one set of
 conventions (§2).
 
-Status: inventory, two designs (§4, §5) and the one lane (§6); the lane is built through step 6. Written 2026-11-12
+Status: inventory, two designs (§4, §5) and the one lane (§6); the lane is built through step 8. Written 2026-11-12
 against `main` at `f583038f6`, from three read-only sweeps whose full findings
 (each with today's code, the friction, the fix and a size) are kept outside the
 repo in `~/tutti-audit/api-inventory/`. Already landed or in flight, and not
@@ -91,7 +91,7 @@ finding where the API produces wrong results today, not only friction.
 | S2 | Restart is spelled four ways (`restart`, `restart_following`, `restart_wanted`, `restart_on`), with a separate `&mut Device` any session accepts. `watch_devices` takes `want`/`running_on` by hand. Events carry `String` errors | one `DeviceRestart` value with a `follow` hook; `watch_devices` reads the device; typed errors in events | M (built, step 7) |
 | S3 | **Bug**: `let (s, _) = build_device(..)` drops the `Device` and silences the stream. `#[must_use]` does not fire on a destructure | return a named `#[must_use]` struct (`LiveSession { session, device }`) that also pairs the device with its session for S2 | S |
 | S4 | `InstrumentHandle` and `LiveInput` duplicate `note_on`/`note_off`/`send`/`send_at`/`clock`/`dropped` over `SharedKeys`. `note_on` takes a bare `u16` velocity | one shared keys handle (with the MIDI plan's `MidiKeys`), and a velocity type | S-M |
-| S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M |
+| S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M (built: the kinds in #636, step 8's `Drop`) |
 | S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S (built, step 7) |
 | S7 | Removal is spelled `remove`, `remove_instrument`, `GeneralMidi::remove`, `unroute` and `close_*`, returning `bool` or `()`. `insert` against `add` is a trap (`insert` skips the reclaim sweep). `open_event_inlet` panics on a bad capacity | one `remove(key)` on typed keys, returning `Result`; `insert` folded into `add`; a checked capacity | S-M (built, 2d) |
 | S8 | The heard tap's `Backpressure` is a transient error mixed in with permanent ones. `LoadMeter::take` is `Clone`, so two readers split the peaks. tutti-cpal lists devices five ways | split the error; one reader, not `Clone`; one listing (built, §6 item 5) | S |
@@ -101,7 +101,7 @@ finding where the API produces wrong results today, not only friction.
 | # | finding | fix | size |
 |---|---|---|---|
 | T1 | **Bug**: a route onto a target with no `range()` is accepted. The next apply refuses with `CompileError::UndeclaredTarget` and freezes *all* modulation, reported only by an event | the range is part of the route: `route(src, target.within(lo..hi), depth)`, or a typestate target that has a range | M-L |
-| T2 | `Mods::range`, `Take::record`, `Trajectory::with_range` and `Graph::set_param` take bare `f32` for params that have units. Min > max is not refused | unit-typed targets from `Key<N>` param methods; a checked range | M |
+| T2 | `Mods::range`, `AutomationTake::record`, `Trajectory::with_range` and `Graph::set_param` take bare `f32` for params that have units. Min > max is not refused | unit-typed targets from `Key<N>` param methods; a checked range | M |
 | T3 | `Graph::set_param` returns `()` and ignores a missing node or param, although `ParamSet::set` returns `bool`. `set_node_params` is plumbing a user can forget | `Result` and `#[must_use]`; the plumbing made `pub(crate)` | S-M |
 | T4 | A route cannot be found again. `RouteKey`/`SourceKey` are opaque with public `u64`s, there is no `routes()` or `routes_to(target)`, and edits are `route_mut` plus public fields. `route` hard-codes polarity and the curve | private minted keys; iterators; a route builder (`.polarity(..).curve(Law::..)`) | M (built, step 4) |
 | T5 | "Why is nothing modulating" has three channels (`ModState::refusal`, `unresolved_*`, a `SessionEvent`), and the errors name opaque keys | one `problems()` iterator whose `Display` names the node and the param | M (built, step 4) |
@@ -136,7 +136,7 @@ finding where the API produces wrong results today, not only friction.
 
 | # | finding | fix | size |
 |---|---|---|---|
-| R1 | A take carries no position on the timeline, input and output latency are not compensated, and a recording starts on wall time | `s.record(input, At) -> Take`: the start frame and beat, the compensation, punch in and out through `At`, with monitoring and recording opened in one call | L |
+| R1 | A take carries no position on the timeline, input and output latency are not compensated, and a recording starts on wall time | `s.record(input, At) -> Take`: the start frame and beat, the compensation, punch in and out through `At`, with monitoring and recording opened in one call | L (built, step 8) |
 | R2 | The playhead is two atomics (`beat()`, `is_playing()`) that can disagree, and it moves in block steps | one `s.playhead() -> Playhead { beat, frame, seconds, playing, at }` (a sequence lock), and `beat_now(now)` extrapolated from the block clock on `tutti_rt::monotonic_ns` | S-M (R2 built, §6 item 6) |
 
 ## 4. Design: declicked wiring
@@ -297,7 +297,7 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      `set_event_sources` and `EventSource` deleted; event input 0 is the main
      one, where a chase delivers) and typed params (T2, T3, N2). N3 is partial:
      `Params(node)` is the way in, but Rust cannot refuse `ForkByClone(param
-     node)` by type. `Take::record` and `Trajectory::with_range` are not typed yet.
+     node)` by type. `AutomationTake::record` and `Trajectory::with_range` are not typed yet.
    - 2d (built): removal (S7). Every removal and close is a `Result` naming what
      was not there (`RemoveError`, `CloseError`, `HeardTapError::NotOpen`,
      `NoSuchModSource`, `NoSuchModRoute`, `NoSuchMidiRoute`); `Graph::add`
@@ -420,7 +420,36 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      record into) at the graph's rate, `None` for a direction not yet reported
      (after a restart too) and never a zero. `Session::latency()` stays the
      plan's compensation.
-8. **Takes:** §5 (`TapReader::next_frame`, `Take`, `Punch`).
+8. **Takes** (built): §5 (`TapReader::next_frame`, `Take`, `Punch`). Two PRs:
+   `next_frame` (with `TapReader::contiguous`) on its own, then the session's take.
+   - `Session::record(&Input, Punch, TakeTarget) -> Result<Take<Armed>, TakeError>`
+     (features `device` and `audio-io`): a plan tap (raw) on the input's inlet
+     node, and a pump on the spawner (`submit_stream`) into a `FileOut` or a
+     sink of the caller's. A gap the tap lost is silence in place, counted in
+     `Recorded::lost`, so the take stays aligned (a plain `Recorder` closes up).
+   - `Punch::at(impl Into<At>)`, `.until(..)` refused where it is made when it
+     is not after the start; a beat is a frame through the project's tempo map
+     from the playhead, and a beat while the transport is stopped is
+     `TakeError::TransportStopped`. A punch in the past starts at once.
+   - Placement: `Terms { in_latency, out_latency: Option<Samples>, inlet_lead,
+     offset: Trim }`, read when the first frame arrives; an unreported latency
+     is `None` and `Terms::is_complete` says so; `Start::{At, BeforeOrigin}` keeps
+     a start before the origin rather than clamping it. `offset` is per input
+     (`InputConfig::offset`, so it survives a restart), signed (`Trim`).
+     `inlet_lead` is `OpenedInput::lead`, declared by the opener (the sound
+     card's ring is not prefilled: 0).
+   - `Take<Armed>` -> `Take<Rolling>` (`rolling()`, once the first frame is in)
+     and `finish()` on both; dropping the handle stops the take. `Recorded`:
+     path, `Placement` (first frame, terms, start, start beat), frames, lost,
+     and `clip()` (feature `sampler`).
+   - `SessionEvent::Take(TakeEvent::{Started, Finished, Failed})`,
+     `Error::Take(TakeError)`, both `#[non_exhaustive]`.
+   - A restart during a take is not followed: its frames after the restart are on
+     the new rate.
+   - S5: the `Live`/`Finite` recorder kinds had landed (#636); a live
+     recorder's `Drop` stops, joins and finalizes, and now logs a failed sink
+     at `error` with the frames lost; `Recorder` stays source-to-sink, off the
+     spawner (it owns no session).
 9. **Sampler:** A1 to A6.
 10. **Codec and export:** C2, C3, E1, E2, then C4.
 11. **Tempo and names:** T6, T8, T10.

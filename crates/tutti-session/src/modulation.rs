@@ -445,13 +445,13 @@ fn unclamped(automation: Option<Arc<dyn Curve>>) -> TargetDecl {
 /// touch. Feed the recorder through [`recorder_mut`](Self::recorder_mut) as
 /// the gesture moves.
 #[derive(Debug)]
-pub struct Take {
+pub struct AutomationTake {
     recorder: Recorder,
     touched: bool,
     closed: bool,
 }
 
-impl Take {
+impl AutomationTake {
     /// A take recording into `recorder` (a fresh one, or
     /// `Recorder::overdub` over the lane's trajectory).
     #[must_use]
@@ -830,7 +830,7 @@ struct OwnRoute {
 
 struct OwnAutomation {
     curve: Arc<dyn Curve>,
-    take: Option<Take>,
+    take: Option<AutomationTake>,
 }
 
 impl std::fmt::Debug for OwnAutomation {
@@ -944,7 +944,10 @@ impl OwnMods {
     /// target's automation.
     fn close_takes(&mut self) {
         for automation in self.automation.values_mut() {
-            if automation.take.as_mut().is_some_and(Take::is_done)
+            if automation
+                .take
+                .as_mut()
+                .is_some_and(AutomationTake::is_done)
                 && let Some(take) = automation.take.take()
             {
                 automation.curve = take.finish();
@@ -1586,7 +1589,11 @@ impl Mods<'_> {
     ///
     /// [`NoAutomation`] when `target` has no automation; the take is dropped.
     #[must_use = "a refused take is dropped, and the target records nothing"]
-    pub fn record(&mut self, target: impl Into<ModTarget>, take: Take) -> Result<(), NoAutomation> {
+    pub fn record(
+        &mut self,
+        target: impl Into<ModTarget>,
+        take: AutomationTake,
+    ) -> Result<(), NoAutomation> {
         let target = target.into();
         let key = self.own.key_of(target);
         match self.own.automation.get_mut(&key) {
@@ -1599,7 +1606,7 @@ impl Mods<'_> {
     }
 
     /// The open take on `target`, to feed its recorder.
-    pub fn take_mut(&mut self, target: impl Into<ModTarget>) -> Option<&mut Take> {
+    pub fn take_mut(&mut self, target: impl Into<ModTarget>) -> Option<&mut AutomationTake> {
         let key = self.own.key_of(target.into());
         self.own
             .automation

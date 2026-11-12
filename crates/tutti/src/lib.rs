@@ -220,7 +220,7 @@ pub use tutti_plugin_host as plugin_host;
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` and `RouteSpec` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
+/// `PluginLoadRequest`, `Plugin` (the view `Session::plugin` lends), `PluginEvent`, `PluginChange`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
 /// `Normalized` (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
 /// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`, `MidiRouteRule` and
@@ -297,7 +297,9 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};
     #[cfg(all(feature = "session", feature = "device", feature = "audio-io"))]
-    pub use tutti_session::{Input, InputConfig};
+    pub use tutti_session::{
+        Input, InputConfig, Punch, Recorded, Take, TakeError, TakeEvent, TakeTarget, Trim,
+    };
 
     // What a session's calls take, by the feature that gates each (design
     // 015 §5): a modulation target, an export, a plugin load, a MIDI file.
@@ -309,8 +311,6 @@ pub mod prelude {
     pub use tutti_plugin::catalog::{Catalog, Hosting, PluginRef, PluginState};
     #[cfg(feature = "plugin")]
     pub use tutti_plugin::{Normalized, ParamId};
-    #[cfg(all(feature = "session", feature = "plugin"))]
-    pub use tutti_session::PluginLoadRequest;
     #[cfg(all(feature = "session", feature = "export"))]
     pub use tutti_session::{
         Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
@@ -319,6 +319,8 @@ pub mod prelude {
     pub use tutti_session::{MidiEvent, MidiRouteRule};
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::{ParamRef, RouteSpec};
+    #[cfg(all(feature = "session", feature = "plugin"))]
+    pub use tutti_session::{Plugin, PluginChange, PluginEvent, PluginLoadRequest};
     #[cfg(feature = "midi")]
     pub use tutti_ump::{Message, NoteNumber, Ump};
 }

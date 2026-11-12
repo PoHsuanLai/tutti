@@ -109,7 +109,13 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `tutti_cpal::MicIn` (on the builder's `host`, by a `MicConfig`) and its inlet
   in one call, `Input::node()` names the node, and a device restart
   (`LiveSession::restart`) reopens every input at the new rate into the same
-  node. A restart is one `DeviceRestart` value through the `LiveSession` (the
+  node. A **take** (`Session::record(&Input, Punch, TakeTarget) -> Take<Armed>`,
+  features `device` and `audio-io`, doc 030 §5) records a plan tap on the input's
+  inlet through a pump on the session's spawner, so it is on the graph's clock; it
+  states where it belongs term by term (`Terms`: the capture's and playback's
+  latency, `None` while unreported and never 0, the ring's lead, the input's
+  `Trim`) and `SessionEvent::Take` reports it started and ended once. A gap the
+  tap lost is silence in place, counted; a plain `Recorder` closes up over it. A restart is one `DeviceRestart` value through the `LiveSession` (the
   pair), and device events are `SessionEvent::Device(DeviceEvent)` with typed
   errors; `Device::latency` is what the streams' callback timestamps report, per
   direction, `None` until reported.
@@ -738,7 +744,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Extend<Ump>` and allocates nothing, `Connection` (`new` returns `(Self, Action)`, the first `Action::Send`) is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
-  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` (an iterator over the devices that settled) from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which answers `Pushed::{Sent, Diverted, Full}` and also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
+  CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` (an iterator over the devices that settled) from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which answers `Pushed::{Sent, Diverted, Full}` and also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. **A MIDI 1.0 source is opened as MIDI 1.0 and widened by the ingest node's `Translator`, never by the OS** (ALSA's `UmpVersion`, CoreMIDI's `Midi10` port). A consumer that persists a `DeviceInfo` depends on it with
   its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
   breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
   is safe to bind unasked: an ALSA identity is a name, so a lone device with
@@ -1564,6 +1570,17 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `BounceError::Cancelled`; the bounce's `Latency` and `Tail` → `BounceLatency` and `BounceTail` (the graph's `tutti_types::{Latency, Tail}` keep their names); `Transport`'s public `settings` and `motion` fields → `Transport::settings()` and
   `Transport::motion()` (and the session's `play`, `stop`, `locate`, `schedule`, `set_tempo`). `bevy-tutti`'s `ExportRequest`,
   `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
+
+- **Dead plugin-event and callback names** (doc 029 step 2): `SessionEvent::{PluginDied,
+  PluginLatencyChanged, PluginReloading, PluginRecovered, PluginGaveUp}` →
+  `SessionEvent::Plugin(PluginEvent { node, change, .. })` with `PluginChange::{Died, LatencyChanged,
+  Reloading, Recovered, GaveUp}` (the three `*Due` job events stay until step 5);
+  `PluginHandle::{on_parameter_changed, on_refresh, on_invalidate, clear_parameter_callback,
+  clear_refresh_callback, clear_invalidate_callback}` → `PluginHandle::subscribe(f) -> Subscription`
+  (the low layer; a host reads `SessionEvent::Plugin`); `Listener::{set, clear}` (one slot, last writer wins) → `Listener::subscribe`
+  (a fan-out); `HostedPlugin` (public) → the `Plugin<'_>` view of `Session::plugin(node) ->
+  Result<Plugin<'_>, NoSuchNode>` (`Option<&HostedPlugin>` before), `Session::plugins()` yielding
+  `Plugin<'_>`.
 
 ## Consumers: the pin that must stay in step
 

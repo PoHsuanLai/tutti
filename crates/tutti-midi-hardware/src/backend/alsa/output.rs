@@ -6,7 +6,7 @@ use tutti_graph::UmpAt;
 use super::enumerate::unpack_id;
 use crate::endpoints::DeviceOut;
 use crate::error::{Error, Result};
-use tutti_alsa_ffi::{CAP_READ, Client, TYPE_APPLICATION, TYPE_MIDI_GENERIC};
+use tutti_alsa_ffi::{CAP_READ, Client, TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpVersion};
 use tutti_midi_device::EndpointId;
 use tutti_midi_runtime::MidiOut;
 
@@ -109,7 +109,7 @@ pub(super) fn connect(id: EndpointId) -> Result<AlsaOutput> {
 
     // Blocking: a send should apply back-pressure rather than silently drop when
     // the destination's queue is full. Only the *input* pump needs to poll.
-    let seq = super::client::open("tutti-out", false)?;
+    let seq = super::client::open("tutti-out", false, UmpVersion::Midi2)?;
     let port = seq.open_port(
         "tutti-out",
         // Not subscribable by others, so never listed as a device (see

@@ -16,9 +16,11 @@
 //!
 //! # Protocol is asked, not assumed
 //!
-//! Input ports open with `Protocol::Midi20`, which makes CoreMIDI up-convert a
-//! MIDI-1.0 device's traffic to UMP. That is *not* the same as the device
-//! speaking MIDI 2.0, so [`UmpCapability`] records `kMIDIPropertyProtocolID` as
+//! An input port opens in the protocol of its source (one port per opened
+//! input): `Protocol::Midi10` for a source whose [`UmpCapability`] is MIDI 1.0,
+//! so CoreMIDI hands it MIDI 1.0 UMP (type 2) and the ingest node's `Translator`
+//! widens it, never the OS (design 017 L6d); `Protocol::Midi20` otherwise.
+//! A MIDI 1.0 source is not a device speaking MIDI 2.0, so [`UmpCapability`] records `kMIDIPropertyProtocolID` as
 //! the OS reports it — and falls back to `Midi1` when the property is absent,
 //! which is the conservative direction (see `UmpCapability::default`).
 //!
@@ -120,6 +122,27 @@ fn endpoint_capability(object: &coremidi::Object, ump: Option<&UmpEndpointInfo>)
     match protocol_id {
         Ok(id) if id == PROTOCOL_ID_MIDI_2_0 => UmpCapability::midi2(),
         _ => UmpCapability::midi1(),
+    }
+}
+
+/// The protocol an input port on `source` is created with, as ALSA chooses
+/// its client's version (design 017 L6d): MIDI 1.0 for a source that cannot
+/// speak the MIDI 2.0 Protocol, so CoreMIDI hands it MIDI 1.0 UMP (type 2)
+/// and the ingest node's `Translator` widens it, never the OS. A UMP Endpoint
+/// that supports MIDI 2.0 opens as MIDI 2.0 even while it is in MIDI 1.0:
+/// the session asks every Endpoint for MIDI 2.0, and a MIDI 1.0 port would
+/// have CoreMIDI narrow what it then sends natively. A source with no UMP
+/// Endpoint record (a MIDI 1.0 device, or macOS before 15) follows
+/// `kMIDIPropertyProtocolID`.
+fn input_protocol(source: &coremidi::Object, ump: Option<&UmpEndpointInfo>) -> CmProtocol {
+    let midi2 = match ump {
+        Some(ump) => ump.supports_midi2,
+        None => endpoint_capability(source, None).protocol == Protocol::Midi2,
+    };
+    if midi2 {
+        CmProtocol::Midi20
+    } else {
+        CmProtocol::Midi10
     }
 }
 
@@ -296,14 +319,20 @@ impl MidiEndpoints for CoreMidiEndpoints {
         let source = Self::find_source(id)
             .ok_or_else(|| Error::device(format!("no MIDI source with id {}", id.raw())))?;
 
-        // No byte parser on this path, deliberately. The port opens with
-        // `Protocol::Midi20`, so CoreMIDI delivers UMP words — a MIDI-1.0
-        // device's SysEx arrives already fragmented into UMP SysEx7 packets,
-        // which `tutti_ump::SysexAssembler` (one layer up) rejoins.
-        // `tutti_ump::Midi1Parser` is for a transport that delivers raw
-        // `F0 … F7` bytes.
+        // The port speaks the source's protocol: a MIDI 1.0 source is delivered
+        // as MIDI 1.0 UMP (type 2), which the ingest node's `Translator`
+        // widens; CoreMIDI up-converts nothing. A MIDI 2.0 source is delivered
+        // as MIDI 2.0 UMP.
+        //
+        // No byte parser on this path, deliberately: CoreMIDI delivers UMP
+        // words either way, and a MIDI-1.0 device's SysEx arrives already
+        // fragmented into UMP SysEx7 packets, which `tutti_ump::SysexAssembler`
+        // (one layer up) rejoins. `tutti_ump::Midi1Parser` is for a transport
+        // that delivers raw `F0 … F7` bytes.
+        let endpoints = ump_endpoints().unwrap_or_default();
+        let protocol = input_protocol(&source, ump_of(&endpoints, &source, true));
         let mut port = client
-            .input_port_with_protocol("tutti-in", CmProtocol::Midi20, move |event_list, _ctx| {
+            .input_port_with_protocol("tutti-in", protocol, move |event_list, _ctx| {
                 // The packet's own host time, as an `Instant`: when the event
                 // reached CoreMIDI, not when this callback ran.
                 let pairing = host_time::Pairing::now();

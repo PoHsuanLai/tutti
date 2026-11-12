@@ -411,6 +411,12 @@ pub enum Error {
     #[error(transparent)]
     BounceConfig(#[from] crate::BounceConfigError),
 
+    /// A take could not be armed or did not end cleanly
+    /// ([`Session::record`](crate::Session::record)).
+    #[cfg(all(feature = "device", feature = "audio-io"))]
+    #[error(transparent)]
+    Take(#[from] crate::TakeError),
+
     /// Standard I/O error encountered while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),

@@ -1003,6 +1003,8 @@ impl HostedPlugin {
 /// A marker only: no value of it exists, and every plugin format, in or out
 /// of process, is a `Key<PluginNode>`. It names the *kind* of node, as
 /// [`Key::erase`] names none; the view of the plugin is [`Plugin`].
+/// It is the session's name for a hosted plugin's node; the node itself is
+/// `tutti_plugin_host::PluginNode`, below the session.
 /// With `modulation`, `key.param(id)` is a plugin parameter's
 /// `ParamRef` (see `Key::param`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

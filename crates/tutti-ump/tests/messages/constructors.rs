@@ -2,8 +2,8 @@
 //! `Voice2::note_on` and `note_off`, and the Timing Clock rate.
 
 use tutti_ump::{
-    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, System, U7, U14,
-    Ump, Unknown, Voice2,
+    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
+    System, U7, U14, Ump, Unknown, Voice2,
 };
 
 #[test]
@@ -22,36 +22,39 @@ fn first_is_the_first_group_with_the_channel() {
 fn note_constructors_are_the_no_attribute_messages() {
     let note = NoteNumber::of(60);
     assert_eq!(
-        Voice2::note_on(note, 0x8000),
+        Voice2::note_on(note, NoteVelocity::new(0x8000)),
         Voice2::NoteOn {
             note,
-            velocity: 0x8000,
+            velocity: NoteVelocity::new(0x8000),
             attribute: Attribute::None
         }
     );
     assert_eq!(
-        Voice2::note_off(note, 0x1234),
+        Voice2::note_off(note, NoteVelocity::new(0x1234)),
         Voice2::NoteOff {
             note,
-            velocity: 0x1234,
+            velocity: NoteVelocity::new(0x1234),
             attribute: Attribute::None
         }
     );
     // On the wire: group 0, channel 3, note 60, no attribute (Table 4's words).
     let address = Address::first(MidiChannel::of(3));
-    let on = Ump::from(Message::Midi2(address, Voice2::note_on(note, 0x8000)));
+    let on = Ump::from(Message::Midi2(
+        address,
+        Voice2::note_on(note, NoteVelocity::new(0x8000)),
+    ));
     assert_eq!(on, Ump([0x4093_3C00, 0x8000_0000, 0, 0]));
-    let off = Ump::from(Message::Midi2(address, Voice2::note_off(note, 0x1234)));
+    let off = Ump::from(Message::Midi2(
+        address,
+        Voice2::note_off(note, NoteVelocity::new(0x1234)),
+    ));
     assert_eq!(off, Ump([0x4083_3C00, 0x1234_0000, 0, 0]));
     assert!(matches!(
         on.decode(),
         Ok(Message::Midi2(
             _,
-            Voice2::NoteOn {
-                velocity: 0x8000,
-                ..
-            }
-        ))
+            Voice2::NoteOn { velocity, .. }
+        )) if velocity == NoteVelocity::new(0x8000)
     ));
 }
 
@@ -107,11 +110,11 @@ fn the_midi2_constructors_are_the_section_7_4_words() {
         (w[0], w[1])
     };
     assert_eq!(
-        words(Message::note_on2(ch, note, 0x8000)),
+        words(Message::note_on2(ch, note, NoteVelocity::new(0x8000))),
         (0x4092_3C00, 0x8000_0000)
     );
     assert_eq!(
-        words(Message::note_off2(ch, note, 0x1234)),
+        words(Message::note_off2(ch, note, NoteVelocity::new(0x1234))),
         (0x4082_3C00, 0x1234_0000)
     );
     assert_eq!(
@@ -141,8 +144,8 @@ fn a_constructed_message_decodes_back_to_itself() {
         Message::control_change(ch, cc, v),
         Message::program_change(ch, v),
         Message::pitch_bend(ch, U14::MAX),
-        Message::note_on2(ch, note, 0xFFFF),
-        Message::note_off2(ch, note, 0),
+        Message::note_on2(ch, note, NoteVelocity::new(0xFFFF)),
+        Message::note_off2(ch, note, NoteVelocity::new(0)),
         Message::control_change2(ch, cc, u32::MAX),
         Message::program_change2(ch, v),
         Message::pitch_bend2(ch, u32::MAX),

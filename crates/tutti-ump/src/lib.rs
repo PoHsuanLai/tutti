@@ -26,7 +26,7 @@
 //! let Ok(Message::Midi2(address, Voice2::NoteOn { note, velocity, .. })) = packet.decode() else {
 //!     unreachable!()
 //! };
-//! assert_eq!((address.channel.get(), note.get(), velocity), (0, 60, 0x8000));
+//! assert_eq!((address.channel.get(), note.get(), velocity.get()), (0, 60, 0x8000));
 //! ```
 //!
 //! Decoding reads no reserved bit. A reserved value in an enumerated field is
@@ -55,6 +55,7 @@ mod midi1;
 mod midi_channel;
 mod midi_group;
 mod note_id;
+mod note_velocity;
 mod rpn;
 mod sysex;
 mod ump;
@@ -77,6 +78,7 @@ pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame, parse_exact};
 pub use note_id::NoteId;
+pub use note_velocity::NoteVelocity;
 pub use rpn::Rpn;
 pub use sysex::{
     NotSysex, SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep,

@@ -4,7 +4,7 @@
 //! event input into audio and names its main output pair. The session adds one
 //! ([`Session::add_instrument`]), makes one of a node already in the graph
 //! ([`Session::instrument`]), or of a hosted plugin whose format says it is one
-//! ([`Session::instrument_plugin`]), and hands back an [`InstrumentHandle`]: a
+//! ([`Session::instrument_plugin`]), and hands back an [`InstrumentHandle`]: an
 //! event inlet before the event input, and a strip after the main pair (the
 //! gain no two instruments agree on).
 //!
@@ -14,32 +14,26 @@
 //! **at the current rate** and is moved to the same wall-clock time when the
 //! graph is re-prepared at another rate. It is not the number of frames
 //! rendered: a sender that counts those lands early or late after a rate change
-//! by the difference. Read the clock with [`InstrumentHandle::clock`], a
-//! [`Moment`]: a frame and the rate it was counted at. A message sent for a
-//! moment ([`Stamp::Moment`]) lands on that wall-clock instant whatever the
+//! by the difference. Read the clock with [`EventInletWriter::clock`](tutti_graph::EventInletWriter::clock), a
+//! [`Moment`](tutti_types::Moment): a frame and the rate it was counted at. A message sent for a
+//! moment ([`Stamp::Moment`](tutti_graph::Stamp::Moment)) lands on that wall-clock instant whatever the
 //! rate has become since, including between the read and the send; a bare
 //! frame is counted at the rate the queue has when it takes the message.
 //!
 //! Everything a handle does is a port or a cell: a message is pushed into the
-//! event inlet's ring (never blocking the audio thread; the handle's clones
-//! share one writer behind a lock only control threads take, which may
-//! allocate on its first use)
-//! stamped with a [`Stamp`], and a gain is a store into the strip's volume cell. Neither takes
-//! `&mut` of anything in the graph.
-//!
-
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+//! event inlet's ring through its [`MidiKeys`] (never blocking the audio
+//! thread), stamped with a [`Stamp`](tutti_graph::Stamp), and a gain is a store into the strip's
+//! volume cell. Neither takes `&mut` of anything in the graph.
 
 use tutti_graph::NodeKey;
-use tutti_graph::{EventInletNode, Instrument, Losses, ParamSet, Refused, Stamp};
+use tutti_graph::{EventInletNode, Instrument, ParamSet};
 use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
 use tutti_nodes::BusStripNode;
-use tutti_types::{Amplitude, Moment, UnitParam};
+use tutti_types::{Amplitude, UnitParam};
 use tutti_ump::MidiGroup;
-use tutti_ump::{MidiChannel, NoteNumber, Ump};
 
-use crate::{Feeder, Graph, Key, OutPort, RemoveError, Session, SessionNode};
+use crate::{Feeder, Graph, Key, OutPort, RemoveError, Root, Session, SessionNode};
 
 /// Why a node is not an instrument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -65,89 +59,26 @@ pub enum NotInstrument {
     Plugin(tutti_plugin_types::PluginRole),
 }
 
-/// Why a send was not queued.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum SendError {
-    /// The queue is full: the message was dropped.
-    #[error("the instrument's queue is full")]
-    Full,
+/// Opens an event inlet in `graph`: its node, and the keys that fill it on
+/// the Group an instrument plays.
+pub(crate) fn open_keys(graph: &mut Graph) -> (Key<EventInletNode>, MidiKeys) {
+    let (node, writer) = graph.open_event_inlet(LIVE_INLET_CAPACITY);
+    (node, MidiKeys::new(writer, MidiGroup::FIRST))
 }
 
-impl From<Refused> for SendError {
-    fn from(e: Refused) -> Self {
-        match e {
-            Refused::Full => Self::Full,
-        }
-    }
-}
-
-/// An event inlet's writer ([`MidiKeys`]) behind the session's own lock, so
-/// that what holds it can be `Clone` (design 017, "The event inlet": the
-/// inlet has one producer). The lock is a control thread's: it is taken to
-/// send, to read the clock and to read a count, never on the audio thread,
-/// which owns the inlet's node.
-#[derive(Clone, Debug)]
-pub(crate) struct SharedKeys(Arc<Mutex<MidiKeys>>);
-
-impl SharedKeys {
-    /// Opens an inlet in `graph`: its node, and the writer.
-    pub(crate) fn open(graph: &mut Graph) -> (Key<EventInletNode>, Self) {
-        let (node, writer) = graph.open_event_inlet(LIVE_INLET_CAPACITY);
-        (
-            node,
-            Self(Arc::new(Mutex::new(MidiKeys::new(
-                writer,
-                MidiGroup::FIRST,
-            )))),
-        )
-    }
-
-    fn keys(&self) -> MutexGuard<'_, MidiKeys> {
-        // A panic while pushing leaves the writer whole.
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn clock(&self) -> Option<Moment> {
-        self.keys().clock()
-    }
-
-    pub(crate) fn send(&self, at: impl Into<Stamp>, ump: impl Into<Ump>) -> Result<(), SendError> {
-        Ok(self.keys().push(at, ump)?)
-    }
-
-    pub(crate) fn note_on(
-        &self,
-        at: impl Into<Stamp>,
-        channel: MidiChannel,
-        note: NoteNumber,
-        velocity: u16,
-    ) -> Result<(), SendError> {
-        Ok(self.keys().note_on(at, channel, note, velocity)?)
-    }
-
-    pub(crate) fn note_off(
-        &self,
-        at: impl Into<Stamp>,
-        channel: MidiChannel,
-        note: NoteNumber,
-    ) -> Result<(), SendError> {
-        Ok(self.keys().note_off(at, channel, note)?)
-    }
-
-    pub(crate) fn losses(&self) -> Losses {
-        self.keys().counts().losses()
-    }
-}
-
-/// A played instrument. Cheap to clone; every clone plays and mixes the same one.
-#[derive(Clone, Debug)]
+/// A played instrument: its node, the strip after its main pair, and the
+/// [`MidiKeys`] that play it.
+///
+/// The keys are an event inlet's one producer, so the handle is not `Clone`:
+/// move it to the thread that plays, or share it behind a lock of your own on
+/// the control side.
+#[derive(Debug)]
 pub struct InstrumentHandle {
     node: NodeKey,
     main: [u16; 2],
     strip: Key<BusStripNode>,
     queue: Key<EventInletNode>,
-    keys: SharedKeys,
+    keys: MidiKeys,
     strip_params: ParamSet,
 }
 
@@ -178,77 +109,17 @@ impl InstrumentHandle {
         self.queue
     }
 
-    /// The engine's frame clock where the instrument's queue last ended a
-    /// block, which is the first frame of the next: a [`Moment`], the frame and
-    /// the rate it was counted at. `None` before the queue is prepared.
-    ///
-    /// It stands still while the graph is suspended for a re-prepare, and a
-    /// message sent for it ([`Stamp::Moment`]) still lands on the right
-    /// instant: the queue rescales it to the rate it runs at.
+    /// The keys that play the instrument: [`EventInletWriter::clock`](tutti_graph::EventInletWriter::clock) reads the engine's
+    /// frame clock where its queue last ended a block, `push` and the key
+    /// helpers send, and `counts().losses()` says what the queue has lost.
     #[must_use]
-    pub fn clock(&self) -> Option<Moment> {
-        self.keys.clock()
+    pub fn keys(&self) -> &MidiKeys {
+        &self.keys
     }
 
-    /// Plays `ump` at `at`: a [`Moment`] (a reading of [`clock`](Self::clock),
-    /// plus [`Moment::after`] a distance) lands on that wall-clock instant
-    /// whatever the rate is when the queue takes it; a [`Frame`](tutti_types::Frame)
-    /// is that frame of the engine's clock at the rate the queue has when it
-    /// takes it (one already past lands on the next block's first frame);
-    /// [`Stamp::NextBlock`] is the next block's first frame. Messages due
-    /// together play in the order they were sent. Never blocks, allocates or
-    /// locks.
-    ///
-    /// # Errors
-    ///
-    /// [`SendError::Full`] when the queue is full.
-    pub fn send(&self, at: impl Into<Stamp>, ump: impl Into<Ump>) -> Result<(), SendError> {
-        self.keys.send(at, ump)
-    }
-
-    /// A MIDI 2.0 Note On at `velocity` (16 bits), at `at` (see
-    /// [`send`](Self::send)), on group 1.
-    ///
-    /// A velocity of 0 is a Note On, not a Note Off (M2-104 §7.4.2): the key is
-    /// held until [`note_off`](Self::note_off).
-    ///
-    /// # Errors
-    ///
-    /// As [`send`](Self::send).
-    pub fn note_on(
-        &self,
-        at: impl Into<Stamp>,
-        channel: MidiChannel,
-        note: NoteNumber,
-        velocity: u16,
-    ) -> Result<(), SendError> {
-        self.keys.note_on(at, channel, note, velocity)
-    }
-
-    /// A MIDI 2.0 Note Off at release velocity 0, at `at` (see
-    /// [`send`](Self::send)), on group 1.
-    ///
-    /// # Errors
-    ///
-    /// As [`send`](Self::send).
-    pub fn note_off(
-        &self,
-        at: impl Into<Stamp>,
-        channel: MidiChannel,
-        note: NoteNumber,
-    ) -> Result<(), SendError> {
-        self.keys.note_off(at, channel, note)
-    }
-
-    /// What the queue has lost, in events. `evicted`: messages dropped for want
-    /// of room to hold them until their frame (more than a ring's worth waiting
-    /// for frames far ahead; the latest that may be lost go first, a note-off
-    /// or a panic only when nothing else can). `lost`: a full ring, also
-    /// reported by [`send`](Self::send). `refused`: the port declined one.
-    /// `late`: found past their frame.
-    #[must_use]
-    pub fn losses(&self) -> Losses {
-        self.keys.losses()
+    /// The keys, to send with.
+    pub fn keys_mut(&mut self) -> &mut MidiKeys {
+        &mut self.keys
     }
 
     /// Sets the gain after the instrument's main pair, a linear amplitude.
@@ -290,29 +161,69 @@ impl SessionInstrument for tutti_soundfont::SoundFontUnit {
     }
 }
 
+/// What [`Session::add_instrument`] hands back: the instrument's handle and
+/// the controls its node was added with.
+#[derive(Debug)]
+pub struct AddedInstrument<C> {
+    /// The instrument, playable, and wired to the master.
+    pub handle: InstrumentHandle,
+    /// The node's controls (`SessionNode::Controls`).
+    pub controls: C,
+}
+
 impl Session {
-    /// Adds `instrument` to the graph and makes it playable. It is built in
+    /// Adds `instrument` to the graph, makes it playable and wires its strip
+    /// to the master, so a note sent through its keys is heard. It is built in
     /// the session's MPE mode ([`Midi::set_mpe`](crate::Midi::set_mpe)) through
     /// [`SessionInstrument::bind_mpe`], which wins over its own configuration.
     /// This is the one place the session's mode applies: a node added with
     /// `Graph::add` keeps what it was built with.
+    ///
+    /// A strip is a stereo pair, so a master of another width refuses the wire
+    /// ([`ConnectError::Width`](crate::ConnectError::Width)): add the instrument
+    /// with [`add_instrument_unwired`](Self::add_instrument_unwired) and wire
+    /// [`InstrumentHandle::out`] as the mix wants.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotInstrument`](crate::Error::NotInstrument) when its shape has
+    /// no event input or lacks the output its main pair names, or the wire's
+    /// [`ConnectError`](crate::ConnectError) (the instrument is removed again in
+    /// both cases).
+    pub fn add_instrument<I: SessionInstrument>(
+        &mut self,
+        instrument: I,
+    ) -> Result<AddedInstrument<I::Controls>, crate::Error> {
+        let added = self.add_instrument_unwired(instrument)?;
+        if let Err(e) = self.graph().connect(added.handle.out(), Root) {
+            let _ = self.remove_instrument(&added.handle); // made a moment ago
+            let _ = self.remove(added.handle.node()); // added a moment ago
+            return Err(e.into());
+        }
+        Ok(added)
+    }
+
+    /// [`add_instrument`](Self::add_instrument) with nothing wired after the
+    /// strip: for a mix that routes [`InstrumentHandle::out`] itself (a bus, a
+    /// send, a wide root), as [`instrument`](Self::instrument) leaves a node
+    /// it is given.
     ///
     /// # Errors
     ///
     /// [`Error::NotInstrument`](crate::Error::NotInstrument) when its shape has
     /// no event input or lacks the output its main pair names (the node is
     /// removed again).
-    pub fn add_instrument<I: SessionInstrument>(
+    pub fn add_instrument_unwired<I: SessionInstrument>(
         &mut self,
         instrument: I,
-    ) -> Result<(InstrumentHandle, I::Controls), crate::Error> {
+    ) -> Result<AddedInstrument<I::Controls>, crate::Error> {
         let main = instrument.main_outputs();
         // The session's MPE mode, over whatever the instrument was configured with.
         let instrument = instrument.bind_mpe(*self.midi_state.mpe());
         let (node, controls) = self.graph().add(instrument);
         let node = node.erase();
         match self.instrument_at(node, main) {
-            Ok(handle) => Ok((handle, controls)),
+            Ok(handle) => Ok(AddedInstrument { handle, controls }),
             Err(e) => {
                 let _ = self.remove(node); // added a moment ago, so it is there
                 Err(e)
@@ -404,7 +315,7 @@ impl Session {
             }
         }
         let graph = self.graph();
-        let (queue, keys) = SharedKeys::open(graph);
+        let (queue, keys) = open_keys(graph);
         graph.set_feed(node, Feeder::Instrument, vec![queue.events_out()]);
         let (strip, strip_params) = graph.add(BusStripNode::new());
         graph.connect(OutPort::new(node, usize::from(main[0])), strip.input(0))?;

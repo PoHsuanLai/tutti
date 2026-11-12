@@ -104,11 +104,11 @@ thread.
 ```rust
 use tutti_graph::{EventInletNode, Stamp};
 use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
 let (_node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
 let mut keys = MidiKeys::new(writer, MidiGroup::FIRST);
-keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 0xC800)
+keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), NoteVelocity::new(0xC800))
     .unwrap();
 ```
 
@@ -117,12 +117,12 @@ Out of the graph, a mailbox is a lock-free ring a control thread drains:
 ```rust
 use tutti_graph::Offset;
 use tutti_midi_runtime::MidiMailbox;
-use tutti_ump::{KeyEvent, MidiChannel, NoteNumber, Ump, Voice2, Address, Message};
+use tutti_ump::{KeyEvent, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2, Address, Message};
 
 let (tx, rx) = MidiMailbox::pair();
 let on = Ump::from(Message::Midi2(
     Address::first(MidiChannel::FIRST),
-    Voice2::note_on(NoteNumber::of(60), 0xC800),
+    Voice2::note_on(NoteNumber::of(60), NoteVelocity::new(0xC800)),
 ));
 assert_eq!(tx.queue(&[(Offset::ZERO, on)]), 1);
 

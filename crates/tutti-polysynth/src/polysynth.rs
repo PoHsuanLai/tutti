@@ -354,7 +354,7 @@ impl PolySynth {
                 velocity,
                 attribute,
             } => {
-                self.handle_note_on(note, u16_to_unit_f32(velocity), channel, attribute);
+                self.handle_note_on(note, u16_to_unit_f32(velocity.get()), channel, attribute);
             }
             // Release velocity is not used: the release is the envelope's.
             Voice2::NoteOff { note, .. } => self.handle_note_off(note, channel),

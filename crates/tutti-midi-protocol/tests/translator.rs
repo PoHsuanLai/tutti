@@ -7,8 +7,8 @@
 
 use tutti_midi_protocol::Translator;
 use tutti_ump::{
-    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump,
-    Voice1, Voice2,
+    Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
+    U7, Ump, Voice1, Voice2,
 };
 
 fn at(group: u8, channel: u8) -> Address {
@@ -485,7 +485,7 @@ fn stateless_messages_are_widened() {
             at(A.0, A.1),
             Voice2::NoteOff {
                 note,
-                velocity: 0x8000,
+                velocity: NoteVelocity::new(0x8000),
                 attribute: Attribute::None,
             }
         )]]
@@ -512,7 +512,7 @@ fn midi_2_packets_pass_through_unchanged() {
         at(2, 4),
         Voice2::NoteOn {
             note,
-            velocity: 0,
+            velocity: NoteVelocity::new(0),
             attribute: Attribute::None,
         },
     )
@@ -604,7 +604,7 @@ fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
             at(A.0, A.1),
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity,
+                velocity: NoteVelocity::new(velocity),
                 attribute: Attribute::None,
             },
         )
@@ -663,9 +663,9 @@ fn a_velocity_prefix_waits_across_other_messages_on_its_channel_only() {
         _ => panic!("not one Note On: {m:?}"),
     };
     // Channel 1 carries no prefix: 7-bit 1 is 0x0200 (1 << 9).
-    assert_eq!(velocity(&out[2]), 0x0200);
+    assert_eq!(velocity(&out[2]), NoteVelocity::new(0x0200));
     // Channel 0: 14-bit 0x00C0 (1 << 7 | 0x40) is 0x0300 at 16 bits.
-    assert_eq!(velocity(&out[3]), 0x0300);
+    assert_eq!(velocity(&out[3]), NoteVelocity::new(0x0300));
 }
 
 /// **CA-031: "If 9n kk 00 is received, that still qualifies as a valid Note
@@ -695,7 +695,7 @@ fn a_velocity_prefix_has_no_effect_on_a_note_on_at_zero() {
             at(A.0, A.1),
             Voice2::NoteOff {
                 note: NoteNumber::of(60),
-                velocity: 0x8000,
+                velocity: NoteVelocity::new(0x8000),
                 attribute: Attribute::None,
             }
         )]
@@ -706,7 +706,7 @@ fn a_velocity_prefix_has_no_effect_on_a_note_on_at_zero() {
             at(A.0, A.1),
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity: 0x8000,
+                velocity: NoteVelocity::new(0x8000),
                 attribute: Attribute::None,
             }
         )]

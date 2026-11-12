@@ -5,8 +5,8 @@
 
 use tutti_midi_protocol::{channel_voice, widen, widen_bytes, widen_message};
 use tutti_ump::{
-    Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, System, U7, Ump, Voice1,
-    Voice2,
+    Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, System, U7, Ump,
+    Voice1, Voice2,
 };
 
 fn address() -> Address {
@@ -40,7 +40,7 @@ fn a_midi_1_message_reads_widened() {
 fn a_midi_2_note_on_at_velocity_0_stays_a_note_on() {
     let on = Voice2::NoteOn {
         note: NoteNumber::of(60),
-        velocity: 0,
+        velocity: NoteVelocity::new(0),
         attribute: Attribute::None,
     };
     let ump = Ump::from(Message::Midi2(address(), on));

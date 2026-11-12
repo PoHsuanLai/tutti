@@ -1,7 +1,7 @@
 //! The three instruments, as subjects.
 
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
-use tutti_session::PluginLoadRequest;
+use tutti_session::{AddedInstrument, PluginLoadRequest};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Adsr, Amplitude, Seconds};
@@ -34,10 +34,10 @@ impl Subject for Poly {
             ..SynthConfig::default()
         });
         let mut session = offline_session();
-        let (handle, _controls) = session
+        let AddedInstrument { handle, .. } = session
             .add_instrument(synth)
             .expect("a synth is an instrument");
-        Rig::wired(session, handle)
+        Rig::played(session, handle)
     }
 }
 
@@ -63,10 +63,10 @@ impl Subject for Soundfont {
             std::sync::Arc::new(SoundFont::from_reader(&mut file).expect("the test font parses"));
         let unit = SoundFontUnit::new(font, settings).expect("builds");
         let mut session = offline_session();
-        let (handle, ()) = session
+        let AddedInstrument { handle, .. } = session
             .add_instrument(unit)
             .expect("a SoundFont unit is an instrument");
-        Rig::wired(session, handle)
+        Rig::played(session, handle)
     }
 }
 

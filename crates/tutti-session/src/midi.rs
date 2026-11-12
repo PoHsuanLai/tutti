@@ -18,20 +18,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tutti_graph::UmpAt;
 
-use tutti_graph::{EventTapId, EventTapReader, Losses, NodeKey, Offset, Stamp, TapEvent};
+use tutti_graph::{EventTapId, EventTapReader, NodeKey, Offset, TapEvent};
 use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{
-    ClockMap, MidiClipControls, MidiClipNode, MidiInputPorts, MidiReceiver, Outgoing,
+    ClockMap, MidiClipControls, MidiClipNode, MidiInputPorts, MidiKeys, MidiReceiver, Outgoing,
     OutputLatency, OutputPlan, OutputTerms, Placement, RouteRule, SendAt, TimedMidiEvent,
     compile_routes,
 };
-use tutti_types::{Frame, Moment, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
+use tutti_types::{Frame, Samples};
+use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
+use crate::RouteDeclarer;
 use crate::graph::{Feeder, Graph};
-use crate::instrument::SharedKeys;
+use crate::instrument::open_keys;
 use crate::{EventOutPort, MidiError, MidiEvent, MidiNodes};
-use crate::{RouteDeclarer, SendError};
 
 /// What a [`Midi`] call returns: the area's one error.
 type Result<T> = std::result::Result<T, MidiError>;
@@ -88,7 +88,7 @@ pub(crate) fn arrival_clock(
         let reading = clock.read()?;
         Some((
             os_instant(reading.os_ns)?,
-            Moment::new(reading.frame, reading.rate),
+            tutti_types::Moment::new(reading.frame, reading.rate),
         ))
     })
 }
@@ -499,80 +499,6 @@ pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRoute
     }
 }
 
-/// A live input's event inlet, fed into its target, and the handle that
-/// sends into it: what is sent plays from the next block
-/// ([`Stamp::NextBlock`]) or on a frame of the engine's clock, held until the
-/// block that contains it. Cheap to clone; every clone shares the one writer
-/// behind a lock only control threads take.
-#[derive(Clone, Debug)]
-pub struct LiveInput {
-    /// The inlet's node.
-    pub node: NodeKey,
-    keys: SharedKeys,
-}
-
-impl LiveInput {
-    /// The engine's clock where the inlet's last block ended
-    /// ([`InstrumentHandle::clock`](crate::InstrumentHandle::clock) reads the
-    /// same); `None` before it is prepared.
-    #[must_use]
-    pub fn clock(&self) -> Option<Moment> {
-        self.keys.clock()
-    }
-
-    /// Sends `ump` at `at`: [`Stamp::NextBlock`], a frame, or a moment (as
-    /// [`InstrumentHandle::send`](crate::InstrumentHandle::send)).
-    ///
-    /// # Errors
-    ///
-    /// [`SendError::Full`] when the ring is full (a note-off dropped there
-    /// leaves a note stuck).
-    pub fn send(
-        &self,
-        at: impl Into<Stamp>,
-        ump: impl Into<Ump>,
-    ) -> std::result::Result<(), SendError> {
-        self.keys.send(at, ump)
-    }
-
-    /// A MIDI 2.0 Note On at `velocity` (16 bits) on group 1. A velocity of 0
-    /// is a Note On (M2-104 §7.4.2).
-    ///
-    /// # Errors
-    ///
-    /// As [`send`](Self::send).
-    pub fn note_on(
-        &self,
-        at: impl Into<Stamp>,
-        channel: MidiChannel,
-        note: NoteNumber,
-        velocity: u16,
-    ) -> std::result::Result<(), SendError> {
-        self.keys.note_on(at, channel, note, velocity)
-    }
-
-    /// A MIDI 2.0 Note Off at release velocity 0 on group 1.
-    ///
-    /// # Errors
-    ///
-    /// As [`send`](Self::send).
-    pub fn note_off(
-        &self,
-        at: impl Into<Stamp>,
-        channel: MidiChannel,
-        note: NoteNumber,
-    ) -> std::result::Result<(), SendError> {
-        self.keys.note_off(at, channel, note)
-    }
-
-    /// What the inlet has lost
-    /// ([`InstrumentHandle::losses`](crate::InstrumentHandle::losses)).
-    #[must_use]
-    pub fn losses(&self) -> Losses {
-        self.keys.losses()
-    }
-}
-
 /// What [`Midi::unroute`] found missing: the rule `id` named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("no MIDI route {0:?}")]
@@ -711,9 +637,10 @@ struct Clip {
     target: NodeKey,
 }
 
-/// One live input: its handle and the target it feeds.
+/// One live input: the target it feeds, and its keys until [`Midi::input`]
+/// hands them out (a take can open the inlet before anyone plays it).
 struct Live {
-    keys: SharedKeys,
+    keys: Option<MidiKeys>,
     target: NodeKey,
 }
 
@@ -1157,35 +1084,48 @@ impl Midi<'_> {
 
     // --- Live input ---
 
-    /// A live input for `target` (a synth, a plugin): an event inlet fed
-    /// into its event input, for a keyboard, a preview or an all-notes-off
-    /// the host sends. The one it has already when there is one.
+    /// The keys of `target`'s live input (a synth, a plugin): an event inlet
+    /// fed into its main event input, for a keyboard, a preview or an
+    /// all-notes-off the host sends. What is sent plays from the next block
+    /// ([`Stamp::NextBlock`](tutti_graph::Stamp::NextBlock)) or on a frame of the engine's clock.
+    ///
+    /// A target has one live input and its keys are the inlet's one
+    /// producer: they are handed out once. [`record`](Self::record) opens the
+    /// inlet too, and leaves the keys for this call.
     ///
     /// # Errors
     ///
     /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
-    /// no MIDI.
-    pub fn live_input(&mut self, target: impl Into<NodeKey>) -> Result<LiveInput> {
+    /// no MIDI; [`MidiError::InputTaken`] when the keys were handed out already.
+    pub fn input(&mut self, target: impl Into<NodeKey>) -> Result<MidiKeys> {
         let target = target.into();
+        let node = self.live_inlet(target)?;
+        self.state
+            .live
+            .get_mut(&node)
+            .and_then(|live| live.keys.take())
+            .ok_or(MidiError::InputTaken(target))
+    }
+
+    /// The node of `target`'s live input, opened with its keys held if it has
+    /// none.
+    fn live_inlet(&mut self, target: NodeKey) -> Result<NodeKey> {
         self.takes_midi(target)?;
-        if let Some((node, live)) = self.fed_by(target, Feeder::LiveInput, &self.state.live) {
-            return Ok(LiveInput {
-                node,
-                keys: live.keys.clone(),
-            });
+        if let Some((node, _)) = self.fed_by(target, Feeder::LiveInput, &self.state.live) {
+            return Ok(node);
         }
-        let (node, keys) = SharedKeys::open(self.graph);
+        let (node, keys) = open_keys(self.graph);
         let node = node.erase();
         self.graph
             .set_feed(target, Feeder::LiveInput, vec![EventOutPort::new(node, 0)]);
         self.state.live.insert(
             node,
             Live {
-                keys: keys.clone(),
+                keys: Some(keys),
                 target,
             },
         );
-        Ok(LiveInput { node, keys })
+        Ok(node)
     }
 
     // --- Clips ---
@@ -1269,33 +1209,55 @@ impl Midi<'_> {
             .map(|(&node, v)| (node, v))
     }
 
-    /// Feeds clip or live input `node` (one this session made) into
-    /// `target` in place of the target it fed: a host whose target was
-    /// re-bound to a new node keeps its clip and its keyboard. A target
-    /// takes one clip and one live input: one it had is no longer fed.
+    /// Feeds clip `node` (one this session made) into `target` in place of
+    /// the target it fed: a host whose target was re-bound to a new node keeps
+    /// its clip. A target takes one clip: one it had is no longer fed. A live
+    /// input moves with [`retarget_input`](Self::retarget_input).
     ///
     /// # Errors
     ///
     /// [`MidiError::NoEventInput`] when `target` is not in the graph or takes
-    /// no MIDI; [`MidiError::NotSessionMidi`] when `node` is not a clip or live
-    /// input of this session's.
+    /// no MIDI; [`MidiError::NotSessionMidi`] when `node` is not a clip of
+    /// this session's.
     pub fn retarget(&mut self, node: impl Into<NodeKey>, target: impl Into<NodeKey>) -> Result<()> {
         let node = node.into();
         let target = target.into();
         self.takes_midi(target)?;
-        let (old, feeder) = if let Some(clip) = self.state.clips.get_mut(&node) {
-            (
-                std::mem::replace(&mut clip.target, target),
-                Feeder::Sequencer,
-            )
-        } else if let Some(live) = self.state.live.get_mut(&node) {
-            (
-                std::mem::replace(&mut live.target, target),
-                Feeder::LiveInput,
-            )
-        } else {
+        let Some(clip) = self.state.clips.get_mut(&node) else {
             return Err(MidiError::NotSessionMidi(node));
         };
+        let old = std::mem::replace(&mut clip.target, target);
+        self.refeed(node, old, target, Feeder::Sequencer);
+        Ok(())
+    }
+
+    /// Feeds the live input of `from` into `to` in place of it, a host's
+    /// re-bind of the target (`from` may be gone from the graph already): the
+    /// same inlet and keys, now playing `to`. A target takes one live input:
+    /// one `to` had is no longer fed.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoEventInput`] when `to` is not in the graph or takes no
+    /// MIDI; [`MidiError::NoLiveInput`] when `from` has no live input.
+    pub fn retarget_input(
+        &mut self,
+        from: impl Into<NodeKey>,
+        to: impl Into<NodeKey>,
+    ) -> Result<()> {
+        let from = from.into();
+        let to = to.into();
+        self.takes_midi(to)?;
+        let Some((&node, live)) = self.state.live.iter_mut().find(|(_, l)| l.target == from) else {
+            return Err(MidiError::NoLiveInput(from));
+        };
+        live.target = to;
+        self.refeed(node, from, to, Feeder::LiveInput);
+        Ok(())
+    }
+
+    /// Moves the feed of `node`'s event output from `old` to `target`.
+    fn refeed(&mut self, node: NodeKey, old: NodeKey, target: NodeKey, feeder: Feeder) {
         if old != target
             && self
                 .graph
@@ -1306,7 +1268,6 @@ impl Midi<'_> {
         }
         self.graph
             .set_feed(target, feeder, vec![EventOutPort::new(node, 0)]);
-        Ok(())
     }
 
     // --- Routes ---
@@ -1324,7 +1285,7 @@ impl Midi<'_> {
     /// built detached); [`MidiError::TwoRouteDeclarers`] while a host's
     /// `set_routes` declares the routes.
     pub fn route(&mut self, rule: MidiRouteRule) -> Result<MidiRouteId> {
-        let input = self.input()?;
+        let input = self.ingest_node()?;
         self.own_may_declare()?;
         self.state.minted += 1;
         let id = MidiRouteId(self.state.minted);
@@ -1343,7 +1304,7 @@ impl Midi<'_> {
         if self.state.rules.remove(&id).is_none() {
             return Err(NoSuchMidiRoute(id).into());
         }
-        if let Ok(input) = self.input() {
+        if let Ok(input) = self.ingest_node() {
             self.compile_own(input);
         }
         Ok(())
@@ -1358,7 +1319,7 @@ impl Midi<'_> {
     /// [`MidiError::TwoRouteDeclarers`] while a host's
     /// [`set_routes`](Self::set_routes) declares the routes.
     pub fn set_route_fallback(&mut self, fallback: Option<impl Into<NodeKey>>) -> Result<()> {
-        let input = self.input()?;
+        let input = self.ingest_node()?;
         self.own_may_declare()?;
         self.state.fallback = fallback.map(Into::into);
         self.compile_own(input);
@@ -1373,7 +1334,7 @@ impl Midi<'_> {
         }
     }
 
-    fn input(&self) -> Result<NodeKey> {
+    fn ingest_node(&self) -> Result<NodeKey> {
         self.nodes.map(|n| n.input).ok_or(MidiError::NoMidiInput)
     }
 
@@ -1506,7 +1467,7 @@ impl Midi<'_> {
     // --- Recording a take ---
 
     /// Records what is played into `target`: an event tap on the event output
-    /// of its live input ([`live_input`](Self::live_input), opened when it has
+    /// of its live input ([`input`](Self::input), opened when it has
     /// none), which every note sent through the live input passes. A reader of
     /// `capacity` events (a non-note-off is refused once that many are held, a
     /// note-off is kept up to [`note_off_room`](tutti_graph::note_off_room) of
@@ -1538,13 +1499,13 @@ impl Midi<'_> {
         target: impl Into<NodeKey>,
         capacity: tutti_graph::EventCapacity,
     ) -> Result<EventTapReader> {
-        let live = self.live_input(target)?;
-        let source = EventOutPort::new(live.node, 0);
+        let node = self.live_inlet(target.into())?;
+        let source = EventOutPort::new(node, 0);
         self.graph
             .taps()
             .open_event(source, tutti_graph::TapAlign::Raw, capacity.get() as usize)
             // The live input was just found or opened in this graph, with its port.
-            .map_err(|_| MidiError::NoEventInput(live.node))
+            .map_err(|_| MidiError::NoEventInput(node))
     }
 
     // --- Hardware out ---

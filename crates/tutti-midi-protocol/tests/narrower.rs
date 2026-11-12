@@ -3,8 +3,8 @@
 
 use tutti_midi_protocol::{Narrower, Translator};
 use tutti_ump::{
-    Address, Bank, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, NoteNumber, U7, Ump,
-    Voice1, Voice2,
+    Address, Bank, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
+    U7, Ump, Voice1, Voice2,
 };
 
 fn at(group: u8, channel: u8) -> Address {
@@ -225,7 +225,7 @@ fn a_quiet_note_on_is_velocity_1() {
         A,
         Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity: 0x0100,
+            velocity: NoteVelocity::new(0x0100),
             attribute: tutti_ump::Attribute::None,
         },
     );

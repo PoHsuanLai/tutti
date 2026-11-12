@@ -41,7 +41,7 @@ use tutti_graph::{EventKind, SubBlocks};
 use tutti_midi_protocol::channel_voice;
 use tutti_sf2::{Preset, SoundFont};
 use tutti_types::{SampleRate, Tail};
-use tutti_ump::{Attribute, MidiChannel, NoteNumber, U7, Ump, Voice2};
+use tutti_ump::{Attribute, MidiChannel, NoteNumber, NoteVelocity, U7, Ump, Voice2};
 
 use crate::player::{Heard, Plane, Planes, Player};
 use crate::render::Render;
@@ -217,7 +217,7 @@ impl SoundFontUnit {
     ///
     /// A MIDI 2.0 Note On at `velocity` (16 bits): a velocity of 0 is a Note
     /// On (M2-104 §7.4.2), struck at the least MIDI 1.0 velocity.
-    pub fn note_on(&mut self, channel: MidiChannel, key: NoteNumber, velocity: u16) {
+    pub fn note_on(&mut self, channel: MidiChannel, key: NoteNumber, velocity: NoteVelocity) {
         let on = Voice2::NoteOn {
             note: key,
             velocity,
@@ -232,7 +232,7 @@ impl SoundFontUnit {
     pub fn note_off(&mut self, channel: MidiChannel, key: NoteNumber) {
         let off = Voice2::NoteOff {
             note: key,
-            velocity: 0,
+            velocity: NoteVelocity::new(0),
             attribute: Attribute::None,
         };
         self.player.apply(channel, off);

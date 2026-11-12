@@ -124,7 +124,7 @@ pub use graph::{
 #[cfg(all(feature = "device", feature = "audio-io"))]
 pub use input::{Input, InputConfig, InputOpener, OpenedInput, Trim};
 #[cfg(feature = "midi")]
-pub use instrument::{InstrumentHandle, NotInstrument, SendError, SessionInstrument};
+pub use instrument::{AddedInstrument, InstrumentHandle, NotInstrument, SessionInstrument};
 pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
@@ -132,9 +132,9 @@ pub use key::{
 };
 #[cfg(feature = "midi")]
 pub use midi::{
-    LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad,
-    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, OutputTiming,
-    TakePlacement, UmpOut, drain_receiver_through,
+    MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad, MidiOutDrops,
+    MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, OutputTiming, TakePlacement,
+    UmpOut, drain_receiver_through,
 };
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;

@@ -149,7 +149,12 @@ pub fn a_frame_already_past_plays_at_the_next_block<S: Subject>() {
     rig.render_to(rig.t(3 * BLOCK));
     let next = rig.frame();
     // The origin of the clock, long gone.
-    assert!(rig.handle.send(Frame(1), note_on(0, 60, 100)).is_ok());
+    assert!(
+        rig.handle
+            .keys_mut()
+            .push(Frame(1), note_on(0, 60, 100))
+            .is_ok()
+    );
     rig.render_to(next + 4_000);
     let first = rig.onset(next).expect("a late note still sounds");
     let w = window::<S>(&rig, next);
@@ -335,11 +340,12 @@ fn rate_change_instant<S: Subject>(send_after_the_change: bool) {
     const AHEAD: usize = 12_000;
     let mut rig = S::rig();
     rig.render_to(2 * BLOCK);
-    let read = rig.handle.clock().expect("the queue is prepared");
+    let read = rig.handle.keys().clock().expect("the queue is prepared");
     assert_eq!(read.rate(), super::rig::RATE);
     let send = |rig: &mut Rig| {
         rig.handle
-            .send(read.after(tutti_types::Samples(AHEAD)), note_on(0, 60, 100))
+            .keys_mut()
+            .push(read.after(tutti_types::Samples(AHEAD)), note_on(0, 60, 100))
             .expect("the queue has room");
     };
     if !send_after_the_change {
@@ -358,7 +364,7 @@ fn rate_change_instant<S: Subject>(send_after_the_change: bool) {
     // The instant, at the new rate: the executor's own arithmetic.
     let target = Frame(read.frame().get() + AHEAD as u64)
         .rescaled(super::rig::RATE, tutti_types::SampleRate(44_100.0));
-    let now = rig.handle.clock().expect("the queue is prepared");
+    let now = rig.handle.keys().clock().expect("the queue is prepared");
     assert_eq!(now.rate(), tutti_types::SampleRate(44_100.0));
     let ahead = target
         .since(now.frame())
@@ -402,12 +408,11 @@ pub fn an_instrument_is_one_handle_at_a_time<S: Subject>() {
         rig.peak(rig.t(STAMP)..rig.t(STAMP) + 2_000) > 1e-4,
         "the first handle plays"
     );
-    let handle = rig.handle.clone();
-    rig.session.remove_instrument(&handle).unwrap();
+    rig.session.remove_instrument(&rig.handle).unwrap();
     assert_eq!(
-        rig.session.remove_instrument(&handle),
+        rig.session.remove_instrument(&rig.handle),
         Err(tutti_session::RemoveError::NoSuchNode(
-            handle.queue().erase()
+            rig.handle.queue().erase()
         )),
         "the handle's parts are gone: the queue is the first named"
     );
@@ -415,8 +420,8 @@ pub fn an_instrument_is_one_handle_at_a_time<S: Subject>() {
         rig.session.graph_ref().contains(rig.node),
         "the instrument stays"
     );
-    assert!(!rig.session.graph_ref().contains(handle.queue()));
-    assert!(!rig.session.graph_ref().contains(handle.out()));
+    assert!(!rig.session.graph_ref().contains(rig.handle.queue()));
+    assert!(!rig.session.graph_ref().contains(rig.handle.out()));
     rig.session
         .instrument(rig.node)
         .expect("a node can be made an instrument again");
@@ -495,12 +500,12 @@ pub fn sending_allocates_nothing<S: Subject>() {
     let on = note_on(0, 64, 100);
     let off = note_off(0, 64);
     let ok = assert_no_alloc::assert_no_alloc(|| {
-        let a = rig.handle.send(Stamp::NextBlock, on).is_ok();
+        let a = rig.handle.keys_mut().push(Stamp::NextBlock, on).is_ok();
         rig.session.render(&mut tutti_types::InterleavedMut::new(
             &mut buf,
             tutti_types::ChannelLayout::STEREO,
         ));
-        let b = rig.handle.send(Stamp::NextBlock, off).is_ok();
+        let b = rig.handle.keys_mut().push(Stamp::NextBlock, off).is_ok();
         rig.session.render(&mut tutti_types::InterleavedMut::new(
             &mut buf,
             tutti_types::ChannelLayout::STEREO,

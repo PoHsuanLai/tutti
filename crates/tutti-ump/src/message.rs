@@ -4,7 +4,7 @@
 use crate::field::{
     DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
 };
-use crate::{CCNumber, MidiChannel, MidiGroup, Ump};
+use crate::{CCNumber, MidiChannel, MidiGroup, NoteVelocity, Ump};
 
 /// One UMP, decoded.
 ///
@@ -178,14 +178,18 @@ impl Message {
     /// 0 is a Note On (§7.4.2).
     #[inline]
     #[must_use]
-    pub fn note_on2(address: impl Into<Address>, note: NoteNumber, velocity: u16) -> Self {
+    pub fn note_on2(address: impl Into<Address>, note: NoteNumber, velocity: NoteVelocity) -> Self {
         Self::Midi2(address.into(), Voice2::note_on(note, velocity))
     }
 
     /// A MIDI 2.0 Note Off with a 16-bit release `velocity` and no attribute.
     #[inline]
     #[must_use]
-    pub fn note_off2(address: impl Into<Address>, note: NoteNumber, velocity: u16) -> Self {
+    pub fn note_off2(
+        address: impl Into<Address>,
+        note: NoteNumber,
+        velocity: NoteVelocity,
+    ) -> Self {
         Self::Midi2(address.into(), Voice2::note_off(note, velocity))
     }
 
@@ -691,7 +695,7 @@ pub enum Voice2 {
         /// The note.
         note: NoteNumber,
         /// The 16-bit release velocity.
-        velocity: u16,
+        velocity: NoteVelocity,
         /// The attribute.
         attribute: Attribute,
     },
@@ -700,7 +704,7 @@ pub enum Voice2 {
         /// The note.
         note: NoteNumber,
         /// The 16-bit velocity.
-        velocity: u16,
+        velocity: NoteVelocity,
         /// The attribute.
         attribute: Attribute,
     },
@@ -744,7 +748,7 @@ impl Voice2 {
     /// A Note On with no attribute.
     #[inline]
     #[must_use]
-    pub const fn note_on(note: NoteNumber, velocity: u16) -> Self {
+    pub const fn note_on(note: NoteNumber, velocity: NoteVelocity) -> Self {
         Self::NoteOn {
             note,
             velocity,
@@ -755,7 +759,7 @@ impl Voice2 {
     /// A Note Off with no attribute.
     #[inline]
     #[must_use]
-    pub const fn note_off(note: NoteNumber, velocity: u16) -> Self {
+    pub const fn note_off(note: NoteNumber, velocity: NoteVelocity) -> Self {
         Self::NoteOff {
             note,
             velocity,

@@ -167,7 +167,8 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     use tutti_session::Stamp;
     use tutti_types::InterleavedMut;
     use tutti_ump::{
-        Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
+        Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump,
+        Voice1,
     };
 
     let font = Arc::new(
@@ -187,7 +188,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     );
     let unit = SoundFontUnit::new(font, Settings::new()).expect("builds");
     let mut session = offline_session();
-    let gm = session.add_general_midi(unit).expect("a SoundFont unit");
+    let mut gm = session.add_general_midi(unit).expect("a SoundFont unit");
     session
         .graph()
         .set_sources(Root::output(0), [OutPort::new(gm.out(), 0)])
@@ -210,7 +211,6 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     );
 
     let channel = MidiChannel::FIRST;
-    let handle = gm.instrument().clone();
     for controller in [91, 93] {
         let message = Message::Midi1(
             Address {
@@ -222,12 +222,19 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
                 value: U7::of(127),
             },
         );
-        handle
-            .send(Stamp::NextBlock, Ump::from(message))
+        gm.instrument_mut()
+            .keys_mut()
+            .push(Stamp::NextBlock, Ump::from(message))
             .expect("room");
     }
-    handle
-        .note_on(Stamp::NextBlock, channel, NoteNumber::of(69), 0xC800)
+    gm.instrument_mut()
+        .keys_mut()
+        .note_on(
+            Stamp::NextBlock,
+            channel,
+            NoteNumber::of(69),
+            NoteVelocity::new(0xC800),
+        )
         .expect("room");
     let mut heard = Vec::new();
     let block = |session: &mut Session, heard: &mut Vec<f32>| {
@@ -240,7 +247,8 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
         block(&mut session, &mut heard);
     }
     let off = heard.len();
-    handle
+    gm.instrument_mut()
+        .keys_mut()
         .note_off(Stamp::NextBlock, channel, NoteNumber::of(69))
         .expect("room");
     while heard.len() < off + summed + 20_000 {
@@ -305,12 +313,12 @@ fn peak_of_block(session: &mut Session) -> f32 {
 #[test]
 fn muting_the_setup_silences_the_wet_path_too() {
     use tutti_ump::{
-        Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
+        Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump,
+        Voice1,
     };
-    let (mut session, gm) = short_release_setup();
-    let handle = gm.instrument().clone();
+    let (mut session, mut gm) = short_release_setup();
     let at = tutti_session::Stamp::NextBlock;
-    let cc = |controller: u8| {
+    let mut cc = |controller: u8| {
         let message = Message::Midi1(
             Address {
                 group: MidiGroup::FIRST,
@@ -321,16 +329,26 @@ fn muting_the_setup_silences_the_wet_path_too() {
                 value: U7::of(127),
             },
         );
-        handle.send(at, Ump::from(message)).expect("room");
+        gm.instrument_mut()
+            .keys_mut()
+            .push(at, Ump::from(message))
+            .expect("room");
     };
     cc(91);
-    handle
-        .note_on(at, MidiChannel::FIRST, NoteNumber::of(69), 0xC800)
+    gm.instrument_mut()
+        .keys_mut()
+        .note_on(
+            at,
+            MidiChannel::FIRST,
+            NoteNumber::of(69),
+            NoteVelocity::new(0xC800),
+        )
         .expect("room");
     for _ in 0..200 {
         peak_of_block(&mut session);
     }
-    handle
+    gm.instrument_mut()
+        .keys_mut()
         .note_off(at, MidiChannel::FIRST, NoteNumber::of(69))
         .expect("room");
     // 0.25 s release is 12000 frames; the room rings past it.
@@ -344,7 +362,7 @@ fn muting_the_setup_silences_the_wet_path_too() {
     );
 
     // The instrument's gain is the dry level: zero leaves the reverb heard.
-    handle.set_gain(tutti_types::Amplitude(0.0));
+    gm.instrument().set_gain(tutti_types::Amplitude(0.0));
     for _ in 0..2 {
         peak_of_block(&mut session);
     }
@@ -385,7 +403,7 @@ fn removing_the_setup_leaves_nothing() {
     for node in nodes {
         assert!(session.graph_ref().contains(node), "{node:?} is in");
     }
-    gm.clone().remove(&mut session).unwrap();
+    gm.remove(&mut session).unwrap();
     for node in nodes {
         assert!(!session.graph_ref().contains(node), "{node:?} is left");
     }

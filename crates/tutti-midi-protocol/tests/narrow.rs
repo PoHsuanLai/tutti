@@ -3,7 +3,7 @@
 //! and the round trip through `widen` for every 7-bit and 14-bit value.
 
 use tutti_midi_protocol::{narrow_bend, narrow_value, narrow_velocity, widen};
-use tutti_ump::{CCNumber, NoteNumber, U7, U14, Voice1, Voice2};
+use tutti_ump::{CCNumber, NoteNumber, NoteVelocity, U7, U14, Voice1, Voice2};
 
 /// Table 8, downscale 16 to 7 bits. `0x15FF` is not in the table: it is the
 /// value Table 10's rounding method sends to 11, which the plain shift of
@@ -17,7 +17,7 @@ fn m2_115_table_8_velocity() {
         (65535, 127),
         (0x15FF, 10),
     ] {
-        assert_eq!(narrow_velocity(v).get(), want, "{v:#x}");
+        assert_eq!(narrow_velocity(NoteVelocity::new(v)).get(), want, "{v:#x}");
     }
 }
 
@@ -26,7 +26,7 @@ fn m2_115_table_8_velocity() {
 #[test]
 fn the_extremes_and_the_centre_keep_their_places() {
     assert_eq!(
-        [0, 0x8000, 0xFFFF].map(|v| narrow_velocity(v).get()),
+        [0, 0x8000, 0xFFFF].map(|v| narrow_velocity(NoteVelocity::new(v)).get()),
         [0, 64, 127]
     );
     assert_eq!(
@@ -45,8 +45,14 @@ fn the_extremes_and_the_centre_keep_their_places() {
 fn the_top_bits_are_kept() {
     for v in 0..=127u32 {
         let step = 1u32 << 9;
-        assert_eq!(narrow_velocity((v * step) as u16).get(), v as u8);
-        assert_eq!(narrow_velocity((v * step + step - 1) as u16).get(), v as u8);
+        assert_eq!(
+            narrow_velocity(NoteVelocity::new((v * step) as u16)).get(),
+            v as u8
+        );
+        assert_eq!(
+            narrow_velocity(NoteVelocity::new((v * step + step - 1) as u16)).get(),
+            v as u8
+        );
         let step = 1u32 << 25;
         assert_eq!(narrow_value(v * step).get(), v as u8);
         assert_eq!(narrow_value(v * step + (step - 1)).get(), v as u8);

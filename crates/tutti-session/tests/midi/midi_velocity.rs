@@ -95,7 +95,7 @@ fn velocity_keeps_its_full_width() {
         .unwrap()
         .iter()
         .filter_map(|(_, e)| match channel_voice(*e) {
-            Some((_, Voice2::NoteOn { velocity, .. })) => Some(velocity),
+            Some((_, Voice2::NoteOn { velocity, .. })) => Some(velocity.get()),
             _ => None,
         })
         .collect();

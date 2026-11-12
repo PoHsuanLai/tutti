@@ -58,6 +58,11 @@ pub(super) const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "ChannelLayout",
         "permanent: every u16 is a valid layout, so the derive cannot admit a bad raw",
     ),
+    (
+        "crates/tutti-ump/src/note_velocity.rs",
+        "NoteVelocity",
+        "permanent: every u16 is a valid velocity field, so the derive cannot admit a bad raw",
+    ),
 ];
 
 const SKIPPED_DIRS: &[&str] = &["tests", "target", "benches"];
@@ -458,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn the_exception_list_is_the_four_it_was() {
+    fn the_exception_list_is_the_five_it_was() {
         let names: Vec<_> = EXCEPTIONS.iter().map(|e| e.1).collect();
         assert_eq!(
             names,
@@ -466,7 +471,8 @@ mod tests {
                 "PitchBendSensitivity",
                 "ParamId",
                 "Latency",
-                "ChannelLayout"
+                "ChannelLayout",
+                "NoteVelocity"
             ]
         );
         assert!(EXCEPTIONS.iter().all(|e| e.2.starts_with("permanent: ")));

@@ -503,7 +503,7 @@ impl PerNoteState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_ump::{CCNumber, MidiGroup, U7};
+    use tutti_ump::{CCNumber, MidiGroup, NoteVelocity, U7};
 
     const PITCH_60: u32 = 60 << 25;
 
@@ -687,7 +687,7 @@ mod tests {
             a,
             Voice2::NoteOff {
                 note: key(5),
-                velocity: 0,
+                velocity: NoteVelocity::new(0),
                 attribute: Attribute::None,
             },
         );
@@ -863,7 +863,7 @@ mod tests {
             },
             Voice2::NoteOff {
                 note: key(5),
-                velocity: 0,
+                velocity: NoteVelocity::new(0),
                 attribute: Attribute::None,
             },
             Voice2::PitchBend(u32::MAX),

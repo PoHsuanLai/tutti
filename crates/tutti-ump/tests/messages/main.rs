@@ -7,6 +7,7 @@ mod constructors;
 mod fields;
 mod key_event;
 mod note_id;
+mod note_velocity;
 mod properties;
 mod reserved;
 mod serde;

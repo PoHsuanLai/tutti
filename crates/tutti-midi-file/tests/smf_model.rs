@@ -608,8 +608,8 @@ fn a_note_pairs_its_on_and_off_with_16_bit_velocity() {
     assert_eq!((n.start, n.end), (Tick(0), Tick(720)));
     // The 7-bit velocity widened by the specification's scaling (M2-104 D.3).
     assert!(
-        n.velocity > 100 << 9 && n.velocity < 101 << 9,
-        "{}",
+        n.velocity.get() > 100 << 9 && n.velocity.get() < 101 << 9,
+        "{:?}",
         n.velocity
     );
 }

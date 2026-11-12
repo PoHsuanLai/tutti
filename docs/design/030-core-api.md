@@ -8,7 +8,7 @@ tempo, modulation, the sampler, the codec, export, and writing a custom node.
 session's plan (lanes L1e to L1h) does it for MIDI. The three share one set of
 conventions (§2).
 
-Status: inventory, two designs (§4, §5) and the one lane (§6); the lane is built through step 8. Written 2026-11-12
+Status: inventory, two designs (§4, §5) and the one lane (§6); the lane is built through step 12. Written 2026-11-12
 against `main` at `f583038f6`, from three read-only sweeps whose full findings
 (each with today's code, the friction, the fix and a size) are kept outside the
 repo in `~/tutti-audit/api-inventory/`. Already landed or in flight, and not
@@ -90,7 +90,7 @@ finding where the API produces wrong results today, not only friction.
 | S1 | `build_device` and every `MicIn::open*` hard-wire `AudioHost::Default`, so JACK is unreachable. A rate-changing restart leaves the host to redo the mic, the inlet and the wiring. `add_inlet(ring, rate)` passes the rate apart from the ring | `SessionBuilder::host(..)`; a `MicConfig` (`Default` plus struct update); a ring that carries its rate; `Session::add_input`, which the restart reopens | M-L (built, step 7) |
 | S2 | Restart is spelled four ways (`restart`, `restart_following`, `restart_wanted`, `restart_on`), with a separate `&mut Device` any session accepts. `watch_devices` takes `want`/`running_on` by hand. Events carry `String` errors | one `DeviceRestart` value with a `follow` hook; `watch_devices` reads the device; typed errors in events | M (built, step 7) |
 | S3 | **Bug**: `let (s, _) = build_device(..)` drops the `Device` and silences the stream. `#[must_use]` does not fire on a destructure | return a named `#[must_use]` struct (`LiveSession { session, device }`) that also pairs the device with its session for S2 | S |
-| S4 | `InstrumentHandle` and `LiveInput` duplicate `note_on`/`note_off`/`send`/`send_at`/`clock`/`dropped` over `SharedKeys`. `note_on` takes a bare `u16` velocity | one shared keys handle (with the MIDI plan's `MidiKeys`), and a velocity type | S-M |
+| S4 | `InstrumentHandle` and `LiveInput` duplicate `note_on`/`note_off`/`send`/`send_at`/`clock`/`dropped` over `SharedKeys`. `note_on` takes a bare `u16` velocity | one shared keys handle (with the MIDI plan's `MidiKeys`), and a velocity type | S-M (built, step 12) |
 | S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M (built: the kinds in #636, step 8's `Drop`) |
 | S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S (built, step 7) |
 | S7 | Removal is spelled `remove`, `remove_instrument`, `GeneralMidi::remove`, `unroute` and `close_*`, returning `bool` or `()`. `insert` against `add` is a trap (`insert` skips the reclaim sweep). `open_event_inlet` panics on a bad capacity | one `remove(key)` on typed keys, returning `Result`; `insert` folded into `add`; a checked capacity | S-M (built, 2d) |
@@ -566,7 +566,26 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      after `play()` is taken.
    - The `tutti` umbrella has a `tempo` module (`TempoMap`, `TempoMapBuilder`, `TempoPoint`,
      `Transition`, `TempoView`) and `TempoMap` in its prelude, since `Session::set_tempo_map` takes one.
-12. **Instruments:** S4, with the MIDI session's keys handle.
+12. **Instruments** (built): S4, with the MIDI session's keys handle.
+    - `InstrumentHandle` holds a `tutti_midi_runtime::MidiKeys` (`keys()`, `keys_mut()`) and no
+      longer sends, plays notes, reads the clock or the losses itself; `SharedKeys`, `LiveInput`
+      and the session's `SendError` are gone (`MidiKeys` answers `Refused`, which
+      `MidiError::Send` carries). A handle is not `Clone`: the keys are an inlet's one producer,
+      so a host that plays from two threads wraps the handle in its own lock or moves it, and
+      this reverses doc 017 E4's "stay `Clone`". `Session::add_instrument` returns
+      `AddedInstrument { handle, controls }` and wires the strip to the master;
+      `add_instrument_unwired` leaves the strip for a mix that routes it (`add_general_midi`
+      does), a second method over a flag so each reads at the call site. `instrument` and
+      `instrument_plugin` still take a node already in the graph and leave it unwired.
+    - `s.midi().input(target) -> MidiKeys` replaces `live_input`: the inlet is opened once, its
+      keys are handed out once (`MidiError::InputTaken`), and `record` opens the inlet
+      without taking them. A live input is moved with `Midi::retarget_input(from, to)`
+      (`MidiError::NoLiveInput`), since it has no node to name; `retarget` is clips only.
+    - `tutti_ump::NoteVelocity` is the M2 note velocity field, the whole `u16`, in
+      `Voice2::NoteOn`/`NoteOff`, `Voice2::note_on`/`note_off`, `Message::note_on2`/`note_off2`,
+      `MidiKeys::note_on`, `SoundFontUnit::note_on` and `PairedNote::velocity`;
+      `tutti_midi_protocol::widen_velocity(U7)` and `narrow_velocity(NoteVelocity)` are the
+      M2-115 scaling. `tutti-voicing`'s `Command`s and `Patch` keep their internal `u16`.
 13. **Test leftovers** (built, #641 by the DSP session): `tutti-nodes`'
     `width_generic_golden.rs` replaced by analytic properties per node.
 

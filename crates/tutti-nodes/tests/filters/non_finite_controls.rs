@@ -191,12 +191,20 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     );
     survives_node(
         "chorus",
-        || ModDelayNode::chorus(ChannelLayout::STEREO),
+        || ModDelayNode::chorus(BusTopology::STEREO),
         |n| {
             vec![
-                ("rate", n.rate().into(), 3.0),
-                ("depth", n.depth().into(), 0.008),
-                ("feedback", n.feedback().into(), 0.6),
+                ("rate", n.param_set().cell(UnitParam::Rate).unwrap(), 3.0),
+                (
+                    "depth",
+                    n.param_set().cell(UnitParam::Depth).unwrap(),
+                    0.008,
+                ),
+                (
+                    "feedback",
+                    n.param_set().cell(UnitParam::Feedback).unwrap(),
+                    0.6,
+                ),
             ]
         },
     );

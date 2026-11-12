@@ -49,7 +49,8 @@
 //! - **Delay and modulation** (`delay.rs`, `modulation/`): [`DelayLine`] with an
 //!   [`InterpolationMode`]; the feedback delay as a family ([`DelayFamily`], run by
 //!   [`DelayRecurrence`], a [`Grows`] family over a [`MaxDelay`], its cross-feedback a
-//!   checked [`Routing`], its time and feedback lanes of the [`Feed`]); [`SweptLines`], the chorus and flanger kernel; the phaser's
+//!   checked [`Routing`], its time and feedback lanes of the [`Feed`]); the chorus and flanger as a family ([`ModDelayFamily`], run by [`ModDelayRecurrence`], a [`Grows`] family over a
+//!   [`MaxDelay`], its [`Sweep`] and [`Stagger`] checked, its LFO state on the stream's clock); the phaser's
 //!   all-pass chain ([`allpass_chain`]).
 //! - **Spatial** (`spatial/`): VBAP ([`SpeakerLayout`], Pulkki's pairs and triplets and
 //!   the gain solve over them, [`SpeakerGeometryError`]; [`VbapKernel`] and
@@ -137,7 +138,11 @@ pub use model::{
     Ring, Setup, Start, Step, Steps, System, TAIL_FLOOR,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
-pub use modulation::swept::SweptLines;
+pub use modulation::mod_delay::{
+    MAX_MOD_DELAY_CHANNELS, MIN_RATE, ModDelayCapacity, ModDelayControls, ModDelayFamily,
+    ModDelayMember, ModDelayRecurrence,
+};
+pub use modulation::sweep::{Stagger, StaggerError, Sweep, SweepError};
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::fdn::design::{FdnControls, FdnFamily, MAX_PRE_DELAY, MIN_DECAY};
 pub use reverb::fdn::recurrence::FdnRecurrence;

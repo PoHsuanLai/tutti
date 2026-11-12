@@ -327,6 +327,12 @@ pub struct VoiceAllocator {
 }
 
 impl VoiceAllocator {
+    /// The channel state the note logic holds, as messages in `group`
+    /// (`tutti_voicing::Voicing::chase`).
+    pub(crate) fn chase(&self, group: tutti_ump::MidiGroup, emit: impl FnMut(tutti_ump::Ump)) {
+        self.core.chase(group, emit);
+    }
+
     pub fn new(config: VoiceAllocatorConfig) -> Self {
         let rules = config.rules();
         let slots = (0..config.max_voices)

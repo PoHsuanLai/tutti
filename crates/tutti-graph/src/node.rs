@@ -158,6 +158,52 @@ pub struct Shape {
     /// [`with_no_note_events`](Self::with_no_note_events)). `true` unless set
     /// otherwise: a node that declares nothing is assumed to carry them.
     pub note_events: bool,
+    /// The most events this node writes into its successor's first event
+    /// input when it is replaced (see [`Node::chase`] and
+    /// [`with_chase`](Self::with_chase)). `None`: the node carries no state
+    /// across a swap, and the executor sizes nothing for it.
+    pub chase: Option<NonZeroU32>,
+}
+
+/// Where a node writes its state for its successor ([`Node::chase`]): a
+/// buffer the executor sized from [`Shape::with_chase`], of MIDI messages at
+/// offset 0.
+///
+/// Writing past the declared capacity refuses the message, and the executor
+/// counts every refusal; nothing grows.
+#[derive(Debug)]
+pub struct Chase<'a> {
+    buf: &'a mut Vec<crate::Event>,
+    limit: usize,
+    refused: u32,
+}
+
+impl<'a> Chase<'a> {
+    /// A chase over `buf`, which takes `capacity` more messages.
+    pub(crate) fn new(buf: &'a mut Vec<crate::Event>, capacity: usize) -> Self {
+        let limit = (buf.len() + capacity).min(buf.capacity());
+        Self {
+            buf,
+            limit,
+            refused: 0,
+        }
+    }
+
+    /// Writes `ump` for the successor, after what was written. `false`, and
+    /// counted, when the declared capacity is used up.
+    pub fn push(&mut self, ump: tutti_ump::Ump) -> bool {
+        if self.buf.len() >= self.limit {
+            self.refused += 1;
+            return false;
+        }
+        self.buf.push(crate::Event::midi(Offset::ZERO, ump));
+        true
+    }
+
+    /// How many messages were refused.
+    pub(crate) fn refused(&self) -> u32 {
+        self.refused
+    }
 }
 
 /// The ports [`Io::input`](crate::Io::input) and its kin cover, per side
@@ -253,6 +299,7 @@ impl Shape {
             params: ParamPorts::NONE,
             cost: Cost::Heavy,
             note_events: true,
+            chase: None,
         }
     }
 
@@ -458,6 +505,30 @@ impl Shape {
         match NonZeroU32::new(per_block) {
             Some(n) => self.event_capacity = Some(n),
             None => panic!("an event capacity of zero: the port could hold no event"),
+        }
+        self
+    }
+
+    /// This shape, saying the node writes up to `events` events of its state
+    /// into its successor when a replace swaps it out (see
+    /// [`Node::chase`]; the executor sizes its buffer from this when it
+    /// builds a plan, and counts what falls past it).
+    ///
+    /// ```
+    /// use tutti_graph::Shape;
+    /// let synth = Shape::EMPTY.with_events(1, 0).with_chase(512);
+    /// assert_eq!(synth.chase.map(|n| n.get()), Some(512));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// If `events` is zero: a node that chases nothing declares nothing. (In
+    /// a `const` context, at compile time.)
+    #[must_use]
+    pub const fn with_chase(mut self, events: u32) -> Self {
+        match NonZeroU32::new(events) {
+            Some(n) => self.chase = Some(n),
+            None => panic!("a chase of zero events: declare nothing instead"),
         }
         self
     }
@@ -1289,6 +1360,29 @@ pub trait Node: Send + 'static {
 
     /// Returns the node to the state of a freshly prepared one.
     fn reset(&mut self);
+
+    /// Writes the state a successor must start from, as events for its first
+    /// event input, when a replace swaps this node out (a crossfade, a plain
+    /// replace, an insert at an existing key): an instrument's programs,
+    /// controllers and bends as the MIDI messages that set them.
+    ///
+    /// The default writes nothing. A node that overrides it declares
+    /// [`Shape::with_chase`], and the executor calls it **once, where the
+    /// commit is applied**, before the block's first task runs: the events
+    /// reach the successor at offset 0 of its first block, ahead of every
+    /// other event there (they travel as flushed events, see the module
+    /// docs of the executor), so a parallel render sees what a serial one
+    /// does. The successor is chased whatever its type; one with no event
+    /// input drops them, and the drop is counted
+    /// ([`Executor::dropped_event_count`](crate::Executor::dropped_event_count)).
+    /// During a crossfade only the incoming node is chased. A fork is not:
+    /// a forked node carries its state in the copy. A replace that waits
+    /// behind a crossfade already running is not chased either (its
+    /// predecessor has not yet taken over; [`Executor::chase_skipped_count`](crate::Executor::chase_skipped_count)). Audio thread: must not
+    /// allocate, lock or block.
+    fn chase(&self, out: &mut Chase<'_>) {
+        let _ = out;
+    }
 
     /// The **base** of declared param `port` ([`Shape::params`]): the current
     /// value of the node's own control for it — the `Param<U>` its

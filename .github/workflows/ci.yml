@@ -713,12 +713,12 @@ jobs:
       # `///` examples, so a green nextest run is not a green workspace.
       - name: Doctests
         run: cargo test --locked --doc --workspace
-      # `Device`'s `compile_fail` doctest (it is `!Send`) exists only with
-      # `device`. A workspace run does not turn it on (the adapter that once
-      # unified it in is parked); this names the feature so the proof does not
-      # depend on another crate's defaults.
-      - name: Doctests (tutti-session, device)
-        run: cargo test --locked --doc -p tutti-session --features device
+      # tutti-session's doctests behind its own features (`Device`'s
+      # `compile_fail` proof under `device`, `PumpLoop`'s under `record`, ...):
+      # a workspace run does not turn them on (the adapter that once unified
+      # them in is parked), so every feature is named here.
+      - name: Doctests (tutti-session, all features)
+        run: cargo test --locked --doc -p tutti-session --all-features
 
   bevy-free:
     name: Bevy-free floor

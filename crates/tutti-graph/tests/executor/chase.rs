@@ -336,8 +336,9 @@ fn a_chase_past_its_declared_capacity_is_counted() {
     assert_eq!(seen, want);
 }
 
-/// A render across swaps (cut and crossfade, on several keys) is bit for bit
-/// the serial one on every worker count.
+/// A render across swaps (cut and crossfade, and a replace queued behind a
+/// running fade, on several keys) is bit for bit the serial one on every
+/// worker count.
 #[test]
 fn a_chase_renders_bit_identically_in_parallel() {
     fn render(workers: usize) -> Vec<Vec<u32>> {
@@ -378,7 +379,19 @@ fn a_chase_renders_bit_identically_in_parallel() {
             .expect("fits");
         }
         ed.commit().expect("commits");
-        for _ in 0..6 {
+        run(&mut exec);
+        // The odd keys replace again behind their running fades: chased when
+        // those fades end.
+        for k in keys.clone().filter(|k| k % 2 == 1) {
+            ed.replace(
+                NodeKey(k),
+                Unforkable(Keeper::new(None, true, 8, &log)),
+                Fade::new(Samples(2 * BLOCK), CrossfadeCurve::EqualPower),
+            )
+            .expect("fits");
+        }
+        ed.commit().expect("commits");
+        for _ in 0..8 {
             run(&mut exec);
         }
         assert_eq!(exec.is_parallel(), workers > 1);
@@ -391,10 +404,13 @@ fn a_chase_renders_bit_identically_in_parallel() {
 }
 
 /// A replace queued behind a running crossfade (A to B fading, B to C
-/// waiting) is not chased, and the skip is counted: C starts from its own
-/// state. The same swap with no fade running is not a skip.
+/// waiting) is chased when the running fade ends: B's state, written when the
+/// replace was applied, reaches C at offset 0 of C's first block, which is the
+/// block after B's fade ended, and not before. The spec is the one of a
+/// replace with nothing running: the successor starts from its predecessor's
+/// state.
 #[test]
-fn a_replace_queued_behind_a_fade_is_counted_as_skipped() {
+fn a_replace_queued_behind_a_fade_is_chased_when_the_fade_ends() {
     let (a, b, c) = (Log::default(), Log::default(), Log::default());
     let set = cc(7, 90);
     let (mut ed, mut exec) = rig(Keeper::new(Some(set), true, 8, &a));
@@ -407,8 +423,13 @@ fn a_replace_queued_behind_a_fade_is_counted_as_skipped() {
     )
     .expect("fits");
     ed.commit().expect("commits");
+    // B's fade is eight blocks, the first of which this one is.
     block(&mut exec);
-    assert_eq!(exec.chase_skipped_count(), 0, "the first swap chased");
+    assert_eq!(
+        b.lock().unwrap().as_slice(),
+        &[(0, 0, set.words()[0])],
+        "the first swap chased B"
+    );
     ed.replace(
         NodeKey(1),
         Unforkable(Keeper::new(None, true, 8, &c)),
@@ -416,13 +437,78 @@ fn a_replace_queued_behind_a_fade_is_counted_as_skipped() {
     )
     .expect("fits");
     ed.commit().expect("commits");
-    for _ in 0..12 {
+    for n in 2..=8 {
+        block(&mut exec);
+        assert!(
+            c.lock().unwrap().is_empty(),
+            "block {n} of B's fade: C waits, and has heard nothing"
+        );
+    }
+    // The ninth block is the first after B's fade: C takes over.
+    block(&mut exec);
+    assert_eq!(
+        c.lock().unwrap().as_slice(),
+        &[(0, 0, set.words()[0])],
+        "C's first call is the block after the fade, and B's state is its first event, at offset 0"
+    );
+    block(&mut exec);
+    assert_eq!(c.lock().unwrap().len(), 1, "delivered once");
+    assert_eq!(exec.dropped_event_count(), 0, "nothing was refused or lost");
+}
+
+/// A node with no event input that writes four messages for a successor and
+/// declares room for three.
+struct Mute;
+
+impl Node for Mute {
+    fn shape(&self) -> Shape {
+        Shape::buses(Buses::NONE, Buses::unassigned(ChannelLayout::MONO)).with_chase(3)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(0.0);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn chase(&self, out: &mut Chase<'_>) {
+        for i in 0..4 {
+            out.push(cc(i, 1));
+        }
+    }
+}
+
+/// What a queued successor cannot take is counted, not delivered: a chase
+/// held for a successor with no event input is dropped, counted, once, and a
+/// chase that overran its declared capacity counts what it refused.
+#[test]
+fn a_held_chase_counts_what_the_successor_cannot_take() {
+    let (mut ed, mut exec) = Editor::new(prepare(BLOCK));
+    ed.insert(NodeKey(1), "mute", Unforkable(Mute));
+    ed.spec_mut()
+        .topology
+        .set_outputs(vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })]);
+    ed.commit().expect("commits");
+    block(&mut exec);
+    let fade = || Fade::new(Samples(4 * BLOCK), CrossfadeCurve::EqualPower);
+    ed.replace(NodeKey(1), Unforkable(Mute), fade())
+        .expect("fits");
+    ed.commit().expect("commits");
+    block(&mut exec);
+    let before = exec.dropped_event_count();
+    // Behind the running fade: what the first Mute wrote is held for the
+    // second, which has no event input to take it.
+    ed.replace(NodeKey(1), Unforkable(Mute), fade())
+        .expect("fits");
+    ed.commit().expect("commits");
+    for _ in 0..8 {
         block(&mut exec);
     }
-    assert_eq!(exec.chase_skipped_count(), 1);
-    assert_eq!(b.lock().unwrap().as_slice(), &[(0, 0, set.words()[0])]);
-    assert!(
-        c.lock().unwrap().is_empty(),
-        "the queued successor was not chased"
+    assert_eq!(
+        exec.dropped_event_count() - before,
+        3 + 1,
+        "three held events the successor has no input for, and the one the buffer refused"
     );
 }

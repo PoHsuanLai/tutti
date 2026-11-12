@@ -349,9 +349,10 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
    failure rule (every query, wire removal and modulation call that names a node
    that is not there is a `Result`); S8: `HeardOpen::Retry` for a busy audio thread,
    a `LoadMeter` with one reader, and tutti-cpal's one listing,
-   `DeviceHost::snapshot`. The deferred chase injection stays in this item: preallocate the inject capacity of each
-   chasing unit, so that a chase whose takeover is delayed by a fade is delivered
-   when the fade ends (`end_fades`), not dropped.
+   `DeviceHost::snapshot`. Then the deferred chase injection (built): a chase whose
+   takeover is delayed by a fade is held in the queued crossfade, its injection
+   sized with the plan, and delivered when the fade ends (`end_fades`), not dropped;
+   `chase_skipped_count` is gone.
 6. **Playhead** (built): R2. `Session::playhead() -> Playhead` is one read of
    the block clock's cell (`tutti-engine`'s `block_clock`, one sequence-lock cell, no
    second copy): the audio thread writes it once per render call, from the

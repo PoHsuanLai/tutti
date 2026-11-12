@@ -157,10 +157,19 @@
 //! successor's first event input: offset 0 of its first block, ahead of
 //! everything else there. A successor without an event input drops them,
 //! counted, as is what the buffer refused. A fade's outgoing node is not
-//! sent anything. A replace waiting behind a running fade is not chased
-//! (its predecessor has not taken over, and delivering later would need a
-//! second path into the flushed events); it is counted,
-//! [`Executor::chase_skipped_count`].
+//! sent anything.
+//!
+//! A replace that waits behind a running fade is chased too, a block later:
+//! its predecessor (the unit fading in) writes its state when the replace is
+//! applied, the crossfade holds it (a `Vec` allocated there, with the apply
+//! that already allocates), and the plan's state keeps an injection for the
+//! successor sized for it. When the running fade ends (`end_fades`) the
+//! successor takes over, and the held events are delivered as flushed events
+//! to its first event input at the next block, at offset 0, ahead of
+//! everything else there, with no allocation. What the buffer refused, and
+//! what a successor with no event input cannot take, is counted as
+//! dropped. A queued replace that a later one supersedes, or that a cut
+//! discards, takes its held events with it.
 //!
 //! # Held keys
 //!
@@ -320,6 +329,10 @@ pub(crate) struct Crossfade {
     done: usize,
     len: usize,
     curve: CrossfadeCurve,
+    /// While this fade waits behind the one running at its key: what the unit
+    /// fading in wrote for the unit that waits (`Node::chase`), delivered to
+    /// it when this fade starts. Empty otherwise.
+    chase: Vec<Event>,
 }
 
 impl Crossfade {
@@ -455,6 +468,7 @@ impl Commit {
                             done: 0,
                             len: f.duration.get(),
                             curve: f.curve,
+                            chase: Vec::new(),
                         })
                     });
                 // The unit's param state, sized here so the audio thread
@@ -731,6 +745,9 @@ struct Gone {
     chased: Vec<(NodeKey, std::ops::Range<usize>, u32)>,
     /// The executor's chase buffer, lent for the commit.
     chase_events: Vec<Event>,
+    /// What a chase held for a successor behind a running fade refused, by
+    /// key, counted once the new plan says where the node is.
+    held_refused: Vec<(NodeKey, u32)>,
 }
 
 pub(crate) enum Ring {
@@ -861,8 +878,6 @@ pub struct Executor {
     /// (`Node::chase`), sized when a plan is built from what its nodes
     /// declare (`Shape::chase`), so the swap never allocates it.
     chase: Vec<Event>,
-    /// Replaces that would have chased but waited behind a running fade.
-    chase_skipped: u64,
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
@@ -956,7 +971,6 @@ impl Executor {
             next_prepare: None,
             parked: Vec::new(),
             chase: Vec::new(),
-            chase_skipped: 0,
             reset_time: false,
             history: TransportHistory::new(),
             play: PlayState::new(ends.play),
@@ -1049,13 +1063,6 @@ impl Executor {
     /// reads the same through [`Editor::play_reading`](crate::Editor::play_reading).
     pub fn play_reading(&self) -> PlayReading {
         self.play.reading()
-    }
-
-    /// Replaces of a chasing node that were not chased because they waited
-    /// behind a crossfade already running (`Node::chase`): the successor
-    /// starts from its own state. Counted when the commit is applied.
-    pub fn chase_skipped_count(&self) -> u64 {
-        self.chase_skipped
     }
 
     /// Events refused so far: writer overflow, and delay or feedback FIFO
@@ -1236,19 +1243,33 @@ impl Executor {
                 .as_ref()
                 .and_then(|p| p.unit(old.key))
                 .and_then(|u| u.shape.chase);
-            if running && capacity.is_some() {
-                self.chase_skipped += 1;
-            }
             let node = self.store.get(old.idx.0 as usize).and_then(Option::as_ref);
-            if let (false, Some(capacity), Some(u)) = (running, capacity, node) {
+            if let (Some(capacity), Some(u)) = (capacity, node) {
                 let from = departed.chase_events.len();
                 let mut out =
                     crate::node::Chase::new(&mut departed.chase_events, capacity.get() as usize);
                 u.node.chase(&mut out);
                 let refused = out.refused();
-                departed
-                    .chased
-                    .push((new.key, from..departed.chase_events.len(), refused));
+                if running {
+                    // Behind a running fade: the unit fading in is the
+                    // predecessor, and the successor starts once that fade
+                    // ends. What it wrote waits in the queued crossfade
+                    // (`end_fades` delivers it).
+                    let fade = c
+                        .incoming
+                        .iter_mut()
+                        .find(|i| i.idx == new.idx)
+                        .and_then(|i| i.fade.as_mut());
+                    if let Some(fade) = fade {
+                        fade.chase.extend_from_slice(&departed.chase_events[from..]);
+                        departed.held_refused.push((new.key, refused));
+                    }
+                    departed.chase_events.truncate(from);
+                } else {
+                    departed
+                        .chased
+                        .push((new.key, from..departed.chase_events.len(), refused));
+                }
             }
         }
         // A retired key, or one replaced without a fade, goes whole: its
@@ -1849,34 +1870,85 @@ impl Executor {
         let extra_total: usize = extra.iter().sum();
         let slot_capacity = |i: usize| plan.event_slot_capacity[i].events(cap) + extra[i];
 
+        // What a crossfade queued behind a running one holds for the unit
+        // that waits (`Node::chase`): delivered by `end_fades`, so its room is
+        // made here, with the plan, and the audio thread allocates none. What
+        // its buffer refused is counted now, and what a successor with no
+        // event input cannot take is dropped, counted.
+        for (key, refused) in departed.held_refused.drain(..) {
+            if let Ok(u) = plan.units.binary_search_by_key(&key, |u| u.key) {
+                self.dropped.at_node(u as u32, refused);
+            }
+        }
+        let mut held: BTreeMap<u32, usize> = BTreeMap::new();
+        for (u, unit) in plan.units.iter().enumerate() {
+            let Some(queued) = self
+                .store
+                .get_mut(unit.idx.0 as usize)
+                .and_then(Option::as_mut)
+                .and_then(|s| s.queued.as_mut())
+            else {
+                continue;
+            };
+            if queued.chase.is_empty() {
+                continue;
+            }
+            if unit.shape.event_in == 0 {
+                let lost = u32::try_from(queued.chase.len()).unwrap_or(u32::MAX);
+                self.dropped.at_node(u as u32, lost);
+                queued.chase.clear();
+            } else {
+                held.insert(u as u32, queued.chase.len());
+            }
+        }
+        let held_total: usize = held.values().sum();
+
         let mut has_inject = vec![false; plan.units.len()];
         let flushed_total: usize = flushed.values().map(Vec::len).sum();
         let widest = (0..plan.event_slot_capacity.len())
             .map(slot_capacity)
             .max()
             .unwrap_or(0);
-        let inject: Vec<Inject> = flushed
-            .into_iter()
-            .map(|((unit, port), mut events)| {
-                has_inject[unit as usize] = true;
-                // Several flushes into one sink: one sorted list, ties in
-                // flush order (stable).
-                events.sort_by_key(|e| e.offset);
-                let merged = Vec::with_capacity(events.len() + widest);
-                Inject {
-                    unit,
-                    port,
-                    events,
-                    merged,
-                    live: true,
-                }
-            })
-            .collect();
+        let mut inject: Vec<Inject> = Vec::with_capacity(flushed.len() + held.len());
+        for ((unit, port), mut events) in flushed {
+            has_inject[unit as usize] = true;
+            // Several flushes into one sink: one sorted list, ties in
+            // flush order (stable).
+            events.sort_by_key(|e| e.offset);
+            // Room for what `end_fades` may deliver to this input later.
+            let room = if port == 0 {
+                held.remove(&unit).unwrap_or(0)
+            } else {
+                0
+            };
+            events.reserve(room);
+            let merged = Vec::with_capacity(events.len() + room + widest);
+            inject.push(Inject {
+                unit,
+                port,
+                events,
+                merged,
+                live: true,
+            });
+        }
+        // The rest of the held: an injection nobody has delivered into yet.
+        for (unit, len) in held {
+            inject.push(Inject {
+                unit,
+                port: 0,
+                events: Vec::with_capacity(len),
+                merged: Vec::with_capacity(len + widest),
+                live: false,
+            });
+        }
+        // By unit, then port: the parallel executor's claims take each unit's
+        // run of the list (`par.rs`).
+        inject.sort_by_key(|i| (i.unit, i.port));
 
         // The widened slots, all of them: an over-estimate of what they add
         // to the widest node's inputs. The parallel workers' overlays take
         // the same figure.
-        let overlay = overlay_capacity(plan, cap, flushed_total + extra_total);
+        let overlay = overlay_capacity(plan, cap, flushed_total + held_total + extra_total);
         let par = par_for(plan, self.pool.as_ref(), self.store.len(), &inject, overlay);
         State {
             arena: Arena::new(plan.audio_slots as usize, max_block),
@@ -2043,7 +2115,6 @@ impl Executor {
                 next_prepare: _,
                 parked: _,
                 chase: _,
-                chase_skipped: _,
                 reset_time: _,
                 history,
                 play,
@@ -2355,7 +2426,7 @@ impl Executor {
                 f.advance(frames);
             }
             if fade_ended {
-                end_fades(plan, store, fade_back);
+                end_fades(plan, store, fade_back, inject, has_inject);
             }
             *frame += Samples(frames);
         });
@@ -2367,7 +2438,13 @@ impl Executor {
 /// waiting behind it, if any — from the next block on.
 #[cold]
 #[inline(never)]
-fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<Box<Crossfade>>) {
+fn end_fades(
+    plan: &Plan,
+    store: &mut [Option<Unit>],
+    fade_back: &mut HeapProd<Box<Crossfade>>,
+    inject: &mut [Inject],
+    has_inject: &mut [bool],
+) {
     for rec in &plan.nodes.recs {
         let Some(u) = store[rec.store as usize].as_mut() else {
             continue;
@@ -2379,6 +2456,21 @@ fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<B
         retire_fade(fade_back, ended);
         if let Some(mut next) = u.queued.take() {
             let incoming = next.waiting.take().expect("a queued fade holds its unit");
+            // What the unit that just finished fading in wrote for this one
+            // (`Node::chase`), delivered at its first block: the injection
+            // `rebuild` sized for it, ahead of anything already waiting
+            // there. Rotated into place, so nothing allocates.
+            if !next.chase.is_empty()
+                && let Some(inj) = inject
+                    .iter_mut()
+                    .find(|i| i.unit == rec.unit && i.port == 0)
+            {
+                inj.events.extend_from_slice(&next.chase);
+                inj.events.rotate_right(next.chase.len());
+                inj.live = true;
+                has_inject[rec.unit as usize] = true;
+            }
+            next.chase.clear();
             next.out = Some(std::mem::replace(&mut u.node, incoming));
             u.keys.promote();
             u.fade = Some(next);

@@ -38,8 +38,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use tutti_cpal::{
-    DeviceInfo, DeviceSelector, OutputSpec, SnapshotSource, StreamDriver, StreamFault,
-    StreamFaults, TuttiDriver,
+    DeviceId, DeviceSelector, OutputSpec, SnapshotSource, StreamDriver, StreamFault, StreamFaults,
+    TuttiDriver,
 };
 use tutti_types::{MaxBlock, SampleRate};
 
@@ -247,8 +247,12 @@ impl Device {
     /// # Errors
     ///
     /// When the host cannot enumerate.
-    pub fn devices() -> Result<impl Iterator<Item = DeviceInfo>> {
-        Ok(tutti_cpal::AudioEngine::output_devices()?.into_iter())
+    pub fn devices() -> Result<impl Iterator<Item = DeviceId>> {
+        let snapshot = tutti_cpal::DeviceHost::open(tutti_cpal::AudioHost::Default)?.snapshot()?;
+        Ok(snapshot
+            .devices(tutti_cpal::Direction::Output)
+            .to_vec()
+            .into_iter())
     }
 }
 

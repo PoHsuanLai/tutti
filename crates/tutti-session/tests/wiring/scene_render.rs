@@ -360,7 +360,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 fn pdc_is_the_compilers() {
     let mut s = scene(true);
     assert_eq!(
-        s.session.graph().sources(Root::output(0)),
+        s.session.graph().sources(Root::output(0)).unwrap(),
         [s.drive.out(0)],
         "nothing is spliced in; the plan delays the channel"
     );

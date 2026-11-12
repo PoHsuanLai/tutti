@@ -94,14 +94,19 @@ fn the_graph_declares_each_index() {
     let mut s = offline();
     let (node, _) = s.graph().add(Params(Bands::new(0.0, 0.0)));
     let _ = s.update();
-    assert!(s.graph().declares_param(node, BAND0));
-    assert!(s.graph().declares_param(node, BAND1));
-    assert!(s.graph().declares_param(node, UnitParam::Threshold));
+    assert!(s.graph().declares_param(node, BAND0).unwrap());
+    assert!(s.graph().declares_param(node, BAND1).unwrap());
+    assert!(
+        s.graph()
+            .declares_param(node, UnitParam::Threshold)
+            .unwrap()
+    );
     assert!(
         !s.graph()
             .declares_param(node, UnitAddr::new(UnitParam::Threshold, 2))
+            .unwrap()
     );
-    assert!(!s.graph().declares_param(node, UnitParam::Ratio));
+    assert!(!s.graph().declares_param(node, UnitParam::Ratio).unwrap());
 }
 
 /// **A route to `Threshold` at index 1 modulates index 1 and leaves index 0

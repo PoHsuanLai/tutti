@@ -172,7 +172,7 @@ fn add_source_weighted_adds_the_edge_and_its_weight() {
         .gain(amp(-0.25))
         .unwrap();
     assert_eq!(
-        r.s.graph_ref().sources(InPort::new(sink, 0)),
+        r.s.graph_ref().sources(InPort::new(sink, 0)).unwrap(),
         [node(a), node(b)]
     );
     assert_eq!(r.edge_from(a).gain(r.s.graph_ref()), Some(amp(0.5)));
@@ -187,7 +187,7 @@ fn add_source_weighted_adds_the_edge_and_its_weight() {
         .gain(amp(2.0))
         .unwrap();
     assert_eq!(
-        r.s.graph_ref().sources(InPort::new(sink, 0)),
+        r.s.graph_ref().sources(InPort::new(sink, 0)).unwrap(),
         [node(a), node(b)]
     );
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 2.0 * A) + -0.25 * B));
@@ -204,7 +204,7 @@ fn add_source_weighted_adds_the_edge_and_its_weight() {
         Some(EdgeGainError::NotFinite)
     );
     assert_eq!(
-        r.s.graph_ref().sources(InPort::new(sink, 0)),
+        r.s.graph_ref().sources(InPort::new(sink, 0)).unwrap(),
         [node(a), node(b)]
     );
 }
@@ -227,7 +227,10 @@ fn add_output_source_weighted_weights_the_channel() {
         .hard()
         .gain(amp(2.0))
         .unwrap();
-    assert_eq!(r.s.graph_ref().sources(Root::output(1)), [node(a), node(b)]);
+    assert_eq!(
+        r.s.graph_ref().sources(Root::output(1)).unwrap(),
+        [node(a), node(b)]
+    );
     assert_eq!(
         Edge::new(node(a), Root::output(1)).gain(r.s.graph_ref()),
         Some(amp(0.5))
@@ -265,7 +268,9 @@ fn removing_a_source_drops_its_weight() {
     g(&mut r);
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 0.5 * A) + B));
 
-    r.s.graph().disconnect_hard(node(a), InPort::new(sink, 0));
+    r.s.graph()
+        .disconnect_hard(node(a), InPort::new(sink, 0))
+        .unwrap();
     assert_eq!(r.edge_from(a).gain(r.s.graph_ref()), None);
     assert!(all_are(&settled(&mut r.s, 0), B), "valid, and just b");
     r.s.graph()
@@ -296,7 +301,9 @@ fn removing_a_source_drops_its_weight() {
         .unwrap()
         .hard();
     assert!(all_are(&settled(&mut r.s, 1), (0.0 + 0.5 * A) + B));
-    r.s.graph().disconnect_hard(node(a), Root::output(1));
+    r.s.graph()
+        .disconnect_hard(node(a), Root::output(1))
+        .unwrap();
     assert_eq!(
         Edge::new(node(a), Root::output(1)).gain(r.s.graph_ref()),
         None
@@ -336,8 +343,8 @@ fn moving_a_weight_marks_no_recompile() {
         .unwrap()
         .hard();
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 0.5 * A) + B));
-    let plan = r.s.graph_ref().sent_plan().expect("a plan");
-    let commits = r.s.graph_ref().commits_sent();
+    let plan = r.s.graph_ref().testing().sent_plan().expect("a plan");
+    let commits = r.s.graph_ref().testing().commits_sent();
 
     let edge = r.edge_from(a);
     edge.set_gain(r.s.graph(), amp(1.5)).unwrap();
@@ -345,7 +352,7 @@ fn moving_a_weight_marks_no_recompile() {
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 1.5 * A) + B));
     assert!(Arc::ptr_eq(
         &plan,
-        &r.s.graph_ref().sent_plan().expect("a plan")
+        &r.s.graph_ref().testing().sent_plan().expect("a plan")
     ));
-    assert_eq!(r.s.graph_ref().commits_sent(), commits);
+    assert_eq!(r.s.graph_ref().testing().commits_sent(), commits);
 }

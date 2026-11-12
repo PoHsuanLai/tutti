@@ -4150,6 +4150,7 @@ dependencies = [
  "tutti-polysynth",
  "tutti-rt",
  "tutti-sampler",
+ "tutti-session",
  "tutti-sf2",
  "tutti-shared-plugin",
  "tutti-soundfont",

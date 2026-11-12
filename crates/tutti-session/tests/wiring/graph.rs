@@ -199,9 +199,17 @@ fn every_source_reads_back_as_written() {
             .set_sources_hard(InPort::new(sink, 0), [source])
             .unwrap();
         let held = vec![source];
-        assert_eq!(graph.sources(InPort::new(sink, 0)), held, "node port");
+        assert_eq!(
+            graph.sources(InPort::new(sink, 0)).unwrap(),
+            held,
+            "node port"
+        );
         graph.set_sources_hard(Root::output(1), [source]).unwrap();
-        assert_eq!(graph.sources(Root::output(1)), held, "global output");
+        assert_eq!(
+            graph.sources(Root::output(1)).unwrap(),
+            held,
+            "global output"
+        );
     }
 }
 
@@ -214,33 +222,42 @@ fn every_setter_stores_silence_as_the_empty_set() {
     let graph = s.graph();
     let (sink, _) = graph.add(ForkByClone(Through::mono()));
     let (src, _) = graph.add(ForkByClone(Const::frame(&[1.0, 2.0])));
-    assert!(graph.planned_compensation().is_some(), "fresh root");
+    assert!(
+        graph.testing().planned_compensation().is_some(),
+        "fresh root"
+    );
 
     graph
         .set_sources_hard(InPort::new(sink, 0), [OutPort::new(src, 0)])
         .unwrap();
     graph.set_sources_hard(InPort::new(sink, 0), []).unwrap();
     assert!(
-        graph.planned_compensation().is_some(),
+        graph.testing().planned_compensation().is_some(),
         "set_sources of none"
     );
 
     graph
         .set_sources_hard(Root::output(0), [OutPort::new(src, 0)])
         .unwrap();
-    assert!(graph.disconnect_all(Root::output(0)));
-    assert!(graph.planned_compensation().is_some(), "disconnect_all");
+    assert!(graph.disconnect_all(Root::output(0)).unwrap());
+    assert!(
+        graph.testing().planned_compensation().is_some(),
+        "disconnect_all"
+    );
 
     graph.connect(src, Root).unwrap().hard();
-    graph.disconnect(src, Root);
+    graph.disconnect(src, Root).unwrap();
     assert!(
-        graph.planned_compensation().is_some(),
+        graph.testing().planned_compensation().is_some(),
         "disconnected main bus"
     );
 
     graph.widen_outputs(4).expect("widens");
-    assert!(graph.planned_compensation().is_some(), "widened root");
-    assert_eq!(graph.sources(Root::output(3)), []);
+    assert!(
+        graph.testing().planned_compensation().is_some(),
+        "widened root"
+    );
+    assert_eq!(graph.sources(Root::output(3)).unwrap(), []);
 }
 
 /// `remove` says whether the node was there, so removing a node twice is a
@@ -342,9 +359,10 @@ fn an_edit_between_updates_is_committed_by_the_next() {
         .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
         .unwrap();
     let _ = s.update();
-    let sent = s.graph_ref().commits_sent();
+    let sent = s.graph_ref().testing().commits_sent();
     let plan = s
         .graph_ref()
+        .testing()
         .sent_plan()
         .expect("the first update sent a plan");
 
@@ -355,8 +373,12 @@ fn an_edit_between_updates_is_committed_by_the_next() {
     assert!(s.graph_ref().is_edited());
     let _ = s.update();
     assert!(!s.graph_ref().is_edited(), "the update committed the edit");
-    assert_eq!(s.graph_ref().commits_sent(), sent + 1, "one commit");
-    let after = s.graph_ref().sent_plan().expect("a plan");
+    assert_eq!(
+        s.graph_ref().testing().commits_sent(),
+        sent + 1,
+        "one commit"
+    );
+    let after = s.graph_ref().testing().sent_plan().expect("a plan");
     assert!(!Arc::ptr_eq(&plan, &after), "and it sent a new plan");
     let mut out = [0.0f32];
     s.render_frame(&mut out);
@@ -373,16 +395,17 @@ fn an_update_with_no_edit_sends_no_plan() {
         .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
         .unwrap();
     let _ = s.update();
-    let sent = s.graph_ref().commits_sent();
+    let sent = s.graph_ref().testing().commits_sent();
     let plan = s
         .graph_ref()
+        .testing()
         .sent_plan()
         .expect("the first update sent a plan");
     for _ in 0..3 {
         let _ = s.update();
     }
-    assert_eq!(s.graph_ref().commits_sent(), sent, "no commit");
-    let after = s.graph_ref().sent_plan().expect("a plan");
+    assert_eq!(s.graph_ref().testing().commits_sent(), sent, "no commit");
+    let after = s.graph_ref().testing().sent_plan().expect("a plan");
     assert!(Arc::ptr_eq(&plan, &after), "the same plan");
 }
 
@@ -442,7 +465,7 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
         Ok(Crossfade::Waiting(id)) => id,
         other => panic!("the crossfade waits for the re-prepare: {other:?}"),
     };
-    assert_eq!(s.graph_ref().waiting_crossfades(), 1);
+    assert_eq!(s.graph_ref().testing().waiting_crossfades(), 1);
 
     // Update by update through the re-prepare: the executor checks its units
     // out (a silent block), the editor sends them back, the executor
@@ -468,7 +491,7 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
         }
         other => panic!("landed once the graph resumed: {other:?}"),
     };
-    assert_eq!(s.graph_ref().waiting_crossfades(), 0);
+    assert_eq!(s.graph_ref().testing().waiting_crossfades(), 0);
     for _ in 0..512 {
         side.tick(&[], &mut out);
     }
@@ -501,7 +524,11 @@ fn a_crossfade_on_a_poisoned_graph_is_refused() {
         CrossfadeCurve::EqualAmplitude,
     );
     assert!(refused.is_err(), "{refused:?}");
-    assert_eq!(s.graph_ref().waiting_crossfades(), 0, "nothing waits");
+    assert_eq!(
+        s.graph_ref().testing().waiting_crossfades(),
+        0,
+        "nothing waits"
+    );
     assert!(s.update().is_empty());
 }
 
@@ -531,7 +558,11 @@ fn every_param_write_path_reaches_a_fork() {
     let mut live = [0.0f32; 2];
     s.render_frame(&mut live);
     assert_eq!(live, [5.0, 4.0], "each write reaches the live node");
-    let mut fork = s.graph_ref().fork_live().expect("every knob forks");
+    let mut fork = s
+        .graph_ref()
+        .testing()
+        .fork_live()
+        .expect("every knob forks");
     let mut forked = [0.0f32; 2];
     fork.tick(&[], &mut forked);
     assert_eq!(forked, [5.0, 4.0], "and the fork");
@@ -559,7 +590,7 @@ fn move_feeds_moves_every_feeders_sources() {
         v
     };
     assert_eq!(g.fed(old), both, "each feeder kept its own entry");
-    let mut edges = g.sources(EventInPort::new(old, 0));
+    let mut edges = g.sources(EventInPort::new(old, 0)).unwrap();
     edges.sort();
     assert_eq!(edges, both, "the union is the sink's event edges");
 
@@ -567,11 +598,11 @@ fn move_feeds_moves_every_feeders_sources() {
     assert_eq!(g.feed(new, Feeder::Sequencer), [clip.events_out()]);
     assert_eq!(g.feed(new, Feeder::Routes), [route.events_out()]);
     assert!(g.fed(old).is_empty(), "the old sink is fed by nothing");
-    let mut edges = g.sources(EventInPort::new(new, 0));
+    let mut edges = g.sources(EventInPort::new(new, 0)).unwrap();
     edges.sort();
     assert_eq!(edges, both, "the new sink's edges are the union");
     assert!(
-        g.sources(EventInPort::new(old, 0)).is_empty(),
+        g.sources(EventInPort::new(old, 0)).unwrap().is_empty(),
         "and the old's are gone"
     );
     assert_eq!(s.update().len(), 0);

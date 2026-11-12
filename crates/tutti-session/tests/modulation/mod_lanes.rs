@@ -982,7 +982,10 @@ fn an_added_synth_is_a_modulation_target() {
 
 /// The plan the graph sent last.
 fn sent(s: &Session) -> Arc<tutti_graph::Plan> {
-    s.graph_ref().sent_plan().expect("a plan was sent")
+    s.graph_ref()
+        .testing()
+        .sent_plan()
+        .expect("a plan was sent")
 }
 
 /// Nothing is staged: the last update's commit took every edit.
@@ -1188,7 +1191,11 @@ fn a_fork_renders_a_modulated_param_as_live_does() {
     for _ in 0..512 {
         s.render_frame(&mut live);
     }
-    let mut fork = s.graph_ref().fork_live().expect("every knob is forkable");
+    let mut fork = s
+        .graph_ref()
+        .testing()
+        .fork_live()
+        .expect("every knob is forkable");
     let mut forked = [0.0f32; 2];
     fork.tick(&[], &mut forked);
     assert_eq!(live[0], 8.0, "the knob written under its modulation, live");

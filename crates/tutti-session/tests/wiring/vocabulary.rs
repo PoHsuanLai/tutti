@@ -122,7 +122,7 @@ fn a_connections_gain_weights_the_edge_it_added() {
         Some(EdgeGainError::NotFinite)
     );
     assert!(
-        s.graph_ref().sources(Root::output(1)).is_empty(),
+        s.graph_ref().sources(Root::output(1)).unwrap().is_empty(),
         "the edge the refused gain came with is gone"
     );
 }
@@ -139,13 +139,16 @@ fn disconnect_removes_one_edge_and_disconnect_all_the_rest() {
     s.graph().connect(b.out(0), sink).unwrap().hard();
     assert_eq!(first_frame(&mut s), [0.75, 0.0]);
 
-    assert!(s.graph().disconnect_hard(a.out(0), sink));
-    assert!(!s.graph().disconnect_hard(a.out(0), sink), "already gone");
-    assert_eq!(s.graph_ref().sources(sink), [b.out(0)]);
+    assert!(s.graph().disconnect_hard(a.out(0), sink).unwrap());
+    assert!(
+        !s.graph().disconnect_hard(a.out(0), sink).unwrap(),
+        "already gone"
+    );
+    assert_eq!(s.graph_ref().sources(sink).unwrap(), [b.out(0)]);
     assert_eq!(first_frame(&mut s), [0.25, 0.0]);
 
-    assert!(s.graph().disconnect_all(sink));
-    assert!(s.graph_ref().sources(sink).is_empty());
+    assert!(s.graph().disconnect_all(sink).unwrap());
+    assert!(s.graph_ref().sources(sink).unwrap().is_empty());
     // The edge fades out over 256 frames: the fifth 64-frame block starts
     // past it.
     for _ in 0..4 {
@@ -165,15 +168,15 @@ fn a_main_bus_disconnects_what_it_connected() {
         .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
     s.graph().connect(src, through).unwrap().hard();
     assert_eq!(
-        s.graph_ref().sources(through.input(1)),
+        s.graph_ref().sources(through.input(1)).unwrap(),
         [src.out(1)],
         "channel by channel"
     );
-    assert!(s.graph().disconnect_hard(src, through));
-    assert!(s.graph_ref().sources(through.input(0)).is_empty());
-    assert!(s.graph_ref().sources(through.input(1)).is_empty());
+    assert!(s.graph().disconnect_hard(src, through).unwrap());
+    assert!(s.graph_ref().sources(through.input(0)).unwrap().is_empty());
+    assert!(s.graph_ref().sources(through.input(1)).unwrap().is_empty());
     assert!(
-        !s.graph().disconnect_hard(src, through),
+        !s.graph().disconnect_hard(src, through).unwrap(),
         "nothing left to take out"
     );
 }
@@ -192,5 +195,8 @@ fn a_key_and_its_erasure_are_one_node() {
         .unwrap()
         .hard();
     assert!(!s.graph_ref().is_edited(), "the same edge, three spellings");
-    assert_eq!(s.graph_ref().sources(Root::output(0)), [src.out(0)]);
+    assert_eq!(
+        s.graph_ref().sources(Root::output(0)).unwrap(),
+        [src.out(0)]
+    );
 }

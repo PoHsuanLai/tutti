@@ -47,7 +47,7 @@ fn skewed(s: &mut Session) -> (tutti_graph::NodeKey, Samples) {
     s.graph()
         .set_sources(Root::output(1), [OutPort::new(b, 0)])
         .unwrap();
-    let lat = s.graph_ref().node_latency(eff);
+    let lat = s.graph_ref().node_latency(eff).unwrap();
     // Every test built on this graph compares against `lat`; if the limiter
     // ever reported no latency they would all agree on zero and pass while
     // testing nothing.
@@ -89,14 +89,15 @@ fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
     let mut s = detached();
     let (_, lat) = skewed(&mut s);
     let authored = [
-        s.graph_ref().sources(Root::output(0)),
-        s.graph_ref().sources(Root::output(1)),
+        s.graph_ref().sources(Root::output(0)).unwrap(),
+        s.graph_ref().sources(Root::output(1)).unwrap(),
     ];
     let _ = s.update();
     assert!(!s.graph_ref().is_edited(), "committed");
 
     let sent = s
         .graph_ref()
+        .testing()
         .sent_compensation()
         .expect("the commit sent a plan");
     assert_eq!(
@@ -118,8 +119,8 @@ fn the_published_figures_are_the_plans_and_nothing_is_spliced_in() {
     );
     assert_eq!(
         [
-            s.graph_ref().sources(Root::output(0)),
-            s.graph_ref().sources(Root::output(1))
+            s.graph_ref().sources(Root::output(0)).unwrap(),
+            s.graph_ref().sources(Root::output(1)).unwrap()
         ],
         authored,
         "nothing is spliced into the wiring"
@@ -154,6 +155,7 @@ fn the_latency_fold_and_the_compiled_plan_agree() {
         let folded = s.graph_ref().latency_plan();
         let planned = s
             .graph_ref()
+            .testing()
             .planned_compensation()
             .expect("a plan is compiled");
         let width = folded.channels().len().max(planned.channels().len());
@@ -199,7 +201,7 @@ fn a_re_prepare_republishes_the_figures_once_it_resumes() {
     s.graph()
         .set_sources(Root::output(1), [OutPort::new(a, 0)])
         .unwrap();
-    let at_44k = s.graph_ref().node_latency(eff);
+    let at_44k = s.graph_ref().node_latency(eff).unwrap();
     let mut side = s.graph().take_audio_side();
     let _ = s.update();
     assert_eq!(s.latency(), at_44k);
@@ -211,7 +213,7 @@ fn a_re_prepare_republishes_the_figures_once_it_resumes() {
         side.tick(&[], &mut out);
         let _ = s.update();
     }
-    let at_48k = s.graph_ref().node_latency(eff);
+    let at_48k = s.graph_ref().node_latency(eff).unwrap();
     assert_ne!(at_48k, at_44k, "the lookahead moved in samples");
     assert_eq!(s.latency(), at_48k);
     assert_eq!(

@@ -145,7 +145,7 @@ fn a_constructed_message_decodes_back_to_itself() {
         Message::program_change(ch, v),
         Message::pitch_bend(ch, U14::MAX),
         Message::note_on2(ch, note, NoteVelocity::new(0xFFFF)),
-        Message::note_off2(ch, note, NoteVelocity::new(0)),
+        Message::note_off2(ch, note, NoteVelocity::MIN),
         Message::control_change2(ch, cc, u32::MAX),
         Message::program_change2(ch, v),
         Message::pitch_bend2(ch, u32::MAX),

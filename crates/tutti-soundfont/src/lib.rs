@@ -232,7 +232,7 @@ impl SoundFontUnit {
     pub fn note_off(&mut self, channel: MidiChannel, key: NoteNumber) {
         let off = Voice2::NoteOff {
             note: key,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         };
         self.player.apply(channel, off);

@@ -8,6 +8,7 @@
 /// `narrow_velocity`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct NoteVelocity(u16);
 
 impl NoteVelocity {

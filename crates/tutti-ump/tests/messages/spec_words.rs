@@ -272,7 +272,7 @@ fn midi2_note_and_pressure() {
         [0x4192_3C01, 0x0000_BEEF, 0, 0],
         v(Voice2::NoteOn {
             note: note(60),
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::Manufacturer(0xBEEF),
         }),
     );

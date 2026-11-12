@@ -90,11 +90,12 @@ impl GeneralMidi {
     /// # Errors
     ///
     /// [`RemoveError::NoSuchNode`] naming the first part that was not in the
-    /// graph (the setup was removed already, or one part was removed by hand).
-    pub fn remove(&self, session: &mut Session) -> Result<(), RemoveError> {
-        let mut first = session.remove_instrument(&self.instrument);
+    /// graph (a part was removed by hand).
+    pub fn remove(self, session: &mut Session) -> Result<(), RemoveError> {
+        let node = self.instrument.node();
+        let mut first = session.remove_instrument(self.instrument);
         for node in [
-            self.instrument.node(),
+            node,
             self.chorus.erase(),
             self.reverb.erase(),
             self.strip.erase(),

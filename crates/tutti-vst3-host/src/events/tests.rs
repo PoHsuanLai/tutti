@@ -1101,7 +1101,7 @@ mod message {
             address(2),
             Voice2::NoteOn {
                 note: note(60),
-                velocity: NoteVelocity::new(0),
+                velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
         ));

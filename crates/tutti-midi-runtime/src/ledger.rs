@@ -75,7 +75,7 @@ impl NoteKey {
             group: self.group,
             channel: self.channel,
         };
-        let off = Voice2::note_off(self.note, NoteVelocity::new(0));
+        let off = Voice2::note_off(self.note, NoteVelocity::MIN);
         Event::midi(at, Ump::from(Message::Midi2(address, off)))
     }
 }

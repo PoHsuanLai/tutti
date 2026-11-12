@@ -408,20 +408,19 @@ pub fn an_instrument_is_one_handle_at_a_time<S: Subject>() {
         rig.peak(rig.t(STAMP)..rig.t(STAMP) + 2_000) > 1e-4,
         "the first handle plays"
     );
-    rig.session.remove_instrument(&rig.handle).unwrap();
+    let (queue, strip) = (rig.handle.queue(), rig.handle.out());
+    rig.session.remove(strip.erase()).unwrap();
     assert_eq!(
-        rig.session.remove_instrument(&rig.handle),
-        Err(tutti_session::RemoveError::NoSuchNode(
-            rig.handle.queue().erase()
-        )),
-        "the handle's parts are gone: the queue is the first named"
+        rig.session.remove_instrument(rig.handle),
+        Err(tutti_session::RemoveError::NoSuchNode(strip.erase())),
+        "a part removed by its key is the one the removal names, the other goes all the same"
     );
     assert!(
         rig.session.graph_ref().contains(rig.node),
         "the instrument stays"
     );
-    assert!(!rig.session.graph_ref().contains(rig.handle.queue()));
-    assert!(!rig.session.graph_ref().contains(rig.handle.out()));
+    assert!(!rig.session.graph_ref().contains(queue));
+    assert!(!rig.session.graph_ref().contains(strip));
     rig.session
         .instrument(rig.node)
         .expect("a node can be made an instrument again");

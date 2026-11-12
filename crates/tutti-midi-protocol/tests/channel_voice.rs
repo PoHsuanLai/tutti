@@ -40,7 +40,7 @@ fn a_midi_1_message_reads_widened() {
 fn a_midi_2_note_on_at_velocity_0_stays_a_note_on() {
     let on = Voice2::NoteOn {
         note: NoteNumber::of(60),
-        velocity: NoteVelocity::new(0),
+        velocity: NoteVelocity::MIN,
         attribute: Attribute::None,
     };
     let ump = Ump::from(Message::Midi2(address(), on));

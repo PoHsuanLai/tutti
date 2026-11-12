@@ -57,7 +57,7 @@ fn a_note_on_at_velocity_zero_stays_a_note_on() {
         Stamp::NextBlock,
         MidiChannel::FIRST,
         NoteNumber::of(60),
-        NoteVelocity::new(0),
+        NoteVelocity::MIN,
     )
     .unwrap();
     d.block();

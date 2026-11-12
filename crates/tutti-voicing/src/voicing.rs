@@ -1974,7 +1974,7 @@ mod tests {
         assert_eq!(s.send(0, one, &One), [release(1)]);
         let two = Voice2::NoteOn {
             note: NoteNumber::of(62),
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         };
         let c = s.send(0, two, &One);

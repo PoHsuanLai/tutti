@@ -260,7 +260,7 @@ fn soundfont_every_decoded_message_is_allocation_free() {
         }),
         m2(Voice2::NoteOn {
             note,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         }),
         m2(Voice2::PerNotePitchBend {
@@ -321,7 +321,7 @@ fn soundfont_every_decoded_message_is_allocation_free() {
         }),
         m2(Voice2::NoteOff {
             note,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::Reserved { kind: 9, data: 2 },
         }),
         ev(Message::Utility(Utility::JrClock(1))),

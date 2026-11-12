@@ -76,7 +76,7 @@ impl MidiKeys {
         channel: MidiChannel,
         note: NoteNumber,
     ) -> Result<(), Refused> {
-        self.voice(at, channel, Voice2::note_off(note, NoteVelocity::new(0)))
+        self.voice(at, channel, Voice2::note_off(note, NoteVelocity::MIN))
     }
 
     fn voice(

@@ -687,7 +687,7 @@ mod tests {
             a,
             Voice2::NoteOff {
                 note: key(5),
-                velocity: NoteVelocity::new(0),
+                velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
         );
@@ -863,7 +863,7 @@ mod tests {
             },
             Voice2::NoteOff {
                 note: key(5),
-                velocity: NoteVelocity::new(0),
+                velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
             Voice2::PitchBend(u32::MAX),

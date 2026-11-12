@@ -2691,7 +2691,7 @@ fn every_note_off_form_releases_the_note() {
             address(0),
             Voice2::NoteOff {
                 note,
-                velocity: NoteVelocity::new(0),
+                velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
         ),
@@ -2715,7 +2715,7 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
         address(0),
         Voice2::NoteOn {
             note,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         },
     )));
@@ -2724,7 +2724,7 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
         address(0),
         Voice2::NoteOff {
             note,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         },
     )));
@@ -2892,7 +2892,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
         address(0),
         Voice2::NoteOff {
             note: NoteNumber::of(60),
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: reserved,
         },
     )));

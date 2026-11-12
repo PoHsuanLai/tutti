@@ -2250,7 +2250,7 @@ impl RefHeld {
         }
         for &(m2, g, c, note) in &self.notes {
             let msg = if m2 {
-                Message::Midi2(addr(g, c), Voice2::note_off(note, NoteVelocity::new(0)))
+                Message::Midi2(addr(g, c), Voice2::note_off(note, NoteVelocity::MIN))
             } else {
                 Message::Midi1(
                     addr(g, c),

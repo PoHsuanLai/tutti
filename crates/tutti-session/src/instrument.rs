@@ -196,8 +196,9 @@ impl Session {
     ) -> Result<AddedInstrument<I::Controls>, crate::Error> {
         let added = self.add_instrument_unwired(instrument)?;
         if let Err(e) = self.graph().connect(added.handle.out(), Root) {
-            let _ = self.remove_instrument(&added.handle); // made a moment ago
-            let _ = self.remove(added.handle.node()); // added a moment ago
+            let node = added.handle.node();
+            let _ = self.remove_instrument(added.handle); // made a moment ago
+            let _ = self.remove(node); // added a moment ago
             return Err(e.into());
         }
         Ok(added)
@@ -265,7 +266,8 @@ impl Session {
         })
     }
 
-    /// Takes away what the handle added: its queue and its strip. The
+    /// Takes away what the handle added: its queue and its strip, consuming the
+    /// handle (a second removal through it is unwritable). The
     /// instrument's own node stays, whether [`add_instrument`](Self::add_instrument)
     /// added it or the caller had it, and can be made an instrument again
     /// ([`instrument`](Self::instrument)); remove it with
@@ -274,9 +276,9 @@ impl Session {
     /// # Errors
     ///
     /// [`RemoveError::NoSuchNode`] naming the first of the queue and the strip
-    /// that is not in the graph (the handle was removed already). The other
-    /// is removed all the same.
-    pub fn remove_instrument(&mut self, handle: &InstrumentHandle) -> Result<(), RemoveError> {
+    /// that is not in the graph (removed by its key). The other is removed all
+    /// the same.
+    pub fn remove_instrument(&mut self, handle: InstrumentHandle) -> Result<(), RemoveError> {
         // The feed into the instrument goes with the queue (`Graph::remove`).
         let queue = self.remove(handle.queue.erase());
         let strip = self.remove(handle.strip.erase());

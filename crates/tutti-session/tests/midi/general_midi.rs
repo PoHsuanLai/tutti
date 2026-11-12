@@ -408,11 +408,4 @@ fn removing_the_setup_leaves_nothing() {
         assert!(!session.graph_ref().contains(node), "{node:?} is left");
     }
     assert_eq!(session.graph_ref().node_count(), before);
-    assert_eq!(
-        gm.remove(&mut session),
-        Err(tutti_session::RemoveError::NoSuchNode(
-            nodes[1] // the instrument's queue is the first part removed
-        )),
-        "a setup removed already names the first part that is not there"
-    );
 }

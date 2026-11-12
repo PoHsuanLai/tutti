@@ -512,7 +512,7 @@ fn midi_2_packets_pass_through_unchanged() {
         at(2, 4),
         Voice2::NoteOn {
             note,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         },
     )

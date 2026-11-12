@@ -287,7 +287,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
         m2(Voice2::ChannelPressure(1 << 30)),
         m2(Voice2::NoteOff {
             note,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::Reserved { kind: 9, data: 2 },
         }),
         ev(Message::System(

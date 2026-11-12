@@ -532,7 +532,7 @@ impl VoiceAllocator {
             .expect("a voice id is made from a channel and a note");
         let off = Voice2::NoteOff {
             note,
-            velocity: NoteVelocity::new(0),
+            velocity: NoteVelocity::MIN,
             attribute: tutti_ump::Attribute::None,
         };
         let before = self.gates.len();

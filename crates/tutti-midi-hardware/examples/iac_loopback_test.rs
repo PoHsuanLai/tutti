@@ -108,7 +108,7 @@ fn main() {
             velocity: NoteVelocity::new(0xC800),
             attribute: Attribute::None,
         }),
-        &|v| matches!(v, Voice2::NoteOn { note, velocity, .. } if note.get() == 60 && velocity > NoteVelocity::new(0)),
+        &|v| matches!(v, Voice2::NoteOn { note, velocity, .. } if note.get() == 60 && velocity > NoteVelocity::MIN),
     );
 
     println!("\n=== Test 2: Note Off ===");

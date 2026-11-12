@@ -8,7 +8,7 @@ one way and exports another. This design makes the map the transport's tempo,
 live and offline, through one pure function, so the two agree by construction.
 
 Status: the open questions are decided (§10). Stages 0 to 4 (guards, publishing a map, steps, ramps) are
-built; see the as-built notes at §9. Doc 019 (bounce) depends on §6.
+built; see the as-built notes at §9. §11 (following an outside tempo, MIDI L7c) is built. Doc 019 (bounce) depends on §6.
 
 ## Summary
 
@@ -704,3 +704,119 @@ The owner decided these on 2026-11-08; the section is closed.
 | Sampler | Beat-locked voices follow the map; time-locked ones ignore it. |
 | Export fork | Keeps the map it was made with; later edits do not reach it. |
 | MIDI file import | The map is adopted only through an explicit session call. |
+
+## 11. Following an outside tempo
+
+Added with MIDI L7c, agreed with the transport's owner. The transport can take
+its tempo and meter from a MIDI 2.0 source (Flex Data Set Tempo, M2-104 §7.5.3,
+and Set Time Signature, §7.5.4) while a `TempoMap` is published. It is built in
+`tutti-session` (`midi_follow.rs`, `Midi::follow_tempo`) over a pure core in
+`tutti-midi-runtime` (`TempoFollower`, the `ClockFollower` row of doc 017's layer
+table, scoped to Flex). `tutti-transport` and `tutti-tempo` needed no change:
+the model of §3 (an edit republishes the map) is all it uses.
+
+### 11.1 Where a received tempo becomes a map edit
+
+The audio thread never sees a map edit.
+
+- **What the follower hears.** An event tap (`Op::EventTap`, `Raw`) on the ingest
+  node's channelless port of the followed Group, which carries that Group's Flex
+  Data (doc 017 L3). It is drained in `Phase::Poll`, after the devices'.
+- **What the core decides.** `TempoFollower::step(Ump) -> Option<Followed>`
+  decodes a Set Tempo with `flex_tempo` and (when the meter is followed) a Set Time
+  Signature with `flex_time_signature`, and answers *what*: a `Bpm` or a
+  `TimeSignature`. Both are Group messages (Format Complete, Address 1; §7.5.3,
+  §7.5.4): a message of another Group, one addressed to a Channel, a tempo field of
+  `0` and a meter the project's units refuse are ignored. It holds no clock, no map
+  and no OS handle. Its source is an enum (`TempoSource`, `Flex` first): MIDI Clock
+  and MTC are other sources of the same follower, later.
+- **What the session does with it.** It places the change, builds the new map with
+  `TempoMap::builder()` and publishes it with `TransportSettings::set_tempo_map`;
+  `Phase::Reclaim` sweeps the old map as it does for any republish. The meter goes
+  through `ProjectMeter::set_meter`.
+
+### 11.2 What a follow mode owns
+
+**It overlays the project's maps; it does not replace them.**
+
+- The follower keeps the project's tempo map and meter apart: the maps the session
+  found when `follow_tempo` was called. The session has no project tempo apart from
+  the published map, so the map it finds is the one it restores. While following,
+  the session refuses a map of the app's (`Session::set_tempo` and `set_tempo_map`
+  return `TempoError::Following`), so nothing else publishes in between and the
+  restore is exact; the app unfollows first. (`Session::transport()` is the
+  transport's own handle, below the session's policy: a publish through its
+  `TransportSettings` is not refused, and is overwritten by the next live step.)
+- While following, the published map is the project's up to the beat of the first
+  change, then the live steps. Each step **truncates** what came after it: a project
+  point or ramp ahead of the playhead is not played while following, because two
+  authorities for the same future beats is the bug to avoid.
+- **A ramp a step lands in is cut at that beat.** The builder keeps the ramp up to
+  the beat, ending at the tempo the map has there (`tempo_at`), so every earlier beat
+  keeps its time. A map holds one tempo at a beat and a jump needs two points, so the
+  step follows one ulp of a beat later. The map ends on a step, never a ramp (the
+  builder's rule).
+- A source that repeats the tempo already in force, with no point after it, changes
+  nothing: no map is published and no event is sent.
+- `unfollow_tempo` publishes the project's maps again (those the follower changed).
+  The clock re-seats at its current beat, so the playhead does not jump; the tempo
+  from there on is the project's. `MidiEvent::TempoUnfollowed` reports it.
+- **One follower at a time.** Following again replaces the first; the project's maps
+  stay the ones found by the first call and the tempo in force stays until the new
+  source sends one. Two outside tempos have no merge.
+- Off by default; there is no routing-rule form (routing moves events between nodes,
+  this changes the transport).
+- A bounce forks the published map like any other: one made while following renders
+  the tempo heard so far.
+
+### 11.3 Timing: a step lands at the start of the next block
+
+- **The step is placed from a frame.** A tempo heard in a block is drained in the
+  `Poll` after it and takes effect at the start of the next block, never behind the
+  playhead: placing it at the frame it arrived on would be retroactive. That frame is
+  the playhead's transport time plus the call's length (`Playhead::seconds` and
+  `span`, while it rolls; a stopped transport does not advance) as a frame on the
+  map's timeline, and its beat is `TempoView::beat_at_frame` through the map in force.
+  It never uses `Playhead::beat`, which is one block stale and, extrapolated at a
+  tempo, wrong after a ramp or a locate in the last block. (The graph's absolute
+  `Playhead::frame` is not the map's frame once the transport has stopped or been
+  located, so the map's own timeline is read through `seconds`.)
+- **A late publish moves no beat.** The publish may land after the audio thread has
+  rendered past the step's beat (a slow poll, a big block, a dropped update). The map
+  is then behind the playhead at its step. The rule: the transport's beat stays
+  continuous and the new tempo applies from the block that reads the map. It holds
+  because `tempo_for_block` re-seats the clock at its current beat on a new map
+  (`TransportClock::follow`: `seat(beat)`, then `TempoWalk::place`). The test
+  `follow_late_publish` publishes a step at beat 2 while the playhead is at beat 8
+  and asserts, from the playhead after each render, that no block moves the beat by
+  more than a block at the old tempo and that the pick-up block advances by exactly
+  a block at the new one.
+- The latency budget is that of any control-side change: one block plus the poll
+  period. A source that needs a tempo on a beat sends it ahead, which Flex allows (a
+  Flex message carries no time of its own).
+
+### 11.4 Time signature
+
+- **When it lands.** A meter change begins a bar (`MeterMap`), so it applies at the
+  next bar line at or after the beat of §11.3 (§7.5.4: Set Time Signature takes effect
+  at the next bar unless sent on a bar line); on a bar line (within the meter's
+  downbeat tolerance) it applies there. The 1/32-notes field does not change the meter
+  and is not read.
+- **Overlay.** As §11.2: the project's `MeterMap` is kept apart, the published one is
+  the project's up to that bar plus the live change, later project changes are
+  dropped while following, and unfollowing restores it. The metronome follows the
+  published meter.
+
+### 11.5 Surface
+
+`Midi::follow_tempo(FollowTempo { group, meter }) -> Result<(), MidiError>`
+(`NoMidiInput`, `GroupNotHeard`; the input node is the session's own), `Midi::unfollow_tempo() ->
+Result<(), MidiError>` (`NotFollowing`), and the events
+`MidiEvent::{TempoFollowed { tempo, beat }, MeterFollowed { signature, beat },
+TempoUnfollowed}`. `beat` is where the step was placed
+(for a meter, the bar line), so a host can draw it. `Playhead::span` (`tutti-engine`) is the one addition outside the
+session and the runtime.
+
+**Not in scope:** bounce-time following, following and leading at once (an app that is
+the clock master while following), smoothing jitter (a Flex tempo is explicit, not
+measured, so it is applied as sent), MIDI Clock (F8) and MTC.

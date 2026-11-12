@@ -61,6 +61,8 @@ mod main_session;
 mod midi;
 #[cfg(feature = "midi")]
 mod midi_event;
+#[cfg(feature = "midi")]
+mod midi_follow;
 #[cfg(feature = "midi-hardware")]
 mod midi_hardware;
 #[cfg(feature = "modulation")]
@@ -98,6 +100,7 @@ pub use device::{
 pub use edge::EdgeGainError;
 pub use error::{
     ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result, ScheduleError,
+    TempoError,
 };
 #[cfg(feature = "midi")]
 pub use error::{MidiError, RouteDeclarer};
@@ -131,6 +134,8 @@ pub use midi::{
 };
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;
+#[cfg(feature = "midi")]
+pub use midi_follow::FollowTempo;
 #[cfg(feature = "midi-hardware")]
 pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]

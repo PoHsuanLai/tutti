@@ -20,6 +20,9 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
   device. The device's thread places each arrival on a frame with a `ClockMap`
   fed the engine's block clock and pushes it into its inlet, so the audio thread
   converts no time; the ingest node has one event input per device slot.
+- [`TempoFollower`]: what a transport that follows an outside tempo applies, as a pure
+  value (a Group's Flex Set Tempo and Set Time Signature, M2-104 §7.5.3, §7.5.4); the
+  session places the change (design 020, section 11).
 - [`NoteLedger`]: the notes a node has started and not ended, and the only way
   it writes to its port; [`MidiClipNode`] uses it.
 - [`MidiKeys`]: the key helpers (`note_on`, `note_off`) over `tutti-graph`'s

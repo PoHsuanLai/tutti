@@ -127,6 +127,8 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "decode-wav", "decode-flac"] }
 # An independent reader for the WAV files the recorder tests write.
 hound = "3.5"
+# `MidiRouteRule`'s serde round trip (`tests/midi/midi_front.rs`).
+serde_json = "1"
 # `test-support`'s hand-stepped streamer, and the WAV reader the disk voice's
 # fork reads its file with (`export_fork_sampler`).
 tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support", "wav"] }

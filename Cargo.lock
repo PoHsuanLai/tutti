@@ -4126,6 +4126,7 @@ dependencies = [
  "hound",
  "libloading 0.8.9",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",

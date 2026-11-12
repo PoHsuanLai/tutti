@@ -801,6 +801,13 @@ impl State {
             }
             // Not while loaded: the reads after an activation answer them.
             Request::LatencyChanged | Request::TailChanged => active,
+            // A parameter rescan and a port rescan are legal on a plugin that
+            // is loaded and not active (CLAP: `params.rescan` is
+            // `[main-thread]`, values and text "take effect immediately"). A
+            // loaded plugin has nothing to restart, so the tick answers them.
+            Request::RescanParams(_) | Request::IoChanged => {
+                active || activating || matches!(self.stage, Stage::Loaded)
+            }
             _ => active || activating,
         };
         if !accepted {
@@ -895,6 +902,7 @@ impl State {
             emit(out, Effect::ServiceFd(id));
         }
         if !matches!(self.stage, Stage::Active) {
+            self.read_while_loaded(out);
             return;
         }
         if self.plan.wait == Wait::Idle && self.plan_restart(out) {
@@ -947,6 +955,37 @@ impl State {
         emit(out, Effect::Recall);
         self.plan.wait = Wait::Recall;
         true
+    }
+
+    /// What a rescan raised while the plugin was loaded and not active asks
+    /// for: the parameters read again and the host told, and the host told the
+    /// ports changed (it reads them from the plugin it holds). There is no
+    /// restart to plan, so nothing is left pending for an activation to
+    /// misread as one.
+    fn read_while_loaded(&mut self, out: &mut Effects) {
+        let p = &mut self.pending;
+        if std::mem::take(&mut p.io) {
+            emit(out, Effect::Notify(Notice::IoChanged));
+        }
+        let all = std::mem::take(&mut p.all);
+        let info = std::mem::take(&mut p.info);
+        let values = std::mem::take(&mut p.values);
+        let text = std::mem::take(&mut p.text);
+        if all || info {
+            let scope = if all {
+                RescanScope::All
+            } else {
+                RescanScope::Info
+            };
+            emit(out, Effect::ReadParams(scope));
+            emit(out, Effect::Notify(Notice::ParamTitlesChanged));
+            if all {
+                emit(out, Effect::Notify(Notice::ParamValuesChanged));
+            }
+        }
+        if (values || text) && !all {
+            emit(out, Effect::Notify(Notice::ParamValuesChanged));
+        }
     }
 
     /// The reads and notices that need no restart. A request that does is left

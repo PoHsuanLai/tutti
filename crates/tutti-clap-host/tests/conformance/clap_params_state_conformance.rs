@@ -764,6 +764,35 @@ fn host_records_a_full_rescan_as_needing_deactivation() {
     );
 }
 
+/// A plugin that changes its parameters while it is loaded and not active (a
+/// `params.rescan` after a state load) has the rescan answered: the lifecycle
+/// reads the parameters again rather than dropping the request.
+#[test]
+fn a_rescan_raised_while_only_loaded_is_answered_by_the_lifecycle() {
+    use tutti_plugin_types::{Effect, Event, RestartRules, State, step};
+
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    let _ = requests(&mut loaded);
+
+    probe.command(PARAM_CMD_RESCAN_ALL);
+    loaded.on_main_thread(&main_thread());
+    let raised = requests(&mut loaded);
+    assert_eq!(raised, [Request::RescanParams(RescanScope::All)]);
+
+    let mut state = State::new(RestartRules::CLAP);
+    for request in raised {
+        state = step(state, Event::Request(request)).0;
+    }
+    let (_, effects) = step(state, Event::Tick);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ReadParams(RescanScope::All))),
+        "a loaded plugin's rescan must be read, got {effects:?}"
+    );
+}
+
 /// Taking the requests is consuming: a second take with no intervening rescan
 /// must report nothing. Without this, a host that never cleared the word would
 /// pass every assertion above while permanently reporting a pending rescan.

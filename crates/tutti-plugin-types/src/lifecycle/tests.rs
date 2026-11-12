@@ -984,6 +984,8 @@ fn rule_6_a_request_during_an_activation_is_kept_except_latency_and_tail() {
 
 #[test]
 fn rule_7_a_request_on_a_plugin_that_is_not_running_changes_nothing() {
+    // A loaded plugin answers a parameter or port rescan
+    // (`rule_7_a_rescan_on_a_loaded_plugin_is_answered`); the rest it ignores.
     let all = [
         Request::Restart,
         Request::IoChanged,
@@ -994,6 +996,14 @@ fn rule_7_a_request_on_a_plugin_that_is_not_running_changes_nothing() {
         Request::MidiCcAssignmentChanged,
         Request::NoteExpressionChanged,
     ];
+    let loaded_all = [
+        Request::Restart,
+        Request::LatencyChanged,
+        Request::TailChanged,
+        Request::Reload,
+        Request::MidiCcAssignmentChanged,
+        Request::NoteExpressionChanged,
+    ];
     let (poisoned, _) = go(State::new(REST), Event::Died);
     for (s, name) in [
         (State::new(RESTARTS), "loaded"),
@@ -1001,8 +1011,12 @@ fn rule_7_a_request_on_a_plugin_that_is_not_running_changes_nothing() {
         (poisoned, "poisoned"),
     ] {
         let mut s = s;
-        for r in all {
-            s = req(s, r);
+        for r in if name == "loaded" {
+            &loaded_all[..]
+        } else {
+            &all[..]
+        } {
+            s = req(s, *r);
         }
         let (s, fx) = go(s, Event::Tick);
         assert!(fx.is_empty(), "{name}");
@@ -1022,6 +1036,52 @@ fn rule_7_a_request_on_a_plugin_that_is_not_running_changes_nothing() {
     assert_eq!(fx, [Fx::Main]);
     let (_, fx) = reply(s, Reply::Done);
     assert_eq!(fx, [Fx::Timer(4), Fx::Fd(5)]);
+}
+
+/// `params.h`: `params.rescan` is legal whenever the plugin is loaded, and a
+/// plugin that changes its parameters after `state.load` while not yet active
+/// must have the host read them again. A loaded plugin answers each rescan with
+/// the read and the notices, restarts nothing, and leaves nothing pending to be
+/// misread as a restart once it activates.
+#[test]
+fn rule_7_a_rescan_on_a_loaded_plugin_is_answered() {
+    let (s, fx) = go(
+        req(
+            State::new(RESTARTS),
+            Request::RescanParams(RescanScope::All),
+        ),
+        Event::Tick,
+    );
+    assert_eq!(
+        fx,
+        [
+            Fx::Params(RescanScope::All),
+            Fx::ParamTitles,
+            Fx::ParamValues
+        ]
+    );
+    let (s, fx) = go(
+        req(s, Request::RescanParams(RescanScope::Info)),
+        Event::Tick,
+    );
+    assert_eq!(fx, [Fx::Params(RescanScope::Info), Fx::ParamTitles]);
+    let (s, fx) = go(
+        req(s, Request::RescanParams(RescanScope::Values)),
+        Event::Tick,
+    );
+    assert_eq!(fx, [Fx::ParamValues]);
+    let (s, fx) = go(
+        req(s, Request::RescanParams(RescanScope::Text)),
+        Event::Tick,
+    );
+    assert_eq!(fx, [Fx::ParamValues]);
+    let (s, fx) = go(req(s, Request::IoChanged), Event::Tick);
+    assert_eq!(fx, [Fx::IoNotice]);
+    assert_eq!(s.stage(), Stage::Loaded);
+    // Nothing is left for the activation to read as a restart.
+    let (s, _) = go(s, Event::Op(HostOp::Activate(prep(1))));
+    let (s, _) = reply(s, Reply::Activated);
+    assert!(go(s, Event::Tick).1.is_empty());
 }
 
 #[test]

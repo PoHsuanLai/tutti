@@ -6,10 +6,8 @@ use std::marker::PhantomData;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, Controller, EditorSize, EditorWindow, Loaded,
-    LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
-    PluginResult, PluginTail, Prepare, Preset, PresetId, Processor, Refused, RenderMode, Request,
-    RescanScope, RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
+    Controller, Loaded, PluginError, PluginTail, Prepare, Processor, Refused, RestartRules,
+    SampleFormat, Samples, Stuck, Wraps,
 };
 
 use crate::loaded::Vst2Loaded;
@@ -17,7 +15,7 @@ use crate::processor::{ProcessorParts, Vst2Processor};
 use crate::scratch::RenderScratch;
 
 /// The main-thread half of an activation: the whole control surface of a
-/// [`Vst2Loaded`] (the [`Control`] trait; [`loaded`](Self::loaded) and
+/// [`Vst2Loaded`] (the [`Control`](tutti_plugin_types::Control) trait; [`loaded`](Self::loaded) and
 /// [`loaded_mut`](Self::loaded_mut) for the format's own surface), beside a Processor that renders.
 ///
 /// It **owns** the [`Vst2Loaded`], and so the plugin: the Processor holds only the audio
@@ -65,7 +63,7 @@ impl Vst2Controller {
         }
     }
 
-    /// The loaded plugin, for the surface the [`Control`] impl does not cover.
+    /// The loaded plugin, for the surface the [`Control`](tutti_plugin_types::Control) impl does not cover.
     /// The Controller does not `Deref` to it (doc 016 section 2.2).
     #[must_use]
     pub fn loaded(&self) -> &Vst2Loaded {
@@ -78,147 +76,19 @@ impl Vst2Controller {
     }
 }
 
-impl Control for Vst2Controller {
-    fn info(&self) -> &PluginDescriptor {
-        Control::info(self.loaded())
+/// Every entry of the control surface is the loaded plugin's: a parameter
+/// write is a direct `setParameter` on the plugin (the SDK allows it from either
+/// thread, and the Processor's own automation writes go the same way), so
+/// nothing is queued and no entry is the Controller's own.
+impl Wraps for Vst2Controller {
+    type Plugin = Vst2Loaded;
+
+    fn plugin(&self) -> &Vst2Loaded {
+        self.loaded()
     }
 
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
-        Control::wiring(self.loaded(), main)
-    }
-
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        Control::parameters(self.loaded(), main)
-    }
-
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        Control::parameter(self.loaded(), main, id)
-    }
-
-    /// A direct `setParameter` on the plugin: the SDK allows it from either
-    /// thread, and the Processor's own automation writes go the same way.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        Control::set_parameter(self.loaded_mut(), main, id, value);
-    }
-
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
-        Control::parameter_plain(self.loaded(), main, id, value)
-    }
-
-    fn parameter_normalized(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        plain: f64,
-    ) -> Option<Normalized> {
-        Control::parameter_normalized(self.loaded(), main, id, plain)
-    }
-
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(self.loaded(), main, id, value)
-    }
-
-    fn parameter_value_from_text(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        text: &str,
-    ) -> Option<Normalized> {
-        Control::parameter_value_from_text(self.loaded(), main, id, text)
-    }
-
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(self.loaded_mut(), main)
-    }
-
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        Control::load_state(self.loaded_mut(), main, bytes)
-    }
-
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
-        Control::presets(self.loaded_mut(), main)
-    }
-
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        Control::load_preset(self.loaded_mut(), main, id)
-    }
-
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
-        Control::current_preset(self.loaded_mut(), main)
-    }
-
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
-        Control::set_automation_state(self.loaded_mut(), main, mode);
-    }
-
-    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        Control::rescan_parameters(self.loaded_mut(), main, scope);
-    }
-
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        Control::take_requests(self.loaded_mut(), main, out);
-    }
-
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
-        Control::set_render_mode(self.loaded_mut(), main, mode)
-    }
-
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
-        Control::take_reported_edits(self.loaded_mut(), main, out);
-    }
-
-    fn dropped_reported_edits(&self) -> u64 {
-        Control::dropped_reported_edits(self.loaded())
-    }
-}
-
-impl EditorWindow for Vst2Controller {
-    fn has_editor(&self, main: &MainThread) -> bool {
-        EditorWindow::has_editor(self.loaded(), main)
-    }
-
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        EditorWindow::open_editor(self.loaded_mut(), main, parent, scale)
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        EditorWindow::close_editor(self.loaded_mut(), main);
-    }
-
-    fn editor_idle(&mut self, main: &MainThread) {
-        EditorWindow::editor_idle(self.loaded_mut(), main);
-    }
-
-    /// The default capabilities: this surface reports no resize support.
-    fn editor_capabilities(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> tutti_plugin_types::EditorCapabilities {
-        tutti_plugin_types::EditorCapabilities::default()
-    }
-
-    /// Not supported here.
-    fn set_editor_size(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-        _requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
-        Err(tutti_plugin_types::PluginError::Editor(
-            tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
-        ))
-    }
-
-    /// The plugin's `audioMasterSizeWindow` request, if any: see the instance's.
-    fn poll_editor_resize_request(
-        &mut self,
-        main: &tutti_plugin_types::MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
-        EditorWindow::poll_editor_resize_request(self.loaded_mut(), main)
+    fn plugin_mut(&mut self) -> &mut Vst2Loaded {
+        self.loaded_mut()
     }
 }
 

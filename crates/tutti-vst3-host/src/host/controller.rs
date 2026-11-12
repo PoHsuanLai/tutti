@@ -9,11 +9,9 @@ use tutti_plugin_types::MainThread;
 use tutti_rt::{DrainMark, DrainWatch};
 
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, Controller, Edit, EditDrain, EditSink, EditorSize,
-    EditorWindow, Loaded, LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo,
-    PluginDescriptor, PluginError, PluginResult, PluginTail, Prepare, Preset, PresetId, Processor,
-    Refused, RenderMode, Request, RescanScope, RestartRules, SampleFormat, Samples, Stuck,
-    WindowHandle,
+    Control, Controller, Edit, EditDrain, EditSink, Loaded, Normalized, ParamEdit, ParamId,
+    PluginError, PluginResult, PluginTail, Prepare, PresetId, Processor, Refused, Request,
+    RestartRules, SampleFormat, Samples, Stuck, Wraps,
 };
 
 use crate::types::{ProcessMode, Vst3Sample};
@@ -259,65 +257,29 @@ impl Drop for Vst3Controller {
     }
 }
 
-impl Control for Vst3Controller {
-    fn info(&self) -> &PluginDescriptor {
-        Control::info(self.loaded())
+impl Wraps for Vst3Controller {
+    type Plugin = Vst3Loaded;
+
+    fn plugin(&self) -> &Vst3Loaded {
+        self.loaded()
     }
 
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
-        Control::wiring(self.loaded(), main)
-    }
-
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        Control::parameters(self.loaded(), main)
-    }
-
-    fn parameter_count(&self, main: &MainThread) -> usize {
-        Control::parameter_count(self.loaded(), main)
-    }
-
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        Control::parameter(self.loaded(), main, id)
+    fn plugin_mut(&mut self) -> &mut Vst3Loaded {
+        self.loaded_mut()
     }
 
     /// Applied to the edit controller now, so a read-back and the plugin's
     /// editor see it, and queued to the Processor, which puts it in the next
     /// block's `inputParameterChanges`: a plugin whose component is separate
     /// from its controller has no other way to hear of it.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        Control::set_parameter(self.loaded_mut(), main, id, value);
+    fn own_set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+        self.loaded_mut().set_parameter(main, id, value);
         self.queue_edit(id, value);
-    }
-
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
-        Control::parameter_plain(self.loaded(), main, id, value)
-    }
-
-    fn parameter_normalized(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        plain: f64,
-    ) -> Option<Normalized> {
-        Control::parameter_normalized(self.loaded(), main, id, plain)
-    }
-
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(self.loaded(), main, id, value)
-    }
-
-    fn parameter_value_from_text(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        text: &str,
-    ) -> Option<Normalized> {
-        Control::parameter_value_from_text(self.loaded(), main, id, text)
     }
 
     /// Saves the state, with the writes no block has taken yet beside the
     /// component's stream, which does not hold them.
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn own_save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         let undrained = self.undrained();
         self.loaded_mut().save_state_with(main, &undrained)
     }
@@ -325,7 +287,7 @@ impl Control for Vst3Controller {
     /// Restores the state, and makes the writes queued before it stale. The
     /// writes the blob carries are queued to the Processor, which the
     /// component's own stream did not hold.
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+    fn own_load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
         let result = self.loaded_mut().restore_state(main, bytes);
         self.reset_edits();
         for (id, value) in result? {
@@ -334,11 +296,7 @@ impl Control for Vst3Controller {
         Ok(())
     }
 
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
-        Control::presets(self.loaded_mut(), main)
-    }
-
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+    fn own_load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
         match self.loaded_mut().program_write(main, id) {
             Some((param, value)) => {
                 // A program replaces the plugin's other parameters too: what
@@ -351,35 +309,15 @@ impl Control for Vst3Controller {
         }
     }
 
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
-        Control::current_preset(self.loaded_mut(), main)
-    }
-
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
-        Control::set_automation_state(self.loaded_mut(), main, mode);
-    }
-
-    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        Control::rescan_parameters(self.loaded_mut(), main, scope);
-    }
-
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        Control::take_requests(self.loaded_mut(), main, out);
-    }
-
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
-        Control::set_render_mode(self.loaded_mut(), main, mode)
-    }
-
     /// The edits the plugin's own editor made, then what the plugin's
     /// processor wrote to `outputParameterChanges` since the last call (each a
     /// change with no gesture around it: the processor is not a hand on a
     /// knob). The editor's changes are queued to the Processor too: a plugin
     /// whose component is separate from its controller has no other way to hear
     /// of them. What the processor reported is not: the plugin made it.
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn own_take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
         let first = out.len();
-        Control::take_reported_edits(self.loaded_mut(), main, out);
+        self.loaded_mut().take_reported_edits(main, out);
         let reported: Vec<_> = out[first..]
             .iter()
             .filter_map(|edit| match *edit {
@@ -394,19 +332,15 @@ impl Control for Vst3Controller {
         out.append(&mut self.processor_edits);
     }
 
-    fn dropped_reported_edits(&self) -> u64 {
-        Control::dropped_reported_edits(self.loaded()) + self.processor_edits_dropped
-    }
-
-    fn rebuild_midi_mapping(&mut self, main: &MainThread) {
-        Control::rebuild_midi_mapping(self.loaded_mut(), main);
+    fn own_dropped_reported_edits(&self) -> u64 {
+        self.loaded().dropped_reported_edits() + self.processor_edits_dropped
     }
 
     /// Applies what the plugin's `outputParameterChanges` reported to the edit
     /// controller (`setParamNormalized`, on this thread, as the portal's
     /// "Processor and Controller" section has it), retries what the ring
     /// refused, oldest first, and lets the retired midi-mapping tables go.
-    fn flush_edits(&mut self, main: &MainThread) {
+    fn own_flush_edits(&mut self, main: &MainThread) {
         self.apply_reports(main);
         self.loaded_mut().midi_cc.reclaim();
         // A tick is a control-side moment: plugins whose last holder was a
@@ -427,56 +361,6 @@ impl Control for Vst3Controller {
                 self.hand(id, value, sent_at);
             }
         }
-    }
-}
-
-impl EditorWindow for Vst3Controller {
-    fn has_editor(&self, main: &MainThread) -> bool {
-        EditorWindow::has_editor(self.loaded(), main)
-    }
-
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        EditorWindow::open_editor(self.loaded_mut(), main, parent, scale)
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        EditorWindow::close_editor(self.loaded_mut(), main);
-    }
-
-    fn editor_idle(&mut self, main: &MainThread) {
-        EditorWindow::editor_idle(self.loaded_mut(), main);
-    }
-
-    /// The default capabilities: this surface reports no resize support.
-    fn editor_capabilities(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> tutti_plugin_types::EditorCapabilities {
-        tutti_plugin_types::EditorCapabilities::default()
-    }
-
-    /// Not supported here.
-    fn set_editor_size(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-        _requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
-        Err(tutti_plugin_types::PluginError::Editor(
-            tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
-        ))
-    }
-
-    /// Nothing asked: this surface never queues a resize request.
-    fn poll_editor_resize_request(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
-        None
     }
 }
 

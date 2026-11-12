@@ -86,7 +86,7 @@ pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
     ResizeHints, WindowHandle,
 };
-pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
+pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck, Wraps};
 pub use hosting::{Editor, EditorWindow, InProcess, Load, Origin, OutOfProcess, Reopen};
 pub use invalidation::{PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind};
 pub use order::{StableOrder, insertion_sort_by_key};

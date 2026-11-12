@@ -1,5 +1,5 @@
 //! The control surface of an Audio Unit: [`Control`] and [`EditorWindow`], on
-//! [`AuLoaded`] and (delegating) on [`AuController`].
+//! [`AuLoaded`] and, through [`Wraps`], on [`AuController`].
 //!
 //! Parameters cross here as normalized `0..=1`, the host's authoring
 //! convention, and are denormalized against the range the AU itself declared:
@@ -19,7 +19,7 @@ use tutti_plugin_types::{
     EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
     ParamEdit, ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
     PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
-    PresetId, RenderMode, Request, RescanScope, SampleRate, WindowHandle, taken,
+    PresetId, RenderMode, Request, RescanScope, SampleRate, WindowHandle, Wraps, taken,
 };
 use tutti_types::Samples;
 
@@ -541,80 +541,20 @@ impl EditorWindow for AuLoaded {
     }
 }
 
-impl Control for AuController {
-    fn info(&self) -> &PluginDescriptor {
-        Control::info(&**self)
+impl Wraps for AuController {
+    type Plugin = AuLoaded;
+
+    fn plugin(&self) -> &AuLoaded {
+        &self.loaded
     }
 
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
-        Control::wiring(&**self, main)
-    }
-
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        Control::parameters(&**self, main)
-    }
-
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        Control::parameter(&**self, main, id)
-    }
-
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        Control::set_parameter(&mut **self, main, id, value);
-    }
-
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
-        Control::parameter_plain(&**self, main, id, value)
-    }
-
-    fn parameter_normalized(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        plain: f64,
-    ) -> Option<Normalized> {
-        Control::parameter_normalized(&**self, main, id, plain)
-    }
-
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(&**self, main, id, value)
-    }
-
-    fn parameter_value_from_text(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        text: &str,
-    ) -> Option<Normalized> {
-        Control::parameter_value_from_text(&**self, main, id, text)
-    }
-
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut **self, main)
-    }
-
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        Control::load_state(&mut **self, main, bytes)
-    }
-
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
-        Control::presets(&mut **self, main)
-    }
-
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        Control::load_preset(&mut **self, main, id)
-    }
-
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
-        Control::current_preset(&mut **self, main)
-    }
-
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
-        Control::set_automation_state(&mut **self, main, mode);
+    fn plugin_mut(&mut self) -> &mut AuLoaded {
+        &mut self.loaded
     }
 
     /// Reads the ranges again and publishes them to the Processor.
-    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        Control::rescan_parameters(&mut **self, main, scope);
+    fn own_rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
+        self.loaded.rescan_parameters(main, scope);
         if matches!(scope, RescanScope::Info | RescanScope::All) {
             self.republish_ranges();
         }
@@ -623,70 +563,23 @@ impl Control for AuController {
     /// Also the range table's reclaim: this is the control-side tick the host
     /// already polls, so a retired table is let go here even when the
     /// parameters go quiet and nothing republishes.
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+    fn own_take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
         self.ranges.reclaim();
-        Control::take_requests(&mut **self, main, out);
+        self.loaded.take_requests(main, out);
     }
 
     /// `false`: the mode is written before `AudioUnitInitialize`, which an
     /// active unit has passed. The caller reconfigures through the `Lifecycle`,
     /// whose next activation carries the mode.
-    fn set_render_mode(&mut self, _main: &MainThread, _mode: RenderMode) -> bool {
+    fn own_set_render_mode(&mut self, _main: &MainThread, _mode: RenderMode) -> bool {
         false
-    }
-
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
-        Control::take_reported_edits(&mut **self, main, out);
-    }
-
-    fn dropped_reported_edits(&self) -> u64 {
-        Control::dropped_reported_edits(&**self)
     }
 
     /// Applies the writes the Processor handed over for the parameters the AU
     /// flagged `NonRealTime`, latest value of each in order: they are written
     /// here, between blocks, and never from the render.
-    fn flush_edits(&mut self, _main: &MainThread) {
+    fn own_flush_edits(&mut self, _main: &MainThread) {
         self.apply_deferred();
-    }
-}
-
-impl EditorWindow for AuController {
-    fn has_editor(&self, main: &MainThread) -> bool {
-        EditorWindow::has_editor(&**self, main)
-    }
-
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        EditorWindow::open_editor(&mut **self, main, parent, scale)
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        EditorWindow::close_editor(&mut **self, main);
-    }
-
-    fn editor_idle(&mut self, main: &MainThread) {
-        EditorWindow::editor_idle(&mut **self, main);
-    }
-
-    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
-        EditorWindow::editor_capabilities(&mut **self, main)
-    }
-
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
-        EditorWindow::set_editor_size(&mut **self, main, requested)
-    }
-
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
-        EditorWindow::poll_editor_resize_request(&mut **self, main)
     }
 }
 

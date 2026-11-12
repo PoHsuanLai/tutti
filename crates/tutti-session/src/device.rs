@@ -28,7 +28,7 @@
 //!   itself.
 //!
 //! After the stream plays again, every input the session added
-//! ([`Session::add_input`], feature `audio-io`) is reopened at the new rate
+//! (`Session::add_input`, feature `audio-io`) is reopened at the new rate
 //! and swapped into its inlet node: the node's key stays and nothing is
 //! rewired.
 //!
@@ -318,7 +318,7 @@ impl Device {
     /// as the open streams' callbacks last reported it: **output**, the
     /// callback's timestamp against the playback it predicts for the block
     /// just rendered; **input**, the capture instant of a frame against the
-    /// callback that delivered it (what [`Session::add_input`]'s inputs
+    /// callback that delivered it (what `Session::add_input`'s inputs
     /// report, feature `audio-io`).
     ///
     /// A direction is `None` until its stream's first callback has reported,
@@ -548,7 +548,7 @@ pub enum DeviceEvent {
     /// and tells the policy, which waits out its backoff before it asks again.
     RestartWanted(DeviceRestart),
     /// A restart moved the stream. An input the session added is reopened by
-    /// the restart itself ([`Session::add_input`]); a capture stream a host
+    /// the restart itself (`Session::add_input`); a capture stream a host
     /// holds itself at the graph's rate is its own to reopen when
     /// [`rate_changed`](DeviceRestarted::rate_changed).
     Restarted(DeviceRestarted),

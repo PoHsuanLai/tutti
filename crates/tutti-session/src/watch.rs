@@ -258,7 +258,7 @@ impl Follow {
 }
 
 /// A source, its roster and the policy: what a session runs on `Phase::Poll`
-/// ([`Session::watch_devices`](crate::Session::watch_devices)), or, with no
+/// ([`LiveSession::watch_devices`](crate::LiveSession::watch_devices)), or, with no
 /// session yet, what an app polls until a device appears
 /// ([`without_stream`](Self::without_stream)).
 pub struct DeviceWatch {

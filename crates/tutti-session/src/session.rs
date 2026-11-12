@@ -215,7 +215,7 @@ pub enum SessionEvent {
     /// updates restarts the count without an event.
     BlocksSilenced(u64),
     /// The sound card or its devices: a fault, a device that came or went, a
-    /// restart wanted, done or failed ([`DeviceEvent`]).
+    /// restart wanted, done or failed ([`DeviceEvent`](crate::DeviceEvent)).
     #[cfg(feature = "device")]
     Device(crate::DeviceEvent),
     /// A modulation problem (design 015 §4.7), the one type

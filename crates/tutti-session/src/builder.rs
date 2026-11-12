@@ -191,7 +191,7 @@ impl SessionBuilder {
     }
 
     /// The platform audio host the output device and every input the session
-    /// opens ([`Session::add_input`](crate::Session::add_input)) go through.
+    /// opens (`Session::add_input`, feature `audio-io`) go through.
     /// Default [`AudioHost::Default`](tutti_cpal::AudioHost::Default); asking for
     /// one this build cannot reach (JACK without the `jack` feature, or with
     /// no server running) is refused when the device opens, as

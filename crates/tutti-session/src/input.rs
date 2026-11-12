@@ -3,7 +3,7 @@
 //!
 //! An input is two things that belong together: a capture stream on the
 //! session's audio host ([`tutti_cpal::MicIn`]) and the inlet node that copies
-//! its monitor ring into the graph ([`Graph::add_inlet`]). Both are made by one
+//! its monitor ring into the graph ([`Graph::add_inlet`](crate::Graph::add_inlet)). Both are made by one
 //! call, and the node is the input's name in the graph: wire it
 //! (`connect(input.node(), ..)`) like any node, to hear the device live
 //! through effects.
@@ -216,7 +216,7 @@ impl Inputs {
 impl Session {
     /// Opens a capture input on the session's host and puts it in the graph:
     /// the capture stream ([`tutti_cpal::MicIn`]) and the inlet node that copies
-    /// it in ([`Graph::add_inlet`]), in one call. Wire
+    /// it in ([`Graph::add_inlet`](crate::Graph::add_inlet)), in one call. Wire
     /// [`Input::node`] to monitor it.
     ///
     /// The session keeps the input's config and **reopens it after every

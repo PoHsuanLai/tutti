@@ -37,7 +37,7 @@ use winnow::token::{any, literal};
 
 use tutti_ump::{DeviceIdentity, ManufacturerId, NoteNumber, U7, U14};
 
-use super::{DeviceId, GeneralMidi, Universal};
+use super::{GeneralMidi, Recipient, Universal};
 use crate::tuning::{
     ChannelMask, KeyChange, KeyChanges, KeyTable, MAX_KEY_CHANGES, OctaveOffsets, Timing,
     TuningFrequency, TuningMessage, TuningName,
@@ -62,8 +62,8 @@ fn u14(input: &mut &[u8]) -> Res<U14> {
         .parse_next(input)
 }
 
-fn device(input: &mut &[u8]) -> Res<DeviceId> {
-    u7.map(DeviceId::new).parse_next(input)
+fn device(input: &mut &[u8]) -> Res<Recipient> {
+    u7.map(Recipient::of_byte).parse_next(input)
 }
 
 /// The manufacturer id of an Identity Reply: one byte, or `00` and two more
@@ -331,7 +331,7 @@ fn tuning(timing: Timing) -> impl FnMut(&mut &[u8]) -> Res<Tuned> {
 
 /// The addressed form: the Universal message, who it names, and the checksum
 /// byte of a dump that has one to check.
-fn addressed(input: &mut &[u8]) -> Res<(DeviceId, Universal, Option<U7>)> {
+fn addressed(input: &mut &[u8]) -> Res<(Recipient, Universal, Option<U7>)> {
     let class = any.parse_next(input)?;
     let to = device.parse_next(input)?;
     let plain = |message| (message, None);
@@ -356,11 +356,11 @@ fn addressed(input: &mut &[u8]) -> Res<(DeviceId, Universal, Option<U7>)> {
 /// What one Universal payload is.
 pub(super) enum Parsed {
     /// A message that matched, with a checksum that held or that it has none.
-    Message(DeviceId, Universal),
+    Message(Recipient, Universal),
     /// A dump whose checksum byte is not the XOR of the bytes before it
     /// (`found` is what it said).
     BadChecksum {
-        device: DeviceId,
+        to: Recipient,
         expected: U7,
         found: U7,
     },
@@ -369,24 +369,24 @@ pub(super) enum Parsed {
 }
 
 /// The payload of a SysEx message (between `F0` and `F7`) as a Universal
-/// message and its device id, or why not.
+/// message and who it is for, or why not.
 ///
 /// MTS's checksum: "successively XOR'ing the bytes in the message, excluding the
 /// F0, F7, and the checksum field [...] AND'ed with 7F".
 pub(super) fn parse(payload: &[u8]) -> Parsed {
     let mut input = payload;
-    let Ok((device, message, checksum)) = addressed.parse_next(&mut input) else {
+    let Ok((to, message, checksum)) = addressed.parse_next(&mut input) else {
         return Parsed::Unread;
     };
     if let (Some(found), Some((_, body))) = (checksum, payload.split_last()) {
         let expected = U7::masked(body.iter().fold(0, |acc, b| acc ^ b));
         if expected != found {
             return Parsed::BadChecksum {
-                device,
+                to,
                 expected,
                 found,
             };
         }
     }
-    Parsed::Message(device, message)
+    Parsed::Message(to, message)
 }

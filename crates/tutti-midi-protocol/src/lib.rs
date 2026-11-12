@@ -29,7 +29,7 @@
 //! ([`Universal`]: Identity Request and Reply, General MIDI On and Off, Master
 //! Volume, Balance, Fine and Coarse Tuning), and [`UniversalReader`] is an
 //! instrument's edge for it: a Group's UMPs in, the messages addressed to the
-//! instrument ([`DeviceId`], or the all-call) out.
+//! instrument ([`SysexDeviceId`], or the all-call) out.
 //!
 //! ```
 //! use tutti_midi_protocol::widen;
@@ -133,7 +133,7 @@ pub use unit::{
     u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
 pub use universal::{
-    Addressed, Addressee, BadChecksum, DeviceId, GeneralMidi, Heard, Read, Universal,
-    UniversalReader, read,
+    Addressed, Addressee, BadChecksum, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient,
+    SysexDeviceId, Universal, UniversalReader, read,
 };
 pub use voice::{channel_voice, widen, widen_bytes, widen_message, widen_velocity};

@@ -43,6 +43,10 @@ mod export_fork_plugin;
 // for, and the graveyard it empties; a fake plugin with an editor.
 #[cfg(feature = "plugin")]
 mod main_view;
+// A hosted plugin's parameters through the session's views (design 029
+// step 3): gestures, typed units, rescans; a fake backend.
+#[cfg(feature = "plugin")]
+mod plugin_params;
 // Work handed to the main thread runs on the session's update.
 #[cfg(feature = "plugin")]
 mod deferred_main;
@@ -55,3 +59,7 @@ mod vst2_modulation;
 // `plugin_vst2_meter` and `mod_plugin` VST2 tests).
 #[cfg(feature = "vst2")]
 mod vst2_off_main_handle;
+// `typed` over a real format's own value map: the reference VST2 plugin's
+// integer-ranged parameter, in process.
+#[cfg(feature = "vst2")]
+mod vst2_params;

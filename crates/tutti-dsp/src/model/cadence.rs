@@ -44,14 +44,6 @@ impl Cadence {
         anchor: Anchor::Block,
     };
 
-    /// Every `n` frames from the start of each block.
-    pub const fn every(n: NonZeroU32) -> Self {
-        Self {
-            period: Period::Frames(n),
-            anchor: Anchor::Block,
-        }
-    }
-
     /// Every `n` frames on the stream clock, from frame 0.
     pub const fn stream(n: NonZeroU32) -> Self {
         Self {
@@ -77,8 +69,7 @@ impl Cadence {
     /// a time.
     ///
     /// - **Block anchor** (`position` is not read): a [`Period::Block`] grid is one
-    ///   step and [`every(n)`](Self::every) tiles the block in steps of at most `n`
-    ///   frames, each solved at its **last** frame ([`Step::solve_at`]).
+    ///   step, solved at its **last** frame ([`Step::solve_at`]).
     ///   `unprimed` makes frame 0 a step of its own: a node with nothing to
     ///   interpolate *from* (its first block after `prepare`) solves there exactly.
     /// - **Stream anchor**: the block is cut at the grid points of the stream

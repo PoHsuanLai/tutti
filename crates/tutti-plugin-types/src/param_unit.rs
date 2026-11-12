@@ -1,5 +1,5 @@
 //! What a parameter's number measures: [`ParamUnit`], and the one-way read of a
-//! plain value into a tutti unit, [`FromPlain`] (doc 023 §5.2).
+//! plain value into a tutti unit, [`PlainUnit`] (doc 023 §5.2).
 //!
 //! A format declares a unit in a different way each time (AU a numeric code,
 //! VST3 and VST2 a display string, CLAP not at all), and every one of them is
@@ -155,20 +155,28 @@ impl ParamUnit {
     }
 }
 
-/// Reads a tutti unit out of a plain value measured in a declared [`ParamUnit`].
+/// A tutti unit that a plain value measured in a declared [`ParamUnit`] reads
+/// into and writes back out of (doc 023 §5.2, doc 029 §2.3).
 ///
 /// This is the one place a percent becomes a fraction (`/ 100`) and a
-/// millisecond becomes a second (`/ 1000`), so the scaling is never done twice
-/// and the plugin's own number is still what is sent back. An implementor
-/// answers `None` for a unit it does not read, and for a value its type cannot
-/// hold. The value arrives finite.
+/// millisecond becomes a second (`/ 1000`), in both directions, so the scaling
+/// is never done twice and the plugin's own number is still what is sent back.
 ///
 /// A unit tutti has no type for (octaves, MIDI numbers) has no implementor, so
 /// [`ParameterInfo::typed`](crate::ParameterInfo::typed) answers `None` for it.
-pub trait FromPlain: Sized {
-    /// `plain`, measured in `unit`, as `Self`; `None` when `unit` is not one
-    /// `Self` reads or `plain` is out of its range.
+pub trait PlainUnit: Copy {
+    /// Whether this type reads values measured in `unit`.
+    fn reads(unit: ParamUnit) -> bool;
+
+    /// `plain`, measured in `unit`, as `Self`; `None` when [`reads`](Self::reads)
+    /// refuses `unit` or `plain` is out of the type's range. The value arrives
+    /// finite.
     fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self>;
+
+    /// This value as a plain figure measured in `unit`, which the caller has
+    /// checked with [`reads`](Self::reads) (any other unit reads as `0.0`, and no
+    /// caller reaches it: a typed parameter holds a unit that was checked once).
+    fn to_plain(self, unit: ParamUnit) -> f64;
 }
 
 // A `f32` unit narrows once here, at the edge: a plain figure is the
@@ -178,19 +186,36 @@ fn narrow(v: f64) -> f32 {
     v as f32
 }
 
-impl FromPlain for Hz {
-    fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
-        (unit == ParamUnit::Hertz).then(|| Self::new(narrow(plain)))
-    }
+/// `PlainUnit` for a unit read from exactly one [`ParamUnit`] by a plain
+/// narrowing, and written back by a widening.
+macro_rules! one_to_one {
+    ($ty:ty, $unit:expr) => {
+        impl PlainUnit for $ty {
+            fn reads(unit: ParamUnit) -> bool {
+                unit == $unit
+            }
+            fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
+                (unit == $unit).then(|| Self::new(narrow(plain)))
+            }
+            fn to_plain(self, _unit: ParamUnit) -> f64 {
+                f64::from(self.get())
+            }
+        }
+    };
 }
 
-impl FromPlain for Db {
-    fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
-        (unit == ParamUnit::Decibels).then(|| Self::new(narrow(plain)))
-    }
-}
+one_to_one!(Hz, ParamUnit::Hertz);
+one_to_one!(Db, ParamUnit::Decibels);
+one_to_one!(Cents, ParamUnit::Cents);
+one_to_one!(Semitones, ParamUnit::Semitones);
+one_to_one!(ArcDegrees, ParamUnit::Degrees);
+one_to_one!(Amplitude, ParamUnit::LinearGain);
+one_to_one!(PlaybackRate, ParamUnit::PlaybackRate);
 
-impl FromPlain for Seconds {
+impl PlainUnit for Seconds {
+    fn reads(unit: ParamUnit) -> bool {
+        matches!(unit, ParamUnit::Seconds | ParamUnit::Milliseconds)
+    }
     fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
         match unit {
             ParamUnit::Seconds => Some(Self::new(plain)),
@@ -198,36 +223,45 @@ impl FromPlain for Seconds {
             _ => None,
         }
     }
+    fn to_plain(self, unit: ParamUnit) -> f64 {
+        match unit {
+            ParamUnit::Milliseconds => self.get() * 1000.0,
+            _ => self.get(),
+        }
+    }
 }
 
-impl FromPlain for Mix {
+impl PlainUnit for Mix {
+    fn reads(unit: ParamUnit) -> bool {
+        unit == ParamUnit::Percent
+    }
     /// A percentage as a position on `0..=1`; a negative percentage is not one.
     fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
         let fraction = plain / 100.0;
         (unit == ParamUnit::Percent && (0.0..=1.0).contains(&fraction))
             .then(|| Self::new(narrow(fraction)))
     }
+    fn to_plain(self, _unit: ParamUnit) -> f64 {
+        f64::from(self.get()) * 100.0
+    }
 }
 
-impl FromPlain for Pan {
+impl PlainUnit for Pan {
+    fn reads(unit: ParamUnit) -> bool {
+        unit == ParamUnit::Pan
+    }
     fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
         (unit == ParamUnit::Pan && (-1.0..=1.0).contains(&plain)).then(|| Self::new(narrow(plain)))
     }
-}
-
-impl FromPlain for Cents {
-    fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
-        (unit == ParamUnit::Cents).then(|| Self::new(narrow(plain)))
+    fn to_plain(self, _unit: ParamUnit) -> f64 {
+        f64::from(self.get())
     }
 }
 
-impl FromPlain for Semitones {
-    fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
-        (unit == ParamUnit::Semitones).then(|| Self::new(narrow(plain)))
+impl PlainUnit for Bpm {
+    fn reads(unit: ParamUnit) -> bool {
+        unit == ParamUnit::Bpm
     }
-}
-
-impl FromPlain for Bpm {
     fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
         if unit == ParamUnit::Bpm {
             Self::new(plain)
@@ -235,29 +269,20 @@ impl FromPlain for Bpm {
             None
         }
     }
+    fn to_plain(self, _unit: ParamUnit) -> f64 {
+        self.get()
+    }
 }
 
-impl FromPlain for BeatDuration {
+impl PlainUnit for BeatDuration {
+    fn reads(unit: ParamUnit) -> bool {
+        unit == ParamUnit::Beats
+    }
     fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
         (unit == ParamUnit::Beats).then(|| Self::new(plain))
     }
-}
-
-impl FromPlain for ArcDegrees {
-    fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
-        (unit == ParamUnit::Degrees).then(|| Self::new(narrow(plain)))
-    }
-}
-
-impl FromPlain for Amplitude {
-    fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
-        (unit == ParamUnit::LinearGain).then(|| Self::new(narrow(plain)))
-    }
-}
-
-impl FromPlain for PlaybackRate {
-    fn from_plain(unit: ParamUnit, plain: f64) -> Option<Self> {
-        (unit == ParamUnit::PlaybackRate).then(|| Self::new(narrow(plain)))
+    fn to_plain(self, _unit: ParamUnit) -> f64 {
+        self.get()
     }
 }
 
@@ -396,10 +421,10 @@ mod tests {
                 .with_plain_range(0.0, max, 0.0)
                 .with_measures(Some(ParamUnit::Percent))
         };
-        assert_eq!(p(100.0).measures, Some(ParamUnit::Percent));
-        assert_eq!(p(1000.0).measures, None);
+        assert_eq!(p(100.0).measures(), Some(ParamUnit::Percent));
+        assert_eq!(p(1000.0).measures(), None);
         let none = ParameterInfo::new(ParamId::new(1), "x").with_measures(None);
-        assert_eq!(none.measures, None);
+        assert_eq!(none.measures(), None);
     }
 
     /// `typed` scales a percent by 100 and a millisecond by 1000, once.
@@ -426,8 +451,10 @@ mod tests {
     /// target does not read, for no unit at all and for a non-finite value.
     #[test]
     fn typed_is_none_where_it_cannot_say() {
-        let mut normalized = ParameterInfo::new(ParamId::new(1), "Cutoff");
-        normalized.measures = Some(ParamUnit::Hertz); // built by hand: the guard is `typed`'s own
+        // A normalized-only parameter cannot be given a unit at all
+        // (`with_measures` applies `fits`), so it has none to read.
+        let normalized =
+            ParameterInfo::new(ParamId::new(1), "Cutoff").with_measures(Some(ParamUnit::Hertz));
         assert_eq!(normalized.typed::<Hz>(1000.0), None, "normalized only");
 
         let hz = ParameterInfo::new(ParamId::new(2), "Cutoff")

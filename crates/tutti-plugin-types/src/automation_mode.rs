@@ -34,3 +34,25 @@ pub enum AutomationMode {
     /// The host is both reading and writing automation.
     ReadWriting,
 }
+
+/// Why [`AnyThread::set_automation_mode`](crate::AnyThread::set_automation_mode)
+/// did not reach the plugin. The mode is an advisory, so none of these is a
+/// failure of the plugin's audio; they differ in what the caller does next.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum AutomationModeError {
+    /// The plugin's hosting carries no automation-state channel (no in-process
+    /// format does). Permanent: do not retry.
+    #[error("{format} carries no automation-state advisory in this hosting")]
+    Unsupported {
+        /// The plugin's format.
+        format: String,
+    },
+    /// The push onto the command queue was dropped because the queue is full.
+    /// Transient: the next change lands.
+    #[error("the automation-state push was dropped: the command queue is full")]
+    Dropped,
+    /// The plugin is gone. Permanent.
+    #[error("the plugin is gone")]
+    PluginDead,
+}

@@ -19,7 +19,7 @@ use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
-use tutti_midi_protocol::{MpeMode, MpeZones};
+use tutti_midi_protocol::{MpeMode, MpeZones, UniversalReader};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_protocol::{u16_to_unit_f32, u32_to_unit_f32};
 use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Spread, Tail};
@@ -27,7 +27,7 @@ use tutti_ump::NoteId;
 use tutti_ump::{
     Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, Ump, Voice2,
 };
-use tutti_voicing::{Controller, Effect, Glide, NoteControl, Stop};
+use tutti_voicing::{Controller, Effect, Glide, MasterGain, NoteControl, Stop};
 
 /// A polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
 /// SIMD voice bank.
@@ -93,6 +93,13 @@ pub struct PolySynth {
     /// The last finite master volume the node read: a cell a host wrote a NaN
     /// or an infinity into reads as this, not as itself.
     last_volume: f32,
+    /// The Universal System Exclusive the synth's Group carries to it: the
+    /// edge that reassembles it and keeps what is addressed to this synth.
+    universal: UniversalReader,
+    /// The master gain (`Voicing::master_gain`) the last control step ended
+    /// at: each step ramps from it to the gain now, so a Master Volume or
+    /// Balance never steps the output.
+    master_applied: MasterGain,
     /// Voices that finished this span. Sized to the polyphony and only cleared,
     /// so it never allocates on the audio thread.
     finished_indices: Vec<usize>,
@@ -136,6 +143,7 @@ impl PolySynth {
         let bank = Self::build_bank(&config, sample_rate, unison_count);
 
         let master_volume = Param::new(Amplitude::UNITY);
+        let universal = UniversalReader::new(config.group, config.device);
         let bends = [Semitones(0.0); 16];
 
         Self {
@@ -149,6 +157,8 @@ impl PolySynth {
             bends,
             master_volume,
             last_volume: Amplitude::UNITY.get(),
+            universal,
+            master_applied: MasterGain::UNITY,
             finished_indices: Vec::with_capacity(polyphony),
         }
     }
@@ -333,9 +343,18 @@ impl PolySynth {
     /// ([`channel_voice`]), so a note sounds the same on either wire. Only the
     /// synth's own Group is read ([`SynthConfig::group`]): a message in another
     /// Group addresses another channel space (M2-104 Appendix B.1), so it is
-    /// not this synth's, whichever channel it names. This is a sink, so a message that is not channel voice (a clock,
-    /// sysex, one `decode` cannot frame) is unused, not an error.
+    /// not this synth's, whichever channel it names.
+    ///
+    /// The Group's System Exclusive is read here too ([`UniversalReader`]): a
+    /// Universal message addressed to this synth or to all of them is the note
+    /// logic's (`Voicing::universal`). This is a sink, so a message that is
+    /// neither (a clock, a manufacturer's sysex, one `decode` cannot frame) is
+    /// unused, not an error.
     fn process_midi_event(&mut self, ump: Ump) {
+        if let Some(heard) = self.universal.push(ump) {
+            self.allocator.universal(heard);
+            self.carry_out_gates();
+        }
         if let Some((address, voice)) = channel_voice(ump)
             && address.group == self.config.group
         {
@@ -704,9 +723,21 @@ impl PolySynth {
             let n = (frames - done).min(to_grid);
             self.control_step(n);
             let (left, right) = self.bank.render(n);
+            // The master gain ramps across the step, from where the last one
+            // ended to where the Universal messages have put it: at unity
+            // throughout it is the identity.
+            let (from, to) = (self.master_applied, self.allocator.master_gain());
+            let ramp = |from: Amplitude, to: Amplitude, i: usize| {
+                from.get() + (to.get() - from.get()) * ((i + 1) as f32 / n as f32)
+            };
             for (i, (&l, &r)) in left.iter().zip(right).enumerate() {
-                emit(start + done + i, l * volume, r * volume);
+                emit(
+                    start + done + i,
+                    l * volume * ramp(from.left, to.left, i),
+                    r * volume * ramp(from.right, to.right, i),
+                );
             }
+            self.master_applied = to;
             done += n;
         }
         self.retire_finished_voices();
@@ -768,6 +799,8 @@ impl PolySynth {
         }
         self.bank.reset();
         self.allocator.reset();
+        self.universal.reset();
+        self.master_applied = MasterGain::UNITY;
         self.bends = [tutti_types::Semitones(0.0); 16];
         self.last_freq = Hz(440.0);
     }
@@ -806,6 +839,8 @@ impl Clone for PolySynth {
             bends: self.bends,
             master_volume: self.master_volume.clone(),
             last_volume: self.last_volume,
+            universal: self.universal.clone(),
+            master_applied: self.master_applied,
             sample_rate: self.sample_rate,
             finished_indices: Vec::with_capacity(self.config.polyphony.get()),
         }

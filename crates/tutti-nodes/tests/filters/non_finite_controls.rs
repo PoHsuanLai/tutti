@@ -21,7 +21,7 @@ use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
     ChannelTimes, CompressorControls, CompressorNode, DelayControls, DelayFamily, DelayNode,
     GateControls, GateNode, InterpolationMode, LadderFilterNode, LadderType, MaxDelay,
-    ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
+    ModDelayNode, PhaserControls, PhaserNode, Stages, SvfFilterNode, SvfType,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, ParamCell, Q, Resonance,
@@ -210,12 +210,16 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     );
     survives_node(
         "phaser",
-        || PhaserNode::with_channels(ChannelLayout::STEREO, 6),
+        || PhaserNode::stereo(Stages::of(6), PhaserControls::DEFAULT),
         |n| {
             vec![
-                ("rate", n.rate().into(), 2.0),
-                ("depth", n.depth().into(), 0.9),
-                ("feedback", n.feedback().into(), 0.8),
+                ("rate", n.param_set().cell(UnitParam::Rate).unwrap(), 2.0),
+                ("depth", n.param_set().cell(UnitParam::Depth).unwrap(), 0.9),
+                (
+                    "feedback",
+                    n.param_set().cell(UnitParam::Feedback).unwrap(),
+                    0.8,
+                ),
             ]
         },
     );

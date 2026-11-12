@@ -18,12 +18,12 @@ use tutti_graph::ParamNode;
 use tutti_graph::contract::{BlockRig, Direct};
 use tutti_nodes::{
     DelayControls, DelayNode, InterpolationMode, LfoNode, LfoShape, MaxDelay, ModDelayNode,
-    PhaserNode,
+    PhaserControls, PhaserNode, Stages, Stagger, SweepRange,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
-    BeatDuration, BusTopology, ChannelLayout, Depth, Feedback, Hz, PhaseIncrement, SampleRate,
-    Seconds, UnitParam,
+    BeatDuration, BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
+    UnitParam,
 };
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
@@ -164,13 +164,17 @@ fn general_midi_chorus_node_process_is_allocation_free() {
 
 #[test]
 fn phaser_node_process_is_allocation_free() {
-    // 4-stage phaser. `prepare` allocates the scratch, but `process` must
-    // reuse it.
-    gate(PhaserNode::new(4), 0.4, 2_000, |_| {});
+    // 4-stage phaser. `prepare` sizes the chain, but `process` must reuse it.
+    gate(
+        PhaserNode::mono(Stages::of(4), PhaserControls::DEFAULT),
+        0.4,
+        2_000,
+        |_| {},
+    );
 }
 
 /// Every control moved each block: the delay time glides at its slew, the chorus depth
-/// sweeps, the phaser's coefficient table is re-solved, the cross-fed delay reads
+/// sweeps, the phaser's control points are re-solved, the cross-fed delay reads
 /// every tap before writing any line. All of it on preallocated scratch.
 /// The delay's moves go through its `ParamSet`; the others through clones, which share
 /// their cells. (A moving mix is the graph's: `tutti-graph/tests/rt_no_alloc.rs`.)
@@ -196,12 +200,22 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
         assert!(c.set(UnitParam::Rate, 0.5 + 4.0 * t));
         assert!(c.set(UnitParam::Feedback, 0.6 * t));
     });
-    let phaser = PhaserNode::with_channels(6u16, 8);
-    let p = phaser.clone();
+    // A 6-wide, 8-stage, staggered phaser whose rate, depth and feedback all move every
+    // block, the glides in flight on every one.
+    let phaser = PhaserNode::new(
+        bus(6),
+        Stages::of(8),
+        SweepRange::DEFAULT,
+        Stagger::of_step(PhaseIncrement(0.2)),
+        PhaserControls::DEFAULT,
+    )
+    .expect("a step fits any width");
+    let p = phaser.param_set();
     gate(phaser, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        p.set_depth(Depth::of(t));
-        p.set_feedback(Feedback::new(0.9 * t));
+        assert!(p.set(UnitParam::Rate, 0.5 + 4.0 * t));
+        assert!(p.set(UnitParam::Depth, t));
+        assert!(p.set(UnitParam::Feedback, 0.9 * t));
     });
 }
 
@@ -270,6 +284,51 @@ fn a_chorus_with_its_lanes_fed_is_allocation_free() {
         assert!(
             rig.output(0).iter().any(|s| s.abs() > 1e-6),
             "the chorus rendered silence; the gate would walk no DSP"
+        );
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..2_000 {
+                rig.block();
+            }
+        });
+    }
+}
+
+/// A phaser with its three slow controls driven (rate, depth and feedback lanes fed): each
+/// is read at the grid's solve frame, the depth and feedback glides move on every solve, and
+/// the staggered 6-wide chain renders every channel's sweep. Through `Direct`, which feeds a
+/// node's param ports.
+#[test]
+fn a_phaser_with_its_lanes_fed_is_allocation_free() {
+    for width in [2u16, 6] {
+        let phaser = PhaserNode::new(
+            bus(width),
+            Stages::of(6),
+            SweepRange::DEFAULT,
+            Stagger::of_step(PhaseIncrement(0.25)),
+            PhaserControls::DEFAULT,
+        )
+        .expect("a step fits any width");
+        let mut rig = Direct::new(phaser, SampleRate(48_000.0), 64);
+        for c in rig.inputs_mut() {
+            for (i, x) in c.iter_mut().enumerate() {
+                *x = if i % 2 == 0 { 0.5 } else { -0.5 };
+            }
+        }
+        let tau = std::f32::consts::TAU / 64.0;
+        let lane = |base: f32, swing: f32, k: f32| -> Vec<f32> {
+            (0..64)
+                .map(|i| base + swing * (tau * k * i as f32).sin())
+                .collect()
+        };
+        rig.feed(0, Some(&lane(2.0, 1.5, 1.0)));
+        rig.feed(1, Some(&lane(0.5, 0.5, 2.0)));
+        rig.feed(2, Some(&lane(0.5, 0.4, 3.0)));
+        for _ in 0..32 {
+            rig.block();
+        }
+        assert!(
+            rig.output(0).iter().any(|s| s.abs() > 1e-6),
+            "the phaser rendered silence; the gate would walk no DSP"
         );
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..2_000 {

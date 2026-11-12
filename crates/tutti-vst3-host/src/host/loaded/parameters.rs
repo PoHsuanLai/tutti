@@ -365,13 +365,13 @@ const DRY_WET_MIX: &str = "DryWetMix";
 /// [`UnitParam::Wet`]. `wet` is what `IParameterFunctionName` answered for
 /// [`DRY_WET_MIX`]; `None` (no such interface, or no such function) leaves every
 /// role alone.
-fn apply_function_roles(mut list: Vec<ParameterInfo>, wet: Option<ParamId>) -> Vec<ParameterInfo> {
-    if let Some(wet) = wet {
-        for p in list.iter_mut().filter(|p| p.id == wet) {
-            p.role = Some(UnitParam::Wet);
-        }
-    }
-    list
+fn apply_function_roles(list: Vec<ParameterInfo>, wet: Option<ParamId>) -> Vec<ParameterInfo> {
+    list.into_iter()
+        .map(|p| match wet {
+            Some(wet) if p.id() == wet => p.with_role(Some(UnitParam::Wet)),
+            _ => p,
+        })
+        .collect()
 }
 
 /// What a VST3 parameter's declaration says it measures (doc 023 §5.2).
@@ -448,31 +448,27 @@ pub(super) fn build_param_info(
     let measures = declared_measures(&info.units_string(), info.is_list(), info.step_count());
     let role = declared_role(info.is_bypass());
 
-    ParameterInfo {
-        // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
-        // the ParamID-vs-index note above.
-        id: info.id().into(),
-        name: info.title_string(),
-        unit: info.units_string(),
-        range,
-        steps,
-        flags: reported & KNOWN,
-        known: KNOWN,
-        // A `unitId` naming a unit the plugin never published resolves to no
-        // group. Several plugins carry dangling ids — the same class of bug
-        // `Vst3UnitInfo::program_list` already absorbs for program lists — and
-        // the alternatives are worse: a lookup that panicked would take down a
-        // parameter list over a display label, and one that fell back to a
-        // neighbour would mislabel silently.
-        group: groups
-            .get(&info.unit_id())
-            .map(|n| n.to_string())
-            .unwrap_or_default(),
-        measures: None,
-        role: None,
-    }
-    .with_measures(measures)
-    .with_role(role)
+    // VST3 `ParamID` is opaque and plugin-chosen, not a list position; see the
+    // ParamID-vs-index note above.
+    //
+    // A `unitId` naming a unit the plugin never published resolves to no group.
+    // Several plugins carry dangling ids (the same class of bug
+    // `Vst3UnitInfo::program_list` already absorbs for program lists), and the
+    // alternatives are worse: a lookup that panicked would take down a
+    // parameter list over a display label, and one that fell back to a
+    // neighbour would mislabel silently.
+    let group = groups
+        .get(&info.unit_id())
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    ParameterInfo::new(info.id().into(), info.title_string())
+        .with_unit(info.units_string())
+        .with_range(range)
+        .with_steps(steps)
+        .with_flags(KNOWN, reported)
+        .with_group(group)
+        .with_measures(measures)
+        .with_role(role)
 }
 
 #[cfg(test)]
@@ -595,10 +591,10 @@ mod measures_tests {
     /// Builds the `measures` a plugin's declaration ends in, as
     /// `build_param_info` does: the mapping, then the range check.
     fn measures(units: &str, is_list: bool, steps: i32, range: ParamRange) -> Option<ParamUnit> {
-        let mut p = ParameterInfo::new(ParamId::new(1), "p");
-        p.range = range;
-        p.with_measures(declared_measures(units, is_list, steps))
-            .measures
+        ParameterInfo::new(ParamId::new(1), "p")
+            .with_range(range)
+            .with_measures(declared_measures(units, is_list, steps))
+            .measures()
     }
 
     /// Every string on the closed list maps over a plain range that fits.
@@ -684,10 +680,10 @@ mod measures_tests {
             ]
         };
         let got = apply_function_roles(list(), Some(ParamId::new(2)));
-        assert_eq!(got[0].role, None);
-        assert_eq!(got[1].role, Some(UnitParam::Wet));
+        assert_eq!(got[0].role(), None);
+        assert_eq!(got[1].role(), Some(UnitParam::Wet));
         let none = apply_function_roles(list(), None);
-        assert!(none.iter().all(|p| p.role.is_none()));
+        assert!(none.iter().all(|p| p.role().is_none()));
         assert_eq!(DRY_WET_MIX, "DryWetMix");
     }
 }

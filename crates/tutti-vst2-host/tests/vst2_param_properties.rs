@@ -669,20 +669,20 @@ fn a_declared_integer_range_reaches_the_shared_parameter_info() {
     let (min, max, step, _large) = PROBE_INT_RANGE;
     let declaring = &listed[PROBE_INT_STEP_PARAM as usize];
     assert_eq!(
-        declaring.range.bounds(),
+        declaring.range().bounds(),
         Some((min as f64, max as f64)),
         "param {} declares USES_INT_STEP over {min}..{max}, so the shared info \
          must carry that range, not the normalized placeholder",
-        declaring.id
+        declaring.id()
     );
     // `step_count()` is steps-between-endpoints; `ParamSteps` counts positions.
     let want_positions = ((max - min) / step) as u32 + 1;
     assert_eq!(
-        declaring.steps.count(),
+        declaring.steps().count(),
         Some(want_positions),
         "param {} spans {min}..{max} in steps of {step}, so it has \
          {want_positions} positions",
-        declaring.id
+        declaring.id()
     );
 
     let mut declined = 0usize;
@@ -691,18 +691,18 @@ fn a_declared_integer_range_reaches_the_shared_parameter_info() {
             continue;
         }
         assert_eq!(
-            info.range.bounds(),
+            info.range().bounds(),
             None,
             "param {} sets only USES_FLOAT_STEP, so its integer fields are \
              invalid — reading them yields the probe's poison values 999/-999",
-            info.id
+            info.id()
         );
         assert_eq!(
-            info.steps,
+            info.steps(),
             ParamSteps::Unknown,
             "param {} declared no integer range, so its step count is \
              unreported — which is not the same as continuous",
-            info.id
+            info.id()
         );
         declined += 1;
     }
@@ -723,8 +723,8 @@ fn a_declared_switch_reaches_the_shared_parameter_info_as_a_toggle() {
     let listed = instance.loaded().parameter_list();
     assert!(listed.len() > PROBE_SWITCH_PARAM as usize);
     let switch = &listed[PROBE_SWITCH_PARAM as usize];
-    assert_eq!(switch.steps, ParamSteps::Toggle);
-    assert_eq!(switch.range.bounds(), None);
+    assert_eq!(switch.steps(), ParamSteps::Toggle);
+    assert_eq!(switch.range().bounds(), None);
 
     reset_switches(&path);
 }
@@ -740,13 +740,13 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert_eq!(
-            info.range.bounds(),
+            info.range().bounds(),
             None,
             "param {} came back with bounds from a plugin that answers no \
              opcode 56 at all",
-            info.id
+            info.id()
         );
-        assert_eq!(info.steps, ParamSteps::Unknown, "param {}", info.id);
+        assert_eq!(info.steps(), ParamSteps::Unknown, "param {}", info.id());
     }
 }
 
@@ -776,16 +776,16 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert!(
-            info.known.contains(ParamFlags::AUTOMATABLE),
+            info.flag(ParamFlags::AUTOMATABLE).is_some(),
             "param {}: AUTOMATABLE left out of the known mask, so a consumer \
              reads it as 'the format never said' when opcode 26 answered",
-            info.id
+            info.id()
         );
         assert_eq!(
             info.flag(ParamFlags::AUTOMATABLE),
             Some(true),
             "param {}: the probe automates every in-range index",
-            info.id
+            info.id()
         );
     }
 
@@ -793,9 +793,9 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
     // known-and-false would assert something the ABI never said.
     for info in &listed {
         assert!(
-            !info.known.contains(ParamFlags::READ_ONLY),
+            info.flag(ParamFlags::READ_ONLY).is_none(),
             "param {}: READ_ONLY has no VST2 opcode and must stay unprobed",
-            info.id
+            info.id()
         );
     }
 }

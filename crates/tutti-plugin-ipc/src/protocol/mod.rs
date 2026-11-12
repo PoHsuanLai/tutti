@@ -879,9 +879,12 @@ mod tests {
         else {
             panic!("a ParameterList decodes as one");
         };
-        assert_eq!(parameters[0].measures, Some(ParamUnit::Pan));
-        assert_eq!(parameters[0].role, Some(UnitParam::Pan));
-        assert_eq!((parameters[1].measures, parameters[1].role), (None, None));
+        assert_eq!(parameters[0].measures(), Some(ParamUnit::Pan));
+        assert_eq!(parameters[0].role(), Some(UnitParam::Pan));
+        assert_eq!(
+            (parameters[1].measures(), parameters[1].role()),
+            (None, None)
+        );
 
         let one = BridgeMessage::ParameterInfoResponse { info: Some(typed) };
         let BridgeMessage::ParameterInfoResponse { info: Some(info) } =
@@ -889,6 +892,6 @@ mod tests {
         else {
             panic!("a ParameterInfoResponse decodes as one");
         };
-        assert_eq!(info.measures, Some(ParamUnit::Pan));
+        assert_eq!(info.measures(), Some(ParamUnit::Pan));
     }
 }

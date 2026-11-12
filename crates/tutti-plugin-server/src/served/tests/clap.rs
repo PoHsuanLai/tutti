@@ -784,9 +784,9 @@ fn test_clap_parameter_list() {
 
     for param in &params {
         assert!(
-            !param.name.is_empty(),
+            !param.name().is_empty(),
             "Parameter id {} has empty name",
-            param.id
+            param.id()
         );
     }
 }
@@ -858,7 +858,7 @@ fn test_clap_get_parameter() {
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty(), "Need at least one parameter");
 
-    let first_id = params[0].id;
+    let first_id = params[0].id();
     let value = instance.normalized(&main_thread(), first_id);
     assert!(
         value.is_finite(),
@@ -1269,7 +1269,7 @@ fn test_surge_set_parameter_flush() {
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty(), "Need at least one parameter");
 
-    let param_id = params[0].id;
+    let param_id = params[0].id();
     instance.set_parameter(&main_thread(), param_id, Normalized::of(0.5));
 }
 
@@ -1441,7 +1441,7 @@ fn test_clap_param_write_is_settled_for_a_state_save() {
     )
     .expect("Failed to load");
     let params = instance.parameters(&main_thread());
-    let param_id = params[0].id;
+    let param_id = params[0].id();
     let original = instance.normalized(&main_thread(), param_id);
     let new_value = if original < 0.5 { 0.75 } else { 0.25 };
 
@@ -1610,7 +1610,7 @@ fn test_clap_param_set_reaches_the_next_block() {
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty(), "Need at least one parameter");
 
-    let param_id = params[0].id;
+    let param_id = params[0].id();
     let clap_id = param_id.get();
     let original = instance.normalized(&main_thread(), param_id);
 
@@ -1676,7 +1676,7 @@ fn test_clap_state_save_load_roundtrip() {
 
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty(), "Need at least one parameter");
-    let param_id = params[0].id;
+    let param_id = params[0].id();
 
     // Save original state
     let saved = instance
@@ -1798,7 +1798,7 @@ fn test_clap_process_with_param_automation() {
     assert!(!params.is_empty());
 
     let mut changes = ParameterChanges::new();
-    let mut queue = ParameterQueue::with_capacity(params[0].id, 1);
+    let mut queue = ParameterQueue::with_capacity(params[0].id(), 1);
     queue.add_point(0, 0.5);
     changes.add_queue(queue);
 
@@ -1936,7 +1936,7 @@ fn test_surge_state_save_load() {
 
     let params = instance.parameters(&main_thread());
     assert!(!params.is_empty());
-    let param_id = params[0].id;
+    let param_id = params[0].id();
 
     let saved = instance
         .save_state(&main_thread())

@@ -63,3 +63,7 @@ mod vst2_off_main_handle;
 // integer-ranged parameter, in process.
 #[cfg(feature = "vst2")]
 mod vst2_params;
+// Presets through the main-thread view: a list that loads by id (VST2, in
+// process) and a file that loads by path (CLAP, in a real `plugin-server`).
+#[cfg(any(feature = "clap", feature = "vst2"))]
+mod plugin_presets;

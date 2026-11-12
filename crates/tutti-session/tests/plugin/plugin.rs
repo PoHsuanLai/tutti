@@ -31,7 +31,7 @@ use tutti_plugin_host::PluginStatus;
 use tutti_plugin_types::{BridgeError, PluginFailure, TerminationReason};
 use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginLiveness,
+    Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginHealth,
     PluginLoadRequest, Range, Session, SessionEvent,
 };
 use tutti_session::{RecoveryFailure, ReloadCause};
@@ -303,15 +303,12 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
             })
             .collect::<Vec<_>>()
     };
-    for (i, ms) in [0, 10, 20].into_iter().enumerate() {
+    for ms in [0, 10, 20] {
         assert!(plugins_at(&mut s, ms).is_empty(), "inside the window");
         assert!(
-            matches!(
-                s.plugin(node).unwrap().liveness(),
-                PluginLiveness::Failing { consecutive } if *consecutive == i as u8 + 1
-            ),
+            matches!(s.plugin(node).unwrap().health(), PluginHealth::Died { .. }),
             "{:?}",
-            s.plugin(node).unwrap().liveness()
+            s.plugin(node).unwrap().health()
         );
         assert!(s.graph_ref().contains(node), "a failing plugin stays");
     }
@@ -682,8 +679,8 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     );
     assert!(s.graph_ref().contains(node));
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Healthy
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Running
     ));
     // The snapshot is still the node's recovery point: a second failure
     // restores it again.
@@ -960,9 +957,79 @@ fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
     }
     assert_eq!(dropped, 1);
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Recovering { .. }
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Reloading { .. }
     ));
+}
+
+/// **A killed server reads `Died`, then `Reloading`, through `health()` and
+/// the events.** The probe aborts on its first block; once the bridge has
+/// latched the death, and before the session has written it off (it waits out
+/// its debounce), the view reads `Died` with the engine's cause. The update
+/// that declares it schedules the reload: the event is `Reloading`, and the view
+/// then reads `Reloading` with the same attempt and cause.
+#[test]
+fn a_killed_server_reads_died_then_reloading() {
+    let once = once_file("health-died-reloading.once");
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1"),
+        ],
+        |b| b.plugin_recovery(Some(tutti_session::RecoveryPolicy::default())),
+    );
+    let (node, _) = wired_probe(&mut s);
+    assert!(
+        matches!(s.plugin(node).unwrap().health(), PluginHealth::Running),
+        "a plugin that has not died is running"
+    );
+
+    let mut out = vec![0.0f32; BLOCK * 2];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
+        assert!(Instant::now() < deadline, "the probe never died");
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let PluginHealth::Died { cause } = s.plugin(node).unwrap().health() else {
+        panic!("a latched death reads Died before the session writes it off");
+    };
+
+    let mut now = Instant::now();
+    let reloading = loop {
+        assert!(Instant::now() < deadline, "the death was never declared");
+        std::thread::sleep(Duration::from_millis(20));
+        now += Duration::from_millis(20);
+        let mut events = Vec::new();
+        s.run_phase(Phase::Plugins, PhaseCx::at(now), &mut events);
+        if let Some(found) = events.into_iter().find_map(|e| match e {
+            SessionEvent::Plugin(PluginEvent {
+                node: n,
+                change: PluginChange::Reloading { cause, attempt, .. },
+                ..
+            }) if n == node => Some((cause, attempt)),
+            _ => None,
+        }) {
+            break found;
+        }
+    };
+    assert_eq!(reloading.1, 1, "the first failure is attempt 1");
+    assert!(
+        matches!(&reloading.0, ReloadCause::Died(c) if std::mem::discriminant(c) == std::mem::discriminant(&cause)),
+        "the reload's cause is the death's: {:?} vs {cause:?}",
+        reloading.0
+    );
+    assert!(
+        matches!(
+            s.plugin(node).unwrap().health(),
+            PluginHealth::Reloading {
+                attempt: 1,
+                cause: ReloadCause::Died(_)
+            }
+        ),
+        "{:?}",
+        s.plugin(node).unwrap().health()
+    );
 }
 
 /// Whether the process `pid` is gone (reaped, or dead and awaiting reaping).
@@ -1109,10 +1176,16 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
         )),
         0
     );
-    assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Healthy
-    ));
+    // Slow, so it may read `Stalled` while a reading catches blocks unanswered;
+    // what it must not be is dead or being replaced.
+    assert!(
+        matches!(
+            s.plugin(node).unwrap().health(),
+            PluginHealth::Running | PluginHealth::Stalled
+        ),
+        "{:?}",
+        s.plugin(node).unwrap().health()
+    );
 }
 
 /// **A replacement with other ports is a failed attempt, and the graph stays
@@ -1338,8 +1411,8 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     );
     assert!(s.plugin(node).unwrap().state().last_good().is_none());
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Healthy
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Running
     ));
     // The user's state is kept for the host, not thrown away...
     assert_eq!(
@@ -1449,8 +1522,8 @@ fn an_export_during_the_recovery_window_is_refused() {
         )
     });
     assert!(matches!(
-        s.plugin(node).unwrap().liveness(),
-        PluginLiveness::Recovering { .. }
+        s.plugin(node).unwrap().health(),
+        PluginHealth::Reloading { .. }
     ));
     let refused = s.bounce_start(request());
     let refusal = format!("{:?}", refused.as_ref().err());

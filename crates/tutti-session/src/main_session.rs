@@ -13,6 +13,7 @@
 //!   graveyard), runs the work other threads handed to the main thread
 //!   (`tutti_plugin_types::run_deferred`) and services every open editor.
 //! - [`MainPlugin::editor`] is the editor: `open`, `resize`, `rescale`, `close`.
+//! - [`MainPlugin::presets`] lists and loads presets.
 //!
 //! The session's own freeing paths (`update`, `commit`, `remove`, `replace`)
 //! stay on [`Session`], whatever feature is on: a plugin they retire is parked
@@ -60,7 +61,7 @@
 use raw_window_handle::HasWindowHandle;
 use tutti_graph::NodeKey;
 use tutti_plugin_types::{
-    ContentScale, EditorError, EditorSize, Features, MainThread, WindowHandle,
+    ContentScale, EditorError, EditorSize, Features, MainThread, PresetError, WindowHandle,
 };
 
 use crate::plugin::HostedPlugin;
@@ -176,6 +177,17 @@ impl MainPlugin<'_> {
     /// The read-only view of the same plugin.
     pub fn view(&self) -> crate::Plugin<'_> {
         crate::Plugin::new(self.node, self.hosted)
+    }
+
+    /// The plugin's presets: a list to load from, or a file to load
+    /// (design 029 section 2.4).
+    ///
+    /// # Errors
+    ///
+    /// [`PresetError::Unsupported`] when the plugin has no preset surface;
+    /// [`PresetError::Lost`] when it is gone.
+    pub fn presets(&self) -> Result<crate::Presets<'_>, PresetError> {
+        crate::Presets::of(&self.hosted.handle, self.main)
     }
 
     /// The plugin's editor.

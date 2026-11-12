@@ -447,17 +447,15 @@ impl PluginLoaded {
 }
 
 /// What the session believes about a plugin's liveness: the debounce
-/// between the engine's latched `PluginStatus` and a node removed.
+/// between the engine's latched `PluginStatus` and a node removed. The public
+/// reading is [`PluginHealth`] ([`Plugin::health`]).
 #[derive(Debug, Clone, Default)]
-pub enum PluginLiveness {
+pub(crate) enum PluginLiveness {
     /// Answering normally.
     #[default]
     Healthy,
     /// Recently unhealthy, not yet written off (`tutti_plugin_host::Liveness`).
-    Failing {
-        /// How many observations in a row found it unhealthy.
-        consecutive: u8,
-    },
+    Failing,
     /// Dead or hung, and being replaced at its node (recovery on): the node
     /// stays, silent, until [`PluginChange::Recovered`] or
     /// [`PluginChange::GaveUp`].
@@ -465,12 +463,47 @@ pub enum PluginLiveness {
         /// Why it needs a replacement.
         cause: ReloadCause,
     },
-    /// Written off: its node was removed (recovery off, or its budget
-    /// spent). Load a replacement restoring its last good state
-    /// ([`Plugin::state`]) to bring it back by hand.
+    /// Written off: its node is being removed (recovery off, or its budget
+    /// spent).
     Dead {
         /// The engine's latched reason.
         cause: PluginFailure,
+    },
+}
+
+/// How a hosted plugin is doing ([`Plugin::health`], design 029 section 2.6):
+/// one reading of what the engine latched, the session's debounce and its
+/// recovery.
+///
+/// The verdicts that remove the node (written off with recovery off, or
+/// recovery's budget spent) are not here: the node and its view are gone in the
+/// update that reaches them, and the events say so ([`PluginChange::Died`],
+/// [`PluginChange::GaveUp`]).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum PluginHealth {
+    /// Answering normally.
+    Running,
+    /// Alive, but its blocks go unanswered: the bridge is abandoning them and
+    /// has not yet declared a hang. With recovery off the session does not
+    /// watch for this, and it is never read.
+    Stalled,
+    /// The engine reports it dead, and the session has not yet written it off
+    /// (it waits out a debounce first). It then becomes
+    /// [`Reloading`](Self::Reloading), or, with recovery off, its node is
+    /// removed.
+    Died {
+        /// The engine's latched reason.
+        cause: PluginFailure,
+    },
+    /// Dead or hung, and a replacement is on its way to the same node: the node
+    /// stays, silent.
+    Reloading {
+        /// Failures within the recovery budget's window so far, this one
+        /// included.
+        attempt: u32,
+        /// Why it needs a replacement.
+        cause: ReloadCause,
     },
 }
 
@@ -1074,9 +1107,26 @@ impl<'a> Plugin<'a> {
         }
     }
 
-    /// What the session believes about its liveness.
-    pub fn liveness(&self) -> &'a PluginLiveness {
-        &self.hosted.status
+    /// How the plugin is doing: running, stalled, dead and about to be
+    /// written off, or being reloaded (design 029 section 2.6).
+    pub fn health(&self) -> PluginHealth {
+        let hosted = self.hosted;
+        match &hosted.status {
+            PluginLiveness::Recovering { cause } => PluginHealth::Reloading {
+                attempt: hosted.recovery.as_ref().map_or(1, Recovery::failures),
+                cause: cause.clone(),
+            },
+            PluginLiveness::Dead { cause } => PluginHealth::Died {
+                cause: cause.clone(),
+            },
+            PluginLiveness::Healthy | PluginLiveness::Failing => match hosted.handle.status() {
+                PluginStatus::Dead { cause } => PluginHealth::Died { cause },
+                _ if hosted.recovery.as_ref().is_some_and(Recovery::is_stalled) => {
+                    PluginHealth::Stalled
+                }
+                _ => PluginHealth::Running,
+            },
+        }
     }
 
     /// The plugin's control surface: editor, parameters, presets. Design 029
@@ -2011,9 +2061,7 @@ impl Session {
             }
             match hosted.liveness.observe(cause.is_none(), now) {
                 Verdict::Healthy => hosted.status = PluginLiveness::Healthy,
-                Verdict::Failing { consecutive } => {
-                    hosted.status = PluginLiveness::Failing { consecutive };
-                }
+                Verdict::Failing { .. } => hosted.status = PluginLiveness::Failing,
                 Verdict::Dead => {
                     // `Liveness` declares a death only on an unhealthy
                     // observation, and every unhealthy one carries the
@@ -2451,8 +2499,8 @@ mod tests {
         rig.dead.store(true, Ordering::SeqCst);
         assert!(rig.plugins_at(1_000).is_empty(), "failing: no snapshot");
         assert!(matches!(
-            rig.session.plugin(rig.node).unwrap().liveness(),
-            PluginLiveness::Failing { consecutive: 1 }
+            rig.session.plugin(rig.node).unwrap().health(),
+            PluginHealth::Died { .. }
         ));
     }
 

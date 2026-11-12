@@ -274,7 +274,7 @@ what it replaces; no deprecated twin is kept.
 | 1 (built) | **Identity and state.** `PluginRef` from `&PluginEntry`; the load passes the plugin id; `PluginState` and `StateError::OtherPlugin`; one `state()` view with `last_good()`, `withheld()`, `save()` and `restore()`; the acceptance example `crates/tutti/examples/plugin_host.rs` (scan, load, wire, MIDI, parameters, editor, save, bounce), which each later step rewrites to its shape | `PluginId` as a path; `snapshot()`; `Load::new()` in the open | the second plugin of the CLAP test bundle loads by its entry; a state restored into another plugin is refused |
 | 2 (view and events built; main-thread view and editor servicing open) | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
 | 3 (built) | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
-| 4 | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
+| 4 (4a built: presets, health) | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
 | 5 | **The spawner.** `spawn_with`, `Job`; jobs landed in `update()` | `land_snapshot`, `land_params`, `land_reload` as public calls; the `*Due` events | a reload completes with no host code but `update()` |
 | 6 | **The catalog and the facade.** `Catalog::open_db`, `scan()`; `Plugins::open` removed; the probe lists every plugin of a bundle (`FileState::Probed` already holds several); 021 step 6's `Hosting` as a `PluginRef` field (`Auto`, `InProcess`, `OutOfProcess`) | `with_fresh_scan`, `Plugins::open`, `Backend` | a blacklisted plugin is refused at load, not at open |
 
@@ -471,6 +471,43 @@ knows. `terminate` takes a `TerminationReason`, a closed set (its
 only reason today is `Hung`, the session's), not free text. None of these
 implements `PartialEq`, since an `io::Error` is not comparable. The server sends no cause, so the wire and `PROTOCOL_VERSION` are
 unchanged.
+
+**As built (step 4a, presets and health).** *Presets* are the main thread's
+(VST3, VST2 and AU answer them there), so the view is
+`MainSession::plugin(node)?.presets()` on `MainPlugin`, not on the read-only
+`Plugin<'_>`: `Result<Presets<'_>, PresetError>` (`tutti-session`'s
+`plugin_presets` module). `PresetError` (`tutti-plugin-types`) is the three
+answers `Option<bool>` kept in one value: `Unsupported` (no preset surface, or
+the operation is not the format's), `Refused` (the plugin declined) and `Lost`
+(the plugin is gone). `Presets::kind()` is `PresetKind::Browse` (VST2, VST3, AU:
+`iter()` of `PresetEntry` with `id`, `name`, `bank` and `load()`; `get(&id)`) or
+`PresetKind::File` (CLAP: `load_file(path)`, an empty list); a plugin with no
+preset surface (a VST2 declaring no programs) is `Err(Unsupported)` at
+`presets()`, and `load_file` on a `Browse` plugin is `Unsupported`.
+`current()` is the plugin's own query (`None` where the format has none). The
+view reads the list once when it is made (a served plugin's is a round trip).
+`PluginHandle::{presets, load_preset}` return the same `Result`s, and
+`preset_support` stays on the handle, the low layer the view reads the kind
+from. `PresetChanged` (§3.3) is not raised: no format tells the host that the
+plugin changed its own preset, and a load the host makes is its own call.
+*Health* is `Plugin::health() -> PluginHealth`, named so the prelude does not
+hold a second `Health` beside `tutti_plugin_types::Health`, the backend's trait.
+`Running`; `Stalled` (alive, blocks abandoned with no reply and no hang
+declared yet: `Recovery::is_stalled`, so never read with recovery off);
+`Died { cause }` (the bridge has latched a death and the session has not yet
+written it off, which it does after its debounce; the reading a host sees for
+those updates); `Reloading { attempt, cause }` (the `ReloadCause` and the
+attempt number the event carried: the node stays, silent). `GaveUp` is not a
+reading: the verdicts that remove the node (recovery off, or its budget spent)
+remove the record in the update that reaches them, so no view can hold it and
+the events (`PluginChange::{Died, GaveUp}`) are where they are seen. The
+session's debounce enum, `PluginLiveness`, is crate-private. The reference CLAP
+plugin gained `clap.preset-load` (a file ending `.tutti-preset` sets Cutoff to
+350, any other location is declined) so the CLAP half runs headless; the
+test observes it through the plugin's saved state. Tests:
+`plugin_presets.rs` (CLAP `load_file` accepted and refused; VST2 list loads by
+id, no programs is `Unsupported`), `plugin.rs`'s
+`a_killed_server_reads_died_then_reloading` and `plugin_health.rs`.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 

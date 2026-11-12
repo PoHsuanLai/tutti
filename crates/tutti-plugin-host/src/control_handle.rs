@@ -14,7 +14,8 @@ use tutti_plugin_types::{
 };
 use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{
-    LayoutSupport, LoadedPlugin, PluginBus, PluginDescriptor, Preset, PresetId, PresetSupport,
+    LayoutSupport, LoadedPlugin, PluginBus, PluginDescriptor, Preset, PresetError, PresetId,
+    PresetSupport,
 };
 #[cfg(doc)]
 use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
@@ -498,25 +499,36 @@ impl PluginHandle {
         }
     }
 
-    /// Every preset the plugin advertises, in its own order, or `None` when
-    /// this handle carries no route to presets at all.
+    /// Every preset the plugin advertises, in its own order.
     ///
-    /// Empty (`Some`) when the format cannot enumerate (CLAP), which is **not**
-    /// the same as a plugin with no presets; read
-    /// [`Features::PRESET_LIST`](tutti_plugin_types::Features::PRESET_LIST) on
-    /// [`loaded`](Self::loaded) to tell them apart.
-    pub fn presets(&self, main: &MainThread) -> Option<Vec<Preset>> {
-        let control = self.control.as_deref()?;
-        Some(lent(control, |c| c.presets(main)).unwrap_or_default())
+    /// An empty list is a format that cannot enumerate (CLAP) as much as a
+    /// plugin with none; [`preset_support`](Self::preset_support) tells them
+    /// apart.
+    ///
+    /// # Errors
+    ///
+    /// [`PresetError::Unsupported`] when this handle carries no route to
+    /// presets; [`PresetError::Lost`] when the plugin is gone.
+    pub fn presets(&self, main: &MainThread) -> Result<Vec<Preset>, PresetError> {
+        let control = self.control.as_deref().ok_or(PresetError::Unsupported)?;
+        lent(control, |c| c.presets(main)).ok_or(PresetError::Lost)
     }
 
     /// Asks the plugin to load a preset, by an id [`presets`](Self::presets)
-    /// produced (or, for CLAP, a path id). `None` when this handle carries no
-    /// route to presets; `Some(false)` when the plugin refused (or is lost):
-    /// leave the UI selection where it was.
-    pub fn load_preset(&self, main: &MainThread, id: &PresetId) -> Option<bool> {
-        let control = self.control.as_deref()?;
-        Some(lent(control, |c| c.load_preset(main, id)).unwrap_or(false))
+    /// produced (or, for CLAP, a path id).
+    ///
+    /// # Errors
+    ///
+    /// [`PresetError::Unsupported`] when this handle carries no route to
+    /// presets, [`PresetError::Refused`] when the plugin declined (leave the
+    /// UI selection where it was), [`PresetError::Lost`] when it is gone.
+    pub fn load_preset(&self, main: &MainThread, id: &PresetId) -> Result<(), PresetError> {
+        let control = self.control.as_deref().ok_or(PresetError::Unsupported)?;
+        match lent(control, |c| c.load_preset(main, id)) {
+            Some(true) => Ok(()),
+            Some(false) => Err(PresetError::Refused),
+            None => Err(PresetError::Lost),
+        }
     }
 
     /// The preset the plugin considers current, when it will say. `None` means
@@ -942,19 +954,17 @@ mod tests {
 
     /// No preset route and an empty preset list are different answers.
     ///
-    /// `None` means this handle cannot reach presets at all; `Some(vec![])`
-    /// means it asked and the plugin listed nothing — the normal state for
+    /// `Unsupported` means this handle cannot reach presets at all; `Ok(vec![])`
+    /// means it asked and the plugin listed nothing: the normal state for
     /// CLAP, whose discovery extension is not bound. Collapsing them to an
     /// empty vec would make a UI show "no presets" for a plugin it never
-    /// asked, which is the same unprobed-versus-declined confusion
-    /// `FeatureReport` exists to prevent.
+    /// asked.
     #[test]
     fn no_preset_route_is_not_an_empty_preset_list() {
-        assert!(
-            handle_with(None)
-                .presets(&MainThread::claim().unwrap())
-                .is_none(),
-            "a handle with no preset capability must report None, not an empty list"
+        assert_eq!(
+            handle_with(None).presets(&MainThread::claim().unwrap()),
+            Err(PresetError::Unsupported),
+            "a handle with no preset capability must be unsupported, not an empty list"
         );
 
         let empty = handle_with(Some(FakePresets {
@@ -963,29 +973,23 @@ mod tests {
         }));
         assert_eq!(
             empty.presets(&MainThread::claim().unwrap()),
-            Some(Vec::new()),
-            "a capability that listed nothing must report an empty list, not None"
+            Ok(Vec::new()),
+            "a capability that listed nothing must report an empty list"
         );
     }
 
-    /// Only an accepted load reports `true`, and an absent route is not a
-    /// refusal.
+    /// A load has three typed outcomes: no route, a refusal, and loaded.
     ///
-    /// Reaching presets through the capability keeps three answers apart that a
-    /// bare `-> bool` collapses into two: `None` (no preset route at all),
-    /// `Some(false)` (a route that refused) and `Some(true)`. A caller leaves
-    /// its selection alone for both of the first two, but only the second is
-    /// the plugin saying no — and a UI reporting "this plugin cannot load
-    /// presets" must tell them apart.
+    /// A UI reporting "this plugin cannot load presets" must tell the absent
+    /// route from the plugin saying no, and both from success.
     #[test]
-    fn only_an_accepted_load_reports_true() {
+    fn a_load_is_unsupported_refused_or_done() {
         let id = PresetId::Number(0);
 
-        assert!(
-            handle_with(None)
-                .presets(&MainThread::claim().unwrap())
-                .is_none(),
-            "no route must stay distinct from a refusal, not collapse into one"
+        assert_eq!(
+            handle_with(None).load_preset(&MainThread::claim().unwrap(), &id),
+            Err(PresetError::Unsupported),
+            "no route must stay distinct from a refusal"
         );
 
         let refusing = handle_with(Some(FakePresets {
@@ -994,7 +998,7 @@ mod tests {
         }));
         assert_eq!(
             refusing.load_preset(&MainThread::claim().unwrap(), &id),
-            Some(false),
+            Err(PresetError::Refused),
             "a refusal must report a present route that said no"
         );
 
@@ -1004,8 +1008,8 @@ mod tests {
         }));
         assert_eq!(
             accepting.load_preset(&MainThread::claim().unwrap(), &id),
-            Some(true),
-            "an accepted load must report true"
+            Ok(()),
+            "an accepted load must be Ok"
         );
     }
 
@@ -1027,7 +1031,7 @@ mod tests {
         }));
         assert_eq!(
             handle.presets(&MainThread::claim().unwrap()),
-            Some(listed),
+            Ok(listed),
             "the handle must not reorder or renumber what the plugin listed"
         );
     }

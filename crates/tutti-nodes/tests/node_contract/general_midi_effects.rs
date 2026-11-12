@@ -1,12 +1,13 @@
 //! The two effect nodes behind a SoundFont unit's sends: the General MIDI
-//! chorus (`ModDelayConfig::GENERAL_MIDI_CHORUS`) and `FamilyNode`. Every
+//! chorus (`ModDelayNode::general_midi_chorus`) and `FamilyNode`. Every
 //! figure is from the definition of the effect (a wet-only line is a delayed
 //! copy, a reverb's tail covers its ring-out), not from another render.
 
-use tutti_graph::Node;
+use tutti_graph::contract::assert_honest_tail;
 use tutti_graph::contract::{drive, prepared};
-use tutti_nodes::{FreeverbNode, ModDelayConfig, ModDelayNode};
-use tutti_types::{ChannelLayout, Feedback, SampleRate, Tail};
+use tutti_graph::{Node, ParamNode};
+use tutti_nodes::{FreeverbNode, ModDelayNode};
+use tutti_types::{BusTopology, ChannelLayout, SampleRate, Tail, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
@@ -35,7 +36,7 @@ fn impulse_response<N: Node>(node: N, frames: usize) -> Vec<Vec<f32>> {
 }
 
 fn chorus() -> ModDelayNode {
-    ModDelayNode::new(ChannelLayout::STEREO, ModDelayConfig::GENERAL_MIDI_CHORUS)
+    ModDelayNode::general_midi_chorus(BusTopology::STEREO)
 }
 
 fn last_nonzero(channel: &[f32]) -> Option<usize> {
@@ -62,11 +63,11 @@ fn the_general_midi_chorus_is_wet_only() {
 /// With no feedback, the line is a delay and nothing more: the impulse comes
 /// out once (a linear read spreads it over two adjacent frames at most), and
 /// raising the feedback through the node's param does not make it ring, since
-/// the config's ceiling is none.
+/// the sweep's ceiling is none.
 #[test]
 fn the_general_midi_chorus_cannot_recirculate() {
     let node = chorus();
-    node.set_feedback(Feedback(0.9));
+    assert!(node.param_set().set(UnitParam::Feedback, 0.9));
     let out = impulse_response(node, 2_000);
     for channel in &out {
         let sounding = channel.iter().filter(|&&s| s != 0.0).count();
@@ -77,16 +78,14 @@ fn the_general_midi_chorus_cannot_recirculate() {
     }
 }
 
-/// The ceiling holds against the raw cell and the param path, which skip
-/// `set_feedback`'s clamp: -0.9 (a negative would recirculate with a flipped
-/// sign) and 5.0 (past any ceiling) both leave the line a pure delay, so the
-/// declared finite tail stays true.
+/// The ceiling holds against a raw write to the cell, which the family's own clamp
+/// meets: -0.9 (a negative would recirculate with a flipped sign) and 5.0 (past any
+/// ceiling) both leave the line a pure delay, so the declared finite tail stays true.
 #[test]
 fn a_raw_write_cannot_make_the_general_midi_chorus_recirculate() {
-    use std::sync::atomic::Ordering;
     for raw in [-0.9f32, 5.0] {
         let node = chorus();
-        node.feedback().store(raw, Ordering::Relaxed);
+        assert!(node.param_set().set(UnitParam::Feedback, raw));
         let out = impulse_response(node, 2_000);
         for channel in &out {
             let sounding = channel.iter().filter(|&&s| s != 0.0).count();
@@ -98,8 +97,10 @@ fn a_raw_write_cannot_make_the_general_midi_chorus_recirculate() {
     }
 }
 
-/// The chorus declares its delay as its tail, and the output never outlasts
-/// it. The tail is the config's `max_delay`, 5 ms: 240 frames at 48 kHz.
+/// The chorus declares its delay as its tail (a [ceiling](tutti_nodes::Rings), 5 ms,
+/// which errs long over the 3.9 ms its longest sweep takes), and the output never
+/// outlasts it. The tail is the sweep's `max_delay`: 240 frames at 48 kHz.
+/// `assert_honest_tail` renders an impulse past it and fails on a sound.
 #[test]
 fn the_general_midi_chorus_declares_its_delay_as_its_tail() {
     let node = prepared(chorus(), SR, BLOCK);
@@ -111,15 +112,16 @@ fn the_general_midi_chorus_declares_its_delay_as_its_tail() {
     for channel in &out {
         assert!(last_nonzero(channel).unwrap() < tail.get());
     }
+    assert_honest_tail(&mut chorus(), SR);
 }
 
-/// The ceiling is the config's: the presets that recirculate keep their tail
+/// The ceiling is the sweep's: the presets that recirculate keep their tail
 /// `Unknown`, as they were.
 #[test]
 fn a_recirculating_chorus_keeps_an_unknown_tail() {
     for node in [
-        ModDelayNode::chorus(ChannelLayout::STEREO),
-        ModDelayNode::flanger(ChannelLayout::STEREO),
+        ModDelayNode::chorus(BusTopology::STEREO),
+        ModDelayNode::flanger(BusTopology::STEREO),
     ] {
         assert_eq!(prepared(node, SR, BLOCK).shape().tail, Tail::Unknown);
     }

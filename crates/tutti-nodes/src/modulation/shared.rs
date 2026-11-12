@@ -1,6 +1,7 @@
-//! Parameter groupings shared by modulation effects (chorus, flanger, phaser).
+//! Parameter groupings the phaser still holds as cells (the LFO driver and its depth and
+//! feedback); the chorus and flanger are a family now.
 
-use tutti_types::{Depth, Feedback, Hz, Param, Phase, PhaseIncrement, SampleRate, Seconds};
+use tutti_types::{Depth, Feedback, Hz, Param, Phase, PhaseIncrement, SampleRate};
 
 use crate::ramp::{LastGood, clamp_finite};
 
@@ -147,62 +148,6 @@ impl LinearMod {
             // unit range sweeps the all-pass past Nyquist.
             Depth::clamped(self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())))
                 .get(),
-            self.good[1].read(fb.map_or_else(
-                || self.feedback.load().get(),
-                |v| Feedback::new_clamped(v).get(),
-            )),
-        )
-    }
-
-    /// Detaches every cell (see [`Param::detach`]): the `fork_fresh` half of this
-    /// group, keeping the current values.
-    pub fn detach(&mut self) {
-        self.depth.detach();
-        self.feedback.detach();
-    }
-}
-
-/// Feedback + time-amplitude depth in seconds (chorus/flanger-style).
-///
-/// Chorus and flanger consume `depth` as the amplitude of LFO time-modulation
-/// around their base delay: `delay = base + lfo * depth * sample_rate`.
-#[derive(Clone, Debug)]
-pub struct TimeMod {
-    pub depth: Param<Seconds>,
-    pub feedback: Param<Feedback>,
-    /// Last finite depth / feedback (see [`LastGood`]).
-    good: [LastGood; 2],
-}
-
-impl TimeMod {
-    pub fn new(depth: impl Into<Seconds>, feedback: impl Into<Feedback>) -> Self {
-        let (depth, feedback) = (depth.into(), Feedback::new_clamped(feedback.into().get()));
-        Self {
-            depth: Param::new(depth),
-            feedback: Param::new(feedback),
-            good: [
-                LastGood::new(depth.to_f32(), 0.0),
-                LastGood::new(feedback.get(), 0.0),
-            ],
-        }
-    }
-
-    /// Returns (depth_secs, feedback) — depth carries `Seconds`
-    /// semantically but unwraps to `f32` here for the per-sample math.
-    ///
-    /// `driven` holds the block's depth and feedback from the node's
-    /// param ports where a lane drives them
-    /// (`ParamInput::last_frame`); `None` reads the cell.
-    /// A driven feedback is clamped as the setter clamps: a lane's
-    /// range is the host's, and an unstable feedback would blow up.
-    #[inline]
-    pub fn load(&mut self, driven: [Option<f32>; 2]) -> (f32, f32) {
-        // Non-finite writes read as unchanged: both feed recursive state
-        // (the sweep, the recirculation) or the output every later block ramps
-        // from.
-        let [depth, fb] = driven;
-        (
-            self.good[0].read(depth.unwrap_or_else(|| self.depth.load().to_f32())),
             self.good[1].read(fb.map_or_else(
                 || self.feedback.load().get(),
                 |v| Feedback::new_clamped(v).get(),

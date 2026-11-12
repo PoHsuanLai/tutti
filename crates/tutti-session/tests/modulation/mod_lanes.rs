@@ -934,9 +934,9 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
 #[test]
 fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
     let (mut s, _side) = rig(2);
-    let (chorus, _) = s
-        .graph()
-        .add(tutti_nodes::ModDelayNode::chorus(ChannelLayout::STEREO));
+    let (chorus, _) = s.graph().add(tutti_nodes::ModDelayNode::chorus(
+        tutti_types::BusTopology::STEREO,
+    ));
     let (phaser, _) = s.graph().add(tutti_nodes::PhaserNode::with_channels(
         ChannelLayout::STEREO,
         4,

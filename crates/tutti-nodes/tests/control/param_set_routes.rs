@@ -31,7 +31,7 @@ use tutti_nodes::{
     LimiterNode, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
 use tutti_types::{BeatDuration, Db, Depth, Hz, PhaseIncrement, Q, Resonance, SampleRate, Samples};
-use tutti_types::{ChannelLayout, UnitParam};
+use tutti_types::{BusTopology, ChannelLayout, UnitParam};
 
 /// Writes `value` to `p` through `node`'s set, as a host does; `false` for
 /// a param the set lacks.
@@ -272,11 +272,11 @@ fn render_chorus(
 #[test]
 fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
     const FRAMES: usize = 24_000;
-    let chorus = || ModDelayNode::chorus(ChannelLayout::STEREO);
+    let chorus = || ModDelayNode::chorus(BusTopology::STEREO);
     let (driven, params) = render_chorus(chorus(), Some(0.2), FRAMES);
     let at_3hz = {
         let n = chorus();
-        n.set_rate(Hz::new(3.0));
+        assert!(set(&n, UnitParam::Rate, 3.0));
         render_chorus(n, None, FRAMES).0
     };
     let at_1hz = render_chorus(chorus(), None, FRAMES).0;
@@ -303,14 +303,14 @@ fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
 
 #[test]
 fn chorus_rate_write_moves_the_nodes_own_cell() {
-    let node = ModDelayNode::chorus(ChannelLayout::STEREO);
-    let rate_atomic = node.rate();
-    let base = rate_atomic.load(Ordering::Acquire);
+    let node = ModDelayNode::chorus(BusTopology::STEREO);
+    let cell = node.param_set().cell(UnitParam::Rate).expect("addressed");
+    let base = cell.load(Ordering::Acquire);
     assert!(
         set(&node, UnitParam::Rate, base + 2.0),
         "chorus rate is addressed"
     );
-    assert_eq!(rate_atomic.load(Ordering::Acquire), base + 2.0);
+    assert_eq!(cell.load(Ordering::Acquire), base + 2.0);
 
     // A param it doesn't expose has no address.
     assert!(!addresses(&node, UnitParam::Cutoff));
@@ -633,9 +633,9 @@ fn a_chorus_driven_past_its_depth_and_rate_gets_the_setters_clamps() {
         })
         .collect();
     let chorus = |depth: f32, rate: f32| {
-        let n = ModDelayNode::chorus(ChannelLayout::MONO);
-        n.set_depth(tutti_types::Seconds::from_f32(depth));
-        n.set_rate(Hz::new(rate));
+        let n = ModDelayNode::chorus(BusTopology::MONO);
+        assert!(set(&n, UnitParam::Depth, depth));
+        assert!(set(&n, UnitParam::Rate, rate));
         n
     };
     let close = |a: &[f32], b: &[f32], what: &str| {

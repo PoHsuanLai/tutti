@@ -90,7 +90,7 @@ impl Default for DelayControls {
 }
 
 /// `x` if it is finite, else `default`.
-fn finite_or(x: f32, default: f32) -> f32 {
+pub(crate) fn finite_or(x: f32, default: f32) -> f32 {
     if x.is_finite() { x } else { default }
 }
 
@@ -279,7 +279,7 @@ impl DelayMember {
     }
 
     /// The trips an echo makes before it is `floor` under the first one, at gain `q`.
-    fn trips(q: f64, floor: Db) -> f64 {
+    pub(crate) fn trips(q: f64, floor: Db) -> f64 {
         if q <= 0.0 {
             return 0.0;
         }
@@ -291,7 +291,7 @@ impl DelayMember {
 /// How long the echoes of a delay of `frames` frames ring: `1 + trips` periods of the
 /// delay and its interpolator's spread (the echo `k` is spread over `k + 1` frames at
 /// most; two per trip errs long), in seconds.
-fn ring_seconds(frames: usize, trips: f64, rate: SampleRate) -> Seconds {
+pub(crate) fn ring_seconds(frames: usize, trips: f64, rate: SampleRate) -> Seconds {
     Seconds((1.0 + trips) * (frames as f64 + 2.0) / rate.get())
 }
 

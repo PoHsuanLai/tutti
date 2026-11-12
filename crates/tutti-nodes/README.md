@@ -31,8 +31,9 @@ node without a lock.
   `Cutoff` per crossover (27 ports at 4 bands), and a `Bypass` and `Solo`
   toggle per band (`>= 0.5` is on, as every toggle; cells without a port). The
   per-band gain reduction meters are readings on `MultibandControls`.
-- **Modulation effects** — `ModDelayNode` (chorus and flanger are its two
-  `ModDelayConfig` presets) and `PhaserNode`, both any width.
+- **Modulation effects** — `ModDelayNode` (chorus and flanger are
+  its two `Sweep` presets, over `tutti_dsp::ModDelayFamily`; the General MIDI chorus a third,
+  with no feedback and a finite tail) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
   adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Waveform`, the wave a

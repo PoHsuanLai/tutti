@@ -26,6 +26,12 @@ serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "tutti-types/serde"]
 # wire between `tutti-plugin-probe` and the host that spawned it.
 probe-wire = ["serde", "dep:postcard"]
 
+# The mapping contract, `tutti_plugin_types::contract` (doc 029 section 6.1): the
+# laws a `ParamMapping` is held to, as `mapping_contract!`. Test support, so off
+# by default: this crate's own tests turn it on through the self dev-dependency
+# below, and a format host turns it on in its dev-dependency on this crate.
+contract = []
+
 # `FakePlugin`: a plugin that records every call, for testing what drives one. A
 # consumer's dev-dependency; nothing ships it.
 test-support = []
@@ -51,6 +57,8 @@ postcard = { version = "1.1.3", default-features = false, features = ["use-std"]
 thiserror.workspace = true
 
 [dev-dependencies]
+# Turns `contract` on for this crate's own tests (the pattern `tutti-dsp` uses).
+tutti-plugin-types = { path = ".", features = ["contract"] }
 # The no-alloc gates on the point storage (`PointBuf`, `ParameterChanges`).
 assert_no_alloc = { version = "1", default-features = false }
 # Wire-format round-trip tests for the serde-gated metadata types.

@@ -6,9 +6,9 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo, PluginClass, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, Preset, PresetId, RenderMode, Request, RescanScope,
-    Samples, Vst3SubCategories, WindowHandle,
+    LoadedPlugin, Normalized, ParamEdit, ParamId, ParamMapping, ParameterInfo, PluginClass,
+    PluginDescriptor, PluginError, PluginResult, PluginTail, Preset, PresetId, RenderMode, Request,
+    RescanScope, Samples, Vst3SubCategories, WindowHandle,
 };
 
 use crate::error::Vst3Error;
@@ -274,31 +274,22 @@ impl Control for Vst3Loaded {
         }
     }
 
-    /// The controller's own `normalizedParamToPlain`, whatever shape it has.
-    /// `None` for an id the plugin does not list, with no controller, or for a
-    /// map that answers a non-finite value.
+    /// The controller's own `normalizedParamToPlain`, whatever shape it has
+    /// ([`ControllerMapping`](crate::ControllerMapping)). `None` for an id the plugin does not list or with
+    /// no controller.
     fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
-        self.parameter_info(main, id)?;
-        self.plugin
-            .normalized_to_plain(main, id.get(), value.get())
-            .filter(|plain| plain.is_finite())
+        Some(self.mapping(main, id)?.plain(value))
     }
 
-    /// The controller's own `plainParamToNormalized`, clamped onto `0..=1`
-    /// (the SDK does not bound it).
+    /// The controller's own `plainParamToNormalized`, clamped onto `0..=1` (the
+    /// SDK does not bound it).
     fn parameter_normalized(
         &self,
         main: &MainThread,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
-        if !plain.is_finite() {
-            return None;
-        }
-        self.parameter_info(main, id)?;
-        self.plugin
-            .plain_to_normalized(main, id.get(), plain)
-            .map(Normalized::clamped)
+        Some(self.mapping(main, id)?.normalized(plain))
     }
 
     /// The plugin's own display string for `value`: the value is a *parameter*

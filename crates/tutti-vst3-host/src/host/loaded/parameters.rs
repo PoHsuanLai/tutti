@@ -1,5 +1,6 @@
 //! The parameter tree and the controller's optional interfaces: note expression, keyswitches, remaps, representations.
 
+use super::super::mapping::ControllerMapping;
 use super::*;
 use crate::types::{PlainRange, ProcessContextRequirements, UnitId};
 use tutti_plugin_types::AutomationMode;
@@ -34,6 +35,22 @@ impl Vst3Loaded {
         (0..self.parameter_count(main))
             .filter_map(|i| self.plugin.parameter_info(main, i))
             .find(|info| info.id() == id.get())
+    }
+
+    /// The plugin's own conversion for the parameter `id`, borrowing the
+    /// controller for the calls it makes. `None` for an id the plugin does not
+    /// list, or with no controller.
+    pub fn mapping<'a>(
+        &'a self,
+        main: &'a MainThread,
+        id: ParamId,
+    ) -> Option<ControllerMapping<'a>> {
+        self.parameter_info(main, id)?;
+        Some(ControllerMapping {
+            plugin: &self.plugin,
+            main,
+            id: id.get(),
+        })
     }
 
     /// The descriptor at list position `index`, for the walks that enumerate.

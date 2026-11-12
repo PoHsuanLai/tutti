@@ -7,6 +7,7 @@ mod active;
 // a new file under tests/ needs an entry here or it will not run.
 mod class_choice;
 mod integration_tests;
+mod param_mapping;
 mod vst3_event_lists;
 mod vst3_ffi_plugin;
 mod vst3_midi_groups;

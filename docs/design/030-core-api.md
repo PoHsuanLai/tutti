@@ -279,12 +279,23 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
    - T1: an undeclared range is refused when the route is made;
    - T7: checked `Law` parameters;
    - C1: no assumed 44.1 kHz.
-2. **Graph surface 1** (doc 013): typed `Key<N>`, `OutPort`/`InPort`, one
-   wiring vocabulary, no `Silence`, **declicked wiring (§4)**, T2, T3, N2, N3,
-   S7. The plugins session's view (doc 029 step 2) builds on this branch.
+2. **Graph surface 1** (doc 013), in four PRs. The plugins session's view
+   (doc 029 step 2) builds on 2a and takes 2c's `ParamRef`.
+   - 2a (#639, built): typed `Key<N>`, `OutPort`/`InPort`, one wiring
+     vocabulary, no `Silence`.
+   - 2b (#644, built): declicked wiring (§4).
+   - 2c (#648, built): event ports (`key.events_out()`, the `Event` wire;
+     `set_event_sources` and `EventSource` deleted; event input 0 is the main
+     one, where a chase delivers) and typed params (T2, T3, N2). N3 is partial:
+     `Params(node)` is the way in, but Rust cannot refuse `ForkByClone(param
+     node)` by type. `Take::record` and `Trajectory::with_range` are not typed yet.
+   - 2d: removal (S7).
 3. **Node authoring:** N1, N4.
-4. **Modulation:** T1's typed range, T4, T5, T9.
+4. **Modulation:** T4, T5, T9 (T1's typed range landed in 2c).
 5. **Graph surface 2** (doc 013): facets, plumbing, the failure rule; S8.
+   Then the deferred chase injection: preallocate the inject capacity of each
+   chasing unit, so that a chase whose takeover is delayed by a fade is delivered
+   when the fade ends (`end_fades`), not dropped.
 6. **Playhead:** R2.
 7. **Device:** S1 (`add_input`), S2, S6, `Device::latency`, typed event
    errors.
@@ -293,8 +304,8 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
 10. **Codec and export:** C2, C3, E1, E2, then C4.
 11. **Tempo and names:** T6, T8, T10.
 12. **Instruments:** S4, with the MIDI session's keys handle.
-13. **Test leftovers:** replace `tutti-nodes`' `width_generic_golden.rs`
-    with analytic properties per node, then delete it.
+13. **Test leftovers** (built, #641 by the DSP session): `tutti-nodes`'
+    `width_generic_golden.rs` replaced by analytic properties per node.
 
 After the lane, the older plan items resume: export features (plan 24),
 correctness odds (plan 35), structure passes (plans 43 to 49), the SAFETY

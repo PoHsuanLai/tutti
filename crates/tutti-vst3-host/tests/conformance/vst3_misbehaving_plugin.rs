@@ -633,59 +633,21 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
 
 // ── setupProcessing refusal ──────────────────────────────────────────────────
 
-/// `setupProcessing` returning `kResultFalse` is tolerated by design.
-///
-/// Unlike `setActive`, a non-OK result here is common in plugins that only
-/// support certain rates or block sizes, and the host deliberately proceeds.
-/// This test pins that as a *decision* rather than an accident: if someone later
-/// tightens `apply_process_setup` the way `set_active` was tightened, this fails
-/// and they have to justify it.
+/// `setupProcessing` returning `kResultFalse` is a failed activation: the
+/// processor is not set up, so `activateBus`, `setActive` and `process` do not
+/// follow (`IAudioProcessor::setupProcessing`, the portal's Audio Processor
+/// Call Sequence).
 #[test]
-fn a_refused_setup_is_tolerated_by_design() {
+fn a_refused_setup_fails_the_activation_at_the_setup_stage() {
     let path = probe_path();
-
-    // This test asserts that activation *succeeds*, which is also what happens
-    // when the misbehaviour never fires — so on its own it cannot tell the two
-    // apart. `setActive` under SETUP_FAILS is the discriminator: the probe
-    // refuses `setupProcessing` only, so a host that (wrongly) aborted on it
-    // would fail here, and a probe that ignored the switch would never have
-    // refused anything. Pinning the *sibling* misbehaviour is what keeps this
-    // honest, since a refused setup leaves no directly observable trace.
-    {
-        let _m = Misbehaviour::set(misbehave::SET_ACTIVE_FAILS);
-        let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
-        assert!(
-            loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK).is_err(),
-            "the misbehaviour switch is not reaching the plugin, so this test's \
-             real subject (a refused setupProcessing) never happens either"
-        );
-    }
-
     let _m = Misbehaviour::set(misbehave::SETUP_FAILS);
     let loaded = Vst3Loaded::load(&main_thread(), &path, LoadOptions::new()).expect("load");
-    let activated = loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK);
-
-    assert!(
-        activated.is_ok(),
-        "the host now rejects a kResultFalse from setupProcessing. That may be \
-         correct, but it is a behaviour change: plugins that only support some \
-         sample rates report it this way, and they used to remain usable. \
-         Update this test deliberately if the new behaviour is intended. Got: \
-         {:?}",
-        activated.err()
-    );
-
-    // And the plugin must actually render, not merely activate.
-    let mut inst = activated.unwrap();
-    for _ in 0..4 {
-        let out = drive_block_with(&mut inst, INPUT_LEVEL);
-        assert!(out.iter().flatten().all(|s| s.is_finite()));
-        assert!(
-            out.iter().flatten().any(|s| *s != 0.0),
-            "activation survived a refused setupProcessing but the plugin \
-             renders silence — tolerating the refusal left it non-functional"
-        );
-    }
+    let Err((_, error)) = loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK) else {
+        panic!("a kResultFalse setup is a failed activation");
+    };
+    // The failure names the setup step, which tells it from a refused `setActive`.
+    let text = format!("{error:?}");
+    assert!(text.contains("Setup"), "got {text}");
 }
 
 // ── The guard itself ─────────────────────────────────────────────────────────

@@ -58,6 +58,10 @@ pub struct Snapshot {
     pub(crate) beat: Beat,
     /// The loop region, when looping.
     pub(crate) looping: Option<(Beat, Beat)>,
+    /// The loop's bounds in seconds from song start, read from the tempo map
+    /// ([`settle`](Snapshot::settle)); `None` until a map has been read or
+    /// when not looping.
+    pub(crate) loop_seconds: Option<(tutti_types::Seconds, tutti_types::Seconds)>,
     /// The free-running sample counter: frames rendered, not musical time, so
     /// it keeps counting while the transport is stopped and never jumps on a
     /// seek or a wrap. An `i64` because that is what every ABI carries.
@@ -398,6 +402,12 @@ impl Snapshot {
     /// A beat that is not finite keeps the transport's tempo.
     pub fn settle(&mut self, map: &TempoMap, cursor: &mut Cursor) -> Beat {
         self.tempo_inc = 0.0;
+        self.loop_seconds = self.looping.map(|(a, b)| {
+            (
+                map.seconds_at_with(a, cursor),
+                map.seconds_at_with(b, cursor),
+            )
+        });
         let mut beat = self.beat;
         if !beat.get().is_finite() {
             return beat;
@@ -459,6 +469,7 @@ impl Snapshot {
             tempo_inc: 0.0,
             beat: t.beat(),
             looping: t.looping.map(|l| (l.start, l.end)),
+            loop_seconds: None,
             continuous,
             system_time_ns: block_ns
                 .map(|ns| HostClock::at(ns, offset.index(), cx.env.sample_rate)),
@@ -540,6 +551,9 @@ pub fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
 
     if let Some((start, end)) = s.looping {
         info = info.with_loop(true, start.get(), end.get());
+        if let Some((a, b)) = s.loop_seconds {
+            info = info.with_loop_seconds(a, b);
+        }
     }
     info
 }
@@ -1122,6 +1136,36 @@ mod tests {
         assert_eq!(crossing.timing.tempo_inc, 0.0);
         let inside = told(&ramp_map(), looped(3.0), 64);
         assert!((inside.timing.tempo_inc - RAMP_SLOPE).abs() < 1e-9);
+    }
+
+    /// The loop's bounds reach the plugin in seconds, read from the tempo map
+    /// (CLAP's `loop_start_seconds`, `loop_end_seconds`). Over `step_map`
+    /// (120 BPM, 90 from beat 4) a loop over beats 2..8 starts at 2 beats of
+    /// 0.5 s, 1 s, and ends after the 2 s of beats 0..4 and 4 beats of
+    /// 2/3 s, 2 + 8/3 s; a transport that is not looping carries none.
+    #[test]
+    fn a_loop_is_told_its_bounds_in_seconds_from_the_tempo_map() {
+        let looped = Transport::new(
+            true,
+            Bpm::of(120.0),
+            Beat(3.0),
+            Some(LoopRange {
+                start: Beat(2.0),
+                end: Beat(8.0),
+            }),
+        );
+        let got = told(&step_map(), looped, 64);
+        let (start, end) = got.loop_region.seconds.expect("a looping transport");
+        assert!((start.get() - 1.0).abs() < 1e-9, "start {}", start.get());
+        assert!(
+            (end.get() - (2.0 + 8.0 / 3.0)).abs() < 1e-9,
+            "end {}",
+            end.get()
+        );
+        assert_eq!(
+            told(&step_map(), rolling(3.0), 64).loop_region.seconds,
+            None
+        );
     }
 
     /// A constant map is its tempo and no slope.

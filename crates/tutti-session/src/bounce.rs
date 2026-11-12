@@ -30,7 +30,7 @@
 //! pipeline checks (between the session's steps, every block, between its
 //! stages, and before each file is finalized and put in place; or before it
 //! starts), and [`progress`](BounceHandle::progress) reads its stage and
-//! fraction, [`Stage::Preparing`] included (the session's steps, in the band
+//! fraction, [`Stage::Preparing`](tutti_export::Stage::Preparing) included (the session's steps, in the band
 //! the pipeline leaves it). A cancelled job returns [`BounceError::Cancelled`]
 //! from [`Session::finish_bounce`], drops its token when the render has
 //! stopped, and leaves a file target's path as it was.
@@ -1290,7 +1290,7 @@ impl Figures {
     }
 }
 
-/// How many steps the session reports as [`Stage::Preparing`]: the gather
+/// How many steps the session reports as [`Stage::Preparing`](tutti_export::Stage::Preparing): the gather
 /// (done when the job is made), the fork's build, the edit, the commit and
 /// assembly.
 const PREPARING_STEPS: u32 = 4;

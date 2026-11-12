@@ -229,10 +229,15 @@ pub struct LoopRegion {
     pub start_beats: f64,
     /// Cycle end in beats (clap `loop_end_beats`).
     pub end_beats: f64,
+    /// The cycle's `(start, end)` in seconds from song start (clap
+    /// `loop_start_seconds`, `loop_end_seconds`), read from the project's tempo
+    /// map at the beats above. [`None`] when the producer had no map to read:
+    /// a consumer then claims no seconds timeline for the loop.
+    pub seconds: Option<(Seconds, Seconds)>,
 }
 
 /// Where the current bar starts, and its number.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarInfo {
     /// Position of the current bar in quarter notes (vst2/vst3
@@ -241,8 +246,21 @@ pub struct BarInfo {
     pub position_quarters: f64,
     /// Position of the current bar in beats (clap `bar_start`).
     pub start_beats: f64,
-    /// 1-based bar number (clap `bar_number`).
+    /// The bar's number, **1-based** like every [`BarNumber`]. CLAP's
+    /// `bar_number` is 0-based, so the CLAP host sends
+    /// [`index`](BarNumber::index).
     pub number: BarNumber,
+}
+
+impl Default for BarInfo {
+    /// The first bar, which starts at position 0.
+    fn default() -> Self {
+        Self {
+            position_quarters: 0.0,
+            start_beats: 0.0,
+            number: BarNumber::FIRST,
+        }
+    }
 }
 
 impl Default for TransportInfo {
@@ -469,6 +487,13 @@ impl TransportInfo {
         self.loop_region.end_beats = end_beats;
         self.loop_region.start_quarters = start_beats;
         self.loop_region.end_quarters = end_beats;
+        self
+    }
+
+    /// Sets the loop region's seconds, `(start, end)` from song start (builder).
+    #[must_use]
+    pub fn with_loop_seconds(mut self, start: Seconds, end: Seconds) -> Self {
+        self.loop_region.seconds = Some((start, end));
         self
     }
 }

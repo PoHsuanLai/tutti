@@ -24,3 +24,6 @@ mod params_at_insert;
 // route to a node's second param of one kind.
 #[cfg(feature = "modulation")]
 mod indexed_params;
+// A route's range is a range of the target's unit; a backwards one is refused.
+#[cfg(feature = "modulation")]
+mod ranges;

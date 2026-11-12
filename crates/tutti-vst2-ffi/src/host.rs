@@ -383,18 +383,23 @@ pub struct MidiChannelCounts {
 ///   caller is on it: `effOpen`, `effMainsChanged`, the sample rate and block size, state
 ///   (`effGetChunk`, `effSetChunk`), programs, bypass, the editor, the MIDI program
 ///   queries, `effCanDo`, `effGetTailSize`. Nothing is checked at the call.
-/// - `getParameter` and `setParameter` are the only dispatcher-free entries VST2 lets any thread
-///   call beside `process`: they take no token and no gate.
-/// - **Named exceptions: token-free, serialised.** `Vst2Loaded`'s parameter reads (and so the
-///   in-process node's control surface) ask for a parameter's name, label and display, its properties, whether it can be
-///   automated, and parses a string into it (`get_parameter_name`, `get_parameter_label`,
-///   `get_parameter_text`, `parameter_properties`, `can_be_automated`, `string_to_parameter`),
-///   off the main thread, behind its own lock.
-///   VST2 does not allow these beside `process` (they are dispatcher calls), so each holds
-///   the audio gate for the call, as the exclusive calls do: it waits for a render in flight
-///   and a render that starts meanwhile is refused. They take no token only because the
-///   backend has none; narrowing them to the main thread waits for the session to give it a
-///   route there.
+/// - `getParameter` and `setParameter` are the dispatcher-free entries any thread may call
+///   beside `process`: they take no token, no gate and no lock.
+/// - **Named exceptions: token-free, beside a render.** `Vst2Loaded`'s parameter reads (and so
+///   the in-process node's control surface) ask for a parameter's name, label and display,
+///   its properties, whether it can be automated, and parses a string into it
+///   (`get_parameter_name`, `get_parameter_label`, `get_parameter_text`,
+///   `parameter_properties`, `can_be_automated`, `string_to_parameter`), off the main thread.
+///   They are dispatcher calls, and they hold only the **dispatcher lock**, which the audio
+///   thread never takes: they are serialised with each other, with the exclusive calls and
+///   with the close, and a render that starts meanwhile runs. The 2.4 headers give no
+///   exclusion between these opcodes and `process` (authority 3), and a host that serialised
+///   them would turn a UI read of a parameter's text into a silent block and lost MIDI;
+///   JUCE does not (authority 2). They take no token only because the backend has none;
+///   narrowing them to the main thread waits for the session to give it a route there.
+/// - The **exclusive** calls (`effSetSampleRate`, `effSetBlockSize`, `effSetProcessPrecision`,
+///   `effMainsChanged`) hold the dispatcher lock and the audio gate: they wait for a render in
+///   flight and a render that starts meanwhile is refused.
 /// - Plain `AEffect` fields (the pin counts, `initialDelay`, `numPrograms`) are read
 ///   without a token; they are not calls into the plugin.
 ///
@@ -410,7 +415,8 @@ pub struct MidiChannelCounts {
 ///
 /// The drop on the right thread is: close the editor if open, `effStopProcess` if
 /// processing, `effMainsChanged(0)` if resumed, then `effClose`, in that order and under the
-/// audio gate, so an audio entry in flight finishes first and later ones are refused.
+/// dispatcher lock and the audio gate, so a parameter read and an audio entry in flight
+/// finish first and later audio entries are refused.
 ///
 /// ```compile_fail,E0061
 /// # use tutti_vst2_ffi::host::PluginInstance;
@@ -539,6 +545,14 @@ struct Core {
     /// instance's drop for the close (`lock`: it waits for the call in flight). `true`
     /// inside means the plugin is closed.
     gate: Mutex<bool>,
+    /// Serialises the dispatcher calls made off the audio thread against each other and
+    /// against the calls that must not meet a render: the parameter reads (name, label,
+    /// display, properties, `effCanBeAutomated`, `effString2Parameter`) take only this lock;
+    /// the exclusive calls and the close take it and then the [`gate`](Self::gate), in that
+    /// order. **The audio thread never takes it**, so a read of a parameter's text cannot
+    /// make a block refuse (doc 029 §6.2, V2-03). It is what JUCE's host does with its own
+    /// `lock`: dispatches are serialised among themselves and not with `process`.
+    dispatcher: Mutex<()>,
     /// The thread the instance was made on: the one the plugin is closed on, and the one a
     /// core the audio side outlives it on is freed on.
     main_thread: ThreadId,
@@ -561,6 +575,7 @@ impl Core {
             pin_refusals_logged: AtomicBool::new(false),
             processing: AtomicBool::new(false),
             gate: Mutex::new(false),
+            dispatcher: Mutex::new(()),
             main_thread,
         });
         // Warm the gate here, on the control side. On macOS (and the other platforms whose
@@ -613,7 +628,13 @@ impl Closer {
             self.core
                 .dispatch(op::EditorClose, 0, 0, ptr::null_mut(), 0.0);
         }
-        // Waits for an audio entry in flight; after this none starts.
+        // Waits for an off-main dispatcher call in flight (a parameter read), and then
+        // for an audio entry in flight; after this none starts.
+        let _dispatching = self
+            .core
+            .dispatcher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut closed = self
             .core
             .gate
@@ -1036,10 +1057,10 @@ impl PluginInstance {
     /// How many blocks have been rendered as silence because the plugin raised its pin
     /// counts past the buffer it was activated with.
     ///
-    /// **S7 stays open:** the plugin renders silence until it is re-activated, which
-    /// the host will do on `audioMasterIOChanged` (step 7 of the VST2 fix plan; today
-    /// `RESTARTS` is `NONE`). The counter is for the control side to report once; the
-    /// audio thread never logs.
+    /// The plugin renders silence until it is re-activated, which the host does on
+    /// `audioMasterIOChanged` (`RestartRules::VST2`); a plugin that grows its pins without
+    /// raising it stays silent, and this counter says so. The counter is for the control
+    /// side to report once; the audio thread never logs.
     pub fn pin_refusals(&self) -> u64 {
         self.core.pin_refusals.load(Ordering::Relaxed)
     }
@@ -1225,7 +1246,7 @@ impl PluginInstance {
         // sees it and remains valid whether or not the plugin writes.
         let mut props: MaybeUninit<api::ParameterProperties> = MaybeUninit::zeroed();
 
-        let supported = self.exclusive(|| {
+        let supported = self.concurrent(|| {
             self.dispatch(
                 plugin::OpCode::GetParamInfo,
                 index,
@@ -1542,10 +1563,15 @@ impl Dispatch for Core {
 impl Core {
     /// Send an `effSetChunk` blob (`index == 1` for a preset, `0` for the bank).
     ///
+    /// **The plugin's return value is not read.** `aeffect.h` documents `[ptr]`, `[value]` and
+    /// `[index]` for `effSetChunk` and no `[return value]` (authority 3), unlike `effGetChunk`
+    /// and `effCanDo`, which state theirs; a JUCE plugin returns 0 after loading
+    /// successfully (authority 2). The call returning is all the host can know.
+    ///
     /// The plugin gets a copy: the opcode's pointer is `void*`, and a plugin that
     /// writes through it (some do while parsing) would write into the caller's memory
     /// if it were handed `data` itself.
-    fn set_chunk(&self, index: i32, data: &[u8]) -> bool {
+    fn set_chunk(&self, index: i32, data: &[u8]) {
         let mut copy = data.to_vec();
         self.dispatch(
             plugin::OpCode::SetData,
@@ -1553,7 +1579,7 @@ impl Core {
             copy.len() as isize,
             copy.as_mut_ptr() as *mut c_void,
             0.0,
-        ) > 0
+        );
     }
 
     /// Read an `effGetChunk` blob (`index == 1` for the current preset,
@@ -2031,17 +2057,43 @@ impl PluginInstance {
     /// Runs one of the **exclusive** calls: the ones a plugin cannot take while it is
     /// processing (`effSetSampleRate`, `effSetBlockSize`, `effSetProcessPrecision`,
     /// `effMainsChanged`). They hold the audio gate for the call, so they wait for an audio
-    /// entry in flight and refuse (to silence) any that starts meanwhile: the plugin never
-    /// sees one beside an audio entry, whoever calls it. The host crate also keeps them to
+    /// entry in flight and refuse (to silence) any that starts meanwhile: the plugin
+    /// never sees one beside an audio entry, whoever calls it. The host crate also keeps them to
     /// the activation and the rejoin, where no audio handle is live, so the wait is never
-    /// taken there; the gate is what makes the serialisation true for any other caller. The
-    /// token-free dispatcher entries the in-process backend uses off the main thread (the
-    /// parameter's name, label, display and properties, `effCanBeAutomated`,
-    /// `effString2Parameter`, the off-main chunk read) take it too, for the same reason.
+    /// taken there; the gate is what makes the serialisation true for any other caller.
+    /// They take the dispatcher lock first, so they do not meet a parameter read either.
+    ///
+    /// **Why these four and not the parameter reads:** a plugin that reallocates its buffers
+    /// on a rate, a block size, a precision or a power change cannot be rendered into
+    /// meanwhile. That is the convention of the SDK's `suspend`/`resume` bracket; the header
+    /// itself states no exclusion for any opcode (authority 3, `aeffect.h` is silent).
     fn exclusive<R>(&self, call: impl FnOnce() -> R) -> R {
+        let _dispatching = self
+            .core
+            .dispatcher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _gate = self
             .core
             .gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        call()
+    }
+
+    /// Runs a dispatcher call that may run **beside a render**: it takes the dispatcher
+    /// lock, which serialises it against the other off-main dispatcher calls, the exclusive
+    /// calls and the close, and not the audio gate, so it never makes a block refuse.
+    ///
+    /// This is what a host does in practice (JUCE's `getTextForOpcode` runs from the message
+    /// thread with no lock shared with `processBlock`, authority 2); the 2.4 headers state
+    /// no exclusion between these opcodes and `process` (authority 3). A plugin whose display
+    /// text races its own `process` is the plugin's to make safe, as it is under every other
+    /// host.
+    fn concurrent<R>(&self, call: impl FnOnce() -> R) -> R {
+        let _dispatching = self
+            .core
+            .dispatcher
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         call()
@@ -2297,19 +2349,19 @@ impl PluginInstance {
         self.core.get_chunk(0 /*bank*/)
     }
 
-    /// Hand a preset chunk to the plugin, reporting whether it **accepted** it.
+    /// Hand a preset chunk to the plugin (`effSetChunk`, index 1: the current program's).
     ///
-    /// VST 2.4 has `effSetChunk` return `1` on success. `> 0`, not `== 1`, matching every
-    /// other boolean opcode in this file: shipping plugins return other positive values for
-    /// "yes", and reading those as refusal would lose presets that did load.
-    pub fn load_preset_data(&self, _main: &MainThread, data: &[u8]) -> bool {
-        self.core.set_chunk(1, data)
+    /// Nothing is reported back: the header gives the opcode no return value, so there is no
+    /// refusal to read (see `Core::set_chunk`). Set the program first
+    /// ([`change_preset`](Self::change_preset)): a program chunk is the current program's.
+    pub fn load_preset_data(&self, _main: &MainThread, data: &[u8]) {
+        self.core.set_chunk(1, data);
     }
 
-    /// Bank counterpart of [`load_preset_data`](Self::load_preset_data); same
-    /// accept/reject contract.
-    pub fn load_bank_data(&self, _main: &MainThread, data: &[u8]) -> bool {
-        self.core.set_chunk(0, data)
+    /// Bank counterpart of [`load_preset_data`](Self::load_preset_data): `effSetChunk`,
+    /// index 0.
+    pub fn load_bank_data(&self, _main: &MainThread, data: &[u8]) {
+        self.core.set_chunk(0, data);
     }
 }
 
@@ -2345,7 +2397,7 @@ impl PluginInstance {
 
     /// `effGetParamLabel`.
     pub fn get_parameter_label(&self, index: i32) -> String {
-        self.exclusive(|| {
+        self.concurrent(|| {
             self.read_string_param(
                 plugin::OpCode::GetParameterLabel,
                 index,
@@ -2358,7 +2410,7 @@ impl PluginInstance {
 
     /// `effGetParamDisplay`.
     pub fn get_parameter_text(&self, index: i32) -> String {
-        self.exclusive(|| {
+        self.concurrent(|| {
             self.read_string_param(
                 plugin::OpCode::GetParameterDisplay,
                 index,
@@ -2371,7 +2423,7 @@ impl PluginInstance {
 
     /// `effGetParamName`.
     pub fn get_parameter_name(&self, index: i32) -> String {
-        self.exclusive(|| {
+        self.concurrent(|| {
             self.read_string_param(
                 plugin::OpCode::GetParameterName,
                 index,
@@ -2384,7 +2436,7 @@ impl PluginInstance {
 
     /// `effCanBeAutomated`.
     pub fn can_be_automated(&self, index: i32) -> bool {
-        self.exclusive(|| {
+        self.concurrent(|| {
             self.dispatch(
                 plugin::OpCode::CanBeAutomated,
                 index,
@@ -2397,7 +2449,7 @@ impl PluginInstance {
 
     /// `effString2Parameter`: a setter, with no parse-only counterpart.
     pub fn string_to_parameter(&self, index: i32, text: String) -> bool {
-        self.exclusive(|| {
+        self.concurrent(|| {
             self.write_string(
                 plugin::OpCode::StringToParameter,
                 index,
@@ -3032,32 +3084,30 @@ mod tests {
         assert_eq!(ask("somethingElse"), 0);
     }
 
-    /// The answer a plugin's `effSetChunk` gives must reach the caller.
-    ///
-    /// Non-vacuous because it drives the *real* dispatch path rather than the
-    /// trait default: a synthetic `AEffect` returning a chosen value, read back
-    /// through `PluginParametersInstance::load_preset_data`, which used to
-    /// return `()` and drop that answer.
-    ///
-    /// VST 2.4 names `1` for success, but `> 0` is deliberate and asserted
-    /// below: shipping plugins return other positive values.
+    /// **A chunk reaches the plugin as the header lays `effSetChunk` out**: `[index]` is 0 for a
+    /// bank and 1 for a program, `[value]` the byte size, `[ptr]` the data. The plugin's
+    /// return value is not part of that layout (`aeffect.h` documents none), and a plugin
+    /// that returns 0 after a successful load, as a JUCE plugin does, must not be told it
+    /// failed: the call has no way to report a refusal, so none is invented.
     #[test]
-    fn the_plugins_set_chunk_answer_reaches_the_caller() {
+    fn a_chunk_reaches_the_plugin_with_its_index_and_size() {
         use crate::api::DispatcherProc;
-        use std::sync::atomic::{AtomicIsize, Ordering};
-
-        /// What the next synthetic dispatch returns.
-        static ANSWER: AtomicIsize = AtomicIsize::new(0);
+        static SEEN: Mutex<Vec<(i32, isize, Vec<u8>)>> = Mutex::new(Vec::new());
 
         extern "C" fn dispatch(
-            _effect: *mut AEffect,
-            _opcode: i32,
-            _index: i32,
-            _value: isize,
-            _ptr: *mut c_void,
-            _opt: f32,
+            _: *mut AEffect,
+            opcode: i32,
+            index: i32,
+            value: isize,
+            ptr: *mut c_void,
+            _: f32,
         ) -> isize {
-            ANSWER.load(Ordering::SeqCst)
+            if opcode == plugin::OpCode::SetData as i32 {
+                // SAFETY: the host gives `value` readable bytes at `ptr`.
+                let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, value as usize) };
+                SEEN.lock().unwrap().push((index, value, bytes.to_vec()));
+            }
+            0
         }
 
         // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
@@ -3065,77 +3115,36 @@ mod tests {
         effect.magic = VST_MAGIC;
         effect.dispatcher = Some(dispatch as DispatcherProc);
         let (params, main) = instance_over(&mut effect as *mut AEffect);
-        let set = |v: isize| ANSWER.store(v, Ordering::SeqCst);
-
-        // 0 — the plugin refused. This is the answer the discarded return hid.
-        set(0);
-        assert!(
-            !params.load_preset_data(&main, b"state"),
-            "effSetChunk returned 0 (refused) but the caller was told success — \
-             this is the bug: a rejected preset restores as if it had loaded"
+        params.load_preset_data(&main, b"program");
+        params.load_bank_data(&main, b"the bank");
+        assert_eq!(
+            *SEEN.lock().unwrap(),
+            [(1, 7, b"program".to_vec()), (0, 8, b"the bank".to_vec())]
         );
-
-        // 1 — the documented success value.
-        set(1);
-        assert!(params.load_preset_data(&main, b"state"));
-
-        // Truthy-but-not-1 is success, matching every other boolean opcode
-        // here. `== 1` would report a loaded preset as refused.
-        set(2);
-        assert!(
-            params.load_preset_data(&main, b"state"),
-            "a positive non-1 return must read as success, as it does for \
-             can_be_automated / string_to_parameter"
-        );
-
-        // Negative is a refusal, never a truthy non-zero.
-        set(-1);
-        assert!(
-            !params.load_preset_data(&main, b"state"),
-            "a negative return must never be read as success"
-        );
-
-        // The bank variant shares the contract.
-        set(0);
-        assert!(!params.load_bank_data(&main, b"state"));
-        set(1);
-        assert!(params.load_bank_data(&main, b"state"));
     }
 
-    /// A plugin's chunk **refusal** must also be representable through the
-    /// trait, so plugin implementations can express one while the default stays
-    /// "accepted" for plugins that simply store what they are given.
+    /// A plugin's chunk-**save** failure must be representable through the trait
+    /// (`effSetChunk` has no return value to carry a refusal on; `effGetChunk` has the length).
     #[test]
     fn a_chunk_refusal_is_representable() {
         use crate::plugin::PluginParameters;
 
         struct RefusingParams;
         impl PluginParameters for RefusingParams {
-            fn load_preset_data(&self, _data: &[u8]) -> bool {
-                false
-            }
             fn try_get_preset_data(&self) -> Result<Vec<u8>, ChunkError> {
                 Err(ChunkError::Failed(-1))
             }
         }
 
         assert!(
-            !RefusingParams.load_preset_data(b"anything"),
-            "a plugin must be able to reject a chunk"
-        );
-        assert!(
             RefusingParams.try_get_preset_data().is_err(),
             "a plugin must be able to report a failed chunk save"
         );
 
-        // The default must still succeed, so neither assertion above is
+        // The default must still succeed, so the assertion above is not
         // satisfied by a blanket failure.
         struct AcceptingParams;
         impl PluginParameters for AcceptingParams {}
-        assert!(
-            AcceptingParams.load_preset_data(b"anything"),
-            "the default must accept, so existing plugins are unaffected"
-        );
         assert_eq!(AcceptingParams.try_get_preset_data(), Ok(Vec::new()));
     }
 
@@ -3981,24 +3990,21 @@ mod tests {
         );
     }
 
-    /// **A token-free dispatcher entry is serialised with `process`, both ways**
-    /// (`get_parameter_name` stands for the named exceptions: name, label, display,
-    /// properties, `effCanBeAutomated`, `effString2Parameter`, the off-main chunk read). VST2
-    /// lets only `getParameter` and `setParameter` run beside a render; these are dispatcher
-    /// calls, so each waits for a render in flight and a render that starts meanwhile is
-    /// refused.
+    /// **A token-free dispatcher read runs beside `process`, both ways** (`get_parameter_name`
+    /// stands for the named exceptions: name, label, display, properties, `effCanBeAutomated`,
+    /// `effString2Parameter`). The 2.4 headers state no exclusion between these opcodes and a
+    /// render, so a UI read of a parameter's text must neither wait for a block nor make one
+    /// refuse: a block rendered as silence, with its MIDI and automation dropped, because the
+    /// UI asked for a string is the defect (doc 029 §6.2, V2-03).
     #[cfg(unix)]
     #[test]
-    fn a_parameter_name_and_process_are_serialised() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use std::time::Duration;
+    fn a_parameter_name_and_process_run_beside_each_other() {
+        use std::sync::atomic::{AtomicBool, Ordering};
         static IN_PROCESS: AtomicBool = AtomicBool::new(false);
         static RELEASE_PROCESS: AtomicBool = AtomicBool::new(false);
         static NAME_DISPATCHED: AtomicBool = AtomicBool::new(false);
         static IN_NAME: AtomicBool = AtomicBool::new(false);
         static RELEASE_NAME: AtomicBool = AtomicBool::new(false);
-        static PROCESSES: AtomicUsize = AtomicUsize::new(0);
-        static FINISHED_PROCESSES: AtomicUsize = AtomicUsize::new(0);
 
         extern "C" fn dispatch(
             _: *mut AEffect,
@@ -4009,11 +4015,6 @@ mod tests {
             _: f32,
         ) -> isize {
             if opcode == plugin::OpCode::GetParameterName as i32 {
-                assert_eq!(
-                    PROCESSES.load(Ordering::SeqCst),
-                    FINISHED_PROCESSES.load(Ordering::SeqCst),
-                    "a dispatcher call began inside an audio entry"
-                );
                 NAME_DISPATCHED.store(true, Ordering::SeqCst);
                 IN_NAME.store(true, Ordering::SeqCst);
                 while !RELEASE_NAME.load(Ordering::SeqCst) {
@@ -4029,7 +4030,6 @@ mod tests {
             outputs: *mut *mut f32,
             n: i32,
         ) {
-            PROCESSES.fetch_add(1, Ordering::SeqCst);
             IN_PROCESS.store(true, Ordering::SeqCst);
             while !RELEASE_PROCESS.load(Ordering::SeqCst) {
                 std::thread::yield_now();
@@ -4037,7 +4037,6 @@ mod tests {
             // SAFETY: the test's buffer has one output channel of `n` samples.
             unsafe { std::slice::from_raw_parts_mut(*outputs, n as usize) }.fill(1.0);
             IN_PROCESS.store(false, Ordering::SeqCst);
-            FINISHED_PROCESSES.fetch_add(1, Ordering::SeqCst);
         }
 
         let effect = fake_effect(dispatch);
@@ -4057,56 +4056,45 @@ mod tests {
             out
         };
 
-        // Part one: a render is in flight; the name call waits for it.
-        let (handle_tx, handle_rx) = std::sync::mpsc::channel();
-        let renderer = std::thread::spawn(move || {
-            let out = block(&mut handle);
-            handle_tx.send(handle).unwrap();
-            out
-        });
-        while !IN_PROCESS.load(Ordering::SeqCst) {
-            std::thread::yield_now();
-        }
-        let watcher = std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_millis(150));
-            let early = NAME_DISPATCHED.load(Ordering::SeqCst);
-            RELEASE_PROCESS.store(true, Ordering::SeqCst);
-            early
-        });
-        RELEASE_NAME.store(true, Ordering::SeqCst);
-        let _ = instance.get_parameter_name(0);
-        assert!(
-            !watcher.join().unwrap(),
-            "the dispatcher call ran while a render was in flight"
-        );
-        assert!(NAME_DISPATCHED.load(Ordering::SeqCst), "and it ran after");
-        assert_eq!(renderer.join().unwrap()[0][0], 1.0);
-        let mut handle = handle_rx.recv().unwrap();
-
-        // Part two: a render starts while the name call runs. It is refused.
-        NAME_DISPATCHED.store(false, Ordering::SeqCst);
-        RELEASE_NAME.store(false, Ordering::SeqCst);
+        // Part one: a name call is in flight (inside the plugin, on this thread); a block
+        // starts on another and renders.
         RELEASE_PROCESS.store(true, Ordering::SeqCst);
-        let before = PROCESSES.load(Ordering::SeqCst);
-        let during = std::thread::spawn(move || {
-            while !IN_NAME.load(Ordering::SeqCst) {
+        let (name, out) = std::thread::scope(|scope| {
+            let renderer = scope.spawn(|| {
+                while !IN_NAME.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+                let out = block(&mut handle);
+                RELEASE_NAME.store(true, Ordering::SeqCst);
+                out
+            });
+            let name = instance.get_parameter_name(0);
+            (name, renderer.join().unwrap())
+        });
+        assert_eq!(name, "");
+        assert_eq!(
+            out[0][0], 1.0,
+            "a block refused (silence) because a parameter name was being read"
+        );
+
+        // Part two: a block is in flight (inside the plugin); a name call is dispatched and
+        // returns without waiting for it.
+        NAME_DISPATCHED.store(false, Ordering::SeqCst);
+        RELEASE_PROCESS.store(false, Ordering::SeqCst);
+        let out = std::thread::scope(|scope| {
+            let renderer = scope.spawn(|| block(&mut handle));
+            while !IN_PROCESS.load(Ordering::SeqCst) {
                 std::thread::yield_now();
             }
-            let out = block(&mut handle);
-            RELEASE_NAME.store(true, Ordering::SeqCst);
-            out
+            let _ = instance.get_parameter_name(0);
+            assert!(
+                NAME_DISPATCHED.load(Ordering::SeqCst) && IN_PROCESS.load(Ordering::SeqCst),
+                "the name call waited for the block in flight"
+            );
+            RELEASE_PROCESS.store(true, Ordering::SeqCst);
+            renderer.join().unwrap()
         });
-        let _ = instance.get_parameter_name(0);
-        let out = during.join().unwrap();
-        assert_eq!(
-            PROCESSES.load(Ordering::SeqCst),
-            before,
-            "a render reached the plugin during a dispatcher call"
-        );
-        assert!(
-            out[0].iter().all(|s| *s == 0.0),
-            "and was refused to silence"
-        );
+        assert_eq!(out[0][0], 1.0);
     }
 
     /// **A plugin that raises its pin counts after activation is not rendered into
@@ -4527,8 +4515,8 @@ mod tests {
         }
         let (params, main) = instance_over(fake_effect(dispatch));
         let data = vec![1u8, 2, 3, 4];
-        assert!(params.load_preset_data(&main, &data));
-        assert!(params.load_bank_data(&main, &data));
+        params.load_preset_data(&main, &data);
+        params.load_bank_data(&main, &data);
         assert_eq!(
             data,
             vec![1, 2, 3, 4],

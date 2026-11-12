@@ -88,9 +88,9 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
     }
 
     // An LFO on the cutoff: 1 Hz across 200 Hz to 3 kHz.
-    let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
+    let cutoff = filter.cutoff();
     let mut m = s.mods();
-    m.range(cutoff, 200.0, 3_000.0);
+    m.range(cutoff, Hz(200.0)..Hz(3_000.0))?;
     let wobble = m.lfo(Lfo::sine().hz(Hz(1.0)));
     m.route(wobble, cutoff, Depth(0.5))?;
 

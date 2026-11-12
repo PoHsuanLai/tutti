@@ -259,9 +259,9 @@ pub trait Processor: Send {
     ///
     /// Per format: CLAP `plugin.reset`; VST3 `setProcessing(false)`, started
     /// again in the next block (the SDK calls it a way to reset buffers, a
-    /// request a plugin may ignore); VST2 has no opcode that clears state, so
-    /// only the host's own SysEx reassembly is dropped. Every format drops a
-    /// SysEx open across the reset (design 016 §6.2).
+    /// request a plugin may ignore); VST2 `effStopProcess`, started again in the next
+    /// block (likewise a request). Every format drops a SysEx open across the reset
+    /// (design 016 §6.2).
     fn reset(&mut self);
 
     /// The frames this Processor renders in, if it renders in fixed chunks

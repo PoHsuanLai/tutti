@@ -5,6 +5,7 @@
 //! happens on the `process` path, not here.
 
 use super::ClapLoaded;
+use crate::events::ParamBounds;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{ClapParamFlags, ClapParamInfo};
 #[cfg(feature = "clap-extras")]
@@ -158,6 +159,26 @@ impl ClapLoaded {
             let info = self.parameter_info(main, i)?;
             if info.id == id {
                 return Some((info.min_value, info.max_value));
+            }
+        }
+        None
+    }
+
+    /// The declared bounds and steppedness for one parameter: what a
+    /// normalized value is denormalized against. [`None`] as for
+    /// [`parameter_range`](Self::parameter_range).
+    pub(crate) fn parameter_bounds(&self, main: &MainThread, id: u32) -> Option<ParamBounds> {
+        let count = self.parameter_count(main) as u32;
+        for i in 0..count {
+            let info = self.parameter_info(main, i)?;
+            if info.id == id {
+                return Some(ParamBounds {
+                    id,
+                    min: info.min_value,
+                    max: info.max_value,
+                    stepped: info.flags.contains(ClapParamFlags::STEPPED),
+                    read_only: info.flags.contains(ClapParamFlags::READONLY),
+                });
             }
         }
         None

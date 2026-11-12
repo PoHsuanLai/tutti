@@ -24,7 +24,7 @@ use tutti_types::MaxBlock;
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_midi_runtime::{MidiIngestNode, TimedMidiEvent};
-use tutti_session::{EventSource, MidiRouteRule, Session};
+use tutti_session::{EventInPort, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::MotionEvent;
@@ -203,7 +203,8 @@ fn routed_level(channel: MidiChannel) -> f32 {
     let (inlet, mut device) = s.graph().open_event_inlet(64);
     let (input, _) = s.graph().insert(MidiIngestNode::new(1));
     s.graph()
-        .set_event_sources(input, 0, &[EventSource::new(inlet, 0)]);
+        .connect(inlet.events_out(), EventInPort::new(input, 0))
+        .unwrap();
     let rule = MidiRouteRule::for_channel(channel).to(synth);
     s.midi()
         .set_routes(input, [&rule], None, Some)

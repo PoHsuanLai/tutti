@@ -99,11 +99,11 @@ fn main() -> Result<(), tutti::Error> {
         .set_sources(Root::output(0), [OutPort::new(filter, 0)])
         .unwrap();
 
-    let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
-    let resonance = ParamRef::unit(filter, UnitParam::Q);
+    let cutoff = filter.cutoff();
+    let resonance = filter.q();
     let mut m = s.mods();
-    m.range(cutoff, 100.0, 4_000.0);
-    m.range(resonance, 0.5, 8.0);
+    m.range(cutoff, Hz(100.0)..Hz(4_000.0))?;
+    m.range(resonance, Q(0.5)..Q(8.0))?;
     let wobble = m.lfo(Lfo::sine().hz(Hz(2.0)));
     let sweep = m.route(wobble, cutoff, Depth(0.2))?;
     let hits = m.follower(Follower::default(), kick);

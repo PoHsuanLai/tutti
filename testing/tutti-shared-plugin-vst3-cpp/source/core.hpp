@@ -17,15 +17,19 @@ constexpr size_t kStateHead = 24;
 // A transport's flags (core.rs, "State"), and how many the log keeps.
 constexpr uint32_t kPlaying = 1, kRecording = 2, kCycle = 4, kTempoValid = 8, kBeatValid = 16;
 constexpr uint32_t kLogTransports = 16;
+// The notice byte (core.rs, "Notice"): none, or an edit on every state load.
+constexpr uint32_t kNoticeOnLoad = 1, kNotices = 2;
 
 inline float tag (uint32_t bus, size_t ch) { return float (bus * 1000 + ch + 1); }
 
-struct Ev { int kind; uint32_t offset; uint32_t id; double value; }; // 1 param, 2 on, 3 off, 4 control change (recorded, never acted on; this plugin's VST3 shell receives none)
+// 1 param, 2 on, 3 off, 4 control change (recorded, never acted on; this plugin's VST3 shell receives none),
+// 5 data event (id: first byte, value: size), 6 null parameter list, 7 flush (core.rs, "VST3 controllers and flushes")
+struct Ev { int kind; uint32_t offset; uint32_t id; double value; };
 
 struct Core
 {
 	std::atomic<double> level {0.5}, aux {0.25};
-	std::atomic<uint32_t> mode {0};
+	std::atomic<uint32_t> mode {0}, notice {0};
 	std::atomic<uint64_t> calls {0}, frames {0};
 	std::atomic<uint32_t> prepares {0}, maxBlock {0};
 	std::atomic<double> rate {0};
@@ -73,15 +77,31 @@ struct Core
 	}
 	void push (Ev e)
 	{
+		record (e);
+		if (events.size () < 128) events.push_back (e);
+		else
+			overflow = 1;
+	}
+	// A VST3 parameter flush (a process call with numSamples == 0): records it,
+	// applies the parameter points queued since the last block at once and
+	// forgets the points. No block is counted and nothing is rendered.
+	void flush ()
+	{
+		record ({7, 0, 0, 0});
+		events.erase (std::remove_if (events.begin (), events.end (), [this] (const Ev& e) {
+			if (e.kind != 1) return false;
+			setParam (e.id, e.value);
+			return true;
+		}), events.end ());
+	}
+	void record (Ev e)
+	{
 		uint32_t n = logN;
 		if (n < 32)
 		{
 			log[n].head = (uint64_t (e.kind) << 32) | e.offset; log[n].id = e.id; log[n].value = e.value;
 			logN = n + 1;
 		}
-		else
-			overflow = 1;
-		if (events.size () < 128) events.push_back (e);
 		else
 			overflow = 1;
 	}
@@ -148,7 +168,7 @@ struct Core
 	std::vector<uint8_t> save () const
 	{
 		std::vector<uint8_t> b;
-		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode); put<double> (b, level); put<double> (b, aux);
+		put<uint32_t> (b, kMagic); put<uint32_t> (b, mode | notice << 16); put<double> (b, level); put<double> (b, aux);
 		put<uint64_t> (b, calls); put<uint64_t> (b, frames); put<uint32_t> (b, prepares);
 		put<double> (b, rate); put<uint32_t> (b, maxBlock); put<uint32_t> (b, overflow);
 		uint32_t nb = blocksN, kept = std::min<uint32_t> (nb, 16);
@@ -168,10 +188,12 @@ struct Core
 	bool load (const uint8_t* p, size_t n)
 	{
 		if (n < kStateHead) return false;
-		uint32_t magic, m; double l, a;
-		std::memcpy (&magic, p, 4); std::memcpy (&m, p + 4, 4); std::memcpy (&l, p + 8, 8); std::memcpy (&a, p + 16, 8);
-		if (magic != kMagic || m >= kModes || !std::isfinite (l) || !std::isfinite (a)) return false;
-		mode = m; setParam (kLevel, l); setParam (kAux, a);
+		uint32_t magic, word, m, editor, nt; double l, a;
+		std::memcpy (&magic, p, 4); std::memcpy (&word, p + 4, 4); std::memcpy (&l, p + 8, 8); std::memcpy (&a, p + 16, 8);
+		m = word & 0xFF; editor = (word >> 8) & 0xFF; nt = word >> 16;
+		// This plugin has no editor: it refuses the editor byte, and takes the notice byte.
+		if (magic != kMagic || m >= kModes || editor != 0 || nt >= kNotices || !std::isfinite (l) || !std::isfinite (a)) return false;
+		mode = m; notice = nt; setParam (kLevel, l); setParam (kAux, a);
 		return true;
 	}
 };

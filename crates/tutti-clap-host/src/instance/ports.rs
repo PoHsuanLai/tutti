@@ -112,6 +112,20 @@ impl ClapLoaded {
             .collect()
     }
 
+    /// For each input note port (at most 16), whether it declares the MIDI
+    /// dialect (`CLAP_NOTE_DIALECT_MIDI` in `supported_dialects`), which
+    /// `clap_event_midi` and SysEx may be sent to. Empty for a plugin with no
+    /// input note port: it declared no event it takes.
+    pub fn midi_capable_ports(&self, main: &MainThread) -> Vec<bool> {
+        let count = self.note_port_count(main, true).min(16);
+        (0..count)
+            .map(|index| {
+                self.note_port_info(main, index, true)
+                    .is_some_and(|port| port.supported_dialects.contains(NoteDialects::MIDI))
+            })
+            .collect()
+    }
+
     /// Metadata for the note port at `index`, including supported dialects.
     pub fn note_port_info(
         &self,

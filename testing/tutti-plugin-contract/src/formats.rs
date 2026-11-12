@@ -44,17 +44,7 @@ impl Format for Vst2 {
     /// VST2 has no sample offset on a parameter: the host's changes land at the
     /// block head.
     const PARAM_TIMING: ParamTiming = ParamTiming::BlockHead;
-    const GAPS: &'static [(&'static str, Gap)] = &[
-        (
-            "reset_clears_the_delay_line",
-            Gap {
-                why: "VST 2.4 has no opcode that clears a plugin's DSP state; \
-                      `Processor::reset` drops only the host's SysEx reassembly",
-                fails_with: "the impulse came out after the reset",
-            },
-        ),
-        NO_TRANSPORT_EVENT,
-    ];
+    const GAPS: &'static [(&'static str, Gap)] = &[NO_TRANSPORT_EVENT];
 
     fn load() -> Self::L {
         tutti_vst2_host::Vst2Loaded::load(&main_thread(), plugin::library())

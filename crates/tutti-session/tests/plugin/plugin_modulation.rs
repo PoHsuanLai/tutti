@@ -29,7 +29,8 @@ use tutti_plugin::catalog::PluginRef;
 use tutti_plugin::handles::PluginClient;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{
-    Crossfade, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent,
+    Crossfade, EventInPort, EventOutPort, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session,
+    SessionEvent,
 };
 use tutti_types::{Depth, Hz, SampleRate, Seconds};
 
@@ -204,7 +205,7 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
     let gain = ParamRef::plugin(node, GAIN);
     {
         let mut m = s.mods();
-        m.range(gain, 0.0, 1.0);
+        m.range_raw(gain, 0.0, 1.0).unwrap();
         let source = m.macro_(1.0);
         m.route(source, gain, Depth(-0.25)).unwrap();
     }
@@ -236,8 +237,8 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
     let rebuilt = lane_of(&mut drive, &mut s, gain);
     assert!(s.graph_ref().contains(rebuilt), "the lane is in the graph");
     assert_eq!(
-        s.graph_ref().event_sources(node, 0),
-        vec![rebuilt.into()],
+        s.graph_ref().sources(EventInPort::new(node, 0)),
+        vec![EventOutPort::new(rebuilt, 0)],
         "and feeds the replacement's event input"
     );
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -269,14 +270,14 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     let gain = ParamRef::plugin(node, GAIN);
     {
         let mut m = s.mods();
-        m.range(gain, 0.0, 1.0);
+        m.range_raw(gain, 0.0, 1.0).unwrap();
         let offset = m.macro_(0.0);
         m.route(offset, gain, Depth(1.0)).unwrap();
     }
     let outgoing_lane = lane_of(&mut drive, &mut s, gain);
     assert_eq!(
-        s.graph_ref().event_sources(node, 0),
-        vec![outgoing_lane.into()],
+        s.graph_ref().sources(EventInPort::new(node, 0)),
+        vec![EventOutPort::new(outgoing_lane, 0)],
         "precondition: the lane feeds the outgoing plugin"
     );
 
@@ -308,8 +309,8 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     let lane = lane_of(&mut drive, &mut s, gain);
     drive.update(&mut s);
     assert_eq!(
-        s.graph_ref().event_sources(node, 0),
-        vec![lane.into()],
+        s.graph_ref().sources(EventInPort::new(node, 0)),
+        vec![EventOutPort::new(lane, 0)],
         "the gain's lane feeds the incoming plugin"
     );
     assert!(s.graph_ref().contains(lane), "while its plugin is");
@@ -355,7 +356,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let gain = ParamRef::plugin(node, GAIN);
     {
         let mut m = s.mods();
-        m.range(gain, 0.0, 1.0);
+        m.range_raw(gain, 0.0, 1.0).unwrap();
         let lfo = m.lfo(Lfo::sine().hz(Hz(3.0)));
         m.route(lfo, gain, Depth(0.1)).unwrap();
     }

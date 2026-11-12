@@ -422,14 +422,36 @@ impl Control for Vst3Loaded {
         false
     }
 
-    /// Nothing: VST3 reports the edits a plugin's own editor makes in the
-    /// block's `ProcessOutput`.
-    fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<(ParamId, Normalized)>) {}
+    /// The edits the plugin's own editor made: each `performEdit` it called on
+    /// the host's `IComponentHandler` (ivsteditcontroller.h, "UI-thread"), in
+    /// order, as the normalized value it reported. The same call is how a
+    /// plugin with a separate component and controller tells the host a value
+    /// changed, so the host must hand it on to the processor; the activated
+    /// [`Vst3Controller`](crate::Vst3Controller) does, and a plugin that is not
+    /// active has no processor to hand it to.
+    ///
+    /// Every other notification popped on the way (a gesture's begin and end,
+    /// dirty state, progress, unit news) is kept for
+    /// [`poll_plugin_notifications`](Vst3Loaded::poll_plugin_notifications). The
+    /// processor's `outputParameterChanges` are not here: they are not edits,
+    /// and reach the controller on
+    /// [`flush_edits`](Control::flush_edits).
+    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        use crate::{ParameterEditEvent, PluginNotification};
+        while let Some(notification) = self.plugin.handler().pop_notification() {
+            match notification {
+                PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id, value }) => {
+                    out.push((param_id.into(), Normalized::clamped(value)));
+                }
+                other => self.stashed.push(other),
+            }
+        }
+    }
 
-    /// `0`: VST3 reports the edits a plugin's own editor makes in the block's
-    /// `ProcessOutput`, not through a queue that can drop them.
+    /// The notifications the host's bounded queue refused because nobody
+    /// drained it, edits among them ([`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY)).
     fn dropped_reported_edits(&self) -> u64 {
-        0
+        self.plugin.handler().dropped_notifications()
     }
 }
 

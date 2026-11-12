@@ -29,7 +29,7 @@ use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 use crate::SendError;
 use crate::graph::{Feeder, Graph};
 use crate::instrument::SharedKeys;
-use crate::{Error, EventSource, MidiNodes, Result};
+use crate::{Error, EventOutPort, MidiNodes, Result};
 
 /// Max events drained per chunk into the stack buffer: one frame of clock at
 /// any sane tempo is a handful of events, so this is generous headroom.
@@ -796,7 +796,12 @@ fn wire_inlets(
             InletChange::Attach { slot, node } => {
                 let key = graph.add_event_inlet(node).erase();
                 nodes.input_controls.restart_slot(slot);
-                graph.set_event_sources(nodes.input, slot as u16, &[EventSource::new(key, 0)]);
+                if let Err(e) = graph.set_sources(
+                    crate::EventInPort::new(nodes.input, slot),
+                    [EventOutPort::new(key, 0)],
+                ) {
+                    tracing::warn!("midi: device slot {slot} has no ingest port: {e}");
+                }
                 if inlet_keys.len() <= slot {
                     inlet_keys.resize(slot + 1, None);
                 }
@@ -804,7 +809,7 @@ fn wire_inlets(
             }
             InletChange::Detach { slot } => {
                 if let Some(key) = inlet_keys.get_mut(slot).and_then(Option::take) {
-                    graph.set_event_sources(nodes.input, slot as u16, &[]);
+                    let _ = graph.set_sources(crate::EventInPort::new(nodes.input, slot), []); // a slot with no port has no source to take out
                     graph.remove(key);
                 }
             }
@@ -845,7 +850,7 @@ impl Midi<'_> {
         let (node, keys) = SharedKeys::open(self.graph);
         let node = node.erase();
         self.graph
-            .set_feed(target, Feeder::LiveInput, vec![node.into()]);
+            .set_feed(target, Feeder::LiveInput, vec![EventOutPort::new(node, 0)]);
         self.state.live.insert(
             node,
             Live {
@@ -897,7 +902,7 @@ impl Midi<'_> {
         // Set on every call: `set_feed` leaves an unchanged feed (and the
         // edit flag) alone.
         self.graph
-            .set_feed(target, Feeder::Sequencer, vec![clip.into()]);
+            .set_feed(target, Feeder::Sequencer, vec![EventOutPort::new(clip, 0)]);
         Ok(clip)
     }
 
@@ -934,7 +939,7 @@ impl Midi<'_> {
         self.graph
             .feed(target, feeder)
             .iter()
-            .find_map(|s| ours.get_key_value(&s.node))
+            .find_map(|s| ours.get_key_value(&s.node()))
             .map(|(&node, v)| (node, v))
     }
 
@@ -965,10 +970,16 @@ impl Midi<'_> {
         } else {
             return Err(Error::NotSessionMidi(node));
         };
-        if old != target && self.graph.feed(old, feeder).contains(&node.into()) {
+        if old != target
+            && self
+                .graph
+                .feed(old, feeder)
+                .contains(&EventOutPort::new(node, 0))
+        {
             self.graph.set_feed(old, feeder, Vec::new());
         }
-        self.graph.set_feed(target, feeder, vec![node.into()]);
+        self.graph
+            .set_feed(target, feeder, vec![EventOutPort::new(node, 0)]);
         Ok(())
     }
 
@@ -1105,17 +1116,15 @@ impl Midi<'_> {
             }),
             fallback,
         );
-        let mut wanted: BTreeMap<NodeKey, Vec<EventSource>> = BTreeMap::new();
+        let mut wanted: BTreeMap<NodeKey, Vec<EventOutPort>> = BTreeMap::new();
         for (target, ports) in ports {
             let Some(sink) = resolve(target).filter(|&n| self.graph.contains(n)) else {
                 continue;
             };
-            wanted.entry(sink).or_default().extend(
-                ports
-                    .into_iter()
-                    .filter_map(|p| u16::try_from(p).ok())
-                    .map(|p| EventSource::new(input, p)),
-            );
+            wanted
+                .entry(sink)
+                .or_default()
+                .extend(ports.into_iter().map(|p| EventOutPort::new(input, p)));
         }
         for &fed in &self.state.routed {
             if !wanted.contains_key(&fed) {
@@ -1124,7 +1133,7 @@ impl Midi<'_> {
         }
         self.state.routed = wanted.keys().copied().collect();
         for (sink, mut sources) in wanted {
-            sources.sort_by_key(|s| (s.node, s.port));
+            sources.sort();
             sources.dedup();
             self.graph.set_feed(sink, Feeder::Routes, sources);
         }

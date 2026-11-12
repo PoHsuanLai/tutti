@@ -58,11 +58,6 @@ static ACCEPT_SOFT_BYPASS: AtomicBool = AtomicBool::new(false);
 /// it accepted. `-1` until the host sends one, so "never asked" is distinct
 /// from "asked with 0".
 static LAST_BYPASS: AtomicI32 = AtomicI32::new(-1);
-/// Whether `effSetChunk` refuses every blob. A switch, not an env var: one
-/// image serves every instance, so arming it after a first instance stored its
-/// chunk makes only what comes later (a second instance restored from the
-/// first's state) refuse.
-static REFUSE_CHUNK_LOAD: AtomicBool = AtomicBool::new(false);
 /// How many `audioMasterAutomate` reports each `process` call sends. Zero
 /// (the default) sends none.
 static AUTOMATE_BURST: AtomicU32 = AtomicU32::new(0);
@@ -284,17 +279,6 @@ pub(crate) fn read_extra_input() -> bool {
     READ_EXTRA_INPUT.load(Ordering::SeqCst)
 }
 
-/// Make `effSetChunk` refuse every blob (answer `0`), as a plugin does a
-/// chunk it cannot read.
-#[unsafe(no_mangle)]
-pub extern "C" fn tutti_vst2_probe_set_refuse_chunk_load(refuse: bool) {
-    REFUSE_CHUNK_LOAD.store(refuse, Ordering::SeqCst);
-}
-
-pub(crate) fn refuse_chunk_load() -> bool {
-    REFUSE_CHUNK_LOAD.load(Ordering::SeqCst)
-}
-
 /// Send `count` `audioMasterAutomate` reports (parameter 0) from inside each
 /// `process` call, as a plugin applying a preset from its audio thread does:
 /// a burst the host must queue without allocating, and may have to drop.
@@ -335,7 +319,6 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     SERVICED_MIDI_PROGRAMS.store(0, Ordering::SeqCst);
     ACCEPT_SOFT_BYPASS.store(false, Ordering::SeqCst);
     LAST_BYPASS.store(-1, Ordering::SeqCst);
-    REFUSE_CHUNK_LOAD.store(false, Ordering::SeqCst);
     AUTOMATE_BURST.store(0, Ordering::SeqCst);
     ECHO_SET_PARAMETER.store(false, Ordering::SeqCst);
     PRESET_TRACE.store(0, Ordering::SeqCst);
@@ -511,6 +494,34 @@ pub extern "C" fn tutti_vst2_probe_fire_io_changed(latency: i32, inputs: i32) ->
         (*effect).numInputs = inputs;
         // `audioMasterIOChanged` is opcode 13.
         call_host(13, std::ptr::null_mut()).unwrap_or(-1)
+    }
+}
+
+/// What a plugin with a size switch does: ask the host to resize its editor window,
+/// `audioMasterSizeWindow` (`[index]` width, `[value]` height). Returns the host's answer
+/// (`1` = supported), or `-1` before a plugin is loaded.
+#[unsafe(no_mangle)]
+pub extern "C" fn tutti_vst2_probe_request_size_window(width: i32, height: i32) -> isize {
+    let effect = HOST_EFFECT.load(Ordering::SeqCst) as *mut vst::api::AEffect;
+    if effect.is_null() {
+        return -1;
+    }
+    let callback = HOST_CALLBACK.load(Ordering::SeqCst);
+    if callback == 0 {
+        return -1;
+    }
+    // SAFETY: the callback is the host's `audioMaster` pointer stored at load, and the effect
+    // is the one it was handed; `audioMasterSizeWindow` (opcode 15) takes no pointer.
+    unsafe {
+        let callback: vst::api::HostCallbackProc = std::mem::transmute(callback);
+        callback(
+            effect,
+            15,
+            width,
+            height as isize,
+            std::ptr::null_mut(),
+            0.0,
+        )
     }
 }
 

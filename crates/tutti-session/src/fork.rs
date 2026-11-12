@@ -3,7 +3,7 @@
 //!
 //! The mechanism lives here and not in `tutti-export` (doc 019 §5, "Fork
 //! gather/build, pool, root topology, edit hook"): `tutti-export` renders a
-//! [`RenderGraph`](tutti_export::RenderGraph), which it can only be given
+//! [`RenderGraph`], which it can only be given
 //! sealed (`RenderGraph::assemble`), so a graph that is half edited, or whose
 //! editor feeds some other executor, is not one a render can be handed.
 //!

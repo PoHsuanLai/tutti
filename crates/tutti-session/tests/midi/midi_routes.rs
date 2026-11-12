@@ -54,8 +54,8 @@ fn ports(s: &Session, input: NodeKey, node: NodeKey) -> BTreeSet<u16> {
         .feed(node, Feeder::Routes)
         .iter()
         .map(|e| {
-            assert_eq!(e.node, input);
-            e.port
+            assert_eq!(e.node(), input);
+            u16::try_from(e.index()).unwrap()
         })
         .collect()
 }

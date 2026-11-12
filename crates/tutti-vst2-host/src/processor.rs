@@ -494,11 +494,18 @@ impl Processor for Vst2Processor {
         Vst2Processor::stop(self);
     }
 
-    /// VST 2.4 has no opcode that clears a plugin's DSP state, so this drops
-    /// only the host's MIDI state: a SysEx message open across the reset does
-    /// not complete on the far side of it, and the RPN, NRPN and bank each
-    /// channel had selected are sent in full again.
+    /// Asks the plugin to forget its signal history with `effStopProcess`, the opcode the
+    /// header has for ending processing (`aeffectx.h`: "no arguments"), and starts it again
+    /// with `effStartProcess` in the next block. This is VST3's `setProcessing(false)` twin,
+    /// and like it a request a plugin may ignore: the header says nothing of what a plugin
+    /// does on it, and clearing delay lines and tails there is what practice has plugins do
+    /// (authority 2, the SDK's `suspend`/`resume` convention; JUCE's host resets with
+    /// `effMainsChanged(0)`, `(1)`, which is a main-thread opcode and so not an option for a
+    /// realtime reset). It also drops the host's MIDI state: a SysEx message open across the
+    /// reset does not complete on the far side of it, and the RPN, NRPN and bank each channel
+    /// had selected are sent in full again.
     fn reset(&mut self) {
         self.midi.send.reset_midi();
+        self.render.stop_process();
     }
 }

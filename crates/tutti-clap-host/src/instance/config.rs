@@ -4,7 +4,7 @@
 //! [`AudioScratch`] holds all per-block RT scratch and lives only on the
 //! `ClapProcessor` (it exists solely for `process`).
 
-use crate::events::{InputEventList, OutputEventList};
+use crate::events::{InputEventList, OutputEventList, ParamBounds};
 use crate::types::{ClapNoteExpression, ParameterChanges, RtNoteExpressions};
 use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use std::sync::atomic::AtomicI32;
@@ -108,8 +108,8 @@ impl AudioScratch {
 /// Processor lends it once per block.
 #[derive(Debug, Default)]
 pub(crate) struct RangeTable {
-    /// `(param_id, min, max)`, sorted by id.
-    pub ranges: Vec<(u32, f32, f32)>,
+    /// Each parameter's bounds and steppedness, sorted by id.
+    pub ranges: Vec<ParamBounds>,
     /// Whether the plugin reported a nonzero `params.count()`.
     ///
     /// An empty `ranges` is ambiguous on its own and the two cases need

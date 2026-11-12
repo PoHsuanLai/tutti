@@ -11,9 +11,7 @@ use tutti_graph::UmpAt;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup, SysexStep};
-use tutti_vst3_ffi::{
-    EVENT_CAPACITY, EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena,
-};
+use tutti_vst3_ffi::{EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena};
 use tutti_vst3_host::{InputEvents, Stager, Utf16Chord, drain_midi};
 use vst3::Steinberg::Vst::{Event, IEventList, IEventListTrait};
 use vst3::Steinberg::{kResultFalse, kResultOk};
@@ -318,12 +316,10 @@ fn sysex_read_by_plugin(list: &EventList) -> Vec<(i32, Vec<u8>)> {
     out
 }
 
-/// A banked Program Change reaches the plugin as CC 0, CC 32 and PC, at one
-/// offset, in that order, as `kDataEvent`s of raw MIDI-1 bytes.
-///
-/// With room for fewer than three, none is staged and all three are counted.
+/// A banked Program Change has no VST3 event (`DataEvent` is `kMidiSysEx`
+/// alone, ivstevents.h): nothing is staged, and the stager counts it dropped.
 #[test]
-fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
+fn a_banked_program_change_is_not_staged_and_is_counted() {
     let pc = (
         at(5),
         midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
@@ -331,39 +327,8 @@ fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
     let list = EventList::input();
     let mut stager = Stager::default();
     assert_no_alloc::assert_no_alloc(|| stager.stage(&list, &midi_only(&[pc])));
-    let mut seen = Vec::new();
-    // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
-    unsafe {
-        for i in 0..list.getEventCount() {
-            let mut e: Event = std::mem::zeroed();
-            assert_eq!(list.getEvent(i, &mut e), kResultOk);
-            assert_eq!(e.r#type, EventKind::Data as u16);
-            let d = e.__field0.data;
-            let bytes = std::slice::from_raw_parts(d.bytes, d.size as usize).to_vec();
-            seen.push((e.sampleOffset, bytes));
-        }
-    }
-    assert_eq!(
-        seen,
-        vec![
-            (5, vec![0xB1, 0, 1]),
-            (5, vec![0xB1, 32, 5]),
-            (5, vec![0xC1, 9, 0]),
-        ]
-    );
-
-    // Room for two: nothing of the bank is staged, and all three are counted.
-    let note = (
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-    );
-    let mut midi = vec![note; EVENT_CAPACITY - 2];
-    midi.push(pc);
-    let full = EventList::input();
-    let mut stager = Stager::default();
-    assert!(stager.stage(&full, &midi_only(&midi)));
-    assert_eq!(count(&full), EVENT_CAPACITY - 2);
-    assert_eq!(full.dropped(), 3);
+    assert_eq!(count(&list), 0, "no event carries a program change");
+    assert_eq!(stager.unsendable_dropped(), 1);
 }
 
 fn sysex_packets(payload: &[u8], frame: u32) -> Vec<UmpAt> {

@@ -1,6 +1,6 @@
 //! The control surface of a CLAP plugin in the shared vocabulary, implemented
-//! by [`ClapLoaded`] and, with parameter writes redirected, by
-//! [`ClapController`].
+//! by [`ClapLoaded`] and, through [`Wraps`] with the writes and edits an
+//! activation redirects, by [`ClapController`].
 
 use std::path::Path;
 use std::time::Instant;
@@ -12,7 +12,7 @@ use tutti_plugin_types::{
     EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit, ParamId,
     ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor,
     PluginError, PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples,
-    TimerId, WindowHandle,
+    TimerId, WindowHandle, Wraps,
 };
 
 use super::controller::ClapController;
@@ -547,117 +547,36 @@ fn preset_path(id: &PresetId) -> Option<&Path> {
     }
 }
 
-impl Control for ClapController {
-    fn info(&self) -> &PluginDescriptor {
-        Control::info(self.loaded())
+impl Wraps for ClapController {
+    type Plugin = ClapLoaded;
+
+    /// A write goes to the Processor alone: the activated plugin's parameters
+    /// are the audio thread's.
+    const WRITES_PLUGIN: bool = false;
+
+    fn plugin(&self) -> &ClapLoaded {
+        self.loaded()
     }
 
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
-        Control::wiring(self.loaded(), main)
+    fn plugin_mut(&mut self) -> &mut ClapLoaded {
+        self.loaded_mut()
     }
 
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
-        Control::parameters(self.loaded(), main)
-    }
-
-    fn parameter_count(&self, main: &MainThread) -> usize {
-        Control::parameter_count(self.loaded(), main)
-    }
-
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
-        Control::parameter(self.loaded(), main, id)
-    }
-
-    /// Queued to the Processor and applied at the head of its next block. A full
-    /// ring keeps the latest value per parameter and retries on the next tick.
-    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+    /// Applied at the head of the Processor's next block. A full ring keeps the
+    /// latest value per parameter and retries on the next tick.
+    fn queue_write(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         self.queue_edit(id, value);
     }
 
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
-        Control::parameter_plain(self.loaded(), main, id, value)
-    }
-
-    fn parameter_normalized(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        plain: f64,
-    ) -> Option<Normalized> {
-        Control::parameter_normalized(self.loaded(), main, id, plain)
-    }
-
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(self.loaded(), main, id, value)
-    }
-
-    fn parameter_value_from_text(
-        &self,
-        main: &MainThread,
-        id: ParamId,
-        text: &str,
-    ) -> Option<Normalized> {
-        Control::parameter_value_from_text(self.loaded(), main, id, text)
-    }
-
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        Control::save_state(self.loaded_mut(), main)
-    }
-
-    /// Restores the state, and makes the writes queued before it stale.
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let result = Control::load_state(self.loaded_mut(), main, bytes);
+    fn after_restore(&mut self, _main: &MainThread) {
         self.reset_edits();
-        result
-    }
-
-    /// Loads the preset, and makes the writes queued before it stale.
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        let loaded = Control::load_preset(self.loaded_mut(), main, id);
-        if loaded {
-            self.reset_edits();
-        }
-        loaded
-    }
-
-    /// An `INFO` or `ALL` rescan changed what the parameters are, so the ranges
-    /// the Processor denormalizes against are read again and republished. A
-    /// rescan of values or text changes neither.
-    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        if matches!(scope, RescanScope::Info | RescanScope::All) {
-            self.republish_ranges(main);
-        }
-    }
-
-    fn flush_edits(&mut self, _main: &MainThread) {
-        self.retry_edits();
-    }
-
-    fn run_main_thread(&mut self, main: &MainThread) {
-        Control::run_main_thread(self.loaded_mut(), main);
-    }
-
-    fn run_timer(&mut self, main: &MainThread, id: TimerId) {
-        Control::run_timer(self.loaded_mut(), main, id);
-    }
-
-    fn service_fd(&mut self, main: &MainThread, id: FdId) {
-        Control::service_fd(self.loaded_mut(), main, id);
-    }
-
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        Control::take_requests(self.loaded_mut(), main, out);
-    }
-
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
-        Control::set_render_mode(self.loaded_mut(), main, mode)
     }
 
     /// What the plugin's `process` told the host of its own parameters, in
     /// order: each output `CLAP_EVENT_PARAM_VALUE` as a change, and
     /// `CLAP_EVENT_PARAM_GESTURE_BEGIN` and `_END` as a gesture's ends, which
     /// carry no value in CLAP.
-    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn collect_reports(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>, _from: usize) {
         self.reported.drain(|edit| {
             if let tutti_plugin_types::Edit::Reported(edit) = edit {
                 out.push(edit);
@@ -665,64 +584,20 @@ impl Control for ClapController {
         });
     }
 
-    fn dropped_reported_edits(&self) -> u64 {
-        Control::dropped_reported_edits(self.loaded())
-            + self
-                .reports_dropped
-                .load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-impl EditorWindow for ClapController {
-    fn has_editor(&self, main: &MainThread) -> bool {
-        EditorWindow::has_editor(self.loaded(), main)
+    fn lost_reports(&self) -> u64 {
+        self.reports_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn open_editor(
-        &mut self,
-        main: &MainThread,
-        parent: WindowHandle,
-        scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
-        EditorWindow::open_editor(self.loaded_mut(), main, parent, scale)
+    /// An `INFO` or `ALL` rescan changed what the parameters are, so the ranges
+    /// the Processor denormalizes against are read again and republished.
+    fn republish_ranges(&mut self, main: &MainThread) {
+        let table = self.loaded_mut().read_param_ranges(main);
+        self.ranges.publish(table);
     }
 
-    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
-        EditorWindow::open_floating_editor(self.loaded_mut(), main)
-    }
-
-    fn close_editor(&mut self, main: &MainThread) {
-        EditorWindow::close_editor(self.loaded_mut(), main);
-    }
-
-    /// Nothing, as the Loaded's is: see [`ClapLoaded`]'s `editor_idle`.
-    fn editor_idle(&mut self, _main: &MainThread) {}
-
-    /// The default capabilities: this surface reports no resize support.
-    fn editor_capabilities(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> tutti_plugin_types::EditorCapabilities {
-        tutti_plugin_types::EditorCapabilities::default()
-    }
-
-    /// Not supported here.
-    fn set_editor_size(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-        _requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
-        Err(tutti_plugin_types::PluginError::Editor(
-            tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
-        ))
-    }
-
-    /// Nothing asked: this surface never queues a resize request.
-    fn poll_editor_resize_request(
-        &mut self,
-        _main: &tutti_plugin_types::MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
-        None
+    fn tick(&mut self, _main: &MainThread) {
+        self.retry_edits();
     }
 }
 

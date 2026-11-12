@@ -37,6 +37,7 @@ use coremidi::{
     Client, Destinations, EventBuffer, InputPortWithContext, OutputPort, Properties,
     PropertyGetter, Protocol as CmProtocol, Source, Sources,
 };
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tutti_graph::UmpAt;
@@ -47,6 +48,7 @@ use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use crate::guard::Guard;
 use tutti_coremidi_ffi::{UmpEndpointInfo, ump_endpoints};
 use tutti_midi_device::{EndpointId, Identity, OsDevice};
 use tutti_midi_runtime::{MidiOut, Outgoing, SendAt};
@@ -331,21 +333,27 @@ impl MidiEndpoints for CoreMidiEndpoints {
         // that delivers raw `F0 … F7` bytes.
         let endpoints = ump_endpoints().unwrap_or_default();
         let protocol = input_protocol(&source, ump_of(&endpoints, &source, true));
+        // CoreMIDI calls this closure from its own thread through a block, so
+        // a panic must not leave it: the guard catches it and ends the input.
+        let died = Arc::new(AtomicBool::new(false));
+        let guard = Guard::new(Arc::clone(&died));
         let mut port = client
             .input_port_with_protocol("tutti-in", protocol, move |event_list, _ctx| {
-                // The packet's own host time, as an `Instant`: when the event
-                // reached CoreMIDI, not when this callback ran.
-                let pairing = host_time::Pairing::now();
-                for packet in event_list.iter() {
-                    let arrived = pairing.instant_of(packet.timestamp());
-                    // One CoreMIDI packet is a packed word stream of several
-                    // concatenated UMP messages.
-                    for event in split_stream(packet.data()) {
-                        if producer.push(event, arrived) == crate::Pushed::Full {
-                            tracing::debug!("MIDI input ring full, dropping event");
+                guard.run(|| {
+                    // The packet's own host time, as an `Instant`: when the event
+                    // reached CoreMIDI, not when this callback ran.
+                    let pairing = host_time::Pairing::now();
+                    for packet in event_list.iter() {
+                        let arrived = pairing.instant_of(packet.timestamp());
+                        // One CoreMIDI packet is a packed word stream of several
+                        // concatenated UMP messages.
+                        for event in split_stream(packet.data()) {
+                            if producer.push(event, arrived) == crate::Pushed::Full {
+                                tracing::debug!("MIDI input ring full, dropping event");
+                            }
                         }
                     }
-                }
+                });
             })
             .map_err(|status| Error::CoreMidi {
                 operation: "create input port",
@@ -358,7 +366,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
                 status,
             })?;
 
-        Ok(Box::new(CoreMidiInput { _port: port }))
+        Ok(Box::new(CoreMidiInput { _port: port, died }))
     }
 
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn DeviceOut>> {
@@ -386,9 +394,15 @@ impl MidiEndpoints for CoreMidiEndpoints {
 struct CoreMidiInput {
     /// Held for its `Drop`: releasing the port is what disconnects.
     _port: InputPortWithContext<()>,
+    /// Set by the callback's [`Guard`] when it panicked.
+    died: Arc<AtomicBool>,
 }
 
-impl InputConnection for CoreMidiInput {}
+impl InputConnection for CoreMidiInput {
+    fn is_alive(&self) -> bool {
+        !self.died.load(Ordering::Acquire)
+    }
+}
 
 /// An open CoreMIDI output, as a [`MidiOut`].
 ///

@@ -21,6 +21,12 @@ mod capability;
 mod devices;
 mod endpoints;
 mod error;
+// Only a native backend's callback runs through it; the stub has none.
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    allow(dead_code, reason = "only a native backend has a driver callback")
+)]
+mod guard;
 mod port;
 mod session;
 mod stamp;

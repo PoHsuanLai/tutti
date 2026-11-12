@@ -128,7 +128,7 @@ pub use strip::BusStripNode;
 // stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
 pub use params::{At, Control, ControlRead, ControlSet, ControlValid, Params};
-pub use reverb::{FamilyNode, FreeverbNode, NodeFamily, Rings};
+pub use reverb::{FamilyNode, FreeverbNode, NodeFamily, Rings, TailCeiling, TailCeilingError};
 
 // The feedback delay network as a `FamilyNode`, and the choice between the two.
 mod reverb_fdn;

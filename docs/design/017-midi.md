@@ -85,9 +85,14 @@ About 600k hostile inputs caused no panic in the parsers.
 
 ### 1.3 Cost is not the problem
 
-No MIDI crate has a benchmark, but measured in release, the receive path takes
-about 0.3% of the budget of a 64-frame block at 48 kHz, at 40 events per block,
-with no allocation. The stack's own code compiles in about 2 s. Neither justifies
+Measured in release, the receive path takes about 0.3% of the budget of a
+64-frame block at 48 kHz, at 40 events per block, with no allocation.
+`tutti-midi-runtime`'s `ingest` bench (L6(f)) reproduces it from the driver
+callback to the drain: on the development machine, 40 events pushed through a
+device's inlet take 4.8 us, and one 512-frame block of an ingest node over 40
+events takes 41 us (0.4% of the block's 10.7 ms), both in one thread, so the
+wall time between a callback and the block that plays it is the inlet's lead by
+design and not a cost. The stack's own code compiles in about 2 s. Neither justifies
 a change on its own. This design is for correctness and for what a caller can
 express.
 
@@ -1106,7 +1111,7 @@ Every MIDI feature has four layers:
 | Connection steps | `Connection` |
 | OS time to frame | `ClockMap` |
 | Output scheduling | `OutputPlan` (built) |
-| Held notes and controllers | `HeldState` |
+| Held notes and controllers | `HeldState` (built, L6(f); `tutti-midi-runtime`) |
 | Recording into clips | `ClipBuilder` |
 | Chase on seek | `MidiClipNode`'s chase table (private, built with the clip) |
 | Clock, MTC and MMC slave | `ClockFollower` |
@@ -1905,6 +1910,79 @@ Note Offs, then reset what they changed (sustain, bend). Today a held key plus
 `retarget` or `unroute` leaves a stuck note on the old target and an orphan off on
 the new one.
 
+**Built for the hardware input edge (L6(f)): `HeldState` and what ends a source.**
+`HeldState` (`tutti-midi-runtime`, `held.rs`) is the pure core: a bitset over
+`tutti_ump::Key` (protocol, Group, Channel, Note: 8 KiB) and the ledger's
+`Controllers` table (the four hold pedals and the pitch bend, per protocol, Group and
+Channel: 1 KiB, moved from `ledger/` so both share it), `observe(ump)` folds in a message
+the source sent, and `release(group, accept)` hands `accept` the messages that end
+what is held, in key order, then the controllers' returns, and forgets what `accept`
+takes: a receiver with no room refuses and is asked again for the rest, so a release
+never strands one. It reads no clock and allocates only in `new`. The executor's edge
+table (`tutti-graph`'s `held.rs`, audit #7) is the other table of the same facts: a
+bitset of keys and the sustain pedals of one event output port, closed when an edge
+ends. It stays, since it needs no node's cooperation; folding it onto `HeldState` (so
+that an edge close also lifts the sostenuto, soft and hold-2 pedals and the bend) is a
+follow-up, not done here.
+
+*What a release sends, and why not All Notes Off.* Per held key a Note Off in the key's
+own protocol; then a pedal-up for each pedal down and a centred bend for each bend off
+centre. Nothing channelwide (CC 120, 121, 123): a channel is shared (several devices
+merge in one listener's fan-in), so a channelwide message from a device that went would
+end another device's notes and reset its wheel. MIDI 1.0 Detailed Specification 4.2.1,
+p. 24: "recognition of All Notes Off is not required of the receiver, all notes should
+first be turned off by transmitting individual Note-Off messages"; Appendix A-5: a pedal
+that is down "takes priority over Note Off and All Notes Off until it is released", so the
+pedals come after the notes; p. 31 (Stop) and RP-015: the pedals and the pitch wheel return
+to their normal positions. A per-note controller ends with its note (M2-104 section 7.4), so
+none is tracked.
+
+*Where it runs.* The `MidiIngestNode` keeps a `HeldState` per slot, folded from the raw
+messages the device sent (before translation, so a MIDI 1.0 key is released as one), and
+sends a release through the same translator and MPE state as any message (`Device::release`),
+so an MPE member channel's map is consistent with what downstream heard. Three things
+trigger it, in order of the stream:
+
+- *Device change or loss.* A slot's epoch now counts opens and releases (`DeviceInlets`:
+  odd while a device holds the slot). A node that follows the inlets compares it each block;
+  a change releases everything the old device held at the block's first frame, then restarts
+  the slot (translator, MPE state, watch), and a slot whose device went (even) is not read
+  until another takes it. The executor's close of the inlet's edge, which would send the same
+  Note Off at the next update, arrives at a slot nobody holds and is dropped, so a note ends
+  once (`a_disconnected_device_ends_its_held_key_once`, with the fake backend).
+- *Active Sensing lapsed* (below).
+- *System Reset* (below).
+
+The three share one rule: what does not fit the block's room is owed (`Device::owing`, one
+bit per Group) and goes out at the next block's first frame.
+
+*Active Sensing (MIDI 1.0 p. 32).* `ActiveSensing` (`tutti-midi-runtime`, `live/sensing.rs`)
+is the receiver's watchdog as a pure value: `heard(group, frame, is_active_sensing)` (any
+message clears the timer, an FE starts watching the Group) and `next_lapse(now) ->
+Option<(MidiGroup, Frame)>` (the Group over the limit, with the frame its time ran out at;
+the Group is unwatched after it, the spec's "reset flag"). The limit is
+`ACTIVE_SENSING_JUDGE`, 330 ms: the spec sends every 300 ms and recommends that "receivers
+judge at over 330 ms". One watch per Group, because a Group is one cable of a device
+(M2-104 section 2.1.2). **It is stepped by the ingest node in the graph's own frames**, not by
+a clock: the events carry the frame the inlet placed them on (the arrival time on the engine's
+clock plus the lead), so the gap between two frames is the gap between two arrivals to within
+a block, and the node reads no OS clock. The device's thread (a CoreMIDI callback has no
+timer) and `Phase::Poll` (a frame's granularity, and no way to put a release into the graph)
+were the alternatives; neither can place the release at its frame. A lapse releases the
+Group's held state at the frame it ran out and leaves the translator alone, as the spec asks
+for no more than "turn off all voices". An engine stall does not lapse a cable: events that
+arrived during it are placed late, at the first frame of the block that finds them, and clear
+the timer there. The FE is the cable's own and is not sent on.
+
+*System Reset (FF, p. 33).* Per Group: its held state is released at the FF's frame, its
+translator state (`Translator::reset_group`) and MPE state (`MpeIngest::reset_group`) are
+reset and its watch is dropped ("turn voices off", "reset all controllers", "clear running
+status"), and the FF is **not sent on** ("under no condition should this message be echoed").
+No input path keeps a byte parser (ALSA and CoreMIDI deliver UMP; the SysEx assembler is a
+`tutti-ump` value one layer up), so running status and SysEx reassembly state cannot be
+stranded at this edge. Set Local On, Omni On / Poly, Song Position 0 and Stop are the transport's
+and a synth's: nothing in the input edge holds them.
+
 ### 8.4 The note ledger
 
 `NoteLedger<T>` (`tutti-midi-runtime`) is the table of notes a node has started and
@@ -1947,7 +2025,7 @@ holds the second borrow of the port).
   `memmove`.
 - **Controllers go back with the notes.** The ledger also keeps, per protocol, Group
   and Channel, whether the hold pedals (CC 64, 66, 67, 69) are down and whether the
-  pitch bend is off centre (512 `u16`s, `ledger/controllers.rs`; a MIDI 1.0 value of 64
+  pitch bend is off centre (512 `u16`s, `held/controllers.rs`; a MIDI 1.0 value of 64
   or more, a MIDI 2.0 one at or above `0x8000_0000`, is down). MIDI 1.0 Detailed Spec
   p. 31 (Stop): "any controllers not in their initialized position (pitch wheels,
   sustain pedal, etc.) should be returned to their normal positions", and A-5: a
@@ -2565,18 +2643,24 @@ at any point; its CI codec move and `ci`/`negotiate` deletion (4a, done) shrink
      was. The constructor does not take the list, because a backend reads the OS
      after it has the sink (a change between the read and the registration needs
      the watch to exist), so the type holds the order instead.
-   - **Not verified, needs a Mac or a check.** (a) The CoreMIDI input callback
-     has no panic guard; only the watch thread has `catch_unwind`
-     (`backend/coremidi/watch.rs`). (b) The session MIDI input ring size
-     is 256 in one place and 2048 in another per the audit; the drain chunk is 256
-     (`tutti-session/src/midi.rs`) and the other figure was not found. (c) **Done (4c).** `AlsaOutput` took its
+   - **Checked in L6(f).** (a) **Done.** The CoreMIDI input callback ran with no panic
+     guard (the `coremidi` crate does not catch one, and a panic out of a block unwinds
+     through C): its body now runs in `Guard` (`tutti-midi-hardware`'s `guard.rs`), which
+     catches it, logs it and marks the input dead (`InputConnection::is_alive`, so the
+     session retires the device as it does one whose reader failed); the ALSA pump runs
+     in it too, since a panic there ended the pump with the input still reading as alive.
+     `check-guards` is the plugin formats' table of callbacks and does not scan this.
+     (b) **Done.** There is one input ring: `MIDI_INPUT_INLET_CAPACITY`, 2,048 events per
+     device; the 256 is the clock's `DRAIN_CHUNK`, and the other 256 a log of losses. Its
+     doc now derives the figure (a second of a saturated MIDI 1.0 cable, 1,563 two-byte
+     messages) and a test pins it. (c) **Done (4c).** `AlsaOutput` took its
      mutex with `.expect("output mutex poisoned")`: it now recovers the guard, since
      `Sender` is a client handle and two ids and is never left half-written, and a
      panic in the output drain over a fault already past is worse than the send.
      `unpack_id` returns `None` for an id with bits above either byte, which
      `pack_id` cannot make, and `open` reports it (a watch's own handles are always
      in range). The input thread's drop waits at most `JOIN_BOUND` (1 s) and then
-     detaches the pump with a warning. (d) There is no benchmark of the hardware callback to the drain.
+     detaches the pump with a warning. (d) **Done.** `tutti-midi-runtime`'s `ingest` bench (push, drain, callback to drain; §1.3).
    - **Bare frame counts at the edge. Done (4c).** `MidiIn::poll_block` and
      `ClockMaster::tick` take the block as `Samples`. In `outbound/jr_timestamp.rs`
      the origin and the frame a tick is read at are `Frame` (`JrClock::ticks_at`,
@@ -3149,9 +3233,11 @@ such as reassembled SysEx; that is decided when that code is written.
   inlets (`DeviceInlets::new` returns the `Arc`). `take_changes` returns a `Changes` iterator
   that pops one change per step under the lock and holds none while the owner works, so
   applying a change may open or drop a device, and what is not read stays queued. A slot's
-  epoch (the generation of the device that took it, plus one) is bumped in `open`;
+  epoch counts its opens and releases (L6(f); it was the generation of the device that took
+  it, plus one, bumped in `open` alone) and is odd while a device holds the slot;
   `MidiIngestNode::following(&DeviceInlets)` shares the epochs and compares them each block,
-  so a new device in a slot starts with an empty translator and MPE state with no call.
+  so a new device in a slot, or none, releases what the one before held and starts with an
+  empty translator and MPE state with no call (§8.3).
   There is one id, `DeviceSlot` (index and generation, ephemeral: no serde), which
   `tutti-midi-hardware`'s `PortId` was; `HardwareMidiInputs` keeps its table keyed by it.
   Removing a port retires its list entry; the slot is the handle's.

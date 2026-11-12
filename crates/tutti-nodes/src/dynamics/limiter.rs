@@ -127,7 +127,9 @@ control_set! {
 impl NodeFamily for LimiterFamily {
     type Set = LimiterSet;
 
-    const RINGS: Rings = Rings::Silent;
+    fn rings(&self) -> Rings {
+        Rings::Silent
+    }
     const SAMPLING: tutti_dsp::Cadence = <Self as tutti_dsp::Family>::CADENCE;
 
     fn set(&self, _: &LimiterControls) -> LimiterSet {

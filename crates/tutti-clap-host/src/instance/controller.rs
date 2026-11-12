@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicU64;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
-    Control, Controller, Edit, EditDrain, EditSink, Loaded, Normalized, ParamId, PluginError,
+    Control, Controller, EditDrain, EditQueue, EditSink, Loaded, Normalized, ParamId, PluginError,
     PluginTail, Prepare, Refused, RestartRules, Samples, Stuck,
 };
 use tutti_rt::ArcLend;
@@ -39,13 +39,9 @@ use super::thread_pool::PoolCell;
 pub struct ClapController {
     /// The plugin. `None` only once `deactivate` has taken it.
     loaded: Option<ClapLoaded>,
-    pub(crate) edits: EditSink,
-    /// Edits a full ring refused, latest value per parameter, retried on the
-    /// next tick ([`flush_edits`](tutti_plugin_types::Control::flush_edits)).
-    pub(crate) unsent: Vec<(ParamId, Normalized)>,
-    /// A [`Edit::Reset`] the full ring refused: sent before anything in `unsent`,
-    /// which is everything written since.
-    reset_pending: bool,
+    /// The writes to the Processor, and those a full ring refused, retried on
+    /// the next tick ([`flush_edits`](tutti_plugin_types::Control::flush_edits)).
+    queue: EditQueue,
     /// The ranges the Processor denormalizes against, republished after a
     /// rescan that changed the parameters.
     pub(crate) ranges: Arc<ArcLend<RangeTable>>,
@@ -62,7 +58,7 @@ pub struct ClapController {
 impl std::fmt::Debug for ClapController {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClapController")
-            .field("unsent", &self.unsent)
+            .field("queue", &self.queue)
             .finish_non_exhaustive()
     }
 }
@@ -77,9 +73,7 @@ impl ClapController {
     ) -> Self {
         Self {
             loaded: Some(loaded),
-            edits,
-            unsent: Vec::new(),
-            reset_pending: false,
+            queue: EditQueue::new(edits),
             ranges,
             pools,
             reported,
@@ -148,7 +142,7 @@ impl ClapController {
     /// Controller wrote.
     #[must_use]
     pub fn refused_edits(&self) -> u32 {
-        self.edits.refused()
+        self.queue.refused()
     }
 }
 
@@ -183,53 +177,23 @@ impl Controller for ClapController {
 }
 
 impl ClapController {
-    /// Queues a parameter write to the Processor.
-    ///
-    /// A value already waiting to be retried is replaced by the newer one; a full
-    /// ring keeps the value for the next tick.
+    /// Queues a parameter write to the Processor: applied at the head of its
+    /// next block, or kept for the next tick when the ring is full.
     pub(crate) fn queue_edit(&mut self, id: ParamId, value: Normalized) {
-        if let Some(slot) = self.unsent.iter_mut().find(|(waiting, _)| *waiting == id) {
-            slot.1 = value;
-            return;
-        }
-        if self.reset_pending || self.edits.send(Edit::Param { id, value }).is_err() {
-            self.unsent.push((id, value));
-        }
+        self.queue.queue(id, value);
     }
 
-    /// Makes every write made so far stale: a state or a preset load replaced
-    /// the values they were written against, and the next block must not put
-    /// them back. The ring's order makes a [`Edit::Reset`] exact; a full ring
-    /// holds it for the next tick, and every write after it waits behind it.
+    /// Makes every write made so far stale (see [`EditQueue::reset`]).
     pub(crate) fn reset_edits(&mut self) {
-        self.unsent.clear();
-        self.reset_pending = self.edits.send(Edit::Reset).is_err();
+        self.queue.reset();
     }
 
     /// Retries what the ring refused, oldest first, and lets the parameter
-    /// ranges' retired values go.
+    /// ranges' and the pool's retired values go.
     pub(crate) fn retry_edits(&mut self) {
         self.ranges.reclaim();
         self.pools.reclaim();
-        if self.reset_pending {
-            if self.edits.send(Edit::Reset).is_err() {
-                return;
-            }
-            self.reset_pending = false;
-        }
-        let waiting = std::mem::take(&mut self.unsent);
-        for (id, value) in waiting {
-            if self.edits.send(Edit::Param { id, value }).is_err() {
-                self.unsent.push((id, value));
-            }
-        }
-    }
-
-    /// Reads the parameters again and republishes the ranges the Processor
-    /// denormalizes against. Allocates; main thread.
-    pub(crate) fn republish_ranges(&mut self, main: &MainThread) {
-        let table = self.loaded_mut().read_param_ranges(main);
-        self.ranges.publish(table);
+        self.queue.retry(|_, _| {});
     }
 }
 
@@ -263,7 +227,7 @@ impl ClapLoaded {
         // the ring held, then what a full ring had refused.
         let mut pending = Vec::new();
         processor.take_edits(&mut pending);
-        pending.append(&mut std::mem::take(&mut controller.unsent));
+        pending.append(&mut controller.queue.take_unsent());
         drop(processor);
         let mut loaded = controller
             .loaded

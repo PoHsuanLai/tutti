@@ -10,6 +10,7 @@ use super::enumerate::unpack_id;
 use super::poll::ErrorRun;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
+use crate::guard::Guard;
 use crate::{InputProducerHandle, Pushed};
 use tutti_alsa_ffi::{
     CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpVersion,
@@ -166,7 +167,9 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
         .spawn(move || {
             // Dropped when the pump returns or unwinds, which disconnects `ended`.
             let _ending: mpsc::Sender<()> = ending;
-            pump(seq, polls, clock, stop_rx, flag, producer);
+            // A panic in the pump ends it with the input held, so it is caught
+            // and marks the input dead, as an error does.
+            Guard::new(Arc::clone(&flag)).run(|| pump(seq, polls, clock, stop_rx, flag, producer));
         })
         .map_err(|e| crate::error::Error::device_from("spawn MIDI pump", e))?;
 

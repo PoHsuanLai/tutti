@@ -793,6 +793,15 @@ impl MpeIngest {
             group.told = [Told::default(); MidiChannel::COUNT as usize];
         }
     }
+
+    /// [`reset`](Self::reset) for one Group's channels: a Group is a channel
+    /// space of its own, so a source's reset of one cable leaves the held
+    /// notes of the others mapped.
+    pub fn reset_group(&mut self, group: MidiGroup) {
+        let state = &mut self.groups[group.index()];
+        state.held.clear();
+        state.told = [Told::default(); MidiChannel::COUNT as usize];
+    }
 }
 
 /// CC74 as an Assignable Per-Note Controller of `note`.

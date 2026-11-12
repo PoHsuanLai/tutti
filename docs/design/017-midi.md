@@ -1939,8 +1939,11 @@ Each is its own lane after its dependency stage.
    (each state's setters, in beat order), so a jump is a binary search per state and allocates
    nothing. Not chased: notes spanning the beat (a note the playhead lands inside is not struck,
    as a DAW's default), per-note controllers, which live with their notes, and relative
-   controllers, which add to what is there. An event less than a frame behind the beat is also
-   played by the walk; the repeat sets the same state.
+   controllers, which add to what is there, nor the Channel Mode messages (CC 120 to 127), which
+   are commands. A chased Program Change carries the bank in force at its beat (one sent with no
+   Bank Select keeps the channel's bank, M1 p.13), so the receiver is moved to the timeline's bank.
+   An event less than a frame behind the beat is also played by the walk; the repeat sets the same
+   state. A port without room for the whole chase refuses the rest, counted like any refused event.
 2. **MIDI recording** into clips, timestamped against the transport.
 3. **CC modulation source and MIDI learn for native nodes.**
 4. **Windows backend** (Windows MIDI Services), **Linux virtual ports** and more

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{
-    cc, channel_pressure, key_of, note_off, note_on, per_note_controller, pitch_bend,
-    program_change, registered_rpn, relative_registered_controller,
+    cc, channel_pressure, from_midi1_bytes, key_of, m1_cc, note_off, note_on, per_note_controller,
+    pitch_bend, program_change, registered_rpn, relative_registered_controller,
 };
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -22,7 +22,7 @@ use tutti_graph::{
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Rpn, U7, U14, Voice1};
+use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Rpn, U7, U14, Voice1, Voice2};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;
@@ -1035,4 +1035,83 @@ fn a_render_from_the_start_chases_nothing() {
         *seen.lock().unwrap(),
         vec![(0, bend(0, 0x7000_0000)), (10, on(60))]
     );
+}
+
+/// **A chased Program Change selects the bank the timeline holds there**,
+/// even when the last one carried none. MIDI 1.0 Bank Select (MSB 1), then
+/// Program Change 5, then Program Change 7 with no Bank Select before it:
+/// the channel keeps bank 1 (M1 p.13), and a render that starts past both
+/// chases program 7 on bank 1, so a receiver last on another bank is moved.
+#[test]
+fn a_chased_program_carries_the_bank_in_force() {
+    let c = MidiChannel::FIRST;
+    let clip = MidiClipNode::new([
+        at(10, m1_cc(c, CCNumber::BANK_SELECT, U7::of(1))),
+        at(11, from_midi1_bytes(&[0xC0, 5]).unwrap()),
+        at(20, from_midi1_bytes(&[0xC0, 7]).unwrap()),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(96_000), &[], &mut []);
+    let programs: Vec<(u8, Option<u8>)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|&(_, u)| match u.decode() {
+            Ok(Message::Midi2(_, Voice2::ProgramChange { program, bank })) => {
+                Some((program.get(), bank.map(|b| b.msb.get())))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(programs, vec![(7, Some(1))]);
+}
+
+/// **The Channel Mode messages are not chased** (CC 120 to 127, M1 p.20):
+/// they are commands, and Reset All Controllers re-sent after the chased
+/// controllers would undo them. Volume, Reset All Controllers, then Volume
+/// again: a render past all three chases the last Volume and nothing else.
+#[test]
+fn channel_mode_messages_are_not_chased() {
+    let (g, c) = (MidiGroup::FIRST, MidiChannel::FIRST);
+    let clip = MidiClipNode::new([
+        at(10, cc(g, c, CCNumber::VOLUME, 0x1000_0000)),
+        at(20, cc(g, c, CCNumber::of(121), 0)),
+        at(30, cc(g, c, CCNumber::VOLUME, 0x2000_0000)),
+        at(40, cc(g, c, CCNumber::ALL_SOUND_OFF, 0)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(512, &rolling(96_000), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(0, cc(g, c, CCNumber::VOLUME, 0x2000_0000))]
+    );
+}
+
+/// **A chase larger than the port is cut short, and what is cut is counted.**
+/// Thirty controllers on each of sixteen channels are 480 states; a
+/// 256-frame block's port holds 256 events, so a render that starts past
+/// them sends the first 256 in chase order (channel 0's first) and the graph
+/// is told of the 224 it refused.
+#[test]
+fn a_chase_larger_than_the_port_is_cut_short_and_counted() {
+    let g = MidiGroup::FIRST;
+    let clip = MidiClipNode::new((0..16u8).flat_map(|ch| {
+        (40..70u8).map(move |n| {
+            at(
+                u64::from(ch) * 30 + u64::from(n),
+                cc(g, MidiChannel::of(ch), CCNumber::of(n), 0x1000_0000),
+            )
+        })
+    }));
+    let (mut ed, mut exec, _c, seen) = rig(clip, 256);
+    exec.process(256, &rolling(96_000), &[], &mut []);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 256);
+    assert_eq!(
+        seen[0].1,
+        cc(g, MidiChannel::FIRST, CCNumber::of(40), 0x1000_0000),
+        "channel 0's first"
+    );
+    let refused: u32 = ed.take_event_losses().map(|l| l.count).sum();
+    assert_eq!(refused, 480 - 256);
 }

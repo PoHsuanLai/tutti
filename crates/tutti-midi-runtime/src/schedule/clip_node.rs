@@ -67,7 +67,7 @@ use tutti_graph::{
 };
 use tutti_midi_protocol::Translator;
 use tutti_rt::{ArcLend, Reader};
-use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice1, Voice2};
+use tutti_ump::{Bank, CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice1, Voice2};
 
 use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
 
@@ -110,10 +110,10 @@ struct ClipEvents {
     generation: u64,
     events: Box<[ClipEvent]>,
     /// For each state a channel holds (a program, a controller, a registered
-    /// or assignable controller, pressure, bend), the indices of the events
-    /// that set it, in beat order; the states in the order a chase sends
-    /// them ([`chase_table`]). Built on the control side with the clip.
-    chase: Box<[Box<[u32]>]>,
+    /// or assignable controller, pressure, bend), the messages that set it,
+    /// in beat order; the states in the order a chase sends them
+    /// ([`chase_table`]). Built on the control side with the clip.
+    chase: Box<[Box<[Setter]>]>,
 }
 
 impl ClipEvents {
@@ -126,6 +126,13 @@ impl ClipEvents {
             chase,
         }
     }
+}
+
+/// A message that sets a state, at its beat: what a chase sends for it.
+#[derive(Clone, Copy, Debug)]
+struct Setter {
+    beat: f64,
+    ump: Ump,
 }
 
 /// What a state message sets on its channel, in the order a chase sends
@@ -143,36 +150,75 @@ enum Held {
     Bend,
 }
 
-/// The `(group, channel, state)` a message sets, if it sets one a chase
-/// restores: a channel's absolute state. Notes are not chased (a note the
-/// playhead lands inside is not started), nor are per-note controllers,
-/// which live with their notes, nor relative controllers, which add to
-/// what is there.
-fn held_by(ump: Ump) -> Option<(usize, usize, Held)> {
-    let Ok(Message::Midi2(address, voice)) = ump.decode() else {
-        return None;
-    };
-    let held = match voice {
+/// The state a channel voice message sets, if it sets one a chase restores:
+/// a channel's absolute state. Notes are not chased (a note the playhead
+/// lands inside is not started), nor are per-note controllers, which live
+/// with their notes, nor relative controllers, which add to what is there,
+/// nor the Channel Mode messages (CC 120 to 127, M1 p.20): All Sound Off and
+/// All Notes Off are actions, and Reset All Controllers, Local Control,
+/// Omni and Mono/Poly are not a controller's value but a command that would
+/// undo what the chase just restored.
+fn held_by(voice: Voice2) -> Option<Held> {
+    Some(match voice {
         Voice2::ProgramChange { .. } => Held::Program,
         Voice2::Registered { bank, index, .. } => Held::Registered(bank.get(), index.get()),
         Voice2::Assignable { bank, index, .. } => Held::Assignable(bank.get(), index.get()),
-        Voice2::ControlChange { controller, .. } => Held::Control(controller.get()),
+        Voice2::ControlChange { controller, .. } if controller.get() < FIRST_CHANNEL_MODE => {
+            Held::Control(controller.get())
+        }
         Voice2::ChannelPressure(_) => Held::Pressure,
         Voice2::PitchBend(_) => Held::Bend,
         _ => return None,
-    };
-    Some((address.group.index(), address.channel.index(), held))
+    })
 }
 
+/// The first Channel Mode controller (All Sound Off, M1 p.20); 120 to 127
+/// are commands, not state.
+const FIRST_CHANNEL_MODE: u8 = 120;
+
 /// The chase table of `events` (sorted by beat): each state's setting
-/// events in beat order, the states by group, channel and [`Held`] order.
-/// Control thread.
-fn chase_table(events: &[ClipEvent]) -> Box<[Box<[u32]>]> {
-    let mut table: BTreeMap<(usize, usize, Held), Vec<u32>> = BTreeMap::new();
-    for (i, e) in events.iter().enumerate() {
-        if let Some(key) = held_by(e.timed.event()) {
-            table.entry(key).or_default().push(i as u32);
+/// messages in beat order, the states by group, channel and [`Held`] order.
+/// A Program Change with no bank (none was selected since the last, so the
+/// channel keeps its bank) is held with the bank in force at its beat, so a
+/// chase to it selects the timeline's bank, not whatever the receiver was
+/// last on. Control thread.
+fn chase_table(events: &[ClipEvent]) -> Box<[Box<[Setter]>]> {
+    let mut table: BTreeMap<(usize, usize, Held), Vec<Setter>> = BTreeMap::new();
+    let mut banks: HashMap<(usize, usize), Bank> = HashMap::new();
+    for e in events {
+        let Ok(Message::Midi2(address, voice)) = e.timed.event().decode() else {
+            continue;
+        };
+        let Some(held) = held_by(voice) else {
+            continue;
+        };
+        let channel = (address.group.index(), address.channel.index());
+        let mut ump = e.timed.event();
+        if let Voice2::ProgramChange { program, bank } = voice {
+            match bank {
+                Some(bank) => {
+                    banks.insert(channel, bank);
+                }
+                None => {
+                    if let Some(&bank) = banks.get(&channel) {
+                        ump = Ump::from(Message::Midi2(
+                            address,
+                            Voice2::ProgramChange {
+                                program,
+                                bank: Some(bank),
+                            },
+                        ));
+                    }
+                }
+            }
         }
+        table
+            .entry((channel.0, channel.1, held))
+            .or_default()
+            .push(Setter {
+                beat: e.timed.beat().get(),
+                ump,
+            });
     }
     table.into_values().map(Vec::into_boxed_slice).collect()
 }
@@ -486,7 +532,7 @@ impl Beated for ClipEvent {
 /// channel state the clip set before the jump's beat.
 struct Playing<'a, 'w, 'c> {
     sending: Sending<'a, 'w, ClipNote>,
-    chase: &'c [Box<[u32]>],
+    chase: &'c [Box<[Setter]>],
 }
 
 impl Visit<ClipEvent> for Playing<'_, '_, '_> {
@@ -504,14 +550,19 @@ impl Visit<ClipEvent> for Playing<'_, '_, '_> {
     /// programs and controllers the timeline holds at that beat (the chase,
     /// design 017). An event on `beat` itself, or less than a frame behind
     /// it, the walk plays as well; that repeats a state, which is harmless.
-    fn jump(&mut self, at: Option<Offset>, beat: f64, _fpb: f64, events: &[ClipEvent]) {
+    ///
+    /// A port without room for the whole chase refuses the rest, counted as
+    /// the graph counts any refused event (`Editor::take_event_losses`): a
+    /// clip that sets many states on many channels can have its chase cut
+    /// short on a short block, and the states it set first (lower groups and
+    /// channels, a channel's program first) are the ones that land.
+    fn jump(&mut self, at: Option<Offset>, beat: f64, _fpb: f64, _events: &[ClipEvent]) {
         let Some(o) = at else { return };
         self.sending.release_all(o);
         for setters in self.chase {
-            let before = setters.partition_point(|&i| events[i as usize].beat() < beat);
-            if let Some(&last) = before.checked_sub(1).and_then(|k| setters.get(k)) {
-                let e = &events[last as usize];
-                self.sending.send(o, e.timed.event(), e.note);
+            let before = setters.partition_point(|s| s.beat < beat);
+            if let Some(last) = before.checked_sub(1).and_then(|k| setters.get(k)) {
+                self.sending.send(o, last.ump, None);
             }
         }
     }

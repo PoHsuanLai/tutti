@@ -22,7 +22,9 @@ use crate::{HeardOpen, HeardTapError, Playhead, RemoveError};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Phase {
-    /// Crossfades that waited out a re-prepare are retried, what bounces
+    /// What the session's jobs sent lands first (`SessionBuilder::spawn_with`:
+    /// each message, then each end, in arrival order). Then crossfades that
+    /// waited out a re-prepare are retried, what bounces
     /// sent back is dropped (feature `export`; and a bounce in flight for
     /// `BOUNCE_STALL_WARNING` of `PhaseCx::now` warned about, once), then
     /// `Editor::collect` frees what the audio thread retired (here, on the
@@ -563,6 +565,8 @@ pub struct Session {
     /// The bounce token and the leftovers' channel.
     #[cfg(feature = "export")]
     pub(crate) bounce: crate::bounce::BounceState,
+    /// The blocking work running on the spawner, landed in `Phase::Collect`.
+    pub(crate) jobs: crate::jobs::Jobs,
 }
 
 impl Session {
@@ -691,6 +695,8 @@ impl Session {
         match phase {
             Phase::Collect => {
                 crate::main_thread();
+                // First, so what a job landed is in the graph this update commits.
+                self.land_jobs(out);
                 // Before the collect, as a frame's spawns run before its
                 // commit: a crossfade lands on the update that first finds
                 // the re-prepare resumed.

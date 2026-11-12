@@ -66,6 +66,7 @@ mod graph;
 mod input;
 #[cfg(feature = "midi")]
 mod instrument;
+mod jobs;
 mod key;
 #[cfg(feature = "midi")]
 mod midi;
@@ -118,6 +119,7 @@ pub use graph::{
 pub use input::{Input, InputConfig, InputOpener, OpenedInput};
 #[cfg(feature = "midi")]
 pub use instrument::{InstrumentHandle, NotInstrument, SendError, SessionInstrument};
+pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
     Inlet, Key, MainBus, MainSink, OutPort, Outlet, Root, Weighted, Wire,

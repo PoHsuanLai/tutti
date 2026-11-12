@@ -59,6 +59,7 @@ pub struct SessionBuilder {
     snapshot_interval: std::time::Duration,
     #[cfg(feature = "plugin")]
     recovery: Option<crate::RecoveryPolicy>,
+    spawner: crate::jobs::Spawner,
 }
 
 /// A MIDI backend a host supplies, held until the session takes it.
@@ -100,6 +101,7 @@ impl Default for SessionBuilder {
             snapshot_interval: crate::SNAPSHOT_INTERVAL,
             #[cfg(feature = "plugin")]
             recovery: Some(crate::RecoveryPolicy::default()),
+            spawner: crate::jobs::Spawner::default(),
         }
     }
 }
@@ -253,6 +255,27 @@ impl SessionBuilder {
     #[must_use]
     pub fn input_opener(mut self, opener: impl crate::InputOpener + 'static) -> Self {
         self.input_opener = Some(Box::new(opener));
+        self
+    }
+
+    /// The spawner the session runs its blocking work on (design 029 §3.4):
+    /// a file load, a plugin round trip, a recording's pump. It is handed
+    /// each [`Job`](crate::Job) and calls [`Job::run`](crate::Job::run) on a
+    /// thread of its own (`tokio::task::spawn_blocking`, a rayon pool); what
+    /// the job reports lands in [`Session::update`]. The default is a named
+    /// `std::thread` per job. A job the spawner drops unrun ends as failed,
+    /// so a spawner that refuses work loses none silently.
+    ///
+    /// ```
+    /// # use tutti_session::Session;
+    /// let builder = Session::builder().spawn_with(|job| {
+    ///     std::thread::spawn(move || job.run());
+    /// });
+    /// # let _ = builder;
+    /// ```
+    #[must_use]
+    pub fn spawn_with(mut self, spawn: impl Fn(crate::Job) + Send + Sync + 'static) -> Self {
+        self.spawner = crate::jobs::Spawner::new(spawn);
         self
     }
 
@@ -556,6 +579,7 @@ impl SessionBuilder {
             render_mode: Default::default(),
             #[cfg(feature = "export")]
             bounce: Default::default(),
+            jobs: crate::jobs::Jobs::new(self.spawner.clone()),
         })
     }
 

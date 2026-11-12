@@ -11,8 +11,11 @@ use coreaudio_sys as sys;
 use crate::cf::{CfArray, CfPlist, CfString, CfUrl, cfstring_to_string_checked, take_string};
 use crate::component::ComponentRef;
 use crate::error::{Error, OsError, Result, check};
+use crate::event_list::{EventList, Wire, send_event_list_fn};
 use crate::plain::Plain;
-use crate::property::{Element, FactoryPresets, PresentPreset, Property, Scope};
+use crate::property::{
+    AudioUnitMidiProtocol, Element, FactoryPresets, PresentPreset, Property, Scope,
+};
 
 /// The size and writability of a property, from `AudioUnitGetPropertyInfo`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,6 +521,39 @@ impl Unit {
         };
         check("MusicDeviceMIDIEvent", result)?;
         Ok(())
+    }
+
+    /// `MusicDeviceMIDIEventList` (macOS 12): every packet of `list`, each at
+    /// its own timestamp as sample frames into the next render (the base
+    /// offset is 0). Empty lists are not sent.
+    ///
+    /// # Errors
+    /// [`Error::Unavailable`] on a macOS before 12, which lacks the function;
+    /// otherwise the `OSStatus` of the call.
+    pub fn midi_event_list(&self, list: &EventList) -> Result<()> {
+        let send = send_event_list_fn().ok_or(Error::Unavailable("MusicDeviceMIDIEventList"))?;
+        if list.is_empty() {
+            return Ok(());
+        }
+        let words = list.as_words();
+        // SAFETY: `words` is the list in CoreMIDI's own layout (`event_list`'s
+        // docs, checked against `MIDIEventListAdd` by the host's tests), four
+        // byte aligned as a `u32` slice, and live for the call, which reads it
+        // and keeps no pointer.
+        let status = unsafe { send(self.raw(), 0, words.as_ptr().cast::<sys::MIDIEventList>()) };
+        check("MusicDeviceMIDIEventList", status)?;
+        Ok(())
+    }
+
+    /// The protocol the unit takes MIDI in (`AudioUnitMIDIProtocol`): `None`
+    /// when the unit does not say (the property is absent before macOS 12, and
+    /// "not set" means legacy MIDI 1.0 through `MusicDeviceMIDIEvent`).
+    pub fn midi_protocol(&self) -> Option<Wire> {
+        match self.get::<AudioUnitMidiProtocol>(Scope::GLOBAL, Element::ZERO) {
+            Ok(1) => Some(Wire::Midi1),
+            Ok(2) => Some(Wire::Midi2),
+            _ => None,
+        }
     }
 
     /// `MusicDeviceSysEx`: one complete, framed system-exclusive message.

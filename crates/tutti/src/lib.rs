@@ -290,9 +290,9 @@ pub mod prelude {
 
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Key,
-        NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder, SessionEvent,
-        TypedParamRef, Workers,
+        ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Job,
+        JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder,
+        SessionEvent, TypedParamRef, Workers,
     };
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};

@@ -288,9 +288,10 @@ impl EventInletWriter {
     }
 
     /// Queues every `(stamp, ump)` in order, each as [`push`](Self::push)
-    /// does, and answers how many the ring took. A refused one is counted as
-    /// lost like any other and the rest are still tried, so the count a
-    /// caller reads stays one per event.
+    /// does, and answers how many the ring took. A refusal does not stop the
+    /// run: the refused event is counted in [`InletCounts::losses`] as `push`
+    /// counts it, and the rest are still tried, so the count a caller reads
+    /// stays one per event.
     pub fn push_all<S: Into<Stamp>, U: Into<Ump>>(
         &mut self,
         events: impl IntoIterator<Item = (S, U)>,

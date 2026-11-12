@@ -425,7 +425,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  `tutti-export` renders them. Its MIDI front is `Session::midi()`
                  (`Midi`, feature `midi`): clips, live inputs, routes, the one `MpeMode`
                  (`set_mpe`; a synth added through `add_instrument` follows it over its own
-                 `SynthConfig::mpe`: `SessionNode::bind_mpe`), `record(target, capacity)` (a
+                 `SynthConfig::mpe`: `SessionInstrument::bind_mpe`, which every instrument
+                 `add_instrument` takes states), `record(target, capacity)` (a
                  take: an event tap on the live input, placed by `TakePlacement`) and, with
                  `midi-hardware`, the devices (`devices`, `connect_input`/`connect_output`,
                  `reconnect_saved -> Resolution`). Its events are `SessionEvent::Midi(MidiEvent)`

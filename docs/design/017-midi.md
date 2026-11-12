@@ -3128,7 +3128,8 @@ such as reassembled SysEx; that is decided when that code is written.
   has the candidates and nothing is opened unasked.
 - **MPE once.** The session holds one `MpeMode` (`Midi::set_mpe`, `mpe`; the builder's
   `mpe_mode` is its start). The ingest node is told at once; a synth added through
-  `Session::add_instrument` is built in it through `SessionNode::bind_mpe`, **so the session's
+  `Session::add_instrument` is built in it through `SessionInstrument::bind_mpe` (the trait `add_instrument` takes;
+  an instrument that reads no MPE, the SoundFont player, returns itself and says so), **so the session's
   mode wins over `SynthConfig::mpe`**. A synth already in the graph keeps the mode it was added
   with, and one inserted with `Graph::add` is the caller's own.
 - **Senders take `impl Into<Ump>`** (`EventInletWriter::push`/`push_all`, `InstrumentHandle::send`,

@@ -174,7 +174,8 @@ pub mod midi {
     pub use tutti_session::MidiError as Error;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        InstrumentHandle, LiveInput, Midi, MidiEvent, MidiRouteRule, SendError, TakePlacement,
+        InstrumentHandle, LiveInput, Midi, MidiEvent, MidiRouteRule, SendError, SessionInstrument,
+        TakePlacement,
     };
 
     #[cfg(feature = "midi-hardware")]

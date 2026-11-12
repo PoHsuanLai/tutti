@@ -10,7 +10,7 @@ use tutti_graph::{
     Shape, Status,
 };
 use tutti_midi_protocol::MpeMode;
-use tutti_session::{MidiError, Session, SessionNode, TakePlacement};
+use tutti_session::{MidiError, Session, SessionInstrument, SessionNode, TakePlacement};
 use tutti_types::{ChannelLayout, Frame, InterleavedMut, MaxBlock, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 
@@ -178,7 +178,8 @@ impl IntoNode for Probe {
     }
 }
 impl Instrument for Probe {}
-impl SessionNode for Probe {
+impl SessionNode for Probe {}
+impl SessionInstrument for Probe {
     fn bind_mpe(self, mode: MpeMode) -> Self {
         self.1.lock().unwrap().push(mode);
         self
@@ -243,7 +244,7 @@ fn a_synth_added_through_the_session_takes_the_sessions_mpe_mode() {
     });
     assert_eq!(synth.mpe(), &own);
     assert_eq!(
-        SessionNode::bind_mpe(synth, rotation).mpe(),
+        SessionInstrument::bind_mpe(synth, rotation).mpe(),
         &rotation,
         "the hook overrides the config"
     );

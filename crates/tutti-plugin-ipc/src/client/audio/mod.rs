@@ -648,6 +648,40 @@ impl AudioBridge {
         ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
     }
 
+    /// The plain value the plugin's format converts `value` to, on one
+    /// parameter. `None` when the subprocess is gone, the request could not be
+    /// queued, or the format has no plain value for it.
+    pub fn parameter_plain(&self, param_id: ParamId, value: Normalized) -> Option<f64> {
+        if self.lifecycle.is_crashed() {
+            return None;
+        }
+        let (ask_resp, reply) = ask::<Option<f64>>();
+        if !self.channels.push_command(Command::GetParameterPlain {
+            param_id,
+            value,
+            reply,
+        }) {
+            return None;
+        }
+        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+    }
+
+    /// The inverse of [`parameter_plain`](Self::parameter_plain).
+    pub fn parameter_normalized(&self, param_id: ParamId, plain: f64) -> Option<Normalized> {
+        if self.lifecycle.is_crashed() {
+            return None;
+        }
+        let (ask_resp, reply) = ask::<Option<Normalized>>();
+        if !self.channels.push_command(Command::GetParameterNormalized {
+            param_id,
+            plain,
+            reply,
+        }) {
+            return None;
+        }
+        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+    }
+
     /// The plugin's display string for `value` on one parameter.
     ///
     /// `None` when the subprocess is gone, the request could not be queued, or

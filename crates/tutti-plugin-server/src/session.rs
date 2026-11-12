@@ -278,6 +278,20 @@ impl Session {
                     .and_then(|p| p.plugin_mut().current_preset(main));
                 Ok(BridgeMessage::CurrentPreset { id }.into())
             }
+            M::GetParameterPlain { param_id, value } => {
+                let plain = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.plugin().parameter_plain(main, param_id, value));
+                Ok(BridgeMessage::ParameterPlain { plain }.into())
+            }
+            M::GetParameterNormalized { param_id, plain } => {
+                let value = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.plugin().parameter_normalized(main, param_id, plain));
+                Ok(BridgeMessage::ParameterNormalized { value }.into())
+            }
             M::GetParameterText { param_id, value } => {
                 let text = self
                     .plugin

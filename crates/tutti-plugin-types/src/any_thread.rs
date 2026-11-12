@@ -54,6 +54,16 @@ pub trait AnyThread: Send + Sync {
     /// value there (a served one is clamped again on receipt).
     fn set_parameter_value(&self, id: ParamId, value: Normalized);
 
+    /// The plain value `value` stands for, converted by the plugin's format
+    /// ([`Control::parameter_plain`](crate::Control::parameter_plain)), so a
+    /// consumer never computes it from a range. `None` when unavailable, or
+    /// when the format has no plain value for the parameter.
+    fn parameter_plain(&self, id: ParamId, value: Normalized) -> Option<f64>;
+
+    /// The inverse of [`parameter_plain`](Self::parameter_plain)
+    /// ([`Control::parameter_normalized`](crate::Control::parameter_normalized)).
+    fn parameter_normalized(&self, id: ParamId, plain: f64) -> Option<Normalized>;
+
     /// The plugin's own display string for `value`, such as `"800 Hz"`.
     ///
     /// `None` means the plugin did not answer and the caller renders the number

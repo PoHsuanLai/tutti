@@ -164,7 +164,17 @@ public:
 		parameters.addParameter (STR16 ("level"), nullptr, 0, 0.5, ParameterInfo::kCanAutomate, shared::kLevel);
 		parameters.addParameter (STR16 ("aux"), nullptr, 0, 0.25, ParameterInfo::kCanAutomate, shared::kAux);
 		parameters.addParameter (STR16 ("mode"), nullptr, shared::kModes - 1, 0.0, ParameterInfo::kCanAutomate, shared::kMode);
+		parameters.addParameter (STR16 ("tone"), nullptr, 0, 0.5, ParameterInfo::kCanAutomate, shared::kTone);
 		return kResultOk;
+	}
+	// `tone` is the one parameter with a plain domain of its own (core.rs, "Spec").
+	ParamValue PLUGIN_API normalizedParamToPlain (ParamID id, ParamValue v) SMTG_OVERRIDE
+	{
+		return id == shared::kTone ? shared::tonePlain (v) : v;
+	}
+	ParamValue PLUGIN_API plainParamToNormalized (ParamID id, ParamValue v) SMTG_OVERRIDE
+	{
+		return id == shared::kTone ? shared::toneNormalized (v) : v;
 	}
 	tresult PLUGIN_API setComponentState (IBStream* s) SMTG_OVERRIDE
 	{
@@ -172,7 +182,7 @@ public:
 		if (b.size () < shared::kStateHead) return kResultFalse;
 		shared::Core tmp;
 		if (!tmp.load (b.data (), b.size ())) return kResultFalse;
-		for (uint32_t id = 0; id < shared::kParams; ++id) { double v; tmp.param (id, v); setParamNormalized (id, v); }
+		for (uint32_t id = 0; id < shared::kTone; ++id) { double v; tmp.param (id, v); setParamNormalized (id, v); }
 		// The notice (core.rs): an edit of `aux` to 0.75 through the host's component handler on every state load.
 		if (tmp.notice == shared::kNoticeOnLoad)
 		{

@@ -326,6 +326,25 @@ impl Control for AuLoaded {
             .collect()
     }
 
+    /// Plain, in the AU's own units: `ParamBounds::to_plain` over the
+    /// declared range (see it for why the display curves do not apply). `None`
+    /// for an id the AU never declared.
+    fn parameter_plain(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        let bounds = self.ranges.bounds(id.get())?;
+        Some(f64::from(bounds.to_plain(value.get())))
+    }
+
+    /// The inverse, `ParamBounds::to_normalized` (`f32`, the AU's own width).
+    fn parameter_normalized(
+        &self,
+        _main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        let bounds = self.ranges.bounds(id.get())?;
+        Some(Normalized::clamped(bounds.to_normalized(plain as f32)))
+    }
+
     /// Normalized `0..=1`: `AudioUnitGetParameter` answers in plain units, so
     /// the declared range maps it back. `None` for an id the AU refuses.
     fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
@@ -538,6 +557,19 @@ impl Control for AuController {
 
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         Control::set_parameter(&mut **self, main, id, value);
+    }
+
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        Control::parameter_plain(&**self, main, id, value)
+    }
+
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        Control::parameter_normalized(&**self, main, id, plain)
     }
 
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {

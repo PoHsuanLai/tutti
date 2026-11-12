@@ -3,9 +3,44 @@
 //! reassembled from them.
 
 use std::fmt;
+use std::str::FromStr;
 
 use tutti_ump::Form;
 use unicode_normalization::{UnicodeNormalization, is_nfc};
+
+/// Why a text is not a name ([`Name::parse`], [`ProductInstanceId`] and
+/// [`MessageText`](crate::MessageText)'s `TryFrom<&str>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NameError {
+    /// The text is longer than `max` bytes (for a name, composed to NFC; for a
+    /// [`MessageText`](crate::MessageText), escaped as it goes on the wire).
+    TooLong {
+        /// The most bytes the type holds.
+        max: usize,
+    },
+    /// A name holds a NUL, which ends one on the wire.
+    Nul,
+    /// A name starts with a Byte Order Mark (M2-104 §1.8).
+    Bom,
+    /// A [`ProductInstanceId`] holds a byte outside ASCII `32..=126` (other
+    /// than the NUL that [`Nul`](Self::Nul) names).
+    NotPrintableAscii,
+}
+
+impl fmt::Display for NameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLong { max } => write!(f, "the text is longer than {max} bytes"),
+            Self::Nul => f.write_str("the text holds a NUL, which ends a name on the wire"),
+            Self::Bom => f.write_str("the text starts with a Byte Order Mark"),
+            Self::NotPrintableAscii => {
+                f.write_str("the text holds a byte outside printable ASCII (32 to 126)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NameError {}
 
 /// A UTF-8 name of at most `N` bytes with no NUL, held inline.
 ///
@@ -45,34 +80,51 @@ pub type BlockName = Name<91>;
 impl<const N: usize> Name<N> {
     /// The name, composed to NFC, or `None` when the composed text is longer
     /// than `N` bytes, holds a NUL or starts with a Byte Order Mark (§1.8).
+    /// [`parse`](Self::parse) says which.
     #[must_use]
     pub fn new(text: &str) -> Option<Self> {
-        Self::from_bytes(text.as_bytes())
+        Self::parse(text).ok()
     }
 
-    pub(crate) fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let text = std::str::from_utf8(bytes).ok()?;
+    /// The name, composed to NFC, or why the text is not one.
+    ///
+    /// # Errors
+    ///
+    /// [`NameError::Bom`] for a leading Byte Order Mark, [`NameError::Nul`] for
+    /// a NUL, [`NameError::TooLong`] when the composed text is longer than `N`
+    /// bytes.
+    pub fn parse(text: &str) -> Result<Self, NameError> {
         if text.starts_with('\u{FEFF}') {
-            return None;
+            return Err(NameError::Bom);
         }
         // Composed only when it is not NFC already, so the common name does not
         // allocate.
         let composed;
         let bytes = if is_nfc(text) {
-            bytes
+            text.as_bytes()
         } else {
             composed = text.nfc().collect::<String>();
             composed.as_bytes()
         };
-        if bytes.len() > N || bytes.contains(&0) {
-            return None;
+        if bytes.contains(&0) {
+            return Err(NameError::Nul);
+        }
+        let too_long = NameError::TooLong { max: N };
+        if bytes.len() > N {
+            return Err(too_long);
         }
         let mut held = [0; N];
         held[..bytes.len()].copy_from_slice(bytes);
-        Some(Self {
+        Ok(Self {
             bytes: held,
-            len: u8::try_from(bytes.len()).ok()?,
+            len: u8::try_from(bytes.len()).map_err(|_| too_long)?,
         })
+    }
+
+    /// A name read off the wire: UTF-8 bytes, read as [`parse`](Self::parse)
+    /// reads a text.
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        Self::parse(std::str::from_utf8(bytes).ok()?).ok()
     }
 
     /// The text.
@@ -101,6 +153,34 @@ impl<const N: usize> fmt::Debug for Name<N> {
     }
 }
 
+impl<const N: usize> fmt::Display for Name<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl<const N: usize> AsRef<str> for Name<N> {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<const N: usize> TryFrom<&str> for Name<N> {
+    type Error = NameError;
+
+    fn try_from(text: &str) -> Result<Self, NameError> {
+        Self::parse(text)
+    }
+}
+
+impl<const N: usize> FromStr for Name<N> {
+    type Err = NameError;
+
+    fn from_str(text: &str) -> Result<Self, NameError> {
+        Self::parse(text)
+    }
+}
+
 /// A Product Instance Id: ASCII `32..=126`, at most 42 bytes, a Start, one
 /// Continue and an End packet of 14 bytes (M2-104 §7.1.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -108,23 +188,64 @@ pub struct ProductInstanceId(Name<42>);
 
 impl ProductInstanceId {
     /// The Id, or `None` when it is longer than 42 bytes or holds a byte
-    /// outside `32..=126`.
+    /// outside `32..=126`. [`parse`](Self::parse) says which.
     #[must_use]
     pub fn new(text: &str) -> Option<Self> {
-        Self::from_bytes(text.as_bytes())
+        Self::parse(text).ok()
+    }
+
+    /// The Id, or why the text is not one.
+    ///
+    /// # Errors
+    ///
+    /// [`NameError::Nul`] for a NUL, [`NameError::NotPrintableAscii`] for any
+    /// other byte outside `32..=126`, [`NameError::TooLong`] past 42 bytes.
+    pub fn parse(text: &str) -> Result<Self, NameError> {
+        if text.bytes().any(|b| b == 0) {
+            return Err(NameError::Nul);
+        }
+        if !text.bytes().all(|b| (32..=126).contains(&b)) {
+            return Err(NameError::NotPrintableAscii);
+        }
+        Name::parse(text).map(Self)
     }
 
     pub(crate) fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if !bytes.iter().all(|b| (32..=126).contains(b)) {
-            return None;
-        }
-        Name::from_bytes(bytes).map(Self)
+        Self::parse(std::str::from_utf8(bytes).ok()?).ok()
     }
 
     /// The text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+}
+
+impl fmt::Display for ProductInstanceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for ProductInstanceId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl TryFrom<&str> for ProductInstanceId {
+    type Error = NameError;
+
+    fn try_from(text: &str) -> Result<Self, NameError> {
+        Self::parse(text)
+    }
+}
+
+impl FromStr for ProductInstanceId {
+    type Err = NameError;
+
+    fn from_str(text: &str) -> Result<Self, NameError> {
+        Self::parse(text)
     }
 }
 

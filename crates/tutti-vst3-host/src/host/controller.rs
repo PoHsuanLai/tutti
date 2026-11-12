@@ -270,6 +270,19 @@ impl Control for Vst3Controller {
         self.queue_edit(id, value);
     }
 
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        Control::parameter_plain(self.loaded(), main, id, value)
+    }
+
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        Control::parameter_normalized(self.loaded(), main, id, plain)
+    }
+
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
         Control::parameter_text(self.loaded(), main, id, value)
     }

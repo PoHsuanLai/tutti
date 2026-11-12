@@ -150,6 +150,18 @@ where
         });
     }
 
+    /// The format's own conversion ([`Control::parameter_plain`]).
+    fn parameter_plain(&self, id: ParamId, value: Normalized) -> Option<f64> {
+        self.on_main(move |main, instance| instance.control()?.parameter_plain(main, id, value))?
+    }
+
+    /// The format's own conversion ([`Control::parameter_normalized`]).
+    fn parameter_normalized(&self, id: ParamId, plain: f64) -> Option<Normalized> {
+        self.on_main(move |main, instance| {
+            instance.control()?.parameter_normalized(main, id, plain)
+        })?
+    }
+
     /// The plugin's display string for `value`, as
     /// [`Control::parameter_text`]
     /// answers it (VST2's only for the value it currently holds).

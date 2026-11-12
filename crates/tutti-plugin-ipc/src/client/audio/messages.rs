@@ -122,6 +122,16 @@ pub(super) enum Command {
         text: String,
         reply: Reply<Option<Normalized>>,
     },
+    GetParameterPlain {
+        param_id: ParamId,
+        value: Normalized,
+        reply: Reply<Option<f64>>,
+    },
+    GetParameterNormalized {
+        param_id: ParamId,
+        plain: f64,
+        reply: Reply<Option<Normalized>>,
+    },
 }
 
 /// Bridge-thread → audio-thread (RT response path).

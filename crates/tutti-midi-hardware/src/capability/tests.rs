@@ -2,12 +2,13 @@ use super::*;
 use tutti_ump::{Direction as BlockDirection, FirstGroup, FunctionBlockId, GroupSpan};
 
 fn block() -> FunctionBlock {
-    FunctionBlock::new(
+    FunctionBlock::builder(
         FunctionBlockId::new(3).unwrap(),
         BlockDirection::Output,
         FirstGroup::new(4).unwrap(),
         GroupSpan::new(2).unwrap(),
     )
+    .build()
     .unwrap()
 }
 

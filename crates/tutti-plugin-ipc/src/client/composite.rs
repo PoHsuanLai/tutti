@@ -639,6 +639,18 @@ impl PluginBridge {
         self.audio.parameter(param_id)
     }
 
+    /// The plain value the format converts a normalized one to, or `None` when
+    /// it cannot be asked or the format has none.
+    pub fn parameter_plain(&self, param_id: ParamId, value: Normalized) -> Option<f64> {
+        self.audio.parameter_plain(param_id, value)
+    }
+
+    /// The normalized value the format converts a plain one to, or `None` as for
+    /// [`parameter_plain`](Self::parameter_plain).
+    pub fn parameter_normalized(&self, param_id: ParamId, plain: f64) -> Option<Normalized> {
+        self.audio.parameter_normalized(param_id, plain)
+    }
+
     /// The plugin's text for a parameter value, or `None` when it cannot be asked.
     pub fn parameter_text(&self, param_id: ParamId, value: Normalized) -> Option<String> {
         self.audio.parameter_text(param_id, value)

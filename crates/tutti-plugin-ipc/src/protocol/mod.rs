@@ -55,7 +55,11 @@ pub(crate) mod wire;
 ///   bounds in seconds from the project's tempo map, which CLAP's
 ///   `loop_start_seconds` / `loop_end_seconds` carry), a field of every
 ///   `TransportInfo` on the wire.
-pub const PROTOCOL_VERSION: u32 = 29;
+/// - **Version 30** added `GetParameterPlain` and `GetParameterNormalized` (and
+///   their replies, `ParameterPlain` and `ParameterNormalized`): the conversion
+///   between a normalized value and the plugin's plain one is the format's, so
+///   it is a request to the server, whose format answers it.
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -387,6 +391,97 @@ mod tests {
                 "{msg:?} did not survive the wire"
             );
         }
+    }
+
+    /// Both conversion frames, request and reply, survive the wire in both
+    /// directions, with the `None` of a format that has no plain value carried
+    /// explicitly and the plain value at full `f64` width (an `f32` would turn
+    /// 632.4555320336758 into 632.4555053710938).
+    #[test]
+    fn every_parameter_conversion_frame_round_trips() {
+        let requests = [
+            HostMessage::GetParameterPlain {
+                param_id: ParamId::new(3),
+                value: Normalized::of(0.375),
+            },
+            HostMessage::GetParameterNormalized {
+                param_id: ParamId::new(3),
+                plain: 632.455_532_033_675_8,
+            },
+        ];
+        for msg in requests {
+            let bytes = postcard::to_allocvec(&msg).expect("serialize");
+            let back: HostMessage = postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(format!("{back:?}"), format!("{msg:?}"), "{msg:?}");
+        }
+        let replies = [
+            BridgeMessage::ParameterPlain {
+                plain: Some(632.455_532_033_675_8),
+            },
+            BridgeMessage::ParameterPlain { plain: None },
+            BridgeMessage::ParameterNormalized {
+                value: Some(Normalized::of(0.5)),
+            },
+            BridgeMessage::ParameterNormalized { value: None },
+        ];
+        for msg in replies {
+            let bytes = postcard::to_allocvec(&msg).expect("serialize");
+            let back: BridgeMessage = postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(format!("{back:?}"), format!("{msg:?}"), "{msg:?}");
+        }
+    }
+
+    /// The v30 conversion frames were **appended**: the request tags follow the
+    /// last request variant that v29 shipped, `StageStateChunk`, and the reply
+    /// tags its last reply, `RestoringState`.
+    #[test]
+    fn the_conversion_frames_are_appended_not_inserted() {
+        let tag = |bytes: &[u8]| {
+            assert!(bytes[0] < 0x80, "a one-byte varint tag");
+            u32::from(bytes[0])
+        };
+        let last_request = tag(&postcard::to_allocvec(&HostMessage::StageStateChunk {
+            seq: 0,
+            last: true,
+            bytes: Vec::new(),
+        })
+        .expect("serialize"));
+        assert_eq!(
+            tag(&postcard::to_allocvec(&HostMessage::GetParameterPlain {
+                param_id: ParamId::new(0),
+                value: Normalized::of(0.0),
+            })
+            .expect("serialize")),
+            last_request + 1,
+            "GetParameterPlain must follow v29's last request"
+        );
+        assert_eq!(
+            tag(
+                &postcard::to_allocvec(&HostMessage::GetParameterNormalized {
+                    param_id: ParamId::new(0),
+                    plain: 0.0,
+                })
+                .expect("serialize")
+            ),
+            last_request + 2,
+        );
+        let last_reply =
+            tag(&postcard::to_allocvec(&BridgeMessage::RestoringState).expect("serialize"));
+        assert_eq!(
+            tag(
+                &postcard::to_allocvec(&BridgeMessage::ParameterPlain { plain: None })
+                    .expect("serialize")
+            ),
+            last_reply + 1,
+            "ParameterPlain must follow v29's last reply"
+        );
+        assert_eq!(
+            tag(
+                &postcard::to_allocvec(&BridgeMessage::ParameterNormalized { value: None })
+                    .expect("serialize")
+            ),
+            last_reply + 2,
+        );
     }
 
     /// The v17 frames were **appended**, leaving every older tag untouched.

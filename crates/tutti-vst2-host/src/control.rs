@@ -108,6 +108,19 @@ impl Control for Vst2Loaded {
         let _ = self.write_parameter(id, value);
     }
 
+    fn parameter_plain(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        Vst2Loaded::parameter_plain(self, id, value)
+    }
+
+    fn parameter_normalized(
+        &self,
+        _main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        Vst2Loaded::parameter_normalized(self, id, plain)
+    }
+
     /// The plugin's display string, but **only for the value it currently
     /// holds**.
     ///

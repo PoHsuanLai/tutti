@@ -274,6 +274,33 @@ impl Control for Vst3Loaded {
         }
     }
 
+    /// The controller's own `normalizedParamToPlain`, whatever shape it has.
+    /// `None` for an id the plugin does not list, with no controller, or for a
+    /// map that answers a non-finite value.
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        self.parameter_info(main, id)?;
+        self.plugin
+            .normalized_to_plain(main, id.get(), value.get())
+            .filter(|plain| plain.is_finite())
+    }
+
+    /// The controller's own `plainParamToNormalized`, clamped onto `0..=1`
+    /// (the SDK does not bound it).
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        if !plain.is_finite() {
+            return None;
+        }
+        self.parameter_info(main, id)?;
+        self.plugin
+            .plain_to_normalized(main, id.get(), plain)
+            .map(Normalized::clamped)
+    }
+
     /// The plugin's own display string for `value`: the value is a *parameter*
     /// of the call, not the plugin's current one, which is what an automation
     /// lane drawing labels along a curve needs.

@@ -138,8 +138,18 @@ impl Format for Au {
         (
             "parameters_listed",
             Gap {
-                why: "AUDelay lists its own four parameters; the spec's plugin lists three",
-                fails_with: "the listed parameters",
+                why: "AUDelay lists its own four parameters, under its own names; the spec's \
+                      plugin lists level, aux, mode and tone",
+                fails_with: "Level name",
+            },
+        ),
+        (
+            "parameter_conversion_is_the_formats_own",
+            Gap {
+                why: "AUDelay has no tone parameter: id 3 is its own lowpass cutoff, which has \
+                      a plain value, where the spec's tone has none under a normalized-only \
+                      surface",
+                fails_with: "tone plain at 0 (loaded)",
             },
         ),
         (

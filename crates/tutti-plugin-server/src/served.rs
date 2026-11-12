@@ -104,6 +104,15 @@ pub(crate) trait ServedPlugin: Render {
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
     /// The host's automation mode.
     fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode);
+    /// The plain value of `value`, by the plugin's format.
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64>;
+    /// The normalized value of a plain one, by the plugin's format.
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized>;
     /// The plugin's own text for `value`.
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String>;
     /// The value the plugin parses from `text`.
@@ -628,6 +637,23 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         if let Some(control) = self.lifecycle.control() {
             control.set_automation_state(main, mode);
         }
+    }
+
+    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+        self.lifecycle
+            .control_ref()?
+            .parameter_plain(main, id, value)
+    }
+
+    fn parameter_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        plain: f64,
+    ) -> Option<Normalized> {
+        self.lifecycle
+            .control_ref()?
+            .parameter_normalized(main, id, plain)
     }
 
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {

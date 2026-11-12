@@ -9,8 +9,8 @@ use std::path::Path;
 
 use tutti_plugin_types::{
     ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, EditorWindow,
-    InProcess, Load, MainThread, Normalized, ParamId, ParamRange, PluginError, PluginResult,
-    Request, RescanScope, WindowHandle,
+    InProcess, Load, MainThread, Normalized, ParamId, PluginError, PluginResult, Request,
+    RescanScope, WindowHandle,
 };
 
 use super::ClapLoaded;
@@ -52,12 +52,7 @@ fn param_edit_from_event(ranges: &[ParamBounds], event: ClapEvent) -> Option<(Pa
         return None;
     };
     let normalized = match lookup_range(ranges, v.param_id) {
-        Some(b) => ParamRange::Plain {
-            min: b.min,
-            max: b.max,
-            default: b.min,
-        }
-        .to_normalized(v.value),
+        Some(b) => b.normalized(v.value),
         None => v.value,
     };
     Some((v.param_id.into(), normalized as f32))
@@ -353,16 +348,11 @@ mod tests {
     #[test]
     fn the_normalize_is_the_inverse_of_the_set_parameter_denormalize() {
         let ranges = [CUTOFF];
-        let ParamBounds { id, min, max, .. } = CUTOFF;
-        let range = ParamRange::Plain {
-            min,
-            max,
-            default: min,
-        };
+        let id = CUTOFF.id;
 
         for host_value in [0.0_f64, 0.25, 0.5, 0.75, 1.0] {
             // What `set_parameter` would hand the plugin...
-            let plain = range.to_plain(host_value);
+            let plain = CUTOFF.plain(host_value);
             // ...and what the editor reporting that same position comes back as.
             let round_tripped =
                 param_edit_from_event(&ranges, ClapEvent::param_value(0, id, plain));

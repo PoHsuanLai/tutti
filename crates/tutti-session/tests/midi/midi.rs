@@ -13,7 +13,7 @@ use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 #[cfg(feature = "midi-hardware")]
-use tutti_midi_hardware::{Direction, EndpointId};
+use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_transport::MotionEvent;
 use tutti_types::{
@@ -630,7 +630,7 @@ fn plug(
     fake: &tutti_midi_hardware::test_support::FakeCounters,
     raw: u64,
     name: &str,
-    d: Direction,
+    d: PortDirection,
 ) {
     fake.plug(tutti_midi_hardware::test_support::endpoint(raw, name), d);
 }
@@ -643,7 +643,7 @@ fn a_device_that_comes_and_goes_is_a_session_event() {
     let (mut s, fake) = hot_plug_session();
     assert!(device_events(&s.update()).is_empty(), "nothing yet");
 
-    plug(&fake, 1, "Keys", Direction::Input);
+    plug(&fake, 1, "Keys", PortDirection::Input);
     assert_eq!(device_events(&s.update()), [("added", "Keys".to_string())]);
     assert!(device_events(&s.update()).is_empty(), "reported once");
 
@@ -663,7 +663,7 @@ fn a_device_that_comes_and_goes_is_a_session_event() {
 #[test]
 fn a_held_input_that_vanishes_is_retired_and_reported() {
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 1, "Keys", Direction::Input);
+    plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("keys").expect("connects");
@@ -866,7 +866,7 @@ fn a_device_past_the_slots_is_refused() {
 #[test]
 fn a_held_output_that_vanishes_is_closed_and_reported() {
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 10, "Synth", Direction::Output);
+    plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_output_by_name("synth").expect("connects");
@@ -915,7 +915,7 @@ fn a_dead_device_watch_is_reported_once() {
 fn a_remembered_device_resolves_through_the_session() {
     use tutti_midi_hardware::Resolved;
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 1, "Keys", Direction::Input);
+    plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     let saved = io.devices().list().remove(0);
@@ -933,9 +933,9 @@ fn a_remembered_device_resolves_through_the_session() {
 #[test]
 fn another_devices_removal_leaves_a_held_input_open() {
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 1, "Keys", Direction::Input);
-    plug(&fake, 2, "Pads", Direction::Input);
-    plug(&fake, 10, "Synth", Direction::Output);
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    plug(&fake, 2, "Pads", PortDirection::Input);
+    plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("keys").expect("connects");
@@ -1062,7 +1062,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     use tutti_ump::Protocol;
 
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 7, "Wire", Direction::Duplex);
+    plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("wire").expect("connects");
@@ -1118,7 +1118,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     use tutti_ump::{Message, Protocol, Stream, StreamConfig};
 
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 7, "Dev", Direction::Duplex);
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
     let _ = s.update();
     let raw = EndpointId::from_raw(7);
     let io = s.midi_io().expect("the OS MIDI layer").clone();

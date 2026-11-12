@@ -226,6 +226,26 @@ pub enum HostMessage {
         #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
+    /// Ask the plugin's format for the plain value `value` stands for
+    /// (`Control::parameter_plain`): the conversion is the format's, so the
+    /// host never computes it from a range. Answered by
+    /// [`BridgeMessage::ParameterPlain`].
+    GetParameterPlain {
+        /// Which parameter — opaque handle or positional index, per format.
+        param_id: crate::protocol::ParamId,
+        /// The value to convert, normalized.
+        #[serde(with = "super::wire::normalized_f64")]
+        value: crate::protocol::Normalized,
+    },
+    /// Ask the plugin's format for the normalized value a plain one stands for
+    /// (`Control::parameter_normalized`). Answered by
+    /// [`BridgeMessage::ParameterNormalized`].
+    GetParameterNormalized {
+        /// Which parameter — opaque handle or positional index, per format.
+        param_id: crate::protocol::ParamId,
+        /// The plain value, in the parameter's own unit.
+        plain: f64,
+    },
 }
 
 /// A reply or notification travelling subprocess → host.
@@ -451,4 +471,18 @@ pub enum BridgeMessage {
     /// restore (one opaque plugin call that may take as long as the state is
     /// large) and not for an open.
     RestoringState,
+    /// The plain value the format converted a normalized one to. `None` means
+    /// the format has none (a parameter it does not declare, or VST2 without an
+    /// integer range).
+    ParameterPlain {
+        /// The plain value, in the parameter's own unit.
+        plain: Option<f64>,
+    },
+    /// The normalized value the format converted a plain one to. `None` as for
+    /// [`ParameterPlain`](Self::ParameterPlain).
+    ParameterNormalized {
+        /// The normalized value.
+        #[serde(with = "super::wire::normalized_f64_opt")]
+        value: Option<Normalized>,
+    },
 }

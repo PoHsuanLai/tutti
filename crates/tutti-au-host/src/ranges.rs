@@ -12,7 +12,6 @@
 #![cfg(target_os = "macos")]
 
 use tutti_au_ffi::Unit;
-use tutti_plugin_types::ParamRange;
 
 use crate::parameters;
 
@@ -30,38 +29,52 @@ pub(crate) struct ParamBounds {
 }
 
 impl ParamBounds {
-    /// These bounds as the shared range type, which owns the conversion.
-    ///
-    /// `default` is unused by [`to_plain`](ParamRange::to_plain) /
-    /// [`to_normalized`](ParamRange::to_normalized): only the endpoints
-    /// participate, so `min` stands in rather than a value invented here.
-    fn as_range(self) -> ParamRange {
-        ParamRange::Plain {
-            min: self.min as f64,
-            max: self.max as f64,
-            default: self.min as f64,
-        }
+    /// The bounds as an `f64` span, `None` for a non-finite bound or a range
+    /// that is not increasing: a malformed AU, which gets no invented span.
+    fn span(self) -> Option<(f64, f64)> {
+        let (min, max) = (f64::from(self.min), f64::from(self.max));
+        (min.is_finite() && max.is_finite() && max > min).then_some((min, max))
     }
 
-    /// Maps a normalized `0..=1` value onto `[min, max]`.
+    /// Maps a normalized `0..=1` value onto `[min, max]`, narrowed to the `f32`
+    /// that `AudioUnitSetParameter` takes.
     ///
-    /// Delegates to [`ParamRange::to_plain`], narrowing to the `f32` that
-    /// `AudioUnitSetParameter` takes. **Delegation rather than an `f32`
-    /// hand-copy**: the four guards this depends on (non-finite bounds,
-    /// degenerate range, NaN value, clamp order) are stated once there, and two
-    /// copies would drift apart silently.
+    /// **This is AU's own conversion, and it is linear.** An AU has no
+    /// normalized value (`AudioUnitGetParameter` and `AudioUnitSetParameter`
+    /// speak plain `Float32` only), so the position is the host's, over the
+    /// declared span. The display-curve flags (`DisplayLogarithmic`, ...,
+    /// `AudioUnitProperties.h`) are *display scales*: the header gives them no
+    /// formula, so they stay `DisplayCurve`
+    /// hints for a UI and do not bend this mapping. The one curve the platform
+    /// defines is `AUParameterValueFromLinear` (`AudioUnitUtilities.h`), keyed
+    /// on the unit, which this crate does not call.
     ///
-    /// The narrowing is safe for the property this path needs: `to_plain` never
-    /// returns a non-finite `f64`, and the result is bounded by `[min, max]`,
-    /// both of which came *from* an `f32`.
+    /// Guards: a non-finite or non-increasing range yields `min` when finite
+    /// and `0.0` otherwise, and NaN is `0.0` normalized, so the result is always
+    /// finite and inside `[min, max]` (both came from an `f32`).
     pub(crate) fn to_plain(self, normalized: f64) -> f32 {
-        self.as_range().to_plain(normalized) as f32
+        let n = if normalized.is_nan() {
+            0.0
+        } else {
+            normalized.clamp(0.0, 1.0)
+        };
+        let Some((min, max)) = self.span() else {
+            return if self.min.is_finite() { self.min } else { 0.0 };
+        };
+        (min + n * (max - min)) as f32
     }
 
     /// Inverse of [`to_plain`](Self::to_plain): the AU's plain value back onto
-    /// normalized `0..=1`, the read direction of the same boundary.
+    /// normalized `0..=1`, the read direction of the same boundary. `0.0` for
+    /// NaN and for a range with no span.
     pub(crate) fn to_normalized(self, plain: f32) -> f64 {
-        self.as_range().to_normalized(plain as f64)
+        let Some((min, max)) = self.span() else {
+            return 0.0;
+        };
+        if plain.is_nan() {
+            return 0.0;
+        }
+        (f64::from(plain).clamp(min, max) - min) / (max - min)
     }
 }
 
@@ -202,6 +215,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// AU's position is the line over the declared range, and its inverse reads
+    /// a plain value back to the position it came from. The display curves
+    /// (`DisplayLogarithmic`, ...) are display hints and bend neither: a log
+    /// cutoff's midpoint is the arithmetic one.
+    #[test]
+    fn the_position_is_the_line_and_inverts() {
+        let cutoff = ParamBounds {
+            min: 10.0,
+            max: 22_050.0,
+        };
+        assert_eq!(cutoff.to_normalized(10.0), 0.0);
+        assert_eq!(cutoff.to_normalized(22_050.0), 1.0);
+        assert_eq!(cutoff.to_normalized(11_030.0), 0.5);
+        for n in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let back = cutoff.to_normalized(cutoff.to_plain(n));
+            assert!((back - n).abs() < 1e-6, "{n} came back as {back}");
+        }
+        assert_eq!(cutoff.to_normalized(-1.0), 0.0, "below the range clamps");
+        assert_eq!(cutoff.to_normalized(1e9), 1.0, "above the range clamps");
+        assert_eq!(cutoff.to_normalized(f32::NAN), 0.0);
+        assert_eq!(ParamBounds { min: 3.0, max: 3.0 }.to_normalized(3.0), 0.0);
     }
 
     #[test]

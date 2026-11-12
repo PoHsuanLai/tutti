@@ -6,6 +6,8 @@
 //! over a received message, with no allocation. The asking side is
 //! [`Connection`](crate::Connection).
 
+use std::fmt;
+
 use tutti_ump::{
     BlockFilter, BlockSelect, DeviceIdentity, Direction as BlockDirection, DiscoveryFilter,
     FirstGroup, FunctionBlockId, FunctionBlockInfo, GroupSpan, Message, Midi1Port, Protocol,
@@ -49,80 +51,153 @@ pub struct FunctionBlock {
     pub(crate) name: Option<BlockName>,
 }
 
-impl FunctionBlock {
-    /// An active block of `groups` Groups from `first_group`, with no UI hint,
-    /// not a MIDI 1.0 port, no MIDI-CI and no SysEx 8.
+/// Why a [`FunctionBlockBuilder`] cannot build a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockError {
+    /// The direction is the reserved `0b00` (M2-104 §7.1.8).
+    ReservedDirection,
+    /// The block would run past Group 16: `first_group + groups > 16`.
+    PastGroup16 {
+        /// The first Group it was to span.
+        first_group: FirstGroup,
+        /// How many Groups it was to span.
+        groups: GroupSpan,
+    },
+    /// The MIDI 1.0 port is the reserved `0x03`.
+    ReservedMidi1Port,
+    /// A MIDI 1.0 port spans one Group (§7.1.8: "Number of Groups Spanned shall
+    /// be 1"), and this block spans `groups`.
+    Midi1PortSpansGroups {
+        /// How many Groups it was to span.
+        groups: GroupSpan,
+    },
+}
+
+impl fmt::Display for BlockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReservedDirection => f.write_str("the block's direction is the reserved 0b00"),
+            Self::PastGroup16 {
+                first_group,
+                groups,
+            } => write!(
+                f,
+                "{} Groups from Group {} run past Group 16",
+                groups.get(),
+                first_group.get()
+            ),
+            Self::ReservedMidi1Port => f.write_str("the block's MIDI 1.0 port is the reserved 3"),
+            Self::Midi1PortSpansGroups { groups } => {
+                write!(f, "a MIDI 1.0 port spans one Group, not {}", groups.get())
+            }
+        }
+    }
+}
+
+impl std::error::Error for BlockError {}
+
+/// A [`FunctionBlock`] being described: [`FunctionBlock::builder`] starts one
+/// with the four fields every block has, the setters add the rest, and
+/// [`build`](Self::build) checks them together.
+#[derive(Clone, Debug)]
+#[must_use = "a builder does nothing until `build`"]
+pub struct FunctionBlockBuilder {
+    block: FunctionBlock,
+}
+
+impl FunctionBlockBuilder {
+    /// Whether the block is active (default: yes). A block of an Endpoint that
+    /// declares its blocks static must stay active (§7.1.8); this core does not
+    /// check it.
+    pub const fn active(mut self, active: bool) -> Self {
+        self.block.active = active;
+        self
+    }
+
+    /// The block's UI hint (default: [`UiHint::Unknown`]).
+    pub const fn ui_hint(mut self, hint: UiHint) -> Self {
+        self.block.ui_hint = hint;
+        self
+    }
+
+    /// Whether the block is a MIDI 1.0 port (default: [`Midi1Port::No`]).
+    /// [`build`](Self::build) refuses the reserved `0x03` and a port over more
+    /// than one Group.
+    pub const fn midi1(mut self, port: Midi1Port) -> Self {
+        self.block.midi1 = port;
+        self
+    }
+
+    /// The block's MIDI-CI Message Version/Format (`0` is none, the default,
+    /// §7.1.8) and the number of simultaneous SysEx 8 streams it supports (`0`
+    /// none, `1` one, `2..=255` that many).
+    pub const fn midi_ci(mut self, version: u8, max_sysex8_streams: u8) -> Self {
+        self.block.midi_ci_version = version;
+        self.block.max_sysex8_streams = max_sysex8_streams;
+        self
+    }
+
+    /// The block's name (default: none).
+    pub const fn name(mut self, name: BlockName) -> Self {
+        self.block.name = Some(name);
+        self
+    }
+
+    /// The block, or why its fields do not go together.
     ///
-    /// `None` when it would run past Group 16 (`first_group + groups > 16`),
-    /// or when `direction` is the reserved `0b00`.
-    #[must_use]
-    pub fn new(
+    /// # Errors
+    ///
+    /// A [`BlockError`]: the reserved direction, Groups past Group 16, the
+    /// reserved MIDI 1.0 port, or a MIDI 1.0 port over several Groups.
+    pub fn build(self) -> Result<FunctionBlock, BlockError> {
+        let block = self.block;
+        if matches!(block.direction, BlockDirection::Reserved(_)) {
+            return Err(BlockError::ReservedDirection);
+        }
+        if u16::from(block.first_group.get()) + u16::from(block.groups.get()) > 16 {
+            return Err(BlockError::PastGroup16 {
+                first_group: block.first_group,
+                groups: block.groups,
+            });
+        }
+        match block.midi1 {
+            Midi1Port::No => {}
+            Midi1Port::Unrestricted | Midi1Port::Restricted if block.groups.get() == 1 => {}
+            Midi1Port::Unrestricted | Midi1Port::Restricted => {
+                return Err(BlockError::Midi1PortSpansGroups {
+                    groups: block.groups,
+                });
+            }
+            Midi1Port::Reserved(_) => return Err(BlockError::ReservedMidi1Port),
+        }
+        Ok(block)
+    }
+}
+
+impl FunctionBlock {
+    /// Starts a block of `groups` Groups from `first_group`: active, with no UI
+    /// hint, not a MIDI 1.0 port, no MIDI-CI, no SysEx 8 and no name until the
+    /// builder says otherwise.
+    pub fn builder(
         id: FunctionBlockId,
         direction: BlockDirection,
         first_group: FirstGroup,
         groups: GroupSpan,
-    ) -> Option<Self> {
-        let reserved = matches!(direction, BlockDirection::Reserved(_));
-        if reserved || u16::from(first_group.get()) + u16::from(groups.get()) > 16 {
-            return None;
+    ) -> FunctionBlockBuilder {
+        FunctionBlockBuilder {
+            block: Self {
+                id,
+                active: true,
+                direction,
+                ui_hint: UiHint::Unknown,
+                midi1: Midi1Port::No,
+                first_group,
+                groups,
+                midi_ci_version: 0,
+                max_sysex8_streams: 0,
+                name: None,
+            },
         }
-        Some(Self {
-            id,
-            active: true,
-            direction,
-            ui_hint: UiHint::Unknown,
-            midi1: Midi1Port::No,
-            first_group,
-            groups,
-            midi_ci_version: 0,
-            max_sysex8_streams: 0,
-            name: None,
-        })
-    }
-
-    /// The block with `active` set. A block of an Endpoint that declares its
-    /// blocks static must stay active (§7.1.8); this core does not check it.
-    #[must_use]
-    pub const fn with_active(mut self, active: bool) -> Self {
-        self.active = active;
-        self
-    }
-
-    /// The block with a UI hint.
-    #[must_use]
-    pub const fn with_ui_hint(mut self, hint: UiHint) -> Self {
-        self.ui_hint = hint;
-        self
-    }
-
-    /// The block declared a MIDI 1.0 port. `None` for the reserved `0x03`, or
-    /// for a port over more than one Group (§7.1.8: a port spans one).
-    #[must_use]
-    pub fn with_midi1(mut self, port: Midi1Port) -> Option<Self> {
-        match port {
-            Midi1Port::No => {}
-            Midi1Port::Unrestricted | Midi1Port::Restricted if self.groups.get() == 1 => {}
-            _ => return None,
-        }
-        self.midi1 = port;
-        Some(self)
-    }
-
-    /// The block with its MIDI-CI Message Version/Format (`0` is none, §7.1.8)
-    /// and the number of simultaneous SysEx 8 streams it supports (`0` none,
-    /// `1` one, `2..=255` that many).
-    #[must_use]
-    pub const fn with_midi_ci(mut self, version: u8, max_sysex8_streams: u8) -> Self {
-        self.midi_ci_version = version;
-        self.max_sysex8_streams = max_sysex8_streams;
-        self
-    }
-
-    /// The block with a name.
-    #[must_use]
-    pub const fn with_name(mut self, name: BlockName) -> Self {
-        self.name = Some(name);
-        self
     }
 
     /// Its number.
@@ -206,18 +281,19 @@ impl FunctionBlock {
         let id = FunctionBlockId::new(info.id.get())?;
         let first_group = FirstGroup::new(info.first_group.get())?;
         let groups = GroupSpan::new(info.groups_spanned.get())?;
-        let mut block = Self::new(id, info.direction, first_group, groups)?;
-        block.active = info.active;
-        block.ui_hint = info.ui_hint;
         // A peer's reserved MIDI 1.0 value, or a port over several Groups, is
         // kept as "not a port": the block is still usable as MIDI 2.0.
-        block.midi1 = match info.midi1 {
+        let midi1 = match info.midi1 {
             Midi1Port::Unrestricted | Midi1Port::Restricted if groups.get() == 1 => info.midi1,
             _ => Midi1Port::No,
         };
-        block.midi_ci_version = info.midi_ci_version;
-        block.max_sysex8_streams = info.max_sysex8_streams;
-        Some(block)
+        Self::builder(id, info.direction, first_group, groups)
+            .active(info.active)
+            .ui_hint(info.ui_hint)
+            .midi1(midi1)
+            .midi_ci(info.midi_ci_version, info.max_sysex8_streams)
+            .build()
+            .ok()
     }
 }
 
@@ -299,10 +375,11 @@ impl Endpoint {
         ) else {
             return;
         };
-        let block = FunctionBlock::new(id, BlockDirection::Bidirectional, first, span)
-            .map(|b| b.with_ui_hint(UiHint::Both))
-            .and_then(|b| b.with_midi1(Midi1Port::Unrestricted));
-        if let Some(block) = block {
+        let block = FunctionBlock::builder(id, BlockDirection::Bidirectional, first, span)
+            .ui_hint(UiHint::Both)
+            .midi1(Midi1Port::Unrestricted)
+            .build();
+        if let Ok(block) = block {
             self.insert_block(block);
         }
     }

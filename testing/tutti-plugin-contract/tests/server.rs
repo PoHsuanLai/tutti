@@ -13,12 +13,12 @@ use tutti_fixtures::main_thread;
 
 use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::PluginClient;
-use tutti_plugin_contract::spec::{Mode, Param};
+use tutti_plugin_contract::spec::{self, Mode, Param};
 use tutti_plugin_contract::{
     Clap, Format, Transcript, Vst3, Vst3Cpp, bundle_of, clap_path, patch_mode, vst3_cpp_module,
     vst3_module,
 };
-use tutti_plugin_types::ParamId;
+use tutti_plugin_types::{Normalized, ParamId};
 
 fn through_server<F: Format>(path: PathBuf) {
     // SAFETY: set before any thread of this test reads it.
@@ -47,6 +47,34 @@ fn through_server<F: Format>(path: PathBuf) {
         .parameter_value(ParamId::new(Param::Level.id().get()))
         .map(|v| v.get());
     assert_eq!(level, Some(0.5), "a parameter read across the boundary");
+
+    // The conversion is the format's, asked across the boundary: each figure is
+    // the spec's for the format (`spec::Tone`), never a line the client draws.
+    let tone = F::SURFACE.tone;
+    for (i, &n) in spec::TONE_AT.iter().enumerate() {
+        let any = handle.any_thread();
+        let plain = any.parameter_plain(Param::Tone.id(), Normalized::of(n));
+        let want = tone.plain.map(|p| p[i]);
+        match (plain, want) {
+            (Some(got), Some(want)) => {
+                assert!(
+                    (got - want).abs() <= want.abs() * 1e-12,
+                    "{}: tone plain at {n} across the boundary: got {got}, want {want}",
+                    F::NAME
+                );
+                let back = any
+                    .parameter_normalized(Param::Tone.id(), got)
+                    .expect("a plain value converts back");
+                assert!(
+                    (back.get() - n).abs() < 1e-9,
+                    "{}: {back:?} is not {n}",
+                    F::NAME
+                );
+            }
+            (None, None) => {}
+            (got, want) => panic!("{}: tone plain at {n}: got {got:?}, want {want:?}", F::NAME),
+        }
+    }
 }
 
 #[test]

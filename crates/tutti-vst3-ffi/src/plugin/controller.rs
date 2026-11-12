@@ -38,6 +38,16 @@ impl Plugin {
         Some(unsafe { controller.normalizedParamToPlain(id, normalized) })
     }
 
+    /// `plainParamToNormalized` for the parameter `id`; `None` without a
+    /// controller.
+    #[must_use]
+    pub fn plain_to_normalized(&self, main: &MainThread, id: u32, plain: f64) -> Option<f64> {
+        let _scope = self.scoped(main);
+        let controller = self.controller.get()?;
+        // SAFETY: a plain conversion on a live controller.
+        Some(unsafe { controller.plainParamToNormalized(id, plain) })
+    }
+
     /// The parameter's current normalized value; `None` without a controller.
     #[must_use]
     pub fn parameter_normalized(&self, main: &MainThread, id: ParamId) -> Option<f64> {

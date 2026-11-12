@@ -4,7 +4,7 @@
 #![cfg(feature = "serde")]
 
 use tutti_midi_device::{
-    DeviceEvent, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange, OsDevice,
+    DeviceEvent, DeviceInfo, DeviceTable, EndpointId, Identity, OsChange, OsDevice, PortDirection,
     Resolved,
 };
 
@@ -16,7 +16,7 @@ fn listed(identity: Identity, count: u64) -> (DeviceTable, Vec<DeviceInfo>) {
                 handle: EndpointId::from_raw(n),
                 identity: identity.clone(),
                 name: "Keys".into(),
-                direction: Direction::Input,
+                direction: PortDirection::Input,
             })) else {
                 unreachable!("a new handle is added")
             };

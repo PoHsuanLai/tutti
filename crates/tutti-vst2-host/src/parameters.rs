@@ -57,6 +57,24 @@ impl Vst2Loaded {
             .map(|v| Normalized::clamped(f64::from(v)))
     }
 
+    /// The plain value of a normalized one: VST2's only plain domain is the
+    /// integer range of `effGetParameterProperties` (`minInteger`..`maxInteger`,
+    /// `aeffectx.h:449`), so a parameter that declares none has no plain value
+    /// and this is `None`, as it is for an id the plugin does not declare. The
+    /// header fixes no map between the float and the range; VST2's convention is
+    /// the line between them, which is written once here (`plain_of`).
+    pub fn parameter_plain(&self, id: ParamId, value: Normalized) -> Option<f64> {
+        let range = self.parameter_properties(id)?.integer_range?;
+        Some(plain_of(range, value.get()))
+    }
+
+    /// The inverse of [`parameter_plain`](Self::parameter_plain): the normalized
+    /// value of a plain one, clamped into the declared integer range.
+    pub fn parameter_normalized(&self, id: ParamId, plain: f64) -> Option<Normalized> {
+        let range = self.parameter_properties(id)?.integer_range?;
+        Some(normalized_of(range, plain))
+    }
+
     /// The plugin's display text for `value`, only when `value` is the one the
     /// plugin currently holds (see [`Control::parameter_text`]). Takes no token, but is not a
     /// `getParameter`: it dispatches `effGetParamDisplay`, which VST2 does not allow beside
@@ -217,15 +235,10 @@ impl Vst2Loaded {
         let range = match int_range {
             Some(r) => {
                 let (min, max) = (r.min as f64, r.max as f64);
-                let plain = ParamRange::Plain {
-                    min,
-                    max,
-                    default: 0.0,
-                };
                 ParamRange::Plain {
                     min,
                     max,
-                    default: plain.to_plain(default),
+                    default: plain_of(r, default),
                 }
             }
             None => ParamRange::Normalized { default },
@@ -330,6 +343,33 @@ fn declared_steps(
 /// converted and is not typed.
 fn declared_measures(label: &str, range: &ParamRange) -> Option<ParamUnit> {
     ParamUnit::from_label(label).filter(|unit| unit.fits(range))
+}
+
+/// `normalized` on `0..=1` as a point of the integer range: the line between
+/// its ends (the 2.4 header gives no other map), running backwards for a range
+/// the plugin declares inverted. `min` for a range of one point.
+fn plain_of(range: IntegerRange, normalized: f64) -> f64 {
+    let (min, max) = (f64::from(range.min), f64::from(range.max));
+    let n = if normalized.is_nan() {
+        0.0
+    } else {
+        normalized.clamp(0.0, 1.0)
+    };
+    if max == min {
+        min
+    } else {
+        min + n * (max - min)
+    }
+}
+
+/// The inverse of [`plain_of`]; NaN and a range of one point are `0.0`.
+fn normalized_of(range: IntegerRange, plain: f64) -> Normalized {
+    let (min, max) = (f64::from(range.min), f64::from(range.max));
+    if max == min || plain.is_nan() {
+        return Normalized::of(0.0);
+    }
+    let plain = plain.clamp(min.min(max), min.max(max));
+    Normalized::clamped((plain - min) / (max - min))
 }
 
 /// The index `id` stands for, if the plugin declares that many parameters.
@@ -461,5 +501,49 @@ mod measures_tests {
             Some(ParamUnit::Decibels),
             "ASCII spaces trim"
         );
+    }
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+
+    /// VST2's plain value is the integer range's line, and the inverse reads it
+    /// back; a plain value past the ends clamps to them.
+    #[test]
+    fn the_integer_range_is_the_only_plain_domain_and_inverts() {
+        let r = IntegerRange { min: -5, max: 5 };
+        assert_eq!(plain_of(r, 0.0), -5.0);
+        assert_eq!(plain_of(r, 0.5), 0.0);
+        assert_eq!(plain_of(r, 1.0), 5.0);
+        for n in [0.0, 0.1, 0.5, 0.9, 1.0] {
+            assert!(
+                (normalized_of(r, plain_of(r, n)).get() - n).abs() < 1e-12,
+                "{n}"
+            );
+        }
+        assert_eq!(normalized_of(r, 50.0).get(), 1.0);
+        assert_eq!(normalized_of(r, -50.0).get(), 0.0);
+    }
+
+    /// A range the plugin declares inverted (`aeffectx.h` does not forbid it)
+    /// runs backwards, and a range of one point is that point.
+    #[test]
+    fn an_inverted_range_runs_backwards_and_a_point_is_a_point() {
+        let inverted = IntegerRange { min: 10, max: 0 };
+        assert_eq!(plain_of(inverted, 0.0), 10.0);
+        assert_eq!(plain_of(inverted, 1.0), 0.0);
+        assert_eq!(normalized_of(inverted, 7.5).get(), 0.25);
+        let point = IntegerRange { min: 3, max: 3 };
+        assert_eq!(plain_of(point, 0.7), 3.0);
+        assert_eq!(normalized_of(point, 3.0).get(), 0.0);
+    }
+
+    /// NaN is `0.0` normalized and the range's `min`, never a NaN to the host.
+    #[test]
+    fn nan_never_escapes() {
+        let r = IntegerRange { min: 0, max: 100 };
+        assert_eq!(plain_of(r, f64::NAN), 0.0);
+        assert_eq!(normalized_of(r, f64::NAN).get(), 0.0);
     }
 }

@@ -5,7 +5,7 @@
 //! switching type is as cheap as any parameter change.
 
 use crate::Lerp;
-use crate::Real;
+use crate::{Lanes, Real};
 use tutti_types::{Db, Hz, Q, SampleRate};
 
 /// Which response the state-variable filter presents.
@@ -156,18 +156,27 @@ impl SvfCoeffs {
     }
 }
 
-/// The coefficients of one set of controls, in the filter's state precision `F`.
+/// The coefficients [`svf_step`] reads, in the arithmetic `L` it runs in: a filter
+/// node's state precision, or the lane bank's `f32x8`.
 ///
-/// One set serves every channel: the controls are one linked surface, so
-/// widening replicates only the integrator state.
+/// One set serves every channel of a node: the controls are one linked surface, so
+/// widening replicates only the integrator state. The fields are named, so a set
+/// built by hand (the lane bank's, one cutoff per lane) cannot swap two of them;
+/// [`SvfCoeffs`] solves them from the controls.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SvfCoefficients<F: Real> {
-    a1: F,
-    a2: F,
-    a3: F,
-    m0: F,
-    m1: F,
-    m2: F,
+pub struct SvfCoefficients<L: Lanes> {
+    /// `1 / (1 + g (g + k))`.
+    pub a1: L,
+    /// `g * a1`.
+    pub a2: L,
+    /// `g * a2`.
+    pub a3: L,
+    /// The input's weight in the output.
+    pub m0: L,
+    /// The band-pass state's weight in the output.
+    pub m1: L,
+    /// The low-pass state's weight in the output.
+    pub m2: L,
 }
 
 impl<F: Real> From<&SvfCoeffs> for SvfCoefficients<F> {
@@ -209,9 +218,12 @@ impl<F: Real> Lerp for SvfCoefficients<F> {
 /// stores stay adjacent. Measured, splitting them cost 26% at width 6 — an
 /// across-channel layout only pays once a channel-inner loop is explicitly
 /// vectorised, which this one is not.
+///
+/// Written once over [`Lanes`], so the polysynth's lane bank runs this step on eight
+/// voices at a time.
 #[inline(always)]
-pub(crate) fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
-    let two = F::from_f64(2.0);
+pub fn svf_step<L: Lanes>(c: &SvfCoefficients<L>, s: &mut [L; 2], v0: L) -> L {
+    let two = L::from_f32(2.0);
     let [ic1eq, ic2eq] = *s;
     let v3 = v0 - ic2eq;
     let v1 = c.a1 * ic1eq + c.a2 * v3;

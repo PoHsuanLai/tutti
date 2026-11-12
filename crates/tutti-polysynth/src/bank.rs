@@ -33,7 +33,10 @@
 
 use crate::kernel::{self, V};
 use crate::{Adsr, FilterType, OscillatorType, SvfMode};
-use tutti_dsp::{LadderCoeffs, SvfCoeffs, SvfType};
+use tutti_dsp::{
+    LadderCoefficients, LadderCoeffs, LadderType, SvfCoefficients, SvfCoeffs, SvfType, ladder_step,
+    svf_step,
+};
 use tutti_types::{Amplitude, Db, Hz, Phase, PhaseIncrement, Q, Resonance, SampleRate, Seconds};
 use wide::u32x8;
 
@@ -711,7 +714,7 @@ impl VoiceBank {
         let mut rng = self.rng[g];
         let mut pink = self.pink[g];
 
-        let [mut z0, mut z1, mut z2, mut z3] = self.z[g];
+        let mut z = self.z[g];
         let mut c = self.coef[g];
         let c_target = self.coef_target[g];
         let c_step = [
@@ -732,7 +735,6 @@ impl VoiceBank {
         let [gain_l_target, gain_r_target] = self.gain_target[g];
         let glide = V::splat(self.gain_glide);
 
-        let two = V::splat(2.0);
         for frame in acc.iter_mut().take(n) {
             inc += inc_step;
             // `max` keeps an idle lane's zero increment from dividing by zero;
@@ -752,35 +754,24 @@ impl VoiceBank {
                     c[0] += c_step[0];
                     c[1] += c_step[1];
                     c[2] += c_step[2];
-                    let v3 = x - z1;
-                    let v1 = c[0] * z0 + c[1] * v3;
-                    let v2 = z1 + c[1] * z0 + c[2] * v3;
-                    z0 = two * v1 - z0;
-                    z1 = two * v2 - z1;
-                    m[0] * x + m[1] * v1 + m[2] * v2
+                    let coefficients = SvfCoefficients {
+                        a1: c[0],
+                        a2: c[1],
+                        a3: c[2],
+                        m0: m[0],
+                        m1: m[1],
+                        m2: m[2],
+                    };
+                    let mut s = [z[0], z[1]];
+                    let y = svf_step(&coefficients, &mut s, x);
+                    [z[0], z[1]] = s;
+                    y
                 }
                 FILTER_LADDER => {
                     c[0] += c_step[0];
                     c[1] += c_step[1];
-                    let g1 = c[0];
-                    // Zero-delay loop, as `tutti_dsp`'s `ladder_step`: the delay-free
-                    // linear solve `(x - k*S) / (1 + k*G^4)`, then the saturator.
-                    let g2 = g1 * g1;
-                    let tail = (V::ONE - g1) * (g1 * (g1 * (g1 * z0 + z1) + z2) + z3);
-                    let u = kernel::tanh((x - c[1] * tail) / (V::ONE + c[1] * g2 * g2));
-                    let v = g1 * (u - z0);
-                    let lp1 = v + z0;
-                    z0 = lp1 + v;
-                    let v = g1 * (lp1 - z1);
-                    let lp2 = v + z1;
-                    z1 = lp2 + v;
-                    let v = g1 * (lp2 - z2);
-                    let lp3 = v + z2;
-                    z2 = lp3 + v;
-                    let v = g1 * (lp3 - z3);
-                    let lp4 = v + z3;
-                    z3 = lp4 + v;
-                    lp4
+                    let coefficients = LadderCoefficients { g1: c[0], k: c[1] };
+                    ladder_step(&coefficients, LadderType::LP24, &mut z, x, kernel::tanh)
                 }
                 _ => x,
             };
@@ -807,7 +798,7 @@ impl VoiceBank {
         self.inc[g] = inc_target;
         self.rng[g] = rng;
         self.pink[g] = pink;
-        self.z[g] = [z0, z1, z2, z3];
+        self.z[g] = z;
         self.coef[g] = c_target;
         self.env[g] = env;
         self.env_slope[g] = slope;

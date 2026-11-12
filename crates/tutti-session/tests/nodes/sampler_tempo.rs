@@ -50,7 +50,7 @@ fn run(s: &Session, frames: usize, block: usize) -> Vec<f32> {
 /// jump from source frame 23 999 to 48 000.
 #[test]
 fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
-    use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+    use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
     use tutti_tempo::{Shape, TempoMap, TempoPoint};
     use tutti_types::{Beat, Bpm};
 
@@ -58,15 +58,10 @@ fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
     for i in 0..RATE as usize * 2 {
         wave.push_frame(&[i as f32 / 131_072.0]);
     }
-    let source = MemorySource::placed(Arc::new(wave), Beat(0.0), None).expect("a placeable wave");
+    let source = MemorySource::placed(Arc::new(wave), VoiceWindow::from(Beat(0.0)))
+        .expect("a placeable wave");
     let mut pool = VoicePool::new();
-    pool.insert_voice(
-        SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback::default(),
-        },
-    );
+    pool.insert(SlotId(1), source, Playback::default());
     let mut s = offline();
     let map =
         TempoMap::new(

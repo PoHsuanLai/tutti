@@ -43,6 +43,10 @@
 //! pin the sizing; `rt_no_alloc`'s ragged 512-frame gates pin that it costs
 //! no allocation.
 
+use tutti_sampler::VoiceWindow;
+
+use tutti_sampler::testing::loop_frames;
+
 use std::f32::consts::TAU;
 use std::path::Path;
 use std::sync::Arc;
@@ -51,12 +55,10 @@ use tutti_codec::Wave;
 use tutti_graph::contract::{self, Direct};
 use tutti_graph::{Env, Node, Transport, TransportChanges};
 use tutti_sampler::{
-    ByHand, Direction, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback,
-    SlotId, StepOutcome, Stream, Voice, VoiceNode, VoicePool, VoiceSource,
+    ByHand, Direction, DiskStreamer, DiskStreamerConfig, MemorySource, Playback, SlotId,
+    StepOutcome, Stream, Voice, VoiceNode, VoicePool, VoiceSource,
 };
-use tutti_types::{
-    Beat, Bpm, Cents, Frame, PlaybackRate, SamplePosition, SampleRate, Samples, StretchFactor,
-};
+use tutti_types::{Beat, Bpm, Cents, Frame, PlaybackRate, SampleRate, Samples, StretchFactor};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;
@@ -216,10 +218,16 @@ fn assert_block_invariant<N: Node>(case: &str, mut build: impl FnMut() -> N) {
     }
 }
 
-/// A placed memory voice playing `play`.
+/// A placed memory source, and the `play` it plays.
+fn memory_parts(wave: &Arc<Wave>, play: Playback) -> (MemorySource, Playback) {
+    let source = MemorySource::placed(Arc::clone(wave), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
+    (source, play)
+}
+
+/// [`memory_parts`] as a voice.
 fn memory_voice(wave: &Arc<Wave>, play: Playback) -> Voice {
-    let source =
-        MemorySource::placed(Arc::clone(wave), Beat::new(0.0), None).expect("a placeable wave");
+    let (source, play) = memory_parts(wave, play);
     Voice {
         source: VoiceSource::Memory(source),
         play,
@@ -247,11 +255,7 @@ fn playbacks() -> Vec<(&'static str, Playback)> {
         (
             "loop with crossfade",
             Playback {
-                loop_: LoopSetting::On {
-                    start: SamplePosition(1_000.0),
-                    end: SamplePosition(5_797.0),
-                    crossfade_frames: 300,
-                },
+                loop_: Some(loop_frames(1_000, 5_797, 300)),
                 ..Default::default()
             },
         ),
@@ -282,7 +286,8 @@ fn memory_voices_render_the_same_frames_at_any_block_length() {
     for (name, play) in playbacks() {
         assert_block_invariant(&format!("pool, {name}"), || {
             let mut pool = VoicePool::new();
-            pool.insert_voice(SlotId(1), memory_voice(&wave, play));
+            let (source, play) = memory_parts(&wave, play);
+            pool.insert(SlotId(1), source, play);
             pool
         });
         assert_block_invariant(&format!("voice node, {name}"), || {
@@ -297,7 +302,8 @@ fn memory_voices_render_the_same_frames_at_any_block_length() {
 fn a_memory_source_node_renders_the_same_frames_at_any_block_length() {
     let wave = tone(1.5);
     assert_block_invariant("memory source, placed", || {
-        MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None).expect("a placeable wave")
+        MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave")
     });
     assert_block_invariant("memory source, free-running", || {
         let s = MemorySource::new(Arc::clone(&wave)).expect("a placeable wave");
@@ -325,7 +331,7 @@ fn disk_voice(path: &Path) -> (DiskStreamer<ByHand>, Stream, tutti_sampler::Disk
             break;
         }
     }
-    let v = tutti_sampler::DiskVoice::from_reader(reader, Beat::new(0.0), None);
+    let v = tutti_sampler::DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)));
     (s, stream, v)
 }
 
@@ -337,24 +343,24 @@ fn a_disk_voice_renders_the_same_frames_at_any_block_length() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("tone.wav");
     write_wav(&path, (1.5 * SR) as usize);
-    // Each render gets its own stream: a ring is read once.
-    let mut streamers = Vec::new();
+    // Each render gets its own stream: a ring is read once. What a render
+    // needs alive (the streamer, the stream or the handle that owns it) is
+    // kept here until the case is done.
+    let mut keep: Vec<Box<dyn std::any::Any>> = Vec::new();
     assert_block_invariant("disk voice node", || {
         let (s, stream, v) = disk_voice(&path);
-        streamers.push((s, stream));
+        keep.push(Box::new((s, stream)));
         v
     });
     assert_block_invariant("pool, disk voice", || {
         let (s, stream, v) = disk_voice(&path);
-        streamers.push((s, stream));
-        let mut pool = VoicePool::new();
-        pool.insert_voice(
-            SlotId(1),
-            Voice {
-                source: VoiceSource::Disk(v),
-                play: Playback::default(),
-            },
-        );
+        // A pool holds a disk voice only with its stream (`add_streaming`),
+        // through its handle's queue, drained on the first block.
+        let (pool, handle) = VoicePool::new().with_handle();
+        handle
+            .add_streaming(SlotId(1), v, stream, Playback::default())
+            .expect("the command queue has room in a test");
+        keep.push(Box::new((s, handle)));
         pool
     });
 }

@@ -119,12 +119,12 @@ finding where the API produces wrong results today, not only friction.
 | N2 | A user's `ParamNode` needs a hand-written `SessionNode` before `Graph::add` takes it (the macro the built-in nodes use is private) | a `Params(node)` wrapper, beside `ForkByClone` and `Unforkable` | S |
 | N3 | `Clone` means opposite things to `ForkByClone` (a fork) and to `param_parts` (a shared cell), so `ForkByClone(param'd node)` compiles and forks onto the live cell | `Params(node)` (N2) is the only way in for a param'd node; refuse the other by type | M |
 | N4 | `Shape`, `Io::channel(c).map(..)` and the shortest node bodies are not in the docs | a node-writing guide in `tutti-graph`'s crate docs | S |
-| A1 | `VoicePoolHandle` is only `send(VoiceCommand::..)`. `AddVoice` on a disk voice silently drops its loop and direction. The `stretch` argument is never `Some` | handle methods; a streaming voice type; the dead argument removed | M |
-| A2 | `VoiceNodeHandle` sets only gain and placement, and the caller must keep the disk `Stream` alive or the voice goes silent | loop, speed and play/stop on the handle; the handle owns the `Stream` | M |
-| A3 | Five loop setters, `crossfade_frames: usize`, a public unchecked `LoopSetting::On`, and the checked `LoopSpan` hidden | one checked `Loop` value in `Samples` | M |
-| A4 | Disk voices take `Beat` plus `Option<BeatDuration>` where memory voices take `VoiceWindow`. `tutti_sampler::Source` and `Status` are unused and collide with other crates' names | one window type; delete the unused | S |
-| A5 | `DiskStreamer::open` can only be polled in a sleep loop. `take_disk_streamer` and the detached session | a blocking open on the spawner, landing in `update()`; the take kept until `bevy-tutti` un-parks | S |
-| A6 | `Clip` (from #632) covers memory only | `Clip` also streams from disk past a size threshold, or with `.streamed()` | M |
+| A1 | `VoicePoolHandle` is only `send(VoiceCommand::..)`. `AddVoice` on a disk voice silently drops its loop and direction. The `stretch` argument is never `Some` | handle methods; a streaming voice type; the dead argument removed | M (built, step 9) |
+| A2 | `VoiceNodeHandle` sets only gain and placement, and the caller must keep the disk `Stream` alive or the voice goes silent | loop, speed and play/stop on the handle; the handle owns the `Stream` | M (built, step 9) |
+| A3 | Five loop setters, `crossfade_frames: usize`, a public unchecked `LoopSetting::On`, and the checked `LoopSpan` hidden | one checked `Loop` value in `Samples` | M (built, step 9) |
+| A4 | Disk voices take `Beat` plus `Option<BeatDuration>` where memory voices take `VoiceWindow`. `tutti_sampler::Source` and `Status` are unused and collide with other crates' names | one window type; delete the unused | S (built, step 9) |
+| A5 | `DiskStreamer::open` can only be polled in a sleep loop. `take_disk_streamer` and the detached session | a blocking open on the spawner, landing in `update()`; the take kept until `bevy-tutti` un-parks | S (built, step 9) |
+| A6 | `Clip` (from #632) covers memory only | `Clip` also streams from disk past a size threshold, or with `.streamed()` | M (built, step 9) |
 | C1 | **Bug**: `Wave::read` silently assumes 44.1 kHz when the container has no rate | refuse with `DecodeError`, or take the rate as an argument | S |
 | C2 | Saving a `Wave` takes a hand-built `Spec` and hand interleaving, and `Rendered` and `Wave` do not convert | `Wave::write(path, format)`, `layout`, `interleaved`, and `From<Rendered> for Wave` | M |
 | C3 | `Spec` holds a `layout` and an optional `topology` that must agree. Codec constructors disagree on argument order and error type | `Spec` from a topology alone; one constructor shape | S |
@@ -450,7 +450,48 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      recorder's `Drop` stops, joins and finalizes, and now logs a failed sink
      at `error` with the frames lost; `Recorder` stays source-to-sink, off the
      spawner (it owns no session).
-9. **Sampler:** A1 to A6.
+9. **Sampler** (built): A1 to A6, one PR. As built:
+   - A3: `Loop`, a span of whole frames in `Samples` (`Loop::new(a..b)` refuses an
+     empty or reversed span, `with_crossfade` one longer than the loop:
+     `LoopError::{EmptySpan, CrossfadeTooLong}`) replaces `LoopSetting`, the five
+     setters and `crossfade_frames: usize`. Every tier takes `Option<Loop>`
+     (`MemorySource::set_loop`, `Stream::set_loop`, a pool's and a node's handles) and the
+     streamer's `LoopError::Position` is gone: a position that is not a frame cannot
+     be written. `Loop` keeps the file-bound derivation (`LoopSpan`: the fade
+     after the clamp to the file, the fade into the head, where a wrap lands)
+     as the one internal read of it; `LoopSpan` stayed because the derived figures
+     depend on the file's length, which a `Loop` made on the control side may not
+     know yet.
+   - A4: `VoiceWindow` is the one window (kept: it was the memory voices' and is
+     already in the prelude): `DiskVoice::from_reader(reader, VoiceWindow)`,
+     `set_window`, `MemorySource::placed(wave, VoiceWindow)`. `tutti_sampler::Source`
+     and `Status` were used by nothing and are deleted (`DiskStreamer::sample_rate()`
+     replaces `status()`); `tutti-sampler`'s `voice` module is private and the crate
+     joins the per-module path gate.
+   - A1: `VoicePoolHandle` is methods over a private `VoiceCommand`: `add` takes a
+     `MemorySource`, `add_streaming` a `DiskVoice` and its `Stream` and a `Playback`,
+     so a disk voice cannot be added without the stream that steers its loop and
+     direction (the add that dropped both is not writable). `VoicePool::insert`
+     is the same for a pool not yet in a graph. `SendError` carries nothing.
+   - A2: `VoiceNodeHandle` sets window, loop, speed and play/stop beside gain, and
+     `VoiceNode::streaming(DiskVoice, Stream, Playback)` hands the stream to the
+     handle, which owns it (an owned cross-thread handle, convention 4): it ends with the
+     last clone, and the session's reclaimer keeps a clone for as long as the node is in the
+     graph. A disk voice's loop is set on the stream; `stop` is a gate on the node (silent,
+     nothing read), which a free-running voice resumes from where it stopped.
+   - A5: `Session::open_stream(path, Placement) -> Result<SamplerLoad, SamplerError>`
+     opens on the spawner (`Opening::wait` sleeps on the reply) and lands
+     `SessionEvent::Sampler(SamplerEvent::Opened { id, stream, reader } | OpenFailed { id, error })`;
+     `Error::Sampler(SamplerError)` is the one error variant. `take_disk_streamer` stays
+     until `bevy-tutti` un-parks; `disk_streamer()` had one user, which moved to the new call.
+   - A6: `Clip` is a `VoiceNode` over either tier (`Clip::new(wave)` resident,
+     `Clip::streaming(reader, stream)`), its controls the node's handle.
+     `Session::load_clip(path, Residency)` decides the tier for a file: `Auto` streams
+     past `STREAM_ABOVE_BYTES` (32 MiB of decoded `f32`, about 95 s of 44.1 kHz stereo:
+     a few such files would take the streamer's 1 GiB cache for audio read once
+     through) and lands `SamplerEvent::ClipLoaded`. The force is the `Residency` argument,
+     not `.streamed()` on the clip: the choice is made in the load job, before there is a clip
+     to call it on. `Recorded::clip()` is unchanged (resident).
 10. **Codec and export:** C2, C3, E1, E2, then C4.
 11. **Tempo and names:** T6, T8, T10.
 12. **Instruments:** S4, with the MIDI session's keys handle.

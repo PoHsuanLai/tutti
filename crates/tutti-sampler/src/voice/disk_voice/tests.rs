@@ -1,10 +1,11 @@
 use super::*;
+use crate::VoiceWindow;
 use crate::streamer::{RegionBuffer, StreamId};
 use crate::testing::{MockTransport, block, play};
 use std::path::PathBuf;
 use tutti_graph::contract::Direct;
 use tutti_types::MaxBlock;
-use tutti_types::{Bpm, Samples};
+use tutti_types::{Beat, BeatDuration, Bpm, Samples};
 
 /// The rate the tests' blocks run at.
 const SR: f64 = 44_100.0;
@@ -241,7 +242,10 @@ fn a_fork_closes_its_file_once_past_its_window() {
     let opening = streamer.open(&path, crate::Placement::HEAD);
     let (_stream, reader) = crate::testing::settle(&mut streamer, opening).expect("the file opens");
     // Beats [0, 1): 24 000 frames at 120 BPM.
-    let voice = crate::DiskVoice::from_reader(reader, Beat::new(0.0), Some(BeatDuration::new(1.0)));
+    let voice = crate::DiskVoice::from_reader(
+        reader,
+        VoiceWindow::span(Beat::new(0.0), BeatDuration::new(1.0)),
+    );
 
     let render = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut copy = voice.fork_copy();
@@ -289,7 +293,7 @@ fn a_stopped_clock_silences_a_fork() {
         crate::DiskStreamer::manual(SampleRate(48_000.0), Default::default()).expect("builds");
     let opening = streamer.open(&path, crate::Placement::HEAD);
     let (_stream, reader) = crate::testing::settle(&mut streamer, opening).expect("the file opens");
-    let voice = crate::DiskVoice::from_reader(reader, Beat::new(0.0), None);
+    let voice = crate::DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)));
 
     for single in [false, true] {
         let mut copy = voice.fork_copy();
@@ -1515,7 +1519,7 @@ fn streamer_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
             break;
         }
     }
-    let mut voice = crate::DiskVoice::from_reader(reader, Beat::new(0.0), None);
+    let mut voice = crate::DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)));
     voice.set_render_rate(SampleRate(SR));
     let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
     let mut clock = crate::voice::clock::Clock::new();

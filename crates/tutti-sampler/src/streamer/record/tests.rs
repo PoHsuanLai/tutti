@@ -59,11 +59,8 @@ fn live(streams: &mut Streams, id: u64) -> (Weak<Ring>, Arc<StatusCell>) {
     opened
 }
 
-fn ask(start: u64, end: u64) -> Option<LoopAsk> {
-    Some(LoopAsk {
-        range: (start, end),
-        crossfade_frames: 0,
-    })
+fn ask(start: u64, end: u64) -> Option<Loop> {
+    Some(crate::testing::loop_frames(start as usize, end as usize, 0))
 }
 
 /// An open is a record in `Opening`, which a refill leaves alone and a loop

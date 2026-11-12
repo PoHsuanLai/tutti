@@ -12,6 +12,8 @@
 //!
 //! Run: `cargo run --release -p tutti-sampler --example render_cases -- <outdir>`
 
+use tutti_sampler::VoiceWindow;
+
 use std::f32::consts::TAU;
 use std::path::Path;
 use std::sync::Arc;
@@ -19,7 +21,7 @@ use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_graph::contract;
 use tutti_sampler::testing::MockTransport;
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool};
 use tutti_types::{Beat, Bpm, Cents, SampleRate, StretchFactor};
 
 const SR: f64 = 48_000.0;
@@ -48,7 +50,8 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     // and look like an attenuation bug.
     let wave = tone(440.0, FRAMES * 4);
 
-    let source = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let source =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     let play = Playback {
         stretch: StretchFactor::new(stretch),
         pitch: Cents::new(cents),
@@ -56,14 +59,7 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     };
 
     handle
-        .send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(source),
-                play,
-            }),
-            stretch: None,
-        })
+        .add(SlotId(1), source, play)
         .expect("the command queue has room in a test");
 
     // Block-driven, as a host drives a node: each block's `Env` carries the

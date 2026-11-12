@@ -153,22 +153,20 @@ fn tone_at(i: usize) -> f32 {
 /// One sampler voice on a second of the tone, placed at beat 0 and pitched
 /// by `cents`. It reads the transport from its blocks' `Env`.
 fn voice(cents: f32) -> tutti_sampler::VoicePool {
-    use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+    use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
     let mut wave = tutti_codec::Wave::new(1, SampleRate::new(RATE));
     for i in 0..RATE as usize {
         wave.push_frame(&[tone_at(i)]);
     }
-    let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None)
+    let source = MemorySource::placed(Arc::new(wave), VoiceWindow::from(tutti_types::Beat(0.0)))
         .expect("a placeable wave");
     let mut pool = VoicePool::new();
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                pitch: tutti_types::Cents::new(cents),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            pitch: tutti_types::Cents::new(cents),
+            ..Default::default()
         },
     );
     pool

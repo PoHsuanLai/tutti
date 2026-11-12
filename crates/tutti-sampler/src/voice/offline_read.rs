@@ -48,7 +48,7 @@ use tutti_types::Samples;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 use tutti_types::Source;
 
-use super::LoopSetting;
+use super::Loop;
 use super::interp::{
     MAX_WAVE_CHANNELS, Place, interpolate_taps, read_frame, read_looped_frame, tap_indices,
 };
@@ -109,7 +109,7 @@ pub(crate) struct OfflineRead {
     file: Arc<StreamFile>,
     /// The loop the stream ran when the fork was taken, as the streamer
     /// applied it (`RingControl`); `Off` for none.
-    loop_: LoopSetting,
+    loop_: Option<Loop>,
     /// The open file. `None` until the first read and after a
     /// [`close`](Self::close); never cloned: a clone opens its own, so no two
     /// renders share a decoder's cursor.
@@ -150,7 +150,7 @@ impl std::fmt::Debug for OfflineRead {
 impl OfflineRead {
     /// A reader for `file` looped as `loop_`, latching its failures into
     /// `fault`. Opens nothing yet.
-    pub(crate) fn new(file: Arc<StreamFile>, loop_: LoopSetting, fault: Arc<FaultLatch>) -> Self {
+    pub(crate) fn new(file: Arc<StreamFile>, loop_: Option<Loop>, fault: Arc<FaultLatch>) -> Self {
         Self {
             file,
             loop_,
@@ -163,7 +163,7 @@ impl OfflineRead {
 
     /// The loop this reader plays (tests).
     #[cfg(test)]
-    pub(crate) fn loop_setting(&self) -> LoopSetting {
+    pub(crate) fn loop_setting(&self) -> Option<Loop> {
         self.loop_
     }
 
@@ -207,7 +207,7 @@ impl OfflineRead {
         // Past what this direction can play, known without opening the file.
         let played_out = match direction {
             Direction::Reverse => true,
-            Direction::Forward => self.loop_ == LoopSetting::Off,
+            Direction::Forward => self.loop_.is_none(),
         };
         if played_out
             && let Some(len) = self.len
@@ -535,6 +535,7 @@ impl Pages {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::loop_frames;
     use tutti_types::SampleRate;
 
     const LEN: usize = 100_000;
@@ -563,7 +564,7 @@ mod tests {
     fn reader(path: std::path::PathBuf) -> OfflineRead {
         OfflineRead::new(
             Arc::new(StreamFile::new(path, SampleRate(48_000.0), None)),
-            LoopSetting::Off,
+            None,
             Arc::default(),
         )
     }
@@ -613,11 +614,7 @@ mod tests {
                 SampleRate(48_000.0),
                 None,
             )),
-            LoopSetting::On {
-                start: SamplePosition(10.0),
-                end: SamplePosition(20.0),
-                crossfade_frames: 0,
-            },
+            Some(loop_frames(10, 20, 0)),
             Arc::default(),
         );
         let mut out = [0.0f32; 1];
@@ -684,7 +681,7 @@ mod tests {
         let fault = Arc::<FaultLatch>::default();
         let mut read = OfflineRead::new(
             Arc::new(StreamFile::new(path, SampleRate(44_100.0), None)),
-            LoopSetting::Off,
+            None,
             Arc::clone(&fault),
         );
         let mut out = [0.0f32; 2];
@@ -709,12 +706,8 @@ mod tests {
     fn a_non_finite_position_reads_silence() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = ramp_file(dir.path());
-        let on = LoopSetting::On {
-            start: SamplePosition(10.0),
-            end: SamplePosition(20.0),
-            crossfade_frames: 0,
-        };
-        for loop_ in [LoopSetting::Off, on] {
+        let on = Some(loop_frames(10, 20, 0));
+        for loop_ in [None, on] {
             for direction in [Direction::Forward, Direction::Reverse] {
                 for pos in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
                     let mut read = OfflineRead::new(

@@ -7,28 +7,27 @@
 use crate::common;
 
 use proptest::prelude::*;
-use tutti_ump::{Address, Key, KeyEvent, Message, Ump, Voice1, Voice2};
+use tutti_ump::{
+    Address, Key, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Protocol, Ump, Voice1,
+    Voice2,
+};
 
 const SUSTAIN: u8 = 64;
-
-fn lane(a: Address) -> u8 {
-    a.group.get() * 16 + a.channel.get()
-}
 
 fn expected(message: Message) -> Option<KeyEvent> {
     match message {
         Message::Midi1(a, v) => {
-            let key = |note: u8| Key::new(false, lane(a), note);
+            let key = |note: NoteNumber| Key::new(Protocol::Midi1, a, note).unwrap();
             match v {
                 Voice1::NoteOn { note, velocity } if velocity.get() == 0 => {
-                    Some(KeyEvent::Off(key(note.get())))
+                    Some(KeyEvent::Off(key(note)))
                 }
-                Voice1::NoteOn { note, .. } => Some(KeyEvent::On(key(note.get()))),
-                Voice1::NoteOff { note, .. } => Some(KeyEvent::Off(key(note.get()))),
+                Voice1::NoteOn { note, .. } => Some(KeyEvent::On(key(note))),
+                Voice1::NoteOff { note, .. } => Some(KeyEvent::Off(key(note))),
                 Voice1::ControlChange { controller, value } if controller.get() == SUSTAIN => {
                     Some(KeyEvent::Sustain {
-                        m2: false,
-                        lane: lane(a),
+                        protocol: Protocol::Midi1,
+                        address: a,
                         down: value.get() >= 64,
                     })
                 }
@@ -36,14 +35,14 @@ fn expected(message: Message) -> Option<KeyEvent> {
             }
         }
         Message::Midi2(a, v) => {
-            let key = |note: u8| Key::new(true, lane(a), note);
+            let key = |note: NoteNumber| Key::new(Protocol::Midi2, a, note).unwrap();
             match v {
-                Voice2::NoteOn { note, .. } => Some(KeyEvent::On(key(note.get()))),
-                Voice2::NoteOff { note, .. } => Some(KeyEvent::Off(key(note.get()))),
+                Voice2::NoteOn { note, .. } => Some(KeyEvent::On(key(note))),
+                Voice2::NoteOff { note, .. } => Some(KeyEvent::Off(key(note))),
                 Voice2::ControlChange { controller, value } if controller.get() == SUSTAIN => {
                     Some(KeyEvent::Sustain {
-                        m2: true,
-                        lane: lane(a),
+                        protocol: Protocol::Midi2,
+                        address: a,
                         down: value >= 0x8000_0000,
                     })
                 }
@@ -108,17 +107,48 @@ proptest! {
         prop_assert_eq!(off.key_event(), Some(KeyEvent::Off(key)));
         prop_assert!(off.is_note_off());
         prop_assert!(off.decode().is_ok());
-        let up = Ump::sustain_up(m2, lane_);
-        prop_assert_eq!(up.key_event(), Some(KeyEvent::Sustain { m2, lane: lane_, down: false }));
+        let protocol = if m2 { Protocol::Midi2 } else { Protocol::Midi1 };
+        let address = Address::from_index(usize::from(lane_)).unwrap();
+        let up = Ump::sustain_up(protocol, address).unwrap();
+        prop_assert_eq!(up.key_event(), Some(KeyEvent::Sustain { protocol, address, down: false }));
         prop_assert!(up.decode().is_ok());
     }
 }
 
 #[test]
 fn a_key_carries_its_fields() {
-    let key = Key::new(true, 0x1f, 0x45);
-    assert_eq!((key.is_m2(), key.lane(), key.note()), (true, 0x1f, 0x45));
+    let address = Address::new(MidiGroup::of(1), MidiChannel::of(0xf));
+    let key = Key::new(Protocol::Midi2, address, NoteNumber::of(0x45)).unwrap();
+    assert_eq!(
+        (key.protocol(), key.address(), key.note()),
+        (Protocol::Midi2, address, NoteNumber::of(0x45))
+    );
     assert_eq!(Key::from_index(key.index()), key);
+}
+
+/// A reserved protocol has no channel voice message, so it opens no key and
+/// closes no pedal; nothing is packed under a wrong protocol.
+#[test]
+fn a_reserved_protocol_has_no_key_and_no_pedal() {
+    let a = Address::first(MidiChannel::FIRST);
+    assert_eq!(Key::new(Protocol::Reserved(3), a, NoteNumber::of(1)), None);
+    assert_eq!(Ump::sustain_up(Protocol::Reserved(3), a), None);
+}
+
+/// A table index is group * 16 + channel, and `from_index` inverts it for
+/// exactly the 256 addresses there are.
+#[test]
+fn an_address_index_is_group_times_sixteen_plus_channel() {
+    for i in 0..300usize {
+        match Address::from_index(i) {
+            Some(a) => {
+                assert!(i < 256);
+                assert_eq!(a.index(), i);
+                assert_eq!((a.group.index(), a.channel.index()), (i / 16, i % 16));
+            }
+            None => assert!(i >= 256),
+        }
+    }
 }
 
 /// MIDI 2.0 reads the pedal from the 32-bit value (down from half), and the
@@ -128,8 +158,8 @@ fn the_midi2_pedal_reads_index_and_value_as_decode_does() {
     let pedal = |w0: u32, w1: u32| Ump([w0, w1, 0, 0]).key_event();
     let sustain = |down| {
         Some(KeyEvent::Sustain {
-            m2: true,
-            lane: 0x33,
+            protocol: Protocol::Midi2,
+            address: Address::new(MidiGroup::of(3), MidiChannel::of(3)),
             down,
         })
     };

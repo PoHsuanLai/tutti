@@ -16,7 +16,7 @@
 //! replacement: past about 72 held keys (what a block's slot takes) it can end a
 //! note the new unit started on the same key.
 
-use tutti_ump::{Key, KeyEvent, Ump};
+use tutti_ump::{Address, Key, KeyEvent, Protocol, Ump};
 
 use crate::event::{Event, EventKind};
 use crate::time::Offset;
@@ -58,8 +58,8 @@ impl Held {
         }
     }
 
-    fn pedal(&mut self, m2: bool, lane: u8, down: bool) {
-        let i = usize::from(m2) * 256 + usize::from(lane);
+    fn pedal(&mut self, protocol: Protocol, address: Address, down: bool) {
+        let i = usize::from(protocol == Protocol::Midi2) * 256 + address.index();
         let (w, b) = (i >> 6, 1u64 << (i & 63));
         if down {
             self.pedals[w] |= b;
@@ -76,7 +76,11 @@ impl Held {
             match u.key_event() {
                 Some(KeyEvent::On(k)) => self.set(k, true),
                 Some(KeyEvent::Off(k)) => self.set(k, false),
-                Some(KeyEvent::Sustain { m2, lane, down }) => self.pedal(m2, lane, down),
+                Some(KeyEvent::Sustain {
+                    protocol,
+                    address,
+                    down,
+                }) => self.pedal(protocol, address, down),
                 None => {}
             }
         }
@@ -129,7 +133,7 @@ impl Held {
                 if !room(events) {
                     break;
                 }
-                events.push(Self::event(Ump::sustain_up(i >= 256, (i & 255) as u8)));
+                events.extend(pedal_up(i).map(Self::event));
                 self.pedals[w] &= !b;
             }
         }
@@ -168,7 +172,9 @@ impl Held {
             kind: EventKind::Midi(ump),
         };
         for i in (0..PEDALS).filter(|&i| self.pedals[i >> 6] & (1u64 << (i & 63)) != 0) {
-            f(event(Ump::sustain_up(i >= 256, (i & 255) as u8)));
+            if let Some(up) = pedal_up(i) {
+                f(event(up));
+            }
         }
         for (w, &word) in self.keys.iter().enumerate() {
             let mut bits = word;
@@ -179,6 +185,16 @@ impl Held {
             }
         }
     }
+}
+
+/// The sustain-pedal-up that closes pedal slot `i` (`protocol * 256 + address`).
+fn pedal_up(i: usize) -> Option<Ump> {
+    let protocol = if i >= 256 {
+        Protocol::Midi2
+    } else {
+        Protocol::Midi1
+    };
+    Ump::sustain_up(protocol, Address::from_index(i & 255)?)
 }
 
 /// One table per event output port of a unit; `None` for a port that carries

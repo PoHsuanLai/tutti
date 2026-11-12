@@ -44,8 +44,8 @@
 //! upstream of it translates down, so it narrows for as long as it exists.
 //!
 //! [`narrow()`](fn@narrow) does the same for a whole [`Voice2`](tutti_ump::Voice2): the
-//! [`Voice1`](tutti_ump::Voice1) that means it, or `None` for a message MIDI 1.0
-//! has no single message for. A Note On that narrows to velocity 0 becomes 1
+//! [`Voice1`](tutti_ump::Voice1) that means it, or the [`NoMidi1Form`] for a message
+//! MIDI 1.0 has no single message for. A Note On that narrows to velocity 0 becomes 1
 //! (M2-104 section 7.4.2), and a note's attribute is not read, whatever its type.
 //! [`midi1()`](fn@midi1) is the step before the wire: the MIDI 1.0 bytes of a
 //! [`Message`](tutti_ump::Message), three messages for a Program Change with a
@@ -82,7 +82,17 @@
 //! [`PitchBendSensitivity`] is the 7.25 fixed-point range of RPN #00/07 (M2-104
 //! section 7.4.13), the one value type here that is not a function.
 //!
-//! The crate depends on `tutti-ump` alone and allocates nothing. Its `serde`
+//! **One input type at the edge:** a packet is a [`Ump`](tutti_ump::Ump), and
+//! [`Translator::translate`], [`Narrower::feed`], [`midi1()`](fn@midi1) and
+//! [`channel_voice`] take `impl Into<Ump>`, so a decoded
+//! [`Message`](tutti_ump::Message) goes in as it is. The conversion between the
+//! two protocols is `widen`/`narrow` (and `widen_message`, `widen_bytes`) rather
+//! than `From`/`TryFrom` on the voice types: the orphan rule would put the impls in
+//! `tutti-ump`, and with them the M2-115 scaling and the Note On at velocity 0
+//! rule, which `tutti-ump` leaves to translation.
+//!
+//! The crate depends on `tutti-ump` and `tutti-types` (for `Semitones`, which
+//! [`PitchBendSensitivity::semitones`] returns) and allocates nothing. Its `serde`
 //! feature (off by default) derives serde on [`PitchBendSensitivity`], which
 //! carries the 32 RPN bits.
 
@@ -98,7 +108,7 @@ mod translator;
 mod unit;
 mod voice;
 
-pub use midi1::{midi1, narrow};
+pub use midi1::{NoMidi1Form, midi1, narrow};
 pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use narrower::Narrower;

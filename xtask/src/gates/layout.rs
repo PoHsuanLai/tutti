@@ -107,7 +107,7 @@ const PARKED: &[&str] = &["crates/bevy-tutti"];
 /// The crates whose normal and build dependencies on workspace crates are exactly these.
 const ONLY: &[(&str, &[&str])] = &[
     ("tutti-rt", &["arc-lend"]),
-    ("tutti-midi-protocol", &["tutti-ump"]),
+    ("tutti-midi-protocol", &["tutti-ump", "tutti-types"]),
     ("tutti-midi-device", &["tutti-ump"]),
     ("tutti-metering", &["tutti-types"]),
     ("tutti-codec", &["tutti-types"]),

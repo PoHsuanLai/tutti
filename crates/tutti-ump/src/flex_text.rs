@@ -1,5 +1,5 @@
 //! A text as Flex Data packets (M2-104 section 7.5.9): the writer of the
-//! Flex text format, the way [`sysex7_packets`](crate::sysex7_packets) is the
+//! Flex text format, the way [`SysexMessage::packets`](crate::SysexMessage::packets) is the
 //! writer of SysEx7.
 
 use std::iter::FusedIterator;

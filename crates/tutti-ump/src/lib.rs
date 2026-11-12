@@ -13,8 +13,8 @@
 //! reads a byte stream into [`Message`]s. [`NoteId`] is a note's identity
 //! (`channel * 128 + note`, the plugin formats' wire value), and [`SysexMessage`]
 //! and [`SysexAssembler`] are a checked complete SysEx and the one SysEx7
-//! reassembler (a stream per Group), over a buffer the caller owns; [`sysex7_packets`] is its inverse,
-//! the one writer of a payload as SysEx7 packets, as [`flex_text_packets`] is of a text as Flex
+//! reassembler (a stream per Group), over a buffer the caller owns; [`SysexMessage::packets`] is its inverse,
+//! the one writer of a payload as SysEx7 packets ([`Sysex7Packets::checked`] for plain bytes), as [`flex_text_packets`] is of a text as Flex
 //! Data packets. [`split_stream`] cuts a buffer
 //! of concatenated packets (a native-UMP transport's) into [`Ump`]s.
 //!
@@ -75,11 +75,10 @@ pub use message::{
 };
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
-pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame};
+pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame, parse_exact};
 pub use note_id::NoteId;
 pub use rpn::Rpn;
 pub use sysex::{
     NotSysex, SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler, SysexMessage, SysexRef, SysexStep,
-    sysex7_packets,
 };
 pub use ump::{Key, KeyEvent, Ump, split_stream};

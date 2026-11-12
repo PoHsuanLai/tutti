@@ -8,7 +8,7 @@
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_ump::{
     Address, CCNumber, Message, Midi1Parser, MidiChannel, MidiGroup, NoteNumber, Sysex7Packet,
-    SysexStatus, System, U7, U14, Voice1,
+    SysexStatus, System, U7, U14, Voice1, parse_exact,
 };
 
 #[global_allocator]
@@ -79,7 +79,7 @@ fn seeded_random_bytes_are_survived() {
             parser.end_of_message();
             messages += block
                 .windows(3)
-                .filter(|w| Midi1Parser::message(MidiGroup::FIRST, w).is_some())
+                .filter(|w| parse_exact(MidiGroup::FIRST, w).is_some())
                 .count() as u64;
         });
     }
@@ -106,8 +106,8 @@ fn a_stray_status_and_a_truncated_message_allocate_nothing() {
         let mut parser = Midi1Parser::new(MidiGroup::FIRST);
         assert_eq!(parser.feed_all(&[0xF7, 1, 2]).count(), 0);
         assert_eq!(parser.feed_all(&[0x90, 60]).count(), 0);
-        assert!(Midi1Parser::message(MidiGroup::FIRST, &[0xF7, 1, 2]).is_none());
-        assert!(Midi1Parser::message(MidiGroup::FIRST, &[0x90, 60]).is_none());
+        assert!(parse_exact(MidiGroup::FIRST, &[0xF7, 1, 2]).is_none());
+        assert!(parse_exact(MidiGroup::FIRST, &[0x90, 60]).is_none());
     });
 }
 

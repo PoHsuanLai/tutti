@@ -3,7 +3,7 @@
 //! The expected bytes are written out from M2-104 Appendix D and M2-115, or
 //! follow from `widen` and the figures `tests/narrow.rs` pins.
 
-use tutti_midi_protocol::{midi1, narrow, widen};
+use tutti_midi_protocol::{NoMidi1Form, midi1, narrow, widen};
 use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Sysex7Packet, SysexStatus, System, U7, U14, Voice1, Voice2,
@@ -26,7 +26,7 @@ fn bytes(message: Message) -> Vec<Vec<u8>> {
 #[test]
 fn a_note_on_never_narrows_to_velocity_zero() {
     for velocity in 0..=u16::MAX {
-        let Some(Voice1::NoteOn { velocity: got, .. }) = narrow(Voice2::NoteOn {
+        let Ok(Voice1::NoteOn { velocity: got, .. }) = narrow(Voice2::NoteOn {
             note: NoteNumber::of(60),
             velocity,
             attribute: Attribute::None,
@@ -53,7 +53,7 @@ fn a_note_off_keeps_a_zero_velocity() {
         });
         assert_eq!(
             off,
-            Some(Voice1::NoteOff {
+            Ok(Voice1::NoteOff {
                 note: NoteNumber::of(60),
                 velocity: U7::of(want)
             }),
@@ -204,7 +204,7 @@ fn messages_without_a_midi1_form_send_nothing() {
         },
     ];
     for voice in none {
-        assert_eq!(narrow(voice), None, "{voice:?}");
+        assert!(narrow(voice).is_err(), "{voice:?}");
         assert!(
             bytes(Message::Midi2(address(0), voice)).is_empty(),
             "{voice:?}"
@@ -234,7 +234,7 @@ fn narrow_returns_what_widen_was_given() {
                 Voice1::PitchBend(U14::of(u16::from(d1) << 7 | u16::from(d2))),
             ];
             for voice in voices {
-                assert_eq!(narrow(widen(voice)), Some(voice), "{voice:?}");
+                assert_eq!(narrow(widen(voice)), Ok(voice), "{voice:?}");
             }
             let on = Voice1::NoteOn { note, velocity: v };
             let want = if d2 == 0 {
@@ -245,7 +245,35 @@ fn narrow_returns_what_widen_was_given() {
             } else {
                 on
             };
-            assert_eq!(narrow(widen(on)), Some(want), "{on:?}");
+            assert_eq!(narrow(widen(on)), Ok(want), "{on:?}");
         }
     }
+}
+
+/// M2-104 Appendix D.2.8: per-note controllers, registered and assignable
+/// controllers and per-note management have no single MIDI 1.0 message, and
+/// the refusal says which of them it was.
+#[test]
+fn a_refusal_names_why_there_is_no_midi1_message() {
+    let note = NoteNumber::of(60);
+    assert_eq!(
+        narrow(Voice2::PerNotePitchBend { note, value: 0 }),
+        Err(NoMidi1Form::PerNote)
+    );
+    assert_eq!(
+        narrow(Voice2::Registered {
+            bank: U7::of(0),
+            index: U7::of(0),
+            value: 0
+        }),
+        Err(NoMidi1Form::Parameter)
+    );
+    assert_eq!(
+        narrow(Voice2::PerNoteManagement {
+            note,
+            detach: true,
+            reset: false
+        }),
+        Err(NoMidi1Form::PerNoteManagement)
+    );
 }

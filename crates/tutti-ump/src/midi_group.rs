@@ -113,6 +113,48 @@ impl MidiGroup {
         MidiGroup(raw & 0x0F)
     }
 
+    /// The channel or group as an array index, `0..16`: the lane of a table
+    /// with one slot for each of the groups.
+    #[inline]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// All sixteen, in order.
+    ///
+    /// ```
+    /// use tutti_ump::MidiGroup;
+    ///
+    /// assert_eq!(MidiGroup::all().count(), 16);
+    /// assert!(MidiGroup::all().map(MidiGroup::index).eq(0..16));
+    /// ```
+    #[inline]
+    pub fn all() -> impl ExactSizeIterator<Item = MidiGroup> + DoubleEndedIterator + Clone {
+        (0..Self::COUNT).map(MidiGroup)
+    }
+
+    /// The group a person numbers `number` (1 to 16: hardware and DAW UIs show
+    /// the first as 1), or `None` outside that. The 1-based door; the wire's
+    /// number is [`new`](Self::new)'s. [`Display`](core::fmt::Display) writes
+    /// the same number back.
+    ///
+    /// ```
+    /// use tutti_ump::MidiGroup;
+    ///
+    /// assert_eq!(MidiGroup::numbered(10), Some(MidiGroup::of(9)));
+    /// assert_eq!(MidiGroup::numbered(0), None);
+    /// assert_eq!(MidiGroup::numbered(17), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn numbered(number: u8) -> Option<MidiGroup> {
+        match number.checked_sub(1) {
+            Some(raw) => Self::new(raw),
+            None => None,
+        }
+    }
+
     /// Returns the raw 0-based group number, for a UMP constructor.
     #[inline]
     #[must_use]
@@ -121,12 +163,16 @@ impl MidiGroup {
     }
 }
 
-// Deliberately no `display_number`. `MidiChannel` has one because the
-// 1-based channel numbering on hardware panels and in every DAW UI is a
-// universal convention; MIDI 2.0 fixes no such convention for groups, and the
-// spec numbers them 0-15 throughout. Inventing a `+ 1` here would put a
-// display decision in the engine that no display has asked for. If a UI wants
-// 1-based groups, it can add the one at its own edge and name it there.
+// Deliberately no `display_number`: `numbered` and `Display` are the 1-based door, as for a
+// channel; MIDI 2.0 itself numbers groups 0-15 throughout, so the wire number stays `get`.
+
+/// The 1-based number a person reads ([`numbered`](MidiGroup::numbered)'s): `MidiGroup::of(9)` is
+/// `10`. [`Debug`](core::fmt::Debug) keeps the wire number.
+impl core::fmt::Display for MidiGroup {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&(u16::from(self.0) + 1), f)
+    }
+}
 
 impl TryFrom<u8> for MidiGroup {
     type Error = OutOfRange;
@@ -215,5 +261,35 @@ mod tests {
         assert_eq!(MidiGroup::new(16), None);
         assert_eq!(MidiChannel::new(16), None);
         assert_eq!(MidiGroup::COUNT, MidiChannel::COUNT);
+    }
+
+    #[test]
+    fn numbered_is_one_based_and_refuses_outside() {
+        for n in 0..=255u8 {
+            match MidiGroup::numbered(n) {
+                Some(v) => {
+                    assert!((1..=16).contains(&n));
+                    assert_eq!(v.get(), n - 1);
+                    assert_eq!(v.to_string(), n.to_string());
+                }
+                None => assert!(n == 0 || n > 16),
+            }
+        }
+    }
+
+    #[test]
+    fn display_is_numbered_and_debug_is_the_wire() {
+        assert_eq!(MidiGroup::of(9).to_string(), "10");
+        assert_eq!(format!("{:?}", MidiGroup::of(9)), "MidiGroup(9)");
+    }
+
+    #[test]
+    fn all_is_every_value_in_order_and_index_is_its_position() {
+        let all: Vec<_> = MidiGroup::all().collect();
+        assert_eq!(all.len(), usize::from(MidiGroup::COUNT));
+        for (i, v) in all.iter().enumerate() {
+            assert_eq!(v.index(), i);
+            assert_eq!(usize::from(v.get()), i);
+        }
     }
 }

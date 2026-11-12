@@ -137,7 +137,7 @@ struct Channel {
 /// let mut out = Vec::new();
 /// // Pitch bend sensitivity, 12 semitones: RPN 0/0, Data Entry 12 then 0.
 /// for ump in [cc(101, 0), cc(100, 0), cc(6, 12), cc(38, 0)] {
-///     translator.feed(ump, |u| out.push(u));
+///     out.extend(translator.translate(ump));
 /// }
 /// assert_eq!(out.len(), 1);
 /// let Ok(Message::Midi2(_, Voice2::Registered { value, .. })) = out[0].decode() else {
@@ -196,13 +196,8 @@ impl Translator {
     /// (a CC 6 with no CC 38 is sent at LSB 0, a CC 38 with no CC 6 at MSB 0).
     /// Nothing else changes: the selections stay.
     pub fn flush(&mut self, mut out: impl FnMut(Address, Ump)) {
-        let addresses = (0..MidiGroup::COUNT)
-            .filter_map(MidiGroup::new)
-            .flat_map(|group| {
-                (0..MidiChannel::COUNT)
-                    .filter_map(MidiChannel::new)
-                    .map(move |channel| Address { group, channel })
-            });
+        let addresses = MidiGroup::all()
+            .flat_map(|group| MidiChannel::all().map(move |channel| Address { group, channel }));
         for (address, channel) in addresses.zip(self.channels.iter_mut()) {
             flush(channel, &mut |voice| {
                 out(address, Message::Midi2(address, voice).into());
@@ -210,20 +205,26 @@ impl Translator {
         }
     }
 
-    /// Translates one packet, calling `out` for the packet it becomes: not at
-    /// all for an absorbed select, Data Entry or Bank Select that ends no run,
-    /// and once otherwise (a select or a CC 6 that ends a run sends that run's
-    /// controller, and is itself absorbed). Never more than once: a clip's
-    /// loader puts the result in its source's place.
-    pub fn feed(&mut self, ump: Ump, mut out: impl FnMut(Ump)) {
+    /// The end of the stream: [`flush`](Self::flush), then the translator is
+    /// gone. The offline caller's door (a clip's loader, which reads a whole
+    /// stream and has no later packet to trigger a waiting run).
+    pub fn finish(mut self, out: impl FnMut(Address, Ump)) {
+        self.flush(out);
+    }
+
+    /// Translates one packet: `None` for an absorbed select, Data Entry or
+    /// Bank Select that ends no run, and the packet it becomes otherwise (a
+    /// select or a CC 6 that ends a run sends that run's controller, and is
+    /// itself absorbed). Never more than one packet: a clip's loader puts the
+    /// result in its source's place. A `Message` is accepted as its packet.
+    pub fn translate(&mut self, packet: impl Into<Ump>) -> Option<Ump> {
+        let ump = packet.into();
         let Ok(Message::Midi1(address, voice)) = ump.decode() else {
-            out(ump);
-            return;
+            return Some(ump);
         };
-        let slot = usize::from(address.group.get()) * usize::from(MidiChannel::COUNT)
-            + usize::from(address.channel.get());
-        let channel = &mut self.channels[slot];
-        let mut send = |voice: Voice2| out(Message::Midi2(address, voice).into());
+        let channel = &mut self.channels[address.index()];
+        let mut sent = None;
+        let mut send = |voice: Voice2| sent = Some(Message::Midi2(address, voice).into());
         match voice {
             Voice1::ControlChange { controller, value } => {
                 controller_change(channel, controller, value, &mut send);
@@ -255,6 +256,7 @@ impl Translator {
                 send(widen(other));
             }
         }
+        sent
     }
 }
 

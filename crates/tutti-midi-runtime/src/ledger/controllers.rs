@@ -49,9 +49,7 @@ impl Controllers {
     }
 
     fn lane(m2: bool, address: Address) -> usize {
-        usize::from(m2) * 256
-            + usize::from(address.group.get()) * 16
-            + usize::from(address.channel.get())
+        usize::from(m2) * 256 + address.index()
     }
 
     /// Folds in a message the port took. A controller back at its normal

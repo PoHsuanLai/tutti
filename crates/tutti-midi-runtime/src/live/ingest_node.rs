@@ -460,9 +460,9 @@ impl Node for MidiIngestNode {
                     continue;
                 };
                 let at = event.offset;
-                translator.feed(raw, |ev| {
+                if let Some(ev) = translator.translate(raw) {
                     staging.whole(ev.is_note_off(), |send| mpe.translate(&(at, ev), send));
-                });
+                }
             }
         }
         let Staging { kept, dropped, .. } = staging;

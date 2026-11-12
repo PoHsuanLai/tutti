@@ -3,7 +3,9 @@
 
 use crate::scale;
 use crate::{midi1, narrow_bend};
-use tutti_ump::{Bank, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, U7, Voice1, Voice2};
+use tutti_ump::{
+    Address, Bank, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, U7, Ump, Voice1, Voice2,
+};
 
 /// Every channel of every group.
 const SLOTS: usize = MidiGroup::COUNT as usize * MidiChannel::COUNT as usize;
@@ -122,7 +124,11 @@ impl Narrower {
     /// order to send them: up to four for a controller, three for a Program
     /// Change with a bank, one for most others, none for one with no MIDI 1.0
     /// form (D.2.8) or that is not a channel or system message.
-    pub fn feed(&mut self, message: Message, mut out: impl FnMut(Midi1Bytes)) {
+    pub fn feed(&mut self, packet: impl Into<Ump>, mut out: impl FnMut(Midi1Bytes)) {
+        // A packet that does not decode has no MIDI 1.0 form.
+        let Ok(message) = packet.into().decode() else {
+            return;
+        };
         let (address, voice) = match message {
             Message::Midi2(address, voice) => (address, voice),
             Message::Midi1(address, voice) => {
@@ -135,9 +141,7 @@ impl Narrower {
                 return;
             }
         };
-        let slot = usize::from(address.group.get()) * usize::from(MidiChannel::COUNT)
-            + usize::from(address.channel.get());
-        let channel = &mut self.channels[slot];
+        let channel = &mut self.channels[address.index()];
         let mut cc = |controller: CCNumber, value: U7| {
             out(Voice1::ControlChange { controller, value }.bytes(address.channel));
         };
@@ -175,11 +179,9 @@ impl Narrower {
     }
 
     /// A MIDI 1.0 Control Change that goes by moves the receiver's state.
-    fn observe(&mut self, address: tutti_ump::Address, voice: Voice1) {
+    fn observe(&mut self, address: Address, voice: Voice1) {
         if let Voice1::ControlChange { controller, .. } = voice {
-            let slot = usize::from(address.group.get()) * usize::from(MidiChannel::COUNT)
-                + usize::from(address.channel.get());
-            forget(&mut self.channels[slot], controller);
+            forget(&mut self.channels[address.index()], controller);
         }
     }
 }

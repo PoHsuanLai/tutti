@@ -41,7 +41,6 @@ use crate::types::RtNoteExpressions;
 use tutti_midi_protocol::{
     Narrower, PitchBendSensitivity, narrow, u16_to_unit_f32, u32_to_unit_f32, widen, widen_bytes,
 };
-use tutti_types::Semitones;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, SysexAssembler,
     SysexStep, U7, Ump, Voice1, Voice2,
@@ -191,7 +190,7 @@ pub enum ClapEvent {
 /// direction reads each channel's range from the stream
 /// ([`PerNoteState`], which scales a bend by it).
 fn emitted_bend_range_semitones() -> f64 {
-    f64::from(PitchBendSensitivity::MPE_DEFAULT.as_semitones_f32())
+    f64::from(PitchBendSensitivity::MPE_DEFAULT.semitones().get())
 }
 
 /// The per-note controllers with a CLAP note expression, and the expression
@@ -871,10 +870,7 @@ impl InputEventList {
     /// sensitivity at the MPE default, ±48 (RP-053), until the stream sets
     /// another.
     fn per_note_state(ports: usize) -> PerNoteState {
-        PerNoteState::new(
-            ports,
-            Semitones(PitchBendSensitivity::MPE_DEFAULT.as_semitones_f32()),
-        )
+        PerNoteState::new(ports, PitchBendSensitivity::MPE_DEFAULT.semitones())
     }
 
     /// Sets the note dialect of the plugin's input note port: `true` sends
@@ -1350,6 +1346,7 @@ impl InputEventList {
                 )
                 .into_midi_dialect(port, None),
                 (Voice2::PolyPressure { .. }, _) => narrow(voice)
+                    .ok()
                     .map(|voice| ClapEvent::midi(time, port, voice.bytes(channel).padded())),
                 _ => None,
             };
@@ -3041,8 +3038,10 @@ mod tests {
     #[test]
     fn sysex_goes_to_its_groups_port_when_that_port_takes_midi() {
         let sysex = |group: u8| -> UmpAt {
-            let payload = [U7::of(0x7E), U7::of(0x09), U7::of(0x01)];
-            let packets = tutti_ump::sysex7_packets(MidiGroup::new(group).unwrap(), &payload);
+            let payload = [0x7E, 0x09, 0x01];
+            let packets =
+                tutti_ump::Sysex7Packets::checked(MidiGroup::new(group).unwrap(), &payload)
+                    .expect("seven-bit bytes");
             let ump = packets.into_iter().next().expect("one packet");
             (Offset::new(0, Samples(64)).expect("inside the block"), ump)
         };

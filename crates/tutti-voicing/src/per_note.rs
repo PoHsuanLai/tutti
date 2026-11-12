@@ -461,7 +461,7 @@ impl PerNoteState {
         let Some(c) = self.channel_index(address) else {
             return;
         };
-        self.ranges[c] = Semitones(PitchBendSensitivity::from_rpn_bits(value).as_semitones_f32());
+        self.ranges[c] = PitchBendSensitivity::from_rpn_bits(value).semitones();
         for at in c * KEYS..(c + 1) * KEYS {
             if self.held[at].get(Held::BEND).is_some() {
                 self.sound_all(at, address);

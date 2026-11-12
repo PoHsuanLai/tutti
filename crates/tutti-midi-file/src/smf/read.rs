@@ -28,7 +28,7 @@
 //!
 //! The combinators frame the file; a channel message is `tutti-ump`'s: its
 //! data-byte count is `Voice1::data_len` and the status and data bytes become
-//! a message through `Midi1Parser::message`, the one-message decode. Track
+//! a message through `parse_exact`, the one-message decode. Track
 //! bytes are never fed to `Midi1Parser::feed` as a stream: in a file the delta
 //! bytes would read as running-status data and `FF` (meta) as a real-time
 //! Reset, so the streaming parser is wrong for file framing.
@@ -53,7 +53,7 @@ use winnow::combinator::{alt, dispatch, eof, fail, peek, repeat, repeat_till};
 use winnow::error::ContextError;
 use winnow::token::{literal, take};
 
-use tutti_ump::{Midi1Parser, MidiGroup, Voice1};
+use tutti_ump::{MidiGroup, Voice1, parse_exact};
 
 use super::SmfParts;
 use crate::file::{FileEvent, Meta, SmfFormat, TextKind, Tick, Track};
@@ -202,7 +202,7 @@ fn smf<'a>(input: &mut &'a [u8]) -> Res<(Header, Vec<&'a [u8]>)> {
 // ---- events ----------------------------------------------------------------
 
 /// The data bytes of a channel status (how many is `Voice1::data_len`'s) as a
-/// message on group 0. `Midi1Parser::message` owns the status bit layout.
+/// message on group 0. `parse_exact` owns the status bit layout.
 fn channel<'a>(status: u8) -> impl Parser<&'a [u8], FileEvent, ContextError<Fault>> {
     let count = Voice1::data_len(status).map_or(0, usize::from);
     take(count)
@@ -212,7 +212,7 @@ fn channel<'a>(status: u8) -> impl Parser<&'a [u8], FileEvent, ContextError<Faul
                 [a, b] => [status, a, b],
                 _ => return None,
             };
-            Midi1Parser::message(MidiGroup::FIRST, &bytes).map(FileEvent::Message)
+            parse_exact(MidiGroup::FIRST, &bytes).map(FileEvent::Message)
         })
         .context(malformed("channel message data"))
 }

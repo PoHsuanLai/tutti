@@ -136,7 +136,7 @@ impl MidiCcMapping {
         if controller >= NUM_CONTROLLERS {
             return None;
         }
-        let id = self.table[usize::from(channel.get()) * NUM_CONTROLLERS + controller];
+        let id = self.table[channel.index() * NUM_CONTROLLERS + controller];
         (id != NO_PARAM_ID).then_some(id)
     }
 }

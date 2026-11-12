@@ -267,7 +267,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
     assert!(event.ump.is_note_off());
     assert_eq!(
         event.ump.key_event().map(|key| match key {
-            KeyEvent::On(key) | KeyEvent::Off(key) => key.note(),
+            KeyEvent::On(key) | KeyEvent::Off(key) => key.note().get(),
             KeyEvent::Sustain { .. } => unreachable!("a note-off"),
         }),
         Some(NOTE),

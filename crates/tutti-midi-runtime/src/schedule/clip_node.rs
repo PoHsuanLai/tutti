@@ -183,8 +183,7 @@ fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidi
     let mut data_entry: HashMap<(MidiGroup, MidiChannel), usize> = HashMap::new();
     let mut translator = Translator::new();
     for i in order {
-        // The translator sends at most one packet per packet fed.
-        translator.feed(events[i].event, |u| out[i] = Some(u));
+        out[i] = translator.translate(events[i].event);
         if let Ok(Message::Midi1(
             address,
             Voice1::ControlChange {
@@ -199,7 +198,7 @@ fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidi
     // Nothing follows the last event, so a CC 6 with no CC 38 after it is
     // complete: send it where the CC 6 stood, not at a later trigger that
     // never comes (a clip has no live timeout; M2-104 D.3.3).
-    translator.flush(|address, ump| {
+    translator.finish(|address, ump| {
         if let Some(&i) = data_entry.get(&(address.group, address.channel)) {
             flushed[i] = Some(ump);
         }

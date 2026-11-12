@@ -101,6 +101,7 @@ impl AddAssign<u64> for Tick {
 }
 
 /// The format word of an SMF header (SMF 1.0 section 2.1).
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SmfFormat {
     /// Format 0: one track holding everything.
@@ -114,6 +115,7 @@ pub enum SmfFormat {
 }
 
 /// What a text meta event says (SMF 1.0 section 3.3 types `01` to `09`).
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextKind {
     /// `01`: any text.
@@ -481,11 +483,8 @@ impl Track {
             let Some(key_event @ (KeyEvent::On(key) | KeyEvent::Off(key))) = ump.key_event() else {
                 continue;
             };
-            let lane = key.lane();
-            let group = MidiGroup::masked(lane >> 4);
-            let channel = MidiChannel::masked(lane & 0x0F);
-            // A `Key`'s note is 7 bits, framed by the packet.
-            let note = NoteNumber::masked(key.note());
+            let Address { group, channel } = key.address();
+            let note = key.note();
             let map_key = (group, channel, note);
             if matches!(key_event, KeyEvent::Off(_)) {
                 if let Some((start, velocity)) = held.get_mut(&map_key).and_then(Vec::pop) {

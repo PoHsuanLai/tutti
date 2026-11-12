@@ -2747,7 +2747,7 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
         synth.apply_midi(ump(message));
         // The synth keeps where the pitch stands: the wheel times the range.
         assert_eq!(
-            synth.bends[usize::from(MidiChannel::FIRST.get())],
+            synth.bends[MidiChannel::FIRST.index()],
             synth.config.pitch_bend_range * expected,
             "{message:?}"
         );

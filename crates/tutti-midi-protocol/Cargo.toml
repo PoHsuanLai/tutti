@@ -23,6 +23,7 @@ default = []
 serde = ["dep:serde", "tutti-ump/serde"]
 
 [dependencies]
+tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
 

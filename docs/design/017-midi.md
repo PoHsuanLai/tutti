@@ -1559,9 +1559,9 @@ moved to `Graph::open_event_inlet` (the session's live input and an
 instrument's queue, through one private `SharedKeys`: a `MidiKeys` behind an
 `Arc<Mutex<_>>` taken on control threads only), to `EventInletNode::pair` (the
 plugin tests' keyboard, the `rt_no_alloc` gates) and to `EventInletWriter::push`
-(`At::NextBlock` replaces an offset of 0). `LiveInput` is no longer a `Deref` to
-a mailbox sender: it has `send`, `send_at`, `note_on`, `note_off`, `clock` and
-`dropped`, as `InstrumentHandle` does. Behaviour that differs from
+(`Stamp::NextBlock` replaces an offset of 0). `LiveInput` is no longer a `Deref` to
+a mailbox sender: it has `send` (at any `Stamp`), `note_on`, `note_off`, `clock` and
+`losses`, as `InstrumentHandle` does. Behaviour that differs from
 `MidiQueueNode`: an event stamped past the block waits for its block instead of
 being clamped onto its last frame (the inlet's rule), and a full ring refuses
 with `SendError::Full` and counts in `lost()`. Two crate-level deviations from

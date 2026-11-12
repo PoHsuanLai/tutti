@@ -9,7 +9,7 @@ use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
 use tutti_types::Samples;
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Sysex7Packets,
-    SysexStatus, System, Ump, Voice2,
+    SysexStatus, System, U7, U14, Ump, Voice2,
 };
 use tutti_vst3_ffi::EventList;
 
@@ -74,25 +74,11 @@ fn encode_live(event: &UmpAt) -> (i32, Option<Event>) {
 
 #[test]
 fn inbound_generic_data_cc_promotes_to_cv2() {
-    // A CC has no typed VST3 slot, so it rounds through a generic `Data`
-    // (3-byte MIDI-1) event. Decoding that must yield MIDI-2 Channel Voice
-    // 2, not CV1 — the engine sees one vocabulary regardless of source
-    // (the same widening the hardware input path makes).
-
-    let event = (
-        Offset::ZERO,
-        midi::cc(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            CCNumber::BRIGHTNESS,
-            tutti_fixtures::midi::wide_value(100),
-        ),
-    );
-    let vst3 = encode(&event).expect("CC -> Data");
-    assert!(
-        matches!(vst3.payload, Payload::Data(_)),
-        "CC should be a Data event"
-    );
+    // A plugin's output `Data` event of three MIDI-1 bytes (a controller on
+    // channel 1) decodes to MIDI-2 Channel Voice 2, not CV1: the engine sees one
+    // vocabulary regardless of source (the same widening the hardware input
+    // path makes).
+    let vst3 = Event::at(0, Payload::Data(Data::inline(0, [0xB1, 74, 100])));
     let back = vst3.to_midi().expect("cc decodes");
     match back.ump.decode().expect("valid UMP") {
         Message::Midi2(address, Voice2::ControlChange { controller, .. }) => {
@@ -105,10 +91,9 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
 
 #[test]
 fn inbound_system_message_passes_through() {
-    // A System real-time message (Timing Clock 0xF8) has no CV form and must
-    // pass through unchanged, not be dropped or widened.
-    let event = (Offset::ZERO, midi::timing_clock(MidiGroup::FIRST));
-    let vst3 = encode(&event).expect("clock -> Data");
+    // A System real-time message (Timing Clock 0xF8) in a plugin's output has no
+    // CV form and must pass through unchanged, not be dropped or widened.
+    let vst3 = Event::at(0, Payload::Data(Data::inline(0, [0xF8, 0, 0])));
     let back = vst3.to_midi().expect("clock decodes");
     assert!(
         matches!(
@@ -226,65 +211,31 @@ fn poly_pressure_lands_in_poly_pressure_variant() {
     ));
 }
 
+/// VST3's `DataEvent` has one type, `kMidiSysEx` (ivstevents.h), so a MIDI 1.0
+/// channel message is never sent in one: a controller, pitch bend and program
+/// change that no `IMidiMapping` parameter took have no VST3 event. Each is
+/// dropped whole and counted.
 #[test]
-fn cc_falls_through_to_data_event() {
-    let event = (
-        Offset::ZERO,
+fn unmapped_channel_messages_are_dropped_and_counted_never_sent_as_data() {
+    let mut encoder = MidiEncoder::default();
+    let events = [
         midi::cc(
             MidiGroup::FIRST,
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
             tutti_fixtures::midi::wide_value(100),
         ),
-    );
-    let vst3 = encode(&event).expect("CC should convert");
-    match &vst3.payload {
-        Payload::Data(e) => {
-            assert_eq!(e.size(), 3);
-            assert_eq!(e.payload()[0], 0xB0 | 2);
-            assert_eq!(e.payload()[1], 74);
-            assert_eq!(e.payload()[2], 100);
-        }
-        _ => panic!("expected Data variant for CC"),
-    }
-}
-
-#[test]
-fn pitch_bend_falls_through_to_data_event() {
-    let event = (
-        Offset::ZERO,
         midi::pitch_bend(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             tutti_fixtures::midi::wide_bend(8192),
         ),
-    );
-    let vst3 = encode(&event).expect("PitchBend should convert");
-    match &vst3.payload {
-        Payload::Data(e) => {
-            assert_eq!(e.size(), 3);
-            assert_eq!(e.payload()[0] & 0xF0, 0xE0);
-            let value = (e.payload()[1] as u16) | ((e.payload()[2] as u16) << 7);
-            assert_eq!(value, 8192, "PitchBend should round-trip to center");
-        }
-        _ => panic!("expected Data variant for PitchBend"),
-    }
-}
-
-#[test]
-fn program_change_falls_through_to_data_event() {
-    let event = (
-        Offset::ZERO,
         midi::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None),
-    );
-    let vst3 = encode(&event).expect("ProgramChange should convert");
-    match &vst3.payload {
-        Payload::Data(e) => {
-            assert_eq!(e.size(), 3);
-            assert_eq!(e.payload()[0], 0xC0 | 9);
-            assert_eq!(e.payload()[1], 42);
-        }
-        _ => panic!("expected Data variant for ProgramChange"),
+    ];
+    for (i, ump) in events.into_iter().enumerate() {
+        let made = encoder.encode(&(Offset::ZERO, ump)).to_vec();
+        assert!(made.is_empty(), "{ump:?} reached the plugin as {made:?}");
+        assert_eq!(encoder.unsendable_dropped(), i as u64 + 1);
     }
 }
 
@@ -984,6 +935,95 @@ fn legacy_cc_out_decodes_to_midi() {
     }
 }
 
+/// `LegacyMIDICCOutEvent`'s controller numbers above the CCs
+/// (ivstmidicontrollers.h): 130 is Program Change, 132 to 140 the System
+/// messages (Cable Select, 135, has none), with `value2` the MSB of Song
+/// Position.
+#[test]
+fn legacy_cc_out_numbers_above_the_controllers_are_program_change_and_system() {
+    let group = MidiGroup::of(2);
+    let decode = |control: u8, value: i8, value2: i8| {
+        let mut event = Event::at(
+            3,
+            Payload::LegacyCcOut(legacy_cc(control, 5, value, value2)),
+        );
+        event.header.bus_index = 2;
+        event.to_midi().map(|m| m.ump.decode())
+    };
+    assert_eq!(
+        decode(130, 42, 0),
+        Some(Ok(Message::Midi2(
+            Address {
+                group,
+                channel: MidiChannel::of(5)
+            },
+            Voice2::ProgramChange {
+                program: U7::new(42).unwrap(),
+                bank: None
+            }
+        )))
+    );
+    let system = |system| Some(Ok(Message::System(group, system)));
+    assert_eq!(
+        decode(132, 0x35, 0),
+        system(System::TimeCode(U7::new(0x35).unwrap()))
+    );
+    assert_eq!(
+        decode(133, 9, 0),
+        system(System::SongSelect(U7::new(9).unwrap()))
+    );
+    // Song Position: value is the LSB, value2 the MSB.
+    assert_eq!(
+        decode(134, 0x34, 0x24),
+        system(System::SongPosition(U14::new(0x24 << 7 | 0x34).unwrap()))
+    );
+    assert_eq!(decode(135, 1, 0), None, "Cable Select has no MIDI message");
+    assert_eq!(decode(136, 0, 0), system(System::TuneRequest));
+    assert_eq!(decode(137, 0, 0), system(System::Start));
+    assert_eq!(decode(138, 0, 0), system(System::Continue));
+    assert_eq!(decode(139, 0, 0), system(System::Stop));
+    assert_eq!(decode(140, 0, 0), system(System::ActiveSensing));
+    assert_eq!(decode(141, 0, 0), None, "past the last number");
+}
+
+/// An output event's `busIndex` is the event output bus it left on, the UMP
+/// Group of its message: a note, a legacy controller and a raw MIDI 1.0 data
+/// event keep it, and a bus past the 16 Groups drops the event.
+#[test]
+fn an_output_events_bus_index_is_its_group() {
+    let on_bus = |bus: i32, mut event: Event| {
+        event.header.bus_index = bus;
+        event.to_midi()
+    };
+    let group_of = |midi: Option<tutti_plugin_types::WireMidi>| match midi.unwrap().ump.decode() {
+        Ok(Message::Midi2(address, _)) => address.group,
+        Ok(Message::System(group, _)) => group,
+        other => panic!("not a message with a Group: {other:?}"),
+    };
+    let note = Event::at(0, Payload::NoteOn(NoteOn::new(1, 60, 0.5, -1)));
+    assert_eq!(group_of(on_bus(7, note)), MidiGroup::of(7));
+    let cc = Event::at(0, Payload::LegacyCcOut(legacy_cc(74, 3, 100, 0)));
+    assert_eq!(group_of(on_bus(3, cc)), MidiGroup::of(3));
+    let raw = Event::at(0, Payload::Data(Data::inline(0, [0xB1, 74, 100])));
+    assert_eq!(group_of(on_bus(15, raw)), MidiGroup::of(15));
+    let clock = Event::at(0, Payload::Data(Data::inline(0, [0xF8, 0, 0])));
+    assert_eq!(group_of(on_bus(1, clock)), MidiGroup::of(1));
+    assert!(
+        on_bus(
+            16,
+            Event::at(0, Payload::NoteOn(NoteOn::new(1, 60, 0.5, -1)))
+        )
+        .is_none()
+    );
+    assert!(
+        on_bus(
+            -1,
+            Event::at(0, Payload::NoteOn(NoteOn::new(1, 60, 0.5, -1)))
+        )
+        .is_none()
+    );
+}
+
 /// Chord / scale / text / int events are not channel-voice MIDI.
 #[test]
 fn harmony_events_are_not_midi() {
@@ -1005,7 +1045,7 @@ mod message {
     use super::*;
     use tutti_ump::{
         Address, Attribute, Bank, Data128, Flex, NoteNumber, Sysex7Packet, Sysex8Packet,
-        SysexStatus, U7, U14, Utility, Voice1,
+        SysexStatus, Utility, Voice1,
     };
 
     fn address(channel: u8) -> Address {
@@ -1025,14 +1065,6 @@ mod message {
 
     fn packet(message: Message) -> UmpAt {
         (at(7), Ump::from(message))
-    }
-
-    fn data_bytes(event: &Event) -> [u8; 3] {
-        let Payload::Data(d) = &event.payload else {
-            panic!("expected a Data event, got {event:?}");
-        };
-        let b = d.payload();
-        [b[0], b[1], b[2]]
     }
 
     /// A MIDI 1.0 Note On at velocity 0 widens to a Note Off at velocity
@@ -1162,133 +1194,98 @@ mod message {
         }
     }
 
-    /// Each System message is carried as its MIDI 1.0 bytes; Song Position
-    /// is LSB first.
+    /// Each System message has no VST3 event (`DataEvent` is `kMidiSysEx`
+    /// alone): it is dropped and counted.
     #[test]
-    fn a_system_message_is_carried_as_its_midi1_bytes() {
+    fn a_system_message_is_dropped_and_counted() {
         let cases = [
-            (System::TimeCode(u7(0x35)), [0xF1, 0x35, 0]),
-            (
-                System::SongPosition(U14::new(0x1234).unwrap()),
-                [0xF2, 0x34, 0x24],
-            ),
-            (System::SongSelect(u7(9)), [0xF3, 9, 0]),
-            (System::TuneRequest, [0xF6, 0, 0]),
-            (System::TimingClock, [0xF8, 0, 0]),
-            (System::Start, [0xFA, 0, 0]),
-            (System::Continue, [0xFB, 0, 0]),
-            (System::Stop, [0xFC, 0, 0]),
-            (System::ActiveSensing, [0xFE, 0, 0]),
-            (System::Reset, [0xFF, 0, 0]),
+            System::TimeCode(u7(0x35)),
+            System::SongPosition(U14::new(0x1234).unwrap()),
+            System::SongSelect(u7(9)),
+            System::TuneRequest,
+            System::TimingClock,
+            System::Start,
+            System::Continue,
+            System::Stop,
+            System::ActiveSensing,
+            System::Reset,
         ];
-        for (system, bytes) in cases {
+        let mut encoder = MidiEncoder::default();
+        for (i, system) in cases.into_iter().enumerate() {
             let event = packet(Message::System(MidiGroup::FIRST, system));
-            let vst3 = encode(&event).unwrap_or_else(|| panic!("{system:?} dropped"));
-            assert_eq!(data_bytes(&vst3), bytes, "{system:?}");
+            assert!(encoder.encode(&event).is_empty(), "{system:?} was sent");
+            assert_eq!(encoder.unsendable_dropped(), i as u64 + 1, "{system:?}");
         }
     }
 
-    /// A MIDI 1.0 controller, program, pressure and bend are carried as they
-    /// came; a MIDI 2.0 one is narrowed to the top bits (M2-115 §3.4).
+    /// A controller, program, pressure and bend, MIDI 1.0 or 2.0, and a banked
+    /// program change or an RPN, have no VST3 event: each is dropped whole and
+    /// counted, and none is a `Data` event.
     #[test]
-    fn controllers_are_carried_at_midi1_resolution() {
-        let carried = |message| data_bytes(&encode(&packet(message)).expect("carried"));
+    fn controllers_have_no_vst3_event_and_are_counted() {
         let ch = address(3);
-        assert_eq!(
-            carried(Message::Midi1(
+        let messages = [
+            Message::Midi1(
                 ch,
                 Voice1::ControlChange {
                     controller: CCNumber::new(74).unwrap(),
                     value: u7(100),
-                }
-            )),
-            [0xB3, 74, 100]
-        );
-        assert_eq!(
-            carried(Message::Midi1(
-                ch,
-                Voice1::PitchBend(U14::new(0x2001).unwrap())
-            )),
-            [0xE3, 0x01, 0x40]
-        );
-        assert_eq!(
-            carried(Message::Midi2(
+                },
+            ),
+            Message::Midi1(ch, Voice1::PitchBend(U14::new(0x2001).unwrap())),
+            Message::Midi1(ch, Voice1::ChannelPressure(u7(5))),
+            Message::Midi1(ch, Voice1::ProgramChange(u7(9))),
+            Message::Midi2(
                 ch,
                 Voice2::ControlChange {
                     controller: CCNumber::new(74).unwrap(),
                     value: 0xFFFF_FFFF,
-                }
-            )),
-            [0xB3, 74, 127]
-        );
-        assert_eq!(
-            carried(Message::Midi2(ch, Voice2::PitchBend(0x8000_0000))),
-            [0xE3, 0x00, 0x40]
-        );
-        assert_eq!(
-            carried(Message::Midi2(ch, Voice2::ChannelPressure(0x8000_0000))),
-            [0xD3, 0x40, 0]
-        );
-        assert_eq!(
-            carried(Message::Midi2(
+                },
+            ),
+            Message::Midi2(ch, Voice2::PitchBend(0x8000_0000)),
+            Message::Midi2(ch, Voice2::ChannelPressure(0x8000_0000)),
+            Message::Midi2(
                 ch,
                 Voice2::ProgramChange {
                     program: u7(9),
-                    bank: None
-                }
-            )),
-            [0xC3, 9, 0]
-        );
+                    bank: Some(Bank {
+                        msb: u7(1),
+                        lsb: u7(5),
+                    }),
+                },
+            ),
+        ];
+        let mut encoder = MidiEncoder::default();
+        for (i, message) in messages.into_iter().enumerate() {
+            let made = encoder.encode(&packet(message)).to_vec();
+            assert!(
+                made.is_empty(),
+                "{message:?} reached the plugin as {made:?}"
+            );
+            assert_eq!(encoder.unsendable_dropped(), i as u64 + 1, "{message:?}");
+        }
     }
 
-    /// Packets written out as M2-104 words, with unequal data bytes, give
-    /// exactly the VST3 bytes below. Channel 3 throughout, group 0.
+    /// Packets written out as M2-104 words (MIDI 1.0 and 2.0 forms of a
+    /// controller, program, pressure and bend) are the messages above: none
+    /// reaches the plugin.
     #[test]
-    fn spec_words_give_the_exact_midi1_bytes() {
-        let bytes = |words: &[u32]| data_bytes(&encode(&raw(words)).expect("carried"));
-        // MT 2: status in bits 23-20, channel 19-16, data bytes 15-8 and 7-0.
-        assert_eq!(
-            bytes(&[0x20C3_0900]),
-            [0xC3, 9, 0],
-            "MIDI 1.0 Program Change"
-        );
-        assert_eq!(
-            bytes(&[0x20D3_4500]),
-            [0xD3, 0x45, 0],
-            "MIDI 1.0 Channel Pressure"
-        );
-        assert_eq!(
-            bytes(&[0x20B3_4A64]),
-            [0xB3, 74, 100],
-            "MIDI 1.0 Control Change"
-        );
-        assert_eq!(
-            bytes(&[0x20E3_0140]),
-            [0xE3, 0x01, 0x40],
-            "MIDI 1.0 Pitch Bend"
-        );
-        // MT 4: the 32-bit value is in word 1; 14-bit bend 0x141 is its top
-        // 14 bits.
-        assert_eq!(
-            bytes(&[0x40C3_0000, 0x0900_0000]),
-            [0xC3, 9, 0],
-            "MIDI 2.0 Program Change"
-        );
-        assert_eq!(
-            bytes(&[0x40D3_0000, 0x8800_0000]),
-            [0xD3, 0x44, 0],
-            "MIDI 2.0 Channel Pressure"
-        );
-        assert_eq!(
-            bytes(&[0x40B3_4A00, 0xC800_0000]),
-            [0xB3, 74, 100],
-            "MIDI 2.0 Control Change"
-        );
-        assert_eq!(
-            bytes(&[0x40E3_0000, 0x0504_0000]),
-            [0xE3, 0x41, 0x02],
-            "MIDI 2.0 Pitch Bend"
-        );
+    fn spec_words_for_channel_messages_are_dropped() {
+        let mut encoder = MidiEncoder::default();
+        let words: [&[u32]; 8] = [
+            &[0x20C3_0900],
+            &[0x20D3_4500],
+            &[0x20B3_4A64],
+            &[0x20E3_0140],
+            &[0x40C3_0000, 0x0900_0000],
+            &[0x40D3_0000, 0x8800_0000],
+            &[0x40B3_4A00, 0xC800_0000],
+            &[0x40E3_0000, 0x0504_0000],
+        ];
+        for (i, w) in words.into_iter().enumerate() {
+            assert!(encoder.encode(&raw(w)).is_empty(), "{w:08x?} was sent");
+            assert_eq!(encoder.unsendable_dropped(), i as u64 + 1, "{w:08x?}");
+        }
     }
 
     /// Per-note pressure and controllers written out as words. The type ids
@@ -1325,42 +1322,6 @@ mod message {
             panic!("expected poly pressure");
         };
         assert_eq!(p.pressure, u32_to_unit_f32(0x4200_0000));
-    }
-
-    /// A banked Program Change is Bank Select MSB, Bank Select LSB and the
-    /// Program Change (M2-104 Figure 64: MSB at bits 15-8, LSB at bits 7-0).
-    /// Bank `0x0085` is MSB 1 and LSB 5, so CC 0 = 1 and CC 32 = 5, and a
-    /// Program Change with no bank is not a bank.
-    #[test]
-    fn a_bank_is_msb_then_lsb() {
-        let banked = (
-            Offset::ZERO,
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
-        );
-        // The bytes of the Data events one packet makes, on a fresh stream.
-        let padded = |event: &UmpAt| -> Vec<[u8; 3]> {
-            MidiEncoder::default()
-                .encode(event)
-                .iter()
-                .map(|e| match e.payload {
-                    Payload::Data(d) => d.payload().try_into().expect("three bytes"),
-                    other => panic!("not Data: {other:?}"),
-                })
-                .collect()
-        };
-        assert_eq!(padded(&banked), [[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]]);
-        // Spec words: MSB 2 at bits 15-8, LSB 5 at bits 7-0.
-        let spec_words = raw(&[0x40C1_0001, 0x0900_0205]);
-        assert_eq!(
-            padded(&spec_words),
-            [[0xB1, 0, 2], [0xB1, 32, 5], [0xC1, 9, 0]]
-        );
-        // A Program Change with no bank is the program alone.
-        let plain = (
-            Offset::ZERO,
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, None),
-        );
-        assert_eq!(padded(&plain), [[0xC1, 9, 0]]);
     }
 
     /// A MIDI 1.0 message a plugin sends as raw bytes is widened on the way

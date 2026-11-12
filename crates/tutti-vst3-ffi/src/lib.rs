@@ -22,7 +22,7 @@ mod sdk;
 mod types;
 mod view;
 
-pub use audio::{AudioSide, ProcessIo};
+pub use audio::{AudioSide, FlushIo, ProcessIo};
 pub use bus_buffers::{BoundBuses, BusBuffers};
 #[cfg(feature = "conformance")]
 pub use com::RunLoopActivity;

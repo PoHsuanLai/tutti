@@ -76,6 +76,11 @@ pub struct Vst3Loaded {
     /// The `IMidiMapping` table the Processor routes against: published by
     /// whichever half rebuilds it, lent to the Processor once per block.
     pub(super) midi_cc: Arc<ArcLend<MidiCcCell>>,
+    /// Notifications [`Control::take_reported_edits`](tutti_plugin_types::Control::take_reported_edits)
+    /// popped that are not edits, for the next
+    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) to hand
+    /// out first.
+    pub(super) stashed: Vec<crate::PluginNotification>,
     /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
     /// the teardown-order note at the top of this struct.
     pub(super) _library: Arc<Library>,

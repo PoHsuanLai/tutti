@@ -111,6 +111,14 @@ already measured.
   and a `DesignNode` **solves at a lane's corners** as well as on its grid (section 4.5). (B5) IAMF
   re-tested on B1 to B4: every stage is a kernel, an edge gain or a control source, with no new trait
   (section 4.10). Section 10, "Step 2b as built, and the lanes after it", carries them.
+- **Amendments C of 2026-11-12: the names are the words that explain them** (section 2.7).
+  The docs explained each trait in the language of signals and systems (a parameterized
+  family of systems, each computed by a recurrence), but the code used other words for the
+  same things, and four names (`Realization`, `Realized`, `Kernel`, `Effect`) stood for one
+  idea. (C1) `Design` becomes **`Family`**, its model a **`Member`**. (C2) `Kernel` becomes
+  **`Recurrence`**. (C3) `Effect` folds into **`Realization`**. (C4) `Sizes` and `Bounds`
+  become **`Capacity`**, `Range` becomes **`Domain`** and `Ceiling` becomes **`Reach`**.
+  Renames only: no algorithm, render or test assertion changes.
 - **The contract is written once per class** (section 6): every LTI realization
   inherits the impulse-response-against-response, ring-time-against-decay,
   linearity and shift-invariance checks; every static map inherits the level
@@ -328,6 +336,55 @@ Four rules decide which word a name uses (the owner's decision of 2026-11-11).
 
 A name that disagrees with this table is a rename to schedule, not a reason to read the
 table loosely.
+
+### 2.7 Amendments C: one sentence, its words as the names (2026-11-12)
+
+Everything in this document is one idea from signals and systems: **a parameterized family
+of discrete-time systems, each member computed by a recurrence over its state.** Sections 2.1
+and 2.5 already explain the traits in those words; the code used others (`Design`, `Kernel`,
+`Sizes`, `Ceiling`) and four names for the thing that processes audio. The owner found the
+names unintuitive; the fix is to name each piece with the word that explains it, so the
+types read as the sentence:
+
+> A **`Family`** maps controls to a **`Member`**, a `System`; a **`Recurrence`** computes the
+> member frame by frame; a **`Realization`** runs it over blocks within a **`Capacity`**,
+> sized for the **`Reach`** a node asks of the family's **`Domain`**.
+
+Each word is the textbook one: a family of systems indexed by parameters, a member of it, a
+recurrence (difference equation) `(state, input) -> (state, output)`, a realization (one
+structure computing a system), its capacity (the worst member its state must hold).
+
+| Now | Becomes | Why |
+|---|---|---|
+| trait `Design` | **`Family`** | it is the set of systems the controls index, `c -> S_D(c, fs)`; "design" read as a noun suggested a drawing |
+| `Design::Model` | **`Family::Member`** (bound `System`) | one member of the family; `type System: System` would collide with the trait |
+| `design`, `design_into` | **`member`**, **`member_into`** | the member at these controls and rate |
+| `Design::Bounds`, trait `Sizes`, `Realization::Bounds`, `Kernel::Bounds` | **`Capacity`** (trait, and the associated type of each) | what a realization allocates for the worst member it must hold; `Sizes`, `Bounds` and the reverb's `NetworkSizes` were three names for it |
+| `NetworkSizes`, `FilterSizes` | **`NetworkCapacity`**, **`FilterCapacity`** | the same |
+| `Design::bounds(&ceiling)` | **`Family::capacity(&reach)`** | measured from the family over the reach |
+| `Design::Range`, trait `Range` | **`Family::Domain`**, trait **`Domain`** | the part of the control space a node may reach (`MaxDecay` is one) |
+| `Ceiling<R>` | **`Reach<D>`** | a domain at a rate and a tail floor: how far into the family a node must be able to go |
+| trait `Kernel` | **`Recurrence`** | the per-frame difference equation; "kernel" is an impulse response in this field (section 2.5 already said so) |
+| `ChannelKernel`, `FreeverbKernel`, `FdnKernel` | **`ChannelRecurrence`**, **`FreeverbRecurrence`**, **`FdnRecurrence`** | the same |
+| trait `Effect<M>` | folded into **`Realization<M>`** (`process` moves onto it) | every realization built has the planar block shape; section 2.4 item 4 kept `process` off `Realization` for a generator or a resampler that does not exist as a realization yet, and a second trait for an unbuilt shape is the indirection this section removes. When one is built it gets its own realization trait then |
+| `NodeDesign`, `DesignNode<D>` | **`NodeFamily`**, **`FamilyNode<F>`** | the node over a family |
+| `SvfDesign`, `LadderDesign`, `CrossoverDesign`, `FreeverbDesign`, `FdnDesign` | **`SvfFamily`**, **`LadderFamily`**, **`CrossoverFamily`**, **`FreeverbFamily`**, **`FdnFamily`** | the SVF family, the ladder family |
+| `design_contract!`, `DesignCase` | **`family_contract!`**, **`FamilyCase`** | the cases a family is held to |
+
+**Kept:** `System`, `Lti` and every class trait; `Realization<M>` and `Realized<K>` (the
+realization of a recurrence); `Setup`, `Effort`, `Cadence`, `Channels`, `Glide`, `Lerp`,
+`Approach`, `Steps` (`Glide` is the engineering word for the interpolation of the parameters
+between two members, and reads as what it does); `realization_contract!`, `RealizationCase`,
+`Figure`; `Filter<K>`. The dynamics kernels (`CompressorKernel`, `GateKernel`,
+`LimiterKernel`) and `VbapKernel` are not `Kernel` impls; each becomes a `Recurrence` (or
+keeps a plain name) in its family lane.
+
+**How it lands.** One PR, after the ladder fix and before the dynamics lane, so no lane is
+written against the old names: the renames in `tutti-dsp`, `tutti-nodes` and their tests,
+CLAUDE.md's `tutti-dsp` paragraph, and sections 2.1, 2.5 and the code names throughout this
+document (dated records in other documents keep theirs). The glossary's "Was" column gains the
+names above. Nothing changes but names and the one trait fold, so no render, digest or
+assertion moves.
 
 ## 3. The inventory
 

@@ -457,6 +457,40 @@ impl AuParameterListener {
         self.add_event_type(K_AUDIO_UNIT_EVENT_PARAMETER_VALUE_CHANGE, id, address)
     }
 
+    /// Writes a parameter and notifies every listener **but this one**
+    /// (`AUParameterSet` with this listener as the sender, which the header
+    /// excludes from the notification).
+    ///
+    /// This is how a host keeps its own writes (automation playback, a restored
+    /// value) from coming back through its own listener as if the user had
+    /// moved the control: the plugin's editor and every other listener still
+    /// follow. `buffer_offset_in_frames` is `AUParameterSet`'s, "the offset into
+    /// the next rendered buffer at which the change takes effect".
+    ///
+    /// # Errors
+    /// Returns the AU's own `OSStatus` for an id or address it does not have.
+    pub fn set_parameter(
+        &self,
+        id: AudioUnitParameterID,
+        address: EventAddress,
+        value: f32,
+        buffer_offset_in_frames: u32,
+    ) -> Result<()> {
+        let parameter = self.parameter(id, address);
+        // SAFETY: `parameter` is live for the call, `self.listener` is live for
+        // `&self`, and a null sending object is the documented "none".
+        check("AUParameterSet", unsafe {
+            AUParameterSet(
+                self.listener,
+                std::ptr::null_mut(),
+                &parameter,
+                value,
+                buffer_offset_in_frames,
+            )
+        })
+        .map_err(Error::from)
+    }
+
     /// Delivers [`AuEvent::BeginGesture`] and [`AuEvent::EndGesture`] for
     /// parameter `id`.
     ///

@@ -29,6 +29,8 @@ use tutti_au_ffi::property::{Latency, ParameterList, TailTime};
 use tutti_au_ffi::{AuEvent, AuParameterListener, EventAddress, Property, Unit};
 use tutti_plugin_types::{Request, RequestWord, RescanScope};
 
+use crate::edits::ReportedEdits;
+
 /// A live property-change registration on the AU, raising bits of the word it
 /// was made with.
 ///
@@ -36,20 +38,25 @@ use tutti_plugin_types::{Request, RequestWord, RescanScope};
 /// registration is disposed first: `AuParameterListener` keeps the unit alive
 /// itself, but a delivery after the unit's owner has gone is still wasted work.
 pub(crate) struct PropertyWatch {
-    /// Never read after construction. Dropping it runs `AUListenerDispose`,
-    /// which is the only thing that stops further deliveries.
-    _listener: AuParameterListener,
+    /// Dropping the last handle runs `AUListenerDispose`, which is the only
+    /// thing that stops further deliveries. Shared with the processor, which
+    /// names it as the sender of its own parameter writes so they are not heard
+    /// back as the plugin's edits.
+    listener: Arc<AuParameterListener>,
+    /// The parameters whose value changes are subscribed, ascending.
+    watched: Vec<u32>,
 }
 
 impl PropertyWatch {
-    /// Registers on `unit`, watching latency, tail and the parameter list.
+    /// Registers on `unit`, watching latency, tail and the parameter list, and
+    /// every parameter in `parameters` for the plugin's own edits.
     ///
     /// `None` if AudioToolbox refuses the listener, which leaves the load-time
     /// figures as the whole answer. A refusal is not fatal: an AU whose latency
     /// cannot be watched is still a usable plugin, exactly as one that refuses
     /// to report latency at all is.
     ///
-    /// The three `watch_property` calls are individually tolerant for a
+    /// The `watch_property` calls are individually tolerant for a
     /// different reason: `AUEventListenerAddEventType` accepts every property id
     /// without validating it (pinned by
     /// `au_api_surface.rs::registration_never_refuses_a_property_id`), so a
@@ -60,13 +67,20 @@ impl PropertyWatch {
     /// itself at every activation, and the listener cannot tell its own writes
     /// from the unit's, so watching it would report an I/O change after every
     /// activation.
-    pub(crate) fn install(unit: &Unit, requests: Arc<RequestWord>) -> Option<Self> {
-        let listener = AuParameterListener::new(unit, move |event| {
-            // Only property changes are subscribed, so a parameter or gesture
-            // event here would mean the registration went to the wrong event
-            // type; ignore rather than mapping it onto a request it does not
-            // mean.
-            if let AuEvent::PropertyChanged { id, .. } = event {
+    ///
+    /// A parameter's value change is delivered to `edits` in plain units. Only
+    /// the value is subscribed: the begin and end of a gesture have no carrier
+    /// in the shared vocabulary yet (the `ParamEdit` event of design 029
+    /// section 6.1), and a subscription whose events are discarded would only
+    /// cost a delivery each.
+    pub(crate) fn install(
+        unit: &Unit,
+        requests: Arc<RequestWord>,
+        edits: Arc<ReportedEdits>,
+        parameters: impl IntoIterator<Item = u32>,
+    ) -> Option<Self> {
+        let listener = AuParameterListener::new(unit, move |event| match event {
+            AuEvent::PropertyChanged { id, .. } => {
                 let request = match id {
                     Latency::ID => Request::LatencyChanged,
                     TailTime::ID => Request::TailChanged,
@@ -81,6 +95,12 @@ impl PropertyWatch {
                 // did before posting it.
                 request.raise(&requests);
             }
+            AuEvent::ParameterChanged { id, address, value } if address == EventAddress::GLOBAL => {
+                edits.push(id, value)
+            }
+            // Gestures are not subscribed, and a parameter off the global
+            // scope is not one this host lists.
+            _ => {}
         })
         .ok()?;
 
@@ -88,8 +108,33 @@ impl PropertyWatch {
             let _ = listener.watch_property(id, EventAddress::GLOBAL);
         }
 
-        Some(Self {
-            _listener: listener,
-        })
+        let mut watch = Self {
+            listener: Arc::new(listener),
+            watched: Vec::new(),
+        };
+        watch.watch_parameters(parameters);
+        Some(watch)
+    }
+
+    /// Subscribes the value changes of every parameter in `ids` not yet
+    /// watched. The registration has no wildcard, so a list that grew needs
+    /// this again. One that the AU refuses is left unwatched: its edits are
+    /// not heard, which is no worse than before.
+    pub(crate) fn watch_parameters(&mut self, ids: impl IntoIterator<Item = u32>) {
+        for id in ids {
+            if let Err(at) = self.watched.binary_search(&id)
+                && self
+                    .listener
+                    .watch_parameter(id, EventAddress::GLOBAL)
+                    .is_ok()
+            {
+                self.watched.insert(at, id);
+            }
+        }
+    }
+
+    /// The listener, for a writer that names it as the sender of its own writes.
+    pub(crate) fn listener(&self) -> &Arc<AuParameterListener> {
+        &self.listener
     }
 }

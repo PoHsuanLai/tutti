@@ -34,6 +34,7 @@ use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::channel_layout::{self, AuLayoutTag};
 use crate::component::{AuComponentRef, AuType};
 use crate::control::describe;
+use crate::edits::ReportedEdits;
 use crate::error::Result;
 use crate::handle::AuHandle;
 use crate::identity;
@@ -75,6 +76,10 @@ pub struct AuLoaded {
     /// What the property listener raised since the last
     /// [`take_requests`](tutti_plugin_types::Control::take_requests).
     pub(crate) requests: Arc<RequestWord>,
+    /// The edits the plugin's own editor made, as the listener heard them: what
+    /// [`take_reported_edits`](tutti_plugin_types::Control::take_reported_edits)
+    /// hands out.
+    pub(crate) edits: Arc<ReportedEdits>,
     /// The declared plain range of every parameter, read at load and again when
     /// the unit says its parameter list moved.
     pub(crate) ranges: RangeTable,
@@ -184,6 +189,7 @@ impl AuLoaded {
             transport: None,
             editor: None,
             requests: Arc::new(RequestWord::new()),
+            edits: Arc::new(ReportedEdits::default()),
             ranges,
             descriptor,
             offline: false,
@@ -210,13 +216,21 @@ impl AuLoaded {
 
     /// Starts watching the properties whose load-time values would otherwise go
     /// stale (latency, tail and the parameter list): a change raises a request,
-    /// which [`take_requests`](tutti_plugin_types::Control::take_requests) hands out. Idempotent.
+    /// which [`take_requests`](tutti_plugin_types::Control::take_requests) hands out.
+    /// It also hears the plugin's own parameter edits, which
+    /// [`take_reported_edits`](tutti_plugin_types::Control::take_reported_edits)
+    /// hands out. Idempotent.
     ///
     /// `false` when AudioToolbox refuses the listener, which leaves the figures
     /// as read; a unit whose latency cannot be watched is still a usable plugin.
     pub fn watch_properties(&mut self) -> bool {
         if self.watch.is_none() {
-            self.watch = PropertyWatch::install(self.handle.unit(), Arc::clone(&self.requests));
+            self.watch = PropertyWatch::install(
+                self.handle.unit(),
+                Arc::clone(&self.requests),
+                Arc::clone(&self.edits),
+                self.ranges.ids(),
+            );
         }
         self.watch.is_some()
     }
@@ -445,13 +459,23 @@ impl AuLoaded {
     /// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) with the AU's own status for an id it does
     /// not declare.
     pub fn set_parameter(&mut self, id: u32, value: f32) -> Result<()> {
-        Ok(crate::listener::set_parameter_notifying(
+        // Not heard back by the host's own listener as the plugin's edit.
+        Ok(crate::processor::write_now(
+            &self.listener(),
             self.unit(),
             id,
-            crate::listener::EventAddress::GLOBAL,
             value,
-            0,
         )?)
+    }
+
+    pub(crate) fn watch_mut(&mut self) -> Option<&mut PropertyWatch> {
+        self.watch.as_mut()
+    }
+
+    /// The host's parameter listener, when it is installed: the sender a write
+    /// names so the listener does not report it as the plugin's own edit.
+    pub(crate) fn listener(&self) -> Option<Arc<tutti_au_ffi::AuParameterListener>> {
+        self.watch.as_ref().map(|w| Arc::clone(w.listener()))
     }
 
     /// Reads a parameter's current value, in the parameter's own units, from

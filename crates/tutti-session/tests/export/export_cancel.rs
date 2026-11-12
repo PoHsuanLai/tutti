@@ -200,13 +200,16 @@ fn progress_ends_at_one_in_the_finalizing_stage() {
 /// `normalize` is set (the stem then takes the master's gain, so the pass
 /// keeps both for its measurement).
 fn with_stem(r: &Rig, dir: &Path, normalize: bool) -> Bounce<NodeKey, FileMaster> {
+    let gain = if normalize {
+        tutti_session::StemGain::Shared
+    } else {
+        tutti_session::StemGain::None
+    };
     let bounce = bounce()
         .master(dir.join("master.wav"), FORMAT)
-        .stem(r.node, dir.join("stem.wav"));
+        .stem_with(tutti_session::Stem::new(r.node, dir.join("stem.wav"), FORMAT).gain(gain));
     if normalize {
-        bounce
-            .normalize(Normalize::peak(Db(-6.0)))
-            .normalize_stems(tutti_session::StemGain::Shared)
+        bounce.normalize(Normalize::peak(Db(-6.0)))
     } else {
         bounce
     }

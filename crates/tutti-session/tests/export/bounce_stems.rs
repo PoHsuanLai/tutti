@@ -365,9 +365,8 @@ fn shared_gain_keeps_the_balance_and_each_measures_its_own() {
                 base(0.1)
                     .master(&paths[0], float_wav())
                     .normalize(target)
-                    .stem(loud.erase(), &paths[1])
-                    .stem(quiet.erase(), &paths[2])
-                    .normalize_stems(gain),
+                    .stem_with(Stem::new(loud.erase(), &paths[1], float_wav()).gain(gain))
+                    .stem_with(Stem::new(quiet.erase(), &paths[2], float_wav()).gain(gain)),
             )
             .expect("renders");
         let (master, stems) = done.into_parts();
@@ -442,21 +441,11 @@ fn a_request_that_cannot_work_is_refused_by_name() {
     assert_eq!(
         why(
             &mut session,
-            base(0.01)
-                .master(path("m.wav"), float_wav())
-                .stem(node.erase(), path("s.wav"))
-                .normalize_stems(StemGain::Shared),
+            base(0.01).master(path("m.wav"), float_wav()).stem_with(
+                Stem::new(node.erase(), path("s.wav"), float_wav()).gain(StemGain::Shared),
+            ),
         ),
         BounceConfigError::SharedGainWithoutMaster
-    );
-    assert_eq!(
-        why(
-            &mut session,
-            bounce(0.01)
-                .stem_with(Stem::buffers(node.erase()))
-                .normalize_stems(StemGain::Each(Normalize::peak(Db(-1.0)))),
-        ),
-        BounceConfigError::NormalizeBuffers
     );
     assert_eq!(
         why(

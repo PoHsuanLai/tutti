@@ -273,8 +273,7 @@ impl Master for BufferMaster {
 #[must_use = "a bounce renders nothing until the session starts it"]
 pub struct Bounce<N = NodeKey, M = NoMaster> {
     master: M,
-    stems: Vec<Stem<N>>,
-    normalize_stems: StemGain,
+    stems: Vec<AnyStem<N>>,
     range: Option<Range>,
     until: Option<Beat>,
     clock: Option<ExportClock>,
@@ -302,7 +301,6 @@ impl<N> Bounce<N, NoMaster> {
         Self {
             master: NoMaster,
             stems: Vec::new(),
-            normalize_stems: StemGain::None,
             range: None,
             until: None,
             clock: None,
@@ -359,7 +357,6 @@ impl<N, M> Bounce<N, M> {
         let Self {
             master: _,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -379,7 +376,6 @@ impl<N, M> Bounce<N, M> {
         Bounce {
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -398,16 +394,10 @@ impl<N, M> Bounce<N, M> {
         }
     }
 
-    /// Also writes the [`Stem`] it describes.
-    pub fn stem_with(mut self, stem: Stem<N>) -> Self {
-        self.stems.push(stem);
-        self
-    }
-
-    /// How the stems are normalized: [`StemGain::None`] (as rendered) without
-    /// it. The master's own normalize is [`normalize`](Self::normalize).
-    pub fn normalize_stems(mut self, gain: StemGain) -> Self {
-        self.normalize_stems = gain;
+    /// Also writes the [`Stem`] it describes: a file stem
+    /// ([`Stem::new`]) or one held in memory ([`Stem::buffers`]).
+    pub fn stem_with(mut self, stem: impl Into<AnyStem<N>>) -> Self {
+        self.stems.push(stem.into());
         self
     }
 
@@ -423,7 +413,6 @@ impl<N, M> Bounce<N, M> {
         let Self {
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -447,7 +436,6 @@ impl<N, M> Bounce<N, M> {
         Ok(Bounce {
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -594,7 +582,6 @@ impl<N: std::fmt::Debug, M: std::fmt::Debug> std::fmt::Debug for Bounce<N, M> {
         f.debug_struct("Bounce")
             .field("master", &self.master)
             .field("stems", &self.stems)
-            .field("normalize_stems", &self.normalize_stems)
             .field("range", &self.range)
             .field("until", &self.until)
             .field("clock", &self.clock)
@@ -614,15 +601,23 @@ impl<N: std::fmt::Debug, M: std::fmt::Debug> std::fmt::Debug for Bounce<N, M> {
     }
 }
 
-/// Where a stem goes.
+/// A stem written to a file ([`Stem::new`]): where, as what, and how its gain is
+/// chosen.
 #[derive(Debug, Clone, PartialEq)]
-enum StemTo {
-    File(PathBuf, Format),
-    Buffers,
+pub struct FileStem {
+    path: PathBuf,
+    format: Format,
+    gain: StemGain,
 }
 
+/// A stem held in memory ([`Stem::buffers`]): planes, which are not measured, so
+/// it has no gain to choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferStem;
+
 /// One node's own output, written beside the master in the same pass (doc 019
-/// section 7): `N` names the node ([`NodeKey`] by default).
+/// section 7): `N` names the node ([`NodeKey`] by default), and `K` is where it
+/// goes ([`FileStem`] by default, or [`BufferStem`]).
 ///
 /// A stem is what the node produces, read where it leaves the node and
 /// delayed to the time the master leaves the plan (so every stem and the
@@ -640,47 +635,111 @@ enum StemTo {
 ///   that cannot place them refuses the bounce when it renders (nothing is
 ///   truncated).
 ///
+/// Only a file stem has a gain ([`gain`](Stem::gain)): a stem held in memory is
+/// not measured, so it cannot be asked for one.
+///
+/// ```compile_fail,E0599
+/// # use tutti_session::{Stem, StemGain};
+/// # use tutti_graph::NodeKey;
+/// # fn go(node: NodeKey) {
+/// let _ = Stem::buffers(node).gain(StemGain::Shared);
+/// # }
+/// ```
+///
 /// The master's root declaration is never applied to a stem: it describes the
 /// graph's output bus, not a node's output.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Stem<N = NodeKey> {
+pub struct Stem<N = NodeKey, K = FileStem> {
     node: N,
-    to: StemTo,
     channels: Option<Vec<u16>>,
     layout: Option<ChannelLayout>,
     topology: Option<ChannelTopology>,
+    kind: K,
 }
 
-impl<N> Stem<N> {
+/// Where a stem goes, once the kind is erased for the bounce to hold.
+#[derive(Debug, Clone, PartialEq)]
+enum StemTo {
+    File(FileStem),
+    Buffers,
+}
+
+/// A [`Stem`] of either kind, as [`Bounce::stem_with`] takes it (made with
+/// `.into()`, which the call does).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnyStem<N = NodeKey>(Stem<N, StemTo>);
+
+impl<N> From<Stem<N, FileStem>> for AnyStem<N> {
+    fn from(stem: Stem<N, FileStem>) -> Self {
+        Self(stem.with_kind(StemTo::File))
+    }
+}
+
+impl<N> From<Stem<N, BufferStem>> for AnyStem<N> {
+    fn from(stem: Stem<N, BufferStem>) -> Self {
+        Self(stem.with_kind(|BufferStem| StemTo::Buffers))
+    }
+}
+
+impl<N> Stem<N, FileStem> {
     /// `node`'s output into a file at `path` as `format`: written beside it
     /// and renamed over it when the bounce finishes, as the master is. A file
     /// stem always has its format; [`Bounce::stem`] of a file master gives it
-    /// the master's.
+    /// the master's. Its gain is [`StemGain::None`] until [`gain`](Self::gain).
     pub fn new(node: N, path: impl Into<PathBuf>, format: Format) -> Self {
-        Self::to(node, StemTo::File(path.into(), format))
+        Self::of(
+            node,
+            FileStem {
+                path: path.into(),
+                format,
+                gain: StemGain::None,
+            },
+        )
     }
 
+    /// How this stem is normalized: as rendered without it.
+    #[must_use]
+    pub fn gain(mut self, gain: StemGain) -> Self {
+        self.kind.gain = gain;
+        self
+    }
+}
+
+impl<N> Stem<N, BufferStem> {
     /// `node`'s output into memory ([`Bounced::stems`] is
     /// [`Produced::Buffers`]), one plane per channel, at the render's rate:
     /// nothing is encoded, resampled, dithered or normalized, as for
     /// [`Bounce::master_buffers`].
     pub fn buffers(node: N) -> Self {
-        Self::to(node, StemTo::Buffers)
+        Self::of(node, BufferStem)
     }
+}
 
-    fn to(node: N, to: StemTo) -> Self {
+impl<N, K> Stem<N, K> {
+    fn of(node: N, kind: K) -> Self {
         Self {
             node,
-            to,
             channels: None,
             layout: None,
             topology: None,
+            kind,
+        }
+    }
+
+    fn with_kind<K2>(self, f: impl FnOnce(K) -> K2) -> Stem<N, K2> {
+        Stem {
+            node: self.node,
+            channels: self.channels,
+            layout: self.layout,
+            topology: self.topology,
+            kind: f(self.kind),
         }
     }
 
     /// Taps only these output channels of the node, in this order, in place
     /// of all of them. A channel the node has not is
     /// [`BounceConfigError::StemChannelMissing`].
+    #[must_use]
     pub fn channels(mut self, channels: impl IntoIterator<Item = u16>) -> Self {
         self.channels = Some(channels.into_iter().collect());
         self
@@ -688,12 +747,14 @@ impl<N> Stem<N> {
 
     /// What the tapped channels are, in lane order. Its width must be the
     /// number tapped (a stem whose width differs is refused when it renders).
+    #[must_use]
     pub fn topology(mut self, topology: ChannelTopology) -> Self {
         self.topology = Some(topology);
         self
     }
 
     /// The file's width, when it is not the tapped one.
+    #[must_use]
     pub fn layout(mut self, layout: ChannelLayout) -> Self {
         self.layout = Some(layout);
         self
@@ -710,40 +771,44 @@ impl<N> Stem<N> {
     /// # Errors
     ///
     /// What `f` returns.
-    pub fn try_map<M, E>(self, f: impl FnOnce(N) -> Result<M, E>) -> Result<Stem<M>, E> {
+    pub fn try_map<M, E>(self, f: impl FnOnce(N) -> Result<M, E>) -> Result<Stem<M, K>, E> {
         let Self {
             node,
-            to,
             channels,
             layout,
             topology,
+            kind,
         } = self;
         Ok(Stem {
             node: f(node)?,
-            to,
             channels,
             layout,
             topology,
+            kind,
         })
     }
 }
 
-/// How a bounce's stems are normalized ([`Bounce::normalize_stems`]). A stem
-/// held in memory is never normalized, so a bounce with one and a gain other
-/// than [`None`](Self::None) is [`BounceConfigError::NormalizeBuffers`].
+impl<N> AnyStem<N> {
+    fn try_map<M, E>(self, f: impl FnOnce(N) -> Result<M, E>) -> Result<AnyStem<M>, E> {
+        self.0.try_map(f).map(AnyStem)
+    }
+}
+
+/// How a file stem is normalized ([`Stem::gain`]).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub enum StemGain {
     /// As rendered: what a DAW that adds its own gain wants.
     #[default]
     None,
-    /// Each stem takes the gain the master was measured to need
+    /// The stem takes the gain the master was measured to need
     /// ([`Bounce::normalize`], required), so stems that sum to the master
     /// still do. Right only while the master is the plain sum of the stems;
     /// with processing on the master bus, the sum is the caller's to keep.
     Shared,
-    /// Each stem is measured and normalized on its own. Breaks the balance
-    /// between them, by design: independent stem libraries.
+    /// The stem is measured and normalized on its own. Breaks the balance
+    /// between stems, by design: independent stem libraries.
     Each(Normalize),
 }
 
@@ -961,10 +1026,6 @@ pub enum BounceConfigError {
     /// positive, or more frames than [`tutti_export::MAX_FRAMES`].
     #[error("the render cannot be a job: {0}")]
     Job(JobError),
-    /// A stem held in memory under a [`StemGain`] other than `None`: planes are
-    /// not measured, so ask a file stem, or apply a gain to the planes.
-    #[error("a stem held in memory cannot be normalized")]
-    NormalizeBuffers,
     /// A prepare hook left the forked graph in a state that cannot commit.
     #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
     PrepareHookUncommittable(CommitError),
@@ -1675,7 +1736,6 @@ impl Session {
         let Bounce {
             master,
             stems,
-            normalize_stems,
             range,
             until,
             clock,
@@ -1727,11 +1787,11 @@ impl Session {
         for stem in stems {
             let Stem {
                 node,
-                to,
                 channels: tapped,
                 layout,
                 topology,
-            } = stem;
+                kind,
+            } = stem.0;
             if !self.graph.contains(node) {
                 return Err(BounceConfigError::StemNotInGraph { node }.into());
             }
@@ -1753,9 +1813,9 @@ impl Session {
             let placement =
                 Placement::new(topology.unwrap_or_else(|| ChannelTopology::for_width(lanes)));
             let layout = layout.unwrap_or(lanes);
-            let target: Target = match to {
-                StemTo::File(path, format) => {
-                    let gain = match normalize_stems {
+            let target: Target = match kind {
+                StemTo::File(FileStem { path, format, gain }) => {
+                    let gain = match gain {
                         StemGain::None => None,
                         StemGain::Each(n) => Some(NormalizeSpec::own(n)),
                         StemGain::Shared => Some(NormalizeSpec::from_output(
@@ -1769,12 +1829,7 @@ impl Session {
                         .with_normalize(gain)
                         .into()
                 }
-                StemTo::Buffers => {
-                    if normalize_stems != StemGain::None {
-                        return Err(BounceConfigError::NormalizeBuffers.into());
-                    }
-                    BufferTarget::new(layout).into()
-                }
+                StemTo::Buffers => BufferTarget::new(layout).into(),
             };
             taps.push(StemTap {
                 node,

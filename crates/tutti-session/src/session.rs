@@ -259,7 +259,7 @@ pub enum SessionEvent {
     /// its read: run the job off the control thread and land it with
     /// [`Session::land_params`](crate::Session::land_params). Until then the
     /// mirror is not ready.
-    #[cfg(all(feature = "plugin", feature = "modulation"))]
+    #[cfg(feature = "plugin")]
     PluginParamsDue(crate::PluginParamRead),
     /// A replacement plugin is due its load: run the job off the control
     /// thread and land it with
@@ -314,7 +314,7 @@ impl std::fmt::Debug for SessionEvent {
             Self::Plugin(event) => f.debug_tuple("Plugin").field(event).finish(),
             #[cfg(feature = "plugin")]
             Self::PluginSnapshotDue(job) => f.debug_tuple("PluginSnapshotDue").field(job).finish(),
-            #[cfg(all(feature = "plugin", feature = "modulation"))]
+            #[cfg(feature = "plugin")]
             Self::PluginParamsDue(job) => f.debug_tuple("PluginParamsDue").field(job).finish(),
             #[cfg(feature = "plugin")]
             Self::PluginReloadDue(job) => f.debug_tuple("PluginReloadDue").field(job).finish(),

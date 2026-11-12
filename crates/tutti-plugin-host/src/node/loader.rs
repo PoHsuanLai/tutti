@@ -193,7 +193,7 @@ where
     // `loaded.features`, not a local copy, so the node gates its per-block
     // transport send on the exact value the handle reports. One value, read
     // twice, cannot drift into a declared-but-undelivered capability.
-    let ids: Vec<ParamId> = parameters.iter().map(|p| p.id).collect();
+    let ids: Vec<ParamId> = parameters.iter().map(|p| p.id()).collect();
     let client = InProcClient::new(
         Arc::clone(&inner),
         rt,

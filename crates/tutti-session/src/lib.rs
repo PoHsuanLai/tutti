@@ -69,6 +69,8 @@ mod node;
 mod params;
 #[cfg(feature = "plugin")]
 mod plugin;
+#[cfg(feature = "plugin")]
+mod plugin_params;
 #[cfg(feature = "record")]
 mod recorder;
 #[cfg(feature = "plugin")]
@@ -143,11 +145,12 @@ pub use params::{ParamError, RangeError, TypedParamRef};
 #[cfg(feature = "plugin")]
 pub use plugin::{
     Plugin, PluginChange, PluginEvent, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded,
-    PluginReload, PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL,
-    StateRestore, StateView,
+    PluginParamRead, PluginParamsRead, PluginReload, PluginReloaded, PluginSnapshot,
+    PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore, StateView,
 };
-#[cfg(all(feature = "plugin", feature = "modulation"))]
-pub use plugin::{PluginParamRead, PluginParamsRead};
+
+#[cfg(feature = "plugin")]
+pub use plugin_params::{Param, ParamGesture, Params, PluginParamError, TypedParam};
 #[cfg(feature = "record")]
 pub use recorder::{Finite, IDLE_PARK, Live, PumpLoop, PumpPass, Recorder, RecorderError};
 #[cfg(feature = "plugin")]

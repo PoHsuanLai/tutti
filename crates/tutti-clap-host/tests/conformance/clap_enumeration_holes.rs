@@ -357,14 +357,14 @@ fn hole_in_params_never_misattributes_a_range() {
     for info in &listed {
         let declared = probe_params()
             .iter()
-            .find(|p| info.id == p.id.into())
-            .unwrap_or_else(|| panic!("host reported unknown param id {}", info.id));
+            .find(|p| info.id() == p.id.into())
+            .unwrap_or_else(|| panic!("host reported unknown param id {}", info.id()));
         assert_eq!(
-            info.range.bounds(),
+            info.range().bounds(),
             Some((declared.min, declared.max)),
             "param {} reported {:?} but the plugin declares {}..{}",
-            info.id,
-            info.range.bounds(),
+            info.id(),
+            info.range().bounds(),
             declared.min,
             declared.max
         );
@@ -391,7 +391,7 @@ fn hole_in_params_truncates_rather_than_closing_the_gap() {
         "hole at index 0 must truncate the parameter list, but the host \
          reported {:?} — it skipped the hole and renumbered, so the dropped \
          parameter's range is silently absent from the denormalization cache",
-        listed.iter().map(|p| p.id).collect::<Vec<_>>()
+        listed.iter().map(|p| p.id()).collect::<Vec<_>>()
     );
 }
 
@@ -410,7 +410,7 @@ fn hole_in_params_does_not_promote_later_params() {
     let ids: Vec<ParamId> = loaded
         .parameter_list(&main_thread())
         .iter()
-        .map(|p| p.id)
+        .map(|p| p.id())
         .collect();
     let expected_prefix = probe_params()[0].id.into();
 
@@ -546,7 +546,7 @@ fn no_hole_enumerates_everything() {
     let ids: Vec<ParamId> = loaded
         .parameter_list(&main_thread())
         .iter()
-        .map(|p| p.id)
+        .map(|p| p.id())
         .collect();
     let expected: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
     assert_eq!(

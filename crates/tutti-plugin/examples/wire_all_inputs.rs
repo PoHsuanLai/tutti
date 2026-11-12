@@ -82,7 +82,7 @@ fn main() -> BridgeResult<()> {
         .handle()
         .any_thread()
         .parameter_descriptors()
-        .and_then(|list| list.first().map(|p| p.id));
+        .and_then(|list| list.first().map(|p| p.id()));
     let _automation = first_param.and_then(|address| {
         let id = address.get();
         let lfo = Layer {

@@ -65,15 +65,20 @@ fn gate() {
         GateNode::stereo(Db(-15.0), Seconds(0.001), Seconds(0.005), Seconds(0.02))
             .with_range(Db(-40.0))
     })
-    .control("threshold", |g| g.set_threshold(Db(-35.0)))
-    .control("attack", |g| g.set_attack(Seconds(0.01)))
-    .control("hold", |g| {
-        g.hold_time()
-            .store(0.05, std::sync::atomic::Ordering::Release)
+    .control("threshold", |g| {
+        assert!(g.param_set().set(UnitParam::Threshold, -35.0));
     })
-    .control("release", |g| g.set_release(Seconds(0.1)))
+    .control("attack", |g| {
+        assert!(g.param_set().set(UnitParam::Attack, 0.01));
+    })
+    .control("hold", |g| {
+        assert!(g.param_set().set(UnitParam::Hold, 0.05));
+    })
+    .control("release", |g| {
+        assert!(g.param_set().set(UnitParam::Release, 0.1));
+    })
     .control("range", |g| {
-        g.range().store(-10.0, std::sync::atomic::Ordering::Release)
+        assert!(g.param_set().set(UnitParam::Range, -10.0));
     })
     .check();
 }

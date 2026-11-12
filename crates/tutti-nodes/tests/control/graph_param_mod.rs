@@ -237,12 +237,13 @@ fn cases() -> Vec<Case> {
         )
     }
     fn gate(w: usize) -> GateNode {
-        GateNode::with_channels(
+        GateNode::with_bus(
+            BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("at most one bus wide"),
             Db::new(-30.0),
             Seconds::new(0.001),
             Seconds::new(0.004),
             Seconds::new(0.02),
-            w as u8,
         )
     }
     fn lim(w: usize) -> LimiterNode {
@@ -380,7 +381,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = gate(w);
                 if let Some(v) = v {
-                    n.set_threshold(Db::new(v));
+                    assert!(n.param_set().set(UnitParam::Threshold, v));
                 }
                 parts_of(n)
             },
@@ -483,12 +484,13 @@ fn block_rate_cases() -> Vec<Case> {
     // Near the noise's peak, no hold: the gate opens and shuts all the
     // time, so its times are heard.
     fn gate(w: usize) -> GateNode {
-        GateNode::with_channels(
+        GateNode::with_bus(
+            BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("at most one bus wide"),
             Db::new(-3.0),
             Seconds::new(0.001),
             Seconds::new(0.0),
             Seconds::new(0.02),
-            w as u8,
         )
     }
     fn chorus(w: usize) -> ModDelayNode {
@@ -578,7 +580,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = gate(w);
                 if let Some(v) = v {
-                    n.set_attack(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::Attack, v));
                 }
                 parts_of(n)
             },
@@ -591,7 +593,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = gate(w);
                 if let Some(v) = v {
-                    n.set_release(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::Release, v));
                 }
                 parts_of(n)
             },

@@ -22,9 +22,10 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
-    DelayLineNode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
+    DelayControls, DelayNode, InterpolationMode, LadderFilterNode, LadderType, MaxDelay,
+    ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
-use tutti_types::{ChannelLayout, Feedback, Hz, Q, Resonance, SampleRate, Seconds};
+use tutti_types::{BusTopology, ChannelLayout, Feedback, Hz, Q, Resonance, SampleRate, Seconds};
 
 const BLOCK: usize = 64;
 const SR: SampleRate = SampleRate(48_000.0);
@@ -106,11 +107,16 @@ fn ladder(c: &mut Criterion) {
 
 fn delay(c: &mut Criterion) {
     for w in [2usize, 6] {
-        let node = DelayLineNode::with_channels(
-            ChannelLayout::try_from(w).expect("a test width is small"),
-            Seconds::new(1.0),
-            Seconds::new(0.25),
-            Feedback::new(0.4),
+        let node = DelayNode::new(
+            BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("at most one bus wide"),
+            MaxDelay::of(Seconds::new(1.0)),
+            InterpolationMode::Linear,
+            DelayControls {
+                time: Seconds::new(0.25),
+                feedback: Feedback::new(0.4),
+                ..DelayControls::DEFAULT
+            },
         );
         run_node(c, "delay", w, node, None);
     }

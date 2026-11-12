@@ -8,12 +8,10 @@ use tutti_types::MaxBlock;
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
-    BrickwallLimiterNode, BusStripNode, DelayLineNode, EqBandNode, LimiterControls, LimiterNode,
-    SvfType,
+    BrickwallLimiterNode, BusStripNode, DelayControls, DelayNode, EqBandNode, LimiterControls,
+    LimiterNode, MaxDelay, SvfType,
 };
-use tutti_types::{
-    AtomicF32, Db, Feedback, Hz, ParamCell, Q, SampleRate, Samples, Seconds, UnitParam,
-};
+use tutti_types::{AtomicF32, Db, Hz, ParamCell, Q, SampleRate, Samples, Seconds, UnitParam};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -42,29 +40,45 @@ fn renders_finite(node: &mut dyn Node, blocks: usize) -> bool {
     ok
 }
 
-/// A maximum delay that is NaN, infinite or negative saturates to an empty
-/// line (`Seconds::to_samples_ceil` reads a non-finite span as zero frames):
-/// the node still builds, passes audio through its zero-length line and stays
-/// finite. It panicked in `f32::clamp(0.0, max)` before.
+/// A maximum delay that is NaN, infinite, negative, zero or past the cap is **refused**
+/// (`MaxDelay::new`), so no delay is built on it: it used to saturate to an empty line,
+/// and a finite 1e30 s asked `from_seconds` for an allocation that aborts. A delay at the
+/// longest the type holds builds, prepares and stays finite.
 #[test]
-fn a_delay_with_an_unusable_maximum_saturates_to_an_empty_line() {
-    for max in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -1e30] {
-        for node in [
-            DelayLineNode::new(Seconds(max), Seconds(0.01), Feedback(0.3)),
-            DelayLineNode::stereo(Seconds(max), Seconds(0.01), Seconds(0.02), Feedback(0.3)),
-        ] {
-            let mut node = node;
-            node.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(64))));
-            assert!(renders_finite(&mut node, 4), "max {max}");
-        }
+fn a_delay_with_an_unusable_maximum_is_refused_and_the_longest_builds() {
+    for max in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        -1.0,
+        -1e30,
+        0.0,
+        1e30,
+        10.000_001,
+    ] {
+        assert_eq!(MaxDelay::new(Seconds(max)), None, "max {max}");
+    }
+    let longest = MaxDelay::of(MaxDelay::CAP);
+    for mut node in [
+        DelayNode::mono(longest, DelayControls::DEFAULT),
+        DelayNode::stereo(longest, DelayControls::DEFAULT),
+    ] {
+        node.prepare(&Prepare::new(RATE, MaxBlock::of(Samples(64))));
+        assert!(renders_finite(&mut node, 4));
     }
 }
 
 /// A NaN initial delay time is read as zero, whatever the maximum.
 #[test]
 fn a_delay_with_a_nan_initial_time_starts_at_zero() {
-    let node = DelayLineNode::new(Seconds(0.1), Seconds(f64::NAN), Feedback(0.3));
-    assert_eq!(node.delay_time().load(Ordering::Acquire), 0.0);
+    let node = DelayNode::mono(
+        MaxDelay::of(Seconds(0.1)),
+        DelayControls {
+            time: Seconds(f64::NAN),
+            ..DelayControls::DEFAULT
+        },
+    );
+    assert_eq!(node.param_base(0), Some(0.0), "the time is port 0");
 }
 
 /// The strip's volume and balance cells hold a bad write off: the output stays

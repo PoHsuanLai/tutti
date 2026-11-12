@@ -26,9 +26,10 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
-    BrickwallLimiterNode, CompressorControls, CompressorNode, DelayLineNode, DistortionNode,
-    FamilyNode, FdnControls, FreeverbNode, GateControls, GateNode, KeySource, LimiterControls,
-    LimiterNode, Lookahead, ShapeKind,
+    BrickwallLimiterNode, ChannelTimes, CompressorControls, CompressorNode, DelayControls,
+    DelayFamily, DelayNode, DistortionNode, FamilyNode, FdnControls, FreeverbNode, GateControls,
+    GateNode, InterpolationMode, KeySource, LimiterControls, LimiterNode, Lookahead, MaxDelay,
+    ShapeKind,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds,
@@ -223,12 +224,21 @@ fn brickwall(c: &mut Criterion) {
     );
 }
 
+/// A quarter-second delay at 0.4 feedback, with no cross-feedback.
+fn delay_at_quarter() -> DelayControls {
+    DelayControls {
+        time: Seconds::new(0.25),
+        feedback: Feedback::new(0.4),
+        ..DelayControls::DEFAULT
+    }
+}
+
 fn delay(c: &mut Criterion) {
     run(
         c,
         "delay",
         "1",
-        || DelayLineNode::new(Seconds::new(1.0), Seconds::new(0.25), Feedback::new(0.4)),
+        || DelayNode::mono(MaxDelay::of(Seconds::new(1.0)), delay_at_quarter()),
         None,
     );
     run(
@@ -236,11 +246,11 @@ fn delay(c: &mut Criterion) {
         "delay",
         "6",
         || {
-            DelayLineNode::with_channels(
-                ChannelLayout::from(6u16),
-                Seconds::new(1.0),
-                Seconds::new(0.25),
-                Feedback::new(0.4),
+            DelayNode::new(
+                BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
+                MaxDelay::of(Seconds::new(1.0)),
+                InterpolationMode::Linear,
+                delay_at_quarter(),
             )
         },
         None,
@@ -250,14 +260,20 @@ fn delay(c: &mut Criterion) {
         "delay",
         "2_cross",
         || {
-            let n = DelayLineNode::stereo(
-                Seconds::new(1.0),
-                Seconds::new(0.25),
-                Seconds::new(0.3),
-                Feedback::new(0.4),
-            );
-            n.set_cross_feedback(Feedback::new(0.3));
-            n
+            let family = DelayFamily::new(
+                BusTopology::STEREO,
+                MaxDelay::of(Seconds::new(1.0)),
+                InterpolationMode::Linear,
+            )
+            .with_times(ChannelTimes::each(&[Seconds::new(0.3)]).expect("a time"))
+            .expect("one time for the right channel");
+            DelayNode::live(
+                family,
+                DelayControls {
+                    cross_feedback: Feedback::new(0.3),
+                    ..delay_at_quarter()
+                },
+            )
         },
         None,
     );

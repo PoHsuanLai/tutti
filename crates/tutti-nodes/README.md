@@ -20,8 +20,9 @@ node without a lock.
   `tutti_dsp::CrossoverFamily`, a 2 to 6 band Linkwitz-Riley 4th-order split (the
   bands sum to flat magnitude; IIR, so not linear-phase and no latency). Each
   crossover is an indexed `Cutoff` param (`UnitAddr::new(UnitParam::Cutoff, i)`).
-- **Delay** — `DelayLineNode` (any width, with a cross-feedback routing
-  matrix), over `tutti_dsp::DelayLine`.
+- **Delay** — `DelayNode` (any width, with a checked cross-feedback `Routing`),
+  a `FamilyNode` over `tutti_dsp::DelayFamily`; the time and feedback are read
+  per frame when driven.
 - **Dynamics** — `CompressorNode`, `GateNode`, `BrickwallLimiterNode`,
   `LimiterNode`, and `MultibandCompressorNode` (2 to 4 bands, a linked
   compressor per band of a Linkwitz-Riley crossover, a hand-written node over

@@ -42,7 +42,7 @@ pub struct NoteExpressionTextValue {
     /// Frame offset from the start of the process block.
     pub sample_offset: i32,
     /// The note this annotates, as a host note id — see
-    /// [`note_id_for`](crate::note_id_for).
+    /// [`plugin_note_id`](crate::plugin_note_id).
     pub note_id: i32,
     /// Which text dimension this is, in the format's own numbering. VST3 passes
     /// it through to the plugin verbatim; nothing here interprets it.
@@ -59,7 +59,7 @@ pub struct NoteExpressionIntValue {
     /// Frame offset from the start of the process block.
     pub sample_offset: i32,
     /// The note this drives, as a host note id — see
-    /// [`note_id_for`](crate::note_id_for).
+    /// [`plugin_note_id`](crate::plugin_note_id).
     pub note_id: i32,
     /// Which stepped dimension this is, in the format's own numbering. Passed
     /// through to the plugin verbatim; nothing here interprets it.

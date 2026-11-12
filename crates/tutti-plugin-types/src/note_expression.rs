@@ -69,7 +69,7 @@ pub struct NoteExpressionValue {
     /// Frame offset from the start of the process block.
     pub sample_offset: i32,
     /// The voice this drives, as a host note id — see
-    /// [`note_id_for`](crate::note_id_for). An id no active voice holds
+    /// [`plugin_note_id`](crate::plugin_note_id). An id no active voice holds
     /// addresses nothing.
     pub note_id: i32,
     /// Which dimension is being driven.

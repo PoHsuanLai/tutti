@@ -5,7 +5,7 @@ use tutti_midi_protocol::{
     PitchBendSensitivity, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
     widen, widen_bytes,
 };
-use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi};
+use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi, plugin_note_id};
 use tutti_ump::{
     Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, SysexMessage, Ump,
     Voice1, Voice2,
@@ -315,13 +315,6 @@ impl MidiEncoder {
 fn on_bus(mut event: Event, bus: i32) -> Event {
     event.header.bus_index = bus;
     event
-}
-
-/// The note id a plugin is told for `id`. A minted id past `i32::MAX` (after two
-/// billion notes) has no `i32` form and is VST3's `-1` "unspecified": the plugin
-/// falls back to channel and pitch.
-fn plugin_note_id(id: NoteId) -> i32 {
-    i32::try_from(id.raw()).unwrap_or(-1)
 }
 
 /// A `PolyPressure` of the note `id` on `note`.

@@ -4,26 +4,26 @@
 //! echoes back, so a note-on and any later per-note expression for the *same*
 //! `(channel, note)` must carry the *same* id. The id is
 //! [`tutti_ump::NoteId`]'s (`channel * 128 + note`, `0..=2047`); the formats
-//! carry it as an `i32`, where `-1` is the wildcard. These two functions are
-//! that edge.
+//! carry it as an `i32`, where `-1` is the wildcard. [`plugin_note_id`] and
+//! [`note_id_to_channel_note`] are that edge, the one pair every format host
+//! uses.
 
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 
-/// The plugin `note_id` of `(channel, note)`: [`NoteId::from_channel_note`]
-/// as the formats' `i32`.
+/// A [`NoteId`] as the formats' `i32` `note_id`: the id itself while it fits,
+/// `-1` (the formats' "unspecified" wildcard) for a minted id above `i32::MAX`.
 ///
-/// This is distinct from the spec's "use `noteId = -1` for channel/pitch
-/// matching" fallback: that fallback only covers note-on/off, *not* note
-/// expression. Note-expression events carry no channel/pitch, only a `noteId`,
-/// so they have no voice to attach to unless the host assigns real ids.
+/// A host that sends a note-on and later per-note expression for the same note
+/// sends both with this id. That is distinct from the spec's "use `noteId = -1`
+/// for channel/pitch matching" fallback, which only covers note-on/off:
+/// note-expression events carry no channel or pitch, only a `noteId`.
 #[inline]
 #[must_use]
-pub fn note_id_for(channel: MidiChannel, note: NoteNumber) -> i32 {
-    // At most `NoteId::MAX_CHANNEL_NOTE` (2047): it fits.
-    NoteId::from_channel_note(channel, note).raw() as i32
+pub fn plugin_note_id(id: NoteId) -> i32 {
+    i32::try_from(id.raw()).unwrap_or(-1)
 }
 
-/// The `(channel, note)` a [`note_id_for`] id was built from, or `None` for
+/// The `(channel, note)` a [`plugin_note_id`] of [`NoteId::from_channel_note`] names, or `None` for
 /// any other id.
 ///
 /// A plugin may assign per-note events its *own* `note_id` space; such an id is
@@ -47,14 +47,26 @@ mod tests {
         for channel in 0..16u8 {
             for note in 0..128u8 {
                 let (channel, note) = (MidiChannel::of(channel), NoteNumber::of(note));
-                let id = note_id_for(channel, note);
+                let id = plugin_note_id(NoteId::from_channel_note(channel, note));
                 assert_eq!(note_id_to_channel_note(id), Some((channel, note)));
             }
         }
         assert_eq!(
-            note_id_for(MidiChannel::of(15), NoteNumber::of(127)),
+            plugin_note_id(NoteId::from_channel_note(
+                MidiChannel::of(15),
+                NoteNumber::of(127)
+            )),
             NoteId::MAX_CHANNEL_NOTE as i32
         );
+    }
+
+    /// A minted id past `i32::MAX` has no `i32` form; it is the wildcard, never
+    /// a wrapped negative id.
+    #[test]
+    fn an_id_past_i32_max_is_the_wildcard() {
+        assert_eq!(plugin_note_id(NoteId::from_raw(i32::MAX as u32)), i32::MAX);
+        assert_eq!(plugin_note_id(NoteId::from_raw(i32::MAX as u32 + 1)), -1);
+        assert_eq!(plugin_note_id(NoteId::from_raw(u32::MAX)), -1);
     }
 
     #[test]

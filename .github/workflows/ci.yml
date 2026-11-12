@@ -776,8 +776,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # JACK too: the umbrellas' `--all-features` line below turns on
+      # `tutti-cpal/jack`, whose `jack-sys` build script wants the headers.
       - name: Install Linux audio deps
         uses: ./.github/actions/linux-audio-deps
+        with:
+          extra: libjack-jackd2-dev
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2

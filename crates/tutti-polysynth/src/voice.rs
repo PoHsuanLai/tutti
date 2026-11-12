@@ -289,6 +289,9 @@ pub(crate) enum Gate {
     Cut(usize),
     /// The channel's pitch moved: its notes sound this far from their keys.
     Retune(MidiChannel, Semitones),
+    /// The voice at this slot sounds its key this far from equal temperament
+    /// (a tuning message or a Tuning Program or Bank Select reached it).
+    Tune(usize, Semitones),
     /// The voice at this slot takes a per-note controller's value.
     Control(usize, NoteControl),
     /// The voice at this slot returns its per-note controllers to defaults.
@@ -298,6 +301,8 @@ pub(crate) enum Gate {
         slot: usize,
         key: NoteNumber,
         channel: MidiChannel,
+        /// How far the key sounds from its equal-tempered pitch.
+        tune: Semitones,
         velocity: f32,
         legato: bool,
         /// The glide the stream asked for, if any.
@@ -374,6 +379,7 @@ impl VoiceAllocator {
                     id,
                     channel,
                     key,
+                    tune,
                     steal,
                     velocity: velocity16,
                     glide,
@@ -395,6 +401,7 @@ impl VoiceAllocator {
                         slot: slot_index,
                         key,
                         channel,
+                        tune,
                         velocity,
                         legato: false,
                         glide,
@@ -408,6 +415,7 @@ impl VoiceAllocator {
                 Command::Retarget {
                     id,
                     key,
+                    tune,
                     velocity: velocity16,
                     glide,
                 } => {
@@ -421,6 +429,7 @@ impl VoiceAllocator {
                             slot: slot_index,
                             key,
                             channel,
+                            tune,
                             velocity,
                             legato: true,
                             glide,
@@ -430,6 +439,11 @@ impl VoiceAllocator {
                 }
                 Command::Retune { channel, bend } => {
                     self.gates.push(Gate::Retune(channel, bend));
+                }
+                Command::Tune { id, tune } => {
+                    if let Some(slot_index) = self.slot_of_voice(id) {
+                        self.gates.push(Gate::Tune(slot_index, tune));
+                    }
                 }
                 Command::Control { id, control } => {
                     if let Some(slot_index) = self.slot_of_voice(id) {
@@ -548,6 +562,7 @@ impl VoiceAllocator {
             Gate::Off(i) => Some(*i),
             Gate::Cut(_)
             | Gate::Retune(..)
+            | Gate::Tune(..)
             | Gate::Control(..)
             | Gate::ResetControls(_)
             | Gate::Start { .. } => None,
@@ -598,6 +613,16 @@ impl VoiceAllocator {
         if slot_index < self.slots.len() {
             self.slots[slot_index].set_envelope_level(level);
         }
+    }
+
+    /// Stores `table` as tuning program 0 of bank 0, the one every channel
+    /// plays by until a Tuning Program or Bank Select says otherwise (the synth's
+    /// construction-time scale).
+    pub(crate) fn store_initial_tuning(&mut self, table: tutti_midi_protocol::KeyTable) {
+        let zero = tutti_ump::U7::of(0);
+        // Program 0 of bank 0 exists in any capacity.
+        let stored = self.core.store_tuning(zero, zero, table);
+        debug_assert!(stored.is_ok());
     }
 
     /// Which channels are MPE zones: a master's pitch bend adds to each of

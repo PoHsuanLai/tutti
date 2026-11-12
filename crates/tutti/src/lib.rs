@@ -229,7 +229,7 @@ pub use tutti_plugin_host as plugin_host;
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` and `RouteSpec` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest`, `Plugin` (the view `Session::plugin` lends), `MainSession` (`Session::main`, the main-thread view), `MainPlugin`, `EditorView`, `Opened`, `PluginEvent`, `PluginChange`, `Params`, `TypedParam`, `ParamGesture`, `PluginParamError`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
+/// `PluginLoadRequest`, `Plugin` (the view `Session::plugin` lends), `PluginNode` (the marker of a plugin's `Key`), `MainSession` (`Session::main`, the main-thread view), `MainPlugin`, `EditorView`, `Opened`, `PluginEvent`, `PluginChange`, `Params`, `TypedParam`, `ParamGesture`, `PluginParamError`, `Catalog`, `Hosting`, `PluginRef`, `PluginState`, `ParamId` and
 /// `Normalized` (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
 /// `Message`, `Ump`, `NoteNumber`, `NoteVelocity`, `TimedMidiEvent`, `MidiRouteRule` and
@@ -331,8 +331,8 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "plugin"))]
     pub use tutti_session::{
         EditorView, MainPlugin, MainSession, Opened, ParamGesture, Params, Plugin, PluginChange,
-        PluginEvent, PluginLoadRequest, PluginParamError, PortCounts, RecoveryFailure, ReloadCause,
-        TypedParam,
+        PluginEvent, PluginLoadRequest, PluginNode, PluginParamError, PortCounts, RecoveryFailure,
+        ReloadCause, TypedParam,
     };
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::{ParamRef, RouteSpec};

@@ -238,10 +238,11 @@ Agreed with the graph's surface ([013](013-native-graph.md), "The session
 graph's surface") and MIDI's ([017](017-midi.md)), so a host learns one way of
 doing each thing:
 
-- **The key.** `add_plugin` returns `Key<Plugin>`; `replace` and `crossfade`
+- **The key.** `add_plugin` returns `Key<PluginNode>` (the marker is
+  `PluginNode`: `Plugin` is the view); `replace` and `crossfade`
   keep it. Ports come from it as from any node's (`synth.out(0)`,
   `fx.input(1)`, the event ports), and wiring is the graph's `connect`.
-  `synth.param(ParamId)` is the same reference a native node's param method
+  `synth.param(ParamId)` (feature `modulation`) is the same reference a native node's param method
   gives, so a modulation route or an automation lane targets a plugin
   parameter and a native one through one type. Values, text, gestures and
   units go through the view, which holds the plugin's descriptors.
@@ -260,7 +261,7 @@ doing each thing:
   `PresetError`, `EditorError`) as sources, is `tutti::Error::Plugin`.
 - **The prelude** (feature `plugin`): `Catalog`, `PluginRef`, the load request,
   `PluginState`, `PluginEvent`, `ParamId`, `Normalized`, `MainThread`,
-  `ContentScale`, `EditorSize` and the `Plugin` marker. Not `PluginHandle`,
+  `ContentScale`, `EditorSize`, the `Plugin` view and the `PluginNode` marker. Not `PluginHandle`,
   `AnyThread`, the bridge's tuning or a format's types.
 
 ## 4. Steps
@@ -410,8 +411,8 @@ answer) leaves `Params::is_ready` false and `get` answers
   `tutti-plugin-types`, which `AnyThread` and `PluginHandle` return too.
 - **`ParamRef`.** `Param::target()` is `ParamRef::plugin(node, id)`, the type a
   native node's `ParamRef::unit` gives, so a route targets either through one
-  type. §3.5's `synth.param(ParamId)` on `Key<Plugin>` is not built:
-  `add_plugin` still returns a `NodeKey`, and `Key<Plugin>` arrives with it.
+  type. §3.5's `synth.param(ParamId)` on the plugin's key arrived with the key
+  (below).
 - **The umbrella.** `Params`, `TypedParam`, `ParamGesture` and
   `PluginParamError` are in the prelude (`Param` is not: `tutti_types::Param` is
   the native cell and holds the name); the prelude never held `PluginHandle`,
@@ -424,6 +425,24 @@ answer) leaves `Params::is_ready` false and `get` answers
   `typed::<Db>` on a hertz parameter is refused; an unknown id is refused; a
   rescan replaces the declarations and values; a typed value round-trips
   through VST2's own integer-range map.
+
+**As built (the plugin's key).** `Session::add_plugin`, `add_plugin_blocking` and
+`Graph::insert_plugin` return `Key<PluginNode>`, `PluginNode` being an
+uninhabited marker (`Plugin` is the view, and `tutti_plugin_host::PluginNode` is
+the node, so the marker names the kind of key only); every format, in or out of
+process, is one. `Graph::host_plugin` (a node the host inserted itself) returns
+`Result<Key<PluginNode>, NoSuchNode>` where it returned `bool`. `erase()`,
+`Into<NodeKey>` and the ports (`out`, `input`, the event ports, the buses) are
+`Key<N>`'s for any `N`, so every call taking `impl Into<NodeKey>` accepts it;
+`session.plugin(key)` is unchanged and the view still borrows the session. With
+`modulation`, `Key<PluginNode>::param(ParamId) -> ParamRef` is
+`Param::target()`'s value (which now calls it): a plain value, no session
+borrow, and an id the plugin does not declare is refused where the reference is
+resolved (a route's resolution, `Problem`; `Params::get` for the view), as
+`ParamRef::plugin` always was. Tests: `plugin_params.rs`
+(`a_plugin_key_names_a_parameter_a_route_targets`,
+`a_hosted_plugin_key_wires_like_a_native_key`) and the probe's modulation
+tests, which name the parameter through the key.
 
 **As built (the typed cause, step 4's, done early).** The cause of a death is
 `tutti_plugin_types::PluginFailure`, latched by the bridge where it notices

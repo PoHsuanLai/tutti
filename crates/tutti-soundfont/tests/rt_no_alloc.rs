@@ -474,3 +474,67 @@ fn soundfont_note_logic_is_allocation_free() {
         }
     });
 }
+
+/// The MIDI Tuning Standard on the audio thread: both timings of a Single Note
+/// Tuning Change, both Scale/Octave forms, a Key-Based Tuning Dump reassembled
+/// from its packets and a Tuning Program Select, over sounding voices that are
+/// retuned, allocate nothing.
+#[test]
+fn soundfont_mts_is_allocation_free() {
+    let mut unit = unit();
+    let message = |bytes: &[u8]| -> Vec<UmpAt> {
+        tutti_ump::SysexMessage::new(bytes)
+            .unwrap()
+            .packets(MidiGroup::FIRST)
+            .map(|u| (at(0), u))
+            .collect()
+    };
+    let mut dump = vec![0xF0, 0x7E, 0x7F, 0x08, 0x04, 0x00, 0x00];
+    dump.extend_from_slice(b"alloc test tune ");
+    for k in 0..128u8 {
+        dump.extend([k, 0x20, 0x00]);
+    }
+    let sum = dump[1..].iter().fold(0, |a, b| a ^ b) & 0x7F;
+    dump.extend([sum, 0xF7]);
+    let mut one = vec![0xF0, 0x7F, 0x7F, 0x08, 0x08, 0x00, 0x7F, 0x7F];
+    one.extend([0x50; 12]);
+    one.push(0xF7);
+    let mut two = vec![0xF0, 0x7E, 0x7F, 0x08, 0x09, 0x00, 0x00, 0x01];
+    two.extend([0x41, 0x10].repeat(12));
+    two.push(0xF7);
+
+    let mut round = vec![note_on(60, 0), note_on(64, 0)];
+    for bytes in [
+        &[
+            0xF0, 0x7F, 0x7F, 0x08, 0x02, 0x00, 0x02, 60, 61, 0x10, 0x00, 64, 0x7F, 0x7F, 0x7F,
+            0xF7,
+        ][..],
+        &[
+            0xF0, 0x7E, 0x7F, 0x08, 0x07, 0x00, 0x00, 0x01, 67, 68, 0x00, 0x00, 0xF7,
+        ],
+        &dump,
+        &one,
+        &two,
+    ] {
+        round.extend(message(bytes));
+    }
+    round.push((
+        at(0),
+        midi::registered_rpn(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            tutti_ump::Rpn::new(U7::of(0), U7::of(3)),
+            1 << 25,
+        ),
+    ));
+    for _ in 0..4 {
+        unit.queue_midi_at(&round);
+        unit.block(64);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..100 {
+            unit.queue_midi_at(&round);
+            unit.block(64);
+        }
+    });
+}

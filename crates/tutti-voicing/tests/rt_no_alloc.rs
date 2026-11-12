@@ -5,14 +5,18 @@
 use std::num::NonZeroU16;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
-use tutti_midi_protocol::{Addressee, GeneralMidi, Heard, MpeZoneConfig, MpeZones, Universal};
+use tutti_midi_protocol::{
+    Addressee, ChannelMask, GeneralMidi, Heard, KeyChange, KeyChanges, KeyTable, MpeZoneConfig,
+    MpeZones, OctaveOffsets, Timing, TuningFrequency, TuningMessage, TuningName, Universal,
+};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{
-    Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, RegisteredPerNoteController, U7,
-    U14, Voice2,
+    Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, RegisteredPerNoteController, Rpn,
+    U7, U14, Voice2,
 };
 use tutti_voicing::{
-    Command, Mode, Order, Patch, PerNoteState, Rules, Steal, VoiceId, VoiceSpec, Voicing,
+    Command, Mode, Order, Patch, PerNoteState, Rules, Steal, TuningCapacity, VoiceId, VoiceSpec,
+    Voicing,
 };
 
 #[global_allocator]
@@ -262,4 +266,102 @@ fn universal_is_allocation_free() {
             std::hint::black_box(core.master_gain());
         }
     });
+}
+
+/// The MIDI Tuning Standard on the audio path: every message (real time and
+/// not, for programs the core holds and ones it refuses, dumps, both Scale/Octave
+/// forms), the Tuning Program and Bank Select that retunes sounding notes, and
+/// the notes that start and move under them allocate nothing, in every mode.
+#[test]
+fn mts_is_allocation_free() {
+    for mode in [Mode::Poly, Mode::Mono, Mode::Legato] {
+        let mut core = Voicing::new(
+            Rules::poly(6)
+                .with_mode(mode)
+                .with_percussion(MidiChannel::of(9))
+                .with_tuning_capacity(TuningCapacity::new(2, 8).unwrap()),
+        );
+        let on = |k: u8| Voice2::NoteOn {
+            note: NoteNumber::of(k),
+            velocity: NoteVelocity::new(0x8000),
+            attribute: Attribute::None,
+        };
+        let select = |rpn: Rpn, v: u8| Voice2::Registered {
+            bank: rpn.bank(),
+            index: rpn.index(),
+            value: u32::from(v) << 25,
+        };
+        let name = TuningName::new([U7::of(b'm'); 16]);
+        let mut table = KeyTable::equal_temperament();
+        table.set(NoteNumber::of(44), TuningFrequency::of(50 << 14 | 77));
+        assert_no_alloc(|| {
+            for round in 0..200u32 {
+                let r = round as u8;
+                let mut changes = KeyChanges::new();
+                for k in 0..(round % 20) as u8 {
+                    changes.push(KeyChange {
+                        key: NoteNumber::of(40 + k),
+                        frequency: TuningFrequency::of(((40 + u32::from(k)) << 14) | round),
+                    });
+                }
+                let offsets = if round % 2 == 0 {
+                    OctaveOffsets::Cents([U7::of(r % 128); 12])
+                } else {
+                    OctaveOffsets::Fine([U14::masked(round as u16 * 97); 12])
+                };
+                let timing = if round % 3 == 0 {
+                    Timing::NonRealTime
+                } else {
+                    Timing::RealTime
+                };
+                let channel = MidiChannel::of((round % 3) as u8);
+                for k in 40..46 {
+                    let level = |_: VoiceId| Some(Amplitude(1.0));
+                    std::hint::black_box(core.step(channel, on(k), &Grouped, level));
+                }
+                for (rpn, v) in [
+                    (Rpn::TUNING_PROGRAM_SELECT, r % 10),
+                    (Rpn::TUNING_BANK_SELECT, r % 3),
+                ] {
+                    let level = |_: VoiceId| Some(Amplitude(1.0));
+                    std::hint::black_box(core.step(channel, select(rpn, v), &Grouped, level));
+                }
+                for message in [
+                    TuningMessage::NoteChange {
+                        timing,
+                        bank: (round % 4 != 0).then_some(U7::of(r % 3)),
+                        program: U7::of(r % 10),
+                        changes,
+                    },
+                    TuningMessage::OctaveTuning {
+                        timing,
+                        channels: ChannelMask::from_bits(round as u16),
+                        offsets,
+                    },
+                    TuningMessage::KeyDump {
+                        bank: Some(U7::of(r % 3)),
+                        program: U7::of(r % 9),
+                        name,
+                        table,
+                    },
+                    TuningMessage::OctaveDump {
+                        bank: U7::of(r % 3),
+                        program: U7::of(r % 9),
+                        name,
+                        offsets,
+                    },
+                    TuningMessage::DumpRequest {
+                        bank: None,
+                        program: U7::of(r % 128),
+                    },
+                ] {
+                    std::hint::black_box(core.universal(Heard {
+                        to: Addressee::All,
+                        message: Universal::Tuning(message),
+                    }));
+                }
+            }
+        });
+        assert!(core.tuning_refused() > 0, "the refusals were exercised");
+    }
 }

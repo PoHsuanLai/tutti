@@ -39,6 +39,15 @@ impl Rpn {
     /// centred at 64; the LSB is not used.
     pub const CHANNEL_COARSE_TUNING: Self = Self::new(U7::of(0), U7::of(2));
 
+    /// RPN #00/03, **Tuning Program Select** (MIDI Tuning Standard): the data
+    /// MSB is the tuning program, 0 to 127 (the tuning spec numbers them 1 to
+    /// 128).
+    pub const TUNING_PROGRAM_SELECT: Self = Self::new(U7::of(0), U7::of(3));
+
+    /// RPN #00/04, **Tuning Bank Select** (MIDI Tuning Standard): the data MSB
+    /// is the tuning bank, 0 to 127.
+    pub const TUNING_BANK_SELECT: Self = Self::new(U7::of(0), U7::of(4));
+
     /// RPN #00/05, **Modulation Depth Range** (CA-026): scales the effective
     /// range of the Modulation Wheel (CC 1). The MSB is semitones and the LSB
     /// 100/128 cent, as GM2 section 3.4.4 words it.
@@ -88,6 +97,8 @@ mod tests {
             (Rpn::PITCH_BEND_SENSITIVITY, 0u8, 0u8),
             (Rpn::CHANNEL_FINE_TUNING, 0, 1),
             (Rpn::CHANNEL_COARSE_TUNING, 0, 2),
+            (Rpn::TUNING_PROGRAM_SELECT, 0, 3),
+            (Rpn::TUNING_BANK_SELECT, 0, 4),
             (Rpn::MODULATION_DEPTH_RANGE, 0, 5),
             (Rpn::MPE_CONFIGURATION, 0, 6),
             (Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY, 0, 7),

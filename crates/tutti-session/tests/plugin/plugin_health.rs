@@ -105,11 +105,13 @@ fn session_with(cause: Option<PluginFailure>) -> (Session, NodeKey) {
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
-    assert!(s.graph().host_plugin(
-        node,
-        handle_with(cause),
-        tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
-    ));
+    s.graph()
+        .host_plugin(
+            node,
+            handle_with(cause),
+            tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
+        )
+        .expect("the node is in the graph");
     // The insert is an edit: send it, so the flag starts clear.
     s.commit();
     (s, node.erase())
@@ -284,11 +286,13 @@ fn session_reporting() -> (
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
-    assert!(s.graph().host_plugin(
-        node,
-        handle,
-        tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
-    ));
+    s.graph()
+        .host_plugin(
+            node,
+            handle,
+            tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
+        )
+        .expect("the node is in the graph");
     s.commit();
     (s, node.erase(), params, refresh, invalidate)
 }

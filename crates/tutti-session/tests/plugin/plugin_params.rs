@@ -13,7 +13,9 @@ use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, Health, Normalized, ParamFlags, ParamId,
     ParamUnit, ParameterInfo, PluginFailure, PluginRefresh, RenderMode,
 };
-use tutti_session::{PluginChange, PluginEvent, PluginParamError, Session, SessionEvent};
+use tutti_session::{
+    Key, PluginChange, PluginEvent, PluginNode, PluginParamError, Session, SessionEvent,
+};
 use tutti_types::{ChannelLayout, Db, Hz, SampleRate};
 
 const CUTOFF: ParamId = ParamId::new(1);
@@ -136,6 +138,12 @@ impl Health for Fake {
 /// A detached session with the fake hosted at a node, its parameters not yet
 /// read, and the sink the fake announces a rescan through.
 fn session() -> (Session, NodeKey, Arc<Fake>, RefreshSink) {
+    let (s, key, fake, refresh) = session_keyed();
+    (s, key.erase(), fake, refresh)
+}
+
+/// [`session`], with the key `host_plugin` returned.
+fn session_keyed() -> (Session, Key<PluginNode>, Arc<Fake>, RefreshSink) {
     let fake = Fake::new();
     let refresh = RefreshSink::default();
     let handle = PluginHandle::from_backend(
@@ -151,13 +159,16 @@ fn session() -> (Session, NodeKey, Arc<Fake>, RefreshSink) {
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
-    assert!(s.graph().host_plugin(
-        node,
-        handle,
-        tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
-    ));
+    let key = s
+        .graph()
+        .host_plugin(
+            node,
+            handle,
+            tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
+        )
+        .expect("the node is in the graph");
     s.commit();
-    (s, node.erase(), fake, refresh)
+    (s, key, fake, refresh)
 }
 
 /// One update, running every parameter read the session hands out and landing
@@ -446,6 +457,48 @@ fn a_plugin_parameter_targets_a_modulation_route_through_a_param_ref() {
         level.target(),
         tutti_session::ParamRef::plugin(node, LEVEL.get())
     );
+}
+
+/// **A plugin's key names a parameter as a route's target** (`modulation`):
+/// `key.param(id)` is the reference `Param::target` gives, and a route onto it
+/// is declared and read back through the key, as a native param's is.
+#[cfg(feature = "modulation")]
+#[test]
+fn a_plugin_key_names_a_parameter_a_route_targets() {
+    use tutti_session::{ParamRef, RouteSpec};
+    use tutti_types::Depth;
+
+    let (mut s, key, _, _) = session_keyed();
+    let _ = update(&mut s);
+    let target = key.param(LEVEL);
+    assert_eq!(target, ParamRef::plugin(key, LEVEL.get()));
+    assert_eq!(
+        target,
+        s.plugin(key).unwrap().params().get(LEVEL).unwrap().target()
+    );
+    let id = {
+        let mut m = s.mods_mut();
+        m.range_raw(target, 0.0, 1.0).unwrap();
+        let source = m.macro_(0.5);
+        m.route(RouteSpec::new(source, target, Depth::of(0.25)))
+            .unwrap()
+    };
+    let routed: Vec<_> = s.mods().routes_to(target).map(|r| r.id).collect();
+    assert_eq!(routed, [id]);
+}
+
+/// **A hosted plugin's key wires like a native node's**: `connect` takes the
+/// key from `host_plugin` (and its ports) and the root, and the edge is in the
+/// graph.
+#[test]
+fn a_hosted_plugin_key_wires_like_a_native_key() {
+    let (mut s, key, _, _) = session_keyed();
+    let _ = update(&mut s);
+    s.graph()
+        .connect(key.out(0), tutti_session::Root::output(0))
+        .unwrap();
+    let sources = s.graph().sources(tutti_session::Root::output(0)).unwrap();
+    assert_eq!(sources, [key.out(0)]);
 }
 
 /// **A gesture outlives frames**: begun, then `update` runs (and a rescan lands),

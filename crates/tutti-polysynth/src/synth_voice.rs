@@ -24,7 +24,7 @@ use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
 use tutti_midi_protocol::MpeMode;
 use tutti_types::{
-    Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, SampleRate, Seconds,
+    Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, SampleRate, Seconds, Semitones,
 };
 use tutti_ump::{MidiChannel, NoteNumber};
 use tutti_voicing::{ChannelState, DEFAULT_MODULATION_RANGE};
@@ -88,6 +88,9 @@ pub(crate) struct SynthVoice {
     /// with its per-note bend, before the channel's bend), if any: else the
     /// key's.
     tuned: Option<Hz>,
+    /// How far its key sounds from equal temperament (what the note logic last
+    /// told it: the channel's tuning program and Scale/Octave offset).
+    tune: Semitones,
     /// This voice's glide: its pitch over the pitch it glides to is a factor on
     /// the sounding pitch ([`glide_ratio`](Self::glide_ratio)), so a glide, a
     /// per-note pitch and the channel's bend are three factors on one pitch and
@@ -221,6 +224,7 @@ impl SynthVoice {
             mpe: MpeVoiceState::new(config.mpe != MpeMode::Disabled),
             base_note_freq: Hz(440.0),
             tuned: None,
+            tune: Semitones(0.0),
             glide: Portamento::new(config.portamento.clone().unwrap_or_default(), sample_rate),
             sub_voices: unison_count.max(1),
         }
@@ -280,6 +284,7 @@ impl SynthVoice {
         self.mpe.reset();
         self.base_note_freq = Hz(440.0);
         self.tuned = None;
+        self.tune = Semitones(0.0);
         self.pitch = Hz(440.0);
         self.glide.reset(Hz(440.0));
     }
@@ -333,6 +338,17 @@ impl SynthVoice {
     /// sounds exactly this without unison.
     pub(crate) fn sounding_freq(&self) -> Hz {
         self.pitch
+    }
+
+    /// How far the key sounds from equal temperament.
+    pub(crate) fn tune(&self) -> Semitones {
+        self.tune
+    }
+
+    /// The note logic's tuning of the voice's key: its next pitch is
+    /// [`key_freq`](crate::tuning::key_freq) of the key and this.
+    pub(crate) fn set_tune(&mut self, tune: Semitones) {
+        self.tune = tune;
     }
 
     /// The sounding pitch a per-note controller gave the note, if any.

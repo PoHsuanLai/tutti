@@ -135,6 +135,9 @@ pub(crate) struct Voice {
     // The note's per-note controllers (M2-104 section 7.4); the defaults of
     // `NoteControls::DEFAULT` until a message sets one.
     note: NoteControls,
+    /// How far the key sounds from equal temperament, in semitones: the note
+    /// logic's tuning of it (`Command::Start`'s `tune`).
+    tune: f32,
 
     note_gain: f32,
 
@@ -192,6 +195,7 @@ impl Voice {
             transpose: 0_f32,
             glide: None,
             note: NoteControls::DEFAULT,
+            tune: 0_f32,
             note_gain: 0_f32,
             cutoff: 0_f32,
             resonance: 0_f32,
@@ -290,10 +294,17 @@ impl Voice {
         self.glide = glide.map(|g| self.glide_run(g));
     }
 
+    /// Sets how far the voice's key sounds from equal temperament, with no new
+    /// attack. A glide in progress keeps the offset it left with.
+    pub(crate) fn tune(&mut self, tune: Semitones) {
+        self.tune = tune.get();
+    }
+
     /// Moves the voice to `key` with no new attack (a legato move, or the voice
     /// a Portamento Control names). With a glide it jumps to the glide's key and
     /// glides to the new one; without, it is at the new key at once.
-    pub(crate) fn retarget(&mut self, key: NoteNumber, glide: Option<Glide>) {
+    pub(crate) fn retarget(&mut self, key: NoteNumber, tune: Semitones, glide: Option<Glide>) {
+        self.tune = tune.get();
         let key = i32::from(key.get());
         self.transpose += (key - self.played) as f32;
         self.played = key;
@@ -302,7 +313,8 @@ impl Voice {
 
     fn glide_run(&self, glide: Glide) -> GlideRun {
         GlideRun {
-            offset: (i32::from(glide.from.get()) - self.played) as f32,
+            offset: (i32::from(glide.from.get()) - self.played) as f32 + glide.from_tune.get()
+                - self.tune,
             frames: (glide.time.get() * self.rate.get()) as f32,
             done: 0_f32,
         }
@@ -416,7 +428,7 @@ impl Voice {
         // the Channel Tuning (RP-022).
         let channel_pitch_change = bends[self.channel as usize].0;
         let glide = self.step_glide(self.block.len());
-        let pitch = self.note.pitch.unwrap_or(self.key as f32)
+        let pitch = self.note.pitch.unwrap_or(self.key as f32 + self.tune)
             + self.transpose
             + glide
             + vib_pitch_change

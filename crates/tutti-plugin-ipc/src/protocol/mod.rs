@@ -59,7 +59,14 @@ pub(crate) mod wire;
 ///   their replies, `ParameterPlain` and `ParameterNormalized`): the conversion
 ///   between a normalized value and the plugin's plain one is the format's, so
 ///   it is a request to the server, whose format answers it.
-pub const PROTOCOL_VERSION: u32 = 30;
+/// - **Version 31** carries parameter values as `f64`: `SetParameter`,
+///   `ParameterValue` and `ParameterChanged` held an `f32` (so 0.3 came back
+///   as 0.30000001192...), while automation points and text queries were
+///   already `f64`. It also replaces `ParameterChanged`'s `index` and `value`
+///   with the shared `ParamEdit` (the id, the value, the gesture it falls in
+///   and whether to record it), so the server forwards a plugin's edits, a
+///   gesture's begin and end among them.
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -167,7 +174,7 @@ pub use tutti_plugin_types::SampleFormat;
 //   (`tutti-{vst2,vst3,clap,au}-host`) via `tutti-plugin-types`.
 pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, LoadedPlugin, Normalized,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParamId,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParamEdit, ParamId,
     ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginDescriptor, PluginTail,
     Preset, PresetId, RenderMode, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };

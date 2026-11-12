@@ -4,11 +4,12 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
-    Control, Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail,
-    Prepare, Refused, RestartRules, Samples, Stuck,
+    Control, Controller, Edit, EditDrain, EditSink, Loaded, Normalized, ParamId, PluginError,
+    PluginTail, Prepare, Refused, RestartRules, Samples, Stuck,
 };
 use tutti_rt::ArcLend;
 
@@ -50,6 +51,11 @@ pub struct ClapController {
     pub(crate) ranges: Arc<ArcLend<RangeTable>>,
     /// The pool the Processor serves `clap.thread-pool` requests on.
     pools: Arc<ArcLend<PoolCell>>,
+    /// The plugin's own parameter edits, which the Processor queued from its
+    /// output events ([`take_reported_edits`](Control::take_reported_edits)).
+    pub(crate) reported: EditDrain,
+    /// What the ring refused, counted by the Processor.
+    pub(crate) reports_dropped: Arc<AtomicU64>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -67,6 +73,7 @@ impl ClapController {
         edits: EditSink,
         ranges: Arc<ArcLend<RangeTable>>,
         pools: Arc<ArcLend<PoolCell>>,
+        (reported, reports_dropped): (EditDrain, Arc<AtomicU64>),
     ) -> Self {
         Self {
             loaded: Some(loaded),
@@ -75,6 +82,8 @@ impl ClapController {
             reset_pending: false,
             ranges,
             pools,
+            reported,
+            reports_dropped,
             _not_sync: PhantomData,
         }
     }

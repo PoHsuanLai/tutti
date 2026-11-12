@@ -183,11 +183,15 @@ public:
 		shared::Core tmp;
 		if (!tmp.load (b.data (), b.size ())) return kResultFalse;
 		for (uint32_t id = 0; id < shared::kTone; ++id) { double v; tmp.param (id, v); setParamNormalized (id, v); }
-		// The notice (core.rs): an edit of `aux` to 0.75 through the host's component handler on every state load.
-		if (tmp.notice == shared::kNoticeOnLoad)
+		// The notice (core.rs): an edit of `aux` to 0.75, or the gesture of the spec (a change to each of
+		// kGestureValues), through the host's component handler on every state load.
+		if (tmp.notice == shared::kNoticeOnLoad || tmp.notice == shared::kNoticeGestureOnLoad)
 		{
 			beginEdit (shared::kAux);
-			performEdit (shared::kAux, 0.75);
+			if (tmp.notice == shared::kNoticeOnLoad)
+				performEdit (shared::kAux, 0.75);
+			else
+				for (double v : shared::kGestureValues) performEdit (shared::kAux, v);
 			endEdit (shared::kAux);
 		}
 		return kResultOk;

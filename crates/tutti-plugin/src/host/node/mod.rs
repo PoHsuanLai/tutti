@@ -349,8 +349,8 @@ impl PluginClient<Unbound> {
                 *tutti_plugin_host::lock_tail(&listener_tail) = tail;
                 listener_invalidate_sink.fire(PluginInvalidation::Tail { tail });
             }
-            BridgeEvent::ParameterChanged { index, value } => {
-                listener_param_sink.fire((index, value));
+            BridgeEvent::ParameterChanged { edit } => {
+                listener_param_sink.fire(edit);
             }
             BridgeEvent::Resync(kind) => match kind.classify() {
                 ResyncClass::Refresh(r) => listener_refresh_sink.fire(r),

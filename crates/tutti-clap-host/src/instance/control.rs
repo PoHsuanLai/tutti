@@ -9,9 +9,10 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence, EditorSize,
-    EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamId, ParameterInfo,
-    PluginBus, PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail,
-    PresetId, RenderMode, Request, RescanScope, Samples, TimerId, WindowHandle,
+    EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit, ParamId,
+    ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples, TimerId,
+    WindowHandle,
 };
 
 use super::controller::ClapController;
@@ -417,7 +418,7 @@ impl Control for ClapLoaded {
 
     /// Nothing: CLAP reports the edits a plugin's own editor makes in the
     /// block's `ProcessOutput`.
-    fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<(ParamId, Normalized)>) {}
+    fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<ParamEdit>) {}
 
     /// `0`: CLAP reports the edits a plugin's own editor makes in the block's
     /// `ProcessOutput`, not through a queue that can drop them.
@@ -652,12 +653,23 @@ impl Control for ClapController {
         Control::set_render_mode(self.loaded_mut(), main, mode)
     }
 
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
-        Control::take_reported_edits(self.loaded_mut(), main, out);
+    /// What the plugin's `process` told the host of its own parameters, in
+    /// order: each output `CLAP_EVENT_PARAM_VALUE` as a change, and
+    /// `CLAP_EVENT_PARAM_GESTURE_BEGIN` and `_END` as a gesture's ends, which
+    /// carry no value in CLAP.
+    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
+        self.reported.drain(|edit| {
+            if let tutti_plugin_types::Edit::Reported(edit) = edit {
+                out.push(edit);
+            }
+        });
     }
 
     fn dropped_reported_edits(&self) -> u64 {
         Control::dropped_reported_edits(self.loaded())
+            + self
+                .reports_dropped
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 

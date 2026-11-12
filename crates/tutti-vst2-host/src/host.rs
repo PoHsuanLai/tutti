@@ -57,9 +57,18 @@ use tutti_rt::RequestWord;
 use vst::api::Supported;
 use vst::host::Host;
 
-/// `(parameter_index, normalized_value)` reported by the plugin's
-/// `audioMasterAutomate` callback.
-pub type ParameterChange = (i32, f32);
+/// What the plugin reported of a parameter edit: `audioMasterBeginEdit`,
+/// `audioMasterAutomate` (the value, as the `f32` the callback carries) and
+/// `audioMasterEndEdit`, each with the parameter's index.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParameterChange {
+    /// `audioMasterBeginEdit`: the plugin took hold of the parameter.
+    Begin(i32),
+    /// `audioMasterAutomate`: the parameter now has this value.
+    Automate(i32, f32),
+    /// `audioMasterEndEdit`: the plugin let go of the parameter.
+    End(i32),
+}
 
 /// Capacity of the plugin→host parameter-automation queue.
 ///
@@ -145,6 +154,17 @@ pub(crate) struct HostState {
 }
 
 impl HostState {
+    /// Queues one report of a parameter edit, unless it is an echo of the
+    /// host's own write ([`host_write`]); a full queue drops it and counts it.
+    fn report(&self, change: ParameterChange) {
+        if IN_HOST_WRITE.with(std::cell::Cell::get) {
+            return;
+        }
+        if self.param_tx.push(change).is_err() {
+            self.dropped_param_changes.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn new(
         param_tx: Arc<ArrayQueue<ParameterChange>>,
         midi_out_tx: Arc<ArrayQueue<WireMidi>>,
@@ -295,12 +315,20 @@ impl Host for HostState {
     /// A report made from inside the host's own `setParameter` is an echo of
     /// the host's value and is not queued ([`host_write`]).
     fn automate(&self, index: i32, value: f32) {
-        if IN_HOST_WRITE.with(std::cell::Cell::get) {
-            return;
-        }
-        if self.param_tx.push((index, value)).is_err() {
-            self.dropped_param_changes.fetch_add(1, Ordering::Relaxed);
-        }
+        self.report(ParameterChange::Automate(index, value));
+    }
+
+    /// `audioMasterBeginEdit` (aeffectx.h): the plugin took hold of a
+    /// parameter. Queued with the automation it brackets, so the order the
+    /// plugin made them in is the order the host reads.
+    fn begin_edit(&self, index: i32) {
+        self.report(ParameterChange::Begin(index));
+    }
+
+    /// `audioMasterEndEdit`: the plugin let go of a parameter. See
+    /// [`begin_edit`](Self::begin_edit).
+    fn end_edit(&self, index: i32) {
+        self.report(ParameterChange::End(index));
     }
 
     /// Called from inside the plugin's `processReplacing` — the audio thread.
@@ -683,7 +711,7 @@ mod tests {
         assert_eq!(host.dropped_param_changes(), 2);
 
         // Draining makes room again — the queue is a queue, not a latch.
-        assert_eq!(host.param_tx.pop(), Some((0, 0.5)));
+        assert_eq!(host.param_tx.pop(), Some(ParameterChange::Automate(0, 0.5)));
         host.automate(7, 0.25);
         assert_eq!(
             host.dropped_param_changes(),

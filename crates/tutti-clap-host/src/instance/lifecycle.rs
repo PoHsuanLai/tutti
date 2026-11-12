@@ -7,6 +7,8 @@
 //! express: the FFI ordering. A plugin that refuses `activate` comes back whole
 //! in [`Refused`].
 
+use std::sync::atomic::AtomicU64;
+
 use super::ClapLoaded;
 use super::config::{AudioScratch, RangeTable};
 use super::controller::ClapController;
@@ -36,6 +38,11 @@ const PARAM_QUEUE_CAPACITY: usize = 16;
 /// Parameter edits the Controller can have queued to the Processor before the
 /// ring refuses one; the Processor reserves event room for as many.
 pub(crate) const EDIT_CAPACITY: usize = 256;
+
+/// How many of the plugin's own parameter edits (its output events) the ring
+/// to the Controller holds between two drains: a preset that touches every
+/// parameter, with a gesture's two ends around each, in one burst.
+pub(crate) const REPORT_CAPACITY: usize = 2048;
 
 /// A `ClapError` as the shared vocabulary's error.
 pub(crate) fn plugin_error(error: ClapError) -> PluginError {
@@ -233,6 +240,8 @@ impl ClapLoaded {
             .audio_side()
             .expect("an activated plugin has an audio half");
         let (sink, drain) = tutti_plugin_types::edits(EDIT_CAPACITY);
+        let (reports, reported) = tutti_plugin_types::edits(REPORT_CAPACITY);
+        let reports_dropped = Arc::new(AtomicU64::new(0));
         let processor = ClapProcessor::new(ProcessorParts {
             audio_side,
             pool: pools.reader(),
@@ -242,8 +251,11 @@ impl ClapLoaded {
             scratch,
             ranges: ranges.reader(),
             drain,
+            reports,
+            reports_dropped: Arc::clone(&reports_dropped),
         });
-        let controller = ClapController::new(self, sink, ranges, pools);
+        let controller =
+            ClapController::new(self, sink, ranges, pools, (reported, reports_dropped));
         Ok((processor, controller))
     }
 

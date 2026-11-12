@@ -309,8 +309,10 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
                     samples: Samples(256),
                 },
                 BridgeMessage::ParameterChanged {
-                    index: ParamId::new(7),
-                    value: Normalized::of(0.42),
+                    edit: tutti_plugin_types::ParamEdit::change(
+                        ParamId::new(7),
+                        Normalized::of(0.42),
+                    ),
                 },
             ],
             HostMessage::GetParameter { param_id } if param_id == ParamId::new(0) => {
@@ -336,8 +338,8 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
             BridgeEvent::LatencyChanged { samples } => {
                 latency_seen.store(samples.get(), Ordering::Release);
             }
-            BridgeEvent::ParameterChanged { index, value } => {
-                *param_seen.lock() = Some((index.get(), value.get() as f32));
+            BridgeEvent::ParameterChanged { edit } => {
+                *param_seen.lock() = edit.value().map(|v| (edit.id().get(), v.get() as f32));
             }
             BridgeEvent::TailChanged { .. }
             | BridgeEvent::Resync(_)

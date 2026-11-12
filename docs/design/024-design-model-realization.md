@@ -357,7 +357,7 @@ structure computing a system), its capacity (the worst member its state must hol
 | Now | Becomes | Why |
 |---|---|---|
 | trait `Design` | **`Family`** | it is the set of systems the controls index, `c -> S_D(c, fs)`; "design" read as a noun suggested a drawing |
-| `Design::Model` | **`Family::Member`** (bound `System`) | one member of the family; `type System: System` would collide with the trait |
+| `Design::Model` | **`Family::Member`** (bound `System`) | `Member` is the word for one system of a family |
 | `design`, `design_into` | **`member`**, **`member_into`** | the member at these controls and rate |
 | `Design::Bounds`, trait `Sizes`, `Realization::Bounds`, `Kernel::Bounds` | **`Capacity`** (trait, and the associated type of each) | what a realization allocates for the worst member it must hold; `Sizes`, `Bounds` and the reverb's `NetworkSizes` were three names for it |
 | `NetworkSizes`, `FilterSizes` | **`NetworkCapacity`**, **`FilterCapacity`** | the same |
@@ -365,7 +365,8 @@ structure computing a system), its capacity (the worst member its state must hol
 | `Design::Range`, trait `Range` | **`Family::Domain`**, trait **`Domain`** | the part of the control space a node may reach (`MaxDecay` is one) |
 | `Ceiling<R>` | **`Reach<D>`** | a domain at a rate and a tail floor: how far into the family a node must be able to go |
 | trait `Kernel` | **`Recurrence`** | the per-frame difference equation; "kernel" is an impulse response in this field (section 2.5 already said so) |
-| `ChannelKernel`, `FreeverbKernel`, `FdnKernel` | **`ChannelRecurrence`**, **`FreeverbRecurrence`**, **`FdnRecurrence`** | the same |
+| `ChannelKernel`, `FreeverbKernel`, `FdnKernel`, the reverb node test's `EchoKernel` | **`ChannelRecurrence`**, **`FreeverbRecurrence`**, **`FdnRecurrence`**, `EchoRealization` | the same (`EchoKernel` is a `Realization`) |
+| the type parameter `K` of `Realized<K>`, `Filter<K>`, `Flawed<K>` and the contract harness | **`R`** | it stood for Kernel; the old word would live on in every signature |
 | trait `Effect<M>` | folded into **`Realization<M>`** (`process` moves onto it) | every realization built has the planar block shape; section 2.4 item 4 kept `process` off `Realization` for a generator or a resampler that does not exist as a realization yet, and a second trait for an unbuilt shape is the indirection this section removes. When one is built it gets its own realization trait then |
 | `NodeDesign`, `DesignNode<D>` | **`NodeFamily`**, **`FamilyNode<F>`** | the node over a family |
 | `SvfDesign`, `LadderDesign`, `CrossoverDesign`, `FreeverbDesign`, `FdnDesign` | **`SvfFamily`**, **`LadderFamily`**, **`CrossoverFamily`**, **`FreeverbFamily`**, **`FdnFamily`** | the SVF family, the ladder family |
@@ -377,7 +378,8 @@ realization of a recurrence); `Setup`, `Effort`, `Cadence`, `Channels`, `Glide`,
 between two members, and reads as what it does); `realization_contract!`, `RealizationCase`,
 `Figure`; `Filter<K>`. The dynamics kernels (`CompressorKernel`, `GateKernel`,
 `LimiterKernel`) and `VbapKernel` are not `Kernel` impls; each becomes a `Recurrence` (or
-keeps a plain name) in its family lane.
+keeps a plain name) in its family lane. After the rename PR, a search for `Kernel` finds only
+those four.
 
 **How it lands.** One PR, after the ladder fix and before the dynamics lane, so no lane is
 written against the old names: the renames in `tutti-dsp`, `tutti-nodes` and their tests,

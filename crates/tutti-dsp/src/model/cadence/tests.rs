@@ -4,30 +4,25 @@ fn ranges(grid: Cadence, size: usize, unprimed: bool) -> Vec<Range<usize>> {
     grid.steps(0, size, unprimed).map(|s| s.frames).collect()
 }
 
-/// The steps tile the block with no gap and no overlap, each solved at its
-/// last frame, and a block grid is one step.
+/// A block grid is one step over the whole block, solved at its last frame.
 #[test]
-fn steps_tile_the_block_and_solve_at_their_last_frame() {
-    let grid = Cadence::every(N16);
-    assert_eq!(ranges(grid, 40, false), vec![0..16, 16..32, 32..40]);
-    assert_eq!(ranges(grid, 1, false), vec![0..1]);
-    assert_eq!(ranges(grid, 0, false), Vec::<Range<usize>>::new());
+fn a_block_grid_is_one_step_solved_at_its_last_frame() {
     assert_eq!(ranges(Cadence::BLOCK, 40, false), vec![0..40]);
+    assert_eq!(ranges(Cadence::BLOCK, 1, false), vec![0..1]);
     assert_eq!(ranges(Cadence::BLOCK, 0, false), Vec::<Range<usize>>::new());
     assert!(
-        grid.steps(0, 40, false)
+        Cadence::BLOCK
+            .steps(0, 40, false)
             .all(|s| s.solve_at == s.frames.end - 1 && s.grid_point)
     );
 }
 
-/// An unprimed block solves its first frame alone, then tiles the rest.
+/// An unprimed block solves its first frame alone, then the rest.
 #[test]
 fn an_unprimed_block_isolates_frame_zero() {
-    let grid = Cadence::every(N16);
-    assert_eq!(ranges(grid, 40, true), vec![0..1, 1..17, 17..33, 33..40]);
-    assert_eq!(ranges(grid, 1, true), vec![0..1]);
-    assert_eq!(ranges(grid, 0, true), Vec::<Range<usize>>::new());
     assert_eq!(ranges(Cadence::BLOCK, 40, true), vec![0..1, 1..40]);
+    assert_eq!(ranges(Cadence::BLOCK, 1, true), vec![0..1]);
+    assert_eq!(ranges(Cadence::BLOCK, 0, true), Vec::<Range<usize>>::new());
 }
 
 /// A stream grid cuts the block at the stream's grid points, whatever the
@@ -72,7 +67,6 @@ const N16: NonZeroU32 = NonZeroU32::new(16).unwrap();
 #[test]
 fn only_a_stream_grid_is_block_independent() {
     assert!(!Cadence::BLOCK.block_independent());
-    assert!(!Cadence::every(N16).block_independent());
     assert!(Cadence::stream(N16).block_independent());
     let block_on_stream = Cadence {
         period: Period::Block,
@@ -87,8 +81,8 @@ fn only_a_stream_grid_is_block_independent() {
 #[test]
 fn the_constructors_name_their_grid() {
     assert_eq!(Cadence::BLOCK.period(), Period::Block);
-    assert_eq!(Cadence::every(N16).period(), Period::Frames(N16));
-    assert_eq!(Cadence::every(N16).anchor(), Anchor::Block);
+    assert_eq!(Cadence::BLOCK.anchor(), Anchor::Block);
+    assert_eq!(Cadence::stream(N16).period(), Period::Frames(N16));
     assert_eq!(
         Cadence::stream(N16).anchor(),
         Anchor::Stream {

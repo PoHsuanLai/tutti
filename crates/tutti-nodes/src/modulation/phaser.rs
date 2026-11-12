@@ -1,499 +1,170 @@
-//! Phaser — a swept all-pass chain, of any width.
+//! Phaser: a swept all-pass chain, of any width.
 //!
-//! The one modulation effect here with no delay line: it notches by phase
-//! cancellation, which is why its notches are fewer and unevenly spaced
+//! [`PhaserFamily`] is the algorithm (the chain, the sweep, the LFO); this file holds the
+//! cells and how the graph reaches them. The one modulation effect here with no delay line:
+//! it notches by phase cancellation, which is why its notches are fewer and unevenly spaced
 //! compared with a flanger's.
 
-use std::sync::Arc;
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::AtomicF32;
-use tutti_types::Tail;
-use tutti_types::UnitParam;
+use tutti_dsp::{Family, PhaserControls, PhaserFamily, Stages, Stagger, StaggerError, SweepRange};
+use tutti_types::{BusTopology, Depth, Feedback, Hz, SampleRate};
 
-use super::shared::{LfoDrive, LinearMod};
-use tutti_dsp::{COEFF_CADENCE, Ramp, allpass_chain, allpass_coeff, sweep_hz};
-use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Phase, PhaseIncrement, SampleRate};
-
-const MAX_STAGES: usize = 12;
-
-/// Inclusive frequency range that the phaser LFO sweeps across.
-#[derive(Debug, Clone, Copy)]
-pub struct FrequencyRange {
-    /// Bottom of the sweep in [`Hz`] — where the all-pass centre sits at the
-    /// LFO's trough.
-    pub min_hz: Hz,
-    /// Top of the sweep in [`Hz`] — where the all-pass centre sits at the LFO's
-    /// peak.
-    ///
-    /// Bounded at 0.90 of Nyquist when applied to a node: several all-pass
-    /// stages compound their phase error near the limit.
-    pub max_hz: Hz,
-}
-
-impl FrequencyRange {
-    /// Pairs a sweep floor and ceiling in [`Hz`].
-    ///
-    /// Neither bound is validated here — the clamping happens where the range
-    /// meets a node's sample rate, in
-    /// [`PhaserNode::set_frequency_range`].
-    pub fn new(min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) -> Self {
-        Self {
-            min_hz: min_hz.into(),
-            max_hz: max_hz.into(),
-        }
-    }
-}
-
-/// The block's depth / feedback — where the next block's ramps start.
-#[derive(Clone, Copy, Debug)]
-struct PhaserControls {
-    depth: f32,
-    fb: f32,
-}
+use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
 /// Phaser of any width: `N` audio inputs, `N` outputs.
 ///
-/// A chain of all-pass stages whose centre frequency an internal LFO sweeps
-/// across a configured frequency range. Each stage passes every frequency at
-/// unity and shifts only phase; blending that against the dry signal (the
-/// graph's mix, `Editor::set_mix`: the node outputs the wet signal alone) turns
-/// the shift into cancellation notches, and sweeping the centre moves them. An
-/// all-pass chain alone barely changes the magnitude, so a phaser wants a mix
-/// below one, deepest at one half.
+/// A [`FamilyNode`] over [`PhaserFamily`]: a chain of all-pass stages whose centre
+/// frequency an internal LFO sweeps across a [`SweepRange`]. Each stage passes every
+/// frequency at unity and shifts only phase; blending that against the dry signal (the
+/// graph's mix, `Editor::set_mix`: the node outputs the wet signal alone) turns the shift
+/// into cancellation notches, and sweeping the centre moves them. An all-pass chain alone
+/// barely changes the magnitude, so a phaser wants a mix below one, deepest at one half.
 ///
-/// **This is not a delay effect.** Unlike chorus and flanger it holds no delay
-/// line, so its notches are unevenly spaced and fewer — the reason a phaser
-/// sounds hollower and less metallic than a flanger. Stage count sets how many
-/// notches there are; feedback deepens them.
+/// **This is not a delay effect.** Unlike chorus and flanger it holds no delay line, so
+/// its notches are unevenly spaced and fewer, the reason a phaser sounds hollower and less
+/// metallic than a flanger. The [`Stages`] set how many notches there are (a pair each);
+/// feedback deepens them.
 ///
-/// One LFO serves every channel, and the all-pass coefficient is solved at
-/// control points (every 16 samples) and interpolated between.
+/// One LFO serves every channel; each channel keeps its own all-pass state, so the channels
+/// phase identically without bleeding into each other. Every channel sweeps in step by
+/// default, which widens nothing by itself: a [`Stagger`] (`[0.0, 0.25]` cycles on a stereo
+/// phaser sweeps the sides a quarter cycle apart) is what widens it.
 ///
-/// Every channel sweeps in step by default, which widens nothing by itself.
-/// [`with_phase_offsets`](Self::with_phase_offsets) staggers them.
+/// - [`mono`](Self::mono) and [`stereo`](Self::stereo): `stages` stages sweeping 200 to
+///   4000 Hz, no stagger, at your controls ([`PhaserControls::DEFAULT`]).
+/// - [`new`](Self::new): any width on a checked [`BusTopology`] (an `n`-channel one on the
+///   engine's order for that width is `BusTopology::assumed(n)?`), your own [`SweepRange`] and
+///   [`Stagger`].
 ///
-/// Rate, [`Depth`] and [`Feedback`] are live params read **once per
-/// block**; depth and feedback ramp across the block when they moved.
-/// A block of one takes a change whole.
+/// # The controls
+///
+/// The ports are in this order: **rate** ([`Rate`](tutti_types::UnitParam::Rate), [`Hz`]),
+/// **depth** ([`Depth`](tutti_types::UnitParam::Depth), unitless) and [`Feedback`]. All
+/// three are read on the stream's 16-frame grid, so what is heard does not depend on how the
+/// stream is cut into blocks; a driven port is read at the grid's solve frame.
+///
+/// - The **rate** is how fast the notches sweep: phaser rates are slow, typically 0.1 to
+///   2 Hz. **Floored at 0.01 Hz, a lane's value and a cell's alike.** It lands whole, and the
+///   LFO's phase is continuous across it.
+/// - The **depth** is a fraction of the sweep range, `0..=1` (a chorus's is seconds of
+///   delay): 1 sweeps the whole range, 0 parks the notches at its bottom. A cell that moves
+///   glides over [`GAIN_GLIDE`](tutti_dsp::GAIN_GLIDE).
+/// - The **feedback** is how much of the chain's output recirculates, clamped into
+///   `0..=`[`Feedback::MAX_STABLE`]. A cell that moves glides over
+///   [`GAIN_GLIDE`](tutti_dsp::GAIN_GLIDE).
+///
+/// The sweep's top is held at 0.90 of Nyquist at the graph's rate, and the authored top is
+/// kept, so a node prepared at a higher rate restores it.
 ///
 /// # In a graph
 ///
-/// A graph node ([`IntoNode`]), `N` in and `N` out, with no latency.
-/// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`]),
-/// depth ([`UnitParam::Depth`]) and feedback ([`UnitParam::Feedback`]); a fork starts from the values last set through it.
-/// The graph prepares it at the device rate before its first block. Its tail
-/// is [`Tail::Unknown`] (the feedback recirculates), so it is never skipped.
-pub struct PhaserNode {
-    /// All-pass stages per channel, `2..=12`.
-    stages: usize,
-    /// Audio width.
-    width: usize,
-    /// Stage input history, stage-major: `x1[s * width + c]`.
-    x1: Vec<f32>,
-    /// Stage output history, stage-major: `y1[s * width + c]`.
-    y1: Vec<f32>,
-    /// Each channel's last chain output, fed back into its input.
-    feedback_sample: Vec<f32>,
-    /// Per-channel LFO phase offset.
-    phase_offsets: Vec<PhaseIncrement>,
-    /// The coefficient each channel's last rendered sample ran at — where the
-    /// next block's interpolation starts.
-    last_coeff: Vec<f32>,
-    /// Per-sample, per-channel coefficients for the block, sample-major
-    /// (`coeffs[i * width + c]`). Scratch sized at `prepare` for the graph's
-    /// maximum block.
-    coeffs: Vec<f32>,
-    /// The block's LFO phases. Scratch sized at `prepare`, as `coeffs`.
-    phases: Vec<Phase>,
-    /// The running signal through the chain, one lane per channel. Scratch.
-    lane: Vec<f32>,
-    lfo: LfoDrive,
-    controls: LinearMod,
-    sample_rate: SampleRate,
-    /// The sweep range in effect: `authored_max_hz` clamped to this rate's
-    /// ceiling.
-    range: FrequencyRange,
-    /// The sweep top as it was asked for, before the rate's ceiling clamped
-    /// it. Kept so a rate that rises again restores it — clamping `range`
-    /// in place would ratchet the top down for good after one low rate.
-    authored_max_hz: Hz,
-    /// `None` until the first block (and after `reset`).
-    last: Option<PhaserControls>,
-}
-
-impl std::fmt::Debug for PhaserNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PhaserNode")
-            .field("stages", &self.stages)
-            .field("width", &self.width)
-            .field("phase_offsets", &self.phase_offsets)
-            .field("phases", &self.phases)
-            .field("lfo", &self.lfo)
-            .field("controls", &self.controls)
-            .field("sample_rate", &self.sample_rate)
-            .field("range", &self.range)
-            .field("authored_max_hz", &self.authored_max_hz)
-            .field("last", &self.last)
-            .finish_non_exhaustive()
-    }
-}
+/// A graph node ([`IntoNode`](tutti_graph::IntoNode)), `N` in and `N` out, with no latency.
+/// Inserted, its controls are a [`ParamSet`](tutti_graph::ParamSet) over those three; a fork
+/// starts from the values last set through it, with the LFO back at the start. The graph
+/// prepares it at the device rate before its first block, and **a re-prepare restarts the
+/// sweep**. Its tail is [`Tail::Unknown`](tutti_types::Tail::Unknown) (the feedback
+/// recirculates), so it is never skipped.
+pub type PhaserNode = FamilyNode<PhaserFamily>;
 
 impl PhaserNode {
-    /// A mono phaser (1 in, 1 out) with `stages` all-pass sections, clamped to
-    /// `2..=12`.
+    /// A phaser on the bus `input`, as wide as it, with `stages` all-passes per channel
+    /// sweeping `range`, its channels' sweeps offset by `stagger` and running at
+    /// `controls`.
     ///
-    /// Stages come in pairs — each pair produces one notch — so 4 gives the
-    /// classic two-notch phaser and higher counts thicken the effect. Defaults:
-    /// 0.3 Hz rate, half depth, 0.5 feedback, sweeping
-    /// 200–4000 Hz.
+    /// # Errors
     ///
-    /// The all-pass corner frequencies and the LFO's per-sample phase
-    /// increment both take the rate [`Node::prepare`] hands it.
+    /// [`StaggerError::Length`] when `stagger` names an offset for each channel and not for
+    /// `input`'s.
+    pub fn new(
+        input: BusTopology,
+        stages: Stages,
+        range: SweepRange,
+        stagger: Stagger,
+        controls: PhaserControls,
+    ) -> Result<Self, StaggerError> {
+        Ok(Self::live(
+            PhaserFamily::new(input, stages, range, stagger)?,
+            controls,
+        ))
+    }
+
+    /// A mono phaser of `stages` stages sweeping [`SweepRange::DEFAULT`] at `controls`.
     #[must_use]
-    pub fn new(stages: usize) -> Self {
-        Self::with_channels(ChannelLayout::MONO, stages)
+    pub fn mono(stages: Stages, controls: PhaserControls) -> Self {
+        Self::unstaggered(BusTopology::MONO, stages, controls)
     }
 
-    /// A phaser `channels` wide (clamped to at least 1) with `stages` all-pass
-    /// sections per channel. Every control is shared; each channel keeps its
-    /// own all-pass state, so the channels phase identically without bleeding
-    /// into each other. Otherwise as [`new`](Self::new).
-    pub fn with_channels(channels: impl Into<ChannelLayout>, stages: usize) -> Self {
-        let width = usize::from(channels.into().count()).max(1);
-        let stages = stages.clamp(2, MAX_STAGES);
-        Self {
-            stages,
-            width,
-            x1: vec![0.0; stages * width],
-            y1: vec![0.0; stages * width],
-            feedback_sample: vec![0.0; width],
-            phase_offsets: vec![PhaseIncrement(0.0); width],
-            last_coeff: vec![0.0; width],
-            coeffs: Vec::new(),
-            phases: Vec::new(),
-            lane: vec![0.0; width],
-            lfo: LfoDrive::new(Hz::new(0.3)),
-            controls: LinearMod::new(Depth::of(0.5), Feedback::new(0.5)),
-            sample_rate: SampleRate::DEFAULT,
-            range: FrequencyRange::new(Hz::new(200.0), Hz::new(4000.0)),
-            authored_max_hz: Hz(4000.0),
-            last: None,
-        }
-    }
-
-    /// Staggers the channels' sweeps: channel `c` runs `offsets[c]` cycles
-    /// ahead of the shared LFO (wrapped). All-zero is the default; `[0.0,
-    /// 0.25]` on a stereo phaser sweeps the sides a quarter-cycle apart, which
-    /// is what widens it.
-    ///
-    /// # Panics
-    ///
-    /// If `offsets.len()` is not the node's width — a build-time shape error.
+    /// A stereo phaser of `stages` stages sweeping [`SweepRange::DEFAULT`] at `controls`, its
+    /// channels in step.
     #[must_use]
-    pub fn with_phase_offsets(mut self, offsets: &[PhaseIncrement]) -> Self {
-        assert_eq!(offsets.len(), self.width, "one phase offset per channel");
-        for (o, &new) in self.phase_offsets.iter_mut().zip(offsets) {
-            *o = PhaseIncrement(Phase::START.advance(new).get());
-        }
-        self
+    pub fn stereo(stages: Stages, controls: PhaserControls) -> Self {
+        Self::unstaggered(BusTopology::STEREO, stages, controls)
     }
 
-    /// The shared LFO rate cell in [`Hz`] — how fast the notches sweep.
-    ///
-    /// Phaser rates are slow, typically 0.1–2 Hz. Shared across clones.
-    pub fn rate(&self) -> Arc<AtomicF32> {
-        self.lfo.rate.as_atomic()
-    }
-
-    /// The shared [`Depth`] cell — how much of the configured frequency range
-    /// the sweep actually covers.
-    ///
-    /// **Unitless, `0.0..=1.0`**, unlike chorus and flanger whose depth is in
-    /// seconds of delay. `1.0` sweeps the full configured range; `0.0` parks the
-    /// notches at the range floor.
-    pub fn depth(&self) -> Arc<AtomicF32> {
-        self.controls.depth.as_atomic()
-    }
-
-    /// The shared [`Feedback`] cell — how much of the all-pass output
-    /// recirculates.
-    ///
-    /// Deepens and sharpens the notches. Writing the raw cell bypasses
-    /// [`set_feedback`](Self::set_feedback)'s stability clamp.
-    pub fn feedback(&self) -> Arc<AtomicF32> {
-        self.controls.feedback.as_atomic()
-    }
-
-    /// Sets the LFO rate in [`Hz`], floored at 0.01 Hz.
-    pub fn set_rate(&self, hz: impl Into<Hz>) {
-        self.lfo
-            .rate
-            .store(Hz(LfoDrive::clamp_rate(hz.into().get())));
-    }
-
-    /// Sets the sweep [`Depth`].
-    pub fn set_depth(&self, d: impl Into<Depth>) {
-        self.controls.depth.store(d.into());
-    }
-
-    /// Sets the [`Feedback`], clamped to the stable range.
-    pub fn set_feedback(&self, fb: impl Into<Feedback>) {
-        self.controls
-            .feedback
-            .store(Feedback::new_clamped(fb.into().get()));
-    }
-
-    /// Sets the band the notches sweep across, in [`Hz`].
-    ///
-    /// `min_hz` is floored at 20 Hz and `max_hz` capped at 0.90 of Nyquist —
-    /// a wider margin than the filters take, because several all-pass stages
-    /// compound their phase error near the limit. A narrow range gives a
-    /// focused sweep; a wide one sounds more dramatic.
-    ///
-    /// `&mut self`, so it cannot reach a node already live in the graph.
-    pub fn set_frequency_range(&mut self, min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) {
-        self.range.min_hz = Hz(min_hz.into().get().max(20.0));
-        self.authored_max_hz = max_hz.into();
-        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
-    }
-
-    /// The highest all-pass centre this rate allows.
-    ///
-    /// 0.90 of Nyquist — a wider margin than the SVF's 0.998, because several
-    /// all-pass stages compound their phase error near the limit.
-    #[inline]
-    fn range_ceiling(&self) -> Hz {
-        self.sample_rate.nyquist_scaled(0.90)
-    }
-
-    /// The render kernel behind `process`, over `size` frames. `size` is at
-    /// most the scratch's length (the prepared maximum block).
-    ///
-    /// `driven` is the block's rate, depth and feedback from the
-    /// node's param ports (its declared params order), each `None` where
-    /// nothing drives it.
-    fn render(
-        &mut self,
-        size: usize,
-        driven: [Option<f32>; 3],
-        x: impl Fn(usize, usize) -> f32,
-        mut y: impl FnMut(usize, usize, f32),
-    ) {
-        debug_assert!(size <= self.phases.len());
-        let w = self.width;
-        // Every control is read here, once, for the whole block.
-        let [rate, depth, fb] = driven;
-        let (depth, fb) = self.controls.load([depth, fb]);
-        let target = PhaserControls { depth, fb };
-        let primed = self.last.is_some();
-        let from = self.last.unwrap_or(target);
-        let depth_r = Ramp::new(from.depth, target.depth, size);
-        let fb_r = Ramp::new(from.fb, target.fb, size);
-
-        self.lfo
-            .fill_block(self.sample_rate, &mut self.phases[..size], rate);
-        let phases = &self.phases;
-
-        // Narrowed once for the all-pass coefficients below.
-        let sr = self.sample_rate.get() as f32;
-        let (min_hz, max_hz) = (self.range.min_hz, self.range.max_hz);
-        let coeff_at = |i: usize, offset: PhaseIncrement| -> f32 {
-            let lfo_raw = phases[i].offset_by(offset).to_radians().get().sin();
-            let sweep = sweep_hz(min_hz, max_hz, lfo_raw, Depth::clamped(depth_r.at(i)));
-            allpass_coeff(sweep.get(), sr)
-        };
-
-        // The coefficient table, solved at the control points and interpolated
-        // between. A channel whose offset equals the previous one's copies it.
-        for c in 0..w {
-            let offset = self.phase_offsets[c];
-            if c > 0 && offset == self.phase_offsets[c - 1] {
-                for i in 0..size {
-                    self.coeffs[i * w + c] = self.coeffs[i * w + c - 1];
-                }
-                self.last_coeff[c] = self.last_coeff[c - 1];
-                continue;
-            }
-            let mut prev = if primed {
-                self.last_coeff[c]
-            } else {
-                coeff_at(0, offset)
-            };
-            for step in COEFF_CADENCE.steps(0, size, !primed) {
-                let (start, end) = (step.frames.start, step.frames.end);
-                let next = coeff_at(end - 1, offset);
-                let seg = Ramp::new(prev, next, end - start);
-                for i in start..end {
-                    self.coeffs[i * w + c] = seg.at(i - start);
-                }
-                prev = next;
-            }
-            self.last_coeff[c] = prev;
-        }
-
-        // Sample-outer; each stage runs across every channel in one inner loop.
-        for i in 0..size {
-            let fb = fb_r.at(i);
-            let coeffs = &self.coeffs[i * w..(i + 1) * w];
-            for c in 0..w {
-                self.lane[c] = x(c, i) + self.feedback_sample[c] * fb;
-            }
-            allpass_chain(
-                self.stages,
-                coeffs,
-                &mut self.lane,
-                &mut self.x1,
-                &mut self.y1,
-            );
-            for c in 0..w {
-                self.feedback_sample[c] = self.lane[c];
-                y(c, i, self.lane[c]);
-            }
-        }
-        self.last = Some(target);
+    fn unstaggered(input: BusTopology, stages: Stages, controls: PhaserControls) -> Self {
+        Self::live(
+            PhaserFamily::new(input, stages, SweepRange::DEFAULT, Stagger::NONE)
+                .expect("a step fits any width"),
+            controls,
+        )
     }
 }
 
-// The params a [`PhaserNode`] lets the graph modulate, in port order: all
-// three of its controls. Each is block-rate in the node (read once per
-// block and ramped across it), so a driven port is read the same way
-// (`ParamInput::last_frame`).
-tutti_graph::declare_params!([] PhaserNode, n {
-    Rate => Hz = &n.lfo.rate,
-    // A fraction of the sweep.
-    Depth => Depth = &n.controls.depth,
-    Feedback => Feedback = &n.controls.feedback,
-});
+/// The phaser's controls, in port order: rate, depth, feedback. Each lands whole on the
+/// stream grid (the recurrence's own glides are the depth's and the feedback's: the reader
+/// must not ramp them across the block as well).
+#[derive(Clone, Copy, Debug)]
+pub struct PhaserSet;
 
-impl Node for PhaserNode {
-    fn shape(&self) -> Shape {
-        let width = ChannelLayout::try_from(self.width).expect("the width came from a layout");
-        Shape::through_unassigned(width)
-            .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::Unknown)
-            .with_param_addrs(self.declared_ports().as_slice())
-    }
+control_set! {
+    PhaserSet(_s): PhaserControls = PhaserControls::DEFAULT;
+    live: (all);
+    // How fast the notches sweep: floored at 0.01 Hz, a lane's value and a cell's alike.
+    Rate => Hz = rate { whole },
+    // A fraction of the sweep range.
+    Depth => Depth = depth { whole },
+    Feedback => Feedback = feedback { whole };
 
-    fn prepare(&mut self, p: &Prepare) {
-        self.sample_rate = p.sample_rate();
-        // Re-clamped from what was asked for, not from the last clamp, so a
-        // rate that rises again restores the authored top.
-        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
-        // The interpolation start was solved at the previous rate.
-        self.last = None;
-        let max = p.max_block().get();
-        self.coeffs = vec![0.0; max * self.width];
-        self.phases = vec![Phase::START; max];
-    }
-
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames();
-        let driven = [
-            self.declared_param::<{ UnitParam::Rate as u16 }>(&io)
-                .last_frame(),
-            self.declared_param::<{ UnitParam::Depth as u16 }>(&io)
-                .last_frame(),
-            self.declared_param::<{ UnitParam::Feedback as u16 }>(&io)
-                .last_frame(),
-        ];
-        let (inputs, mut outputs) = io.split();
-        // One call in a graph, whose blocks fit the scratch; a longer block
-        // driven by hand renders in scratch-sized pieces.
-        let step = self.phases.len().max(1);
-        let mut at = 0;
-        while at < size {
-            let n = step.min(size - at);
-            self.render(
-                n,
-                driven,
-                |c, i| inputs.get(c)[at + i],
-                |c, i, v| outputs.get(c)[at + i] = v,
-            );
-            at += n;
-        }
-        Status::Modified
-    }
-
-    fn reset(&mut self) {
-        self.x1.fill(0.0);
-        self.y1.fill(0.0);
-        self.feedback_sample.fill(0.0);
-        self.lfo.reset_phase();
-        self.last = None;
-    }
-
-    fn param_base(&self, k: usize) -> Option<f32> {
-        self.declared_base(k)
+    fn defaults(&self) -> PhaserControls {
+        PhaserControls::DEFAULT
     }
 }
 
-impl ParamNode for PhaserNode {
-    fn param_set(&self) -> ParamSet {
-        self.declared_set()
+/// The closed loop's ring-out has no bound a tail could be cut at, so it is declared
+/// [`Tail::Unknown`](tutti_types::Tail::Unknown) and never narrowed or parked.
+impl NodeFamily for PhaserFamily {
+    type Set = PhaserSet;
+
+    const SAMPLING: tutti_dsp::Cadence = <Self as Family>::CADENCE;
+
+    fn rings(&self) -> Rings {
+        Rings::Unknown
     }
 
-    /// A clone with every control cell detached (at its value now), its
-    /// all-pass state cleared and its LFO back at the start.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.lfo.detach();
-        fork.controls.detach();
-        Node::reset(&mut fork);
-        fork
+    fn set(&self, _: &PhaserControls) -> PhaserSet {
+        PhaserSet
     }
-}
 
-/// Inserted with its [`ParamSet`] as its controls and a fork that starts
-/// from the values last set through it ([`tutti_graph::param_parts`]).
-impl IntoNode for PhaserNode {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-impl Clone for PhaserNode {
-    fn clone(&self) -> Self {
-        Self {
-            stages: self.stages,
-            width: self.width,
-            x1: self.x1.clone(),
-            y1: self.y1.clone(),
-            feedback_sample: self.feedback_sample.clone(),
-            phase_offsets: self.phase_offsets.clone(),
-            last_coeff: self.last_coeff.clone(),
-            coeffs: self.coeffs.clone(),
-            phases: self.phases.clone(),
-            lane: self.lane.clone(),
-            lfo: self.lfo.clone(),
-            controls: self.controls.clone(),
-            sample_rate: self.sample_rate,
-            range: self.range,
-            authored_max_hz: self.authored_max_hz,
-            last: self.last,
-        }
-    }
+    fn capacity(&self, _: SampleRate) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::drive_frames;
-    use tutti_graph::contract::{assert_param_fork, prepared};
-    use tutti_types::UnitParam;
+    use tutti_graph::contract::{assert_param_fork, drive, prepared};
+    use tutti_graph::{Node, ParamNode};
+    use tutti_types::{ChannelLayout, Latency, PhaseIncrement, Samples, Tail, UnitParam};
 
-    /// `node`, prepared at `sr` for blocks of up to 1024 frames.
-    fn at(node: PhaserNode, sr: f64) -> PhaserNode {
-        prepared(node, SampleRate(sr), 1024)
+    const RATE: SampleRate = SampleRate(48_000.0);
+
+    fn bus(width: u16) -> BusTopology {
+        BusTopology::assumed(ChannelLayout::from(width)).expect("a test width is one bus")
     }
 
-    /// A fork starts from the values last set through the node's
-    /// `ParamSet` and shares no cell with it (see
-    /// `tutti_graph::contract::assert_param_fork`).
+    /// A fork starts from the values last set through the node's `ParamSet` and shares no
+    /// cell with it, and the set has the three controls in the family's order.
     #[test]
     fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
-        let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
+        let node = PhaserNode::stereo(Stages::of(4), PhaserControls::DEFAULT);
         assert_eq!(
             node.param_set().params().collect::<Vec<_>>(),
             [UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback]
@@ -501,138 +172,245 @@ mod tests {
         assert_param_fork(node);
     }
 
+    /// The node declares rate, depth and feedback as its params in that order, each with its
+    /// control as the base, as wide as it was built, in and out, with no latency (the sweep
+    /// is the sound) and an unknown tail (the feedback recirculates).
     #[test]
-    fn test_phaser_stages_affect_sound() {
-        let sr = 44100.0;
-        let mut phaser_4 = at(PhaserNode::new(4), sr);
-
-        let mut phaser_12 = at(PhaserNode::new(12), sr);
-
-        let input: Vec<f32> = (0..4410)
-            .map(|i| (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin())
-            .collect();
-        let sum = |o: Vec<Vec<f32>>| o[0].iter().map(|&s| s as f64).sum::<f64>();
-        let sum_4 = sum(drive_frames(&mut phaser_4, &[&input]));
-        let sum_12 = sum(drive_frames(&mut phaser_12, &[&input]));
-
-        assert!(
-            (sum_4 - sum_12).abs() > 0.01,
-            "Different stage counts should sound different"
+    fn the_shape_declares_the_three_controls_no_latency_and_an_unknown_tail() {
+        let node = prepared(
+            PhaserNode::new(
+                bus(3),
+                Stages::of(5),
+                SweepRange::DEFAULT,
+                Stagger::NONE,
+                PhaserControls::DEFAULT,
+            )
+            .unwrap(),
+            RATE,
+            64,
         );
-    }
-
-    #[test]
-    fn test_phaser_reset() {
-        let mut phaser = at(PhaserNode::new(6), 44_100.0);
-        drive_frames(&mut phaser, &[&[1.0; 100]]);
-        Node::reset(&mut phaser);
-        let out = drive_frames(&mut phaser, &[&[0.0]]);
-        assert!(
-            out[0][0].abs() < 0.01,
-            "After reset, output should be near zero"
+        let shape = node.shape();
+        assert_eq!(
+            shape.params.as_slice(),
+            &[UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback][..]
         );
-    }
-
-    #[test]
-    fn test_phaser_feedback_resonance() {
-        let mut phaser = at(PhaserNode::new(6), 44_100.0);
-        phaser.set_feedback(Feedback::new(0.9));
-
-        let mut x = [0.0f32; 501];
-        x[0] = 1.0;
-        let out = drive_frames(&mut phaser, &[&x]);
-        let max_output = out[0][1..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        assert!(
-            max_output > 0.001,
-            "High feedback should produce resonance: {max_output}"
+        assert_eq!(
+            (shape.audio_in().count(), shape.audio_out().count()),
+            (3, 3)
         );
+        assert_eq!(shape.latency, Latency::new(Samples(0)));
+        assert_eq!(shape.tail, Tail::Unknown);
+        assert_eq!(node.param_base(0), Some(0.3), "the rate's base is its cell");
+        assert_eq!(node.param_base(1), Some(0.5));
+        assert_eq!(node.param_base(2), Some(0.5));
+        assert_eq!(node.param_base(3), None, "no fourth param");
     }
 
+    /// A stagger that names an offset per channel must name the bus's.
     #[test]
-    fn test_phaser_clamp_stages() {
-        let phaser = PhaserNode::new(1);
-        assert_eq!(phaser.stages, 2);
-
-        let phaser = PhaserNode::new(20);
-        assert_eq!(phaser.stages, MAX_STAGES);
-    }
-
-    // ── Per-block reads and width ────────────────────────────────────────────
-
-    fn phaser_48k(channels: usize) -> PhaserNode {
-        at(
-            PhaserNode::with_channels(
-                ChannelLayout::try_from(channels).expect("a test width is small"),
-                6,
-            ),
-            48_000.0,
-        )
-    }
-
-    /// Six channels with the default (zero) offsets: each is the mono phaser on
-    /// its own input, bit for bit — one LFO and one coefficient table serve all
-    /// six, and the stage-major state keeps them apart.
-    #[test]
-    fn six_channels_are_six_mono_phasers() {
-        use crate::test_support::{drive_block, noise};
-        let inputs: Vec<Vec<f32>> = (0..6).map(|c| noise(c + 30, 64)).collect();
-        let refs: Vec<&[f32]> = inputs.iter().map(|v| &v[..]).collect();
-        let mut wide = phaser_48k(6);
-        let mut out = Vec::new();
-        for _ in 0..4 {
-            out = drive_block(&mut wide, &refs);
-        }
-        for (c, input) in inputs.iter().enumerate() {
-            let mut mono = phaser_48k(1);
-            let mut want = Vec::new();
-            for _ in 0..4 {
-                want = drive_block(&mut mono, &[&input[..]]);
-            }
-            assert_eq!(want[0], out[c], "channel {c}");
-        }
-    }
-
-    /// Per-channel phase offsets stagger the sweep: a quarter-cycle offset
-    /// changes the channel, a full-cycle one is no offset at all.
-    #[test]
-    fn phase_offsets_stagger_the_channels() {
-        use crate::test_support::{drive_block, noise};
-        let x = noise(14, 64);
-        let mut node = at(
-            PhaserNode::with_channels(3u16, 4).with_phase_offsets(&[
-                PhaseIncrement(0.0),
-                PhaseIncrement(0.25),
-                PhaseIncrement(1.0),
-            ]),
-            48_000.0,
-        );
-        node.set_rate(Hz::new(5.0));
-        let mut out = Vec::new();
-        for _ in 0..8 {
-            out = drive_block(&mut node, &[&x, &x, &x]);
-        }
-        assert_ne!(out[0], out[1], "a quarter-cycle offset sweeps elsewhere");
-        assert_eq!(out[0], out[2], "a full-cycle offset wraps to none");
-    }
-
-    /// A low rate clamps the sweep top to its ceiling; a higher rate after it
-    /// restores what was asked for.
-    #[test]
-    fn a_rising_rate_restores_the_authored_sweep_top() {
-        let prep = |sr: f64| {
-            Prepare::new(
-                SampleRate(sr),
-                tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+    fn a_stagger_of_the_wrong_length_is_refused_at_construction() {
+        let two = Stagger::each(&[PhaseIncrement(0.0), PhaseIncrement(0.5)]).unwrap();
+        let new = |w| {
+            PhaserNode::new(
+                bus(w),
+                Stages::of(4),
+                SweepRange::DEFAULT,
+                two,
+                PhaserControls::DEFAULT,
             )
         };
-        let mut phaser = PhaserNode::new(4);
-        phaser.prepare(&prep(8_000.0));
-        assert_eq!(phaser.range.max_hz, Hz(3_600.0), "0.90 of a 4 kHz Nyquist");
-        phaser.prepare(&prep(48_000.0));
-        assert_eq!(phaser.range.max_hz, Hz(4_000.0));
-        phaser.set_frequency_range(Hz::new(300.0), Hz::new(30_000.0));
-        assert_eq!(phaser.range.max_hz, Hz(21_600.0));
-        phaser.prepare(&prep(96_000.0));
-        assert_eq!(phaser.range.max_hz, Hz(30_000.0));
+        assert!(new(2).is_ok());
+        assert_eq!(
+            new(3).unwrap_err(),
+            StaggerError::Length { width: 3, got: 2 }
+        );
+    }
+
+    /// The textbook phase of one stage tuned to `hz`, from `H(z) = (c + z^-1) / (1 + c z^-1)`
+    /// with `c = (tan(pi hz / sr) - 1) / (tan(pi hz / sr) + 1)`, at `at` Hz.
+    fn stage_phase(hz: f64, at: f64) -> f64 {
+        let t = (std::f64::consts::PI * hz / RATE.get()).tan();
+        let c = (t - 1.0) / (t + 1.0);
+        let w = std::f64::consts::TAU * at / RATE.get();
+        let (zr, zi) = (w.cos(), -w.sin());
+        let (nr, ni) = (c + zr, zi);
+        let (dr, di) = (1.0 + c * zr, c * zi);
+        (ni * dr - nr * di).atan2(nr * dr + ni * di)
+    }
+
+    /// The rate is **floored at 0.01 Hz, a lane's value and a cell's alike**: a rate of -3 Hz,
+    /// written to the cell or fed on the port, is the 0.01 Hz sweep, which after 0.1 s has
+    /// moved the LFO a thousandth of a cycle, so the centre of a 4-stage phaser at full depth
+    /// over 200 to 4000 Hz is `200 + 3800 (1 + sin(2 pi 0.001)) / 2`. A 1 kHz sine comes out
+    /// with the phase of four stages tuned there (a quasi-static prediction from the textbook
+    /// stage, since the coefficient has barely moved). Running backwards at 3 Hz would have
+    /// the centre near its trough, 0.3 of a cycle behind, and a different phase.
+    #[test]
+    fn a_rate_below_the_floor_is_the_floor_in_a_cell_and_on_a_lane() {
+        let n = 4_800;
+        let centre = 200.0 + 3_800.0 * 0.5 * (1.0 + (std::f64::consts::TAU * 0.001).sin());
+        let wanted = 4.0 * stage_phase(centre, 1_000.0);
+        let backwards = 200.0 + 3_800.0 * 0.5 * (1.0 + (-std::f64::consts::TAU * 0.3).sin());
+        assert!(
+            (4.0 * stage_phase(backwards, 1_000.0) - wanted).abs() > 0.1,
+            "a backwards sweep would be heard"
+        );
+        let controls = PhaserControls {
+            depth: Depth::of(1.0),
+            feedback: Feedback::NONE,
+            ..PhaserControls::DEFAULT
+        };
+        let x: Vec<f32> = (0..n + 64)
+            .map(|i| (std::f64::consts::TAU * 1_000.0 * i as f64 / RATE.get()).sin() as f32)
+            .collect();
+        let render = |cell: Option<f32>, lane: Option<f32>| {
+            let node = PhaserNode::mono(Stages::of(4), controls);
+            if let Some(v) = cell {
+                assert!(node.param_set().set(UnitParam::Rate, v));
+            }
+            let mut node = prepared(node, RATE, 64);
+            let mut y = Vec::new();
+            for chunk in x.chunks(64) {
+                let rate = lane.map(|v| vec![v; chunk.len()]);
+                let params = [rate.as_deref(), None, None];
+                y.extend(drive(&mut node, RATE, &[chunk], &params).remove(0));
+            }
+            y
+        };
+        for (what, y) in [
+            ("cell", render(Some(-3.0), None)),
+            ("lane", render(None, Some(-3.0))),
+        ] {
+            let w = std::f64::consts::TAU * 1_000.0 / RATE.get();
+            let worst = (n - 256..n)
+                .map(|i| (f64::from(y[i]) - (w * i as f64 + wanted).sin()).abs())
+                .fold(0.0, f64::max);
+            assert!(worst < 5e-3, "a negative rate on a {what}: {worst}");
+        }
+    }
+
+    /// A depth lane past 1 sweeps the whole range and no further: at 0.01 Hz after 0.1 s the
+    /// LFO is a thousandth of a cycle on, so a 1 kHz sine through four stages comes out with
+    /// the phase of four stages tuned to `200 + 3800 (1 + sin(2 pi 0.001)) / 2` Hz, the
+    /// sweep at depth exactly 1 (a lane at 8 unclamped would put the centre at 15 kHz and more).
+    #[test]
+    fn a_depth_lane_past_one_sweeps_the_whole_range_and_no_further() {
+        let n = 4_800;
+        let centre = 200.0 + 3_800.0 * 0.5 * (1.0 + (std::f64::consts::TAU * 0.001).sin());
+        let wanted = 4.0 * stage_phase(centre, 1_000.0);
+        let unclamped = 200.0 + 3_800.0 * 0.5 * 8.0;
+        assert!((4.0 * stage_phase(unclamped, 1_000.0) - wanted).abs() > 0.1);
+        let controls = PhaserControls {
+            rate: Hz(0.01),
+            feedback: Feedback::NONE,
+            ..PhaserControls::DEFAULT
+        };
+        let mut node = prepared(PhaserNode::mono(Stages::of(4), controls), RATE, 64);
+        let x: Vec<f32> = (0..n + 64)
+            .map(|i| (std::f64::consts::TAU * 1_000.0 * i as f64 / RATE.get()).sin() as f32)
+            .collect();
+        let mut y = Vec::new();
+        for chunk in x.chunks(64) {
+            let lane = vec![8.0f32; chunk.len()];
+            let params = [None, Some(&lane[..]), None];
+            y.extend(drive(&mut node, RATE, &[chunk], &params).remove(0));
+        }
+        let w = std::f64::consts::TAU * 1_000.0 / RATE.get();
+        let worst = (n - 256..n)
+            .map(|i| (f64::from(y[i]) - (w * i as f64 + wanted).sin()).abs())
+            .fold(0.0, f64::max);
+        assert!(worst < 5e-3, "depth driven to 8: {worst}");
+    }
+
+    /// A control the graph drives is sampled on the stream's 16-frame grid, not at the block's
+    /// last frame, so what is heard does not depend on how the stream is cut into blocks
+    /// (the node against itself under cuts, not a reference render); and the lane is heard,
+    /// since the cell it overrides is a different depth.
+    #[test]
+    fn a_driven_slow_control_is_sampled_on_the_grid_whatever_the_blocks() {
+        let len = 4_096;
+        let lane: Vec<f32> = (0..len)
+            .map(|n| 0.1 + 0.9 * n as f32 / len as f32)
+            .collect();
+        let x: Vec<f32> = (0..len)
+            .map(|n| ((n * 7 + 3) % 100) as f32 / 50.0 - 1.0)
+            .collect();
+        let render = |block: usize, driven: bool| -> Vec<f32> {
+            let mut node = prepared(
+                PhaserNode::mono(Stages::of(6), PhaserControls::DEFAULT),
+                RATE,
+                1_024,
+            );
+            let mut out = Vec::new();
+            for (n, chunk) in x.chunks(block).enumerate() {
+                let at = n * block;
+                let l = &lane[at..at + chunk.len()];
+                let params = [None, driven.then_some(l), None];
+                out.extend(drive(&mut node, RATE, &[chunk], &params).remove(0));
+            }
+            out
+        };
+        let whole = render(1_024, true);
+        assert_ne!(whole, render(1_024, false), "the lane is heard");
+        for block in [1, 16, 64, 128] {
+            assert_eq!(render(block, true), whole, "blocks of {block}");
+        }
+    }
+
+    /// A cell that moves lands on the stream's grid, whatever the blocks: the rate, the depth
+    /// and the feedback written between two blocks at frame 1024 (a multiple of every block
+    /// below) give the same render in blocks of 1, 16, 64, 128 and 1024 (the node against
+    /// itself under cuts), because the reader takes each whole at the grid and the
+    /// recurrence's glides are on the stream's clock, not a block's. And the move is heard.
+    #[test]
+    fn a_moved_cell_lands_on_the_grid_whatever_the_blocks() {
+        let len = 4_096;
+        let x: Vec<f32> = (0..len)
+            .map(|n| ((n * 13 + 5) % 100) as f32 / 50.0 - 1.0)
+            .collect();
+        let render = |block: usize, moved: bool| -> Vec<f32> {
+            let node = PhaserNode::mono(Stages::of(6), PhaserControls::DEFAULT);
+            let set = node.param_set();
+            let mut node = prepared(node, RATE, 1_024);
+            let mut out = Vec::new();
+            for (n, chunk) in x.chunks(block).enumerate() {
+                if moved && n * block == 1_024 {
+                    assert!(set.set(UnitParam::Rate, 8.0));
+                    assert!(set.set(UnitParam::Depth, 0.2));
+                    assert!(set.set(UnitParam::Feedback, 0.1));
+                }
+                out.extend(drive(&mut node, RATE, &[chunk], &[]).remove(0));
+            }
+            out
+        };
+        let whole = render(1_024, true);
+        assert_ne!(whole, render(1_024, false), "the move is heard");
+        for block in [1, 16, 64, 128] {
+            assert_eq!(render(block, true), whole, "blocks of {block}");
+        }
+    }
+
+    /// Feedback recirculates: after an impulse, a 6-stage phaser at 0.9 feedback is still
+    /// ringing 500 frames on, where with none the all-pass chain's response has decayed away
+    /// (an all-pass section's pole is its coefficient, `|c| < 1`, and the chain's impulse
+    /// response is under 1e-3 well before that at these centres).
+    #[test]
+    fn feedback_keeps_the_chain_ringing() {
+        let ring = |fb: f32| {
+            let node = PhaserNode::mono(
+                Stages::of(6),
+                PhaserControls {
+                    feedback: Feedback(fb),
+                    ..PhaserControls::DEFAULT
+                },
+            );
+            let mut node = prepared(node, SampleRate(44_100.0), 1_024);
+            let mut x = [0.0f32; 1_024];
+            x[0] = 1.0;
+            let y = drive(&mut node, SampleRate(44_100.0), &[&x], &[]).remove(0);
+            y[500..].iter().fold(0.0f32, |m, s| m.max(s.abs()))
+        };
+        assert!(ring(0.9) > 1e-3, "feedback rings: {}", ring(0.9));
+        assert!(ring(0.0) < 1e-3, "no feedback does not: {}", ring(0.0));
     }
 }

@@ -33,7 +33,8 @@ node without a lock.
   per-band gain reduction meters are readings on `MultibandControls`.
 - **Modulation effects** — `ModDelayNode` (chorus and flanger are
   its two `Sweep` presets, over `tutti_dsp::ModDelayFamily`; the General MIDI chorus a third,
-  with no feedback and a finite tail) and `PhaserNode`, both any width.
+  with no feedback and a finite tail) and `PhaserNode` (over `tutti_dsp::PhaserFamily`, its `Stages`
+  and `SweepRange` checked; the rate is floored at 0.01 Hz, a lane's value and a cell's alike), both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
   adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Waveform`, the wave a

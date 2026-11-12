@@ -36,7 +36,10 @@ ramps and the graph shape. Here they take plain typed values per call.
   `DelayFamily`, the feedback delay (a checked `MaxDelay`, `Routing` and
   `ChannelTimes`, its time and feedback per-frame lanes); and `ModDelayFamily`, the chorus and flanger (a checked `Sweep` and `Stagger`, a `Grows`
   family over a `MaxDelay`; the LFO's phase is state of its recurrence on the stream's clock,
-  its sine solved every `COEFF_INTERVAL` frames of the stream and interpolated between).
+  its sine solved every `COEFF_INTERVAL` frames of the stream and interpolated between); and
+  `PhaserFamily`, the phaser (a checked `Stages`, `SweepRange` and `Stagger`; a swept all-pass chain
+  on the same stream grid and clock, its member `Lti` frozen at a sweep position, its tail
+  `Ring::Unbounded`).
 - **Waveshaping** — `ShapeKind`, six memoryless curves with block kernels.
 - **Reverb** — the reverb model of design 022, a `Network` with analytic queries
   (RT60, tail, stability, densities), and two families over it: `FreeverbFamily` and

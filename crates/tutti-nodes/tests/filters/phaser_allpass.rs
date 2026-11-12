@@ -11,8 +11,8 @@
 
 use tutti_fixtures::signal::sine;
 use tutti_graph::contract::{drive, prepared};
-use tutti_nodes::PhaserNode;
-use tutti_types::{Amplitude, ChannelLayout, Depth, Feedback, Hz, SampleRate, Samples};
+use tutti_nodes::{PhaserControls, PhaserNode, Stages, Stagger, SweepRange};
+use tutti_types::{Amplitude, BusTopology, Depth, Feedback, Hz, SampleRate, Samples};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const F0: f32 = 1_000.0;
@@ -21,10 +21,18 @@ const LEN: usize = 6_000;
 /// The wet output of a depth-0 phaser of `stages` stages parked at `F0`, over a
 /// sine of `hz`, in ragged blocks.
 fn wet(stages: usize, hz: f32) -> Vec<f32> {
-    let mut node = PhaserNode::with_channels(ChannelLayout::MONO, stages);
-    node.set_frequency_range(Hz::new(F0), Hz::new(2_000.0));
-    node.set_depth(Depth::of(0.0));
-    node.set_feedback(Feedback::new(0.0));
+    let node = PhaserNode::new(
+        BusTopology::MONO,
+        Stages::of(stages),
+        SweepRange::of(Hz::new(F0), Hz::new(2_000.0)),
+        Stagger::NONE,
+        PhaserControls {
+            rate: Hz::new(0.3),
+            depth: Depth::of(0.0),
+            feedback: Feedback::NONE,
+        },
+    )
+    .expect("a step fits any width");
     let mut node = prepared(node, SR, 64);
     let x = sine(Hz::new(hz), Amplitude::new(1.0), SR, Samples(LEN));
     let mut out = Vec::new();

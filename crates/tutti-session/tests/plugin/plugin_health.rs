@@ -104,7 +104,7 @@ fn session_with(cause: Option<&str>) -> (Session, NodeKey) {
     ));
     // The insert is an edit: send it, so the flag starts clear.
     s.commit();
-    (s, node)
+    (s, node.erase())
 }
 
 /// `Phase::Plugins` at `t0 + ms`: the deaths it reported.

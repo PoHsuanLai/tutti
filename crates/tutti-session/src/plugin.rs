@@ -1036,6 +1036,7 @@ impl Session {
                 let plugin_meter = plugin.meter();
                 plugin_meter.set_meter(meter);
                 let (node, _) = self.graph.insert((*plugin).bind(self.graph.tempo.clone()));
+                let node = node.erase();
                 let mut hosted = HostedPlugin::new(handle, loaded_ref);
                 hosted.meter = Some(plugin_meter);
                 self.graph.plugins.insert(node, hosted);
@@ -1054,7 +1055,8 @@ impl Session {
     }
 
     /// The plugin hosted at `node`.
-    pub fn plugin(&self, node: NodeKey) -> Option<&HostedPlugin> {
+    pub fn plugin(&self, node: impl Into<NodeKey>) -> Option<&HostedPlugin> {
+        let node = node.into();
         self.graph.plugins.get(&node)
     }
 
@@ -1868,6 +1870,7 @@ mod tests {
             handle,
             PluginRef::file("fake.clap").expect("a plugin file")
         ));
+        let node = node.erase();
         Rig {
             session,
             node,

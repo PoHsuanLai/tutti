@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tutti_graph::{EdgeId, EventOut, NodeKey};
+use tutti_graph::{EventOut, NodeKey};
 use tutti_modulation::{
     Curve, Declarations, Follower, Lfo, Macro, NoteEnvelope, RouteDecl, RouteKey, RouteTarget,
     Source, SourceKey, TargetDecl, TargetKey,
@@ -41,8 +41,8 @@ use tutti_nodes::automation::{LaneControls, RecordMode, Recorder};
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_types::{Depth, ParamAddr, UnitAddr, UnitParam};
 
+use crate::Edge;
 use crate::ModKeys;
-use crate::edge::EdgeRef;
 use crate::graph::Graph;
 
 /// How long a modulation target may stay unresolved before it is logged:
@@ -64,7 +64,8 @@ pub struct ParamRef {
 
 impl ParamRef {
     /// `param` on `node`.
-    pub fn new(node: NodeKey, param: impl Into<ParamAddr>) -> Self {
+    pub fn new(node: impl Into<NodeKey>, param: impl Into<ParamAddr>) -> Self {
+        let node = node.into();
         Self {
             node,
             param: param.into(),
@@ -72,9 +73,9 @@ impl ParamRef {
     }
 
     /// A native param of `node`, at index 0.
-    pub const fn unit(node: NodeKey, param: UnitParam) -> Self {
+    pub fn unit(node: impl Into<NodeKey>, param: UnitParam) -> Self {
         Self {
-            node,
+            node: node.into(),
             param: ParamAddr::Unit(param),
         }
     }
@@ -82,17 +83,17 @@ impl ParamRef {
     /// A native param of `node` at `index` among the node's params of that
     /// kind (a multiband compressor's threshold of band `index`).
     /// [`unit`](Self::unit) is index 0.
-    pub const fn unit_at(node: NodeKey, param: UnitParam, index: u8) -> Self {
+    pub fn unit_at(node: impl Into<NodeKey>, param: UnitParam, index: u8) -> Self {
         Self {
-            node,
+            node: node.into(),
             param: ParamAddr::unit(UnitAddr::new(param, index)),
         }
     }
 
     /// Parameter `id` of the plugin hosted on `node`.
-    pub const fn plugin(node: NodeKey, id: u32) -> Self {
+    pub fn plugin(node: impl Into<NodeKey>, id: u32) -> Self {
         Self {
-            node,
+            node: node.into(),
             param: ParamAddr::Id(id),
         }
     }
@@ -105,7 +106,7 @@ impl ParamRef {
     }
 
     /// The `ParamRef` a key of the session's own names; `None` for the key
-    /// of an edge ([`EdgeRef`]) or a mix ([`MixRef`]).
+    /// of an edge ([`Edge`]) or a mix ([`MixRef`]).
     #[must_use]
     pub fn from_key(target: TargetKey) -> Option<Self> {
         match target {
@@ -134,8 +135,8 @@ pub struct MixRef {
 impl MixRef {
     /// The mix of `node`.
     #[must_use]
-    pub const fn of(node: NodeKey) -> Self {
-        Self { node }
+    pub fn of(node: impl Into<NodeKey>) -> Self {
+        Self { node: node.into() }
     }
 
     /// The reconciler's key: the node's key bits. What a refusal of the
@@ -147,7 +148,7 @@ impl MixRef {
 }
 
 /// What a modulation route, range or automation names: a param of a node
-/// ([`ParamRef`]), the gain of an edge ([`EdgeRef`]) or the mix of a node
+/// ([`ParamRef`]), the gain of an edge ([`Edge`]) or the mix of a node
 /// ([`MixRef`]). Each converts: `mods.route(source, param_ref, depth)`,
 /// `mods.route(source, edge_ref, depth)` and `mods.route(source, mix_ref,
 /// depth)`.
@@ -156,7 +157,7 @@ pub enum ModTarget {
     /// A param of a node.
     Param(ParamRef),
     /// The gain of an edge.
-    Edge(EdgeRef),
+    Edge(Edge),
     /// The mix of a node.
     Mix(MixRef),
 }
@@ -173,8 +174,8 @@ impl From<ParamRef> for ModTarget {
     }
 }
 
-impl From<EdgeRef> for ModTarget {
-    fn from(e: EdgeRef) -> Self {
+impl From<Edge> for ModTarget {
+    fn from(e: Edge) -> Self {
         Self::Edge(e)
     }
 }
@@ -586,9 +587,9 @@ pub(crate) struct OwnMods {
     /// The key the reconciler is given for each edge a target names (an
     /// edge has no node bits to be its key): minted on first use, kept for
     /// the edge's life as a target.
-    edge_keys: BTreeMap<EdgeId, u64>,
+    edge_keys: BTreeMap<Edge, u64>,
     /// The inverse, for [`OwnKeys`].
-    edge_refs: BTreeMap<u64, EdgeRef>,
+    edge_refs: BTreeMap<u64, Edge>,
     /// The declarations as the reconciler takes them, built from the maps
     /// above on the first apply after they may have changed: cleared when
     /// [`Mods`] is handed out (whatever it then edits), when a take closes
@@ -635,12 +636,11 @@ impl OwnMods {
             ModTarget::Param(p) => p.key(),
             ModTarget::Mix(m) => m.key(),
             ModTarget::Edge(e) => {
-                let id = e.id();
-                let key = match self.edge_keys.get(&id) {
+                let key = match self.edge_keys.get(&e) {
                     Some(&key) => key,
                     None => {
                         let key = self.mint();
-                        self.edge_keys.insert(id, key);
+                        self.edge_keys.insert(e, key);
                         self.edge_refs.insert(key, e);
                         key
                     }
@@ -733,7 +733,7 @@ impl ModKeys for OwnKeys<'_> {
         Some(NodeKey(target))
     }
 
-    fn edge(&self, target: u64) -> Option<EdgeRef> {
+    fn edge(&self, target: u64) -> Option<Edge> {
         self.0.edge_refs.get(&target).copied()
     }
 
@@ -882,13 +882,20 @@ impl Mods<'_> {
     }
 
     /// A follower of every audio output of `input`.
-    pub fn follower(&mut self, follower: Follower, input: NodeKey) -> SourceKey {
+    pub fn follower(&mut self, follower: Follower, input: impl Into<NodeKey>) -> SourceKey {
+        let input = input.into();
         self.add_source(follower.into(), Some(OwnFeed::Audio(input)))
     }
 
     /// A note envelope on event output `port` of `midi` (a clip node, a
     /// live input).
-    pub fn note_envelope(&mut self, envelope: NoteEnvelope, midi: NodeKey, port: u16) -> SourceKey {
+    pub fn note_envelope(
+        &mut self,
+        envelope: NoteEnvelope,
+        midi: impl Into<NodeKey>,
+        port: u16,
+    ) -> SourceKey {
+        let midi = midi.into();
         self.add_source(envelope.into(), Some(OwnFeed::Events(midi, port)))
     }
 

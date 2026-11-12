@@ -632,7 +632,7 @@ pub enum RootTopologyStatus {
 /// ```
 /// use tutti_types::MaxBlock;
 /// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
-/// use tutti_session::{GraphSource, Session};
+/// use tutti_session::{OutPort, Root, Session};
 /// use tutti_nodes::testing::Const;
 ///
 /// // One global output: the mono device takes it as it is, unfolded.
@@ -641,7 +641,7 @@ pub enum RootTopologyStatus {
 ///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().insert(Const::mono(0.5));
-/// session.graph().set_output_source(0, GraphSource::Node(dc, 0));
+/// session.graph().set_sources(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
 /// session.update();
 ///
 /// let mut block = [0.0f32; 64];
@@ -1062,7 +1062,8 @@ impl Session {
     /// `modulation`), and, when it is a clip or live input of the
     /// session's (`midi`, feature `midi`), that. A clip or live input
     /// feeding `node` stays, to be re-aimed (`Midi::retarget`) or removed.
-    pub fn remove(&mut self, node: NodeKey) -> bool {
+    pub fn remove(&mut self, node: impl Into<NodeKey>) -> bool {
+        let node = node.into();
         #[cfg(feature = "modulation")]
         self.mods.own.forget_node(node);
         #[cfg(feature = "midi")]

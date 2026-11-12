@@ -14,6 +14,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tutti_session::Root;
 
 use tutti_export::Produced;
 use tutti_graph::NodeKey;
@@ -61,7 +62,7 @@ fn render_stem(
     bounce: Bounce<NodeKey, BufferMaster>,
     node: NodeKey,
 ) -> Vec<Vec<f32>> {
-    session.graph().set_outputs_from(node);
+    session.graph().connect(node, Root).unwrap();
     let (_, mut stems) = session
         .bounce(bounce.stem_with(Stem::buffers(node)))
         .expect("the bounce renders")
@@ -119,7 +120,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         let source =
             MemorySource::placed(Arc::new(wave), Beat(3.0), None).expect("a placeable wave");
         let (node, _params) = session.graph().insert(source);
-        session.graph().set_outputs_from(node);
+        session.graph().connect(node, Root).unwrap();
         node
     };
     let zero = {
@@ -132,7 +133,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         session.graph().insert(source).0
     };
 
-    let planes = render_stem(&mut session, on(2.5, &timeline(90.0)), voice);
+    let planes = render_stem(&mut session, on(2.5, &timeline(90.0)), voice.erase());
     // Beat 3 at 90 BPM is frame 96 000.
     const AT: usize = 96_000;
     assert!(
@@ -160,7 +161,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let planes = render_stem(
         &mut session,
         bounce_of(0.1, RATE, ExportClock::frozen()),
-        zero,
+        zero.erase(),
     );
     assert!(
         planes[0].iter().all(|&s| s == 0.0),
@@ -261,8 +262,11 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
         ));
         let graph = session.graph();
         let (bare, _) = graph.insert(bare);
-        graph.set_outputs_from(bare);
-        (graph.insert(wrapped).0, graph.insert(memory).0)
+        graph.connect(bare, Root).unwrap();
+        (
+            graph.insert(wrapped).0.erase(),
+            graph.insert(memory).0.erase(),
+        )
     };
 
     let master = render(&mut session, on(3.0, &timeline(90.0)));
@@ -312,7 +316,7 @@ fn a_node_export_of_a_disk_voice_plays_its_file() {
         let voice = node_of(VoiceSource::Disk(disk_voice(reader, 1.0)));
         session.graph().insert(voice).0
     };
-    let planes = render_stem(&mut session, on(1.0, &timeline(120.0)), voice);
+    let planes = render_stem(&mut session, on(1.0, &timeline(120.0)), voice.erase());
     assert!(
         planes[0][..24_000].iter().all(|&s| s == 0.0),
         "sounded before beat 1"
@@ -339,7 +343,7 @@ fn a_disk_voice_at_another_rate_exports_resampled() {
     {
         let voice = disk_voice(reader, 1.0);
         let (node, _) = session.graph().insert(voice);
-        session.graph().set_outputs_from(node);
+        session.graph().connect(node, Root).unwrap();
     }
     let planes = render(&mut session, on(2.0, &timeline(120.0)));
     assert!(
@@ -388,7 +392,7 @@ fn live_disk_playback_is_untouched_while_its_voice_exports() {
 
     let mut session = session();
     let (node, _) = session.graph().insert(disk_voice(reader, 0.0));
-    session.graph().set_outputs_from(node);
+    session.graph().connect(node, Root).unwrap();
     session.render_frame(&mut [0.0, 0.0]);
     let mut live = session.graph().take_audio_side();
 
@@ -478,7 +482,7 @@ fn an_export_leaves_nothing_open_behind_it() {
     {
         let voice = disk_voice(reader, 0.0);
         let (node, _) = session.graph().insert(voice);
-        session.graph().set_outputs_from(node);
+        session.graph().connect(node, Root).unwrap();
     }
     let before = open_handles(&path);
     let planes = render(&mut session, on(0.2, &timeline(120.0)));
@@ -506,13 +510,13 @@ fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
     let clip = {
         let voice = disk_voice(reader, 0.0);
         let (node, _) = session.graph().insert(voice);
-        session.graph().set_outputs_from(node);
+        session.graph().connect(node, Root).unwrap();
         node
     };
     std::fs::remove_file(&path).expect("removes");
     match session.bounce(on(0.2, &timeline(120.0))) {
         Err(BounceError::Export(tutti_export::Error::ForkFailed { key, kind, cause })) => {
-            assert_eq!(key, clip);
+            assert_eq!(key, clip.erase());
             assert_eq!(kind, tutti_graph::ForkFaultKind::Failed);
             assert!(
                 cause.to_string().contains("vanished.wav"),

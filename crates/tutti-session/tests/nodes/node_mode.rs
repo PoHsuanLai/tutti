@@ -12,7 +12,7 @@
 
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
-use tutti_session::{GraphSource, ModeError, NodeMode, Session};
+use tutti_session::{InPort, ModeError, NodeMode, OutPort, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -59,11 +59,16 @@ fn rig() -> Rig {
     let g = s.graph();
     let (a, _) = g.insert(Const::mono(A));
     let (halve, _) = g.insert(ForkByClone(Halve));
-    g.set_source(halve, 0, GraphSource::Node(a, 0));
-    g.set_output_source(0, GraphSource::Node(halve, 0));
+    g.set_sources(InPort::new(halve, 0), [OutPort::new(a, 0)])
+        .unwrap();
+    g.set_sources(Root::output(0), [OutPort::new(halve, 0)])
+        .unwrap();
     let _ = s.update();
     assert!(!s.graph_ref().is_edited());
-    Rig { s, halve }
+    Rig {
+        s,
+        halve: halve.erase(),
+    }
 }
 
 impl Rig {

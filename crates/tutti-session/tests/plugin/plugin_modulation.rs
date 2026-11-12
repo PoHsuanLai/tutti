@@ -18,6 +18,7 @@
 //! rather than skip.
 
 use crate::support;
+use tutti_session::Root;
 
 use std::time::{Duration, Instant};
 
@@ -68,7 +69,7 @@ fn add_probe(s: &mut Session) -> NodeKey {
             PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");
-    s.graph().set_outputs_from(node);
+    s.graph().connect(node, Root).unwrap();
     node
 }
 

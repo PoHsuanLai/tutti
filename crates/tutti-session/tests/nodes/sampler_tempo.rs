@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
-use tutti_session::{GraphSource, Session};
+use tutti_session::{OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -83,7 +83,8 @@ fn a_sampler_node_added_to_the_graph_follows_the_sessions_tempo_map() {
     let (voice, _handle) = s.graph().add(pool);
     for port in 0..2 {
         s.graph()
-            .set_output_source(port, GraphSource::Node(voice, port));
+            .set_sources(Root::output(port), [OutPort::new(voice, port)])
+            .unwrap();
     }
     let _ = s.update();
     let out = run(&s, 60_000, 512);

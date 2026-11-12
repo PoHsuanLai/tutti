@@ -23,7 +23,7 @@ use tutti_types::MaxBlock;
 use tutti_graph::NodeKey;
 use tutti_modulation::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
-use tutti_session::{GraphSource, ParamRef, Session};
+use tutti_session::{InPort, OutPort, ParamRef, Root, Session};
 use tutti_types::{BeatDuration, Depth, Hz, Q, UnitParam};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
@@ -45,12 +45,16 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<NodeKey>) {
             Q(0.7),
         ));
         if let Some(&prev) = filters.last() {
-            s.graph().set_source(f, 0, GraphSource::Node(prev, 0));
+            s.graph()
+                .set_sources(InPort::new(f, 0), [OutPort::new(prev, 0)])
+                .unwrap();
         }
-        filters.push(f);
+        filters.push(f.erase());
     }
     let last = *filters.last().expect("n > 0");
-    s.graph().set_output_source(0, GraphSource::Node(last, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(last, 0)])
+        .unwrap();
     if modulated {
         let mut m = s.mods();
         for (i, &f) in filters.iter().enumerate() {

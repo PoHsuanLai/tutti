@@ -32,7 +32,7 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
-use tutti_session::{AudioSide, GraphSource, Session};
+use tutti_session::{AudioSide, InPort, OutPort, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds, UnitParam};
 
@@ -83,24 +83,29 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     let g = session.graph();
     let (osc, _) = g.add(saw());
     let (filter, _) = g.add(low_pass(1_200.0));
-    g.set_source(filter, 0, GraphSource::Node(osc, 0));
+    g.set_sources(InPort::new(filter, 0), [OutPort::new(osc, 0)])
+        .unwrap();
     let (drive, _) = g.add(shaper(drive));
-    g.set_source(drive, 0, GraphSource::Node(filter, 0));
+    g.set_sources(InPort::new(drive, 0), [OutPort::new(filter, 0)])
+        .unwrap();
     let right = if with_limiter {
         let (lim, _) = g.add(limiter());
-        g.set_source(lim, 0, GraphSource::Node(osc, 0));
-        lim
+        g.set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
+            .unwrap();
+        lim.erase()
     } else {
-        osc
+        osc.erase()
     };
-    g.set_output_source(0, GraphSource::Node(drive, 0));
-    g.set_output_source(1, GraphSource::Node(right, 0));
+    g.set_sources(Root::output(0), [OutPort::new(drive, 0)])
+        .unwrap();
+    g.set_sources(Root::output(1), [OutPort::new(right, 0)])
+        .unwrap();
     let _ = session.update();
     Scene {
         session,
         side,
-        filter,
-        drive,
+        filter: filter.erase(),
+        drive: drive.erase(),
     }
 }
 
@@ -354,8 +359,8 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 fn pdc_is_the_compilers() {
     let mut s = scene(true);
     assert_eq!(
-        s.session.graph().output_sources(0),
-        [GraphSource::Node(s.drive, 0)],
+        s.session.graph().sources(Root::output(0)),
+        [OutPort::new(s.drive, 0)],
         "nothing is spliced in; the plan delays the channel"
     );
     assert!(

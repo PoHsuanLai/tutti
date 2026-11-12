@@ -270,7 +270,7 @@ fn check_paths_and_doc_tests_pass_their_arguments_through() {
     assert_eq!(d[0], "cargo test --locked --doc --workspace -- x");
     assert_eq!(
         d[1],
-        "cargo test --locked --doc -p tutti-session --features device -- x"
+        "cargo test --locked --doc -p tutti-session --all-features -- x"
     );
 }
 

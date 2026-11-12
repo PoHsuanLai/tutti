@@ -9,6 +9,7 @@
 //! the `PluginShadow` and the `PluginMeterBound` marker.
 
 use std::sync::Arc;
+use tutti_session::Root;
 
 use tutti_plugin::catalog::PluginRef;
 use tutti_session::{PluginLoadRequest, Session};
@@ -67,7 +68,7 @@ fn an_in_process_vst2_plugin_is_given_the_project_meter() {
             PluginLoadRequest::new(PluginRef::file(vst2_probe()).expect("a plugin file")),
         )
         .expect("the in-process VST2 loads");
-    s.graph().set_outputs_from(node);
+    s.graph().connect(node, Root).unwrap();
 
     let hosted = s.plugin(node).expect("hosted");
     assert!(

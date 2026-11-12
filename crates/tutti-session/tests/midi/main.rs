@@ -26,3 +26,6 @@ mod midi_out_tap;
 // a recorded take and its placement, a saved route rule.
 #[cfg(feature = "midi")]
 mod midi_front;
+// File loads as jobs: a MIDI file and a SoundFont land as events in `update()`.
+#[cfg(feature = "midi")]
+mod loads;

@@ -11,11 +11,10 @@
 //! when the session is gone, so it stops writing what no one will land.
 
 #![cfg_attr(
-    not(test),
+    all(not(test), not(feature = "midi")),
     expect(
         dead_code,
-        reason = "the spawner's first users are the take's pump (doc 030 step 8) and the MIDI \
-                  file and SoundFont loads (doc 017 L1f-b), which land on it next"
+        reason = "the MIDI file and SoundFont loads (feature `midi`) are the spawner's first users"
     )
 )]
 
@@ -87,6 +86,13 @@ pub enum JobFailed {
 /// The sending half a streaming job reports through. Sending never blocks
 /// and never fails the work: after the session is gone a message is
 /// returned to the sender and dropped.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the take's pump (doc 030 step 8) is its first user"
+    )
+)]
 pub(crate) struct Landings<M> {
     tx: Sender<Arrival>,
     id: JobId,
@@ -101,6 +107,13 @@ impl<M: Send + 'static> Landings<M> {
     /// # Errors
     ///
     /// The message back, when the session is gone.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the take's pump (doc 030 step 8) is its first user"
+        )
+    )]
     pub(crate) fn send(&self, message: M) -> Result<(), M> {
         if self.is_closed() {
             return Err(message);
@@ -117,6 +130,13 @@ impl<M: Send + 'static> Landings<M> {
 
     /// The session is gone: nothing sent will land, and the job's result
     /// will not either.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the take's pump (doc 030 step 8) is its first user"
+        )
+    )]
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
@@ -139,6 +159,13 @@ struct JobId(u64);
 
 /// What crosses from a worker to the control thread.
 enum Arrival {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the take's pump (doc 030 step 8) is its first user"
+        )
+    )]
     Message(JobId, Box<dyn Any + Send>),
     End(JobId, Result<Box<dyn Any + Send>, JobFailed>),
 }
@@ -214,9 +241,9 @@ impl Drop for Jobs {
     }
 }
 
-impl Session {
+impl Jobs {
     /// Runs `work` on the spawner and lands its result in a later
-    /// [`update`](Self::update), on the control thread.
+    /// [`Session::update`], on the control thread.
     ///
     /// `land` (and every lander of [`submit_stream`](Self::submit_stream))
     /// runs on the thread that calls `update()`. A landing that needs the
@@ -247,7 +274,7 @@ impl Session {
 
     /// Runs `work` on the spawner, landing each message it sends through
     /// its [`Landings`] and then its end, exactly once and after every
-    /// message, in later [`update`](Self::update)s on the control thread.
+    /// message, in later [`Session::update`]s on the control thread.
     /// `work` sees the landings by reference, so nothing it sends can
     /// outlive it and follow the end.
     pub(crate) fn submit_stream<M, R, W, L>(&mut self, work: W, mut land: L)
@@ -257,7 +284,7 @@ impl Session {
         W: FnOnce(&Landings<M>) -> R + Send + 'static,
         L: FnMut(&mut Session, Landed<M, R>, &mut Vec<SessionEvent>) + Send + 'static,
     {
-        let jobs = &mut self.jobs;
+        let jobs = &mut *self;
         let id = JobId(jobs.next);
         jobs.next += 1;
         let landings = Landings {
@@ -296,7 +323,7 @@ impl Session {
             })),
             end: Some((end_tx, id)),
         };
-        (self.jobs.spawn.0)(job);
+        (self.spawn.0)(job);
     }
 }
 
@@ -361,7 +388,7 @@ mod tests {
         let (go, wait) = sync_channel::<()>(0);
         let landed = Arc::new(Mutex::new(None));
         let into = Arc::clone(&landed);
-        s.submit(
+        s.jobs.submit(
             move || {
                 wait.recv().unwrap();
                 std::thread::current().id()
@@ -387,7 +414,7 @@ mod tests {
         let mut s = session(Session::builder());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let into = Arc::clone(&seen);
-        s.submit_stream(
+        s.jobs.submit_stream(
             |landings: &Landings<u32>| {
                 for n in 0..500 {
                     landings.send(n).unwrap();
@@ -414,7 +441,7 @@ mod tests {
         let mut s = session(Session::builder());
         let landed = Arc::new(Mutex::new(None));
         let into = Arc::clone(&landed);
-        s.submit(
+        s.jobs.submit(
             || -> u8 { panic!("the file was gone") },
             move |_, result, _| *into.lock().unwrap() = Some(result),
         );
@@ -433,7 +460,7 @@ mod tests {
         let ran = Arc::new(AtomicBool::new(false));
         let landed = Arc::new(Mutex::new(None));
         let (r, into) = (Arc::clone(&ran), Arc::clone(&landed));
-        s.submit(
+        s.jobs.submit(
             move || r.store(true, Ordering::SeqCst),
             move |_, result, _| *into.lock().unwrap() = Some(result),
         );
@@ -453,7 +480,7 @@ mod tests {
         let landed = Arc::new(Mutex::new(Vec::new()));
         for n in 0..3_u8 {
             let into = Arc::clone(&landed);
-            s.submit(
+            s.jobs.submit(
                 move || n,
                 move |_, r, _| into.lock().unwrap().push(r.unwrap()),
             );
@@ -469,7 +496,7 @@ mod tests {
         let (go, wait) = sync_channel::<()>(0);
         let (opened, open) = sync_channel::<bool>(1);
         let (report, seen) = sync_channel::<(Result<(), u8>, bool)>(1);
-        s.submit_stream(
+        s.jobs.submit_stream(
             move |landings: &Landings<u8>| {
                 opened.send(landings.is_closed()).unwrap();
                 wait.recv().unwrap();

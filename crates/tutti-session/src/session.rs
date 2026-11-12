@@ -1050,6 +1050,7 @@ impl Session {
             graph: &mut self.graph,
             state: &mut self.midi_state,
             nodes: self.midi.as_ref(),
+            jobs: &mut self.jobs,
             #[cfg(feature = "midi-hardware")]
             io: self.midi_io.as_ref(),
         }

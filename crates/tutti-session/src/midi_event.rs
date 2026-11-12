@@ -80,6 +80,23 @@ pub enum MidiEvent {
         /// Events dropped so far.
         total: u64,
     },
+    /// A [`Midi::load_file`](crate::Midi::load_file) ended: the file, or why
+    /// not.
+    FileLoaded {
+        /// The id `load_file` returned.
+        load: crate::MidiLoad,
+        /// The file read, or the read's error ([`MidiError::File`](crate::MidiError::File))
+        /// or the job's ([`MidiError::Job`](crate::MidiError::Job)).
+        file: Result<tutti_midi_file::MidiFile, crate::MidiError>,
+    },
+    /// A `Midi::load_soundfont` ended: the unit, or why not.
+    #[cfg(feature = "soundfont")]
+    SoundFontLoaded {
+        /// The id `load_soundfont` returned.
+        load: crate::MidiLoad,
+        /// The unit built (boxed: a unit is large), or the font's or the unit's error, or the job's.
+        unit: Result<Box<tutti_soundfont::SoundFontUnit>, crate::MidiError>,
+    },
     /// The OS watch for MIDI devices ended on its own (the reason is the
     /// message): the device list is frozen at what it last saw and no further
     /// hot-plug is reported. Reported once.

@@ -31,13 +31,13 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
         Db(-0.3),
     ));
     s.graph()
-        .set_sources(InPort::new(lim, 0), [OutPort::new(src, 0)])
+        .set_sources_hard(InPort::new(lim, 0), [OutPort::new(src, 0)])
         .unwrap();
     s.graph()
-        .set_sources(Root::output(0), [OutPort::new(lim, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(lim, 0)])
         .unwrap();
     s.graph()
-        .set_sources(Root::output(1), [OutPort::new(dry, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(dry, 0)])
         .unwrap();
     let _ = s.update();
 
@@ -53,6 +53,14 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
     );
 
     assert!(s.remove(lim));
+    // The limiter's output fades out over 256 frames before the node goes,
+    // and the figure with it.
+    for _ in 0..6 {
+        for _ in 0..64 {
+            s.render_frame(&mut [0.0; 2]);
+        }
+        let _ = s.update();
+    }
     let _ = s.update();
     assert!(s.latency() < before, "the figure shrank");
     assert_eq!(

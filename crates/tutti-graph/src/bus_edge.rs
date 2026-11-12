@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 
 use tutti_types::{Amplitude, BusTopology, ChannelTopology, Fold, FoldError};
 
-use crate::gain::EdgeGain;
+use crate::gain::{EdgeFade, EdgeGain};
 use crate::spec::GraphSpec;
 use crate::{Edge, EdgeId, InPort, NodeKey, OutPort, Shapes, Sink, Source};
 
@@ -113,6 +113,11 @@ pub struct BusFeed {
     pub source: BusSource,
     /// How its channels map onto the bus's.
     pub fold: BusFold,
+    /// The fade its lanes run ([`EdgeFade`]): each lane of the fold fades by
+    /// the same rule as a per-port edge, and a lane a fade leaves at its
+    /// weight is the plain lane it was. `None` for every feed the author
+    /// declares; the session sets it.
+    pub fade: EdgeFade,
 }
 
 /// Which side of a node a bus was asked for on.
@@ -234,17 +239,22 @@ pub struct Lowering {
     /// Every lane a bus edge produced, plain or weighted, with its weight
     /// (`1.0` for a plain one), in edge order.
     pub lanes: BTreeMap<EdgeId, Amplitude>,
+    /// The fade of each lane whose feed has one.
+    pub fades: BTreeMap<EdgeId, EdgeFade>,
 }
 
 impl Lowering {
-    /// The lanes with a weight other than `1.0`: the ones that became weighted
-    /// lanes of their sink's sum.
+    /// The lanes that became weighted lanes of their sink's sum: a weight
+    /// other than `1.0`, or a fade, with the fade each runs.
     #[must_use]
-    pub fn weights(&self) -> BTreeMap<EdgeId, Amplitude> {
+    pub fn weights(&self) -> BTreeMap<EdgeId, (Amplitude, EdgeFade)> {
         self.lanes
             .iter()
-            .filter(|(_, w)| w.get().to_bits() != 1.0f32.to_bits())
-            .map(|(&id, &w)| (id, w))
+            .filter_map(|(&id, &w)| {
+                let fade = self.fades.get(&id).copied().unwrap_or_default();
+                (w.get().to_bits() != 1.0f32.to_bits() || fade != EdgeFade::None)
+                    .then_some((id, (w, fade)))
+            })
             .collect()
     }
 }
@@ -311,6 +321,64 @@ impl GraphSpec {
             }
             None => false,
         }
+    }
+
+    /// The fade of the bus edge `from -> to` (`None` for the root), or `None`
+    /// when it is not in the spec.
+    #[must_use]
+    pub fn bus_fade(&self, from: BusSource, to: Option<BusRef>) -> Option<EdgeFade> {
+        self.feeds(to)
+            .and_then(|f| f.iter().find(|f| f.source == from))
+            .map(|f| f.fade)
+    }
+
+    /// Sets the fade of the bus edge `from -> to` (`None` for the root).
+    /// Returns whether it was there and changed.
+    pub fn set_bus_fade(&mut self, from: BusSource, to: Option<BusRef>, fade: EdgeFade) -> bool {
+        let feeds = match to {
+            Some(to) => self.bus_edges.get_mut(&to),
+            None => Some(&mut self.root_sources),
+        };
+        match feeds.and_then(|f| f.iter_mut().find(|f| f.source == from)) {
+            Some(feed) if feed.fade != fade => {
+                feed.fade = fade;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn feeds(&self, to: Option<BusRef>) -> Option<&Vec<BusFeed>> {
+        match to {
+            Some(to) => self.bus_edges.get(&to),
+            None => Some(&self.root_sources),
+        }
+    }
+
+    /// The bus edge one of whose lanes is `id`, and the fade it runs: its
+    /// source, its sink (`None` for the root) and the fade. A pure function of
+    /// the spec and `shapes`.
+    pub(crate) fn feed_of_lane(
+        &self,
+        shapes: &Shapes,
+        id: EdgeId,
+    ) -> Option<(BusSource, Option<BusRef>, EdgeFade)> {
+        let has = |lanes: Result<Vec<(EdgeId, f32)>, BusError>| {
+            lanes.is_ok_and(|l| l.iter().any(|(lane, _)| *lane == id))
+        };
+        for (&to, feeds) in &self.bus_edges {
+            for f in feeds {
+                if has(self.bus_lanes(shapes, f.source, to, f.fold)) {
+                    return Some((f.source, Some(to), f.fade));
+                }
+            }
+        }
+        for f in &self.root_sources {
+            if has(self.root_lanes(shapes, f.source, f.fold)) {
+                return Some((f.source, None, f.fade));
+            }
+        }
+        None
     }
 
     /// Whether the spec holds any bus edge, to a node or to the root.
@@ -484,7 +552,12 @@ impl GraphSpec {
         spec.bus_edges.clear();
         spec.root_sources.clear();
         let mut lanes = BTreeMap::new();
-        let mut place = |spec: &mut GraphSpec, id: EdgeId, weight: f32| -> Result<(), BusError> {
+        let mut fades = BTreeMap::new();
+        let mut place = |spec: &mut GraphSpec,
+                         id: EdgeId,
+                         weight: f32,
+                         fade: EdgeFade|
+         -> Result<(), BusError> {
             // Against the spec as lowered so far, so two bus edges that make
             // the same lane are caught too.
             spec.check_lane(id)?;
@@ -505,25 +578,44 @@ impl GraphSpec {
                     unreachable!("a bus lane is a direct edge");
                 }
             }
-            if weight.to_bits() != 1.0f32.to_bits() {
-                spec.gains.insert(id, EdgeGain::new(Amplitude::new(weight)));
+            if weight.to_bits() != 1.0f32.to_bits() || fade != EdgeFade::None {
+                spec.gains.insert(
+                    id,
+                    EdgeGain {
+                        fade,
+                        ..EdgeGain::new(Amplitude::new(weight))
+                    },
+                );
+            }
+            if fade != EdgeFade::None {
+                fades.insert(id, fade);
             }
             lanes.insert(id, Amplitude::new(weight));
             Ok(())
         };
         for (&to, sources) in &self.bus_edges {
-            for &BusFeed { source: from, fold } in sources {
+            for &BusFeed {
+                source: from,
+                fold,
+                fade,
+            } in sources
+            {
                 for (id, weight) in self.bus_lanes(shapes, from, to, fold)? {
-                    place(&mut spec, id, weight)?;
+                    place(&mut spec, id, weight, fade)?;
                 }
             }
         }
-        for &BusFeed { source: from, fold } in &self.root_sources {
+        for &BusFeed {
+            source: from,
+            fold,
+            fade,
+        } in &self.root_sources
+        {
             for (id, weight) in self.root_lanes(shapes, from, fold)? {
-                place(&mut spec, id, weight)?;
+                place(&mut spec, id, weight, fade)?;
             }
         }
-        Ok(Lowering { spec, lanes })
+        Ok(Lowering { spec, lanes, fades })
     }
 }
 
@@ -533,7 +625,14 @@ fn insert_feed(sources: &mut Vec<BusFeed>, from: BusSource, fold: BusFold) -> bo
     match sources.binary_search_by_key(&from, |f| f.source) {
         Ok(_) => false,
         Err(i) => {
-            sources.insert(i, BusFeed { source: from, fold });
+            sources.insert(
+                i,
+                BusFeed {
+                    source: from,
+                    fold,
+                    fade: EdgeFade::None,
+                },
+            );
             true
         }
     }

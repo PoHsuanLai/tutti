@@ -282,7 +282,14 @@ carry no value (`ParamEdit`). `PluginSnapshotDue`, `PluginParamsDue` and
 `PluginReloadDue` stay `SessionEvent` variants until step 5. Still open in
 step 2: `MainSession` and `Session::main`, `update()` servicing editors, the
 editor's `Opened`, `resize` and `rescale`, `EditorWantsSize`, and removing the
-freeing paths' `debug_assert!`.
+freeing paths' `debug_assert!`. Also open, and step 4's with `Health`: `Died`
+and `Reloading` still carry the cause as a `String`, because the bridge latches
+it as one (`mark_crashed`, and the same string in `Health::crash_cause`,
+`PluginStatus::Dead`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed` and
+`RecoveryEvent`). A typed cause starts where the bridge latches it: a
+`PluginFailure` (connect, handshake, stream closed, timeout, terminated, ...) in
+`tutti-plugin-types`, with the `BridgeError` as the `source` of a failed reload
+attempt, which `Died`, `Reloading` and `GaveUp` then carry.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.
 

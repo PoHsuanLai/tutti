@@ -15,7 +15,7 @@ use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
 use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{InPort, OutPort, Root, Session};
-use tutti_types::{Db, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Db, SampleRate, Samples};
 
 #[test]
 fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {

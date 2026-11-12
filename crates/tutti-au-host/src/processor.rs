@@ -13,7 +13,8 @@
 use std::sync::Arc;
 
 use tutti_au_ffi::{
-    AuParameterListener, Element, EventAddress, RenderNotify, Renderer, Scope, TransportState, Unit,
+    AuParameterListener, Element, EventAddress, EventList, Pushed, RenderNotify, Renderer, Scope,
+    TransportState, Unit, Wire,
 };
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
@@ -95,6 +96,9 @@ pub struct AuProcessor {
     /// from consecutive blocks' snapshots.
     playhead: PlayheadWatch,
     receives_midi: bool,
+    /// How `send_midi` delivers: UMP through `MusicDeviceMIDIEventList` for a
+    /// unit that takes MIDI 2.0, legacy bytes for every other.
+    midi: MidiDelivery,
     block_size: u32,
     /// The block's staged automation, which the render notify schedules.
     stage: SharedStage,
@@ -104,6 +108,60 @@ pub struct AuProcessor {
     /// The host's parameter listener, excluded from the notification of the
     /// processor's own writes so they are not heard as the plugin's edits.
     listener: Option<Arc<AuParameterListener>>,
+}
+
+/// What `send_midi` delivers through: the protocol the unit takes, the list
+/// built once per activation and the refusals counted.
+struct MidiDelivery {
+    wire: Option<Wire>,
+    list: EventList,
+    groups_dropped: u64,
+    unsendable_dropped: u64,
+}
+
+/// Stages a block's events into `list` and hands it to `send` whenever it is
+/// full or cannot take the next packet (another protocol, an earlier time), and
+/// once at the end. The list is empty on entry and on return.
+fn stage_ump(list: &mut EventList, events: &[UmpAt], mut send: impl FnMut(&EventList)) {
+    list.clear();
+    for &(offset, ev) in events {
+        // Types with a Group and a musical meaning: System, channel voice,
+        // SysEx7 and Data 128. Utility, Flex and Stream are not sent.
+        if !matches!(ev.message_type(), 0x1..=0x5) {
+            continue;
+        }
+        let wire = Wire::of_message_type(ev.message_type());
+        if list.push(wire, offset.get(), ev.words()) == Pushed::Refused {
+            send(list);
+            list.clear();
+            // An empty list takes any one packet.
+            let _ = list.push(wire, offset.get(), ev.words());
+        }
+    }
+    if !list.is_empty() {
+        send(list);
+    }
+    list.clear();
+}
+
+/// Words of the event list reserved at activation: a few hundred packets, and a
+/// block with more is sent as several lists.
+const EVENT_LIST_WORDS: usize = 1024;
+
+impl MidiDelivery {
+    fn new(wire: Option<Wire>) -> Self {
+        Self {
+            wire,
+            // Reserved only for a unit that is sent one.
+            list: EventList::with_capacity(if wire == Some(Wire::Midi2) {
+                EVENT_LIST_WORDS
+            } else {
+                0
+            }),
+            groups_dropped: 0,
+            unsendable_dropped: 0,
+        }
+    }
 }
 
 /// Writes `value` (plain units) to `id` now, telling every listener but the
@@ -147,6 +205,7 @@ pub(crate) struct ProcessorParts {
     pub(crate) ranges: Reader<RangeTable>,
     pub(crate) transport: Option<Arc<TransportState>>,
     pub(crate) receives_midi: bool,
+    pub(crate) midi_protocol: Option<Wire>,
     pub(crate) block_size: u32,
     pub(crate) stage: SharedStage,
     pub(crate) deferred: EditWriter<u64>,
@@ -162,6 +221,7 @@ impl AuProcessor {
             ranges,
             transport,
             receives_midi,
+            midi_protocol,
             block_size,
             stage,
             deferred,
@@ -175,6 +235,7 @@ impl AuProcessor {
             transport,
             playhead: PlayheadWatch::new(),
             receives_midi,
+            midi: MidiDelivery::new(midi_protocol),
             block_size,
             stage,
             deferred,
@@ -231,19 +292,64 @@ impl AuProcessor {
         Ok(())
     }
 
-    /// Delivers a block of UMP MIDI events to an instrument / music-effect AU as
-    /// legacy `MusicDeviceMIDIEvent` calls.
+    /// Delivers a block of UMP MIDI events to an instrument / music-effect AU,
+    /// by the protocol the unit takes ([`midi_protocol`](Self::midi_protocol)).
     ///
-    /// Each channel-voice event goes out as the MIDI 1.0 messages it stands for
-    /// (`midi1`: a MIDI 1.0 one as it came, a MIDI 2.0 one narrowed, a Note On
-    /// never at velocity 0, and a banked Program Change as CC 0, CC 32, then the
-    /// program). One with no MIDI 1.0 form (per-note controllers, RPN/NRPN,
-    /// per-note management) sends nothing. SysEx goes through `MusicDeviceSysEx`
-    /// once reassembled across packets in the pre-sized buffer; a message past
-    /// its capacity is dropped whole and counted
+    /// # A unit that takes MIDI 2.0: the packets as they are
+    ///
+    /// Every packet of a channel voice, System, SysEx7 or Data 128 message goes
+    /// to `MusicDeviceMIDIEventList` unchanged, its Group in its first word,
+    /// stamped with its frame offset (the list's base offset is 0, so a
+    /// packet's timestamp is its offset: `MusicDevice.h`). A SysEx needs no
+    /// reassembly and no longer lands ahead of the notes that precede it. A list
+    /// holds one protocol, so a run of MIDI 1.0 channel voice packets and a run
+    /// of MIDI 2.0 ones go as separate calls in order, and a list is sent when
+    /// it is full or its time would run back. The list is built in a buffer
+    /// reserved at activation. Utility (JR included), Flex Data and UMP Stream
+    /// messages are the endpoint's, not music, and are not sent. What the unit
+    /// does with a Group is the unit's: AUv2 has no cable or port to route one
+    /// by, so tutti sends the Group it was given and does not drop another.
+    ///
+    /// # Every other unit: legacy MIDI 1.0 bytes
+    ///
+    /// A unit that reports MIDI 1.0, or does not say (macOS before 12), is sent
+    /// `MusicDeviceMIDIEvent` calls, as before: the framework would narrow a
+    /// UMP list to the same bytes, and the narrowing here is tutti's own
+    /// (`midi1`: a Note On never at velocity 0, a banked Program Change as CC 0,
+    /// CC 32, then the program), SysEx7 is reassembled once for
+    /// `MusicDeviceSysEx`, and the path works on every macOS. A MIDI 1.0 call
+    /// has no Group, so only Group 0's channels are played: a channel voice
+    /// message of another Group is dropped and counted
+    /// ([`groups_dropped`](Self::groups_dropped)), never heard on Group 0's
+    /// channels (M2-104 section 2.1.2), as VST2 does. A message with no MIDI 1.0
+    /// form (per-note controllers, per-note management) is dropped and counted
+    /// ([`unsendable_dropped`](Self::unsendable_dropped)). SysEx goes through
+    /// `MusicDeviceSysEx` once reassembled in the pre-sized buffer; a message
+    /// past its capacity is dropped whole and counted
     /// ([`sysex_dropped`](Self::sysex_dropped)). A run left open at the end of a
     /// block continues in the next.
     pub fn send_midi(&mut self, events: &[UmpAt]) {
+        match self.midi.wire {
+            Some(Wire::Midi2) => self.send_ump(events),
+            _ => self.send_legacy(events),
+        }
+    }
+
+    /// The protocol the unit asked for, read at activation: `Some(Midi2)` takes
+    /// UMP, anything else the legacy calls.
+    pub fn midi_protocol(&self) -> Option<Wire> {
+        self.midi.wire
+    }
+
+    fn send_ump(&mut self, events: &[UmpAt]) {
+        let unit = &self.unit;
+        stage_ump(&mut self.midi.list, events, |list| {
+            // The unit's status has nowhere to go on the audio thread.
+            let _ = unit.midi_event_list(list);
+        });
+    }
+
+    fn send_legacy(&mut self, events: &[UmpAt]) {
         use tutti_midi_protocol::midi1;
         use tutti_ump::{Message, SysexStep};
 
@@ -252,10 +358,19 @@ impl AuProcessor {
         let unit = &self.unit;
         for &(offset, ev) in events {
             match ev.decode() {
-                Ok(message @ (Message::Midi1(..) | Message::Midi2(..))) => {
+                Ok(message @ (Message::Midi1(address, _) | Message::Midi2(address, _))) => {
+                    if address.group.get() != 0 {
+                        self.midi.groups_dropped += 1;
+                        continue;
+                    }
+                    let mut sent = false;
                     for bytes in midi1(message) {
+                        sent = true;
                         let [status, d1, d2] = bytes.padded();
                         let _ = unit.midi_event(status, d1, d2, offset.get());
+                    }
+                    if !sent {
+                        self.midi.unsendable_dropped += 1;
                     }
                 }
                 // SysEx has no 3-byte form; it goes out through a different AU
@@ -270,6 +385,20 @@ impl AuProcessor {
                 }
             }
         }
+    }
+
+    /// Channel voice messages dropped since activation because they were of a
+    /// Group other than 0 on the legacy path (see [`send_midi`](Self::send_midi)).
+    /// Zero on a unit that takes MIDI 2.0, which is sent the Group.
+    pub fn groups_dropped(&self) -> u64 {
+        self.midi.groups_dropped
+    }
+
+    /// Channel voice messages dropped since activation because MIDI 1.0 has no
+    /// form for them (per-note controllers, per-note management) on the legacy
+    /// path. Zero on a unit that takes MIDI 2.0.
+    pub fn unsendable_dropped(&self) -> u64 {
+        self.midi.unsendable_dropped
     }
 
     /// How many SysEx messages were dropped whole for want of room, or because
@@ -575,5 +704,119 @@ mod tests {
             .as_ref()
             .expect("AUDelay takes it");
         assert_eq!(notify.deliveries(), 2, "one pre and one post per render");
+    }
+}
+
+#[cfg(test)]
+mod ump_staging {
+    use super::*;
+    use tutti_graph::Offset;
+    use tutti_plugin_types::Samples;
+    use tutti_ump::{Message, MidiChannel, MidiGroup, Ump};
+
+    fn at(frame: u32, ump: Ump) -> UmpAt {
+        (
+            Offset::new(frame as usize, Samples(4096)).expect("inside the block"),
+            ump,
+        )
+    }
+
+    fn note_on(group: u8, key: u8) -> Ump {
+        // MIDI 2.0 Note On: type 4, status 0x9, velocity 0xFFFF.
+        Ump([
+            0x4000_0000 | u32::from(group) << 24 | 0x90 << 16 | u32::from(key) << 8,
+            0xFFFF_0000,
+            0,
+            0,
+        ])
+    }
+
+    fn m1_note_on(group: u8, key: u8) -> Ump {
+        Ump([
+            0x2000_0000 | u32::from(group) << 24 | 0x90 << 16 | u32::from(key) << 8 | 0x40,
+            0,
+            0,
+            0,
+        ])
+    }
+
+    /// Every list `stage_ump` sends, as (protocol word, packets as (time, words)).
+    fn staged(list: &mut EventList, events: &[UmpAt]) -> Vec<(u32, Vec<(u32, Vec<u32>)>)> {
+        let mut sent = Vec::new();
+        stage_ump(list, events, |l| {
+            let w = l.as_words();
+            let mut packets = Vec::new();
+            let mut i = 2;
+            for _ in 0..w[1] {
+                let n = w[i + 2] as usize;
+                packets.push((w[i], w[i + 3..i + 3 + n].to_vec()));
+                i += 3 + n;
+            }
+            sent.push((w[0], packets));
+        });
+        sent
+    }
+
+    /// **UMP goes as it is, Group and frame offset included**: a MIDI 2.0 Note On
+    /// of Group 5 is one packet, its words untouched, stamped with its offset.
+    #[test]
+    fn a_ump_packet_goes_unchanged_with_its_group_and_offset() {
+        let mut list = EventList::with_capacity(64);
+        let ev = note_on(5, 60);
+        let sent = staged(&mut list, &[at(37, ev)]);
+        assert_eq!(sent, vec![(2, vec![(37, ev.words().to_vec())])]);
+        assert_eq!(
+            ev.decode().ok().and_then(|m| match m {
+                Message::Midi2(a, _) => Some((a.group, a.channel)),
+                _ => None,
+            }),
+            Some((MidiGroup::of(5), MidiChannel::FIRST)),
+            "the fixture is a Group 5 message"
+        );
+    }
+
+    /// **A list holds one protocol**: MIDI 1.0 and MIDI 2.0 channel voice go as
+    /// separate lists in order, and a SysEx7 packet rides in the list it
+    /// follows, at its own frame (no reassembly, no reordering).
+    #[test]
+    fn protocols_split_into_lists_and_sysex_rides_along() {
+        let mut list = EventList::with_capacity(64);
+        let sysex = Ump([0x3016_0102, 0x0300_0000, 0, 0]);
+        let sent = staged(
+            &mut list,
+            &[
+                at(0, m1_note_on(0, 60)),
+                at(4, sysex),
+                at(8, note_on(0, 62)),
+            ],
+        );
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].0, 1);
+        assert_eq!(sent[0].1.iter().map(|p| p.0).collect::<Vec<_>>(), [0, 4]);
+        assert_eq!(sent[1].0, 2);
+        assert_eq!(sent[1].1.iter().map(|p| p.0).collect::<Vec<_>>(), [8]);
+    }
+
+    /// **A full list is sent and a new one started, nothing lost**: capacity 16
+    /// words holds two Note Ons (5 words each) and the third starts a list.
+    #[test]
+    fn a_full_list_is_sent_and_the_block_continues() {
+        let mut list = EventList::with_capacity(16);
+        let events: Vec<UmpAt> = (0..5).map(|i| at(i, note_on(0, 60 + i as u8))).collect();
+        let sent = staged(&mut list, &events);
+        let frames: Vec<u32> = sent.iter().flat_map(|l| l.1.iter().map(|p| p.0)).collect();
+        assert_eq!(frames, [0, 1, 2, 3, 4]);
+        assert!(sent.len() > 1);
+        assert!(list.is_empty());
+    }
+
+    /// **Utility, Flex and Stream messages are not music** and are not sent; a
+    /// block with nothing to send sends nothing.
+    #[test]
+    fn non_music_messages_are_not_sent() {
+        let mut list = EventList::with_capacity(64);
+        let jr_clock = Ump([0x0010_0000, 0, 0, 0]);
+        let stream = Ump([0xF000_0000, 0, 0, 0]);
+        assert!(staged(&mut list, &[at(0, jr_clock), at(0, stream)]).is_empty());
     }
 }

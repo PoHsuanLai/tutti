@@ -339,6 +339,77 @@ fn a_slow_reader_loses_events_counted_and_a_note_off_is_kept() {
     assert_eq!(tap.take_lost(), 0, "the read clears the count");
 }
 
+/// `drain` yields exactly what was written, in order, and leaves nothing
+/// behind: the script's twenty events come back frame for frame, the ring is
+/// empty after, and a second `drain` yields none. Read inside `assert_no_alloc`
+/// into a fixed array, so the iterator allocates nothing.
+#[test]
+fn drain_yields_what_was_written_in_order_and_leaves_nothing() {
+    let want: Vec<TapEvent> = edges()
+        .into_iter()
+        .map(|(f, u)| at(f, on_port(u, 0)))
+        .collect();
+    let mut r = rig(1, false, 0);
+    script(&mut r, 1, Script::new(edges()));
+    let mut tap =
+        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 256)
+            .expect("the port exists");
+    commit(&mut r);
+    render(&mut r, &[64], 2000);
+    assert_eq!(tap.available(), want.len());
+    let mut got = [at(0, Ump::default()); 64];
+    let mut n = 0;
+    assert_no_alloc::assert_no_alloc(|| {
+        for event in tap.drain() {
+            got[n] = event;
+            n += 1;
+        }
+    });
+    assert_eq!(&got[..n], &want[..], "in order, packet for packet");
+    assert_eq!(tap.available(), 0, "nothing left behind");
+    assert_eq!(tap.drain().count(), 0, "and a second drain is empty");
+}
+
+/// `drain` does not change how a slow reader's losses are counted: with the
+/// ring of the test above (capacity 8, 23 refusals), draining yields the 17
+/// held events and `take_lost` still answers 23 once, then 0.
+#[test]
+fn drain_leaves_the_loss_count_to_take_lost() {
+    let ons = (0..20u32).map(|k| (u64::from(k), on(k)));
+    let offs = (0..20u32).map(|k| (20 + u64::from(k), off(k)));
+    let mut r = rig(1, false, 0);
+    script(&mut r, 1, Script::new(ons.chain(offs).collect()));
+    let mut tap =
+        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 8)
+            .expect("the port exists");
+    commit(&mut r);
+    render(&mut r, &[64], 64);
+    assert_eq!(tap.drain().count(), 17, "what the ring held");
+    assert_eq!(
+        tap.take_lost(),
+        12 + 11,
+        "the drain did not clear the count"
+    );
+    assert_eq!(tap.take_lost(), 0);
+}
+
+/// Dropped early, the iterator keeps what it did not yield: three of the
+/// twenty are read, seventeen stay for the next read.
+#[test]
+fn a_drain_dropped_early_leaves_the_rest() {
+    let mut r = rig(1, false, 0);
+    script(&mut r, 1, Script::new(edges()));
+    let mut tap =
+        r.ed.open_event_tap(EventTapId(1), port(1, 0), TapAlign::Raw, 256)
+            .expect("the port exists");
+    commit(&mut r);
+    render(&mut r, &[64], 2000);
+    let first: Vec<TapEvent> = tap.drain().take(3).collect();
+    assert_eq!(first.len(), 3);
+    assert_eq!(tap.available(), 17);
+    assert_eq!(drain(&mut tap).first(), Some(&at(2, on_port(on(3), 0))));
+}
+
 /// A port that narrows or vanishes after the open reads nothing: the commit
 /// succeeds, the plan has no op for the tap, nothing is counted lost, the
 /// other tap plays on, and restoring the port resumes the stream (the writer

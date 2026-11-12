@@ -13,7 +13,7 @@ use tutti_graph::{
     Node, NodeParts, Op, TapReader, Transport,
 };
 use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
-use tutti_types::{Beat, Bpm, ChannelLayout, Samples};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -384,6 +384,76 @@ fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
         "nothing more arrived after the close"
     );
     assert_eq!(tap.take_lost().get(), 0);
+}
+
+/// The reader's clock is the graph frame of the next frame it hands out: it
+/// starts at the frame of the block the tap first saw, advances by what is
+/// read, and across several blocks follows each block's own start.
+#[test]
+fn next_frame_is_the_graph_frame_of_the_next_frame_read() {
+    let mut r = rig(1, false);
+    let mut tap =
+        r.ed.open_tap(
+            TapId(1),
+            r.gains[..2].to_vec(),
+            TapAlign::Raw,
+            Samples(1 << 12),
+        )
+        .expect("the sources exist");
+    commit(&mut r);
+    assert_eq!(tap.next_frame(), Frame(0), "nothing has rendered");
+    for i in 0..3 {
+        block(&mut r, 100, i * 100);
+    }
+    assert_eq!(tap.next_frame(), Frame(0), "nothing was read yet");
+    let mut buf = vec![0.0f32; 2 * 150];
+    assert_eq!(tap.pop_into(&mut buf).get(), 150);
+    assert_eq!(
+        tap.next_frame(),
+        Frame(150),
+        "mid-way through the second block"
+    );
+    assert_eq!(tap.contiguous().get(), 150, "no gap in the rest");
+    let mut buf = vec![0.0f32; 2 * 1000];
+    assert_eq!(tap.pop_into(&mut buf).get(), 150);
+    assert_eq!(tap.next_frame(), Frame(300));
+}
+
+/// A block the ring had no room for advances the clock: the frame after a
+/// gap is the frame of the block that arrived after it, and a read never
+/// reaches across the gap.
+#[test]
+fn a_lost_block_advances_next_frame_and_a_contiguous_read_stops_at_it() {
+    let mut r = rig(1, false);
+    let mut tap =
+        r.ed.open_tap(TapId(1), r.gains[..2].to_vec(), TapAlign::Raw, Samples(150))
+            .expect("the sources exist");
+    commit(&mut r);
+    // Frames 0..100 fit; of 100..200 only 100..150 does; the ring is then full.
+    block(&mut r, 100, 0);
+    block(&mut r, 100, 100);
+    block(&mut r, 100, 200);
+    assert_eq!(
+        tap.take_lost().get(),
+        150,
+        "50 of the second block and all of the third"
+    );
+    let mut buf = vec![0.0f32; 2 * 1000];
+    assert_eq!(tap.contiguous().get(), 150);
+    assert_eq!(
+        tap.pop_into(&mut buf[..2 * tap.contiguous().get()]).get(),
+        150
+    );
+    // The ring is empty again: the fourth block (frames 300..400) is whole.
+    block(&mut r, 100, 300);
+    assert_eq!(
+        tap.next_frame(),
+        Frame(300),
+        "the gap 150..300 is skipped over"
+    );
+    assert_eq!(tap.contiguous().get(), 100);
+    assert_eq!(tap.pop_into(&mut buf).get(), 100);
+    assert_eq!(tap.next_frame(), Frame(400));
 }
 
 /// A read is whole frames: a buffer that ends mid-frame leaves its tail as it

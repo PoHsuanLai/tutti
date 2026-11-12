@@ -1,4 +1,4 @@
-//! User-facing configuration for the `tutti-plugin`'s `Plugins` catalog.
+//! User-facing configuration for the `tutti-plugin`'s `Catalog`.
 //!
 //! Two structs, because they answer two unrelated questions and change at
 //! different times:

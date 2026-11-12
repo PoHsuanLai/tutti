@@ -1,18 +1,24 @@
-//! The [`Plugins`] catalog: scans plugin directories and opens what it found.
+//! The [`Catalog`]: scans plugin directories, keeps what it found and says what
+//! is blacklisted. It does not open a plugin: the session loads one (design 029
+//! principle 1), and a load asks the catalog whether it may ([`Catalog::check`],
+//! `PluginLoad::with_catalog`).
 //!
 //! The caller supplies where the DB lives and which directories to scan —
 //! this crate has no opinion on OS conventions or app names.
 //!
 //! ```no_run
-//! # #[cfg(feature = "json")] {
-//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
+//! # #[cfg(feature = "json")]
+//! # fn ex() -> Result<(), tutti_plugin_db::ScanBusy> {
+//! use tutti_plugin::catalog::{Catalog, CatalogConfig};
 //! use std::path::PathBuf;
 //!
-//! let plugins = Plugins::load(CatalogConfig::new(
+//! let mut catalog = Catalog::open_db(CatalogConfig::new(
 //!     PathBuf::from("/my/app/plugin-db.json"),
 //!     vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
-//! ))
-//! .with_fresh_scan();
+//! ));
+//! let scanned = catalog.scan()?;
+//! println!("{} new", scanned.new);
+//! # Ok(())
 //! # }
 //! ```
 //!
@@ -22,12 +28,12 @@
 //!
 //! ```no_run
 //! use std::path::PathBuf;
-//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
+//! use tutti_plugin::catalog::{CatalogConfig, Catalog};
 //! use tutti_plugin_db::PluginDb;
 //!
 //! let mut db = PluginDb::new();
 //! // ... db.apply(delta) for each row the host stored ...
-//! let plugins = Plugins::with_db(
+//! let plugins = Catalog::with_db(
 //!     db,
 //!     CatalogConfig::new(PathBuf::from("/unused"), vec![PathBuf::from("/usr/lib/vst3")]),
 //! );
@@ -35,17 +41,16 @@
 //!
 //! # Threads
 //!
-//! A [`Plugins`] is owned by one thread, the one that calls its methods. A
-//! rescan ([`spawn_rescan`](Plugins::spawn_rescan)) works on a snapshot on its
-//! own thread and sends deltas back; [`poll_rescan`](Plugins::poll_rescan)
+//! A [`Catalog`] is owned by one thread, the one that calls its methods. A
+//! rescan ([`spawn_scan`](Catalog::spawn_scan)) works on a snapshot on its
+//! own thread and sends deltas back; [`poll_scan`](Catalog::poll_scan)
 //! applies them on the owner. The catalog is readable throughout, and nothing
 //! here runs on or reaches the audio thread.
 //!
 //! Audio knobs are separate and default sensibly; set them with
-//! [`Plugins::with_audio_config`] when the defaults don't fit.
+//! [`Catalog::with_audio_config`] when the defaults don't fit.
 
 use crate::host::db_probe::{probe_plugin, probe_record};
-use crate::host::plugin::Plugin;
 use crate::host::plugin_ref::PluginRef;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -55,18 +60,17 @@ use tutti_plugin_db::{
     Scanner,
 };
 use tutti_plugin_ipc::{AudioConfig, CatalogConfig};
-use tutti_plugin_types::MainThread;
 use tutti_plugin_types::PluginDescriptor;
 use tutti_plugin_types::{BridgeError, BridgeResult};
-use tutti_types::SampleRate;
 
 /// How a catalog writes its database out: the host's own, or the JSON file.
 type Saver = Arc<dyn Fn(&PluginDb) -> std::io::Result<()> + Send + Sync>;
 
-/// A catalog of scanned plugins that can list, blacklist and open them.
+/// A catalog of scanned plugins that can list and blacklist them, and says
+/// whether a load may open one ([`check`](Self::check)).
 ///
-/// Wraps a [`PluginDb`]; [`Plugins::with_db`] takes your own, and
-/// `Plugins::load` reads the versioned JSON file when the `json` feature is
+/// Wraps a [`PluginDb`]; [`Catalog::with_db`] takes your own, and
+/// `Catalog::open_db` reads the versioned JSON file when the `json` feature is
 /// enabled. Every change is in memory until [`save`](Self::save) is called.
 ///
 /// With the `json` feature the store is the JSON file at `config.db_path`.
@@ -75,7 +79,7 @@ type Saver = Arc<dyn Fn(&PluginDb) -> std::io::Result<()> + Send + Sync>;
 /// [`Unsupported`](std::io::ErrorKind::Unsupported), and so does the save a
 /// crash recovery needs, which keeps the pedal armed (see
 /// [`recover_crash`](Self::recover_crash)).
-pub struct Plugins {
+pub struct Catalog {
     db: PluginDb,
     scanner: Scanner,
     config: CatalogConfig,
@@ -85,16 +89,16 @@ pub struct Plugins {
     pending_save: Option<std::thread::JoinHandle<()>>,
 }
 
-impl std::fmt::Debug for Plugins {
+impl std::fmt::Debug for Catalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Plugins")
+        f.debug_struct("Catalog")
             .field("config", &self.config)
             .field("audio", &self.audio)
             .finish_non_exhaustive()
     }
 }
 
-impl Drop for Plugins {
+impl Drop for Catalog {
     fn drop(&mut self) {
         self.finish_pending_save();
     }
@@ -117,7 +121,7 @@ fn write_through(saver: Option<&Saver>, db: &PluginDb) -> std::io::Result<()> {
         Some(save) => save(db),
         None => Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "this catalog has no store: enable `json` or call `Plugins::with_saver`",
+            "this catalog has no store: enable `json` or call `Catalog::with_saver`",
         )),
     }
 }
@@ -129,11 +133,11 @@ fn key(path: &Path) -> PathBuf {
     tutti_plugin_db::canonical_path(path)
 }
 
-impl Plugins {
+impl Catalog {
     /// Creates a catalog over a database you built.
     ///
     /// Audio settings default ([`AudioConfig::default`]); override with
-    /// [`Plugins::with_audio_config`].
+    /// [`Catalog::with_audio_config`].
     #[must_use]
     pub fn with_db(db: PluginDb, config: CatalogConfig) -> Self {
         let scanner = Scanner::new(config.pedal_path(), probe_plugin);
@@ -175,26 +179,23 @@ impl Plugins {
     /// other-version file is handled. Requires the `json` feature.
     #[cfg(feature = "json")]
     #[must_use]
-    pub fn load(config: CatalogConfig) -> Self {
+    pub fn open_db(config: CatalogConfig) -> Self {
         let db = tutti_plugin_db::load(&config.db_path);
         Self::with_db(db, config)
     }
 
-    /// Sets the audio settings applied to every plugin this catalog opens.
+    /// Sets the audio settings a load that names this catalog applies.
     #[must_use]
     pub fn with_audio_config(mut self, audio: AudioConfig) -> Self {
         self.audio = audio;
         self
     }
 
-    /// Returns the audio settings this catalog applies when opening a plugin.
+    /// Returns the audio settings a load that names this catalog applies.
     ///
-    /// Pass them to [`Plugin::open_with`] to open a plugin off-thread with the
-    /// same settings: clone the value, hand it to a worker with the path, and
-    /// no borrow of the catalog has to outlive the launch, which can take from
-    /// half a second to several seconds.
-    ///
-    /// [`Plugin::open_with`]: crate::catalog::Plugin::open_with
+    /// `PluginLoad::with_catalog` (the session's load) takes them, with the
+    /// blacklist's verdict, so no borrow of the catalog has to outlive the
+    /// launch, which can take from half a second to several seconds.
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio
     }
@@ -210,21 +211,12 @@ impl Plugins {
         &self.db
     }
 
-    /// Runs a blocking scan and returns `self`, for use in a builder chain.
-    ///
-    /// Discards the [`ScanResult`]; use [`Plugins::rescan`] if you need it.
-    #[must_use]
-    pub fn with_fresh_scan(mut self) -> Self {
-        let _ = self.rescan();
-        self
-    }
-
     /// Starts a scan of the plugin directories on a background thread.
     ///
     /// Recovers a crashed previous scan first, then hands the scanner a
     /// snapshot. This catalog stays whole and usable while the scan runs; call
-    /// [`poll_rescan`](Self::poll_rescan) on the owning thread (a frame tick, a
-    /// UI loop) to apply what the scan found. See [`rescan`](Self::rescan) for
+    /// [`poll_scan`](Self::poll_scan) on the owning thread (a frame tick, a
+    /// UI loop) to apply what the scan found. See [`rescan`](Self::scan) for
     /// the blocking form.
     ///
     /// # Errors
@@ -239,15 +231,15 @@ impl Plugins {
     /// # Examples
     ///
     /// ```no_run
-    /// # use tutti_plugin::catalog::Plugins;
+    /// # use tutti_plugin::catalog::Catalog;
     /// # use tutti_plugin_db::ScanPoll;
-    /// # fn ex(mut plugins: Plugins) -> Result<(), tutti_plugin_db::ScanBusy> {
-    /// let scan = plugins.spawn_rescan()?;
+    /// # fn ex(mut plugins: Catalog) -> Result<(), tutti_plugin_db::ScanBusy> {
+    /// let scan = plugins.spawn_scan()?;
     /// loop {
     ///     while let Ok(progress) = scan.progress_rx.try_recv() {
     ///         println!("{}/{}", progress.current, progress.total);
     ///     }
-    ///     match plugins.poll_rescan(&scan) {
+    ///     match plugins.poll_scan(&scan) {
     ///         ScanPoll::Running => std::thread::yield_now(),
     ///         ScanPoll::Done(result) => break println!("{} new", result.new),
     ///         ScanPoll::Died => break,
@@ -256,7 +248,7 @@ impl Plugins {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn spawn_rescan(&mut self) -> std::result::Result<Scan, ScanBusy> {
+    pub fn spawn_scan(&mut self) -> std::result::Result<Scan, ScanBusy> {
         self.finish_pending_save();
         let saver = self.saver.as_ref();
         self.scanner
@@ -273,7 +265,7 @@ impl Plugins {
     /// on the owner's thread. A failed save is logged, not returned. The write
     /// is finished before the next scan, `save`, `reload` or drop. Drop the
     /// [`Scan`] once it reports `Done` or `Died`.
-    pub fn poll_rescan(&mut self, scan: &Scan) -> ScanPoll {
+    pub fn poll_scan(&mut self, scan: &Scan) -> ScanPoll {
         let poll = scan.poll(&mut self.db);
         if matches!(poll, ScanPoll::Done(_)) {
             self.save_in_background();
@@ -289,8 +281,8 @@ impl Plugins {
     ///
     /// # Errors
     ///
-    /// [`ScanBusy`], as for [`spawn_rescan`](Self::spawn_rescan).
-    pub fn rescan(&mut self) -> std::result::Result<ScanResult, ScanBusy> {
+    /// [`ScanBusy`], as for [`spawn_scan`](Self::spawn_scan).
+    pub fn scan(&mut self) -> std::result::Result<ScanResult, ScanBusy> {
         self.finish_pending_save();
         let saver = self.saver.as_ref();
         let result = self
@@ -402,13 +394,12 @@ impl Plugins {
         self.db.blacklisted()
     }
 
-    /// Returns `true` if [`open`](Self::open) would refuse the plugin at
+    /// Returns `true` if [`check`](Self::check) would refuse the plugin at
     /// `path`.
     ///
     /// A blacklisted plugin whose file has changed since it was blacklisted
     /// (a reinstall or update) is not refused, so this returns `false` for it.
-    /// Must stay in step with `open`: both use the mtime-aware check
-    /// ([`PluginDb::is_blacklisted_and_unchanged`]).
+    /// The check is mtime-aware ([`PluginDb::is_blacklisted_and_unchanged`]).
     #[must_use]
     pub fn is_blacklisted(&self, path: impl AsRef<Path>) -> bool {
         let path = key(path.as_ref());
@@ -416,46 +407,39 @@ impl Plugins {
             .is_blacklisted_and_unchanged(&path, &FileFacts::read(&path))
     }
 
-    /// Opens a plugin with this catalog's audio settings, refusing one that is
-    /// blacklisted.
+    /// Whether a load may open `plugin`: the catalog's one refusal.
     ///
-    /// [`Plugin::open`] opens any path without consulting a catalog; this adds
-    /// the blacklist check. The path need not have been scanned. The check is
-    /// mtime-aware, so a reinstall or update re-admits the plugin without
-    /// clearing anything. Blocks while the plugin-server subprocess launches.
+    /// The path need not have been scanned. The check is mtime-aware, so a
+    /// reinstall or update re-admits a plugin without clearing anything. The
+    /// catalog does not open a plugin; the session's load asks this
+    /// (`PluginLoad::with_catalog`), so a blacklisted plugin is refused when it
+    /// is loaded, before any server starts.
     ///
     /// # Errors
     ///
-    /// Returns [`BridgeError::Blacklisted`] with the recorded reason if the
-    /// plugin is blacklisted and unchanged; a host can offer to load it anyway
-    /// through [`Plugin::open`]. Otherwise returns any error of
-    /// [`Plugin::open_with`].
-    ///
-    /// [`Plugin::open`]: crate::catalog::Plugin::open
-    pub fn open(
-        &self,
-        main: Option<&MainThread>,
-        plugin: &PluginRef,
-        sample_rate: impl Into<SampleRate>,
-    ) -> BridgeResult<Plugin> {
+    /// [`BridgeError::Blacklisted`] with the recorded reason when the plugin's
+    /// file is blacklisted and unchanged; a host can offer to load it anyway
+    /// (a load that does not name the catalog) or to
+    /// [`unblacklist`](Self::unblacklist) it.
+    pub fn check(&self, plugin: &PluginRef) -> BridgeResult<()> {
         let path = plugin.path();
-        if self.is_blacklisted(path) {
-            let reason = self
-                .db
-                .row(&key(path))
-                .and_then(|row| row.blacklist_reason())
-                .unwrap_or("no reason recorded")
-                .to_string();
-            return Err(BridgeError::Blacklisted {
-                path: path.to_path_buf(),
-                reason,
-            });
+        if !self.is_blacklisted(path) {
+            return Ok(());
         }
-        Plugin::open_with(main, &self.audio, plugin, sample_rate)
+        let reason = self
+            .db
+            .row(&key(path))
+            .and_then(|row| row.blacklist_reason())
+            .unwrap_or("no reason recorded")
+            .to_string();
+        Err(BridgeError::Blacklisted {
+            path: path.to_path_buf(),
+            reason,
+        })
     }
 
     /// Blacklists a plugin by path, hiding it from `iter`, `entries` and `find`
-    /// and making [`open`](Self::open) refuse it.
+    /// and making [`check`](Self::check) refuse it.
     pub fn blacklist(&mut self, path: impl AsRef<Path>, reason: impl Into<String>) {
         let path = key(path.as_ref());
         self.db
@@ -608,7 +592,9 @@ impl Plugins {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::plugin::Plugin;
     use tutti_plugin_db::{FileRow, PluginFormat, ScanPoll};
+    use tutti_types::SampleRate;
 
     /// A blacklisted row whose `mtime` matches what the file system reports,
     /// i.e. the file has not changed since it was recorded.
@@ -616,11 +602,11 @@ mod tests {
         FileRow::blacklisted(reason.to_string(), &FileFacts::read(path))
     }
 
-    fn catalog_with(path: &Path, row: FileRow) -> Plugins {
+    fn catalog_with(path: &Path, row: FileRow) -> Catalog {
         let mut db = PluginDb::new();
         // Rows are keyed by canonical path, as a scan keys them.
         db.apply(Delta::put(key(path), row));
-        Plugins::with_db(
+        Catalog::with_db(
             db,
             CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
         )
@@ -665,7 +651,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// The guarded door refuses a plugin the scanner recorded as a crasher,
+    /// The check refuses a plugin the scanner recorded as a crasher,
     /// and says which one and why.
     ///
     /// The reason is the whole point of carrying it: a host has to be able to
@@ -679,11 +665,7 @@ mod tests {
 
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
 
-        match plugins.open(
-            None,
-            &PluginRef::file(&path).unwrap(),
-            SampleRate::new(48_000.0),
-        ) {
+        match plugins.check(&PluginRef::file(&path).unwrap()) {
             Err(BridgeError::Blacklisted { path: p, reason }) => {
                 assert_eq!(p, path);
                 assert_eq!(reason, "SIGSEGV during probe");
@@ -701,9 +683,6 @@ mod tests {
     /// raw flag instead would hide the plugin permanently, and false positives
     /// are expected — the scanner's pedal fires on a force-quit or an OOM kill
     /// as readily as on a real crash.
-    ///
-    /// The load itself still fails (the fixture is not a plugin), but it must
-    /// fail as a *load*, never as a `Blacklisted` refusal.
     #[test]
     fn a_blacklisted_plugin_is_readmitted_once_its_file_changes() {
         let dir = std::env::temp_dir().join("tutti-bl-readmit");
@@ -717,34 +696,26 @@ mod tests {
         row.mtime = row.mtime.map(|t| t.saturating_sub(1_000));
         let plugins = catalog_with(&path, row);
 
-        let err = plugins
-            .open(
-                None,
-                &PluginRef::file(&path).unwrap(),
-                SampleRate::new(48_000.0),
-            )
-            .expect_err("the fixture is not a loadable plugin");
-        assert!(
-            !matches!(err, BridgeError::Blacklisted { .. }),
-            "a changed file must not be refused as blacklisted, got {err:?}"
-        );
+        plugins
+            .check(&PluginRef::file(&path).unwrap())
+            .expect("a changed file must not be refused as blacklisted");
 
         std::fs::remove_file(&path).ok();
     }
 
-    /// The query and the door agree about a plugin whose file has changed.
+    /// The query and the check agree about a plugin whose file has changed.
     ///
-    /// Were the query to read the raw flag while `open` used the mtime-aware
+    /// Were the query to read the raw flag while `check` used the mtime-aware
     /// check, an updated plugin would report blacklisted and open anyway. A
     /// browser greying entries out on the query then hides a plugin it could
     /// load — permanently, because the reinstall meant to lift the blacklist is
     /// exactly what makes the two diverge.
     ///
     /// Asserting *agreement* rather than a fixed answer is what makes this
-    /// survive a future change to the staleness rule: whatever `open` decides,
+    /// survive a future change to the staleness rule: whatever `check` decides,
     /// the query has to say the same thing.
     #[test]
-    fn the_query_and_the_door_agree_after_the_file_changes() {
+    fn the_query_and_the_check_agree_after_the_file_changes() {
         let dir = std::env::temp_dir().join("tutti-bl-stale");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Updated.vst3");
@@ -758,14 +729,10 @@ mod tests {
         );
         assert!(
             matches!(
-                fresh.open(
-                    None,
-                    &PluginRef::file(&path).unwrap(),
-                    SampleRate::new(48_000.0)
-                ),
+                fresh.check(&PluginRef::file(&path).unwrap()),
                 Err(BridgeError::Blacklisted { .. })
             ),
-            "unchanged and blacklisted: the door must refuse"
+            "unchanged and blacklisted: the check must refuse"
         );
 
         // Now the vendor ships a fix. Backdating the *record* rather than
@@ -780,17 +747,9 @@ mod tests {
             !plugins.is_blacklisted(&path),
             "a changed file lifts the blacklist — this is the half that was wrong"
         );
-        let err = plugins
-            .open(
-                None,
-                &PluginRef::file(&path).unwrap(),
-                SampleRate::new(48_000.0),
-            )
-            .expect_err("the fixture is not a loadable plugin");
-        assert!(
-            !matches!(err, BridgeError::Blacklisted { .. }),
-            "the door must admit it too, so the two answers agree; got {err:?}"
-        );
+        plugins
+            .check(&PluginRef::file(&path).unwrap())
+            .expect("the check must admit it too, so the two answers agree");
 
         std::fs::remove_file(&path).ok();
     }
@@ -842,7 +801,7 @@ mod tests {
                 ),
             ));
         }
-        let mut plugins = Plugins::with_db(
+        let mut plugins = Catalog::with_db(
             db,
             CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
         );
@@ -862,11 +821,11 @@ mod tests {
         std::fs::write(&crashy, b"x").unwrap();
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
 
-        let mut plugins = Plugins::empty(config.clone());
+        let mut plugins = Catalog::empty(config.clone());
         assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
 
         assert!(!config.pedal_path().exists());
-        let restarted = Plugins::load(config);
+        let restarted = Catalog::open_db(config);
         assert!(restarted.is_blacklisted(&crashy));
     }
 
@@ -884,7 +843,7 @@ mod tests {
         let log = Arc::clone(&seen);
         let key_path = key(&crashy);
 
-        let mut plugins = Plugins::empty(config).with_saver(move |db| {
+        let mut plugins = Catalog::empty(config).with_saver(move |db| {
             log.lock()
                 .unwrap()
                 .push((db.is_blacklisted(&key_path), pedal.exists()));
@@ -907,10 +866,10 @@ mod tests {
         std::fs::write(&crashy, b"x").unwrap();
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
 
-        let mut plugins = Plugins::empty(config.clone());
+        let mut plugins = Catalog::empty(config.clone());
         assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
         // A rescan recovers first; it must not delete what it could not save.
-        plugins.rescan().unwrap();
+        plugins.scan().unwrap();
 
         assert!(plugins.db().is_blacklisted(&key(&crashy)));
         assert!(config.pedal_path().exists());
@@ -930,7 +889,7 @@ mod tests {
         std::fs::write(&real, b"x").unwrap();
         let alias = dir.path().join("Alias.vst3");
         std::os::unix::fs::symlink(&real, &alias).unwrap();
-        let mut plugins = Plugins::empty(CatalogConfig::new(
+        let mut plugins = Catalog::empty(CatalogConfig::new(
             dir.path().join("db.json"),
             crate::catalog::NO_SCAN_DIRS,
         ));
@@ -942,7 +901,7 @@ mod tests {
         assert_eq!(plugins.db().len(), 1);
     }
 
-    /// The save after a rescan is off the owner's thread: `poll_rescan` reports
+    /// The save after a rescan is off the owner's thread: `poll_scan` reports
     /// `Done` while the saver is still running, and the next `save` waits for
     /// it, and dropping the catalog waits for it.
     #[test]
@@ -953,7 +912,7 @@ mod tests {
         let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(1);
         let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let done = Arc::clone(&writes);
-        let mut plugins = Plugins::empty(config).with_saver(move |_| {
+        let mut plugins = Catalog::empty(config).with_saver(move |_| {
             started_tx.send(()).unwrap();
             let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
             done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -961,9 +920,9 @@ mod tests {
         });
 
         let began = std::time::Instant::now();
-        let scan = plugins.spawn_rescan().unwrap();
+        let scan = plugins.spawn_scan().unwrap();
         let end = loop {
-            match plugins.poll_rescan(&scan) {
+            match plugins.poll_scan(&scan) {
                 ScanPoll::Running => std::thread::yield_now(),
                 other => break other,
             }
@@ -993,7 +952,7 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let alias_dir = dir.path().join("alias");
         std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
-        let mut plugins = Plugins::empty(CatalogConfig::new(
+        let mut plugins = Catalog::empty(CatalogConfig::new(
             dir.path().join("db.json"),
             crate::catalog::NO_SCAN_DIRS,
         ));
@@ -1019,17 +978,17 @@ mod tests {
         let entries = format!("{}\0{}", a.display(), b.display());
         std::fs::write(config.pedal_path(), entries).unwrap();
         let mut plugins =
-            Plugins::empty(config.clone()).with_saver(|_| Err(std::io::Error::other("no disk")));
+            Catalog::empty(config.clone()).with_saver(|_| Err(std::io::Error::other("no disk")));
         assert_eq!(plugins.recover_crash().unwrap().len(), 2);
         assert!(config.pedal_path().exists(), "kept: the save failed");
 
         assert!(plugins.unblacklist(&a));
-        plugins.rescan().unwrap();
+        plugins.scan().unwrap();
         assert!(!plugins.is_blacklisted(&a), "the user's unblacklist held");
         assert!(plugins.is_blacklisted(&b), "the other entry is still kept");
 
         plugins.remove(&b);
-        plugins.rescan().unwrap();
+        plugins.scan().unwrap();
         assert!(plugins.db().row(&key(&b)).is_none(), "the removal held");
         assert!(!config.pedal_path().exists());
     }
@@ -1050,7 +1009,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &root).unwrap();
         let config = CatalogConfig::new(root.join("db.json"), crate::catalog::NO_SCAN_DIRS);
         std::fs::write(config.pedal_path(), root.join("A.vst3").to_str().unwrap()).unwrap();
-        let mut plugins = Plugins::empty(config).with_saver(|_| Ok(()));
+        let mut plugins = Catalog::empty(config).with_saver(|_| Ok(()));
 
         let crashed = plugins.recover_crash().unwrap();
         plugins.blacklist(root.join("B.vst3"), "boom");

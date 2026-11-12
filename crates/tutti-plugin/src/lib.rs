@@ -56,25 +56,25 @@ pub use tutti_plugin_types::{Normalized, ParamId};
 /// }
 /// ```
 ///
-/// **Or let the library manage it.** [`Plugins`](catalog::Plugins) wraps a
+/// **Or let the library manage it.** [`Catalog`](catalog::Catalog) wraps a
 /// [`PluginDb`](tutti_plugin_db::PluginDb) and adds the two things the pure path
 /// cannot give you: incremental rescan (probe only what changed, via stored
 /// mtimes, on a worker thread while the catalog stays readable: the difference
 /// between a multi-minute startup and an instant one) and crash recovery (a
 /// plugin that hard-crashes the scanner is auto-blacklisted on the next run).
 ///
-/// With the opt-in `json` feature, `Plugins::load` and `Plugins::save` keep the
+/// With the opt-in `json` feature, `Catalog::open_db` and `Catalog::save` keep the
 /// table in a versioned JSON file. Without it, build the `PluginDb` from your
-/// own store and pass it to `Plugins::with_db`.
+/// own store and pass it to `Catalog::with_db`.
 pub mod catalog {
     pub use crate::host::db_probe::{
         DEFAULT_PROBE_TIMEOUT, probe_failure, probe_record, probe_record_with,
     };
     pub use tutti_plugin_types::{Helper, Locator};
-    // Named in `Plugin::role` and `Plugins::iter`.
+    // Named in `Plugin::role` and `Catalog::iter`.
+    pub use crate::host::catalog::Catalog;
     pub use crate::host::plugin::{BoundPlugin, Plugin};
-    pub use crate::host::plugin_ref::{PluginRef, PluginState};
-    pub use crate::host::plugins::Plugins;
+    pub use crate::host::plugin_ref::{Hosting, PluginRef, PluginState};
     pub use tutti_plugin_ipc::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
     pub use tutti_plugin_types::{PluginDescriptor, PluginRole};
 }

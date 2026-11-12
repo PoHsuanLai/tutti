@@ -1052,7 +1052,7 @@ Every MIDI feature has four layers:
 | Output scheduling | `OutputPlan` |
 | Held notes and controllers | `HeldState` |
 | Recording into clips | `ClipBuilder` |
-| Chase on seek | `ChaseIndex` |
+| Chase on seek | `MidiClipNode`'s chase table (private, built with the clip) |
 | Clock, MTC and MMC slave | `ClockFollower` |
 | CC modulation and MIDI learn | `Binding`, `LearnState` |
 | Events across the graph's edge | `EventTapReader`, `EventInletWriter` (`tutti-graph`) |
@@ -1931,8 +1931,19 @@ holds the second borrow of the port).
 
 Each is its own lane after its dependency stage.
 
-1. **Chase on seek** in `MidiClipNode`: controllers, program and bend, and notes
-   spanning the seek point. Starting at beat 2 of a clip emits nothing today.
+1. **Chase on seek** in `MidiClipNode`, done for a channel's state (L4d-b): wherever playback
+   jumps (a start, a seek, a loop wrap, a bounce's first block), after the held notes and
+   controllers are returned, the clip sends for each state it set before the beat (a program, a
+   controller, a registered or assignable controller, pressure, bend) the last message that set
+   it, per group and channel in that order. The table is built on the control side with the clip
+   (each state's setters, in beat order), so a jump is a binary search per state and allocates
+   nothing. Not chased: notes spanning the beat (a note the playhead lands inside is not struck,
+   as a DAW's default), per-note controllers, which live with their notes, and relative
+   controllers, which add to what is there, nor the Channel Mode messages (CC 120 to 127), which
+   are commands. A chased Program Change carries the bank in force at its beat (one sent with no
+   Bank Select keeps the channel's bank, M1 p.13), so the receiver is moved to the timeline's bank.
+   An event less than a frame behind the beat is also played by the walk; the repeat sets the same
+   state. A port without room for the whole chase refuses the rest, counted like any refused event.
 2. **MIDI recording** into clips, timestamped against the transport.
 3. **CC modulation source and MIDI learn for native nodes.**
 4. **Windows backend** (Windows MIDI Services), **Linux virtual ports** and more

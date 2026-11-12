@@ -1,4 +1,4 @@
-//! A plugin host, end to end (design 029 step 1): scan, pick, load, wire, play,
+//! A plugin host, end to end (design 029): scan, pick, load, wire, play,
 //! set a parameter, save the state, bounce.
 //!
 //! ```text
@@ -7,7 +7,8 @@
 //!     "Plugin Name" out.wav /path/to/plugin/dir [more dirs...]
 //! ```
 //!
-//! The scan puts every plugin it finds in a catalog; the one whose name is
+//! The scan puts every plugin it finds in a [`Catalog`]; the catalog says what
+//! exists and what is blacklisted, and the session does the loading; the one whose name is
 //! `argv[1]` becomes a [`PluginRef`] (its file *and* its id in it, so a bundle
 //! that exports several loads the one that was picked); the session loads it,
 //! hosts it, and bounces four beats of it to `out.wav`. An instrument plays a
@@ -23,7 +24,7 @@
 
 use std::path::PathBuf;
 
-use tutti::plugin::catalog::{CatalogConfig, Plugins};
+use tutti::plugin::catalog::CatalogConfig;
 use tutti::prelude::*;
 use tutti::ump::{Address, Message, NoteNumber, U7, Ump, Voice1};
 
@@ -42,33 +43,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    nothing is kept between runs); the scan probes every file it finds in a
     //    `plugin-probe` subprocess, so a plugin that crashes the probe is
     //    blacklisted, not loaded into this process.
-    let mut plugins = Plugins::empty(CatalogConfig::new(
+    let mut catalog = Catalog::empty(CatalogConfig::new(
         std::env::temp_dir().join("tutti-plugin-host-example.db"),
         dirs,
     ));
-    let scanned = plugins.rescan()?;
+    let scanned = catalog.scan()?;
     eprintln!("scanned {} plugin file(s)", scanned.scanned);
 
     // 2. Pick by name. An entry knows its file, its format and its descriptor;
     //    the ref made from it is what the load and a saved state both name.
-    let entry = plugins
+    let entry = catalog
         .entries()
         .find(|e| e.descriptor.name == name)
         .ok_or_else(|| format!("no plugin named {name:?} in the scan"))?;
     let instrument = entry.is_instrument();
-    let plugin = PluginRef::from(&entry);
+    // `Hosting::Auto` is what a ref starts with: CLAP, VST3 and AU are served
+    //    from a `plugin-server` process, VST2 runs here. `Hosting::InProcess`
+    //    asks for this process where the format allows it.
+    let plugin = PluginRef::from(&entry).with_hosting(Hosting::Auto);
     eprintln!("{name}: {:?} in {}", plugin.id(), plugin.path().display());
 
     // 3. Load it into an offline session. The load is a job (a server launch
-    //    blocks); here it runs on this thread. The thread that loads an
-    //    in-process plugin (VST2) is the main thread: claim the token once.
+    //    blocks); here it runs on this thread. The load names the catalog, so a
+    //    plugin it blacklisted is refused here (`BridgeError::Blacklisted`),
+    //    before any server starts. The thread that loads an in-process plugin
+    //    is the main thread: claim the token once.
     let mut session = Session::builder().build_offline(
         RATE,
         ChannelLayout::STEREO,
         MaxBlock::of(Samples(512)),
     )?;
     let main = tutti::plugin::MainThread::claim()?;
-    let node = session.add_plugin_blocking(&main, PluginLoadRequest::new(plugin))?;
+    let loaded = session
+        .plugin_load(PluginLoadRequest::new(plugin))
+        .with_catalog(&catalog)
+        .run();
+    let node = session.add_plugin(&main, loaded)?;
 
     // 4. Wire it: the plugin's outputs feed the root's channels.
     session.graph().connect(node, Root)?;

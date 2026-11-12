@@ -52,7 +52,7 @@ type ProbeFn =
 /// out-of-process one); unchanged ones (same modification time) are skipped. A
 /// plugin that fails to load, hangs or crashes its probe is blacklisted with the
 /// reason, and a sentinel file (the "dead-man's pedal") blacklists the plugin a
-/// crashed scan was probing on the next run. `tutti_plugin::catalog::Plugins`
+/// crashed scan was probing on the next run. `tutti_plugin::catalog::Catalog`
 /// drives a scanner for most hosts.
 ///
 /// A scanner holds no database. Every scan takes the database it reads from and
@@ -655,7 +655,7 @@ mod tests {
     /// caller with a `Vec<String>`, a borrowed config field, or a filtered
     /// iterator does not have to materialise a `Vec<PathBuf>` first. Each arm
     /// here is a distinct shape that fails to compile under a narrower
-    /// signature: `&Vec<PathBuf>` is what `Plugins::rescan` passes, `[&str; 1]`
+    /// signature: `&Vec<PathBuf>` is what `Catalog::scan` passes, `[&str; 1]`
     /// covers the no-PathBuf-in-sight caller, and the `filter` covers a lazy
     /// iterator with no length to read.
     #[test]

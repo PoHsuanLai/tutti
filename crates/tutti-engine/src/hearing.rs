@@ -55,14 +55,34 @@ pub enum HeardTapError {
     /// the session's reclaim phase closes a tap whose reader is gone).
     #[error("the output tap already has a reader; close it before opening again")]
     Busy,
-    /// The audio thread has not yet taken the last installs (it is not
-    /// rendering). Try again once it has.
-    #[error("the audio thread has not yet taken the last tap installs")]
-    Backpressure,
     /// [`HeardTaps::close`] found no tap open (none was opened, or it was
     /// closed, or its dropped reader was reclaimed).
     #[error("no output tap is open")]
     NotOpen,
+}
+
+/// What [`HeardTaps::open`] did: opened the tap, or found the audio thread
+/// behind. Not a [`HeardTapError`]: that says a call was refused for good (a
+/// reader is alive, nothing is open), and this one is a moment that passes.
+#[derive(Debug)]
+#[must_use = "a Retry opened nothing"]
+pub enum HeardOpen {
+    /// The tap is open: this reads it. It flows from the first render that
+    /// begins after the call returned.
+    Opened(TapReader),
+    /// The audio thread has not yet taken the last installs (it is not
+    /// rendering). Nothing was opened or changed; call again once it has.
+    Retry,
+}
+
+impl HeardOpen {
+    /// The reader, or `None` for a [`Retry`](Self::Retry).
+    pub fn reader(self) -> Option<TapReader> {
+        match self {
+            Self::Opened(reader) => Some(reader),
+            Self::Retry => None,
+        }
+    }
 }
 
 /// The control side of the engine's after-the-fader tap: cheap to clone,
@@ -153,16 +173,17 @@ impl HeardTaps {
     /// ([`TapReader::take_lost`]). Flows from the first call of the engine's
     /// render that begins after this returns.
     ///
+    /// Returns [`HeardOpen::Retry`], opening nothing, while the audio thread
+    /// has not taken the last installs.
+    ///
     /// # Errors
     ///
-    /// [`HeardTapError::Busy`] while another reader of the tap is alive;
-    /// [`HeardTapError::Backpressure`] while the audio thread has not taken
-    /// the last installs.
+    /// [`HeardTapError::Busy`] while another reader of the tap is alive.
     pub fn open(
         &self,
         width: ChannelLayout,
         capacity: Samples,
-    ) -> Result<TapReader, HeardTapError> {
+    ) -> Result<HeardOpen, HeardTapError> {
         let mut c = self.control();
         c.settle();
         if c.alive() {
@@ -170,14 +191,14 @@ impl HeardTaps {
         }
         // One slot stays free for a close.
         if c.owed_close || c.install.vacant_len() <= 1 {
-            return Err(HeardTapError::Backpressure);
+            return Ok(HeardOpen::Retry);
         }
         let (reader, writer) = TapReader::pair(TapId(0), usize::from(width.count()), capacity);
         if c.install.try_push(Some(Box::new(writer))).is_err() {
             unreachable!("the queue has a free slot");
         }
         c.reader = Some(reader.watch());
-        Ok(reader)
+        Ok(HeardOpen::Opened(reader))
     }
 
     /// Closes the tap from the next call of the engine's render on. The

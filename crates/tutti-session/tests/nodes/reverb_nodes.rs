@@ -57,9 +57,9 @@ fn the_graph_sees_each_reverbs_ceiling() {
         FdnControls::DEFAULT,
     ));
     let _ = s.update();
-    let Tail::Finite(n) = s.graph_ref().node_tail(plain) else {
+    let Tail::Finite(n) = s.graph_ref().node_tail(plain).unwrap() else {
         panic!("finite")
     };
     assert!(n.get() as f64 / 48_000.0 > 8.0);
-    assert_eq!(s.graph_ref().node_tail(frozen), Tail::Unbounded);
+    assert_eq!(s.graph_ref().node_tail(frozen).unwrap(), Tail::Unbounded);
 }

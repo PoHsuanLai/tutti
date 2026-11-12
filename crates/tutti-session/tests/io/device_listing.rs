@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_cpal::{DeviceId, DeviceInfo, DeviceListing, ManualStreamDriver, OutputSpec};
+use tutti_cpal::{DeviceId, DeviceListing, ManualStreamDriver, OutputSpec};
 use tutti_session::{Session, SessionEvent};
 use tutti_types::{ChannelLayout, SampleRate};
 
@@ -33,12 +33,7 @@ fn a_blocked_enumeration_does_not_hold_the_update_and_lands_when_it_answers() {
     s.list_outputs(
         DeviceListing::spawn_with(move || {
             held.recv().ok();
-            Ok(["Card", "USB"]
-                .into_iter()
-                .map(|n| DeviceInfo {
-                    id: DeviceId::new(n),
-                })
-                .collect())
+            Ok(["Card", "USB"].into_iter().map(DeviceId::new).collect())
         })
         .expect("the listing thread starts"),
     );

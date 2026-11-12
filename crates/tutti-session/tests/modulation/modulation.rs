@@ -563,6 +563,7 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
     assert_eq!(
         s.compensation().to_vec().as_slice(),
         s.graph_ref()
+            .testing()
             .sent_compensation()
             .expect("a plan was sent")
             .channels(),
@@ -649,6 +650,7 @@ fn an_own_edit_after_a_steady_state_applies() {
     let range = s
         .graph()
         .param_mod(probe, UnitParam::Cutoff)
+        .unwrap()
         .expect("a modulated port")
         .range;
     assert_eq!(range.max, 2_000.0, "the range edit is stored");

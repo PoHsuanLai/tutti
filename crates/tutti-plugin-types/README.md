@@ -47,7 +47,9 @@ parameter through [`ParameterInfo`]'s own accessors ([`bounds`], [`default_value
 [`step_count`], [`flag`]) — the variants exist for the host that
 must produce them, not as the reading path. A range is data for display: the
 plain value of a normalized one is the format's answer
-([`AnyThread::parameter_plain`]), never a formula over `bounds`.
+([`AnyThread::parameter_plain`]: each format's own [`ParamMapping`], held to its
+laws by `contract::mapping_contract!` under the `contract` feature), never a
+formula over `bounds`.
 
 ## Example
 
@@ -133,6 +135,9 @@ All four format hosts and `tutti-plugin` depend on it.
   [`EditorCapabilities`], [`WindowHandle`], and the metadata that rides the
   plugin-load reply). Required by the plugin IPC protocol (postcard); a host
   crate that does no IPC does not pay for the dependency.
+- `contract` — the `contract` module: `mapping_contract!`, the laws a
+  [`ParamMapping`] is held to. Test support, off by default; a format host turns
+  it on in its dev-dependency.
 
 ## License
 
@@ -163,3 +168,4 @@ MIT OR Apache-2.0
 [`step_count`]: crate::ParameterInfo::step_count
 [`flag`]: crate::ParameterInfo::flag
 [`AnyThread::parameter_plain`]: crate::AnyThread::parameter_plain
+[`ParamMapping`]: crate::ParamMapping

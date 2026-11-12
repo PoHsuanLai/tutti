@@ -173,7 +173,7 @@ pub struct Engine {
     /// Records each block's render time against its budget.
     load: AudioThreadCell<LoadRecorder>,
     /// The reading half of `load`.
-    meter: LoadMeter,
+    meter: Option<LoadMeter>,
     /// The tap after the fader, the audio thread's ends.
     hearing: AudioThreadCell<crate::hearing::Hearing>,
     /// Its control side.
@@ -340,7 +340,7 @@ impl Engine {
             fader: AudioThreadCell::new(Fader::new(fade_frames(rate))),
             capacity: Samples(stride),
             load: AudioThreadCell::new(recorder),
-            meter,
+            meter: Some(meter),
             hearing: AudioThreadCell::new(hearing),
             heard_taps,
             clock_reader,
@@ -410,8 +410,10 @@ impl Engine {
 
     /// The DSP-load meter every [`process`](Self::process) and
     /// [`process_segment`](Self::process_segment) call feeds: the call's
-    /// wall time against its block's real-time budget. Clone it to read from
-    /// another thread.
+    /// wall time against its block's real-time budget. `None` once a host has
+    /// taken it ([`take_load_meter`](Self::take_load_meter)); until then it
+    /// can be read with [`peek`](LoadMeter::peek) and
+    /// [`reset`](LoadMeter::reset), which leave the peak for the one reader.
     ///
     /// What it times is the whole call, which is what a device deadline
     /// counts, the plan's meter ops included; a driver's own work around
@@ -424,8 +426,15 @@ impl Engine {
     /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced). Events the
     /// graph dropped (an event port past its capacity) are counted in
     /// [`LoadReading::dropped_events`](tutti_metering::LoadReading::dropped_events).
-    pub fn load_meter(&self) -> &LoadMeter {
-        &self.meter
+    pub fn load_meter(&self) -> Option<&LoadMeter> {
+        self.meter.as_ref()
+    }
+
+    /// Hands the DSP-load meter's reader to its one consumer, which owns it
+    /// from here ([`load_meter`](Self::load_meter) has what the call took).
+    /// `None` when it was taken already.
+    pub fn take_load_meter(&mut self) -> Option<LoadMeter> {
+        self.meter.take()
     }
 
     /// A reader of the block clock: each [`process`](Self::process) and
@@ -1294,7 +1303,9 @@ mod tests {
         let mut tap = engine
             .heard_taps()
             .open(ChannelLayout::STEREO, Samples(256))
-            .expect("opens");
+            .expect("opens")
+            .reader()
+            .expect("the audio thread is not behind");
         let mut buf = vec![1.0f32; 64 * 2];
         let mut seg = vec![1.0f32; 32 * 2];
         {
@@ -1526,13 +1537,13 @@ mod tests {
             engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
             engine.process_segment(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
         }
-        let r = engine.load_meter().peek();
+        let r = engine.load_meter().expect("not taken").peek();
         assert_eq!((r.silenced, r.blocks), (2, 0));
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        let r = engine.load_meter().peek();
+        let r = engine.load_meter().expect("not taken").peek();
         assert_eq!((r.silenced, r.blocks), (2, 1));
-        engine.load_meter().reset();
-        assert_eq!(engine.load_meter().peek().silenced, 0);
+        engine.load_meter().expect("not taken").reset();
+        assert_eq!(engine.load_meter().expect("not taken").peek().silenced, 0);
     }
 
     /// `width` outputs, channel `c` holding `10 * width + c + 1`.
@@ -1679,7 +1690,7 @@ mod tests {
             ChannelLayout::from(40u16),
         ));
         assert!(out.iter().all(|&s| s == 0.0));
-        assert_eq!(engine.load_meter().peek().silenced, 1);
+        assert_eq!(engine.load_meter().expect("not taken").peek().silenced, 1);
     }
 
     /// A root the device has no place for (five channels into three: either
@@ -1699,13 +1710,13 @@ mod tests {
         let mut out = vec![-9.0f32; 3 * 8];
         engine.process_segment(&mut InterleavedMut::new(&mut out, three));
         assert!(out.iter().all(|&s| s == 0.0), "{out:?}");
-        assert_eq!(engine.load_meter().peek().silenced, 1);
+        assert_eq!(engine.load_meter().expect("not taken").peek().silenced, 1);
         let seven = ChannelLayout::from(7u16);
         let mut out = vec![-9.0f32; 7 * 8];
         engine.process_segment(&mut InterleavedMut::new(&mut out, seven));
         // Ramp(5) writes 51..=55; the rest of the 7-wide device is silent.
         assert_eq!(&out[..7], &[51.0, 52.0, 53.0, 54.0, 55.0, 0.0, 0.0]);
-        assert_eq!(engine.load_meter().peek().silenced, 1);
+        assert_eq!(engine.load_meter().expect("not taken").peek().silenced, 1);
     }
 
     /// Renders one 8-frame segment of the committed graph into a device of `device`

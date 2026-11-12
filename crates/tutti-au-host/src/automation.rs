@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use tutti_au_ffi::{ParamEvent, RenderNotification, RenderPhase, RenderUnit, ScheduleAddress};
-use tutti_plugin_types::ParameterQueue;
+use tutti_plugin_types::{ParamMapping, ParameterQueue};
 use tutti_rt::AudioThreadCell;
 
 use crate::ranges::ParamBounds;
@@ -76,7 +76,7 @@ impl Stage {
         }
         let mut end = 0.0;
         for point in queue.points.iter() {
-            end = bounds.to_plain(point.value.get());
+            end = bounds.plain(point.value) as f32;
             self.events.push(ParamEvent::Immediate {
                 buffer_offset: u32::try_from(point.sample_offset).unwrap_or(0),
                 value: end,

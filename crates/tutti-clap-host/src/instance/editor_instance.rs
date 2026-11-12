@@ -14,6 +14,7 @@ use tutti_plugin_types::{
 };
 
 use super::ClapLoaded;
+use super::control::denormalize;
 use crate::ParamBounds;
 use crate::types::ClapParamFlags;
 
@@ -112,10 +113,7 @@ impl Editor for ClapEditor {
         if bounds.is_some_and(|b| b.read_only) {
             return;
         }
-        let plain = match bounds {
-            Some(b) => b.plain(value.get()),
-            None => value.get(),
-        };
+        let plain = denormalize(bounds.copied(), value);
         self.inner.set_plain_value(main, id.get(), plain);
     }
 
@@ -336,7 +334,7 @@ mod tests {
 
         for host_value in [0.0_f64, 0.25, 0.5, 0.75, 1.0] {
             // What `set_parameter` would hand the plugin...
-            let plain = CUTOFF.plain(host_value);
+            let plain = denormalize(Some(CUTOFF), Normalized::of(host_value));
             // ...and what the editor reporting that same position comes back as.
             let heard = ClapEvent::param_value(0, id, plain)
                 .heard(&ranges)

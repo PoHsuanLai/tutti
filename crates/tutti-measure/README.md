@@ -119,7 +119,7 @@ let reading = correlate(planes);
 ## Reading from a running graph
 
 Nothing here knows about the graph, so the seam is a tap (`tutti-graph`'s
-`Editor::open_tap`, or a session's `Graph::open_tap`): the audio thread copies
+`Editor::open_tap`, or a session's `Graph::taps().open`): the audio thread copies
 the sources into a ring a lane and a control thread drains them through the
 `TapReader`. What arrives on this side is an ordinary `&[f32]`, which is the
 whole reason these algorithms need no engine vocabulary.

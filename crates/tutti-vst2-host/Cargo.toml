@@ -39,6 +39,8 @@ tutti-vst2-ffi = { path = "../tutti-vst2-ffi" }
 # The README's editor example takes any `raw-window-handle` window.
 raw-window-handle = "0.6"
 tutti-vst2-ffi = { path = "../tutti-vst2-ffi", features = ["test-support"] }
+# `mapping_contract!`: the laws `IntegerRange` is held to.
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }

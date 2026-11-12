@@ -137,7 +137,10 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
     assert!(ins.is_empty(), "no input channels, no input bus");
     assert_eq!(outs.len(), 1);
     assert_eq!(outs.get(0).unwrap().topology, named(2));
-    assert_eq!(g.buses(NodeKey(u64::MAX)), None);
+    assert_eq!(
+        g.buses(NodeKey(u64::MAX)).unwrap_err().node(),
+        NodeKey(u64::MAX)
+    );
 
     g.connect(OutPort::new(r.own, 0), InPort::new(r.sink, 0))
         .unwrap()
@@ -150,14 +153,14 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
         .hard();
     assert!(g.is_edited());
     assert_eq!(
-        g.bus_sources(BusRef::new(r.sink, 0)),
+        g.bus_sources(BusRef::new(r.sink, 0)).unwrap(),
         [BusSource::Node(bus(r.stereo))]
     );
     // A second connect of the same edge is the same edge.
     g.connect(BusSource::Node(bus(r.stereo)), bus(r.sink))
         .unwrap()
         .hard();
-    assert_eq!(g.bus_sources(BusRef::new(r.sink, 0)).len(), 1);
+    assert_eq!(g.bus_sources(BusRef::new(r.sink, 0)).unwrap().len(), 1);
     // The fold (0.5 * 0.25 + 0.5 * 0.75) summed with the ordinary source
     // (bus edge's node sorts first): (0.125 + 0.375) + 0.125.
     let want = (0.5f32 * 0.25 + 0.5 * 0.75) + 0.125;
@@ -165,12 +168,18 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
     assert!(all_are(&out0(&mut r.s), want));
 
     let g = r.s.graph();
-    assert!(g.disconnect_hard(BusSource::Node(bus(r.stereo)), bus(r.sink)));
-    assert!(!g.disconnect_hard(BusSource::Node(bus(r.stereo)), bus(r.sink)));
+    assert!(
+        g.disconnect_hard(BusSource::Node(bus(r.stereo)), bus(r.sink))
+            .unwrap()
+    );
+    assert!(
+        !g.disconnect_hard(BusSource::Node(bus(r.stereo)), bus(r.sink))
+            .unwrap()
+    );
     assert!(g.is_edited());
-    assert!(g.bus_sources(BusRef::new(r.sink, 0)).is_empty());
+    assert!(g.bus_sources(BusRef::new(r.sink, 0)).unwrap().is_empty());
     assert_eq!(
-        g.sources(InPort::new(r.sink, 0)),
+        g.sources(InPort::new(r.sink, 0)).unwrap(),
         [OutPort::new(r.own, 0)],
         "the author's own source stays"
     );
@@ -199,8 +208,11 @@ fn a_bus_edge_fades_in_and_out_lane_by_lane() {
     assert!(all_are(&out0(&mut r.s), 0.5), "at the fold's weight");
 
     let g = r.s.graph();
-    assert!(g.disconnect(BusSource::Node(bus(r.stereo)), bus(r.sink)));
-    assert!(g.bus_sources(BusRef::new(r.sink, 0)).is_empty());
+    assert!(
+        g.disconnect(BusSource::Node(bus(r.stereo)), bus(r.sink))
+            .unwrap()
+    );
+    assert!(g.bus_sources(BusRef::new(r.sink, 0)).unwrap().is_empty());
     let down = out0(&mut r.s);
     assert_eq!(down[0], 0.5, "leaves from the weight it had");
     assert!(down[BLOCK - 1] < down[0]);
@@ -245,7 +257,7 @@ fn a_refused_bus_edge_changes_nothing() {
         Err(ConnectError::Bus(BusError::NoSuchNode { .. }))
     ));
     assert!(!g.is_edited());
-    assert!(g.bus_sources(BusRef::new(r.sink, 0)).is_empty());
+    assert!(g.bus_sources(BusRef::new(r.sink, 0)).unwrap().is_empty());
 }
 
 /// The weights of a bus edge's lanes are the fold's: the session refuses an
@@ -267,7 +279,7 @@ fn a_lane_takes_no_session_gain_and_a_removed_node_takes_its_bus_edges() {
 
     let g = r.s.graph();
     g.remove(r.stereo).unwrap();
-    assert!(g.bus_sources(BusRef::new(r.sink, 0)).is_empty());
+    assert!(g.bus_sources(BusRef::new(r.sink, 0)).unwrap().is_empty());
     // The removed node's lanes fade out over 256 frames before they go.
     let silent = (0..64).any(|_| all_are(&out0(&mut r.s), 0.0));
     assert!(silent, "the lanes faded out");
@@ -314,7 +326,7 @@ fn a_bus_into_the_declared_root_renders_the_itu_rows() {
         .expect("5.1 folds to stereo")
         .hard();
     assert!(g.is_edited());
-    assert_eq!(g.bus_sources(Root), [BusSource::Node(bus(src))]);
+    assert_eq!(g.bus_sources(Root).unwrap(), [BusSource::Node(bus(src))]);
     let [l, r] = stereo_block(&mut s);
     // The unity lane is a plain addend, the others weighted, in source order.
     let left = ((0.0f32 + 0.5) + M3DB * 0.125) + M3DB * 0.0625;
@@ -323,8 +335,8 @@ fn a_bus_into_the_declared_root_renders_the_itu_rows() {
     assert!(all_are(&r, right), "{:?}", &r[..2]);
 
     let g = s.graph();
-    assert!(g.disconnect_hard(BusSource::Node(bus(src)), Root));
-    assert!(!g.disconnect_hard(BusSource::Node(bus(src)), Root));
+    assert!(g.disconnect_hard(BusSource::Node(bus(src)), Root).unwrap());
+    assert!(!g.disconnect_hard(BusSource::Node(bus(src)), Root).unwrap());
     assert!(g.is_edited());
     let [l, r] = stereo_block(&mut s);
     assert!(all_are(&l, 0.0) && all_are(&r, 0.0));
@@ -342,7 +354,7 @@ fn an_undeclared_root_refuses_a_bus_edge() {
         Some(ConnectError::Bus(BusError::RootUndeclared))
     );
     assert!(!g.is_edited());
-    assert!(g.bus_sources(Root).is_empty());
+    assert!(g.bus_sources(Root).unwrap().is_empty());
 }
 
 /// A re-declaration that changes the root under a root edge re-lowers it at

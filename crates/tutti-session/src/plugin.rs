@@ -42,7 +42,7 @@
 //!   [`SessionEvent::PluginDied`].
 //! - **Latency.** The figure its node declares now
 //!   (`PluginControls::declared_latency`) is handed to the graph when it
-//!   moved ([`Graph::refresh_node_latency`](crate::Graph::refresh_node_latency)):
+//!   moved (`Graph::refresh_node_latency`):
 //!   [`SessionEvent::PluginLatencyChanged`].
 //! - **GUI edits** (`modulation`). The values the plugin reported go into
 //!   its mirror, and into the knob of the lane on that parameter when it
@@ -1370,7 +1370,7 @@ impl Session {
                 return;
             }
         }
-        let latency_after = self.graph.node_latency(node);
+        let latency_after = self.graph.node_latency(node).unwrap_or_default();
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
             return;
         };
@@ -1588,7 +1588,7 @@ impl Session {
                     // observation, and every unhealthy one carries the
                     // engine's latched cause.
                     let cause = cause.unwrap_or_default();
-                    let latency = self.graph.node_latency(node);
+                    let latency = self.graph.node_latency(node).unwrap_or_default();
                     let hosted = self
                         .graph
                         .plugins
@@ -1707,7 +1707,7 @@ impl Session {
             {
                 out.push(SessionEvent::PluginLatencyChanged {
                     node,
-                    latency: self.graph.node_latency(node),
+                    latency: self.graph.node_latency(node).unwrap_or_default(),
                 });
             }
             if let Some(snapshot) = snapshot {

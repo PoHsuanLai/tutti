@@ -111,11 +111,11 @@ fn each_mode_reaches_the_running_node() {
 #[test]
 fn mode_reads_back_what_was_set() {
     let mut r = rig();
-    assert_eq!(r.s.graph_ref().mode(r.halve), NodeMode::Active);
+    assert_eq!(r.s.graph_ref().mode(r.halve).unwrap(), NodeMode::Active);
     r.s.graph().set_mode(r.halve, NodeMode::Bypassed).unwrap();
-    assert_eq!(r.s.graph_ref().mode(r.halve), NodeMode::Bypassed);
+    assert_eq!(r.s.graph_ref().mode(r.halve).unwrap(), NodeMode::Bypassed);
     r.s.graph().set_mode(r.halve, NodeMode::Muted).unwrap();
-    assert_eq!(r.s.graph_ref().mode(r.halve), NodeMode::Muted);
+    assert_eq!(r.s.graph_ref().mode(r.halve).unwrap(), NodeMode::Muted);
 }
 
 /// A mode is a control: setting one marks nothing edited, and the next
@@ -123,15 +123,19 @@ fn mode_reads_back_what_was_set() {
 #[test]
 fn a_mode_is_not_an_edit() {
     let mut r = rig();
-    let plan = r.s.graph_ref().sent_plan().expect("a plan");
-    let sent = r.s.graph_ref().commits_sent();
+    let plan = r.s.graph_ref().testing().sent_plan().expect("a plan");
+    let sent = r.s.graph_ref().testing().commits_sent();
 
     r.s.graph().set_mode(r.halve, NodeMode::Bypassed).unwrap();
     assert!(!r.s.graph_ref().is_edited(), "a mode marks nothing edited");
     let _ = r.settled();
 
-    assert_eq!(r.s.graph_ref().commits_sent(), sent, "no commit was sent");
-    let now = r.s.graph_ref().sent_plan().expect("a plan");
+    assert_eq!(
+        r.s.graph_ref().testing().commits_sent(),
+        sent,
+        "no commit was sent"
+    );
+    let now = r.s.graph_ref().testing().sent_plan().expect("a plan");
     assert!(std::sync::Arc::ptr_eq(&plan, &now), "the same plan");
 }
 
@@ -145,7 +149,7 @@ fn a_missing_node_is_refused() {
         r.s.graph().set_mode(stranger, NodeMode::Muted),
         Err(ModeError::NoSuchNode { node: stranger })
     );
-    assert_eq!(r.s.graph_ref().mode(stranger), NodeMode::Active);
+    assert_eq!(r.s.graph_ref().mode(stranger).unwrap_err().node(), stranger);
 
     r.s.graph().set_mode(r.halve, NodeMode::Muted).unwrap();
     r.s.graph().remove(r.halve).unwrap();
@@ -154,8 +158,8 @@ fn a_missing_node_is_refused() {
         Err(ModeError::NoSuchNode { node: r.halve })
     );
     assert_eq!(
-        r.s.graph_ref().mode(r.halve),
-        NodeMode::Active,
-        "a removed node's mode goes with it"
+        r.s.graph_ref().mode(r.halve).unwrap_err().node(),
+        r.halve,
+        "a removed node's mode goes with it, and asking for it is refused"
     );
 }

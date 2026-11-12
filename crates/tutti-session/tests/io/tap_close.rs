@@ -35,7 +35,8 @@ fn opening_a_tap_yields_a_reader_that_sees_the_rendered_frames() {
     s.render_frame(&mut out);
     let mut reader = s
         .graph()
-        .open_output_tap(Samples(64))
+        .taps()
+        .open_output(Samples(64))
         .expect("the sources exist");
     for _ in 0..3 {
         s.render_frame(&mut out);
@@ -57,13 +58,14 @@ fn closing_the_tap_stops_the_copy() {
     let mut s = session();
     let mut reader = s
         .graph()
-        .open_output_tap(Samples(64))
+        .taps()
+        .open_output(Samples(64))
         .expect("the sources exist");
     let mut out = [0.0f32];
     s.render_frame(&mut out);
-    s.graph().close_tap(reader.id()).unwrap();
+    s.graph().taps().close(reader.id()).unwrap();
     assert_eq!(
-        s.graph().close_tap(reader.id()),
+        s.graph().taps().close(reader.id()),
         Err(CloseError::Tap(reader.id())),
         "a closed tap is not open"
     );
@@ -88,7 +90,8 @@ fn a_session_without_a_tap_renders_untouched() {
     assert_eq!(out[0], 0.25);
     let reader = s
         .graph()
-        .open_output_tap(Samples(64))
+        .taps()
+        .open_output(Samples(64))
         .expect("the sources exist");
     assert_eq!(
         reader.available(),

@@ -46,7 +46,11 @@ pub trait Subject {
     /// compiler. A subject whose declaration is not what it does says what it
     /// does.
     fn lag(rig: &Rig) -> usize {
-        rig.session.graph_ref().node_latency(rig.node).get()
+        rig.session
+            .graph_ref()
+            .node_latency(rig.node)
+            .unwrap()
+            .get()
     }
 }
 
@@ -190,7 +194,7 @@ pub fn tail_covers_the_ring_out<S: Subject>() {
     rig.render_to(end);
     let last = rig.last_audible().expect("it sounded");
     let rang = last.saturating_sub(rig.t(OFF) + S::lag(&rig));
-    let tail = rig.session.graph_ref().node_tail(rig.node);
+    let tail = rig.session.graph_ref().node_tail(rig.node).unwrap();
     let declared = match tail {
         Tail::None | Tail::Unknown => 0,
         Tail::Finite(n) => n.get(),
@@ -453,6 +457,7 @@ pub fn a_fork_starts_silent_and_plays<S: Subject>() {
     let mut fork = rig
         .session
         .graph_ref()
+        .testing()
         .fork_live()
         .expect("the instrument forks");
     let mut out = vec![Vec::new(), Vec::new()];

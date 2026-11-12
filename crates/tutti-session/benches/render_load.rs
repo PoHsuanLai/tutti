@@ -378,7 +378,7 @@ struct Figures {
 
 fn measure(block: usize, workers: usize, variant: Variant) -> Figures {
     let s = scene(block, workers, variant);
-    let meter = s.load_meter().expect("an offline engine").clone();
+    let meter = s.load_meter().expect("an offline engine");
     let mut out = vec![0.0f32; block * 2];
     let blocks = |span: Seconds| span.to_samples(SampleRate(RATE)).get().div_ceil(block);
     let warm = blocks(WARM);

@@ -69,6 +69,9 @@ libm = "0.2.15"
 # those targets when the feature is off — see `tutti-sampler`'s manifest.
 tutti-nodes = { path = ".", features = ["testing"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# `check_range_contract` for `TailCeiling`, and `Seconds`'s serde for it.
+serde = "1"
+tutti-types = { path = "../tutti-types", default-features = false, features = ["serde"] }
 approx = "0.5"
 # An independent RBJ-cookbook biquad, as a second opinion on the SVF's magnitude
 # response in `tests/filters/oracle_biquad.rs`. Adds no transitive crates — `num-traits`

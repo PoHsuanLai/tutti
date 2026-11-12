@@ -1836,7 +1836,7 @@ pub struct DesignNode<D: NodeDesign> { /* design, realization, params: Params<D:
 (`Tracks` is the old `PARKS = true`, `Unknown` the old `false`, `Silent` declares `Tail::None` and never
 parks: a memoryless or gain-only family whose detector must see every block). **As built (the delay lane's
 PR 1):** the const is `NodeFamily::rings(&self)`, the instance's, since the chorus's tail kind follows a construction
-value (finite only without feedback), and `Rings::Ceiling(Seconds)` declares a fixed finite ceiling at the prepared rate
+value (finite only without feedback), and `Rings::Ceiling(TailCeiling)` (a checked time: finite, not negative; core review of #705) declares a fixed finite ceiling at the prepared rate
 that never narrows, cuts or parks (the General MIDI chorus: its longest delay); `UnitParam::CrossFeedback` (34) gives
 the delay's cross-feedback a port. `ControlSet` gained
 `control(k) -> Control`, how the reader takes control `k`: a `ControlRead` (`Glide`, the default; `Whole`, a moved cell

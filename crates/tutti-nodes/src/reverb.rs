@@ -56,7 +56,68 @@ pub enum Rings {
     /// General MIDI chorus: its longest delay, since it has no feedback): the node
     /// declares [`Tail::Finite`] of it at the prepared rate and never narrows, cuts or
     /// parks (the graph's silence skip reads the ceiling). A ceiling errs long.
-    Ceiling(Seconds),
+    Ceiling(TailCeiling),
+}
+
+/// The longest a family can ring, as a fixed ceiling ([`Rings::Ceiling`]): a time that is
+/// finite and not negative.
+///
+/// A range-checked value (CLAUDE.md, "Range-checked values"): [`new`](Self::new) refuses a
+/// NaN, an infinite or a negative time and never clamps, since the ceiling becomes the
+/// [`Tail::Finite`] the graph reads, and an unchecked one would declare a tail no node has.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct TailCeiling(Seconds);
+
+/// A refused tail ceiling: the raw it carries.
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("{0:?} is not a tail ceiling: it must be finite and not negative")]
+pub struct TailCeilingError(pub Seconds);
+
+impl TailCeiling {
+    /// A ceiling of `seconds`, or `None` when it is not finite or is negative. Never
+    /// clamps.
+    #[must_use]
+    pub const fn new(seconds: Seconds) -> Option<Self> {
+        let s = seconds.get();
+        if s.is_finite() && s >= 0.0 {
+            Some(Self(seconds))
+        } else {
+            None
+        }
+    }
+
+    /// A ceiling for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If [`new`](Self::new) refuses `seconds`.
+    #[must_use]
+    pub const fn of(seconds: Seconds) -> Self {
+        match Self::new(seconds) {
+            Some(c) => c,
+            None => panic!("a tail ceiling is finite and not negative"),
+        }
+    }
+
+    /// The ceiling in seconds.
+    #[must_use]
+    pub const fn get(self) -> Seconds {
+        self.0
+    }
+}
+
+impl TryFrom<Seconds> for TailCeiling {
+    type Error = TailCeilingError;
+
+    fn try_from(seconds: Seconds) -> Result<Self, TailCeilingError> {
+        Self::new(seconds).ok_or(TailCeilingError(seconds))
+    }
+}
+
+impl From<TailCeiling> for Seconds {
+    fn from(ceiling: TailCeiling) -> Seconds {
+        ceiling.0
+    }
 }
 
 /// A [`Family`] a [`FamilyNode`] can run: the design plus the cells of its
@@ -555,7 +616,7 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
                 Rings::Tracks => tail_of(self.ceiling),
                 Rings::Unknown => Tail::Unknown,
                 Rings::Silent => Tail::None,
-                Rings::Ceiling(seconds) => Tail::Finite(seconds.to_samples_ceil(self.rate)),
+                Rings::Ceiling(c) => Tail::Finite(c.get().to_samples_ceil(self.rate)),
             })
             .with_param_addrs(addrs)
     }
@@ -706,5 +767,52 @@ impl<F: NodeFamily> IntoNode for FamilyNode<F> {
 
     fn into_parts(self) -> NodeParts<ParamSet> {
         tutti_graph::param_parts(self)
+    }
+}
+
+#[cfg(test)]
+mod tail_ceiling_tests {
+    use tutti_fixtures::{RangeContract, check_range_contract};
+    use tutti_types::Seconds;
+
+    use super::TailCeiling;
+
+    // The shape `check_range_contract` checks is serde's; `TailCeiling` has none in the
+    // library (nothing persists it), so the check runs on the same `try_from` shape here.
+    impl serde::Serialize for TailCeiling {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            self.0.serialize(s)
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for TailCeiling {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            Self::try_from(<Seconds as serde::Deserialize>::deserialize(d)?)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+
+    /// `TailCeiling` keeps the range-checked shape: `new` refuses a NaN, an infinite or a
+    /// negative time and never clamps, `of` agrees, and `TryFrom` carries the refused raw,
+    /// so no declared `Tail::Finite` comes from a time that is not one.
+    #[test]
+    fn a_tail_ceiling_keeps_the_range_checked_shape() {
+        check_range_contract(&RangeContract {
+            new: TailCeiling::new,
+            get: TailCeiling::get,
+            of: Some(TailCeiling::of),
+            valid: &[Seconds(0.0), Seconds(0.005), Seconds(60.0)],
+            invalid: &[
+                Seconds(-1e-9),
+                Seconds(-1.0),
+                Seconds(f64::NAN),
+                Seconds(f64::INFINITY),
+                Seconds(f64::NEG_INFINITY),
+            ],
+        });
+        assert_eq!(
+            TailCeiling::try_from(Seconds(f64::NAN)).map_err(|e| e.0.get().is_nan()),
+            Err(true)
+        );
     }
 }

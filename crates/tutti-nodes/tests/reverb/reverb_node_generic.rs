@@ -13,7 +13,7 @@ use tutti_dsp::{
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
-use tutti_nodes::{ControlSet, FamilyNode, NodeFamily, Rings};
+use tutti_nodes::{ControlSet, FamilyNode, NodeFamily, Rings, TailCeiling};
 use tutti_types::MaxBlock;
 use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
@@ -31,7 +31,7 @@ struct Echo {
     actual: usize,
     latency: usize,
     /// A fixed ceiling to declare ([`Rings::Ceiling`]) instead of tracking the tail.
-    ceiling: Option<Seconds>,
+    ceiling: Option<TailCeiling>,
 }
 
 /// The echo's recurrence: its delay line is the state, it has no coefficients.
@@ -417,7 +417,7 @@ fn a_declared_ceiling_is_the_tail_and_is_never_narrowed_or_cut() {
         claimed: 20,
         actual: 300,
         latency: 0,
-        ceiling: Some(Seconds(0.010_01)),
+        ceiling: Some(TailCeiling::of(Seconds(0.010_01))),
     };
     let mut rig = Rig {
         node: node(echo),

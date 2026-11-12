@@ -261,23 +261,25 @@ bundle until the probe lists them all. `PluginClient::new` and `open` take a
 `&PluginRef` (`PluginRef::file` is the explicit "the file's first"); no
 path-only open is left.
 
-## Lane order
+### Lane order
 
-The plugin lane is one ordered list; each item is a PR.
+The plugin lane is one ordered list. Each item is a PR or a short series. Items 3 and 4 come from the spec audit (§6).
 
 1. 021 step 5 (#625, merged).
-2. 029 step 1 (identity and state).
-3. AU MIDI input parity (Groups, `PerNoteState`, `Narrower` in `AuProcessor::send_midi`).
-4. 029 step 6 (the catalog: `open_db`, `scan()`, one open path, `Hosting`; also the
-   probe listing every plugin of a bundle).
-5. 029 step 2 (the view; builds on Core's `Key<N>`, doc 030 §6 step 2).
-6. 029 step 3.
-7. 029 step 4.
-8. 029 step 5.
-9. 023 steps 2-3.
-10. AU completeness.
-11. Plugin MIDI out by Group, and the contract cases.
-12. 021 step 8 (docs).
+2. 029 step 1 (identity and state; #645, merged).
+3. The spec audit's correctness fixes (§6.2): the VST2 struct (#647, merged), then one PR per format (CLAP, VST3, AU, VST2).
+4. The shared-layer fixes (§6.1): each format converts its own values, one `ParamEdit` with its gesture, `f64` on the wire.
+5. AU MIDI input parity: UMP through `MusicDeviceMIDIEventList` where the unit takes it, the `Narrower` on the legacy path (§6.3).
+6. 029 step 6: the catalog (`open_db`, `scan()`, one open path, `Hosting`), the probe listing every plugin of a file, VST2 shells included.
+7. 029 step 2: the view. It builds on Core's `Key<N>` (doc 030 §6 step 2), its event ports and its `ParamRef`, and the editor servicing takes in VST3's run loop and resize (§6.3).
+8. 029 step 3, built on item 4.
+9. 029 step 4, with the buses and the transport items of §6.3.
+10. 029 step 5.
+11. 023 steps 2–3.
+12. AU completeness, including the in-process registered AU test plugin.
+13. AUv3 through the v2 bridge (§6.4) and served VST2 (§6.5). Whichever comes first builds the server's event loop.
+14. Plugin MIDI out by Group, and the contract cases.
+15. 021 step 8 (docs).
 
 ## 5. Open questions
 
@@ -287,3 +289,125 @@ The plugin lane is one ordered list; each item is a PR.
 | Q2 | Does `PluginState` carry the plugin's version, and refuse across versions? | Carry it, do not refuse: plugins read their old states. Refuse only another plugin |
 | Q3 | A window-system adapter (`tutti-plugin-winit`) as its own crate? | Yes, outside the engine's layers, depending on winit and `tutti` only; Bevy keeps its own. Owner's call: it is a new crate |
 | Q4 | Without `spawn_with`, does the session spawn its own thread, or refuse to start the job? | **Decided with core:** `std::thread` is the default spawner, and the spawner is a session facility (the bounce moves onto it) |
+
+## 6. What the spec audit changed
+
+On 2026-11-12, after step 1, each format host was read against its own spec:
+- CLAP: the 1.2.10 headers.
+- VST3: the vendored SDK and the developer portal.
+- AU: the macOS 27.2 AudioToolbox headers.
+- VST2: the 2.4 ABI headers, plus our fork.
+
+A sixth pass read the format-generic layer against all four. The reports, with every finding's spec and code citation, are kept outside the repo; this section is what they changed in the plan.
+
+### 6.1 The abstraction
+
+The audit asked for no format-specific case in the shared types. What it found are three places where the shared layer **flattened** something and got it wrong. Fixing them removes special cases:
+
+1. **Value conversion belongs to the format.**
+   - `ParamRange::Plain` treats every plain range as linear. As a result, `Normalized` means the plugin's own value for VST3 and VST2, but a position tutti invented for CLAP and AU.
+   - The consequences:
+     - A CLAP stepped parameter lands one step low, because the host computes it in `f32` and never truncates as the spec says.
+     - A VST3 parameter with a non-linear `normalizedParamToPlain` gets a wrong plain value and default, and a decreasing map runs backwards.
+     - AU's log and exponential display curves are ignored.
+   - The fix: each format converts between plain and normalized itself, and the linear assumption goes. Step 3's `TypedParam<U>` is built on that conversion, not on a range.
+2. **A parameter edit is one shared event:** `ParamEdit { id, value, gesture }`, with the gesture `Begin`, `Change` or `End`.
+   - CLAP's gesture events and `DONT_RECORD`, VST3's `beginEdit`/`performEdit`/`endEdit`, VST2's `audioMasterBeginEdit`/`EndEdit`, and AU's parameter listener all become it.
+   - The served wire carries it. Today it forwards no edit made in a plugin's own editor for VST3 in process or for AU, and no gesture at all.
+   - Step 2's `ParamChanged { gesture }` and step 3's `param.edit()` carry this type.
+3. **The wire carries `f64` parameter values.** Set, get and changed are narrowed to `f32` today, while automation points and text queries are already `f64`.
+
+Two candidates for a change to the abstraction were rejected.
+
+- **AUv3 needs nothing shared.** Asynchronous instantiation stays inside `Loaded::load`: the AU implementation keeps the main run loop turning until the unit arrives, which the header allows (it forbids blocking the main thread, not pumping it). The v3 view controller is one more `EditorWindow` implementation. Loading in process or in the system's extension process is an AU load option. Parameter ids through the v2 bridge are 32-bit.
+- **Serving VST2 does not get a VST2 case.**
+  - Out of process, CLAP and VST3 keep a second, editor-only instance in the host. VST2 cannot have one: it has no state-dirty signal, and its meters read the audio object.
+  - An experiment showed its editor *can* live in the server, on the audio instance, parented to a host window on X11.
+  - So where an editor lives becomes a generic choice of the served client (§6.5), not a variant of `OutOfProcess::Editor` and not a VST2 marker.
+  - 021 Q2 is reversed to that design.
+
+### 6.2 Fixed or found per format
+
+Each row is one PR, mostly inside one host crate.
+
+| PR | Findings | Spec |
+|---|---|---|
+| VST2 struct (#647, merged) | `VstParameterProperties::categoryLabel` is 24 bytes; it was 8, so a plugin wrote 16 bytes past a host stack buffer | aeffectx.h:71, :480 |
+| CLAP correctness | stepped values truncated as the spec says (with 6.1 item 1); `bar_number` is 0 at song position 0 (`BarNumber`'s doc claimed CLAP was 1-based); loop seconds filled; `gui.closed` serviced; the `*_COMPAT` extension ids answered; rescans raised while loaded kept; `deinit` called before unload | events.h:298, params.h, gui.h, entry.h |
+| VST3 correctness | the `IMidiMapping` table built at activation, not only on `kMidiCCAssignmentChanged`; MIDI 1.0 channel messages never sent as `DataEvent` type 0 (`kMidiSysEx`); the processor's `outputParameterChanges` delivered to the controller; in-process editor edits reported; `setupProcessing` returning `kResultFalse` refused; `inputParameterChanges` never null; a `numSamples == 0` flush while not processing | ivstmidicontrollers.h, ivstevents.h, ivstaudioprocessor.h, the portal's call sequence and FAQ |
+| AU correctness | automation scheduled at its frame (`AudioUnitScheduleParameters` with buffer offsets), not the block's last point at its head; the plugin's own edits heard through a parameter listener; `NonRealTime` parameters not written on the audio thread; a null `mData` in the input callback | AUComponent.h, AudioUnitUtilities.h |
+| VST2 correctness | an `effSetChunk` returning 0 is not a refusal (the header gives it no meaning); UI string reads do not take the audio thread's lock; `audioMasterIOChanged` re-reads the pins (S7); the state carries the program index | aeffect.h, aeffectx.h |
+
+The latent violations (no known plugin breaks on them) go into the same PRs as their format's bugs. Where a contract case can pin one, the PR adds the case:
+- CLAP's MIDI dialects, overlapping notes and READONLY writes.
+- VST3's legacy CCs 130/132–140 and the output bus index.
+- The VST2 header order of `effOpen`.
+
+### 6.3 Where the rest went
+
+| Finding | Step |
+|---|---|
+| VST2 shell plugins (`effShellGetNextPlugin`, a sub-plugin id) make "one plugin per VST2 file" false; `audioMasterCurrentId` answers 0 outside a shell | 6 (the catalog lists every plugin of a file, shells included) |
+| AU's 20 contract gaps are one missing AU shared plugin, not AU limits; the two `f32` round trips want a per-format tolerance, not a gap | AU completeness (the fixture is an in-process registered `AUAudioUnit` subclass) |
+| AU input as UMP (`MusicDeviceMIDIEventList`, `HostMIDIProtocol` / `AudioUnitMIDIProtocol`, the Group in each packet); the legacy path keeps the `Narrower`; v2 has no cable routing | AU MIDI input parity |
+| Project time computed from beats at one tempo (`transport_source.rs`), not from the `TempoMap`; VST2 extrapolates a split block's transport at the block's first tempo | a transport PR beside step 4 |
+| A VST3 aux bus without `kDefaultActive` stays inactive though the graph wires it | step 4 (buses as graph handles activate what is wired) |
+| VST3 editor: the served editor's run loop not pumped on Linux, in-process resize stubbed, no content-scale update after open | step 2 (`update()` services every editor) |
+| AUv3 | after AU completeness (§6.4) |
+| `NoteId` has no Group; note expression lacks port, channel and key | plugin MIDI out by Group |
+| Format statuses (VST3 `tresult`, AU `OSStatus`) stringified at the shared error | step 4 (`Diagnostics`) |
+| `clap-sys` 0.5.0 binds CLAP 1.2.2; only the draft `transport-control` id moved since | 021 step 8 |
+
+### 6.4 AUv3
+
+AUv3 units are hosted through Apple's v2 bridge, which the header documents as bridging "all major pieces of functionality" (AUAudioUnit.h:337). No native `AUAudioUnit` host is planned. Today a v3 unit without a view already loads, and one with a view is refused (`RequiresAsyncInstantiation`).
+
+The step:
+- **Asynchronous loading.** `AudioComponentInstantiate`, with the main thread pumping its run loop until the unit arrives. This also gives the served AU a pumped main queue, which it lacks today.
+- **The v3 editor.** `kAudioUnitProperty_RequestViewController`, embedding the view and following its size.
+- **Loading in process** when `kAudioComponentFlag_CanLoadInProcess` is set. Otherwise the system's extension process renders it over XPC, whose death the health watch must recognise.
+- **The v3 flags in the descriptor.**
+- **A test fixture:** an in-process registered `AUAudioUnit` subclass. It is the AU completeness fixture's second face, since no v3 unit can be assumed installed (none is on the test Mac).
+
+About 1.5–2.5k lines in two or three PRs.
+
+Risk: a v3 parameter address is 64-bit, while the bridge's and `ParamId` are 32-bit. Step 3 decides whether `ParamId` widens.
+
+### 6.5 Serving VST2: the editor in the server
+
+A served plugin's editor lives in one of two places:
+
+- **In the host:** an editor-only second instance. This is CLAP, VST3 and AU today, through `OutOfProcess::Editor`.
+- **In the server:** the editor opens on the served instance itself, parented to a host window. Any format may use this; VST2 can use nothing else.
+
+The choice is the served client's, made at launch. The editor loader `Ipc::launch` takes becomes optional, and a format without one gets the remote editor. It is a runtime value, not a trait marker. In the server, the editor opens through the format's own in-process editor call (`Control::open_editor`), so no format gains code for it.
+
+What changes:
+
+1. **The server's main thread runs an event loop:** socket reads, an idle timer (VST2's `effEditIdle`, about 30 Hz) and the window system's events, in one loop. Today it blocks in a socket read. This is shared work: the served AU needs a pumped main queue (§6.2), and AUv3's asynchronous load needs it too (§6.4). Whichever of the three comes first builds it.
+2. **Editor messages on the wire.**
+   - Host to server: `OpenEditor { parent, scale }`, `CloseEditor` and `SetEditorSize`. The protocol carried an `OpenEditor` until version 25.
+   - Server to host: `EditorWantsSize`, `EditorClosed` and the shared `ParamEdit { id, value, gesture }` (§6.1). For VST2, `ParamEdit` carries `audioMasterAutomate` and `BeginEdit`/`EndEdit`.
+3. **A remote editor in `Ipc`.** It is an `EditorWindow` that forwards open, close and resize over the wire, and it is what step 2's editor view holds for such a plugin.
+4. **The parent window, per OS:**
+   - **X11:** the window id is valid in another process, so the editor embeds. The server opens its own display connection and passes it in `effEditOpen`'s `value`, as LXVST hosts do.
+   - **Windows:** a parent across processes (`SetParent`) works, but it joins the two input queues, so a stalled server could freeze the host's UI. The first version is a floating owned window; embedding follows.
+   - **macOS:** no public API embeds another process's view. The editor floats, and the server runs as an app. This is step 2's `Opened::Floating`, so the API does not change.
+   - **Wayland:** limited exactly as in process, since an Xlib editor needs an X11 window.
+5. **VST2's row.**
+   - `impl OutOfProcess for Vst2Loaded`: its served load is its in-process load.
+   - A `served!` row, which takes several extensions (`.so`, `.dll`, `.vst`).
+   - The client no longer refuses VST2 (`BridgeError::NotOutOfProcess`), and the contract's `hostings` and the `check-hosting` gate gain served VST2.
+   - The `compile_fail` doctest that pins today's refusal is deleted.
+6. **Which hosting a VST2 gets** is step 6's `Hosting`. In process stays the default and served is opted into. On Linux served may become the default later, since it isolates a crash.
+
+What VST2 needs no work for:
+- **Editor sync.** With the editor on the audio instance there is no second instance to keep in step, which was the real obstacle.
+- **Audio, parameters and state.** These already work served: the server hosted VST2 audio before #625, and the experiment's served tests pass.
+
+About 1.5–2k lines, in three PRs:
+1. The event loop, the editor messages and the remote editor, with no VST2 in them.
+2. VST2's row, the client and the contract.
+3. Windows: floating, then embedded.
+
+The step comes after AU completeness.

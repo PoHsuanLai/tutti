@@ -274,7 +274,7 @@ impl Normalize {
 /// The value of an outcome no token could have cancelled.
 fn finished<T>(outcome: Outcome<T>) -> T {
     outcome
-        .finished()
+        .into_finished()
         .expect("a control with no token is never cancelled")
 }
 

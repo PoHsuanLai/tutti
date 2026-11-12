@@ -186,8 +186,8 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
             &mut Control::none(),
         )
         .expect("renders")
-        .finished()
-        .and_then(Produced::buffers)
+        .into_finished()
+        .and_then(Produced::into_buffers)
         .expect("nothing cancels a control with no token")
         .into_planes()
     };
@@ -403,7 +403,10 @@ fn an_unrenderable_stem_is_refused_by_name() {
     let (loose, _) = session.graph().add(ForkByClone(Const::mono(0.25)));
     let gone = NodeKey::fresh();
     let refusal =
-        |session: &mut Session, stem: Stem| match refused(session, buffers(0.01).stem_with(stem)) {
+        |session: &mut Session, stem: Stem<NodeKey, tutti_session::BufferStem>| match refused(
+            session,
+            buffers(0.01).stem_with(stem),
+        ) {
             BounceError::Config(why) => why,
             other => panic!("expected a refusal by name, got {other:?}"),
         };

@@ -2,6 +2,7 @@
 //! unchecked.
 
 use crate::job::is_rate;
+use tutti_codec::Wave;
 use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples};
 
@@ -71,6 +72,12 @@ pub enum RenderedError {
         /// The length of that plane.
         found: Samples,
     },
+    /// More planes than a [`ChannelLayout`] holds.
+    #[error("rendered audio has {planes} channels, and a layout holds at most 65535")]
+    TooWide {
+        /// The number of planes given.
+        planes: usize,
+    },
     /// The rate is NaN, infinite, zero or negative.
     #[error("the rate of rendered audio must be finite and positive, not {rate:?}")]
     InvalidRate {
@@ -97,6 +104,7 @@ impl Rendered {
     /// # Errors
     ///
     /// [`RenderedError::NoPlanes`] for no planes,
+    /// [`RenderedError::TooWide`] for more planes than a layout holds,
     /// [`RenderedError::UnequalPlanes`] for planes of different lengths and
     /// [`RenderedError::InvalidRate`] for a rate that is not finite and
     /// positive.
@@ -108,6 +116,11 @@ impl Rendered {
         let Some(first) = planes.first() else {
             return Err(RenderedError::NoPlanes);
         };
+        if u16::try_from(planes.len()).is_err() {
+            return Err(RenderedError::TooWide {
+                planes: planes.len(),
+            });
+        }
         if let Some((plane, other)) = planes
             .iter()
             .enumerate()
@@ -193,7 +206,8 @@ impl Rendered {
     ///
     /// [`channels`](Self::channels) is the same number as a raw stride.
     pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from(u16::try_from(self.planes.len()).unwrap_or(u16::MAX))
+        // `new` refuses more planes than a layout holds.
+        ChannelLayout::clamped(self.planes.len())
     }
 
     /// Multiplies every sample by `gain` — the apply half of a
@@ -232,6 +246,29 @@ impl Rendered {
         }
         out.resize(self.frames().interleaved_len(self.layout()), 0.0);
         tutti_types::InterleavedMut::new(out, self.layout()).interleave_from(&self.planes, 0);
+    }
+}
+
+impl From<Rendered> for Wave {
+    /// The planes as a [`Wave`] at the render's rate, one channel per plane,
+    /// in the engine's order for the width where it has one (unassigned
+    /// channels where it has none: a render keeps no topology of its own).
+    /// Infallible: a `Rendered` has at least one channel, no more than a
+    /// layout holds, and planes of one length, which is what a `Wave` is.
+    fn from(rendered: Rendered) -> Self {
+        let mut wave = Wave::with_capacity(
+            rendered.channels(),
+            rendered.sample_rate,
+            rendered.frames().get(),
+        );
+        let mut frame = vec![0.0; rendered.planes.len()];
+        for i in 0..rendered.frames().get() {
+            for (sample, plane) in frame.iter_mut().zip(&rendered.planes) {
+                *sample = plane[i];
+            }
+            wave.push_frame(&frame);
+        }
+        wave
     }
 }
 

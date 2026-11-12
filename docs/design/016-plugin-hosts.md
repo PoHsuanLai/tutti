@@ -665,7 +665,7 @@ server's `Plugin` enum, still use them.
 one.
 
 - `ClapLoaded` implements `Loaded` and `Control`; `ClapController` implements
-  `Control` and `Controller` and does not deref to `ClapLoaded`: the inherent
+  `Wraps` (so `Control`) and `Controller` and does not deref to `ClapLoaded`: the inherent
   surface the format has (editor, state contexts, ports, the `clap-extras`
   extensions) stays reachable while audio runs through `loaded()` and
   `loaded_mut()`, and a call that must also tell the Processor
@@ -1031,6 +1031,20 @@ and from CLAP and VST3:
   implement it, so `parameters`, `save_state`, `editor` and the rest are declared
   once and a caller reaches them in either state. What an active plugin adds is
   `Controller::latency` and `tail`.
+- **A Controller that holds its plugin forwards once.** The in-process formats'
+  Controllers (CLAP, VST2, VST3, AU) own the `Loaded` they were split from and answer
+  the whole surface through it. What an activation adds is one concern: the Controller
+  owns the pipeline of edits to and from the Processor. They implement `Wraps`
+  (`plugin`, `plugin_mut`, and the few points where that pipeline joins the plugin's
+  answers: `queue_write`, `after_restore`, `save_with_pending`, `collect_reports`,
+  `lost_reports`, `republish_ranges`, `tick`, with the two constants `WRITES_PLUGIN`
+  and `SWITCHES_RENDER_MODE`), each defaulting to nothing, and `Control` and
+  `EditorWindow` are implemented once for every `Wraps`. CLAP's and VST3's queue of
+  host writes (latest value per parameter, a refused reset first) is one `EditQueue`.
+  No Controller writes a forwarding method; VST2 writes none of the points. The
+  served Controller (`IpcController`) holds no plugin (it is across the wire), so it
+  implements `Control` itself and is not a `Wraps`. `Wraps` is not a supertrait of
+  `Control`, so a type that is both never makes `x.set_parameter(..)` ambiguous.
 - **`latency` and `tail` stay on the Controller.** No format documents either as
   audio-thread only, and VST3's `getLatencySamples` is `[UI-thread & Setup Done]`,
   CLAP's `latency.get` is `[main-thread & (being-activated | active)]` (the CLAP

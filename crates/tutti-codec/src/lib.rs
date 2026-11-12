@@ -3,7 +3,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // With no format feature a `Format` has no value, so every body that follows
 // one is unreachable by construction. That build compiles and writes nothing.
-#![cfg_attr(not(encode), allow(unreachable_code, unused_mut, dead_code))]
+#![cfg_attr(
+    not(encode),
+    allow(unreachable_code, unused_mut, unused_variables, dead_code)
+)]
 
 #[cfg(feature = "encode-aiff")]
 mod aiff;

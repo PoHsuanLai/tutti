@@ -104,9 +104,8 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
     let written = s
         .bounce(
             Bounce::project()
-                .format(Format::Wav(Pcm::Int24))
                 .range(Beat(0.0)..Beat(8.0))
-                .master(&path),
+                .master(&path, Format::Wav(Pcm::Int24)),
         )?
         .into_master();
     Ok(written)

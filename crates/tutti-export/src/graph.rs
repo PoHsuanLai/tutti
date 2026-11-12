@@ -138,8 +138,8 @@ impl Setup {
 ///     &mut Control::none(),
 /// )
 /// .expect("renders")
-/// .finished()
-/// .and_then(Produced::buffers)
+/// .into_finished()
+/// .and_then(Produced::into_buffers)
 /// .expect("nothing cancels it");
 /// assert_eq!(out.frames().get(), 4_800);
 /// ```

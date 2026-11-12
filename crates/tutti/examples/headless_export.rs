@@ -50,11 +50,12 @@ fn mono_tone() -> Session {
     session_with(Const::mono(0.5))
 }
 
-/// The first `seconds` of the project, 24-bit.
+/// The format of every file here.
+const FORMAT: Format = Format::Wav(Pcm::Int24);
+
+/// The first `seconds` of the project.
 fn first(seconds: f64) -> Bounce {
-    Bounce::project()
-        .format(Format::Wav(Pcm::Int24))
-        .range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
+    Bounce::project().range(Range::Seconds(Seconds(0.0), Seconds(seconds)))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,7 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. A project to a file.
     let path = dir.join("tone.wav");
-    let written = tone().bounce(first(1.0).master(&path))?.into_master();
+    let written = tone()
+        .bounce(first(1.0).master(&path, FORMAT))?
+        .into_master();
     println!("wrote {} ({written:?})", path.display());
 
     // 2. The same project into memory, and a measurement of it.
@@ -87,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     mono_tone().bounce(
         first(0.5)
             .channels(ChannelLayout::STEREO)
-            .master(&mono_path),
+            .master(&mono_path, FORMAT),
     )?;
     println!("wrote {}", mono_path.display());
 

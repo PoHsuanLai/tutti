@@ -45,7 +45,7 @@ fn input(channels: usize, frames: usize) -> Vec<f32> {
 /// in two, and its length and digest.
 fn written(format: Format, channels: u16, frames: usize) -> (usize, u64) {
     let layout = ChannelLayout::from(channels);
-    let spec = Spec::new(format, layout, SampleRate(44_100.0));
+    let spec = Spec::of_width(format, layout, SampleRate(44_100.0));
     let samples = input(usize::from(channels), frames);
     let cut = frames / 3 * usize::from(channels);
     let mut encoder = Encoder::create(&spec, Cursor::new(Vec::new())).unwrap();

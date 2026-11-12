@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let drag = param.edit()?;
         for step in 0..=4 {
-            drag.set(Normalized::clamped(f64::from(step) / 8.0));
+            drag.set(Normalized::clamped(f64::from(step) / 8.0))?;
         }
         drop(drag);
     }

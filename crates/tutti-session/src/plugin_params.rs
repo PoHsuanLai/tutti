@@ -55,19 +55,24 @@
 //! automation touches a parameter with, so the session reports the host's own
 //! begin, changes and end in the one stream with the plugin's, in order.
 //!
+//! The gesture is the one owned handle ([`ParamGesture`]): a drag spans frames,
+//! each of which calls `update` under `&mut Session`, so it cannot borrow. A
+//! shared gate stands in for the borrow and refuses a `set` once the plugin is
+//! gone.
+//!
 //! The gesture is the host's own. No hosted format has a call that tells a plugin
 //! the host holds a parameter (CLAP's and VST3's gesture events go from the
 //! plugin to the host, VST2 has none, AU's are notifications to listeners), so a
 //! plugin hears only the values.
 
 use tutti_graph::NodeKey;
-use tutti_plugin_host::Notice;
+use tutti_plugin_host::{Notice, ParamReporter, PluginHandle};
 use tutti_plugin_types::{
     AutomationMode, AutomationModeError, Normalized, ParamEdit, ParamId, ParamUnit, ParameterInfo,
     PlainUnit,
 };
 
-use crate::plugin::HostedPlugin;
+use crate::plugin::{Gate, HostedPlugin, Notices, queue};
 
 /// Why a call on a plugin's parameters did not do what it was asked.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -110,6 +115,10 @@ pub enum PluginParamError {
         /// The type asked for.
         wanted: &'static str,
     },
+    /// The plugin a [`ParamGesture`] began on is gone (removed, replaced by a
+    /// crossfade or a reload) or stopped declaring the parameter (a rescan).
+    #[error("the plugin of the gesture on parameter {0} is gone")]
+    Gone(ParamId),
     /// The value lies outside the range the parameter declares, or is not
     /// finite.
     #[error("the value lies outside the range parameter {0} declares")]
@@ -364,6 +373,9 @@ impl<'a> Param<'a> {
 
     /// The value now in the plugin's own units, through the format's own map
     /// (design 029 section 6.1); `None` where the format has none.
+    ///
+    /// A bare `f64`, on purpose: a plugin's plain value has no tutti unit unless
+    /// the plugin declares one, and [`Params::typed`] is the typed door for that.
     #[must_use]
     pub fn plain(&self) -> Option<f64> {
         self.params
@@ -373,7 +385,8 @@ impl<'a> Param<'a> {
             .parameter_plain(self.id(), self.normalized())
     }
 
-    /// Sets the parameter to `plain` in the plugin's own units, through the
+    /// Sets the parameter to `plain` in the plugin's own units (a bare `f64` for
+    /// the reason [`plain`](Self::plain) gives), through the
     /// format's own map, and returns the position it took. A value past an end
     /// of the range takes that end (the map's law).
     ///
@@ -405,50 +418,88 @@ impl<'a> Param<'a> {
     ///
     /// [`PluginParamError::ReadOnly`]: a gesture on a parameter that cannot be
     /// set is refused before it begins, so the guard's `set` cannot fail.
-    pub fn edit(&self) -> Result<ParamGesture<'a>, PluginParamError> {
+    pub fn edit(&self) -> Result<ParamGesture, PluginParamError> {
         self.writable()?;
-        self.params.hosted.hear(ParamEdit::Begin(self.id()));
-        Ok(ParamGesture { param: *self })
+        let hosted = self.params.hosted;
+        hosted.hear(ParamEdit::Begin(self.id()));
+        Ok(ParamGesture {
+            node: self.params.node,
+            id: self.id(),
+            gate: hosted.gate.clone(),
+            handle: hosted.handle.clone(),
+            notices: std::sync::Arc::clone(&hosted.notices),
+            reporter: hosted.mirror.reporter(),
+        })
     }
 }
 
 /// A host's hold on a parameter: made by [`Param::edit`], which begins the
 /// gesture, and ended when it drops.
 ///
-/// There is no way to end it but to drop it, and no way to keep the hold past
-/// the drop, so a drag that is cut short (an early return, a panic unwinding)
-/// still lets go.
-#[must_use = "the gesture ends when this drops: bind it for as long as the hand is down"]
+/// **It is the one handle that is owned, with no borrow of the session.** A drag
+/// is a mouse down, many frames each calling [`Session::update`](crate::Session::update)
+/// (which takes `&mut Session`), and a mouse up, so the guard has to live across
+/// them; the other handles stay borrowed because a stale one is then a compile
+/// error. What stands in for the borrow is a shared gate the session ends when
+/// the plugin is removed, replaced (a crossfade, a reload) or stops declaring the
+/// parameter (a rescan landed): [`set`](Self::set) then refuses with
+/// [`PluginParamError::Gone`] and nothing is sent, and the drop sends nothing.
+/// The notices go through the plugin's own queue, so the begin, the changes and
+/// the end are reported in the order they were made, with the plugin's.
+///
+/// There is no way to end it but to drop it, so a drag that is cut short (an
+/// early return, a panic unwinding) still lets go.
+#[must_use = "the gesture ends when this drops: keep it for as long as the hand is down"]
 #[derive(Debug)]
-pub struct ParamGesture<'a> {
-    param: Param<'a>,
+pub struct ParamGesture {
+    node: NodeKey,
+    id: ParamId,
+    gate: Gate,
+    handle: PluginHandle,
+    notices: Notices,
+    reporter: ParamReporter,
 }
 
-impl ParamGesture<'_> {
+impl ParamGesture {
+    /// The plugin's node.
+    #[must_use]
+    pub fn node(&self) -> NodeKey {
+        self.node
+    }
+
     /// The parameter held.
     #[must_use]
-    pub fn param(&self) -> Param<'_> {
-        self.param
+    pub fn id(&self) -> ParamId {
+        self.id
     }
 
     /// Moves the parameter to `value`, inside the gesture: the plugin takes the
     /// value, and the session reports a
     /// [`ParamChanged`](crate::PluginChange::ParamChanged) for it.
-    pub fn set(&self, value: Normalized) {
-        self.param.send(value);
-        self.param
-            .params
-            .hosted
-            .hear(ParamEdit::change(self.param.id(), value));
+    ///
+    /// # Errors
+    ///
+    /// [`PluginParamError::Gone`] once the plugin was removed or replaced, or no
+    /// longer declares the parameter.
+    pub fn set(&self, value: Normalized) -> Result<(), PluginParamError> {
+        if !self.gate.holds(self.id) {
+            return Err(PluginParamError::Gone(self.id));
+        }
+        self.handle.any_thread().set_parameter_value(self.id, value);
+        self.reporter.report(self.id, value);
+        queue(
+            &self.notices,
+            Notice::Param(ParamEdit::change(self.id, value)),
+        );
+        Ok(())
     }
 }
 
-impl Drop for ParamGesture<'_> {
+impl Drop for ParamGesture {
     fn drop(&mut self) {
-        self.param
-            .params
-            .hosted
-            .hear(ParamEdit::End(self.param.id()));
+        if self.gate.holds(self.id) {
+            queue(&self.notices, Notice::Param(ParamEdit::End(self.id)));
+        }
     }
 }
 

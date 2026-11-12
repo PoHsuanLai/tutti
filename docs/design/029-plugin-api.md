@@ -377,17 +377,27 @@ answer) leaves `Params::is_ready` false and `get` answers
   silent clamp) and goes through the format's `parameter_normalized`.
   `FromPlain` became `PlainUnit` (`reads`, `from_plain`, `to_plain`) for the way
   back.
-- **A gesture is the host's own.** `param.edit()? -> ParamGesture` begins when it
-  is made (refused up front for a read-only parameter, so `set` is infallible),
-  each `set` moves the parameter, and `Drop` ends it, a drop in the middle of a
-  drag included. No hosted format has a call that tells a plugin the host holds
-  a parameter (CLAP's and VST3's gesture events go from the plugin to the host,
-  VST2 has none, AU's are notifications to listeners), so the plugin hears the
-  values and the session reports the begin, the changes and the end as
-  `PluginChange::{GestureBegan, ParamChanged { recorded: true }, GestureEnded}`,
-  queued with the plugin's own reports and in the order they were made, which is
-  what a host that records automation touches a parameter with. A plain
-  `param.set` is not a gesture and reports no event.
+- **A gesture is the host's own, and the one owned handle.** `param.edit()? ->
+  ParamGesture` begins when it is made (refused up front for a read-only
+  parameter), each `set` moves the parameter, and `Drop` ends it, a drop in the
+  middle of a drag included. It has no lifetime: a drag is a mouse down, many
+  frames each calling `update()` (which takes `&mut Session`), and a mouse up, so
+  the guard must span them, while every other handle stays borrowed so that a
+  stale one does not compile. A shared `Gate` stands in for the borrow: the
+  record ends it when it is retired (`Graveyard::bury`) or its plugin is replaced
+  (`adopt`: a crossfade or a reload), and refreshes the declared ids whenever a
+  read lands. `ParamGesture::set` returns `PluginParamError::Gone` when the gate
+  is ended or the parameter is no longer declared, sending nothing, and the drop
+  then sends nothing. The guard holds the plugin's handle, the plugin's own
+  notice queue (no second channel) and a `ParamReporter` into the mirror. No hosted
+  format has a call that tells a plugin the host holds a parameter (CLAP's and
+  VST3's gesture events go from the plugin to the host, VST2 has none, AU's are
+  notifications to listeners), so the plugin hears the values and the session
+  reports the begin, the changes and the end as `PluginChange::{GestureBegan,
+  ParamChanged { recorded: true }, GestureEnded}`, in the order made, with the
+  plugin's own. A plain `param.set` is not a gesture and reports no event.
+- **`plain` and `set_plain` take a bare `f64`** because a plugin's plain value
+  has no tutti unit unless it declares one; `TypedParam<U>` is the typed door.
 - **`ParameterInfo`'s fields are private.** Read through `id`, `name`, `unit`,
   `range`, `steps`, `group`, `measures`, `role` and `flag(f)`; the format
   hosts build it with `new` and the `with_*` builders (`with_unit` and

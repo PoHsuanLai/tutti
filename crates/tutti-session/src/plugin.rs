@@ -602,7 +602,7 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// What a plugin reported, waiting for the next `Phase::Plugins`.
-type Notices = Arc<Mutex<Vec<Notice>>>;
+pub(crate) type Notices = Arc<Mutex<Vec<Notice>>>;
 
 /// Queues `notice` as if the plugin had reported it.
 pub(crate) fn queue(notices: &Notices, notice: Notice) {
@@ -660,6 +660,7 @@ impl Graveyard {
     pub(crate) const WARN_AT: usize = 16;
 
     pub(crate) fn bury(&mut self, record: HostedPlugin) {
+        record.gate.end();
         self.retired.push(Box::new(record));
     }
 
@@ -734,6 +735,10 @@ pub(crate) struct HostedPlugin {
     /// What the plugin declares and the value of each parameter
     /// ([`Plugin::params`]).
     pub(crate) mirror: tutti_plugin_host::PluginParamValues,
+    /// What a gesture asks before it sends: is this still the plugin, and does
+    /// it still declare the parameter. Ended when the record retires or the
+    /// plugin is replaced.
+    pub(crate) gate: Gate,
     /// The read that fills the mirror (a crossfade rebuilt it, the load's read
     /// was not answered, or the plugin announced a rescan), until
     /// `Phase::Plugins` hands it to the host as a job.
@@ -741,6 +746,38 @@ pub(crate) struct HostedPlugin {
     /// Held by that job: a later read mints a new one, and the earlier read
     /// lands nowhere.
     mirror_token: Arc<()>,
+}
+
+/// The part of a plugin's record a [`ParamGesture`](crate::ParamGesture) keeps:
+/// whether the plugin it began on is still the one at the node, and which
+/// parameters it declares now. Shared (`Arc`) because a gesture spans frames
+/// and cannot borrow the session; the session ends it when the record retires or
+/// the plugin is replaced, and refreshes the ids when a read lands.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Gate(Arc<Mutex<GateState>>);
+
+#[derive(Debug, Default)]
+struct GateState {
+    ended: bool,
+    declared: std::collections::HashSet<ParamId>,
+}
+
+impl Gate {
+    /// The plugin is gone: removed or replaced.
+    pub(crate) fn end(&self) {
+        locked(&self.0).ended = true;
+    }
+
+    /// The ids the mirror declares now (a read landed).
+    pub(crate) fn declare(&self, mirror: &tutti_plugin_host::PluginParamValues) {
+        locked(&self.0).declared = mirror.descriptors().iter().map(|p| p.id()).collect();
+    }
+
+    /// Whether the plugin is still there and declares `id`.
+    pub(crate) fn holds(&self, id: ParamId) -> bool {
+        let state = locked(&self.0);
+        !state.ended && state.declared.contains(&id)
+    }
 }
 
 /// How a plugin was loaded, besides which plugin it is: what a reload needs.
@@ -820,6 +857,7 @@ impl HostedPlugin {
             notices,
             hearing,
             mirror,
+            gate: Gate::default(),
             param_read: Some(read),
             mirror_token: Arc::new(()),
         }
@@ -870,6 +908,9 @@ impl HostedPlugin {
         self.mirror = mirror;
         self.param_read = Some(read);
         self.mirror_token = Arc::new(());
+        // A gesture on the outgoing plugin ends here: it is not this one.
+        self.gate.end();
+        self.gate = Gate::default();
         // What the outgoing plugin reported and nobody drained is its own.
         (self.notices, self.hearing) = hear(&handle);
         let outgoing = std::mem::replace(&mut self.handle, handle);
@@ -1377,6 +1418,7 @@ impl Session {
         {
             hosted.mirror = values;
             hosted.param_read = unread;
+            hosted.gate.declare(&hosted.mirror);
         }
         tracing::info!("plugin '{}' added as {node:?}", requested.path().display());
         Ok(node)
@@ -1472,6 +1514,7 @@ impl Session {
         match values {
             Ok(values) => {
                 hosted.mirror.land(values);
+                hosted.gate.declare(&hosted.mirror);
                 true
             }
             Err(read) => {
@@ -1731,6 +1774,7 @@ impl Session {
             hosted.mirror = values;
             hosted.param_read = unread;
             hosted.mirror_token = Arc::new(());
+            hosted.gate.declare(&hosted.mirror);
         }
         let restore = match (restore, withheld) {
             (StateRestore::NoSnapshot, Some(age)) => StateRestore::Withheld { age },

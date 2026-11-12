@@ -202,7 +202,7 @@ fn a_gesture_guard_dropped_mid_drag_ends_the_gesture() {
             if i == 2 {
                 return Err("the hand was lifted");
             }
-            gesture.set(Normalized::of(v));
+            gesture.set(Normalized::of(v)).unwrap();
         }
         Ok(())
     };
@@ -445,5 +445,79 @@ fn a_plugin_parameter_targets_a_modulation_route_through_a_param_ref() {
     assert_eq!(
         level.target(),
         tutti_session::ParamRef::plugin(node, LEVEL.get())
+    );
+}
+
+/// **A gesture outlives frames**: begun, then `update` runs (and a rescan lands),
+/// then the hand moves, `update` runs again, then lets go. The stream holds
+/// exactly one begin, the changes and one end, and `set` after the plugin is
+/// removed is refused and sends nothing.
+#[test]
+fn a_gesture_spans_updates_and_refuses_once_the_plugin_is_gone() {
+    let (mut s, node, fake, refresh) = ready();
+    let gesture = cutoff(&s, node).edit().unwrap();
+    let mut heard = changes(update(&mut s));
+    // A rescan lands in between; the parameter is still declared.
+    refresh.fire(PluginRefresh::ParamTitles);
+    heard.extend(changes(update(&mut s)));
+    gesture.set(Normalized::of(0.3)).unwrap();
+    heard.extend(changes(update(&mut s)));
+    gesture.set(Normalized::of(0.6)).unwrap();
+    heard.extend(changes(update(&mut s)));
+    drop(gesture);
+    heard.extend(changes(update(&mut s)));
+
+    let began = heard
+        .iter()
+        .filter(|c| matches!(c, PluginChange::GestureBegan { .. }))
+        .count();
+    let ended = heard
+        .iter()
+        .filter(|c| matches!(c, PluginChange::GestureEnded { .. }))
+        .count();
+    let moved: Vec<f64> = heard
+        .iter()
+        .filter_map(|c| match c {
+            PluginChange::ParamChanged {
+                value,
+                recorded: true,
+                ..
+            } => Some(value.get()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!((began, ended), (1, 1), "{heard:?}");
+    assert_eq!(moved, [0.3, 0.6]);
+    assert_eq!(fake.sets(), [(CUTOFF, 0.3), (CUTOFF, 0.6)]);
+
+    // Gone: removed.
+    let gesture = cutoff(&s, node).edit().unwrap();
+    let _ = update(&mut s);
+    s.remove(node).unwrap();
+    assert_eq!(
+        gesture.set(Normalized::of(0.9)),
+        Err(PluginParamError::Gone(CUTOFF))
+    );
+    drop(gesture);
+    assert_eq!(fake.sets().len(), 2, "nothing was sent blind");
+    assert!(
+        !changes(update(&mut s))
+            .iter()
+            .any(|c| matches!(c, PluginChange::GestureEnded { .. })),
+        "a gone plugin hears no end"
+    );
+}
+
+/// **A rescan that drops the parameter ends the hold**: `set` is refused.
+#[test]
+fn a_gesture_on_a_parameter_the_rescan_dropped_is_refused() {
+    let (mut s, node, fake, refresh) = ready();
+    let gesture = cutoff(&s, node).edit().unwrap();
+    *locked(&fake.infos) = vec![ParameterInfo::new(MODE, "Mode").with_normalized_default(0.0)];
+    refresh.fire(PluginRefresh::ParamTitles);
+    let _ = update(&mut s);
+    assert_eq!(
+        gesture.set(Normalized::of(0.5)),
+        Err(PluginParamError::Gone(CUTOFF))
     );
 }

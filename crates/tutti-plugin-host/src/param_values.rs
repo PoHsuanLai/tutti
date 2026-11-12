@@ -38,6 +38,23 @@ use tutti_plugin_types::{Normalized, ParamId, ParamRange, ParameterInfo};
 /// [`PluginParamValues::drain_edits`].
 type Edits = Arc<Mutex<Vec<(ParamId, Normalized)>>>;
 
+/// A cloneable way to report values into a mirror from anywhere, as the host
+/// sets them ([`PluginParamValues::reporter`]): it outlives a borrow of the
+/// mirror and keeps working while the mirror lives (a replaced mirror's queue
+/// is never drained).
+#[derive(Debug, Clone)]
+pub struct ParamReporter(Edits);
+
+impl ParamReporter {
+    /// Queues a value as if the plugin had reported it.
+    pub fn report(&self, id: ParamId, value: Normalized) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((id, value));
+    }
+}
+
 /// What a plugin declares and the value of each parameter, as one read found
 /// them: the descriptors, and a value aligned with each.
 ///
@@ -199,6 +216,12 @@ impl PluginParamValues {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push((id, value));
+    }
+
+    /// A handle that reports into this mirror without borrowing it.
+    #[must_use]
+    pub fn reporter(&self) -> ParamReporter {
+        ParamReporter(Arc::clone(&self.edits))
     }
 
     /// Every parameter the plugin declares, in the order it listed them; empty

@@ -103,6 +103,7 @@ members = [
     "crates/tutti-vst2-host",
     "crates/tutti-vst2-ffi",
     "testing/tutti-vst2-test-plugin",
+    "testing/tutti-vst2-shell-plugin",
     "testing/tutti-vst2-author",
     "testing/tutti-fixtures",
     "crates/tutti-sf2",

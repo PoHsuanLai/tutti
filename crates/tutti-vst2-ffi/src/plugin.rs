@@ -626,6 +626,13 @@ pub trait Plugin: Send {
         Supported::Maybe
     }
 
+    /// `effShellGetNextPlugin`, for a plugin whose category is `Category::Shell`: the next
+    /// sub-plugin's `uniqueID` and name, then `None` (the host reads 0) when none is left. The
+    /// host calls it until then. Not a shell: leave it, and the answer is 0.
+    fn shell_next_plugin(&mut self) -> Option<(i32, String)> {
+        None
+    }
+
     /// Get the tail size of plugin when it is stopped. Used in offline processing as well.
     fn get_tail_size(&self) -> isize {
         0

@@ -10,11 +10,15 @@
 use std::path::Path;
 
 use tutti_au_ffi::declared_components;
-use tutti_plugin_types::{Load, LoadStage, MainThread, Origin, PluginError, PluginResult};
+use tutti_plugin_types::{
+    EditorPresence, Load, LoadStage, MainThread, Origin, PluginClass, PluginDescriptor,
+    PluginError, PluginResult,
+};
 
 use crate::bus::BusDirection;
+use crate::component::component_info;
 use crate::component::{AuType, find_component};
-use crate::control::{descriptor_id, plugin_error};
+use crate::control::{class_of, descriptor_id, plugin_error};
 use crate::instance::AuLoaded;
 use crate::types::AudioComponentDescription;
 
@@ -82,6 +86,51 @@ fn select(
 }
 
 impl AuLoaded {
+    /// The descriptor of every Audio Unit the bundle at `path` declares
+    /// (`AudioComponents` in its `Info.plist`), in the bundle's order, read from the
+    /// registry's component and **without creating one**: a unit's editor is a property
+    /// of an instance, so it is [`EditorPresence::Unknown`]. A unit the bundle declares
+    /// and the system has not registered is left out, as a [`load`](Self::load) of it
+    /// would refuse it.
+    ///
+    /// # Errors
+    /// [`PluginError::Load`] at `Scanning`: `path` is not a bundle that declares an
+    /// Audio Unit, or none of its units is registered.
+    pub fn describe_all(path: &Path) -> PluginResult<Vec<PluginDescriptor>> {
+        let units = declared(path)?;
+        let found: Vec<_> = units
+            .iter()
+            .filter_map(|(id, desc)| {
+                let info = find_component(desc).and_then(component_info)?;
+                Some(PluginDescriptor {
+                    id: id.clone(),
+                    name: info.name,
+                    vendor: info.manufacturer,
+                    version: info.version,
+                    class: PluginClass::Au {
+                        component_type: class_of(info.component_type),
+                    },
+                    editor: EditorPresence::Unknown,
+                })
+            })
+            .collect();
+        if found.is_empty() {
+            return Err(PluginError::Load {
+                stage: LoadStage::Scanning,
+                reason: format!(
+                    "'{}' declares Audio Units the system has not registered: {}",
+                    path.display(),
+                    units
+                        .iter()
+                        .map(|(id, _)| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+        Ok(found)
+    }
+
     /// Loads the Audio Unit installed from the bundle at `path`, not initialized.
     ///
     /// The host transport callbacks are offered once, here, off the audio

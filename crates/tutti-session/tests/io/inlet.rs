@@ -23,10 +23,10 @@ fn pushed_frames_reach_the_outputs_in_order() {
         .open_inlet(ChannelLayout::STEREO, Samples(256), RATE)
         .expect("the producer runs at the graph's rate");
     s.graph()
-        .set_sources(Root::output(0), [OutPort::new(key, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(key, 0)])
         .unwrap();
     s.graph()
-        .set_sources(Root::output(1), [OutPort::new(key, 1)])
+        .set_sources_hard(Root::output(1), [OutPort::new(key, 1)])
         .unwrap();
     let mut tap = s
         .graph()

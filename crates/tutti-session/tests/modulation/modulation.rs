@@ -129,10 +129,10 @@ fn the_8_1_example_renders_its_analytic_values() {
         level: 0.8,
     }));
     s.graph()
-        .set_sources(Root::output(0), [OutPort::new(filter, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(filter, 0)])
         .unwrap();
     s.graph()
-        .set_sources(Root::output(1), [OutPort::new(pad, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(pad, 0)])
         .unwrap();
 
     let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
@@ -500,7 +500,7 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     s.graph()
-        .set_sources(Root::output(0), [OutPort::new(probe, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(probe, 0)])
         .unwrap();
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();

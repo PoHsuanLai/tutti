@@ -116,7 +116,7 @@ fn an_export_fork_is_accepted_and_silent() {
     s.graph()
         .set_event_sources(hear, 0, &[EventSource::new(key, 0)]);
     s.graph()
-        .set_sources(Root::output(0), [OutPort::new(hear, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(hear, 0)])
         .unwrap();
     let _ = s.update();
     writer.push(At::NextBlock, note(1)).unwrap();

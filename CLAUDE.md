@@ -1141,6 +1141,16 @@ Scalars use `Param<U>`.
   `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
+- **The session graph declicks its wiring** (doc 030 §4, doc 013 "As built
+  (declicked wiring)"): `connect` fades the new edge in over `EDGE_DECLICK`
+  (= `MODE_DECLICK`, 256 frames) unless `.hard()`; `disconnect`, `disconnect_all`,
+  `set_sources` removals and `remove` fade out, and the edge leaves the spec
+  when its lane reports the fade over (`Editor::settle_fades`, from
+  `Phase::Collect`); `disconnect_hard` and `set_sources_hard` cut.
+  `tutti_graph::Editor` fades nothing unless a host sets `EdgeFade`, so the
+  engine's tests and the differential suite keep hard steps; event edges are
+  never faded. A test that renders a session wire for some other reason wires
+  `.hard()`.
 - **The root's channels are declared too** (`MasterTopology`, a pure
   translation into `Session::declare_root_topology` /
   `SessionBuilder::root_topology`): `Unassigned` for independent buses, a named

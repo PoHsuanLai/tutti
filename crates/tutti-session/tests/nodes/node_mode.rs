@@ -59,9 +59,9 @@ fn rig() -> Rig {
     let g = s.graph();
     let (a, _) = g.insert(Const::mono(A));
     let (halve, _) = g.insert(ForkByClone(Halve));
-    g.set_sources(InPort::new(halve, 0), [OutPort::new(a, 0)])
+    g.set_sources_hard(InPort::new(halve, 0), [OutPort::new(a, 0)])
         .unwrap();
-    g.set_sources(Root::output(0), [OutPort::new(halve, 0)])
+    g.set_sources_hard(Root::output(0), [OutPort::new(halve, 0)])
         .unwrap();
     let _ = s.update();
     assert!(!s.graph_ref().is_edited());

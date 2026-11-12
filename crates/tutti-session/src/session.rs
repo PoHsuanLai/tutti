@@ -646,7 +646,7 @@ pub enum RootTopologyStatus {
 ///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().insert(Const::mono(0.5));
-/// session.graph().set_sources(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
+/// session.graph().set_sources_hard(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
 /// session.update();
 ///
 /// let mut block = [0.0f32; 64];

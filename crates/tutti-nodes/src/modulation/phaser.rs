@@ -231,9 +231,9 @@ impl PhaserNode {
             .store(Hz(LfoDrive::clamp_rate(hz.into().get())));
     }
 
-    /// Sets the sweep [`Depth`], clamped to the unit range.
+    /// Sets the sweep [`Depth`].
     pub fn set_depth(&self, d: impl Into<Depth>) {
-        self.controls.depth.store(Depth::clamped(d.into().get()));
+        self.controls.depth.store(d.into());
     }
 
     /// Sets the [`Feedback`], clamped to the stable range.

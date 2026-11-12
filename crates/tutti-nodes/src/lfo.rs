@@ -249,14 +249,13 @@ impl<M: Modulator> ModulatorNode<M> {
         BeatDuration(f64::from(self.frequency.load().get()))
     }
 
-    /// Sets the modulation [`Depth`], clamped to `-1.0..=1.0`.
+    /// Sets the modulation [`Depth`].
     ///
     /// Bipolar: a negative depth inverts the modulator, so `-1.0` is the same
-    /// shape phase-flipped and `0.0` is flat. Values past full scale saturate
-    /// rather than wrapping.
+    /// shape phase-flipped and `0.0` is flat.
     #[must_use]
     pub fn with_depth(self, depth: impl Into<Depth>) -> Self {
-        self.depth.store(Depth::clamped(depth.into().get()));
+        self.depth.store(depth.into());
         self
     }
 
@@ -335,7 +334,7 @@ impl<M: Modulator> ModulatorNode<M> {
         }
     }
 
-    /// Sets the modulation [`Depth`], clamped to `-1.0..=1.0`.
+    /// Sets the modulation [`Depth`].
     ///
     /// Bipolar: `1.0` is the shape at full scale, `0.0` flat, `-1.0` the same
     /// shape phase-flipped. Read once per sample, so a write lands on the next
@@ -344,7 +343,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// `&self`, and the cell is shared across clones, so this reaches a node
     /// already live in the graph.
     pub fn set_depth(&self, depth: impl Into<Depth>) {
-        self.depth.store(Depth::clamped(depth.into().get()));
+        self.depth.store(depth.into());
     }
 
     /// Sets the [`PhaseIncrement`] added to the running phase before the shape
@@ -398,7 +397,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
             "a node with no inputs arrives at zero"
         );
         let size = io.frames();
-        // A driven depth is clamped as `set_depth` clamps a written one. A
+        // A driven depth is clamped into a `Depth` (a written one is one). A
         // non-finite driven value reads the cell instead: a NaN rate would
         // leave the phase NaN for good.
         let finite = |v: &f32| v.is_finite();

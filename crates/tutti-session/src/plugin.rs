@@ -96,7 +96,7 @@ use std::time::{Duration, Instant};
 use tutti_plugin::MainThread;
 
 use tutti_graph::NodeKey;
-use tutti_plugin::catalog::{AudioConfig, Plugin, PluginRef, PluginState};
+use tutti_plugin::catalog::{AudioConfig, Catalog, Hosting, Plugin, PluginRef, PluginState};
 use tutti_plugin::error::StateError;
 use tutti_plugin_host::{Liveness, Verdict};
 use tutti_plugin_host::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
@@ -168,6 +168,9 @@ pub struct PluginLoad {
     rate: SampleRate,
     config: AudioConfig,
     state: Option<PluginState>,
+    /// A catalog's refusal ([`with_catalog`](Self::with_catalog)), landed by
+    /// [`run`](Self::run) as the load's failure.
+    refusal: Option<Box<BridgeError>>,
 }
 
 impl std::fmt::Debug for PluginLoad {
@@ -181,9 +184,23 @@ impl std::fmt::Debug for PluginLoad {
 }
 
 impl PluginLoad {
-    /// Bridge settings other than the defaults (a catalog's, say).
+    /// Bridge settings other than the defaults.
     pub fn with_config(mut self, config: AudioConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// This load under `catalog`: its audio settings
+    /// ([`Catalog::audio_config`]) and its blacklist ([`Catalog::check`]),
+    /// asked now and answered by [`run`](Self::run) (and so by
+    /// [`add_plugin`](Session::add_plugin)) as the load's failure,
+    /// [`BridgeError::Blacklisted`] with the recorded reason, before any
+    /// server starts or library loads. The catalog is not borrowed past this
+    /// call, so the load stays `Send`; a load that does not name a catalog
+    /// consults no blacklist (a host offering to load a plugin anyway).
+    pub fn with_catalog(mut self, catalog: &Catalog) -> Self {
+        self.config = catalog.audio_config().clone();
+        self.refusal = catalog.check(&self.plugin).err().map(Box::new);
         self
     }
 
@@ -203,28 +220,41 @@ impl PluginLoad {
         self.plugin.path()
     }
 
-    /// Whether the plugin is hosted in process (`Plugin::opens_in_process`:
-    /// a VST2 plugin, with `vst2`): [`run`](Self::run) leaves it unopened,
-    /// and [`Session::add_plugin`] opens it on the main thread, stalling
-    /// that call for the library's init, the state restore and the
-    /// parameter read.
+    /// Whether the plugin is hosted in process (its ref's [`Hosting`]
+    /// resolved by the format, `Plugin::hosting_of`: VST2 by default, any
+    /// format built in on request): [`run`](Self::run) leaves it unopened, and
+    /// [`Session::add_plugin`] opens it on the main thread, stalling that call
+    /// for the library's init, the state restore and the parameter read. A
+    /// hosting the format refuses is `false` here and the refusal is
+    /// [`run`](Self::run)'s.
     pub fn opens_in_process(&self) -> bool {
-        Plugin::opens_in_process(self.plugin.path())
+        matches!(Plugin::hosting_of(&self.plugin), Ok(Hosting::InProcess))
     }
 
     /// Opens the plugin, restores the request's state, and (`modulation`)
     /// reads its parameter values, after the state: those are what a
     /// modulation lane's knob starts at. Any thread; it blocks.
     ///
-    /// A plugin hosted in process (`Plugin::opens_in_process`: a VST2
-    /// plugin, with `vst2`) is not opened here: VST2 confines its load to
-    /// the main thread, so the job returns it unopened and
-    /// [`Session::add_plugin`] opens it there (a library load and an
-    /// instance's init, with no subprocess to wait for).
-    pub fn run(self) -> PluginLoaded {
+    /// A plugin hosted in process ([`opens_in_process`](Self::opens_in_process))
+    /// is not opened here: an in-process load is confined to the main thread,
+    /// so the job returns it unopened and [`Session::add_plugin`] opens it
+    /// there (a library load and an instance's init, with no subprocess to
+    /// wait for).
+    ///
+    /// A load the catalog refuses, or whose hosting the format cannot have
+    /// ([`BridgeError::NotOutOfProcess`] for VST2 asked to be served), is
+    /// refused here, before anything is opened.
+    pub fn run(mut self) -> PluginLoaded {
         let plugin = self.plugin.clone();
         let config = self.config.clone();
-        let opened = if self.opens_in_process() {
+        let refused = self
+            .refusal
+            .take()
+            .map(|refusal| *refusal)
+            .or_else(|| Plugin::hosting_of(&self.plugin).err());
+        let opened = if let Some(refusal) = refused {
+            Opened::Done(Box::new(Open::refused(refusal)))
+        } else if self.opens_in_process() {
             Opened::OnMain(self)
         } else {
             Opened::Done(Box::new(self.open(None)))
@@ -311,6 +341,18 @@ struct Open {
     restore: Option<Result<(), String>>,
     #[cfg(feature = "modulation")]
     mirror: Option<Mirror>,
+}
+
+impl Open {
+    /// A load that did not open: `why`.
+    fn refused(why: BridgeError) -> Self {
+        Self {
+            plugin: Err(why),
+            restore: None,
+            #[cfg(feature = "modulation")]
+            mirror: None,
+        }
+    }
 }
 
 /// What a [`PluginLoad`]'s run did.
@@ -966,6 +1008,7 @@ impl Session {
             rate: self.graph.prepared().sample_rate(),
             config: AudioConfig::default(),
             state: request.state,
+            refusal: None,
         }
     }
 
@@ -1536,6 +1579,7 @@ impl Session {
             rate,
             config: origin.config,
             state: hosted.snapshot.clone(),
+            refusal: None,
         };
         out.push(SessionEvent::PluginReloadDue(PluginReload {
             node,

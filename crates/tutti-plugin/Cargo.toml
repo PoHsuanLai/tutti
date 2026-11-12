@@ -21,7 +21,7 @@ workspace = true
 default = []
 
 # Opt-in versioned JSON database file (`tutti-plugin-db`'s `save` and `load`)
-# behind `Plugins::load` and `Plugins::save`. Leave it off and build a
+# behind `Catalog::open_db` and `Catalog::save`. Leave it off and build a
 # `PluginDb` from your own store.
 json = ["tutti-plugin-db/json"]
 

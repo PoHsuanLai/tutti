@@ -12,15 +12,18 @@
 
 use std::sync::Arc;
 
-use tutti_au_ffi::{Element, Renderer, Scope, TransportState, Unit};
+use tutti_au_ffi::{
+    AuParameterListener, Element, EventAddress, RenderNotify, Renderer, Scope, TransportState, Unit,
+};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     AudioBufferMut, PlayheadWatch, PluginError, PluginIo, PluginResult, ProcessContext,
     ProcessOutput, Processor, TransportInfo, is_usable,
 };
-use tutti_rt::Reader;
+use tutti_rt::{EditWriter, Reader};
 use tutti_ump::SysexAssembler;
 
+use crate::automation::SharedStage;
 use crate::error::{AuError, Result};
 use crate::ranges::RangeTable;
 use crate::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
@@ -47,6 +50,11 @@ enum Silence {
 /// initialized) is dropped.
 pub(crate) struct Rendering {
     pub(crate) guard: UninitializeOnDrop,
+    /// The pre-render notify that schedules a block's automation at its frames
+    /// ([`crate::automation`]); `None` when the unit refused it, and a block's
+    /// points are then written at its head. Dropped after the guard, before
+    /// the renderer: it removes itself from the unit.
+    pub(crate) notify: Option<RenderNotify>,
     pub(crate) renderer: Renderer,
 }
 
@@ -88,6 +96,39 @@ pub struct AuProcessor {
     playhead: PlayheadWatch,
     receives_midi: bool,
     block_size: u32,
+    /// The block's staged automation, which the render notify schedules.
+    stage: SharedStage,
+    /// Writes to parameters flagged `NonRealTime`, packed by [`pack_deferred`],
+    /// for the control side to apply between blocks.
+    deferred: EditWriter<u64>,
+    /// The host's parameter listener, excluded from the notification of the
+    /// processor's own writes so they are not heard as the plugin's edits.
+    listener: Option<Arc<AuParameterListener>>,
+}
+
+/// Writes `value` (plain units) to `id` now, telling every listener but the
+/// host's own.
+pub(crate) fn write_now(
+    listener: &Option<Arc<AuParameterListener>>,
+    unit: &Unit,
+    id: u32,
+    value: f32,
+) -> tutti_au_ffi::Result<()> {
+    match listener {
+        Some(listener) => listener.set_parameter(id, EventAddress::GLOBAL, value, 0),
+        None => crate::listener::set_parameter_notifying(unit, id, EventAddress::GLOBAL, value, 0),
+    }
+}
+
+/// A deferred write on the ring: the parameter in the high word, the plain
+/// value's bits in the low.
+pub(crate) fn pack_deferred(id: u32, value: f32) -> u64 {
+    (u64::from(id) << 32) | u64::from(value.to_bits())
+}
+
+/// The inverse of [`pack_deferred`].
+pub(crate) fn unpack_deferred(word: u64) -> (u32, f32) {
+    ((word >> 32) as u32, f32::from_bits(word as u32))
 }
 
 impl std::fmt::Debug for AuProcessor {
@@ -107,6 +148,9 @@ pub(crate) struct ProcessorParts {
     pub(crate) transport: Option<Arc<TransportState>>,
     pub(crate) receives_midi: bool,
     pub(crate) block_size: u32,
+    pub(crate) stage: SharedStage,
+    pub(crate) deferred: EditWriter<u64>,
+    pub(crate) listener: Option<Arc<AuParameterListener>>,
 }
 
 impl AuProcessor {
@@ -119,6 +163,9 @@ impl AuProcessor {
             transport,
             receives_midi,
             block_size,
+            stage,
+            deferred,
+            listener,
         } = parts;
         Self {
             rendering,
@@ -129,6 +176,9 @@ impl AuProcessor {
             playhead: PlayheadWatch::new(),
             receives_midi,
             block_size,
+            stage,
+            deferred,
+            listener,
         }
     }
 
@@ -353,26 +403,36 @@ impl AuProcessor {
         ctx: &ProcessContext<'_>,
         out: &mut ProcessOutput,
     ) -> PluginResult<()> {
-        // Automation arrives normalized `0..=1`, but `AudioUnitSetParameter`
-        // takes NATIVE PLAIN UNITS. Writing the normalized value straight
-        // through set Apple AUDelay's Lowpass Cutoff (declared `[10, 22050]` Hz)
-        // to 1 Hz at full scale. Denormalize against the range the AU itself
-        // declared; a parameter missing from the table is skipped rather than
-        // written blind: a guessed range would be the same class of bug.
+        // Automation arrives normalized `0..=1`, but the AU takes NATIVE PLAIN
+        // UNITS. Writing the normalized value straight through set Apple
+        // AUDelay's Lowpass Cutoff (declared `[10, 22050]` Hz) to 1 Hz at full
+        // scale. Denormalize against the range the AU itself declared; a
+        // parameter missing from the table is skipped rather than written
+        // blind: a guessed range would be the same class of bug.
+        //
+        // Each point is staged as an immediate event at its offset, and the
+        // render notify schedules them from inside `AudioUnitRender`, the one
+        // place `AudioUnitScheduleParameters` is valid. A parameter the AU
+        // flagged `NonRealTime` is not written here at all: its latest value
+        // goes to the control side, which applies it between blocks.
+        self.stage.borrow_mut().begin_block();
         if let Some(changes) = ctx.param_changes {
             let table = self.ranges.lend();
+            let scheduled = self.rendering.notify.is_some();
             for queue in &changes.queues {
-                if let Some(point) = queue.points.last() {
-                    let id = queue.param_id.get();
-                    if let Some(bounds) = table.bounds(id) {
-                        let _ = crate::listener::set_parameter_notifying(
-                            &self.unit,
-                            id,
-                            crate::listener::EventAddress::GLOBAL,
-                            bounds.to_plain(point.value.get()),
-                            0,
-                        );
-                    }
+                let id = queue.param_id.get();
+                let (Some(bounds), Some(last)) = (table.bounds(id), queue.points.last()) else {
+                    continue;
+                };
+                let plain = bounds.to_plain(last.value.get());
+                if table.is_non_realtime(id) {
+                    // A full ring counts the refusal; the next point of the
+                    // parameter carries its value again.
+                    let _ = self.deferred.push(pack_deferred(id, plain));
+                } else if !(scheduled && self.stage.borrow_mut().stage(queue, bounds)) {
+                    // No notify, or no room left in the stage: the block's last
+                    // point at its head, as a host that cannot place points.
+                    let _ = write_now(&self.listener, &self.unit, id, plain);
                 }
             }
         }
@@ -401,6 +461,14 @@ impl AuProcessor {
                 self.render_f64(buf.inputs, buf.outputs, buf.num_samples as u32)
             }
         };
+        // The scheduled events do not reach the unit's listeners (the plugin's
+        // editor among them), so each parameter is told the value its block
+        // ended on; the write is the value the unit already holds.
+        let stage = self.stage.borrow();
+        for &(id, value) in stage.ends() {
+            let _ = write_now(&self.listener, &self.unit, id, value);
+        }
+        drop(stage);
         // AUv2 reports no per-block MIDI, parameter or note-expression output
         // through this path, so `out` is left as the caller cleared it.
         let _ = out;
@@ -435,5 +503,77 @@ impl Processor for AuProcessor {
         // A refusal leaves the AU holding the history it had and the cursor
         // where it was (see `flush`); `Processor::reset` has nowhere to put it.
         let _ = self.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::component::find_component;
+    use crate::instance::AuLoaded;
+    use crate::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
+    use tutti_plugin_types::{
+        AudioBuffer, Loaded, MainThread, MaxBlock, ParamId, ParameterChanges, Prepare, SampleRate,
+    };
+
+    fn delay() -> (AuProcessor, crate::controller::AuController) {
+        let desc = AudioComponentDescription {
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let comp = find_component(&desc).expect("AUDelay ships with macOS");
+        let au = AuLoaded::new(comp, 48_000.0, 512).unwrap();
+        let prepare = Prepare::new(
+            SampleRate(48_000.0),
+            MaxBlock::of(tutti_types::Samples(512)),
+        )
+        .unwrap();
+        au.activate(&MainThread::claim().unwrap(), prepare)
+            .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
+    }
+
+    /// A block's automation points are staged and then handed to the unit from
+    /// its pre-render notify: after the render nothing is left staged, though
+    /// both points were (the stage's ends say so). A host that wrote the last
+    /// point at the head would stage nothing, and one whose notify did not run
+    /// would leave both events behind (`AUComponent.h`: the events are
+    /// "scheduled as a part of the pre-render notification callback").
+    #[test]
+    fn the_block_points_are_scheduled_by_the_pre_render_notify() {
+        let (mut processor, _controller) = delay();
+        let mut changes = ParameterChanges::reserved(1, 4);
+        assert!(changes.add_change(ParamId::from(0), 3, 0.25));
+        assert!(changes.add_change(ParamId::from(0), 25, 0.75));
+        let ctx = ProcessContext::new().params(&changes);
+
+        let input = vec![vec![0.0f32; 64]; 2];
+        let mut output = vec![vec![0.0f32; 64]; 2];
+        let inputs: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
+        let mut outputs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let mut out = ProcessOutput::default();
+        let mut buffer = AudioBufferMut::F32(AudioBuffer {
+            inputs: &inputs,
+            outputs: &mut outputs,
+            num_samples: 64,
+            sample_rate: 48_000.0,
+        });
+        processor.render(&mut buffer, &ctx, &mut out).unwrap();
+
+        let stage = processor.stage.borrow();
+        assert_eq!(
+            stage.ends(),
+            [(0, 75.0)],
+            "the parameter was staged, ending on the last point's plain value"
+        );
+        assert_eq!(stage.pending(), 0, "the notify handed the events over");
+        let notify = processor
+            .rendering
+            .notify
+            .as_ref()
+            .expect("AUDelay takes it");
+        assert_eq!(notify.deliveries(), 2, "one pre and one post per render");
     }
 }

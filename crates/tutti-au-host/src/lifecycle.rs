@@ -11,17 +11,23 @@
 
 use std::sync::Arc;
 
-use tutti_au_ffi::Renderer;
+use tutti_au_ffi::{RenderNotify, Renderer};
 use tutti_plugin_types::{
     Loaded, MainThread, PluginError, Prepare, Refused, RestartRules, Stuck, sysex_assembler,
 };
-use tutti_rt::ArcLend;
+use tutti_rt::{ArcLend, edit_ring};
 
+use crate::automation::{Stage, schedule_pending};
 use crate::control::plugin_error;
 use crate::controller::AuController;
 use crate::error::AuError;
 use crate::instance::AuLoaded;
 use crate::processor::{AuProcessor, ProcessorParts, Rendering, UninitializeOnDrop};
+
+/// Writes to `NonRealTime` parameters one block can hand the control side
+/// before a tick drains them: one per parameter per block, so this is seconds
+/// of every such parameter moving at once.
+const DEFERRED_ROOM: usize = 1024;
 
 impl Loaded for AuLoaded {
     type Processor = AuProcessor;
@@ -134,11 +140,24 @@ impl AuLoaded {
         // The renderer owns the heap-pinned scratch the input callback reads,
         // and withdraws that callback before freeing it.
         let renderer = Renderer::new(&unit, self.config().channels, self.config().block_size);
+        // The pre-render notify that schedules a block's automation at its
+        // frames. A unit that refuses it still renders; its points are then
+        // written at the block head.
+        let stage = Stage::shared();
+        let notify = {
+            let stage = Arc::clone(&stage);
+            let render_unit = unit.render_unit();
+            RenderNotify::new(&unit, move |notification| {
+                schedule_pending(&stage, &render_unit, &notification);
+            })
+            .ok()
+        };
         let mut rendering = Box::new(Rendering {
             guard: UninitializeOnDrop {
                 unit: unit.clone(),
                 armed: true,
             },
+            notify,
             renderer,
         });
 
@@ -166,6 +185,7 @@ impl AuLoaded {
         }
 
         let ranges = Arc::new(ArcLend::new(self.range_snapshot()));
+        let (deferred_in, deferred_out) = edit_ring(DEFERRED_ROOM);
         let processor = AuProcessor::new(ProcessorParts {
             rendering,
             unit,
@@ -176,7 +196,10 @@ impl AuLoaded {
             transport: self.share_transport(),
             receives_midi: self.au_type().receives_midi(),
             block_size: self.config().block_size,
+            stage,
+            deferred: deferred_in,
+            listener: self.listener(),
         });
-        Ok((processor, AuController::new(self, ranges)))
+        Ok((processor, AuController::new(self, ranges, deferred_out)))
     }
 }

@@ -111,9 +111,9 @@ impl Format for Au {
     const NAME: &'static str = "au";
     const SURFACE: spec::Surface = spec::AU;
     type L = tutti_au_host::AuLoaded;
-    /// The host writes the last point of each parameter's queue at the block
-    /// head (`AudioUnitSetParameter` with no ramp offset).
-    const PARAM_TIMING: ParamTiming = ParamTiming::BlockHead;
+    /// The host schedules each point as an immediate event at its offset
+    /// (`AudioUnitScheduleParameters`, from the pre-render notify).
+    const PARAM_TIMING: ParamTiming = ParamTiming::SampleAccurate;
     const GAPS: &'static [(&'static str, Gap)] = &[
         ("routing_tag_oracle", NEEDS_THE_BLOB),
         ("reconfigure_keeps_rendering", NEEDS_THE_BLOB),

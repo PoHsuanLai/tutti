@@ -73,12 +73,23 @@ impl ParamBounds {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RangeTable {
     ranges: Vec<(u32, ParamBounds)>,
+    /// The ids flagged `kAudioUnitParameterFlag_NonRealTime`, sorted: a write
+    /// "in real-time will cause a glitch or otherwise undesirable effect"
+    /// (`AudioUnitProperties.h`), so the audio thread never makes one.
+    non_realtime: Vec<u32>,
 }
 
 impl RangeTable {
     /// Reads every parameter's declared range off the AU.
     pub(crate) fn read(unit: &Unit) -> Self {
-        let mut ranges: Vec<(u32, ParamBounds)> = parameters::list(unit)
+        let list = parameters::list(unit);
+        let mut non_realtime: Vec<u32> = list
+            .iter()
+            .filter(|p| p.non_realtime)
+            .map(|p| p.id)
+            .collect();
+        non_realtime.sort_unstable();
+        let mut ranges: Vec<(u32, ParamBounds)> = list
             .into_iter()
             .map(|p| {
                 (
@@ -91,7 +102,21 @@ impl RangeTable {
             })
             .collect();
         ranges.sort_unstable_by_key(|&(id, _)| id);
-        Self { ranges }
+        Self {
+            ranges,
+            non_realtime,
+        }
+    }
+
+    /// Whether the AU flagged `id` `NonRealTime`: a write to it belongs between
+    /// blocks, on the control side.
+    pub(crate) fn is_non_realtime(&self, id: u32) -> bool {
+        self.non_realtime.binary_search(&id).is_ok()
+    }
+
+    /// Every declared id, ascending.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.ranges.iter().map(|&(id, _)| id)
     }
 
     /// The declared bounds for `id`, or `None` for a parameter the AU never
@@ -192,7 +217,10 @@ mod tests {
                     },
                 ),
             ],
+            non_realtime: vec![7],
         };
+        assert!(table.is_non_realtime(7));
+        assert!(!table.is_non_realtime(2));
         assert_eq!(table.bounds(7).map(|b| b.max), Some(22_050.0));
         assert_eq!(table.bounds(2).map(|b| b.min), Some(0.0));
         // A parameter the AU never declared has no range to denormalize

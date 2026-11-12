@@ -564,9 +564,10 @@ core takes an `Instant`; the hardware layer only passes one on).
   hands it type 2; an Endpoint that offers MIDI 2.0 is a MIDI 2.0 client even while it is in
   MIDI 1.0, because the session negotiates up and the version is fixed for the pump's life (a
   MIDI 1.0 client would have the kernel narrow what the device then sends natively). An
-  output is always a MIDI 2.0 client; `OpenOutput::queue` narrows. CoreMIDI: an input port
-  is created with `Midi10` for a source whose capability is MIDI 1.0 and `Midi20` otherwise,
-  one port per opened input. Pinned by `tutti-midi-hardware`'s sequencer suite (a legacy
+  output is always a MIDI 2.0 client; `OpenOutput::queue` narrows. CoreMIDI chooses the same
+  way, one port per opened input: `Midi20` for a UMP Endpoint whose `supportedMIDIProtocols`
+  includes MIDI 2.0 (`UmpEndpointInfo::supports_midi2`), and for a source with no Endpoint
+  record whose `kMIDIPropertyProtocolID` is MIDI 2.0; `Midi10` otherwise. Pinned by `tutti-midi-hardware`'s sequencer suite (a legacy
   client's Note On and control change arrive as type 2, a MIDI 2.0 Endpoint's type 4 as sent)
   and, through the node, by `tutti-midi-runtime`'s `an_rpn_run_split_across_blocks_is_assembled`
   (type 2 in, one Registered Controller out). The kernel's `ump_conversion` stays on: it is

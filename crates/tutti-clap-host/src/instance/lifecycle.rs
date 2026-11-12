@@ -13,7 +13,8 @@ use super::controller::ClapController;
 use super::processor::{ClapProcessor, ProcessorParts};
 use super::thread_pool::PoolCell;
 use crate::error::{ClapError, LoadStage, Result};
-use crate::types::{ParameterChanges, ParameterQueue, PluginInfo};
+use crate::events::ParamBounds;
+use crate::types::{ClapParamFlags, ParameterChanges, ParameterQueue, PluginInfo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_clap_ffi::ActivateError;
@@ -212,6 +213,10 @@ impl ClapLoaded {
         scratch
             .input_events
             .set_note_ports(&self.midi_note_ports(main));
+        // `clap_event_midi` only to a port that declares the MIDI dialect.
+        scratch
+            .input_events
+            .set_midi_capable_ports(&self.midi_capable_ports(main));
         scratch
             .in_note_expressions
             .reserve_exact(super::config::INPUT_NOTE_EXPRESSIONS);
@@ -246,7 +251,7 @@ impl ClapLoaded {
     /// (the host authors normalized 0..1; CLAP wants plain), and whether the
     /// plugin claims parameters at all. Queries the plugin: control thread only.
     pub(crate) fn read_param_ranges(&self, main: &MainThread) -> RangeTable {
-        let mut ranges: Vec<(u32, f32, f32)> = self
+        let mut ranges: Vec<ParamBounds> = self
             .native_parameters(main)
             .into_iter()
             // A parameter with no declared bounds has nothing to denormalize
@@ -255,11 +260,17 @@ impl ClapLoaded {
             // missing from this table. Every CLAP parameter declares a range, so
             // this filters nothing today — but inventing bounds if one ever
             // didn't would write a wrong plain value to the plugin.
-            .map(|p| (p.id, p.min_value as f32, p.max_value as f32))
+            .map(|p| ParamBounds {
+                id: p.id,
+                min: p.min_value,
+                max: p.max_value,
+                stepped: p.flags.contains(ClapParamFlags::STEPPED),
+                read_only: p.flags.contains(ClapParamFlags::READONLY),
+            })
             .collect();
         // Sorted by id: `add_param_changes` finds each queue's range by
         // binary search.
-        ranges.sort_unstable_by_key(|&(id, _, _)| id);
+        ranges.sort_unstable_by_key(|b| b.id);
         RangeTable {
             ranges,
             // Read the plugin's own count, not the length of the table above:
@@ -366,7 +377,7 @@ fn reserve_output_params(scratch: &mut AudioScratch, table: &RangeTable, max_fra
     let queues = table.ranges.len().max(PARAM_QUEUE_CAPACITY);
     let points = ParameterQueue::chunk_room(max_frames);
     let budget = ParameterChanges::point_budget(queues, points);
-    let ids: Vec<u32> = table.ranges.iter().map(|&(id, _, _)| id).collect();
+    let ids: Vec<u32> = table.ranges.iter().map(|b| b.id).collect();
     let events = &mut scratch.output_events;
     events.reserve(EVENT_SCRATCH_CAPACITY);
     events.set_param_room(budget, &ids);
@@ -410,7 +421,9 @@ mod tests {
             for frames in [512usize, 4096] {
                 let mut scratch = AudioScratch::new(SampleFormat::Float32);
                 let table = RangeTable {
-                    ranges: (0..params).map(|id| (id, 0.0, 1.0)).collect(),
+                    ranges: (0..params)
+                        .map(|id| ParamBounds::continuous(id, 0.0, 1.0))
+                        .collect(),
                     claims: true,
                 };
                 reserve_input_events(&mut scratch, &table, frames);
@@ -456,7 +469,9 @@ mod tests {
         const FRAMES: usize = 512;
         let mut scratch = AudioScratch::new(SampleFormat::Float32);
         let table = RangeTable {
-            ranges: (0..PARAMS).map(|id| (id, 0.0, 1.0)).collect(),
+            ranges: (0..PARAMS)
+                .map(|id| ParamBounds::continuous(id, 0.0, 1.0))
+                .collect(),
             claims: true,
         };
         reserve_input_events(&mut scratch, &table, FRAMES);

@@ -23,9 +23,10 @@
 //!
 //! [`open_with_monitor`](MicIn::open_with_monitor) tees the same capture
 //! callback into a *second*, shallow ring and hands back its reader. Give it to
-//! `tutti-session`'s `Graph::add_inlet` with [`MicIn::sample_rate`], which
-//! refuses a rate that is not the graph's; the inlet node it makes copies the
-//! ring into the graph. Wire that node through effects if you like to hear the
+//! `tutti-session`'s `Graph::add_inlet`, which reads the rate off the ring and
+//! refuses one that is not the graph's; the inlet node it makes copies the
+//! ring into the graph. (`tutti-session`'s `Session::add_input` does both
+//! halves, and reopens them after a restart.) Wire that node through effects if you like to hear the
 //! mic live while recording the same input. The two rings are independent: the
 //! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
 //! monitor ring is shallow (low-latency, so you don't hear yourself slapped-back).
@@ -36,9 +37,9 @@
 //! channel map, so they are [`Speaker::Unassigned`](tutti_types::Speaker::Unassigned)
 //! and never go through a surround matrix (a 6-input interface is six
 //! microphones, not 5.1). The mic delivers the inputs it was opened with:
-//! [`open`](MicIn::open) takes the first two (a mono device's one input on both
-//! sides), and [`open_inputs`](MicIn::open_inputs) takes any list of them, so
-//! "inputs 3 and 4 of 16" is `&[2, 3]`. The selection is
+//! [`MicConfig::inputs`] defaults to the first two (a mono device's one input on
+//! both sides) and takes any list of them, so "inputs 3 and 4 of 16" is
+//! `Some(vec![2, 3])`. The selection is
 //! [`Fold::select`](tutti_types::Fold::select), applied in the capture callback.
 
 use std::sync::Arc;
@@ -47,7 +48,7 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 
 use tutti_codec::{FileOut, Format, Spec};
 use tutti_graph::TapId;
-use tutti_graph::{TapReader, TapWriter};
+use tutti_graph::{InletRing, TapReader, TapWriter};
 use tutti_rt::Drained;
 use tutti_types::SampleRate;
 use tutti_types::Samples;
@@ -57,6 +58,7 @@ use tutti_types::{Pull, Source};
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
 use crate::host::{AudioHost, DeviceHost, DeviceSelector};
+use crate::latency::StreamLatency;
 use crate::owner::Owned;
 use crate::roster::Direction;
 
@@ -72,7 +74,7 @@ const RING_FRAMES: usize = 48_000;
 /// heard as latency (you'd hear yourself slapped-back), and a full ring just
 /// drops the oldest-unread frames, which for live monitoring is the right
 /// failure — always hear "now", never a growing delay.
-const MONITOR_RING_FRAMES: usize = 480;
+pub const MONITOR_RING_FRAMES: usize = 480;
 
 /// Device frames the capture callback selects and pushes at a time. The
 /// callback's scratch is this many frames of the selection, allocated once, so
@@ -110,6 +112,9 @@ pub struct MicIn {
     device_inputs: ChannelLayout,
     /// What the input stream's error callback reports into.
     faults: Arc<StreamFaults>,
+    /// The delay between a frame's capture and its callback, as the callback
+    /// last measured it.
+    latency: Arc<StreamLatency>,
     // Held to keep the input stream running; dropped with the source.
     _stream: StreamHandle,
 }
@@ -131,10 +136,58 @@ fn default_inputs(width: ChannelLayout) -> [usize; 2] {
     [0, usize::from(width.count() > 1)]
 }
 
+/// What [`MicIn`] opens: the host and device, which inputs, and where the
+/// capture delay is reported. `Default` is the default host's default input
+/// device, its first two inputs, and a delay cell of the mic's own; build one
+/// by struct update.
+///
+/// ```
+/// use tutti_cpal::{AudioHost, DeviceSelector, MicConfig};
+///
+/// let config = MicConfig {
+///     host: AudioHost::Jack,
+///     device: DeviceSelector::named("system"),
+///     inputs: Some(vec![2, 3]), // inputs 3 and 4 of the device
+///     ..MicConfig::default()
+/// };
+/// assert_eq!(config.inputs.as_deref(), Some(&[2, 3][..]));
+/// ```
+#[derive(Debug, Clone)]
+pub struct MicConfig {
+    /// The platform host the device is opened through.
+    pub host: AudioHost,
+    /// The input device on it.
+    pub device: DeviceSelector,
+    /// The device inputs to capture, counted from 0: destination channel `i` is
+    /// the device's input `inputs[i]`. `None`: the first two (a mono device's
+    /// one input on both sides).
+    pub inputs: Option<Vec<usize>>,
+    /// Where the capture callback reports the delay between a frame's capture
+    /// and its callback (`None`: a cell of the mic's own,
+    /// [`MicIn::latency`]). A host that reopens its mic hands the same cell to
+    /// each, so one reader follows them all.
+    pub latency: Option<Arc<StreamLatency>>,
+    /// The depth of the monitor ring [`MicIn::open_with_monitor`] makes, in
+    /// frames: shallow on purpose, so a monitored input is heard now and not
+    /// late. [`MONITOR_RING_FRAMES`] (about 10 ms at 48 kHz) by default.
+    pub monitor_frames: Samples,
+}
+
+impl Default for MicConfig {
+    fn default() -> Self {
+        Self {
+            host: AudioHost::default(),
+            device: DeviceSelector::default(),
+            inputs: None,
+            latency: None,
+            monitor_frames: Samples(MONITOR_RING_FRAMES),
+        }
+    }
+}
+
 impl MicIn {
-    /// Opens an input device on the default host at the graph's sample rate
-    /// and starts capturing its first two inputs (a mono device's one input
-    /// on both). Returns once the stream is live.
+    /// Opens the input device `config` names at the graph's sample rate and
+    /// starts capturing its inputs. Returns once the stream is live.
     ///
     /// The rate is a parameter rather than read off the device because nothing
     /// downstream resamples: an inlet renders the mic into the graph
@@ -145,22 +198,22 @@ impl MicIn {
     /// Asking for a rate does not prove a device produces it natively: ALSA
     /// plug devices, for one, advertise wide ranges and resample internally.
     ///
-    /// To take other inputs, or more of them, use
-    /// [`open_inputs`](Self::open_inputs).
-    ///
     /// # Errors
+    /// [`Error::HostUnavailable`] if the host cannot be opened;
     /// [`Error::SampleRateMismatch`] if the device cannot run at
-    /// `graph_rate`; [`Error::InvalidDevice`] if `sel` does not resolve or
+    /// `graph_rate`; [`Error::InvalidDevice`] if the device does not resolve or
     /// its configs cannot be queried; [`Error::DeviceNotAvailable`] if it has
     /// no default input config; [`Error::InvalidConfig`] for an unsupported
     /// sample format; [`Error::BuildStream`] / [`Error::PlayStream`] from
-    /// CPAL.
-    pub fn open(sel: impl Into<DeviceSelector>, graph_rate: SampleRate) -> Result<Self> {
-        Self::open_inner(sel.into(), graph_rate, None, false).map(|(mic, _)| mic)
+    /// CPAL; [`Error::Inputs`] for an empty list of inputs or one the device
+    /// does not have.
+    pub fn open(config: &MicConfig, graph_rate: SampleRate) -> Result<Self> {
+        Self::open_inner(config, graph_rate, false).map(|(mic, _)| mic)
     }
 
     /// Opens the mic like [`open`](Self::open), and also returns the reader of
-    /// a live-monitor ring fed by the same capture callback.
+    /// a live-monitor ring fed by the same capture callback (one lane a
+    /// selected input).
     ///
     /// Each captured frame goes into both the recording ring (drained by
     /// [`pull`](Source::pull)) and a shallow monitor ring. Give the
@@ -173,57 +226,25 @@ impl MicIn {
     /// # Errors
     /// As [`open`](Self::open).
     pub fn open_with_monitor(
-        sel: impl Into<DeviceSelector>,
+        config: &MicConfig,
         graph_rate: SampleRate,
-    ) -> Result<(Self, TapReader)> {
-        Self::open_inner(sel.into(), graph_rate, None, true).map(Self::with_ring)
+    ) -> Result<(Self, InletRing)> {
+        Self::open_inner(config, graph_rate, true).map(Self::with_ring)
     }
 
-    /// Opens the mic like [`open`](Self::open), capturing `inputs`: destination
-    /// channel `i` is the device's input `inputs[i]` (counted from 0). "Inputs 3
-    /// and 4 of 16" is `&[2, 3]`; one input on both sides is `&[0, 0]`; all of a
-    /// six-input interface is `&[0, 1, 2, 3, 4, 5]`.
-    ///
-    /// The device's inputs feed no speaker (cpal reports a count and no
-    /// channel map), so they are chosen by number and are never matrixed.
-    ///
-    /// # Errors
-    /// As [`open`](Self::open), and [`Error::Inputs`] for an empty list or an
-    /// input the device does not have.
-    pub fn open_inputs(
-        sel: impl Into<DeviceSelector>,
-        graph_rate: SampleRate,
-        inputs: &[usize],
-    ) -> Result<Self> {
-        Self::open_inner(sel.into(), graph_rate, Some(inputs), false).map(|(mic, _)| mic)
-    }
-
-    /// [`open_inputs`](Self::open_inputs) with a live-monitor ring, as
-    /// [`open_with_monitor`](Self::open_with_monitor) is to [`open`](Self::open).
-    /// The ring has one lane a selected input.
-    ///
-    /// # Errors
-    /// As [`open_inputs`](Self::open_inputs).
-    pub fn open_inputs_with_monitor(
-        sel: impl Into<DeviceSelector>,
-        graph_rate: SampleRate,
-        inputs: &[usize],
-    ) -> Result<(Self, TapReader)> {
-        Self::open_inner(sel.into(), graph_rate, Some(inputs), true).map(Self::with_ring)
-    }
-
-    fn with_ring((source, ring): (Self, Option<TapReader>)) -> (Self, TapReader) {
+    fn with_ring((source, ring): (Self, Option<InletRing>)) -> (Self, InletRing) {
         (source, ring.expect("a monitor was asked for"))
     }
 
     fn open_inner(
-        sel: DeviceSelector,
+        mic: &MicConfig,
         graph_rate: SampleRate,
-        inputs: Option<&[usize]>,
         monitor: bool,
-    ) -> Result<(Self, Option<TapReader>)> {
-        let host = DeviceHost::open(AudioHost::Default)?;
-        let device = host.device(Direction::Input, &sel)?;
+    ) -> Result<(Self, Option<InletRing>)> {
+        let host = DeviceHost::open(mic.host)?;
+        let device = host.device(Direction::Input, &mic.device)?;
+        let inputs = mic.inputs.as_deref();
+        let latency = mic.latency.clone().unwrap_or_default();
         let name = device.name().unwrap_or_default();
         let config = choose_input_config(
             device.supported_input_configs().map_err(|e| {
@@ -248,11 +269,9 @@ impl MicIn {
         let (reader, rec) =
             TapReader::pair(TapId(0), usize::from(width.count()), Samples(RING_FRAMES));
         let (ring, mon) = if monitor {
-            let (ring, writer) = TapReader::pair(
-                TapId(0),
-                usize::from(width.count()),
-                Samples(MONITOR_RING_FRAMES),
-            );
+            // The ring carries the rate the stream runs at, so whoever takes it
+            // into a graph can check it there.
+            let (ring, writer) = InletRing::pair(width, mic.monitor_frames, sample_rate);
             (Some(ring), Some(writer))
         } else {
             (None, None)
@@ -277,17 +296,30 @@ impl MicIn {
             )));
         }
         let cb_faults = Arc::clone(&faults);
+        let cb_latency = Arc::clone(&latency);
         let owned = Owned::spawn("tutti-input-stream", move || {
             let (d, c) = (&device, &cfg);
             let stream = match sample_format {
-                cpal::SampleFormat::I8 => build_input::<i8>(d, c, capture, cb_faults)?,
-                cpal::SampleFormat::I16 => build_input::<i16>(d, c, capture, cb_faults)?,
-                cpal::SampleFormat::I32 => build_input::<i32>(d, c, capture, cb_faults)?,
-                cpal::SampleFormat::U8 => build_input::<u8>(d, c, capture, cb_faults)?,
-                cpal::SampleFormat::U16 => build_input::<u16>(d, c, capture, cb_faults)?,
-                cpal::SampleFormat::U32 => build_input::<u32>(d, c, capture, cb_faults)?,
-                cpal::SampleFormat::F32 => build_input::<f32>(d, c, capture, cb_faults)?,
-                cpal::SampleFormat::F64 => build_input::<f64>(d, c, capture, cb_faults)?,
+                cpal::SampleFormat::I8 => build_input::<i8>(d, c, capture, cb_faults, cb_latency)?,
+                cpal::SampleFormat::I16 => {
+                    build_input::<i16>(d, c, capture, cb_faults, cb_latency)?
+                }
+                cpal::SampleFormat::I32 => {
+                    build_input::<i32>(d, c, capture, cb_faults, cb_latency)?
+                }
+                cpal::SampleFormat::U8 => build_input::<u8>(d, c, capture, cb_faults, cb_latency)?,
+                cpal::SampleFormat::U16 => {
+                    build_input::<u16>(d, c, capture, cb_faults, cb_latency)?
+                }
+                cpal::SampleFormat::U32 => {
+                    build_input::<u32>(d, c, capture, cb_faults, cb_latency)?
+                }
+                cpal::SampleFormat::F32 => {
+                    build_input::<f32>(d, c, capture, cb_faults, cb_latency)?
+                }
+                cpal::SampleFormat::F64 => {
+                    build_input::<f64>(d, c, capture, cb_faults, cb_latency)?
+                }
                 // Checked above, before the thread is spawned.
                 _ => unreachable!("sample format checked before spawn"),
             };
@@ -300,6 +332,7 @@ impl MicIn {
             sample_rate,
             device_inputs,
             faults,
+            latency,
             _stream: StreamHandle(owned),
         };
         Ok((mic, ring))
@@ -315,6 +348,15 @@ impl MicIn {
     #[must_use]
     pub fn faults(&self) -> Arc<StreamFaults> {
         Arc::clone(&self.faults)
+    }
+
+    /// The delay between a frame's capture and the callback that delivered it,
+    /// as the last callback measured it: the cell a host reads, `None` while
+    /// no callback has reported one. It is the one [`MicConfig::latency`]
+    /// named if it named one.
+    #[must_use]
+    pub fn latency(&self) -> Arc<StreamLatency> {
+        Arc::clone(&self.latency)
     }
 
     /// Returns the rate the capture stream runs at (the `graph_rate` it was
@@ -498,6 +540,7 @@ fn build_input<T>(
     config: &cpal::StreamConfig,
     mut capture: Capture,
     faults: Arc<StreamFaults>,
+    latency: Arc<StreamLatency>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample,
@@ -506,8 +549,9 @@ where
     let delivering = Arc::clone(&faults);
     let stream = device.build_input_stream(
         config,
-        move |data: &[T], _: &cpal::InputCallbackInfo| {
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
             delivering.delivered();
+            latency.record(crate::latency::input_delay(&info.timestamp()));
             capture.block(data);
         },
         // Not exercised without a device: what it calls, `StreamFaults::record`

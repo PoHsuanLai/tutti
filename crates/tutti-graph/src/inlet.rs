@@ -10,7 +10,7 @@
 //!
 //! # The ring
 //!
-//! The ring is a [`TapReader`] built by [`TapReader::pair`], with the
+//! The ring is an [`InletRing`] built by [`InletRing::pair`], with the
 //! [`TapWriter`] the producer keeps: one lane a channel, frames written and
 //! read whole, so a frame cannot tear across channels, and a frame the ring
 //! has no room for is refused whole and counted by the writer.
@@ -18,8 +18,9 @@
 //! # No resampling, no clock
 //!
 //! **An inlet does not resample.** Its producer must run at the graph's rate:
-//! `tutti-session`'s `Graph::open_inlet` refuses one that does not, once, when
-//! it opens. After that two clocks are two clocks: the producer's and the graph's cannot be locked, so they
+//! `tutti-session`'s `Graph::add_inlet` refuses one that does not, once, when
+//! it opens: the ring carries the rate its producer fills it at ([`InletRing::rate`]),
+//! stated where the ring is made. After that two clocks are two clocks: the producer's and the graph's cannot be locked, so they
 //! drift, however slowly. Nothing here corrects it; what fills or empties the
 //! ring is counted, never blocked on:
 //!
@@ -54,12 +55,66 @@
 //! There is no gain: a level belongs in a node downstream of this one.
 
 use crate::TapId;
-use tutti_types::{ChannelLayout, Samples, Tail};
+use tutti_types::{ChannelLayout, SampleRate, Samples, Tail};
 
 use crate::cost::Cost;
 use crate::io::Io;
 use crate::node::{Cx, IntoNode, Node, NodeParts, Prepare, Shape, Status};
 use crate::tap::{TapReader, TapWriter};
+
+/// The reader half of an inlet's ring, with the rate its producer fills it at.
+///
+/// An inlet does not resample, so the rate the producer runs at is what the
+/// graph must run at. It is stated once, where the ring is made, and travels
+/// with the ring to `tutti-session`'s `Graph::add_inlet`, which refuses a rate
+/// that is not the graph's: it cannot be given apart from the ring, and so
+/// cannot be given wrong.
+///
+/// ```
+/// use tutti_graph::InletRing;
+/// use tutti_types::{ChannelLayout, SampleRate, Samples};
+///
+/// let (ring, mut producer) =
+///     InletRing::pair(ChannelLayout::STEREO, Samples(64), SampleRate(48_000.0));
+/// producer.push_interleaved(&[0.5, -0.5]);
+/// assert_eq!(ring.rate(), SampleRate(48_000.0));
+/// assert_eq!(ring.layout(), ChannelLayout::STEREO);
+/// ```
+#[derive(Debug)]
+pub struct InletRing {
+    reader: TapReader,
+    rate: SampleRate,
+}
+
+impl InletRing {
+    /// A ring of `width` channels and `capacity` frames, its producer running
+    /// at `rate`, and the writer the producer fills it with. Allocates; control
+    /// side.
+    #[must_use = "the writer is the only way to fill the ring"]
+    pub fn pair(width: ChannelLayout, capacity: Samples, rate: SampleRate) -> (Self, TapWriter) {
+        let (reader, writer) = TapReader::pair(TapId(0), usize::from(width.count()), capacity);
+        (Self { reader, rate }, writer)
+    }
+
+    /// The rate the producer fills the ring at.
+    #[must_use]
+    pub fn rate(&self) -> SampleRate {
+        self.rate
+    }
+
+    /// The ring's width: one channel a lane.
+    #[must_use]
+    pub fn layout(&self) -> ChannelLayout {
+        self.reader.layout()
+    }
+
+    /// The reader, for an [`InletNode`]: the rate was checked by whoever
+    /// took the ring in.
+    #[must_use]
+    pub fn into_reader(self) -> TapReader {
+        self.reader
+    }
+}
 
 /// A node that copies a ring of its own into the graph: no inputs, one output
 /// a channel of the ring.
@@ -95,8 +150,9 @@ pub struct InletNode {
 }
 
 impl InletNode {
-    /// An inlet over `ring`, the reader half of a [`TapReader::pair`]
-    /// pair. The node is as wide as the ring.
+    /// An inlet over `ring`: the reader of an [`InletRing`]
+    /// ([`into_reader`](InletRing::into_reader)) whose rate the caller has
+    /// checked against the graph's. The node is as wide as the ring.
     #[must_use]
     pub fn new(ring: TapReader) -> Self {
         Self { ring }

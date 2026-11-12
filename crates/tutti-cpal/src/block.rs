@@ -23,8 +23,10 @@
 //! it.
 
 use std::sync::Arc;
+use std::time::Duration;
 use tutti_types::{ChannelLayout, InterleavedMut};
 
+use crate::latency::StreamLatency;
 use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};
 
 /// The working set one output stream's callback reads, sized once.
@@ -46,6 +48,8 @@ pub struct OutputBlock {
     channels: usize,
     buffer: Vec<f32>,
     last_rendered_frames: usize,
+    /// Where each callback's reported delay goes ([`render_delayed`](Self::render_delayed)).
+    latency: Arc<StreamLatency>,
 }
 
 impl std::fmt::Debug for OutputBlock {
@@ -83,7 +87,16 @@ impl OutputBlock {
             channels,
             buffer: vec![0.0f32; MAX_FRAMES * channels],
             last_rendered_frames: 0,
+            latency: Arc::new(StreamLatency::new()),
         }
+    }
+
+    /// This block reporting each callback's delay into `latency` instead of a
+    /// cell of its own: the engine's, which outlives the block.
+    #[must_use]
+    pub(crate) fn with_latency(mut self, latency: Arc<StreamLatency>) -> Self {
+        self.latency = latency;
+        self
     }
 
     /// The device width this block was sized for.
@@ -103,6 +116,19 @@ impl OutputBlock {
     /// from a silent tail.
     pub fn last_rendered_frames(&self) -> usize {
         self.last_rendered_frames
+    }
+
+    /// [`render`](Self::render), first recording the delay the callback's
+    /// timestamp reports between now and when this block plays (`None`: the
+    /// backend gave none, which clears the reading). A stream driver calls
+    /// this with what its backend stamped; wait-free like `render`.
+    #[inline]
+    pub fn render_delayed<T>(&mut self, data: &mut [T], delay: Option<Duration>)
+    where
+        T: cpal::SizedSample + cpal::FromSample<f32>,
+    {
+        self.latency.record(delay);
+        self.render(data);
     }
 
     /// Render one block and write it to `data` in the device's sample format.

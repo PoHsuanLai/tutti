@@ -85,8 +85,8 @@ assert!(driver.engine().is_running());
   rendering each callback; for tests.
 - `MicIn` (feature `capture`) — a microphone as a `tutti_types::Source`,
   optionally with a live-monitor graph node. It delivers the inputs it was
-  opened with, as unassigned channels: `open` the first two, `open_inputs` any
-  list (`&[2, 3]` is inputs 3 and 4 of 16).
+  opened with, as unassigned channels: the first two by default, any
+  list (`MicConfig::inputs` of `[2, 3]` is inputs 3 and 4 of 16).
 
 ## Real-time behaviour
 

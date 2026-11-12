@@ -11,13 +11,14 @@
 use tutti_graph::{EDGE_DECLICK, ForkByClone};
 use tutti_nodes::testing::Const;
 use tutti_session::{OutPort, Root, Session};
+use tutti_types::ChannelLayout;
 use tutti_types::SampleRate;
 
 const SPAN: usize = 256;
 
 fn session() -> Session {
     Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate(48_000.0))
         .expect("builds")
 }

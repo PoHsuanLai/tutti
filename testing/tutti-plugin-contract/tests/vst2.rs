@@ -2,6 +2,6 @@
 
 tutti_plugin_contract::contract!(
     tutti_plugin_contract::Vst2,
-    gaps = 2,
+    gaps = 1,
     hostings = [InProcess]
 );

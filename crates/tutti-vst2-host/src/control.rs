@@ -188,11 +188,13 @@ impl Control for Vst2Loaded {
     /// [`Request::LatencyChanged`] and [`Request::TailChanged`] together;
     /// `audioMasterUpdateDisplay` raises a rescan of the parameters' values and
     /// of their names. Feed them to [`Lifecycle::drive`](tutti_plugin_types::Lifecycle::drive);
-    /// the core reads the figures again rather than restarting the plugin
-    /// ([`RestartRules::NONE`](tutti_plugin_types::RestartRules::NONE)).
+    /// the core restarts the plugin for the I/O change
+    /// ([`RestartRules::VST2`](tutti_plugin_types::RestartRules::VST2)) and reads the latency
+    /// and the tail again.
     fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
         // Control side, so the one warning about a plugin that grew its pins past the
-        // activation (S7: it renders silence until re-activated) is logged here.
+        // activation (it renders silence until the restart its `audioMasterIOChanged` asks for)
+        // is logged here.
         let _ = self.instance.report_pin_refusals();
         out.extend(tutti_plugin_types::taken(self.host.requests()));
     }
@@ -273,11 +275,12 @@ impl EditorWindow for Vst2Loaded {
         ))
     }
 
-    /// Nothing asked: this surface never queues a resize request.
+    /// The size the plugin asked the window to take with `audioMasterSizeWindow` since the
+    /// last poll, if any (`aeffectx.h`: `[index]` width, `[value]` height).
     fn poll_editor_resize_request(
         &mut self,
         _main: &tutti_plugin_types::MainThread,
     ) -> Option<tutti_plugin_types::EditorSize> {
-        None
+        self.host.take_size_request()
     }
 }

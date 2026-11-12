@@ -599,11 +599,13 @@ fn chunk_state_round_trips() {
         .expect("get_state should succeed");
     assert_eq!(
         &saved[..4],
-        b"CHK\0",
+        b"CHK\x01",
         "a plugin advertising effFlagsProgramChunks with a non-empty chunk \
          must be saved as a chunk, not downgraded to a parameter snapshot"
     );
-    assert_eq!(&saved[4..], b"probe-state-v1");
+    // The current program's index (the probe's fresh instance is at program 0), then the chunk.
+    assert_eq!(i32::from_le_bytes(saved[4..8].try_into().unwrap()), 0);
+    assert_eq!(&saved[8..], b"probe-state-v1");
 
     instance
         .load_state(&main_thread(), &saved)
@@ -630,33 +632,31 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
         .expect("no chunk support is not a failure — fall back, don't error");
     assert_eq!(
         &saved[..4],
-        b"PRM\0",
+        b"PRM\x01",
         "a plugin without effFlagsProgramChunks must be saved as a parameter \
          snapshot"
     );
 }
 
-// The refusal direction — that a chunk *refusal* is representable, so
-// `set_state` can report it — is pinned in `tutti-vst2-ffi`'s
-// `a_chunk_refusal_is_representable`; the shared probe deliberately accepts
-// every chunk, so it cannot be built here. These cover the host-side half:
-// framing, fallback, and the acceptance path.
+// `effSetChunk` has no return value in the header (`aeffect.h`), so there is no refusal
+// direction to pin: a restore reports success once the chunk went to the plugin. These cover
+// the host-side half: framing, fallback, and the call reaching the plugin.
 
 /// Restoring a chunk into a plugin that does not advertise chunk support still
-/// goes through the plugin and reports what it answered.
+/// goes through the plugin.
 #[test]
-fn restoring_a_chunk_into_a_chunkless_plugin_reports_the_plugin_answer() {
+fn restoring_a_chunk_into_a_chunkless_plugin_goes_to_the_plugin() {
     let _guard = lock_probe();
     let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
     let mut chunk = b"CHK\0".to_vec();
     chunk.extend_from_slice(b"state-for-a-plugin-that-cannot-take-it");
 
-    // The probe's `load_preset_data` is unconditional, so it accepts; what is
-    // asserted is that the host relayed that answer rather than inventing one.
+    // The probe answers `effSetChunk` with 0, as a JUCE plugin does after a successful load:
+    // the host must not read that as a failure.
     instance
         .load_state(&main_thread(), &chunk)
-        .expect("the probe accepts chunks, so the host must report success");
+        .expect("a plugin answering 0 to effSetChunk has not refused it");
 }
 
 /// Parameter-snapshot save/restore, for a plugin with no chunk support.
@@ -679,7 +679,7 @@ fn parameter_state_round_trips() {
     let state = instance
         .save_state(&main_thread())
         .expect("get_state should succeed");
-    assert_eq!(&state[..4], b"PRM\0");
+    assert_eq!(&state[..4], b"PRM\x01");
 
     assert!(
         instance
@@ -769,8 +769,9 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
         .save_state(&main_thread())
         .expect("a negative numParams should produce an empty snapshot, not an abort");
 
-    assert_eq!(&state[..4], b"PRM\0");
-    let count = i32::from_le_bytes(state[4..8].try_into().unwrap());
+    assert_eq!(&state[..4], b"PRM\x01");
+    // Then the program index, then the count.
+    let count = i32::from_le_bytes(state[8..12].try_into().unwrap());
     assert_eq!(
         count, 0,
         "a negative count must be normalized to 0 in the blob, not written \
@@ -779,7 +780,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
     );
     assert_eq!(
         state.len(),
-        8,
+        12,
         "no parameter values should follow a zero count"
     );
 

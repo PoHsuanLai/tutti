@@ -284,16 +284,15 @@ fn dispatch_inner(
             // the host for the call. Not checked for null or a negative `value`.
             let chunks = unsafe { slice::from_raw_parts(ptr as *mut u8, value as usize) };
 
-            // VST 2.4: `effSetChunk` returns 1 when the plugin accepted the
-            // blob. This used to fall through to the trailing `0`, which a
-            // spec-conforming host reads as a *rejection* — so a plugin built on
-            // this fork could not tell a host it had loaded a preset.
-            let accepted = if index == 0 {
-                params.load_bank_data(chunks)
+            // `aeffect.h` documents no return value for `effSetChunk`, and a JUCE plugin
+            // returns 0 after loading successfully, so this answers 0 as practice does:
+            // a host that reads the 0 as a refusal is the one this plugin exists to catch.
+            if index == 0 {
+                params.load_bank_data(chunks);
             } else {
-                params.load_preset_data(chunks)
-            };
-            return accepted as isize;
+                params.load_preset_data(chunks);
+            }
+            return 0;
         }
 
         Ok(OpCode::ProcessEvents) => {

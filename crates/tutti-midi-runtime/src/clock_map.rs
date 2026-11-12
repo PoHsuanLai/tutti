@@ -140,7 +140,7 @@ impl ClockMap {
     }
 
     /// [`frame_at`](Self::frame_at) with the rate it is counted at: what the
-    /// event inlet's `push_at` takes.
+    /// event inlet's `push` takes.
     #[must_use]
     pub fn moment_at(&self, os: Instant) -> Option<Moment> {
         self.frame_at(os).map(|f| Moment::new(f, self.rate))

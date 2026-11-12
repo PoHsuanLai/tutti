@@ -89,6 +89,7 @@ mod level_cell;
 mod packed_atomic;
 mod pos_ring;
 mod priority;
+mod reclaim;
 mod request_word;
 mod scope;
 mod seq_cell;
@@ -113,6 +114,7 @@ pub use pos_ring::{
     RingWindow,
 };
 pub use priority::{PriorityOutcome, PriorityRequest, Scheduling, request_priority};
+pub use reclaim::Reclaim;
 pub use request_word::{REQUEST_BITS, RequestBit, RequestBitOutOfRange, RequestBits, RequestWord};
 pub use scope::{RtScope, RtScopeGuard};
 pub use seq_cell::{Contended, SeqReader, SeqWriter};

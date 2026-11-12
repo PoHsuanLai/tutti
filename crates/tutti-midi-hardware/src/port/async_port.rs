@@ -22,6 +22,7 @@ use std::time::Instant;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
+use tutti_graph::Losses;
 use tutti_midi_runtime::{DeviceInput, DeviceSlot, InletCounts};
 use tutti_ump::Ump;
 
@@ -96,7 +97,7 @@ impl InputProducerHandle {
     ///
     /// Returns `false` when the device's inlet is full; the event is then
     /// dropped, not queued, and counted
-    /// ([`HardwareMidiInputs::dropped_events`](super::HardwareMidiInputs::dropped_events)).
+    /// ([`HardwareMidiInputs::losses`](super::HardwareMidiInputs::losses)).
     /// An **inactive** port ([`set_port_active`](super::HardwareMidiInputs::set_port_active))
     /// discards the event and returns `true`: it was not lost for want of room.
     /// Lock-free and allocation-free, so it is safe to call from a driver
@@ -172,14 +173,9 @@ impl HardwareMidiInput {
         )
     }
 
-    /// How many events the inlet had no room for.
-    pub(crate) fn dropped(&self) -> u64 {
-        self.counts.lost()
-    }
-
-    /// How many events the graph found already past.
-    pub(crate) fn late(&self) -> u64 {
-        self.counts.late()
+    /// What the inlet has lost.
+    pub(crate) fn losses(&self) -> Losses {
+        self.counts.losses()
     }
 
     /// How many Stream messages the ring had no room for.

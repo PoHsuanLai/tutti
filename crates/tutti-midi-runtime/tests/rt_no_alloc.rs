@@ -6,17 +6,17 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
-use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventInletNode, EventInletWriter, EventOut, Harmony, LoopRange,
     Prepare, Transport,
 };
+use tutti_graph::{NodeKey, Stamp};
 use tutti_midi_runtime::{
     ClockNode, HarmonyNode, LIVE_INLET_CAPACITY, MidiClipNode, MidiIngestNode, MidiKeys,
     MidiMailbox, TimedHarmony, TimedMidiEvent,
 };
 use tutti_types::MaxBlock;
-use tutti_types::{At, Beat, Bpm, Frame, FrameClock, Moment, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, Frame, FrameClock, Moment, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
 
 mod common;
@@ -52,15 +52,15 @@ fn device(ed: &mut Editor, inlet: u64) -> EventInletWriter {
 }
 
 /// The first frame of block `block` (blocks of 512).
-fn frame_of(block: u64, offset: u64) -> At {
-    At::Frame(Frame(512 * block + offset))
+fn frame_of(block: u64, offset: u64) -> Stamp {
+    Stamp::Frame(Frame(512 * block + offset))
 }
 
 /// A fresh note on four channels for block `block`.
 fn busy(device: &mut EventInletWriter, block: u64) {
     for i in 0..4u64 {
         device
-            .push_at(
+            .push(
                 Moment::new(Frame(512 * block + 40 - 10 * i), SampleRate(48_000.0)),
                 note_on(i as u8 * 3, 60),
             )
@@ -78,7 +78,7 @@ fn the_border_nodes_process_without_allocating() {
     let mut dev = device(&mut ed, 4);
     let (inlet, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     ed.insert(NodeKey(2), "keys", inlet);
-    let mut keys = MidiKeys::new(writer);
+    let mut keys = MidiKeys::new(writer, MidiGroup::FIRST);
     let clock = ed.insert(NodeKey(3), "clock", ClockNode::new());
     let mut out = common::sink(&mut ed, 0, &[(1, 0), (1, 3), (2, 0), (3, 0)]);
     clock.set_enabled(true);
@@ -95,7 +95,7 @@ fn the_border_nodes_process_without_allocating() {
         for b in 1..200u32 {
             busy(&mut dev, u64::from(b));
             keys.note_on(
-                At::NextBlock,
+                Stamp::NextBlock,
                 MidiChannel::FIRST,
                 NoteNumber::of(60),
                 0xC800,
@@ -265,7 +265,7 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
             exec.process(512, &t, &[], &mut []);
             reached += out.poll_into(&mut drain);
         });
-        controls.reclaim();
+        tutti_rt::Reclaim::reclaim(&controls);
     }
     // Each block's adoption resets the upper master (channel 15), and every
     // other block's upper MCM resets it again.
@@ -514,9 +514,9 @@ fn the_event_inlet_processes_without_allocating() {
     for b in 1..200u64 {
         // Control side, outside the gate: one for this block's middle, one
         // already late, one for the next block.
-        tx.push(At::Frame(Frame(b * 512 + 200)), msg).unwrap();
-        tx.push(At::Frame(Frame(3)), msg).unwrap();
-        tx.push(At::NextBlock, msg).unwrap();
+        tx.push(Stamp::Frame(Frame(b * 512 + 200)), msg).unwrap();
+        tx.push(Stamp::Frame(Frame(3)), msg).unwrap();
+        tx.push(Stamp::NextBlock, msg).unwrap();
         // The audio thread's part, inside the gate.
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
@@ -548,20 +548,24 @@ fn the_event_inlet_with_a_full_list_processes_without_allocating() {
     let off = midi::m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0));
     // Outside the gate: fill the list with events for frames far ahead.
     for k in 0..256u64 {
-        tx.push(At::Frame(Frame(10_000_000 + k)), on).unwrap();
+        tx.push(Stamp::Frame(Frame(10_000_000 + k)), on).unwrap();
     }
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
 
     for b in 1..100u64 {
         // Control side, outside the gate.
-        tx.push(At::NextBlock, on).unwrap();
-        tx.push(At::Frame(Frame(20_000_000 + b)), off).unwrap();
-        tx.push(At::Frame(Frame(30_000_000 + b)), on).unwrap();
+        tx.push(Stamp::NextBlock, on).unwrap();
+        tx.push(Stamp::Frame(Frame(20_000_000 + b)), off).unwrap();
+        tx.push(Stamp::Frame(Frame(30_000_000 + b)), on).unwrap();
         assert_no_alloc::assert_no_alloc(|| {
             exec.process(512, &t, &[], &mut []);
             let _ = out.poll_into(&mut drain);
         });
     }
-    assert!(tx.evicted() >= 99 * 2, "dropped only {}", tx.evicted());
+    assert!(
+        tx.counts().losses().evicted >= 99 * 2,
+        "dropped only {}",
+        tx.counts().losses().evicted
+    );
 }

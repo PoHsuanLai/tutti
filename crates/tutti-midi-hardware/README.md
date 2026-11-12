@@ -88,7 +88,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 
 // The inlets inbound events land in (four devices, 1024 events each, placed
 // 10 ms after they arrive), then a session over this platform's backend.
-let inlets = Arc::new(DeviceInlets::new(4, 1024, std::time::Duration::from_millis(10)));
+let inlets = Arc::new(DeviceInlets::new(4, tutti_graph::EventCapacity::of(1024), std::time::Duration::from_millis(10)));
 let ports = Arc::new(HardwareMidiInputs::new(inlets));
 let session = MidiSession::open(Arc::clone(&ports))?;
 

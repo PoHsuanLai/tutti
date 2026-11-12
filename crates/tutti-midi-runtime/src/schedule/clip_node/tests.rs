@@ -19,7 +19,7 @@ fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
         controls.clear();
     }
     assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
-    assert_eq!(controls.reclaim(), 0);
+    assert_eq!(tutti_rt::Reclaim::reclaim(&controls), 0);
     assert!(gone.upgrade().is_none(), "freed by the reclaim");
 }
 

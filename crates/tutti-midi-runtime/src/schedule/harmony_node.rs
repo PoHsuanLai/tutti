@@ -222,15 +222,6 @@ impl HarmonyControls {
         self.set([]);
     }
 
-    /// Frees the lanes the node has let go of since the last
-    /// [`set`](Self::set) (ones a block still held when they were replaced),
-    /// without publishing; returns how many are still held. Control thread,
-    /// from the owner's tick; with nothing retired it is a lock and a length
-    /// check.
-    pub fn reclaim(&self) -> usize {
-        self.shared.cell.reclaim()
-    }
-
     /// How many changes the lanes hold.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -408,6 +399,14 @@ impl IntoNode for HarmonyNode {
             controls,
             fork: Some(Box::new(fork)),
         }
+    }
+}
+
+/// Frees what the control side retired and no block holds, without publishing
+/// (the lanes a replacement left behind); control thread, from the owner's tick.
+impl tutti_rt::Reclaim for HarmonyControls {
+    fn reclaim(&self) -> usize {
+        self.shared.cell.reclaim()
     }
 }
 

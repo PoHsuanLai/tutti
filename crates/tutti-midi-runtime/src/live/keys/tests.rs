@@ -3,14 +3,14 @@ use tutti_fixtures::midi::{self, wide_velocity};
 use tutti_graph::EventInletNode;
 use tutti_graph::EventKind;
 use tutti_graph::contract::Direct;
-use tutti_types::SampleRate;
+use tutti_types::{Frame, SampleRate};
 use tutti_ump::MidiGroup;
 
 fn rig() -> (Direct<EventInletNode>, MidiKeys) {
     let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
     (
         Direct::new(node, SampleRate(48_000.0), 64),
-        MidiKeys::new(writer),
+        MidiKeys::new(writer, MidiGroup::FIRST),
     )
 }
 
@@ -30,13 +30,13 @@ fn sent(d: &Direct<EventInletNode>) -> Vec<Ump> {
 fn the_key_helpers_match_explicit_events() {
     let (mut d, mut keys) = rig();
     keys.note_on(
-        At::NextBlock,
+        Stamp::NextBlock,
         MidiChannel::FIRST,
         NoteNumber::of(60),
         wide_velocity(100),
     )
     .unwrap();
-    keys.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
+    keys.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
         .unwrap();
     d.block();
     assert_eq!(
@@ -53,7 +53,7 @@ fn the_key_helpers_match_explicit_events() {
 #[test]
 fn a_note_on_at_velocity_zero_stays_a_note_on() {
     let (mut d, mut keys) = rig();
-    keys.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 0)
+    keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 0)
         .unwrap();
     d.block();
     assert_eq!(
@@ -68,12 +68,34 @@ fn a_note_on_at_velocity_zero_stays_a_note_on() {
 fn a_full_ring_refuses_through_the_helper() {
     let (_d, mut keys) = rig();
     for _ in 0..LIVE_INLET_CAPACITY.slots() {
-        keys.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 1)
+        keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 1)
             .unwrap();
     }
     assert_eq!(
-        keys.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
+        keys.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
         Err(Refused::Full)
     );
-    assert_eq!(keys.lost(), 1);
+    assert_eq!(keys.counts().losses().lost, 1);
+}
+
+/// The helpers send on the Group the keys were made for, not always the first.
+#[test]
+fn the_helpers_send_on_the_keys_group() {
+    let group = MidiGroup::new(2).expect("in range");
+    let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
+    let mut d = Direct::new(node, SampleRate(48_000.0), 64);
+    let mut keys = MidiKeys::new(writer, group);
+    assert_eq!(keys.group(), group);
+    keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 5)
+        .unwrap();
+    keys.note_off(Frame(0), MidiChannel::FIRST, NoteNumber::of(60))
+        .unwrap();
+    d.block();
+    assert_eq!(
+        sent(&d),
+        [
+            midi::note_on(group, MidiChannel::FIRST, 60, 5),
+            midi::note_off(group, MidiChannel::FIRST, 60, 0),
+        ]
+    );
 }

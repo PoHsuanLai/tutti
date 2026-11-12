@@ -137,7 +137,7 @@ fn after(t: Instant, frames: u64) -> Instant {
 }
 
 fn inlets(lead: Duration) -> DeviceInlets {
-    DeviceInlets::new(2, 64, lead)
+    DeviceInlets::new(2, tutti_graph::EventCapacity::of(64), lead)
 }
 
 /// **An arrival is the frame the reading puts it on, plus the lead**: the
@@ -186,7 +186,7 @@ fn a_later_reading_places_later_arrivals() {
 }
 
 /// **Before any reading an event is pushed for the next block**: the first
-/// frame of the block that finds it, as `At::NextBlock` is.
+/// frame of the block that finds it, as `Stamp::NextBlock` is.
 #[test]
 fn before_a_reading_an_event_is_for_the_next_block() {
     let inlets = inlets(Duration::from_millis(5));
@@ -320,12 +320,12 @@ fn an_inlet_closed_before_it_was_taken_is_never_queued() {
 /// a push into a full inlet is refused and counted as lost.
 #[test]
 fn a_full_inlet_refuses_and_counts() {
-    let inlets = DeviceInlets::new(1, 2, Duration::ZERO);
+    let inlets = DeviceInlets::new(1, tutti_graph::EventCapacity::of(2), Duration::ZERO);
     let mut device = inlets.open().unwrap();
     let counts = device.counts();
     let pushed: Vec<bool> = (0..4)
         .map(|i| device.push(note(60 + i), Instant::now()))
         .collect();
     assert_eq!(pushed, vec![true, true, false, false]);
-    assert_eq!(counts.lost(), 2);
+    assert_eq!(counts.losses().lost, 2);
 }

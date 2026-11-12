@@ -11,7 +11,7 @@ use tutti_graph::{
 use tutti_types::{AtomicF32, CompressionRatio, Db, Hz, Param, SampleRate, Seconds, Tail};
 use tutti_types::{ChannelLayout, UnitAddr, UnitParam};
 
-use super::compressor::CompressorCore;
+use super::compressor_core::CompressorCore;
 use crate::filter::Splits;
 use tutti_dsp::{Crossover, CrossoverError};
 

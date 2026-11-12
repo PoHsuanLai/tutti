@@ -331,7 +331,7 @@ pub(super) mod realization {
             let models = [d.member(&a, rate), d.member(&b, rate)];
             let run = |block: usize| {
                 let (mut k, _) = built(d, &a, rate);
-                let mut out: Vec<Vec<f32>> = vec![Vec::new(); shape.1];
+                let mut out: Vec<Vec<f32>> = vec![Vec::new(); shape.outputs];
                 for (n, span) in x.chunks(SPAN).enumerate() {
                     if n > 0 {
                         k.retarget(&models[n % 2]);

@@ -79,6 +79,53 @@ fn compressor_stereo_process_is_allocation_free() {
     );
 }
 
+/// The compressor's lane path with every cell moving too: the threshold port fed a per-frame
+/// ramp with a NaN frame (the `Feed` lane the recurrence reads), and each block writes
+/// the ratio, the times, the knee and the makeup (a new design on the stream grid, the makeup
+/// gliding) through the `ParamSet`, 6 channels, 2 000 blocks under `assert_no_alloc`.
+#[test]
+fn compressor_fed_threshold_and_moving_cells_are_allocation_free() {
+    use tutti_graph::ParamNode;
+    use tutti_graph::contract::Direct;
+    use tutti_types::UnitParam;
+
+    let mut node = Direct::new(
+        CompressorNode::with_bus(
+            tutti_types::BusTopology::assumed(tutti_types::ChannelLayout::from(6u16))
+                .expect("at most one bus wide"),
+            Db::new(-20.0),
+            CompressionRatio::new(4.0),
+            Seconds::new(0.003),
+            Seconds::new(0.08),
+        ),
+        SampleRate(48_000.0),
+        64,
+    );
+    for c in node.inputs_mut() {
+        for (i, x) in c.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 0.8 } else { -0.8 };
+        }
+    }
+    let mut lane: Vec<f32> = (0..64).map(|i| -30.0 + 0.3 * i as f32).collect();
+    lane[9] = f32::NAN;
+    node.feed(0, Some(&lane));
+    let set = node.node.param_set();
+    for _ in 0..16 {
+        node.block();
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 0..2_000 {
+            let k = (b % 40) as f32;
+            assert!(set.set(UnitParam::Ratio, 2.0 + 0.2 * k));
+            assert!(set.set(UnitParam::Attack, 0.0005 + 0.0002 * k));
+            assert!(set.set(UnitParam::Release, 0.01 + 0.005 * k));
+            assert!(set.set(UnitParam::Knee, 0.3 * k));
+            assert!(set.set(UnitParam::GainDb, k - 20.0));
+            node.block();
+        }
+    });
+}
+
 #[test]
 fn limiter_node_process_is_allocation_free() {
     // Warm-up fills the lookahead ring and primes the deque; over ceiling.

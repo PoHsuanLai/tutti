@@ -437,7 +437,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  `add_instrument` takes states), `record(target, capacity)` (a
                  take: an event tap on the live input, placed by `TakePlacement`) and, with
                  `midi-hardware`, the devices (`devices`, `connect_input`/`connect_output`,
-                 `reconnect_saved -> Resolution`). Its events are `SessionEvent::Midi(MidiEvent)`
+                 `reconnect_saved -> Resolution`), and `load_file` and (`soundfont`)
+                 `load_soundfont`, jobs on the session's spawner that return a `MidiLoad`
+                 and land `FileLoaded` / `SoundFontLoaded` in `update()`. Its events are `SessionEvent::Midi(MidiEvent)`
                  and its error `Error::Midi(MidiError)`, each cause (hardware, file, send,
                  route) the source of one variant; `MidiRouteRule<T>` has `serde` behind the
                  `serde` feature, keyed by the app's own stable id, never a `NodeKey`.

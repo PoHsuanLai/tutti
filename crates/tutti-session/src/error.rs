@@ -157,6 +157,21 @@ pub enum MidiError {
     #[error("MIDI file: {0}")]
     File(#[from] tutti_midi_file::Error),
 
+    /// A session job did not finish ([`Midi::load_file`](crate::Midi::load_file),
+    /// `Midi::load_soundfont`): its work panicked, or the spawner dropped it.
+    #[error("MIDI load: {0}")]
+    Job(#[from] crate::JobFailed),
+
+    /// A SoundFont file could not be read.
+    #[cfg(feature = "soundfont")]
+    #[error("SoundFont file: {0}")]
+    SoundFont(#[from] tutti_sf2::Error),
+
+    /// A SoundFont unit could not be built from the font and its settings.
+    #[cfg(feature = "soundfont")]
+    #[error("SoundFont instrument: {0}")]
+    Instrument(#[from] tutti_soundfont::Error),
+
     /// A message was not queued ([`SendError::Full`](crate::SendError::Full)).
     #[error("MIDI send: {0}")]
     Send(#[from] crate::SendError),

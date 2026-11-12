@@ -3126,6 +3126,14 @@ such as reassembled SysEx; that is decided when that code is written.
   binds only an `Exact` device (`BindPolicy::ExactOnly`), in the directions it was saved with;
   `SameName`, `Ambiguous` and `Missing` come back as `Resolution` variants, so an app that asks
   has the candidates and nothing is opened unasked.
+- **Loads are jobs.** `Midi::load_file(path) -> MidiLoad` and, with `soundfont`,
+  `load_soundfont(path, Settings) -> MidiLoad` return at once and run on the session's spawner
+  (`Jobs::submit`; `Midi` holds the jobs, not the session). The result lands in `update()` as
+  `MidiEvent::FileLoaded { load, file }` / `SoundFontLoaded { load, unit }` (the unit boxed),
+  each `Result<_, MidiError>`: `File`, `SoundFont` (`tutti_sf2::Error`) and `Instrument`
+  (`tutti_soundfont::Error`) are the read's and the build's causes, `Job(JobFailed)` a panic or a
+  dropped job. `MidiLoad` is the session's counter and names only the call. The host then adds
+  the unit (`add_instrument`, `add_general_midi`) or plays the file's clip.
 - **MPE once.** The session holds one `MpeMode` (`Midi::set_mpe`, `mpe`; the builder's
   `mpe_mode` is its start). The ingest node is told at once; a synth added through
   `Session::add_instrument` is built in it through `SessionInstrument::bind_mpe` (the trait `add_instrument` takes;

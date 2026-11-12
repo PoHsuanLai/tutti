@@ -125,11 +125,15 @@ fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
     figure(&mut s, -0.75, "the knob moved");
 
     // The range is the route's span too: `-0.25 + 0.25 * -0.5 * 2`.
-    s.mods().range(edge, Amplitude(-2.0)..Amplitude(0.0)).unwrap();
+    s.mods()
+        .range(edge, Amplitude(-2.0)..Amplitude(0.0))
+        .unwrap();
     settle(&mut s);
     figure(&mut s, -0.5, "within the range");
     // Span 2.25: `-0.25 - 0.28125` is below the range's floor.
-    s.mods().range(edge, Amplitude(-0.25)..Amplitude(2.0)).unwrap();
+    s.mods()
+        .range(edge, Amplitude(-0.25)..Amplitude(2.0))
+        .unwrap();
     settle(&mut s);
     figure(&mut s, -0.25, "clamped to the range");
 

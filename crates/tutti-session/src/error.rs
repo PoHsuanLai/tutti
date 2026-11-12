@@ -231,7 +231,7 @@ pub enum Error {
     #[error(transparent)]
     Param(#[from] crate::ParamError),
 
-    /// A modulation range was refused ([`Mods::range`](crate::Mods::range)).
+    /// A modulation range was refused (`Mods::range`).
     #[error(transparent)]
     Range(#[from] crate::RangeError),
 

@@ -183,7 +183,8 @@ fn the_meter_of_band_1_follows_its_threshold() {
     let (mut s, mb, controls) = rig();
     for band in 0..2 {
         let g = s.graph();
-        g.set_param(mb.ratio_at(band), CompressionRatio(2.0)).unwrap();
+        g.set_param(mb.ratio_at(band), CompressionRatio(2.0))
+            .unwrap();
         g.set_param(mb.release_at(band), Seconds(0.001)).unwrap();
         g.set_param(mb.attack_at(band), Seconds(0.001)).unwrap();
     }

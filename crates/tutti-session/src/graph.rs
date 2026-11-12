@@ -1192,8 +1192,7 @@ impl Graph {
         let fits = port
             .raw()
             .is_some_and(|raw| self.shape(raw.node).is_some_and(|s| raw.port < s.event_out));
-        fits.then_some(())
-            .ok_or(ConnectError::NoSuchEventOut(port))
+        fits.then_some(()).ok_or(ConnectError::NoSuchEventOut(port))
     }
 
     /// Whether `port` names an event input the graph has.
@@ -1292,8 +1291,7 @@ impl Graph {
             return Ok(());
         }
         let fed = self.fed_in_graph(sink);
-        let theirs: Vec<EventOutPort> =
-            fed.into_iter().filter(|s| !sources.contains(s)).collect();
+        let theirs: Vec<EventOutPort> = fed.into_iter().filter(|s| !sources.contains(s)).collect();
         let mut all = sources.to_vec();
         all.extend_from_slice(&theirs);
         self.set_fed_edges(sink, theirs);
@@ -1983,7 +1981,7 @@ impl Graph {
     ///   must be the same width, and a bus into the root may be narrower than
     ///   it (it feeds the first channels); a connection never truncates or
     ///   zero-fills, so a width change is a bus edge;
-    /// - a [`BusSource`] into a [`BusRef`](tutti_graph::BusRef) (`key.bus_out(i)`,
+    /// - a [`BusSource`] into a [`BusRef`] (`key.bus_out(i)`,
     ///   `key.bus_in(i)`) or into [`Root`]: **a bus edge**, a fold between two
     ///   declared topologies, lowered at the commit to one weighted lane per
     ///   contribution (`Fold::contributions`) and summed with any other source
@@ -2620,7 +2618,9 @@ impl Graph {
         let raw = source.raw().ok_or_else(|| MissingSource::EventPort {
             node: source.node(),
             port: u16::MAX,
-            width: self.shape(source.node()).map_or(0, |s| usize::from(s.event_out)),
+            width: self
+                .shape(source.node())
+                .map_or(0, |s| usize::from(s.event_out)),
         })?;
         let reader = self.editor.open_event_tap(id, raw, align, capacity)?;
         self.next_event_tap += 1;

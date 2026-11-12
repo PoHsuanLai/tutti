@@ -98,8 +98,8 @@ pub use general_midi::GeneralMidi;
 pub use graph::ModKeys;
 pub use graph::RenderWorkerStart;
 pub use graph::{
-    AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph,
-    LIVE_MAX_BLOCK, ReplaceRefused,
+    AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph, LIVE_MAX_BLOCK,
+    ReplaceRefused,
 };
 #[cfg(feature = "midi")]
 pub use instrument::{InstrumentHandle, NotInstrument, SendError};
@@ -115,15 +115,12 @@ pub use midi::{
 #[cfg(feature = "modulation")]
 pub use modulation::{
     MixRef, ModRefusal, ModState, ModTarget, Mods, ParamRef, Ranged, RouteError, Take,
-    UNRESOLVED_WARNING,
-    declare_targets,
+    UNRESOLVED_WARNING, declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
 #[doc(hidden)]
 pub use params::Declared as __Declared;
 pub use params::{HasParam, HasParams, ParamError, ParamValue, RangeError, Scalar, TypedParamRef};
-#[doc(hidden)]
-pub use tutti_types::UnitParam as __UnitParam;
 #[cfg(feature = "plugin")]
 pub use plugin::{
     HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
@@ -150,6 +147,8 @@ pub use tutti_export::{
 };
 pub use tutti_graph::{BusError, BusRef, BusSource, Buses, MissingSource};
 pub use tutti_graph::{MixError, ModeError, NodeMode, PassError};
+#[doc(hidden)]
+pub use tutti_types::UnitParam as __UnitParam;
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]

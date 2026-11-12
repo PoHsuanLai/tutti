@@ -45,7 +45,10 @@ fn an_event_edge_is_connected_read_back_and_disconnected() {
     let (sink, _) = g.insert(ForkByClone(Events::<1, 0>));
 
     let connection = g.connect(src.events_out(), sink.events_in()).unwrap();
-    assert!(connection.edges().is_empty(), "an event edge is no audio edge");
+    assert!(
+        connection.edges().is_empty(),
+        "an event edge is no audio edge"
+    );
     g.connect(src.events_out(), sink.events_in()).unwrap();
     assert_eq!(g.sources(sink.events_in()), [src.events_out()], "once");
 
@@ -74,7 +77,10 @@ fn event_port_zero_is_the_main_port_and_an_index_names_another() {
     assert_eq!(sink.events_in().index(), 0);
 
     g.connect(src.events_out(), sink.events_in_at(1)).unwrap();
-    assert!(g.sources(sink.events_in()).is_empty(), "the main input is unfed");
+    assert!(
+        g.sources(sink.events_in()).is_empty(),
+        "the main input is unfed"
+    );
     assert_eq!(g.sources(sink.events_in_at(1)), [src.events_out()]);
 }
 
@@ -128,7 +134,8 @@ fn set_sources_and_disconnect_all_cover_event_inputs() {
     let (sink, _) = g.insert(ForkByClone(Events::<1, 0>));
     let input = sink.events_in();
 
-    g.set_sources(input, [a.events_out(), b.events_out()]).unwrap();
+    g.set_sources(input, [a.events_out(), b.events_out()])
+        .unwrap();
     let mut held = g.sources(input);
     held.sort();
     let mut both = [a.events_out(), b.events_out()];

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use tutti_graph::CrossfadeCurve;
-use tutti_graph::Params;
 use tutti_graph::MAX_ROOT_CHANNELS;
+use tutti_graph::Params;
 use tutti_graph::{
     Cx, ForkByClone, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
     Unforkable,
@@ -412,14 +412,15 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
     // the executor has not run it yet.
     s.graph().set_sample_rate(SampleRate(44_100.0));
     let fade = Seconds(0.005);
-    let waiting =
-        match s
-            .graph()
-            .crossfade(knob, Params(Knob::at(3.0)), fade, CrossfadeCurve::EqualAmplitude)
-        {
-            Ok(Crossfade::Waiting(id)) => id,
-            other => panic!("the crossfade waits for the re-prepare: {other:?}"),
-        };
+    let waiting = match s.graph().crossfade(
+        knob,
+        Params(Knob::at(3.0)),
+        fade,
+        CrossfadeCurve::EqualAmplitude,
+    ) {
+        Ok(Crossfade::Waiting(id)) => id,
+        other => panic!("the crossfade waits for the re-prepare: {other:?}"),
+    };
     assert_eq!(s.graph_ref().waiting_crossfades(), 1);
 
     // Update by update through the re-prepare: the executor checks its units

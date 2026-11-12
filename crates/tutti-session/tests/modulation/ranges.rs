@@ -71,7 +71,10 @@ fn a_typed_range_declares_the_target_an_untyped_ref_names() {
     let src = m.macro_(0.0);
     let same = ParamRef::unit(lp.erase(), tutti_types::UnitParam::Cutoff);
     assert_eq!(ParamRef::from(lp.cutoff()), same);
-    assert!(m.route(src, same, Depth(0.5)).is_ok(), "the range is declared");
+    assert!(
+        m.route(src, same, Depth(0.5)).is_ok(),
+        "the range is declared"
+    );
 
     // A mix's range is in `Mix`: backwards is refused there too.
     let mix = tutti_session::MixRef::of(NodeKey(1));

@@ -63,12 +63,7 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<Key<SvfFilterNode<f32>>>) {
             m.route(lfo, cutoff, Depth(0.1)).unwrap();
         }
         let follower = m.follower(Follower::new(), filters[0]);
-        m.route(
-            follower,
-            last.cutoff(),
-            Depth(-0.2),
-        )
-        .unwrap();
+        m.route(follower, last.cutoff(), Depth(-0.2)).unwrap();
     }
     for _ in 0..8 {
         let _ = s.update();
@@ -90,10 +85,7 @@ fn measure(label: &str, n: usize, modulated: bool, edit: bool) {
     for i in 0..UPDATES {
         if edit {
             s.mods()
-                .range(
-                    filters[0].cutoff(),
-                    Hz(20.0)..Hz(20_000.0 + (i % 2) as f32),
-                )
+                .range(filters[0].cutoff(), Hz(20.0)..Hz(20_000.0 + (i % 2) as f32))
                 .unwrap();
         }
         let t = Instant::now();

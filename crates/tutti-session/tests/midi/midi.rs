@@ -23,8 +23,8 @@ use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
 use tutti_session::{
-    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, SendError,
-    Session, SessionEvent, SessionNode, UmpOut,
+    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx,
+    SendError, Session, SessionEvent, SessionNode, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.

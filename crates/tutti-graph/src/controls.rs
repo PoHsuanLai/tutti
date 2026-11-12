@@ -233,7 +233,7 @@ impl<N: ParamNode> ForkSource for ParamFork<N> {
 
 /// `node` split for insertion as a [`ParamNode`]: the node, its
 /// [`ParamSet`] as its controls, and a [`ParamFork`] as its fork source.
-/// What a `ParamNode`'s [`IntoNode::into_parts`](crate::IntoNode::into_parts) returns:
+/// What a `ParamNode`'s [`IntoNode::into_parts`] returns:
 ///
 /// ```ignore
 /// impl IntoNode for MyFilter {
@@ -257,7 +257,7 @@ pub fn param_parts<N: ParamNode + Clone>(node: N) -> NodeParts<ParamSet> {
 }
 
 /// A [`ParamNode`] inserted as one: the wrapper that makes `Params(node)` an
-/// [`IntoNode`](crate::IntoNode) whose controls are the node's [`ParamSet`] and
+/// [`IntoNode`] whose controls are the node's [`ParamSet`] and
 /// whose fork starts from the values set through it ([`param_parts`]), beside
 /// [`ForkByClone`](crate::ForkByClone) and [`Unforkable`](crate::Unforkable)
 /// for a node with no params. A host's own param'd node needs no hand-written

@@ -23,14 +23,15 @@ use thiserror::Error;
 use tutti_graph::NodeKey;
 use tutti_types::{
     Amplitude, Azimuth, Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix,
-    Pan, ParamAddr, ParamRaw, Q, Resonance, Seconds, Spread, StereoWidth, Unit, UnitAddr, UnitParam,
+    Pan, ParamAddr, ParamRaw, Q, Resonance, Seconds, Spread, StereoWidth, Unit, UnitAddr,
+    UnitParam,
 };
 
 use crate::Key;
 
 /// One native param of a node in the session's graph, with the unit its value
 /// is in: what `key.cutoff()` returns. The typed sibling of
-/// [`ParamRef`](crate::ParamRef) (feature `modulation`), which it converts
+/// `ParamRef` (feature `modulation`), which it converts
 /// into, so `mods.route(src, lp.cutoff(), depth)` takes it as it takes the
 /// untyped one; a plugin's param stays a `ParamRef`.
 ///
@@ -136,7 +137,7 @@ pub trait ParamValue: Copy + sealed::Sealed {
 }
 
 /// A [`ParamValue`] that is a number in a unit (not a switch): what a range
-/// ([`Mods::range`](crate::Mods::range)) is a range of. Sealed.
+/// (`Mods::range`) is a range of. Sealed.
 pub trait Scalar: ParamValue {}
 
 macro_rules! scalar_values {
@@ -152,8 +153,23 @@ macro_rules! scalar_values {
 }
 
 scalar_values!(
-    Amplitude, Azimuth, Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix,
-    Pan, Q, Resonance, Seconds, Spread, StereoWidth,
+    Amplitude,
+    Azimuth,
+    Cents,
+    CompressionRatio,
+    Db,
+    Depth,
+    Drive,
+    Elevation,
+    Feedback,
+    Hz,
+    Mix,
+    Pan,
+    Q,
+    Resonance,
+    Seconds,
+    Spread,
+    StereoWidth,
 );
 
 impl sealed::Sealed for bool {}
@@ -251,7 +267,7 @@ pub enum ParamError {
     },
 }
 
-/// Why [`Mods::range`](crate::Mods::range) refused a range; nothing was
+/// Why `Mods::range` refused a range; nothing was
 /// stored.
 #[derive(Clone, Copy, Debug, PartialEq, Error)]
 #[non_exhaustive]

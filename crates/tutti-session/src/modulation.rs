@@ -42,9 +42,9 @@ use tutti_nodes::{Feed, ReconcileError};
 use tutti_types::{Depth, ParamAddr, UnitAddr, UnitParam};
 
 use crate::Edge;
+use crate::ModKeys;
 use crate::ParamValue;
 use crate::RangeError;
-use crate::ModKeys;
 use crate::graph::Graph;
 
 /// How long a modulation target may stay unresolved before it is logged:
@@ -189,7 +189,7 @@ impl From<Edge> for ModTarget {
 }
 
 /// A modulation target whose value is in a unit tutti knows: what
-/// [`Mods::range`] takes a range of. A [`TypedParamRef`] (the unit its node
+/// [`Mods::range`] takes a range of. A [`TypedParamRef`](crate::TypedParamRef) (the unit its node
 /// declares), an [`Edge`] ([`Amplitude`](tutti_types::Amplitude)) and a
 /// [`MixRef`] ([`Mix`](tutti_types::Mix)). Sealed.
 pub trait Ranged: Into<ModTarget> + ranged::Sealed {
@@ -1023,11 +1023,7 @@ impl Mods<'_> {
         target: T,
         range: std::ops::Range<T::Unit>,
     ) -> Result<(), RangeError> {
-        self.range_raw(
-            target,
-            range.start.to_cell(),
-            range.end.to_cell(),
-        )
+        self.range_raw(target, range.start.to_cell(), range.end.to_cell())
     }
 
     /// [`range`](Self::range) for a target whose unit is not tutti's: a

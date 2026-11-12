@@ -408,7 +408,10 @@ mod tests {
             let Some((_, many)) = declared else {
                 panic!("{what}: builds {addr:?}, which it does not declare");
             };
-            assert!(*many || addr.index == 0, "{what}: {addr:?} is one of several");
+            assert!(
+                *many || addr.index == 0,
+                "{what}: {addr:?} is one of several"
+            );
         }
         for (kind, _) in N::KINDS {
             assert!(
@@ -427,8 +430,14 @@ mod tests {
         use tutti_types::{
             ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, Q, Resonance, Seconds,
         };
-        declared_matches(SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(1e3), Q(0.7)), "svf f32");
-        declared_matches(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1e3), Q(0.7)), "svf f64");
+        declared_matches(
+            SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(1e3), Q(0.7)),
+            "svf f32",
+        );
+        declared_matches(
+            SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1e3), Q(0.7)),
+            "svf f64",
+        );
         declared_matches(
             EqBandNode::<f32>::new(SvfType::LowPass, Hz(1e3), Q(0.7), Db(3.0)),
             "eq band",
@@ -438,7 +447,12 @@ mod tests {
             "ladder",
         );
         declared_matches(
-            CompressorNode::mono(Db(-20.0), CompressionRatio(4.0), Seconds(0.01), Seconds(0.1)),
+            CompressorNode::mono(
+                Db(-20.0),
+                CompressionRatio(4.0),
+                Seconds(0.01),
+                Seconds(0.1),
+            ),
             "compressor",
         );
         declared_matches(
@@ -447,7 +461,10 @@ mod tests {
         );
         declared_matches(LimiterNode::new(Db(-6.0), Db(-1.0)), "limiter");
         declared_matches(BrickwallLimiterNode::new(Db(-1.0)), "brickwall limiter");
-        declared_matches(DistortionNode::new(ShapeKind::Tanh, Drive::new(2.0)), "distortion");
+        declared_matches(
+            DistortionNode::new(ShapeKind::Tanh, Drive::new(2.0)),
+            "distortion",
+        );
         declared_matches(BusStripNode::new(), "strip");
         declared_matches(
             CrossoverNode::new(ChannelLayout::STEREO, &[Hz(500.0), Hz(2e3)]).unwrap(),
@@ -465,7 +482,7 @@ mod tests {
         declared_matches(PhaserNode::new(4), "phaser");
         declared_matches(LfoNode::new(LfoShape::Sine), "free-running lfo");
         declared_matches(
-            FreeverbNode::live(FreeverbDesign::default(), FreeverbControls::GENERAL_MIDI),
+            FreeverbNode::live(FreeverbDesign, FreeverbControls::GENERAL_MIDI),
             "live freeverb",
         );
         declared_matches(

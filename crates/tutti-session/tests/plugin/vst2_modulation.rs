@@ -17,7 +17,9 @@ use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin_types::{Normalized, ParamId};
-use tutti_session::{EventInPort, Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent};
+use tutti_session::{
+    EventInPort, Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent,
+};
 use tutti_types::{ChannelLayout, Depth, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);

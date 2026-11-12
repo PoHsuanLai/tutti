@@ -4,6 +4,13 @@
 //! through a `tanh` saturator, so pushing resonance or drive grits and
 //! compresses rather than blowing up. That saturation is the character, not a
 //! safety measure.
+//!
+//! The resonance loop is closed with **no unit delay** (zero-delay feedback,
+//! Zavalishin, *The Art of VA Filter Design*, the ladder chapter): the loop
+//! `u = x - k * y4` is solved for `u` within the sample, using that each trapezoidal
+//! one-pole is affine in its input, so the filter realises the continuous ladder
+//! `1 / ((1 + s/wc)^4 + k)` under the bilinear map prewarped at the cutoff, with
+//! the resonance where the continuous model puts it.
 
 use crate::Real;
 use tutti_types::{Hz, Resonance, SampleRate};
@@ -36,8 +43,9 @@ pub enum LadderType {
 /// Public for the same reason as [`SvfCoeffs`](crate::SvfCoeffs): a voice
 /// engine running this topology across SIMD lanes derives its coefficients
 /// from this function rather than a copy of it. The recurrence they feed is
-/// the ladder node's: `u = tanh(x - k*s3)`, then four one-pole stages each
-/// `v = g1*(in - s); lp = v + s; s = lp + v` with `g1 = g / (1 + g)`.
+/// the ladder node's: four one-pole stages each `v = G*(in - s); lp = v + s;
+/// s = lp + v` with `G = g / (1 + g)`, whose input is `u = tanh(u_lin)` for the
+/// delay-free loop's solution `u_lin = (x - k*S) / (1 + k*G^4)` (see [`ladder_step`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LadderCoeffs {
     /// Prewarped integrator gain, `tan(pi * fc / sr)`.
@@ -69,8 +77,10 @@ impl LadderCoeffs {
 /// The ladder's two coefficients, narrowed to the state precision `F` and shared
 /// by every channel.
 ///
-/// `g1` is the one-pole stage gain `g / (1 + g)` with `g = tan(π·fc/sr)`, solved
-/// once with the `tan` rather than divided out every sample.
+/// `g1` is the one-pole stage gain `G = g / (1 + g)` with `g = tan(π·fc/sr)`, solved
+/// once with the `tan` rather than divided out every sample. The powers of `G` the
+/// zero-delay loop needs are derived in the step from `g1` and `k`, so a glide
+/// interpolates these two and every blended set is a valid ladder.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LadderCoefficients<F: Real> {
     g1: F,
@@ -101,7 +111,17 @@ impl<F: Real> LadderCoefficients<F> {
     }
 }
 
-/// One channel's four-stage step over its stage words `s`.
+/// One channel's four-stage step over its stage words `s`, the resonance loop
+/// closed without a delay.
+///
+/// Each trapezoidal one-pole (`v = G*(in - s); y = v + s; s' = y + v`) is affine in
+/// its input, `y = G*in + (1 - G)*s`, so four in a chain give
+/// `y4 = G^4 * u + S` with
+/// `S = (1 - G) * (G^3*s0 + G^2*s1 + G*s2 + s3)`. The linear loop
+/// `u = x - k*y4` then solves to `u_lin = (x - k*S) / (1 + k*G^4)`. The saturator
+/// is applied to that solution, `u = tanh(u_lin)`: the standard cheap nonlinear
+/// zero-delay form, exact for small signals (where `tanh x = x`, so the response
+/// is the continuous ladder's bilinear image) and a saturating limit past the knee.
 #[inline(always)]
 pub(crate) fn ladder_step<F: Real>(
     c: &LadderCoefficients<F>,
@@ -111,8 +131,12 @@ pub(crate) fn ladder_step<F: Real>(
     drive: F,
 ) -> F {
     let x = input * drive;
-    let u = (x - c.k * s[3]).tanh();
     let g1 = c.g1;
+    let g2 = g1 * g1;
+    let g4 = g2 * g2;
+    let one = F::from_f64(1.0);
+    let tail = (one - g1) * (g1 * (g1 * (g1 * s[0] + s[1]) + s[2]) + s[3]);
+    let u = ((x - c.k * tail) / (one + c.k * g4)).tanh();
 
     let v1 = g1 * (u - s[0]);
     let lp1 = v1 + s[0];

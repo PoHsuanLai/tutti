@@ -214,3 +214,46 @@ fn a_full_resonance_is_unstable_at_small_signal() {
         Ring::Unbounded
     );
 }
+
+/// The spec: the LP24 model is the continuous ladder `1 / ((1 + s/wc)^4 + k)`,
+/// `k = 4 res`, under the bilinear map prewarped at the cutoff,
+/// `s/wc = (1/g)(1 - z^-1)/(1 + z^-1)` with `g = tan(pi fc / rate)`, evaluated
+/// directly. Resonances 0, 0.5 and 0.9 (a peak at 975 Hz for 1 kHz, not the delayed
+/// loop's 958 Hz), to 1e-9 relative.
+#[test]
+fn the_lp24_model_is_the_prewarped_bilinear_image_of_the_continuous_ladder() {
+    for (fc, res) in [
+        (1_000.0f32, 0.0f32),
+        (1_000.0, 0.5),
+        (1_000.0, 0.9),
+        (4_000.0, 0.9),
+    ] {
+        let m = model(LadderType::LP24, fc, res);
+        let g = (PI * f64::from(fc) / RATE.get()).tan();
+        let k = 4.0 * f64::from(res);
+        for f in [
+            50.0f32, 500.0, 900.0, 975.0, 1_000.0, 2_000.0, 3_900.0, 9_000.0,
+        ] {
+            let w = 2.0 * PI * f64::from(f) / RATE.get();
+            let zi = Complex64::from_polar(1.0, -w);
+            let s_over_wc = (1.0 - zi) / (1.0 + zi) / g;
+            let one = Complex64::new(1.0, 0.0);
+            let p = one + s_over_wc;
+            let want = one / (p * p * p * p + k);
+            let got = at(&m, f);
+            let rel = (got - want).norm() / want.norm();
+            assert!(rel < 1e-9, "fc {fc} res {res} at {f} Hz: {rel:.2e}");
+        }
+    }
+}
+
+/// The continuous ladder self-oscillates at `k = 4` and not below: the model's
+/// poles are inside the unit circle for `res < 1` and the loop reaches it at 1.
+#[test]
+fn the_poles_cross_the_unit_circle_at_k_four() {
+    for res in [0.9f32, 0.99, 0.999] {
+        assert!(model(LadderType::LP24, 1_000.0, res).is_stable(), "{res}");
+    }
+    let r = model(LadderType::LP24, 1_000.0, 1.0).spectral_radius();
+    assert!((r - 1.0).abs() < 1e-9, "{r}");
+}

@@ -3749,6 +3749,7 @@ dependencies = [
  "tutti-fixtures",
  "tutti-ump",
  "unicode-normalization",
+ "winnow 1.0.4",
 ]
 
 [[package]]

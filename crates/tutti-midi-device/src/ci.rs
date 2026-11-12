@@ -25,6 +25,7 @@ use std::vec::Vec;
 use tutti_ump::{MidiChannel, MidiGroup, Sysex7Packets, U7, Ump};
 
 mod discovery;
+mod read;
 mod status;
 mod text;
 
@@ -529,13 +530,16 @@ impl CiMessage {
     pub fn decode(bytes: &[u8]) -> Decoded {
         // Not a CI message at all, or too short to hold the preamble: there is
         // no header to keep, and no sender a NAK could be addressed to.
-        if bytes.len() < CiHeader::LEN || bytes[0] != CI_UNIVERSAL_SYSEX || bytes[2] != CI_SUB_ID_1
-        {
+        let Some((preamble, body)) = read::preamble(bytes) else {
             return Decoded::NotCi;
-        }
-        let (device_id, sub_id2, version) = (bytes[1], bytes[3], bytes[4]);
-        let source = Muid::from_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]);
-        let destination = Destination::from_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]);
+        };
+        let read::Preamble {
+            device_id,
+            sub_id2,
+            version,
+            source,
+            destination,
+        } = preamble;
         let unread = |reason| {
             Decoded::Unread(Unread {
                 device_id,
@@ -571,7 +575,6 @@ impl CiMessage {
             source,
         };
 
-        let body = &bytes[CiHeader::LEN..];
         // The destination each message is defined with (§3.3.3): `Some(to)` is
         // the one device, `None` the Broadcast MUID.
         let unicast = match destination {
@@ -581,10 +584,9 @@ impl CiMessage {
         let message = match (sub_id2, unicast) {
             (SUB_ID2_DISCOVERY, None) => DiscoveryData::decode_body(false, body)
                 .map(|data| CiMessage::Discovery { header, data }),
-            (SUB_ID2_INVALIDATE_MUID, None) => body
-                .get(..4)
-                .and_then(|b| Muid::from_bytes([b[0], b[1], b[2], b[3]]))
-                .map(|target| CiMessage::InvalidateMuid { header, target }),
+            (SUB_ID2_INVALIDATE_MUID, None) => {
+                read::target_body(body).map(|target| CiMessage::InvalidateMuid { header, target })
+            }
             (SUB_ID2_DISCOVERY_REPLY, Some(to)) => DiscoveryData::decode_body(true, body)
                 .map(|data| CiMessage::DiscoveryReply { header, to, data }),
             (SUB_ID2_ACK, Some(to)) => {

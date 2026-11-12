@@ -93,6 +93,9 @@ struct Open {
 /// it reads its answers from goes after.
 struct Held {
     stream: Negotiation,
+    /// Whether the port's input edge is copying SysEx7 packets to the stream
+    /// ring for the Identity Request.
+    hearing: bool,
     input: OpenInput,
 }
 
@@ -287,14 +290,13 @@ impl MidiSession {
         // `poll`. Its output is the negotiation's own, not the session's one
         // destination: asking must not wait for, or disturb, that choice.
         let os = self.inner.devices.capability(&id).unwrap_or_default();
-        let out = os
-            .is_ump_endpoint()
-            .then(|| self.inner.devices.open_output(&id).ok())
-            .flatten();
+        // A MIDI 1.0 port with an output is asked for its identity instead.
+        let out = self.inner.devices.open_output(&id).ok();
         open.inputs.insert(
             id,
             Held {
                 stream: Negotiation::new(os, out),
+                hearing: false,
                 input,
             },
         );
@@ -437,9 +439,19 @@ impl MidiSession {
         let mut settled = Vec::new();
         let mut open = self.inner.open();
         for (id, held) in &mut open.inputs {
-            let said: Vec<_> = self.inner.ports.drain_stream(held.input.slot()).collect();
+            let slot = held.input.slot();
+            // The copy of the SysEx7 packets is on before the request goes out
+            // and off once the inquiry is over.
+            if held.stream.hears_sysex() && !held.hearing {
+                held.hearing = self.inner.ports.hear_sysex(slot, true);
+            }
+            let said: Vec<_> = self.inner.ports.drain_stream(slot).collect();
             if let Some(stream) = held.stream.poll(now, said) {
                 settled.push((id.clone(), stream));
+            }
+            if held.hearing && !held.stream.hears_sysex() {
+                self.inner.ports.hear_sysex(slot, false);
+                held.hearing = false;
             }
         }
         // The output the session holds sends in what its device settled.

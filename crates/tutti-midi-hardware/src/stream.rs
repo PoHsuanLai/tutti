@@ -18,6 +18,23 @@
 //! Stream messages, or an OS that never delivers them) costs three sends and
 //! then is a [`Basis::Unanswered`] device, described by the OS.
 //!
+//! # Identity Request
+//!
+//! A MIDI 1.0 port with an output has no UMP Stream to ask what it is
+//! (M2-104 Appendix I), and is `Described` from the connect all the same. What
+//! it can say of itself is its Identity Reply (M1 p.40), so the first poll also
+//! sends it an Identity Request to every device (`F0 7E 7F 06 01 F7`, one SysEx7
+//! packet), through `tutti_midi_device::IdentityInquiry`: sent again once if it
+//! is not answered in
+//! [`INQUIRY_TIMEOUT`](tutti_midi_device::INQUIRY_TIMEOUT), then given up on, and
+//! a device that never answers is the same `Described` device as before. The
+//! reply is read from a copy of the port's SysEx7 packets that the input edge
+//! keeps while the request is out
+//! ([`HardwareMidiInputs::hear_sysex`](crate::HardwareMidiInputs::hear_sysex));
+//! the packets still reach the graph. An answer is returned by
+//! [`MidiSession::poll`](crate::MidiSession::poll) as a [`DeviceStream`]
+//! of basis [`Basis::Inquired`], whose Endpoint carries the identity.
+//!
 //! # What is asked for
 //!
 //! The MIDI 2.0 Protocol where the device offers it, else MIDI 1.0
@@ -41,9 +58,12 @@
 use std::time::Instant;
 
 use tutti_graph::Offset;
-use tutti_midi_device::{Action, Connection, Ending, Endpoint};
+use tutti_midi_device::{Action, Connection, Ending, Endpoint, IdentityInquiry, InquiryAction};
+use tutti_midi_protocol::{Addressed, Read, Universal, read};
 use tutti_midi_runtime::MidiOut;
-use tutti_ump::{Protocol, StreamConfig, Ump};
+use tutti_ump::{
+    DeviceIdentity, MidiGroup, Protocol, StreamConfig, SysexAssembler, SysexStep, Ump,
+};
 
 use crate::capability::UmpCapability;
 use crate::devices::OpenOutput;
@@ -66,10 +86,15 @@ pub enum Basis {
     /// OS's description of it, which for a device an OS has already
     /// discovered (the ALSA kernel does, for USB) is the true one.
     Unanswered,
-    /// It was not asked: a MIDI 1.0 port has no UMP Stream to ask, and a
-    /// device with no output has no way to ask. The Endpoint is the OS's
+    /// It was not asked what it is: a device with no output has no way to ask,
+    /// and a MIDI 1.0 port that has one has no UMP Stream to ask but is sent an
+    /// Identity Request, which it may never answer. The Endpoint is the OS's
     /// description.
     Described,
+    /// A MIDI 1.0 port that answered an Identity Request (M1 p.40): the
+    /// Endpoint is the OS's description with the identity the device gave
+    /// ([`Endpoint::identity`]).
+    Inquired,
 }
 
 /// What is known of the UMP Stream state of one device: its Endpoint, the
@@ -117,6 +142,59 @@ pub(crate) struct Negotiation {
     os: UmpCapability,
     out: Option<OpenOutput>,
     run: Run,
+    inquire: Inquire,
+}
+
+/// The Identity Request of a MIDI 1.0 port that has an output (the module's
+/// "Identity Request"). It runs beside a `Run::Done` that is `Described` from
+/// the connect, so a MIDI 1.0 port is settled at once and the inquiry only
+/// adds to it.
+enum Inquire {
+    /// Nothing to ask: a UMP Endpoint (it has a `Run`), a device with no
+    /// output, or an inquiry that has ended.
+    No,
+    /// Decided to ask, not yet started: the first poll sends the request.
+    Idle,
+    Asking(Box<Asking>),
+}
+
+/// The request out, and what hears the reply.
+struct Asking {
+    inquiry: IdentityInquiry,
+    assembler: SysexAssembler<Box<[u8]>>,
+}
+
+/// The Group of a MIDI 1.0 port's UMPs.
+const LEGACY_GROUP: MidiGroup = MidiGroup::of(0);
+
+/// The longest message the reply reader takes in, `F0` and `F7` included: an
+/// Identity Reply is 17 bytes with a three-byte manufacturer id.
+const REPLY_ROOM: usize = 32;
+
+impl Asking {
+    fn new(now: Instant) -> (Self, InquiryAction) {
+        let (inquiry, first) = IdentityInquiry::new(LEGACY_GROUP, now);
+        let room = SysexAssembler::room_for(REPLY_ROOM, 1, 1);
+        let assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), REPLY_ROOM, 1);
+        (Self { inquiry, assembler }, first)
+    }
+
+    /// Takes in one SysEx7 packet: the identity, if it completed an Identity
+    /// Reply. The reply's device id is the responder's own and is not looked
+    /// at: the request went to every device (`7F`) of one port.
+    fn hear(&mut self, ump: Ump) -> Option<DeviceIdentity> {
+        self.assembler.begin_block();
+        let SysexStep::Complete(done) = self.assembler.push(ump) else {
+            return None;
+        };
+        match read(self.assembler.message(done)) {
+            Read::Universal(Addressed {
+                message: Universal::IdentityReply(identity),
+                ..
+            }) => Some(identity),
+            _ => None,
+        }
+    }
 }
 
 enum Run {
@@ -137,6 +215,11 @@ impl Negotiation {
     /// other is [`Basis::Described`] at once.
     pub(crate) fn new(os: UmpCapability, out: Option<OpenOutput>) -> Self {
         let asks = os.is_ump_endpoint() && out.is_some();
+        let inquire = if !os.is_ump_endpoint() && out.is_some() {
+            Inquire::Idle
+        } else {
+            Inquire::No
+        };
         let run = if asks {
             Run::Idle
         } else {
@@ -148,7 +231,12 @@ impl Negotiation {
                 listening: None,
             }
         };
-        Self { os, out, run }
+        Self {
+            os,
+            out,
+            run,
+            inquire,
+        }
     }
 
     /// What is known, once it is settled.
@@ -159,6 +247,58 @@ impl Negotiation {
         }
     }
 
+    /// Whether the port should copy the SysEx7 packets the device sends to the
+    /// stream ring: an Identity Request is about to go out or is out.
+    pub(crate) fn hears_sysex(&self) -> bool {
+        matches!(self.inquire, Inquire::Idle | Inquire::Asking(_))
+    }
+
+    /// The Identity Request of a MIDI 1.0 port: starts it, or hands it the
+    /// packets the port copied (`incoming`) and the time. Returns the stream
+    /// when the device answered, with the identity it gave.
+    fn poll_inquiry(
+        &mut self,
+        now: Instant,
+        incoming: impl IntoIterator<Item = Ump>,
+    ) -> Option<DeviceStream> {
+        let mut actions = Vec::new();
+        match &mut self.inquire {
+            Inquire::No => {}
+            Inquire::Idle => {
+                let (asking, first) = Asking::new(now);
+                actions.push(first);
+                self.inquire = Inquire::Asking(Box::new(asking));
+            }
+            Inquire::Asking(asking) => {
+                for ump in incoming {
+                    if let Some(identity) = asking.hear(ump) {
+                        actions.push(asking.inquiry.on_reply(identity));
+                    }
+                }
+                if asking.inquiry.deadline().is_some_and(|at| now >= at) {
+                    actions.push(asking.inquiry.on_timeout(now));
+                }
+            }
+        }
+        for action in actions {
+            match action {
+                InquiryAction::Wait => {}
+                InquiryAction::Send(ump) => self.send(ump),
+                InquiryAction::GaveUp => self.inquire = Inquire::No,
+                InquiryAction::Answered(identity) => {
+                    self.inquire = Inquire::No;
+                    let Run::Done { stream, .. } = &mut self.run else {
+                        return None;
+                    };
+                    stream.endpoint = stream.endpoint.with_identity(identity);
+                    stream.basis = Basis::Inquired;
+                    return Some(**stream);
+                }
+            }
+        }
+        None
+    }
+
     /// Takes the Stream messages the device sent (`incoming`) and the time
     /// `now`: starts the negotiation, or steps it. Returns the stream when this
     /// call settled it, or, after that, changed it.
@@ -167,6 +307,9 @@ impl Negotiation {
         now: Instant,
         incoming: impl IntoIterator<Item = Ump>,
     ) -> Option<DeviceStream> {
+        if !matches!(self.inquire, Inquire::No) {
+            return self.poll_inquiry(now, incoming);
+        }
         let mut actions = Vec::new();
         match &mut self.run {
             Run::Idle => {

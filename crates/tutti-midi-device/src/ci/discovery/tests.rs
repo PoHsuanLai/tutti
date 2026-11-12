@@ -1,5 +1,6 @@
 use super::super::*;
 use super::*;
+use tutti_ump::ManufacturerId;
 
 fn header() -> CiHeader {
     CiHeader::new(Muid::new(0x0123_4567).unwrap())

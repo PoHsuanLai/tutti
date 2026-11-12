@@ -255,10 +255,11 @@ fn a_silent_device_settles_as_the_os_describes_it() {
 }
 
 /// An OS that says MIDI 1.0 and lists no blocks has no UMP Stream to ask: no
-/// packet is sent, and the device is `Described` from the connect (no wait).
+/// Stream message is sent, and the device is `Described` from the connect (no
+/// wait). (It is sent an Identity Request, the tests below.)
 #[test]
-fn a_midi1_port_is_not_asked_and_is_described_at_once() {
-    let mut wire = session_over(
+fn a_midi1_port_is_not_sent_stream_messages_and_is_described_at_once() {
+    let wire = session_over(
         UmpCapability::midi1(),
         PortDirection::Duplex,
         Endpoint::new(Capabilities::default()),
@@ -267,8 +268,171 @@ fn a_midi1_port_is_not_asked_and_is_described_at_once() {
     let stream = wire.session.stream(&wire.id).expect("settled at connect");
     assert_eq!(stream.basis(), Basis::Described);
     assert_eq!(stream.config().protocol, Protocol::Midi1);
-    let (sent, settled) = wire.tick(0);
-    assert!(sent.is_empty() && settled.is_empty());
+    let settled: Vec<_> = wire.session.poll(wire.at(0)).collect();
+    assert!(settled.is_empty());
+    let sent = received(&wire);
+    assert!(
+        sent.iter().all(|ump| ump.message_type() == 3),
+        "only SysEx goes to a MIDI 1.0 port, got {sent:?}"
+    );
+}
+
+// --- The Identity Request of a MIDI 1.0 port -------------------------------
+
+/// A MIDI 1.0 duplex device, connected, and what the session sent at `ms`.
+fn midi1_wire() -> Wire {
+    let wire = session_over(
+        UmpCapability::midi1(),
+        PortDirection::Duplex,
+        Endpoint::new(Capabilities::default()),
+    );
+    wire.session.connect_input(&wire.id.clone()).unwrap();
+    wire
+}
+
+/// The SysEx7 packets of the payload between `F0` and `F7`.
+fn sysex(payload: &[u8]) -> Vec<Ump> {
+    tutti_ump::Sysex7Packets::checked(tutti_ump::MidiGroup::FIRST, payload)
+        .expect("7-bit payload")
+        .collect()
+}
+
+/// M1 p.40: `F0 7E <device ID> 06 02 mm ff ff dd dd ss ss ss ss F7`.
+fn identity_reply(device: u8) -> Vec<Ump> {
+    sysex(&[
+        0x7E, device, 0x06, 0x02, 0x41, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    ])
+}
+
+fn identity() -> tutti_ump::DeviceIdentity {
+    use tutti_ump::{ManufacturerId, U7};
+    tutti_ump::DeviceIdentity {
+        manufacturer: ManufacturerId::new(0x41).unwrap(),
+        family: [U7::of(1), U7::of(2)],
+        model: [U7::of(3), U7::of(4)],
+        revision: [U7::of(5), U7::of(6), U7::of(7), U7::of(8)],
+    }
+}
+
+fn reply_at(wire: &Wire, packets: Vec<Ump>, ms: u64) {
+    for ump in packets {
+        assert!(wire.counters.send_input(wire.raw, ump, wire.at(ms)));
+    }
+}
+
+/// The first poll of a MIDI 1.0 port with an output sends the all-call Identity
+/// Request (M1 p.40) as one SysEx7 packet; a device that answers, whatever its
+/// own device id, gives the Endpoint its identity, which `poll` reports as an
+/// `Inquired` stream and `stream` then holds.
+#[test]
+fn a_midi1_device_that_answers_an_identity_request_has_its_identity() {
+    let wire = midi1_wire();
+    assert!(wire.session.poll(wire.at(0)).next().is_none());
+    assert_eq!(received(&wire), sysex(&[0x7E, 0x7F, 0x06, 0x01]));
+    assert_eq!(
+        wire.session.stream(&wire.id).unwrap().endpoint().identity(),
+        None
+    );
+
+    // The device's own id is 5, not the all-call.
+    reply_at(&wire, identity_reply(0x05), 10);
+    let settled: Vec<_> = wire.session.poll(wire.at(20)).collect();
+    let [(id, stream)] = settled.as_slice() else {
+        panic!("the answer is reported once, got {settled:?}");
+    };
+    assert_eq!(*id, wire.id);
+    assert_eq!(stream.basis(), Basis::Inquired);
+    assert_eq!(stream.endpoint().identity(), Some(&identity()));
+    assert_eq!(stream.config().protocol, Protocol::Midi1);
+    assert_eq!(
+        wire.session.stream(&wire.id).unwrap().endpoint().identity(),
+        Some(&identity())
+    );
+    // Over: nothing more is sent, however long it goes on.
+    assert!(wire.session.poll(wire.at(5000)).next().is_none());
+    assert!(received(&wire).is_empty());
+}
+
+/// A device that never answers (one that does not implement Device Inquiry) is
+/// sent the request twice, one timeout apart, and then left alone: it is the
+/// `Described` device it was, with no identity, and nothing waits.
+#[test]
+fn a_silent_midi1_device_is_asked_twice_and_stays_described() {
+    use tutti_midi_device::{INQUIRY_ATTEMPTS, INQUIRY_TIMEOUT};
+    let wire = midi1_wire();
+    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
+    let mut sends = 0;
+    for step in 0..6 {
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+        sends += received(&wire).len();
+    }
+    assert_eq!(sends, usize::from(INQUIRY_ATTEMPTS));
+    let stream = wire.session.stream(&wire.id).unwrap();
+    assert_eq!(stream.basis(), Basis::Described);
+    assert_eq!(stream.endpoint().identity(), None);
+}
+
+/// A late reply (after the inquiry gave up) and a SysEx that is not an Identity
+/// Reply (here General MIDI System On, M1 p.52) leave the device as it was.
+#[test]
+fn only_an_identity_reply_inside_the_inquiry_answers_it() {
+    use tutti_midi_device::INQUIRY_TIMEOUT;
+    let wire = midi1_wire();
+    let ms = INQUIRY_TIMEOUT.as_millis() as u64;
+    assert!(wire.session.poll(wire.at(0)).next().is_none());
+    reply_at(&wire, sysex(&[0x7E, 0x7F, 0x09, 0x01]), 1);
+    assert!(wire.session.poll(wire.at(2)).next().is_none());
+    assert_eq!(
+        wire.session.stream(&wire.id).unwrap().endpoint().identity(),
+        None
+    );
+    for step in 1..4 {
+        assert!(wire.session.poll(wire.at(step * ms)).next().is_none());
+    }
+    reply_at(&wire, identity_reply(0), 4 * ms);
+    assert!(wire.session.poll(wire.at(4 * ms + 1)).next().is_none());
+    assert_eq!(
+        wire.session.stream(&wire.id).unwrap().basis(),
+        Basis::Described
+    );
+}
+
+/// While the request is out, the input edge keeps a copy of the device's SysEx7
+/// packets for the control side, and the graph still hears them (a patch dump
+/// must not be eaten by an inquiry). With the copy off, nothing is kept.
+#[test]
+fn sysex_is_copied_to_the_stream_ring_while_asked_and_always_reaches_the_graph() {
+    use crate::testing::Rig;
+
+    let inlets = tutti_midi_runtime::DeviceInlets::new(
+        2,
+        tutti_graph::EventCapacity::of(64),
+        Duration::ZERO,
+    );
+    let ports = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
+    let mut rig = Rig::over(&inlets, Instant::now());
+    rig.run(1);
+    let mut producer = ports.open_input_port("dev").unwrap();
+    let port = producer.slot();
+    rig.apply();
+    let packets = identity_reply(0);
+    let arrival = rig.origin + Duration::from_millis(1);
+
+    assert!(ports.hear_sysex(port, true));
+    for ump in &packets {
+        assert_eq!(producer.push(*ump, arrival), Pushed::Sent);
+    }
+    assert_eq!(ports.drain_stream(port).collect::<Vec<_>>(), packets);
+
+    assert!(ports.hear_sysex(port, false));
+    for ump in &packets {
+        assert_eq!(producer.push(*ump, arrival), Pushed::Sent);
+    }
+    assert_eq!(ports.drain_stream(port).count(), 0);
+
+    rig.run(8);
+    let heard: Vec<_> = rig.take().into_iter().map(|(_, _, ump)| ump).collect();
+    assert_eq!(heard, [packets.clone(), packets].concat());
 }
 
 /// A UMP Endpoint the session can only read (no output) cannot be asked:

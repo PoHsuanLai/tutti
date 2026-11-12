@@ -3389,8 +3389,8 @@ What the decoded messages are consumed by, one item each.
   a one-byte or `00 xx yy` manufacturer, family and member LSB first), General MIDI On and Off
   (`09 01`, `09 02`, M1 p.52), Master Volume and Balance (`04 01`, `04 02`, 14 bits LSB first,
   M1 p.57), Master Fine Tuning (`04 03`) and Master Coarse Tuning (`04 04 00 msb`, CA-025).
-  MIDI-CI (`7E dev 0D`) is Universal too and is `Unread` here: the CI codec's decode is
-  untouched, and L8's move to `winnow` can reuse the header rules (`7E`/`7F`, device id).
+  MIDI-CI (`7E dev 0D`) is Universal too and is `Unread` here: the CI codec's decode is its own
+  grammar in `tutti-midi-device` (see "L8 part 1").
   **Not read:** GM2 System On (`09 03`, L10(d): it needs the GM2 differences); MTS is part 2, below.
 - **The device id.** `DeviceId` wraps a `U7` (its range is the whole raw, so `new` does not
   refuse): `ALL_CALL` is `7F` ("if `<device ID>` = 7FH then the device should respond
@@ -3438,6 +3438,47 @@ What the decoded messages are consumed by, one item each.
   releases held state, resets the translator, does not echo it, M1 p.33), and what reaches an
   instrument is the Note Offs and pedal-ups it made. An instrument has no output to echo to.
 - **Part 2: the MIDI Tuning Standard** (below).
+
+### L8 part 1: the CI decode on winnow, and the Identity Request: as built
+
+- **The CI decode is a `winnow` grammar** (`tutti-midi-device/src/ci/read.rs`, the crate's one
+  parser module, listed in `check-layout`'s `WINNOW_HOMES` with a gate test; `winnow` is a normal
+  dependency of the crate, which CLAUDE.md's paragraph for it now names). The grammar covers the
+  preamble (`7E device_id 0D sub_id2 version source destination`, kept raw so an `Unread` can still
+  address a NAK) and the bodies of Discovery and its reply, ACK and NAK, and Invalidate MUID's target.
+  `CiMessage::decode` validates the header in §5.3, §5.4 and Table 5's order and dispatches on
+  (sub-ID#2, destination), as before; no `winnow` type is in a public signature, field or error.
+  Behaviour is unchanged (every earlier test passes): a field a Message Format Version 1 peer does
+  not send reads as its default, a field that is there is read in full, and bytes after the last
+  field are ignored. The grammar could not share `tutti-midi-protocol`'s Universal grammar: the two
+  crates are on one layer, so the CI side keeps its own. The later messages (Endpoint Inquiry,
+  Profiles, Property Exchange) are new combinators in the same file.
+- **Identity Request (Device Inquiry, M1 p.40) as initiator.** `tutti_midi_device::IdentityInquiry`
+  is the pure core, shaped as `Connection` is (`new(group, now) -> (Self, InquiryAction)`,
+  `on_reply`, `on_timeout`, `deadline`; `InquiryAction::{Wait, Send, Answered, GaveUp}`). The request
+  is the all-call (`7F`), one SysEx7 packet. M1 gives no timeout, so the figures are ours:
+  `INQUIRY_TIMEOUT` is 1 s (a reply is 15 bytes, under 5 ms on a DIN cable) and `INQUIRY_ATTEMPTS`
+  is 2, the request and at most one retry; a device that never answers is the `Described` device it
+  was (M2-104 Appendix I: nothing hangs).
+- **Where it runs.** `MidiSession::connect_input` now opens the device's output for every device
+  (it did for UMP Endpoints only), and a MIDI 1.0 port with an output (not a UMP Endpoint) is sent
+  the request by `Negotiation::poll`, from `MidiSession::poll(now)` in the session's `Phase::Poll`.
+  The reply is a SysEx, which the input edge must hand to the control side without hiding it from
+  the graph, because a SysEx7 packet is not recognisable as an Identity Reply until the message is
+  whole, and a patch dump arriving meanwhile must reach the graph: so the edge **copies** (not
+  diverts, unlike a Stream message) SysEx7 packets to the port's stream ring while the control side
+  asks (`HardwareMidiInputs::hear_sysex(slot, bool)`, off by default), the session turns it on
+  before the first send and off when the inquiry ends, and `Asking` assembles the packets
+  (`SysexAssembler`) and reads the message with `tutti_midi_protocol::read`. The reply's own device
+  id is not looked at: the request went to every device of one port.
+- **Where the identity lives.** The `Endpoint` already holds `identity: Option<DeviceIdentity>`
+  (M2-104 §7.1.3's Device Identity), so no field was added: an answered inquiry is a `DeviceStream`
+  of the new `Basis::Inquired` whose Endpoint is the OS's description with `with_identity`, returned
+  by `poll` once and held by `MidiSession::stream`.
+- **Open.** The identity is not yet in `DeviceInfo` (a listing's row: id, name, direction), and a
+  `Devices::resolve` of a saved device does not use it: the saved file would need `DeviceIdentity`
+  under serde, and the binding rules (`Exact` / `SameName`) a decision about whether a manufacturer,
+  family and model can promote a `SameName` device. Not decided here.
 
 ### L7b: the MIDI Tuning Standard: as built (part 2)
 

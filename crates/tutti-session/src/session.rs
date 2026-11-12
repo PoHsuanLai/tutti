@@ -39,9 +39,9 @@ pub enum Phase {
     /// a change or when it was never told.
     RenderMode,
     /// Modulation's apply (feature `modulation`): the declarations (the
-    /// host's, `PhaseCx::mods`, or the session's own, `Session::mods`)
+    /// host's, `PhaseCx::mods`, or the session's own, `Session::mods_mut`)
     /// onto the graph, staging what is new for the commit. A refusal is
-    /// `SessionEvent::ModulationRefused`.
+    /// `SessionEvent::Modulation`.
     Modulation,
     /// The commit, iff the graph was edited since the last one, and the
     /// compensation of the plan it sent (or of a re-prepare's resumed plan)
@@ -91,7 +91,7 @@ pub struct PhaseCx<'a> {
     /// The time thresholds are measured on (a test passes its own).
     pub now: Instant,
     /// The host's modulation declarations and the resolver for its keys;
-    /// `None`: the session's own ([`Session::mods`]). Read by the
+    /// `None`: the session's own ([`Session::mods_mut`]). Read by the
     /// [`Modulation`](Phase::Modulation) and
     /// [`AfterCommit`](Phase::AfterCommit) phases.
     #[cfg(feature = "modulation")]
@@ -275,23 +275,15 @@ pub enum SessionEvent {
     /// [`Session::restart`](crate::Session::restart) for the stream's state.
     #[cfg(feature = "device")]
     RestartFailed(String),
-    /// The modulation declarations were refused, in the host's keys
-    /// (design 015 §4.7): reported once, when the refusal starts or
-    /// changes; [`ModState::refusal`](crate::ModState::refusal) holds it
-    /// while it lasts.
-    #[cfg(feature = "modulation")]
-    ModulationRefused(crate::ModRefusal),
-    /// A modulation target has stayed unresolved for the session's warning
-    /// time ([`UNRESOLVED_WARNING`](crate::UNRESOLVED_WARNING) by default)
-    /// of [`PhaseCx::now`]: likely a key no node is ever bound to. Reported
+    /// A modulation problem (design 015 §4.7), the one type
+    /// [`ModState::problems`](crate::ModState::problems) lists. Reported
+    /// once: a refusal when it starts or changes (the problems list holds it
+    /// while it lasts), a target that has stayed unresolved for the session's
+    /// warning time ([`UNRESOLVED_WARNING`](crate::UNRESOLVED_WARNING) by
+    /// default) of [`PhaseCx::now`], likely a key no node is ever bound to,
     /// once per stretch it stays unresolved.
     #[cfg(feature = "modulation")]
-    ModulationUnresolved {
-        /// The target, in the host's key.
-        target: tutti_modulation::TargetKey,
-        /// How long it has been unresolved.
-        waited: std::time::Duration,
-    },
+    Modulation(crate::Problem),
     /// The hardware out dropped events for want of an output: the total so
     /// far, reported when it rises, at most once per
     /// [`MIDI_OUT_DROP_REPORT`](crate::MIDI_OUT_DROP_REPORT) of
@@ -461,15 +453,7 @@ impl std::fmt::Debug for SessionEvent {
             #[cfg(feature = "device")]
             Self::RestartFailed(why) => f.debug_tuple("RestartFailed").field(why).finish(),
             #[cfg(feature = "modulation")]
-            Self::ModulationRefused(refusal) => {
-                f.debug_tuple("ModulationRefused").field(refusal).finish()
-            }
-            #[cfg(feature = "modulation")]
-            Self::ModulationUnresolved { target, waited } => f
-                .debug_struct("ModulationUnresolved")
-                .field("target", target)
-                .field("waited", waited)
-                .finish(),
+            Self::Modulation(problem) => f.debug_tuple("Modulation").field(problem).finish(),
             #[cfg(feature = "midi")]
             Self::MidiOutDropped(count) => f.debug_tuple("MidiOutDropped").field(count).finish(),
             #[cfg(feature = "midi-hardware")]
@@ -1078,12 +1062,23 @@ impl Session {
         Ok(())
     }
 
+    /// The session's own modulation declarations, read: its routes and
+    /// sources ([`ModsView::routes`](crate::ModsView::routes),
+    /// [`routes_to`](crate::ModsView::routes_to),
+    /// [`sources`](crate::ModsView::sources)). Reading marks nothing
+    /// edited; [`mods_mut`](Self::mods_mut) edits.
+    #[cfg(feature = "modulation")]
+    #[must_use]
+    pub fn mods(&self) -> crate::ModsView<'_> {
+        crate::Mods::view_of(&self.mods.own)
+    }
+
     /// The session's own modulation declarations, to edit (design 015
     /// §4.3, §5.1): the next update applies them. A session has one
     /// declarer: while these hold anything, a host's
     /// [`ModInput`] is refused.
     #[cfg(feature = "modulation")]
-    pub fn mods(&mut self) -> crate::Mods<'_> {
+    pub fn mods_mut(&mut self) -> crate::Mods<'_> {
         // Whatever the handle edits is built into the next apply's
         // declarations.
         self.mods.own.edited();

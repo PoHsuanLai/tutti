@@ -284,7 +284,7 @@ pub enum ProgramError {
     /// A drawn wave whose points are not ascending in `[0, 1)` with finite
     /// values, in this layer.
     BadDrawnWave(LayerId),
-    /// A NaN in this layer (a depth, a rate, a phase, a beat span, an
+    /// A NaN in this layer (a rate, a phase, a beat span, an
     /// anchor, a constant): a program is [`Eq`], and NaN equals nothing.
     NotANumber(LayerId),
 }
@@ -344,7 +344,7 @@ impl std::error::Error for ProgramError {}
 ///     id: LayerId(1),
 ///     clock: Clock::Beats { per_cycle: BeatDuration(4.0), phase: PhaseIncrement(0.0) },
 ///     wave: Wave::Shape { shape: LfoShape::Square, seed: 0 },
-///     amount: Amount { depth: Depth(0.25), polarity: Polarity::Bipolar, curve: Law::Linear },
+///     amount: Amount { depth: Depth::of(0.25), polarity: Polarity::Bipolar, curve: Law::Linear },
 ///     depth_by: None,
 /// };
 /// let program = ControlProgram::new(None, vec![square], vec![]).unwrap();
@@ -450,9 +450,6 @@ impl ControlProgram {
                     }
                 }
             }
-        }
-        if let Some(l) = inputs.iter().find(|l| l.amount.depth.get().is_nan()) {
-            return Err(ProgramError::NotANumber(l.id));
         }
         Ok(Self {
             automation: automation.map(|c| c.frozen().unwrap_or(c)),
@@ -681,7 +678,6 @@ impl Layer {
 
     /// Whether a NaN is anywhere in the layer.
     fn has_nan(&self) -> bool {
-        let amount = |a: &Amount| a.depth.get().is_nan();
         let clock = |c: &Clock| match *c {
             Clock::Beats { per_cycle, phase } => per_cycle.get().is_nan() || phase.get().is_nan(),
             Clock::Seconds {
@@ -695,13 +691,12 @@ impl Layer {
             }
         };
         let wave = |w: &Wave| matches!(w, Wave::Const(v) if v.is_nan());
-        amount(&self.amount)
-            || clock(&self.clock)
+        clock(&self.clock)
             || wave(&self.wave)
             || self
                 .depth_by
                 .as_ref()
-                .is_some_and(|d| amount(&d.amount) || clock(&d.clock) || wave(&d.wave))
+                .is_some_and(|d| clock(&d.clock) || wave(&d.wave))
     }
 }
 

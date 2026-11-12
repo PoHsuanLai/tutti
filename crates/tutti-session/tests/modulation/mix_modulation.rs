@@ -15,7 +15,8 @@ use tutti_modulation::Macro;
 use tutti_nodes::ReconcileError;
 use tutti_nodes::testing::Const;
 use tutti_session::{
-    InPort, MixRef, ModRefusal, ModTarget, OutPort, ParamRef, PassError, Root, Session,
+    InPort, MixRef, ModRefusal, ModTarget, OutPort, ParamRef, PassError, Problem, Root, RouteSpec,
+    Session, TargetName,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, SampleRate, Samples, UnitParam};
@@ -58,11 +59,10 @@ fn settle(s: &mut Session) {
     for _ in 0..6 {
         let _ = s.update();
     }
-    assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(
-        s.mod_state().unresolved_targets(),
-        &[],
-        "every target resolved"
+        s.mod_state().problems().next(),
+        None,
+        "the declarations apply"
     );
 }
 
@@ -123,10 +123,12 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
     figure(&mut s, 0.25, "the base, before any route");
 
     let mix = MixRef::of(node);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range(mix, Mix(0.0)..Mix(1.0)).unwrap();
     let source = m.macro_(0.5);
-    let route = m.route(source, mix, Depth(0.5)).unwrap();
+    let route = m
+        .route(RouteSpec::new(source, mix, Depth::of(0.5)))
+        .unwrap();
     let target = m.key(mix);
     settle(&mut s);
     figure(&mut s, 0.5, "the base plus the route's offset");
@@ -140,11 +142,11 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
         "the base, not the lane"
     );
 
-    s.mods().set_source(source, Macro(-0.5));
+    s.mods_mut().set_source(source, Macro(-0.5)).unwrap();
     settle(&mut s);
     figure(&mut s, 0.25, "the macro moved");
 
-    s.mods().set_source(source, Macro(0.5));
+    s.mods_mut().set_source(source, Macro(0.5)).unwrap();
     assert!(s.mod_state().set_knob(target, 0.875), "the lane has a knob");
     settle(&mut s);
     figure(&mut s, 1.0, "clamped to the blend");
@@ -154,7 +156,7 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
         "the knob is the mix"
     );
 
-    s.mods().remove_route(route).unwrap();
+    s.mods_mut().remove_route(route).unwrap();
     settle(&mut s);
     figure(&mut s, 0.875, "the route gone: the base the knob left");
 }
@@ -165,9 +167,12 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
 fn a_mix_target_keys_apart_from_a_param_of_its_node() {
     let mut s = offline();
     let node = rig(&mut s);
-    let key = s.mods().key(MixRef::of(node));
-    assert_eq!(key, s.mods().key(ModTarget::Mix(MixRef::of(node))));
-    assert_ne!(key, s.mods().key(ParamRef::unit(node, UnitParam::Volume)));
+    let key = s.mods_mut().key(MixRef::of(node));
+    assert_eq!(key, s.mods_mut().key(ModTarget::Mix(MixRef::of(node))));
+    assert_ne!(
+        key,
+        s.mods_mut().key(ParamRef::unit(node, UnitParam::Volume))
+    );
     assert_eq!(ParamRef::from_key(key), None);
 }
 
@@ -178,10 +183,11 @@ fn a_removed_node_takes_its_mix_route_with_it() {
     let mut s = offline();
     let node = rig(&mut s);
     let mix = MixRef::of(node);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range(mix, Mix(0.0)..Mix(1.0)).unwrap();
     let source = m.macro_(0.5);
-    m.route(source, mix, Depth(0.5)).unwrap();
+    m.route(RouteSpec::new(source, mix, Depth::of(0.5)))
+        .unwrap();
     settle(&mut s);
     s.remove(node).unwrap();
     // Nothing is left declared on the node: no refusal, nothing unresolved.
@@ -232,22 +238,26 @@ fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
     );
 
     let mix = MixRef::of(spread);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range(mix, Mix(0.0)..Mix(1.0)).unwrap();
     let source = m.macro_(0.5);
-    m.route(source, mix, Depth(0.5)).unwrap();
+    m.route(RouteSpec::new(source, mix, Depth::of(0.5)))
+        .unwrap();
     let target = m.key(mix);
     for _ in 0..6 {
         let _ = s.update();
     }
     assert_eq!(
-        s.mod_state().refusal(),
-        Some(&ModRefusal::Apply(ReconcileError::Unplaced {
-            target,
-            error: PassError::Unplaced {
-                inputs: 1,
-                outputs: 2
-            },
-        }))
+        s.mod_state().problems().next(),
+        Some(&Problem::Refused {
+            cause: ModRefusal::Apply(ReconcileError::Unplaced {
+                target,
+                error: PassError::Unplaced {
+                    inputs: 1,
+                    outputs: 2
+                },
+            }),
+            at: Some(TargetName::Own(mix.into())),
+        })
     );
 }

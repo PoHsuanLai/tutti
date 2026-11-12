@@ -17,6 +17,7 @@
 
 mod support;
 
+use std::num::NonZeroUsize;
 use support::{BLOCK, Hand};
 use tutti_fixtures::midi;
 use tutti_fixtures::signal::peak;
@@ -56,7 +57,6 @@ fn flat_envelope() -> Adsr {
 
 fn config(osc: OscillatorType) -> SynthConfig {
     SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(SR),
         oscillator: osc,
         envelope: flat_envelope(),
         ..Default::default()
@@ -148,7 +148,7 @@ fn every_oscillator_plays_the_requested_pitch() {
         OscillatorType::Triangle,
     ] {
         for note in [48u8, 60, 69, 81] {
-            let mut synth = Hand::new(PolySynth::new(config(osc)).expect("synth builds"));
+            let mut synth = Hand::new(PolySynth::new(config(osc)));
             synth.queue_midi(&[note_on(note, 100)]);
 
             // Skip the attack; measure the steady state.
@@ -174,7 +174,7 @@ fn every_oscillator_plays_the_requested_pitch() {
 /// nothing would pass a pitch test that skipped it.
 #[test]
 fn the_noise_oscillator_produces_broadband_sound() {
-    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Noise)).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Noise)));
     synth.queue_midi(&[note_on(69, 100)]);
     let audio = render(&mut synth, 200);
     let tail = &audio[4096..];
@@ -195,8 +195,7 @@ fn the_noise_oscillator_produces_broadband_sound() {
 fn velocity_scales_the_output_level() {
     let mut levels = Vec::new();
     for vel in [30u8, 60, 100, 127] {
-        let mut synth =
-            Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+        let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
         synth.queue_midi(&[note_on(69, vel)]);
         let audio = render(&mut synth, 100);
         levels.push((vel, peak(&audio[2048..])));
@@ -237,7 +236,7 @@ fn a_note_off_silences_the_voice_after_release() {
         sustain: Amplitude(1.0),
         release: Seconds(0.05),
     };
-    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(cfg));
 
     synth.queue_midi(&[note_on(69, 100)]);
     let held = render(&mut synth, 100);
@@ -262,7 +261,7 @@ fn a_note_off_silences_the_voice_after_release() {
 /// passes every allocation test in the crate.
 #[test]
 fn two_simultaneous_notes_both_sound() {
-    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
 
     // An octave apart, so the two peaks are unambiguous.
     synth.queue_midi(&[note_on(60, 100), note_on(72, 100)]);
@@ -285,7 +284,7 @@ fn two_simultaneous_notes_both_sound() {
 
     // ...and the mix must be louder than either note alone, which is what
     // distinguishes summing from replacement.
-    let mut solo = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+    let mut solo = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
     solo.queue_midi(&[note_on(60, 100)]);
     let solo_audio = render(&mut solo, 200);
 
@@ -306,9 +305,9 @@ fn two_simultaneous_notes_both_sound() {
 #[test]
 fn nosteal_leaves_the_held_notes_alone() {
     let mut cfg = config(OscillatorType::Sine);
-    cfg.max_voices = 2;
+    cfg.polyphony = NonZeroUsize::new(2).unwrap();
     cfg.allocation_strategy = AllocationStrategy::NoSteal;
-    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(cfg));
 
     synth.queue_midi(&[note_on(60, 100), note_on(64, 100)]);
     let before = render(&mut synth, 100);
@@ -341,9 +340,9 @@ fn nosteal_leaves_the_held_notes_alone() {
 #[test]
 fn a_stolen_voice_plays_the_new_note() {
     let mut cfg = config(OscillatorType::Sine);
-    cfg.max_voices = 1;
+    cfg.polyphony = NonZeroUsize::MIN;
     cfg.allocation_strategy = AllocationStrategy::Oldest;
-    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(cfg));
 
     synth.queue_midi(&[note_on(60, 100)]);
     let _ = render(&mut synth, 50);
@@ -371,7 +370,7 @@ fn a_stolen_voice_plays_the_new_note() {
 fn mono_mode_holds_one_voice() {
     let mut cfg = config(OscillatorType::Sine);
     cfg.voice_mode = VoiceMode::Mono;
-    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(cfg));
 
     synth.queue_midi(&[note_on(60, 100), note_on(64, 100), note_on(67, 100)]);
     // 300 blocks = 19200 samples, enough to skip the retriggering at the start
@@ -397,16 +396,16 @@ fn mono_mode_holds_one_voice() {
 
 /// The master volume must scale the output.
 ///
-/// `set_volume`/`volume_atomic` are exercised for their atomics but never for
-/// their effect on the signal.
+/// `set_volume` is the gain a synth is inserted with; this is its effect on
+/// the signal.
 #[test]
 fn master_volume_scales_the_output() {
-    let mut full = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+    let mut full = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
     full.queue_midi(&[note_on(69, 100)]);
     let loud = render(&mut full, 100);
 
-    let mut half = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
-    half.set_volume(0.5);
+    let mut half = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
+    half.set_volume(tutti_types::Amplitude(0.5));
     half.queue_midi(&[note_on(69, 100)]);
     let quiet = render(&mut half, 100);
 
@@ -418,8 +417,8 @@ fn master_volume_scales_the_output() {
     );
 
     // Zero must be silence, not merely quiet.
-    let mut muted = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
-    muted.set_volume(0.0);
+    let mut muted = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
+    muted.set_volume(tutti_types::Amplitude(0.0));
     muted.queue_midi(&[note_on(69, 100)]);
     let silent = render(&mut muted, 100);
     assert!(
@@ -435,14 +434,15 @@ fn master_volume_scales_the_output() {
 #[test]
 fn a_non_finite_master_volume_write_leaves_the_synth_at_its_volume() {
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        let mut synth =
-            Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
-        synth.set_volume(0.5);
+        let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
+        synth.set_volume(tutti_types::Amplitude(0.5));
         synth.queue_midi(&[note_on(69, 100)]);
         let before = render(&mut synth, 40);
-        synth
-            .volume_atomic()
-            .store(bad, std::sync::atomic::Ordering::Release);
+        // A host writes the cell through the synth's `ParamSet`, which stores
+        // what it is given.
+        assert!(
+            tutti_graph::ParamNode::param_set(&*synth).set(tutti_types::UnitParam::Volume, bad)
+        );
         let held = render(&mut synth, 40);
         assert!(
             held.iter().all(|s| s.is_finite()),
@@ -453,7 +453,7 @@ fn a_non_finite_master_volume_write_leaves_the_synth_at_its_volume() {
             (ratio - 1.0).abs() < 0.05,
             "volume = {bad} moved the level by {ratio}"
         );
-        synth.set_volume(0.25);
+        synth.set_volume(tutti_types::Amplitude(0.25));
         let after = render(&mut synth, 40);
         assert!(
             rms(&after[2048..]) < 0.7 * rms(&held[2048..]),
@@ -493,8 +493,7 @@ fn a_key_struck_twice_then_released_once_goes_silent() {
         ),
     ];
     for (name, strikes, releases) in cases {
-        let mut synth =
-            Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+        let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
         synth.queue_midi(&strikes);
         let sounding = render(&mut synth, 50);
         assert!(peak(&sounding) > 0.01, "{name}: the strike must sound");
@@ -515,7 +514,7 @@ fn a_key_struck_twice_then_released_once_goes_silent() {
 /// something other than the note.
 #[test]
 fn an_idle_synth_is_silent() {
-    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
     let audio = render(&mut synth, 50);
     assert_eq!(
         peak(&audio),
@@ -532,7 +531,7 @@ fn an_idle_synth_is_silent() {
 /// measurement in this file.
 #[test]
 fn a_centred_voice_reaches_both_channels() {
-    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
     synth.queue_midi(&[note_on(69, 100)]);
     let (l, r) = render_stereo(&mut synth, 100);
 
@@ -568,12 +567,11 @@ fn render_tick(synth: &mut Hand, samples: usize) -> (Vec<f32>, Vec<f32>) {
 /// channels are fed.
 #[test]
 fn the_tick_path_matches_the_block_path() {
-    let mut ticked = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+    let mut ticked = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
     ticked.queue_midi(&[note_on(69, 100)]);
     let (tl, tr) = render_tick(&mut ticked, 12_800);
 
-    let mut blocked =
-        Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
+    let mut blocked = Hand::new(PolySynth::new(config(OscillatorType::Sine)));
     blocked.queue_midi(&[note_on(69, 100)]);
     let (bl, _br) = render_stereo(&mut blocked, 200);
 

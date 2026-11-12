@@ -8,7 +8,7 @@
 //! share lane groups; eight lanes form a group, one `f32x8` per field. A
 //! group none of whose lanes belongs to a sounding voice is skipped outright,
 //! so the cost is proportional to the sounding sub-voices rounded up to a
-//! group, not to `max_voices`.
+//! group, not to the polyphony.
 //!
 //! This avoids a boxed processor per sub-voice ticked per sample through a
 //! virtual call. Surge's `QuadFilterChain` and Vital's `poly_float` are the

@@ -21,8 +21,8 @@ use tutti_plugin_types::{
 use tutti_rt::Rt;
 
 use tutti_plugin_types::LoadStage;
+use tutti_plugin_types::ParamEdit;
 use tutti_plugin_types::PluginTail;
-use tutti_plugin_types::{Normalized, ParamId};
 
 /// What the plugin changed about itself since the last
 /// [`Instance::pump`]: each field is a re-read the core did after the
@@ -361,7 +361,7 @@ impl<F: Loaded> Instance<F> {
     }
 
     /// The plugin's parameter edits since the last call.
-    pub(super) fn drain_param_changes(&mut self, main: &MainThread) -> Vec<(ParamId, Normalized)> {
+    pub(super) fn drain_param_changes(&mut self, main: &MainThread) -> Vec<ParamEdit> {
         let mut edits = Vec::new();
         if let Some(control) = self.lifecycle.control() {
             control.take_reported_edits(main, &mut edits);

@@ -16,6 +16,7 @@
 //! Run: `cargo run --release -p tutti-polysynth --example render_synth_cases -- <outdir>`
 
 use std::path::Path;
+use tutti_polysynth::UnisonVoices;
 
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
@@ -43,10 +44,10 @@ fn flat_envelope() -> Adsr {
 }
 
 fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
-    let rate = cfg.sample_rate;
+    let rate = tutti_types::SampleRate::new(SR);
     // Driven as a graph drives it: `Node::process`, the notes on its event
     // input in the first block.
-    let mut synth = Direct::new(PolySynth::new(cfg).expect("synth builds"), rate, BLOCK);
+    let mut synth = Direct::new(PolySynth::new(cfg), rate, BLOCK);
     let at = Offset::new(0, Samples(BLOCK)).expect("inside");
     let events: Vec<Event> = notes
         .iter()
@@ -111,7 +112,6 @@ fn main() {
     std::fs::create_dir_all(out).expect("create output dir");
 
     let base = |osc: OscillatorType| SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(SR),
         oscillator: osc,
         envelope: flat_envelope(),
         ..Default::default()
@@ -188,7 +188,7 @@ fn main() {
     for (voices, detune) in [(2u8, 10.0f32), (3, 20.0), (7, 25.0)] {
         let mut cfg = base(OscillatorType::Saw);
         cfg.unison = Some(UnisonConfig {
-            voice_count: voices,
+            voice_count: UnisonVoices::new(voices).expect("a unison count"),
             detune_cents: Cents::new(detune),
             stereo_spread: Spread(0.8),
             ..Default::default()

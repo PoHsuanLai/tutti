@@ -53,7 +53,7 @@ impl Default for OfflineTimelineConfig {
 /// ```
 /// # use std::sync::Arc;
 /// # use tutti_tempo::TempoMap;
-/// # use tutti_types::{Beat, Bpm, SampleRate};
+/// # use tutti_types::{Beat, Bpm, SampleRate, Samples};
 /// # use tutti_transport::Timeline;
 /// # use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 /// let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
@@ -65,7 +65,7 @@ impl Default for OfflineTimelineConfig {
 ///
 /// // Advance by 44100 samples (1 second at 44.1kHz)
 /// // At 120 BPM, that's 2 beats
-/// timeline.advance(44100);
+/// timeline.advance(Samples(44100));
 /// assert!((timeline.beat().get() - 2.0).abs() < 0.001);
 /// # Ok::<_, tutti_tempo::TempoError>(())
 /// ```
@@ -155,7 +155,7 @@ impl OfflineTimeline {
         }
     }
 
-    /// Advances the playhead by `samples` **frames** of render.
+    /// Advances the playhead by `samples` frames of render.
     ///
     /// If a loop region is set and the timeline crosses its end, the position
     /// wraps back into the region, on the frame that reaches the end.
@@ -164,15 +164,21 @@ impl OfflineTimeline {
     /// the live `TransportClock`'s own code, so the two land on the same beat
     /// to the bit whether either is stepped a frame or a block at a time —
     /// see the sample-for-sample test below.
-    pub fn advance(&self, samples: usize) {
+    pub fn advance(&self, samples: Samples) {
         let mut head = self.lock();
         let Head { clock, walk } = &mut *head;
         // `LoopRange` is non-empty by construction, so no guard. Only a
         // crossing wraps, as for the clock (`LoopRange::advance`).
         if self.stepped {
-            walk.roll(&self.tempo_map, clock, samples, self.loop_range, false);
+            walk.roll(
+                &self.tempo_map,
+                clock,
+                samples.get(),
+                self.loop_range,
+                false,
+            );
         } else {
-            clock.advance(Samples(samples), self.loop_range);
+            clock.advance(samples, self.loop_range);
         }
         self.publish(&head.clock);
     }
@@ -372,9 +378,7 @@ impl super::OfflineClock for OfflineTimeline {}
 
 impl super::RenderClock for OfflineTimeline {
     fn advance(&self, frames: tutti_types::Samples) {
-        // The inherent `advance` takes a raw count; this is the same call with
-        // the frame-count type at the trait boundary.
-        OfflineTimeline::advance(self, frames.get());
+        OfflineTimeline::advance(self, frames);
     }
 
     fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
@@ -413,7 +417,7 @@ impl super::RenderClock for OfflineTimeline {
                 });
                 exec.process_with_changes(n, &transport, &changes, &ins[..ni], &mut outs[..no]);
             }
-            OfflineTimeline::advance(self, n);
+            OfflineTimeline::advance(self, Samples(n));
             done += n;
         }
     }
@@ -452,7 +456,7 @@ mod tests {
 
         // ...and the timeline runs free rather than pretending to loop.
         let samples_per_beat = 44100.0 / 2.0;
-        timeline.advance((10.0 * samples_per_beat) as usize);
+        timeline.advance(Samples((10.0 * samples_per_beat) as usize));
         assert!(
             (timeline.beat().get() - 10.0).abs() < 0.01,
             "expected free-running beat 10.0, got {}",
@@ -492,7 +496,7 @@ mod tests {
         // Five beats over a one-beat loop: a crossing every 22 050 frames, each
         // on a frame (one beat is exactly 22 050), so each wraps to 0.0.
         let samples_per_beat = 22050usize;
-        timeline.advance(5 * samples_per_beat);
+        timeline.advance(Samples(5 * samples_per_beat));
         assert_eq!(
             timeline.beat(),
             Beat(0.0),
@@ -508,9 +512,9 @@ mod tests {
             loop_range: LoopRange::new(Beat::new(0.1), Beat::new(0.43)),
         };
         let (block, frames) = (OfflineTimeline::new(&config), OfflineTimeline::new(&config));
-        block.advance(50_000);
+        block.advance(Samples(50_000));
         for _ in 0..50_000 {
-            frames.advance(1);
+            frames.advance(Samples(1));
         }
         assert!(config.loop_range.expect("a loop").contains(block.beat()));
         assert_eq!(block.beat().get().to_bits(), frames.beat().get().to_bits());
@@ -565,7 +569,7 @@ mod tests {
         for _ in 1..block {
             clock_beat = clock.step(1).get();
         }
-        timeline.advance(block);
+        timeline.advance(Samples(block));
 
         let expected_lag =
             tutti_types::beats_per_sample(Bpm::of(tempo), SampleRate::new(sample_rate));
@@ -593,11 +597,11 @@ mod tests {
             loop_range: None,
         });
         for _ in 0..500 {
-            timeline.advance(64);
+            timeline.advance(Samples(64));
         }
         assert_eq!(timeline.beat(), Beat(1.0));
         for _ in 500..1_500 {
-            timeline.advance(64);
+            timeline.advance(Samples(64));
         }
         assert_eq!(timeline.beat(), Beat(3.0));
     }
@@ -638,7 +642,7 @@ mod tests {
             let mut frames = 0u64;
             for _ in 0..1_000 {
                 let n = 1 + (next() % 2_048) as usize;
-                timeline.advance(n);
+                timeline.advance(Samples(n));
                 frames += n as u64;
             }
             for _ in 0..frames / 64 {
@@ -669,7 +673,7 @@ mod tests {
         });
 
         let samples_per_beat = 44100.0 / 2.0;
-        timeline.advance((5.0 * samples_per_beat) as usize);
+        timeline.advance(Samples((5.0 * samples_per_beat) as usize));
         assert!((timeline.beat().get() - 5.0).abs() < 0.01);
 
         // Seek back to beat 2
@@ -755,7 +759,7 @@ mod tests {
         assert!((first - chord).abs() < 1e-9, "{first} vs {chord}");
         assert!(first > 97.0);
         // 128 frames on, the next cell's chord is higher.
-        ramp.advance(128);
+        ramp.advance(Samples(128));
         assert!(ramp.graph_block().0.tempo.get() > first);
     }
 
@@ -809,13 +813,13 @@ mod tests {
         });
         t.seek_to(Beat::new(4.5));
         assert_eq!(t.graph_block().0.tempo, Bpm::of(60.0));
-        t.advance(48_000);
+        t.advance(Samples(48_000));
         assert_eq!(t.beat(), Beat(5.5));
         t.seek_to(Beat::new(3.5));
         assert_eq!(t.graph_block().0.tempo, Bpm::of(120.0));
-        t.advance(11_999);
+        t.advance(Samples(11_999));
         assert_eq!(t.graph_block().0.tempo, Bpm::of(120.0));
-        t.advance(1);
+        t.advance(Samples(1));
         assert_eq!(
             (t.beat(), t.graph_block().0.tempo),
             (Beat(4.0), Bpm::of(60.0))

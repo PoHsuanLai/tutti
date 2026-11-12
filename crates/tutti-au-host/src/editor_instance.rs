@@ -9,7 +9,8 @@ use std::path::Path;
 
 use tutti_plugin_types::{
     ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, EditorWindow,
-    InProcess, Load, MainThread, Normalized, ParamId, PluginError, PluginResult, WindowHandle,
+    InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
+    WindowHandle,
 };
 
 use crate::instance::AuLoaded;
@@ -38,9 +39,13 @@ impl AuEditorInstance {
     /// Loads the editor-only instance, resolved by [`AuLoaded::load`] so it
     /// finds the same component the audio path does.
     pub(crate) fn load(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
-        Ok(Self {
-            inner: AuLoaded::load_in_process(main, path, load)?,
-        })
+        let mut inner = AuLoaded::load_in_process(main, path, load)?;
+        // The unit's own view changes parameters through `AudioUnitSetParameter`,
+        // which only a parameter listener hears: the one `AuLoaded` installs for
+        // the audio instance, so `poll_edits` reports what the user does in it.
+        // A unit that refuses the listener reports nothing, as before.
+        let _ = inner.watch_properties();
+        Ok(Self { inner })
     }
 
     /// The loaded unit behind the editor.
@@ -75,10 +80,11 @@ impl Editor for AuEditorInstance {
             .map_err(|e| editor_error(format!("AU get_state failed: {e}")))
     }
 
-    fn poll_edits(&mut self, _main: &MainThread) -> Vec<(ParamId, f32)> {
-        // AUv2 has no parameter-change notification from the GUI: a Cocoa view
-        // calls `AudioUnitSetParameter` directly.
-        Vec::new()
+    fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit> {
+        // What the Cocoa view changed, heard by the listener `load` installed.
+        let mut edits = Vec::new();
+        Control::take_reported_edits(&mut self.inner, main, &mut edits);
+        edits
     }
 }
 

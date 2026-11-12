@@ -9,8 +9,8 @@ use std::path::Path;
 
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
-    EditorWindow, InProcess, Load, MainThread, Normalized, ParamId, PluginError, PluginResult,
-    WindowHandle,
+    EditorWindow, InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
+    PluginResult, WindowHandle,
 };
 
 use super::loaded::Vst3Loaded;
@@ -36,7 +36,7 @@ pub struct Vst3Editor {
     inner: Vst3Loaded,
     /// `PerformEdit`s drained but not yet polled: one notification drain
     /// serves both [`Editor::poll_edits`] and [`Editor::take_dirty`].
-    edits: Vec<(ParamId, f32)>,
+    edits: Vec<ParamEdit>,
     /// The plugin called `setDirty(true)` since the last
     /// [`take_dirty`](Editor::take_dirty).
     dirty: bool,
@@ -67,7 +67,16 @@ impl Vst3Editor {
         let _restart = self.inner.poll_plugin_notifications(main, |n| match n {
             // The plugin's editor reported one of its own `ParamID`s.
             PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id, value }) => {
-                edits.push((param_id.into(), value as f32));
+                edits.push(ParamEdit::change(
+                    param_id.into(),
+                    Normalized::clamped(value),
+                ));
+            }
+            PluginNotification::Edit(ParameterEditEvent::BeginEdit(id)) => {
+                edits.push(ParamEdit::Begin(id.into()));
+            }
+            PluginNotification::Edit(ParameterEditEvent::EndEdit(id)) => {
+                edits.push(ParamEdit::End(id.into()));
             }
             PluginNotification::Edit(ParameterEditEvent::SetDirty(true)) => *dirty = true,
             _ => {}
@@ -106,7 +115,7 @@ impl Editor for Vst3Editor {
         Ok(())
     }
 
-    fn poll_edits(&mut self, main: &MainThread) -> Vec<(ParamId, f32)> {
+    fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit> {
         self.drain(main);
         std::mem::take(&mut self.edits)
     }

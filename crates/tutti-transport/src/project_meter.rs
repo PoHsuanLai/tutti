@@ -85,7 +85,8 @@ impl ProjectMeter {
     /// Publishes `meter` to the metronome and to every following slot, before
     /// returning. Control thread: allocates, and frees the values it
     /// replaces here.
-    pub fn set_meter(&self, meter: Arc<MeterMap>) {
+    pub fn set_meter(&self, meter: impl Into<Arc<MeterMap>>) {
+        let meter = meter.into();
         let mut state = self.state();
         self.0.cell.publish(Arc::clone(&meter));
         state.followers.retain(|follower| match follower.upgrade() {
@@ -310,6 +311,21 @@ mod tests {
             Beat(0.0),
             TimeSignature::from_numbers(n, 4).unwrap(),
         )]))
+    }
+
+    /// `set_meter` takes a meter by value as `set_tempo_map` takes a map: the
+    /// metronome reads the one that was passed.
+    #[test]
+    fn set_meter_takes_a_meter_by_value() {
+        let project = ProjectMeter::new(MeterMap::default());
+        let mut click = project.reader();
+        let five = MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            TimeSignature::from_numbers(5, 4).unwrap(),
+        )]);
+        project.set_meter(five.clone());
+        assert_eq!(*click.lend(), five);
+        assert_eq!(*project.current(), five);
     }
 
     /// What a node reading `slot` sees this block.

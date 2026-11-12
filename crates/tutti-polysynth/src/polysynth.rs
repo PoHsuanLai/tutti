@@ -12,24 +12,22 @@
 //! bank, so no scratch is sized to a block.
 
 use crate::SynthConfig;
+use crate::UnisonVoices;
 use crate::bank::{CONTROL_BLOCK, VoiceBank};
 use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
 use crate::{UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
-use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
+use tutti_midi_protocol::{MpeMode, MpeZones};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_protocol::{u16_to_unit_f32, u32_to_unit_f32};
-use tutti_types::Hz;
-use tutti_types::{Amplitude, Param, Tail};
+use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Spread, Tail};
 use tutti_ump::NoteId;
 use tutti_ump::{
     Attribute, CCNumber, MidiChannel, NoteNumber, RegisteredPerNoteController, Ump, Voice2,
 };
 use tutti_voicing::{Controller, Effect, Glide, NoteControl, Stop};
-
-use std::sync::Arc;
 
 /// A polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
 /// SIMD voice bank.
@@ -43,7 +41,7 @@ use std::sync::Arc;
 ///
 /// The event input accepts MIDI 1.0 and MIDI 2.0 (UMP) channel-voice
 /// messages, including MPE and MIDI 2.0 per-note controllers when
-/// [`SynthConfig::mpe_enabled`] is set. Up to 512 events per block are
+/// [`SynthConfig::mpe`] is not [`MpeMode::Disabled`]. Up to 512 events per block are
 /// applied; any beyond that are dropped.
 ///
 /// Rendering allocates nothing and takes no lock. Construction, forking and
@@ -54,6 +52,7 @@ use std::sync::Arc;
 /// # Examples
 ///
 /// ```
+/// use std::num::NonZeroUsize;
 /// use tutti_types::MaxBlock;
 /// use tutti_types::{Hz, Resonance, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo};
@@ -61,21 +60,23 @@ use std::sync::Arc;
 ///
 /// let synth = PolySynth::new(SynthConfig {
 ///     oscillator: OscillatorType::Saw,
-///     max_voices: 8,
+///     polyphony: NonZeroUsize::new(8).unwrap(),
 ///     filter: FilterType::Moog { cutoff: Hz(2_000.0), resonance: Resonance(0.5) },
 ///     ..Default::default()
-/// })?;
+/// });
 /// assert_eq!(synth.active_voice_count(), 0);
 ///
 /// // Alone in a graph; a host wires a clip or keyboard to its event input.
 /// let mut solo = Solo::new(synth, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))));
 /// let out = solo.render(64);
 /// assert_eq!(out.len(), 2); // stereo
-/// # Ok::<(), tutti_polysynth::Error>(())
 /// ```
 #[derive(Debug)]
 pub struct PolySynth {
     config: SynthConfig,
+    /// The rate the voices are built for: [`PolySynth::INITIAL_RATE`] until the
+    /// graph prepares the synth (`Node::prepare`).
+    sample_rate: SampleRate,
     allocator: VoiceAllocator,
     voices: Vec<SynthVoice>,
     /// Every sub-voice's oscillator, filter and envelope state, in SIMD lanes.
@@ -92,57 +93,54 @@ pub struct PolySynth {
     /// The last finite master volume the node read: a cell a host wrote a NaN
     /// or an infinity into reads as this, not as itself.
     last_volume: f32,
-    /// Voices that finished this span. Sized to `max_voices` and only cleared,
+    /// Voices that finished this span. Sized to the polyphony and only cleared,
     /// so it never allocates on the audio thread.
     finished_indices: Vec<usize>,
 }
 
 impl PolySynth {
+    /// The rate a synth renders at until its graph prepares it: 44.1 kHz. The
+    /// rate is the graph's, not the config's (`Node::prepare`).
+    pub const INITIAL_RATE: SampleRate = SampleRate::SR_44K1;
+
     /// Creates a synth from a [`SynthConfig`], usually written as `Default`
     /// plus struct update:
-    /// `SynthConfig { oscillator: OscillatorType::Saw, max_voices: 8, ..Default::default() }`.
+    /// `SynthConfig { oscillator: OscillatorType::Saw, ..Default::default() }`.
     ///
-    /// Every voice — and every unison sub-voice within it — is built here, so
-    /// this allocates in proportion to `max_voices * unison.voice_count` and
-    /// belongs off the audio thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidConfig`](crate::Error::InvalidConfig) if
-    /// `max_voices` is 0. There is no upper bound: every voice is built up
-    /// front, so `max_voices` is a memory and CPU budget, not a real-time
-    /// risk.
-    pub fn new(config: SynthConfig) -> crate::Result<Self> {
-        if config.max_voices == 0 {
-            return Err(crate::Error::InvalidConfig(
-                "max_voices must be at least 1".into(),
-            ));
-        }
-        let max_voices = config.max_voices;
+    /// Every voice, and every unison sub-voice within it, is built here, so
+    /// this allocates in proportion to `polyphony * unison.voice_count` and
+    /// belongs off the audio thread. There is no upper bound on the polyphony:
+    /// every voice is built up front, so it is a memory and CPU budget, not a
+    /// real-time risk.
+    #[must_use]
+    pub fn new(config: SynthConfig) -> Self {
+        let polyphony = config.polyphony.get();
         let allocator_config = VoiceAllocatorConfig {
-            max_voices: config.max_voices,
+            max_voices: polyphony,
             mode: config.voice_mode,
             strategy: config.allocation_strategy,
             bend_range: config.pitch_bend_range,
-            per_note_bend_range: config.mpe_pitch_bend_range,
+            per_note_bend_range: config.per_note_bend_range(),
         };
         let mut allocator = VoiceAllocator::new(allocator_config);
-        allocator.set_zones(mpe_zones(config.mpe_enabled));
+        allocator.set_zones(mpe_zones(&config.mpe));
 
         let unison = config.unison.as_ref().map(|u| UnisonEngine::new(u.clone()));
-        // The engine's clamped count: voices and bank must match its params.
+        // The engine's count: voices and bank must match its params.
         let unison_count = unison.as_ref().map_or(1, UnisonEngine::voice_count);
 
-        let voices = (0..config.max_voices)
-            .map(|_| SynthVoice::from_config(&config, unison_count))
+        let sample_rate = Self::INITIAL_RATE;
+        let voices = (0..polyphony)
+            .map(|_| SynthVoice::from_config(&config, sample_rate, unison_count))
             .collect();
-        let bank = Self::build_bank(&config, unison_count);
+        let bank = Self::build_bank(&config, sample_rate, unison_count);
 
         let master_volume = Param::new(Amplitude::UNITY);
-        let bends = [tutti_types::Semitones(0.0); 16];
+        let bends = [Semitones(0.0); 16];
 
-        Ok(Self {
+        Self {
             config,
+            sample_rate,
             allocator,
             voices,
             bank,
@@ -151,17 +149,17 @@ impl PolySynth {
             bends,
             master_volume,
             last_volume: Amplitude::UNITY.get(),
-            finished_indices: Vec::with_capacity(max_voices),
-        })
+            finished_indices: Vec::with_capacity(polyphony),
+        }
     }
 
-    fn build_bank(config: &SynthConfig, unison_count: usize) -> VoiceBank {
+    fn build_bank(config: &SynthConfig, sample_rate: SampleRate, unison_count: usize) -> VoiceBank {
         VoiceBank::new(
             config.oscillator,
             &config.filter,
             &config.envelope,
-            config.sample_rate,
-            config.max_voices,
+            sample_rate,
+            config.polyphony.get(),
             unison_count,
         )
     }
@@ -176,21 +174,29 @@ impl PolySynth {
         self.process_midi_event(ump);
     }
 
-    /// Returns whether per-note (MPE) expression is applied at render time.
+    /// Returns how the channels are occupied by MPE: what the config said, or
+    /// what [`set_mpe`](Self::set_mpe) last set.
     ///
     /// The per-note controllers and the bend-sensitivity RPN are accepted
     /// either way, so a host cannot tell from their effect whether MPE is on.
-    pub fn mpe_enabled(&self) -> bool {
-        self.config.mpe_enabled
+    pub fn mpe(&self) -> &MpeMode {
+        &self.config.mpe
     }
 
-    /// Turns per-note (MPE) expression on or off, for sounding notes as well
+    /// Sets how the channels are occupied by MPE, for sounding notes as well
     /// as future ones. Disabling resets each voice's per-note state (its
-    /// sounding pitch returns to the key's), so nothing
-    /// received while off snaps into effect when it is re-enabled.
-    pub fn set_mpe_enabled(&mut self, enabled: bool) {
-        self.config.mpe_enabled = enabled;
-        self.allocator.set_zones(mpe_zones(enabled));
+    /// sounding pitch returns to the key's), so nothing received while off
+    /// snaps into effect when it is re-enabled. A zone's member bend range is
+    /// the per-note default of a synth *built* with it
+    /// ([`SynthConfig::mpe`]); changing zones here does not move a range a
+    /// channel already has.
+    ///
+    /// Takes `&mut self`, so it cannot reach a synth that is already in a
+    /// graph: set it before insertion.
+    pub fn set_mpe(&mut self, mpe: MpeMode) {
+        let enabled = mpe != MpeMode::Disabled;
+        self.allocator.set_zones(mpe_zones(&mpe));
+        self.config.mpe = mpe;
         for voice in &mut self.voices {
             voice.set_mpe_enabled(enabled);
             if !enabled {
@@ -214,42 +220,18 @@ impl PolySynth {
     /// default) is unity, `0.0` silence, and values above unity boost.
     /// Negative values clamp to 0.
     ///
-    /// Applied once per block to the summed mix, not per voice. The write is
-    /// a lock-free store into the cell the node reads, the same one the
-    /// synth's `ParamSet` addresses as `Volume` and
-    /// [`volume_atomic`](Self::volume_atomic) returns, so it reaches a synth
-    /// that is already rendering.
-    pub fn set_volume(&self, volume: f32) {
+    /// Applied once per block to the summed mix, not per voice. Takes `&mut
+    /// self`, so it sets the gain a synth is inserted with; once in a graph the
+    /// gain is the synth's `ParamSet` entry, `Volume`, which a host writes and a
+    /// modulation lane takes as its knob.
+    pub fn set_volume(&mut self, volume: Amplitude) {
         self.master_volume
-            .store(Amplitude(Self::clamp_volume(volume)));
+            .store(Amplitude(Self::clamp_volume(volume.get())));
     }
 
-    /// Returns the current master gain as a linear amplitude. Reflects modulation
-    /// written through [`volume_atomic`](Self::volume_atomic) as well as
-    /// [`set_volume`](Self::set_volume) — they share one cell.
-    pub fn volume(&self) -> f32 {
-        self.master_volume.load().get()
-    }
-
-    /// Returns the shared master-volume cell, for control-rate modulation (the
-    /// cell the synth's `ParamSet` addresses as `Volume`). Clones the `Arc`;
-    /// call it during setup, not from the audio path.
-    pub fn volume_atomic(&self) -> Arc<tutti_types::AtomicF32> {
-        self.master_volume.as_atomic()
-    }
-
-    /// Returns the shared unison-detune cell (cents), for control-rate
-    /// modulation.
-    /// `None` when this synth has no unison engine.
-    pub fn detune_atomic(&self) -> Option<Arc<tutti_types::AtomicF32>> {
-        self.unison.as_ref().map(|u| u.detune_atomic())
-    }
-
-    /// Returns the shared unison stereo-spread cell (0..1), for control-rate
-    /// modulation.
-    /// `None` when this synth has no unison engine.
-    pub fn spread_atomic(&self) -> Option<Arc<tutti_types::AtomicF32>> {
-        self.unison.as_ref().map(|u| u.spread_atomic())
+    /// Returns the current master gain as a linear amplitude.
+    pub fn volume(&self) -> Amplitude {
+        self.master_volume.load()
     }
 
     /// Returns how many voices are currently sounding, counting those in their release
@@ -266,11 +248,13 @@ impl PolySynth {
         self.unison.as_ref().map(|u| u.config())
     }
 
-    /// Returns the number of sub-voices stacked per note (1..=16), or `1` when this
+    /// Returns the number of sub-voices stacked per note, or one when this
     /// synth has no unison engine, so the total oscillator count is always
-    /// `max_voices * this`.
-    pub fn unison_voice_count(&self) -> usize {
-        self.unison.as_ref().map_or(1, |u| u.voice_count())
+    /// `polyphony * this`.
+    pub fn unison_voice_count(&self) -> UnisonVoices {
+        self.unison
+            .as_ref()
+            .map_or(UnisonVoices::ONE, |u| u.config().voice_count)
     }
 
     /// Sets the unison detune in [`Cents`](tutti_types::Cents), applied
@@ -283,23 +267,23 @@ impl PolySynth {
         }
     }
 
-    /// Sets how wide the sub-voices are panned, 0.0 (all centre) to 1.0
-    /// (outermost pair hard left and right); out-of-range values are clamped.
-    /// Takes effect on sounding notes. No-op without unison.
-    pub fn set_unison_stereo_spread(&mut self, spread: f32) {
+    /// Sets how wide the sub-voices are panned: a [`Spread`], 0.0 (all centre)
+    /// to 1.0 (outermost pair hard left and right). Takes effect on sounding
+    /// notes. No-op without unison.
+    pub fn set_unison_stereo_spread(&mut self, spread: Spread) {
         if let Some(unison) = &mut self.unison {
             unison.set_stereo_spread(spread);
         }
     }
 
-    /// Sets the number of stacked sub-voices per note, clamped to 1..=16.
+    /// Sets the number of stacked sub-voices per note.
     ///
     /// Allocates: the voice bank is rebuilt at the new width (sounding
     /// sub-voices keep their state). Call it from the control thread, never the
     /// audio thread.
     ///
     /// No-op without unison.
-    pub fn set_unison_voice_count(&mut self, count: u8) {
+    pub fn set_unison_voice_count(&mut self, count: UnisonVoices) {
         if let Some(unison) = &mut self.unison {
             unison.set_voice_count(count);
             let new_count = unison.voice_count();
@@ -799,7 +783,8 @@ impl PolySynth {
     }
 
     /// Re-rate the voice bank and the glide.
-    pub(crate) fn set_rate(&mut self, sample_rate: tutti_types::SampleRate) {
+    pub(crate) fn set_rate(&mut self, sample_rate: SampleRate) {
+        self.sample_rate = sample_rate;
         self.bank.set_sample_rate(sample_rate);
         for voice in &mut self.voices {
             voice.set_rate(sample_rate);
@@ -821,7 +806,8 @@ impl Clone for PolySynth {
             bends: self.bends,
             master_volume: self.master_volume.clone(),
             last_volume: self.last_volume,
-            finished_indices: Vec::with_capacity(self.config.max_voices),
+            sample_rate: self.sample_rate,
+            finished_indices: Vec::with_capacity(self.config.polyphony.get()),
         }
     }
 }
@@ -845,7 +831,7 @@ impl PolySynth {
             .config
             .envelope
             .release
-            .to_samples_ceil(self.config.sample_rate)
+            .to_samples_ceil(self.sample_rate)
         {
             s if s.is_zero() => Tail::None,
             s => Tail::Finite(s),
@@ -855,10 +841,11 @@ impl PolySynth {
 
 mod node;
 
-/// The channels MPE makes zones when it is on: the lower zone, master 0 and
-/// every other channel its member (RP-053 allows 15 with no upper zone).
-fn mpe_zones(enabled: bool) -> Option<MpeZones> {
-    enabled
-        .then(|| MpeZones::new(MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS), None))
-        .flatten()
+/// The zones an MPE mode names; single-channel rotation has none (M2-104
+/// Appendix C.3: a receiver keeps that channel's messages and needs no zone).
+fn mpe_zones(mpe: &MpeMode) -> Option<MpeZones> {
+    match mpe {
+        MpeMode::Zones(zones) => Some(*zones),
+        MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => None,
+    }
 }

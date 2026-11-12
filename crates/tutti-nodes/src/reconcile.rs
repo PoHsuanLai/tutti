@@ -476,7 +476,7 @@ struct SourcePlan {
 ///     RouteDecl {
 ///         source: SourceKey(1),
 ///         to: RouteTarget::Param(cutoff),
-///         depth: Depth(0.3),
+///         depth: Depth::of(0.3),
 ///         polarity: Polarity::Bipolar,
 ///         curve: Law::Linear,
 ///     },
@@ -491,7 +491,7 @@ struct SourcePlan {
 /// # editor.collect();
 ///
 /// // A depth edit republishes the lane's program: no commit.
-/// routes[0].1.depth = Depth(0.5);
+/// routes[0].1.depth = Depth::of(0.5);
 /// let decl = Declarations { sources: &sources, routes: &routes, targets: &targets };
 /// let applied = modulation.apply(&decl, &mut editor, &host).expect("applies");
 /// assert!(!applied.commit);

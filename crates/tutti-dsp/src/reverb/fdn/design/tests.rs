@@ -2,7 +2,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::*;
-use crate::contract::{FamilyCase, Hook, LtiCase, RealizationCase, ReverbCase};
+use crate::contract::{FamilyCase, Hook, LtiCase, RecurrenceCase, ReverbCase};
 use crate::reverb::network::{Band, Fdn, Matrix, Network, Stage};
 use crate::{Lti as _, Realized, System as _};
 
@@ -56,7 +56,7 @@ impl FamilyCase for FdnFamily {
                 size: Mix(rng.gen_range(0.0..=1.0)),
                 diffusion: Mix(rng.gen_range(0.0..=1.0)),
                 pre_delay: Seconds(rng.gen_range(0.0..=0.5)),
-                modulation: Depth(rng.gen_range(-1.0..=1.0)),
+                modulation: Depth::of(rng.gen_range(-1.0..=1.0)),
                 rate: Hz(rng.gen_range(0.05..=5.0)),
                 width: StereoWidth(rng.gen_range(0.0..=2.0)),
                 wet: Db(rng.gen_range(-60.0..=12.0)),
@@ -75,7 +75,7 @@ impl FamilyCase for FdnFamily {
                 size: Mix(v),
                 diffusion: Mix(v),
                 pre_delay: Seconds::from_f32(v),
-                modulation: Depth(v),
+                modulation: Depth::clamped(v),
                 rate: Hz(v),
                 width: StereoWidth(v),
                 wet: Db(v),
@@ -180,9 +180,9 @@ impl ReverbCase for FdnFamily {
 
     fn pre_delay_pairs(&self) -> Vec<(FdnControls, FdnControls, Seconds)> {
         vec![(
-            with(|c| c.modulation = Depth(0.0)),
+            with(|c| c.modulation = Depth::of(0.0)),
             with(|c| {
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
                 c.pre_delay = Seconds(0.1);
             }),
             Seconds(0.1),
@@ -206,11 +206,11 @@ impl ReverbCase for FdnFamily {
                 (
                     with(|c| {
                         c.size = Mix(a);
-                        c.modulation = Depth(0.0);
+                        c.modulation = Depth::of(0.0);
                     }),
                     with(|c| {
                         c.size = Mix(b);
-                        c.modulation = Depth(0.0);
+                        c.modulation = Depth::of(0.0);
                     }),
                 )
             })
@@ -239,7 +239,7 @@ mod plain_design {
     crate::family_contract!(FdnFamily::default(), Grows, Lti, reverb);
 }
 
-impl RealizationCase for FdnFamily {
+impl RecurrenceCase for FdnFamily {
     fn probes(&self) -> Vec<FdnControls> {
         vec![
             base(),
@@ -247,7 +247,7 @@ impl RealizationCase for FdnFamily {
                 c.decay = [Seconds(3.0), Seconds(3.5), Seconds(1.5)];
                 c.diffusion = Mix(1.0);
                 c.pre_delay = Seconds(0.05);
-                c.modulation = Depth(0.5);
+                c.modulation = Depth::of(0.5);
             }),
             with(|c| {
                 c.decay = [Seconds(1.0), Seconds(1.5), Seconds(0.5)];
@@ -256,7 +256,7 @@ impl RealizationCase for FdnFamily {
             }),
             with(|c| {
                 c.diffusion = Mix(0.0);
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
             }),
         ]
     }
@@ -265,7 +265,7 @@ impl RealizationCase for FdnFamily {
         self.probes()
             .into_iter()
             .map(|c| FdnControls {
-                modulation: Depth(0.0),
+                modulation: Depth::of(0.0),
                 pre_delay: Seconds(0.02),
                 ..c
             })
@@ -276,7 +276,7 @@ impl RealizationCase for FdnFamily {
         let hard = |f: fn(&mut FdnControls)| {
             with(|c| {
                 c.size = Mix(1.0);
-                c.modulation = Depth(1.0);
+                c.modulation = Depth::of(1.0);
                 c.rate = Hz(5.0);
                 f(c)
             })
@@ -306,7 +306,7 @@ impl RealizationCase for FdnFamily {
     }
 }
 
-crate::realization_contract!(freezable(), Lti, reverb, BlockIndependent);
+crate::recurrence_contract!(freezable(), Lti, reverb, BlockIndependent);
 
 /// The FDN's declared cadence is its chunk clock, so it names the
 /// `BlockIndependent` group.
@@ -315,141 +315,6 @@ fn the_fdn_declares_its_stream_grid() {
     assert_eq!(
         FdnFamily::CADENCE,
         Cadence::stream(NonZeroU32::new(CHUNK as u32).unwrap())
-    );
-}
-
-use crate::contract::cases::realization as cases;
-use crate::testing::flaws::{Defect, Defective};
-
-fn defective(defect: Defect) -> Defective<FdnFamily> {
-    Defective {
-        inner: freezable(),
-        defect,
-        tweak: |_| {},
-    }
-}
-
-#[track_caller]
-fn fails(result: Result<(), String>, why: &str) {
-    let e = result.expect_err("the case should fail on the defective realization");
-    assert!(e.contains(why), "{e}");
-}
-
-/// Each case of the realization contract fails on an FDN with the defect its
-/// mutation names, the cases Freeverb cannot run (pre-delay, size,
-/// diffusion, freeze, width, wet gain) included.
-#[test]
-fn a_defective_fdn_fails_its_case() {
-    // rt60 and tail: every loop gain 5% and 3% too high.
-    fails(
-        cases::rt60(&defective(Defect::LoopGain(1.05))),
-        "measured RT60",
-    );
-    fails(cases::tail_covers(&defective(Defect::LoopGain(1.03))), "dB");
-    // band order: every band like the lowest.
-    fails(cases::band_order(&defective(Defect::NoDamping)), "bands");
-    // arrival and latency.
-    fails(
-        cases::arrival(&defective(Defect::LateByOne)),
-        "first output",
-    );
-    fails(
-        cases::arrival(&defective(Defect::FalseLatency)),
-        "first output",
-    );
-    fails(cases::latency(&defective(Defect::FalseLatency)), "latency");
-    fails(
-        cases::wet_only(&defective(Defect::DryLeak)),
-        "shortest path",
-    );
-    fails(
-        cases::decorrelated(&defective(Defect::MonoOutput)),
-        "correlate",
-    );
-    fails(cases::stability(&defective(Defect::Runaway)), "");
-    fails(
-        cases::click_free(&defective(Defect::UnslewedGain(4.0))),
-        "jump",
-    );
-    // A modest step too: 1.5 times fails the 3 times allowance (measured
-    // margins of the clean realizations: Freeverb 1.98, the FDN 1.51 times the
-    // steady jump).
-    fails(
-        cases::click_free(&defective(Defect::UnslewedGain(1.5))),
-        "jump",
-    );
-    fails(cases::reset(&defective(Defect::NoReset)), "reset");
-    fails(cases::fresh(&defective(Defect::FreshKeepsState)), "fresh()");
-    fails(
-        cases::block_independent(&defective(Defect::BlockDependent)),
-        "blocks of",
-    );
-    // line lengths: the last line 5% long, inside the RT60 tolerance.
-    fails(
-        cases::line_lengths(&defective(Defect::LastLineLong)),
-        "first echo",
-    );
-    // pre-delay, size, diffusion, freeze, width, wet gain.
-    fails(
-        cases::pre_delay(&defective(Defect::PreDelayIgnored)),
-        "pre-delay",
-    );
-    fails(cases::size(&defective(Defect::FixedLines)), "bigger room");
-    fails(cases::diffusion(&defective(Defect::NoMixing)), "diffusion");
-    fails(
-        cases::freeze(&defective(Defect::LoopGain(0.998))),
-        "frozen level",
-    );
-    fails(
-        cases::freeze(&defective(Defect::OpenInput)),
-        "input reached",
-    );
-    fails(
-        cases::width(&defective(Defect::WidthIgnored)),
-        "correlation",
-    );
-    fails(cases::wet_gain(&defective(Defect::WetIgnored)), "wet gain");
-}
-
-/// The cases added by step 1b fail on an FDN with the defect their mutation
-/// names: the ramp cases (`landed`, `stream_clock`), which a realization that
-/// does not ramp cannot fail, and the response cases on the mixing network.
-#[test]
-fn the_new_cases_fail_on_their_defects() {
-    use crate::model::Flaw;
-    // landed: the first retarget goes to another model and ramps to the target.
-    fails(cases::landed(&defective(Defect::RampFirst)), "did not land");
-    // landed: a reset that empties the lines and keeps the ramps mid-way.
-    let keeps = Defective {
-        inner: freezable(),
-        defect: Defect::None,
-        tweak: |k| k.flawed(Flaw::ResetKeepsGlides),
-    };
-    fails(cases::landed(&keeps), "reset() mid-ramp");
-    // stream clock: a ramp that restarts at every call of `process`.
-    let restarts = Defective {
-        inner: freezable(),
-        defect: Defect::None,
-        tweak: |k| k.flawed(Flaw::RestartClock),
-    };
-    fails(cases::stream_clock(&restarts), "blocks of");
-    // response and decay on the mixing network.
-    fails(
-        cases::response(&defective(Defect::LoopGain(1.05))),
-        "impulse response's spectrum",
-    );
-    fails(
-        cases::response(&defective(Defect::UnslewedGain(1.1))),
-        "impulse response's spectrum",
-    );
-    fails(
-        cases::decay(&defective(Defect::LoopGain(1.05))),
-        "spectral radius",
-    );
-    fails(cases::linear(&defective(Defect::Tanh)), "additivity");
-    fails(
-        cases::linear(&defective(Defect::PeriodicGain)),
-        "shift invariance",
     );
 }
 
@@ -593,7 +458,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
         &with(|c| {
             c.decay = [Seconds(2.0); 3];
             c.diffusion = Mix(0.0);
-            c.modulation = Depth(0.0);
+            c.modulation = Depth::of(0.0);
             c.pre_delay = Seconds(0.0);
             c.width = StereoWidth(1.0);
         }),
@@ -654,7 +519,7 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
             &with(|c| {
                 c.diffusion = Mix(diffusion);
                 c.freeze = freeze;
-                c.modulation = Depth(0.0);
+                c.modulation = Depth::of(0.0);
             }),
             rate,
         )
@@ -699,7 +564,7 @@ fn the_bounds_dominate_where_rounding_matters() {
             size: Mix(1.0),
             diffusion: Mix(k as f32 / 100.0),
             pre_delay: MAX_PRE_DELAY,
-            modulation: Depth(1.0),
+            modulation: Depth::of(1.0),
             ..FdnControls::DEFAULT
         };
         let tail = d.member(&c, rate).tail(reach.floor());

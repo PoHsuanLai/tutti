@@ -159,7 +159,7 @@ fn a_missing_node_is_refused() {
     );
     assert_eq!(
         r.s.graph_ref().mode(r.halve).unwrap_err().node(),
-        r.halve.erase(),
+        r.halve,
         "a removed node's mode goes with it, and asking for it is refused"
     );
 }

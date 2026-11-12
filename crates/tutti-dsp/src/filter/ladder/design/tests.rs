@@ -4,7 +4,7 @@ use tutti_types::{Drive, Hz, Resonance};
 
 use super::*;
 use crate::Family;
-use crate::contract::{FamilyCase, Figure, LtiCase, RealizationCase};
+use crate::contract::{FamilyCase, Figure, LtiCase, RecurrenceCase};
 
 const TYPES: [LadderType; 4] = [
     LadderType::LP12,
@@ -126,7 +126,7 @@ impl LtiCase for LadderFamily<f64> {
     }
 }
 
-impl RealizationCase for LadderFamily<f64> {
+impl RecurrenceCase for LadderFamily<f64> {
     fn probes(&self) -> Vec<LadderControls> {
         vec![
             controls(LadderType::LP24, 1_000.0, 0.3, 1.0),
@@ -171,7 +171,7 @@ fn a_glides_midpoint_is_stable() {
 // model's own response is held against `ladder_step` at small signal in
 // `model.rs`. Solved on the stream's 16-frame grid, so the render does not
 // depend on how audio is split: `BlockIndependent`.
-crate::realization_contract!(design(), BlockIndependent);
+crate::recurrence_contract!(design(), BlockIndependent);
 
 /// A blended call is the linear blend of the two sets, coefficients and drive
 /// alike, arriving **exactly** on the new set at its last frame: an impulse at

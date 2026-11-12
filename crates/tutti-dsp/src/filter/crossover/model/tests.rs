@@ -67,6 +67,37 @@ fn two_bands_have_the_closed_form_anchors() {
     assert!((at(&m, 1, 24_000.0).norm() - 1.0).abs() < 1e-9);
 }
 
+/// The spec (the design diagram of the crossover, doc 024 section 2.7.4): the two
+/// bands of one split are the Linkwitz-Riley prototypes, the Butterworth section
+/// `D(s) = s^2 + sqrt2 s + 1` squared, `LP^2 = 1 / D^2` and `HP^2 = s^4 / D^2`, under
+/// the bilinear map prewarped at the crossover, `s = (1/g)(z - 1)/(z + 1)` with
+/// `g = tan(pi fc / rate)`, evaluated directly with plain complex arithmetic, for
+/// crossovers from 60 Hz to 18 kHz and frequencies from 20 Hz to 23.9 kHz, to 1e-9
+/// of the larger magnitude.
+#[test]
+fn the_two_bands_are_the_prewarped_bilinear_image_of_the_lr4_prototypes() {
+    let one = Complex64::new(1.0, 0.0);
+    for fc in [60.0f32, 1_000.0, 5_000.0, 18_000.0] {
+        let m = model(&[fc]);
+        let g = (PI * f64::from(fc) / RATE.get()).tan();
+        for f in [20.0f32, 150.0, 700.0, 1_000.0, 4_000.0, 12_000.0, 23_900.0] {
+            let w = 2.0 * PI * f64::from(f) / RATE.get();
+            let z = Complex64::from_polar(1.0, w);
+            let s = (z - 1.0) / (z + 1.0) / g;
+            let d = s * s + s * 2f64.sqrt() + one;
+            let (s2, d2) = (s * s, d * d);
+            for (band, want) in [(0, one / d2), (1, s2 * s2 / d2)] {
+                let got = at(&m, band, f);
+                let scale = want.norm().max(got.norm()).max(1e-12);
+                assert!(
+                    (got - want).norm() <= 1e-9 * scale + 1e-12,
+                    "fc {fc} band {band} at {f} Hz: {got} against {want}"
+                );
+            }
+        }
+    }
+}
+
 /// The model's response is the running crossover's: the `RealFft` of each
 /// band's impulse response through `Crossover::split` against
 /// `frequency_response`, to 1e-5 of its norm, for three bands.

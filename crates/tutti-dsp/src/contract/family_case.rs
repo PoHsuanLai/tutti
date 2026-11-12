@@ -13,13 +13,13 @@ use crate::{Band, Family, Grows, Lti, MaxDecay, Network, NetworkCapacity, Reach,
 pub enum Hook {
     /// [`FamilyCase::hostile`].
     Hostile,
-    /// [`RealizationCase::probes`].
+    /// [`RecurrenceCase::probes`].
     Probes,
-    /// [`RealizationCase::extremes`].
+    /// [`RecurrenceCase::extremes`].
     Extremes,
-    /// [`RealizationCase::steps`].
+    /// [`RecurrenceCase::steps`].
     Steps,
-    /// [`RealizationCase::static_probes`].
+    /// [`RecurrenceCase::static_probes`].
     StaticProbes,
     /// [`LtiCase::figures`].
     Figures,
@@ -91,7 +91,7 @@ pub trait FamilyCase: Family {
 
 /// A family whose recurrence is measured, run by [`Realized`](crate::Realized): the
 /// controls to render at.
-pub trait RealizationCase: FamilyCase {
+pub trait RecurrenceCase: FamilyCase {
     /// The controls the measured cases run over: a few, spread across the
     /// controls' range, because each renders seconds of audio.
     fn probes(&self) -> Vec<Self::Controls>;

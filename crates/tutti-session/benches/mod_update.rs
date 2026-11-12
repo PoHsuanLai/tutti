@@ -22,7 +22,7 @@ use tutti_types::MaxBlock;
 
 use tutti_modulation::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
-use tutti_session::{InPort, Key, OutPort, Root, Session};
+use tutti_session::{InPort, Key, OutPort, Root, RouteSpec, Session};
 use tutti_types::{BeatDuration, Depth, Hz, Q};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
@@ -55,24 +55,26 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<Key<SvfFilterNode<f32>>>) {
         .set_sources(Root::output(0), [OutPort::new(last, 0)])
         .unwrap();
     if modulated {
-        let mut m = s.mods();
+        let mut m = s.mods_mut();
         for (i, &f) in filters.iter().enumerate() {
             let cutoff = f.cutoff();
             m.range(cutoff, Hz(20.0)..Hz(20_000.0)).unwrap();
             let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.25 + i as f64 / 64.0)));
-            m.route(lfo, cutoff, Depth(0.1)).unwrap();
+            m.route(RouteSpec::new(lfo, cutoff, Depth::of(0.1)))
+                .unwrap();
         }
         let follower = m.follower(Follower::new(), filters[0]);
-        m.route(follower, last.cutoff(), Depth(-0.2)).unwrap();
+        m.route(RouteSpec::new(follower, last.cutoff(), Depth::of(-0.2)))
+            .unwrap();
     }
     for _ in 0..8 {
         let _ = s.update();
     }
     if modulated {
-        assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
-        assert!(
-            s.mod_state().unresolved_targets().is_empty(),
-            "every target resolved"
+        assert_eq!(
+            s.mod_state().problems().next(),
+            None,
+            "the declarations apply"
         );
     }
     (s, filters)
@@ -84,7 +86,7 @@ fn measure(label: &str, n: usize, modulated: bool, edit: bool) {
     let mut times = Vec::with_capacity(UPDATES);
     for i in 0..UPDATES {
         if edit {
-            s.mods()
+            s.mods_mut()
                 .range(filters[0].cutoff(), Hz(20.0)..Hz(20_000.0 + (i % 2) as f32))
                 .unwrap();
         }

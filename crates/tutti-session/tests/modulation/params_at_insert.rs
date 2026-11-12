@@ -21,7 +21,7 @@ use tutti_types::MaxBlock;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::NodeKey;
 use tutti_nodes::{DistortionNode, ShapeKind};
-use tutti_session::{OutPort, ParamRef, Root, Session};
+use tutti_session::{OutPort, ParamRef, Root, RouteSpec, Session};
 use tutti_types::AtomicF32;
 use tutti_types::{ChannelLayout, Depth, Drive, SampleRate, Samples, Seconds, UnitParam};
 
@@ -42,10 +42,11 @@ fn session() -> Session {
 /// A macro on `node`'s drive, `0..=10`, and updates until it applies.
 fn modulate_drive(s: &mut Session, node: NodeKey) {
     let drive = ParamRef::unit(node, UnitParam::Drive);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(drive, 0.0, 10.0).unwrap();
     let offset = m.macro_(1.0);
-    m.route(offset, drive, Depth(0.1)).unwrap();
+    m.route(RouteSpec::new(offset, drive, Depth::of(0.1)))
+        .unwrap();
     settle(s);
 }
 
@@ -53,7 +54,11 @@ fn settle(s: &mut Session) {
     for _ in 0..4 {
         let _ = s.update();
     }
-    assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
+    assert_eq!(
+        s.mod_state().problems().next(),
+        None,
+        "the declarations apply"
+    );
 }
 
 /// The knob of `node`'s drive lane, `None` with no lane or no knob.

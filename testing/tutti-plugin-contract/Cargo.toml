@@ -29,11 +29,13 @@ tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp" }
 tutti-plugin = { path = "../../crates/tutti-plugin", features = ["clap", "vst2", "vst3"], optional = true }
 # `tests/probe.rs` applies a probe's `Delta` to a `PluginDb` to read the descriptor.
 tutti-plugin-db = { path = "../../crates/tutti-plugin-db", optional = true }
+# `tests/server.rs` drives a served plugin through `Ipc`, a `Loaded` of its own.
+tutti-plugin-ipc = { path = "../../crates/tutti-plugin-ipc", optional = true }
 
 [features]
 # `tests/server.rs`: the same configuration and transcript through a real
 # `plugin-server` process.
-server = ["dep:tutti-plugin", "dep:tutti-plugin-db"]
+server = ["dep:tutti-plugin", "dep:tutti-plugin-db", "dep:tutti-plugin-ipc"]
 
 [[test]]
 name = "server"

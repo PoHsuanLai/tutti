@@ -18,7 +18,8 @@ use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{
-    EventInPort, Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, Session, SessionEvent,
+    EventInPort, Feeder, PHASES, ParamRef, PhaseCx, PluginLoadRequest, RouteSpec, Session,
+    SessionEvent,
 };
 use tutti_types::{ChannelLayout, Depth, SampleRate};
 
@@ -72,7 +73,12 @@ fn knob_of(s: &mut Session, target: ParamRef) -> f32 {
     let deadline = Instant::now() + Duration::from_secs(10);
     let now = Instant::now();
     loop {
-        assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
+        assert!(
+            !s.mod_state()
+                .problems()
+                .any(|p| matches!(p, tutti_session::Problem::Refused { .. })),
+            "the declarations apply"
+        );
         if let Some((_, lane)) = s.mod_state().lane(target.key()) {
             return lane.knob().expect("a plugin lane has a knob");
         }
@@ -108,12 +114,12 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     let (mut s, node) = session_with_probe();
     let (p0, p1) = (ParamRef::plugin(node, 0), ParamRef::plugin(node, 1));
     {
-        let mut m = s.mods();
+        let mut m = s.mods_mut();
         m.range_raw(p0, 0.0, 1.0).unwrap();
         m.range_raw(p1, 0.0, 1.0).unwrap();
         let zero = m.macro_(0.0);
-        m.route(zero, p0, Depth(1.0)).unwrap();
-        m.route(zero, p1, Depth(1.0)).unwrap();
+        m.route(RouteSpec::new(zero, p0, Depth::of(1.0))).unwrap();
+        m.route(RouteSpec::new(zero, p1, Depth::of(1.0))).unwrap();
     }
     // The probe's parameter `i` starts at `i / 16`.
     assert_eq!(knob_of(&mut s, p0), 0.0);
@@ -182,10 +188,11 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     let (mut s, node) = session_with_probe();
     let p0 = ParamRef::plugin(node, 0);
     {
-        let mut m = s.mods();
+        let mut m = s.mods_mut();
         m.range_raw(p0, 0.0, 1.0).unwrap();
         let offset = m.macro_(1.0);
-        m.route(offset, p0, Depth(0.25)).unwrap();
+        m.route(RouteSpec::new(offset, p0, Depth::of(0.25)))
+            .unwrap();
     }
     knob_of(&mut s, p0);
     let lane = s.mod_state().lane(p0.key()).expect("a lane").0;
@@ -245,10 +252,11 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
     let (mut s, node) = session_with_probe();
     let p0 = ParamRef::plugin(node, 0);
     {
-        let mut m = s.mods();
+        let mut m = s.mods_mut();
         m.range_raw(p0, 0.0, 1.0).unwrap();
         let offset = m.macro_(1.0);
-        m.route(offset, p0, Depth(0.25)).unwrap();
+        m.route(RouteSpec::new(offset, p0, Depth::of(0.25)))
+            .unwrap();
     }
     assert_eq!(knob_of(&mut s, p0), 0.0);
     probe_switch::<bool>(b"tutti_vst2_probe_set_echo_set_parameter\0", true);

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tutti_plugin_types::{BridgeResult, Delivered, EditorError, StateError};
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
-use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
+use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
 use tutti_plugin_types::{Editor, Load, Origin};
 use tutti_types::SampleRate;
 
@@ -517,6 +517,17 @@ impl PluginBridge {
         Ok(())
     }
 
+    /// Sends the audio instance the changes the user made in the editor, and
+    /// tells the listener of every edit, a gesture's ends among them.
+    fn forward_edits(&self, edits: Vec<ParamEdit>) {
+        for edit in edits {
+            if let ParamEdit::Change { id, value, .. } = edit {
+                self.audio.set_parameter_rt(id, value);
+            }
+            self.audio.report_edit(edit);
+        }
+    }
+
     /// Closes the editor, after sending the audio instance what the user changed
     /// in it. `false` when no editor was open.
     pub fn close_editor(&self, main: &MainThread) -> bool {
@@ -526,10 +537,7 @@ impl PluginBridge {
         };
         if let Some(gui) = guard.as_mut() {
             // Flush pending GUI param changes before closing.
-            for (param_id, value) in gui.poll_edits(main) {
-                self.audio
-                    .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
-            }
+            self.forward_edits(gui.poll_edits(main));
             // What the user changed in the editor that is not a parameter
             // reaches the audio instance (design 021 Q8). Read while the view
             // is still attached.
@@ -563,10 +571,7 @@ impl PluginBridge {
                 gui.set_automation_state(main, mode);
             }
             // Forward GUI-originated parameter changes to the audio bridge.
-            for (param_id, value) in gui.poll_edits(main) {
-                self.audio
-                    .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
-            }
+            self.forward_edits(gui.poll_edits(main));
             // The plugin said its state changed: give the audio instance the
             // editor's state now rather than at close.
             if gui.take_dirty(main) {
@@ -833,7 +838,7 @@ mod state_back_tests {
         fn set_state(&mut self, _: &MainThread, _: &[u8]) -> PluginResult<()> {
             Ok(())
         }
-        fn poll_edits(&mut self, _: &MainThread) -> Vec<(ParamId, f32)> {
+        fn poll_edits(&mut self, _: &MainThread) -> Vec<ParamEdit> {
             Vec::new()
         }
         fn save_state(&mut self, _: &MainThread) -> PluginResult<Vec<u8>> {

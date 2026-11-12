@@ -6,8 +6,8 @@
 //!
 //! The plugin→host notifications split **by consequence**, one
 //! [`Listener`] each:
-//! - [`ParameterChangeSink`]: a single parameter's value was written back
-//!   (targeted, cosmetic; carries `(id, value)` inline).
+//! - [`ParameterChangeSink`]: the plugin edited one of its own parameters
+//!   (targeted, cosmetic; carries the [`ParamEdit`], with its gesture, inline).
 //! - [`RefreshSink`]: a cached *view* is stale ([`PluginRefresh`]); re-read it,
 //!   no graph edit.
 //! - [`InvalidateSink`]: the plugin changed structurally
@@ -19,7 +19,7 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use tutti_plugin_types::{Normalized, ParamId};
+use tutti_plugin_types::ParamEdit;
 use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
 /// A one-slot callback for one kind of plugin notification, `A`.
@@ -34,8 +34,9 @@ pub struct Listener<A> {
 
 type Callback<A> = Arc<dyn Fn(A) + Send + Sync>;
 
-/// A plugin-initiated parameter move: `(id, value)`.
-pub type ParameterChangeSink = Listener<(ParamId, Normalized)>;
+/// A plugin-initiated parameter edit: a [`ParamEdit`] (the parameter, its value
+/// and where in a gesture it fell).
+pub type ParameterChangeSink = Listener<ParamEdit>;
 /// **Cosmetic** refresh signals ([`PluginRefresh`]): a cached view (param
 /// values / titles) is stale. The callback re-reads from the plugin; the audio
 /// graph is untouched.

@@ -11,7 +11,7 @@
 
 use tutti_fixtures::midi;
 use tutti_graph::EventKind;
-use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
+use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -21,18 +21,14 @@ fn synth_row() -> Row {
     Row::new(
         "PolySynth",
         || {
-            Box::new(
-                PolySynth::new(SynthConfig {
-                    sample_rate: SAMPLE_RATE,
-                    oscillator: OscillatorType::Square { pulse_width: 0.5 },
-                    envelope: Adsr {
-                        attack: tutti_types::Seconds(0.0),
-                        ..Default::default()
-                    },
+            Box::new(PolySynth::new(SynthConfig {
+                oscillator: OscillatorType::Square { pulse_width: 0.5 },
+                envelope: Adsr {
+                    attack: tutti_types::Seconds(0.0),
                     ..Default::default()
-                })
-                .expect("the synth builds"),
-            )
+                },
+                ..Default::default()
+            }))
         },
         Excite::Event {
             port: 0,

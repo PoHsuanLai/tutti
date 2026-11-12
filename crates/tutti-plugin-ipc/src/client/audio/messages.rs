@@ -4,8 +4,8 @@
 use super::ask::Reply;
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamId, ParameterChanges, ParameterInfo, PluginTail, Preset,
-    PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
+    NoteExpressionTextChanges, ParamEdit, ParamId, ParameterChanges, ParameterInfo, PluginTail,
+    Preset, PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
 use tutti_plugin_types::{ResyncKind, StateError};
 use tutti_types::SampleRate;
@@ -186,13 +186,12 @@ pub enum BridgeEvent {
         /// The tail it reports now.
         tail: PluginTail,
     },
-    /// The plugin changed a parameter itself (its own automation or a
-    /// modulation it reports).
+    /// The plugin edited a parameter itself (its editor, its own automation or
+    /// a modulation it reports): one [`ParamEdit`], in the order the plugin
+    /// made them.
     ParameterChanged {
-        /// The parameter.
-        index: ParamId,
-        /// Its value now.
-        value: Normalized,
+        /// The edit: the parameter, its value now and the gesture it falls in.
+        edit: ParamEdit,
     },
     /// The plugin asked the host to resync some aspect of its state at runtime
     /// (preset load, param-title change, IO change, full reload). Carries no
@@ -269,7 +268,7 @@ pub(super) const UNSOLICITED_PARAMS: usize = 128;
 /// so [`Crashed`](BridgeEvent::Crashed), which the bridge sends from the site
 /// that noticed, cannot come through here.
 pub(super) struct Unsolicited {
-    params: std::collections::VecDeque<(ParamId, Normalized)>,
+    params: std::collections::VecDeque<ParamEdit>,
     latency: Option<Samples>,
     tail: Option<PluginTail>,
     rate: Option<Option<(SampleRate, String)>>,
@@ -304,13 +303,13 @@ impl Unsolicited {
     }
 
     /// Queue a parameter event, dropping (and counting) the oldest when full.
-    pub(super) fn param(&mut self, index: ParamId, value: Normalized) {
+    pub(super) fn param(&mut self, edit: ParamEdit) {
         if self.params.len() == UNSOLICITED_PARAMS {
             self.params.pop_front();
             self.dropped += 1;
             self.resync(ResyncKind::ParamValues);
         }
-        self.params.push_back((index, value));
+        self.params.push_back(edit);
     }
 
     /// The plugin's new latency, replacing one already held.
@@ -383,7 +382,7 @@ impl Unsolicited {
         let params = self
             .params
             .drain(..)
-            .map(|(index, value)| BridgeEvent::ParameterChanged { index, value });
+            .map(|edit| BridgeEvent::ParameterChanged { edit });
         let latency = self
             .latency
             .take()
@@ -418,7 +417,7 @@ mod tests {
         inbox
             .drain()
             .map(|ev| match ev {
-                BridgeEvent::ParameterChanged { index, .. } => format!("p{index}"),
+                BridgeEvent::ParameterChanged { edit } => format!("p{}", edit.id()),
                 BridgeEvent::LatencyChanged { samples } => format!("latency {}", samples.get()),
                 BridgeEvent::TailChanged { .. } => "tail".to_owned(),
                 BridgeEvent::Resync(kind) => format!("{kind:?}"),
@@ -433,7 +432,10 @@ mod tests {
     fn the_inbox_keeps_arrival_order_and_empties() {
         let mut inbox = Unsolicited::new();
         for i in 0..3 {
-            inbox.param(ParamId::new(i as u32), Normalized::default());
+            inbox.param(ParamEdit::change(
+                ParamId::new(i as u32),
+                Normalized::default(),
+            ));
         }
         inbox.latency(Samples::new(64));
         assert_eq!(labels(&mut inbox), ["p0", "p1", "p2", "latency 64"]);
@@ -457,7 +459,10 @@ mod tests {
         inbox.latency(Samples::new(64));
         let n = UNSOLICITED_PARAMS as i32;
         for i in 0..n + 2 {
-            inbox.param(ParamId::new(i as u32), Normalized::default());
+            inbox.param(ParamEdit::change(
+                ParamId::new(i as u32),
+                Normalized::default(),
+            ));
         }
         assert_eq!(inbox.params.capacity(), cap, "the inbox reallocated");
         assert_eq!(inbox.take_dropped(), 2);
@@ -487,8 +492,8 @@ mod tests {
         inbox.latency(Samples::new(16));
         inbox.resync(ResyncKind::Io);
         inbox.resync(ResyncKind::Reloaded);
-        inbox.param(ParamId::new(0), Normalized::default());
-        inbox.param(ParamId::new(1), Normalized::default());
+        inbox.param(ParamEdit::change(ParamId::new(0), Normalized::default()));
+        inbox.param(ParamEdit::change(ParamId::new(1), Normalized::default()));
         inbox.resync(ResyncKind::Reloaded);
         assert_eq!(
             labels(&mut inbox),

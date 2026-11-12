@@ -7,7 +7,7 @@
 //! it: the pool it serves a plugin's thread-pool extension on, what it drops
 //! unread, and how a write waiting for a block is delivered early.
 
-use tutti_plugin_types::{Lifecycle, MainThread, OutOfProcess, Request};
+use tutti_plugin_types::{Lifecycle, MainThread, OutOfProcess, ParamEdit, Request};
 
 /// What the server does to a loaded plugin of format `Self`, beyond what the
 /// format's [`OutOfProcess::load_served`] and its `Control` give.
@@ -16,12 +16,16 @@ pub(crate) trait ServerSide: OutOfProcess {
     /// process lends it (CLAP's `clap.thread-pool`).
     fn adopt(&mut self) {}
 
-    /// Called at the head of every pass over what the plugin asked of the host:
-    /// what the server has no use for and drops unread, so a bounded queue the
-    /// plugin fills holds no backlog (VST3's edits, progress and unit news; the
-    /// server has never forwarded them).
-    fn before_requests(lifecycle: &Lifecycle<Self>) {
-        let _ = lifecycle;
+    /// Appends the parameter edits the plugin made of its own accord since the
+    /// last call to `out`, in order, for the server to forward to the host
+    /// ([`Control::take_reported_edits`](tutti_plugin_types::Control::take_reported_edits)),
+    /// and drops what else the plugin queued that the server has no use for, so
+    /// a bounded queue the plugin fills holds no backlog (VST3's progress and
+    /// unit news).
+    fn take_edits(lifecycle: &mut Lifecycle<Self>, main: &MainThread, out: &mut Vec<ParamEdit>) {
+        if let Some(control) = lifecycle.control() {
+            control.take_reported_edits(main, out);
+        }
     }
 
     /// What the plugin raised since the pass's first take, on a later pass of the
@@ -192,15 +196,18 @@ pub(in crate::served) mod clap {
 
 #[cfg(feature = "vst3")]
 impl ServerSide for tutti_vst3_host::Vst3Loaded {
-    /// Edits, progress and unit news the plugin queues are dropped unread, so
-    /// the host's bounded queue holds no backlog. Lock-free and allocation-free.
-    fn before_requests(lifecycle: &Lifecycle<Self>) {
+    /// The edits the plugin made go to the host; the progress and unit news it
+    /// queues are dropped unread, so the host's bounded queue holds no backlog.
+    fn take_edits(lifecycle: &mut Lifecycle<Self>, main: &MainThread, out: &mut Vec<ParamEdit>) {
+        if let Some(control) = lifecycle.control() {
+            control.take_reported_edits(main, out);
+        }
         match lifecycle {
             Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => {
                 plugin.discard_notifications();
             }
             Lifecycle::Active { controller, .. } => {
-                controller.loaded().discard_notifications();
+                controller.loaded_mut().discard_notifications();
             }
             Lifecycle::Poisoned => {}
         }

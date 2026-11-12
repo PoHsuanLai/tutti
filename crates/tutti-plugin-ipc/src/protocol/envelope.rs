@@ -93,7 +93,6 @@ pub enum HostMessage {
         /// Which parameter — opaque handle or positional index, per format.
         param_id: ParamId,
         /// Normalized `0.0..=1.0`; the loader maps it into the plugin's domain.
-        /// An `f32` on the wire.
         #[serde(with = "super::wire::normalized")]
         value: Normalized,
     },
@@ -193,7 +192,7 @@ pub enum HostMessage {
         /// Which parameter — opaque handle or positional index, per format.
         param_id: crate::protocol::ParamId,
         /// The value to render, normalized.
-        #[serde(with = "super::wire::normalized_f64")]
+        #[serde(with = "super::wire::normalized")]
         value: crate::protocol::Normalized,
     },
     /// Ask the plugin to parse `text` into a value.
@@ -234,7 +233,7 @@ pub enum HostMessage {
         /// Which parameter — opaque handle or positional index, per format.
         param_id: crate::protocol::ParamId,
         /// The value to convert, normalized.
-        #[serde(with = "super::wire::normalized_f64")]
+        #[serde(with = "super::wire::normalized")]
         value: crate::protocol::Normalized,
     },
     /// Ask the plugin's format for the normalized value a plain one stands for
@@ -298,7 +297,7 @@ pub enum BridgeMessage {
     },
     /// One parameter's normalized value, or `None` if the plugin declined.
     ParameterValue {
-        /// Normalized `0.0..=1.0`; an optional `f32` on the wire.
+        /// Normalized `0.0..=1.0`.
         #[serde(with = "super::wire::normalized_opt")]
         value: Option<Normalized>,
     },
@@ -333,13 +332,14 @@ pub enum BridgeMessage {
         #[serde(with = "super::wire::bytes")]
         bytes: Vec<u8>,
     },
-    /// The plugin moved one of its own parameters, typically from its editor.
+    /// The plugin edited one of its own parameters, typically from its editor:
+    /// a [`ParamEdit`](tutti_plugin_types::ParamEdit) (the parameter by the id the plugin reported, its
+    /// normalized value as an `f64`, and where in a gesture it fell). A
+    /// gesture's `Begin`, changes and `End` arrive in the order the plugin made
+    /// them.
     ParameterChanged {
-        /// The parameter, by the id the plugin reported (VST2: its index).
-        index: ParamId,
-        /// Normalized `0.0..=1.0`; an `f32` on the wire.
-        #[serde(with = "super::wire::normalized")]
-        value: Normalized,
+        /// The edit.
+        edit: crate::protocol::ParamEdit,
     },
     /// Plugin reported a latency change at runtime. Host updates the
     /// corresponding `PluginClient::set_latency` so the latency the node
@@ -434,7 +434,7 @@ pub enum BridgeMessage {
     /// could not parse it, and the caller must leave its field unchanged.
     ParameterValueFromText {
         /// The parsed value, normalized.
-        #[serde(with = "super::wire::normalized_f64_opt")]
+        #[serde(with = "super::wire::normalized_opt")]
         value: Option<Normalized>,
     },
     /// Acknowledges a `HostMessage::LoadState`, carrying the plugin's refusal
@@ -482,7 +482,7 @@ pub enum BridgeMessage {
     /// [`ParameterPlain`](Self::ParameterPlain).
     ParameterNormalized {
         /// The normalized value.
-        #[serde(with = "super::wire::normalized_f64_opt")]
+        #[serde(with = "super::wire::normalized_opt")]
         value: Option<Normalized>,
     },
 }

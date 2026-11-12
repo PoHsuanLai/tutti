@@ -446,6 +446,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
         descriptor: Default::default(),
         wiring: Default::default(),
         requests: Vec::new(),
+        edits: Vec::new(),
         events: Vec::new(),
         refused: false,
     };

@@ -20,8 +20,8 @@ use tutti_modulation::{
 };
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    ModInput, ModKeys, ModRefusal, OutPort, PHASES, ParamRef, PhaseCx, Root, RouteError, Session,
-    SessionEvent,
+    ModInput, ModKeys, ModRefusal, OutPort, PHASES, ParamRef, PhaseCx, Problem, Root, RouteError,
+    RouteSpec, Session, SessionEvent, TargetName,
 };
 use tutti_transport::MotionEvent;
 use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, UnitParam};
@@ -60,16 +60,24 @@ fn update_at(s: &mut Session, now: Instant, mods: Option<ModInput<'_>>) -> Vec<S
     out
 }
 
+/// A problem for a target that has waited no time: what a target the last apply
+/// could not resolve is, in the update that first finds it.
+fn unresolved(target: TargetName) -> Problem {
+    Problem::Unresolved {
+        target,
+        waited: Duration::ZERO,
+    }
+}
+
 /// Updates until nothing is left to resolve: nodes committed, then lanes.
 fn settle(s: &mut Session) {
     for _ in 0..4 {
         let _ = s.update();
     }
-    assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
     assert_eq!(
-        s.mod_state().unresolved_targets(),
-        &[],
-        "every target resolved"
+        s.mod_state().problems().next(),
+        None,
+        "the declarations apply"
     );
 }
 
@@ -137,13 +145,15 @@ fn the_8_1_example_renders_its_analytic_values() {
 
     let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
     let gain = ParamRef::unit(pad, UnitParam::Volume);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     m.range_raw(gain, 0.0, 1.0).unwrap();
     let wobble = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    m.route(wobble, cutoff, Depth(0.3)).unwrap();
+    m.route(RouteSpec::new(wobble, cutoff, Depth::of(0.3)))
+        .unwrap();
     let kick = m.follower(Follower::default(), kick_bus);
-    m.route(kick, gain, Depth(-0.6)).unwrap(); // sidechain
+    m.route(RouteSpec::new(kick, gain, Depth::of(-0.6)))
+        .unwrap(); // sidechain
     settle(&mut s);
 
     // Rolling from beat 0 at frame 0 (120 BPM, the transport's default).
@@ -209,13 +219,13 @@ const HOST_TARGET: TargetKey = TargetKey::param(1, ParamAddr::Unit(UnitParam::Cu
 impl HostDecl {
     fn new(range: bool) -> Self {
         Self {
-            sources: vec![(SourceKey(1), Lfo::sine().hz(Hz(3.0)).into())],
+            sources: vec![(SourceKey(1), Lfo::sine().rate(Hz(3.0)).into())],
             routes: vec![(
                 RouteKey(2),
                 RouteDecl {
                     source: SourceKey(1),
                     to: RouteTarget::Param(HOST_TARGET),
-                    depth: Depth(0.3),
+                    depth: Depth::of(0.3),
                     polarity: tutti_modulation::Polarity::Bipolar,
                     curve: tutti_modulation::Law::Linear,
                 },
@@ -263,15 +273,18 @@ fn a_target_placed_one_update_later_resolves_on_that_update() {
     let now = Instant::now();
 
     update_at(&mut s, now, Some(decl.input(&keys)));
-    assert_eq!(s.mod_state().unresolved_targets(), &[HOST_TARGET]);
+    assert_eq!(
+        s.mod_state().problems().cloned().collect::<Vec<_>>(),
+        [unresolved(TargetName::Host(HOST_TARGET))]
+    );
     assert!(s.mod_state().lane(HOST_TARGET).is_none());
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     keys.node.set(Some(probe.erase()));
     update_at(&mut s, now, Some(decl.input(&keys)));
     assert_eq!(
-        s.mod_state().unresolved_targets(),
-        &[],
+        s.mod_state().problems().next(),
+        None,
         "resolved on the update its node was placed"
     );
     assert!(s.mod_state().lane(HOST_TARGET).is_some(), "with its lane");
@@ -294,7 +307,10 @@ fn the_unresolved_warning_fires_after_four_seconds_not_n_updates() {
         events
             .into_iter()
             .filter_map(|e| match e {
-                SessionEvent::ModulationUnresolved { target, waited } => Some((target, waited)),
+                SessionEvent::Modulation(Problem::Unresolved {
+                    target: TargetName::Host(target),
+                    waited,
+                }) => Some((target, waited)),
                 _ => None,
             })
             .collect()
@@ -327,45 +343,60 @@ fn the_unresolved_warning_fires_after_four_seconds_not_n_updates() {
     }
 }
 
-/// **A refusal names the host's own keys** (design 015 §4.7): a route whose
-/// target lost its range (`clear_range` after the route was made) is refused by
-/// the compile, and the refusal names the `RouteKey` `s.mods()` returned.
-/// Reported once, held while it lasts, and cleared when the range returns.
+/// **A refusal names the node and the param** (doc 030 T5): a route whose
+/// target lost its range (`clear_range` after the route was made) is refused
+/// by the compile, and the `Problem` says which param of which node, in its
+/// `Display`. Reported once, held while it lasts, and cleared when the range
+/// returns.
 #[test]
-fn a_refusal_names_the_route_key_the_session_minted() {
+fn a_refusal_names_the_node_and_the_param() {
     let mut s = offline();
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut m = s.mods();
-    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
+    let mut m = s.mods_mut();
+    let lfo = m.lfo(Lfo::sine().rate(Hz(2.0)));
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
-    let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
+    m.route(RouteSpec::new(lfo, cutoff, Depth::of(0.5)))
+        .unwrap();
     assert!(m.clear_range(cutoff));
 
-    let refused: Vec<ModRefusal> = s
+    let refused: Vec<Problem> = s
         .update()
         .into_iter()
         .filter_map(|e| match e {
-            SessionEvent::ModulationRefused(r) => Some(r),
+            SessionEvent::Modulation(p) => Some(p),
             _ => None,
         })
         .collect();
     assert_eq!(refused.len(), 1, "reported once: {refused:?}");
-    assert_eq!(refused[0].route(), Some(route), "{}", refused[0]);
+    let Problem::Refused { cause, at } = &refused[0] else {
+        panic!("a refusal: {:?}", refused[0]);
+    };
     assert!(matches!(
-        s.mod_state().refusal(),
-        Some(ModRefusal::Apply(ReconcileError::Compile(_)))
+        cause,
+        ModRefusal::Apply(ReconcileError::Compile(_))
     ));
+    assert_eq!(*at, Some(TargetName::Own(cutoff.into())));
+    let text = refused[0].to_string();
+    assert!(
+        text.contains("Cutoff") && text.contains(&format!("node {}", probe.erase().0)),
+        "names the param and its node: {text}"
+    );
+    assert_eq!(s.mod_state().problems().collect::<Vec<_>>(), [&refused[0]]);
     assert!(
         !s.update()
             .iter()
-            .any(|e| matches!(e, SessionEvent::ModulationRefused(_))),
+            .any(|e| matches!(e, SessionEvent::Modulation(_))),
         "not repeated while it lasts"
     );
 
-    s.mods().range_raw(cutoff, 0.0, 1_000.0).unwrap();
+    s.mods_mut().range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let _ = s.update();
-    assert_eq!(s.mod_state().refusal(), None, "cleared once it applies");
+    assert_eq!(
+        s.mod_state().problems().next(),
+        None,
+        "cleared once it applies"
+    );
 }
 
 /// **A route onto a target with no range is refused when it is made**, naming
@@ -377,10 +408,10 @@ fn a_route_onto_an_unranged_target_is_refused_at_the_call() {
     let mut s = offline();
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut m = s.mods();
-    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
+    let mut m = s.mods_mut();
+    let lfo = m.lfo(Lfo::sine().rate(Hz(2.0)));
     assert_eq!(
-        m.route(lfo, cutoff, Depth(0.5)),
+        m.route(RouteSpec::new(lfo, cutoff, Depth::of(0.5))),
         Err(RouteError::UndeclaredRange {
             target: cutoff.into()
         })
@@ -389,38 +420,42 @@ fn a_route_onto_an_unranged_target_is_refused_at_the_call() {
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, SessionEvent::ModulationRefused(_))),
+            .any(|e| matches!(e, SessionEvent::Modulation(_))),
         "nothing was added to refuse: {events:?}"
     );
-    assert_eq!(s.mod_state().refusal(), None);
+    assert_eq!(s.mod_state().problems().next(), None);
 
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
-    assert!(m.route(lfo, cutoff, Depth(0.5)).is_ok());
+    assert!(m.route(RouteSpec::new(lfo, cutoff, Depth::of(0.5))).is_ok());
     let _ = s.update();
-    assert_eq!(s.mod_state().refusal(), None, "applies clean");
+    assert_eq!(s.mod_state().problems().next(), None, "applies clean");
 }
 
-/// **A session has one declarer.** While `s.mods()` holds declarations, a
+/// **A session has one declarer.** While `s.mods_mut()` holds declarations, a
 /// host's `ModInput` is refused (`ModRefusal::TwoDeclarers`) and applies
 /// nothing.
 #[test]
 fn a_host_and_the_session_cannot_both_declare() {
     let mut s = offline();
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    s.mods().macro_(0.5);
+    s.mods_mut().macro_(0.5);
     let keys = HostKeys {
         node: Cell::new(Some(probe.erase())),
     };
     let decl = HostDecl::new(true);
     let events = update_at(&mut s, Instant::now(), Some(decl.input(&keys)));
+    let refusal = Problem::Refused {
+        cause: ModRefusal::TwoDeclarers,
+        at: None,
+    };
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::ModulationRefused(ModRefusal::TwoDeclarers))),
+            .any(|e| matches!(e, SessionEvent::Modulation(p) if *p == refusal)),
         "{events:?}"
     );
-    assert_eq!(s.mod_state().refusal(), Some(&ModRefusal::TwoDeclarers));
+    assert_eq!(s.mod_state().problems().collect::<Vec<_>>(), [&refusal]);
     assert!(s.mod_state().lane(HOST_TARGET).is_none());
 }
 
@@ -432,10 +467,11 @@ fn removing_a_node_forgets_its_declarations() {
     let mut s = offline();
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
-    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    m.route(lfo, cutoff, Depth(0.5)).unwrap();
+    let lfo = m.lfo(Lfo::sine().rate(Hz(2.0)));
+    m.route(RouteSpec::new(lfo, cutoff, Depth::of(0.5)))
+        .unwrap();
     settle(&mut s);
     assert!(s.mod_state().lane(cutoff.key()).is_some());
 
@@ -503,10 +539,11 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
         .set_sources_hard(Root::output(0), [OutPort::new(probe, 0)])
         .unwrap();
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let follower = m.follower(Follower::default(), late);
-    m.route(follower, cutoff, Depth(0.5)).unwrap();
+    m.route(RouteSpec::new(follower, cutoff, Depth::of(0.5)))
+        .unwrap();
 
     let now = Instant::now();
     let mut out = Vec::new();
@@ -514,14 +551,14 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
         s.run_phase(phase, PhaseCx::at(now), &mut out);
         if phase == tutti_session::Phase::Commit {
             assert_eq!(
-                s.mod_state().unresolved_targets(),
-                &[cutoff.key()],
+                s.mod_state().problems().cloned().collect::<Vec<_>>(),
+                [unresolved(TargetName::Own(cutoff.into()))],
                 "precondition: the lane waits for the re-apply"
             );
             assert_eq!(s.latency(), Samples(0), "precondition: no lane yet");
         }
     }
-    assert_eq!(s.mod_state().unresolved_targets(), &[], "the lane is built");
+    assert_eq!(s.mod_state().problems().next(), None, "the lane is built");
     assert_eq!(s.latency(), Samples(LATE), "the re-apply's plan, published");
     assert_eq!(
         s.compensation().to_vec().as_slice(),
@@ -545,10 +582,12 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     let mut s = offline();
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
-    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
+    let lfo = m.lfo(Lfo::sine().rate(Hz(2.0)));
+    let route = m
+        .route(RouteSpec::new(lfo, cutoff, Depth::of(0.5)))
+        .unwrap();
     settle(&mut s);
     let (_, lane) = s.mod_state().lane(cutoff.key()).expect("the lane");
     let lane = lane.clone();
@@ -557,7 +596,10 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     let mut block = lane.probe_reader();
     {
         let _held = block.lend();
-        s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
+        s.mods_mut()
+            .route_of(route)
+            .expect("the route")
+            .set_depth(Depth::of(0.25));
         let _ = s.update();
         assert_eq!(lane.retired_programs(), 1, "republished, the old held");
     }
@@ -574,10 +616,12 @@ fn an_own_edit_after_a_steady_state_applies() {
     let mut s = offline();
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
-    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
+    let lfo = m.lfo(Lfo::sine().rate(Hz(2.0)));
+    let route = m
+        .route(RouteSpec::new(lfo, cutoff, Depth::of(0.5)))
+        .unwrap();
     settle(&mut s);
     for _ in 0..4 {
         let _ = s.update();
@@ -591,14 +635,17 @@ fn an_own_edit_after_a_steady_state_applies() {
     };
     let before = program(&s);
 
-    s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
+    s.mods_mut()
+        .route_of(route)
+        .expect("the route")
+        .set_depth(Depth::of(0.25));
     let _ = s.update();
     assert!(
         !std::sync::Arc::ptr_eq(&before, &program(&s)),
         "the depth edit is republished"
     );
 
-    s.mods().range_raw(cutoff, 0.0, 2_000.0).unwrap();
+    s.mods_mut().range_raw(cutoff, 0.0, 2_000.0).unwrap();
     let _ = s.update();
     let range = s
         .graph()

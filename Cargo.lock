@@ -3901,6 +3901,7 @@ dependencies = [
  "tutti-graph",
  "tutti-plugin",
  "tutti-plugin-db",
+ "tutti-plugin-ipc",
  "tutti-plugin-types",
  "tutti-shared-plugin",
  "tutti-shared-plugin-vst3-cpp",
@@ -4052,7 +4053,7 @@ dependencies = [
  "approx",
  "assert_no_alloc",
  "criterion",
- "thiserror 2.0.21",
+ "serde",
  "tutti-curve",
  "tutti-dsp",
  "tutti-fixtures",
@@ -4201,6 +4202,7 @@ name = "tutti-soundfont"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
+ "serde",
  "thiserror 2.0.21",
  "tutti-dsp",
  "tutti-fixtures",

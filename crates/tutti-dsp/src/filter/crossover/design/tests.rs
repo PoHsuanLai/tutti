@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng};
 
 use super::*;
 use crate::Family;
-use crate::contract::{FamilyCase, Figure, LtiCase, RealizationCase};
+use crate::contract::{FamilyCase, Figure, LtiCase, RecurrenceCase};
 
 /// Mono, three bands: output `b` is band `b`, the model's own outputs.
 fn design() -> CrossoverFamily {
@@ -95,7 +95,7 @@ impl LtiCase for CrossoverFamily {
     }
 }
 
-impl RealizationCase for CrossoverFamily {
+impl RecurrenceCase for CrossoverFamily {
     fn probes(&self) -> Vec<CrossoverControls> {
         vec![
             controls(200.0, 2_000.0),
@@ -132,7 +132,7 @@ crate::family_contract!(design(), Lti);
 // design is mono so that the realization's output channel `b` is band `b`.
 // Solved on the stream's 16-frame grid, so the render does not depend on how audio
 // is split: `BlockIndependent`.
-crate::realization_contract!(design(), BlockIndependent, Lti);
+crate::recurrence_contract!(design(), BlockIndependent, Lti);
 
 /// The first sample after a retarget is the new set's, whole: an impulse into a
 /// realization with no state answers with the product of the first coefficients of

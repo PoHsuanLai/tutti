@@ -18,30 +18,30 @@ use tutti_ump::{
     U7, U14, Ump, Voice1, Voice2,
 };
 
-const RATE: SampleRate = SampleRate::SR_44K1;
-
 fn load_test_soundfont() -> Arc<SoundFont> {
     let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
     let mut file = std::fs::File::open(&path)
         .unwrap_or_else(|e| panic!("test soundfont missing at {}: {e}", path.display()));
     Arc::new(
-        SoundFont::new(&mut file)
+        SoundFont::from_reader(&mut file)
             .unwrap_or_else(|e| panic!("test soundfont at {} is malformed: {e}", path.display())),
     )
 }
 
 /// The unit's dry pair, which is linear in the channel gain.
 fn unit() -> Hand {
-    let settings = Settings::new(RATE);
-    Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).unwrap())
+    let settings = Settings::new();
+    Hand::new(SoundFontUnit::new(load_test_soundfont(), settings).unwrap())
 }
 
 const BLOCK_FRAMES: usize = support::BLOCK;
 
 /// A unit on GM program 16 at `rate`.
 fn unit_at(rate: SampleRate) -> Hand {
-    let mut unit =
-        Hand::new(SoundFontUnit::new(load_test_soundfont(), &Settings::new(rate)).unwrap());
+    let mut unit = Hand::at(
+        SoundFontUnit::new(load_test_soundfont(), Settings::new()).unwrap(),
+        rate,
+    );
     unit.program_change(MidiChannel::FIRST, U7::of(16));
     unit
 }
@@ -306,8 +306,8 @@ fn a_full_bend_spans_the_registered_sensitivity() {
     }
 }
 
-/// A node prepared again at another rate (`with_sample_rate`, which `prepare`
-/// calls) keeps the channel's bend wheel and its RPN 0 sensitivity: the unit
+/// A node prepared again at another rate (which re-rates it, as a graph at
+/// that rate does) keeps the channel's bend wheel and its RPN 0 sensitivity: the unit
 /// is set to a 7-semitone range and a full bend, re-rated to 48 kHz, and a note
 /// there sounds 7 semitones above the same note unbent at 48 kHz.
 #[test]
@@ -332,7 +332,7 @@ fn a_re_rated_unit_keeps_the_bend_and_its_range() {
 
     let mut source = organ();
     render(&mut source, &[sensitivity, full], BLOCK_FRAMES);
-    let mut moved = Hand::at(source.with_sample_rate(rate).unwrap(), rate);
+    let mut moved = Hand::at(source.into_unit(), rate);
     let bent = period(&sustained(&mut moved, &[key]), 200, 500);
 
     let mut fresh = unit_at(rate);
@@ -474,17 +474,17 @@ fn a_unit_plays_its_own_groups_channels_only() {
     };
     let group2 = MidiGroup::of(1);
     let heard = |settings: Settings, group: MidiGroup| {
-        let mut unit = Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).unwrap());
+        let mut unit = Hand::new(SoundFontUnit::new(load_test_soundfont(), settings).unwrap());
         unit.program_change(MidiChannel::FIRST, U7::of(16));
         rms(&render(&mut unit, &[note(group)], 11_025))
     };
-    assert!(heard(Settings::new(RATE), MidiGroup::FIRST) > 0.001);
+    assert!(heard(Settings::new(), MidiGroup::FIRST) > 0.001);
     assert_eq!(
-        heard(Settings::new(RATE), group2),
+        heard(Settings::new(), group2),
         0.0,
         "Group 2 is not Group 1's"
     );
-    let second = Settings::new(RATE).with_group(group2);
+    let second = Settings::new().with_group(group2);
     assert!(heard(second, group2) > 0.001);
     assert_eq!(
         heard(second, MidiGroup::FIRST),

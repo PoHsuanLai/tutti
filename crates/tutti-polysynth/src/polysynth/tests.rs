@@ -1,17 +1,30 @@
 use super::*;
+use crate::UnisonVoices;
 use crate::synth_voice::SynthVoice;
 use crate::{
     Adsr, FilterType, OscillatorType, PortamentoConfig, PortamentoMode, SynthConfig, UnisonConfig,
     VoiceMode,
 };
+use std::num::NonZeroUsize;
 use tutti_curve::Law;
 use tutti_fixtures::midi;
-use tutti_midi_protocol::{bend_u32_to_signed_f32, u16_to_unit_f32};
+use tutti_midi_protocol::{
+    MpeMode, MpeZoneConfig, MpeZones, PitchBendSensitivity, bend_u32_to_signed_f32, u16_to_unit_f32,
+};
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump,
     Voice1, Voice2,
 };
+
+/// MPE's lower zone as RP-053 allows it with no upper zone: master channel 0
+/// and every other channel its member, with the default bend ranges.
+fn lower_zone() -> MpeMode {
+    MpeMode::Zones(
+        MpeZones::new(MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS), None)
+            .expect("a lower zone alone is a layout"),
+    )
+}
 
 /// A synth driven by hand the way a graph drives it
 /// (`tutti_graph::contract::drive_input`): what these tests queue with
@@ -87,7 +100,7 @@ impl Hand {
             .collect();
         let env = tutti_graph::Env {
             frame: tutti_types::Frame(0),
-            sample_rate: self.synth.config.sample_rate,
+            sample_rate: self.synth.sample_rate,
             block_len: block,
             transport: tutti_graph::Transport::default(),
             changes: tutti_graph::TransportChanges::NONE,
@@ -104,7 +117,7 @@ impl Hand {
 
 /// Build a hand-driven synth from a config, unwrapping the result.
 fn synth(config: SynthConfig) -> Hand {
-    Hand::new(PolySynth::new(config).expect("synth builds"))
+    Hand::new(PolySynth::new(config))
 }
 
 /// A long block renders every frame it was asked for.
@@ -115,8 +128,7 @@ fn synth(config: SynthConfig) -> Hand {
 #[test]
 fn a_full_block_renders_every_frame() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         // Near-instant attack, so the note is audible within the first block
         // rather than still ramping up from silence.
         envelope: Adsr {
@@ -218,8 +230,7 @@ fn ev_aftertouch(channel: u8, pressure: u8) -> Ump {
 #[test]
 fn a_fork_carries_no_sounding_note() {
     let mut live = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         ..Default::default()
@@ -243,8 +254,7 @@ fn a_fork_carries_no_sounding_note() {
 #[test]
 fn a_clone_unaliases_voice_state() {
     let mut live = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         ..Default::default()
@@ -280,12 +290,11 @@ fn a_clone_unaliases_voice_state() {
 fn test_unison_creates_subvoices() {
     // Create synth with 3-voice unison
     let synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
-            voice_count: 3,
+            voice_count: UnisonVoices::of(3),
             detune_cents: tutti_types::Cents(15.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
@@ -312,19 +321,17 @@ fn set(synth: &PolySynth, p: tutti_types::UnitParam, value: f32) -> bool {
 }
 
 #[test]
-fn a_volume_write_moves_the_master_atomic() {
+fn a_volume_write_moves_the_master_volume() {
     use tutti_types::UnitParam;
 
     let synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         ..Default::default()
     });
-    let vol_atomic = synth.volume_atomic();
     assert!(set(&synth, UnitParam::Volume, 0.6), "volume is addressable");
     assert!(
-        (vol_atomic.load(core::sync::atomic::Ordering::Acquire) - 0.6).abs() < 1e-4,
-        "the synth's master-volume atomic reflects the write"
+        (synth.volume().get() - 0.6).abs() < 1e-4,
+        "the synth's master volume reflects the write"
     );
     // (A foreign `ParamAddr::Id` is not expressible: a `ParamSet` is
     // addressed by `UnitParam`.)
@@ -336,7 +343,7 @@ fn detune_is_addressable_with_unison_absent_without() {
 
     let with_unison = synth(SynthConfig {
         unison: Some(UnisonConfig {
-            voice_count: 3,
+            voice_count: UnisonVoices::of(3),
             detune_cents: tutti_types::Cents(10.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
@@ -355,11 +362,10 @@ fn a_detune_write_recomputes_unison_on_process() {
     use tutti_types::UnitParam;
 
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
-            voice_count: 3,
+            voice_count: UnisonVoices::of(3),
             detune_cents: tutti_types::Cents(0.0),
             stereo_spread: Spread(0.0),
             phase_randomize: false,
@@ -391,8 +397,7 @@ fn a_detune_write_recomputes_unison_on_process() {
 #[test]
 fn test_unison_stereo_output() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
         envelope: Adsr {
@@ -402,7 +407,7 @@ fn test_unison_stereo_output() {
             release: Seconds(0.1),
         }, // Fast attack to get output quickly
         unison: Some(UnisonConfig {
-            voice_count: 3,
+            voice_count: UnisonVoices::of(3),
             detune_cents: tutti_types::Cents(15.0),
             stereo_spread: Spread(1.0), // Full stereo spread
             phase_randomize: false,
@@ -450,8 +455,7 @@ fn test_unison_stereo_output() {
 fn test_no_unison_single_subvoice() {
     // Create synth without unison
     let synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         ..Default::default()
@@ -511,12 +515,11 @@ fn test_basic_dsp_chain() {
 fn test_dynamic_unison_resize() {
     // Create synth with 2-voice unison
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
-            voice_count: 2,
+            voice_count: UnisonVoices::of(2),
             detune_cents: tutti_types::Cents(10.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
@@ -527,19 +530,19 @@ fn test_dynamic_unison_resize() {
     // Initial state: 2 sub-voices per polyphonic voice
     assert_eq!(synth.voices[0].sub_voice_count(), 2);
     assert_eq!(synth.voices[1].sub_voice_count(), 2);
-    assert_eq!(synth.unison_voice_count(), 2);
+    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(2));
 
     // Increase to 5 unison voices
-    synth.set_unison_voice_count(5);
+    synth.set_unison_voice_count(UnisonVoices::of(5));
     assert_eq!(synth.voices[0].sub_voice_count(), 5);
     assert_eq!(synth.voices[1].sub_voice_count(), 5);
-    assert_eq!(synth.unison_voice_count(), 5);
+    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(5));
 
     // Decrease to 3 unison voices
-    synth.set_unison_voice_count(3);
+    synth.set_unison_voice_count(UnisonVoices::of(3));
     assert_eq!(synth.voices[0].sub_voice_count(), 3);
     assert_eq!(synth.voices[1].sub_voice_count(), 3);
-    assert_eq!(synth.unison_voice_count(), 3);
+    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(3));
 
     // Verify it still produces sound
     let note_on = ev_note_on(0, 60, 100);
@@ -562,8 +565,7 @@ fn test_dynamic_unison_resize() {
 #[test]
 fn test_note_off_respects_channel() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -617,8 +619,7 @@ fn test_note_off_respects_channel() {
 #[test]
 fn test_cc64_sustain_pedal_holds_notes() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -669,8 +670,7 @@ fn test_cc64_sustain_pedal_holds_notes() {
 #[test]
 fn test_cc66_sostenuto_pedal_holds_notes() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -733,8 +733,7 @@ fn test_cc66_sostenuto_pedal_holds_notes() {
 #[test]
 fn test_cc120_all_sound_off() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -769,8 +768,7 @@ fn test_cc120_all_sound_off() {
 #[test]
 fn test_cc123_all_notes_off() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -810,8 +808,7 @@ fn test_cc123_all_notes_off() {
 #[test]
 fn test_cc123_respects_channel() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -854,8 +851,7 @@ fn test_cc123_respects_channel() {
 #[test]
 fn test_velocity_zero_note_on_is_note_off() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -896,8 +892,7 @@ fn test_velocity_zero_note_on_is_note_off() {
 #[test]
 fn test_legato_mode_no_retrigger() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 1,
+        polyphony: NonZeroUsize::new(1).unwrap(),
         voice_mode: VoiceMode::Legato,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -943,8 +938,7 @@ fn test_legato_mode_no_retrigger() {
 #[test]
 fn test_mono_mode_retrigger() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 1,
+        polyphony: NonZeroUsize::new(1).unwrap(),
         voice_mode: VoiceMode::Mono,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -990,8 +984,7 @@ fn test_mono_mode_retrigger() {
 #[test]
 fn a_bend_lands_on_the_same_pitch_whether_the_note_was_already_sounding() {
     let config = || SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         // An unequal table is the whole point: on equal temperament the two
@@ -1036,8 +1029,7 @@ fn a_bend_lands_on_the_same_pitch_whether_the_note_was_already_sounding() {
 #[test]
 fn test_portamento_with_pitch_bend() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1087,20 +1079,9 @@ fn test_portamento_with_pitch_bend() {
 }
 
 #[test]
-fn test_zero_voices_returns_error() {
-    let result = PolySynth::new(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 0,
-        ..Default::default()
-    });
-    assert!(result.is_err(), "max_voices=0 should return error");
-}
-
-#[test]
 fn test_polysynth_reset() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1131,8 +1112,7 @@ fn test_polysynth_reset() {
 #[test]
 fn test_mpe_per_voice_pitch_bend() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1141,8 +1121,7 @@ fn test_mpe_per_voice_pitch_bend() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1190,6 +1169,64 @@ fn test_mpe_per_voice_pitch_bend() {
     );
 }
 
+/// **A zone's member bend range is the per-note default** (RP-053): a full
+/// per-note bend on a synth whose zone says 12 semitones sweeps 12 semitones,
+/// not the 48 of a zone with the default member range.
+#[test]
+fn a_zones_member_range_sets_the_per_note_bend_range() {
+    let swept = |member_semitones: u8| {
+        let zone = MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS)
+            .unwrap()
+            .with_member_pitch_bend_range(PitchBendSensitivity::of(member_semitones));
+        let mut synth = synth(SynthConfig {
+            oscillator: OscillatorType::Sine,
+            mpe: MpeMode::Zones(MpeZones::new(Some(zone), None).unwrap()),
+            ..Default::default()
+        });
+        queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, u32::MAX);
+        queue_midi(&mut synth, &[bend]);
+        synth.tick(&[], &mut output);
+        synth
+            .voices
+            .iter()
+            .find(|v| v.is_active())
+            .unwrap()
+            .per_note_bend()
+            .get()
+    };
+    assert!((swept(12) - 12.0).abs() < 0.01, "{}", swept(12));
+    assert!((swept(48) - 48.0).abs() < 0.01, "{}", swept(48));
+}
+
+/// Without zones the per-note range is the MPE convention, 48 semitones:
+/// single-channel rotation has no member range to name.
+#[test]
+fn without_zones_the_per_note_bend_range_is_48_semitones() {
+    let mut synth = synth(SynthConfig {
+        oscillator: OscillatorType::Sine,
+        mpe: MpeMode::SingleChannelRotation {
+            channel: MidiChannel::of(1),
+        },
+        ..Default::default()
+    });
+    queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
+    let mut output = [0.0f32; 2];
+    synth.tick(&[], &mut output);
+    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, u32::MAX);
+    queue_midi(&mut synth, &[bend]);
+    synth.tick(&[], &mut output);
+    let bent = synth
+        .voices
+        .iter()
+        .find(|v| v.is_active())
+        .unwrap()
+        .per_note_bend();
+    assert!((bent.get() - 48.0).abs() < 0.01, "{bent}");
+}
+
 #[test]
 fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
     // MIDI 2.0 native per-note pitch bend carries the note number on the
@@ -1197,8 +1234,7 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
     // sound on the same channel (where the classic per-channel MPE handler
     // would have bent both). This is the per-note-addressing proof.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1207,8 +1243,7 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1254,8 +1289,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
     // MIDI 2.0 Per-Note Management {reset:true} must reset ONLY the addressed
     // note's per-note expression, leaving another sounding voice's bend intact.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1264,8 +1298,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1322,8 +1355,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
     // absolute pitch for the addressed note. Note 60 retuned to note 69.0
     // (A440) should sound at 440 Hz; another note is untouched.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1332,7 +1364,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1384,8 +1416,7 @@ fn test_per_note_management_detach_freezes_the_note() {
     // Detach (D=1): the addressed voice keeps its current per-note bend but
     // stops responding to further per-note controllers (M2-104 §7.4.5).
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1394,8 +1425,7 @@ fn test_per_note_management_detach_freezes_the_note() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1454,8 +1484,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     // 12-semitone sensitivity, a full per-note bend should reach ~12 semitones
     // (not the default 48).
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1464,8 +1493,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1509,12 +1537,10 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
 /// freshest voice on it (the last one started).
 fn hand_mpe() -> Hand {
     synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        mpe: lower_zone(),
         ..Default::default()
     })
 }
@@ -1642,8 +1668,7 @@ fn test_reset_all_controllers_spares_per_note() {
     // Reset All Controllers (CC121) resets channel controllers + global pitch
     // bend but must NOT touch per-note controllers (M2-104 Appendix B.2).
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1652,8 +1677,7 @@ fn test_reset_all_controllers_spares_per_note() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1694,8 +1718,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
     // A Registered Per-Note Controller for Brightness (CC74 / SoundController
     // index 5) addressed to note X must set ONLY note X's slide.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Moog {
@@ -1708,7 +1731,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1764,8 +1787,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
     // and as a Registered Volume controller — must reach the addressed voice
     // as gain, and leave others at unity.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1774,7 +1796,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1827,8 +1849,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
 #[test]
 fn test_mpe_per_voice_pressure() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1837,7 +1858,7 @@ fn test_mpe_per_voice_pressure() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1878,8 +1899,7 @@ fn test_mpe_per_voice_pressure() {
 #[test]
 fn test_mpe_per_voice_slide() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Moog {
@@ -1892,7 +1912,7 @@ fn test_mpe_per_voice_slide() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1929,8 +1949,7 @@ fn test_mpe_per_voice_slide() {
 #[test]
 fn test_mpe_disabled_global_pitch_bend() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1972,8 +1991,7 @@ fn test_mpe_disabled_global_pitch_bend() {
 #[test]
 fn test_mpe_pressure_affects_amplitude() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 1,
+        polyphony: NonZeroUsize::new(1).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -1982,7 +2000,7 @@ fn test_mpe_pressure_affects_amplitude() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -2019,8 +2037,7 @@ fn test_mpe_pressure_affects_amplitude() {
 #[test]
 fn test_mpe_note_on_resets_expression() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
@@ -2029,7 +2046,7 @@ fn test_mpe_note_on_resets_expression() {
             sustain: Amplitude(1.0),
             release: Seconds(0.05),
         },
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -2074,20 +2091,18 @@ fn test_mpe_note_on_resets_expression() {
 /// could send an MCM, watch sensitivity apply, and reasonably conclude MPE
 /// was on — with no way to find out otherwise.
 #[test]
-fn mpe_enabled_is_observable() {
+fn mpe_is_observable() {
     let off = PolySynth::new(SynthConfig {
-        mpe_enabled: false,
+        mpe: MpeMode::Disabled,
         ..Default::default()
-    })
-    .unwrap();
-    assert!(!off.mpe_enabled());
+    });
+    assert_eq!(off.mpe(), &MpeMode::Disabled);
 
     let on = PolySynth::new(SynthConfig {
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
-    })
-    .unwrap();
-    assert!(on.mpe_enabled());
+    });
+    assert_eq!(on.mpe(), &lower_zone());
 }
 
 /// Enabling MPE at runtime reaches voices that are already sounding.
@@ -2097,24 +2112,20 @@ fn mpe_enabled_is_observable() {
 /// anything.
 #[test]
 fn enabling_mpe_applies_to_a_sounding_voice() {
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            max_voices: 4,
-            oscillator: OscillatorType::Sine,
-            mpe_enabled: false,
-            mpe_pitch_bend_range: tutti_types::Semitones(48.0),
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(4).unwrap(),
+        oscillator: OscillatorType::Sine,
+        mpe: MpeMode::Disabled,
+        ..Default::default()
+    }));
 
     let mut output = [0.0f32; 2];
     queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
     synth.tick(&[], &mut output);
     assert_eq!(synth.active_voice_count(), 1);
 
-    synth.set_mpe_enabled(true);
-    assert!(synth.mpe_enabled());
+    synth.set_mpe(lower_zone());
+    assert_eq!(synth.mpe(), &lower_zone());
     assert!(
         synth
             .voices
@@ -2135,16 +2146,12 @@ fn enabling_mpe_applies_to_a_sounding_voice() {
 /// earlier.
 #[test]
 fn disabling_mpe_clears_latent_per_note_state() {
-    let mut synth = Hand::new(
-        PolySynth::new(SynthConfig {
-            max_voices: 4,
-            oscillator: OscillatorType::Sine,
-            mpe_enabled: true,
-            mpe_pitch_bend_range: tutti_types::Semitones(48.0),
-            ..Default::default()
-        })
-        .unwrap(),
-    );
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(4).unwrap(),
+        oscillator: OscillatorType::Sine,
+        mpe: lower_zone(),
+        ..Default::default()
+    }));
 
     let mut output = [0.0f32; 2];
     queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
@@ -2167,7 +2174,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
         "precondition: the bend applied while MPE was on"
     );
 
-    synth.set_mpe_enabled(false);
+    synth.set_mpe(MpeMode::Disabled);
 
     assert!(
         synth
@@ -2195,8 +2202,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
 #[test]
 fn a_long_block_renders_every_frame_like_short_blocks() {
     let config = || SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(48_000.0),
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
             cutoff: Hz(3_000.0),
@@ -2268,11 +2274,10 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
 #[test]
 fn unison_grown_under_a_held_note_sounds_immediately() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(48_000.0),
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
-            voice_count: 1,
+            voice_count: UnisonVoices::of(1),
             detune_cents: tutti_types::Cents(12.0),
             stereo_spread: Spread(1.0),
             phase_randomize: false,
@@ -2285,7 +2290,7 @@ fn unison_grown_under_a_held_note_sounds_immediately() {
         synth.render_planar(&mut l, &mut r);
     }
 
-    synth.set_unison_voice_count(3);
+    synth.set_unison_voice_count(UnisonVoices::of(3));
     let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
     let (mut left, mut right) = (Vec::new(), Vec::new());
     for _ in 0..8 {
@@ -2317,8 +2322,7 @@ fn unison_grown_under_a_held_note_sounds_immediately() {
 #[test]
 fn process_and_tick_agree_through_a_glide() {
     let config = || SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(48_000.0),
-        max_voices: 1,
+        polyphony: NonZeroUsize::new(1).unwrap(),
         voice_mode: VoiceMode::Mono,
         oscillator: OscillatorType::Sine,
         envelope: Adsr::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.1)),
@@ -2383,11 +2387,10 @@ fn process_and_tick_agree_through_a_glide() {
 #[test]
 fn a_chord_gets_a_distinct_phase_stack_per_voice() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(48_000.0),
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
-            voice_count: 3,
+            voice_count: UnisonVoices::of(3),
             detune_cents: tutti_types::Cents(0.0),
             stereo_spread: Spread(0.0),
             phase_randomize: true,
@@ -2437,8 +2440,7 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
 #[test]
 fn a_steal_at_a_different_velocity_does_not_click() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(48_000.0),
-        max_voices: 1,
+        polyphony: NonZeroUsize::new(1).unwrap(),
         allocation_strategy: crate::AllocationStrategy::Oldest,
         oscillator: OscillatorType::Sine,
         envelope: Adsr::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.1)),
@@ -2482,8 +2484,7 @@ fn a_steal_at_a_different_velocity_does_not_click() {
 #[test]
 fn reset_all_controllers_leaves_the_cutoff_alone() {
     let config = || SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(48_000.0),
-        max_voices: 1,
+        polyphony: NonZeroUsize::new(1).unwrap(),
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
             cutoff: Hz(600.0),
@@ -2516,19 +2517,19 @@ fn reset_all_controllers_leaves_the_cutoff_alone() {
     );
 }
 
-/// The voices and the bank use the engine's clamped unison count, not the
-/// config's raw one.
+/// The voices and the bank are sized to the unison count the config holds,
+/// at the ceiling of 16 too.
 #[test]
-fn an_oversized_unison_count_is_clamped_everywhere() {
+fn the_unison_ceiling_sizes_the_voices_and_the_bank() {
     let synth = synth(SynthConfig {
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         unison: Some(UnisonConfig {
-            voice_count: 40,
+            voice_count: UnisonVoices::of(UnisonVoices::MAX),
             ..Default::default()
         }),
         ..Default::default()
     });
-    assert_eq!(synth.unison_voice_count(), 16);
+    assert_eq!(synth.unison_voice_count(), UnisonVoices::of(16));
     assert_eq!(synth.voices[0].sub_voice_count(), 16);
     assert_eq!(
         synth.bank.lane(1, 0),
@@ -2546,20 +2547,19 @@ fn an_oversized_unison_count_is_clamped_everywhere() {
 fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
     use tutti_graph::ParamFork;
     let live = || {
-        let synth = synth(SynthConfig {
-            sample_rate: tutti_types::SampleRate(48_000.0),
-            max_voices: 4,
+        let mut synth = synth(SynthConfig {
+            polyphony: NonZeroUsize::new(4).unwrap(),
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
             unison: Some(UnisonConfig {
-                voice_count: 3,
+                voice_count: UnisonVoices::of(3),
                 detune_cents: tutti_types::Cents(15.0),
                 stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
             ..Default::default()
         });
-        synth.set_volume(0.5);
+        synth.set_volume(tutti_types::Amplitude(0.5));
         synth.synth
     };
     let render = |fork: PolySynth| {
@@ -2618,12 +2618,10 @@ fn sounding(synth: &PolySynth) -> usize {
 
 fn poly_synth() -> PolySynth {
     PolySynth::new(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         ..Default::default()
     })
-    .expect("synth builds")
 }
 
 /// A MIDI 1.0 Note On and the MIDI 2.0 Note On that widens it claim the same
@@ -2799,13 +2797,11 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
 
 fn mpe_synth() -> PolySynth {
     PolySynth::new(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
-        mpe_enabled: true,
+        mpe: lower_zone(),
         ..Default::default()
     })
-    .expect("synth builds")
 }
 
 /// What a voice sounds, as an offset from its key's equal-tempered frequency
@@ -2986,7 +2982,7 @@ fn midi1_values_scale_to_exact_figures() {
 #[test]
 fn reset_all_controllers_keeps_the_sound_controllers() {
     let mut s = synth(SynthConfig {
-        max_voices: 2,
+        polyphony: NonZeroUsize::new(2).unwrap(),
         ..Default::default()
     });
     queue_midi(
@@ -3022,10 +3018,10 @@ fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
         )));
     };
     let mut synth = poly_synth();
-    synth.set_mpe_enabled(true);
+    synth.set_mpe(lower_zone());
     bend(&mut synth, 0);
     assert_ne!(synth.bends[5].0, 0.0, "a master bend reaches channel 5");
-    synth.set_mpe_enabled(false);
+    synth.set_mpe(MpeMode::Disabled);
     bend(&mut synth, 15);
     assert_ne!(synth.bends[15].0, 0.0, "and its own channel");
     // Off again, a bend on channel 0 stays on channel 0.
@@ -3060,12 +3056,10 @@ fn a_mono_synth_returns_to_the_held_key_and_sounds_it() {
         ))
     };
     let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Mono,
         ..Default::default()
-    })
-    .expect("synth builds");
+    });
     synth.apply_midi(on(60, 100));
     synth.apply_midi(on(64, 90));
     assert_eq!(synth.voices[0].note(), NoteNumber::of(64));
@@ -3105,10 +3099,7 @@ fn a_synth_plays_its_own_groups_channels_only() {
     first.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(first.active_voice_count(), 1);
 
-    let mut second = synth(SynthConfig {
-        group: group2,
-        ..SynthConfig::default()
-    });
+    let mut second = synth(SynthConfig::default().with_group(group2));
     second.apply_midi(note(MidiGroup::FIRST));
     assert_eq!(second.active_voice_count(), 0, "Group 1 is not Group 2's");
     second.apply_midi(note(group2));
@@ -3120,8 +3111,7 @@ fn a_synth_plays_its_own_groups_channels_only() {
 /// A steady sine voice per note, no filter, so the level of a note is its own.
 fn steady(extra: impl FnOnce(&mut SynthConfig)) -> Hand {
     let mut config = SynthConfig {
-        sample_rate: tutti_types::SampleRate::SR_44K1,
-        max_voices: 4,
+        polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
         filter: FilterType::None,
@@ -3423,7 +3413,7 @@ fn portamento_on_glides_from_the_previous_key() {
 #[test]
 fn a_per_note_pitch_survives_a_glide() {
     let mut s = steady(|c| {
-        c.mpe_enabled = true;
+        c.mpe = lower_zone();
         c.portamento = Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
@@ -3470,7 +3460,7 @@ fn a_per_note_pitch_survives_a_glide() {
 /// per-note controller told the first note is that note's, not the new one's.
 #[test]
 fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
-    let mut s = steady(|c| c.mpe_enabled = true);
+    let mut s = steady(|c| c.mpe = lower_zone());
     let mut out = [0.0f32; 2];
     queue_midi(
         &mut s,

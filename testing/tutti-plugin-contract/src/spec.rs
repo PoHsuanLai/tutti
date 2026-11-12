@@ -153,6 +153,53 @@ pub const EDITOR_TIDY: u32 = 1;
 /// The notice behaviour that raises one notice per state load (`NOTICE_ON_LOAD`,
 /// third byte).
 pub const NOTICE_ON_LOAD: u32 = 1;
+/// The notice behaviour that reports one gesture on `aux` per state load
+/// (`NOTICE_GESTURE_ON_LOAD`, third byte).
+pub const NOTICE_GESTURE_ON_LOAD: u32 = 2;
+
+/// One edit a host must read from a plugin, as the spec states it: the figures
+/// are written here, not taken from the host's own type.
+#[derive(Clone, Copy, Debug)]
+pub enum Edit {
+    /// A gesture's begin on a parameter. No value: no format carries one.
+    Begin(Param),
+    /// A change of a parameter to a normalized value.
+    Change(Param, f64),
+    /// A gesture's end on a parameter. No value.
+    End(Param),
+}
+
+impl Edit {
+    /// The host's edit this stands for.
+    #[must_use]
+    pub fn expected(self) -> tutti_plugin_types::ParamEdit {
+        use tutti_plugin_types::{Normalized, ParamEdit};
+        match self {
+            Self::Begin(p) => ParamEdit::Begin(p.id()),
+            Self::Change(p, v) => ParamEdit::change(p.id(), Normalized::of(v)),
+            Self::End(p) => ParamEdit::End(p.id()),
+        }
+    }
+}
+
+/// The edits the gesture notice reports, in the order the plugin makes them: the
+/// gesture's begin, a change to 0.375, a change to 0.625, the gesture's end,
+/// all of `aux`. Every one is reported: none is dropped, and the begin and the
+/// end hold no value.
+pub const GESTURE: [Edit; 4] = [
+    Edit::Begin(Param::Aux),
+    Edit::Change(Param::Aux, 0.375),
+    Edit::Change(Param::Aux, 0.625),
+    Edit::End(Param::Aux),
+];
+
+/// What a notice's edit of `aux` to 0.75 is as `take_reported_edits` reads it
+/// through VST3's component handler: the gesture's begin, the change, the end.
+const AUX_EDITED: [Edit; 3] = [
+    Edit::Begin(Param::Aux),
+    Edit::Change(Param::Aux, 0.75),
+    Edit::End(Param::Aux),
+];
 
 /// What a format's control surface answers for the shared plugin, the same in
 /// a loaded plugin and an active one. One row per format ([`Surface`]).
@@ -177,11 +224,13 @@ pub struct Surface {
     /// The request a notice raises, as `take_requests` reports it: CLAP's
     /// `request_callback`. Nothing for every other format.
     pub request: Option<tutti_plugin_types::Request>,
-    /// The edit a notice reports outside a block, as `take_reported_edits`
-    /// reads it: VST2's `audioMasterAutomate(0, 0.5)`, VST3's `performEdit` of
-    /// `aux` to 0.75 through the host's component handler. Nothing for CLAP,
-    /// which reports edits in a block's output, and for AU.
-    pub edit: Option<(Param, f64)>,
+    /// The edits a notice reports, as `take_reported_edits` reads them: VST2's
+    /// `audioMasterAutomate(0, 0.5)` (one change: VST2 reports no gesture here),
+    /// VST3's `beginEdit`, `performEdit` of `aux` to 0.75 and `endEdit` through
+    /// the host's component handler. Nothing for CLAP, which reports
+    /// edits in a block's output and so not from a state load alone, and for
+    /// AU.
+    pub edits: &'static [Edit],
     /// What the format's conversion answers for [`Param::Tone`].
     pub tone: Tone,
 }
@@ -193,7 +242,7 @@ pub const CLAP: Surface = Surface {
     render_mode_live: false,
     notices: true,
     request: Some(tutti_plugin_types::Request::Callback),
-    edit: None,
+    edits: &[],
     tone: TONE_LINEAR,
 };
 
@@ -204,7 +253,7 @@ pub const VST2: Surface = Surface {
     render_mode_live: true,
     notices: true,
     request: None,
-    edit: Some((Param::Level, 0.5)),
+    edits: &[Edit::Change(Param::Level, 0.5)],
     tone: TONE_NORMALIZED,
 };
 
@@ -217,7 +266,7 @@ pub const VST3: Surface = Surface {
     render_mode_live: false,
     notices: true,
     request: None,
-    edit: Some((Param::Aux, 0.75)),
+    edits: &AUX_EDITED,
     tone: TONE_CURVED,
 };
 
@@ -229,7 +278,7 @@ pub const VST3_CPP: Surface = Surface {
     render_mode_live: false,
     notices: true,
     request: None,
-    edit: Some((Param::Aux, 0.75)),
+    edits: &AUX_EDITED,
     tone: TONE_CURVED,
 };
 
@@ -242,6 +291,6 @@ pub const AU: Surface = Surface {
     render_mode_live: false,
     notices: false,
     request: None,
-    edit: None,
+    edits: &[],
     tone: TONE_NORMALIZED,
 };

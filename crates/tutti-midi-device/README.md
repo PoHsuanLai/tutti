@@ -16,7 +16,7 @@ MIDI-CI codec.
   for a lone device whose identity is only a name (ALSA), which may be another
   unit of that name; `Ambiguous`, with the candidates, for a saved ordinal
   above 0 or several alike devices; `Missing` otherwise. With the `serde`
-  feature, `DeviceInfo`, `DeviceId`, `Identity` and `Direction` serialize, so
+  feature, `DeviceInfo`, `DeviceId`, `Identity` and `PortDirection` serialize, so
   an app can remember a device; renaming an `Identity` variant breaks saved
   files.
 - `EndpointId`: the OS's own handle, opaque, valid while the device is present.

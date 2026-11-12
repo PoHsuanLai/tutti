@@ -22,10 +22,12 @@ fn is_malformed(body: &[u8], is_reply: bool) -> bool {
 
 fn sample_discovery() -> DiscoveryData {
     DiscoveryData {
-        manufacturer: [0x00, 0x21, 0x09],
-        family: 0x1234,
-        family_model: 0x0055,
-        software_revision: [1, 2, 3, 4],
+        identity: DeviceIdentity {
+            manufacturer: [0x00, 0x21, 0x09].map(U7::of),
+            family: [0x34, 0x24].map(U7::of),
+            model: [0x55, 0x00].map(U7::of),
+            revision: [1, 2, 3, 4].map(U7::of),
+        },
         categories: CiCategories::PROFILE_CONFIGURATION | CiCategories::PROPERTY_EXCHANGE,
         max_sysex_size: MaxSysexSize::of(512),
         output_path_id: U7::of(0x05),
@@ -100,7 +102,7 @@ fn a_version_1_body_still_decodes() {
     body.truncate(DiscoveryData::BODY_LEN); // strip the v2 trailer
 
     let back = DiscoveryData::decode_body(true, &body).expect("v1 body decodes");
-    assert_eq!(back.manufacturer, d.manufacturer);
+    assert_eq!(back.identity, d.identity);
     assert_eq!(back.max_sysex_size, d.max_sysex_size);
     assert_eq!(
         back.output_path_id,
@@ -214,4 +216,18 @@ fn the_receivable_size_is_a_range_checked_value() {
         valid: &[128, 512, 0x0FFF_FFFF],
         invalid: &[0, 127, 0x1000_0000, u32::MAX],
     });
+}
+
+// M2-101 Table 6: after the 13-byte preamble come the manufacturer's three
+// bytes, the family and the model (each LSB first), the four software
+// revision bytes, the category bitmap and the four size bytes. The identity
+// is `DeviceIdentity`'s arrays in that order.
+#[test]
+fn the_identity_is_written_in_the_tables_order() {
+    let mut body = Vec::new();
+    sample_discovery().encode_body(false, &mut body);
+    assert_eq!(
+        &body[..11],
+        [0x00, 0x21, 0x09, 0x34, 0x24, 0x55, 0x00, 1, 2, 3, 4]
+    );
 }

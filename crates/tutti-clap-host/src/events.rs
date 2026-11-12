@@ -1355,7 +1355,7 @@ impl InputEventList {
         if self.midi_ports >> port & 1 != 0 {
             // A port that takes the MIDI dialect has no per-note expression
             // but poly pressure; the state still follows the stream.
-            let _ = self.notes.step(address, &voice);
+            let _ = self.notes.step(address, voice);
             let event = match (voice, note) {
                 (Voice2::NoteOn { .. }, Some(note)) => ClapEvent::note_on(
                     time,
@@ -1385,7 +1385,7 @@ impl InputEventList {
                 }
             }
         };
-        for event in self.notes.step(address, &voice) {
+        for event in self.notes.step(address, voice) {
             match *event {
                 NoteEvent::Started { id, note, .. } => {
                     let on = ClapEvent::note_on(

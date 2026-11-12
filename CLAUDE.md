@@ -436,10 +436,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
                  `tutti-ump` and `tutti-types`
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
-                 pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
+                 pure step: `Voicing::step(channel, message, patch, level) -> &[Command]`
                  (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
-                 note table and the note gate (`Holds`), with the differences between
-                 instruments as values (`Rules`) and a `Patch`; no audio, no voice, no
+                 note table and the note gate (`Holds`, whose `*_up` return a `Release`), with the differences between
+                 instruments as values (`Rules::poly(n)`, `mono()`, `legato()`, `with_*`) and a `Patch`; no audio, no voice, no
                  allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and
                  `tutti-types`; `publish = false`
   tutti-midi-device  MIDI device core (design 017 §5): `DeviceId`, `OsChange`, the pure
@@ -641,13 +641,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`
   and has no `bevy` feature. **The note logic of an instrument is one pure step
   here, and an instrument keeps its voices and its render:** it builds a
-  `VoiceView` list, calls `step`, and does what the `Command`s say (`PolySynth`
+  `level` lookup (`impl Fn(VoiceId) -> Option<Amplitude>`, `None` for a voice it no
+  longer has: no list, no order, no copy), calls `step` with the message by value, and
+  does what the `Command`s say (`PolySynth`
   does, in `tutti-polysynth`'s `VoiceAllocator`, which is now its slot table).
   What differs between instruments is a value of `Rules` or a `Patch`, never a
   branch in the core; a difference only one instrument has and the spec does not
   require is a reason to look again. `step` allocates nothing: its tables are
-  sized in `new` and a `Clone` keeps their capacity; the instrument passes
-  `VoiceView`s sorted by id, and only for a note-on (liveness is read there).
+  sized in `new` and a `Clone` keeps their capacity; the core calls `level`
+  only for a note message (liveness is read there). `VoiceId` has a private
+  field (`new`, `get`: every `u64` is a voice) and `VoiceSpec::group` is an
+  `Option<NonZeroU16>`.
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
   and nothing is pinned against another implementation. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
   Group's sixteen channels** (`SynthConfig::group`, `Settings::with_group`; a message of
@@ -659,20 +663,22 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
   feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
-  threads and the OS. It also holds the MIDI-CI codec (`CiMessage::encode` and
-  `decode` over the bytes between `F0` and `F7`, which the caller frames with
-  `tutti_ump::frame` and reassembles with `tutti_ump::SysexAssembler`; `Muid::new`
+  threads and the OS. It also holds the MIDI-CI codec (`CiMessage::encode`,
+  `encode_into(&mut impl Extend<u8>)` and `decode` over the bytes between `F0` and
+  `F7`, `packets(group)` for a UMP stream, or `tutti_ump::frame` for a byte stream,
+  and `tutti_ump::SysexAssembler` to reassemble; `DiscoveryData::new` takes a
+  `tutti_ump::DeviceIdentity`; `Muid::new`
   refuses the reserved range and broadcast, which is a `Destination`). The CI codec has
   no state machine; design 017 §5, "MIDI-CI", is the rebuild. `CiMessage::decode` returns
   a `Decoded`, and a message it cannot read is an `Unread` that keeps its header so the
   NAK can be addressed (`Unread::nak`); a message carries its own destination (Discovery
   and Invalidate MUID are broadcast, the rest go to one `Muid`), and a value the spec
   bounds is a checked type (`CiVersion`, `CiDeviceId`, `MaxSysexSize`, `MessageText`).
-  A name (`EndpointName`, `BlockName`) is held in NFC and has no leading BOM (M2-104
+  A name (`EndpointName`, `BlockName`; with `ProductInstanceId` and `MessageText` it has `new -> Option` and `TryFrom<&str>`/`FromStr` with a `NameError`, `Display` and `AsRef<str>`) is held in NFC and has no leading BOM (M2-104
   §1.8).
   Its `tutti-ump` edge is for the UMP Endpoint and Connection (doc 017 stage 4b):
   `Endpoint::reply` answers a received Stream message into a caller's
-  `Extend<Ump>` and allocates nothing, `Connection` is Table 4 steps 2 to 4 as a
+  `Extend<Ump>` and allocates nothing, `Connection` (`new` returns `(Self, Action)`, the first `Action::Send`) is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
   CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
@@ -1331,6 +1337,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
 - **Dead crate names:** `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output

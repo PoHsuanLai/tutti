@@ -14,8 +14,7 @@ use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 use tutti_voicing::{
-    ChannelState, Command, Glide, Mode, NoteControl, Order, Patch, Retrigger, Rules, Steal,
-    VoiceSpec, VoiceView, Voicing,
+    ChannelState, Command, Glide, Mode, NoteControl, Order, Patch, Rules, Steal, VoiceSpec, Voicing,
 };
 
 pub use tutti_voicing::VoiceId;
@@ -98,7 +97,7 @@ pub(crate) struct VoiceSlot {
 impl Default for VoiceSlot {
     fn default() -> Self {
         Self {
-            voice_id: VoiceId(0),
+            voice_id: VoiceId::new(0),
             id: NoteId::default(),
             note: NoteNumber::default(),
             channel: MidiChannel::FIRST,
@@ -223,27 +222,22 @@ impl Default for VoiceAllocatorConfig {
 impl VoiceAllocatorConfig {
     /// This synth's rules: a value of the shared note logic.
     fn rules(&self) -> Rules {
-        Rules {
-            mode: match self.mode {
+        Rules::poly(self.max_voices)
+            .with_mode(match self.mode {
                 VoiceMode::Poly => Mode::Poly,
                 VoiceMode::Mono => Mode::Mono,
                 VoiceMode::Legato => Mode::Legato,
-            },
-            retrigger: Retrigger::Replace,
-            polyphony: self.max_voices,
-            steal: match self.strategy {
+            })
+            .with_steal(match self.strategy {
                 AllocationStrategy::NoSteal => Steal::Never,
                 AllocationStrategy::Oldest => Steal::By(Order::Oldest),
                 AllocationStrategy::Newest => Steal::By(Order::Newest),
                 AllocationStrategy::Quietest => Steal::By(Order::Quietest),
                 AllocationStrategy::HighestNote => Steal::By(Order::HighestNote),
                 AllocationStrategy::LowestNote => Steal::By(Order::LowestNote),
-            },
-            exclusive_groups: false,
-            sostenuto: true,
-            bend_range: self.bend_range,
-            per_note_bend_range: self.per_note_bend_range,
-        }
+            })
+            .with_bend_range(self.bend_range)
+            .with_per_note_bend_range(self.per_note_bend_range)
     }
 }
 
@@ -277,7 +271,7 @@ struct OneVoice;
 impl Patch for OneVoice {
     fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
         spec(VoiceSpec {
-            group: 0,
+            group: None,
             scope: 0,
             tag: 0,
         });
@@ -321,7 +315,6 @@ pub struct VoiceAllocator {
     /// [`NoteId`] → active slot index. Keyed by full per-note identity, so two
     /// notes sharing a note number map to distinct slots.
     id_to_slot: PerNoteMap<usize, 128>,
-    views: Vec<VoiceView>,
     commands: Vec<Command>,
     gates: Vec<Gate>,
 }
@@ -340,7 +333,6 @@ impl VoiceAllocator {
             .collect();
         Self {
             core: Voicing::new(rules),
-            views: Vec::with_capacity(config.max_voices),
             commands: Vec::with_capacity(2 * config.max_voices + 64),
             gates: Vec::with_capacity(2 * config.max_voices + 64),
             config,
@@ -357,23 +349,15 @@ impl VoiceAllocator {
         message: &Voice2,
         strike: Option<(NoteId, f32)>,
     ) -> AllocationResult {
-        // Only a note message reads the voices (to forget the ones that ended,
-        // to choose a victim, to return to a held key); every other message
-        // passes none. Sorted by id.
-        self.views.clear();
-        if matches!(message, Voice2::NoteOn { .. } | Voice2::NoteOff { .. }) {
-            for s in self.slots.iter().filter(|s| !s.is_idle()) {
-                let at = self.views.partition_point(|v| v.id < s.voice_id());
-                self.views.insert(
-                    at,
-                    VoiceView {
-                        id: s.voice_id(),
-                        level: Amplitude(s.envelope_level()),
-                    },
-                );
-            }
-        }
-        let cmds = self.core.step(channel, message, &OneVoice, &self.views);
+        // Only a note message asks about the voices (to forget the ones that
+        // ended, to choose a victim, to return to a held key).
+        let slots = &self.slots;
+        let cmds = self.core.step(channel, *message, &OneVoice, |id| {
+            slots
+                .iter()
+                .find(|s| !s.is_idle() && s.voice_id() == id)
+                .map(|s| Amplitude(s.envelope_level()))
+        });
         self.commands.clear();
         self.commands.extend_from_slice(cmds);
         let mut result = AllocationResult::Unavailable;
@@ -671,7 +655,6 @@ impl Clone for VoiceAllocator {
             core: self.core.clone(),
             slots: self.slots.clone(),
             id_to_slot: self.id_to_slot.clone(),
-            views: Vec::with_capacity(self.config.max_voices),
             commands: Vec::with_capacity(2 * self.config.max_voices + 64),
             gates: Vec::with_capacity(2 * self.config.max_voices + 64),
         }

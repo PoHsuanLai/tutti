@@ -57,7 +57,7 @@ fn open_lists_what_is_plugged_in_and_reports_no_event_for_it() {
 #[test]
 fn plug_is_added_and_unplug_is_removed() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     let added = wake(&events);
     let [DeviceEvent::Added(info)] = &added[..] else {
         panic!("one Added, got {added:?}");
@@ -73,11 +73,11 @@ fn plug_is_added_and_unplug_is_removed() {
 #[test]
 fn a_replug_of_a_known_state_and_an_unknown_unplug_are_silent() {
     let (_devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     fake.unplug(EndpointId::from_raw(9));
     // The channel is in order, so the sentinel arrives after the silent ones.
-    fake.plug(endpoint(2, "Pads"), Direction::Input);
+    fake.plug(endpoint(2, "Pads"), PortDirection::Input);
     let mut seen = Vec::new();
     while seen.len() < 2 {
         seen.extend(wake(&events));
@@ -90,13 +90,13 @@ fn a_replug_of_a_known_state_and_an_unknown_unplug_are_silent() {
 #[test]
 fn a_rename_is_changed_and_keeps_the_id() {
     let (_devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     let [DeviceEvent::Added(before)] = &wake(&events)[..] else {
         panic!("Added");
     };
     let mut renamed = endpoint(1, "Keys");
     renamed.name = "Keys II".into();
-    fake.plug(renamed, Direction::Input);
+    fake.plug(renamed, PortDirection::Input);
     let events = wake(&events);
     let [DeviceEvent::Changed(after)] = &events[..] else {
         panic!("Changed, got {events:?}");
@@ -108,7 +108,7 @@ fn a_rename_is_changed_and_keeps_the_id() {
 fn a_wake_takes_the_change_off_the_queue() {
     let (_devices, events, fake) = fake();
     assert!(events.try_iter().next().is_none());
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     let got = wake(&events);
     assert_eq!(got.len(), 1);
     assert!(events.try_iter().next().is_none(), "wake consumed it");
@@ -117,7 +117,7 @@ fn a_wake_takes_the_change_off_the_queue() {
 #[test]
 fn a_watch_that_fails_says_so_and_the_list_freezes() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     assert!(events.failure().is_none());
     fake.fail_watch("the sequencer went away");
     assert_eq!(
@@ -125,7 +125,7 @@ fn a_watch_that_fails_says_so_and_the_list_freezes() {
         Some("MIDI port error: the sequencer went away".into())
     );
     // The thread has ended: a later plug is not reported.
-    fake.plug(endpoint(2, "Pads"), Direction::Input);
+    fake.plug(endpoint(2, "Pads"), PortDirection::Input);
     assert_eq!(devices.list().len(), 1);
 }
 
@@ -141,7 +141,7 @@ fn recv_times_out_empty() {
 #[test]
 fn recv_wakes_for_a_change_made_on_another_thread() {
     let (_devices, events, fake) = fake();
-    let plugger = std::thread::spawn(move || fake.plug(endpoint(1, "Keys"), Direction::Input));
+    let plugger = std::thread::spawn(move || fake.plug(endpoint(1, "Keys"), PortDirection::Input));
     let events = wake(&events);
     plugger.join().unwrap();
     assert!(matches!(&events[..], [DeviceEvent::Added(_)]));
@@ -153,7 +153,7 @@ fn recv_wakes_for_a_change_made_on_another_thread() {
 fn each_subscriber_sees_every_change() {
     let (devices, first, fake) = fake();
     let second = devices.subscribe();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     assert_eq!(wake(&first).len(), 1);
     assert_eq!(wake(&second).len(), 1);
 }
@@ -163,9 +163,9 @@ fn each_subscriber_sees_every_change() {
 #[test]
 fn initial_and_stream_split_at_the_subscription() {
     let (devices, _first, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     let late = devices.subscribe();
-    fake.plug(endpoint(2, "Pads"), Direction::Input);
+    fake.plug(endpoint(2, "Pads"), PortDirection::Input);
     let names: Vec<_> = late.initial().iter().map(|d| d.name.as_str()).collect();
     assert_eq!(names, ["Keys"]);
     let streamed = wake(&late);
@@ -190,7 +190,7 @@ fn a_dropped_subscriber_is_forgotten() {
 #[test]
 fn a_failed_watch_ends_the_stream_after_what_it_reported() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     fake.fail_watch("gone");
     assert!(matches!(
         events.recv_timeout(PATIENCE),
@@ -210,7 +210,7 @@ fn a_failed_watch_ends_the_stream_after_what_it_reported() {
 #[test]
 fn a_dropped_input_retires_its_port() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     wake(&events);
     let ports = ports();
     let input = devices
@@ -282,7 +282,7 @@ fn a_change_during_subscribe_is_in_initial_or_in_the_stream_once() {
                     handle: EndpointId::from_raw(1_000 + u64::try_from(n).unwrap()),
                     identity: Identity::CoreMidi(n),
                     name: format!("d{n}"),
-                    direction: Direction::Input,
+                    direction: PortDirection::Input,
                 }));
             }
         });
@@ -321,9 +321,9 @@ fn a_saved_device_resolves_through_devices() {
         e.identity = Identity::Product("unit-1".into());
         fake.plug(e, direction);
     };
-    port(1, "Pad In", Direction::Input);
-    port(2, "Pad Out", Direction::Output);
-    fake.plug(endpoint(3, "Keys"), Direction::Input);
+    port(1, "Pad In", PortDirection::Input);
+    port(2, "Pad Out", PortDirection::Output);
+    fake.plug(endpoint(3, "Keys"), PortDirection::Input);
     let mut seen = 0;
     while seen < 3 {
         seen += wake(&events).len();
@@ -341,7 +341,7 @@ fn a_saved_device_resolves_through_devices() {
     );
     let mut again = endpoint(7, "Pad Out");
     again.identity = Identity::Product("unit-1".into());
-    fake.plug(again, Direction::Output);
+    fake.plug(again, PortDirection::Output);
     assert_eq!(
         devices.resolve(&pad_out),
         Resolved::Exact(by_name("Pad Out"))
@@ -364,8 +364,8 @@ fn dropping_devices_stops_the_watch_thread() {
 #[test]
 fn open_input_takes_a_present_input_only() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
-    fake.plug(endpoint(10, "Synth"), Direction::Output);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
+    fake.plug(endpoint(10, "Synth"), PortDirection::Output);
     let mut seen = 0;
     while seen < 2 {
         seen += wake(&events).len();
@@ -387,7 +387,7 @@ fn open_input_takes_a_present_input_only() {
 #[test]
 fn open_input_refuses_a_device_that_was_unplugged() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     wake(&events);
     let keys = id_of(&devices, "Keys");
     fake.unplug(EndpointId::from_raw(1));
@@ -401,10 +401,10 @@ fn open_input_refuses_a_device_that_was_unplugged() {
 #[test]
 fn a_duplex_device_opens_both_ways() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Box"), Direction::Duplex);
+    fake.plug(endpoint(1, "Box"), PortDirection::Duplex);
     wake(&events);
     let id = id_of(&devices, "Box");
-    assert_eq!(devices.list()[0].direction, Direction::Duplex);
+    assert_eq!(devices.list()[0].direction, PortDirection::Duplex);
     assert!(devices.open_input(&id, &ports()).is_ok());
     assert!(devices.open_output(&id).is_ok());
 }
@@ -412,7 +412,7 @@ fn a_duplex_device_opens_both_ways() {
 #[test]
 fn capability_is_the_backends_for_a_present_device() {
     let (devices, events, fake) = fake();
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    fake.plug(endpoint(1, "Keys"), PortDirection::Input);
     wake(&events);
     let caps = devices.capability(&id_of(&devices, "Keys")).unwrap();
     assert!(caps.carries_midi2_only());
@@ -424,7 +424,7 @@ fn os_devices_merges_an_endpoint_listed_both_ways_into_a_duplex() {
     let only_out = endpoint(2, "Synth");
     let devices = os_devices(std::slice::from_ref(&both), &[both.clone(), only_out]);
     let directions: Vec<_> = devices.iter().map(|d| d.direction).collect();
-    assert_eq!(directions, [Direction::Duplex, Direction::Output]);
+    assert_eq!(directions, [PortDirection::Duplex, PortDirection::Output]);
 }
 
 /// A subscriber's queue on `shared`, as `Devices::subscribe` makes one.

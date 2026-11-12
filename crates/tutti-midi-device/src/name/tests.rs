@@ -1,6 +1,7 @@
 use tutti_ump::Form;
 
 use super::*;
+use crate::MessageText;
 
 fn collect<const W: usize>(bytes: &[u8]) -> Vec<(Form, [u8; W])> {
     let mut out = Vec::new();
@@ -178,4 +179,50 @@ fn the_longest_names_are_seven_seven_and_three_packets() {
         .len(),
         3
     );
+}
+
+// A refusal says which rule it broke, and the text types read, show and parse
+// as text.
+#[test]
+fn a_refused_text_says_why() {
+    assert_eq!(
+        EndpointName::parse(&"a".repeat(99)),
+        Err(NameError::TooLong { max: 98 })
+    );
+    assert_eq!(
+        BlockName::parse(&"a".repeat(92)),
+        Err(NameError::TooLong { max: 91 })
+    );
+    assert_eq!(EndpointName::parse("a\0b"), Err(NameError::Nul));
+    assert_eq!(EndpointName::parse("\u{FEFF}Keys"), Err(NameError::Bom));
+    assert_eq!(ProductInstanceId::parse("a\0"), Err(NameError::Nul));
+    assert_eq!(
+        ProductInstanceId::parse("caf\u{e9}"),
+        Err(NameError::NotPrintableAscii)
+    );
+    assert_eq!(
+        ProductInstanceId::parse(&"a".repeat(43)),
+        Err(NameError::TooLong { max: 42 })
+    );
+    assert_eq!(
+        MessageText::try_from("a".repeat(104).as_str()),
+        Err(NameError::TooLong { max: 103 })
+    );
+}
+
+#[test]
+fn the_text_types_convert_display_and_parse() {
+    let name: EndpointName = "Keystep".parse().unwrap();
+    assert_eq!(name.to_string(), "Keystep");
+    assert_eq!(name.as_ref() as &str, "Keystep");
+    assert_eq!(BlockName::try_from("Keys").unwrap().as_str(), "Keys");
+    let id: ProductInstanceId = "SN-0001".parse().unwrap();
+    assert_eq!(
+        (id.to_string(), id.as_ref() as &str),
+        ("SN-0001".into(), "SN-0001")
+    );
+    let text: MessageText = "done".parse().unwrap();
+    assert_eq!(text.to_string(), "done");
+    assert_eq!(text.as_ref() as &str, "done");
+    assert!("a\0".parse::<EndpointName>().is_err());
 }

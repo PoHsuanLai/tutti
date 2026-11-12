@@ -31,7 +31,7 @@ use crate::capability::{EndpointInfo, UmpCapability};
 use crate::devices::{ChangeSink, os_devices};
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
-use tutti_midi_device::{Direction, EndpointId, Identity, OsChange};
+use tutti_midi_device::{EndpointId, Identity, OsChange, PortDirection};
 use tutti_midi_runtime::MidiOut;
 
 /// A backend with a fixed device list and no OS behind it.
@@ -189,7 +189,7 @@ impl FakeCounters {
     /// watch. A device already plugged in under that id is replaced, which a
     /// watch sees as a change. The watch thread delivers it, and this returns
     /// once it has: the event is waiting in every subscriber's queue.
-    pub fn plug(&self, endpoint: EndpointInfo, direction: Direction) {
+    pub fn plug(&self, endpoint: EndpointInfo, direction: PortDirection) {
         let mut devices = self.devices();
         let id = endpoint.id;
         devices.inputs.retain(|e| e.id != id);

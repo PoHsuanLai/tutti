@@ -988,7 +988,7 @@ fn expected_victim(
     if !released.is_empty() {
         return by(&released, &level);
     }
-    let id = |i: usize| alloc.slots()[i].voice_id().0 as f64;
+    let id = |i: usize| alloc.slots()[i].voice_id().get() as f64;
     let key = |i: usize| f64::from(alloc.slots()[i].note().get());
     match strategy {
         S::Oldest => by(&live, &id),

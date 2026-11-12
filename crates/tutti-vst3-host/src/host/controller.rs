@@ -9,8 +9,8 @@ use tutti_plugin_types::MainThread;
 use tutti_rt::{DrainMark, DrainWatch};
 
 use tutti_plugin_types::{
-    Control, Controller, Edit, EditDrain, EditSink, Loaded, Normalized, ParamEdit, ParamId,
-    PluginError, PluginResult, PluginTail, Prepare, PresetId, Processor, Refused, Request,
+    Control, Controller, Edit, EditDrain, EditQueue, EditSink, Loaded, Normalized, ParamEdit,
+    ParamId, PluginError, PluginResult, PluginTail, Prepare, Processor, Refused, Request,
     RestartRules, SampleFormat, Samples, Stuck, Wraps,
 };
 
@@ -51,13 +51,9 @@ pub struct Vst3Controller {
     loaded: Option<Vst3Loaded>,
     /// The identity of the pair, and the hand-off to the Processor.
     shell: Arc<Shell>,
-    edits: EditSink,
-    /// Writes a full ring refused, latest value per parameter, retried on the
-    /// next tick ([`flush_edits`](Control::flush_edits)).
-    unsent: Vec<(ParamId, Normalized)>,
-    /// A [`Edit::Reset`] the full ring refused: sent before anything in `unsent`,
-    /// which is everything written since.
-    reset_pending: bool,
+    /// The writes to the Processor, and those a full ring refused, retried on
+    /// the next tick ([`flush_edits`](Control::flush_edits)).
+    queue: EditQueue,
     /// What the Controller handed the Processor, latest per parameter, until a
     /// block has surely taken it: what a save must add, because the
     /// component's stream does not hold it yet.
@@ -106,7 +102,7 @@ impl Handed {
 impl std::fmt::Debug for Vst3Controller {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Vst3Controller")
-            .field("unsent", &self.unsent)
+            .field("queue", &self.queue)
             .finish_non_exhaustive()
     }
 }
@@ -123,9 +119,7 @@ impl Vst3Controller {
         Self {
             loaded: Some(loaded),
             shell,
-            edits,
-            unsent: Vec::new(),
-            reset_pending: false,
+            queue: EditQueue::new(edits),
             handed,
             watch,
             reports,
@@ -169,7 +163,7 @@ impl Vst3Controller {
     /// Controller wrote.
     #[must_use]
     pub fn refused_edits(&self) -> u32 {
-        self.edits.refused()
+        self.queue.refused()
     }
 
     /// Queues a parameter write to the Processor.
@@ -177,11 +171,7 @@ impl Vst3Controller {
     /// A value already waiting to be retried is replaced by the newer one; a
     /// full ring keeps the value for the next tick.
     fn queue_edit(&mut self, id: ParamId, value: Normalized) {
-        let held_back = self.reset_pending || self.unsent.iter().any(|(waiting, _)| *waiting == id);
-        let sent = !held_back && self.edits.send(Edit::Param { id, value }).is_ok();
-        if !sent {
-            self.keep(id, value);
-        }
+        let sent = self.queue.queue(id, value);
         let sent_at = sent.then(|| self.watch.mark());
         self.hand(id, value, sent_at);
     }
@@ -226,23 +216,10 @@ impl Vst3Controller {
         self.handed.iter().map(|h| (h.id, h.value)).collect()
     }
 
-    /// Holds a write for the next tick, replacing an earlier one to the same
-    /// parameter.
-    fn keep(&mut self, id: ParamId, value: Normalized) {
-        match self.unsent.iter_mut().find(|(waiting, _)| *waiting == id) {
-            Some(slot) => slot.1 = value,
-            None => self.unsent.push((id, value)),
-        }
-    }
-
-    /// Makes every write made so far stale: a state or a preset load replaced
-    /// the values they were written against, and the next block must not put
-    /// them back. The ring's order makes a [`Edit::Reset`] exact; a full ring
-    /// holds it for the next tick, and every write after it waits behind it.
+    /// Makes every write made so far stale (see [`EditQueue::reset`]).
     fn reset_edits(&mut self) {
-        self.unsent.clear();
         self.handed.clear();
-        self.reset_pending = self.edits.send(Edit::Reset).is_err();
+        self.queue.reset();
     }
 }
 
@@ -268,57 +245,39 @@ impl Wraps for Vst3Controller {
         self.loaded_mut()
     }
 
-    /// Applied to the edit controller now, so a read-back and the plugin's
-    /// editor see it, and queued to the Processor, which puts it in the next
-    /// block's `inputParameterChanges`: a plugin whose component is separate
-    /// from its controller has no other way to hear of it.
-    fn own_set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        self.loaded_mut().set_parameter(main, id, value);
+    /// Applied to the edit controller by the plugin, and queued to the
+    /// Processor, which puts it in the next block's `inputParameterChanges`: a
+    /// plugin whose component is separate from its controller has no other way
+    /// to hear of it.
+    fn queue_write(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         self.queue_edit(id, value);
+    }
+
+    /// The writes queued before are stale. The writes the state or the program
+    /// carried (the plugin keeps them in `carried`) are queued to the Processor,
+    /// which the component's own stream did not hold.
+    fn after_restore(&mut self, _main: &MainThread) {
+        self.reset_edits();
+        for (id, value) in std::mem::take(&mut self.loaded_mut().carried) {
+            self.queue_edit(id, value);
+        }
     }
 
     /// Saves the state, with the writes no block has taken yet beside the
     /// component's stream, which does not hold them.
-    fn own_save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_with_pending(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         let undrained = self.undrained();
         self.loaded_mut().save_state_with(main, &undrained)
     }
 
-    /// Restores the state, and makes the writes queued before it stale. The
-    /// writes the blob carries are queued to the Processor, which the
-    /// component's own stream did not hold.
-    fn own_load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let result = self.loaded_mut().restore_state(main, bytes);
-        self.reset_edits();
-        for (id, value) in result? {
-            self.queue_edit(id, value);
-        }
-        Ok(())
-    }
-
-    fn own_load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        match self.loaded_mut().program_write(main, id) {
-            Some((param, value)) => {
-                // A program replaces the plugin's other parameters too: what
-                // was queued before it is stale.
-                self.reset_edits();
-                Control::set_parameter(self, main, param, value);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// The edits the plugin's own editor made, then what the plugin's
+    /// The edits the plugin's own editor made (already in `out`) are queued to
+    /// the Processor too: a plugin whose component is separate from its
+    /// controller has no other way to hear of them. Then what the plugin's
     /// processor wrote to `outputParameterChanges` since the last call (each a
-    /// change with no gesture around it: the processor is not a hand on a
-    /// knob). The editor's changes are queued to the Processor too: a plugin
-    /// whose component is separate from its controller has no other way to hear
-    /// of them. What the processor reported is not: the plugin made it.
-    fn own_take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
-        let first = out.len();
-        self.loaded_mut().take_reported_edits(main, out);
-        let reported: Vec<_> = out[first..]
+    /// change with no gesture around it: the processor is not a hand on a knob),
+    /// which is not queued back: the plugin made it.
+    fn collect_reports(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>, from: usize) {
+        let reported: Vec<_> = out[from..]
             .iter()
             .filter_map(|edit| match *edit {
                 ParamEdit::Change { id, value, .. } => Some((id, value)),
@@ -332,35 +291,32 @@ impl Wraps for Vst3Controller {
         out.append(&mut self.processor_edits);
     }
 
-    fn own_dropped_reported_edits(&self) -> u64 {
-        self.loaded().dropped_reported_edits() + self.processor_edits_dropped
+    fn lost_reports(&self) -> u64 {
+        self.processor_edits_dropped
     }
 
     /// Applies what the plugin's `outputParameterChanges` reported to the edit
     /// controller (`setParamNormalized`, on this thread, as the portal's
     /// "Processor and Controller" section has it), retries what the ring
     /// refused, oldest first, and lets the retired midi-mapping tables go.
-    fn own_flush_edits(&mut self, main: &MainThread) {
+    fn tick(&mut self, main: &MainThread) {
         self.apply_reports(main);
         self.loaded_mut().midi_cc.reclaim();
         // A tick is a control-side moment: plugins whose last holder was a
         // Processor are destroyed here, not on its thread.
         super::shell::reap();
-        if self.reset_pending {
-            if self.edits.send(Edit::Reset).is_err() {
-                return;
+        let (queue, watch, handed) = (&mut self.queue, &self.watch, &mut self.handed);
+        queue.retry(|id, value| {
+            let slot = Handed {
+                id,
+                value,
+                sent_at: Some(watch.mark()),
+            };
+            match handed.iter_mut().find(|h| h.id == id) {
+                Some(held) => *held = slot,
+                None => handed.push(slot),
             }
-            self.reset_pending = false;
-        }
-        let waiting = std::mem::take(&mut self.unsent);
-        for (id, value) in waiting {
-            if self.edits.send(Edit::Param { id, value }).is_err() {
-                self.unsent.push((id, value));
-            } else {
-                let sent_at = Some(self.watch.mark());
-                self.hand(id, value, sent_at);
-            }
-        }
+        });
     }
 }
 
@@ -513,7 +469,7 @@ impl Vst3Loaded {
         // the ring held, then what a full ring had refused.
         let mut pending = Vec::new();
         take_edits(&mut processor, &mut pending);
-        pending.append(&mut std::mem::take(&mut controller.unsent));
+        pending.append(&mut controller.queue.take_unsent());
         drop(processor);
         let mut loaded = controller
             .loaded

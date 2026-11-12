@@ -1033,17 +1033,18 @@ and from CLAP and VST3:
   `Controller::latency` and `tail`.
 - **A Controller that holds its plugin forwards once.** The in-process formats'
   Controllers (CLAP, VST2, VST3, AU) own the `Loaded` they were split from and answer
-  the whole surface through it, but for the entries an activation changes. They
-  implement `Wraps` (`plugin`, `plugin_mut`, and an `own_*` entry for each answer that
-  differs: `own_set_parameter`, `own_save_state`, `own_load_state`, `own_load_preset`,
-  `own_rescan_parameters`, `own_flush_edits`, `own_take_requests`,
-  `own_set_render_mode`, `own_take_reported_edits`, `own_dropped_reported_edits`,
-  each defaulting to the plugin's), and `Control` and `EditorWindow` are implemented
-  once for every `Wraps`. No Controller writes a forwarding method. The served
-  Controller (`IpcController`) holds no plugin (it is across the wire), so it
+  the whole surface through it. What an activation adds is one concern: the Controller
+  owns the pipeline of edits to and from the Processor. They implement `Wraps`
+  (`plugin`, `plugin_mut`, and the few points where that pipeline joins the plugin's
+  answers: `queue_write`, `after_restore`, `save_with_pending`, `collect_reports`,
+  `lost_reports`, `republish_ranges`, `tick`, with the two constants `WRITES_PLUGIN`
+  and `SWITCHES_RENDER_MODE`), each defaulting to nothing, and `Control` and
+  `EditorWindow` are implemented once for every `Wraps`. CLAP's and VST3's queue of
+  host writes (latest value per parameter, a refused reset first) is one `EditQueue`.
+  No Controller writes a forwarding method; VST2 writes none of the points. The
+  served Controller (`IpcController`) holds no plugin (it is across the wire), so it
   implements `Control` itself and is not a `Wraps`. `Wraps` is not a supertrait of
-  `Control` and its entries are named `own_*`, so a type that is both never makes
-  `x.set_parameter(..)` ambiguous.
+  `Control`, so a type that is both never makes `x.set_parameter(..)` ambiguous.
 - **`latency` and `tail` stay on the Controller.** No format documents either as
   audio-thread only, and VST3's `getLatencySamples` is `[UI-thread & Setup Done]`,
   CLAP's `latency.get` is `[main-thread & (being-activated | active)]` (the CLAP

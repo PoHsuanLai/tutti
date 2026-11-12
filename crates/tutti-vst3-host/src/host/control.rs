@@ -322,13 +322,10 @@ impl Control for Vst3Loaded {
     }
 
     /// Restores the state. The writes a rejoin carried are older than it, and
-    /// are dropped; the writes the blob itself carries wait for the next
-    /// activation.
+    /// are dropped; the writes the blob itself carries wait in `carried`, for the
+    /// next activation, or (active) for the Controller to queue to the Processor.
     fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let pending = self.restore_state(main, bytes)?;
-        if !self.active.is_active() {
-            self.carried = pending;
-        }
+        self.carried = self.restore_state(main, bytes)?;
         Ok(())
     }
 
@@ -369,6 +366,10 @@ impl Control for Vst3Loaded {
                 // A program replaces the plugin's other parameters too.
                 self.carried.clear();
                 self.set_parameter(main, param, value);
+                if self.active.is_active() {
+                    // The Controller of this activation queues it to the Processor.
+                    self.carried.push((param, value));
+                }
                 true
             }
             None => false,

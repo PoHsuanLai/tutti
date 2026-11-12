@@ -202,6 +202,87 @@ impl EditSink {
     }
 }
 
+/// The main thread's side of the edits a Controller hands its Processor: an
+/// [`EditSink`], and the writes the ring refused, kept until a tick retries them.
+///
+/// A write to a parameter already waiting replaces it (latest value per
+/// parameter), and nothing is sent ahead of a [`Edit::Reset`] the full ring
+/// refused. One idea for every format whose Controller queues writes.
+#[derive(Debug)]
+pub struct EditQueue {
+    sink: EditSink,
+    /// Writes a full ring refused, latest per parameter, oldest first.
+    unsent: Vec<(ParamId, Normalized)>,
+    /// A [`Edit::Reset`] the full ring refused: it goes before anything in
+    /// `unsent`, which is everything written since.
+    reset_pending: bool,
+}
+
+impl EditQueue {
+    /// A queue over `sink`, with nothing waiting.
+    #[must_use]
+    pub fn new(sink: EditSink) -> Self {
+        Self {
+            sink,
+            unsent: Vec::new(),
+            reset_pending: false,
+        }
+    }
+
+    /// Queues a write. `true` when it entered the ring now; `false` when it is
+    /// kept for the next [`retry`](Self::retry) (the ring is full, a reset or an
+    /// earlier write to the parameter is waiting).
+    pub fn queue(&mut self, id: ParamId, value: Normalized) -> bool {
+        let held_back = self.reset_pending || self.unsent.iter().any(|(waiting, _)| *waiting == id);
+        let sent = !held_back && self.sink.send(Edit::Param { id, value }).is_ok();
+        if !sent {
+            match self.unsent.iter_mut().find(|(waiting, _)| *waiting == id) {
+                Some(slot) => slot.1 = value,
+                None => self.unsent.push((id, value)),
+            }
+        }
+        sent
+    }
+
+    /// Makes every write made so far stale: a state or a preset load replaced
+    /// the values they were written against, and the next block must not put
+    /// them back. The ring's order makes a [`Edit::Reset`] exact; a full ring
+    /// holds it for the next tick, and every write after it waits behind it.
+    pub fn reset(&mut self) {
+        self.unsent.clear();
+        self.reset_pending = self.sink.send(Edit::Reset).is_err();
+    }
+
+    /// Retries what the ring refused, oldest first, and calls `sent` for each
+    /// write that entered it.
+    pub fn retry(&mut self, mut sent: impl FnMut(ParamId, Normalized)) {
+        if self.reset_pending {
+            if self.sink.send(Edit::Reset).is_err() {
+                return;
+            }
+            self.reset_pending = false;
+        }
+        for (id, value) in std::mem::take(&mut self.unsent) {
+            if self.sink.send(Edit::Param { id, value }).is_err() {
+                self.unsent.push((id, value));
+            } else {
+                sent(id, value);
+            }
+        }
+    }
+
+    /// The writes waiting for a retry, taken: a rejoin carries them on.
+    pub fn take_unsent(&mut self) -> Vec<(ParamId, Normalized)> {
+        std::mem::take(&mut self.unsent)
+    }
+
+    /// Edits the ring refused for want of room, cumulatively.
+    #[must_use]
+    pub fn refused(&self) -> u32 {
+        self.sink.refused()
+    }
+}
+
 /// The audio thread's end of an edit ring.
 #[derive(Debug)]
 pub struct EditDrain {

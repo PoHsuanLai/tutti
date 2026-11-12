@@ -544,6 +544,11 @@ impl EditorWindow for AuLoaded {
 impl Wraps for AuController {
     type Plugin = AuLoaded;
 
+    /// The mode is written before `AudioUnitInitialize`, which an active unit
+    /// has passed: the caller reconfigures through the `Lifecycle`, whose next
+    /// activation carries the mode.
+    const SWITCHES_RENDER_MODE: bool = false;
+
     fn plugin(&self) -> &AuLoaded {
         &self.loaded
     }
@@ -553,32 +558,17 @@ impl Wraps for AuController {
     }
 
     /// Reads the ranges again and publishes them to the Processor.
-    fn own_rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        self.loaded.rescan_parameters(main, scope);
-        if matches!(scope, RescanScope::Info | RescanScope::All) {
-            self.republish_ranges();
-        }
-    }
-
-    /// Also the range table's reclaim: this is the control-side tick the host
-    /// already polls, so a retired table is let go here even when the
-    /// parameters go quiet and nothing republishes.
-    fn own_take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        self.ranges.reclaim();
-        self.loaded.take_requests(main, out);
-    }
-
-    /// `false`: the mode is written before `AudioUnitInitialize`, which an
-    /// active unit has passed. The caller reconfigures through the `Lifecycle`,
-    /// whose next activation carries the mode.
-    fn own_set_render_mode(&mut self, _main: &MainThread, _mode: RenderMode) -> bool {
-        false
+    fn republish_ranges(&mut self, _main: &MainThread) {
+        AuController::republish_ranges(self);
     }
 
     /// Applies the writes the Processor handed over for the parameters the AU
     /// flagged `NonRealTime`, latest value of each in order: they are written
-    /// here, between blocks, and never from the render.
-    fn own_flush_edits(&mut self, _main: &MainThread) {
+    /// here, between blocks, and never from the render. Also the range table's
+    /// reclaim: a retired table is let go on this tick even when the parameters
+    /// go quiet and nothing republishes.
+    fn tick(&mut self, _main: &MainThread) {
+        self.ranges.reclaim();
         self.apply_deferred();
     }
 }

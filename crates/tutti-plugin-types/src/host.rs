@@ -373,24 +373,35 @@ pub trait Controller: Control + Send {
     fn tail(&self, main: &MainThread) -> PluginTail;
 }
 
-/// A [`Control`] that is a loaded plugin's own, with a few answers of its own.
+/// A [`Control`] that is a loaded plugin's own, with what an activation adds.
 ///
 /// An in-process format's [`Controller`] holds the [`Loaded`] it was split from
-/// and answers the whole control surface through it, but for the entries an
-/// activation changes (a parameter write goes through the edit ring, a state
-/// restore makes the queued writes stale, a tick retries a refused edit). This
-/// trait names that plugin and those entries; [`Control`] and
-/// [`EditorWindow`] are implemented for every `Wraps`, once, here, so a format
-/// writes only what differs.
+/// and answers the whole control surface through it. What an activation adds is
+/// one concern: the Controller owns the pipeline of edits to and from the
+/// Processor (an [`EditQueue`](crate::EditQueue) for host writes, a drain for
+/// what the plugin reported, the ranges the Processor denormalizes against).
+/// This trait names the plugin and the few points where that pipeline joins the
+/// plugin's answers; [`Control`] and [`EditorWindow`] are implemented once for
+/// every `Wraps`, here, so a format writes only those points. Every point
+/// defaults to nothing, so a format with no such pipeline (VST2) writes none.
 ///
-/// Each `own_*` entry is the wrapper's answer to the [`Control`] method of the
-/// same name and defaults to the plugin's. They have their own names so a type
-/// that is both does not make `x.set_parameter(..)` ambiguous. A served
-/// controller holds no plugin (its plugin is across the wire) and does not
-/// implement this: it implements [`Control`] itself.
+/// A served controller holds no plugin (its plugin is across the wire) and does
+/// not implement this: it implements [`Control`] itself.
 pub trait Wraps {
     /// The plugin whose surface this one answers.
     type Plugin: Control;
+
+    /// Whether a host write reaches the plugin itself. `false` where the
+    /// activated plugin must not be written from the main thread (CLAP's
+    /// `params.flush` belongs to the audio thread), so the write only goes to
+    /// the Processor ([`queue_write`](Self::queue_write)).
+    const WRITES_PLUGIN: bool = true;
+
+    /// Whether the render mode can change while active. `false` where the mode
+    /// is fixed at activation (AU's is written before `AudioUnitInitialize`):
+    /// the caller reconfigures through the `Lifecycle` and the answer is
+    /// `false`.
+    const SWITCHES_RENDER_MODE: bool = true;
 
     /// The plugin.
     fn plugin(&self) -> &Self::Plugin;
@@ -398,62 +409,49 @@ pub trait Wraps {
     /// The plugin, mutably.
     fn plugin_mut(&mut self) -> &mut Self::Plugin;
 
-    /// [`Control::set_parameter`].
-    fn own_set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        self.plugin_mut().set_parameter(main, id, value);
+    /// A host write, after the plugin took it (or instead of it): hands it to
+    /// the Processor.
+    fn queue_write(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+        let _ = (main, id, value);
     }
 
-    /// [`Control::save_state`].
+    /// A state or a preset load took: the writes queued before it are stale, and
+    /// whatever it carried is owed to the Processor.
+    fn after_restore(&mut self, main: &MainThread) {
+        let _ = main;
+    }
+
+    /// The state, with the writes the Processor has not surely taken yet beside
+    /// it. Defaults to the plugin's own.
     ///
     /// # Errors
     ///
     /// As [`Control::save_state`].
-    fn own_save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_with_pending(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
         self.plugin_mut().save_state(main)
     }
 
-    /// [`Control::load_state`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Control::load_state`].
-    fn own_load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        self.plugin_mut().load_state(main, bytes)
+    /// Appends what the Processor reported to `out`, after the plugin's own,
+    /// which start at `from`.
+    fn collect_reports(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>, from: usize) {
+        let _ = (main, out, from);
     }
 
-    /// [`Control::load_preset`].
-    fn own_load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        self.plugin_mut().load_preset(main, id)
+    /// The reports the Controller's own pipeline lost, beside the plugin's.
+    fn lost_reports(&self) -> u64 {
+        0
     }
 
-    /// [`Control::rescan_parameters`].
-    fn own_rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        self.plugin_mut().rescan_parameters(main, scope);
+    /// A rescan changed what the parameters are: the ranges the Processor
+    /// denormalizes against are read again and republished.
+    fn republish_ranges(&mut self, main: &MainThread) {
+        let _ = main;
     }
 
-    /// [`Control::flush_edits`].
-    fn own_flush_edits(&mut self, main: &MainThread) {
-        self.plugin_mut().flush_edits(main);
-    }
-
-    /// [`Control::take_requests`].
-    fn own_take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        self.plugin_mut().take_requests(main, out);
-    }
-
-    /// [`Control::set_render_mode`].
-    fn own_set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
-        self.plugin_mut().set_render_mode(main, mode)
-    }
-
-    /// [`Control::take_reported_edits`].
-    fn own_take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
-        self.plugin_mut().take_reported_edits(main, out);
-    }
-
-    /// [`Control::dropped_reported_edits`].
-    fn own_dropped_reported_edits(&self) -> u64 {
-        self.plugin().dropped_reported_edits()
+    /// The control-side tick (every [`Event::Tick`](crate::Event::Tick)): retry
+    /// or apply what the Processor owes, and let retired published values go.
+    fn tick(&mut self, main: &MainThread) {
+        let _ = main;
     }
 }
 
@@ -479,7 +477,10 @@ impl<W: Wraps> Control for W {
     }
 
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        self.own_set_parameter(main, id, value);
+        if W::WRITES_PLUGIN {
+            self.plugin_mut().set_parameter(main, id, value);
+        }
+        self.queue_write(main, id, value);
     }
 
     fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
@@ -509,11 +510,13 @@ impl<W: Wraps> Control for W {
     }
 
     fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
-        self.own_save_state(main)
+        self.save_with_pending(main)
     }
 
     fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        self.own_load_state(main, bytes)
+        let result = self.plugin_mut().load_state(main, bytes);
+        self.after_restore(main);
+        result
     }
 
     fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
@@ -521,7 +524,11 @@ impl<W: Wraps> Control for W {
     }
 
     fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        self.own_load_preset(main, id)
+        let loaded = self.plugin_mut().load_preset(main, id);
+        if loaded {
+            self.after_restore(main);
+        }
+        loaded
     }
 
     fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
@@ -533,7 +540,10 @@ impl<W: Wraps> Control for W {
     }
 
     fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        self.own_rescan_parameters(main, scope);
+        self.plugin_mut().rescan_parameters(main, scope);
+        if matches!(scope, RescanScope::Info | RescanScope::All) {
+            self.republish_ranges(main);
+        }
     }
 
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {
@@ -541,7 +551,8 @@ impl<W: Wraps> Control for W {
     }
 
     fn flush_edits(&mut self, main: &MainThread) {
-        self.own_flush_edits(main);
+        self.plugin_mut().flush_edits(main);
+        self.tick(main);
     }
 
     fn run_main_thread(&mut self, main: &MainThread) {
@@ -557,19 +568,21 @@ impl<W: Wraps> Control for W {
     }
 
     fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
-        self.own_take_requests(main, out);
+        self.plugin_mut().take_requests(main, out);
     }
 
     fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
-        self.own_set_render_mode(main, mode)
+        W::SWITCHES_RENDER_MODE && self.plugin_mut().set_render_mode(main, mode)
     }
 
     fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
-        self.own_take_reported_edits(main, out);
+        let from = out.len();
+        self.plugin_mut().take_reported_edits(main, out);
+        self.collect_reports(main, out, from);
     }
 
     fn dropped_reported_edits(&self) -> u64 {
-        self.own_dropped_reported_edits()
+        self.plugin().dropped_reported_edits() + self.lost_reports()
     }
 }
 

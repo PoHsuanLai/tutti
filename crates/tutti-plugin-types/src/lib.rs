@@ -91,7 +91,7 @@ pub use hosting::{Editor, EditorWindow, InProcess, Load, Origin, OutOfProcess, R
 pub use invalidation::{PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind};
 pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
-pub use requests::{Edit, EditDrain, EditSink, edits, taken};
+pub use requests::{Edit, EditDrain, EditQueue, EditSink, edits, taken};
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
 pub use error::{Delivered, PluginError, Result as PluginResult, StateError};

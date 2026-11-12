@@ -550,6 +550,10 @@ fn preset_path(id: &PresetId) -> Option<&Path> {
 impl Wraps for ClapController {
     type Plugin = ClapLoaded;
 
+    /// A write goes to the Processor alone: the activated plugin's parameters
+    /// are the audio thread's.
+    const WRITES_PLUGIN: bool = false;
+
     fn plugin(&self) -> &ClapLoaded {
         self.loaded()
     }
@@ -558,46 +562,21 @@ impl Wraps for ClapController {
         self.loaded_mut()
     }
 
-    /// Queued to the Processor and applied at the head of its next block. A full
-    /// ring keeps the latest value per parameter and retries on the next tick.
-    fn own_set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+    /// Applied at the head of the Processor's next block. A full ring keeps the
+    /// latest value per parameter and retries on the next tick.
+    fn queue_write(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
         self.queue_edit(id, value);
     }
 
-    /// Restores the state, and makes the writes queued before it stale.
-    fn own_load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
-        let result = self.loaded_mut().load_state(main, bytes);
+    fn after_restore(&mut self, _main: &MainThread) {
         self.reset_edits();
-        result
-    }
-
-    /// Loads the preset, and makes the writes queued before it stale.
-    fn own_load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
-        let loaded = self.loaded_mut().load_preset(main, id);
-        if loaded {
-            self.reset_edits();
-        }
-        loaded
-    }
-
-    /// An `INFO` or `ALL` rescan changed what the parameters are, so the ranges
-    /// the Processor denormalizes against are read again and republished. A
-    /// rescan of values or text changes neither.
-    fn own_rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
-        if matches!(scope, RescanScope::Info | RescanScope::All) {
-            self.republish_ranges(main);
-        }
-    }
-
-    fn own_flush_edits(&mut self, _main: &MainThread) {
-        self.retry_edits();
     }
 
     /// What the plugin's `process` told the host of its own parameters, in
     /// order: each output `CLAP_EVENT_PARAM_VALUE` as a change, and
     /// `CLAP_EVENT_PARAM_GESTURE_BEGIN` and `_END` as a gesture's ends, which
     /// carry no value in CLAP.
-    fn own_take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn collect_reports(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>, _from: usize) {
         self.reported.drain(|edit| {
             if let tutti_plugin_types::Edit::Reported(edit) = edit {
                 out.push(edit);
@@ -605,11 +584,20 @@ impl Wraps for ClapController {
         });
     }
 
-    fn own_dropped_reported_edits(&self) -> u64 {
-        self.loaded().dropped_reported_edits()
-            + self
-                .reports_dropped
-                .load(std::sync::atomic::Ordering::Relaxed)
+    fn lost_reports(&self) -> u64 {
+        self.reports_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// An `INFO` or `ALL` rescan changed what the parameters are, so the ranges
+    /// the Processor denormalizes against are read again and republished.
+    fn republish_ranges(&mut self, main: &MainThread) {
+        let table = self.loaded_mut().read_param_ranges(main);
+        self.ranges.publish(table);
+    }
+
+    fn tick(&mut self, _main: &MainThread) {
+        self.retry_edits();
     }
 }
 

@@ -23,7 +23,7 @@ const LEN: usize = 6_000;
 fn wet(stages: usize, hz: f32) -> Vec<f32> {
     let mut node = PhaserNode::with_channels(ChannelLayout::MONO, stages);
     node.set_frequency_range(Hz::new(F0), Hz::new(2_000.0));
-    node.set_depth(Depth::new(0.0));
+    node.set_depth(Depth::of(0.0));
     node.set_feedback(Feedback::new(0.0));
     let mut node = prepared(node, SR, 64);
     let x = sine(Hz::new(hz), Amplitude::new(1.0), SR, Samples(LEN));

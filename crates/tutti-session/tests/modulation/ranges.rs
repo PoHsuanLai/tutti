@@ -3,7 +3,7 @@
 
 use tutti_graph::NodeKey;
 use tutti_nodes::{SvfFilterNode, SvfType};
-use tutti_session::{ParamRef, RangeError, RouteError, Session};
+use tutti_session::{ParamRef, RangeError, RouteError, RouteSpec, Session};
 use tutti_types::{Depth, Hz, MaxBlock, Mix, Q, SampleRate, Samples};
 
 fn session() -> Session {
@@ -27,7 +27,7 @@ fn a_backwards_or_nan_range_is_refused_and_declares_nothing() {
         Hz(1_000.0),
         Q(0.7),
     ));
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     assert_eq!(
         m.range(lp.cutoff(), Hz(4_000.0)..Hz(100.0)),
         Err(RangeError::MinAboveMax {
@@ -45,13 +45,16 @@ fn a_backwards_or_nan_range_is_refused_and_declares_nothing() {
     ));
     let src = m.macro_(0.0);
     assert!(matches!(
-        m.route(src, lp.cutoff(), Depth(0.5)),
+        m.route(RouteSpec::new(src, lp.cutoff(), Depth::of(0.5))),
         Err(RouteError::UndeclaredRange { .. })
     ));
 
     // A range of one point is a range.
     m.range(lp.cutoff(), Hz(500.0)..Hz(500.0)).unwrap();
-    assert!(m.route(src, lp.cutoff(), Depth(0.5)).is_ok());
+    assert!(
+        m.route(RouteSpec::new(src, lp.cutoff(), Depth::of(0.5)))
+            .is_ok()
+    );
 }
 
 /// **A typed range, an untyped one and the typed reference's `ParamRef` are
@@ -66,13 +69,13 @@ fn a_typed_range_declares_the_target_an_untyped_ref_names() {
         Hz(1_000.0),
         Q(0.7),
     ));
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range(lp.cutoff(), Hz(100.0)..Hz(4_000.0)).unwrap();
     let src = m.macro_(0.0);
     let same = ParamRef::unit(lp.erase(), tutti_types::UnitParam::Cutoff);
     assert_eq!(ParamRef::from(lp.cutoff()), same);
     assert!(
-        m.route(src, same, Depth(0.5)).is_ok(),
+        m.route(RouteSpec::new(src, same, Depth::of(0.5))).is_ok(),
         "the range is declared"
     );
 

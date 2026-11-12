@@ -62,7 +62,7 @@ fn constant(depth: f32) -> ControlProgram {
         },
         wave: Wave::Const(1.0),
         amount: Amount {
-            depth: Depth(depth),
+            depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },

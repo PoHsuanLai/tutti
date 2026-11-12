@@ -96,7 +96,7 @@ fn main() -> BridgeResult<()> {
                 seed: 0,
             },
             amount: Amount {
-                depth: Depth(0.5),
+                depth: Depth::of(0.5),
                 polarity: Polarity::Bipolar,
                 curve: Law::Linear,
             },

@@ -89,10 +89,10 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
 
     // An LFO on the cutoff: 1 Hz across 200 Hz to 3 kHz.
     let cutoff = filter.cutoff();
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range(cutoff, Hz(200.0)..Hz(3_000.0))?;
-    let wobble = m.lfo(Lfo::sine().hz(Hz(1.0)));
-    m.route(wobble, cutoff, Depth(0.5))?;
+    let wobble = m.lfo(Lfo::sine().rate(Hz(1.0)));
+    m.route(RouteSpec::new(wobble, cutoff, Depth::of(0.5)))?;
 
     // Commit the graph and the lanes, then roll the transport.
     report(s.update());

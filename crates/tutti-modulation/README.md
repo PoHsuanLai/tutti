@@ -65,7 +65,7 @@ let routes = [(
     RouteDecl {
         source: SourceKey(1),
         to: RouteTarget::Param(cutoff),
-        depth: Depth(0.25),
+        depth: Depth::of(0.25),
         polarity: Polarity::Bipolar,
         curve: Law::Linear,
     },

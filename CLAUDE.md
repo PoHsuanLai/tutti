@@ -1191,6 +1191,20 @@ Scalars use `Param<U>`.
   param). A host's `ParamNode` is inserted as `Params(node)`; `set_node_params`
   is crate-private. `ForkByClone(param node)` still compiles (Rust cannot refuse
   it by type): use `Params`.
+- **The session's own modulation** (doc 030 T4, T5, T9; the feature `modulation`):
+  `Session::mods()` reads (`&self`, a `ModsView`: `routes()`, `routes_to(target)`,
+  `sources()`) and `Session::mods_mut()` edits (`Mods`, which marks the declarations
+  edited). A source and a route are named by `ModSourceId` and `ModRouteId`,
+  minted by `Mods` and never built (`tutti_modulation::{SourceKey, RouteKey}` are
+  the compiler's and a host's own minting, for `ModInput`). A route is
+  `Mods::route(RouteSpec::new(source, target, depth).polarity(..).curve(..))` and is
+  edited in place by `route_of(id)?`'s named setters. `Mods::record` is a
+  `#[must_use]` `Result`. **Why nothing modulates has one answer,
+  `ModState::problems()`**: a `Problem` each for a refusal, an unresolved target and
+  an unfed follower, whose `Display` names the node and the param; the event is
+  the same type (`SessionEvent::Modulation(Problem)`). A route's `Depth` is
+  range-checked (`Depth::new -> Option`, `of` for a literal, `clamped` for a lane's
+  value), so the compiler has no refusal for it.
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
 - **The session graph declicks its wiring** (doc 030 §4, doc 013 "As built
@@ -1403,7 +1417,20 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `OfflineTimelineConfig::tempo` → deleted (doc 020 stage 6: the project's tempo is one
   `TempoMap`: `TransportSettings::set_tempo` / `set_tempo_map` publish it, `Timeline::tempo_map`
   and `OfflineTimelineConfig::tempo_map` carry it, and a tempo is `TempoMap::tempo_at` a beat).
-  A comment or doc that
+  `Depth(x)` and `Depth::new_clamped` → `Depth::of(x)` / `Depth::new(x)` /
+  `Depth::clamped(x)` (doc 030 T9: `Depth` is range-checked, and has no `+` or `*`);
+  `Lfo::hz(rate)` → `Lfo::rate(Hz)` (`rate` takes a `BeatDuration` or an `Hz`);
+  `ClickSettings::set_volume` clamping → `Result<(), VolumeOutOfRange>`;
+  `OfflineTimeline::advance(usize)` → `advance(Samples)`;
+  `TransportSettings::in_preroll` (a public cell) and `is_in_preroll` → the method
+  `in_preroll()` (`in_preroll_cell()` for the node that reads it);
+  `Session::mods()` as the editor → `mods_mut()`; `Mods::route(source, target,
+  depth)` → `route(RouteSpec)`; `Mods::route_mut` and its public `RouteDecl` fields →
+  `route_of(id)?` setters; `ModState::{refusal, unresolved_targets,
+  unresolved_sources}` → `problems()`; `SessionEvent::{ModulationRefused,
+  ModulationUnresolved}` → `SessionEvent::Modulation(Problem)`; `Mods` returning
+  `tutti_modulation::{SourceKey, RouteKey}` → `ModSourceId` and `ModRouteId`;
+  `CompileError::BadRoute` → deleted (a `Depth` is never NaN). A comment or doc that
   disagrees with the code is the bug.
 - **Dead export names** (doc 019): `tutti-export`'s `ExportConfig`, `RenderConfig`,
   `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,

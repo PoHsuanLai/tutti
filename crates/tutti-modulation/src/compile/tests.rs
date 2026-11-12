@@ -58,7 +58,7 @@ fn route(source: u64, to: RouteTarget, depth: f32) -> RouteDecl {
     RouteDecl {
         source: SourceKey(source),
         to,
-        depth: Depth(depth),
+        depth: Depth::of(depth),
         polarity: Polarity::Bipolar,
         curve: Law::Linear,
     }
@@ -268,7 +268,7 @@ fn the_offset_at_raw_unit_is_shape_times_span_for_every_source_kind() {
     for polarity in [Polarity::Bipolar, Polarity::Unipolar] {
         for curve in curves {
             for raw in [1.0f32, -1.0, 0.5, -0.5] {
-                let depth = Depth(-0.35);
+                let depth = Depth::of(-0.35);
                 let want =
                     (0.0f64 + (-0.0 + f64::from(shape(raw, depth, polarity, curve)) * span)) as f32;
                 let r = |source, t| RouteDecl {
@@ -354,7 +354,7 @@ fn the_offset_at_raw_unit_is_shape_times_span_for_every_source_kind() {
 fn a_depth_edit_changes_only_its_targets_program_and_keeps_its_ids() {
     let mut rig = Rig::new();
     let before = rig.compile(None, now(1, 0));
-    rig.route_mut(100).depth = Depth(0.7);
+    rig.route_mut(100).depth = Depth::of(0.7);
     let after = rig.compile(Some(&before), now(1, 5_000));
     for (t, p) in &after.programs {
         if *t == target(1) {
@@ -399,7 +399,7 @@ fn a_macro_move_changes_exactly_the_programs_it_reaches() {
     assert_eq!(
         after.programs[&target(2)].value_at(Some(0.0), &at, 2.0, &[]),
         Some(
-            (-0.0 + f64::from(shape(-0.75, Depth(0.2), Polarity::Bipolar, Law::Linear)) * 2.0)
+            (-0.0 + f64::from(shape(-0.75, Depth::of(0.2), Polarity::Bipolar, Law::Linear)) * 2.0)
                 as f32
         ),
         "depth 0.2 of a span of 2, at the macro's −0.75"
@@ -488,7 +488,7 @@ fn an_anchor_is_carried_until_a_play_start() {
     let c1 = rig.compile(Some(&c0), now(7, 10_000));
     let a1 = anchor(&c1).expect("anchored");
 
-    rig.route_mut(100).depth = Depth(0.9);
+    rig.route_mut(100).depth = Depth::of(0.9);
     let c2 = rig.compile(Some(&c1), now(7, 30_000));
     assert_eq!(anchor(&c2), Some(a1), "a depth edit carries it");
 
@@ -744,11 +744,6 @@ fn each_refusal_fires_by_name() {
         run(&[(SourceKey(1), anchored)], &r1, &t1),
         Err(CompileError::AnchorDeclared(SourceKey(1)))
     );
-    // A NaN depth.
-    assert_eq!(
-        run(&one_lfo, &[(RouteKey(1), route(1, to(1), f32::NAN))], &t1),
-        Err(CompileError::BadRoute(RouteKey(1)))
-    );
     // At the caps, it compiles.
     let routes: Vec<_> = (0..16)
         .map(|k| (RouteKey(k), route(1, to(1), 0.1)))
@@ -819,7 +814,7 @@ fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
                 RouteDecl {
                     source: SourceKey(s),
                     to: RouteTarget::Param(target(1 + k % 2)),
-                    depth: Depth(0.3),
+                    depth: Depth::of(0.3),
                     polarity,
                     curve,
                 },
@@ -972,8 +967,8 @@ fn a_second_rate_edit_near_its_anchor_reanchors() {
 }
 
 /// A value that is not finite is refused where it would reach the lane: an
-/// infinite route depth (`inf · 0` is a NaN in the value rule), an
-/// infinite constant wave, and a clock's infinite rate, period or phase,
+/// infinite constant wave (a route's depth cannot be one: `Depth` is
+/// range-checked), and a clock's infinite rate, period or phase,
 /// on an LFO no route reads (so the source check refuses it, not a
 /// program). An infinite phase after a rate edit would otherwise carry the
 /// live anchor with a jump of `inf − inf`, a NaN in `Compiled::clocks`
@@ -981,14 +976,6 @@ fn a_second_rate_edit_near_its_anchor_reanchors() {
 #[test]
 fn a_value_that_is_not_finite_is_refused() {
     let t1 = [(target(1), ranged(0.0, 1.0))];
-    let one_lfo = [(SourceKey(1), lfo(LfoShape::Sine, beats(1.0)))];
-    for depth in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
-        assert_eq!(
-            run(&one_lfo, &[(RouteKey(1), route(1, to(1), depth))], &t1),
-            Err(CompileError::BadRoute(RouteKey(1))),
-            "depth {depth}"
-        );
-    }
     for v in [f32::INFINITY, f32::NAN] {
         let constant = [(
             SourceKey(1),

@@ -46,7 +46,7 @@ fn shape_linear_bipolar_is_depth_scaled_identity() {
 
 #[test]
 fn shape_depth_scales_output() {
-    assert!((shape(1.0, Depth(0.5), Polarity::Bipolar, Law::Linear) - 0.5).abs() < 1e-2);
+    assert!((shape(1.0, Depth::of(0.5), Polarity::Bipolar, Law::Linear) - 0.5).abs() < 1e-2);
 }
 
 /// A negative depth inverts the modulator rather than attenuating it — the

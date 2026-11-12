@@ -92,6 +92,14 @@ runs:
       shell: bash
       env:
         DIR: ${{ steps.pkgs.outputs.dir }}
+        PKGS: ${{ steps.pkgs.outputs.list }}
       run: |
         # Local files only: no apt index, no network.
         sudo dpkg -i "$DIR"/*.deb
+        # The list must be installed now, whatever the cache held: a cache saved
+        # without one of them fails here, naming it, not later at a link.
+        missing=$(for p in $PKGS; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done)
+        if [ -n "$missing" ]; then
+          echo "::error::linux-audio-deps: not installed after the cached .debs: $missing (cache key ${{ steps.pkgs.outputs.key }})"
+          exit 1
+        fi

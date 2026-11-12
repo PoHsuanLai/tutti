@@ -33,7 +33,10 @@
 
 use crate::kernel::{self, V};
 use crate::{Adsr, FilterType, OscillatorType, SvfMode};
-use tutti_dsp::{LadderCoeffs, LadderType, SvfCoeffs, SvfType, ladder_step, svf_step};
+use tutti_dsp::{
+    LadderCoefficients, LadderCoeffs, LadderType, SvfCoefficients, SvfCoeffs, SvfType, ladder_step,
+    svf_step,
+};
 use tutti_types::{Amplitude, Db, Hz, Phase, PhaseIncrement, Q, Resonance, SampleRate, Seconds};
 use wide::u32x8;
 
@@ -751,15 +754,24 @@ impl VoiceBank {
                     c[0] += c_step[0];
                     c[1] += c_step[1];
                     c[2] += c_step[2];
+                    let coefficients = SvfCoefficients {
+                        a1: c[0],
+                        a2: c[1],
+                        a3: c[2],
+                        m0: m[0],
+                        m1: m[1],
+                        m2: m[2],
+                    };
                     let mut s = [z[0], z[1]];
-                    let y = svf_step(c, m, &mut s, x);
+                    let y = svf_step(&coefficients, &mut s, x);
                     [z[0], z[1]] = s;
                     y
                 }
                 FILTER_LADDER => {
                     c[0] += c_step[0];
                     c[1] += c_step[1];
-                    ladder_step(c[0], c[1], LadderType::LP24, &mut z, x, kernel::tanh)
+                    let coefficients = LadderCoefficients { g1: c[0], k: c[1] };
+                    ladder_step(&coefficients, LadderType::LP24, &mut z, x, kernel::tanh)
                 }
                 _ => x,
             };

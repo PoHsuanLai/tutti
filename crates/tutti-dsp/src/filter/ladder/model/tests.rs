@@ -1,6 +1,6 @@
 use super::*;
-use crate::filter::ladder::kernel::LadderCoefficients;
-use crate::{Complex32, RealFft};
+use crate::filter::ladder::kernel::{LadderCoefficients, ladder_step};
+use crate::{Complex32, Real, RealFft};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -74,7 +74,10 @@ fn the_small_signal_response_is_the_models() {
             let c = coefficients(Hz(1_200.0), Resonance(res));
             let mut s = [0.0f64; 4];
             let ir: Vec<f32> = (0..N)
-                .map(|n| (c.step(ty, &mut s, if n == 0 { amp } else { 0.0 }, 1.0) / amp) as f32)
+                .map(|n| {
+                    (ladder_step(&c, ty, &mut s, if n == 0 { amp } else { 0.0 }, Real::tanh) / amp)
+                        as f32
+                })
                 .collect();
             let fft = RealFft::new(N);
             let mut scratch = fft.new_scratch();
@@ -106,11 +109,12 @@ fn the_model_is_the_small_signal_system_and_loud_signals_leave_it() {
         let mut s = [0.0f64; 4];
         (0..N)
             .map(|n| {
-                c.step(
+                ladder_step(
+                    &c,
                     LadderType::LP24,
                     &mut s,
                     if n == 0 { amp } else { 0.0 },
-                    1.0,
+                    Real::tanh,
                 ) / amp
             })
             .collect::<Vec<f64>>()
@@ -133,11 +137,12 @@ fn the_radius_and_the_tail_are_what_the_linearised_filter_rings() {
     let mut s = [0.0f64; 4];
     let ir: Vec<f64> = (0..N)
         .map(|n| {
-            c.step(
+            ladder_step(
+                &c,
                 LadderType::LP24,
                 &mut s,
                 if n == 0 { amp } else { 0.0 },
-                1.0,
+                Real::tanh,
             ) / amp
         })
         .collect();

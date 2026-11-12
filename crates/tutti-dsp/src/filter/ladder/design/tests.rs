@@ -196,7 +196,13 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
         let at = a.lerp(&b, (i + 1) as u32, 16);
         // The drive is written out: 1 to 4 linearly.
         let drive = 1.0 + (4.0 - 1.0) * t;
-        let want = at.c.step(LadderType::HP12, &mut [0.0; 4], 0.5, drive);
+        let want = ladder_step(
+            &at.c,
+            LadderType::HP12,
+            &mut [0.0; 4],
+            0.5 * drive,
+            Real::tanh,
+        );
         assert_eq!(y[i], want as f32, "frame {i}");
     }
     let mut held = d.realization();
@@ -236,6 +242,12 @@ fn the_cut_ramp_goes_on_from_where_it_was() {
     let (pa, pb) = (LadderPoint::<f64>::of(&a), LadderPoint::<f64>::of(&b));
     let from = pa.lerp(&pb, 8, 16);
     let at = from.lerp(&pa, 1, 16);
-    let want = at.c.step(LadderType::HP12, &mut [0.0; 4], 0.5, at.drive);
+    let want = ladder_step(
+        &at.c,
+        LadderType::HP12,
+        &mut [0.0; 4],
+        0.5 * at.drive,
+        Real::tanh,
+    );
     assert_eq!(y[0], want as f32);
 }

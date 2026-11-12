@@ -6,5 +6,5 @@ mod kernel;
 mod model;
 
 pub use design::{Svf, SvfDesign};
-pub use kernel::{SvfCoeffs, SvfType, svf_step};
+pub use kernel::{SvfCoefficients, SvfCoeffs, SvfType, svf_step};
 pub use model::{SvfControls, SvfModel};

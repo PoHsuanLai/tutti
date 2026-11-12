@@ -16,9 +16,12 @@ pub use crossover::{
     MAX_SPLITS, SOLVE_CEILING, fit_to_rate,
 };
 pub use ladder::{
-    Ladder, LadderCoeffs, LadderControls, LadderDesign, LadderModel, LadderType, ladder_step,
+    Ladder, LadderCoefficients, LadderCoeffs, LadderControls, LadderDesign, LadderModel,
+    LadderType, ladder_step,
 };
 pub use per_channel::{ChannelKernel, Filter, PerChannel};
 pub use real::{Lanes, Real};
 pub use sizes::FilterSizes;
-pub use svf::{Svf, SvfCoeffs, SvfControls, SvfDesign, SvfModel, SvfType, svf_step};
+pub use svf::{
+    Svf, SvfCoefficients, SvfCoeffs, SvfControls, SvfDesign, SvfModel, SvfType, svf_step,
+};

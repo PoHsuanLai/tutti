@@ -6,5 +6,5 @@ mod kernel;
 mod model;
 
 pub use design::{Ladder, LadderDesign};
-pub use kernel::{LadderCoeffs, LadderType, ladder_step};
+pub use kernel::{LadderCoefficients, LadderCoeffs, LadderType, ladder_step};
 pub use model::{LadderControls, LadderModel};

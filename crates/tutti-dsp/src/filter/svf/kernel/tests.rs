@@ -90,7 +90,7 @@ fn measured_db(ty: SvfType, fc: f64, q: f64, gain_db: f64, rate: f64, f: f64) ->
     let (mut re, mut im) = (0.0, 0.0);
     for i in 0..2 * n {
         let ph = 2.0 * core::f64::consts::PI * f * i as f64 / rate;
-        let y = c.step(&mut st, ph.sin());
+        let y = svf_step(&c, &mut st, ph.sin());
         if i >= n {
             re += y * ph.sin();
             im += y * ph.cos();

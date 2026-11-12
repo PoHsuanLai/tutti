@@ -13,7 +13,7 @@ use core::marker::PhantomData;
 
 use tutti_types::{BusTopology, SampleRate};
 
-use super::kernel::LadderCoefficients;
+use super::kernel::{LadderCoefficients, ladder_step};
 use super::{LadderControls, LadderModel, LadderType};
 use crate::Lerp;
 use crate::filter::real::Real;
@@ -94,7 +94,7 @@ impl<F: Real> ChannelKernel for Ladder<F> {
 
     #[inline(always)]
     fn tick(p: &LadderPoint<F>, s: &mut [F; 4], x: f32) -> [f32; 1] {
-        [p.c.step(p.ty, s, F::from_f32(x), p.drive).to_f32()]
+        [ladder_step(&p.c, p.ty, s, F::from_f32(x) * p.drive, Real::tanh).to_f32()]
     }
 }
 

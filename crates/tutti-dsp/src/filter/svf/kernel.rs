@@ -156,18 +156,27 @@ impl SvfCoeffs {
     }
 }
 
-/// The coefficients of one set of controls, in the filter's state precision `F`.
+/// The coefficients [`svf_step`] reads, in the arithmetic `L` it runs in: a filter
+/// node's state precision, or the lane bank's `f32x8`.
 ///
-/// One set serves every channel: the controls are one linked surface, so
-/// widening replicates only the integrator state.
+/// One set serves every channel of a node: the controls are one linked surface, so
+/// widening replicates only the integrator state. The fields are named, so a set
+/// built by hand (the lane bank's, one cutoff per lane) cannot swap two of them;
+/// [`SvfCoeffs`] solves them from the controls.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SvfCoefficients<F: Real> {
-    a1: F,
-    a2: F,
-    a3: F,
-    m0: F,
-    m1: F,
-    m2: F,
+pub struct SvfCoefficients<L: Lanes> {
+    /// `1 / (1 + g (g + k))`.
+    pub a1: L,
+    /// `g * a1`.
+    pub a2: L,
+    /// `g * a2`.
+    pub a3: L,
+    /// The input's weight in the output.
+    pub m0: L,
+    /// The band-pass state's weight in the output.
+    pub m1: L,
+    /// The low-pass state's weight in the output.
+    pub m2: L,
 }
 
 impl<F: Real> From<&SvfCoeffs> for SvfCoefficients<F> {
@@ -210,31 +219,17 @@ impl<F: Real> Lerp for SvfCoefficients<F> {
 /// across-channel layout only pays once a channel-inner loop is explicitly
 /// vectorised, which this one is not.
 ///
-/// `a` is `[a1, a2, a3]` and `m` the output taps `[m0, m1, m2]` (the input, band and
-/// low), as [`SvfCoeffs`] solves them. Written once over [`Lanes`], so the
-/// polysynth's lane bank runs this step on eight voices at a time.
+/// Written once over [`Lanes`], so the polysynth's lane bank runs this step on eight
+/// voices at a time.
 #[inline(always)]
-pub fn svf_step<L: Lanes>(a: [L; 3], m: [L; 3], s: &mut [L; 2], v0: L) -> L {
+pub fn svf_step<L: Lanes>(c: &SvfCoefficients<L>, s: &mut [L; 2], v0: L) -> L {
     let two = L::from_f32(2.0);
     let [ic1eq, ic2eq] = *s;
     let v3 = v0 - ic2eq;
-    let v1 = a[0] * ic1eq + a[1] * v3;
-    let v2 = ic2eq + a[1] * ic1eq + a[2] * v3;
+    let v1 = c.a1 * ic1eq + c.a2 * v3;
+    let v2 = ic2eq + c.a2 * ic1eq + c.a3 * v3;
     *s = [two * v1 - ic1eq, two * v2 - ic2eq];
-    m[0] * v0 + m[1] * v1 + m[2] * v2
-}
-
-impl<F: Real> SvfCoefficients<F> {
-    /// [`svf_step`] at these coefficients.
-    #[inline(always)]
-    pub(crate) fn step(&self, s: &mut [F; 2], v0: F) -> F {
-        svf_step(
-            [self.a1, self.a2, self.a3],
-            [self.m0, self.m1, self.m2],
-            s,
-            v0,
-        )
-    }
+    c.m0 * v0 + c.m1 * v1 + c.m2 * v2
 }
 
 #[cfg(test)]

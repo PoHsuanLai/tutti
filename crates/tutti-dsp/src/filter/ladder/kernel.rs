@@ -74,17 +74,20 @@ impl LadderCoeffs {
     }
 }
 
-/// The ladder's two coefficients, narrowed to the state precision `F` and shared
-/// by every channel.
+/// The ladder's two coefficients [`ladder_step`] reads, in the arithmetic `L` it runs
+/// in (a node's state precision, shared by every channel, or the lane bank's `f32x8`).
+/// The fields are named, so a set built by hand cannot swap them.
 ///
 /// `g1` is the one-pole stage gain `G = g / (1 + g)` with `g = tan(π·fc/sr)`, solved
 /// once with the `tan` rather than divided out every sample. The powers of `G` the
 /// zero-delay loop needs are derived in the step from `g1` and `k`, so a glide
 /// interpolates these two and every blended set is a valid ladder.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LadderCoefficients<F: Real> {
-    g1: F,
-    k: F,
+pub struct LadderCoefficients<L: Lanes> {
+    /// The one-pole stage gain `G = g / (1 + g)`.
+    pub g1: L,
+    /// The loop gain, `4 * resonance`: the ladder self-oscillates from `k = 4`.
+    pub k: L,
 }
 
 impl<F: Real> From<&LadderCoeffs> for LadderCoefficients<F> {
@@ -109,13 +112,6 @@ impl<F: Real> LadderCoefficients<F> {
             k: self.k + (to.k - self.k) * t,
         }
     }
-
-    /// [`ladder_step`] at these coefficients, `input` driven by `drive` and
-    /// saturated by `tanh`.
-    #[inline(always)]
-    pub(crate) fn step(&self, ty: LadderType, s: &mut [F; 4], input: F, drive: F) -> F {
-        ladder_step(self.g1, self.k, ty, s, input * drive, F::tanh)
-    }
 }
 
 /// One channel's four-stage step over its stage words `s`, the resonance loop
@@ -133,15 +129,18 @@ impl<F: Real> LadderCoefficients<F> {
 /// `x` is the driven input (`input * drive`); `saturate` is the nonlinearity on the
 /// solved loop input: `tanh` for a filter node, the lane bank's rational
 /// approximation of it for the polysynth. Written once over [`Lanes`].
+///
+/// `ty` is matched every frame; a caller with a constant type (the lane bank's
+/// `LP24`) has the match folded away by the inlining, so it costs nothing there.
 #[inline(always)]
 pub fn ladder_step<L: Lanes>(
-    g1: L,
-    k: L,
+    c: &LadderCoefficients<L>,
     ty: LadderType,
     s: &mut [L; 4],
     x: L,
     saturate: impl Fn(L) -> L,
 ) -> L {
+    let (g1, k) = (c.g1, c.k);
     let g2 = g1 * g1;
     let g4 = g2 * g2;
     let one = L::from_f32(1.0);

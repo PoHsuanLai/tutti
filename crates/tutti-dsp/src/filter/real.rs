@@ -17,11 +17,26 @@ use core::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 /// The SVF and ladder steps ([`svf_step`](crate::svf_step),
 /// [`ladder_step`](crate::ladder_step)) are written once over it, so a lane bank
 /// runs the same recurrence as a filter node rather than a copy of it.
+///
+/// Sealed: the three types above are the set, so `wide` is not a version a
+/// downstream crate can plug into. [`Real`] extends it, so it is closed too.
 pub trait Lanes:
-    Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + Div<Output = Self>
+    sealed::Sealed
+    + Copy
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Div<Output = Self>
 {
     /// `x` in every lane (for a scalar, `x` widened or kept).
     fn from_f32(x: f32) -> Self;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
+    impl Sealed for wide::f32x8 {}
 }
 
 impl Lanes for f32 {
@@ -50,7 +65,7 @@ impl Lanes for wide::f32x8 {
 ///
 /// The filter nodes are generic over it: `SvfFilterNode::<f64>` keeps its
 /// state in double precision, which matters for low cutoffs at high sample
-/// rates. You do not need to implement it yourself.
+/// rates. It is sealed (through [`Lanes`]): `f32` and `f64` are the set.
 pub trait Real:
     Lanes
     + Copy

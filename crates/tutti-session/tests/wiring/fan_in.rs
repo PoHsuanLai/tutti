@@ -50,7 +50,7 @@ fn rig() -> Rig {
     let (b, _) = g.insert(Const::mono(B));
     let (c, _) = g.insert(Const::mono(C));
     let (sink, _) = g.insert(Through::mono());
-    g.set_sources(Root::output(0), [OutPort::new(sink, 0)])
+    g.set_sources_hard(Root::output(0), [OutPort::new(sink, 0)])
         .unwrap();
     let _ = s.update();
     assert!(!s.graph_ref().is_edited());
@@ -73,10 +73,12 @@ fn add_source_adds_an_addend() {
     let mut r = rig();
     r.s.graph()
         .connect(node(r.b), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     r.s.graph()
         .connect(node(r.a), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert_eq!(
         r.s.graph_ref().sources(InPort::new(r.sink, 0)),
         [node(r.a), node(r.b)]
@@ -91,15 +93,19 @@ fn remove_source_goes_back_to_one() {
     let mut r = rig();
     r.s.graph()
         .connect(node(r.a), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     r.s.graph()
         .connect(node(r.b), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
-    r.s.graph().disconnect(node(r.b), InPort::new(r.sink, 0));
+    r.s.graph()
+        .disconnect_hard(node(r.b), InPort::new(r.sink, 0));
     assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.a)]);
     assert!(left(&mut r.s).iter().all(|&x| x == A));
-    r.s.graph().disconnect(node(r.a), InPort::new(r.sink, 0));
+    r.s.graph()
+        .disconnect_hard(node(r.a), InPort::new(r.sink, 0));
     assert!(r.s.graph_ref().sources(InPort::new(r.sink, 0)).is_empty());
     assert!(left(&mut r.s).iter().all(|&x| x == 0.0));
 }
@@ -111,18 +117,20 @@ fn set_sources_replaces_the_set() {
     let mut r = rig();
     r.s.graph()
         .connect(node(r.a), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     r.s.graph()
         .connect(node(r.b), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.c)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.c)])
         .unwrap();
     assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.c)]);
     assert!(left(&mut r.s).iter().all(|&x| x == C));
 
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.b), node(r.a)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.b), node(r.a)])
         .unwrap();
     assert_eq!(
         r.s.graph_ref().sources(InPort::new(r.sink, 0)),
@@ -132,7 +140,7 @@ fn set_sources_replaces_the_set() {
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
 
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.c)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.c)])
         .unwrap();
     assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.c)]);
     assert!(left(&mut r.s).iter().all(|&x| x == C));
@@ -144,12 +152,13 @@ fn set_sources_replaces_the_set() {
 fn a_source_twice_is_one_source() {
     let mut r = rig();
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.a), node(r.a)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a), node(r.a)])
         .unwrap();
     assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.a)]);
     r.s.graph()
         .connect(node(r.a), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.a)]);
     assert!(left(&mut r.s).iter().all(|&x| x == A));
 }
@@ -160,23 +169,26 @@ fn a_source_twice_is_one_source() {
 fn an_unchanged_set_marks_nothing_edited() {
     let mut r = rig();
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.a), node(r.b)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a), node(r.b)])
         .unwrap();
     assert!(r.s.graph_ref().is_edited(), "a change");
     let _ = r.s.update();
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.b), node(r.a)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.b), node(r.a)])
         .unwrap();
     assert!(!r.s.graph_ref().is_edited(), "the same set, reordered");
     r.s.graph()
         .connect(node(r.a), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert!(!r.s.graph_ref().is_edited(), "a source it holds");
-    r.s.graph().disconnect(node(r.c), InPort::new(r.sink, 0));
+    r.s.graph()
+        .disconnect_hard(node(r.c), InPort::new(r.sink, 0));
     assert!(!r.s.graph_ref().is_edited(), "a source it lacks");
     r.s.graph()
         .connect(node(r.c), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert!(r.s.graph_ref().is_edited(), "a new source");
 }
 
@@ -186,12 +198,14 @@ fn an_unchanged_set_marks_nothing_edited() {
 fn silence_is_the_empty_set() {
     let mut r = rig();
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.a), node(r.b)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a), node(r.b)])
         .unwrap();
-    r.s.graph().set_sources(InPort::new(r.sink, 0), []).unwrap();
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [])
+        .unwrap();
     assert!(r.s.graph_ref().sources(InPort::new(r.sink, 0)).is_empty());
     r.s.graph()
-        .set_sources(InPort::new(r.sink, 0), [node(r.a)])
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a)])
         .unwrap();
     assert!(r.s.graph().disconnect_all(InPort::new(r.sink, 0)));
     assert!(
@@ -223,25 +237,28 @@ fn a_node_cannot_be_its_own_source() {
 fn an_output_channel_sums_its_sources() {
     let mut r = rig();
     r.s.graph()
-        .set_sources(Root::output(0), [node(r.b)])
+        .set_sources_hard(Root::output(0), [node(r.b)])
         .unwrap();
-    r.s.graph().connect(node(r.a), Root::output(0)).unwrap();
+    r.s.graph()
+        .connect(node(r.a), Root::output(0))
+        .unwrap()
+        .hard();
     assert_eq!(
         r.s.graph_ref().sources(Root::output(0)),
         [node(r.a), node(r.b)]
     );
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
 
-    r.s.graph().disconnect(node(r.b), Root::output(0));
+    r.s.graph().disconnect_hard(node(r.b), Root::output(0));
     assert_eq!(r.s.graph_ref().sources(Root::output(0)), [node(r.a)]);
     assert!(left(&mut r.s).iter().all(|&x| x == A));
 
     r.s.graph()
-        .set_sources(Root::output(0), [node(r.c), node(r.a)])
+        .set_sources_hard(Root::output(0), [node(r.c), node(r.a)])
         .unwrap();
     assert!(left(&mut r.s).iter().all(|&x| x == A + C));
     r.s.graph()
-        .set_sources(Root::output(0), [node(r.c)])
+        .set_sources_hard(Root::output(0), [node(r.c)])
         .unwrap();
     assert_eq!(r.s.graph_ref().sources(Root::output(0)), [node(r.c)]);
     assert!(left(&mut r.s).iter().all(|&x| x == C));
@@ -252,12 +269,15 @@ fn an_output_channel_sums_its_sources() {
 fn an_unchanged_output_set_marks_nothing_edited() {
     let mut r = rig();
     r.s.graph()
-        .set_sources(Root::output(0), [node(r.sink)])
+        .set_sources_hard(Root::output(0), [node(r.sink)])
         .unwrap();
     assert!(!r.s.graph_ref().is_edited());
-    r.s.graph().connect(node(r.sink), Root::output(0)).unwrap();
+    r.s.graph()
+        .connect(node(r.sink), Root::output(0))
+        .unwrap()
+        .hard();
     assert!(!r.s.graph_ref().is_edited());
-    r.s.graph().disconnect(node(r.a), Root::output(0));
+    r.s.graph().disconnect_hard(node(r.a), Root::output(0));
     assert!(!r.s.graph_ref().is_edited());
 }
 
@@ -267,14 +287,17 @@ fn an_unchanged_output_set_marks_nothing_edited() {
 fn the_output_tap_hears_the_sum() {
     let mut r = rig();
     r.s.graph()
-        .set_sources(Root::output(0), [node(r.a), node(r.b)])
+        .set_sources_hard(Root::output(0), [node(r.a), node(r.b)])
         .unwrap();
     let mut tap =
         r.s.graph()
             .open_output_tap(Samples(1_024))
             .expect("the sources exist");
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
-    r.s.graph().connect(node(r.c), Root::output(0)).unwrap();
+    r.s.graph()
+        .connect(node(r.c), Root::output(0))
+        .unwrap()
+        .hard();
     assert!(left(&mut r.s).iter().all(|&x| x == A + B + C));
 
     let mut got = vec![f32::NAN; 128 * 2];

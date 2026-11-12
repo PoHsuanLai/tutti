@@ -114,7 +114,7 @@ fn rig() -> Rig {
         out: named(1),
     }));
     let (sink, _) = g.add(Unforkable(Pass { input: named(1) }));
-    g.set_sources(Root::output(0), [OutPort::new(sink, 0)])
+    g.set_sources_hard(Root::output(0), [OutPort::new(sink, 0)])
         .unwrap();
     let _ = s.update();
     assert!(!s.graph_ref().is_edited());
@@ -140,12 +140,14 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
     assert_eq!(g.buses(NodeKey(u64::MAX)), None);
 
     g.connect(OutPort::new(r.own, 0), InPort::new(r.sink, 0))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert!(all_are(&out0(&mut r.s), 0.125));
 
     let g = r.s.graph();
     g.connect(BusSource::Node(bus(r.stereo)), bus(r.sink))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert!(g.is_edited());
     assert_eq!(
         g.bus_sources(BusRef::new(r.sink, 0)),
@@ -153,7 +155,8 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
     );
     // A second connect of the same edge is the same edge.
     g.connect(BusSource::Node(bus(r.stereo)), bus(r.sink))
-        .unwrap();
+        .unwrap()
+        .hard();
     assert_eq!(g.bus_sources(BusRef::new(r.sink, 0)).len(), 1);
     // The fold (0.5 * 0.25 + 0.5 * 0.75) summed with the ordinary source
     // (bus edge's node sorts first): (0.125 + 0.375) + 0.125.
@@ -162,8 +165,8 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
     assert!(all_are(&out0(&mut r.s), want));
 
     let g = r.s.graph();
-    assert!(g.disconnect(BusSource::Node(bus(r.stereo)), bus(r.sink)));
-    assert!(!g.disconnect(BusSource::Node(bus(r.stereo)), bus(r.sink)));
+    assert!(g.disconnect_hard(BusSource::Node(bus(r.stereo)), bus(r.sink)));
+    assert!(!g.disconnect_hard(BusSource::Node(bus(r.stereo)), bus(r.sink)));
     assert!(g.is_edited());
     assert!(g.bus_sources(BusRef::new(r.sink, 0)).is_empty());
     assert_eq!(
@@ -172,6 +175,39 @@ fn connecting_and_disconnecting_a_bus_edge_round_trips() {
         "the author's own source stays"
     );
     assert!(all_are(&out0(&mut r.s), 0.125));
+}
+
+/// **A bus edge fades per lane** (doc 030 section 4): both lanes of the fold
+/// rise from exactly 0 to their weight over 256 frames (the fifth 64-frame
+/// block is at the weight), and a disconnect fades them out again.
+#[test]
+fn a_bus_edge_fades_in_and_out_lane_by_lane() {
+    let mut r = rig();
+    let g = r.s.graph();
+    g.connect(BusSource::Node(bus(r.stereo)), bus(r.sink))
+        .unwrap();
+    let first = out0(&mut r.s);
+    assert_eq!(first[0].to_bits(), 0.0f32.to_bits(), "from exactly 0");
+    for (j, &x) in first.iter().enumerate() {
+        let w = 0.5 * (j as f32 / 256.0);
+        let want = (0.0 + w * 0.25) + w * 0.75;
+        assert_eq!(x.to_bits(), want.to_bits(), "frame {j}");
+    }
+    for _ in 0..3 {
+        out0(&mut r.s);
+    }
+    assert!(all_are(&out0(&mut r.s), 0.5), "at the fold's weight");
+
+    let g = r.s.graph();
+    assert!(g.disconnect(BusSource::Node(bus(r.stereo)), bus(r.sink)));
+    assert!(g.bus_sources(BusRef::new(r.sink, 0)).is_empty());
+    let down = out0(&mut r.s);
+    assert_eq!(down[0], 0.5, "leaves from the weight it had");
+    assert!(down[BLOCK - 1] < down[0]);
+    for _ in 0..3 {
+        out0(&mut r.s);
+    }
+    assert!(all_are(&out0(&mut r.s), 0.0), "silent after the span");
 }
 
 /// A refused bus edge changes nothing and marks nothing edited: the fold's
@@ -220,7 +256,8 @@ fn a_lane_takes_no_session_gain_and_a_removed_node_takes_its_bus_edges() {
     let mut r = rig();
     let g = r.s.graph();
     g.connect(BusSource::Node(bus(r.stereo)), bus(r.sink))
-        .unwrap();
+        .unwrap()
+        .hard();
     let lane = Edge::new(OutPort::new(r.stereo, 0), InPort::new(r.sink, 0));
     assert_eq!(
         lane.set_gain(g, Amplitude::new(0.5)),
@@ -231,7 +268,9 @@ fn a_lane_takes_no_session_gain_and_a_removed_node_takes_its_bus_edges() {
     let g = r.s.graph();
     assert!(g.remove(r.stereo));
     assert!(g.bus_sources(BusRef::new(r.sink, 0)).is_empty());
-    assert!(all_are(&out0(&mut r.s), 0.0));
+    // The removed node's lanes fade out over 256 frames before they go.
+    let silent = (0..64).any(|_| all_are(&out0(&mut r.s), 0.0));
+    assert!(silent, "the lanes faded out");
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +311,8 @@ fn a_bus_into_the_declared_root_renders_the_itu_rows() {
     let (mut s, src) = root_rig();
     let g = s.graph();
     g.connect(BusSource::Node(bus(src)), Root)
-        .expect("5.1 folds to stereo");
+        .expect("5.1 folds to stereo")
+        .hard();
     assert!(g.is_edited());
     assert_eq!(g.bus_sources(Root), [BusSource::Node(bus(src))]);
     let [l, r] = stereo_block(&mut s);
@@ -283,8 +323,8 @@ fn a_bus_into_the_declared_root_renders_the_itu_rows() {
     assert!(all_are(&r, right), "{:?}", &r[..2]);
 
     let g = s.graph();
-    assert!(g.disconnect(BusSource::Node(bus(src)), Root));
-    assert!(!g.disconnect(BusSource::Node(bus(src)), Root));
+    assert!(g.disconnect_hard(BusSource::Node(bus(src)), Root));
+    assert!(!g.disconnect_hard(BusSource::Node(bus(src)), Root));
     assert!(g.is_edited());
     let [l, r] = stereo_block(&mut s);
     assert!(all_are(&l, 0.0) && all_are(&r, 0.0));
@@ -318,7 +358,8 @@ fn a_redeclared_root_relowers_its_edges_and_a_misfit_refuses_the_commit() {
     }));
     s.graph()
         .connect(BusSource::Node(bus(src.erase())), Root)
-        .unwrap();
+        .unwrap()
+        .hard();
     let [l, r] = stereo_block(&mut s);
     assert!(all_are(&l, 0.25) && all_are(&r, 0.75));
 

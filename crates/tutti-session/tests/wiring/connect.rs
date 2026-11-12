@@ -29,7 +29,7 @@ fn first_frame(s: &mut Session) -> [f32; 2] {
 fn feed_root(s: &mut Session, node: NodeKey) {
     for c in 0..2 {
         s.graph()
-            .set_sources(Root::output(c), [OutPort::new(node, c)])
+            .set_sources_hard(Root::output(c), [OutPort::new(node, c)])
             .unwrap();
     }
 }
@@ -42,7 +42,10 @@ fn connect_wires_each_channel_to_its_own() {
     let mut s = offline();
     let (src, _) = s.graph().insert(Const::frame(&[0.25, 0.5]));
     let (through, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    s.graph().connect(src, through).expect("both are stereo");
+    s.graph()
+        .connect(src, through)
+        .expect("both are stereo")
+        .hard();
     feed_root(&mut s, through.erase());
     assert_eq!(first_frame(&mut s), [0.25, 0.5]);
 }
@@ -58,6 +61,11 @@ fn chain_connects_each_node_to_the_next() {
         .chain([src.erase(), a.erase(), b.erase()])
         .expect("all stereo");
     feed_root(&mut s, b.erase());
+    // The chain's links fade in over 256 frames: the fifth 64-frame block
+    // starts past it.
+    for _ in 0..4 {
+        first_frame(&mut s);
+    }
     assert_eq!(first_frame(&mut s), [0.25, 0.5]);
 }
 
@@ -69,8 +77,8 @@ fn connect_adds_to_what_feeds_the_input() {
     let (one, _) = s.graph().insert(Const::frame(&[0.25, 0.125]));
     let (two, _) = s.graph().insert(Const::frame(&[0.5, 0.25]));
     let (sink, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    s.graph().connect(one, sink).unwrap();
-    s.graph().connect(two, sink).unwrap();
+    s.graph().connect(one, sink).unwrap().hard();
+    s.graph().connect(two, sink).unwrap().hard();
     feed_root(&mut s, sink.erase());
     assert_eq!(first_frame(&mut s), [0.75, 0.375]);
 }

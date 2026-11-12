@@ -133,13 +133,13 @@ fn chain(session: &mut Session) -> NodeKey {
         Q(1.0),
     ));
     graph
-        .set_sources(InPort::new(filter, 0), [OutPort::new(osc, 0)])
+        .set_sources_hard(InPort::new(filter, 0), [OutPort::new(osc, 0)])
         .unwrap();
     graph
-        .set_sources(Root::output(0), [OutPort::new(filter, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(filter, 0)])
         .unwrap();
     graph
-        .set_sources(Root::output(1), [OutPort::new(osc, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(osc, 0)])
         .unwrap();
     filter.erase()
 }
@@ -280,7 +280,7 @@ impl Node for Late {
 fn latency_and_tail_come_from_the_graph() {
     let mut session = session();
     let (late, _) = session.graph().insert(ForkByClone(Late { pos: 0 }));
-    session.graph().connect(late, Root).unwrap();
+    session.graph().connect(late, Root).unwrap().hard();
     let seconds = 0.01;
     let frames = (seconds * RATE) as usize;
     let planes = render(
@@ -299,7 +299,7 @@ fn latency_and_tail_come_from_the_graph() {
     let (unknown, _) = session.graph().insert(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
-    session.graph().connect(unknown, Root).unwrap();
+    session.graph().connect(unknown, Root).unwrap().hard();
     let planes = render(
         &mut session,
         buffers(seconds).tail(tutti_session::BounceTail::Graph {
@@ -322,7 +322,7 @@ fn latency_and_tail_come_from_the_graph() {
 fn the_trim_is_read_after_the_prepare_hook() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().connect(dc, Root).unwrap();
+    session.graph().connect(dc, Root).unwrap().hard();
     let request = buffers(0.01).latency(BounceLatency::Graph).edit(Box::new(
         |prepared: PreparedGraph<'_>| {
             let key = prepared.fresh_key();
@@ -351,7 +351,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
 fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().connect(dc, Root).unwrap();
+    session.graph().connect(dc, Root).unwrap().hard();
     let request = buffers(0.01).edit(Box::new(|prepared: PreparedGraph<'_>| {
         let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
             SampleRate(RATE),
@@ -396,7 +396,7 @@ fn a_graph_with_no_outputs_says_so() {
 fn an_unrenderable_stem_is_refused_by_name() {
     let mut session = session();
     let (wired, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().connect(wired, Root).unwrap();
+    session.graph().connect(wired, Root).unwrap().hard();
     // `Sink::mono()` consumes one channel and produces nothing.
     let (orphan, _) = session.graph().insert(Sink::mono());
     let (loose, _) = session.graph().insert(Const::mono(0.25));
@@ -444,7 +444,7 @@ fn an_unrenderable_stem_is_refused_by_name() {
 fn graph_with_one_node_on() -> (Session, NodeKey) {
     let mut session = session();
     let (node, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().connect(node, Root).unwrap();
+    session.graph().connect(node, Root).unwrap().hard();
     (session, node.erase())
 }
 
@@ -628,7 +628,7 @@ fn live_playback_continues_unaffected_while_an_export_renders() {
     let (node, _) = session.graph().insert(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
-    session.graph().connect(node, Root).unwrap();
+    session.graph().connect(node, Root).unwrap().hard();
     // Commit on this side, then hand the audio side to the "device".
     session.render_frame(&mut [0.0, 0.0]);
     let mut live = session.graph().take_audio_side();
@@ -692,7 +692,7 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
     let mut session = session();
     let (_mic, _) = session.graph().insert(tutti_graph::Unforkable(Mic));
     let (dc, _) = session.graph().insert(Const::mono(0.25));
-    session.graph().connect(dc, Root).unwrap();
+    session.graph().connect(dc, Root).unwrap().hard();
     let planes = render(&mut session, buffers(0.01));
     assert!(planes[0].iter().all(|&s| s == 0.25));
 }
@@ -708,11 +708,11 @@ fn an_unforkable_node_refuses_the_export_by_key() {
     let (osc, _) = session.graph().insert(Osc::sine(Hz(220.0)));
     session
         .graph()
-        .set_sources(Root::output(0), [OutPort::new(mic, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(mic, 0)])
         .unwrap();
     session
         .graph()
-        .set_sources(Root::output(1), [OutPort::new(osc, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(osc, 0)])
         .unwrap();
 
     match refused(&mut session, buffers(0.05)) {
@@ -896,11 +896,11 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
     let (other, _) = session.graph().insert(Const::mono(9.0));
     session
         .graph()
-        .set_sources(Root::output(0), [OutPort::new(slow_node, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(slow_node, 0)])
         .unwrap();
     session
         .graph()
-        .set_sources(Root::output(1), [OutPort::new(level, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(level, 0)])
         .unwrap();
 
     let job = session
@@ -914,7 +914,7 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
     // Edits after the start: none reaches the fork.
     cell.store(0.25f32.to_bits(), Ordering::SeqCst);
     session.graph().set_param(level, UnitParam::Volume, 0.25);
-    session.graph().connect(other, Root).unwrap();
+    session.graph().connect(other, Root).unwrap().hard();
     let _ = release.send(());
 
     let rendered = std::thread::spawn(move || job.run())
@@ -1036,11 +1036,11 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
     let (slow_node, _) = session.graph().insert(node);
     session
         .graph()
-        .set_sources(Root::output(0), [OutPort::new(slow_node, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(slow_node, 0)])
         .unwrap();
     session
         .graph()
-        .set_sources(Root::output(1), [OutPort::new(pinned, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(pinned, 0)])
         .unwrap();
     drop(release); // the slow build goes straight through
 
@@ -1076,11 +1076,11 @@ fn a_dropped_export_job_drops_its_fork_on_the_main_thread() {
     let (pinned, _) = session.graph().insert(PinnedNode(Arc::clone(&threads)));
     session
         .graph()
-        .set_sources(Root::output(0), [OutPort::new(pinned, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(pinned, 0)])
         .unwrap();
     session
         .graph()
-        .set_sources(Root::output(1), [OutPort::new(pinned, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(pinned, 0)])
         .unwrap();
 
     let job = session
@@ -1161,11 +1161,11 @@ fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
     let (broken, _) = session.graph().insert(Broken);
     session
         .graph()
-        .set_sources(Root::output(0), [OutPort::new(pinned, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(pinned, 0)])
         .unwrap();
     session
         .graph()
-        .set_sources(Root::output(1), [OutPort::new(broken, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(broken, 0)])
         .unwrap();
 
     let job = session
@@ -1216,7 +1216,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     // A build that fails.
     let mut session = session();
     let (broken, _) = session.graph().insert(Broken);
-    session.graph().connect(broken, Root).unwrap();
+    session.graph().connect(broken, Root).unwrap().hard();
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
         .bounce_start(witnessed(&drops))
@@ -1233,7 +1233,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     // A job dropped before it ran.
     let mut session = self::session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().connect(dc, Root).unwrap();
+    session.graph().connect(dc, Root).unwrap().hard();
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
         .bounce_start(witnessed(&drops))

@@ -141,6 +141,11 @@ finding where the API produces wrong results today, not only friction.
 
 ## 4. Design: declicked wiring
 
+**Built (core lane step 2b).** See doc 013, "As built (declicked wiring)", for
+where the build chose: the end of a fade is reported on its own ring rather than
+in the commit box, a removed node stays until its output has faded, and a lane
+the modulation drives is not faded.
+
 Today a plain `connect` or `disconnect` steps at a block boundary (doc 013,
 "No automatic declick of audio wiring"). The workaround is to wire at weight 0
 and ramp the edge gain, which every host forgets. Decided 2026-11-12: the

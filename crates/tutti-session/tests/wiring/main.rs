@@ -3,6 +3,7 @@
 mod bus_edges;
 mod compensation;
 mod connect;
+mod declick;
 mod edge_gain;
 mod engine;
 mod fan_in;

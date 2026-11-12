@@ -45,7 +45,7 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
         .insert(tutti_nodes::testing::Const::mono(0.5));
     session
         .graph()
-        .set_sources(Root::output(0), [OutPort::new(dc, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
         .unwrap();
     let mut tap = session
         .graph()
@@ -105,13 +105,13 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
         Db(0.0),
     ));
     s.graph()
-        .set_sources(InPort::new(lim, 0), [OutPort::new(osc, 0)])
+        .set_sources_hard(InPort::new(lim, 0), [OutPort::new(osc, 0)])
         .unwrap();
     s.graph()
-        .set_sources(Root::output(0), [OutPort::new(osc, 0)])
+        .set_sources_hard(Root::output(0), [OutPort::new(osc, 0)])
         .unwrap();
     s.graph()
-        .set_sources(Root::output(1), [OutPort::new(lim, 0)])
+        .set_sources_hard(Root::output(1), [OutPort::new(lim, 0)])
         .unwrap();
     let _ = s.update();
     old.render_block(480).expect("open");

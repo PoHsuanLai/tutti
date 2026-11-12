@@ -291,6 +291,43 @@ impl GraphSpec {
         }
     }
 
+    /// This spec with every declick fade ended where it stands, or `None`
+    /// when no edge fades: an edge fading `Out` is gone and one fading `In` is
+    /// at its weight (a fork starts steady, as it does in every mode: it
+    /// hears the state, not a toggle).
+    #[must_use]
+    pub(crate) fn settled(&self) -> Option<Self> {
+        use crate::gain::EdgeFade;
+        if self.gains.values().all(|g| g.fade == EdgeFade::None) {
+            return None;
+        }
+        let mut spec = self.clone();
+        for (id, g) in &self.gains {
+            match g.fade {
+                EdgeFade::None => {}
+                EdgeFade::Out => match (id.sink, id.from) {
+                    (Sink::Port(at), from) => {
+                        spec.disconnect(at, from);
+                    }
+                    (Sink::Output(c), Edge::Direct(s)) => {
+                        spec.disconnect_output(usize::from(c), s);
+                    }
+                    (Sink::Output(_), Edge::Feedback(_)) => {}
+                },
+                EdgeFade::In => {
+                    spec.set_edge_gain(
+                        *id,
+                        crate::gain::EdgeGain {
+                            fade: EdgeFade::None,
+                            ..*g
+                        },
+                    );
+                }
+            }
+        }
+        Some(spec)
+    }
+
     /// Whether edge `id` is in the topology: a direct or feedback edge of an
     /// input port, or a source of a global output channel.
     #[must_use]

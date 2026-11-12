@@ -198,6 +198,20 @@ bounce's job (`bounce_start` / `finish_bounce`) moves onto it later.
 `load_plugin(..).run()` stays for a host that wants the load's latency in its
 own hands.
 
+As built (`tutti-session`'s `jobs` module): the public surface is
+`SessionBuilder::spawn_with` and `Job::run`; a job the spawner drops unrun ends
+as failed (`JobFailed::Dropped`), and a panic in it is caught
+(`JobFailed::Panicked`). Inside the crate, `submit(work, land)` lands one result
+and `submit_stream(work, land)` lands each message the work sends through its
+`Landings` (unbounded, never blocking) and then its end, exactly once and after
+every message: `work` borrows the `Landings`, so nothing it sends outlives it.
+Landing is the first thing `Phase::Collect` does, so what a job landed is in the
+graph that update commits. There is no cancel: a job that stops carries its own
+flag, and `Landings::is_closed` (a send returns the message) tells it the session
+is gone. The recording take's pump (doc 030 step 8) and the MIDI file and
+SoundFont loads (doc 017 L1f-b) are its first users; the bounce moves onto it
+later.
+
 ### 3.5 Where it meets the graph and MIDI
 
 Agreed with the graph's surface ([013](013-native-graph.md), "The session

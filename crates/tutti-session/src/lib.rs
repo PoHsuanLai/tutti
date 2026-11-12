@@ -174,8 +174,6 @@ pub use tutti_graph::{
 pub use tutti_graph::{
     CloseError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
 };
-#[cfg(feature = "plugin")]
-pub use tutti_plugin_host::Subscription;
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]

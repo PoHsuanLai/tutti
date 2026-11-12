@@ -576,8 +576,6 @@ impl SessionBuilder {
             #[cfg(feature = "plugin")]
             plugins_now: std::time::Instant::now(),
             #[cfg(feature = "plugin")]
-            plugin_subscribers: Default::default(),
-            #[cfg(feature = "plugin")]
             render_mode: Default::default(),
             #[cfg(feature = "export")]
             bounce: Default::default(),

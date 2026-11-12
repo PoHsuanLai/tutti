@@ -462,10 +462,6 @@ pub struct Session {
     /// measured at.
     #[cfg(feature = "plugin")]
     pub(crate) plugins_now: Instant,
-    /// The hosts that asked to hear every plugin event
-    /// ([`Session::subscribe`]).
-    #[cfg(feature = "plugin")]
-    pub(crate) plugin_subscribers: crate::plugin::PluginSubscribers,
     /// The render mode last announced.
     #[cfg(feature = "plugin")]
     pub(crate) render_mode: crate::plugin::RenderModeState,

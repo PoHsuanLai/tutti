@@ -1558,8 +1558,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   Reloading, Recovered, GaveUp}` (the three `*Due` job events stay until step 5);
   `PluginHandle::{on_parameter_changed, on_refresh, on_invalidate, clear_parameter_callback,
   clear_refresh_callback, clear_invalidate_callback}` → `PluginHandle::subscribe(f) -> Subscription`
-  (the low layer; a host subscribes to the session: `Session::subscribe`, or reads
-  `SessionEvent::Plugin`); `Listener::{set, clear}` (one slot, last writer wins) → `Listener::subscribe`
+  (the low layer; a host reads `SessionEvent::Plugin`); `Listener::{set, clear}` (one slot, last writer wins) → `Listener::subscribe`
   (a fan-out); `HostedPlugin` (public) → the `Plugin<'_>` view of `Session::plugin(node) ->
   Result<Plugin<'_>, NoSuchNode>` (`Option<&HostedPlugin>` before), `Session::plugins()` yielding
   `Plugin<'_>`.

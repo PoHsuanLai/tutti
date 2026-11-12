@@ -43,7 +43,7 @@
 //! - **Reports.** What the plugin reported since the last update (its own edit
 //!   of a parameter, a rescan, a new tail, a bus change) is queued where it
 //!   was heard and becomes [`PluginEvent`]s here, in the order the plugin made
-//!   them; [`Session::subscribe`] hears the same events.
+//!   them.
 //! - **Latency.** The figure its node declares now
 //!   (`PluginControls::declared_latency`) is handed to the graph when it
 //!   moved (`Graph::refresh_node_latency`):
@@ -477,7 +477,8 @@ pub enum PluginLiveness {
 /// One stream carries both what a plugin reports (its own edit of a
 /// parameter, a new tail) and every transition of its life (death, reload,
 /// recovery), so a host reads one place. There is no callback slot to install
-/// or clear: [`Session::subscribe`] is the push, and drops to unsubscribe.
+/// or clear; a host that needs a push from the thread that hears the plugin
+/// subscribes to its handle (`PluginHandle::subscribe`, the low layer).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct PluginEvent {
@@ -945,50 +946,6 @@ impl<'a> Plugin<'a> {
     }
 }
 
-/// Calls a subscriber with every plugin event, until its [`Subscription`] drops.
-type Subscriber = Arc<dyn Fn(&PluginEvent) + Send + Sync>;
-
-/// The session's plugin subscribers.
-#[derive(Default)]
-pub(crate) struct PluginSubscribers {
-    next: u64,
-    list: Arc<Mutex<Vec<(u64, Subscriber)>>>,
-}
-
-impl std::fmt::Debug for PluginSubscribers {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginSubscribers")
-            .field("len", &locked(&self.list).len())
-            .finish()
-    }
-}
-
-impl PluginSubscribers {
-    pub(crate) fn subscribe(&mut self, f: Subscriber) -> Subscription {
-        let id = self.next;
-        self.next += 1;
-        locked(&self.list).push((id, f));
-        let list = Arc::clone(&self.list);
-        Subscription::from_fn(move || locked(&list).retain(|(n, _)| *n != id))
-    }
-
-    /// Tells every subscriber of the plugin events in `events`, in order.
-    pub(crate) fn announce(&self, events: &[SessionEvent]) {
-        let callbacks: Vec<Subscriber> =
-            locked(&self.list).iter().map(|(_, f)| f.clone()).collect();
-        if callbacks.is_empty() {
-            return;
-        }
-        for event in events {
-            if let SessionEvent::Plugin(event) = event {
-                for f in &callbacks {
-                    f(event);
-                }
-            }
-        }
-    }
-}
-
 /// A hosted plugin's states ([`Plugin::state`]): what the session holds
 /// of them, a save now, and a restore.
 #[derive(Debug, Clone, Copy)]
@@ -1373,16 +1330,6 @@ impl Session {
             .map(|(&node, hosted)| Plugin { node, hosted })
     }
 
-    /// Calls `f` with every [`PluginEvent`] the session reports, as the
-    /// update (or [`land_reload`](Self::land_reload)) that found it reports it,
-    /// until the returned [`Subscription`] drops. It is the push for a host
-    /// that mirrors a plugin's parameters elsewhere: the events are the
-    /// same ones [`update`](Self::update) returns, in the same order, and `f`
-    /// runs on the thread that called it.
-    pub fn subscribe(&mut self, f: impl Fn(&PluginEvent) + Send + Sync + 'static) -> Subscription {
-        self.plugin_subscribers.subscribe(Arc::new(f))
-    }
-
     /// Lands a finished snapshot: the plugin's last snapshot becomes it. A
     /// refused one is logged and keeps the previous snapshot (a good
     /// recovery point beats none). Returns whether it was stored. Frees the
@@ -1491,9 +1438,7 @@ impl Session {
     ///
     /// A main-thread call.
     pub fn land_reload(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
-        let out = self.land_reload_inner(main, done);
-        self.plugin_subscribers.announce(&out);
-        out
+        self.land_reload_inner(main, done)
     }
 
     fn land_reload_inner(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
@@ -1887,7 +1832,6 @@ impl Session {
         let now = cx.now;
         self.plugins_now = now;
         let interval = self.snapshot_interval;
-        let first = out.len();
         let mut dead = Vec::new();
         let mut gave_up = Vec::new();
         let nodes: Vec<NodeKey> = self.graph.plugins.keys().copied().collect();
@@ -2058,7 +2002,6 @@ impl Session {
             out.push(event(node, PluginChange::Died { cause }));
         }
         self.finish_gave_up(gave_up, out);
-        self.plugin_subscribers.announce(&out[first..]);
     }
 
     /// `Phase::RenderMode`: Offline while an export token lives, Realtime

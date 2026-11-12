@@ -182,9 +182,10 @@ lets run off the OS main thread on Linux and Windows.
 | `EditorWantsSize(EditorSize)` | `poll_editor_resize_request` (step 2, editor half) |
 | `Died`, `Reloading`, `Recovered`, `GaveUp` | the existing `Plugin*` events, moved under one variant |
 
-A host that needs a push (a parameter mirror on another thread) gets
-`Session::subscribe(f) -> Subscription`, which unsubscribes on drop; there is no
-`clear_*`.
+A host that needs a push from the thread that hears the plugin (a parameter
+mirror on another thread) subscribes at the low layer,
+`PluginHandle::subscribe(f) -> Subscription`, which unsubscribes on drop; there
+is no `clear_*`, and the session has no second channel for the same events.
 
 ### 3.4 The spawner
 
@@ -275,8 +276,7 @@ heard, and `Phase::Plugins` turns it into `PluginEvent`s in the order the plugin
 made them. A latency the plugin reports is not an event of its own: the update
 that hands it to the graph reports `LatencyChanged` once; a rate refusal, a
 crash and an in-place reload stay the plugin's health (step 4's `Health`).
-`Session::subscribe` hears the events the update (or `land_reload`) reports, on
-the thread that called it. A gesture is three variants, not a field:
+A gesture is three variants, not a field:
 `GestureBegan`, `ParamChanged { recorded }`, `GestureEnded`, since the two ends
 carry no value (`ParamEdit`). `PluginSnapshotDue`, `PluginParamsDue` and
 `PluginReloadDue` stay `SessionEvent` variants until step 5. Still open in

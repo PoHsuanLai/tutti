@@ -9,8 +9,7 @@
 //! removal stayed with the adapter), moved here when the adapter was parked.
 //! The plugin is a fake backend (`PluginHandle::from_backend`) hosted at a
 //! node with `Graph::host_plugin`, so no `plugin-server` is needed; what the
-//! plugin reports (`SessionEvent::Plugin`'s `ParamChanged` and the rest, and
-//! `Session::subscribe`) is driven through the same fake's listeners. The real
+//! plugin reports (`SessionEvent::Plugin`'s `ParamChanged` and the rest) is driven through the same fake's listeners. The real
 //! plugin's death is `plugin.rs`'s
 //! `a_plugin_dead_for_the_window_is_removed_and_reported_once`.
 
@@ -373,33 +372,5 @@ fn a_plugins_refreshes_and_invalidations_arrive_in_the_stream() {
             },
             PluginChange::IoChanged,
         ]
-    );
-}
-
-/// **`subscribe` hears every plugin event the update reports, until its
-/// subscription drops**, and any number of hosts may subscribe: a second
-/// subscriber does not replace the first, and dropping one leaves the other.
-#[test]
-fn a_subscription_hears_the_plugin_events_until_it_drops() {
-    use std::sync::Mutex;
-    use tutti_plugin_types::ParamEdit;
-    let _ = main_thread();
-    let (mut s, _, params, _, _) = session_reporting();
-    let (first, second) = (Arc::new(Mutex::new(0)), Arc::new(Mutex::new(0)));
-    let (a, b) = (first.clone(), second.clone());
-    let one = s.subscribe(move |_| *a.lock().unwrap() += 1);
-    let _two = s.subscribe(move |_| *b.lock().unwrap() += 1);
-    let id = ParamId::new(1);
-    params.fire(ParamEdit::Begin(id));
-    params.fire(ParamEdit::End(id));
-    let _ = plugin_events(&mut s);
-    assert_eq!((*first.lock().unwrap(), *second.lock().unwrap()), (2, 2));
-    drop(one);
-    params.fire(ParamEdit::Begin(id));
-    let _ = plugin_events(&mut s);
-    assert_eq!(
-        (*first.lock().unwrap(), *second.lock().unwrap()),
-        (2, 3),
-        "the dropped subscription stopped, the other did not"
     );
 }

@@ -320,12 +320,12 @@ fn dynamics(c: &mut Criterion) {
         "gate",
         "6",
         || {
-            GateNode::with_channels(
+            GateNode::with_bus(
+                BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
                 Db::new(-12.0),
                 Seconds::new(0.001),
                 Seconds::new(0.01),
                 Seconds::new(0.1),
-                6,
             )
         },
         None,

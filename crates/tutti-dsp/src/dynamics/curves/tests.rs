@@ -111,18 +111,6 @@ fn test_compressor_gain_reduction_soft_knee() {
 }
 
 #[test]
-fn test_compute_gate_gain() {
-    // Fully open (gate_level=1): gain=1.0 regardless of range
-    assert!((compute_gate_gain(1.0, Db::new(-80.0)).get() - 1.0).abs() < 0.001);
-    // Fully closed (gate_level=0): gain = range_linear
-    let closed = compute_gate_gain(0.0, Db::new(-80.0)).get();
-    assert!(closed < 0.001); // -80dB is very quiet
-    // -12dB range, closed gate
-    let closed_12 = compute_gate_gain(0.0, Db::new(-12.0)).get();
-    assert!((closed_12 - Db::new(-12.0).to_amplitude().get()).abs() < 0.001);
-}
-
-#[test]
 fn test_compute_limiter_gain() {
     // Below threshold: gain = ceiling - threshold offset
     let gain = compute_limiter_gain(Db::new(-20.0), Db::new(-6.0), Db::new(-0.3)).get();

@@ -1,15 +1,15 @@
 //! The feed-forward [`CompressorNode`] with an external side-chain, soft knee and
 //! makeup gain.
 
-use tutti_dsp::{CompressorControls, CompressorFamily};
+use tutti_dsp::{CompressorControls, CompressorFamily, KeySource};
 use tutti_graph::ParamNode;
 use tutti_types::{BusTopology, CompressionRatio, Db, SampleRate, Seconds, UnitParam};
 
 use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
-/// A compressor with an external side-chain: `channels = N` means N audio inputs, N
-/// side-chain inputs and N outputs, with one **linked** gain computed from the loudest
-/// side-chain channel and applied to every output.
+/// A compressor: `channels = N` means N audio inputs, then (for a side-chain key) N key
+/// inputs, and N outputs, with one **linked** gain computed from the loudest key channel and
+/// applied to every output.
 ///
 /// A [`FamilyNode`] over [`CompressorFamily`], the detector and the gain being the
 /// family's recurrence; this file holds the cells and how the graph reaches them.
@@ -18,10 +18,21 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 /// - [`stereo`](Self::stereo): 4 inputs (L, R, key L, key R), 2 outputs, linked gain.
 /// - [`with_bus`](Self::with_bus): any width up to one bus (16 channels), on a checked
 ///   [`BusTopology`]; the key is as wide.
+/// - [`own_key`](Self::own_key): the same without a key bus; the detector listens to the
+///   signal itself.
 ///
-/// The audio inputs come first, then the key (the graph feeds an unconnected key
-/// silence, which compresses nothing). The node declares no tail: the release decays
-/// after the key goes silent, but it only scales, so a silent input is a silent output.
+/// # The key
+///
+/// The detector listens to a [`KeySource`], chosen when the node is built. `mono`, `stereo` and
+/// `with_bus` have a **side-chain** key, a second bus after the audio inputs, **and it must
+/// be wired**: the graph feeds an unconnected input silence, which compresses nothing, so
+/// a compressor whose key nobody wired does nothing. Wire it with a bus edge, for example
+/// `graph.connect(kick.bus_out(0), comp.bus_in(1))` in `tutti-session`, or each key channel
+/// into the inputs after the audio. A compressor that should listen to its own signal, as
+/// an ordinary compressor does, is `own_key`, which has no key bus and needs nothing wired.
+///
+/// The node declares no tail: the release decays after the key goes silent, but it only
+/// scales, so a silent input is a silent output.
 ///
 /// # Controls
 ///
@@ -55,6 +66,9 @@ impl CompressorNode {
     /// expansion). `attack` and `release` are [`Seconds`] envelope times: short attacks
     /// catch transients, long releases sound smoother.
     ///
+    /// **The key is a side-chain that must be wired** (see the [type](CompressorNode)); for a
+    /// compressor that listens to its own signal use [`own_key`](Self::own_key).
+    ///
     /// Knee is hard and makeup is 0 dB; add them with
     /// [`with_soft_knee`](Self::with_soft_knee) / [`with_makeup`](Self::with_makeup). The
     /// envelope's one-pole coefficients are derived from the times at the rate
@@ -73,7 +87,8 @@ impl CompressorNode {
     ///
     /// The gain is **linked**: one reduction computed from the loudest key channel and
     /// applied to both, so the stereo image does not shift when one side is louder.
-    /// Parameters are as [`mono`](Self::mono).
+    /// Parameters are as [`mono`](Self::mono), and so is the key: a side-chain that must be
+    /// wired (use [`own_key`](Self::own_key) for one that listens to its own signal).
     #[must_use]
     pub fn stereo(
         threshold_db: impl Into<Db>,
@@ -88,7 +103,7 @@ impl CompressorNode {
     /// speaker placement, the key (a level to read, not a placement) has none.
     /// `with_bus(BusTopology::STEREO, ..)` is [`stereo`](Self::stereo); an `n`-channel one on
     /// the engine's order for that width is `with_bus(BusTopology::assumed(n)?, ..)`, which
-    /// refuses a width past one bus. Parameters are as
+    /// refuses a width past one bus. Parameters and the key are as
     /// [`mono`](Self::mono).
     #[must_use]
     pub fn with_bus(
@@ -98,8 +113,41 @@ impl CompressorNode {
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
+        Self::keyed(
+            KeySource::Sidechain,
+            input,
+            threshold_db,
+            ratio,
+            attack,
+            release,
+        )
+    }
+
+    /// A compressor on the bus `input` whose detector listens to **its own signal**: no key
+    /// bus, so `width` audio inputs and `width` outputs, and nothing to wire. The signal
+    /// that is measured is the signal that is shaped, as in an ordinary compressor.
+    /// Parameters are as [`mono`](Self::mono).
+    #[must_use]
+    pub fn own_key(
+        input: BusTopology,
+        threshold_db: impl Into<Db>,
+        ratio: impl Into<CompressionRatio>,
+        attack: impl Into<Seconds>,
+        release: impl Into<Seconds>,
+    ) -> Self {
+        Self::keyed(KeySource::Own, input, threshold_db, ratio, attack, release)
+    }
+
+    fn keyed(
+        key: KeySource,
+        input: BusTopology,
+        threshold_db: impl Into<Db>,
+        ratio: impl Into<CompressionRatio>,
+        attack: impl Into<Seconds>,
+        release: impl Into<Seconds>,
+    ) -> Self {
         Self::live(
-            CompressorFamily::new(input),
+            CompressorFamily::new(input, key),
             CompressorControls {
                 threshold: threshold_db.into(),
                 ratio: ratio.into(),
@@ -249,6 +297,37 @@ mod tests {
         Node::reset(&mut node);
         let out = drive(&mut node, RATE_44K, &[&audio, &sc], &[]).remove(0);
         assert!(out.iter().all(|s| s.is_finite()), "after reset");
+    }
+
+    /// An own-key compressor listens to its signal: no key bus (one input a channel), a
+    /// loud signal is reduced and a quiet one under the threshold is not.
+    #[test]
+    fn an_own_key_compressor_listens_to_its_signal() {
+        let mk = || {
+            CompressorNode::own_key(
+                BusTopology::MONO,
+                Db::new(-20.0),
+                CompressionRatio::new(4.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.1),
+            )
+        };
+        let shape = mk().shape();
+        assert_eq!(
+            (shape.audio_in().count(), shape.audio_out().count()),
+            (1, 1)
+        );
+        let mut output = [0.0f32];
+        let mut loud = prepared_at(mk(), RATE_44K);
+        for _ in 0..1000 {
+            tick(&mut loud, &[0.5], &mut output);
+        }
+        assert!(output[0] < 0.4, "a loud signal ducks itself: {}", output[0]);
+        let mut quiet = prepared_at(mk(), RATE_44K);
+        for _ in 0..1000 {
+            tick(&mut quiet, &[0.05], &mut output);
+        }
+        assert_eq!(output[0], 0.05, "under the threshold nothing is reduced");
     }
 
     #[test]

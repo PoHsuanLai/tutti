@@ -241,11 +241,27 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         },
         |n| {
             vec![
-                ("threshold", n.threshold().into(), -20.0),
-                ("attack", n.attack_time().into(), 0.005),
-                ("hold", n.hold_time().into(), 0.02),
-                ("release", n.release_time().into(), 0.1),
-                ("range", n.range().into(), -20.0),
+                (
+                    "threshold",
+                    n.param_set().cell(UnitParam::Threshold).unwrap(),
+                    -20.0,
+                ),
+                (
+                    "attack",
+                    n.param_set().cell(UnitParam::Attack).unwrap(),
+                    0.005,
+                ),
+                ("hold", n.param_set().cell(UnitParam::Hold).unwrap(), 0.02),
+                (
+                    "release",
+                    n.param_set().cell(UnitParam::Release).unwrap(),
+                    0.1,
+                ),
+                (
+                    "range",
+                    n.param_set().cell(UnitParam::Range).unwrap(),
+                    -20.0,
+                ),
             ]
         },
     );

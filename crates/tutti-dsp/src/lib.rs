@@ -28,14 +28,15 @@
 //!   processor the multiband node still runs), each a [`ChannelRecurrence`] under the one
 //!   [`Filter`] family, run by [`PerChannel`]; [`Real`], the `f32` or `f64` their state
 //!   runs in, and the [`Biquad`] section they share.
-//! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the
-//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`GateKernel`] and
-//!   [`LimiterKernel`] with their blocks (and [`CompressorKernel`], the multiband's bands');
+//! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`]; the
+//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`LimiterKernel`] with
+//!   its block (and [`CompressorKernel`], the multiband's bands');
 //!   the limiter's [`LookaheadRing`]; the brickwall clipper as a family
 //!   ([`BrickwallFamily`], run by [`BrickwallRecurrence`], its ceiling a per-frame lane of
 //!   the [`Feed`]); and the compressor ([`CompressorFamily`], run by
 //!   [`CompressorRecurrence`], keyed, its threshold a lane, its makeup gliding over
-//!   [`GAIN_GLIDE`]).
+//!   [`GAIN_GLIDE`]) and the noise gate ([`GateFamily`], run by [`GateRecurrence`], its
+//!   range gliding likewise). Both read a [`KeySource`]: a side-chain bus or the signal itself.
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
@@ -107,9 +108,9 @@ pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
     BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence, CompressorBlock,
     CompressorControls, CompressorFamily, CompressorKernel, CompressorMember, CompressorRecurrence,
-    EnvelopeFollower, GAIN_GLIDE, GateBlock, GateEnvelopeFollower, GateKernel, LimiterBlock,
-    LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db, compute_compressor_gain_reduction,
-    compute_limiter_gain, fold_peak, ramp_db,
+    EnvelopeFollower, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence, KeySource,
+    LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
+    compute_compressor_gain_reduction, compute_limiter_gain, fold_peak, ramp_db,
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{

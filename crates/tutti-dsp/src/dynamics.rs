@@ -7,6 +7,7 @@ mod compressor_kernel;
 mod curves;
 mod envelope;
 mod gate;
+mod key_source;
 mod limiter;
 mod lookahead;
 mod window;
@@ -19,7 +20,8 @@ pub use compressor_kernel::{CompressorBlock, CompressorKernel};
 pub use curves::{
     LimiterCurve, amplitude_to_db, compute_compressor_gain_reduction, compute_limiter_gain, ramp_db,
 };
-pub use envelope::{EnvelopeFollower, GateEnvelopeFollower};
-pub use gate::{GateBlock, GateKernel};
+pub use envelope::EnvelopeFollower;
+pub use gate::{GateControls, GateFamily, GateMember, GateRecurrence};
+pub use key_source::KeySource;
 pub use limiter::{LimiterBlock, LimiterKernel};
 pub use lookahead::{LookaheadRing, fold_peak};

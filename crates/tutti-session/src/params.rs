@@ -216,4 +216,6 @@ param_methods! {
     bypass, bypass_at => Bypass;
     solo, solo_at => Solo;
     freeze, freeze_at => Freeze;
+    hold, hold_at => Hold;
+    range, range_at => Range;
 }

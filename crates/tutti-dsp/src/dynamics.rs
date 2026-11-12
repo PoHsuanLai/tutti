@@ -3,6 +3,7 @@
 
 mod brickwall;
 mod compressor;
+mod compressor_kernel;
 mod curves;
 mod envelope;
 mod gate;
@@ -11,7 +12,10 @@ mod lookahead;
 mod window;
 
 pub use brickwall::{BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence};
-pub use compressor::{CompressorBlock, CompressorKernel};
+pub use compressor::{
+    CompressorControls, CompressorFamily, CompressorMember, CompressorRecurrence, GAIN_GLIDE,
+};
+pub use compressor_kernel::{CompressorBlock, CompressorKernel};
 pub use curves::{
     LimiterCurve, amplitude_to_db, compute_compressor_gain_reduction, compute_limiter_gain, ramp_db,
 };

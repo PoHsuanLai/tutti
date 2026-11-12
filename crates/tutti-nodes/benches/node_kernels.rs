@@ -363,12 +363,13 @@ fn dynamics(c: &mut Criterion) {
         "compressor",
         "6",
         || {
-            CompressorNode::with_channels(
+            CompressorNode::with_bus(
+                tutti_types::BusTopology::assumed(tutti_types::ChannelLayout::from(6u16))
+                    .expect("at most one bus wide"),
                 Db::new(-20.0),
                 CompressionRatio::new(4.0),
                 Seconds::new(0.001),
                 Seconds::new(0.1),
-                6,
             )
         },
         None,

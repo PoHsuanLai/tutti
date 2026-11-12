@@ -29,10 +29,13 @@
 //!   [`Filter`] family, run by [`PerChannel`]; [`Real`], the `f32` or `f64` their state
 //!   runs in, and the [`Biquad`] section they share.
 //! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the
-//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`CompressorKernel`],
-//!   [`GateKernel`] and [`LimiterKernel`] with their blocks; the limiter's
-//!   [`LookaheadRing`]; and the brickwall clipper as a family ([`BrickwallFamily`], run by
-//!   [`BrickwallRecurrence`], its ceiling a per-frame lane of the [`Feed`]).
+//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`GateKernel`] and
+//!   [`LimiterKernel`] with their blocks (and [`CompressorKernel`], the multiband's bands');
+//!   the limiter's [`LookaheadRing`]; the brickwall clipper as a family
+//!   ([`BrickwallFamily`], run by [`BrickwallRecurrence`], its ceiling a per-frame lane of
+//!   the [`Feed`]); and the compressor ([`CompressorFamily`], run by
+//!   [`CompressorRecurrence`], keyed, its threshold a lane, its makeup gliding over
+//!   [`GAIN_GLIDE`]).
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
@@ -103,7 +106,8 @@ pub use dither::sink::{DitherSink, DitherSpec};
 pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{
     BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence, CompressorBlock,
-    CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower, GateKernel, LimiterBlock,
+    CompressorControls, CompressorFamily, CompressorKernel, CompressorMember, CompressorRecurrence,
+    EnvelopeFollower, GAIN_GLIDE, GateBlock, GateEnvelopeFollower, GateKernel, LimiterBlock,
     LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db, compute_compressor_gain_reduction,
     compute_limiter_gain, fold_peak, ramp_db,
 };

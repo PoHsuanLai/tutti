@@ -204,12 +204,28 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
         },
         |n| {
             vec![
-                ("threshold", n.threshold().into(), -30.0),
-                ("ratio", n.ratio().into(), 8.0),
-                ("attack", n.attack_time().into(), 0.01),
-                ("release", n.release_time().into(), 0.2),
-                ("makeup", n.makeup_gain().into(), 3.0),
-                ("knee", n.knee_width().into(), 2.0),
+                (
+                    "threshold",
+                    n.param_set().cell(UnitParam::Threshold).unwrap(),
+                    -30.0,
+                ),
+                ("ratio", n.param_set().cell(UnitParam::Ratio).unwrap(), 8.0),
+                (
+                    "attack",
+                    n.param_set().cell(UnitParam::Attack).unwrap(),
+                    0.01,
+                ),
+                (
+                    "release",
+                    n.param_set().cell(UnitParam::Release).unwrap(),
+                    0.2,
+                ),
+                (
+                    "makeup",
+                    n.param_set().cell(UnitParam::GainDb).unwrap(),
+                    3.0,
+                ),
+                ("knee", n.param_set().cell(UnitParam::Knee).unwrap(), 2.0),
             ]
         },
     );

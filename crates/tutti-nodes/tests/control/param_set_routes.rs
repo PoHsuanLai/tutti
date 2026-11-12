@@ -318,14 +318,17 @@ fn chorus_rate_write_moves_the_nodes_own_cell() {
 /// its set.
 #[test]
 fn compressor_makeup_is_addressed_as_gain_db() {
-    let node = CompressorNode::with_channels(
+    let node = CompressorNode::with_bus(
+        tutti_types::BusTopology::STEREO,
         tutti_types::Db(-12.0),
         tutti_types::CompressionRatio(4.0),
         tutti_types::Seconds(0.01),
         tutti_types::Seconds(0.1),
-        2,
     );
-    let makeup = node.makeup_gain();
+    let makeup = node
+        .param_set()
+        .cell(UnitParam::GainDb)
+        .expect("makeup is GainDb");
     assert!(set(&node, UnitParam::GainDb, 6.0), "makeup is GainDb");
     assert_eq!(makeup.load(Ordering::Acquire), 6.0);
     assert!(!addresses(&node, UnitParam::Makeup));

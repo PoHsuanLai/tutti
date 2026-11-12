@@ -21,9 +21,11 @@ ramps and the graph shape. Here they take plain typed values per call.
   platform's C math library.
 - **Dynamics** — `EnvelopeFollower` and `GateEnvelopeFollower`; the curves
   `compute_compressor_gain_reduction`, `compute_limiter_gain` and
-  `LimiterCurve`; `CompressorKernel` and
-  `GateKernel`, whose `gain` takes a `CompressorBlock` or `GateBlock`;
-  and `LookaheadRing`, the limiter's delay with its sliding gain minimum.
+  `LimiterCurve`; the compressor as a family (`CompressorFamily`, keyed, run by
+  `CompressorRecurrence`; its threshold a per-frame lane, its makeup gliding over
+  `GAIN_GLIDE`); the brickwall clipper (`BrickwallFamily`); `CompressorKernel` (the
+  multiband's bands') and `GateKernel`, whose `gain` takes a `CompressorBlock` or
+  `GateBlock`; and `LookaheadRing`, the limiter's delay with its sliding gain minimum.
 - **Convolution** — `Convolver`, a uniform or non-uniform partitioned FFT
   convolution over an IR's shared, read-only `IrSpectra`.
 - **Delay** — `DelayLine`, a fractional-read ring with an `InterpolationMode`,

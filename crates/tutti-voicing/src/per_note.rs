@@ -286,8 +286,8 @@ impl PerNoteState {
     }
 
     fn channel_index(&self, address: Address) -> Option<usize> {
-        let group = usize::from(address.group.get());
-        (group < self.groups).then(|| group * CHANNELS + usize::from(address.channel.get()))
+        let group = address.group.index();
+        (group < self.groups).then(|| group * CHANNELS + address.channel.index())
     }
 
     fn slot(&self, address: Address, note: NoteNumber) -> Option<usize> {

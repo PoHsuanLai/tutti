@@ -644,7 +644,7 @@ impl Voicing {
     /// [`Command::Retune`] for it said.
     #[must_use]
     pub fn channel_pitch(&self, channel: MidiChannel) -> Semitones {
-        self.pitch(usize::from(channel.get()))
+        self.pitch(channel.index())
     }
 
     /// Every channel's [`ChannelState`], by channel number.
@@ -659,7 +659,7 @@ impl Voicing {
     /// expression) from it when it makes a block.
     #[must_use]
     pub fn channel(&self, channel: MidiChannel) -> &ChannelState {
-        &self.channels[usize::from(channel.get())]
+        &self.channels[channel.index()]
     }
 
     /// What holds `id` open, if it is a voice the core knows and has not
@@ -732,7 +732,7 @@ impl Voicing {
             }
             Voice2::ChannelPressure(pressure) => {
                 let pressure = u32_to_unit_f32(pressure);
-                self.channels[usize::from(channel.get())].set_pressure(pressure);
+                self.channels[channel.index()].set_pressure(pressure);
             }
             Voice2::PitchBend(bend) => {
                 let position = bend_u32_to_signed_f32(bend);
@@ -759,7 +759,7 @@ impl Voicing {
                     self.bend(channel, |b| b.coarse = coarse);
                 }
                 Rpn::MODULATION_DEPTH_RANGE => {
-                    self.channels[usize::from(channel.get())].set_modulation_range(value);
+                    self.channels[channel.index()].set_modulation_range(value);
                 }
                 _ => {
                     let address = Self::address(channel);
@@ -792,7 +792,7 @@ impl Voicing {
     /// p.14: 40 to 7F is Legato) and Portamento Control (CC 84, M1 p.16). Any
     /// other controller is the instrument's own.
     fn controller(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {
-        let ch = usize::from(channel.get());
+        let ch = channel.index();
         match controller {
             CCNumber::PORTAMENTO_SWITCH => self.channels[ch].portamento = Controller::pedal(value),
             CCNumber::LEGATO => {
@@ -820,7 +820,7 @@ impl Voicing {
     /// off", M1 p.14; "When turned off the voice assignment mode [...] returns
     /// to the state it was in").
     fn mode(&self, channel: MidiChannel) -> Mode {
-        if self.channels[usize::from(channel.get())].legato {
+        if self.channels[channel.index()].legato {
             Mode::Legato
         } else {
             self.rules.mode
@@ -831,7 +831,7 @@ impl Voicing {
     /// The Portamento Control is consumed; Portamento On starts from the key
     /// struck before.
     fn glide_source(&mut self, channel: MidiChannel, key: NoteNumber) -> GlideSource {
-        let state = &mut self.channels[usize::from(channel.get())];
+        let state = &mut self.channels[channel.index()];
         let source = GlideSource {
             ptc: state.glide_from.take(),
             previous: state.last_key.filter(|_| state.portamento),
@@ -848,7 +848,7 @@ impl Voicing {
         key: NoteNumber,
     ) -> Option<Glide> {
         let from = from.filter(|&f| f != key)?;
-        let time = self.channels[usize::from(channel.get())].glide_time(from, key);
+        let time = self.channels[channel.index()].glide_time(from, key);
         Some(Glide { from, time })
     }
 
@@ -1074,7 +1074,7 @@ impl Voicing {
         source: GlideSource,
         returning: bool,
     ) {
-        let ch = usize::from(channel.get());
+        let ch = channel.index();
         let was_held = self.held[ch].top().is_some();
         if !returning {
             self.held[ch].push(key, velocity);
@@ -1213,7 +1213,7 @@ impl Voicing {
         patch: &P,
         levels: Levels<'_>,
     ) {
-        let ch = usize::from(channel.get());
+        let ch = channel.index();
         self.reconcile(levels);
         if self.mode(channel) != Mode::Poly {
             let was_top = self.held[ch].top().map(|k| k.0) == Some(key);
@@ -1360,7 +1360,7 @@ impl Voicing {
     /// instrument where every channel it moves ended up: its own, and, if it is
     /// a zone master, each member's.
     fn bend(&mut self, channel: MidiChannel, change: impl Fn(&mut Bend)) {
-        let ch = usize::from(channel.get());
+        let ch = channel.index();
         change(&mut self.channels[ch].bend);
         for i in 0..CHANNELS {
             if (i == ch || self.master_of(i) == Some(ch))

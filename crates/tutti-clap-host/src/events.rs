@@ -34,7 +34,7 @@ use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
     Normalized, ParamId, ParamRange, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi,
-    note_id_for, note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
+    note_id_to_channel_note, plugin_note_id, push_sysex, sysex_assembler, sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;
@@ -371,7 +371,7 @@ impl ClapEvent {
     /// Mints the host's `note_id` for a `(channel, key)` voice, matching what
     /// [`per_note_expression`](Self::per_note_expression) stamps.
     ///
-    /// [`note_id_for`] takes a channel and a note; note/off events carry CLAP's signed
+    /// [`plugin_note_id`] names a `(channel, note)`; note/off events carry CLAP's signed
     /// `i16` wildcard-capable fields. A wildcard (`< 0`) or out-of-range value
     /// has no `(channel, key)` voice to name, so it yields CLAP's `-1`
     /// "unspecified note id" — which the spec permits and plugins fall back
@@ -380,7 +380,7 @@ impl ClapEvent {
         let channel = u8::try_from(channel).ok().and_then(MidiChannel::new);
         let key = u8::try_from(key).ok().and_then(NoteNumber::new);
         match (channel, key) {
-            (Some(channel), Some(key)) => note_id_for(channel, key),
+            (Some(channel), Some(key)) => plugin_note_id(NoteId::from_channel_note(channel, key)),
             _ => -1,
         }
     }
@@ -407,7 +407,7 @@ impl ClapEvent {
     /// Builds a CLAP note-on event. `velocity` is normalized to `[0.0, 1.0]`.
     ///
     /// The `note_id` is minted from `(channel, key)` with the *same*
-    /// [`note_id_for`] the note-expression path uses, so a plugin keying its
+    /// [`plugin_note_id`] the note-expression path uses, so a plugin keying its
     /// voice map on `note_id` — the normal MPE-capable design — finds the voice
     /// a later `NOTE_EXPRESSION` refers to.
     pub fn note_on(time: u32, channel: i16, key: i16, velocity: f64) -> Self {
@@ -731,13 +731,6 @@ impl ClapEvent {
         }
         Some(event)
     }
-}
-
-/// The note id a plugin is told for `id`. A minted id past `i32::MAX` (after
-/// two billion notes) has no `i32` form and is CLAP's `-1` "unspecified": the
-/// plugin falls back to port, channel and key.
-fn plugin_note_id(id: NoteId) -> i32 {
-    i32::try_from(id.raw()).unwrap_or(-1)
 }
 
 /// The expression and CLAP value a per-note controller stands for on the note
@@ -2249,7 +2242,7 @@ mod tests {
         ClapEvent::per_note_expression(
             time,
             ty,
-            note_id_for(channel, note),
+            plugin_note_id(NoteId::from_channel_note(channel, note)),
             0,
             channel,
             Some(note),
@@ -3611,7 +3604,7 @@ mod tests {
         assert_eq!((off.channel, off.key), (3, 60));
     }
 
-    /// `note_id_for` only covers channels 0..16 and keys 0..128. A
+    /// `plugin_note_id` of a `(channel, note)` only covers channels 0..16 and keys 0..128. A
     /// CLAP wildcard (`-1`) or out-of-range field has no voice to name, so it
     /// must fall back to CLAP's `-1` "unspecified" rather than minting a
     /// nonsense id from a negative number.

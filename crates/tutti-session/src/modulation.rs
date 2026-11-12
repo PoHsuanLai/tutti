@@ -214,6 +214,16 @@ impl Ranged for MixRef {
     type Unit = tutti_types::Mix;
 }
 
+/// What [`Mods::remove_source`] found missing: the source `key` named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no modulation source {0:?}")]
+pub struct NoSuchModSource(pub SourceKey);
+
+/// What [`Mods::remove_route`] found missing: the route `key` named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("no modulation route {0:?}")]
+pub struct NoSuchModRoute(pub RouteKey);
+
 /// Why [`Mods::route`] refused a route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -948,10 +958,17 @@ impl Mods<'_> {
     }
 
     /// Removes a source and the routes from it.
-    pub fn remove_source(&mut self, key: SourceKey) -> bool {
-        let had = self.own.sources.remove(&key).is_some();
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchModSource`] when this session declared no source `key` (removed
+    /// already, or another declarer's); nothing changes.
+    pub fn remove_source(&mut self, key: SourceKey) -> Result<(), NoSuchModSource> {
+        if self.own.sources.remove(&key).is_none() {
+            return Err(NoSuchModSource(key));
+        }
         self.own.routes.retain(|_, r| r.source != key);
-        had
+        Ok(())
     }
 
     /// A route from `source` into `target` at `depth` of its range, bipolar
@@ -998,8 +1015,16 @@ impl Mods<'_> {
     }
 
     /// Removes a route.
-    pub fn remove_route(&mut self, key: RouteKey) -> bool {
-        self.own.routes.remove(&key).is_some()
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchModRoute`] when this session declared no route `key` (removed
+    /// already, or went with its source); nothing changes.
+    pub fn remove_route(&mut self, key: RouteKey) -> Result<(), NoSuchModRoute> {
+        match self.own.routes.remove(&key) {
+            Some(_) => Ok(()),
+            None => Err(NoSuchModRoute(key)),
+        }
     }
 
     /// `target`'s range, `range.start..=range.end` in its own unit: what a

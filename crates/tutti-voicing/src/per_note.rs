@@ -286,8 +286,8 @@ impl PerNoteState {
     }
 
     fn channel_index(&self, address: Address) -> Option<usize> {
-        let group = usize::from(address.group.get());
-        (group < self.groups).then(|| group * CHANNELS + usize::from(address.channel.get()))
+        let group = address.group.index();
+        (group < self.groups).then(|| group * CHANNELS + address.channel.index())
     }
 
     fn slot(&self, address: Address, note: NoteNumber) -> Option<usize> {
@@ -300,9 +300,9 @@ impl PerNoteState {
     /// Per-Note Management and RPN 0/7 are the state's; every other message
     /// (a Note Off, a Control Change, Reset All Controllers among them) returns
     /// nothing.
-    pub fn step(&mut self, address: Address, message: &Voice2) -> &[NoteEvent] {
+    pub fn step(&mut self, address: Address, message: Voice2) -> &[NoteEvent] {
         self.out.clear();
-        match *message {
+        match message {
             Voice2::NoteOn {
                 note, attribute, ..
             } => return self.start(address, note, attribute),
@@ -525,7 +525,7 @@ mod tests {
     fn pitch_of(s: &mut PerNoteState, a: Address, n: u8, value: u32) -> Vec<NoteEvent> {
         s.step(
             a,
-            &Voice2::RegisteredPerNote {
+            Voice2::RegisteredPerNote {
                 note: key(n),
                 controller: RegisteredPerNoteController::Pitch,
                 value,
@@ -537,7 +537,7 @@ mod tests {
     fn bend(s: &mut PerNoteState, a: Address, n: u8, value: u32) -> Vec<NoteEvent> {
         s.step(
             a,
-            &Voice2::PerNotePitchBend {
+            Voice2::PerNotePitchBend {
                 note: key(n),
                 value,
             },
@@ -554,7 +554,7 @@ mod tests {
     ) -> Vec<NoteEvent> {
         s.step(
             a,
-            &Voice2::PerNoteManagement {
+            Voice2::PerNoteManagement {
                 note: key(n),
                 detach,
                 reset,
@@ -566,7 +566,7 @@ mod tests {
     fn sensitivity(s: &mut PerNoteState, a: Address, semitones: u32) -> Vec<NoteEvent> {
         s.step(
             a,
-            &Voice2::Registered {
+            Voice2::Registered {
                 bank: U7::of(0),
                 index: U7::of(7),
                 value: semitones << 25,
@@ -685,7 +685,7 @@ mod tests {
         let second = started(&start(&mut s, a, 5));
         s.step(
             a,
-            &Voice2::NoteOff {
+            Voice2::NoteOff {
                 note: key(5),
                 velocity: 0,
                 attribute: Attribute::None,
@@ -868,7 +868,7 @@ mod tests {
             },
             Voice2::PitchBend(u32::MAX),
         ] {
-            assert_eq!(s.step(a, &m), &[], "{m:?}");
+            assert_eq!(s.step(a, m), &[], "{m:?}");
         }
         assert_eq!(sounding(&start(&mut s, a, 5)[1]), 60.0);
     }

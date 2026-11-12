@@ -1,4 +1,4 @@
-//! The deliberately broken designs and realizations the cases are shown to fail
+//! The deliberately broken designs and recurrences the cases are shown to fail
 //! on, and a toy design with every control: test-only, the mutation record of the
 //! contract.
 
@@ -6,34 +6,28 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tutti_types::{Amplitude, BusTopology, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth};
 
-use crate::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase, ReverbCase};
+use crate::contract::{FamilyCase, Figure, Hook, LtiCase, RealizationCase, ReverbCase};
 use crate::reverb::network::{
     AllPass, AllPassForm, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, OutputMap,
     pre_delay_frames,
 };
 use crate::{
-    Absorption, Band, Ceiling, Channels, Design, Effect, Lti, MaxDecay, Network, NetworkSizes,
-    Realization, Ring, Setup, Sizes, Stage, System, loop_gain,
+    Absorption, Approach, Band, Capacity, Channels, Effort, Family, Grows, Lti, MaxDecay, Network,
+    NetworkCapacity, Reach, Realized, Recurrence, Ring, Setup, Stage, Start, System, loop_gain,
 };
 
-/// A design whose model is a reverb [`Network`] and whose realization renders it:
-/// what a defect can be wrapped around.
-pub(crate) trait NetDesign:
-    Design<
-        Model = Network,
-        Bounds = NetworkSizes,
-        Range = MaxDecay,
-        Realization: Effect<Network, Bounds = NetworkSizes> + Clone,
-    >
+/// A design whose model is a reverb [`Network`] and whose recurrence runs it: what a
+/// defect can be wrapped around.
+pub(crate) trait NetFamily:
+    Grows<Member = Network, Domain = MaxDecay, Recurrence: Recurrence<Capacity = NetworkCapacity>>
 {
 }
 
-impl<D> NetDesign for D where
-    D: Design<
-            Model = Network,
-            Bounds = NetworkSizes,
-            Range = MaxDecay,
-            Realization: Effect<Network, Bounds = NetworkSizes> + Clone,
+impl<D> NetFamily for D where
+    D: Grows<
+            Member = Network,
+            Domain = MaxDecay,
+            Recurrence: Recurrence<Capacity = NetworkCapacity>,
         >
 {
 }
@@ -43,7 +37,7 @@ impl<D> NetDesign for D where
 pub(crate) struct Mutant<D> {
     pub(crate) inner: D,
     pub(crate) network: fn(&mut Network),
-    pub(crate) bounds: fn(NetworkSizes) -> NetworkSizes,
+    pub(crate) capacity: fn(NetworkCapacity) -> NetworkCapacity,
     /// The hooks it says are vacant, when not the inner design's.
     pub(crate) vacant: Option<&'static [(Hook, &'static str)]>,
 }
@@ -53,18 +47,16 @@ impl<D> Mutant<D> {
         Self {
             inner,
             network,
-            bounds: |b| b,
+            capacity: |b| b,
             vacant: None,
         }
     }
 }
 
-impl<D: NetDesign> Design for Mutant<D> {
+impl<D: NetFamily> Family for Mutant<D> {
     type Controls = D::Controls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
-    type Realization = D::Realization;
+    type Member = Network;
+    type Recurrence = D::Recurrence;
 
     fn blank(&self, rate: SampleRate) -> Network {
         Network::new(rate)
@@ -74,21 +66,25 @@ impl<D: NetDesign> Design for Mutant<D> {
         self.inner.channels()
     }
 
-    fn design_into(&self, controls: &D::Controls, rate: SampleRate, out: &mut Network) {
-        self.inner.design_into(controls, rate, out);
+    fn member_into(&self, controls: &D::Controls, rate: SampleRate, out: &mut Network) {
+        self.inner.member_into(controls, rate, out);
         (self.network)(out);
     }
 
-    fn realization(&self) -> D::Realization {
-        self.inner.realization()
-    }
-
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        (self.bounds)(self.inner.bounds(ceiling))
+    fn recurrence(&self) -> D::Recurrence {
+        self.inner.recurrence()
     }
 }
 
-impl<D: NetDesign + DesignCase> DesignCase for Mutant<D> {
+impl<D: NetFamily> Grows for Mutant<D> {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        (self.capacity)(self.inner.reach(reach))
+    }
+}
+
+impl<D: NetFamily + FamilyCase> FamilyCase for Mutant<D> {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
     }
@@ -98,8 +94,8 @@ impl<D: NetDesign + DesignCase> DesignCase for Mutant<D> {
     fn hostile(&self) -> Vec<D::Controls> {
         self.inner.hostile()
     }
-    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
-        self.inner.ceiling(rate)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
     }
     fn musical_delay(&self, model: &Network) -> usize {
         self.inner.musical_delay(model)
@@ -109,7 +105,7 @@ impl<D: NetDesign + DesignCase> DesignCase for Mutant<D> {
     }
 }
 
-impl<D: NetDesign + RealizationCase> RealizationCase for Mutant<D> {
+impl<D: NetFamily + RealizationCase> RealizationCase for Mutant<D> {
     fn probes(&self) -> Vec<D::Controls> {
         self.inner.probes()
     }
@@ -124,7 +120,7 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Mutant<D> {
     }
 }
 
-impl<D: NetDesign + LtiCase> LtiCase for Mutant<D> {
+impl<D: NetFamily + LtiCase> LtiCase for Mutant<D> {
     fn figures(&self) -> Vec<Figure<D::Controls>> {
         self.inner.figures()
     }
@@ -151,7 +147,7 @@ impl<D: NetDesign + LtiCase> LtiCase for Mutant<D> {
     }
 }
 
-impl<D: NetDesign + ReverbCase> ReverbCase for Mutant<D> {
+impl<D: NetFamily + ReverbCase> ReverbCase for Mutant<D> {
     fn requested_rt60(&self, c: &D::Controls, rate: SampleRate, band: Band) -> Option<Seconds> {
         self.inner.requested_rt60(c, rate, band)
     }
@@ -262,33 +258,61 @@ impl ToyFdn {
     }
 }
 
-/// The realization of a design that is never run: [`ToyFdn`] is analysed, not
-/// heard.
+/// The recurrence of a design that is never run: [`ToyFdn`] is analysed, not heard.
+/// It has no coefficients, no state and no target, and its run is silence.
 #[derive(Clone, Debug)]
 pub(crate) struct Unrun;
 
-impl Realization<Network> for Unrun {
-    type Bounds = NetworkSizes;
-    fn prepare(&mut self, _: &NetworkSizes, _: &Setup) {}
-    fn retarget(&mut self, _: &Network) {}
-    fn reset(&mut self) {}
-    fn fresh(&self) -> Self {
-        Unrun
+/// The coefficients of [`Unrun`]: none, and so always there.
+#[derive(Clone, Debug)]
+pub(crate) struct NoCoeffs;
+
+impl Approach for NoCoeffs {
+    type Target = ();
+    fn aim(&mut self, _: &()) {}
+    fn step(&mut self) -> bool {
+        false
+    }
+    fn settle(&mut self) {}
+}
+
+impl Recurrence for Unrun {
+    type Member = Network;
+    type Capacity = NetworkCapacity;
+    type Target = ();
+    type Coeffs = NoCoeffs;
+    type State = ();
+
+    const STEP: usize = 1;
+
+    fn start(&self, _: &Network) -> Start<Self> {
+        Start {
+            coeffs: NoCoeffs,
+            state: (),
+            target: (),
+        }
+    }
+    fn coefficients_into(&self, _: &Network, _: &mut ()) -> bool {
+        false
+    }
+    fn clear(&self, _: &mut ()) {}
+    fn run(
+        &self,
+        _: &NoCoeffs,
+        _: &mut (),
+        _: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: core::ops::Range<usize>,
+        _: usize,
+    ) {
+        output.iter_mut().for_each(|c| c[frames.clone()].fill(0.0));
     }
 }
 
-impl Effect<Network> for Unrun {
-    fn process(&mut self, _: &[&[f32]], output: &mut [&mut [f32]]) {
-        output.iter_mut().for_each(|c| c.fill(0.0));
-    }
-}
-
-impl Design for ToyFdn {
+impl Family for ToyFdn {
     type Controls = ToyControls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
-    type Realization = Unrun;
+    type Member = Network;
+    type Recurrence = Unrun;
 
     fn blank(&self, rate: SampleRate) -> Network {
         Network::new(rate)
@@ -298,11 +322,11 @@ impl Design for ToyFdn {
         Channels::new(BusTopology::MONO, BusTopology::STEREO)
     }
 
-    fn realization(&self) -> Unrun {
+    fn recurrence(&self) -> Unrun {
         Unrun
     }
 
-    fn design_into(&self, c: &ToyControls, rate: SampleRate, out: &mut Network) {
+    fn member_into(&self, c: &ToyControls, rate: SampleRate, out: &mut Network) {
         let size = if c.size.get().is_nan() {
             0.5
         } else {
@@ -331,7 +355,7 @@ impl Design for ToyFdn {
                 length,
                 modulation: Modulation::NONE,
                 absorption: {
-                    // As `FdnDesign` does: scaled to peak at most 0.9999.
+                    // As `FdnFamily` does: scaled to peak at most 0.9999.
                     let Absorption::Bands {
                         low,
                         mid,
@@ -344,7 +368,7 @@ impl Design for ToyFdn {
                     let pole = crossover.map(|f| {
                         libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
                     });
-                    let [low, mid, high] = crate::reverb::fdn::kernel::rescale_bands(
+                    let [low, mid, high] = crate::reverb::fdn::recurrence::rescale_bands(
                         [low.get(), mid.get(), high.get()],
                         pole,
                     );
@@ -398,24 +422,32 @@ impl Design for ToyFdn {
         network.wet = Db(0.0);
         *out = network;
     }
+}
+
+impl Grows for ToyFdn {
+    type Domain = MaxDecay;
 
     /// The largest design (size 1, the longest decay, the longest pre-delay);
     /// the tail is unbounded because freeze is reachable.
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
         let worst = ToyControls {
-            decay: [ceiling.max_decay(); 3],
+            decay: [reach.max_decay(); 3],
             size: Mix(1.0),
             diffusion: Mix(1.0),
             pre_delay: TOY_MAX_PRE_DELAY,
             freeze: false,
         };
-        let mut b = NetworkSizes::measure(&self.design(&worst, ceiling.rate()), ceiling.floor());
+        let mut b = NetworkCapacity::need(&self.member(&worst, reach.rate()), reach.floor());
         b.tail = Ring::Unbounded;
         b
     }
 }
 
-impl DesignCase for ToyFdn {
+impl FamilyCase for ToyFdn {
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
+    }
+
     fn reachable(&self) -> Vec<ToyControls> {
         let mut all = Vec::new();
         for low in [0.2, 1.0, 8.0] {
@@ -518,7 +550,7 @@ impl ReverbCase for ToyFdn {
     fn requested_rt60(&self, c: &ToyControls, rate: SampleRate, band: Band) -> Option<Seconds> {
         // Not where the asked bands would exceed 1: the design scales them.
         let d = |i: usize| ToyFdn::decay(c.decay[i]);
-        let n = self.design(c, rate);
+        let n = self.member(c, rate);
         if let Some(Stage::Fdn(f)) = n.stages.first()
             && !c.freeze
             && let Some(l) = f.lines.first()
@@ -527,7 +559,7 @@ impl ReverbCase for ToyFdn {
             let pole = [Hz(250.0), Hz(4000.0)].map(|f| {
                 libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32
             });
-            if crate::reverb::fdn::kernel::peak_response(g, pole) > 1.0 {
+            if crate::reverb::fdn::recurrence::peak_response(g, pole) > 1.0 {
                 return None;
             }
         }
@@ -657,14 +689,79 @@ pub(crate) enum Defect {
     PeriodicGain,
 }
 
-/// A real realization with one [`Defect`].
+/// A real recurrence with one [`Defect`], wrapped around: the defect is planted where
+/// the map it breaks is. A defect of the model the recurrence is asked to run (the
+/// loop gain, the damping, the lengths, the pre-delay, ...) is in κ, which writes
+/// the target of an edited network; one of the output is in `run`; a false
+/// latency is in `latency`; a reset that does nothing is in `clear`; and a first
+/// retarget that ramps is in the pair κ and γ ([`FlawedCoeffs`]).
 #[derive(Clone, Debug)]
-pub(crate) struct Flawed<K> {
-    inner: K,
+pub(crate) struct Flawed<R> {
+    inner: R,
     defect: Defect,
+}
+
+/// The target of [`Flawed`]: the inner one, and what the defect needs of the retargets
+/// that came.
+#[derive(Clone, Debug)]
+pub(crate) struct FlawedTarget<T> {
+    inner: T,
+    /// Where `RampFirst`'s first retarget goes before the real one.
+    off: T,
+    /// Whether the last κ wrote `off` too: the first retarget of `RampFirst`.
+    two_steps: bool,
+    /// Whether the inner κ accepted the model.
+    accepted: bool,
+    /// The retargets so far, for `UnslewedGain`.
     retargets: usize,
-    /// Whether no retarget has come since the realization was built or forked.
-    first: bool,
+}
+
+/// The coefficients of [`Flawed`]: the inner ones, and the retargets counted when
+/// they were aimed.
+#[derive(Clone, Debug)]
+pub(crate) struct FlawedCoeffs<C> {
+    inner: C,
+    retargets: usize,
+    /// Whether the aim that has just been made left a ramp that the runner's
+    /// landing `settle` must not cut short (`RampFirst`).
+    keep: bool,
+}
+
+impl<C: Approach> Approach for FlawedCoeffs<C> {
+    type Target = FlawedTarget<C::Target>;
+
+    fn aim(&mut self, t: &FlawedTarget<C::Target>) {
+        self.retargets = t.retargets;
+        self.keep = false;
+        if t.two_steps {
+            // The first retarget lands on `off` (what the runner's landing does to a
+            // first aim) and the real target is aimed at straight after, so it ramps
+            // from there instead of landing; the runner's own landing is then skipped.
+            self.inner.aim(&t.off);
+            self.inner.settle();
+            self.inner.aim(&t.inner);
+            self.keep = true;
+        } else if t.accepted {
+            self.inner.aim(&t.inner);
+        }
+    }
+
+    fn step(&mut self) -> bool {
+        self.inner.step()
+    }
+
+    fn settle(&mut self) {
+        if std::mem::take(&mut self.keep) {
+            return;
+        }
+        self.inner.settle();
+    }
+}
+
+/// What [`Flawed`] adds to the state of the inner recurrence.
+#[derive(Clone, Debug)]
+pub(crate) struct FlawedState<S> {
+    pub(crate) inner: S,
     /// Frames rendered so far, for `PeriodicGain`.
     samples: usize,
     /// The last frame of the previous block, per channel, for `LateByOne`.
@@ -673,62 +770,124 @@ pub(crate) struct Flawed<K> {
     runaway: f32,
 }
 
-impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Flawed<K> {
-    /// Retargets the inner realization to `network` as `edit` leaves it.
-    fn edited(&mut self, network: &Network, edit: impl FnOnce(&mut Network)) {
+impl<R: Recurrence<Member = Network, Capacity = NetworkCapacity>> Flawed<R> {
+    /// κ of the inner recurrence at `network` as `edit` leaves it.
+    fn edited(
+        &self,
+        network: &Network,
+        target: &mut R::Target,
+        edit: impl FnOnce(&mut Network),
+    ) -> bool {
         let mut n = Box::new(network.clone());
         edit(&mut n);
-        self.inner.retarget(&n);
+        self.inner.coefficients_into(&n, target)
+    }
+
+    /// The network `RampFirst` retargets to first: a wet gain and a size that sound
+    /// before the 20 ms the gains take, and lengths that move at half a frame a chunk
+    /// (seconds).
+    fn off(network: &Network) -> Network {
+        let mut off = network.clone();
+        off.wet = Db(off.wet.get() - 12.0);
+        map_fdn(&mut off, |f| {
+            f.lines
+                .as_mut_slice()
+                .iter_mut()
+                .for_each(|l| l.length *= 0.8);
+        });
+        map_absorption(&mut off, |a| match a {
+            Absorption::Bands {
+                low,
+                mid,
+                high,
+                crossover,
+            } => Absorption::Bands {
+                low: low * 0.5,
+                mid: mid * 0.5,
+                high: high * 0.5,
+                crossover,
+            },
+            Absorption::OnePole { gain, damp } => Absorption::OnePole {
+                gain: gain * 0.5,
+                damp,
+            },
+            Absorption::Gain(g) => Absorption::Gain(g * 0.5),
+        });
+        off
     }
 }
 
-impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Realization<Network> for Flawed<K> {
-    type Bounds = NetworkSizes;
+impl<R: Recurrence<Member = Network, Capacity = NetworkCapacity>> Recurrence for Flawed<R> {
+    type Member = Network;
+    type Capacity = NetworkCapacity;
+    type Target = FlawedTarget<R::Target>;
+    type Coeffs = FlawedCoeffs<R::Coeffs>;
+    type State = FlawedState<R::State>;
 
-    fn prepare(&mut self, bounds: &NetworkSizes, setup: &Setup) {
-        self.inner.prepare(bounds, setup);
+    const STEP: usize = R::STEP;
+
+    fn start(&self, model: &Network) -> Start<Self> {
+        let Start {
+            coeffs,
+            state,
+            target,
+        } = self.inner.start(model);
+        Start {
+            coeffs: FlawedCoeffs {
+                inner: coeffs,
+                retargets: 0,
+                keep: false,
+            },
+            state: FlawedState {
+                inner: state,
+                samples: 0,
+                held: [0.0; 8],
+                runaway: 1.0,
+            },
+            target: FlawedTarget {
+                off: target.clone(),
+                inner: target,
+                two_steps: false,
+                accepted: false,
+                retargets: 0,
+            },
+        }
     }
 
-    fn retarget(&mut self, network: &Network) {
-        self.retargets += 1;
-        let first = std::mem::replace(&mut self.first, false);
-        match self.defect {
+    fn prepare(
+        &mut self,
+        bounds: &NetworkCapacity,
+        setup: &Setup,
+        coeffs: &mut FlawedCoeffs<R::Coeffs>,
+        state: &mut FlawedState<R::State>,
+        target: &mut FlawedTarget<R::Target>,
+    ) {
+        self.inner.prepare(
+            bounds,
+            setup,
+            &mut coeffs.inner,
+            &mut state.inner,
+            &mut target.inner,
+        );
+        target.off = target.inner.clone();
+    }
+
+    fn coefficients_into(&self, network: &Network, t: &mut FlawedTarget<R::Target>) -> bool {
+        // Whether this is the first retarget since the runner was built.
+        let first = t.retargets == 0;
+        t.retargets += 1;
+        t.two_steps = false;
+        t.accepted = match self.defect {
             Defect::RampFirst if first => {
-                let mut off = network.clone();
-                // What a ramp shows: a wet gain and a size that sound before the
-                // 20 ms the gains take, and lengths that move at half a frame a
-                // chunk (seconds).
-                off.wet = Db(off.wet.get() - 12.0);
-                map_fdn(&mut off, |f| {
-                    f.lines
-                        .as_mut_slice()
-                        .iter_mut()
-                        .for_each(|l| l.length *= 0.8);
-                });
-                map_absorption(&mut off, |a| match a {
-                    Absorption::Bands {
-                        low,
-                        mid,
-                        high,
-                        crossover,
-                    } => Absorption::Bands {
-                        low: low * 0.5,
-                        mid: mid * 0.5,
-                        high: high * 0.5,
-                        crossover,
-                    },
-                    Absorption::OnePole { gain, damp } => Absorption::OnePole {
-                        gain: gain * 0.5,
-                        damp,
-                    },
-                    Absorption::Gain(g) => Absorption::Gain(g * 0.5),
-                });
-                self.inner.retarget(&off);
-                self.inner.retarget(network);
+                let off = self
+                    .inner
+                    .coefficients_into(&Self::off(network), &mut t.off);
+                let real = self.inner.coefficients_into(network, &mut t.inner);
+                t.two_steps = off && real;
+                real
             }
-            Defect::LoopGain(factor) => {
-                let mut n = network.clone();
-                map_absorption(&mut n, |a| match a {
+            Defect::LoopGain(factor) => self.edited(network, &mut t.inner, |n| {
+                map_absorption(n, |a| match a {
                     Absorption::OnePole { gain, damp } => Absorption::OnePole {
                         gain: gain * factor,
                         damp,
@@ -745,12 +904,10 @@ impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Realization<Network> for
                         high: high * factor,
                         crossover,
                     },
-                });
-                self.inner.retarget(&n);
-            }
-            Defect::NoDamping => {
-                let mut n = network.clone();
-                map_absorption(&mut n, |a| match a {
+                })
+            }),
+            Defect::NoDamping => self.edited(network, &mut t.inner, |n| {
+                map_absorption(n, |a| match a {
                     Absorption::OnePole { gain, .. } => Absorption::OnePole { gain, damp: 0.0 },
                     // Every band like the lowest.
                     Absorption::Bands { low, crossover, .. } => Absorption::Bands {
@@ -760,18 +917,19 @@ impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Realization<Network> for
                         crossover,
                     },
                     a => a,
-                });
-                self.inner.retarget(&n);
-            }
-            Defect::LastLineLong => self.edited(network, |n| {
+                })
+            }),
+            Defect::LastLineLong => self.edited(network, &mut t.inner, |n| {
                 map_fdn(n, |f| {
                     if let Some(l) = f.lines.as_mut_slice().last_mut() {
                         l.length *= 1.05;
                     }
                 })
             }),
-            Defect::PreDelayIgnored => self.edited(network, |n| n.pre_delay = Samples::ZERO),
-            Defect::FixedLines => self.edited(network, |n| {
+            Defect::PreDelayIgnored => {
+                self.edited(network, &mut t.inner, |n| n.pre_delay = Samples::ZERO)
+            }
+            Defect::FixedLines => self.edited(network, &mut t.inner, |n| {
                 map_fdn(n, |f| {
                     f.lines
                         .as_mut_slice()
@@ -779,23 +937,27 @@ impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Realization<Network> for
                         .for_each(|l| l.length = 1500.0)
                 })
             }),
-            Defect::NoMixing => self.edited(network, |n| {
+            Defect::NoMixing => self.edited(network, &mut t.inner, |n| {
                 map_fdn(n, |f| f.matrix = crate::reverb::network::Matrix::Diagonal)
             }),
-            Defect::OpenInput => self.edited(network, |n| {
+            Defect::OpenInput => self.edited(network, &mut t.inner, |n| {
                 map_fdn(n, |f| f.input.as_mut_slice().fill(0.35))
             }),
-            Defect::WidthIgnored => {
-                self.edited(network, |n| n.width = tutti_types::StereoWidth::NATURAL)
-            }
-            Defect::WetIgnored => self.edited(network, |n| n.wet = Db(0.0)),
-            _ => self.inner.retarget(network),
-        }
+            Defect::WidthIgnored => self.edited(network, &mut t.inner, |n| {
+                n.width = tutti_types::StereoWidth::NATURAL
+            }),
+            Defect::WetIgnored => self.edited(network, &mut t.inner, |n| n.wet = Db(0.0)),
+            _ => self.inner.coefficients_into(network, &mut t.inner),
+        };
+        true
     }
 
-    fn reset(&mut self) {
+    fn clear(&self, state: &mut FlawedState<R::State>) {
         if self.defect != Defect::NoReset {
-            self.inner.reset();
+            self.inner.clear(&mut state.inner);
+            state.samples = 0;
+            state.held = [0.0; 8];
+            state.runaway = 1.0;
         }
     }
 
@@ -808,78 +970,79 @@ impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Realization<Network> for
         }
     }
 
-    fn effort(&self) -> crate::Effort {
+    fn effort(&self) -> Effort {
         self.inner.effort()
     }
 
-    fn fresh(&self) -> Self {
-        if self.defect == Defect::FreshKeepsState {
-            return self.clone();
-        }
-        Self {
-            inner: self.inner.fresh(),
-            defect: self.defect,
-            retargets: self.retargets,
-            first: true,
-            samples: 0,
-            held: [0.0; 8],
-            runaway: 1.0,
-        }
-    }
-}
-
-impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Effect<Network> for Flawed<K> {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        self.inner.process(input, output);
+    fn run(
+        &self,
+        coeffs: &FlawedCoeffs<R::Coeffs>,
+        state: &mut FlawedState<R::State>,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: core::ops::Range<usize>,
+        into: usize,
+    ) {
+        self.inner.run(
+            &coeffs.inner,
+            &mut state.inner,
+            input,
+            output,
+            frames.clone(),
+            into,
+        );
         match self.defect {
             Defect::LateByOne => {
                 for (c, ch) in output.iter_mut().enumerate() {
-                    for s in ch.iter_mut() {
-                        std::mem::swap(s, &mut self.held[c]);
+                    for s in &mut ch[frames.clone()] {
+                        std::mem::swap(s, &mut state.held[c]);
                     }
                 }
             }
             Defect::DryLeak => {
-                for (o, i) in output[0].iter_mut().zip(input[0]) {
+                for (o, i) in output[0][frames.clone()].iter_mut().zip(&input[0][frames]) {
                     *o += i;
                 }
             }
             Defect::MonoOutput => {
                 let (first, rest) = output.split_at_mut(1);
-                rest[0].copy_from_slice(first[0]);
+                rest[0][frames.clone()].copy_from_slice(&first[0][frames]);
             }
-            Defect::UnslewedGain(factor) if self.retargets >= 2 => {
+            Defect::UnslewedGain(factor) if coeffs.retargets >= 2 => {
                 output
                     .iter_mut()
-                    .flat_map(|c| c.iter_mut())
+                    .flat_map(|c| c[frames.clone()].iter_mut())
                     .for_each(|s| *s *= factor);
             }
             Defect::Tanh => {
-                for s in output.iter_mut().flat_map(|c| c.iter_mut()) {
+                for s in output.iter_mut().flat_map(|c| c[frames.clone()].iter_mut()) {
                     *s = libm::tanhf(4.0 * *s) / 4.0;
                 }
             }
             Defect::PeriodicGain => {
-                for (i, n) in (0..output[0].len()).map(|i| (i, self.samples + i)) {
+                for (i, n) in frames
+                    .clone()
+                    .map(|i| (i, state.samples + i - frames.start))
+                {
                     let g = 1.0 + 0.2 * libm::sin(std::f64::consts::TAU * n as f64 / 700.0) as f32;
                     for ch in output.iter_mut() {
                         ch[i] *= g;
                     }
                 }
-                self.samples += output[0].len();
+                state.samples += frames.len();
             }
             Defect::BlockDependent => {
-                let len = output[0].len() as f32;
+                let len = frames.len() as f32;
                 output
                     .iter_mut()
-                    .flat_map(|c| c.iter_mut())
+                    .flat_map(|c| c[frames.clone()].iter_mut())
                     .for_each(|s| *s *= 1.0 + 1e-6 * len);
             }
             Defect::Runaway => {
-                for i in 0..output[0].len() {
-                    self.runaway *= 1.0001;
+                for i in frames {
+                    state.runaway *= 1.0001;
                     for ch in output.iter_mut() {
-                        ch[i] *= self.runaway;
+                        ch[i] *= state.runaway;
                     }
                 }
             }
@@ -888,21 +1051,19 @@ impl<K: Effect<Network, Bounds = NetworkSizes> + Clone> Effect<Network> for Flaw
     }
 }
 
-/// A design whose realization has one [`Defect`].
+/// A design whose recurrence has one [`Defect`].
 #[derive(Clone)]
-pub(crate) struct Defective<D: NetDesign> {
+pub(crate) struct Defective<D: NetFamily> {
     pub(crate) inner: D,
     pub(crate) defect: Defect,
-    /// Applied to the realization as it is built: a defect in the realization's own state.
-    pub(crate) tweak: fn(&mut D::Realization),
+    /// Applied to the runner as it is built: a defect in the runner's own state.
+    pub(crate) tweak: fn(&mut Realized<Flawed<D::Recurrence>>),
 }
 
-impl<D: NetDesign> Design for Defective<D> {
+impl<D: NetFamily> Family for Defective<D> {
     type Controls = D::Controls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
-    type Realization = Flawed<D::Realization>;
+    type Member = Network;
+    type Recurrence = Flawed<D::Recurrence>;
 
     fn blank(&self, rate: SampleRate) -> Network {
         Network::new(rate)
@@ -912,30 +1073,38 @@ impl<D: NetDesign> Design for Defective<D> {
         self.inner.channels()
     }
 
-    fn design_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Network) {
-        self.inner.design_into(c, rate, out);
+    fn member_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Network) {
+        self.inner.member_into(c, rate, out);
     }
 
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        self.inner.bounds(ceiling)
-    }
-
-    fn realization(&self) -> Flawed<D::Realization> {
-        let mut inner = self.inner.realization();
-        (self.tweak)(&mut inner);
+    fn recurrence(&self) -> Flawed<D::Recurrence> {
         Flawed {
-            inner,
+            inner: self.inner.recurrence(),
             defect: self.defect,
-            retargets: 0,
-            first: true,
-            held: [0.0; 8],
-            runaway: 1.0,
-            samples: 0,
         }
+    }
+
+    /// The runner, with the flaw of the runner's own the defect asks for (a `fresh`
+    /// that keeps the state is the runner's), and the tweak.
+    fn realized(&self) -> Realized<Flawed<D::Recurrence>> {
+        let mut r = Realized::new(self.recurrence(), &self.blank(SampleRate::DEFAULT));
+        if self.defect == Defect::FreshKeepsState {
+            r.flawed(crate::model::Flaw::FreshKeepsState);
+        }
+        (self.tweak)(&mut r);
+        r
     }
 }
 
-impl<D: NetDesign + DesignCase> DesignCase for Defective<D> {
+impl<D: NetFamily> Grows for Defective<D> {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        self.inner.reach(reach)
+    }
+}
+
+impl<D: NetFamily + FamilyCase> FamilyCase for Defective<D> {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
     }
@@ -945,8 +1114,8 @@ impl<D: NetDesign + DesignCase> DesignCase for Defective<D> {
     fn hostile(&self) -> Vec<D::Controls> {
         self.inner.hostile()
     }
-    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
-        self.inner.ceiling(rate)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
     }
     fn musical_delay(&self, model: &Network) -> usize {
         self.inner.musical_delay(model)
@@ -956,7 +1125,7 @@ impl<D: NetDesign + DesignCase> DesignCase for Defective<D> {
     }
 }
 
-impl<D: NetDesign + ReverbCase> ReverbCase for Defective<D> {
+impl<D: NetFamily + ReverbCase> ReverbCase for Defective<D> {
     fn requested_rt60(&self, c: &D::Controls, rate: SampleRate, band: Band) -> Option<Seconds> {
         self.inner.requested_rt60(c, rate, band)
     }
@@ -1001,7 +1170,7 @@ impl<D: NetDesign + ReverbCase> ReverbCase for Defective<D> {
     }
 }
 
-impl<D: NetDesign + RealizationCase> RealizationCase for Defective<D> {
+impl<D: NetFamily + RealizationCase> RealizationCase for Defective<D> {
     fn probes(&self) -> Vec<D::Controls> {
         self.inner.probes()
     }
@@ -1016,7 +1185,7 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Defective<D> {
     }
 }
 
-impl<D: NetDesign + LtiCase> LtiCase for Defective<D> {
+impl<D: NetFamily + LtiCase> LtiCase for Defective<D> {
     fn figures(&self) -> Vec<Figure<D::Controls>> {
         self.inner.figures()
     }
@@ -1099,37 +1268,64 @@ impl<M: Lti> Lti for Scaled<M> {
     }
 }
 
-/// The realization of a [`Lying`] design: the inner one, retargeted to the model
+/// The recurrence of a [`Lying`] design: the inner one, retargeted to the model
 /// inside.
 #[derive(Clone, Debug)]
-pub(crate) struct Lie<K>(K);
+pub(crate) struct Lie<R>(R);
 
-impl<K: Realization<Network>> Realization<Scaled<Network>> for Lie<K> {
-    type Bounds = K::Bounds;
+impl<R: Recurrence<Member = Network>> Recurrence for Lie<R> {
+    type Member = Scaled<Network>;
+    type Capacity = R::Capacity;
+    type Target = R::Target;
+    type Coeffs = R::Coeffs;
+    type State = R::State;
 
-    fn prepare(&mut self, bounds: &K::Bounds, setup: &Setup) {
-        self.0.prepare(bounds, setup);
+    const STEP: usize = R::STEP;
+
+    fn start(&self, model: &Scaled<Network>) -> Start<Self> {
+        let Start {
+            coeffs,
+            state,
+            target,
+        } = self.0.start(&model.inner);
+        Start {
+            coeffs,
+            state,
+            target,
+        }
     }
-    fn retarget(&mut self, model: &Scaled<Network>) {
-        self.0.retarget(&model.inner);
+    fn prepare(
+        &mut self,
+        bounds: &R::Capacity,
+        setup: &Setup,
+        coeffs: &mut R::Coeffs,
+        state: &mut R::State,
+        target: &mut R::Target,
+    ) {
+        self.0.prepare(bounds, setup, coeffs, state, target);
     }
-    fn reset(&mut self) {
-        self.0.reset();
+    fn coefficients_into(&self, model: &Scaled<Network>, target: &mut R::Target) -> bool {
+        self.0.coefficients_into(&model.inner, target)
+    }
+    fn clear(&self, state: &mut R::State) {
+        self.0.clear(state);
+    }
+    fn run(
+        &self,
+        coeffs: &R::Coeffs,
+        state: &mut R::State,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: core::ops::Range<usize>,
+        into: usize,
+    ) {
+        self.0.run(coeffs, state, input, output, frames, into);
     }
     fn latency(&self) -> Samples {
         self.0.latency()
     }
-    fn effort(&self) -> crate::Effort {
+    fn effort(&self) -> Effort {
         self.0.effort()
-    }
-    fn fresh(&self) -> Self {
-        Lie(self.0.fresh())
-    }
-}
-
-impl<K: Effect<Network>> Effect<Scaled<Network>> for Lie<K> {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        self.0.process(input, output);
     }
 }
 
@@ -1142,12 +1338,10 @@ pub(crate) struct Lying<D> {
     pub(crate) l1: f64,
 }
 
-impl<D: NetDesign> Design for Lying<D> {
+impl<D: NetFamily> Family for Lying<D> {
     type Controls = D::Controls;
-    type Model = Scaled<Network>;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
-    type Realization = Lie<D::Realization>;
+    type Member = Scaled<Network>;
+    type Recurrence = Lie<D::Recurrence>;
 
     fn blank(&self, rate: SampleRate) -> Scaled<Network> {
         Scaled {
@@ -1160,19 +1354,24 @@ impl<D: NetDesign> Design for Lying<D> {
     fn channels(&self) -> Channels {
         self.inner.channels()
     }
-    fn design_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Scaled<Network>) {
-        self.inner.design_into(c, rate, &mut out.inner);
+    fn member_into(&self, c: &D::Controls, rate: SampleRate, out: &mut Scaled<Network>) {
+        self.inner.member_into(c, rate, &mut out.inner);
         (out.tail, out.hinf, out.l1) = (self.tail, self.hinf, self.l1);
     }
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        self.inner.bounds(ceiling)
-    }
-    fn realization(&self) -> Lie<D::Realization> {
-        Lie(self.inner.realization())
+    fn recurrence(&self) -> Lie<D::Recurrence> {
+        Lie(self.inner.recurrence())
     }
 }
 
-impl<D: NetDesign + DesignCase> DesignCase for Lying<D> {
+impl<D: NetFamily> Grows for Lying<D> {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        self.inner.reach(reach)
+    }
+}
+
+impl<D: NetFamily + FamilyCase> FamilyCase for Lying<D> {
     fn rates(&self) -> Vec<SampleRate> {
         self.inner.rates()
     }
@@ -1182,15 +1381,15 @@ impl<D: NetDesign + DesignCase> DesignCase for Lying<D> {
     fn hostile(&self) -> Vec<D::Controls> {
         self.inner.hostile()
     }
-    fn ceiling(&self, rate: SampleRate) -> Ceiling<MaxDecay> {
-        self.inner.ceiling(rate)
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
     }
     fn vacant(&self) -> &'static [(Hook, &'static str)] {
         self.inner.vacant()
     }
 }
 
-impl<D: NetDesign + RealizationCase> RealizationCase for Lying<D> {
+impl<D: NetFamily + RealizationCase> RealizationCase for Lying<D> {
     fn probes(&self) -> Vec<D::Controls> {
         self.inner.probes()
     }
@@ -1205,7 +1404,7 @@ impl<D: NetDesign + RealizationCase> RealizationCase for Lying<D> {
     }
 }
 
-impl<D: NetDesign + LtiCase> LtiCase for Lying<D> {
+impl<D: NetFamily + LtiCase> LtiCase for Lying<D> {
     fn figures(&self) -> Vec<Figure<D::Controls>> {
         self.inner.figures()
     }

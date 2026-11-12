@@ -8,7 +8,7 @@ use tutti_midi_protocol::narrow_velocity;
 use tutti_sf2::SoundFont;
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::MidiChannel;
-use tutti_voicing::{ChannelState, Command, VoiceId, VoiceView};
+use tutti_voicing::{ChannelState, Command, VoiceId};
 
 use crate::channel::Channel;
 use crate::patch::PresetPatch;
@@ -31,7 +31,6 @@ pub(crate) struct Voices {
     polyphony: usize,
     active: Vec<Slot>,
     free: Vec<Voice>,
-    views: Vec<VoiceView>,
 }
 
 impl Clone for Voices {
@@ -43,11 +42,9 @@ impl Clone for Voices {
             polyphony: self.polyphony,
             active: Vec::with_capacity(self.polyphony),
             free: Vec::with_capacity(self.polyphony),
-            views: Vec::with_capacity(self.polyphony),
         };
         copy.active.extend(self.active.iter().cloned());
         copy.free.extend(self.free.iter().cloned());
-        copy.views.extend_from_slice(&self.views);
         copy
     }
 }
@@ -62,23 +59,15 @@ impl Voices {
                 free.extend((0..polyphony).map(|_| Voice::new(render)));
                 free
             },
-            views: Vec::with_capacity(polyphony),
         }
     }
 
-    /// The voices as the core reads them, with their levels now: the list
-    /// [`views`](Self::views) hands back.
-    pub(crate) fn refresh(&mut self) {
-        self.views.clear();
-        self.views.extend(self.active.iter().map(|s| VoiceView {
-            id: s.id,
-            level: Amplitude(s.voice.level()),
-        }));
-    }
-
-    /// The list [`refresh`](Self::refresh) made, sorted by id.
-    pub(crate) fn views(&self) -> &[VoiceView] {
-        &self.views
+    /// The envelope level of voice `id` now, `None` once it has ended: what the
+    /// core asks on a note message. `active` is in id order, so it is a binary
+    /// search.
+    pub(crate) fn level(&self, id: VoiceId) -> Option<Amplitude> {
+        let i = self.active.binary_search_by_key(&id, |s| s.id).ok()?;
+        Some(Amplitude(self.active[i].voice.level()))
     }
 
     /// Carries out what the core said, in order. A command that names a voice

@@ -4,15 +4,15 @@
 //! switching type is as cheap as any parameter change. One width-generic node,
 //! [`SvfFilterNode`]: the coefficients are shared across channels and only the
 //! integrator state is per channel. The algorithm is `tutti-dsp`'s
-//! ([`SvfDesign`]); the node is a [`DesignNode`] over it, and this file holds the
+//! ([`SvfFamily`]); the node is a [`FamilyNode`] over it, and this file holds the
 //! cells and how a block reads them.
 
-use tutti_dsp::{Real, Svf, SvfControls, SvfDesign, SvfType};
+use tutti_dsp::{Real, Svf, SvfControls, SvfFamily, SvfType};
 use tutti_types::{ChannelLayout, Db, Hz, Q};
 
-use super::NodeKernel;
+use super::NodeRecurrence;
 use super::filter_bus;
-use crate::reverb::DesignNode;
+use crate::reverb::FamilyNode;
 
 /// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
 /// coefficient set shared across the channels and one integrator pair per
@@ -78,7 +78,7 @@ use crate::reverb::DesignNode;
 /// its input stops, for as long as its Q says, so the graph's tail fold must not
 /// read it as `None`; it never parks. The graph prepares it at the device rate
 /// before its first block. Rendering allocates nothing.
-pub type SvfFilterNode<F = f64> = DesignNode<SvfDesign<F>>;
+pub type SvfFilterNode<F = f64> = FamilyNode<SvfFamily<F>>;
 
 impl<F: Real> SvfFilterNode<F> {
     /// A mono filter (1 in, 1 out) of `filter_type` at `frequency` cutoff and
@@ -126,7 +126,7 @@ impl<F: Real> SvfFilterNode<F> {
     /// fixed here: a node with another one is another node.
     #[must_use]
     pub fn with_controls(channels: impl Into<ChannelLayout>, controls: SvfControls) -> Self {
-        Self::live(SvfDesign::new(filter_bus(channels.into())), controls)
+        Self::live(SvfFamily::new(filter_bus(channels.into())), controls)
     }
 }
 
@@ -151,7 +151,7 @@ control_set! {
     }
 }
 
-impl<F: Real> NodeKernel for Svf<F> {
+impl<F: Real> NodeRecurrence for Svf<F> {
     type Set = SvfSet;
 
     fn set(&self, initial: &SvfControls) -> SvfSet {

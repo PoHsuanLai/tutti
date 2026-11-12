@@ -1,17 +1,19 @@
-//! `DesignNode<D>` over a design that is not Freeverb: a test-only echo with a
+//! `FamilyNode<D>` over a design that is not Freeverb: a test-only echo with a
 //! realization latency and a tail the test can make lie. What Freeverb cannot show
 //! (it has no latency and a tail longer than a block): the graph's mix aligned
 //! to the realization's latency, the cut at `tail + latency` inside a block, and a
 //! block-aligned park. Every figure is the definition of a delay.
 
+use std::ops::Range;
+
 use tutti_dsp::{
-    Ceiling, Channels, Design, Effect, Effort, FirSummary, MaxDecay, Network, NetworkSizes,
-    Realization, Setup, Sizes, Stage,
+    Approach, Capacity, Channels, Effort, Family, FirSummary, Grows, MaxDecay, Network,
+    NetworkCapacity, Reach, Recurrence, Stage, Start,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
-use tutti_nodes::{ControlSet, DesignNode, NodeDesign};
+use tutti_nodes::{ControlSet, FamilyNode, NodeFamily};
 use tutti_types::MaxBlock;
 use tutti_types::{BusTopology, Frame, Mix, SampleRate, Samples, Seconds, UnitAddr, UnitParam};
 
@@ -30,69 +32,100 @@ struct Echo {
     latency: usize,
 }
 
+/// The echo's recurrence: its delay line is the state, it has no coefficients.
 #[derive(Clone, Debug)]
-struct EchoKernel {
-    line: Vec<f32>,
-    at: usize,
+struct EchoRecurrence {
     echo: Echo,
 }
 
-impl Realization<Network> for EchoKernel {
-    type Bounds = NetworkSizes;
-    fn prepare(&mut self, _: &NetworkSizes, _: &Setup) {}
-    fn retarget(&mut self, _: &Network) {}
-    fn reset(&mut self) {
-        self.line.fill(0.0);
+/// The echo's delay line.
+#[derive(Clone, Debug)]
+struct EchoLine {
+    line: Vec<f32>,
+    at: usize,
+}
+
+/// An echo has nothing to approach: no coefficient, and so always there.
+#[derive(Clone, Debug)]
+struct NoCoeffs;
+
+impl Approach for NoCoeffs {
+    type Target = ();
+    fn aim(&mut self, _: &()) {}
+    fn step(&mut self) -> bool {
+        false
     }
+    fn settle(&mut self) {}
+}
+
+impl Recurrence for EchoRecurrence {
+    type Member = Network;
+    type Capacity = NetworkCapacity;
+    type Target = ();
+    type Coeffs = NoCoeffs;
+    type State = EchoLine;
+
+    const STEP: usize = 1;
+
+    fn start(&self, _: &Network) -> Start<Self> {
+        let echo = self.echo;
+        let line = vec![0.0; echo.claimed.max(echo.actual) + echo.latency + 1];
+        Start {
+            coeffs: NoCoeffs,
+            state: EchoLine { line, at: 0 },
+            target: (),
+        }
+    }
+
+    fn coefficients_into(&self, _: &Network, _: &mut ()) -> bool {
+        false
+    }
+
+    fn clear(&self, state: &mut EchoLine) {
+        state.line.fill(0.0);
+    }
+
     fn latency(&self) -> Samples {
         Samples(self.echo.latency)
     }
+
     fn effort(&self) -> Effort {
         Effort::Light
     }
-    fn fresh(&self) -> Self {
-        Self::new(self.echo)
-    }
-}
 
-impl Effect<Network> for EchoKernel {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        let n = self.line.len();
+    fn run(
+        &self,
+        _: &NoCoeffs,
+        state: &mut EchoLine,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: Range<usize>,
+        _: usize,
+    ) {
+        let n = state.line.len();
         let (first, second) = (
             self.echo.claimed + self.echo.latency,
             self.echo.actual + self.echo.latency,
         );
-        for (o, &x) in output[0].iter_mut().zip(input[0]) {
-            self.line[self.at] = x;
-            let back = |d: usize| self.line[(self.at + n - d) % n];
-            *o = back(first) + if second != first { back(second) } else { 0.0 };
-            self.at = (self.at + 1) % n;
+        for i in frames {
+            state.line[state.at] = input[0][i];
+            let back = |d: usize| state.line[(state.at + n - d) % n];
+            output[0][i] = back(first) + if second != first { back(second) } else { 0.0 };
+            state.at = (state.at + 1) % n;
         }
     }
 }
 
-impl EchoKernel {
-    fn new(echo: Echo) -> Self {
-        Self {
-            line: vec![0.0; echo.claimed.max(echo.actual) + echo.latency + 1],
-            at: 0,
-            echo,
-        }
-    }
-}
-
-impl Design for Echo {
+impl Family for Echo {
     type Controls = ();
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
-    type Realization = EchoKernel;
+    type Member = Network;
+    type Recurrence = EchoRecurrence;
 
     fn channels(&self) -> Channels {
         Channels::same(BusTopology::MONO)
     }
 
-    fn design_into(&self, _: &(), rate: SampleRate, out: &mut Network) {
+    fn member_into(&self, _: &(), rate: SampleRate, out: &mut Network) {
         out.clear(rate);
         let _ = out.stages.push(Stage::Fir(FirSummary {
             length: Samples(self.claimed),
@@ -107,12 +140,16 @@ impl Design for Echo {
         Network::new(rate)
     }
 
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
-        NetworkSizes::measure(&self.design(&(), ceiling.rate()), ceiling.floor())
+    fn recurrence(&self) -> EchoRecurrence {
+        EchoRecurrence { echo: *self }
     }
+}
 
-    fn realization(&self) -> EchoKernel {
-        EchoKernel::new(*self)
+impl Grows for Echo {
+    type Domain = MaxDecay;
+
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
+        NetworkCapacity::need(&self.member(&(), reach.rate()), reach.floor())
     }
 }
 
@@ -134,20 +171,24 @@ impl ControlSet for NoParams {
     fn assemble(&self, _: &[f32]) {}
 }
 
-impl NodeDesign for Echo {
+impl NodeFamily for Echo {
     type Set = NoParams;
 
     fn set(&self, _: &()) -> NoParams {
         NoParams
     }
+
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.grown(rate)
+    }
 }
 
-fn node(echo: Echo) -> DesignNode<Echo> {
-    prepared(DesignNode::live(echo, ()), SR, BLOCK)
+fn node(echo: Echo) -> FamilyNode<Echo> {
+    prepared(FamilyNode::live(echo, ()), SR, BLOCK)
 }
 
 struct Rig {
-    node: DesignNode<Echo>,
+    node: FamilyNode<Echo>,
     frame: u64,
 }
 
@@ -310,7 +351,7 @@ fn a_block_aligned_cut_parks_and_resets() {
 fn the_graphs_mix_is_aligned_to_the_kernels_latency() {
     let (claimed, latency) = (25, 7);
     let mut solo = Solo::new(
-        DesignNode::live(
+        FamilyNode::live(
             Echo {
                 claimed,
                 actual: claimed,

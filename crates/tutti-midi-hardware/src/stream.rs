@@ -170,8 +170,8 @@ impl Negotiation {
         let mut actions = Vec::new();
         match &mut self.run {
             Run::Idle => {
-                let (connection, discovery) = Connection::with_wanted(WANTED, now);
-                actions.push(Action::Send(discovery));
+                let (connection, first) = Connection::with_wanted(WANTED, now);
+                actions.push(first);
                 self.run = Run::Asking(Box::new(connection));
             }
             Run::Asking(connection) => {

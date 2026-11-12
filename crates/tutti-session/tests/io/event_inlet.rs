@@ -11,7 +11,7 @@
 
 use tutti_fixtures::midi::{key_of, m1_note_on};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_graph::{EventInletNode, EventTapReader, Refused, TapAlign, TapEvent};
+use tutti_graph::{EventCapacity, EventInletNode, EventTapReader, Refused, TapAlign, TapEvent};
 use tutti_session::{OutPort, Root, Session};
 use tutti_types::ChannelLayout;
 use tutti_types::{At, Frame, SampleRate};
@@ -56,9 +56,9 @@ fn pushed_events_come_out_at_their_frames() {
     let mut s = session();
     let _ = s.update();
     assert!(!s.graph().is_edited());
-    let (key, mut writer) = s.graph().open_event_inlet(64);
+    let (key, mut writer) = s.graph().open_event_inlet(EventCapacity::of(64));
     assert!(s.graph().is_edited(), "the open inserted a node");
-    let (node, mut prebuilt) = EventInletNode::pair(64);
+    let (node, mut prebuilt) = EventInletNode::pair(EventCapacity::of(64));
     let key2 = s.graph().add_event_inlet(node);
     assert_ne!(key, key2);
     let mut tap = s
@@ -111,8 +111,8 @@ impl Node for Hear {
 #[test]
 fn an_export_fork_is_accepted_and_silent() {
     let mut s = session();
-    let (key, mut writer) = s.graph().open_event_inlet(8);
-    let (hear, ()) = s.graph().insert(ForkByClone(Hear));
+    let (key, mut writer) = s.graph().open_event_inlet(EventCapacity::of(8));
+    let (hear, ()) = s.graph().add(ForkByClone(Hear));
     s.graph()
         .connect(key.events_out(), hear.events_in())
         .unwrap();
@@ -133,14 +133,6 @@ fn an_export_fork_is_accepted_and_silent() {
     assert!(live > 0.0, "the live graph hears the push");
 }
 
-/// A capacity of 0 is refused, loudly, where the ring would be built.
-#[test]
-#[should_panic(expected = "an event inlet holds")]
-fn a_zero_capacity_is_refused() {
-    let mut s = session();
-    let _ = s.graph().open_event_inlet(0);
-}
-
 /// **An event edge is never faded**: a note-off is a message, not a level
 /// (doc 030, section 4). An audio edge that is cut stays in the plan as a
 /// fading edge and is dropped by a commit of its own when the fade has ended;
@@ -150,8 +142,8 @@ fn a_zero_capacity_is_refused() {
 #[test]
 fn an_event_edge_is_cut_with_one_commit_and_not_faded() {
     let mut s = session();
-    let (key, mut writer) = s.graph().open_event_inlet(8);
-    let (hear, ()) = s.graph().insert(ForkByClone(Hear));
+    let (key, mut writer) = s.graph().open_event_inlet(EventCapacity::of(8));
+    let (hear, ()) = s.graph().add(ForkByClone(Hear));
     s.graph()
         .connect(key.events_out(), hear.events_in())
         .unwrap();

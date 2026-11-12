@@ -1,4 +1,4 @@
-//! `DesignNode` over Freeverb, as the graph runs it (design 022 step 1b): its
+//! `FamilyNode` over Freeverb, as the graph runs it (design 022 step 1b): its
 //! ports, its tail (a ceiling it narrows and honours), its controls (a cell, or
 //! a port the graph modulates), and its fork. Every figure is from the
 //! definition (the network's own analytic tail, an impulse's first echo, a
@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use tutti_dsp::{
-    Ceiling, Design, Effect, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign,
-    Realization, Setup, System,
+    Family, FdnControls, FdnFamily, Freeverb, FreeverbControls, FreeverbFamily, Grows, Reach,
+    Setup, System,
 };
 use tutti_fixtures::Noise;
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
@@ -18,7 +18,7 @@ use tutti_graph::{
 };
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_nodes::{DesignNode, FdnNode, FreeverbNode};
+use tutti_nodes::{FamilyNode, FdnNode, FreeverbNode};
 use tutti_types::{
     AtomicF32, ChannelLayout, Db, Frame, MaxBlock, Mix, SampleRate, Samples, Tail, UnitAddr,
     UnitParam,
@@ -40,7 +40,7 @@ fn controls(room: f32, damp: f32) -> FreeverbControls {
 
 /// A live (modulatable) Freeverb node at `c`, prepared at 48 kHz.
 fn live(c: FreeverbControls) -> FreeverbNode {
-    prepared(DesignNode::live(FreeverbDesign, c), SR, BLOCK)
+    prepared(FamilyNode::live(FreeverbFamily, c), SR, BLOCK)
 }
 
 /// A node driven block by block, at its own running frame.
@@ -90,7 +90,7 @@ fn reported(d: &tutti_graph::contract::Driven) -> usize {
 /// The network's own tail at -60 dB, in frames at 48 kHz: the figure the node
 /// reports for `c`, from the network's analytic query.
 fn tail_of(c: FreeverbControls) -> usize {
-    let ring = FreeverbDesign.design(&c, SR).tail(Db(-60.0));
+    let ring = FreeverbFamily.member(&c, SR).tail(Db(-60.0));
     let tutti_dsp::Ring::Finite(s) = ring else {
         panic!("finite")
     };
@@ -146,7 +146,7 @@ fn the_port_order_is_the_cells_in_their_order() {
         ]
     );
     let fdn: FdnNode = prepared(
-        DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT),
+        FamilyNode::live(FdnFamily::default(), FdnControls::DEFAULT),
         SR,
         BLOCK,
     );
@@ -206,20 +206,20 @@ fn the_reported_tail_is_honest() {
 fn the_cut_discards_only_what_is_below_the_floor() {
     for c in [gm(), controls(0.9, 0.2), controls(0.1, 0.9)] {
         let tail = tail_of(c);
-        let mut tuned = FreeverbDesign.realization();
+        let mut tuned = FreeverbFamily.realized();
         tuned.prepare(
-            &FreeverbDesign.bounds(&Ceiling::at(SR).unwrap()),
+            &FreeverbFamily.reach(&Reach::at(SR).unwrap()),
             &Setup {
                 rate: SR,
                 max_block: MaxBlock::of(Samples(BLOCK)),
             },
         );
-        tuned.retarget(&FreeverbDesign.design(&c, SR));
+        tuned.retarget(&FreeverbFamily.member(&c, SR));
         let frames = tail + 20_000;
         let mut x = vec![0.0f32; frames];
         x[0] = 1.0;
         let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
-        tuned.process(&[&x], &mut [&mut l, &mut r]);
+        tuned.process(&[&x], &mut [&mut l, &mut r], frames);
         let peak = l.iter().chain(&r).fold(0.0f32, |m, s| m.max(s.abs()));
         let after = l[tail + 1..]
             .iter()
@@ -399,7 +399,7 @@ fn the_node_is_the_room_alone() {
 /// does not carry the ring (doc 022's export-fork rule: `fresh()` plus preroll).
 #[test]
 fn a_fork_starts_silent_with_the_values_set() {
-    assert_param_fork(DesignNode::live(FreeverbDesign, gm()));
+    assert_param_fork(FamilyNode::live(FreeverbFamily, gm()));
 
     let mut rig = Rig::new(live(controls(0.9, 0.5)));
     rig.block(&noise(5, BLOCK), &[]);
@@ -432,7 +432,7 @@ fn a_fork_starts_silent_with_the_values_set() {
 #[test]
 fn a_lane_driving_the_room_changes_how_long_it_rings() {
     let ring = |room: f32| -> f64 {
-        let node = DesignNode::live(FreeverbDesign, gm());
+        let node = FamilyNode::live(FreeverbFamily, gm());
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
         let (n, _) = g.add_with_controls(node);
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -477,11 +477,11 @@ fn a_lane_driving_the_room_changes_how_long_it_rings() {
     );
 }
 
-/// A `DesignNode` is an `IntoNode` whose controls are its
+/// A `FamilyNode` is an `IntoNode` whose controls are its
 /// `ParamSet`, so the session can address the room by `UnitParam`.
 #[test]
 fn it_is_inserted_with_a_param_set() {
-    let (_, set) = DesignNode::live(FreeverbDesign, gm()).into_node();
+    let (_, set) = FamilyNode::live(FreeverbFamily, gm()).into_node();
     assert!(set.set(UnitParam::RoomSize, 0.7));
     assert_eq!(set.get(UnitParam::RoomSize), Some(0.7));
     assert!(

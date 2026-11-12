@@ -8,8 +8,8 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tutti_types::{MaxBlock, SampleRate, Samples};
 
-use super::DesignCase;
-use crate::{Design, Effect, Realization, Setup};
+use super::FamilyCase;
+use crate::{Family, Realized, Recurrence, Setup};
 
 /// The longest block the cases prepare for.
 pub const MAX_BLOCK: usize = 512;
@@ -26,30 +26,30 @@ pub fn setup(rate: SampleRate) -> Setup {
     }
 }
 
-/// A prepared realization retargeted to `controls`, and its model.
-pub fn built<D: DesignCase>(
+/// A prepared runner retargeted to `controls`, and its model.
+pub fn built<D: FamilyCase>(
     d: &D,
     controls: &D::Controls,
     rate: SampleRate,
-) -> (D::Realization, D::Model) {
-    let mut k = d.realization();
-    k.prepare(&d.bounds(&d.ceiling(rate)), &setup(rate));
-    let model = d.design(controls, rate);
+) -> (Realized<D::Recurrence>, D::Member) {
+    let mut k = d.realized();
+    k.prepare(&d.capacity(rate), &setup(rate));
+    let model = d.member(controls, rate);
     k.retarget(&model);
     (k, model)
 }
 
 /// The input and output widths of `d`.
 #[must_use]
-pub fn widths<D: Design>(d: &D) -> (usize, usize) {
+pub fn widths<D: Family>(d: &D) -> (usize, usize) {
     let channels = d.channels();
     (channels.input_width(), channels.output_width())
 }
 
 /// Renders `input` (the same signal on every input channel) through `k` in
 /// blocks of `block`, one `Vec` per output channel.
-pub fn render<M, K: Effect<M>>(
-    k: &mut K,
+pub fn render<R: Recurrence>(
+    k: &mut Realized<R>,
     (inputs, outputs): (usize, usize),
     input: &[f32],
     block: usize,
@@ -60,7 +60,7 @@ pub fn render<M, K: Effect<M>>(
         let end = (start + block).min(input.len());
         let ins: Vec<&[f32]> = vec![&input[start..end]; inputs];
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[start..end]).collect();
-        k.process(&ins, &mut outs);
+        k.process(&ins, &mut outs, end - start);
         start = end;
     }
     out
@@ -135,6 +135,6 @@ pub fn rms(out: &[Vec<f32>], from: usize, len: usize) -> f64 {
 }
 
 /// The first rate a design is measured at.
-pub(super) fn rate_of<D: DesignCase>(d: &D) -> SampleRate {
+pub(super) fn rate_of<D: FamilyCase>(d: &D) -> SampleRate {
     d.rates()[0]
 }

@@ -120,7 +120,7 @@ impl fmt::Display for DeviceId {
 /// Which way MIDI flows through a device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Direction {
+pub enum PortDirection {
     /// It sends MIDI to this engine.
     Input,
     /// This engine sends MIDI to it.
@@ -129,7 +129,7 @@ pub enum Direction {
     Duplex,
 }
 
-impl Direction {
+impl PortDirection {
     /// Whether the engine can receive from it.
     #[must_use]
     pub fn is_input(self) -> bool {
@@ -156,5 +156,5 @@ pub struct DeviceInfo {
     /// The name to show, as the OS reports it.
     pub name: String,
     /// Which way MIDI flows.
-    pub direction: Direction,
+    pub direction: PortDirection,
 }

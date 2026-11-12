@@ -8,7 +8,7 @@ fn handle(n: u64) -> EndpointId {
     EndpointId::from_raw(n)
 }
 
-fn dev(n: u64, client: &str, port: &str, direction: Direction) -> OsDevice {
+fn dev(n: u64, client: &str, port: &str, direction: PortDirection) -> OsDevice {
     OsDevice {
         handle: handle(n),
         identity: Identity::alsa(client, port),
@@ -18,7 +18,7 @@ fn dev(n: u64, client: &str, port: &str, direction: Direction) -> OsDevice {
 }
 
 fn keys(n: u64) -> OsDevice {
-    dev(n, "Keystep", "MIDI 1", Direction::Input)
+    dev(n, "Keystep", "MIDI 1", PortDirection::Input)
 }
 
 fn added(event: Option<DeviceEvent>) -> DeviceInfo {
@@ -33,8 +33,8 @@ fn a_new_handle_is_added_and_listed() {
     let mut table = DeviceTable::default();
     let info = added(table.apply(OsChange::Present(keys(1))));
     assert_eq!(info.name, "Keystep: MIDI 1");
-    assert_eq!(info.direction, Direction::Input);
-    assert_eq!(table.list(), std::slice::from_ref(&info));
+    assert_eq!(info.direction, PortDirection::Input);
+    assert!(table.list().eq([&info]));
     assert_eq!(table.get(&info.id), Some(&info));
     assert_eq!(table.handle(&info.id), Some(handle(1)));
 }
@@ -55,7 +55,7 @@ fn gone_returns_the_last_info_and_unlists() {
         table.apply(OsChange::Gone(handle(1))),
         Some(DeviceEvent::Removed(info.clone()))
     );
-    assert!(table.list().is_empty());
+    assert_eq!(table.list().len(), 0);
     assert_eq!(table.handle(&info.id), None);
 }
 
@@ -81,7 +81,7 @@ fn a_rename_is_changed_and_keeps_the_id() {
     };
     assert_eq!(now.id, info.id);
     assert_eq!(now.name, "Keystep Pro");
-    assert_eq!(table.list(), [now]);
+    assert_eq!(table.list().cloned().collect::<Vec<_>>(), [now]);
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn a_direction_change_is_changed() {
     let mut table = DeviceTable::default();
     table.apply(OsChange::Present(keys(1)));
     let duplex = OsDevice {
-        direction: Direction::Duplex,
+        direction: PortDirection::Duplex,
         ..keys(1)
     };
     let Some(DeviceEvent::Changed(now)) = table.apply(OsChange::Present(duplex)) else {
@@ -124,15 +124,19 @@ fn a_freed_ordinal_is_taken_by_the_next_identical_device() {
 #[test]
 fn a_re_enumeration_changes_nothing() {
     let mut table = DeviceTable::default();
-    let all = [keys(1), keys(2), dev(3, "Synth", "Out", Direction::Output)];
+    let all = [
+        keys(1),
+        keys(2),
+        dev(3, "Synth", "Out", PortDirection::Output),
+    ];
     for d in &all {
         table.apply(OsChange::Present(d.clone()));
     }
-    let before = table.list();
+    let before: Vec<_> = table.list().cloned().collect();
     for d in all.iter().rev() {
         assert_eq!(table.apply(OsChange::Present(d.clone())), None);
     }
-    assert_eq!(table.list(), before);
+    assert_eq!(table.list().cloned().collect::<Vec<_>>(), before);
 }
 
 #[test]
@@ -157,7 +161,7 @@ fn a_product_id_is_shared_by_ports_of_one_device() {
         handle: handle(n),
         identity: Identity::Product("sn-0042".into()),
         name: format!("Port {n}"),
-        direction: Direction::Duplex,
+        direction: PortDirection::Duplex,
     };
     let a = added(table.apply(OsChange::Present(port(1))));
     let b = added(table.apply(OsChange::Present(port(2))));
@@ -170,8 +174,13 @@ fn ids_order_by_identity_then_ordinal() {
     let mut table = DeviceTable::default();
     table.apply(OsChange::Present(keys(1)));
     table.apply(OsChange::Present(keys(2)));
-    table.apply(OsChange::Present(dev(3, "Another", "P", Direction::Input)));
-    let names: Vec<_> = table.list().into_iter().map(|d| d.id.to_string()).collect();
+    table.apply(OsChange::Present(dev(
+        3,
+        "Another",
+        "P",
+        PortDirection::Input,
+    )));
+    let names: Vec<_> = table.list().map(|d| d.id.to_string()).collect();
     assert_eq!(
         names,
         [
@@ -190,7 +199,11 @@ fn change() -> impl Strategy<Value = OsChange> {
             handle: handle(h),
             identity: Identity::alsa(["A", "B"][who], "P"),
             name: ["one", "two"][label].to_string(),
-            direction: [Direction::Input, Direction::Output, Direction::Duplex][dir],
+            direction: [
+                PortDirection::Input,
+                PortDirection::Output,
+                PortDirection::Duplex,
+            ][dir],
         })
     });
     let gone = (0u64..5).prop_map(|h| OsChange::Gone(handle(h)));
@@ -243,14 +256,14 @@ proptest! {
             None => {}
         });
         // The event history replays to the table's own list.
-        prop_assert_eq!(table.list(), listed.into_values().collect::<Vec<_>>());
+        prop_assert_eq!(table.list().cloned().collect::<Vec<_>>(), listed.into_values().collect::<Vec<_>>());
     }
 
     #[test]
     fn list_agrees_with_the_os(changes in prop::collection::vec(change(), 0..60)) {
         let mut table = DeviceTable::default();
         drive(&mut table, changes, |_, table, os| {
-            let list = table.list();
+            let list: Vec<_> = table.list().cloned().collect();
             assert_eq!(list.len(), os.len());
             for (handle, device) in os {
                 let id = list
@@ -270,11 +283,11 @@ proptest! {
     fn a_re_enumeration_is_silent_and_keeps_ids(changes in prop::collection::vec(change(), 0..40)) {
         let mut table = DeviceTable::default();
         let os = drive(&mut table, changes, |_, _, _| {});
-        let before = table.list();
+        let before: Vec<_> = table.list().cloned().collect();
         for device in os.values() {
             prop_assert_eq!(table.apply(OsChange::Present(device.clone())), None);
         }
-        prop_assert_eq!(table.list(), before);
+        prop_assert_eq!(table.list().cloned().collect::<Vec<_>>(), before);
     }
 }
 
@@ -289,7 +302,7 @@ fn ordinals(candidates: &[DeviceInfo]) -> Vec<u32> {
     candidates.iter().map(|d| d.id.ordinal()).collect()
 }
 
-fn port(n: u64, unit: &str, name: &str, direction: Direction) -> OsDevice {
+fn port(n: u64, unit: &str, name: &str, direction: PortDirection) -> OsDevice {
     OsDevice {
         handle: handle(n),
         identity: Identity::Product(unit.into()),
@@ -303,7 +316,7 @@ fn coremidi(n: u64, unique: i32, name: &str) -> OsDevice {
         handle: handle(n),
         identity: Identity::CoreMidi(unique),
         name: name.into(),
-        direction: Direction::Input,
+        direction: PortDirection::Input,
     }
 }
 
@@ -345,7 +358,7 @@ fn nothing_alike_is_missing() {
     let info = DeviceInfo {
         id: DeviceId::new(Identity::alsa("Keystep", "MIDI 1"), 0),
         name: "Keystep: MIDI 1".into(),
-        direction: Direction::Input,
+        direction: PortDirection::Input,
     };
     assert_eq!(table.resolve(&info), Resolved::Missing);
     let listed = keys_info(&mut table, 1);
@@ -364,13 +377,13 @@ fn a_neighbouring_identity_is_not_a_candidate() {
         3,
         "Keystep",
         "MIDI 10",
-        Direction::Input,
+        PortDirection::Input,
     )));
     table.apply(OsChange::Present(dev(
         4,
         "Keysteo",
         "MIDI 1",
-        Direction::Input,
+        PortDirection::Input,
     )));
     let Resolved::Ambiguous(candidates) = table.resolve(&first) else {
         panic!("two alike");
@@ -396,18 +409,23 @@ fn a_saved_zero_resolves_to_the_lone_survivor_of_a_pair_by_name_only() {
 #[test]
 fn a_unit_port_is_told_by_name_and_direction() {
     let mut table = DeviceTable::default();
-    let in1 = added(table.apply(OsChange::Present(port(1, "u1", "Pad In", Direction::Input))));
+    let in1 = added(table.apply(OsChange::Present(port(
+        1,
+        "u1",
+        "Pad In",
+        PortDirection::Input,
+    ))));
     let out1 = added(table.apply(OsChange::Present(port(
         2,
         "u1",
         "Pad Out",
-        Direction::Output,
+        PortDirection::Output,
     ))));
     let in2 = added(table.apply(OsChange::Present(port(
         3,
         "u1",
         "Pad Out",
-        Direction::Input,
+        PortDirection::Input,
     ))));
     assert_eq!(
         [in1.id.ordinal(), out1.id.ordinal(), in2.id.ordinal()],
@@ -424,9 +442,14 @@ fn a_unit_port_is_told_by_name_and_direction() {
         9,
         "u1",
         "Pad Out",
-        Direction::Input,
+        PortDirection::Input,
     ))));
-    let pad_in = added(after.apply(OsChange::Present(port(8, "u1", "Pad In", Direction::Input))));
+    let pad_in = added(after.apply(OsChange::Present(port(
+        8,
+        "u1",
+        "Pad In",
+        PortDirection::Input,
+    ))));
     assert_eq!(after.resolve(&in1), Resolved::Exact(pad_in));
     assert_eq!(after.resolve(&in2), Resolved::Exact(pad_out_in));
 }
@@ -434,13 +457,18 @@ fn a_unit_port_is_told_by_name_and_direction() {
 #[test]
 fn a_unit_without_the_saved_port_is_ambiguous_over_its_ports() {
     let mut table = DeviceTable::default();
-    let saved = added(table.apply(OsChange::Present(port(1, "u1", "Pad In", Direction::Input))));
+    let saved = added(table.apply(OsChange::Present(port(
+        1,
+        "u1",
+        "Pad In",
+        PortDirection::Input,
+    ))));
     table.apply(OsChange::Gone(handle(1)));
     let other = added(table.apply(OsChange::Present(port(
         2,
         "u1",
         "Pad Out",
-        Direction::Output,
+        PortDirection::Output,
     ))));
     assert_eq!(table.resolve(&saved), Resolved::Ambiguous(vec![other]));
 }
@@ -459,8 +487,18 @@ fn a_coremidi_endpoint_is_exact_by_its_unique_id() {
 #[test]
 fn a_unit_with_two_identical_ports_is_ambiguous() {
     let mut table = DeviceTable::default();
-    let a = added(table.apply(OsChange::Present(port(1, "u1", "Pad", Direction::Input))));
-    let b = added(table.apply(OsChange::Present(port(2, "u1", "Pad", Direction::Input))));
+    let a = added(table.apply(OsChange::Present(port(
+        1,
+        "u1",
+        "Pad",
+        PortDirection::Input,
+    ))));
+    let b = added(table.apply(OsChange::Present(port(
+        2,
+        "u1",
+        "Pad",
+        PortDirection::Input,
+    ))));
     assert_eq!(table.resolve(&a), Resolved::Ambiguous(vec![a, b]));
 }
 
@@ -474,9 +512,9 @@ fn a_lone_device_that_no_longer_goes_the_saved_way_is_ambiguous() {
         1,
         "Keystep",
         "MIDI 1",
-        Direction::Output,
+        PortDirection::Output,
     )));
-    let now = table.list().remove(0);
+    let now = table.list().next().cloned().unwrap();
     assert_eq!(table.resolve(&saved), Resolved::Ambiguous(vec![now]));
 }
 
@@ -488,8 +526,8 @@ fn a_duplex_device_still_serves_a_saved_input() {
         1,
         "Keystep",
         "MIDI 1",
-        Direction::Duplex,
+        PortDirection::Duplex,
     )));
-    let now = table.list().remove(0);
+    let now = table.list().next().cloned().unwrap();
     assert_eq!(table.resolve(&saved), Resolved::SameName(now));
 }

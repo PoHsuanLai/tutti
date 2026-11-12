@@ -3705,6 +3705,7 @@ dependencies = [
  "libc",
  "proptest",
  "ringbuf",
+ "serde",
  "tutti-curve",
  "tutti-fixtures",
  "tutti-graph",

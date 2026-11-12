@@ -13,7 +13,7 @@ use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 #[cfg(feature = "midi-hardware")]
-use tutti_midi_hardware::{Direction, EndpointId};
+use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_transport::MotionEvent;
 use tutti_types::{
@@ -23,8 +23,8 @@ use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
 use tutti_session::{
-    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx,
-    SendError, Session, SessionEvent, SessionNode, UmpOut,
+    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, NoSuchMidiRoute,
+    PHASES, PhaseCx, SendError, Session, SessionEvent, SessionNode, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -210,7 +210,7 @@ fn a_target_without_an_event_input_takes_no_clip() {
         s.midi().play_clip(dc, std::iter::empty::<TimedMidiEvent>()),
         Err(Error::NoEventInput(n)) if n == dc.erase()
     ));
-    s.remove(dc);
+    s.remove(dc).unwrap();
     assert!(matches!(
         s.midi().live_input(dc),
         Err(Error::NoEventInput(_))
@@ -232,7 +232,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     let live = s.midi().live_input(old).unwrap();
     let _ = s.update();
 
-    assert!(s.remove(old));
+    s.remove(old).unwrap();
     let (new, new_seen) = tap(&mut s);
     s.midi().retarget(clip, new).expect("the clip re-aims");
     s.midi()
@@ -304,7 +304,7 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
     assert!(heard[0].0 < 512 && heard[1].0 < 512, "{heard:?}");
     assert_eq!(heard[2].0, 3_000);
 
-    for _ in 0..LIVE_INLET_CAPACITY {
+    for _ in 0..LIVE_INLET_CAPACITY.slots() {
         a.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
             .unwrap();
     }
@@ -350,7 +350,12 @@ fn route_rules_wire_the_hardware_input() {
         .unwrap();
     assert_eq!(ports(&s, b), vec![2, CHANNELLESS_PORT as u16]);
 
-    assert!(s.midi().unroute(all));
+    s.midi().unroute(all).unwrap();
+    assert_eq!(
+        s.midi().unroute(all),
+        Err(NoSuchMidiRoute(all)),
+        "a removed rule is not there"
+    );
     assert_eq!(ports(&s, a), Vec::<u16>::new(), "unrouted");
 
     s.midi().set_route_fallback(Some(a)).unwrap();
@@ -440,7 +445,7 @@ fn the_routes_have_one_declarer() {
     ));
     assert!(fed(&s, a) && !fed(&s, b), "the refusal changed nothing");
 
-    assert!(s.midi().unroute(own));
+    s.midi().unroute(own).unwrap();
     s.midi().set_routes(input, &host, None, resolve).unwrap();
     assert!(fed(&s, b), "the host's routes apply");
     assert!(matches!(
@@ -630,7 +635,7 @@ fn plug(
     fake: &tutti_midi_hardware::test_support::FakeCounters,
     raw: u64,
     name: &str,
-    d: Direction,
+    d: PortDirection,
 ) {
     fake.plug(tutti_midi_hardware::test_support::endpoint(raw, name), d);
 }
@@ -643,7 +648,7 @@ fn a_device_that_comes_and_goes_is_a_session_event() {
     let (mut s, fake) = hot_plug_session();
     assert!(device_events(&s.update()).is_empty(), "nothing yet");
 
-    plug(&fake, 1, "Keys", Direction::Input);
+    plug(&fake, 1, "Keys", PortDirection::Input);
     assert_eq!(device_events(&s.update()), [("added", "Keys".to_string())]);
     assert!(device_events(&s.update()).is_empty(), "reported once");
 
@@ -663,7 +668,7 @@ fn a_device_that_comes_and_goes_is_a_session_event() {
 #[test]
 fn a_held_input_that_vanishes_is_retired_and_reported() {
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 1, "Keys", Direction::Input);
+    plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("keys").expect("connects");
@@ -866,7 +871,7 @@ fn a_device_past_the_slots_is_refused() {
 #[test]
 fn a_held_output_that_vanishes_is_closed_and_reported() {
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 10, "Synth", Direction::Output);
+    plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_output_by_name("synth").expect("connects");
@@ -915,7 +920,7 @@ fn a_dead_device_watch_is_reported_once() {
 fn a_remembered_device_resolves_through_the_session() {
     use tutti_midi_hardware::Resolved;
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 1, "Keys", Direction::Input);
+    plug(&fake, 1, "Keys", PortDirection::Input);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     let saved = io.devices().list().remove(0);
@@ -933,9 +938,9 @@ fn a_remembered_device_resolves_through_the_session() {
 #[test]
 fn another_devices_removal_leaves_a_held_input_open() {
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 1, "Keys", Direction::Input);
-    plug(&fake, 2, "Pads", Direction::Input);
-    plug(&fake, 10, "Synth", Direction::Output);
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    plug(&fake, 2, "Pads", PortDirection::Input);
+    plug(&fake, 10, "Synth", PortDirection::Output);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("keys").expect("connects");
@@ -1062,7 +1067,7 @@ fn a_connected_ump_endpoint_is_negotiated_by_the_session_tick() {
     use tutti_ump::Protocol;
 
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 7, "Wire", Direction::Duplex);
+    plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("wire").expect("connects");
@@ -1118,7 +1123,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     use tutti_ump::{Message, Protocol, Stream, StreamConfig};
 
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 7, "Dev", Direction::Duplex);
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
     let _ = s.update();
     let raw = EndpointId::from_raw(7);
     let io = s.midi_io().expect("the OS MIDI layer").clone();

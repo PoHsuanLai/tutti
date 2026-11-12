@@ -1,17 +1,17 @@
 //! The Linkwitz-Riley crossover as a graph node: [`CrossoverNode`] is a
-//! [`DesignNode`] over [`CrossoverDesign`]. The algorithm is `tutti-dsp`'s; this
+//! [`FamilyNode`] over [`CrossoverFamily`]. The algorithm is `tutti-dsp`'s; this
 //! file holds the cells and how a block reads them.
 
 use tutti_dsp::{
-    CrossoverControls, CrossoverDesign, CrossoverError, CrossoverTree, MAX_SPLITS, fit_to_rate,
+    CrossoverControls, CrossoverError, CrossoverFamily, CrossoverTree, MAX_SPLITS, fit_to_rate,
 };
 use tutti_types::{BusTopology, ChannelLayout, Hz, Param, SampleRate};
 #[cfg(test)]
 use tutti_types::{UnitAddr, UnitParam};
 
-use super::NodeKernel;
+use super::NodeRecurrence;
 use crate::ramp::LastGood;
-use crate::reverb::DesignNode;
+use crate::reverb::FamilyNode;
 
 /// The crossover frequency cells of a node, and the last finite value each
 /// held. Used by the multiband compressor.
@@ -69,7 +69,7 @@ impl Splits {
 }
 
 /// A graph node splitting its input into bands with a Linkwitz-Riley crossover per
-/// channel: a [`DesignNode`] over [`CrossoverDesign`].
+/// channel: a [`FamilyNode`] over [`CrossoverFamily`].
 ///
 /// `channels` inputs, `bands * channels` outputs, band-major: output
 /// `band * channels + channel`. That layout is fixed, and `bands * channels`
@@ -94,7 +94,7 @@ impl Splits {
 /// port does not glide while another's cell does). The design holds each split between
 /// the one below it and about 0.499 of the rate, so a set out of order is solved with
 /// its splits no lower than the one before, and a non-finite write reads as unchanged.
-pub type CrossoverNode = DesignNode<CrossoverDesign>;
+pub type CrossoverNode = FamilyNode<CrossoverFamily>;
 
 impl CrossoverNode {
     /// A crossover over `layout` with one split at each of `frequencies`.
@@ -108,7 +108,7 @@ impl CrossoverNode {
         let controls = CrossoverControls::new(frequencies, SampleRate::DEFAULT)?;
         let channels = usize::from(layout.count());
         let input = BusTopology::assumed(layout).ok_or(CrossoverError::Channels { channels })?;
-        let design = CrossoverDesign::new(input, frequencies.len() + 1)?;
+        let design = CrossoverFamily::new(input, frequencies.len() + 1)?;
         if channels * design.bands() > tutti_graph::MAX_PORTS {
             return Err(CrossoverError::Channels { channels });
         }
@@ -141,7 +141,7 @@ control_set! {
     }
 }
 
-impl NodeKernel for CrossoverTree {
+impl NodeRecurrence for CrossoverTree {
     type Set = CrossoverSet;
 
     fn set(&self, _: &CrossoverControls) -> CrossoverSet {

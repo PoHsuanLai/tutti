@@ -94,7 +94,7 @@ fn rig(mode: NodeMode) -> Rig {
         )
         .expect("the reference CLAP plugin loads");
     let g = s.graph();
-    let (click, _) = g.insert(ForkByClone(Click::default()));
+    let (click, _) = g.add(ForkByClone(Click::default()));
     g.set_sources_hard(InPort::new(plugin, 0), [OutPort::new(click, 0)])
         .unwrap();
     g.set_sources_hard(Root::output(0), [OutPort::new(plugin, 0)])

@@ -1,25 +1,28 @@
 //! The neutral model module (design 024): the traits every family of processor
 //! answers to, and the engineering that sizes and schedules what runs it.
 //!
-//! A [`Design`] is a parameter map, a [`System`] (and its class, [`Lti`]) is the
-//! mathematical object it gives, and a [`Realization`] is one structure that
-//! computes it. [`Ceiling`], [`Sizes`], [`Effort`] and [`Cadence`] are the
-//! engineering layer: none is a property of the system.
+//! A [`Family`] is a parameter map, a [`System`] (and its class, [`Lti`]) is the
+//! mathematical object it gives (a member of the family), and a [`Recurrence`], run by
+//! [`Realized`], is one structure that computes it. [`Grows`], [`Capacity`], [`Reach`],
+//! [`Domain`], [`Effort`] and [`Cadence`] are the engineering layer: none is a property
+//! of the system.
 
 mod cadence;
-mod ceiling;
-mod design;
+mod capacity;
+mod family;
 mod lti;
-mod realization;
+mod reach;
 mod realized;
+mod setup;
 mod system;
 
 pub use cadence::{Anchor, Cadence, Period, Step};
-pub use ceiling::{Ceiling, MaxDecay, MaxDecayError, Range};
-pub use design::{Channels, Design, Sizes};
+pub use capacity::Capacity;
+pub use family::{Channels, Family, Grows};
 pub use lti::Lti;
-pub use realization::{Effect, Effort, Realization, Setup};
+pub use reach::{Domain, MaxDecay, MaxDecayError, Reach, TAIL_FLOOR};
 #[cfg(test)]
 pub(crate) use realized::Flaw;
-pub use realized::{Approach, Glide, Kernel, Lerp, Realized, Steps};
+pub use realized::{Approach, Glide, Lerp, Realized, Recurrence, Start, Steps};
+pub use setup::{Effort, Setup};
 pub use system::{Ring, System};

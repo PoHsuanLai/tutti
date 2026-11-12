@@ -439,7 +439,7 @@ fn removing_a_node_forgets_its_declarations() {
     settle(&mut s);
     assert!(s.mod_state().lane(cutoff.key()).is_some());
 
-    assert!(s.remove(probe));
+    s.remove(probe).unwrap();
     settle(&mut s);
     assert!(s.mod_state().lane(cutoff.key()).is_none(), "its lane went");
 }
@@ -494,7 +494,7 @@ impl tutti_graph::Node for Late {
 #[test]
 fn a_re_apply_that_moves_the_latency_publishes_it() {
     let mut s = offline();
-    let (late, _) = s.graph().insert(ForkByClone(Late));
+    let (late, _) = s.graph().add(ForkByClone(Late));
     let _ = s.update();
     assert_eq!(s.latency(), Samples(0), "precondition: nothing latent out");
 

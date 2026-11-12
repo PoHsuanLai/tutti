@@ -52,7 +52,7 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
         "the dry channel pre-rolls by the limiter's lookahead"
     );
 
-    assert!(s.remove(lim));
+    s.remove(lim).unwrap();
     // The limiter's output fades out over 256 frames before the node goes,
     // and the figure with it.
     for _ in 0..6 {

@@ -6,15 +6,15 @@
 //! safety measure.
 //!
 //! One width-generic node, [`LadderFilterNode`]. The algorithm is `tutti-dsp`'s
-//! ([`LadderDesign`]); the node is a [`DesignNode`] over it, and this file holds
+//! ([`LadderFamily`]); the node is a [`FamilyNode`] over it, and this file holds
 //! the cells and how a block reads them.
 
-use tutti_dsp::{Ladder, LadderControls, LadderDesign, LadderType, Real};
+use tutti_dsp::{Ladder, LadderControls, LadderFamily, LadderType, Real};
 use tutti_types::{ChannelLayout, Drive, Hz, Resonance};
 
-use super::NodeKernel;
+use super::NodeRecurrence;
 use super::filter_bus;
-use crate::reverb::DesignNode;
+use crate::reverb::FamilyNode;
 
 /// A Moog-style four-stage ladder filter with resonance and drive, of any
 /// width: `N` audio inputs, `N` outputs.
@@ -68,7 +68,7 @@ use crate::reverb::DesignNode;
 /// rings on after its input stops, so it is never skipped on a silent block and
 /// never parks. The graph prepares it at the device rate before its first block.
 /// Rendering allocates nothing.
-pub type LadderFilterNode<F = f64> = DesignNode<LadderDesign<F>>;
+pub type LadderFilterNode<F = f64> = FamilyNode<LadderFamily<F>>;
 
 impl<F: Real> LadderFilterNode<F> {
     /// A mono ladder filter (1 in, 1 out) of `ladder_type` at `frequency`
@@ -99,7 +99,7 @@ impl<F: Real> LadderFilterNode<F> {
         resonance: impl Into<Resonance>,
     ) -> Self {
         Self::live(
-            LadderDesign::new(filter_bus(channels.into())),
+            LadderFamily::new(filter_bus(channels.into())),
             LadderControls {
                 ty: ladder_type,
                 freq: frequency.into(),
@@ -132,7 +132,7 @@ control_set! {
     }
 }
 
-impl<F: Real> NodeKernel for Ladder<F> {
+impl<F: Real> NodeRecurrence for Ladder<F> {
     type Set = LadderSet;
 
     fn set(&self, initial: &LadderControls) -> LadderSet {

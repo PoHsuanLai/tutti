@@ -1,8 +1,8 @@
 use super::*;
+use crate::Setup;
 use crate::contract::RealizationCase;
 use crate::contract::cases::realization as cases;
 use crate::testing::flaws::{Defect, Defective};
-use crate::{Realization, Setup};
 
 fn controls(room: f32, damp: f32) -> FreeverbControls {
     FreeverbControls {
@@ -11,7 +11,7 @@ fn controls(room: f32, damp: f32) -> FreeverbControls {
     }
 }
 
-impl RealizationCase for FreeverbDesign {
+impl RealizationCase for FreeverbFamily {
     fn probes(&self) -> Vec<FreeverbControls> {
         vec![
             controls(0.5, 0.5),
@@ -33,11 +33,11 @@ impl RealizationCase for FreeverbDesign {
     }
 }
 
-crate::realization_contract!(FreeverbDesign, Lti, reverb, BlockIndependent);
+crate::realization_contract!(FreeverbFamily, Lti, reverb, BlockIndependent);
 
-fn defective(defect: Defect) -> Defective<FreeverbDesign> {
+fn defective(defect: Defect) -> Defective<FreeverbFamily> {
     Defective {
-        inner: FreeverbDesign,
+        inner: FreeverbFamily,
         defect,
         tweak: |_| {},
     }
@@ -99,9 +99,9 @@ fn a_defective_realization_fails_its_case() {
     );
     // line lengths: the longest comb 5% long (inside the RT60 tolerance).
     let m = Defective {
-        inner: FreeverbDesign,
+        inner: FreeverbFamily,
         defect: Defect::None,
-        tweak: |k| k.parts_mut().2.lengthen_last_comb(1722),
+        tweak: |k| k.parts_mut().2.inner.lengthen_last_comb(1722),
     };
     fails(cases::line_lengths(&m), "first echo");
     // reset that does nothing; fresh that keeps the state; a gain that
@@ -144,7 +144,7 @@ fn a_defective_freeverb_fails_the_lti_realization_cases() {
     );
     // tail tightness: a model whose tail is twice the truth.
     let lying = Lying {
-        inner: FreeverbDesign,
+        inner: FreeverbFamily,
         tail: 2.0,
         hinf: 1.0,
         l1: 1.0,
@@ -163,10 +163,10 @@ fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
     let rate = SampleRate(44_100.0);
     let fresh = Freeverb::new(rate);
     // Start from other figures so the retarget is seen to set them.
-    let mut realization = FreeverbDesign.realization();
-    realization.retarget(&FreeverbDesign.design(&controls(0.9, 0.9), rate));
+    let mut realization = FreeverbFamily.realized();
+    realization.retarget(&FreeverbFamily.member(&controls(0.9, 0.9), rate));
     assert_ne!(realization.figures().comb, fresh.figures().comb);
-    realization.retarget(&FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, rate));
+    realization.retarget(&FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, rate));
     let (a, b) = (realization.figures().comb, fresh.figures().comb);
     assert_eq!(
         (a.0.to_bits(), a.1.to_bits(), a.2.to_bits()),
@@ -180,13 +180,13 @@ fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
 #[test]
 fn a_network_it_does_not_understand_is_ignored() {
     let rate = SampleRate(44_100.0);
-    let mut realization = FreeverbDesign.realization();
+    let mut realization = FreeverbFamily.realized();
     let before = realization.figures().comb;
     realization.retarget(&Network::new(rate));
-    let mut flat = FreeverbDesign.design(&controls(0.9, 0.9), rate);
+    let mut flat = FreeverbFamily.member(&controls(0.9, 0.9), rate);
     crate::testing::flaws::map_absorption(&mut flat, |_| Absorption::Gain(Amplitude(0.5)));
     realization.retarget(&flat);
-    let mut unstable = FreeverbDesign.design(&controls(0.9, 0.9), rate);
+    let mut unstable = FreeverbFamily.member(&controls(0.9, 0.9), rate);
     crate::testing::flaws::map_absorption(&mut unstable, |_| Absorption::OnePole {
         gain: Amplitude(1.5),
         damp: 0.2,
@@ -199,13 +199,13 @@ fn a_network_it_does_not_understand_is_ignored() {
 /// retargeted to, and its lines are those of a `Freeverb` built at that rate.
 #[test]
 fn prepare_retunes_the_lines_and_keeps_the_coefficients() {
-    let mut realization = FreeverbDesign.realization();
-    realization.retarget(&FreeverbDesign.design(&controls(0.9, 0.2), SampleRate::DEFAULT));
+    let mut realization = FreeverbFamily.realized();
+    realization.retarget(&FreeverbFamily.member(&controls(0.9, 0.2), SampleRate::DEFAULT));
     let want = realization.figures().comb;
     let rate = SampleRate(96_000.0);
-    let ceiling = Ceiling::at(rate).unwrap();
+    let reach = Reach::at(rate).unwrap();
     realization.prepare(
-        &FreeverbDesign.bounds(&ceiling),
+        &FreeverbFamily.reach(&reach),
         &Setup {
             rate,
             max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),

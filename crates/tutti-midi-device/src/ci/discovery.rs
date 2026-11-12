@@ -6,10 +6,9 @@
 //! shares the Discovery *body* format, so [`DiscoveryData`] serves both.
 
 use std::fmt;
-use std::vec::Vec;
 
 use bitflags::bitflags;
-use tutti_ump::{FunctionBlockId, U7};
+use tutti_ump::{DeviceIdentity, FunctionBlockId, U7};
 
 /// Sub-ID#2: Discovery message (M2-101 §5.5).
 pub const SUB_ID2_DISCOVERY: u8 = 0x70;
@@ -144,14 +143,10 @@ impl From<MaxSysexSize> for u32 {
 /// shapes; see `encode_body`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiscoveryData {
-    /// 3-byte SysEx device manufacturer id.
-    pub manufacturer: [u8; 3],
-    /// 2-byte device family (little-endian 7-bit pair on the wire).
-    pub family: u16,
-    /// 2-byte device family model number.
-    pub family_model: u16,
-    /// 4-byte software/firmware revision.
-    pub software_revision: [u8; 4],
+    /// The device's SysEx identity: the 3-byte manufacturer id, the family and
+    /// model (each a little-endian pair of 7-bit bytes) and the 4-byte software
+    /// revision, the same ones a Device Inquiry reply carries (M2-101 §5.5.1).
+    pub identity: DeviceIdentity,
     /// CI categories this device supports.
     pub categories: CiCategories,
     /// Maximum SysEx message size the device can receive (§5.5.3).
@@ -192,18 +187,12 @@ impl DiscoveryData {
     /// has several MIDI Out connections or sits behind a Function Block.
     #[must_use]
     pub fn new(
-        manufacturer: [u8; 3],
-        family: u16,
-        family_model: u16,
-        software_revision: [u8; 4],
+        identity: DeviceIdentity,
         categories: CiCategories,
         max_sysex_size: MaxSysexSize,
     ) -> Self {
         Self {
-            manufacturer,
-            family,
-            family_model,
-            software_revision,
+            identity,
             categories,
             max_sysex_size,
             output_path_id: U7::default(),
@@ -214,26 +203,25 @@ impl DiscoveryData {
     /// Encode the body. `is_reply` selects Table 8's trailer (path instance id +
     /// function block) over Table 6's (path id alone) — the one place the two
     /// directions differ on the wire.
-    pub(crate) fn encode_body(&self, is_reply: bool, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.manufacturer);
-        out.push((self.family & 0x7F) as u8);
-        out.push(((self.family >> 7) & 0x7F) as u8);
-        out.push((self.family_model & 0x7F) as u8);
-        out.push(((self.family_model >> 7) & 0x7F) as u8);
-        out.extend_from_slice(&self.software_revision);
-        out.push(self.categories.bits());
+    pub(crate) fn encode_body(&self, is_reply: bool, out: &mut impl Extend<u8>) {
+        let id = &self.identity;
+        out.extend(
+            id.manufacturer
+                .iter()
+                .chain(&id.family)
+                .chain(&id.model)
+                .chain(&id.revision)
+                .map(|b| b.get()),
+        );
+        out.extend(self.categories.bits().to_le_bytes());
         // 28-bit max size as four little-endian 7-bit bytes.
         let size = self.max_sysex_size.get();
-        out.push((size & 0x7F) as u8);
-        out.push(((size >> 7) & 0x7F) as u8);
-        out.push(((size >> 14) & 0x7F) as u8);
-        out.push(((size >> 21) & 0x7F) as u8);
-        out.push(self.output_path_id.get());
+        out.extend([0, 7, 14, 21].map(|shift| ((size >> shift) & 0x7F) as u8));
+        out.extend([self.output_path_id.get()]);
         if is_reply {
-            out.push(
-                self.function_block
-                    .map_or(NO_FUNCTION_BLOCK_WIRE, FunctionBlockId::get),
-            );
+            out.extend([self
+                .function_block
+                .map_or(NO_FUNCTION_BLOCK_WIRE, FunctionBlockId::get)]);
         }
     }
 
@@ -266,10 +254,13 @@ impl DiscoveryData {
             (true, Some(&n)) => Some(FunctionBlockId::new(n)?),
         };
         Some(DiscoveryData {
-            manufacturer: [b[0], b[1], b[2]],
-            family: u16::from(b[3]) | (u16::from(b[4]) << 7),
-            family_model: u16::from(b[5]) | (u16::from(b[6]) << 7),
-            software_revision: [b[7], b[8], b[9], b[10]],
+            // Every byte of the common fields was checked 7-bit above.
+            identity: DeviceIdentity {
+                manufacturer: [b[0], b[1], b[2]].map(U7::masked),
+                family: [b[3], b[4]].map(U7::masked),
+                model: [b[5], b[6]].map(U7::masked),
+                revision: [b[7], b[8], b[9], b[10]].map(U7::masked),
+            },
             categories: CiCategories::from_bits_truncate(b[11]),
             max_sysex_size,
             output_path_id,

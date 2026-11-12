@@ -1,6 +1,6 @@
-//! [`FreeverbDesign`]: [`Freeverb`] as a [`Design`].
+//! [`FreeverbFamily`]: [`Freeverb`] as a [`Family`].
 //!
-//! The network describes the linear filters of the reverb in `kernel.rs`: per
+//! The network describes the linear filters of the reverb in `recurrence.rs`: per
 //! channel eight parallel damped combs (a diagonal [`Fdn`] of one-pole lines,
 //! the right channel's 23 frames longer) feeding four series all-passes in
 //! [`AllPassForm::Freeverb`] (Freeverb's own, not the unit-magnitude lattice),
@@ -8,21 +8,21 @@
 //! flush of any value under 1e-6 to zero, a nonlinearity far below the tail's
 //! floor that no query models. The comb loop gain is `room * 0.28 + 0.7` and the
 //! damping `damp * 0.4`, computed in the same `f32` operations as
-//! [`Freeverb`]'s constants. The realization is [`Realized`] over
-//! [`FreeverbKernel`], which reads those two numbers from the
+//! [`Freeverb`]'s constants. The recurrence is [`FreeverbRecurrence`], run by
+//! [`Realized`](crate::Realized), which reads those two numbers from the
 //! network.
 
 use core::num::NonZeroU32;
 
 use tutti_types::{Amplitude, BusTopology, Mix, SampleRate};
 
-use crate::reverb::fdn::kernel::CHUNK;
-use crate::reverb::freeverb::kernel::{Freeverb, FreeverbKernel};
+use crate::reverb::fdn::recurrence::CHUNK;
+use crate::reverb::freeverb::recurrence::{Freeverb, FreeverbRecurrence};
 use crate::reverb::network::{
     Absorption, AllPass, AllPassForm, Fdn, Gains, Inline, Line, MAX_CHANNELS, MAX_LINES, Matrix,
-    Modulation, Network, NetworkSizes, OutputMap, Stage,
+    Modulation, Network, NetworkCapacity, OutputMap, Stage,
 };
-use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Realized, Sizes};
+use crate::{Cadence, Capacity, Channels, Family, Grows, MaxDecay, Reach};
 
 const COMBS_LEFT: [usize; 8] = [
     Freeverb::CF_TUNING_L1,
@@ -79,12 +79,12 @@ impl Default for FreeverbControls {
     }
 }
 
-/// The [`Design`] of [`Freeverb`]: mono in, stereo out, two controls.
+/// The [`Family`] of [`Freeverb`]: mono in, stereo out, two controls.
 ///
 /// A control outside `0..1` is clamped, and a non-finite one takes the General
 /// MIDI value, so every control gives a stable network.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FreeverbDesign;
+pub struct FreeverbFamily;
 
 fn position(mix: Mix, default: f32) -> f32 {
     let v = mix.get();
@@ -95,12 +95,10 @@ fn position(mix: Mix, default: f32) -> f32 {
     }
 }
 
-impl Design for FreeverbDesign {
+impl Family for FreeverbFamily {
     type Controls = FreeverbControls;
-    type Model = Network;
-    type Bounds = NetworkSizes;
-    type Range = MaxDecay;
-    type Realization = Realized<FreeverbKernel>;
+    type Member = Network;
+    type Recurrence = FreeverbRecurrence;
 
     // The comb feedback and damping glide in whole chunks counted from the last
     // reset, so the render is a function of the stream whatever the blocks (the
@@ -118,12 +116,12 @@ impl Design for FreeverbDesign {
         Network::new(rate)
     }
 
-    /// A [`Freeverb`] at the default rate; the node's `prepare` re-tunes it.
-    fn realization(&self) -> Realized<FreeverbKernel> {
-        Realized::new(FreeverbKernel::new(), &self.blank(SampleRate::DEFAULT))
+    /// A [`Freeverb`] at the default rate; the runner's `prepare` re-tunes it.
+    fn recurrence(&self) -> FreeverbRecurrence {
+        FreeverbRecurrence::new()
     }
 
-    fn design_into(&self, controls: &FreeverbControls, rate: SampleRate, out: &mut Network) {
+    fn member_into(&self, controls: &FreeverbControls, rate: SampleRate, out: &mut Network) {
         // `Freeverb::new` rounds the rate to whole hertz and scales the tunings
         // from it, so the lines are those of a reverb built at `rate`.
         let rate = SampleRate(rate.get().round());
@@ -187,17 +185,21 @@ impl Design for FreeverbDesign {
             let _ = out.stages.push(Stage::AllPass(channels));
         }
     }
+}
+
+impl Grows for FreeverbFamily {
+    type Domain = MaxDecay;
 
     /// Freeverb's lengths and stages are constants and its decay is longest at
     /// room 1 (the low band's loop gain is the room's alone), so the worst case
     /// is that design. `max_decay` does not apply: Freeverb has no decay
     /// control, and its longest RT60 is what room 1 makes it.
-    fn bounds(&self, ceiling: &Ceiling<MaxDecay>) -> NetworkSizes {
+    fn reach(&self, reach: &Reach<MaxDecay>) -> NetworkCapacity {
         let worst = FreeverbControls {
             room: Mix(1.0),
             damp: Mix(0.0),
         };
-        NetworkSizes::measure(&self.design(&worst, ceiling.rate()), ceiling.floor())
+        NetworkCapacity::need(&self.member(&worst, reach.rate()), reach.floor())
     }
 }
 

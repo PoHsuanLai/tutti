@@ -3,15 +3,15 @@
 
 use tutti_types::{Hz, SampleRate, Seconds};
 
-use crate::{Band, Ceiling, Design, Effect, Lti, MaxDecay, Network, NetworkSizes};
+use crate::{Band, Family, Grows, Lti, MaxDecay, Network, NetworkCapacity, Reach, Recurrence};
 
 /// A hook of the contract that returns a list: a case that has nothing to run
-/// when the list is empty passes for no reason, so a design says which hooks it
-/// leaves empty and why ([`DesignCase::vacant`], the `vacuity` cases).
+/// when the list is empty passes for no reason, so a family says which hooks it
+/// leaves empty and why ([`FamilyCase::vacant`], the `vacuity` cases).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Hook {
-    /// [`DesignCase::hostile`].
+    /// [`FamilyCase::hostile`].
     Hostile,
     /// [`RealizationCase::probes`].
     Probes,
@@ -39,9 +39,9 @@ pub enum Hook {
     WetPairs,
 }
 
-/// A design plus what the contract needs to know to test it, whatever the class.
-pub trait DesignCase: Design {
-    /// The rates to design at.
+/// A family plus what the contract needs to know to test it, whatever the class.
+pub trait FamilyCase: Family {
+    /// The rates to make members at.
     fn rates(&self) -> Vec<SampleRate> {
         vec![
             SampleRate(44_100.0),
@@ -53,26 +53,35 @@ pub trait DesignCase: Design {
     /// Controls in range: a grid with the corners, and seeded random draws.
     fn reachable(&self) -> Vec<Self::Controls>;
 
-    /// Controls out of range or non-finite, which `design` must still turn into
-    /// a model the family can run.
+    /// Controls out of range or non-finite, which `member_into` must still turn into
+    /// a member the family can run.
     fn hostile(&self) -> Vec<Self::Controls> {
         Vec::new()
     }
 
-    /// The ceiling the design is bounded against at `rate`.
-    fn ceiling(&self, rate: SampleRate) -> Ceiling<Self::Range> {
-        Ceiling::at(rate).expect("a positive finite rate")
+    /// The capacity the runner is prepared with at `rate`: `()` for a family that
+    /// does not grow, and for a [`Grows`] one what [`Grows::reach`] gives over
+    /// [`reach_at`](Self::reach_at).
+    fn capacity(&self, rate: SampleRate) -> <Self::Recurrence as Recurrence>::Capacity;
+
+    /// The reach a [`Grows`] family is built to at `rate`: the family's default
+    /// domain and the default tail floor.
+    fn reach_at(&self, rate: SampleRate) -> Reach<Self::Domain>
+    where
+        Self: Grows,
+    {
+        Reach::at(rate).expect("a positive finite rate")
     }
 
     /// The frames of musical delay before the model's first sound: a pre-delay,
     /// the shortest path, a delay time. **Never latency**: the `arrival` case adds
     /// the realization's declared latency to this and measures the first output
     /// sample against the sum. Zero by default.
-    fn musical_delay(&self, _model: &Self::Model) -> usize {
+    fn musical_delay(&self, _model: &Self::Member) -> usize {
         0
     }
 
-    /// The hooks this design leaves empty, each with why: a hook that returns
+    /// The hooks this family leaves empty, each with why: a hook that returns
     /// nothing and is not listed fails the `vacuity` case, and one that is listed
     /// but returns something fails it too, so a case cannot stop running unseen.
     fn vacant(&self) -> &'static [(Hook, &'static str)] {
@@ -80,10 +89,9 @@ pub trait DesignCase: Design {
     }
 }
 
-/// A design whose realization is measured: the controls to render at.
-pub trait RealizationCase:
-    DesignCase + Design<Realization: Effect<<Self as Design>::Model> + Clone>
-{
+/// A family whose recurrence is measured, run by [`Realized`](crate::Realized): the
+/// controls to render at.
+pub trait RealizationCase: FamilyCase {
     /// The controls the measured cases run over: a few, spread across the
     /// controls' range, because each renders seconds of audio.
     fn probes(&self) -> Vec<Self::Controls>;
@@ -123,7 +131,7 @@ pub struct Figure<C> {
 
 /// The class group of a family whose model is [`Lti`]: its figures and how
 /// close its realization must come to the model's response.
-pub trait LtiCase: DesignCase + Design<Model: Lti> {
+pub trait LtiCase: FamilyCase + Family<Member: Lti> {
     /// Closed-form points of the response (a low-pass at its cutoff, a shelf's
     /// half gain, a reverb's gain at DC), from the family's figures and never from a
     /// render.
@@ -181,7 +189,8 @@ pub trait LtiCase: DesignCase + Design<Model: Lti> {
 /// The class group of a reverb [`Network`]: the controls a reverb has and a
 /// filter does not, and the figures they ask for.
 pub trait ReverbCase:
-    DesignCase + Design<Model = Network, Bounds = NetworkSizes, Range = MaxDecay>
+    FamilyCase
+    + Grows<Member = Network, Domain = MaxDecay, Recurrence: Recurrence<Capacity = NetworkCapacity>>
 {
     /// The RT60 the controls ask for in `band`, from the formula and the controls
     /// alone (`None`: the controls do not ask).

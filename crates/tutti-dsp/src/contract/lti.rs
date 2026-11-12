@@ -5,7 +5,7 @@ use tutti_types::{Db, Hz, SampleRate};
 use super::core::{check_vacuity, every};
 use super::harness::{WINDOW, built, burst, noise, rate_of, render, rms, widths};
 use super::{Hook, LtiCase, RealizationCase};
-use crate::{Complex32, Complex64, Lti, RealFft, Realization, Ring, System};
+use crate::{Complex32, Complex64, Lti, RealFft, Ring, System};
 
 /// The frames an impulse response is rendered for: up to the model's tail at
 /// -100 dB, a power of two (an FFT of the response is exact), or `None` for a
@@ -24,7 +24,7 @@ fn impulse<D: LtiCase + RealizationCase>(
     controls: &D::Controls,
     rate: SampleRate,
     frames: usize,
-) -> (Vec<Vec<f32>>, D::Model) {
+) -> (Vec<Vec<f32>>, D::Member) {
     let (mut k, model) = built(d, controls, rate);
     // A retarget to the model it already holds changes nothing.
     k.retarget(&model);
@@ -41,7 +41,7 @@ pub(super) mod design {
     pub fn stable<D: LtiCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in every(d) {
-                let n = d.design(&c, rate);
+                let n = d.member(&c, rate);
                 if !n.is_stable() {
                     return Err(format!(
                         "unstable at {rate:?}: spectral radius {}",
@@ -58,7 +58,7 @@ pub(super) mod design {
     pub fn radius<D: LtiCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in every(d) {
-                let r = d.design(&c, rate).spectral_radius();
+                let r = d.member(&c, rate).spectral_radius();
                 let ok = if d.marginal(&c) { r <= 1.0 } else { r < 1.0 };
                 if !ok {
                     return Err(format!("spectral radius {r} at {rate:?}"));
@@ -73,7 +73,7 @@ pub(super) mod design {
     /// design with none says so (`vacuity`).
     pub fn figures<D: LtiCase>(d: &D) -> Result<(), String> {
         for a in d.figures() {
-            let model = d.design(&a.controls, a.rate);
+            let model = d.member(&a.controls, a.rate);
             let mut g = [Complex64::new(0.0, 0.0)];
             model.frequency_response(a.output, &[a.freq], &mut g);
             let got = g[0].norm();
@@ -104,7 +104,7 @@ pub(super) mod design {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let (l1, hinf) = (model.l1_norm(), model.hinf_norm());
             if hinf > l1 * (1.0 + 1e-9) {
                 return Err(format!("hinf_norm {hinf} above l1_norm {l1}"));
@@ -152,7 +152,7 @@ pub(super) mod design {
         let channels = d.channels();
         let (i, o) = (channels.input_width(), channels.output_width());
         for c in d.reachable().into_iter().take(8) {
-            let m = d.design(&c, d.rates()[0]);
+            let m = d.member(&c, d.rates()[0]);
             if (m.inputs(), m.outputs()) != (i, o) {
                 return Err(format!(
                     "the model has {} inputs and {} outputs, the design declares {i} and {o}",
@@ -341,7 +341,7 @@ pub(super) mod realization {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let Some(frames) = ir_frames(&model, rate) else {
                 continue;
             };
@@ -399,7 +399,7 @@ pub(super) mod realization {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let radius = model.spectral_radius();
             if radius == 0.0 {
                 continue;
@@ -460,7 +460,7 @@ pub(super) mod realization {
             if d.marginal(&c) {
                 continue;
             }
-            let model = d.design(&c, rate);
+            let model = d.member(&c, rate);
             let Some(frames) = ir_frames(&model, rate) else {
                 continue;
             };

@@ -1,6 +1,6 @@
 //! The contract is public under the `contract` feature (design 024 section 6), and
 //! a family outside this crate runs it: a gain, the smallest system with a
-//! frequency response, through `design_contract!` and `realization_contract!`,
+//! frequency response, through `family_contract!` and `realization_contract!`,
 //! against the `Lti` group (the reverb group is for a `Network`).
 //!
 //! The gain slews to a new value over 64 frames from the first frame since the
@@ -9,11 +9,12 @@
 //! ramp must.
 
 use std::num::NonZeroU32;
+use std::ops::Range;
 
-use tutti_dsp::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase};
+use tutti_dsp::contract::{FamilyCase, Figure, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
-    Cadence, Ceiling, Channels, Complex64, Design, Effect, Lti, Realization, Ring, Setup, Sizes,
-    System, design_contract, realization_contract,
+    Cadence, Channels, Complex64, Family, Glide, Lti, Recurrence, Ring, Start, System,
+    family_contract, realization_contract,
 };
 use tutti_types::BusTopology;
 use tutti_types::{Db, Hz, SampleRate, Samples};
@@ -50,99 +51,60 @@ impl Lti for GainModel {
     }
 }
 
-/// A gain has no sizes to allocate.
 #[derive(Clone, Copy, Debug)]
-struct NoSizes;
+struct GainFamily;
 
-impl Sizes for NoSizes {
-    type Source = GainModel;
-
-    fn measure(_: &GainModel, _: Db) -> Self {
-        NoSizes
-    }
-
-    fn tail(&self) -> Ring {
-        Ring::Finite(tutti_types::Seconds::new(0.0))
-    }
-
-    fn dominates(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct GainDesign;
-
-/// The realization: the gain, slewed over 64 frames from the last reset.
+/// The recurrence: `y = g x` at the gain as it stands, the gain slewed over 64 frames
+/// from the last reset by a [`Glide`] (γ), toward the gain the model asks for (κ).
 #[derive(Clone, Debug)]
-struct GainRealization {
-    from: f32,
-    to: f32,
-    done: usize,
-    landed: bool,
-}
+struct GainRecurrence;
 
-const SLEW: usize = 64;
+const SLEW: u32 = 64;
 
-impl Realization<GainModel> for GainRealization {
-    type Bounds = NoSizes;
+impl Recurrence for GainRecurrence {
+    type Member = GainModel;
+    type Capacity = ();
+    type Target = f32;
+    type Coeffs = Glide<f32>;
+    type State = ();
 
-    fn prepare(&mut self, _: &NoSizes, _: &Setup) {
-        *self = Self::new();
-    }
+    const STEP: usize = 1;
 
-    fn retarget(&mut self, model: &GainModel) {
-        let now = self.current();
-        self.from = if self.landed { now } else { model.gain };
-        self.to = model.gain;
-        self.done = if self.landed { 0 } else { SLEW };
-        self.landed = true;
-    }
-
-    fn reset(&mut self) {
-        self.from = self.to;
-        self.done = SLEW;
-    }
-
-    fn fresh(&self) -> Self {
-        let mut fresh = self.clone();
-        fresh.reset();
-        fresh
-    }
-}
-
-impl GainRealization {
-    fn new() -> Self {
-        Self {
-            from: 0.0,
-            to: 0.0,
-            done: SLEW,
-            landed: false,
+    fn start(&self, model: &GainModel) -> Start<Self> {
+        Start {
+            coeffs: Glide::landed(model.gain).by(SLEW),
+            state: (),
+            target: model.gain,
         }
     }
 
-    fn current(&self) -> f32 {
-        let t = self.done as f32 / SLEW as f32;
-        self.from + (self.to - self.from) * t.min(1.0)
+    fn coefficients_into(&self, model: &GainModel, target: &mut f32) -> bool {
+        *target = model.gain;
+        true
     }
-}
 
-impl Effect<GainModel> for GainRealization {
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        for i in 0..input[0].len() {
-            self.done = (self.done + 1).min(SLEW);
-            let g = self.current();
+    fn clear(&self, _: &mut ()) {}
+
+    fn run(
+        &self,
+        gain: &Glide<f32>,
+        _: &mut (),
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        frames: Range<usize>,
+        _: usize,
+    ) {
+        let g = gain.now();
+        for i in frames {
             output[0][i] = g * input[0][i];
         }
     }
 }
 
-impl Design for GainDesign {
+impl Family for GainFamily {
     type Controls = f32;
-    type Model = GainModel;
-    type Bounds = NoSizes;
-    type Range = ();
-    type Realization = GainRealization;
+    type Member = GainModel;
+    type Recurrence = GainRecurrence;
     // The slew counts frames from the last reset: a per-frame stream grid.
     const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
 
@@ -154,7 +116,7 @@ impl Design for GainDesign {
         GainModel { gain: 0.0 }
     }
 
-    fn design_into(&self, g: &f32, _: SampleRate, out: &mut GainModel) {
+    fn member_into(&self, g: &f32, _: SampleRate, out: &mut GainModel) {
         out.gain = if g.is_finite() {
             g.clamp(0.0, 0.9)
         } else {
@@ -162,16 +124,14 @@ impl Design for GainDesign {
         };
     }
 
-    fn bounds(&self, _: &Ceiling<()>) -> NoSizes {
-        NoSizes
-    }
-
-    fn realization(&self) -> GainRealization {
-        GainRealization::new()
+    fn recurrence(&self) -> GainRecurrence {
+        GainRecurrence
     }
 }
 
-impl DesignCase for GainDesign {
+impl FamilyCase for GainFamily {
+    fn capacity(&self, _: SampleRate) {}
+
     fn reachable(&self) -> Vec<f32> {
         vec![0.1, 0.25, 0.5, 0.75, 0.9]
     }
@@ -185,7 +145,7 @@ impl DesignCase for GainDesign {
     }
 }
 
-impl RealizationCase for GainDesign {
+impl RealizationCase for GainFamily {
     fn probes(&self) -> Vec<f32> {
         vec![0.3, 0.8]
     }
@@ -199,7 +159,7 @@ impl RealizationCase for GainDesign {
     }
 }
 
-impl LtiCase for GainDesign {
+impl LtiCase for GainFamily {
     /// A gain is its value at every frequency.
     fn figures(&self) -> Vec<Figure<f32>> {
         [0.1, 0.5, 0.9]
@@ -218,10 +178,10 @@ impl LtiCase for GainDesign {
 
 mod design {
     use super::*;
-    design_contract!(GainDesign, Lti);
+    family_contract!(GainFamily, Lti);
 }
 
 mod realization {
     use super::*;
-    realization_contract!(GainDesign, Lti, BlockIndependent);
+    realization_contract!(GainFamily, Lti, BlockIndependent);
 }

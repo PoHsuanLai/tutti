@@ -1,4 +1,4 @@
-//! [`CrossoverDesign`]: the Linkwitz-Riley crossover as a [`Design`](crate::Design) (design 024
+//! [`CrossoverFamily`]: the Linkwitz-Riley crossover as a [`Family`](crate::Family) (design 024
 //! step 2b).
 //!
 //! The controls are [`CrossoverControls`] (the split frequencies), the model
@@ -7,7 +7,7 @@
 //! with the model's own coefficients.
 //!
 //! Like the SVF and the ladder it is designed on a 16-frame grid counted on the
-//! stream clock from the last reset ([`Design::CADENCE`](crate::Design::CADENCE)), so a control is
+//! stream clock from the last reset ([`Family::CADENCE`](crate::Family::CADENCE)), so a control is
 //! in the render at most 16 frames after it was sampled and the render does not
 //! depend on how audio is split into blocks. **Unlike them its coefficients do not
 //! ramp over the segment**: a retarget lands whole (`STEPS = 0`) and the segment runs on the set
@@ -26,7 +26,7 @@ use super::legacy::check_bands;
 use super::legacy::{CrossoverError, CrossoverState, MAX_SPLITS, SOLVE_CEILING, validate};
 use super::{Crossover, CrossoverModel};
 use crate::Lerp;
-use crate::{ChannelKernel, Filter};
+use crate::{ChannelRecurrence, Filter};
 
 /// The frequencies of a crossover's splits, lowest first; the entries past the
 /// design's last split are 0 and ignored.
@@ -54,19 +54,19 @@ impl CrossoverControls {
     }
 }
 
-/// The [`Design`](crate::Design) of the Linkwitz-Riley crossover: `bands` bands over
+/// The [`Family`](crate::Family) of the Linkwitz-Riley crossover: `bands` bands over
 /// `channels` channels, the input's width in and `bands * channels` out, band-major
 /// (output `band * channels + channel`).
-pub type CrossoverDesign = Filter<CrossoverTree>;
+pub type CrossoverFamily = Filter<CrossoverTree>;
 
-/// The crossover as a [`ChannelKernel`]: a tree of `bands` bands per channel, run with
+/// The crossover as a [`ChannelRecurrence`]: a tree of `bands` bands per channel, run with
 /// the model's own coefficients.
 #[derive(Clone, Copy, Debug)]
 pub struct CrossoverTree {
     bands: usize,
 }
 
-impl CrossoverDesign {
+impl CrossoverFamily {
     /// A crossover of `bands` bands on the bus `input`, each band where it is.
     ///
     /// # Errors
@@ -84,7 +84,7 @@ impl CrossoverDesign {
     /// How many bands it makes.
     #[must_use]
     pub fn bands(&self) -> usize {
-        self.kernel().bands()
+        self.recurrence().bands()
     }
 }
 
@@ -96,7 +96,7 @@ impl CrossoverTree {
     }
 }
 
-/// A crossover's coefficients do not blend: its glide has no steps ([`ChannelKernel::STEPS`]),
+/// A crossover's coefficients do not blend: its glide has no steps ([`ChannelRecurrence::STEPS`]),
 /// so this is only ever the target.
 impl Lerp for CrossoverModel {
     fn lerp(&self, to: &Self, _: u32, _: u32) -> Self {
@@ -104,9 +104,9 @@ impl Lerp for CrossoverModel {
     }
 }
 
-impl ChannelKernel for CrossoverTree {
+impl ChannelRecurrence for CrossoverTree {
     type Controls = CrossoverControls;
-    type Model = CrossoverModel;
+    type Member = CrossoverModel;
     type Coeffs = CrossoverModel;
     type State = CrossoverState;
     type Frame = [f32; Crossover::MAX_BANDS];
@@ -123,7 +123,7 @@ impl ChannelKernel for CrossoverTree {
         let mut model = CrossoverModel::unsolved(self.bands, rate.get());
         let frequencies =
             core::array::from_fn(|i| Hz((rate.get() * 0.002 * (1 << i) as f64) as f32));
-        self.design_into(&CrossoverControls { frequencies }, rate, &mut model);
+        self.member_into(&CrossoverControls { frequencies }, rate, &mut model);
         model
     }
 
@@ -132,7 +132,7 @@ impl ChannelKernel for CrossoverTree {
     /// NaN reading as the floor, so a set that is not increasing is solved with its
     /// splits no lower than the one before. [`CrossoverControls::new`] is what
     /// refuses one.
-    fn design_into(
+    fn member_into(
         &self,
         controls: &CrossoverControls,
         rate: SampleRate,

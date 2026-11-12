@@ -417,7 +417,14 @@ pub fn an_instrument_is_one_handle_at_a_time<S: Subject>() {
         "the first handle plays"
     );
     let handle = rig.handle.clone();
-    rig.session.remove_instrument(&handle);
+    rig.session.remove_instrument(&handle).unwrap();
+    assert_eq!(
+        rig.session.remove_instrument(&handle),
+        Err(tutti_session::RemoveError::NoSuchNode(
+            handle.queue().erase()
+        )),
+        "the handle's parts are gone: the queue is the first named"
+    );
     assert!(
         rig.session.graph_ref().contains(rig.node),
         "the instrument stays"

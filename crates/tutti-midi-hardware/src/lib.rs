@@ -45,8 +45,8 @@ pub use port::{HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};
 pub use session::MidiSession;
 pub use stream::{Basis, DeviceStream};
 pub use tutti_midi_device::{
-    Capabilities, DeviceEvent, DeviceId, DeviceInfo, Direction, Endpoint, EndpointId,
-    FunctionBlock, Identity, OsChange, OsDevice, Resolved,
+    Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId, FunctionBlock, Identity,
+    OsChange, OsDevice, PortDirection, Resolved,
 };
 
 #[cfg(target_os = "macos")]

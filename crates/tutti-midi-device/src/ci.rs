@@ -22,7 +22,7 @@
 use std::fmt;
 use std::vec::Vec;
 
-use tutti_ump::{MidiChannel, U7};
+use tutti_ump::{MidiChannel, MidiGroup, Sysex7Packets, U7, Ump};
 
 mod discovery;
 mod status;
@@ -377,14 +377,16 @@ impl CiHeader {
 
     /// Append the preamble bytes to `out`, stamping the given `sub_id2` and
     /// `destination`.
-    fn encode(&self, sub_id2: u8, destination: Destination, out: &mut Vec<u8>) {
-        out.push(CI_UNIVERSAL_SYSEX);
-        out.push(self.device_id.get());
-        out.push(CI_SUB_ID_1);
-        out.push(sub_id2);
-        out.push(self.ci_version.get());
-        out.extend_from_slice(&self.source.to_bytes());
-        out.extend_from_slice(&destination.to_bytes());
+    fn encode(&self, sub_id2: u8, destination: Destination, out: &mut impl Extend<u8>) {
+        out.extend([
+            CI_UNIVERSAL_SYSEX,
+            self.device_id.get(),
+            CI_SUB_ID_1,
+            sub_id2,
+            self.ci_version.get(),
+        ]);
+        out.extend(self.source.to_bytes());
+        out.extend(destination.to_bytes());
     }
 }
 
@@ -481,21 +483,44 @@ impl CiMessage {
 
     /// The CI byte payload: the bytes carried *inside* a SysEx, starting at
     /// `0x7E`, without the `0xF0` and `0xF7` delimiters.
+    ///
+    /// [`encode_into`](Self::encode_into) writes them into a buffer of the
+    /// caller's, and [`packets`](Self::packets) cuts them into UMP packets.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        self.header()
-            .encode(self.sub_id2(), self.destination(), &mut out);
-        match self {
-            CiMessage::Discovery { data, .. } => data.encode_body(false, &mut out),
-            CiMessage::DiscoveryReply { data, .. } => data.encode_body(true, &mut out),
-            CiMessage::InvalidateMuid { target, .. } => {
-                out.extend_from_slice(&target.to_bytes());
-            }
-            CiMessage::Ack { ack, .. } => ack.encode_body(&mut out),
-            CiMessage::Nak { nak, .. } => nak.encode_body(&mut out),
-        }
+        self.encode_into(&mut out);
         out
+    }
+
+    /// Appends the CI byte payload (what [`encode`](Self::encode) returns) to
+    /// `out`: a `Vec<u8>`, a `VecDeque`, any collection of bytes.
+    pub fn encode_into(&self, out: &mut impl Extend<u8>) {
+        self.header()
+            .encode(self.sub_id2(), self.destination(), out);
+        match self {
+            CiMessage::Discovery { data, .. } => data.encode_body(false, out),
+            CiMessage::DiscoveryReply { data, .. } => data.encode_body(true, out),
+            CiMessage::InvalidateMuid { target, .. } => out.extend(target.to_bytes()),
+            CiMessage::Ack { ack, .. } => ack.encode_body(out),
+            CiMessage::Nak { nak, .. } => nak.encode_body(out),
+        }
+    }
+
+    /// The message as SysEx7 packets on `group` (M2-104 section 7.7), ready to
+    /// send on a UMP stream: the payload of [`encode`](Self::encode) cut into a
+    /// `Complete`, or a `Start`, `Continue`s and an `End`. It allocates once,
+    /// for the payload; a MIDI 1.0 byte stream frames
+    /// [`encode`](Self::encode)'s bytes with `tutti_ump::frame` instead.
+    pub fn packets(&self, group: MidiGroup) -> std::vec::IntoIter<Ump> {
+        let payload = self.encode();
+        // Every byte a CI message encodes is 7-bit: the fields are `U7`, the
+        // MUIDs and sizes are cut to 7-bit bytes and a text is ASCII.
+        Sysex7Packets::checked(group, &payload)
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// Decodes a CI byte payload (as [`encode`](Self::encode) produces, or a

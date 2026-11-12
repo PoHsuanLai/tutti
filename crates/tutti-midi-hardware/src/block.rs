@@ -48,34 +48,39 @@ impl RawBlock<'_> {
             3 => BlockDirection::Bidirectional,
             _ => return None,
         };
-        let mut out = FunctionBlock::new(
-            FunctionBlockId::new(u8::try_from(self.id).ok()?)?,
-            direction,
-            FirstGroup::new(u8::try_from(self.first_group).ok()?)?,
-            GroupSpan::new(u8::try_from(self.groups).ok()?)?,
-        )?
-        .with_active(self.active)
-        .with_ui_hint(match self.ui_hint {
-            1 => UiHint::Receiver,
-            2 => UiHint::Sender,
-            3 => UiHint::Both,
-            _ => UiHint::Unknown,
-        })
-        .with_midi_ci(
-            u8::try_from(self.midi_ci_version).unwrap_or(0),
-            u8::try_from(self.sysex8_streams).unwrap_or(0),
-        );
-        // A port over several Groups is not one (§7.1.8): kept as a block.
         let port = match self.midi1 {
             1 => Midi1Port::Unrestricted,
             2 => Midi1Port::Restricted,
             _ => Midi1Port::No,
         };
-        out = out.with_midi1(port).unwrap_or(out);
+        let groups = GroupSpan::new(u8::try_from(self.groups).ok()?)?;
+        let mut builder = FunctionBlock::builder(
+            FunctionBlockId::new(u8::try_from(self.id).ok()?)?,
+            direction,
+            FirstGroup::new(u8::try_from(self.first_group).ok()?)?,
+            groups,
+        )
+        .active(self.active)
+        .ui_hint(match self.ui_hint {
+            1 => UiHint::Receiver,
+            2 => UiHint::Sender,
+            3 => UiHint::Both,
+            _ => UiHint::Unknown,
+        })
+        .midi_ci(
+            u8::try_from(self.midi_ci_version).unwrap_or(0),
+            u8::try_from(self.sysex8_streams).unwrap_or(0),
+        )
+        // A port over several Groups is not one (§7.1.8): kept as a block.
+        .midi1(if groups.get() == 1 {
+            port
+        } else {
+            Midi1Port::No
+        });
         if let Some(name) = self.name.and_then(BlockName::new) {
-            out = out.with_name(name);
+            builder = builder.name(name);
         }
-        Some(out)
+        builder.build().ok()
     }
 }
 

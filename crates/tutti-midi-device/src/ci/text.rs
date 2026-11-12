@@ -1,8 +1,11 @@
 //! The Message Text of an ACK or a NAK (M2-101 §5.10.4, §5.11.4): ASCII on the
 //! wire, with everything else a JSON `\u` escape.
 
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
+use std::str::FromStr;
 use std::vec::Vec;
+
+use crate::name::NameError;
 
 /// The human-readable text of an ACK or NAK, held as the text it says and
 /// written as the pure ASCII the wire carries.
@@ -41,7 +44,7 @@ impl MessageText {
     /// [`MAX_ENCODED`](Self::MAX_ENCODED) bytes.
     #[must_use]
     pub fn new(text: &str) -> Option<Self> {
-        (encoded_len(text) <= Self::MAX_ENCODED).then(|| Self(text.to_owned()))
+        Self::try_from(text).ok()
     }
 
     /// The text, unescaped.
@@ -131,6 +134,43 @@ impl MessageText {
             }
         }
         Self(out)
+    }
+}
+
+impl fmt::Display for MessageText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for MessageText {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl TryFrom<&str> for MessageText {
+    type Error = NameError;
+
+    /// The text, or [`NameError::TooLong`] with [`MAX_ENCODED`](Self::MAX_ENCODED)
+    /// when its escaped form is longer. A message text has no other refusal:
+    /// every character has an escape.
+    fn try_from(text: &str) -> Result<Self, NameError> {
+        if encoded_len(text) <= Self::MAX_ENCODED {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(NameError::TooLong {
+                max: Self::MAX_ENCODED,
+            })
+        }
+    }
+}
+
+impl FromStr for MessageText {
+    type Err = NameError;
+
+    fn from_str(text: &str) -> Result<Self, NameError> {
+        Self::try_from(text)
     }
 }
 

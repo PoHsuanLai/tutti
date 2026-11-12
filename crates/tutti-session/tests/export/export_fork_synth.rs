@@ -104,17 +104,17 @@ fn sf2(font: &Arc<SoundFont>, rate: f64) -> SoundFontUnit {
 }
 
 /// A detached stereo session at the export's rate with `unit` inserted as a
-/// graph node (the path a host takes), routed to the outputs. `insert`
-/// takes a unit with no params of its own (`SoundFontUnit`); `add` takes
-/// one a param write reaches (`PolySynth`).
-fn session_with<N: tutti_graph::IntoNode>(unit: N) -> (Session, NodeKey) {
+/// graph node (the path a host takes), routed to the outputs: a unit with no
+/// params of its own (`SoundFontUnit`) or one a param write reaches
+/// (`PolySynth`).
+fn session_with<N: tutti_session::SessionNode>(unit: N) -> (Session, NodeKey) {
     let mut session = Session::builder()
         .inputs(0)
         .outputs_floor(2)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     session.graph().set_sample_rate(SampleRate(RATE));
-    let (synth, _) = session.graph().insert(unit);
+    let (synth, _) = session.graph().add(unit);
     // The dry pair; the unit's other outputs are sends.
     for c in 0..2 {
         session

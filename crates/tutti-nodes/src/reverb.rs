@@ -1,11 +1,11 @@
-//! The reverb: any [`Design`] as a graph node (design 022 section 5).
+//! The reverb: any [`Family`] as a graph node (design 022 section 5).
 //!
-//! [`DesignNode<D>`] is the one node over every reverb algorithm. It is generic
-//! rather than boxed: a [`Design`] has a `Controls` type and a [`Realization`] of its
+//! [`FamilyNode<F>`] is the one node over every reverb algorithm. It is generic
+//! rather than boxed: a [`Family`] has a `Controls` type and a [`Recurrence`] of its
 //! own, and erasing them would bring back a settings bag. The node holds the
 //! design, its realization and the algorithm's [`Param`](tutti_types::Param) cells ([`Params`]),
-//! and per block it reads the cells once, designs a [`Model`](Design::Model) when the
-//! controls changed, moves the realization to it ([`Realization::retarget`]), renders, and
+//! and per block it reads the cells once, designs a [`Member`](Family::Member) when the
+//! controls changed, moves the realization to it ([`Realized::retarget`]), renders, and
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
 //!
 //! The node is wet only: its blend with its input, for use as an insert, is the
@@ -16,31 +16,30 @@
 use core::ops::Range as Frames;
 
 use tutti_dsp::{
-    Cadence, Ceiling, Channels, Design, Effect, Effort, FreeverbControls, FreeverbDesign,
-    MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
+    Cadence, Capacity, Channels, Effort, Family, FreeverbControls, FreeverbFamily, Grows,
+    MAX_CHANNELS, NetworkCapacity, Reach, Realized, Recurrence, Ring, Setup, System, TAIL_FLOOR,
 };
 use tutti_graph::{
     Bus, BusRole, Buses, Cost, Cx, HasParam, HasParams, IntoNode, Io, Node, NodeParts, OutBus,
     ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail};
+use tutti_types::{Latency, MaxBlock, Mix, SampleRate, Samples, Tail};
 
 use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 
-/// The level the wet signal has fallen to when the declared tail ends, and below
-/// which the node parks: 60 dB under what it carried, the figure the General MIDI
-/// reverb has always declared. Measured against the old, uncut Freeverb at
-/// `input_end + tail`, what the cut discards is more than 100 dB below the
-/// rendered peak: about -112 dBFS RMS after a 2 s noise burst, -128 dBFS after a
-/// 50 ms one, and nothing after an impulse (already flushed).
-const TAIL_FLOOR: Db = Db(-60.0);
+// The node measures its tail to `TAIL_FLOOR`: the level the wet signal has fallen to
+// when the declared tail ends, and below which the node parks, 60 dB under what it
+// carried, the figure the General MIDI reverb has always declared. Measured against
+// the old, uncut Freeverb at `input_end + tail`, what the cut discards is more than
+// 100 dB below the rendered peak: about -112 dBFS RMS after a 2 s noise burst,
+// -128 dBFS after a 50 ms one, and nothing after an impulse (already flushed).
 
 /// A tail of this many frames never ends.
 const UNBOUNDED: u64 = u64::MAX;
 
-/// A [`Design`] a [`DesignNode`] can run: the design plus the cells of its
+/// A [`Family`] a [`FamilyNode`] can run: the design plus the cells of its
 /// controls.
-pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'static {
+pub trait NodeFamily: Family + 'static {
     /// The cells: the family's addresses and the conversion between its controls and
     /// the `f32`s the ports carry.
     type Set: ControlSet<Controls = Self::Controls>;
@@ -57,13 +56,33 @@ pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'st
     /// block (the default), or every `n` frames when a control moves inside the
     /// block. A stream grid is counted from the last reset ([`Cadence::steps`]), so
     /// what it designs does not depend on where the blocks fall.
-    /// Separate from [`Design::CADENCE`], the grid the render is a function of: a
+    /// Separate from [`Family::CADENCE`], the grid the render is a function of: a
     /// reverb whose render is a function of the stream is still designed once per
     /// block.
     const SAMPLING: Cadence = Cadence::BLOCK;
 
     /// The control set, for a node whose controls start at `initial`. Control side.
     fn set(&self, initial: &Self::Controls) -> Self::Set;
+
+    /// The capacity the node's runner is prepared with at `rate`: `()` for a family
+    /// that does not grow, and for a [`Grows`] one [`grown`](Self::grown). Control side.
+    fn capacity(&self, rate: SampleRate) -> <Self::Recurrence as Recurrence>::Capacity;
+
+    /// What a [`Grows`] family's [`Grows::reach`] gives at `rate`, over the family's
+    /// default [`Domain`](tutti_dsp::Domain) with the tail measured to [`TAIL_FLOOR`] ([`Reach::at`]): such a
+    /// family's [`capacity`](Self::capacity).
+    ///
+    /// # Panics
+    ///
+    /// For a `rate` that is not positive and finite ([`Reach::at`] refuses it; the node
+    /// replaces such a rate before it asks).
+    fn grown(&self, rate: SampleRate) -> <Self::Recurrence as Recurrence>::Capacity
+    where
+        Self: Grows,
+    {
+        let reach = Reach::<Self::Domain>::at(rate).expect("a positive finite rate");
+        self.reach(&reach)
+    }
 }
 
 /// Freeverb's controls: the room size and the damping, as positions on `0..1`.
@@ -89,16 +108,20 @@ control_set! {
     }
 }
 
-impl NodeDesign for FreeverbDesign {
+impl NodeFamily for FreeverbFamily {
     type Set = FreeverbSet;
 
     fn set(&self, _: &FreeverbControls) -> FreeverbSet {
         FreeverbSet
     }
+
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.grown(rate)
+    }
 }
 
 /// The Freeverb as a graph node: mono in, stereo out.
-pub type FreeverbNode = DesignNode<FreeverbDesign>;
+pub type FreeverbNode = FamilyNode<FreeverbFamily>;
 
 /// Whether a node's controls can change.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,14 +134,14 @@ enum Mode<C> {
     Fixed(C),
 }
 
-/// A reverb of any [`NodeDesign`] as a graph node, [`Design::channels`] wide.
+/// A reverb of any [`NodeFamily`] as a graph node, [`Family::channels`] wide.
 ///
 /// # Controls
 ///
 /// Per block the node reads its cells once ([`Params`]), and when
-/// the controls differ from the last block's it designs the [`Model`](Design::Model) **in
-/// place** into one it owns ([`Design::design_into`]: a network is about 56 KB,
-/// too large to build on an audio thread) and calls [`Realization::retarget`], which
+/// the controls differ from the last block's it designs the [`Member`](Family::Member) **in
+/// place** into one it owns ([`Family::member_into`]: a network is about 56 KB,
+/// too large to build on an audio thread) and calls [`Realized::retarget`], which
 /// moves the realization toward it. An unmodulated, unchanged reverb designs once.
 /// The audio thread is the only place that sees a modulated value (a lane
 /// writes the port, never the cell), so it is where the design runs, and it
@@ -129,7 +152,7 @@ enum Mode<C> {
 /// A graph node ([`IntoNode`], through [`tutti_graph::param_parts`]): inserted,
 /// its controls are a [`ParamSet`] over the
 /// algorithm's cells, and a fork starts from the values set with a
-/// [`Realization::fresh`] realization, silent (the graph's preroll warms it).
+/// [`Realized::fresh`] realization, silent (the graph's preroll warms it).
 ///
 /// **Latency** is the realization's, never a pre-delay. **The tail** is a ceiling
 /// ([`Shape::tail`], the design's worst case at the longest decay) that the
@@ -138,17 +161,17 @@ enum Mode<C> {
 /// heard out. Once its input has been silent for the reported tail the node
 /// cuts the room off, resets the realization and parks ([`Status::Idle`]): the state
 /// is below -60 dB, and an idle node is a fresh one when it wakes.
-pub struct DesignNode<D: NodeDesign> {
-    design: D,
-    realization: D::Realization,
-    params: Params<D::Set>,
-    mode: Mode<D::Controls>,
+pub struct FamilyNode<F: NodeFamily> {
+    family: F,
+    realization: Realized<F::Recurrence>,
+    params: Params<F::Set>,
+    mode: Mode<F::Controls>,
     /// The model the realization was last retargeted to: designed in place.
-    network: Box<D::Model>,
+    network: Box<F::Member>,
     /// The longest-ringing model of a modulated block, for the tail only.
-    longest: Box<D::Model>,
+    longest: Box<F::Member>,
     /// The controls `network` is the design of.
-    applied: Option<D::Controls>,
+    applied: Option<F::Controls>,
     /// The tail of `network`, in frames at `rate`.
     current: u64,
     /// The ceiling: what `Shape::tail` declares, in frames.
@@ -169,9 +192,9 @@ pub struct DesignNode<D: NodeDesign> {
     position: u64,
 }
 
-impl<D: NodeDesign> std::fmt::Debug for DesignNode<D> {
+impl<F: NodeFamily> std::fmt::Debug for FamilyNode<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DesignNode")
+        f.debug_struct("FamilyNode")
             .field("rate", &self.rate)
             .field("channels", &self.channels)
             .field("ceiling", &self.ceiling)
@@ -181,35 +204,35 @@ impl<D: NodeDesign> std::fmt::Debug for DesignNode<D> {
     }
 }
 
-impl<D: NodeDesign> DesignNode<D> {
+impl<F: NodeFamily> FamilyNode<F> {
     /// A reverb of `design`, its cells at `controls`, at the default rate (the
     /// graph's `prepare` re-tunes it). The graph may modulate the cells, so
     /// its tail ceiling is the design's worst case. Allocates: build it before
     /// the node goes live.
     #[must_use]
-    pub fn live(design: D, controls: D::Controls) -> Self {
-        Self::build(design, controls, Mode::Live)
+    pub fn live(family: F, controls: F::Controls) -> Self {
+        Self::build(family, controls, Mode::Live)
     }
 
     /// A reverb of `design` with no cells: its controls are
     /// `controls` for good, so its tail is the exact figure of that one
     /// network, not a worst case. Allocates.
     #[must_use]
-    pub fn fixed(design: D, controls: D::Controls) -> Self {
-        Self::build(design, controls, Mode::Fixed(controls))
+    pub fn fixed(family: F, controls: F::Controls) -> Self {
+        Self::build(family, controls, Mode::Fixed(controls))
     }
 
-    fn build(design: D, controls: D::Controls, mode: Mode<D::Controls>) -> Self {
+    fn build(family: F, controls: F::Controls, mode: Mode<F::Controls>) -> Self {
         let rate = SampleRate::DEFAULT;
-        let channels = design.channels();
+        let channels = family.channels();
         let out = ports(channels)
             .output_bus(0)
             .expect("a design has an output");
-        let realization = design.realization();
-        let params = Params::new(design.set(&controls), &controls);
-        let (network, longest) = (Box::new(design.blank(rate)), Box::new(design.blank(rate)));
+        let realization = family.realized();
+        let params = Params::new(family.set(&controls), &controls);
+        let (network, longest) = (Box::new(family.blank(rate)), Box::new(family.blank(rate)));
         let mut node = Self {
-            design,
+            family,
             realization,
             params,
             mode,
@@ -232,13 +255,14 @@ impl<D: NodeDesign> DesignNode<D> {
 
     /// Prepares the realization for `rate` and sizes everything that depends on it.
     fn retune(&mut self, rate: SampleRate, max_block: MaxBlock) {
-        let ceiling = Ceiling::new(rate, D::Range::DEFAULT, TAIL_FLOOR)
-            .or_else(|| Ceiling::new(SampleRate::DEFAULT, D::Range::DEFAULT, TAIL_FLOOR))
-            .expect("the default rate is positive and finite");
-        let bounds = self.design.bounds(&ceiling);
-        self.rate = ceiling.rate();
+        self.rate = if rate.get().is_finite() && rate.get() > 0.0 {
+            rate
+        } else {
+            SampleRate::DEFAULT
+        };
+        let capacity = self.family.capacity(self.rate);
         self.realization.prepare(
-            &bounds,
+            &capacity,
             &Setup {
                 rate: self.rate,
                 max_block,
@@ -246,10 +270,10 @@ impl<D: NodeDesign> DesignNode<D> {
         );
         self.applied = None;
         self.ceiling = match self.mode {
-            Mode::Live => frames(bounds.tail(), self.rate),
+            Mode::Live => frames(capacity.tail(), self.rate),
             Mode::Fixed(controls) => {
-                self.design
-                    .design_into(&controls, self.rate, &mut self.network);
+                self.family
+                    .member_into(&controls, self.rate, &mut self.network);
                 frames(self.network.tail(TAIL_FLOOR), self.rate)
             }
         };
@@ -266,11 +290,11 @@ impl<D: NodeDesign> DesignNode<D> {
     }
 
     /// Designs `controls` into the node's network and retargets the realization.
-    fn apply(&mut self, controls: D::Controls) {
-        self.design
-            .design_into(&controls, self.rate, &mut self.network);
+    fn apply(&mut self, controls: F::Controls) {
+        self.family
+            .member_into(&controls, self.rate, &mut self.network);
         self.realization.retarget(&self.network);
-        if D::PARKS {
+        if F::PARKS {
             self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
         }
         self.applied = Some(controls);
@@ -278,7 +302,7 @@ impl<D: NodeDesign> DesignNode<D> {
 
     /// The controls the model was last designed from, for a node's own tests.
     #[cfg(test)]
-    pub(crate) fn applied(&self) -> Option<D::Controls> {
+    pub(crate) fn applied(&self) -> Option<F::Controls> {
         self.applied
     }
 
@@ -293,8 +317,8 @@ impl<D: NodeDesign> DesignNode<D> {
             && let Some(longest) = self.params.longest(io)
             && Some(longest) != self.applied
         {
-            self.design
-                .design_into(&longest, self.rate, &mut self.longest);
+            self.family
+                .member_into(&longest, self.rate, &mut self.longest);
             current = current.max(frames(self.longest.tail(TAIL_FLOOR), self.rate));
         }
 
@@ -356,7 +380,7 @@ impl<D: NodeDesign> DesignNode<D> {
         }
         let width = self.channels.output_width();
         self.realization
-            .process(&input[..inputs], &mut output[..width]);
+            .process(&input[..inputs], &mut output[..width], frames.len());
     }
 
     /// Renders the block one step of the sampling grid at a time, the block
@@ -370,14 +394,14 @@ impl<D: NodeDesign> DesignNode<D> {
         // A cell glides from where the block began, whatever the steps designed,
         // and arrives at its value on the block's last solve.
         let applied = self.applied;
-        let span = D::SAMPLING
+        let span = F::SAMPLING
             .steps(position, size, applied.is_none())
             .filter(|step| step.grid_point)
             .map(|step| step.solve_at + 1)
             .last()
             .unwrap_or(size);
         let mut held = 0;
-        for step in D::SAMPLING.steps(position, size, applied.is_none()) {
+        for step in F::SAMPLING.steps(position, size, applied.is_none()) {
             if !step.grid_point {
                 continue;
             }
@@ -403,17 +427,17 @@ impl<D: NodeDesign> DesignNode<D> {
     }
 }
 
-impl DesignNode<FreeverbDesign> {
+impl FamilyNode<FreeverbFamily> {
     /// The General MIDI reverb send: Freeverb at room 0.5 and damping 0.5, mono
     /// in and stereo out, wet only. Its controls are fixed, so its tail is the
     /// exact figure of that one network, and it declares no cells.
     #[must_use]
     pub fn general_midi() -> Self {
-        Self::fixed(FreeverbDesign, FreeverbControls::GENERAL_MIDI)
+        Self::fixed(FreeverbFamily, FreeverbControls::GENERAL_MIDI)
     }
 }
 
-impl Default for DesignNode<FreeverbDesign> {
+impl Default for FamilyNode<FreeverbFamily> {
     fn default() -> Self {
         Self::general_midi()
     }
@@ -455,7 +479,7 @@ fn ports(channels: Channels) -> Shape {
     )
 }
 
-impl<D: NodeDesign> Node for DesignNode<D> {
+impl<F: NodeFamily> Node for FamilyNode<F> {
     fn shape(&self) -> Shape {
         let addrs = match self.mode {
             Mode::Live => self.params.addrs(),
@@ -464,7 +488,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
         ports(self.channels)
             .with_cost(cost(self.realization.effort()))
             .with_latency(Latency::new(self.realization.latency()))
-            .with_tail(if D::PARKS {
+            .with_tail(if F::PARKS {
                 tail_of(self.ceiling)
             } else {
                 Tail::Unknown
@@ -499,15 +523,15 @@ impl<D: NodeDesign> Node for DesignNode<D> {
                 },
             ),
         };
-        let moved = |applied: &D::Controls| self.params.moved(applied, &target);
-        let stepped = D::SAMPLING != Cadence::BLOCK
+        let moved = |applied: &F::Controls| self.params.moved(applied, &target);
+        let stepped = F::SAMPLING != Cadence::BLOCK
             && matches!(self.mode, Mode::Live)
             && (self.params.driven(&io) || self.applied.as_ref().is_some_and(moved));
         if !stepped && self.applied.as_ref().is_none_or(moved) {
             self.apply(target);
         }
 
-        let cut = if D::PARKS { self.cut(&mut io) } else { size };
+        let cut = if F::PARKS { self.cut(&mut io) } else { size };
 
         // Past its tail the room is cut off and parked: its state is below the
         // floor, and the input has been silent for longer than the realization's
@@ -552,11 +576,11 @@ impl<D: NodeDesign> Node for DesignNode<D> {
 }
 
 /// A clone shares the cells and starts silent: a copy of the realization with its
-/// state empty ([`Realization::fresh`]).
-impl<D: NodeDesign> Clone for DesignNode<D> {
+/// state empty ([`Realized::fresh`]).
+impl<F: NodeFamily> Clone for FamilyNode<F> {
     fn clone(&self) -> Self {
         Self {
-            design: self.design.clone(),
+            family: self.family.clone(),
             realization: self.realization.fresh(),
             params: self.params.clone(),
             mode: self.mode,
@@ -576,7 +600,7 @@ impl<D: NodeDesign> Clone for DesignNode<D> {
     }
 }
 
-impl<D: NodeDesign> ParamNode for DesignNode<D> {
+impl<F: NodeFamily> ParamNode for FamilyNode<F> {
     /// In a live node the algorithm's cells; a fixed one has none.
     fn param_set(&self) -> ParamSet {
         let set = ParamSet::builder();
@@ -596,18 +620,18 @@ impl<D: NodeDesign> ParamNode for DesignNode<D> {
 
 /// A design node has the params its [`ControlSet`] declares, in the units its
 /// `Controls` hold them in.
-impl<D: NodeDesign, const P: u16> HasParam<P> for DesignNode<D>
+impl<F: NodeFamily, const P: u16> HasParam<P> for FamilyNode<F>
 where
-    D::Set: HasControl<P>,
+    F::Set: HasControl<P>,
 {
-    type Unit = <D::Set as HasControl<P>>::Unit;
+    type Unit = <F::Set as HasControl<P>>::Unit;
 }
 
-impl<D: NodeDesign, const P: u16> HasParams<P> for DesignNode<D> where D::Set: HasControls<P> {}
+impl<F: NodeFamily, const P: u16> HasParams<P> for FamilyNode<F> where F::Set: HasControls<P> {}
 
 /// Inserted with its [`ParamSet`] as its controls and a fork that starts from
 /// the values last set through it ([`tutti_graph::param_parts`]).
-impl<D: NodeDesign> IntoNode for DesignNode<D> {
+impl<F: NodeFamily> IntoNode for FamilyNode<F> {
     type Controls = ParamSet;
 
     fn into_parts(self) -> NodeParts<ParamSet> {

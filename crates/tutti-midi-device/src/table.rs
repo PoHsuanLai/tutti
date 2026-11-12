@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::id::{DeviceId, DeviceInfo, Direction, EndpointId, Identity};
+use crate::id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection};
 
 /// One device as a backend sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,7 +15,7 @@ pub struct OsDevice {
     /// The name to show.
     pub name: String,
     /// Which way MIDI flows.
-    pub direction: Direction,
+    pub direction: PortDirection,
 }
 
 /// What a backend learned from the OS.
@@ -73,7 +73,7 @@ pub enum Resolved {
 }
 
 /// Whether a device that goes `now` still carries what `saved` used it for.
-fn serves(now: Direction, saved: Direction) -> bool {
+fn serves(now: PortDirection, saved: PortDirection) -> bool {
     (now.is_input() || !saved.is_input()) && (now.is_output() || !saved.is_output())
 }
 
@@ -147,9 +147,8 @@ impl DeviceTable {
     }
 
     /// The devices present, ordered by id.
-    #[must_use]
-    pub fn list(&self) -> Vec<DeviceInfo> {
-        self.devices.values().map(|e| e.info.clone()).collect()
+    pub fn list(&self) -> impl ExactSizeIterator<Item = &DeviceInfo> + '_ {
+        self.devices.values().map(|e| &e.info)
     }
 
     /// The device with this id, if present.

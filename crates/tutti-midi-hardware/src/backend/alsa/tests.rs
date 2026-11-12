@@ -248,7 +248,7 @@ fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
     let caps = CAP_READ | CAP_SUBS_READ | CAP_WRITE | CAP_SUBS_WRITE;
     seq.set_port_caps(port, caps).expect("capabilities");
     let added = info(until(&devices, added(&name)));
-    assert_eq!(added.direction, tutti_midi_device::Direction::Duplex);
+    assert_eq!(added.direction, tutti_midi_device::PortDirection::Duplex);
 }
 
 #[test]

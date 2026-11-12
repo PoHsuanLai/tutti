@@ -94,7 +94,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (`tutti-graph`), a ring one producer (`EventInletWriter`, not `Clone`) fills with
   `push(At, Ump)` or `push_at(Moment, Ump)`, held on `Env::due` until its frame
   (late lands at offset 0 and is counted), `Graph::open_event_inlet` /
-  `add_event_inlet` (`tutti-session`). No rate to refuse: a `Moment` carries
+  `add_event_inlet` (`tutti-session`; the capacity is an `EventCapacity`, 1 to
+  `u32::MAX`, so neither it nor `EventInletNode::pair` panics). No rate to refuse: a `Moment` carries
   its own. A note-off or panic controller (`Ump::is_panic_controller`) is kept
   over any other event; four counts (`lost`, `evicted`, `refused`, `late`);
   its fork is silent, unlike the audio inlet's. A producer holding an OS time gets
@@ -436,10 +437,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
                  `tutti-ump` and `tutti-types`
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
-                 pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
+                 pure step: `Voicing::step(channel, message, patch, level) -> &[Command]`
                  (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
-                 note table and the note gate (`Holds`), with the differences between
-                 instruments as values (`Rules`) and a `Patch`; no audio, no voice, no
+                 note table and the note gate (`Holds`, whose `*_up` return a `Release`), with the differences between
+                 instruments as values (`Rules::poly(n)`, `mono()`, `legato()`, `with_*`) and a `Patch`; no audio, no voice, no
                  allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and
                  `tutti-types`; `publish = false`
   tutti-midi-device  MIDI device core (design 017 §5): `DeviceId`, `OsChange`, the pure
@@ -641,13 +642,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`
   and has no `bevy` feature. **The note logic of an instrument is one pure step
   here, and an instrument keeps its voices and its render:** it builds a
-  `VoiceView` list, calls `step`, and does what the `Command`s say (`PolySynth`
+  `level` lookup (`impl Fn(VoiceId) -> Option<Amplitude>`, `None` for a voice it no
+  longer has: no list, no order, no copy), calls `step` with the message by value, and
+  does what the `Command`s say (`PolySynth`
   does, in `tutti-polysynth`'s `VoiceAllocator`, which is now its slot table).
   What differs between instruments is a value of `Rules` or a `Patch`, never a
   branch in the core; a difference only one instrument has and the spec does not
   require is a reason to look again. `step` allocates nothing: its tables are
-  sized in `new` and a `Clone` keeps their capacity; the instrument passes
-  `VoiceView`s sorted by id, and only for a note-on (liveness is read there).
+  sized in `new` and a `Clone` keeps their capacity; the core calls `level`
+  only for a note message (liveness is read there). `VoiceId` has a private
+  field (`new`, `get`: every `u64` is a voice) and `VoiceSpec::group` is an
+  `Option<NonZeroU16>`.
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
   and nothing is pinned against another implementation. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
   Group's sixteen channels** (`SynthConfig::group`, `Settings::with_group`; a message of
@@ -659,20 +664,22 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
   feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
-  threads and the OS. It also holds the MIDI-CI codec (`CiMessage::encode` and
-  `decode` over the bytes between `F0` and `F7`, which the caller frames with
-  `tutti_ump::frame` and reassembles with `tutti_ump::SysexAssembler`; `Muid::new`
+  threads and the OS. It also holds the MIDI-CI codec (`CiMessage::encode`,
+  `encode_into(&mut impl Extend<u8>)` and `decode` over the bytes between `F0` and
+  `F7`, `packets(group)` for a UMP stream, or `tutti_ump::frame` for a byte stream,
+  and `tutti_ump::SysexAssembler` to reassemble; `DiscoveryData::new` takes a
+  `tutti_ump::DeviceIdentity`; `Muid::new`
   refuses the reserved range and broadcast, which is a `Destination`). The CI codec has
   no state machine; design 017 §5, "MIDI-CI", is the rebuild. `CiMessage::decode` returns
   a `Decoded`, and a message it cannot read is an `Unread` that keeps its header so the
   NAK can be addressed (`Unread::nak`); a message carries its own destination (Discovery
   and Invalidate MUID are broadcast, the rest go to one `Muid`), and a value the spec
   bounds is a checked type (`CiVersion`, `CiDeviceId`, `MaxSysexSize`, `MessageText`).
-  A name (`EndpointName`, `BlockName`) is held in NFC and has no leading BOM (M2-104
+  A name (`EndpointName`, `BlockName`; with `ProductInstanceId` and `MessageText` it has `new -> Option` and `TryFrom<&str>`/`FromStr` with a `NameError`, `Display` and `AsRef<str>`) is held in NFC and has no leading BOM (M2-104
   §1.8).
   Its `tutti-ump` edge is for the UMP Endpoint and Connection (doc 017 stage 4b):
   `Endpoint::reply` answers a received Stream message into a caller's
-  `Extend<Ump>` and allocates nothing, `Connection` is Table 4 steps 2 to 4 as a
+  `Extend<Ump>` and allocates nothing, `Connection` (`new` returns `(Self, Action)`, the first `Action::Send`) is Table 4 steps 2 to 4 as a
   state machine whose time is an `Instant` argument (`on_message`, `on_timeout`,
   `deadline`), never read from a clock; the bit fields stay in `tutti-ump`. The
   CI codec takes `tutti-ump`'s `U7`, `MidiChannel` and `FunctionBlockId` for its fields. `tutti-midi-hardware` feeds them: one `Connection` per open UMP input, stepped by `MidiSession::poll(now)` from the session's `Phase::Poll`, with the device's Stream messages kept out of the graph (`InputProducerHandle::push`, which also drops a JR Clock or JR Timestamp a device sends) and the connection still hearing a Stream Configuration Notification (and, unless the Endpoint declared its blocks static, Function Block changes) after it settles; **an output is put in the device's wire form at one place, `OpenOutput::queue`**: from the device's `StreamConfig` (the OS's description, then what the negotiation settled), a MIDI 2.0 Protocol endpoint gets the graph's packets as they are, a MIDI 1.0 Protocol endpoint or port never gets type `0x4` (one `tutti_midi_protocol::Narrower` per output) and JR goes only when `rx_jr` is set, and the session's `UmpOut` stamps by the same configuration (there is no host JR switch); `Endpoint::reply` has no caller, since tutti publishes no endpoint. A consumer that persists a `DeviceInfo` depends on it with
@@ -762,8 +769,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   each) and thiserror, and `rand` under the `contract` feature only), keeps every
   module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it; `contract`, behind the off-by-default `contract`
-  feature, is the one public module: the cases a `Design` and its `Realization` are
-  held to, `design_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
+  feature, is the one public module: the cases a `Family` and its `Realized` runner are
+  held to, `family_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
@@ -777,8 +784,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the filters' one
-  `Design`, `Filter<K>` over a `ChannelKernel` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
-  `SvfDesign<F>`, `LadderDesign<F>` and `CrossoverDesign` its aliases), whose channels run
+  `Family`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
+  `SvfFamily<F>`, `LadderFamily<F>` and `CrossoverFamily` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
   written once), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
@@ -787,33 +794,38 @@ list (normal and build edges; dev-dependencies may go anywhere).
   one figure of a resampled length; `ChunkSize`), the dither noise
   (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
   the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
-  `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
-  (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
+  `FreeverbRecurrence`, the `Recurrence` of `FreeverbFamily`), the feedback delay network
+  (`FdnFamily`, `FdnRecurrence`: both run by `Realized`, whose glides step between
   `retarget`s in 32-frame chunks counted from the last reset, so the output does
   not depend on the block length), the
-  model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
-  to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
+  model of doc 024 (the `model` module, exported at the root: a `Family` maps controls
+  (φ, `member_into`) to a `Member`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
-  and a stability test, all bounds stated as such); a `Realization<M>` (`Clone`, with a
-  default `fresh`) is one realization of a model and an `Effect<M>` its planar block shape;
-  every effect moved onto it is the one `Realized<K>` over a `Kernel` (its per-frame math),
-  whose coefficients approach each new model by a `Glide` (`Lerp`, `Approach`); prepared from a
-  `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
-  over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` (a period and an anchor: only a
+  and a stability test, all bounds stated as such); a `Recurrence` is one
+  realization of a member (its `coefficients_into` writes the coefficient point a member asks for,
+  its `Approach` glides to it, its `run` is the per-frame math), and `Realized<R>` is the one
+  runner over it, with the planar block shape `process(input, output, frames)`;
+  the coefficients approach each new point by an `Approach` (a `Glide` of a `Lerp`
+  set, or the FDN's own, a glide a field); prepared from a
+  `Setup` and the recurrence's `Capacity`, moved to each member by `retarget`; a family whose
+  state grows with its member is also `Grows`, whose `reach` over a `Reach<D>` (the
+  family's `Domain`, `MaxDecay` for a reverb) is a `Capacity` (`need` of a member, the lattice
+  `dominates`; the one condition is `need(φ(c)) ≤ reach(D)`), and a family that does not
+  grow has capacity `()`; `Effort` and `Cadence` (a period and an anchor: only a
   stream-anchored one is block independent) are the
   engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
-  a `System` and an `Lti`, with `Bounds` and `FreeverbDesign`: a plain
+  a `System` and an `Lti`, with `NetworkCapacity` and `FreeverbFamily`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
-  a realization must follow; a `Design` writes its model in place, `design_into`, because a
+  a realization must follow; a `Family` writes its member in place, `member_into`, because a
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
-  them (shape, prepare, process, params, fork; `DesignNode<D: NodeDesign>` is
-  the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
-  its two instances and `ReverbKind` the choice between them; a design node is
+  them (shape, prepare, process, params, fork; `FamilyNode<F: NodeFamily>` is
+  the one node over every reverb and filter `Family`, with `FreeverbNode` and `FdnNode`
+  its two reverb instances and `ReverbKind` the choice between them; a family node is
   the wet signal alone, and its dry/wet is the graph's mix, `Editor::set_mix`), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
-  `FdnDesign`, `FreeverbControls`, `FreeverbDesign`).
+  `FdnFamily`, `FreeverbControls`, `FreeverbFamily`).
 - `tutti-measure` depends on `tutti-types` and `tutti-dsp` alone among workspace
   crates (its outside deps are `ebur128`, the only place it is pulled, and
   `thiserror`; `tutti-graph` is a dev-dependency only, for the README's tap
@@ -1133,7 +1145,7 @@ Scalars use `Param<U>`.
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
 - **The session graph has typed keys and one wiring vocabulary** (doc 013, "The
-  session graph's surface"). `Graph::add`/`insert` return a `Key<N>` (a `Copy`
+  session graph's surface"). `Graph::add` (the one way a node enters) returns a `Key<N>` (a `Copy`
   `NodeKey` with its node type; every call that takes a node takes
   `impl Into<NodeKey>`, `Key::erase` gives the plain key). Ports come from keys:
   `key.out(i)` is an `OutPort`, `key.input(i)` an `InPort`; the root is `Root`
@@ -1146,6 +1158,14 @@ Scalars use `Param<U>`.
   and into the root it folds to the declared topology, `BusError::RootUndeclared`
   otherwise). `Graph::chain` does a main bus down a list. All refuse with
   `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **Removal is a `#[must_use]` `Result` that names what was not there** (doc 030
+  step 2d, doc 013 "As built (removal)"): `Graph::remove` / `Session::remove`
+  (`RemoveError`, declicked), `close_tap` / `close_event_tap` / `close_meter`
+  (`CloseError`), `close_heard_tap` (`HeardTapError::NotOpen`), the session's
+  modulation `remove_source` / `remove_route` and `Midi::unroute`; never a `bool`.
+  A refusal changes nothing. **`Graph::add` is the one way a node enters** and
+  takes a `SessionNode`, so a node with params cannot be added unaddressed; the
+  unaddressed insert is private.
 - **Event ports are keys' too, and params are typed** (doc 030 step 2c).
   `key.events_out()` / `key.events_in()` are the main event ports (index 0;
   **event input 0 is the main event input, where the chase delivers**),
@@ -1157,7 +1177,7 @@ Scalars use `Param<U>`.
   that converts into `ParamRef`, generated from the node's own declaration of
   its params (`tutti_graph::declare_params!` next to its `Param<U>` cells, doc 030
   N1: the unit is checked against the cell's type, and the same table gives its
-  `ParamSet` and shape's ports; a `DesignNode` family declares them in its
+  `ParamSet` and shape's ports; a `FamilyNode` family declares them in its
   `ControlSet`, `control_set!`; a host's node uses the graph's macro, and
   `param_session_node!` only lists the engine's nodes as `SessionNode`s):
   `Graph::set_param(lp.cutoff(),
@@ -1215,8 +1235,8 @@ Scalars use `Param<U>`.
   system that runs a phase in its set. Node removal is an
   `On<Remove, AudioNode>` observer.
 - Every spawn path takes a `SessionNode`: `spawn_audio_node`,
-  `insert_audio_node`, `crossfade_audio_node` (and `Graph::insert` /
-  `replace`, reached through `AudioGraphRes::graph`, take its `IntoNode`). A host's plain node goes in as
+  `insert_audio_node`, `crossfade_audio_node` (and `Graph::add` /
+  `replace`, reached through `AudioGraphRes::graph`). A host's plain node goes in as
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with
@@ -1331,6 +1351,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
 - **Dead crate names:** `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output

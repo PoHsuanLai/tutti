@@ -25,7 +25,7 @@ use tutti_types::MaxBlock;
 use clap_probe::{ProbeEnv, Rig, load_probe, render};
 use param_probe::{extra, knob, knobs, load_param_probe, until};
 use tutti_fixtures::machine_lock;
-use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};
+use tutti_graph::{ForkMode, ForkTarget, Prepare, TransportPosition};
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::ParamId;
@@ -63,8 +63,12 @@ fn rig(client: tutti_plugin::handles::PluginClient, lanes: Vec<ControlLaneNode>)
         prepare,
         lanes,
     );
-    rig.renderer()
-        .set_transport(Transport::new(true, Bpm::of(120.0), Beat(0.0), None));
+    rig.renderer().set_transport(TransportPosition::new(
+        true,
+        Bpm::of(120.0),
+        Beat(0.0),
+        None,
+    ));
     rig
 }
 
@@ -248,8 +252,12 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         prepare,
         vec![held],
     );
-    live.renderer()
-        .set_transport(Transport::new(true, Bpm::of(120.0), Beat(0.0), None));
+    live.renderer().set_transport(TransportPosition::new(
+        true,
+        Bpm::of(120.0),
+        Beat(0.0),
+        None,
+    ));
     let near = |out: &[Vec<f32>], db: f64| {
         out.first()
             .and_then(|c| c.last())

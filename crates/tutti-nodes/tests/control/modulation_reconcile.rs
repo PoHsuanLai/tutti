@@ -16,12 +16,12 @@ use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Node, Offset, ParamIn, ParamSegment, Prepare, ScheduleError, Shape, Status,
-    Transport, TransportChanges,
+    TransportChanges, TransportPosition,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_modulation::{
     Adsr, Clock, Declarations, Law, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
-    Source as ModSource, SourceKey, TargetDecl, TargetKey, Wave,
+    Source as ModSource, SourceKey, TargetDecl, TargetKey, Waveform,
 };
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
 use tutti_nodes::testing::Through;
@@ -336,7 +336,7 @@ fn cutoff_of(node: u64) -> TargetKey {
 
 fn sine(rate: f32) -> ModSource {
     ModSource::Lfo {
-        wave: Wave::Shape {
+        wave: Waveform::Shape {
             shape: LfoShape::Sine,
             seed: 0,
         },
@@ -395,7 +395,7 @@ fn probe_of(ed: &mut Editor, host: &mut Host, id: u64, p: Probe) {
 fn block(
     ed: &mut Editor,
     exec: &mut Executor,
-    t: &Transport,
+    t: &TransportPosition,
     ch: &TransportChanges,
     n: usize,
 ) -> Vec<Vec<f32>> {
@@ -416,8 +416,8 @@ fn append(all: &mut Vec<Vec<f32>>, got: Vec<Vec<f32>>) {
     }
 }
 
-fn stopped() -> Transport {
-    Transport::new(false, TEMPO, Beat(0.0), None)
+fn stopped() -> TransportPosition {
+    TransportPosition::new(false, TEMPO, Beat(0.0), None)
 }
 
 /// `total` stopped frames in blocks of `n`.
@@ -1376,7 +1376,7 @@ impl Playhead {
         Self(FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE)))
     }
     fn roll(&mut self, ed: &mut Editor, exec: &mut Executor, n: usize, all: &mut Vec<Vec<f32>>) {
-        let t = Transport::counted(true, TEMPO, self.0.origin(), None);
+        let t = TransportPosition::counted(true, TEMPO, self.0.origin(), None);
         append(all, block(ed, exec, &t, &TransportChanges::NONE, n));
         self.0.advance(Samples(n), None);
     }
@@ -1425,7 +1425,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     let total = 48_000;
     let mut head = Playhead::new();
     let mut ch = TransportChanges::NONE;
-    let start = Transport::counted(true, TEMPO, head.0.origin(), None);
+    let start = TransportPosition::counted(true, TEMPO, head.0.origin(), None);
     ch.push(Offset::new(37, Samples(128)).expect("in"), start)
         .expect("room");
     let mut live = block(&mut ed, &mut exec, &stopped(), &ch, 128);
@@ -1755,7 +1755,7 @@ fn a_play_start_after_a_steady_state_republishes_an_anchored_program() {
     assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
     steady(&mut r);
     let mut ch = TransportChanges::NONE;
-    let start = Transport::new(true, TEMPO, Beat(0.0), None);
+    let start = TransportPosition::new(true, TEMPO, Beat(0.0), None);
     ch.push(Offset::new(37, Samples(128)).expect("in"), start)
         .expect("room");
     block(&mut r.ed, &mut r.exec, &stopped(), &ch, 128);

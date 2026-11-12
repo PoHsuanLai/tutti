@@ -319,7 +319,8 @@ fn lane_block(
         start: l.start(),
         end: l.end(),
     });
-    let t = tutti_graph::Transport::counted(true, clock.tempo(), clock.origin(), graph_loop);
+    let t =
+        tutti_graph::TransportPosition::counted(true, clock.tempo(), clock.origin(), graph_loop);
     let [a, b, c, d] = bufs;
     exec.process(
         n,
@@ -480,7 +481,8 @@ impl tutti_graph::Node for Probe8 {
 fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
     use std::sync::Arc;
     use tutti_modulation::{
-        Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, PeriodPoint, Polarity, Wave,
+        Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, PeriodPoint, Polarity,
+        Waveform,
     };
     use tutti_nodes::automation::{Breakpoint, Exponent, Trajectory};
     use tutti_types::{Beat, BeatDuration, Depth, Hz, Phase, PhaseIncrement};
@@ -503,7 +505,7 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
         phase: PhaseIncrement(0.0),
         anchor: None,
     };
-    let shape = |shape| Wave::Shape {
+    let shape = |shape| Waveform::Shape {
         shape,
         seed: k as u64,
     };
@@ -521,7 +523,7 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
             None,
             vec![layer(
                 beats,
-                Wave::Drawn(Arc::from(vec![
+                Waveform::Drawn(Arc::from(vec![
                     PeriodPoint {
                         at: Phase(0.0),
                         value: -0.5,
@@ -659,8 +661,8 @@ fn lane_moves(
 
 /// The 120 BPM transport the 200-lane rigs roll, looping 0.5 to 1.7 beats
 /// (wraps inside blocks).
-fn lanes_transport(clock: &tutti_types::FrameClock) -> tutti_graph::Transport {
-    tutti_graph::Transport::counted(
+fn lanes_transport(clock: &tutti_types::FrameClock) -> tutti_graph::TransportPosition {
+    tutti_graph::TransportPosition::counted(
         true,
         clock.tempo(),
         clock.origin(),
@@ -986,10 +988,10 @@ fn signal_block(
     n: usize,
     refs: &mut [&mut [f32]],
 ) {
-    use tutti_graph::{Offset, Transport, TransportChanges};
+    use tutti_graph::{Offset, TransportChanges, TransportPosition};
     let rolling =
-        |c: &tutti_types::FrameClock| Transport::counted(true, c.tempo(), c.origin(), None);
-    let stopped = Transport::new(false, clock.tempo(), tutti_types::Beat(0.0), None);
+        |c: &tutti_types::FrameClock| TransportPosition::counted(true, c.tempo(), c.origin(), None);
+    let stopped = TransportPosition::new(false, clock.tempo(), tutti_types::Beat(0.0), None);
     let mut ch = TransportChanges::NONE;
     let t = match b {
         0..20 => stopped,
@@ -1141,10 +1143,10 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use tutti_graph::NodeKey;
     use tutti_graph::{Edge, InPort, OutPort, Source};
-    use tutti_graph::{Editor, ForkByClone, Prepare, Transport};
+    use tutti_graph::{Editor, ForkByClone, Prepare, TransportPosition};
     use tutti_modulation::{
         Clock, Declarations, Law, Polarity, RouteDecl, RouteKey, RouteTarget, Source as ModSource,
-        SourceKey, TargetDecl, TargetKey, Wave,
+        SourceKey, TargetDecl, TargetKey, Waveform,
     };
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
@@ -1209,7 +1211,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
         port: 0,
     })]);
     ed.commit().expect("commits");
-    let transport = Transport::new(false, Bpm::of(120.0), Beat(0.0), None);
+    let transport = TransportPosition::new(false, Bpm::of(120.0), Beat(0.0), None);
     let mut out = vec![0.0f32; 128];
     exec.process(128, &transport, &[], &mut [&mut out[..]]);
     ed.collect();
@@ -1223,7 +1225,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
         (
             SourceKey(1),
             ModSource::Lfo {
-                wave: Wave::Shape {
+                wave: Waveform::Shape {
                     shape: tutti_modulation::LfoShape::Sine,
                     seed: 0,
                 },

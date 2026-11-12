@@ -13,7 +13,7 @@ use tutti_types::MaxBlock;
 
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey, OutPort,
-    Prepare, Shape, Source, Status, Transport, Unforkable,
+    Prepare, Shape, Source, Status, TransportPosition, Unforkable,
 };
 use tutti_midi_hardware::DeviceInlets;
 use tutti_midi_runtime::InletChange;
@@ -147,8 +147,12 @@ impl Listener {
             self.clock
                 .write(start, Frame(self.frames), SampleRate(RATE));
             let mut out = vec![0.0f32; BLOCK];
-            self.exec
-                .process(BLOCK, &Transport::default(), &[], &mut [&mut out[..]]);
+            self.exec.process(
+                BLOCK,
+                &TransportPosition::default(),
+                &[],
+                &mut [&mut out[..]],
+            );
             self.frames += BLOCK as u64;
         }
     }

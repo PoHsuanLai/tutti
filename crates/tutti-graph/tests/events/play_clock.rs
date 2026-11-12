@@ -18,7 +18,7 @@ use common::prepare;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Executor, ForkByClone, ForkMode, ForkTarget, Io, Node, Offset, PlayReading,
-    Prepare, Reference, Shape, Status, Transport, TransportChanges, Unforkable,
+    Prepare, Reference, Shape, Status, TransportChanges, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, Samples};
@@ -69,11 +69,11 @@ impl Node for Probe {
     fn reset(&mut self) {}
 }
 
-fn transport(playing: bool, beat: f64) -> Transport {
-    Transport::new(playing, Bpm::of(120.0), Beat(beat), None)
+fn transport(playing: bool, beat: f64) -> TransportPosition {
+    TransportPosition::new(playing, Bpm::of(120.0), Beat(beat), None)
 }
 
-fn changes(list: &[(usize, Transport)]) -> TransportChanges {
+fn changes(list: &[(usize, TransportPosition)]) -> TransportChanges {
     let mut c = TransportChanges::NONE;
     for &(at, t) in list {
         c.push(Offset::new(at, Samples(MAX)).expect("in a block"), t)
@@ -127,7 +127,12 @@ fn rig(lat: usize, forkable: bool) -> Rig {
 impl Rig {
     /// One block through both: the executor's readings, per frame, after
     /// asserting the reference counted the same frames.
-    fn block(&mut self, n: usize, t: Transport, ch: &[(usize, Transport)]) -> Vec<PlayReading> {
+    fn block(
+        &mut self,
+        n: usize,
+        t: TransportPosition,
+        ch: &[(usize, TransportPosition)],
+    ) -> Vec<PlayReading> {
         let ch = changes(ch);
         let (mut a0, mut a1) = (vec![0.0; n], vec![0.0; n]);
         let (mut b0, mut b1) = (vec![0.0; n], vec![0.0; n]);

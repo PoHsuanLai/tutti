@@ -885,7 +885,7 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
         .build(Prepare::new(RATE, MaxBlock::of(Samples(256))))
         .expect("builds");
     exec.apply_pending();
-    let elsewhere = tutti_graph::Transport::new(true, Bpm::of(120.0), Beat(0.25), None);
+    let elsewhere = tutti_graph::TransportPosition::new(true, Bpm::of(120.0), Beat(0.25), None);
     let mut sink = vec![0.0f32; 256];
     for _ in 0..8 {
         exec.process(256, &elsewhere, &[], &mut [&mut sink[..]]);

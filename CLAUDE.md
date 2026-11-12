@@ -51,6 +51,10 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
+  The session's loop is `Session::set_loop(LoopRange)` and `clear_loop()` (a `LoopEdit` at
+  `At::NextBlock`; a range is `LoopRange::try_from(a..b)`), and a play timed at a beat while
+  the transport is stopped can never fire, so `Session::schedule` refuses it
+  (`ScheduleError::BeatWhileStopped`).
 - Copying audio out of the graph is a **tap**, read through one `TapReader`
   (it is a `Source` as it is: `impl Source for TapReader`), and there are two
   kinds:
@@ -793,9 +797,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   only on `CellGrid`. A `TempoMap` is an immutable value built on the control
   side: its constructors refuse a tempo that is not finite and positive
   themselves, whatever `Bpm` accepts, and no query allocates. Time is `Seconds`,
-  an `f64`. A map reaches a constant-tempo reader as `Cell`s on one
-  fixed `CellGrid`, also cut at every point's frame (`TempoMap::next_change`);
-  `chord_cell` is a pure function of the absolute frame, a cell inside a step
+  an `f64`. The map answers the rate-free queries (beats and seconds); a reader
+  that walks it by frame takes a `TempoView` (`TempoMap::view(rate)`: the map, the
+  rate and a lookup hint it owns, made per block because it borrows the lent map),
+  whose methods are the frame queries (`frame_at_or_after`, `beat_at_frame`,
+  `tempo_at_frame`, `tempo_slope`, `next_change`, `chord_cell`): there is no
+  `_with(&mut Cursor)` twin and no query that takes a `rate`. A segment's law is
+  `Transition` (`Step`, `RampTime`, `RampBeats`), a `TempoPoint` is made with
+  `step`, `ramp_time` or `ramp_beats`, and `TempoMap::builder` writes a map whose
+  last point cannot ramp. A map reaches a constant-tempo reader as `Cell`s on one
+  fixed `CellGrid`, also cut at every point's frame (`TempoView::next_change`);
+  `TempoView::chord_cell` is a pure function of the absolute frame, a cell inside a step
   has that step's tempo to the bit, and the crate derives no grid from a block.
   The transport follows a map, steps and ramps, with one walker
   (`tutti-transport`'s `TempoWalk`, doc 020 stages 3 and 4) on one engine grid
@@ -1555,7 +1567,17 @@ read the `Cargo.toml`, grep for the type, run the probe.
   unresolved_sources}` → `problems()`; `SessionEvent::{ModulationRefused,
   ModulationUnresolved}` → `SessionEvent::Modulation(Problem)`; `Mods` returning
   `tutti_modulation::{SourceKey, RouteKey}` → `ModSourceId` and `ModRouteId`;
-  `CompileError::BadRoute` → deleted (a `Depth` is never NaN)., `UmpOut::send_frames(events)` and `MidiOutRouter { out, drops }` → `send_frames(events, Option<&OutputTiming>) -> usize` (the refused count) and a `timing` field (an offset-only send was the defect: the OS never scheduled it), `AlsaOutput::send_ump(words)` → `send_ump_at(words, SendAt)`. A comment or doc that
+  `CompileError::BadRoute` → deleted (a `Depth` is never NaN)., `UmpOut::send_frames(events)` and `MidiOutRouter { out, drops }` → `send_frames(events, Option<&OutputTiming>) -> usize` (the refused count) and a `timing` field (an offset-only send was the defect: the OS never scheduled it), `AlsaOutput::send_ump(words)` → `send_ump_at(words, SendAt)`. `tutti_tempo::Shape` → `Transition`;
+  `TempoMap::{seconds_at_with, beat_at_seconds_with, tempo_at_with, tempo_at_seconds_with,
+  tempo_slope_with, tempo_at_frame{,_with}, beat_at_frame{,_with}, frame_at_or_after{,_with},
+  next_change{,_with}}`, `tutti_tempo::{Cursor, chord_cell, chord_cell_with}` and
+  `TempoPoint::shape` → `TempoMap::view(rate)` and `TempoView`'s methods, and
+  `TempoPoint::transition`; `tutti_graph::Transport` → `tutti_graph::TransportPosition`
+  (`tutti_transport::Transport` is the handle); `tutti_modulation::Wave` → `Waveform`
+  (`tutti_codec::Wave` is the buffer); `LoopRange::new` as the only check →
+  `LoopRange::try_from(a..b)` (a `LoopRangeError`; `new` is the same check as an `Option`);
+  `Session::schedule -> Result<(), ScheduleFull>` → `Result<(), ScheduleError>`
+  (`Error::Schedule(ScheduleError)`). A comment or doc that
   disagrees with the code is the bug.
 - **Dead device names** (doc 030 step 7): `Session::{restart, restart_following,
   restart_wanted}` → `LiveSession::restart` (one `DeviceRestart`, its hook

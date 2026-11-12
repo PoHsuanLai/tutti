@@ -196,7 +196,7 @@ pub enum PumpPass {
 ///
 /// ```
 /// use tutti_codec::{FileOut, Format, Pcm, Spec};
-/// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+/// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, TransportPosition, Unforkable};
 /// use tutti_session::{PumpLoop, PumpPass};
 /// use tutti_graph::{OutPort, Source};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, MaxBlock, SampleRate, Samples, Sink};
@@ -232,7 +232,7 @@ pub enum PumpPass {
 ///
 /// // The audio callback renders three frames.
 /// let (mut left, mut right) = ([0.0f32; 3], [0.0f32; 3]);
-/// let transport = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+/// let transport = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
 /// executor.process(3, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 ///
 /// let dir = tempfile::tempdir().expect("temp dir");

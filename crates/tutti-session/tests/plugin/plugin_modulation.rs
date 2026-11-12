@@ -428,7 +428,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let mut out = vec![Vec::new(), Vec::new()];
     for b in 0..BLOCKS {
         let beat = (b * BLOCK) as f64 * 2.0 / RATE.get();
-        side.set_transport(tutti_graph::Transport::new(
+        side.set_transport(tutti_graph::TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(beat),

@@ -30,7 +30,7 @@ use arrayvec::ArrayVec;
 use parking_lot::Mutex;
 use tutti_graph::{Bus, Buses, Cx, Offset, Shape};
 use tutti_plugin_types::{LoadedPlugin, PluginBus};
-use tutti_tempo::{Cursor, TempoMap};
+use tutti_tempo::TempoView;
 use tutti_transport::TempoReader;
 use tutti_types::{BusTopology, ChannelLayout, Samples};
 
@@ -334,8 +334,7 @@ impl TransportFeed {
         cx: &Cx<'_>,
         frames: usize,
         features: Features,
-        tempo: &TempoMap,
-        cursor: &mut Cursor,
+        tempo: &mut TempoView<'_>,
     ) -> TransportInfo {
         if !features.contains(Features::TRANSPORT) {
             self.source.advance(frames);
@@ -344,10 +343,7 @@ impl TransportFeed {
         let Some(at) = Offset::new(0, Samples(frames)) else {
             return self.last;
         };
-        self.last = self
-            .source
-            .block(features)
-            .at(cx, at, frames, tempo, cursor);
+        self.last = self.source.block(features).at(cx, at, frames, tempo);
         self.source.advance(frames);
         self.last
     }
@@ -355,14 +351,13 @@ impl TransportFeed {
 
 /// An in-process client bound to the project's tempo map
 /// ([`InProcClient::bind`]): the graph node. It owns the reader, lends
-/// the map once per block and keeps a cursor into it. Only this type is a
+/// the map once per block, read through a view at the block's rate. Only this type is a
 /// [`Node`](tutti_graph::Node) and an [`IntoNode`](tutti_graph::IntoNode);
 /// the loaded client is neither. It derefs to the client for its control
 /// surface (`controls`, `set_meter`, ...).
 pub struct PluginNode<F: Loaded> {
     pub(super) client: InProcClient<F>,
     pub(super) tempo: TempoReader,
-    pub(super) cursor: Cursor,
 }
 
 impl<F: Loaded> std::fmt::Debug for PluginNode<F> {
@@ -506,7 +501,6 @@ impl<F: Loaded> InProcClient<F> {
         PluginNode {
             client: self,
             tempo,
-            cursor: Cursor::default(),
         }
     }
 
@@ -776,7 +770,8 @@ pub(super) fn render_with<P: Processor>(
 #[cfg(test)]
 mod transport_tests {
     use super::*;
-    use tutti_graph::{Env, Transport, TransportChanges, TransportHistory};
+    use tutti_graph::{Env, TransportChanges, TransportHistory, TransportPosition};
+    use tutti_tempo::TempoMap;
     use tutti_transport::ProjectMeter;
     use tutti_types::Latency;
     use tutti_types::TimeSignature;
@@ -792,7 +787,7 @@ mod transport_tests {
             frame: Frame(0),
             sample_rate: SampleRate(48_000.0),
             block_len: Samples(64),
-            transport: Transport::new(true, Bpm::of(132.0), Beat(4.0), None),
+            transport: TransportPosition::new(true, Bpm::of(132.0), Beat(4.0), None),
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         }
@@ -842,8 +837,7 @@ mod transport_tests {
             &cx(&e),
             64,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         let params = ParameterChanges::default();
         let ctx = block_context(&[], &params, &snapshot);
@@ -868,8 +862,7 @@ mod transport_tests {
             &cx(&e),
             64,
             Features::empty(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         let default = TransportInfo::default();
         assert_eq!(got.timing.tempo, default.timing.tempo);
@@ -890,8 +883,7 @@ mod transport_tests {
             &cx(&e),
             64,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         assert_eq!(got.timing.signature, seven_eight());
     }
@@ -907,8 +899,7 @@ mod transport_tests {
             &cx(&e),
             64,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         let mut fork = live.forked(false);
         live.meter.clear_meter();
@@ -916,8 +907,7 @@ mod transport_tests {
             &cx(&e),
             64,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         assert_eq!(got.timing.signature, seven_eight());
         assert_eq!(got.position.continuous_samples, 0);
@@ -933,15 +923,13 @@ mod transport_tests {
             &cx(&e),
             64,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         let second = feed.block(
             &cx(&e),
             64,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         assert_eq!(second.position.continuous_samples, 64);
     }
@@ -956,15 +944,13 @@ mod transport_tests {
             &cx(&e),
             64,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         let empty = feed.block(
             &cx(&e),
             0,
             loader_features(),
-            &map(),
-            &mut Cursor::default(),
+            &mut map().view(e.sample_rate),
         );
         assert_eq!(empty.timing.tempo, 132.0);
         assert!(empty.state.playing);
@@ -983,8 +969,7 @@ mod transport_tests {
                 &cx(&e),
                 64,
                 loader_features(),
-                &map(),
-                &mut Cursor::default()
+                &mut map().view(e.sample_rate),
             )
             .system_time_ns
             .is_some()
@@ -996,8 +981,7 @@ mod transport_tests {
                     &cx(&e),
                     64,
                     loader_features(),
-                    &map(),
-                    &mut Cursor::default()
+                    &mut map().view(e.sample_rate),
                 )
                 .system_time_ns
                 .is_some()
@@ -1009,8 +993,7 @@ mod transport_tests {
                     &cx(&e),
                     64,
                     loader_features(),
-                    &map(),
-                    &mut Cursor::default()
+                    &mut map().view(e.sample_rate),
                 )
                 .system_time_ns,
             None
@@ -1024,7 +1007,7 @@ mod transport_tests {
         let e = env();
         let mut live = feed();
         let map = TempoMap::constant(Bpm::of(100.0)).expect("a tempo");
-        let got = live.block(&cx(&e), 64, loader_features(), &map, &mut Cursor::default());
+        let got = live.block(&cx(&e), 64, loader_features(), &mut map.view(e.sample_rate));
         assert_eq!(got.timing.tempo, 100.0);
     }
 }

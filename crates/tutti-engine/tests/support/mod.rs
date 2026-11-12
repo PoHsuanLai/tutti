@@ -18,7 +18,7 @@ use std::f64::consts::TAU;
 use std::sync::Arc;
 
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
-use tutti_tempo::{Shape as TempoShape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, Hz, SampleRate, Tail};
 
@@ -29,7 +29,7 @@ pub fn step_map(points: &[(f64, f64)]) -> Arc<TempoMap> {
         TempoMap::new(points.iter().map(|&(beat, bpm)| TempoPoint {
             beat: Beat(beat),
             tempo: Bpm::of(bpm),
-            shape: TempoShape::Step,
+            transition: Transition::Step,
         }))
         .expect("a map"),
     )

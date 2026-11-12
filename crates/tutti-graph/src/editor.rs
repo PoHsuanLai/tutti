@@ -451,7 +451,7 @@ impl std::error::Error for MissingSource {}
 ///
 /// ```
 /// use tutti_types::MaxBlock;
-/// use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status, Transport};
+/// use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status, TransportPosition};
 /// use tutti_graph::{Edge, InPort, OutPort, Source};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 /// use tutti_graph::NodeKey;
@@ -485,7 +485,7 @@ impl std::error::Error for MissingSource {}
 /// // On the audio thread:
 /// let input = [1.0_f32; 64];
 /// let mut output = [0.0_f32; 64];
-/// let transport = Transport::new(false, Bpm::of(120.0), Beat(0.0), None);
+/// let transport = TransportPosition::new(false, Bpm::of(120.0), Beat(0.0), None);
 /// executor.process(64, &transport, &[&input], &mut [&mut output]);
 /// assert_eq!(output[0], 0.5);
 /// ```

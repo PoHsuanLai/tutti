@@ -8,11 +8,11 @@
 use std::sync::Arc;
 
 use tutti_graph::{
-    Cx, Env, LoopRange, MAX_TRANSPORT_CHANGES, Offset, PlayClock, Transport, TransportChanges,
-    TransportHistory,
+    Cx, Env, LoopRange, MAX_TRANSPORT_CHANGES, Offset, PlayClock, TransportChanges,
+    TransportHistory, TransportPosition,
 };
 use tutti_plugin_types::{Features, TransportChanges as WireChanges, TransportInfo};
-use tutti_tempo::{Cursor, Shape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
 
 use crate::{
@@ -22,17 +22,17 @@ use crate::{
 
 const RATE: f64 = 48_000.0;
 
-fn point(beat: f64, bpm: f64, shape: Shape) -> TempoPoint {
+fn point(beat: f64, bpm: f64, shape: Transition) -> TempoPoint {
     TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
-        shape,
+        transition: shape,
     }
 }
 
 /// An engine block: `len` frames from `transport`, with the changes a
 /// block carries as `(frame, transport)`.
-fn block(len: usize, transport: Transport, changes: &[(usize, Transport)]) -> Env {
+fn block(len: usize, transport: TransportPosition, changes: &[(usize, TransportPosition)]) -> Env {
     let mut list = TransportChanges::NONE;
     for &(at, to) in changes {
         list.push(Offset::new(at, Samples(len)).expect("inside the block"), to)
@@ -48,8 +48,8 @@ fn block(len: usize, transport: Transport, changes: &[(usize, Transport)]) -> En
     }
 }
 
-fn rolling(bpm: f64, beat: f64) -> Transport {
-    Transport::new(true, Bpm::of(bpm), Beat(beat), None)
+fn rolling(bpm: f64, beat: f64) -> TransportPosition {
+    TransportPosition::new(true, Bpm::of(bpm), Beat(beat), None)
 }
 
 /// What the plugin is told for a chunk: its transport at the chunk's first
@@ -65,7 +65,6 @@ struct Rig {
     counters: Arc<DeliveryCounters>,
     params: ParamDelivery,
     walk: TransportWalk,
-    cursor: Cursor,
     source: TransportSource,
     tempo: TempoMap,
     arrival: Latency,
@@ -82,7 +81,6 @@ impl Rig {
             params: ParamDelivery::new([], Arc::clone(&counters)),
             counters,
             walk: TransportWalk::default(),
-            cursor: Cursor::default(),
             source,
             tempo,
             arrival: Latency::ZERO,
@@ -112,7 +110,8 @@ impl Rig {
                     self.changes.clear();
                     let offset = Offset::new(0, Samples(frames)).expect("inside the block");
                     let mut s = Snapshot::at(&cx, offset, steady.at(0), project, block_ns);
-                    let settled = s.settle(&self.tempo, &mut self.cursor);
+                    let mut view = self.tempo.view(env.sample_rate);
+                    let settled = s.settle(&mut view);
                     self.walk.begin(&s, settled);
                     self.info = transport_info(&s, meter);
                 }
@@ -122,11 +121,11 @@ impl Rig {
                     steady,
                     block_ns,
                     meter,
-                    tempo: &self.tempo,
                 };
+                let mut view = self.tempo.view(env.sample_rate);
                 let over = self.walk.scan(
                     &call,
-                    &mut self.cursor,
+                    &mut view,
                     project,
                     &mut self.info,
                     &mut self.changes,
@@ -136,14 +135,8 @@ impl Rig {
                 );
                 at += frames;
                 if at == chunk {
-                    self.walk.finish(
-                        &self.tempo,
-                        &mut self.cursor,
-                        env.sample_rate,
-                        chunk,
-                        &mut self.info,
-                        &mut self.changes,
-                    );
+                    self.walk
+                        .finish(&mut view, chunk, &mut self.info, &mut self.changes);
                     told = Some(Told {
                         transport: self.info,
                         changes: self.changes.clone(),
@@ -177,8 +170,8 @@ fn entries(p: &Told) -> Vec<(u32, f64, f64)> {
 /// 120 BPM, then 90 from beat 4 (a step).
 fn step_map() -> TempoMap {
     TempoMap::new([
-        point(0.0, 120.0, Shape::Step),
-        point(4.0, 90.0, Shape::Step),
+        point(0.0, 120.0, Transition::Step),
+        point(4.0, 90.0, Transition::Step),
     ])
     .expect("a map")
 }
@@ -188,9 +181,9 @@ fn step_map() -> TempoMap {
 /// 96 000 frames, -120 / 96 000 a frame), then a step at 60.
 fn ramps_map() -> TempoMap {
     TempoMap::new([
-        point(0.0, 120.0, Shape::RampTime),
-        point(4.0, 180.0, Shape::RampTime),
-        point(8.0, 60.0, Shape::Step),
+        point(0.0, 120.0, Transition::RampTime),
+        point(4.0, 180.0, Transition::RampTime),
+        point(8.0, 60.0, Transition::Step),
     ])
     .expect("a map")
 }
@@ -207,8 +200,13 @@ fn ramps_map() -> TempoMap {
 fn a_step_inside_a_chunk_is_an_entry_at_its_frame() {
     let map = step_map();
     assert_eq!(
-        map.frame_at_or_after(Beat(4.0), SampleRate(RATE)).get()
-            - map.frame_at_or_after(Beat(3.99), SampleRate(RATE)).get(),
+        map.view(SampleRate(RATE))
+            .frame_at_or_after(Beat(4.0))
+            .get()
+            - map
+                .view(SampleRate(RATE))
+                .frame_at_or_after(Beat(3.99))
+                .get(),
         240
     );
     let mut rig = Rig::new(map);
@@ -281,10 +279,10 @@ fn a_stop_a_start_a_seek_and_a_wrap_are_entries() {
     // [1, 2]; stop at 100 (held at 1.5004), start again at 200, seek to
     // 1.9 at 300 (0.1 beat is 2 400 frames from the end: wrap at 2 700).
     let at = |f: usize| 1.5 + f as f64 / 24_000.0;
-    let t0 = Transport::new(true, Bpm::of(120.0), Beat(1.5), Some(looped));
-    let stopped = Transport::new(false, Bpm::of(120.0), Beat(at(100)), Some(looped));
-    let started = Transport::new(true, Bpm::of(120.0), Beat(at(100)), Some(looped));
-    let sought = Transport::new(true, Bpm::of(120.0), Beat(1.9), Some(looped));
+    let t0 = TransportPosition::new(true, Bpm::of(120.0), Beat(1.5), Some(looped));
+    let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(at(100)), Some(looped));
+    let started = TransportPosition::new(true, Bpm::of(120.0), Beat(at(100)), Some(looped));
+    let sought = TransportPosition::new(true, Bpm::of(120.0), Beat(1.9), Some(looped));
     let env = block(3_000, t0, &[(100, stopped), (200, started), (300, sought)]);
     let p = rig.chunk(3_000, &[env]);
     let flags: Vec<_> = p
@@ -360,7 +358,7 @@ fn a_seek_the_second_call_does_not_list_is_told_at_its_first_frame() {
 #[test]
 fn a_dropped_seek_leaves_its_stretch_without_a_slope() {
     let mut rig = Rig::new(ramps_map());
-    let seeks: Vec<(usize, Transport)> = (0..8)
+    let seeks: Vec<(usize, TransportPosition)> = (0..8)
         .map(|i| (4 + 8 * i, rolling(150.0, 1.0 + 0.1 * i as f64)))
         .collect();
     let first = block(64, rolling(150.0, 0.5), &seeks);
@@ -386,7 +384,7 @@ fn a_dropped_seek_leaves_its_stretch_without_a_slope() {
 #[test]
 fn a_dropped_point_leaves_its_stretch_without_a_slope() {
     let mut rig = Rig::new(ramps_map());
-    let seeks: Vec<(usize, Transport)> = (0..8)
+    let seeks: Vec<(usize, TransportPosition)> = (0..8)
         .map(|i| (4 + 8 * i, rolling(180.0, 3.928 + 0.01 * i as f64)))
         .collect();
     let only = block(128, rolling(180.0, 3.5), &seeks);
@@ -421,7 +419,7 @@ fn a_point_the_engine_reaches_late_is_one_entry() {
 fn nine_changes_send_eight_count_one_and_the_ninth_waits_for_the_next_chunk() {
     assert_eq!(MAX_TRANSPORT_CHANGES, 8);
     let mut rig = Rig::new(TempoMap::constant(Bpm::of(120.0)).expect("a tempo"));
-    let seeks: Vec<(usize, Transport)> = (0..8)
+    let seeks: Vec<(usize, TransportPosition)> = (0..8)
         .map(|i| (4 + 8 * i, rolling(120.0, 10.0 + i as f64)))
         .collect();
     let first = block(64, rolling(120.0, 1.0), &seeks);

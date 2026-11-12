@@ -18,7 +18,8 @@ use tutti_graph::Node;
 use tutti_graph::{
     Bus, BusError, BusFeed, BusFold, BusRef, BusRole, BusSide, BusSource, Buses, CommitError,
     CompileError, DelayKey, Edge, EdgeGain, EdgeId, Editor, GraphInvalid, GraphSpec, InPort,
-    Lowering, NodeKey, Op, OutPort, Plan, Sink, Source, Transport, Unforkable, ValidGraph, compile,
+    Lowering, NodeKey, Op, OutPort, Plan, Sink, Source, TransportPosition, Unforkable, ValidGraph,
+    compile,
 };
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, ChannelTopology, FoldError, M3DB, Samples, Tail,
@@ -759,7 +760,7 @@ fn render_block(
     let ins: Vec<&[f32]> = inputs.iter().map(Vec::as_slice).collect();
     let mut bufs = vec![vec![0.0f32; frames]; outs];
     let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
-    exec.process(frames, &Transport::default(), &ins, &mut refs);
+    exec.process(frames, &TransportPosition::default(), &ins, &mut refs);
     bufs
 }
 

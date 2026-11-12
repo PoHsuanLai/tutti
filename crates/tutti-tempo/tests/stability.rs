@@ -13,7 +13,7 @@ mod common;
 mod figures;
 
 use common::pt;
-use tutti_tempo::{Shape, TempoMap};
+use tutti_tempo::{TempoMap, Transition};
 use tutti_types::{Beat, Seconds};
 
 /// One ramp and its rows: (beat in, seconds out, seconds in, beat out).
@@ -44,13 +44,13 @@ fn close(got: f64, want: f64) -> bool {
 fn ramps_match_decimal_figures() {
     for case in figures::CASES {
         let shape = if case.ramp_beats {
-            Shape::RampBeats
+            Transition::RampBeats
         } else {
-            Shape::RampTime
+            Transition::RampTime
         };
         let map = TempoMap::new([
             pt(0.0, case.from, shape),
-            pt(case.span, case.to, Shape::Step),
+            pt(case.span, case.to, Transition::Step),
         ])
         .unwrap();
         for &(beat_in, sec_out, sec_in, beat_out) in case.rows {

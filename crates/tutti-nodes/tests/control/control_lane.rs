@@ -15,12 +15,12 @@ use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Law, Node, Offset, PARAM_DECLICK, ParamIn, ParamRange, ParamSegment, Prepare,
-    Shape, Status, Transport, TransportChanges,
+    Shape, Status, TransportChanges, TransportPosition,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_modulation::{
     Amount, Clock, ControlProgram, Curve, DepthBy, InputLayer, Layer, LayerId, LfoShape,
-    PeriodPoint, Polarity, RateAnchor, SourceId, Wave,
+    PeriodPoint, Polarity, RateAnchor, SourceId, Waveform,
 };
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode, LaneControls};
 use tutti_types::{
@@ -219,7 +219,7 @@ fn wire_sink(ed: &mut Editor, key: u64, lane: ControlLaneNode, sink: u64) -> Lan
 fn block(
     ed: &mut Editor,
     exec: &mut Executor,
-    t: &Transport,
+    t: &TransportPosition,
     ch: &TransportChanges,
     n: usize,
 ) -> Vec<Vec<f32>> {
@@ -245,8 +245,8 @@ impl Host {
         }
     }
 
-    fn rolling(&self) -> Transport {
-        Transport::counted(true, TEMPO, self.clock.origin(), None)
+    fn rolling(&self) -> TransportPosition {
+        TransportPosition::counted(true, TEMPO, self.clock.origin(), None)
     }
 
     /// One rolling block of `n`, appended channel by channel to `all`.
@@ -305,11 +305,11 @@ fn seconds(rate: f32) -> Clock {
     }
 }
 
-fn wave(shape: LfoShape) -> Wave {
-    Wave::Shape { shape, seed: 0 }
+fn wave(shape: LfoShape) -> Waveform {
+    Waveform::Shape { shape, seed: 0 }
 }
 
-fn layer(id: u64, clock: Clock, wave: Wave, amount: Amount) -> Layer {
+fn layer(id: u64, clock: Clock, wave: Waveform, amount: Amount) -> Layer {
     Layer {
         id: LayerId(id),
         clock,
@@ -457,7 +457,7 @@ fn an_export_is_the_live_render_bit_for_bit() {
             e.add_breakpoint(Breakpoint::new(Beat(1.9), 600.0));
             Arc::new(e)
         };
-        let drawn = Wave::Drawn(Arc::from(vec![
+        let drawn = Waveform::Drawn(Arc::from(vec![
             PeriodPoint {
                 at: Phase(0.0),
                 value: -1.0,
@@ -494,7 +494,7 @@ fn an_export_is_the_live_render_bit_for_bit() {
                     layer(
                         1,
                         beats(0.5),
-                        Wave::Shape {
+                        Waveform::Shape {
                             shape: LfoShape::Random,
                             seed: 9,
                         },
@@ -503,7 +503,7 @@ fn an_export_is_the_live_render_bit_for_bit() {
                     layer(
                         2,
                         seconds(5.0),
-                        Wave::Shape {
+                        Waveform::Shape {
                             shape: LfoShape::RandomSmooth,
                             seed: 3,
                         },
@@ -553,7 +553,7 @@ fn an_export_is_the_live_render_bit_for_bit() {
     ed.commit().expect("commits");
 
     // Three stopped blocks, then the fork, then live starts at offset 37.
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     for _ in 0..3 {
         block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
     }
@@ -719,7 +719,7 @@ fn a_rate_anchor_holds_two_lanes_in_phase() {
     }
 
     // Stop, then start again: a new epoch, the anchor stale.
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
     let mut host = Host::new();
     let mut again = Vec::new();
@@ -1017,7 +1017,7 @@ fn an_input_offset_is_exact_from_its_frame() {
     );
     feed_into(&mut ed, 5, 1);
     ed.commit().expect("commits");
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let mut all = Vec::new();
     for _ in 0..10 {
         let got = block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
@@ -1079,7 +1079,7 @@ fn a_republished_program_reads_a_new_source() {
     ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
     feed_into(&mut ed, 5, 1);
     ed.commit().expect("commits");
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let mut all = Vec::new();
     for k in 0..10 {
         if k == 4 {
@@ -1121,7 +1121,7 @@ fn a_reused_source_id_starts_from_nothing() {
     ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
     feed_into(&mut ed, 5, 1);
     ed.commit().expect("commits");
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let mut all = Vec::new();
     for k in 0..10 {
         if k == 2 {
@@ -1169,7 +1169,7 @@ fn an_unread_source_is_no_point() {
     ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
     feed_into(&mut ed, 5, 1);
     ed.commit().expect("commits");
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let mut all = Vec::new();
     for _ in 0..5 {
         let got = block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
@@ -1193,7 +1193,7 @@ fn a_resync_sends_a_steady_lane_to_its_new_target() {
     let lane = native(&ed, 2, program(None, vec![]), Some(250.0));
     let controls = wire(&mut ed, 1, lane, 2);
     ed.commit().expect("commits");
-    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
     let run = |ed: &mut Editor, exec: &mut Executor| {
         block(ed, exec, &stopped, &TransportChanges::NONE, 64)
     };
@@ -1304,7 +1304,7 @@ fn lane_controls_reach_their_own_cells() {
 }
 
 /// **A constant layer (a macro) does not move.** A plugin lane whose one
-/// layer is `Wave::Const(1.0)` at depth 0.5 of a 0..1 range, on knob 0.25,
+/// layer is `Waveform::Const(1.0)` at depth 0.5 of a 0..1 range, on knob 0.25,
 /// sends one piece at frame 0 and holds 0.75, rolling (the beat moves, so
 /// a beat-clocked wave would walk the grid) and stopped with the layer on
 /// a seconds clock (the play clock moves, so a seconds-clocked wave would
@@ -1314,12 +1314,12 @@ fn lane_controls_reach_their_own_cells() {
 /// a piece every `CONTROL_STEP` frames.
 #[test]
 fn a_constant_layer_is_one_held_value() {
-    let konst = |clock| layer(1, clock, Wave::Const(1.0), amount(0.5));
+    let konst = |clock| layer(1, clock, Waveform::Const(1.0), amount(0.5));
     let sine = layer(2, beats(1.0), wave(LfoShape::Sine), amount(0.25));
     let scaled = Layer {
         depth_by: Some(DepthBy {
             clock: seconds(3.0),
-            wave: Wave::Const(1.0),
+            wave: Waveform::Const(1.0),
             amount: DepthBy::UNIT,
         }),
         ..sine.clone()
@@ -1337,7 +1337,7 @@ fn a_constant_layer_is_one_held_value() {
         wire_sink(&mut ed, 1, lane, 2);
         ed.commit().expect("commits");
         let mut host = Host::new();
-        let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+        let stopped = TransportPosition::new(false, TEMPO, Beat(0.0), None);
         let mut all = Vec::new();
         for _ in 0..8 {
             if rolling {

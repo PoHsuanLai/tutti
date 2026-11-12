@@ -8,7 +8,7 @@ use tutti_types::MaxBlock;
 
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey, OutPort,
-    Prepare, Shape, Source, Status, Transport, Unforkable,
+    Prepare, Shape, Source, Status, TransportPosition, Unforkable,
 };
 use tutti_midi_runtime::{DeviceInlets, InletChange};
 use tutti_types::{Frame, SampleRate, Samples};
@@ -181,8 +181,12 @@ impl Rig {
                 SampleRate(RATE),
             );
             let mut out = vec![0.0f32; Self::BLOCK];
-            self.exec
-                .process(Self::BLOCK, &Transport::default(), &[], &mut [&mut out[..]]);
+            self.exec.process(
+                Self::BLOCK,
+                &TransportPosition::default(),
+                &[],
+                &mut [&mut out[..]],
+            );
             self.frames += Self::BLOCK as u64;
         }
     }

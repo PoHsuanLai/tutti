@@ -430,7 +430,7 @@ struct Script {
 impl Script {
     /// The transport for the next block of `n` frames at 48 kHz, then
     /// advance past it.
-    fn block(&mut self, n: usize, rng: &mut Rng) -> tutti_graph::Transport {
+    fn block(&mut self, n: usize, rng: &mut Rng) -> tutti_graph::TransportPosition {
         // A tempo change is ramped linearly across this block, as a host
         // automating tempo reports it: the block says its starting tempo,
         // and the position advances by the average.
@@ -450,7 +450,7 @@ impl Script {
             }
             _ => {}
         }
-        let t = tutti_graph::Transport::new(
+        let t = tutti_graph::TransportPosition::new(
             self.playing,
             tutti_types::Bpm::of(self.tempo),
             tutti_types::Beat(self.beat),
@@ -1802,7 +1802,7 @@ impl EditorPair {
     }
 
     fn run(&mut self, blocks: &[usize], frame: &mut u64) {
-        let transport = tutti_graph::Transport::new(
+        let transport = tutti_graph::TransportPosition::new(
             true,
             tutti_types::Bpm::of(120.0),
             tutti_types::Beat(0.0),

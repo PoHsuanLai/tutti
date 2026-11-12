@@ -21,7 +21,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, IntoNode, Io, Law, Node, NodeParts, ParamIn, ParamRamp, ParamRange,
-    ParamSegment, Prepare, Schedule, Shape, Status, Transport, Unforkable,
+    ParamSegment, Prepare, Schedule, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, UnitParam};
@@ -423,7 +423,8 @@ fn render_wide(
         let mut chans = vec![vec![0.0f32; n]; outputs + extra];
         {
             let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-            let t = Transport::new(true, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None);
+            let t =
+                TransportPosition::new(true, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None);
             exec.process(n, &t, &[&input], &mut outs);
         }
         assert!(
@@ -624,7 +625,12 @@ fn a_panic_on_a_worker_reaches_the_caller() {
     let mut chans = vec![vec![0.0f32; MAX_BLOCK]; 6];
     for _ in 0..4 {
         let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-        exec.process(MAX_BLOCK, &Transport::default(), &[&input], &mut outs);
+        exec.process(
+            MAX_BLOCK,
+            &TransportPosition::default(),
+            &[&input],
+            &mut outs,
+        );
     }
 }
 
@@ -744,7 +750,12 @@ fn the_executor_waits_by_its_pools_budget() {
     let input = vec![0.5f32; MAX_BLOCK];
     let mut chans = vec![vec![0.0f32; MAX_BLOCK]; 2];
     let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-    exec.process(MAX_BLOCK, &Transport::default(), &[&input], &mut outs);
+    exec.process(
+        MAX_BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut outs,
+    );
 
     let slow_done = times
         .slow_done
@@ -812,7 +823,7 @@ fn reporting_nodes_render_bit_identically_on_a_pool() {
         for &n in blocks {
             let mut chans = vec![vec![0.0f32; n]; RINGERS.len()];
             let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-            exec.process(n, &Transport::default(), &[], &mut outs);
+            exec.process(n, &TransportPosition::default(), &[], &mut outs);
             for (a, c) in all.iter_mut().zip(chans) {
                 a.extend(c);
             }

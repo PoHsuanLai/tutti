@@ -155,7 +155,7 @@ fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
 
 /// One block of `frames` through `unit` as it is prepared now: no prepare.
 fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
-    use tutti_graph::{Env, Node, Transport, TransportChanges};
+    use tutti_graph::{Env, Node, TransportChanges, TransportPosition};
     let rate = SampleRate(SAMPLE_RATE);
     let silence = vec![0.0f32; frames];
     let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in().count())
@@ -165,7 +165,7 @@ fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
         frame: tutti_types::Frame(0),
         sample_rate: rate,
         block_len: tutti_types::Samples(frames),
-        transport: Transport::default(),
+        transport: TransportPosition::default(),
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
     };
@@ -413,7 +413,7 @@ fn a_drain_with_nothing_parked_dispatches_nothing() {
 /// a small integer, so the comparison is exact on every platform.
 #[test]
 fn the_output_is_what_the_plugin_wrote() {
-    use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
+    use tutti_graph::{Env, Node, Prepare, TransportChanges, TransportPosition};
     use tutti_vst2_test_plugin::channel_tag;
 
     let _guard = lock_probe();
@@ -441,7 +441,7 @@ fn the_output_is_what_the_plugin_wrote() {
             frame: tutti_types::Frame(0),
             sample_rate: rate,
             block_len: tutti_types::Samples(frames),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };
@@ -495,7 +495,7 @@ impl tutti_graph::Node for Fill {
 /// plugin's (`in + tag(ch)`); the two past them are zero.
 #[test]
 fn outputs_past_the_tables_are_silent() {
-    use tutti_graph::{GraphBuilder, Prepare, Transport, Unforkable};
+    use tutti_graph::{GraphBuilder, Prepare, TransportPosition, Unforkable};
     use tutti_types::{ChannelLayout, Samples};
     use tutti_vst2_test_plugin::channel_tag;
 
@@ -553,7 +553,7 @@ fn outputs_past_the_tables_are_silent() {
         let mut out = vec![vec![0.0f32; BLOCK]; WIDE];
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
         r.executor_mut()
-            .process(BLOCK, &Transport::default(), &[], &mut outs);
+            .process(BLOCK, &TransportPosition::default(), &[], &mut outs);
         for (c, ch) in out.iter().enumerate() {
             let want = if c < TABLE {
                 INPUT + channel_tag(c)

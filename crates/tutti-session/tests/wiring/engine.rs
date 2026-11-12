@@ -139,7 +139,8 @@ fn the_transport_converts_at_the_sessions_rate() {
     let s = offline();
     assert_eq!(s.transport().sample_rate(), SampleRate(RATE));
     let beat = (s.transport().settings().tempo_map())
-        .frame_at_or_after(Beat(1.0), s.transport().sample_rate());
+        .view(s.transport().sample_rate())
+        .frame_at_or_after(Beat(1.0));
     assert_eq!(beat.get(), 24_000, "one beat at 120 BPM and 48 kHz");
 }
 

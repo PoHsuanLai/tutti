@@ -86,7 +86,7 @@ fn run<N: Node>(
 /// output channel summing its channel of every group. No node runs, so the
 /// figure is the op's.
 fn channel_sum(c: &mut Criterion) {
-    use tutti_graph::{Editor, Prepare, Source, Transport};
+    use tutti_graph::{Editor, Prepare, Source, TransportPosition};
     use tutti_types::{ChannelLayout, Samples};
 
     let mut g = c.benchmark_group("channel_sum");
@@ -121,7 +121,7 @@ fn channel_sum(c: &mut Criterion) {
                 .collect();
             let input: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
             let mut out = vec![vec![0.0f32; block]; width as usize];
-            let t = Transport::default();
+            let t = TransportPosition::default();
             g.throughput(Throughput::Elements((block * width as usize) as u64));
             g.bench_function(BenchmarkId::new(case, block), |b| {
                 b.iter(|| {

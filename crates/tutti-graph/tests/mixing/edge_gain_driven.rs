@@ -591,7 +591,7 @@ fn a_fork_carries_the_driven_lane() {
     let mut o = vec![0.0f32; BLOCK];
     fexec.process(
         BLOCK,
-        &tutti_graph::Transport::default(),
+        &tutti_graph::TransportPosition::default(),
         &[],
         &mut [o.as_mut_slice()],
     );

@@ -27,7 +27,7 @@ use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::NodeKey;
-use tutti_graph::{Editor, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport};
+use tutti_graph::{Editor, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, TransportPosition};
 use tutti_graph::{OutPort, Source};
 use tutti_plugin::{PresetId, RenderMode};
 use tutti_plugin_host::PluginHandle;
@@ -420,7 +420,7 @@ fn a_fork_reads_its_transport_from_the_render() {
         )
         .expect("forks");
     let mut renderer = Renderer::new(fork_ed, fork_exec);
-    renderer.set_transport(Transport::new(true, Bpm::of(93.0), Beat(5.0), None));
+    renderer.set_transport(TransportPosition::new(true, Bpm::of(93.0), Beat(5.0), None));
     let _ = renderer.render(BLOCK);
 
     let cap = read_capture();

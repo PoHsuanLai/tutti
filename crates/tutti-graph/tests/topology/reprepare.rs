@@ -14,7 +14,7 @@ use common::{Kind, TestNode};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, CompileError, Cx, CycleEdge, Editor, EventEdge, EventIn, EventKind, EventOut,
-    Executor, Io, Node, Prepare, Reference, Shape, Status, Transport, Unforkable,
+    Executor, Io, Node, Prepare, Reference, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Latency, SampleRate, Samples, Tail};
@@ -171,7 +171,7 @@ impl Rig {
     /// output, after asserting the reference's is bit-identical.
     fn render(&mut self, blocks: &[usize]) -> Vec<f32> {
         let mut all = Vec::new();
-        let t = Transport::default();
+        let t = TransportPosition::default();
         for &n in blocks {
             let input = vec![1.0f32; n];
             let (mut a, mut b) = (vec![0.0f32; n], vec![0.0f32; n]);
@@ -257,8 +257,12 @@ impl Solo {
         for &n in blocks {
             let input = vec![1.0f32; n];
             let mut out = vec![0.0f32; n];
-            self.reference
-                .process(n, &Transport::default(), &[&input[..]], &mut [&mut out[..]]);
+            self.reference.process(
+                n,
+                &TransportPosition::default(),
+                &[&input[..]],
+                &mut [&mut out[..]],
+            );
             all.extend(out);
         }
         all
@@ -335,7 +339,7 @@ fn a_feedback_edge_shorter_than_the_new_block_is_refused_first() {
     );
     assert_eq!(ed.in_flight(), 0, "nothing was sent");
     assert_eq!(ed.prepare().max_block().get(), 64);
-    exec.process(64, &Transport::default(), &[], &mut []);
+    exec.process(64, &TransportPosition::default(), &[], &mut []);
     assert_eq!(exec.prepare().max_block().get(), 64);
     assert_eq!(ed.commit(), Ok(()), "and the editor is not stuck");
 }
@@ -435,7 +439,7 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
     let mut out = vec![9.0f32; 128];
     rig.exec.process(
         128,
-        &Transport::default(),
+        &TransportPosition::default(),
         &[&input[..]],
         &mut [&mut out[..]],
     );
@@ -450,7 +454,7 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
     assert_eq!(rig.ed.poison_cause(), None);
     rig.exec.process(
         128,
-        &Transport::default(),
+        &TransportPosition::default(),
         &[&input[..]],
         &mut [&mut out[..]],
     );
@@ -467,7 +471,7 @@ fn shrinking_max_block_never_fails_the_callback() {
     rig.ed.reprepare(prep(48_000.0, 64)).expect("reprepares");
     let input = vec![1.0f32; 256];
     let mut out = vec![9.0f32; 256];
-    let t = Transport::default();
+    let t = TransportPosition::default();
     rig.exec
         .process(256, &t, &[&input[..]], &mut [&mut out[..]]);
     assert!(out.iter().all(|&x| x == 0.0), "silence at the old size");
@@ -550,7 +554,7 @@ fn assert_poisoned(mut ed: Editor, mut exec: Executor, cause: &str) {
         Err(tutti_graph::ScheduleError::Poisoned)
     );
     assert_eq!(ed.cancel_all(), Err(tutti_graph::ScheduleError::Poisoned));
-    let t = Transport::default();
+    let t = TransportPosition::default();
     for n in [64usize, 256, 1, 1024] {
         let mut out = vec![9.0f32; n];
         exec.process(n, &t, &[], &mut [&mut out[..]]);

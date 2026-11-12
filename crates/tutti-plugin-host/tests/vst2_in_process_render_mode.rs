@@ -146,7 +146,7 @@ fn drive_blocks(unit: &mut PluginNode<Vst2Loaded>, max: usize, frames: usize) {
 
 /// [`drive_blocks`] at `hz`: the node is prepared at that rate.
 fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frames: usize) {
-    use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
+    use tutti_graph::{Env, Node, Prepare, TransportChanges, TransportPosition};
     let rate = SampleRate(hz);
     Node::prepare(
         unit,
@@ -160,7 +160,7 @@ fn drive_blocks_at(unit: &mut PluginNode<Vst2Loaded>, hz: f64, max: usize, frame
         frame: tutti_types::Frame(0),
         sample_rate: rate,
         block_len: tutti_types::Samples(frames),
-        transport: Transport::default(),
+        transport: TransportPosition::default(),
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
     };

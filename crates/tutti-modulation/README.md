@@ -45,7 +45,7 @@ An LFO on a filter's cutoff, a quarter of the range deep:
 ```rust
 use tutti_modulation::{
     compile, Clock, Law, Declarations, LfoShape, Polarity, ProgramTime, RouteDecl,
-    RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey, Wave,
+    RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey, Waveform,
 };
 use tutti_types::{
     Beat, BeatDuration, Depth, Frame, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
@@ -56,7 +56,7 @@ let cutoff = TargetKey::param(7, ParamAddr::Unit(UnitParam::Cutoff));
 let sources = [(
     SourceKey(1),
     Source::Lfo {
-        wave: Wave::Shape { shape: LfoShape::Square, seed: 0 },
+        wave: Waveform::Shape { shape: LfoShape::Square, seed: 0 },
         clock: Clock::Beats { per_cycle: BeatDuration(4.0), phase: PhaseIncrement(0.0) },
     },
 )];

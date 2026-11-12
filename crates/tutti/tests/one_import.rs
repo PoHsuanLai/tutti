@@ -122,3 +122,19 @@ fn a_timed_transport_program_needs_only_the_prelude() {
     let bar: BarNumber = map.bar_numbers()[0];
     assert_eq!(Meter::bar_start(&map, bar), Beat(0.0));
 }
+
+/// A tempo map is built from `tutti::tempo` alone and published to the
+/// transport's settings (what `Session::set_tempo_map` forwards to), with
+/// `TempoMap` itself in the prelude: 120 BPM, then a time ramp to 180 over four
+/// beats, lasts 1.6 s, so beat 4 is frame 76 800 at 48 kHz.
+#[test]
+fn a_tempo_map_is_built_and_published_through_the_facade() {
+    let map: TempoMap = tutti::tempo::TempoMap::builder(Bpm::of(120.0))
+        .ramp_time_to(Beat(4.0), Bpm::of(180.0))
+        .build()
+        .expect("a map");
+    let rate = SampleRate(48_000.0);
+    assert_eq!(map.view(rate).frame_at_or_after(Beat(4.0)), Frame(76_800));
+    let transport = tutti::transport::Transport::new(rate);
+    transport.settings().set_tempo_map(map);
+}

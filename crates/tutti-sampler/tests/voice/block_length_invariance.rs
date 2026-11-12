@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use tutti_codec::Wave;
 use tutti_graph::contract::{self, Direct};
-use tutti_graph::{Env, Node, Transport, TransportChanges};
+use tutti_graph::{Env, Node, TransportChanges, TransportPosition};
 use tutti_sampler::{
     ByHand, Direction, DiskStreamer, DiskStreamerConfig, MemorySource, Playback, SlotId,
     StepOutcome, Stream, Voice, VoiceNode, VoicePool, VoiceSource,
@@ -97,7 +97,7 @@ fn env_at(frame: usize, len: usize) -> Env {
         frame: Frame(frame as u64),
         sample_rate: SampleRate(SR),
         block_len: Samples(len),
-        transport: Transport::new(true, Bpm::of(BPM), Beat::new(beat), None),
+        transport: TransportPosition::new(true, Bpm::of(BPM), Beat::new(beat), None),
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
     }

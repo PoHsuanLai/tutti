@@ -24,7 +24,7 @@ use common::prepare;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Env, Executor, Io, LoopRange, Node, Offset, Prepare, Reference, Shape, Status,
-    Transport, TransportChanges, TransportHistory, Unforkable,
+    TransportChanges, TransportHistory, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples};
@@ -79,7 +79,7 @@ impl Node for Probe {
     fn reset(&mut self) {}
 }
 
-fn encode(t: &Transport) -> [f32; 2] {
+fn encode(t: &TransportPosition) -> [f32; 2] {
     let flags = 1000.0 * f32::from(u8::from(t.playing))
         + 2000.0 * f32::from(u8::from(t.recording()))
         + 4000.0 * f32::from(u8::from(t.looping.is_some()));
@@ -116,7 +116,7 @@ struct Rig {
     played: Vec<Env>,
     /// The pieces the executor's history holds, by its documented rules:
     /// each piece's first frame, transport and rate.
-    kept: VecDeque<(u64, Transport, SampleRate)>,
+    kept: VecDeque<(u64, TransportPosition, SampleRate)>,
     /// The rate blocks are rendered at.
     rate: SampleRate,
     /// Frames checked that were older than every piece kept, and after
@@ -170,7 +170,12 @@ impl Rig {
 
     /// One block through both; asserts they agree bit for bit and returns
     /// the executor's outputs.
-    fn block(&mut self, n: usize, t: Transport, changes: TransportChanges) -> [Vec<f32>; 3] {
+    fn block(
+        &mut self,
+        n: usize,
+        t: TransportPosition,
+        changes: TransportChanges,
+    ) -> [Vec<f32>; 3] {
         let env = Env {
             frame: self.exec.frame(),
             sample_rate: self.rate,
@@ -232,7 +237,7 @@ impl Rig {
 
     /// What the block holding timeline frame `f` said for it; older than
     /// every piece kept (or before frame 0), the oldest kept, unmoved.
-    fn truth(&self, f: Option<u64>) -> Transport {
+    fn truth(&self, f: Option<u64>) -> TransportPosition {
         let (oldest, t, _) = *self.kept.front().expect("a block was observed");
         let Some(f) = f.filter(|&f| f >= oldest) else {
             return t;
@@ -268,7 +273,7 @@ impl Rig {
 
 /// Where `e`'s transport stands at its end: a host that counts frames starts
 /// the next block there, and the history keeps no piece for it.
-fn end_of(e: &Env) -> Transport {
+fn end_of(e: &Env) -> TransportPosition {
     let longer = Env {
         block_len: Samples(e.block_len.get() + 1),
         ..*e
@@ -282,22 +287,22 @@ fn mostly_rolling(
     every: usize,
     n: usize,
     prev: Option<&Env>,
-) -> (Transport, TransportChanges) {
+) -> (TransportPosition, TransportChanges) {
     match prev {
         Some(p) if !b.is_multiple_of(every) => (end_of(p), TransportChanges::NONE),
         _ => scene(b / every, n, prev),
     }
 }
 
-fn rolling(beat: f64) -> Transport {
-    Transport::new(true, Bpm::of(120.0), Beat(beat), None)
+fn rolling(beat: f64) -> TransportPosition {
+    TransportPosition::new(true, Bpm::of(120.0), Beat(beat), None)
 }
 
 /// The block-`b` scene for a block of `n` frames after `prev` (the block
 /// before, if any): a plain roll continuing it, a seek, a seek and tempo
 /// change inside the block, a 40-frame loop starting at the block, the loop
 /// continued from where it stood, a stop, and recording.
-fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges) {
+fn scene(b: usize, n: usize, prev: Option<&Env>) -> (TransportPosition, TransportChanges) {
     let at = |i: usize| Offset::new(i, Samples(n)).expect("inside");
     let mut changes = TransportChanges::NONE;
     let t = match b % 7 {
@@ -308,13 +313,13 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
                 changes
                     .push(
                         at(n / 2),
-                        Transport::new(true, Bpm::of(90.0), Beat(64.0 + b as f64), None),
+                        TransportPosition::new(true, Bpm::of(90.0), Beat(64.0 + b as f64), None),
                     )
                     .expect("inside");
             }
             rolling(8.0 + b as f64)
         }
-        3 => Transport::new(
+        3 => TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(4.0),
@@ -327,7 +332,7 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
         4 => prev.map_or(rolling(2.0), |p| {
             p.transport_at(Offset::new(p.block_len.get() - 1, p.block_len).expect("last"))
         }),
-        5 => Transport::new(false, Bpm::of(100.0), Beat(3.0), None),
+        5 => TransportPosition::new(false, Bpm::of(100.0), Beat(3.0), None),
         _ => rolling(32.0 + b as f64).with_recording(true),
     };
     (t, changes)

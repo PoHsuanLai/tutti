@@ -19,7 +19,7 @@ use tutti_graph::{
     Edge, Editor, Env, EventCapacity, EventEdge, EventIn, EventInletNode, EventInletWriter,
     EventKind, EventOut, EventTapId, EventTapReader, Executor, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, InPort, IntoNode, Losses, Node, NodeKey, NodeParts, OutPort, PlayClock,
-    Prepare, Refused, Source, Stamp, TapAlign, TapEvent, Transport, TransportChanges,
+    Prepare, Refused, Source, Stamp, TapAlign, TapEvent, TransportChanges, TransportPosition,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{Frame, Moment, SampleRate, Samples};
@@ -80,7 +80,7 @@ fn block_at(d: &mut Direct<EventInletNode>, frame: u64, rate: SampleRate, len: u
         frame: Frame(frame),
         sample_rate: rate,
         block_len: Samples(len),
-        transport: Transport::default(),
+        transport: TransportPosition::default(),
         changes: TransportChanges::NONE,
         play: PlayClock::ZERO,
     });
@@ -608,7 +608,7 @@ fn render(
     total: usize,
     gated: bool,
 ) -> Vec<u32> {
-    let t = Transport::default();
+    let t = TransportPosition::default();
     let (mut done, mut i) = (0, 0);
     let mut bits = Vec::new();
     while done < total {

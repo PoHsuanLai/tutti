@@ -23,7 +23,7 @@ use crate::clap_probe;
 use clap_probe::{ProbeEnv, Rig, load_probe, render};
 use tutti_fixtures::machine_lock;
 
-use tutti_graph::{ForkMode, Transport};
+use tutti_graph::{ForkMode, TransportPosition};
 use tutti_types::Samples;
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -60,7 +60,7 @@ fn render_blocks(rig: &mut Rig, blocks: &[usize]) -> Vec<f32> {
         let inputs: Vec<&[f32]> = (0..ins).map(|_| &chan[..]).collect();
         let mut o = vec![vec![0.0f32; n]; rig.outputs()];
         let mut outs: Vec<&mut [f32]> = o.iter_mut().map(|c| &mut c[..]).collect();
-        let transport = Transport::default();
+        let transport = TransportPosition::default();
         rig.renderer()
             .executor_mut()
             .process(n, &transport, &inputs, &mut outs);

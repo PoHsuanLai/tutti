@@ -19,7 +19,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventOut, Executor, Io, Node, Prepare, Shape, Status,
-    Transport, Unforkable,
+    TransportPosition, Unforkable,
 };
 use tutti_types::{SampleRate, Samples};
 
@@ -93,7 +93,7 @@ fn rig(source: Source) -> Executor {
 
 fn bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("event_path");
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     for n in [64u32, 256, 1000] {
         g.throughput(Throughput::Elements(u64::from(n)));
         let cases = [

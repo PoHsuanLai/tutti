@@ -11,7 +11,7 @@
 
 use tutti_fixtures::{machine_lock, midi};
 use tutti_graph::{
-    Env, Event, Harmony, Node, Offset, ParamRamp, PlayClock, Transport, TransportChanges,
+    Env, Event, Harmony, Node, Offset, ParamRamp, PlayClock, TransportChanges, TransportPosition,
 };
 use tutti_plugin_ipc::{HostMessage, ProcessAudioData};
 use tutti_plugin_types::ParamId;
@@ -66,7 +66,7 @@ fn block_env(frame: u64, len: usize) -> Env {
         frame: Frame(frame),
         sample_rate: SR,
         block_len: Samples(len),
-        transport: Transport::new(
+        transport: TransportPosition::new(
             true,
             Bpm::of(if frame >= STEP_FRAME { 90.0 } else { 120.0 }),
             Beat(beat_at(frame)),
@@ -412,7 +412,7 @@ fn a_chosen_plugin_is_the_one_a_reopen_loads() {
 /// The block at stream frame `frame` with its own transport state.
 fn block_env_with(frame: u64, len: usize, playing: bool, bpm: Bpm, beat: Beat) -> Env {
     Env {
-        transport: Transport::new(playing, bpm, beat, None),
+        transport: TransportPosition::new(playing, bpm, beat, None),
         ..block_env(frame, len)
     }
 }
@@ -504,17 +504,17 @@ fn a_stop_and_a_seek_inside_a_chunk_reach_the_server_on_the_chunk_frame() {
 /// start (frame 160), and the figure is in the transport the server is sent.
 #[test]
 fn a_tempo_ramp_across_a_block_boundary_reaches_the_server_as_its_slope() {
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     let _machine = machine_lock();
     let point = |beat: f64, bpm: f64, shape| TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
-        shape,
+        transition: shape,
     };
     let map = tutti_transport::TempoReader::fixed(std::sync::Arc::new(
         TempoMap::new(vec![
-            point(0.0, 120.0, Shape::RampTime),
-            point(100.0, 90.0, Shape::Step),
+            point(0.0, 120.0, Transition::RampTime),
+            point(100.0, 90.0, Transition::Step),
         ])
         .expect("a map"),
     ));

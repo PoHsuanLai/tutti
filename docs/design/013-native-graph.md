@@ -5263,7 +5263,7 @@ vocoder retirement channel for voices the pool removes.
 - **Transport from `Env`.** `transport_source::from_env` maps
   `Env::transport_at` of each chunk's first frame, plus the meter, onto the
   ABI snapshot. No `Arc<dyn Timeline>`, no `BeatCursor`, no rebind for a fork:
-  an offline fork's `Env` is the render's. `tutti_graph::Transport` gained a
+  an offline fork's `Env` is the render's. `tutti_graph::TransportPosition` gained a
   `recording` flag (additive; tutti-engine's engine sets it) because the ABIs
   carry it. The continuous-sample counter is the node's own `SteadyTime`
   (frames rendered; `Env`'s frame restarts at a re-prepare). Project-time

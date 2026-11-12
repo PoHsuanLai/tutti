@@ -3,7 +3,7 @@
 //! side (the executor hands the old unit back; `Editor::collect` drops it), as
 //! a tap's lanes are.
 
-use tutti_graph::{CrossfadeCurve, Editor, Fade, InletNode, Prepare, TapReader, Transport};
+use tutti_graph::{CrossfadeCurve, Editor, Fade, InletNode, Prepare, TapReader, TransportPosition};
 use tutti_graph::{NodeKey, TapId};
 use tutti_graph::{OutPort, Source};
 use tutti_types::MaxBlock;
@@ -16,7 +16,7 @@ fn inlet() -> (InletNode, tutti_graph::TapWriter) {
 }
 
 fn render(exec: &mut tutti_graph::Executor, blocks: usize) {
-    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     for _ in 0..blocks {
         let mut chans = vec![vec![0.0f32; 64]; 2];
         let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();

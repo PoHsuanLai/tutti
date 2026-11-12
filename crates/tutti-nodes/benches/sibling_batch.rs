@@ -41,7 +41,9 @@ use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::NodeKey;
-use tutti_graph::{Cost, Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport};
+use tutti_graph::{
+    Cost, Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TransportPosition,
+};
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{ForkByClone, Unforkable};
 use tutti_nodes::BusStripNode;
@@ -442,7 +444,7 @@ impl Bufs {
     fn block(&mut self, exec: &mut Executor, frames: usize) {
         let ins: Vec<&[f32]> = self.input.iter().map(|v| &v[..]).collect();
         let mut outs: Vec<&mut [f32]> = self.out.iter_mut().map(|v| &mut v[..]).collect();
-        exec.process(frames, &Transport::default(), &ins, &mut outs);
+        exec.process(frames, &TransportPosition::default(), &ins, &mut outs);
     }
 }
 

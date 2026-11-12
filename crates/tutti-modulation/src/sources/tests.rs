@@ -6,7 +6,7 @@ use tutti_types::Amplitude;
 fn lfo_parts(source: Source) -> (LfoShape, u64, Clock) {
     match source {
         Source::Lfo {
-            wave: Wave::Shape { shape, seed },
+            wave: Waveform::Shape { shape, seed },
             clock,
         } => (shape, seed, clock),
         other => panic!("not a shaped LFO: {other:?}"),

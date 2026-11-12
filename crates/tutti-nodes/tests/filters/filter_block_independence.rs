@@ -8,7 +8,7 @@
 //! the output at the impulse is the coefficient set in force there).
 
 use tutti_graph::contract::{drive_input, prepared};
-use tutti_graph::{Env, Node, ParamNode, PlayClock, Transport, TransportChanges};
+use tutti_graph::{Env, Node, ParamNode, PlayClock, TransportChanges, TransportPosition};
 use tutti_nodes::{
     CrossoverNode, EqBandNode, LadderFilterNode, LadderType, SvfControls, SvfFilterNode, SvfType,
 };
@@ -51,7 +51,7 @@ fn render<N: Node + ParamNode + 'static>(
             frame: Frame(start as u64),
             sample_rate: RATE,
             block_len: Samples(end - start),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             changes: TransportChanges::NONE,
             play: PlayClock::ZERO,
         };

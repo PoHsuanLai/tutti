@@ -11,7 +11,7 @@ use tutti_types::MaxBlock;
 use tutti_fixtures::midi::note_on;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey, OutPort,
-    Prepare, Shape, Source, Status, Transport, Unforkable,
+    Prepare, Shape, Source, Status, TransportPosition, Unforkable,
 };
 use tutti_midi_runtime::{DeviceInlets, DeviceInput, InletChange, NoFreeSlot};
 use tutti_types::{ChannelLayout, Frame, SampleRate, Samples};
@@ -121,8 +121,12 @@ impl Rig {
     fn run(&mut self, blocks: usize) {
         for _ in 0..blocks {
             let mut out = vec![0.0f32; BLOCK];
-            self.exec
-                .process(BLOCK, &Transport::default(), &[], &mut [&mut out[..]]);
+            self.exec.process(
+                BLOCK,
+                &TransportPosition::default(),
+                &[],
+                &mut [&mut out[..]],
+            );
         }
     }
 

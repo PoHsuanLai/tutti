@@ -16,7 +16,7 @@ use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_graph::{OutPort, Source};
-use tutti_tempo::{Shape as TempoShape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::{
     FadeOut, LoopEdit, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Then, Transport,
 };
@@ -74,7 +74,7 @@ fn steps(points: &[(f64, f64)]) -> Arc<TempoMap> {
         TempoMap::new(points.iter().map(|&(beat, bpm)| TempoPoint {
             beat: Beat(beat),
             tempo: Bpm::of(bpm),
-            shape: TempoShape::Step,
+            transition: Transition::Step,
         }))
         .expect("a map"),
     )

@@ -31,8 +31,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tutti_fixtures::midi;
-use tutti_graph::{Offset, Transport, TransportChanges};
-use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
+use tutti_graph::{Offset, TransportChanges, TransportPosition};
+use tutti_modulation::{
+    Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Waveform,
+};
 use tutti_nodes::automation::{Breakpoint, ControlLaneNode, Law, Trajectory};
 use tutti_types::{Beat, Bpm, Samples};
 use tutti_types::{BeatDuration, Depth, PhaseIncrement};
@@ -47,11 +49,11 @@ const SAMPLE_RATE: f64 = 48_000.0;
 /// 9 at 90): the chunk's walk adds an entry for each, beside the seek's, and
 /// fills the eight it can hold in every chunk, counting the rest.
 fn points_inside_blocks() -> tutti_tempo::TempoMap {
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     let point = |beat: f64, bpm: f64| TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
-        shape: Shape::Step,
+        transition: Transition::Step,
     };
     let mut points = vec![point(0.0, 120.0)];
     points.extend((0..400).map(|k| point(f64::from(k) + 0.001, 120.0 + f64::from(k % 2))));
@@ -92,7 +94,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             per_cycle: BeatDuration(0.25),
             phase: PhaseIncrement(0.0),
         },
-        wave: Wave::Shape {
+        wave: Waveform::Shape {
             shape: LfoShape::Sine,
             seed: 0,
         },
@@ -150,7 +152,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     changes
         .push(
             Offset::new(20, Samples(BLOCK)).expect("inside"),
-            Transport::new(true, Bpm::of(90.0), Beat(9.0), None),
+            TransportPosition::new(true, Bpm::of(90.0), Beat(9.0), None),
         )
         .expect("a change inside the block");
     let pace = Duration::from_millis(15);
@@ -168,7 +170,8 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             sender.push(tutti_graph::Stamp::NextBlock, off).unwrap();
         }
         let n = BLOCK;
-        let t = Transport::new(true, Bpm::of(120.0), Beat(b as f64), None).with_recording(true);
+        let t =
+            TransportPosition::new(true, Bpm::of(120.0), Beat(b as f64), None).with_recording(true);
         let ins: [&[f32]; 2] = [&inputs[0][..n], &inputs[1 % inputs.len()][..n]];
         let (a, rest) = outs.split_at_mut(1);
         let mut o: [&mut [f32]; 2] = [&mut a[0][..n], &mut rest[0][..n]];

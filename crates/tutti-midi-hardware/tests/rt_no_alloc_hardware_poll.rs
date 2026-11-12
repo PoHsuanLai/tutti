@@ -26,7 +26,7 @@ use tutti_fixtures::midi::{noop, note_on};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, EventTapId, EventTapReader, Executor, Prepare, TapAlign,
-    TapEvent, Transport,
+    TapEvent, TransportPosition,
 };
 use tutti_midi_hardware::{HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{DeviceInlets, InletChange, MidiIngestNode};
@@ -153,7 +153,7 @@ impl Rig {
         self.clock
             .write(self.next_block(), Frame(self.frames), SampleRate(RATE));
         self.exec
-            .process(frames, &Transport::default(), &[], &mut []);
+            .process(frames, &TransportPosition::default(), &[], &mut []);
         self.frames += frames as u64;
         self.carried += self.out.pop_into(&mut self.drain);
     }

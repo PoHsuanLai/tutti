@@ -22,8 +22,8 @@ use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::contract::Latent;
 use tutti_graph::{
-    Env, GraphBuilder, IntoNode, LoopRange, Offset, Prepare, Renderer, Transport, TransportChanges,
-    Unforkable,
+    Env, GraphBuilder, IntoNode, LoopRange, Offset, Prepare, Renderer, TransportChanges,
+    TransportPosition, Unforkable,
 };
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_host::{PluginNode, load_client};
@@ -116,11 +116,11 @@ fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
 /// each frame. (A tempo point is the map's way to say what a transport's
 /// own tempo change says.)
 fn scene_map(blocks: usize) -> tutti_tempo::TempoMap {
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     let point = |beat: f64, bpm: f64| TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
-        shape: Shape::Step,
+        transition: Transition::Step,
     };
     let mut points = vec![point(0.0, 120.0)];
     for b in 0..blocks {
@@ -161,15 +161,15 @@ fn rig<N: IntoNode>(node: N, arrival: usize) -> (Renderer, N::Controls) {
 
 /// One scene per block: the transport at its first frame, and the changes
 /// inside it.
-fn scene(b: usize) -> (Transport, TransportChanges) {
+fn scene(b: usize) -> (TransportPosition, TransportChanges) {
     let base = 4.0 + b as f64;
     let mut changes = TransportChanges::NONE;
-    let rolling = Transport::new(true, Bpm::of(120.0), Beat(base), None);
+    let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(base), None);
     let t = match b % 6 {
         0 => rolling,
         // A seek at the block boundary, far from where the last block left
         // off.
-        1 => Transport::new(true, Bpm::of(120.0), Beat(64.0 + base), None),
+        1 => TransportPosition::new(true, Bpm::of(120.0), Beat(64.0 + base), None),
         // A tempo change inside the block, after the frame the next block
         // hears (frame 24 of this one) and before it.
         2 => {
@@ -177,14 +177,14 @@ fn scene(b: usize) -> (Transport, TransportChanges) {
             changes
                 .push(
                     at,
-                    Transport::new(true, Bpm::of(90.0), Beat(base + 0.5), None),
+                    TransportPosition::new(true, Bpm::of(90.0), Beat(base + 0.5), None),
                 )
                 .expect("a change inside the block");
             rolling
         }
         // A loop 16 frames long from here: it wraps at frame 16, before
         // frame 24, which the next block's first frame hears.
-        3 => Transport::new(
+        3 => TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(base),
@@ -194,7 +194,7 @@ fn scene(b: usize) -> (Transport, TransportChanges) {
             }),
         ),
         4 => rolling.with_recording(true),
-        _ => Transport::new(false, Bpm::of(100.0), Beat(base), None),
+        _ => TransportPosition::new(false, Bpm::of(100.0), Beat(base), None),
     };
     (t, changes)
 }
@@ -224,7 +224,7 @@ impl Told {
     }
 
     /// Whether this is `t` (the beat to well under a frame).
-    fn is(&self, t: &Transport) -> bool {
+    fn is(&self, t: &TransportPosition) -> bool {
         (self.ppq - t.beat().get()).abs() < 1e-9
             && self.tempo == t.tempo.get()
             && self.playing == t.playing
@@ -259,7 +259,7 @@ fn render_scenes(r: &mut Renderer, blocks: usize) -> Vec<(Env, Told)> {
 /// What the blocks in `seen` said for timeline frame `f`: `Env::transport_at`
 /// in the block that held it, or, for a frame before the first block, the
 /// first block's transport, unmoved (`TransportHistory`'s rule).
-fn said_at(seen: &[(Env, Told)], f: Option<u64>) -> Transport {
+fn said_at(seen: &[(Env, Told)], f: Option<u64>) -> TransportPosition {
     let Some(f) = f else {
         return seen[0].0.transport;
     };

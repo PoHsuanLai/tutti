@@ -92,7 +92,7 @@ pub struct RateAnchor {
 
 /// One period of a layer's raw value, in `[-1, 1]`.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Wave {
+pub enum Waveform {
     /// A closed-form shape. `Random` and `RandomSmooth` derive their steps
     /// from a hash of the cycle index and `seed`, so they replay after a
     /// seek and in a fork.
@@ -112,7 +112,7 @@ pub enum Wave {
     Const(f32),
 }
 
-/// A breakpoint of a [`Wave::Drawn`] period.
+/// A breakpoint of a [`Waveform::Drawn`] period.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PeriodPoint {
     /// Where in the period, in `[0, 1)` (a program with one outside is
@@ -173,7 +173,7 @@ pub struct Layer {
     /// The clock its phase runs on.
     pub clock: Clock,
     /// Its raw value over one cycle.
-    pub wave: Wave,
+    pub wave: Waveform,
     /// How the raw value becomes an offset.
     pub amount: Amount,
     /// The offset scaled by a second wave through its own [`Amount`] (depth
@@ -198,7 +198,7 @@ pub struct DepthBy {
     /// The clock the scaling wave runs on.
     pub clock: Clock,
     /// The scaling wave.
-    pub wave: Wave,
+    pub wave: Waveform,
     /// How its raw value becomes the scale.
     pub amount: Amount,
 }
@@ -335,7 +335,7 @@ impl std::error::Error for ProgramError {}
 /// ```
 /// use tutti_modulation::{
 ///     Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity,
-///     ProgramTime, Wave,
+///     ProgramTime, Waveform,
 /// };
 /// use tutti_types::{Beat, BeatDuration, Depth, PhaseIncrement, SamplePosition, SampleRate};
 ///
@@ -343,7 +343,7 @@ impl std::error::Error for ProgramError {}
 /// let square = Layer {
 ///     id: LayerId(1),
 ///     clock: Clock::Beats { per_cycle: BeatDuration(4.0), phase: PhaseIncrement(0.0) },
-///     wave: Wave::Shape { shape: LfoShape::Square, seed: 0 },
+///     wave: Waveform::Shape { shape: LfoShape::Square, seed: 0 },
 ///     amount: Amount { depth: Depth::of(0.25), polarity: Polarity::Bipolar, curve: Law::Linear },
 ///     depth_by: None,
 /// };
@@ -440,7 +440,7 @@ impl ControlProgram {
             }
             let waves = std::iter::once(&l.wave).chain(l.depth_by.as_ref().map(|d| &d.wave));
             for w in waves {
-                if let Wave::Drawn(points) = w {
+                if let Waveform::Drawn(points) = w {
                     let in_range = points
                         .iter()
                         .all(|p| (0.0..1.0).contains(&p.at.get()) && p.value.is_finite());
@@ -654,11 +654,11 @@ impl Layer {
     /// are all constant (and with no automation) does not walk the grid.
     #[must_use]
     pub fn is_constant(&self) -> bool {
-        matches!(self.wave, Wave::Const(_))
+        matches!(self.wave, Waveform::Const(_))
             && self
                 .depth_by
                 .as_ref()
-                .is_none_or(|d| matches!(d.wave, Wave::Const(_)))
+                .is_none_or(|d| matches!(d.wave, Waveform::Const(_)))
     }
 
     /// This layer's offset at `at` (just before it for [`Limit::Before`]),
@@ -690,7 +690,7 @@ impl Layer {
                     || anchor.is_some_and(|a| a.phase.is_nan() || a.prev_rate.get().is_nan())
             }
         };
-        let wave = |w: &Wave| matches!(w, Wave::Const(v) if v.is_nan());
+        let wave = |w: &Waveform| matches!(w, Waveform::Const(v) if v.is_nan());
         clock(&self.clock)
             || wave(&self.wave)
             || self
@@ -734,7 +734,7 @@ impl Clock {
     /// The next corner of `wave` on this clock strictly after `at` (with
     /// zero crossings when `kinks`), and an anchor's own frame, where the
     /// rate changes.
-    fn next_corner(&self, at: &ProgramTime, wave: &Wave, kinks: bool) -> Corners {
+    fn next_corner(&self, at: &ProgramTime, wave: &Waveform, kinks: bool) -> Corners {
         let Some(c) = self.cycles(at) else {
             return Corners::default();
         };
@@ -806,7 +806,7 @@ pub(crate) fn hash_bipolar(n: i64) -> f32 {
     ((z >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
 }
 
-impl Wave {
+impl Waveform {
     /// The raw value on `clock` at `at` (just before it for [`Limit::Before`]);
     /// `None` when the clock gives no position. A constant needs none.
     fn raw_on(&self, clock: &Clock, at: &ProgramTime, limit: Limit) -> Option<f32> {

@@ -3464,6 +3464,7 @@ dependencies = [
  "tutti-sf2",
  "tutti-shared-plugin",
  "tutti-soundfont",
+ "tutti-tempo",
  "tutti-transport",
  "tutti-types",
  "tutti-ump",

@@ -37,7 +37,7 @@ use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
 use tutti_graph::NodeKey;
-use tutti_graph::{Editor, Executor, ForkMode, ForkTarget, Prepare, Transport, Unforkable};
+use tutti_graph::{Editor, Executor, ForkMode, ForkTarget, Prepare, TransportPosition, Unforkable};
 use tutti_graph::{OutPort, Source};
 use tutti_sampler::testing::{MockTransport, block};
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource, VoiceWindow};
@@ -98,7 +98,7 @@ fn graph_with(node: VoiceNode) -> (Editor, Executor, tutti_sampler::VoiceNodeHan
 /// at `beat`.
 fn render_peak(exec: &mut Executor, beat: f64) -> f32 {
     let mut out = vec![0.0f32; 256];
-    let t = Transport::new(true, Bpm::of(120.0), Beat(beat), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(beat), None);
     exec.process(256, &t, &[], &mut [&mut out[..]]);
     out.iter().fold(0.0f32, |a, s| a.max(s.abs()))
 }

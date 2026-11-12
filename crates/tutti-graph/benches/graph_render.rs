@@ -30,7 +30,9 @@ use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::NodeKey;
-use tutti_graph::{Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+use tutti_graph::{
+    Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TransportPosition, Unforkable,
+};
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, SampleRate, Samples, Tail};
 
@@ -274,7 +276,7 @@ fn render_graph(exec: &mut Executor, frames: usize, input: &[f32], out: &mut [f3
     };
     exec.process(
         frames,
-        &Transport::default(),
+        &TransportPosition::default(),
         inputs,
         &mut [&mut out[..frames]],
     );
@@ -456,7 +458,7 @@ fn bench_overhead_forms(c: &mut Criterion) {
                     let ins: [&[f32]; 3] = [&input[..frames], &input[..frames], &input[..frames]];
                     exec.process(
                         frames,
-                        &Transport::default(),
+                        &TransportPosition::default(),
                         &ins[..width],
                         &mut [black_box(&mut out[..frames])],
                     );

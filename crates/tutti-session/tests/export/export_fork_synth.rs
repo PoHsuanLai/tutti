@@ -207,7 +207,7 @@ fn assert_live_untouched(session: &mut Session) {
     let mut heard = false;
     // Rolling at 120 BPM from beat 1.
     for i in 0..4_096 {
-        let t = tutti_graph::Transport::new(
+        let t = tutti_graph::TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(1.0 + f64::from(i) / (RATE / 2.0)),

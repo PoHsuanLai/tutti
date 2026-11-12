@@ -978,7 +978,10 @@ impl MemorySource {
     /// splits, one product — `both_tier_splits_agree_on_the_same_position` pins
     /// the agreement.
     #[inline]
-    pub fn window_position(&self, transport: &tutti_graph::Transport) -> Option<SamplePosition> {
+    pub fn window_position(
+        &self,
+        transport: &tutti_graph::TransportPosition,
+    ) -> Option<SamplePosition> {
         let window = self.placement?;
         super::interp::window_position(
             transport,
@@ -1014,7 +1017,7 @@ impl MemorySource {
     #[inline]
     pub fn stretched_window_position(
         &self,
-        transport: &tutti_graph::Transport,
+        transport: &tutti_graph::TransportPosition,
         stretch_rate: ReadRate,
     ) -> Option<SamplePosition> {
         let window = self.placement?;

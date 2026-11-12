@@ -24,7 +24,7 @@ use common::prepare;
 use proptest::prelude::*;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, GraphSpec, Io, Node,
-    Prepare, Reference, Shape, Shapes, Status, Transport, compile,
+    Prepare, Reference, Shape, Shapes, Status, TransportPosition, compile,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
 use tutti_graph::{NodeKey, Topology};
@@ -268,7 +268,7 @@ fn run_scheduled(
     let (mut ed, mut exec): (Editor, Executor) = Editor::with_event_capacity(prep, CAP);
     let mut reference = Reference::new(prep);
     let mut phase_of: Vec<(usize, u32, u64)> = Vec::new();
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     let mut all = phases.to_vec();
     all.push(ph_drain(phases));
     for (k, ph) in all.iter().enumerate() {
@@ -569,7 +569,7 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
         ed.package(plan, delta, units).expect("room in the queue");
         exec.apply_pending();
         ed.collect();
-        exec.process(MAX, &Transport::default(), &[], &mut []);
+        exec.process(MAX, &TransportPosition::default(), &[], &mut []);
         let got: Vec<u32> = inbox
             .lock()
             .unwrap()
@@ -707,9 +707,9 @@ fn feedback_delays_by_its_declared_delay_at_any_max_block() {
             for &n in &schedule {
                 let mut out = vec![0.0f32; n];
                 if executor {
-                    exec.process(n, &Transport::default(), &[], &mut [&mut out[..]]);
+                    exec.process(n, &TransportPosition::default(), &[], &mut [&mut out[..]]);
                 } else {
-                    reference.process(n, &Transport::default(), &[], &mut [&mut out[..]]);
+                    reference.process(n, &TransportPosition::default(), &[], &mut [&mut out[..]]);
                 }
                 audio.extend(out);
             }
@@ -839,9 +839,9 @@ fn wide_fan_in_matches_the_reference() {
         }
         for n in [MAX, 7, MAX, 1, 20] {
             if executor {
-                exec.process(n, &Transport::default(), &[], &mut []);
+                exec.process(n, &TransportPosition::default(), &[], &mut []);
             } else {
-                reference.process(n, &Transport::default(), &[], &mut []);
+                reference.process(n, &TransportPosition::default(), &[], &mut []);
             }
         }
 

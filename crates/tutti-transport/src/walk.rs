@@ -13,14 +13,14 @@
 //! the clock, and it never feeds the beat; the beat is the clock's, derived in
 //! closed form from the segment the walk starts. At each cell boundary
 //! ([`CELL_GRID`] frames, and where a point of the map starts) it asks
-//! `chord_cell` for the cell's tempo and, when that differs from the clock's,
+//! `TempoView::chord_cell` for the cell's tempo and, when that differs from the clock's,
 //! starts a segment on the map's beat. A step cell carries its segment's tempo
 //! to the bit, so a step interior never restarts; there is no hysteresis here
 //! (a map is an immutable value, and a tempo that moved by an ulp moved on
 //! purpose).
 
-use tutti_graph::{Offset, Transport, TransportChanges};
-use tutti_tempo::{CellGrid, Cursor, TempoMap, chord_cell_with};
+use tutti_graph::{Offset, TransportChanges, TransportPosition};
+use tutti_tempo::{CellGrid, TempoMap, TempoView};
 use tutti_types::{Beat, Frame, FrameClock, LoopRange, Samples, first_frame_at_or_after};
 
 /// The one cell grid: a cell is at most this many frames, whatever the block
@@ -52,7 +52,6 @@ pub(crate) struct TempoWalk {
     /// The map frame the playhead is on. Negative before beat 0 (a count-in),
     /// where the first point's tempo holds.
     frame: i64,
-    hint: Cursor,
 }
 
 impl TempoWalk {
@@ -68,30 +67,25 @@ impl TempoWalk {
     pub fn place(&mut self, map: &TempoMap, clock: &mut FrameClock) -> bool {
         let rate = clock.sample_rate();
         let beat = clock.beat();
+        let mut view = map.view(rate);
         self.frame = if beat.get() < 0.0 {
-            first_frame_at_or_after(map.seconds_at_with(beat, &mut self.hint).get() * rate.get())
+            first_frame_at_or_after(view.seconds_at(beat).get() * rate.get())
         } else {
-            map.frame_at_or_after_with(beat, rate, &mut self.hint).get() as i64
+            view.frame_at_or_after(beat).get() as i64
         };
-        self.sync(map, clock, true)
+        self.sync(&mut view, clock, true)
     }
 
     /// Take the tempo of the cell the playhead is on. `exact`: the clock's beat
     /// was just placed and stays; otherwise the playhead is on a cell's first
     /// frame and the segment starts on the map's beat there.
-    fn sync(&mut self, map: &TempoMap, clock: &mut FrameClock, exact: bool) -> bool {
+    fn sync(&mut self, view: &mut TempoView, clock: &mut FrameClock, exact: bool) -> bool {
         let (tempo, beat) = match u64::try_from(self.frame) {
             Ok(f) => {
-                let cell = chord_cell_with(
-                    map,
-                    Frame(f),
-                    CELL_GRID,
-                    clock.sample_rate(),
-                    &mut self.hint,
-                );
+                let cell = view.chord_cell(Frame(f), CELL_GRID);
                 (cell.tempo, Some(cell.beat))
             }
-            Err(_) => (map.points()[0].tempo, None),
+            Err(_) => (view.map().points()[0].tempo, None),
         };
         if tempo == clock.tempo() {
             return false;
@@ -104,10 +98,10 @@ impl TempoWalk {
     }
 
     /// Frames from the playhead to the end of its cell (at least 1).
-    fn frames_to_edge(&mut self, map: &TempoMap, rate: tutti_types::SampleRate) -> usize {
+    fn frames_to_edge(&mut self, view: &mut TempoView) -> usize {
         match u64::try_from(self.frame) {
             Ok(f) => {
-                let cell = chord_cell_with(map, Frame(f), CELL_GRID, rate, &mut self.hint);
+                let cell = view.chord_cell(Frame(f), CELL_GRID);
                 (cell.end.get() - f).max(1) as usize
             }
             Err(_) => self.frame.unsigned_abs() as usize,
@@ -126,10 +120,10 @@ impl TempoWalk {
         looping: Option<LoopRange>,
         stop: bool,
     ) -> (usize, bool) {
-        let rate = clock.sample_rate();
+        let mut view = map.view(clock.sample_rate());
         let (mut rolled, mut changed) = (0, false);
         while rolled < frames {
-            let edge = self.frames_to_edge(map, rate);
+            let edge = self.frames_to_edge(&mut view);
             let chunk = (frames - rolled).min(edge);
             match clock.advance_to_wrap(Samples(chunk), looping) {
                 Some(wrapped) => {
@@ -143,7 +137,7 @@ impl TempoWalk {
                     rolled += chunk;
                     self.frame += chunk as i64;
                     if chunk == edge {
-                        changed |= self.sync(map, clock, false);
+                        changed |= self.sync(&mut view, clock, false);
                     }
                 }
             }
@@ -165,7 +159,7 @@ impl TempoWalk {
         frames: usize,
         looping: Option<LoopRange>,
         cap: usize,
-        transport: impl Fn(&FrameClock) -> Transport,
+        transport: impl Fn(&FrameClock) -> TransportPosition,
     ) -> TempoAhead {
         let (mut walk, mut clock) = (*self, *clock);
         let mut out = TempoAhead::NONE;

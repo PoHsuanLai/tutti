@@ -23,7 +23,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventOut, ForkMode, ForkTarget, IntoNode, Io, Law, MAX_PARAM_PORTS, Node,
     NodeParts, ParamIn, ParamInput, ParamNode, ParamPorts, ParamPortsError, ParamSegment, ParamSet,
-    Prepare, Shape, Status, Transport, param_parts,
+    Prepare, Shape, Status, TransportPosition, param_parts,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, Db, Param, Samples, UnitAddr, UnitParam};
@@ -141,7 +141,7 @@ fn render(ed: &mut Editor, exec: &mut tutti_graph::Executor, frames: usize) -> [
     let mut b = vec![0.0; frames];
     exec.process(
         frames,
-        &Transport::default(),
+        &TransportPosition::default(),
         &[],
         &mut [&mut a[..], &mut b[..]],
     );

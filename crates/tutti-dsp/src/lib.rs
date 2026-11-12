@@ -47,7 +47,9 @@
 //!   both ways.
 //! - **Convolution**: [`Convolver`] over a shared [`IrSpectra`].
 //! - **Delay and modulation** (`delay.rs`, `modulation/`): [`DelayLine`] with an
-//!   [`InterpolationMode`]; [`SweptLines`], the chorus and flanger kernel; the phaser's
+//!   [`InterpolationMode`]; the feedback delay as a family ([`DelayFamily`], run by
+//!   [`DelayRecurrence`], a [`Grows`] family over a [`MaxDelay`], its cross-feedback a
+//!   checked [`Routing`], its time and feedback lanes of the [`Feed`]); [`SweptLines`], the chorus and flanger kernel; the phaser's
 //!   all-pass chain ([`allpass_chain`]).
 //! - **Spatial** (`spatial/`): VBAP ([`SpeakerLayout`], Pulkki's pairs and triplets and
 //!   the gain solve over them, [`SpeakerGeometryError`]; [`VbapKernel`] and
@@ -104,7 +106,11 @@ mod testing;
 pub use balance::balance_gains;
 pub use control::{COEFF_CADENCE, COEFF_INTERVAL, LANES, Ramp};
 pub use convolver::{Convolver, IrSpectra};
-pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
+pub use delay::{
+    ChannelTimes, ChannelTimesError, DELAY_SLEW, DelayCapacity, DelayControls, DelayFamily,
+    DelayLine, DelayMember, DelayRecurrence, InterpolationMode, MAX_DELAY_CHANNELS, MaxDelay,
+    MaxDelayError, Routing, RoutingError, delay_step, fractional_samples,
+};
 pub use dither::sink::{DitherSink, DitherSpec};
 pub use dither::{DitherNoise, DitherShape};
 pub use dynamics::{

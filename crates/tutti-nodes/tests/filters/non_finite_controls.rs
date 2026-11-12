@@ -19,12 +19,13 @@ use tutti_fixtures::Noise;
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, ParamNode, Prepare};
 use tutti_nodes::{
-    CompressorControls, CompressorNode, DelayLineNode, GateControls, GateNode, LadderFilterNode,
-    LadderType, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
+    ChannelTimes, CompressorControls, CompressorNode, DelayControls, DelayFamily, DelayNode,
+    GateControls, GateNode, InterpolationMode, LadderFilterNode, LadderType, MaxDelay,
+    ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
 use tutti_types::{
-    ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, ParamCell, Q, Resonance, SampleRate,
-    Samples, Seconds, UnitParam,
+    BusTopology, ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, ParamCell, Q, Resonance,
+    SampleRate, Samples, Seconds, UnitParam,
 };
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
@@ -152,20 +153,39 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
     survives_node(
         "delay",
         || {
-            let n = DelayLineNode::stereo(
-                Seconds::new(0.1),
-                Seconds::new(0.01),
-                Seconds::new(0.013),
-                Feedback::new(0.5),
-            );
-            n.set_cross_feedback(Feedback::new(0.2));
-            n
+            let family = DelayFamily::new(
+                BusTopology::STEREO,
+                MaxDelay::of(Seconds::new(0.1)),
+                InterpolationMode::Linear,
+            )
+            .with_times(ChannelTimes::each(&[Seconds::new(0.013)]).unwrap())
+            .unwrap();
+            DelayNode::live(
+                family,
+                DelayControls {
+                    time: Seconds::new(0.01),
+                    feedback: Feedback::new(0.5),
+                    cross_feedback: Feedback::new(0.2),
+                },
+            )
         },
         |n| {
             vec![
-                ("delay time", n.delay_time().into(), 0.02),
-                ("feedback", n.feedback().into(), 0.7),
-                ("cross feedback", n.cross_feedback().into(), 0.1),
+                (
+                    "delay time",
+                    n.param_set().cell(UnitParam::DelayTime).unwrap(),
+                    0.02,
+                ),
+                (
+                    "feedback",
+                    n.param_set().cell(UnitParam::Feedback).unwrap(),
+                    0.7,
+                ),
+                (
+                    "cross feedback",
+                    n.param_set().cell(UnitParam::CrossFeedback).unwrap(),
+                    0.1,
+                ),
             ]
         },
     );

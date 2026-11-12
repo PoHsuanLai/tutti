@@ -12,11 +12,12 @@
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, ParamNode, ParamSet};
 use tutti_nodes::{
-    DelayLineNode, InterpolationMode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode,
-    SvfFilterNode, SvfType,
+    DelayControls, DelayNode, InterpolationMode, LadderFilterNode, LadderType, MaxDelay,
+    ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
 use tutti_types::{
-    ChannelLayout, Feedback, Hz, PhaseIncrement, Q, Resonance, SampleRate, Seconds, UnitParam,
+    BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, Q, Resonance, SampleRate, Seconds,
+    UnitParam,
 };
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -139,14 +140,17 @@ fn ladder(layout: ChannelLayout) -> LadderFilterNode<f64> {
     )
 }
 
-fn delay(layout: ChannelLayout) -> DelayLineNode {
-    DelayLineNode::with_channels(
-        layout,
-        Seconds::new(0.5),
-        Seconds::new(0.0123),
-        Feedback::new(0.55),
+fn delay(layout: ChannelLayout) -> DelayNode {
+    DelayNode::new(
+        BusTopology::assumed(layout).expect("a test width is one bus"),
+        MaxDelay::of(Seconds::new(0.5)),
+        InterpolationMode::CubicHermite,
+        DelayControls {
+            time: Seconds::new(0.0123),
+            feedback: Feedback::new(0.55),
+            cross_feedback: Feedback::NONE,
+        },
     )
-    .with_interpolation(InterpolationMode::CubicHermite)
 }
 
 fn chorus(layout: ChannelLayout) -> ModDelayNode {
@@ -205,16 +209,15 @@ fn ladder_channels_are_independent_mono_filters() {
 }
 
 /// An uncoupled delay's channels are independent whether its feedback and time
-/// are held or on lanes, or its feedback is moved between blocks. (The param
-/// set addresses channel 0's time cell alone, so a time written there is not
-/// every channel's; a time lane is.)
+/// are held or on lanes, or its feedback is moved between blocks. (Its channels are
+/// linked in time, so the one time cell is every channel's, as a time lane is.)
 #[test]
 fn delay_channels_are_independent_mono_delays() {
     assert_width_generic("delay held", delay, Moves::held());
     assert_width_generic(
         "delay lanes",
         delay,
-        Moves::lanes(vec![Some(ramp(0.0, 0.9)), Some(ramp(0.002, 0.012))]),
+        Moves::lanes(vec![Some(ramp(0.002, 0.012)), Some(ramp(0.0, 0.9))]),
     );
     assert_width_generic(
         "delay automated",

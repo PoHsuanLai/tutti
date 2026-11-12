@@ -142,7 +142,7 @@ impl SessionNode for tutti_nodes::MultibandCompressorNode {
 // blend is the graph's mix). The convolution reverb has no param addressed (its
 // wet gain is a linear trim with no `UnitParam`).
 param_session_node!(
-    tutti_nodes::DelayLineNode,
+    tutti_nodes::DelayNode,
     tutti_nodes::ModDelayNode,
     tutti_nodes::PhaserNode,
     tutti_nodes::LfoNode,

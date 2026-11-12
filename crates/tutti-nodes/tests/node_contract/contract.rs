@@ -15,7 +15,7 @@
 //! - **CrossoverNode** and **MultibandCompressorNode** — IIR splits with no
 //!   latency: an impulse leaves its first band on its own frame, on the right
 //!   channel.
-//! - **DelayLineNode** — a musical delay is not latency: it declares
+//! - **DelayNode** — a musical delay is not latency: it declares
 //!   none (its dry half is the graph's mix: `reported_latency.rs`).
 //!
 //! A failing row here is a real latency regression: fix the node, never
@@ -26,7 +26,8 @@
 use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_graph::contract_tests;
 use tutti_nodes::{
-    CrossoverNode, DelayLineNode, LimiterControls, LimiterNode, MultibandCompressorNode,
+    CrossoverNode, DelayControls, DelayNode, LimiterControls, LimiterNode, MaxDelay,
+    MultibandCompressorNode,
 };
 use tutti_types::{ChannelLayout, Db, Feedback, Hz, Samples, Seconds};
 
@@ -79,12 +80,15 @@ fn stereo_limiter_row() -> Row {
 /// in `node_mix.rs`.) A `tutti_graph::Node`, so the row runs it as itself.
 fn delay_line_row() -> Row {
     Row::new(
-        "DelayLineNode (zero delay)",
+        "DelayNode (zero delay)",
         || {
-            Box::new(DelayLineNode::new(
-                Seconds::new(1.0_f64),
-                Seconds::new(0.0_f64),
-                Feedback::new(0.0_f32),
+            Box::new(DelayNode::mono(
+                MaxDelay::of(Seconds::new(1.0_f64)),
+                DelayControls {
+                    time: Seconds::new(0.0_f64),
+                    feedback: Feedback::new(0.0_f32),
+                    ..DelayControls::DEFAULT
+                },
             ))
         },
         impulse(0),

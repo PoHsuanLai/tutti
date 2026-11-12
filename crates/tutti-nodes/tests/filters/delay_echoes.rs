@@ -7,18 +7,29 @@
 
 use tutti_fixtures::signal::{impulse, sine};
 use tutti_graph::contract::{drive, prepared};
-use tutti_nodes::{DelayLineNode, InterpolationMode};
-use tutti_types::{Amplitude, ChannelLayout, Feedback, Hz, SampleRate, Samples, Seconds};
+use tutti_nodes::{DelayControls, DelayFamily, DelayNode, InterpolationMode, MaxDelay, Routing};
+use tutti_types::{Amplitude, BusTopology, Feedback, Hz, SampleRate, Samples, Seconds};
 
 const SR: SampleRate = SampleRate(1_024.0);
+/// A second of line: every time here is a few frames of it.
+const MAX: MaxDelay = MaxDelay::of(Seconds(1.0));
 
 /// `frames` frames over `SR`, as a time.
 fn frames(frames: f64) -> Seconds {
     Seconds::new(frames / SR.get())
 }
 
+/// A delay's controls: `time`, the feedback and the cross-feedback.
+fn controls(time: Seconds, feedback: f32, cross: f32) -> DelayControls {
+    DelayControls {
+        time,
+        feedback: Feedback::new(feedback),
+        cross_feedback: Feedback::new(cross),
+    }
+}
+
 /// `node` over `inputs`, in ragged blocks.
-fn render(node: DelayLineNode, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+fn render(node: DelayNode, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
     let mut node = prepared(node, SR, 64);
     let len = inputs[0].len();
     let mut out: Vec<Vec<f32>> = vec![Vec::new(); inputs.len()];
@@ -41,7 +52,7 @@ fn render(node: DelayLineNode, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
 #[test]
 fn an_impulse_echoes_at_the_delay_scaled_by_the_feedback_each_period() {
     let (d, g) = (16usize, 0.5f32);
-    let node = DelayLineNode::new(Seconds::new(1.0), frames(d as f64), Feedback::new(g));
+    let node = DelayNode::mono(MAX, controls(frames(d as f64), g, 0.0));
     let out = render(node, &[impulse(Samples(d * 8 + 5))]);
     for (i, &y) in out[0].iter().enumerate() {
         let want = if i >= d && i % d == 0 {
@@ -71,8 +82,12 @@ fn a_fractional_delay_is_a_sine_delayed_by_that_time_within_the_interpolators_er
         (InterpolationMode::Linear, w * w / 8.0 * 1.05),
         (InterpolationMode::CubicHermite, w * w * w / 8.0),
     ] {
-        let node = DelayLineNode::new(Seconds::new(1.0), frames(delay), Feedback::new(0.0))
-            .with_interpolation(mode);
+        let node = DelayNode::new(
+            BusTopology::MONO,
+            MAX,
+            mode,
+            controls(frames(delay), 0.0, 0.0),
+        );
         let out = render(node, std::slice::from_ref(&x));
         let worst = (20..512)
             .map(|n| (f64::from(out[0][n]) - (w * (n as f64 - delay)).sin()).abs())
@@ -96,18 +111,12 @@ fn a_fractional_delay_is_a_sine_delayed_by_that_time_within_the_interpolators_er
 #[test]
 fn a_ring_routed_echo_steps_to_the_next_channel_scaled_by_the_cross_feedback() {
     let (n, d, amount) = (6usize, 8usize, 0.5f32);
-    let mut ring = vec![0.0f32; n * n];
-    for c in 0..n {
-        ring[c * n + (c + n - 1) % n] = 1.0; // channel c is fed by channel c - 1
-    }
-    let node = DelayLineNode::with_channels(
-        ChannelLayout::try_from(n).expect("a small width"),
-        Seconds::new(1.0),
-        frames(d as f64),
-        Feedback::new(0.0),
-    )
-    .with_cross_feedback_matrix(&ring);
-    node.set_cross_feedback(Feedback::new(amount));
+    let bus = BusTopology::assumed(6u16.into()).expect("six channels are one bus");
+    // Channel c is fed by channel c - 1.
+    let family = DelayFamily::new(bus, MAX, InterpolationMode::Linear)
+        .with_routing(Routing::ring(bus))
+        .expect("a routing for the family's bus");
+    let node = DelayNode::live(family, controls(frames(d as f64), 0.0, amount));
     // Stops before the echo wraps round to channel 0.
     let mut inputs = vec![vec![0.0; d * (n + 1)]; n];
     inputs[0][0] = 1.0;
@@ -134,13 +143,7 @@ fn a_ring_routed_echo_steps_to_the_next_channel_scaled_by_the_cross_feedback() {
 #[test]
 fn the_stereo_cross_feedback_ping_pongs_the_echo() {
     let (d, amount) = (8usize, 0.5f32);
-    let node = DelayLineNode::stereo(
-        Seconds::new(1.0),
-        frames(8.0),
-        frames(8.0),
-        Feedback::new(0.0),
-    );
-    node.set_cross_feedback(Feedback::new(amount));
+    let node = DelayNode::stereo(MAX, controls(frames(8.0), 0.0, amount));
     let mut left = vec![0.0; d * 5];
     left[0] = 1.0;
     let out = render(node, &[left.clone(), vec![0.0; left.len()]]);

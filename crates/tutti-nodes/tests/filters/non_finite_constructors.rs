@@ -8,7 +8,7 @@ use tutti_types::MaxBlock;
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::*;
-use tutti_types::{ChannelLayout, Db, Hz, Q, SampleRate, Samples, Seconds};
+use tutti_types::{BusTopology, ChannelLayout, Db, Feedback, Hz, Q, SampleRate, Samples, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 // A huge finite value (1e30) is left out on purpose: it is a valid number that
@@ -201,18 +201,37 @@ fn sweep() {
                 ),
             )
         }));
-        add(probe("delay max", b, || {
-            Box::new(DelayLineNode::new(s(b), s(0.1), Feedback::new(0.3)))
-        }));
+        // The longest delay is a `MaxDelay`, which refuses a non-finite, negative or
+        // huge value by type (`a_delay_with_an_unusable_maximum_is_refused_and_the_longest_builds`).
         add(probe("delay time", b, || {
-            Box::new(DelayLineNode::new(s(0.5), s(b), Feedback::new(0.3)))
+            Box::new(DelayNode::mono(
+                MaxDelay::of(s(0.5)),
+                DelayControls {
+                    time: s(b),
+                    feedback: Feedback::new(0.3),
+                    cross_feedback: Feedback::NONE,
+                },
+            ))
         }));
+        // A channel's own time is a `ChannelTimes`, which refuses a time that is not
+        // finite or is negative; the delay falls back to linked channels.
         add(probe("delay stereo", b, || {
-            Box::new(DelayLineNode::stereo(
-                s(b),
-                s(b),
-                s(0.1),
-                Feedback::new(0.3),
+            let family = DelayFamily::new(
+                BusTopology::STEREO,
+                MaxDelay::of(s(0.5)),
+                InterpolationMode::Linear,
+            );
+            let family = match ChannelTimes::each(&[s(b)]) {
+                Ok(times) => family.with_times(times).unwrap(),
+                Err(_) => family,
+            };
+            Box::new(DelayNode::live(
+                family,
+                DelayControls {
+                    time: s(b),
+                    feedback: Feedback::new(0.3),
+                    cross_feedback: Feedback::new(0.3),
+                },
             ))
         }));
     }

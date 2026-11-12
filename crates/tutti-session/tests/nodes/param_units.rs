@@ -67,7 +67,9 @@ units! {
             Cutoff => Hz, Threshold => Db, Knee => Db, Ratio => CompressionRatio,
             Attack => Seconds, Release => Seconds, GainDb => Db, Bypass => bool, Solo => bool
         }
-        tutti_nodes::DelayLineNode { Feedback => Feedback, DelayTime => Seconds }
+        tutti_nodes::DelayNode {
+            DelayTime => Seconds, Feedback => Feedback, CrossFeedback => Feedback
+        }
         tutti_nodes::ModDelayNode { Rate => Hz, Depth => Seconds, Feedback => Feedback }
         tutti_nodes::PhaserNode { Rate => Hz, Depth => Depth, Feedback => Feedback }
         tutti_nodes::LfoNode { Depth => Depth, Rate => Hz }

@@ -232,34 +232,56 @@ impl ChannelState {
             index: rpn.index(),
             value,
         };
-        if self.bend.range != fresh.bend.range {
-            // MSB semitones, LSB cents: `bend_sensitivity`'s inverse.
-            let hundredths = (self.bend.range.get() * 100.0).round().clamp(0.0, 12_799.0) as u32;
-            let value = (hundredths / 100) << 25 | (hundredths % 100) << 18;
-            emit(registered(Rpn::PITCH_BEND_SENSITIVITY, value));
+        for rpn in Self::REGISTERED {
+            let (now, then) = (self.registered_word(rpn), fresh.registered_word(rpn));
+            if let (Some(value), true) = (now, now != then) {
+                emit(registered(rpn, value));
+            }
         }
-        if self.bend.fine != fresh.bend.fine {
-            let fourteen = ((self.bend.fine.get() + 1.0) * 8192.0)
-                .round()
-                .clamp(0.0, 16_383.0);
-            emit(registered(
-                Rpn::CHANNEL_FINE_TUNING,
-                (fourteen as u32) << 18,
-            ));
-        }
-        if self.bend.coarse != fresh.bend.coarse {
-            let msb = (self.bend.coarse.get() + 64.0).round().clamp(0.0, 127.0);
-            emit(registered(Rpn::CHANNEL_COARSE_TUNING, (msb as u32) << 25));
-        }
-        if self.modulation_range != fresh.modulation_range {
-            // MSB semitones, LSB 100/128 cent: `set_modulation_range`'s inverse.
-            let cents = self.modulation_range.get().clamp(0.0, 12_700.0);
-            let semitones = (cents / 100.0).floor();
-            let eighths = ((cents - semitones * 100.0) * 128.0 / 100.0)
-                .round()
-                .min(127.0);
-            let value = (semitones as u32) << 25 | (eighths as u32) << 18;
-            emit(registered(Rpn::MODULATION_DEPTH_RANGE, value));
+    }
+
+    /// The Registered Controllers this state holds: RPN 0, 1, 2 and 5.
+    const REGISTERED: [Rpn; 4] = [
+        Rpn::PITCH_BEND_SENSITIVITY,
+        Rpn::CHANNEL_FINE_TUNING,
+        Rpn::CHANNEL_COARSE_TUNING,
+        Rpn::MODULATION_DEPTH_RANGE,
+    ];
+
+    /// The data word [`Voicing::step`](crate::Voicing::step) would read `rpn`'s
+    /// value from, so that the state is the value a Registered Controller set
+    /// (the inverse of what it reads), or `None` for a parameter this state
+    /// does not hold. A word carries only the resolution the parameter has:
+    /// the bits below it are zero (M2-104 section 7.4.7: they are "undefined
+    /// and shall be ignored").
+    pub(crate) fn registered_word(&self, rpn: Rpn) -> Option<u32> {
+        match rpn {
+            Rpn::PITCH_BEND_SENSITIVITY => {
+                // MSB semitones, LSB cents: `bend_sensitivity`'s inverse.
+                let hundredths =
+                    (self.bend.range.get() * 100.0).round().clamp(0.0, 12_799.0) as u32;
+                Some((hundredths / 100) << 25 | (hundredths % 100) << 18)
+            }
+            Rpn::CHANNEL_FINE_TUNING => {
+                let fourteen = ((self.bend.fine.get() + 1.0) * 8192.0)
+                    .round()
+                    .clamp(0.0, 16_383.0);
+                Some((fourteen as u32) << 18)
+            }
+            Rpn::CHANNEL_COARSE_TUNING => {
+                let msb = (self.bend.coarse.get() + 64.0).round().clamp(0.0, 127.0);
+                Some((msb as u32) << 25)
+            }
+            Rpn::MODULATION_DEPTH_RANGE => {
+                // MSB semitones, LSB 100/128 cent: `set_modulation_range`'s inverse.
+                let cents = self.modulation_range.get().clamp(0.0, 12_700.0);
+                let semitones = (cents / 100.0).floor();
+                let eighths = ((cents - semitones * 100.0) * 128.0 / 100.0)
+                    .round()
+                    .min(127.0);
+                Some((semitones as u32) << 25 | (eighths as u32) << 18)
+            }
+            _ => None,
         }
     }
 

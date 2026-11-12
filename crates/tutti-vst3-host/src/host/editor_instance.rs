@@ -155,8 +155,16 @@ impl EditorWindow for Vst3Editor {
         EditorWindow::close_editor(&mut self.inner, main);
     }
 
-    fn editor_idle(&mut self, _main: &MainThread) {
-        // VST3 editors don't have explicit idle.
+    /// On Linux the host owns the plugin's run loop (`IRunLoop`: its timers and
+    /// file descriptors), and this editor-only instance is the one a served
+    /// plugin's window lives in, so it is pumped here; Windows and macOS have
+    /// the OS's.
+    fn editor_idle(&mut self, main: &MainThread) {
+        EditorWindow::editor_idle(&mut self.inner, main);
+    }
+
+    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+        EditorWindow::set_editor_scale(&mut self.inner, main, scale)
     }
 
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {

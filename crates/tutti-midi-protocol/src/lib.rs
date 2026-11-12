@@ -98,6 +98,7 @@
 
 #![forbid(unsafe_code)]
 
+mod flex;
 mod midi1;
 mod mpe;
 mod narrow;
@@ -108,6 +109,7 @@ mod translator;
 mod unit;
 mod voice;
 
+pub use flex::{flex_tempo, flex_time_signature};
 pub use midi1::{NoMidi1Form, midi1, narrow};
 pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};

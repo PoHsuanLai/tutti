@@ -15,6 +15,7 @@
 use tutti_midi_device::{
     CiCategories, CiHeader, CiMessage, Decoded, DiscoveryData, MaxSysexSize, Muid,
 };
+use tutti_ump::ManufacturerId;
 use tutti_ump::{
     DeviceIdentity, Message, Midi1Parser, MidiGroup, SysexAssembler, SysexStep, U7, Ump, frame,
 };
@@ -29,7 +30,7 @@ fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
         header: CiHeader::new(Muid::new(0x1234).expect("a valid MUID")),
         data: DiscoveryData {
             identity: DeviceIdentity {
-                manufacturer: [0x00, 0x21, 0x09].map(U7::of),
+                manufacturer: ManufacturerId::of(0xA109),
                 family: [0x42, 0x00].map(U7::of),
                 model: [0x07, 0x00].map(U7::of),
                 revision: [1, 2, 3, 4].map(U7::of),

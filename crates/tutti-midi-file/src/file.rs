@@ -20,16 +20,16 @@ use std::ops::{Add, AddAssign, Sub};
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_midi_protocol::channel_voice;
+use tutti_midi_protocol::{channel_voice, flex_tempo};
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{
-    Address, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Sysex7Packets,
-    U7, Ump, Unknown, Voice2,
+    Address, Flex, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
+    Sysex7Packets, U7, Ump, Unknown, Voice2,
 };
 
 use crate::MidiFileKind;
-use crate::{ConfigError, Error, OutOfOrder, Refusal, Result, clip_file, flex, smf};
+use crate::{ConfigError, Error, OutOfOrder, Refusal, Result, clip_file, smf};
 
 mod to_clip;
 
@@ -1131,6 +1131,15 @@ fn refuses(container: Container, event: &FileEvent) -> Option<Refusal> {
     }
 }
 
+/// The tempo of a Flex Set Tempo message, `None` for any other message or a
+/// field of `0` (M2-104 section 7.5.3).
+fn set_tempo(message: &Message) -> Option<Bpm> {
+    match message {
+        Message::Flex(_, Flex::SetTempo(field)) => flex_tempo(*field),
+        _ => None,
+    }
+}
+
 /// The tempo map of one timeline: `tracks`' Set Tempo events as steps.
 fn tempo_map(
     container: Container,
@@ -1147,7 +1156,7 @@ fn tempo_map(
         // overrides it).
         for (_, event) in &track.header {
             if let (Container::Clip, FileEvent::Message(message)) = (container, event)
-                && let Some(bpm) = flex::tempo(message)
+                && let Some(bpm) = set_tempo(message)
             {
                 changes.push((Tick(0), bpm));
             }
@@ -1155,7 +1164,7 @@ fn tempo_map(
         for (tick, event) in &track.events {
             let bpm = match (container, event) {
                 (Container::Smf(_), FileEvent::Meta(meta)) => meta.bpm(),
-                (Container::Clip, FileEvent::Message(message)) => flex::tempo(message),
+                (Container::Clip, FileEvent::Message(message)) => set_tempo(message),
                 _ => None,
             };
             if let Some(bpm) = bpm {

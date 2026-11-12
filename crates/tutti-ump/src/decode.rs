@@ -27,7 +27,7 @@ use crate::message::{
     StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System, TimeSignature, UiHint,
     UmpVersion, Unknown, Utility, Voice1, Voice2,
 };
-use crate::{CCNumber, MidiChannel, MidiGroup, NoteVelocity, Ump};
+use crate::{CCNumber, ManufacturerId, MidiChannel, MidiGroup, NoteVelocity, Ump};
 
 impl Ump {
     /// Decodes this packet into the [`Message`] it holds.
@@ -244,7 +244,7 @@ fn data128(w: [u32; 4]) -> Option<Data128> {
             chunk_bytes: w[0] as u16,
             chunks: (w[1] >> 16) as u16,
             chunk: w[1] as u16,
-            manufacturer: (w[2] >> 16) as u16,
+            manufacturer: ManufacturerId::new((w[2] >> 16) as u16)?,
             device: w[2] as u16,
             sub_id_1: (w[3] >> 16) as u16,
             sub_id_2: w[3] as u16,
@@ -544,7 +544,11 @@ fn stream(w: [u32; 4]) -> Option<Stream> {
             tx_jr: flag(w[1], 0),
         })),
         0x02 if complete => Some(Stream::DeviceIdentity(DeviceIdentity {
-            manufacturer: [u7(w[1], 2), u7(w[1], 1), u7(w[1], 0)],
+            manufacturer: ManufacturerId::from_sysex_bytes([
+                u7(w[1], 2),
+                u7(w[1], 1),
+                u7(w[1], 0),
+            ])?,
             family: [u7(w[2], 3), u7(w[2], 2)],
             model: [u7(w[2], 1), u7(w[2], 0)],
             revision: [u7(w[3], 3), u7(w[3], 2), u7(w[3], 1), u7(w[3], 0)],

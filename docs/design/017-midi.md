@@ -3315,3 +3315,58 @@ such as reassembled SysEx; that is decided when that code is written.
 - **Not built:** MIDI Time Code out, MIDI-CI and profiles beyond the codec. The
   `s.midi().input(target)` that replaces `live_input` is built (Core's S4, step 12). The acceptance program is
   `crates/tutti/examples/midi_all.rs`, run as a test in CI.
+
+### L7: consumers of decoded messages: as built
+
+What the decoded messages are consumed by, one item each.
+
+- **Flex text, read.** `tutti_ump::FlexTextAssembler<B>` is `flex_text_packets`' reader
+  (`new(buf, max_text, lanes)`, `room_for`, `push(Ump) -> FlexTextStep`, `lost_tail`, `reset`,
+  `dropped`, `invalid`). It lends the finished text (`FlexText { group, address, kind, text }`)
+  from the `push` that completed it, not in a block as `SysexAssembler` does: a Flex text is
+  complete at the `push` of its End or Complete packet and has no caller that holds many at
+  once. One message is open per Group, up to `lanes` of them (a slot of `max_text` bytes each);
+  M2-104 §7.5.2 lets only that message's Continue packets, System Real Time and JR Clock
+  between its Start and End, so any other UMP of the Group, or a packet of another message
+  (address or Table 16 status), drops it, counted once. Text is UTF-8 without a BOM (§7.5.9),
+  checked when whole (a packet may end inside a character); `0x00` is padding, may occur only
+  in a Complete or End packet and everything after it in the packet is `0x00`, and a message
+  that breaks it is not delivered and counted in `invalid`, once. The all-zero Complete packet
+  of Lyrics and Ruby (a melisma, §7.5.10.1) is an empty text. **A spec contradiction, read as
+  7.5.9:** §7.5.10 says a `0x00` in a Continue packet is a melisma, which §7.5.9 and the Start
+  rule beside it exclude; the assembler refuses it. Over capacity drops whole and skips to the
+  End. A Continue or End with no open message costs nothing.
+- **Relative RPN and NRPN.** `tutti_voicing::Voicing::step` applies a
+  `Voice2::RelativeRegistered` (§7.4.8) to the channel state it already keeps for RPN 0, 1, 2
+  and 5: the data word the state reads back (`ChannelState::registered_word`, which `chase`
+  now also writes with: one inverse, not two), plus the two's complement delta, **saturating**
+  at `0` and `u32::MAX` (the spec says nothing about the ends; a wrap would turn a nudge up
+  from the top into the bottom), then the same path as an absolute `Registered`. A
+  parameter the channel does not hold (any other RPN, the per-note sensitivity included) and
+  every Relative Assignable have no value to add to, and nothing here takes an NRPN, so both
+  are ignored; a consumer that holds NRPN values does its own add. A delta below a
+  parameter's resolution is lost with the bits the spec calls undefined.
+- **The 16-bit manufacturer id.** `tutti_ump::ManufacturerId` (§7.10): `new -> Option`
+  refuses a word that is neither `0x00xx` nor `0x8000 | xx << 8 | yy` with 7-bit bytes, `of`,
+  `get`, `TryFrom<u16>` (`NotManufacturerId`), serde through `TryFrom`. `from_sysex_bytes(
+  [U7; 3]) -> Option` and `sysex_bytes()` are the spec's conversion code and the `xx 00 00` /
+  `00 xx yy` of a Device Inquiry reply (§7.1.3); a one-byte id followed by a non-zero byte is
+  refused, because the code would drop that byte. `0x0000` (Reserved) and the three-byte `00 00
+  00` (`0x8000`) share three zero bytes and read as `0x8000`. `DeviceIdentity::manufacturer`
+  and `MixedDataHeader::manufacturer` are this type, so the decoder refuses a Device Identity
+  or Mixed Data header whose id is no id (it was three loose bytes and a bare `u16`), and the
+  MIDI-CI Discovery codec uses the same conversion.
+- **Flex tempo and time signature, as unit values.** `tutti_midi_protocol::flex_tempo(u32) ->
+  Option<Bpm>` (`6e9 / field`, `0` is no tempo; it was private to `tutti-midi-file`, which now
+  calls it) and `flex_time_signature(tutti_ump::TimeSignature) -> Option<tutti_types::TimeSignature>`
+  (numerator is the beats per bar, the denominator field an exponent of 2 with `0` non-standard,
+  anything the meter's `BeatsPerBar` and `NoteValue` refuse is `None`, never clamped; the
+  1/32-notes field does not change the meter and is not read).
+- **Not built: the transport's follow mode.** There is none. `tutti-transport` follows only
+  its own published `TempoMap` (`FrameClock::follow`), and the inbound sync decoders
+  (`MidiClockDecoder::tempo_bpm`, `MtcDecoder`) have no consumer in the session either. A tempo
+  or a meter that arrives live needs the transport to take a tempo from outside while a
+  `TempoMap` is published (an edit of the map on the fly, at the frame of the message and
+  at a bar line for a time signature, §7.5.3 and §7.5.4), which is doc 020's and the Core
+  session's, and a policy of the session (whether to follow, which Group, what a
+  clock master does with a Set Tempo it hears). The values above are what that wiring reads.

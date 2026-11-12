@@ -743,30 +743,21 @@ impl Voicing {
             // the Modulation Depth Range (CA-026: RPN 5). The data is the MIDI
             // 1.0 pair zero-extended (M2-115 section 4.1): `MSB << 7 | LSB` in
             // the top 14 bits.
-            Voice2::Registered { bank, index, value } => match Rpn::new(bank, index) {
-                Rpn::PITCH_BEND_SENSITIVITY => {
-                    let range = bend_sensitivity(value);
-                    self.bend(channel, |b| b.range = range);
+            Voice2::Registered { bank, index, value } => {
+                self.registered(channel, Rpn::new(bank, index), value, message);
+            }
+            // A change of the same parameters (M2-104 section 7.4.8): a two's
+            // complement delta added to the value now held. The spec does not
+            // say what happens at the ends of the range; this core saturates, so
+            // a nudge up from the top stays at the top instead of wrapping to the
+            // bottom. A parameter the channel state does not hold has no value
+            // to add to, and the message is ignored.
+            Voice2::RelativeRegistered { bank, index, delta } => {
+                let rpn = Rpn::new(bank, index);
+                if let Some(now) = self.channels[channel.index()].registered_word(rpn) {
+                    self.registered(channel, rpn, now.saturating_add_signed(delta), message);
                 }
-                Rpn::CHANNEL_FINE_TUNING => {
-                    // 14 bits centred at 0x2000, a semitone over the half range.
-                    let fine = Semitones((value >> 18) as f32 / 8192.0 - 1.0);
-                    self.bend(channel, |b| b.fine = fine);
-                }
-                Rpn::CHANNEL_COARSE_TUNING => {
-                    // The MSB, centred at 64, in semitones.
-                    let coarse = Semitones((value >> 25) as f32 - 64.0);
-                    self.bend(channel, |b| b.coarse = coarse);
-                }
-                Rpn::MODULATION_DEPTH_RANGE => {
-                    self.channels[channel.index()].set_modulation_range(value);
-                }
-                _ => {
-                    let address = Self::address(channel);
-                    self.events
-                        .extend_from_slice(self.per_note.step(address, message));
-                }
-            },
+            }
             // The per-note controllers, Per-Note Management and RPN 0/7 are
             // `PerNoteState`'s; this core carries what it says to the voices.
             Voice2::RegisteredPerNote { .. }
@@ -783,6 +774,35 @@ impl Voicing {
         self.deliver();
         self.settle();
         &self.out
+    }
+
+    /// Carries out a Registered Controller's data word on `channel`; `message`
+    /// is what a parameter that is the per-note state's is read from.
+    fn registered(&mut self, channel: MidiChannel, rpn: Rpn, value: u32, message: Voice2) {
+        match rpn {
+            Rpn::PITCH_BEND_SENSITIVITY => {
+                let range = bend_sensitivity(value);
+                self.bend(channel, |b| b.range = range);
+            }
+            Rpn::CHANNEL_FINE_TUNING => {
+                // 14 bits centred at 0x2000, a semitone over the half range.
+                let fine = Semitones((value >> 18) as f32 / 8192.0 - 1.0);
+                self.bend(channel, |b| b.fine = fine);
+            }
+            Rpn::CHANNEL_COARSE_TUNING => {
+                // The MSB, centred at 64, in semitones.
+                let coarse = Semitones((value >> 25) as f32 - 64.0);
+                self.bend(channel, |b| b.coarse = coarse);
+            }
+            Rpn::MODULATION_DEPTH_RANGE => {
+                self.channels[channel.index()].set_modulation_range(value);
+            }
+            _ => {
+                let address = Self::address(channel);
+                self.events
+                    .extend_from_slice(self.per_note.step(address, message));
+            }
+        }
     }
 
     /// A Control Change the instrument does not own: the channel's 14-bit
@@ -2399,6 +2419,72 @@ mod tests {
                 Semitones(retunes(&up)[0].1)
             );
         }
+    }
+
+    fn relative(rpn: u8, delta: i32) -> Voice2 {
+        Voice2::RelativeRegistered {
+            bank: U7::of(0),
+            index: U7::of(rpn),
+            delta,
+        }
+    }
+
+    /// M2-104 section 7.4.8: a Relative Registered Controller adds its two's
+    /// complement delta to the value the parameter holds. RPN 0 holds 2
+    /// semitones until told otherwise, its semitones field is the top 7 bits,
+    /// so `+3 << 25` makes 5 and `-1 << 25` of that makes 4.
+    #[test]
+    fn a_relative_registered_controller_adds_to_the_held_value() {
+        let mut s = Sim::new(POLY);
+        s.send(1, relative(0, 3 << 25), &One);
+        let up = s.send(1, bend(u32::MAX), &One);
+        assert!((retunes(&up)[0].1 - 5.0).abs() < 1e-5, "{up:?}");
+        s.send(1, relative(0, -(1 << 25)), &One);
+        let up = s.send(1, bend(u32::MAX), &One);
+        assert!((retunes(&up)[0].1 - 4.0).abs() < 1e-5, "{up:?}");
+        // Another channel holds its own.
+        let other = s.send(2, bend(u32::MAX), &One);
+        assert!((retunes(&other)[0].1 - 2.0).abs() < 1e-5);
+    }
+
+    /// The spec is silent at the ends of the range; this core saturates: a
+    /// delta past the top of the 32-bit word stays at the top (RPN 2, coarse
+    /// tuning, is the MSB centred at 64: its top is +63 semitones) and one
+    /// below zero stays at zero (-64).
+    #[test]
+    fn a_relative_delta_saturates_at_the_ends_of_the_word() {
+        let mut s = Sim::new(POLY);
+        s.send(0, relative(2, i32::MAX), &One);
+        s.send(0, relative(2, i32::MAX), &One);
+        assert_eq!(
+            s.core
+                .channel(MidiChannel::of(0))
+                .registered_word(Rpn::CHANNEL_COARSE_TUNING),
+            Some(127 << 25)
+        );
+        s.send(0, relative(2, i32::MIN), &One);
+        s.send(0, relative(2, i32::MIN), &One);
+        s.send(0, relative(2, i32::MIN), &One);
+        assert_eq!(
+            s.core
+                .channel(MidiChannel::of(0))
+                .registered_word(Rpn::CHANNEL_COARSE_TUNING),
+            Some(0)
+        );
+    }
+
+    /// A parameter the channel does not hold has no value to add to, and a
+    /// Relative Assignable Controller has no target here: neither does anything.
+    #[test]
+    fn a_relative_controller_with_nothing_to_change_is_ignored() {
+        let mut s = Sim::new(POLY);
+        assert!(s.send(0, relative(9, 1 << 25), &One).is_empty());
+        let nrpn = Voice2::RelativeAssignable {
+            bank: U7::of(0),
+            index: U7::of(0),
+            delta: 1 << 25,
+        };
+        assert!(s.send(0, nrpn, &One).is_empty());
     }
 
     /// MIDI 1.0 Pitch Bend (Est): the wheel is a channel's, and full travel

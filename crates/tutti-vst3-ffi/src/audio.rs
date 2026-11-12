@@ -196,7 +196,7 @@ impl Shared {
 }
 
 /// The audio-thread half of a plugin, taken once from
-/// [`Plugin::audio_side`](crate::Plugin::audio_side), which hands it out only
+/// `Plugin::audio_side`, which hands it out only
 /// for a plugin that is set up and active.
 ///
 /// It names no main-thread entry, so a processor that owns it cannot make a

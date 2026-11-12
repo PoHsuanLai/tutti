@@ -39,6 +39,10 @@ mod plugin_modulation;
 // `plugin-server`, by design.
 #[cfg(all(feature = "export", feature = "clap"))]
 mod export_fork_plugin;
+// The main-thread view: editors serviced by its update, the sizes they ask
+// for, and the graveyard it empties; a fake plugin with an editor.
+#[cfg(feature = "plugin")]
+mod main_view;
 // Work handed to the main thread runs on the session's update.
 #[cfg(feature = "plugin")]
 mod deferred_main;

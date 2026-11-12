@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use tutti_ump::ManufacturerId;
 use tutti_ump::{
     DeviceIdentity, Direction as BlockDirection, FirstGroup, Form, FunctionBlockId,
     FunctionBlockInfo, GroupSpan, Message, Midi1Port, Protocol, Stream, StreamConfig, U7, UiHint,
@@ -56,7 +57,7 @@ fn device() -> Endpoint {
     let u = |n| U7::new(n).unwrap();
     Endpoint::new(FULL)
         .with_identity(DeviceIdentity {
-            manufacturer: [u(0), u(0x21), u(0x09)],
+            manufacturer: ManufacturerId::of(0xA109),
             family: [u(1), u(2)],
             model: [u(3), u(4)],
             revision: [u(5), u(6), u(7), u(8)],

@@ -86,7 +86,7 @@ impl BusBuffers {
     ///
     /// [`Vst3Error::InvalidArgument`] if a bus is wider than `u16::MAX`
     /// channels, which
-    /// [`Plugin::audio_bus_channels`](crate::Plugin::audio_bus_channels) never
+    /// `Plugin::audio_bus_channels` never
     /// reports.
     pub fn new(
         width: SampleWidth,

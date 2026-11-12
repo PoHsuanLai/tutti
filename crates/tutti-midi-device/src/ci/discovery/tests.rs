@@ -23,7 +23,7 @@ fn is_malformed(body: &[u8], is_reply: bool) -> bool {
 fn sample_discovery() -> DiscoveryData {
     DiscoveryData {
         identity: DeviceIdentity {
-            manufacturer: [0x00, 0x21, 0x09].map(U7::of),
+            manufacturer: ManufacturerId::of(0xA109),
             family: [0x34, 0x24].map(U7::of),
             model: [0x55, 0x00].map(U7::of),
             revision: [1, 2, 3, 4].map(U7::of),

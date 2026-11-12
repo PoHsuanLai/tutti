@@ -228,6 +228,14 @@ impl EditorWindow for ClapEditor {
         self.inner.editor_capabilities(main)
     }
 
+    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+        match self.inner.rescale_editor(main, scale) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(PluginError::Editor(EditorError::ScaleUnsupported)),
+            Err(e) => Err(editor_error(format!("CLAP rescale_editor failed: {e}"))),
+        }
+    }
+
     fn set_editor_size(
         &mut self,
         main: &MainThread,

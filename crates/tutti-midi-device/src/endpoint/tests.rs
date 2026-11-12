@@ -1,3 +1,4 @@
+use tutti_ump::ManufacturerId;
 use tutti_ump::{
     BlockFilter, BlockSelect, DeviceIdentity, Direction as BlockDirection, DiscoveryFilter,
     FirstGroup, FunctionBlockId, GroupSpan, Message, Midi1Port, Protocol, Stream, StreamConfig, U7,
@@ -38,7 +39,7 @@ fn block(n: u8, first: u8, span: u8) -> FunctionBlockBuilder {
 fn identity() -> DeviceIdentity {
     let u = |n| U7::new(n).unwrap();
     DeviceIdentity {
-        manufacturer: [u(0), u(0x21), u(0x09)],
+        manufacturer: ManufacturerId::of(0xA109),
         family: [u(1), u(2)],
         model: [u(3), u(4)],
         revision: [u(5), u(6), u(7), u(8)],

@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl Plugin {
+impl Parts {
     // ── Buses and the processor's setup ──────────────────────────────────────
 
     /// `IComponent::getBusCount`.

@@ -5,7 +5,6 @@
 mod clip_file;
 mod config;
 mod file;
-mod flex;
 mod kind;
 mod smf;
 

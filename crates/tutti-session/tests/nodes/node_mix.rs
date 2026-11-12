@@ -189,9 +189,9 @@ fn a_missing_node_and_a_bad_mix_are_refused() {
         Err(MixError::NoSuchNode { node: r.halve })
     );
     assert_eq!(
-        r.s.graph_ref().mix(r.halve).unwrap(),
-        Mix::WET,
-        "a removed node's mix goes with it"
+        r.s.graph_ref().mix(r.halve).unwrap_err().node(),
+        r.halve,
+        "a removed node's mix goes with it, and asking for it is refused"
     );
 }
 

@@ -320,7 +320,10 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::{ParamRef, RouteSpec};
     #[cfg(all(feature = "session", feature = "plugin"))]
-    pub use tutti_session::{Plugin, PluginChange, PluginEvent, PluginLoadRequest};
+    pub use tutti_session::{
+        Plugin, PluginChange, PluginEvent, PluginLoadRequest, PortCounts, RecoveryFailure,
+        ReloadCause,
+    };
     #[cfg(feature = "midi")]
     pub use tutti_ump::{Message, NoteNumber, Ump};
 }

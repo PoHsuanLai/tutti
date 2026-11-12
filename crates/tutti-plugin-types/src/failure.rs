@@ -2,8 +2,10 @@
 //!
 //! The bridge latches one at the site that notices a death, and the same value
 //! reaches every reader: `Health::crash_cause`, `PluginInvalidation::Crashed`,
-//! the host's `PluginStatus::Dead`, and the session's `PluginChange::Died`,
-//! `Reloading` and `GaveUp`. It is `Clone` (a latch is read many times and an
+//! the host's `PluginStatus::Dead`, and the session's `PluginChange::Died`
+//! and (inside its `ReloadCause`) `Reloading` and `GaveUp`. It holds only what a
+//! backend or the host latches; why a *replacement* failed is the session's
+//! own `RecoveryFailure`. It is `Clone` (a latch is read many times and an
 //! event outlives the call that raised it), so an error that is not `Clone`
 //! (`BridgeError` holds an `io::Error`) is held in an `Arc` and reached as
 //! [`source`](std::error::Error::source).
@@ -15,12 +17,12 @@ use thiserror::Error;
 
 use crate::BridgeError;
 
-/// Why a hosted plugin is dead, or why a replacement for it did not come up.
+/// Why a hosted plugin is dead.
 ///
 /// The variants from [`Connect`](Self::Connect) to [`Bridge`](Self::Bridge) are
-/// a served plugin's death, latched by the bridge; [`Terminated`](Self::Terminated) is the host ending it; the
-/// `Reload` and `Replacement` variants are the session's, for an attempt to
-/// replace a dead plugin that failed.
+/// a served plugin's death, latched by the bridge; [`Terminated`](Self::Terminated)
+/// is the host ending it; [`Unreported`](Self::Unreported) is a backend that
+/// could not say.
 ///
 /// A cause that came from an underlying error carries it as the variant's
 /// [`source`](std::error::Error::source), not as text.
@@ -79,39 +81,6 @@ pub enum PluginFailure {
     },
     /// A backend reported the plugin dead and could not say why.
     Unreported,
-    /// A replacement's load failed.
-    ReloadFailed {
-        /// The load's error.
-        source: Arc<BridgeError>,
-    },
-    /// The replacement opened inside the host's process, which a served
-    /// plugin's replacement must not.
-    ReplacementInProcess,
-    /// The replacement was dead before it was installed.
-    ReplacementDied {
-        /// Why.
-        cause: Box<PluginFailure>,
-    },
-    /// The replacement's ports differ from the node's, which would leave the
-    /// graph's wiring invalid.
-    ReplacementPorts {
-        /// The replacement's.
-        got: PortCounts,
-        /// The node's.
-        was: PortCounts,
-    },
-    /// The graph refused the swap that installs the replacement.
-    ReplacementRefused {
-        /// The graph's refusal.
-        source: Arc<dyn std::error::Error + Send + Sync>,
-    },
-    /// The reload's job was dropped before it reported.
-    ReloadDropped,
-    /// The reload did not finish within its allowance.
-    ReloadTimedOut {
-        /// The allowance.
-        after: Duration,
-    },
 }
 
 impl std::fmt::Display for PluginFailure {
@@ -135,22 +104,6 @@ impl std::fmt::Display for PluginFailure {
             Self::Unreported => {
                 f.write_str("the plugin died for a reason its backend did not report")
             }
-            Self::ReloadFailed { source } => write!(f, "the replacement did not load: {source}"),
-            Self::ReplacementInProcess => f.write_str("the replacement opened in process"),
-            Self::ReplacementDied { cause } => {
-                write!(f, "the replacement died before it was installed: {cause}")
-            }
-            Self::ReplacementPorts { got, was } => write!(
-                f,
-                "the replacement's ports ({got}) differ from the node's ({was})"
-            ),
-            Self::ReplacementRefused { source } => {
-                write!(f, "the graph refused the replacement: {source}")
-            }
-            Self::ReloadDropped => f.write_str("the reload job was dropped"),
-            Self::ReloadTimedOut { after } => {
-                write!(f, "the reload did not finish in {after:?}")
-            }
         }
     }
 }
@@ -166,18 +119,11 @@ impl std::error::Error for PluginFailure {
             | Self::TimedOut { source }
             | Self::Io { source }
             | Self::Protocol { source }
-            | Self::Bridge { source }
-            | Self::ReloadFailed { source } => Some(&**source),
-            Self::ReplacementRefused { source } => Some(&**source),
-            Self::ReplacementDied { cause } => Some(&**cause),
+            | Self::Bridge { source } => Some(&**source),
             Self::Terminated { .. }
             | Self::StreamClosed
             | Self::ServerExited { .. }
-            | Self::Unreported
-            | Self::ReplacementInProcess
-            | Self::ReplacementPorts { .. }
-            | Self::ReloadDropped
-            | Self::ReloadTimedOut { .. } => None,
+            | Self::Unreported => None,
         }
     }
 }
@@ -220,29 +166,6 @@ pub enum TerminationReason {
         /// How long it had been starved.
         held: Duration,
     },
-}
-
-/// How many ports a node has, for a [`PluginFailure::ReplacementPorts`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PortCounts {
-    /// Audio inputs.
-    pub audio_in: usize,
-    /// Audio outputs.
-    pub audio_out: usize,
-    /// Event inputs.
-    pub event_in: usize,
-    /// Event outputs.
-    pub event_out: usize,
-}
-
-impl std::fmt::Display for PortCounts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} audio in, {} out, {} event in, {} out",
-            self.audio_in, self.audio_out, self.event_in, self.event_out
-        )
-    }
 }
 
 #[cfg(test)]

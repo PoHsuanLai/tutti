@@ -26,9 +26,12 @@
 //!   still.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tutti_plugin_types::{PluginFailure, TerminationReason};
+use tutti_plugin_types::{BridgeError, PluginFailure, TerminationReason};
+
+use crate::CrossfadeRefused;
 
 /// When to reload a plugin and when to give up. Times are measured on the
 /// `now` each [`Recovery::step`] is given.
@@ -99,7 +102,7 @@ pub enum RecoveryEvent {
     /// The reload did not come up.
     LoadFailed {
         /// Why.
-        cause: PluginFailure,
+        cause: RecoveryFailure,
     },
     /// The running plugin's totals from the bridge, since it started.
     Starved {
@@ -143,8 +146,8 @@ pub struct GiveUp {
     pub failures: u32,
     /// The window they fell in.
     pub window: Duration,
-    /// The last failure's cause.
-    pub last: PluginFailure,
+    /// The last failure's cause: a death, or a reload that did not come up.
+    pub last: ReloadCause,
 }
 
 impl std::fmt::Display for GiveUp {
@@ -154,6 +157,151 @@ impl std::fmt::Display for GiveUp {
             "{} failures within {:?}; the last: {}",
             self.failures, self.window, self.last
         )
+    }
+}
+
+/// Why a plugin needs a replacement: what a reload follows.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum ReloadCause {
+    /// The plugin died or was ended: the cause the engine latched.
+    Died(PluginFailure),
+    /// The attempt to replace it failed, and another follows.
+    Attempt(RecoveryFailure),
+}
+
+impl std::fmt::Display for ReloadCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Died(cause) => cause.fmt(f),
+            Self::Attempt(failure) => failure.fmt(f),
+        }
+    }
+}
+
+/// The failure behind is its [`source`](std::error::Error::source).
+impl std::error::Error for ReloadCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Died(cause) => Some(cause),
+            Self::Attempt(failure) => Some(failure),
+        }
+    }
+}
+
+impl From<PluginFailure> for ReloadCause {
+    fn from(cause: PluginFailure) -> Self {
+        Self::Died(cause)
+    }
+}
+
+impl From<RecoveryFailure> for ReloadCause {
+    fn from(failure: RecoveryFailure) -> Self {
+        Self::Attempt(failure)
+    }
+}
+
+/// How many ports a node has, for a [`RecoveryFailure::ReplacementPorts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortCounts {
+    /// Audio inputs.
+    pub audio_in: usize,
+    /// Audio outputs.
+    pub audio_out: usize,
+    /// Event inputs.
+    pub event_in: usize,
+    /// Event outputs.
+    pub event_out: usize,
+}
+
+impl std::fmt::Display for PortCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} audio in, {} out, {} event in, {} out",
+            self.audio_in, self.audio_out, self.event_in, self.event_out
+        )
+    }
+}
+
+/// Why an attempt to replace a dead plugin failed (the session's reload, not
+/// the plugin's death: that is [`PluginFailure`]).
+///
+/// An error behind a failure is its [`source`](std::error::Error::source),
+/// typed. It is `Clone` (an event outlives the call that raised it), so the
+/// one error that is not, [`BridgeError`], is held in an `Arc`.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum RecoveryFailure {
+    /// The replacement's load failed.
+    ReloadFailed {
+        /// The load's error.
+        source: Arc<BridgeError>,
+    },
+    /// The replacement opened inside the host's process, which a served
+    /// plugin's replacement must not.
+    ReplacementInProcess,
+    /// The replacement was dead before it was installed.
+    ReplacementDied {
+        /// Why.
+        cause: PluginFailure,
+    },
+    /// The replacement's ports differ from the node's, which would leave the
+    /// graph's wiring invalid.
+    ReplacementPorts {
+        /// The replacement's.
+        got: PortCounts,
+        /// The node's.
+        was: PortCounts,
+    },
+    /// The graph refused the swap that installs the replacement.
+    ReplacementRefused {
+        /// The graph's refusal.
+        source: CrossfadeRefused,
+    },
+    /// The reload's job was dropped before it reported.
+    ReloadDropped,
+    /// The reload did not finish within its allowance.
+    ReloadTimedOut {
+        /// The allowance.
+        after: Duration,
+    },
+}
+
+impl std::fmt::Display for RecoveryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReloadFailed { source } => write!(f, "the replacement did not load: {source}"),
+            Self::ReplacementInProcess => f.write_str("the replacement opened in process"),
+            Self::ReplacementDied { cause } => {
+                write!(f, "the replacement died before it was installed: {cause}")
+            }
+            Self::ReplacementPorts { got, was } => write!(
+                f,
+                "the replacement's ports ({got}) differ from the node's ({was})"
+            ),
+            Self::ReplacementRefused { source } => {
+                write!(f, "the graph refused the replacement: {source}")
+            }
+            Self::ReloadDropped => f.write_str("the reload job was dropped"),
+            Self::ReloadTimedOut { after } => {
+                write!(f, "the reload did not finish in {after:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RecoveryFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReloadFailed { source } => Some(&**source),
+            Self::ReplacementDied { cause } => Some(cause),
+            Self::ReplacementRefused { source } => Some(source),
+            Self::ReplacementInProcess
+            | Self::ReplacementPorts { .. }
+            | Self::ReloadDropped
+            | Self::ReloadTimedOut { .. } => None,
+        }
     }
 }
 
@@ -236,7 +384,9 @@ impl Recovery {
     pub fn step(&mut self, event: RecoveryEvent, now: Instant) -> RecoveryAction {
         match (&mut self.phase, event) {
             (State::GaveUp, _) => RecoveryAction::Wait,
-            (State::Running { .. }, RecoveryEvent::Died { cause }) => self.fail(cause, now),
+            (State::Running { .. }, RecoveryEvent::Died { cause }) => {
+                self.fail(ReloadCause::Died(cause), now)
+            }
             (State::Running { .. }, RecoveryEvent::LoadFailed { .. } | RecoveryEvent::Loaded) => {
                 RecoveryAction::Wait
             }
@@ -299,13 +449,15 @@ impl Recovery {
                 };
                 RecoveryAction::Wait
             }
-            (State::Reloading { .. }, RecoveryEvent::LoadFailed { cause }) => self.fail(cause, now),
+            (State::Reloading { .. }, RecoveryEvent::LoadFailed { cause }) => {
+                self.fail(ReloadCause::Attempt(cause), now)
+            }
             (State::Reloading { started }, RecoveryEvent::Tick) => {
                 if now.saturating_duration_since(*started) >= self.policy.load_timeout {
-                    let cause = PluginFailure::ReloadTimedOut {
+                    let cause = RecoveryFailure::ReloadTimedOut {
                         after: self.policy.load_timeout,
                     };
-                    self.fail(cause, now)
+                    self.fail(ReloadCause::Attempt(cause), now)
                 } else {
                     RecoveryAction::Wait
                 }
@@ -318,7 +470,7 @@ impl Recovery {
     }
 
     /// Records a failure at `now`: another reload, or the end of trying.
-    fn fail(&mut self, cause: PluginFailure, now: Instant) -> RecoveryAction {
+    fn fail(&mut self, cause: ReloadCause, now: Instant) -> RecoveryAction {
         while self
             .failures
             .front()
@@ -422,8 +574,8 @@ mod tests {
         }
     }
 
-    fn reload_timed_out(id: u64) -> PluginFailure {
-        PluginFailure::ReloadTimedOut {
+    fn reload_timed_out(id: u64) -> RecoveryFailure {
+        RecoveryFailure::ReloadTimedOut {
             after: Duration::from_millis(id),
         }
     }
@@ -481,7 +633,7 @@ mod tests {
         };
         assert_eq!(why.failures, 4);
         assert!(
-            matches!(why.last, PluginFailure::ReloadTimedOut { after }
+            matches!(why.last, ReloadCause::Attempt(RecoveryFailure::ReloadTimedOut { after })
                 if after == Duration::from_millis(3)),
             "{:?}",
             why.last

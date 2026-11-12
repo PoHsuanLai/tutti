@@ -110,12 +110,13 @@ use tutti_plugin_host::{
 };
 use tutti_plugin_types::{
     BridgeError, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation, PluginRefresh,
-    PluginTail, PortCounts,
+    PluginTail,
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{
-    GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy, Session, SessionEvent,
+    GiveUp, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure, RecoveryPolicy,
+    ReloadCause, Session, SessionEvent,
 };
 
 /// How often a healthy plugin's state is captured, by default: 8 s, the
@@ -460,7 +461,7 @@ pub enum PluginLiveness {
     /// [`PluginChange::GaveUp`].
     Recovering {
         /// Why it needs a replacement.
-        cause: PluginFailure,
+        cause: ReloadCause,
     },
     /// Written off: its node was removed (recovery off, or its budget
     /// spent). Load a replacement restoring its last good state
@@ -552,8 +553,8 @@ pub enum PluginChange {
     /// attempt.
     Reloading {
         /// Why it needs a replacement: the engine's latched cause, or a failed
-        /// attempt's reason.
-        cause: PluginFailure,
+        /// attempt's.
+        cause: ReloadCause,
         /// Failures within the budget's window so far, this one included.
         attempt: u32,
         /// The wait before the load is handed out.
@@ -831,7 +832,7 @@ impl HostedPlugin {
     /// Records a scheduled reload and tells the host. The node stays.
     fn begin_reload(
         &mut self,
-        cause: PluginFailure,
+        cause: ReloadCause,
         now: Instant,
         delay: Duration,
         attempt: u32,
@@ -1477,7 +1478,7 @@ impl Session {
             Ok(Err(_in_process)) => {
                 self.fail_reload(
                     node,
-                    PluginFailure::ReplacementInProcess,
+                    RecoveryFailure::ReplacementInProcess,
                     now,
                     &mut out,
                     &mut gave_up,
@@ -1496,7 +1497,7 @@ impl Session {
                 }
                 self.fail_reload(
                     node,
-                    PluginFailure::ReloadFailed {
+                    RecoveryFailure::ReloadFailed {
                         source: Arc::new(e),
                     },
                     now,
@@ -1546,15 +1547,13 @@ impl Session {
             {
                 hosted.withhold_snapshot(now);
             }
-            let cause = PluginFailure::ReplacementDied {
-                cause: Box::new(
-                    client
-                        .handle()
-                        .status()
-                        .cause()
-                        .cloned()
-                        .unwrap_or(PluginFailure::Unreported),
-                ),
+            let cause = RecoveryFailure::ReplacementDied {
+                cause: client
+                    .handle()
+                    .status()
+                    .cause()
+                    .cloned()
+                    .unwrap_or(PluginFailure::Unreported),
             };
             let mut gave_up = Vec::new();
             self.fail_reload(node, cause, now, out, &mut gave_up);
@@ -1576,7 +1575,7 @@ impl Session {
                 event_out: usize::from(s.event_out),
             };
             if counts(&was) != counts(&got) {
-                let cause = PluginFailure::ReplacementPorts {
+                let cause = RecoveryFailure::ReplacementPorts {
                     got: counts(&got),
                     was: counts(&was),
                 };
@@ -1638,9 +1637,7 @@ impl Session {
                     }
                 }
                 let mut gave_up = Vec::new();
-                let cause = PluginFailure::ReplacementRefused {
-                    source: Arc::new(refused),
-                };
+                let cause = RecoveryFailure::ReplacementRefused { source: refused };
                 self.fail_reload(node, cause, now, out, &mut gave_up);
                 self.finish_gave_up(gave_up, out);
                 return;
@@ -1706,7 +1703,7 @@ impl Session {
     fn fail_reload(
         &mut self,
         node: NodeKey,
-        cause: PluginFailure,
+        cause: RecoveryFailure,
         now: Instant,
         out: &mut Vec<SessionEvent>,
         gave_up: &mut Vec<(NodeKey, GiveUp)>,
@@ -1724,7 +1721,7 @@ impl Session {
             },
             now,
         );
-        self.apply_failure(node, action, cause, now, out, gave_up);
+        self.apply_failure(node, action, ReloadCause::Attempt(cause), now, out, gave_up);
     }
 
     /// Carries out the answer to a failed attempt.
@@ -1732,7 +1729,7 @@ impl Session {
         &mut self,
         node: NodeKey,
         action: RecoveryAction,
-        reason: PluginFailure,
+        reason: ReloadCause,
         now: Instant,
         out: &mut Vec<SessionEvent>,
         gave_up: &mut Vec<(NodeKey, GiveUp)>,
@@ -1788,7 +1785,7 @@ impl Session {
             // The token is the job's alone while it is out: sole owner means
             // the job was dropped.
             if Arc::strong_count(&hosted.reload.token) == 1 {
-                self.fail_reload(node, PluginFailure::ReloadDropped, now, out, gave_up);
+                self.fail_reload(node, RecoveryFailure::ReloadDropped, now, out, gave_up);
                 return;
             }
         }
@@ -1800,9 +1797,9 @@ impl Session {
             });
         if !matches!(tick, RecoveryAction::Wait) {
             // The attempt ran out of time.
-            let reason = PluginFailure::ReloadTimedOut {
+            let reason = ReloadCause::Attempt(RecoveryFailure::ReloadTimedOut {
                 after: load_timeout,
-            };
+            });
             self.apply_failure(node, tick, reason, now, out, gave_up);
             return;
         }
@@ -1910,7 +1907,14 @@ impl Session {
                                 hosted.handle.name()
                             );
                             hosted.reload.latency_before = latency;
-                            hosted.begin_reload(cause, now, delay, attempt, node, out);
+                            hosted.begin_reload(
+                                ReloadCause::Died(cause),
+                                now,
+                                delay,
+                                attempt,
+                                node,
+                                out,
+                            );
                             continue;
                         }
                         Some(RecoveryAction::GiveUp(why)) => {

@@ -34,6 +34,7 @@ use tutti_session::{
     Bounce, BounceError, BounceLatency, BounceTail, ExportClock, Phase, PhaseCx, PluginLiveness,
     PluginLoadRequest, Range, Session, SessionEvent,
 };
+use tutti_session::{RecoveryFailure, ReloadCause};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -794,7 +795,7 @@ fn a_plugin_that_crashes_every_time_is_given_up_on() {
     assert_eq!(*at, node);
     assert_eq!(why.failures, 3);
     assert!(
-        matches!(&why.last, PluginFailure::StreamClosed),
+        matches!(&why.last, ReloadCause::Died(PluginFailure::StreamClosed)),
         "a replacement that aborts on its first block closed its stream: {:?}",
         why.last
     );
@@ -807,7 +808,7 @@ fn a_plugin_that_crashes_every_time_is_given_up_on() {
 /// copy is deleted once it is running, and its first server aborts on its
 /// 40th block. Every replacement is then asked to load a file that is gone,
 /// so each attempt fails with the server's load error: `Reloading` and
-/// `GaveUp` carry `PluginFailure::ReloadFailed`, with the `BridgeError`
+/// `GaveUp` carry `RecoveryFailure::ReloadFailed`, with the `BridgeError`
 /// behind it, not as text.
 #[cfg(target_os = "linux")]
 #[test]
@@ -842,7 +843,7 @@ fn a_reload_that_fails_to_load_carries_the_bridge_error_as_its_source() {
             })
         )
     });
-    let causes: Vec<&PluginFailure> = drive
+    let causes: Vec<&ReloadCause> = drive
         .events
         .iter()
         .filter_map(|e| match e {
@@ -854,17 +855,26 @@ fn a_reload_that_fails_to_load_carries_the_bridge_error_as_its_source() {
         })
         .collect();
     assert!(
-        matches!(causes.first(), Some(PluginFailure::StreamClosed)),
+        matches!(
+            causes.first(),
+            Some(ReloadCause::Died(PluginFailure::StreamClosed))
+        ),
         "the first reload is for the death: {causes:?}"
     );
     let failed = causes
         .get(1)
         .expect("a second attempt follows a failed load");
     assert!(
-        matches!(failed, PluginFailure::ReloadFailed { .. }),
+        matches!(
+            failed,
+            ReloadCause::Attempt(RecoveryFailure::ReloadFailed { .. })
+        ),
         "{failed:?}"
     );
-    let source = failed.source().expect("a failed load has a source");
+    let ReloadCause::Attempt(attempt) = failed else {
+        unreachable!()
+    };
+    let source = attempt.source().expect("a failed load has a source");
     assert!(
         matches!(
             source.downcast_ref::<BridgeError>(),
@@ -887,15 +897,15 @@ fn a_reload_that_fails_to_load_carries_the_bridge_error_as_its_source() {
     else {
         unreachable!()
     };
+    let ReloadCause::Attempt(last @ RecoveryFailure::ReloadFailed { .. }) = &why.last else {
+        panic!("the give-up carries the failed load: {:?}", why.last);
+    };
     assert!(
         matches!(
-            why.last
-                .source()
-                .and_then(|e| e.downcast_ref::<BridgeError>()),
+            last.source().and_then(|e| e.downcast_ref::<BridgeError>()),
             Some(BridgeError::LoadFailed { .. })
         ),
-        "{:?}",
-        why.last
+        "{last:?}"
     );
 }
 
@@ -1038,9 +1048,9 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
     assert!(
         matches!(
             cause,
-            PluginFailure::Terminated {
+            ReloadCause::Died(PluginFailure::Terminated {
                 reason: TerminationReason::Hung { .. }
-            }
+            })
         ),
         "{cause:?}"
     );
@@ -1197,7 +1207,10 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
         unreachable!()
     };
     assert!(
-        matches!(why.last, PluginFailure::ReplacementPorts { got, was } if got != was),
+        matches!(
+            why.last,
+            ReloadCause::Attempt(RecoveryFailure::ReplacementPorts { got, was }) if got != was
+        ),
         "{why}"
     );
     assert_eq!(

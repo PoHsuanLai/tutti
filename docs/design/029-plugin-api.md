@@ -288,21 +288,28 @@ freeing paths' `debug_assert!`.
 `tutti_plugin_types::PluginFailure`, latched by the bridge where it notices
 (`mark_crashed(PluginFailure)`) and the one value behind `Health::crash_cause`,
 `PluginStatus::Dead`, `BridgeEvent::Crashed`, `PluginInvalidation::Crashed`,
-`RecoveryEvent::{Died, LoadFailed}`, `GiveUp::last`, `PluginRenderFault::Crashed`
-and the session's `PluginChange::{Died, Reloading}` and `PluginLiveness`. Its
+`RecoveryEvent::Died`, `PluginRenderFault::Crashed` and the session's
+`PluginChange::Died` and `PluginLiveness::Dead`. Its
 variants are what the call sites produce: `Connect`, `Handshake` (a version skew
 is `BridgeError::ProtocolMismatch`, a wrong first message `UnexpectedMessage`),
 `StreamClosed`, `ServerExited`, `TimedOut`, `Io`, `Protocol` and `Bridge` (a
 stream error, classified once in `PluginFailure::from_stream`),
-`Terminated { reason: TerminationReason }` and `Unreported`; and the session's
-failed attempts, `ReloadFailed` (the load's `BridgeError`), `ReplacementDied`,
-`ReplacementPorts`, `ReplacementRefused`, `ReplacementInProcess`, `ReloadDropped`
-and `ReloadTimedOut`. A `BridgeError` or other error behind a failure is its
-`source` (held in an `Arc`, as `BridgeError` is not `Clone`), downcast to the
-type the caller knows. `terminate` takes a `TerminationReason`, a closed set (its
-only reason today is `Hung`, the session's), not free text. Two failures compare
-equal when they are the same kind and read the same, since an `io::Error` is not
-comparable. The server sends no cause, so the wire and `PROTOCOL_VERSION` are
+`Terminated { reason: TerminationReason }` and `Unreported`: only what a backend
+or the host latches. The session's reload reasoning is its own type,
+`tutti_session::RecoveryFailure` (`ReloadFailed`, the load's `BridgeError`;
+`ReplacementDied { cause: PluginFailure }`; `ReplacementPorts { got, was }` over
+the session's `PortCounts`; `ReplacementRefused`, whose `source` is the graph's
+`CrossfadeRefused`; `ReplacementInProcess`; `ReloadDropped`; `ReloadTimedOut`),
+and the events say which cause they hold: `PluginChange::Died` carries a
+`PluginFailure`, while `PluginChange::Reloading`, `PluginLiveness::Recovering` and
+`GiveUp::last` carry a `ReloadCause` (`Died(PluginFailure)` or
+`Attempt(RecoveryFailure)`, a reload follows either), and
+`RecoveryEvent::LoadFailed` a `RecoveryFailure`. `tutti-plugin-types` names no
+graph type. A `BridgeError` or other error behind a failure is its `source` (held
+in an `Arc`, as `BridgeError` is not `Clone`), downcast to the type the caller
+knows. `terminate` takes a `TerminationReason`, a closed set (its
+only reason today is `Hung`, the session's), not free text. None of these
+implements `PartialEq`, since an `io::Error` is not comparable. The server sends no cause, so the wire and `PROTOCOL_VERSION` are
 unchanged.
 
 Steps 1 and 6 can run before or beside the others; 3, 4 and 5 need 2.

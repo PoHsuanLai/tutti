@@ -7,13 +7,11 @@
 pub mod error {
     pub use tutti_plugin_ipc::PluginRenderFault;
     pub use tutti_plugin_types::{
-        Delivered, EditorError, LoadStage, PluginError, PluginFailure, PortCounts, StateError,
+        Delivered, EditorError, LoadStage, PluginError, PluginFailure, StateError,
         TerminationReason,
     };
 }
-pub use error::{
-    EditorError, LoadStage, PluginFailure, PluginRenderFault, PortCounts, TerminationReason,
-};
+pub use error::{EditorError, LoadStage, PluginFailure, PluginRenderFault, TerminationReason};
 
 mod format;
 mod host;

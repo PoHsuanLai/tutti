@@ -317,6 +317,8 @@ The audit asked for no format-specific case in the shared types. What it found a
    - Step 2's `ParamChanged { gesture }` and step 3's `param.edit()` carry this type.
 3. **The wire carries `f64` parameter values.** Set, get and changed are narrowed to `f32` today, while automation points and text queries are already `f64`.
 
+The type and range of each value in each format, beside tutti's type for it, are tabulated in [016](016-plugin-hosts.md) §3.5.
+
 Two candidates for a change to the abstraction were rejected.
 
 - **AUv3 needs nothing shared.** Asynchronous instantiation stays inside `Loaded::load`: the AU implementation keeps the main run loop turning until the unit arrives, which the header allows (it forbids blocking the main thread, not pumping it). The v3 view controller is one more `EditorWindow` implementation. Loading in process or in the system's extension process is an AU load option. Parameter ids through the v2 bridge are 32-bit.
@@ -354,7 +356,7 @@ The latent violations (no known plugin breaks on them) go into the same PRs as t
 | A VST3 aux bus without `kDefaultActive` stays inactive though the graph wires it | step 4 (buses as graph handles activate what is wired) |
 | VST3 editor: the served editor's run loop not pumped on Linux, in-process resize stubbed, no content-scale update after open | step 2 (`update()` services every editor) |
 | AUv3 | after AU completeness (§6.4) |
-| `NoteId` has no Group; note expression lacks port, channel and key | plugin MIDI out by Group |
+| A note is `(Group, NoteId)` at the port edge (Group N is port or bus N), so `NoteId` keeps `channel * 128 + note` and gains no Group; the legacy note-expression route lacks port, channel and key | plugin MIDI out by Group |
 | Format statuses (VST3 `tresult`, AU `OSStatus`) stringified at the shared error | step 4 (`Diagnostics`) |
 | `clap-sys` 0.5.0 binds CLAP 1.2.2; only the draft `transport-control` id moved since | 021 step 8 |
 

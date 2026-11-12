@@ -60,21 +60,23 @@ pub trait SessionNode: IntoNode + Send + 'static {
 }
 
 /// A node's control-side reclaim, kept by the graph
-/// ([`SessionNode::reclaimer`]): a closure over a clone of the node's
-/// controls that calls their `reclaim` (each `ArcLend::reclaim`) and returns
-/// how many retired values are still pinned afterwards. Control thread only,
+/// ([`SessionNode::reclaimer`]): a clone of the node's controls, which
+/// implement [`Reclaim`](tutti_rt::Reclaim) (each `ArcLend::reclaim`), and how
+/// many retired values are still pinned after it runs. Control thread only,
 /// like the `reclaim` it calls.
-pub struct Reclaimer(Box<dyn Fn() -> usize + Send>);
+pub struct Reclaimer(Box<dyn tutti_rt::Reclaim + Send>);
 
 impl Reclaimer {
-    /// A reclaimer that runs `reclaim`.
-    pub fn new(reclaim: impl Fn() -> usize + Send + 'static) -> Self {
-        Self(Box::new(reclaim))
+    /// A reclaimer that sweeps a clone of `controls`. The clone is the whole
+    /// controls, so what they keep alive (a token, a second cell) lives as long
+    /// as the reclaimer does.
+    pub fn of<R: tutti_rt::Reclaim + Clone + Send + 'static>(controls: &R) -> Self {
+        Self(Box::new(controls.clone()))
     }
 
     /// Runs it: how many retired values are still pinned.
     pub fn reclaim(&self) -> usize {
-        (self.0)()
+        self.0.reclaim()
     }
 }
 
@@ -160,8 +162,7 @@ impl SessionNode for tutti_nodes::automation::AutomationLaneNode {}
 #[cfg(feature = "midi")]
 impl SessionNode for tutti_midi_runtime::MidiClipNode {
     fn reclaimer(controls: &tutti_midi_runtime::MidiClipControls) -> Option<Reclaimer> {
-        let controls = controls.clone();
-        Some(Reclaimer::new(move || controls.reclaim()))
+        Some(Reclaimer::of(controls))
     }
 }
 
@@ -170,8 +171,7 @@ impl SessionNode for tutti_midi_runtime::MidiClipNode {
 #[cfg(feature = "midi")]
 impl SessionNode for tutti_midi_runtime::HarmonyNode {
     fn reclaimer(controls: &tutti_midi_runtime::HarmonyControls) -> Option<Reclaimer> {
-        let controls = controls.clone();
-        Some(Reclaimer::new(move || controls.reclaim()))
+        Some(Reclaimer::of(controls))
     }
 }
 
@@ -180,8 +180,7 @@ impl SessionNode for tutti_midi_runtime::HarmonyNode {
 #[cfg(feature = "midi")]
 impl SessionNode for tutti_midi_runtime::MidiIngestNode {
     fn reclaimer(controls: &tutti_midi_runtime::MidiIngestControls) -> Option<Reclaimer> {
-        let controls = controls.clone();
-        Some(Reclaimer::new(move || controls.reclaim()))
+        Some(Reclaimer::of(controls))
     }
 }
 
@@ -213,8 +212,7 @@ impl SessionNode for tutti_sampler::VoiceNode {
     }
 
     fn reclaimer(controls: &tutti_sampler::VoiceNodeHandle) -> Option<Reclaimer> {
-        let controls = controls.clone();
-        Some(Reclaimer::new(move || controls.reclaim()))
+        Some(Reclaimer::of(controls))
     }
 }
 

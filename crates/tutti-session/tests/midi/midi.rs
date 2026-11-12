@@ -248,7 +248,7 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     assert_eq!(fed, want);
 
     live.send(
-        At::NextBlock,
+        Stamp::NextBlock,
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, MF),
     )
     .unwrap();
@@ -277,17 +277,12 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
     assert_eq!(a.node, b.node, "one inlet");
     let _ = s.update();
 
-    a.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), MF)
+    a.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), MF)
         .unwrap();
-    b.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(62), MF)
+    b.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(62), MF)
         .unwrap();
-    b.note_on(
-        At::Frame(Frame(3_000)),
-        MidiChannel::FIRST,
-        NoteNumber::of(64),
-        MF,
-    )
-    .unwrap();
+    b.note_on(Frame(3_000), MidiChannel::FIRST, NoteNumber::of(64), MF)
+        .unwrap();
     assert_eq!(
         a.send(
             At::Beat(Beat(1.0)),
@@ -305,11 +300,11 @@ fn a_live_inputs_clones_send_in_order_through_one_writer() {
     assert_eq!(heard[2].0, 3_000);
 
     for _ in 0..LIVE_INLET_CAPACITY {
-        a.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
+        a.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
             .unwrap();
     }
     assert_eq!(
-        b.note_off(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
+        b.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
         Err(SendError::Full)
     );
 }

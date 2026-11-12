@@ -181,7 +181,7 @@ fn preview_still_sounds_under_an_installed_clip() {
         .expect("a synth takes a live input");
     let _ = s.update();
     live.send(
-        At::NextBlock,
+        Stamp::NextBlock,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
     )
     .unwrap();
@@ -213,7 +213,7 @@ fn routed_level(channel: MidiChannel) -> f32 {
 
     device
         .push(
-            At::NextBlock,
+            Stamp::NextBlock,
             note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, u16::MAX),
         )
         .expect("room");

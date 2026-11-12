@@ -40,7 +40,7 @@
 //!   (when `send_mtc` is set).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use tutti_graph::UmpAt;
+use tutti_graph::{Losses, UmpAt};
 use tutti_ump::{Message, MidiGroup, System, U7, U14, Ump};
 
 use crate::{SmpteFrameRate, SmpteTimecode};
@@ -188,16 +188,17 @@ impl ClockMaster {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// How many events the [`ClockNode`](crate::ClockNode) ticking this master
-    /// has dropped, since it was created, because a single block produced
+    /// What the [`ClockNode`](crate::ClockNode) ticking this master has lost,
+    /// all of it `refused` (no room in its block):
+    /// events it has dropped, since it was created, because a single block produced
     /// more than [`CLOCK_EVENT_CAPACITY`](crate::CLOCK_EVENT_CAPACITY) of
     /// them (a very long block at a very high tempo with MTC on). A host polls
     /// it; nonzero means the receiver missed ticks and should be resynced.
-    pub fn dropped_events(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
+    pub fn losses(&self) -> Losses {
+        Losses::new(0, 0, self.dropped.load(Ordering::Relaxed), 0)
     }
 
-    /// Adds `n` to [`dropped_events`](Self::dropped_events). Audio thread.
+    /// Adds `n` to [`losses`](Self::losses). Audio thread.
     pub(crate) fn count_dropped(&self, n: u64) {
         if n > 0 {
             self.dropped.fetch_add(n, Ordering::Relaxed);

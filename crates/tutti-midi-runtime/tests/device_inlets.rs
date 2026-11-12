@@ -186,7 +186,7 @@ fn a_later_reading_places_later_arrivals() {
 }
 
 /// **Before any reading an event is pushed for the next block**: the first
-/// frame of the block that finds it, as `At::NextBlock` is.
+/// frame of the block that finds it, as `Stamp::NextBlock` is.
 #[test]
 fn before_a_reading_an_event_is_for_the_next_block() {
     let inlets = inlets(Duration::from_millis(5));
@@ -327,5 +327,5 @@ fn a_full_inlet_refuses_and_counts() {
         .map(|i| device.push(note(60 + i), Instant::now()))
         .collect();
     assert_eq!(pushed, vec![true, true, false, false]);
-    assert_eq!(counts.lost(), 2);
+    assert_eq!(counts.losses().lost, 2);
 }

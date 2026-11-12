@@ -28,7 +28,6 @@ macro_rules! contract {
             only_an_instrument_is_one,
             note_on_sounds_at_its_stamp,
             a_frame_already_past_plays_at_the_next_block,
-            a_beat_is_refused,
             an_instrument_is_one_handle_at_a_time,
             note_off_releases,
             velocity_zero_is_a_note_off,

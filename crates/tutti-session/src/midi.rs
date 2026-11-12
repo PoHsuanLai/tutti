@@ -18,12 +18,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tutti_graph::UmpAt;
 
-use tutti_graph::{EventTapId, EventTapReader, NodeKey, Offset, TapEvent};
+use tutti_graph::{EventTapId, EventTapReader, Losses, NodeKey, Offset, Stamp, TapEvent};
 use tutti_midi_runtime::{
     MidiClipControls, MidiClipNode, MidiInputPorts, MidiReceiver, RouteRule, TimedMidiEvent,
     compile_routes,
 };
-use tutti_types::{At, Frame, Moment, Samples};
+use tutti_types::{Frame, Moment, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 
 use crate::SendError;
@@ -340,7 +340,7 @@ pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRoute
 
 /// A live input's event inlet, fed into its target, and the handle that
 /// sends into it: what is sent plays from the next block
-/// ([`At::NextBlock`]) or on a frame of the engine's clock, held until the
+/// ([`Stamp::NextBlock`]) or on a frame of the engine's clock, held until the
 /// block that contains it. Cheap to clone; every clone shares the one writer
 /// behind a lock only control threads take.
 #[derive(Clone, Debug)]
@@ -359,23 +359,15 @@ impl LiveInput {
         self.keys.clock()
     }
 
-    /// Sends `ump` at `at` ([`At::Frame`] or [`At::NextBlock`]).
+    /// Sends `ump` at `at`: [`Stamp::NextBlock`], a frame, or a moment (as
+    /// [`InstrumentHandle::send`](crate::InstrumentHandle::send)).
     ///
     /// # Errors
     ///
-    /// [`SendError::Beat`] for [`At::Beat`]; [`SendError::Full`] when the
-    /// ring is full (a note-off dropped there leaves a note stuck).
-    pub fn send(&self, at: At, ump: Ump) -> std::result::Result<(), SendError> {
+    /// [`SendError::Full`] when the ring is full (a note-off dropped there
+    /// leaves a note stuck).
+    pub fn send(&self, at: impl Into<Stamp>, ump: Ump) -> std::result::Result<(), SendError> {
         self.keys.send(at, ump)
-    }
-
-    /// Sends `ump` at the instant `moment` names, whatever the rate has become.
-    ///
-    /// # Errors
-    ///
-    /// [`SendError::Full`].
-    pub fn send_at(&self, moment: Moment, ump: Ump) -> std::result::Result<(), SendError> {
-        self.keys.send_at(moment, ump)
     }
 
     /// A MIDI 2.0 Note On at `velocity` (16 bits) on group 1. A velocity of 0
@@ -386,7 +378,7 @@ impl LiveInput {
     /// As [`send`](Self::send).
     pub fn note_on(
         &self,
-        at: At,
+        at: impl Into<Stamp>,
         channel: MidiChannel,
         note: NoteNumber,
         velocity: u16,
@@ -401,18 +393,18 @@ impl LiveInput {
     /// As [`send`](Self::send).
     pub fn note_off(
         &self,
-        at: At,
+        at: impl Into<Stamp>,
         channel: MidiChannel,
         note: NoteNumber,
     ) -> std::result::Result<(), SendError> {
         self.keys.note_off(at, channel, note)
     }
 
-    /// How many events the inlet dropped from its waiting list for want of
-    /// room ([`InstrumentHandle::dropped`](crate::InstrumentHandle::dropped)).
+    /// What the inlet has lost
+    /// ([`InstrumentHandle::losses`](crate::InstrumentHandle::losses)).
     #[must_use]
-    pub fn dropped(&self) -> u64 {
-        self.keys.dropped()
+    pub fn losses(&self) -> Losses {
+        self.keys.losses()
     }
 }
 
@@ -659,7 +651,7 @@ impl MidiState {
             self.watch_failure_reported = true;
             out.push(crate::SessionEvent::MidiWatchFailed(why));
         }
-        let total = io.ports().dropped_events();
+        let total = io.ports().losses().dropped();
         let due = self
             .input_reported_at
             .is_none_or(|at| now.saturating_duration_since(at) >= MIDI_INPUT_DROP_REPORT);

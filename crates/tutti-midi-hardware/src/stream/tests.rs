@@ -546,7 +546,7 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     rig.run(8);
     let heard: Vec<_> = rig.take().into_iter().map(|(_, _, ump)| ump).collect();
     assert_eq!(heard, [note]);
-    assert_eq!(ports.dropped_events(), 0);
+    assert_eq!(ports.losses(), tutti_graph::Losses::NONE);
 }
 
 /// An output connected after its device settled is in the settled Protocol from

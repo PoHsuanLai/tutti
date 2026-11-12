@@ -10,30 +10,32 @@
 //!
 //! # What a frame is
 //!
-//! [`At::Frame`] is a position on the engine's frame clock, which counts frames
+//! A [`Frame`](tutti_types::Frame) stamp is a position on the engine's frame clock, which counts frames
 //! **at the current rate** and is moved to the same wall-clock time when the
 //! graph is re-prepared at another rate. It is not the number of frames
 //! rendered: a sender that counts those lands early or late after a rate change
 //! by the difference. Read the clock with [`InstrumentHandle::clock`], a
 //! [`Moment`]: a frame and the rate it was counted at. A message sent for a
-//! moment ([`InstrumentHandle::send_at`]) lands on that wall-clock instant
-//! whatever the rate has become since, including between the read and the send.
+//! moment ([`Stamp::Moment`]) lands on that wall-clock instant whatever the
+//! rate has become since, including between the read and the send; a bare
+//! frame is counted at the rate the queue has when it takes the message.
 //!
 //! Everything a handle does is a port or a cell: a message is pushed into the
 //! event inlet's ring (never blocking the audio thread; the handle's clones
 //! share one writer behind a lock only control threads take, which may
 //! allocate on its first use)
-//! stamped with an [`At`], and a gain is a store into the strip's volume cell. Neither takes
+//! stamped with a [`Stamp`], and a gain is a store into the strip's volume cell. Neither takes
 //! `&mut` of anything in the graph.
 //!
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tutti_graph::NodeKey;
-use tutti_graph::{EventInletNode, Instrument, ParamSet, Refused};
+use tutti_graph::{EventInletNode, Instrument, Losses, ParamSet, Refused, Stamp};
 use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
 use tutti_nodes::BusStripNode;
-use tutti_types::{Amplitude, At, Moment, UnitParam};
+use tutti_types::{Amplitude, Moment, UnitParam};
+use tutti_ump::MidiGroup;
 use tutti_ump::{MidiChannel, NoteNumber, Ump};
 
 use crate::{Feeder, Graph, Key, OutPort, Session, SessionNode};
@@ -66,11 +68,6 @@ pub enum NotInstrument {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SendError {
-    /// [`At::Beat`]: a beat is resolved against the transport, which a send
-    /// from a control thread does not have. A clip (`Midi::play_clip`) places
-    /// events in beats.
-    #[error("an instrument is played at a frame or the next block, not at a beat")]
-    Beat,
     /// The queue is full: the message was dropped.
     #[error("the instrument's queue is full")]
     Full,
@@ -79,7 +76,6 @@ pub enum SendError {
 impl From<Refused> for SendError {
     fn from(e: Refused) -> Self {
         match e {
-            Refused::Beat => Self::Beat,
             Refused::Full => Self::Full,
         }
     }
@@ -97,7 +93,13 @@ impl SharedKeys {
     /// Opens an inlet in `graph`: its node, and the writer.
     pub(crate) fn open(graph: &mut Graph) -> (Key<EventInletNode>, Self) {
         let (node, writer) = graph.open_event_inlet(LIVE_INLET_CAPACITY);
-        (node, Self(Arc::new(Mutex::new(MidiKeys::new(writer)))))
+        (
+            node,
+            Self(Arc::new(Mutex::new(MidiKeys::new(
+                writer,
+                MidiGroup::FIRST,
+            )))),
+        )
     }
 
     fn keys(&self) -> MutexGuard<'_, MidiKeys> {
@@ -109,17 +111,13 @@ impl SharedKeys {
         self.keys().clock()
     }
 
-    pub(crate) fn send_at(&self, moment: Moment, ump: Ump) -> Result<(), SendError> {
-        Ok(self.keys().push_at(moment, ump)?)
-    }
-
-    pub(crate) fn send(&self, at: At, ump: Ump) -> Result<(), SendError> {
+    pub(crate) fn send(&self, at: impl Into<Stamp>, ump: Ump) -> Result<(), SendError> {
         Ok(self.keys().push(at, ump)?)
     }
 
     pub(crate) fn note_on(
         &self,
-        at: At,
+        at: impl Into<Stamp>,
         channel: MidiChannel,
         note: NoteNumber,
         velocity: u16,
@@ -129,15 +127,15 @@ impl SharedKeys {
 
     pub(crate) fn note_off(
         &self,
-        at: At,
+        at: impl Into<Stamp>,
         channel: MidiChannel,
         note: NoteNumber,
     ) -> Result<(), SendError> {
         Ok(self.keys().note_off(at, channel, note)?)
     }
 
-    pub(crate) fn dropped(&self) -> u64 {
-        self.keys().evicted()
+    pub(crate) fn losses(&self) -> Losses {
+        self.keys().counts().losses()
     }
 }
 
@@ -184,37 +182,26 @@ impl InstrumentHandle {
     /// the rate it was counted at. `None` before the queue is prepared.
     ///
     /// It stands still while the graph is suspended for a re-prepare, and a
-    /// message sent for it ([`send_at`](Self::send_at)) still lands on the right
+    /// message sent for it ([`Stamp::Moment`]) still lands on the right
     /// instant: the queue rescales it to the rate it runs at.
     #[must_use]
     pub fn clock(&self) -> Option<Moment> {
         self.keys.clock()
     }
 
-    /// Plays `ump` at the instant `moment` names (a reading of
-    /// [`clock`](Self::clock), plus [`Moment::after`] a distance), whatever the
-    /// rate is when the queue takes it. Messages due together play in the order
-    /// they were sent. Never blocks, allocates or locks.
+    /// Plays `ump` at `at`: a [`Moment`] (a reading of [`clock`](Self::clock),
+    /// plus [`Moment::after`] a distance) lands on that wall-clock instant
+    /// whatever the rate is when the queue takes it; a [`Frame`](tutti_types::Frame)
+    /// is that frame of the engine's clock at the rate the queue has when it
+    /// takes it (one already past lands on the next block's first frame);
+    /// [`Stamp::NextBlock`] is the next block's first frame. Messages due
+    /// together play in the order they were sent. Never blocks, allocates or
+    /// locks.
     ///
     /// # Errors
     ///
     /// [`SendError::Full`] when the queue is full.
-    pub fn send_at(&self, moment: Moment, ump: Ump) -> Result<(), SendError> {
-        self.keys.send_at(moment, ump)
-    }
-
-    /// Plays `ump` at `at`: [`At::Frame`] on that frame of the engine's clock
-    /// at the rate the queue last published (one already past lands on the next
-    /// block's first frame; a caller that read the clock sends for that
-    /// reading with [`send_at`](Self::send_at)),
-    /// [`At::NextBlock`] on the next block's first frame. Messages due together
-    /// play in the order they were sent. Never blocks, allocates or locks.
-    ///
-    /// # Errors
-    ///
-    /// [`SendError::Beat`] for [`At::Beat`]; [`SendError::Full`] when the queue
-    /// is full.
-    pub fn send(&self, at: At, ump: Ump) -> Result<(), SendError> {
+    pub fn send(&self, at: impl Into<Stamp>, ump: Ump) -> Result<(), SendError> {
         self.keys.send(at, ump)
     }
 
@@ -229,7 +216,7 @@ impl InstrumentHandle {
     /// As [`send`](Self::send).
     pub fn note_on(
         &self,
-        at: At,
+        at: impl Into<Stamp>,
         channel: MidiChannel,
         note: NoteNumber,
         velocity: u16,
@@ -245,21 +232,22 @@ impl InstrumentHandle {
     /// As [`send`](Self::send).
     pub fn note_off(
         &self,
-        at: At,
+        at: impl Into<Stamp>,
         channel: MidiChannel,
         note: NoteNumber,
     ) -> Result<(), SendError> {
         self.keys.note_off(at, channel, note)
     }
 
-    /// How many messages the queue has dropped for want of room to hold them
-    /// until their frame (more than a ring's worth waiting for frames far
-    /// ahead). The latest that may be lost go first; a note-off or a panic goes
-    /// only when nothing else can. A full ring is reported by [`send`](Self::send)
-    /// instead.
+    /// What the queue has lost, in events. `evicted`: messages dropped for want
+    /// of room to hold them until their frame (more than a ring's worth waiting
+    /// for frames far ahead; the latest that may be lost go first, a note-off
+    /// or a panic only when nothing else can). `lost`: a full ring, also
+    /// reported by [`send`](Self::send). `refused`: the port declined one.
+    /// `late`: found past their frame.
     #[must_use]
-    pub fn dropped(&self) -> u64 {
-        self.keys.dropped()
+    pub fn losses(&self) -> Losses {
+        self.keys.losses()
     }
 
     /// Sets the gain after the instrument's main pair, a linear amplitude.

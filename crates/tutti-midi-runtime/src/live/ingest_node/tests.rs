@@ -39,7 +39,7 @@ fn reclaim_frees_a_request_a_block_held_across_the_next() {
         controls.set_mpe_mode(tutti_fixtures::midi::lower_zone(15));
     }
     assert_eq!(controls.request.retired_len(), 1, "pinned until a scan");
-    assert_eq!(controls.reclaim(), 0);
+    assert_eq!(tutti_rt::Reclaim::reclaim(&controls), 0);
     assert_eq!(controls.request.retired_len(), 0, "freed by the reclaim");
 }
 

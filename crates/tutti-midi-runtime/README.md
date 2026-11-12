@@ -102,14 +102,13 @@ Into the graph, a control thread pushes into an event inlet's writer
 thread.
 
 ```rust
-use tutti_graph::EventInletNode;
+use tutti_graph::{EventInletNode, Stamp};
 use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
-use tutti_types::At;
-use tutti_ump::{MidiChannel, NoteNumber};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber};
 
 let (_node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
-let mut keys = MidiKeys::new(writer);
-keys.note_on(At::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 0xC800)
+let mut keys = MidiKeys::new(writer, MidiGroup::FIRST);
+keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 0xC800)
     .unwrap();
 ```
 

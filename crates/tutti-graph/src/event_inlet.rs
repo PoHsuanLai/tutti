@@ -107,9 +107,8 @@ use crate::time::Due;
 ///
 /// One variant: a stamp cannot name a beat any more, so the ring being full is
 /// the only way left. It stays an enum so the reason reads at the call site
-/// (`Err(Refused::Full)`) and a second reason does not break a match.
+/// (`Err(Refused::Full)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Refused {
     /// The ring is full: the event was dropped and counted
     /// ([`Losses::lost`]).

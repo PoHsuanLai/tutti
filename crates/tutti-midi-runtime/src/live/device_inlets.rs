@@ -23,7 +23,7 @@
 //! it arrived, whatever the block boundaries, and the spacing between events
 //! is the map's: within the bound doc 017 section 5 states
 //! ([`ClockMap`]). An event is late, and counted so
-//! ([`InletCounts::late`]), only when the
+//! (`late` in [`InletCounts::losses`]), only when the
 //! thread's push comes more than the lead after its arrival.
 //!
 //! # Slots
@@ -40,9 +40,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use tutti_graph::{EventInletNode, EventInletWriter, InletCounts};
+use tutti_graph::{EventInletNode, EventInletWriter, InletCounts, Stamp};
 use tutti_rt::{ArcLend, Reader};
-use tutti_types::{At, Moment};
+use tutti_types::Moment;
 use tutti_ump::Ump;
 
 use crate::clock_map::{ClockMap, ClockReading, Observed};
@@ -293,9 +293,10 @@ impl DeviceInput {
         self.slot
     }
 
-    /// The inlet's counts, readable from any thread: events the ring had no
-    /// room for ([`lost`](InletCounts::lost)), the waiting list had no room
-    /// for, the port refused, and events that came late.
+    /// The inlet's counts, readable from any thread ([`InletCounts::losses`]):
+    /// events the ring had no room for (`lost`), the waiting list had no room
+    /// for (`evicted`), the port refused (`refused`), and events that came
+    /// late.
     #[must_use]
     pub fn counts(&self) -> InletCounts {
         self.counts.clone()
@@ -305,13 +306,13 @@ impl DeviceInput {
     /// block clock puts that time on, plus the lead; or for the next block
     /// while no reading exists (no engine yet, or `arrival` before frame 0).
     /// `false` when the ring was full: the event is dropped and counted in
-    /// [`lost`](InletCounts::lost). Lock-free and allocation-free, so safe to
+    /// [`Losses::lost`](tutti_graph::Losses::lost). Lock-free and allocation-free, so safe to
     /// call from a driver callback.
     #[inline]
     pub fn push(&mut self, ump: Ump, arrival: Instant) -> bool {
         let sent = match self.moment_of(arrival) {
-            Some(at) => self.writer.push_at(at, ump),
-            None => self.writer.push(At::NextBlock, ump),
+            Some(at) => self.writer.push(at, ump),
+            None => self.writer.push(Stamp::NextBlock, ump),
         };
         sent.is_ok()
     }

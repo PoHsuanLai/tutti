@@ -45,7 +45,7 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 
 let mut file = File::open("piano.sf2")?;
-let soundfont = Arc::new(SoundFont::new(&mut file)?);
+let soundfont = Arc::new(SoundFont::from_reader(&mut file)?);
 
 let settings = Settings::new(SampleRate::SR_44K1);
 let mut unit = SoundFontUnit::new(soundfont, &settings)?;

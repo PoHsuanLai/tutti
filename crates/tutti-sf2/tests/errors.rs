@@ -18,17 +18,29 @@ impl Read for Broken {
 /// being done, and the cause is the `source`.
 #[test]
 fn an_io_failure_names_the_task_and_keeps_the_cause_as_its_source() {
-    let error = SoundFont::new(&mut Broken).unwrap_err();
+    let error = SoundFont::from_reader(&mut Broken).unwrap_err();
     assert!(matches!(error, Error::Io(_)));
     assert_eq!(error.to_string(), "reading the SoundFont failed");
     let cause = error.source().expect("the cause is the source");
     assert_eq!(cause.to_string(), "the disk went away");
 }
 
+/// `open` of a path with no file is the file system's error, `NotFound`, as
+/// `Io`: not a parse error and not a panic.
+#[test]
+fn opening_a_missing_path_is_an_io_not_found() {
+    let dir = std::env::temp_dir().join("tutti-sf2-no-such-dir");
+    let error = SoundFont::open(dir.join("missing.sf2")).unwrap_err();
+    match error {
+        Error::Io(cause) => assert_eq!(cause.kind(), io::ErrorKind::NotFound),
+        other => panic!("expected Io, got {other:?}"),
+    }
+}
+
 /// A truncated file is an I/O error too, not a panic.
 #[test]
 fn a_truncated_file_is_an_io_error() {
-    let error = SoundFont::new(&mut Cursor::new(b"RIFF".to_vec())).unwrap_err();
+    let error = SoundFont::from_reader(&mut Cursor::new(b"RIFF".to_vec())).unwrap_err();
     assert!(matches!(error, Error::Io(_)), "{error:?}");
 }
 
@@ -40,7 +52,7 @@ fn a_wrong_form_type_names_what_it_found() {
     // The RIFF size is honoured, so it is true: the form type and 16 more bytes.
     let mut file = b"RIFF\x14\0\0\0WAV\x01".to_vec();
     file.extend([0; 16]);
-    let error = SoundFont::new(&mut Cursor::new(file)).unwrap_err();
+    let error = SoundFont::from_reader(&mut Cursor::new(file)).unwrap_err();
     let message = error.to_string();
     assert!(message.contains("'sfbk'"), "{message}");
     assert!(message.contains("'WAV?'"), "{message}");
@@ -56,6 +68,6 @@ fn a_wrong_form_type_names_what_it_found() {
 /// A file that is not RIFF at all.
 #[test]
 fn a_file_that_is_not_riff_is_refused() {
-    let error = SoundFont::new(&mut Cursor::new(b"OggS\0\0\0\0".to_vec())).unwrap_err();
+    let error = SoundFont::from_reader(&mut Cursor::new(b"OggS\0\0\0\0".to_vec())).unwrap_err();
     assert!(matches!(error, Error::RiffChunkNotFound), "{error:?}");
 }

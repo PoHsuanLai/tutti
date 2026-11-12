@@ -22,6 +22,7 @@ use crate::mpe::{MpeControl, SLIDE_CENTER};
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
+use tutti_midi_protocol::MpeMode;
 use tutti_types::{
     Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, SampleRate, Seconds,
 };
@@ -187,7 +188,11 @@ impl SynthVoice {
         self.channel = channel;
     }
 
-    pub(crate) fn from_config(config: &SynthConfig, unison_count: usize) -> Self {
+    pub(crate) fn from_config(
+        config: &SynthConfig,
+        sample_rate: SampleRate,
+        unison_count: usize,
+    ) -> Self {
         let (base_filter_cutoff, base_filter_resonance) = match config.filter {
             FilterType::Moog { cutoff, resonance } => (cutoff, resonance),
             FilterType::Svf { cutoff, .. } => (cutoff, Resonance::NONE),
@@ -213,13 +218,10 @@ impl SynthVoice {
             lfo_phase: Phase::START,
             envelope_level: 0.0,
             active: false,
-            mpe: MpeVoiceState::new(config.mpe_enabled),
+            mpe: MpeVoiceState::new(config.mpe != MpeMode::Disabled),
             base_note_freq: Hz(440.0),
             tuned: None,
-            glide: Portamento::new(
-                config.portamento.clone().unwrap_or_default(),
-                config.sample_rate,
-            ),
+            glide: Portamento::new(config.portamento.clone().unwrap_or_default(), sample_rate),
             sub_voices: unison_count.max(1),
         }
     }

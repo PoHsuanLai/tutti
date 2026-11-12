@@ -16,7 +16,7 @@
 //!
 //! The fork follows its graph's rate, as the live node does: the editor
 //! prepares it at the render's rate, and the node's `prepare` swaps in
-//! [`SoundFontUnit::with_sample_rate`], keeping the preset. `prepare` runs on
+//! a unit at the render's rate, keeping the preset. `prepare` runs on
 //! the control thread, where rebuilding is allowed.
 //!
 //! What the fork does not carry: sounding voices, and channel state the
@@ -98,14 +98,14 @@ mod tests {
                 path.display()
             )
         });
-        Arc::new(SoundFont::new(&mut file).expect("the test soundfont parses"))
+        Arc::new(SoundFont::from_reader(&mut file).expect("the test soundfont parses"))
     }
 
-    /// A unit at `rate`, on preset `preset`.
-    fn unit(soundfont: &Arc<SoundFont>, rate: SampleRate, preset: U7) -> SoundFontUnit {
-        let settings = Settings::new(rate);
+    /// A unit on preset `preset`.
+    fn unit(soundfont: &Arc<SoundFont>, preset: U7) -> SoundFontUnit {
+        let settings = Settings::new();
         let mut unit =
-            SoundFontUnit::new(Arc::clone(soundfont), &settings).expect("the unit builds");
+            SoundFontUnit::new(Arc::clone(soundfont), settings).expect("the unit builds");
         unit.program_change(MidiChannel::FIRST, preset);
         unit
     }
@@ -142,14 +142,14 @@ mod tests {
     }
 
     /// A fork plays at the render's rate, on the live unit's preset, and
-    /// shares the decoded SoundFont. A 48 kHz unit on preset 24 (a guitar,
-    /// not the default piano), forked for a render at 48 and at 96 kHz: a
-    /// note renders sample for sample what a fresh unit built at the render's
-    /// rate on that preset renders.
+    /// shares the decoded SoundFont. A unit on preset 24 (a guitar, not the
+    /// default piano), forked for a render at 48 and at 96 kHz: a note renders
+    /// sample for sample what a fresh unit on that preset renders when
+    /// prepared at the render's rate.
     #[test]
     fn a_fork_plays_at_the_render_rate_on_the_live_preset() {
         let font = soundfont();
-        let live = unit(&font, LIVE, U7::of(24));
+        let live = unit(&font, U7::of(24));
         let source = live.fork_template();
 
         for rate in [LIVE, SampleRate(96_000.0)] {
@@ -161,11 +161,10 @@ mod tests {
                 "the fork shares the decoded SoundFont"
             );
             let out = render(fork, rate, 4_096);
-            let reference = render(Box::new(unit(&font, rate, U7::of(24))), rate, 4_096);
+            let reference = render(Box::new(unit(&font, U7::of(24))), rate, 4_096);
             assert!(reference.iter().any(|&s| s != 0.0), "the note sounds");
             assert_eq!(out, reference, "{rate:?}: the note at the render's rate");
         }
-        assert_eq!(live.sample_rate(), LIVE, "the live unit keeps its rate");
     }
 
     /// A fork releases every key: a note held on the unit when it went
@@ -176,7 +175,10 @@ mod tests {
     #[test]
     fn a_fork_releases_every_held_key() {
         let font = soundfont();
-        let mut live = unit(&font, LIVE, U7::of(16));
+        let mut live = unit(&font, U7::of(16));
+        // At the render's rate first: preparing at another rate drops the
+        // voices (they are built against a rate).
+        live.prepare(&Prepare::new(LIVE, MaxBlock::of(Samples(64))));
         live.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800);
         let fork = live
             .fork_template()

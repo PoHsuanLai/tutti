@@ -31,7 +31,9 @@
 //! the same reason `examples/render_synth_cases.rs` uses one.
 
 use std::hint::black_box;
+use std::num::NonZeroUsize;
 use tutti_curve::Exponent;
+use tutti_polysynth::UnisonVoices;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_curve::Law;
@@ -64,7 +66,6 @@ fn flat_envelope() -> Adsr {
 
 fn config() -> SynthConfig {
     SynthConfig {
-        sample_rate: tutti_types::SampleRate::new(SR),
         envelope: flat_envelope(),
         ..Default::default()
     }
@@ -72,19 +73,15 @@ fn config() -> SynthConfig {
 
 /// A synth with `n` notes held and the attack already elapsed.
 ///
-/// Raises `max_voices` to `n`: at the default of 8 every case above 8 steals
+/// Raises the polyphony to `n`: at the default of 8 every case above 8 steals
 /// voices and measures the same work. Panics above 16, which is the synth's
 /// own hard ceiling — see the module header.
 fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
     let cfg = SynthConfig {
-        max_voices: n.max(cfg.max_voices),
+        polyphony: NonZeroUsize::new(n.max(cfg.polyphony.get())).unwrap(),
         ..cfg
     };
-    let mut synth = Direct::new(
-        PolySynth::new(cfg).expect("synth builds"),
-        SampleRate(SR),
-        BLOCK,
-    );
+    let mut synth = Direct::new(PolySynth::new(cfg), SampleRate(SR), BLOCK);
     let at = Offset::new(0, Samples(BLOCK)).expect("inside");
     let events: Vec<Event> = (0..n)
         .map(|i| {
@@ -187,7 +184,7 @@ fn bench_unison(c: &mut Criterion) {
                 // `Option`, not a count: a synth built with `None` has no
                 // unison engine at all, which is the 1-voice baseline.
                 unison: (n > 1).then(|| UnisonConfig {
-                    voice_count: n as u8,
+                    voice_count: UnisonVoices::new(n as u8).expect("a unison count"),
                     ..Default::default()
                 }),
                 ..config()

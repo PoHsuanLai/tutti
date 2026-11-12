@@ -1,14 +1,12 @@
 //! The reference SoundFont (`assets/soundfonts/TimGM6mb.sf2`) read as data.
 
-use std::fs::File;
-
 use tutti_fixtures::asset;
 
 use tutti_sf2::{Bank, GeneratorType, SoundFont};
 use tutti_ump::{NoteNumber, U7};
 
 fn timgm6mb() -> SoundFont {
-    SoundFont::new(&mut File::open(asset("soundfonts/TimGM6mb.sf2")).unwrap()).unwrap()
+    SoundFont::open(asset("soundfonts/TimGM6mb.sf2")).unwrap()
 }
 
 #[test]

@@ -279,7 +279,7 @@ mod tests {
             }],
         );
         std::sync::Arc::new(
-            tutti_sf2::SoundFont::new(&mut std::io::Cursor::new(bytes))
+            tutti_sf2::SoundFont::from_reader(&mut std::io::Cursor::new(bytes))
                 .expect("the built SoundFont parses"),
         )
     }

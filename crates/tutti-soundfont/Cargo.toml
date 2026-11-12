@@ -42,6 +42,8 @@ tutti-polysynth = { path = "../tutti-polysynth" }
 # Finds the repo's `assets/` for the tests, and `assert_golden`: the
 # libm-recorded digest gate.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# `check_range_contract`'s serde shape, for `Polyphony`.
+serde = "1"
 assert_no_alloc = { version = "1", default-features = false }
 # `contract::{drive_input, Direct}`: the unit driven by hand, as a graph drives
 # it, in its tests and allocation gate.

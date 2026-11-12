@@ -86,6 +86,22 @@ impl Channel {
         self.patch_number = i32::from(program.get());
     }
 
+    /// Selects a preset's bank and program at once: a melodic bank is held as
+    /// Bank Select and the Program Change applies it; the percussion bank
+    /// (`wBank` 128) is the channel's bank as it is.
+    pub(crate) fn select(&mut self, bank: tutti_sf2::Bank, program: U7) {
+        match bank {
+            tutti_sf2::Bank::Melodic(msb) => {
+                self.pending_bank = with_msb(msb);
+                self.program_change(program);
+            }
+            tutti_sf2::Bank::Percussion => {
+                self.bank_number = i32::from(tutti_sf2::Bank::PERCUSSION_NUMBER);
+                self.patch_number = i32::from(program.get());
+            }
+        }
+    }
+
     /// The most messages [`chase`](Self::chase) writes: a Program Change with
     /// its bank, the Bank Select held for the next one (two controllers) and
     /// the two sends.

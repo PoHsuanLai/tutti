@@ -11,7 +11,7 @@ pub use tutti_fixtures::sf2::{Inst, Preset, Zone};
 /// The file, parsed.
 pub fn font(presets: &[Preset], insts: &[Inst]) -> Arc<SoundFont> {
     Arc::new(
-        SoundFont::new(&mut std::io::Cursor::new(tutti_fixtures::sf2::bytes(
+        SoundFont::from_reader(&mut std::io::Cursor::new(tutti_fixtures::sf2::bytes(
             presets, insts,
         )))
         .expect("the built SoundFont parses"),
@@ -45,7 +45,7 @@ pub fn one_preset_with_samples(
     }];
     let insts = [Inst { name: "i", zones }];
     Arc::new(
-        SoundFont::new(&mut std::io::Cursor::new(
+        SoundFont::from_reader(&mut std::io::Cursor::new(
             tutti_fixtures::sf2::bytes_with_headers(&presets, &insts, samples),
         ))
         .expect("the built SoundFont parses"),

@@ -22,7 +22,6 @@
 //! and construction (which does allocate, heavily) is deliberately outside
 //! every gate.
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tutti_graph::UmpAt;
 
@@ -33,8 +32,8 @@ use support::Hand;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_sf2::SoundFont;
-use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::{SampleRate, Samples};
+use tutti_soundfont::{Polyphony, Settings, SoundFontUnit};
+use tutti_types::Samples;
 use tutti_ump::{
     Address, Attribute, Bank, CCNumber, Data128, Flex, Message, MidiChannel, MidiGroup, NoteNumber,
     RegisteredPerNoteController, Stream, Sysex7Packet, SysexStatus, System, U7, U14, Ump, Utility,
@@ -50,15 +49,15 @@ fn load_test_soundfont() -> Arc<SoundFont> {
     let mut file = std::fs::File::open(&path)
         .unwrap_or_else(|e| panic!("test soundfont missing at {}: {e}", path.display()));
     Arc::new(
-        SoundFont::new(&mut file)
+        SoundFont::from_reader(&mut file)
             .unwrap_or_else(|e| panic!("test soundfont at {} is malformed: {e}", path.display())),
     )
 }
 
 /// A unit at 44.1 kHz, prepared (outside any gate) and driven by hand.
 fn unit() -> Hand {
-    let settings = Settings::new(SampleRate::SR_44K1);
-    Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).expect("create SoundFontUnit"))
+    let settings = Settings::new();
+    Hand::new(SoundFontUnit::new(load_test_soundfont(), settings).expect("create SoundFontUnit"))
 }
 
 /// `offset` frames into a block of [`Hand`]'s length.
@@ -404,8 +403,8 @@ fn drum(key: u8, offset: u32) -> UmpAt {
 fn soundfont_note_logic_is_allocation_free() {
     let font = load_test_soundfont();
     let (open, closed) = two_drums_of_a_class(&font);
-    let settings = Settings::new(SampleRate::SR_44K1).with_polyphony(NonZeroUsize::new(8).unwrap());
-    let mut unit = Hand::new(SoundFontUnit::new(font, &settings).expect("create SoundFontUnit"));
+    let settings = Settings::new().with_polyphony(Polyphony::of(8));
+    let mut unit = Hand::new(SoundFontUnit::new(font, settings).expect("create SoundFontUnit"));
 
     let ons: Vec<UmpAt> = (0..24u32).map(|f| note_on(36 + f as u8, f * 2)).collect();
     let offs: Vec<UmpAt> = (0..24u32).map(|f| note_off(36 + f as u8, f * 2)).collect();

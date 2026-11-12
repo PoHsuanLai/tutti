@@ -1,4 +1,5 @@
 use super::*;
+use crate::UnisonVoices;
 
 /// **A driven detune gets `set_detune`'s floor**: driven to −10 cents
 /// the engine detunes by 0, as `set_detune(-10)` leaves it, and does not
@@ -6,14 +7,14 @@ use super::*;
 #[test]
 fn a_driven_detune_is_floored_as_the_setter_floors_it() {
     let mut engine = UnisonEngine::new(UnisonConfig {
-        voice_count: 3,
+        voice_count: UnisonVoices::of(3),
         detune_cents: Cents(12.0),
         ..UnisonConfig::default()
     });
     engine.sync_from_atomics([Some(-10.0), None]);
     assert_eq!(engine.config().detune_cents, Cents(0.0));
     let mut by_setter = UnisonEngine::new(UnisonConfig {
-        voice_count: 3,
+        voice_count: UnisonVoices::of(3),
         ..UnisonConfig::default()
     });
     by_setter.set_detune(Cents(-10.0));
@@ -26,7 +27,7 @@ fn a_driven_detune_is_floored_as_the_setter_floors_it() {
 #[test]
 fn test_single_voice() {
     let config = UnisonConfig {
-        voice_count: 1,
+        voice_count: UnisonVoices::of(1),
         ..Default::default()
     };
     let unison = UnisonEngine::new(config);
@@ -42,7 +43,7 @@ fn test_single_voice() {
 #[test]
 fn test_detune_spread() {
     let config = UnisonConfig {
-        voice_count: 3,
+        voice_count: UnisonVoices::of(3),
         detune_cents: Cents(12.0), // ~1/8 semitone spread
         stereo_spread: Spread::POINT,
         phase_randomize: false,
@@ -72,7 +73,7 @@ fn test_detune_spread() {
 #[test]
 fn test_stereo_spread() {
     let config = UnisonConfig {
-        voice_count: 3,
+        voice_count: UnisonVoices::of(3),
         detune_cents: Cents(0.0),
         stereo_spread: Spread(1.0),
         phase_randomize: false,
@@ -92,7 +93,7 @@ fn test_stereo_spread() {
 fn test_equal_power_amplitude() {
     for count in 1..=8 {
         let config = UnisonConfig {
-            voice_count: count,
+            voice_count: UnisonVoices::new(count).expect("a unison count"),
             ..Default::default()
         };
         let unison = UnisonEngine::new(config);
@@ -116,7 +117,7 @@ fn test_equal_power_amplitude() {
 #[test]
 fn test_phase_randomization() {
     let config = UnisonConfig {
-        voice_count: 4,
+        voice_count: UnisonVoices::of(4),
         phase_randomize: true,
         ..Default::default()
     };
@@ -150,25 +151,71 @@ fn test_config_update() {
 
     assert_eq!(unison.voice_count(), 1);
 
-    unison.set_voice_count(5);
+    unison.set_voice_count(UnisonVoices::of(5));
     assert_eq!(unison.voice_count(), 5);
 
     unison.set_detune(Cents::new(20.0));
     assert!((unison.config().detune_cents.get() - 20.0).abs() < 0.001);
 
-    unison.set_stereo_spread(0.5);
+    unison.set_stereo_spread(tutti_types::Spread::new_clamped(0.5));
     assert!((unison.config().stereo_spread.get() - 0.5).abs() < 0.001);
 }
 
+/// `UnisonVoices` keeps the range-checked shape of CLAUDE.md: `new` refuses 0
+/// and anything past 16 and never clamps, `TryFrom` agrees and carries the
+/// refused raw, `of` panics. The checked shape is serde's, which the type has
+/// none of in the library: the check runs on the same `try_from` shape
+/// written here.
 #[test]
-fn test_clamp_voice_count() {
+fn unison_voices_keep_the_range_checked_shape() {
+    use serde::{Deserialize, Serialize};
+    use tutti_fixtures::{RangeContract, check_range_contract};
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Checked(UnisonVoices);
+    impl Serialize for Checked {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            self.0.get().serialize(s)
+        }
+    }
+    impl<'de> Deserialize<'de> for Checked {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            UnisonVoices::try_from(u8::deserialize(d)?)
+                .map(Checked)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+    impl TryFrom<u8> for Checked {
+        type Error = crate::UnisonVoicesError;
+        fn try_from(raw: u8) -> Result<Self, Self::Error> {
+            UnisonVoices::try_from(raw).map(Checked)
+        }
+    }
+    impl From<Checked> for u8 {
+        fn from(c: Checked) -> u8 {
+            c.0.get()
+        }
+    }
+    check_range_contract(&RangeContract {
+        new: |raw| UnisonVoices::new(raw).map(Checked),
+        get: |c| c.0.get(),
+        of: Some(|raw| Checked(UnisonVoices::of(raw))),
+        valid: &[1, 2, 16],
+        invalid: &[0, 17, 100, u8::MAX],
+    });
+}
+
+/// A stack at the ceiling renders every one of its sub-voices' params.
+#[test]
+fn the_ceiling_stack_has_sixteen_sub_voices() {
     let config = UnisonConfig {
-        voice_count: 100, // Over max
+        voice_count: UnisonVoices::of(UnisonVoices::MAX),
         ..Default::default()
     };
     let unison = UnisonEngine::new(config);
 
     assert_eq!(unison.voice_count(), MAX_UNISON_VOICES);
+    assert_eq!(unison.all_params().len(), 16);
 }
 
 /// Recomputing detune/spread keeps the drawn phases.
@@ -179,7 +226,7 @@ fn test_clamp_voice_count() {
 #[test]
 fn recompute_keeps_the_drawn_phases() {
     let mut unison = UnisonEngine::new(UnisonConfig {
-        voice_count: 4,
+        voice_count: UnisonVoices::of(4),
         phase_randomize: true,
         ..Default::default()
     });

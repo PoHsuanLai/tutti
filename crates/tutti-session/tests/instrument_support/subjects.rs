@@ -22,8 +22,7 @@ impl Subject for Poly {
 
     fn rig() -> Rig {
         let synth = PolySynth::new(SynthConfig {
-            sample_rate: RATE,
-            max_voices: 8,
+            polyphony: std::num::NonZeroUsize::new(8).unwrap(),
             oscillator: OscillatorType::Saw,
             filter: FilterType::None,
             envelope: Adsr {
@@ -33,8 +32,7 @@ impl Subject for Poly {
                 release: Seconds(0.05),
             },
             ..SynthConfig::default()
-        })
-        .expect("builds");
+        });
         let mut session = offline_session();
         let (handle, _controls) = session
             .add_instrument(synth)
@@ -58,11 +56,12 @@ impl Subject for Soundfont {
     const CUT: usize = 8;
 
     fn rig() -> Rig {
-        let settings = Settings::new(RATE);
+        let settings = Settings::new();
         let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
         let mut file = std::fs::File::open(&path).expect("the test font is in the checkout");
-        let font = std::sync::Arc::new(SoundFont::new(&mut file).expect("the test font parses"));
-        let unit = SoundFontUnit::new(font, &settings).expect("builds");
+        let font =
+            std::sync::Arc::new(SoundFont::from_reader(&mut file).expect("the test font parses"));
+        let unit = SoundFontUnit::new(font, settings).expect("builds");
         let mut session = offline_session();
         let (handle, ()) = session
             .add_instrument(unit)

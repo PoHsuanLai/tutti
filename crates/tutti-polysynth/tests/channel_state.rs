@@ -8,6 +8,7 @@
 
 mod support;
 
+use std::num::NonZeroUsize;
 use support::{BLOCK, Hand};
 use tutti_fixtures::midi;
 use tutti_fixtures::signal::peak;
@@ -16,7 +17,7 @@ use tutti_midi_protocol::PitchBendSensitivity;
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
-use tutti_types::{Amplitude, SampleRate, Seconds, Semitones};
+use tutti_types::{Amplitude, Seconds, Semitones};
 use tutti_ump::Rpn;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
 
@@ -30,7 +31,6 @@ fn blocks(seconds: f64) -> usize {
 
 fn config() -> SynthConfig {
     SynthConfig {
-        sample_rate: SampleRate::new(SR),
         oscillator: OscillatorType::Sine,
         envelope: Adsr {
             attack: Seconds(0.001),
@@ -38,13 +38,13 @@ fn config() -> SynthConfig {
             sustain: Amplitude(1.0),
             release: Seconds(RELEASE),
         },
-        max_voices: 8,
+        polyphony: NonZeroUsize::new(8).unwrap(),
         ..Default::default()
     }
 }
 
 fn hand(config: SynthConfig) -> Hand {
-    Hand::new(PolySynth::new(config).expect("a valid config"))
+    Hand::new(PolySynth::new(config))
 }
 
 fn on(channel: u8, note: u8) -> Ump {
@@ -296,8 +296,7 @@ fn reset_all_controllers_centres_its_own_wheel() {
 #[test]
 fn under_mpe_the_master_bend_and_the_per_note_bend_add() {
     let mut h = hand(SynthConfig {
-        mpe_enabled: true,
-        mpe_pitch_bend_range: Semitones(48.0),
+        mpe: support::lower_zone(),
         ..config()
     });
     // Per-note bend of a quarter of the wheel's travel: 12 of 48 semitones.
@@ -311,7 +310,7 @@ fn under_mpe_the_master_bend_and_the_per_note_bend_add() {
 #[test]
 fn under_mpe_a_members_reset_touches_only_the_member() {
     let mut h = hand(SynthConfig {
-        mpe_enabled: true,
+        mpe: support::lower_zone(),
         ..config()
     });
     play(&mut h, &[bend_up(0), on(1, 69)], 0.2);
@@ -345,8 +344,7 @@ fn reset_returns_the_wheel_and_the_range_to_their_defaults() {
 #[test]
 fn reset_returns_the_per_note_range_to_its_default() {
     let mut h = hand(SynthConfig {
-        mpe_enabled: true,
-        mpe_pitch_bend_range: Semitones(48.0),
+        mpe: support::lower_zone(),
         ..config()
     });
     let rpn7 = midi::registered_rpn(
@@ -367,7 +365,7 @@ fn config_with(mode: VoiceMode, strategy: AllocationStrategy, voices: usize) -> 
     SynthConfig {
         voice_mode: mode,
         allocation_strategy: strategy,
-        max_voices: voices,
+        polyphony: NonZeroUsize::new(voices).unwrap(),
         ..config()
     }
 }

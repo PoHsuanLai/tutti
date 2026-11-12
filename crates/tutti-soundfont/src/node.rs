@@ -41,7 +41,7 @@ impl Node for SoundFontUnit {
     fn prepare(&mut self, p: &Prepare) {
         let rate = p.sample_rate();
         if rate.get().round() != self.sample_rate.get().round()
-            && let Ok(unit) = self.with_sample_rate(rate)
+            && let Some(unit) = self.rerated(rate)
         {
             *self = unit;
         }

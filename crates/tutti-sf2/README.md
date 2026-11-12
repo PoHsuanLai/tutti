@@ -25,7 +25,7 @@ The crate's failure type is `Error`, with a `Result` alias.
 use std::fs::File;
 use tutti_sf2::SoundFont;
 
-let soundfont = SoundFont::new(&mut File::open("piano.sf2")?)?;
+let soundfont = SoundFont::from_reader(&mut File::open("piano.sf2")?)?;
 for preset in soundfont.presets() {
     if let (Some(bank), Some(patch)) = (preset.bank(), preset.patch()) {
         println!("{bank}:{} {}", patch.get(), preset.name());

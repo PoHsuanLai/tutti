@@ -24,7 +24,7 @@ fn base() -> Vec<u8> {
 }
 
 fn load(file: Vec<u8>) -> Result<SoundFont, Error> {
-    SoundFont::new(&mut Cursor::new(file))
+    SoundFont::from_reader(&mut Cursor::new(file))
 }
 
 fn word(file: &[u8], at: usize) -> u32 {

@@ -7,7 +7,7 @@
 //! - [`SoundFontUnit`]: the player, a graph node with one MIDI event input and
 //!   five outputs: the dry pair and the effect sends.
 //! - [`SYNTH_BLOCK_FRAMES`]: the 8-frame MIDI timing resolution.
-//! - [`Settings`]: what a unit is built with.
+//! - [`Settings`]: what a unit is built with, and [`Polyphony`], its voice count.
 //! - [`enum@Error`] and [`Result`]: this crate's failure type.
 
 mod array_math;
@@ -29,7 +29,7 @@ mod voices;
 mod volume_envelope;
 
 pub use error::{Error, Result};
-pub use settings::Settings;
+pub use settings::{Polyphony, PolyphonyError, Settings};
 
 // `SoundFontUnit::fork_instance`: the unit in a fork of the graph
 // (an export), with its clip.
@@ -39,7 +39,7 @@ mod node;
 use std::sync::Arc;
 use tutti_graph::{EventKind, SubBlocks};
 use tutti_midi_protocol::channel_voice;
-use tutti_sf2::SoundFont;
+use tutti_sf2::{Preset, SoundFont};
 use tutti_types::{SampleRate, Tail};
 use tutti_ump::{Attribute, MidiChannel, NoteNumber, U7, Ump, Voice2};
 
@@ -103,15 +103,12 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// # Examples
 ///
 /// ```no_run
-/// use std::fs::File;
-/// use std::sync::Arc;
-/// use tutti_types::SampleRate;
 /// use tutti_ump::{MidiChannel, U7};
 /// use tutti_sf2::SoundFont;
 /// use tutti_soundfont::{Settings, SoundFontUnit};
 ///
-/// let soundfont = Arc::new(SoundFont::new(&mut File::open("piano.sf2")?)?);
-/// let mut unit = SoundFontUnit::new(soundfont, &Settings::new(SampleRate::SR_48K))?;
+/// let soundfont = SoundFont::open("piano.sf2")?;
+/// let mut unit = SoundFontUnit::new(soundfont, Settings::new())?;
 /// unit.program_change(MidiChannel::FIRST, U7::of(0));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -130,10 +127,10 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// # The rate
 ///
 /// A player's voices are built against a rate and cannot be re-rated in place.
-/// [`new`](Self::new) builds at `Settings::sample_rate`; the node's `prepare`
-/// swaps in [`with_sample_rate`](Self::with_sample_rate) (control thread,
-/// keeping the preset) when its graph runs at another rate. A rate outside
-/// 16 to 192 kHz leaves it at its own.
+/// [`new`](Self::new) builds at 44.1 kHz; the node's `prepare` swaps in a
+/// player at the graph's rate (control thread, keeping the presets and
+/// channel state), and a rate outside 16 to 192 kHz leaves it at its own. The
+/// rate is the graph's: nothing here names one.
 pub struct SoundFontUnit {
     player: Player,
     /// The longest the unit can keep sounding after its last key is up, in
@@ -166,45 +163,21 @@ impl SoundFontUnit {
         }
     }
 
-    /// Creates a unit over a decoded `SoundFont`, sharing it rather than
-    /// copying it.
+    /// Creates a unit over a decoded `SoundFont`, sharing it when given an
+    /// `Arc` rather than copying it.
     ///
-    /// The voices cannot be re-rated, so a graph prepared at another rate has
-    /// the node build a new one ([`with_sample_rate`](Self::with_sample_rate)).
-    /// Allocates the voices and reads every zone of the
-    /// font once (for the tail), so call it off the audio thread.
+    /// The unit renders at 44.1 kHz until its graph prepares it at the graph's
+    /// rate ("The rate" on [`SoundFontUnit`]). Allocates the voices and reads
+    /// every zone of the font once (for the tail), so call it off the audio
+    /// thread.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SampleRateOutOfRange`] or
-    /// [`Error::PolyphonyOutOfRange`] if `settings` is out of range (the rate
-    /// 16 to 192 kHz, the polyphony up to [`Settings::MAX_POLYPHONY`]), and
-    /// [`Error::NoPlayablePreset`] for a font none of whose presets has a MIDI
-    /// bank and program.
-    pub fn new(soundfont: Arc<SoundFont>, settings: &Settings) -> Result<Self> {
-        let player = Player::new(&soundfont, settings)?;
+    /// Returns [`Error::NoPlayablePreset`] for a font none of whose presets has
+    /// a MIDI bank and program.
+    pub fn new(soundfont: impl Into<Arc<SoundFont>>, settings: Settings) -> Result<Self> {
+        let player = Player::new(&soundfont.into(), settings)?;
         Ok(Self::from_player(player, 0))
-    }
-
-    /// Creates a unit over `soundfont` at `sample_rate`, playing `program` on
-    /// `channel`: [`new`](Self::new) with the default [`Settings`], then
-    /// [`program_change`](Self::program_change).
-    ///
-    /// Allocates, so call it off the audio thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::SampleRateOutOfRange`] if `sample_rate` is outside 16
-    /// to 192 kHz.
-    pub fn with_preset(
-        soundfont: Arc<SoundFont>,
-        sample_rate: SampleRate,
-        channel: MidiChannel,
-        program: U7,
-    ) -> Result<Self> {
-        let mut unit = Self::new(soundfont, &Settings::new(sample_rate))?;
-        unit.program_change(channel, program);
-        Ok(unit)
     }
 
     /// Returns the rate this unit renders at: its settings' rate at
@@ -213,22 +186,14 @@ impl SoundFontUnit {
         self.sample_rate
     }
 
-    /// Returns a copy of this unit that renders at `sample_rate`.
-    ///
-    /// The copy has the same SoundFont (shared, not reloaded), settings,
-    /// preset and channel state, and no voice sounding. The rate is rounded to
-    /// whole hertz. Allocates a new player's voices, so
-    /// call it off the audio thread. A graph node does this itself in
-    /// `prepare` when its graph runs at another rate (see "The rate" on
-    /// [`SoundFontUnit`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::SampleRateOutOfRange`] if the rate is outside 16 to
-    /// 192 kHz.
-    pub fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
-        let player = self.player.with_sample_rate(sample_rate)?;
-        Ok(Self::from_player(player, self.planes[0].len()))
+    /// A copy of this unit that renders at `sample_rate`, or `None` outside
+    /// 16 to 192 kHz: the same SoundFont (shared, not reloaded), settings,
+    /// presets and channel state, and no voice sounding. The rate is rounded to
+    /// whole hertz. Allocates a new player's voices; the node's `prepare` calls
+    /// it on the control thread when its graph runs at another rate.
+    pub(crate) fn rerated(&self, sample_rate: SampleRate) -> Option<Self> {
+        let player = self.player.rerated(sample_rate)?;
+        Some(Self::from_player(player, self.planes[0].len()))
     }
 
     /// The tail the node declares: the longest release of any voice, in frames
@@ -279,6 +244,23 @@ impl SoundFontUnit {
     /// event input instead.
     pub fn program_change(&mut self, channel: MidiChannel, program: U7) {
         self.player.program_change(channel, program);
+    }
+
+    /// Selects `preset` on a channel, bypassing MIDI: its bank and its
+    /// program, as a Bank Select and a Program Change would. The percussion
+    /// bank (`wBank` 128) is a channel's bank as it is, which a MIDI channel
+    /// other than the percussion channel cannot send, so a chase (`Node::chase`)
+    /// carries it only on the percussion channel. Call it before inserting the
+    /// unit; once in a graph, send the program change on the event input.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnplayablePreset`] for a preset whose bank or program is not
+    /// MIDI's (SF2 2.04 section 7.2): nothing changes.
+    pub fn select(&mut self, channel: MidiChannel, preset: &Preset) -> Result<()> {
+        self.player
+            .select(channel, preset)
+            .ok_or(Error::UnplayablePreset)
     }
 
     /// Renders `range` of the scratch planes, advancing the player by

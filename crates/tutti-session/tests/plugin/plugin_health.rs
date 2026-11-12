@@ -8,7 +8,8 @@
 //! (the component mirror, `PluginHealth`, and the entity's `AudioNode`
 //! removal stayed with the adapter), moved here when the adapter was parked.
 //! The plugin is a fake backend (`PluginHandle::from_backend`) hosted at a
-//! node with `Graph::host_plugin`, so no `plugin-server` is needed; the real
+//! node with `Graph::host_plugin`, so no `plugin-server` is needed; what the
+//! plugin reports (`SessionEvent::Plugin`'s `ParamChanged` and the rest) is driven through the same fake's listeners. The real
 //! plugin's death is `plugin.rs`'s
 //! `a_plugin_dead_for_the_window_is_removed_and_reported_once`.
 
@@ -24,6 +25,7 @@ use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::ParameterInfo;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_session::{Phase, PhaseCx, PluginLiveness, Session, SessionEvent};
+use tutti_session::{PluginChange, PluginEvent};
 use tutti_types::SampleRate;
 
 /// A backend whose liveness is whatever the test says it is.
@@ -125,7 +127,11 @@ fn deaths_at(s: &mut Session, t0: Instant, ms: u64) -> Vec<(NodeKey, String)> {
     );
     out.into_iter()
         .filter_map(|e| match e {
-            SessionEvent::PluginDied { node, cause } => Some((node, cause)),
+            SessionEvent::Plugin(PluginEvent {
+                node,
+                change: PluginChange::Died { cause },
+                ..
+            }) => Some((node, cause)),
             _ => None,
         })
         .collect()
@@ -239,4 +245,132 @@ fn a_live_plugin_is_never_declared_dead() {
         &PluginLiveness::Healthy
     );
     assert!(s.graph_ref().contains(node), "a healthy plugin stays wired");
+}
+
+/// A detached session with a fake plugin hosted at a dc node, and the
+/// listeners its backend reports through (firing one is the plugin
+/// reporting).
+fn session_reporting() -> (
+    Session,
+    NodeKey,
+    tutti_plugin_host::ParameterChangeSink,
+    tutti_plugin_host::RefreshSink,
+    tutti_plugin_host::InvalidateSink,
+) {
+    let (params, refresh, invalidate) = (
+        tutti_plugin_host::ParameterChangeSink::new(),
+        tutti_plugin_host::RefreshSink::new(),
+        tutti_plugin_host::InvalidateSink::new(),
+    );
+    let handle = PluginHandle::from_backend(
+        Arc::new(FakeBackend { cause: None }),
+        None,
+        Default::default(),
+        Default::default(),
+        params.clone(),
+    )
+    .with_refresh_sink(refresh.clone())
+    .with_invalidate_sink(invalidate.clone());
+    let mut s = Session::builder()
+        .outputs_floor(ChannelLayout::STEREO)
+        .build_detached(SampleRate::DEFAULT)
+        .expect("a detached session builds");
+    let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
+    assert!(s.graph().host_plugin(
+        node,
+        handle,
+        tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
+    ));
+    s.commit();
+    (s, node.erase(), params, refresh, invalidate)
+}
+
+/// The plugin events one `Phase::Plugins` reported.
+fn plugin_events(s: &mut Session) -> Vec<PluginEvent> {
+    let mut out = Vec::new();
+    s.run_phase(Phase::Plugins, PhaseCx::at(Instant::now()), &mut out);
+    out.into_iter()
+        .filter_map(|e| match e {
+            SessionEvent::Plugin(event) => Some(event),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **A plugin's own edit of a parameter arrives as `ParamChanged`**, in the
+/// order the plugin made it, with its gesture's ends, at the plugin's node: a
+/// gesture is a `GestureBegan`, a change with its value and its
+/// recording flag, a `GestureEnded`. A later update reports nothing again.
+#[test]
+fn a_plugins_own_edit_arrives_as_param_changed() {
+    use tutti_plugin_types::ParamEdit;
+    let _ = main_thread();
+    let (mut s, node, params, _, _) = session_reporting();
+    let id = ParamId::new(7);
+    let value = Normalized::clamped(0.25);
+    params.fire(ParamEdit::Begin(id));
+    params.fire(ParamEdit::change(id, value));
+    params.fire(ParamEdit::change(id, value).unrecorded());
+    params.fire(ParamEdit::End(id));
+    let events = plugin_events(&mut s);
+    let changes: Vec<_> = events
+        .iter()
+        .inspect(|e| assert_eq!(e.node, node))
+        .map(|e| e.change.clone())
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            PluginChange::GestureBegan { id },
+            PluginChange::ParamChanged {
+                id,
+                value,
+                recorded: true
+            },
+            PluginChange::ParamChanged {
+                id,
+                value,
+                recorded: false
+            },
+            PluginChange::GestureEnded { id },
+        ]
+    );
+    assert!(plugin_events(&mut s).is_empty(), "each is reported once");
+}
+
+/// **What a plugin reports besides edits reaches the same stream**: a refresh
+/// is `ParamsRescanned` or `ParamTitlesChanged`, a tail and a bus change are
+/// `TailChanged` and `IoChanged`. A latency it reports is not repeated here
+/// (the update that gives it to the graph reports it once, as
+/// `LatencyChanged`), and a rate refusal is the plugin's health.
+#[test]
+fn a_plugins_refreshes_and_invalidations_arrive_in_the_stream() {
+    use tutti_plugin_types::{PluginInvalidation, PluginRefresh, PluginTail};
+    let _ = main_thread();
+    let (mut s, _, _, refresh, invalidate) = session_reporting();
+    refresh.fire(PluginRefresh::ParamValues);
+    refresh.fire(PluginRefresh::ParamTitles);
+    invalidate.fire(PluginInvalidation::Latency {
+        samples: tutti_types::Samples(64),
+    });
+    invalidate.fire(PluginInvalidation::Tail {
+        tail: PluginTail::Unbounded,
+    });
+    invalidate.fire(PluginInvalidation::Io);
+    invalidate.fire(PluginInvalidation::RateRestored);
+    let changes: Vec<_> = plugin_events(&mut s)
+        .into_iter()
+        .map(|e| e.change)
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            PluginChange::ParamsRescanned,
+            PluginChange::ParamTitlesChanged,
+            PluginChange::TailChanged {
+                tail: PluginTail::Unbounded
+            },
+            PluginChange::IoChanged,
+        ]
+    );
 }

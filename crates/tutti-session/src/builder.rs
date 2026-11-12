@@ -367,7 +367,7 @@ impl SessionBuilder {
     /// What a hosted plugin's death or hang does. Default
     /// `Some(RecoveryPolicy::default())`: the plugin reloads at its node with
     /// its last snapshot. `None`: its node is removed
-    /// ([`SessionEvent::PluginDied`](crate::SessionEvent::PluginDied)) and the
+    /// ([`PluginChange::Died`](crate::PluginChange::Died)) and the
     /// host decides, a prompt to the user for instance.
     ///
     /// It covers out-of-process plugins loaded through the session's load

@@ -559,7 +559,7 @@ impl<S> PluginClient<S> {
     /// [`PluginControls::declared_latency`] reports, and a graph re-plans PDC
     /// around it when the host hands that to `Editor::set_latency` — the
     /// node's `Shape` changes at the next commit. Register a callback via
-    /// `PluginHandle::on_invalidate` (latency arrives as
+    /// `PluginHandle::subscribe` (latency arrives as
     /// `PluginInvalidation::Latency`) to get notified.
     pub fn set_latency(&self, samples: impl Into<Samples>) {
         self.controls.set_latency(samples);

@@ -30,8 +30,9 @@ use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
 
 use crate::graph::{Feeder, Graph};
 use crate::instrument::SharedKeys;
+use crate::midi_follow::{FOLLOW_TAP_CAPACITY, Follow, FollowCx};
 use crate::{EventOutPort, MidiError, MidiEvent, MidiNodes};
-use crate::{RouteDeclarer, SendError};
+use crate::{FollowTempo, RouteDeclarer, SendError};
 
 /// What a [`Midi`] call returns: the area's one error.
 type Result<T> = std::result::Result<T, MidiError>;
@@ -740,6 +741,11 @@ pub(crate) struct MidiState {
     /// `None` when the session has no engine MIDI (or the clock left).
     hardware_tap: Option<EventTapReader>,
     drops: MidiOutDrops,
+    /// The tempo the session follows, if it does ([`Midi::follow_tempo`]).
+    follow: Option<Follow>,
+    /// Events [`Midi::unfollow_tempo`] queued for the next `Poll` phase, which
+    /// reports them.
+    follow_events: Vec<MidiEvent>,
     /// What the engine gives the hardware out's timing: its block clock and the
     /// audio output's latency. `None` with no audio device, where every event
     /// is sent at once.
@@ -955,6 +961,35 @@ impl MidiState {
         self.drops.record_refused(tap.take_lost());
     }
 
+    /// `Phase::Poll`, for the tempo the session follows: reports what
+    /// `unfollow_tempo` queued, reads the follower's tap and applies what it
+    /// heard (the project's tempo map and meter, overlaid at the next block
+    /// start; see `midi_follow`). Whether the graph was edited, which the
+    /// caller commits.
+    pub(crate) fn follow_phase(
+        &mut self,
+        cx: &FollowCx<'_>,
+        graph: &mut Graph,
+        out: &mut Vec<crate::SessionEvent>,
+    ) -> bool {
+        out.extend(self.follow_events.drain(..).map(Into::into));
+        let Some(follow) = self.follow.as_mut() else {
+            return false;
+        };
+        // What the tap holds is read at the scale it was opened at, then the
+        // tap is reopened if the graph has been re-prepared at another rate.
+        let heard = follow.heard();
+        let mut edited = false;
+        if follow.tap_rate() != graph.prepared().sample_rate() {
+            edited = true;
+            if let Some(tap) = graph.taps().reopen_event(follow.tap_id()) {
+                follow.set_tap(tap);
+            }
+        }
+        follow.apply(&heard, cx, out);
+        edited
+    }
+
     /// The hardware out's tap is on one scale of frames, the rate it was
     /// opened at: when the graph has been re-prepared at another, drains the
     /// old reader, reopens that one tap (and no other: a caller's own are the
@@ -1032,6 +1067,10 @@ pub struct Midi<'a> {
     pub(crate) state: &'a mut MidiState,
     pub(crate) nodes: Option<&'a MidiNodes>,
     pub(crate) jobs: &'a mut crate::jobs::Jobs,
+    /// The transport's settings (the tempo map a follower overlays).
+    pub(crate) settings: &'a tutti_transport::TransportSettings,
+    /// The project meter a follower overlays.
+    pub(crate) meter: tutti_transport::ProjectMeter,
     /// The OS MIDI layer, when the builder opened it.
     #[cfg(feature = "midi-hardware")]
     pub(crate) io: Option<&'a tutti_midi_hardware::MidiSession>,
@@ -1545,6 +1584,94 @@ impl Midi<'_> {
             .open_event(source, tutti_graph::TapAlign::Raw, capacity.get() as usize)
             // The live input was just found or opened in this graph, with its port.
             .map_err(|_| MidiError::NoEventInput(live.node))
+    }
+
+    // --- Following an outside tempo ---
+
+    /// Follows the tempo (and, if `follow.meter`, the time signature) the MIDI
+    /// input's `follow.group` sends as Flex Data Set Tempo and Set Time Signature
+    /// (M2-104 §7.5.3, §7.5.4): the session reads them from an event tap on
+    /// that Group's channelless port in each
+    /// [`Poll`](crate::Phase::Poll) phase and publishes them to the transport,
+    /// reported as [`MidiEvent::TempoFollowed`] and [`MidiEvent::MeterFollowed`].
+    /// **Off by default**: until this is called, a Flex tempo changes nothing.
+    ///
+    /// **It overlays the project's maps; it does not replace them.** The tempo
+    /// map and meter the project has now are kept; from the beat of each change,
+    /// the published map is the project's up to there and the live steps after,
+    /// so a project point or ramp ahead of the playhead is not played while
+    /// following (a ramp a step lands in is cut at its beat). The session has no
+    /// project tempo apart from the published map, so **the map it finds now is
+    /// the one [`unfollow_tempo`](Self::unfollow_tempo) restores**; a map the app
+    /// publishes (`Session::set_tempo_map`, `set_tempo`) while following is
+    /// replaced by the next change, and is not what unfollowing restores.
+    ///
+    /// A change takes effect at the start of the next block (a meter at the next
+    /// bar line at or after it), at the latest one block and one update after it
+    /// was sent; a device that needs a tempo change on a beat sends it ahead,
+    /// which Flex allows (a Flex message carries no time of its own). The
+    /// transport's beat stays continuous when a publish lands late (design 020,
+    /// "Following an outside tempo").
+    ///
+    /// **One follower at a time**: following again replaces the first. The
+    /// project's maps stay the ones found by the first call, and the tempo in
+    /// force stays until the new source sends one.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoSuchInput`] when `follow.input` is not the session's MIDI
+    /// input node, [`MidiError::NoMidiInput`] when the session has none, and
+    /// [`MidiError::GroupNotHeard`] for a Group the input does not hear. Nothing
+    /// changes.
+    pub fn follow_tempo(&mut self, follow: FollowTempo) -> Result<()> {
+        let nodes = self.nodes.ok_or(MidiError::NoMidiInput)?;
+        if follow.input != nodes.input {
+            return Err(MidiError::NoSuchInput(follow.input));
+        }
+        let port = nodes
+            .input_ports
+            .channelless(follow.group)
+            .ok_or(MidiError::GroupNotHeard(follow.group))?;
+        let tap = self
+            .graph
+            .taps()
+            .open_event(
+                EventOutPort::new(nodes.input, port),
+                tutti_graph::TapAlign::Raw,
+                FOLLOW_TAP_CAPACITY,
+            )
+            .map_err(|_| MidiError::NoSuchInput(follow.input))?;
+        let core = tutti_midi_runtime::TempoFollower::new(
+            tutti_midi_runtime::TempoSource::Flex(follow.group),
+            follow.meter,
+        );
+        self.state.follow = Some(match self.state.follow.take() {
+            Some(first) => first.replaced_by(core, tap),
+            None => Follow::new(core, tap, self.settings.tempo_map(), self.meter.current()),
+        });
+        Ok(())
+    }
+
+    /// Stops following ([`follow_tempo`](Self::follow_tempo)): publishes the
+    /// project's tempo map and meter again, for the ones the follower changed.
+    /// The transport takes them at the next block at its current beat, so the
+    /// playhead does not jump, and the tempo from there on is the project's.
+    /// Reported as [`MidiEvent::TempoUnfollowed`] by the next update.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NotFollowing`] when nothing is followed.
+    pub fn unfollow_tempo(&mut self) -> Result<()> {
+        let follow = self.state.follow.take().ok_or(MidiError::NotFollowing)?;
+        let (tempo, meter) = follow.restore();
+        if let Some(tempo) = tempo {
+            self.settings.set_tempo_map(tempo);
+        }
+        if let Some(meter) = meter {
+            self.meter.set_meter(meter);
+        }
+        self.state.follow_events.push(MidiEvent::TempoUnfollowed);
+        Ok(())
     }
 
     // --- Hardware out ---

@@ -711,6 +711,19 @@ impl Session {
                 ) {
                     self.commit();
                 }
+                // The tempo the session follows is read after the devices:
+                // what a device sent in the block before is in its tap.
+                #[cfg(feature = "midi")]
+                {
+                    let follow = crate::midi_follow::FollowCx {
+                        settings: self.transport.settings(),
+                        meter: &self.click_settings.project_meter(),
+                        playhead: self.playhead(),
+                    };
+                    if self.midi_state.follow_phase(&follow, &mut self.graph, out) {
+                        self.commit();
+                    }
+                }
                 #[cfg(feature = "device")]
                 self.device_poll(cx.now, out)
             }
@@ -888,6 +901,8 @@ impl Session {
             state: &mut self.midi_state,
             nodes: self.midi.as_ref(),
             jobs: &mut self.jobs,
+            settings: self.transport.settings(),
+            meter: self.click_settings.project_meter(),
             #[cfg(feature = "midi-hardware")]
             io: self.midi_io.as_ref(),
         }

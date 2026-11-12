@@ -72,6 +72,8 @@ mod key;
 mod midi;
 #[cfg(feature = "midi")]
 mod midi_event;
+#[cfg(feature = "midi")]
+mod midi_follow;
 #[cfg(feature = "midi-hardware")]
 mod midi_hardware;
 #[cfg(feature = "modulation")]
@@ -138,6 +140,8 @@ pub use midi::{
 };
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;
+#[cfg(feature = "midi")]
+pub use midi_follow::FollowTempo;
 #[cfg(feature = "midi-hardware")]
 pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]

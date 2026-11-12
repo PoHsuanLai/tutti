@@ -97,6 +97,37 @@ pub enum MidiEvent {
         /// The unit built (boxed: a unit is large), or the font's or the unit's error, or the job's.
         unit: Result<Box<tutti_soundfont::SoundFontUnit>, crate::MidiError>,
     },
+    /// A tempo the session follows ([`Midi::follow_tempo`](crate::Midi::follow_tempo))
+    /// was published: a Set Tempo of the followed Group, as a step in the
+    /// project's tempo map at the start of the next block. A source that
+    /// repeats the tempo already in force reports nothing.
+    TempoFollowed {
+        /// The tempo.
+        tempo: tutti_types::Bpm,
+        /// The beat the step was placed at, for a host to draw it.
+        beat: tutti_types::Beat,
+    },
+    /// A meter the session follows was published: a Set Time Signature of the
+    /// followed Group, from the next bar line at or after the beat the transport
+    /// was at.
+    MeterFollowed {
+        /// The time signature.
+        signature: tutti_types::TimeSignature,
+        /// The bar line it takes effect on.
+        beat: tutti_types::Beat,
+    },
+    /// A Set Tempo could not be taken: the map cannot hold the result (a tempo so
+    /// slow that a segment's duration overflows). The tempo in force stays.
+    TempoRefused {
+        /// The tempo sent.
+        tempo: tutti_types::Bpm,
+        /// Why the map refused it.
+        error: tutti_tempo::TempoError,
+    },
+    /// The session stopped following ([`Midi::unfollow_tempo`](crate::Midi::unfollow_tempo)):
+    /// the project's own tempo and meter are published again, from the next
+    /// block, at the beat the transport is then at.
+    TempoUnfollowed,
     /// The OS watch for MIDI devices ended on its own (the reason is the
     /// message): the device list is frozen at what it last saw and no further
     /// hot-plug is reported. Reported once.

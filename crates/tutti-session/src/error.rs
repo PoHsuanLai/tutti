@@ -240,6 +240,20 @@ pub enum MidiError {
     #[error("{0:?} is not a clip or live input of this session's")]
     NotSessionMidi(tutti_graph::NodeKey),
 
+    /// `Midi::follow_tempo` named an input that is not the session's MIDI input
+    /// node ([`MidiNodes::input`](crate::MidiNodes::input)).
+    #[error("{0:?} is not the session's MIDI input")]
+    NoSuchInput(tutti_graph::NodeKey),
+
+    /// `Midi::follow_tempo` named a Group the MIDI input does not hear
+    /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
+    #[error("the MIDI input does not hear Group {}", .0.get())]
+    GroupNotHeard(tutti_ump::MidiGroup),
+
+    /// `Midi::unfollow_tempo` with no tempo being followed.
+    #[error("the session is not following a tempo")]
+    NotFollowing,
+
     /// The hardware input's routes have one declarer: the session's own
     /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
     /// (`Midi::set_routes`), not both at once.

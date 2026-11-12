@@ -1114,7 +1114,7 @@ Every MIDI feature has four layers:
 | Held notes and controllers | `HeldState` (built, L6(f); `tutti-midi-runtime`) |
 | Recording into clips | `ClipBuilder` |
 | Chase on seek | `MidiClipNode`'s chase table (private, built with the clip) |
-| Clock, MTC and MMC slave | `ClockFollower` |
+| Clock, MTC and MMC slave | `ClockFollower`: built for Flex as `TempoFollower` (L7c, doc 020 §11); MIDI Clock, MTC and MMC are later sources |
 | CC modulation and MIDI learn | `Binding`, `LearnState` |
 | Events across the graph's edge | `EventTapReader`, `EventInletWriter` (`tutti-graph`) |
 
@@ -3358,11 +3358,16 @@ What the decoded messages are consumed by, one item each.
   (numerator is the beats per bar, the denominator field an exponent of 2 with `0` non-standard,
   anything the meter's `BeatsPerBar` and `NoteValue` refuse is `None`, never clamped; the
   1/32-notes field does not change the meter and is not read).
-- **Not built: the transport's follow mode.** There is none. `tutti-transport` follows only
-  its own published `TempoMap` (`FrameClock::follow`), and the inbound sync decoders
-  (`MidiClockDecoder::tempo_bpm`, `MtcDecoder`) have no consumer in the session either. A tempo
-  or a meter that arrives live needs the transport to take a tempo from outside while a
-  `TempoMap` is published (an edit of the map on the fly, at the frame of the message and
-  at a bar line for a time signature, §7.5.3 and §7.5.4), which is doc 020's and the Core
-  session's, and a policy of the session (whether to follow, which Group, what a
-  clock master does with a Set Tempo it hears). The values above are what that wiring reads.
+- **The transport's follow mode, for Flex (L7c).** `tutti_midi_runtime::TempoFollower`
+  (pure: `step(Ump) -> Option<Followed>`, a `Bpm` or a `TimeSignature`; the Group's Set
+  Tempo and Set Time Signature, which are Group messages (§7.5.3, §7.5.4); `TempoSource`
+  is an enum, `Flex` first) is the `ClockFollower` row, scoped to Flex. The session's
+  `s.midi().follow_tempo(FollowTempo { input, group, meter })` opens an event tap on the
+  ingest node's channelless port of that Group, drains it in `Phase::Poll` and overlays
+  the project's tempo map and meter at the next block start (the meter at the next bar
+  line); `unfollow_tempo` restores them. Off by default, one follower at a time, events
+  `MidiEvent::{TempoFollowed, MeterFollowed, TempoRefused, TempoUnfollowed}`. The
+  placement, the ramp cut, the late-publish rule and the restore are doc 020 §11.
+- **Not built: following MIDI Clock, MTC and MMC.** The inbound sync decoders
+  (`MidiClockDecoder::tempo_bpm`, `MtcDecoder`) have no consumer in the session; they
+  are other sources of the same follower (doc 020 §11.1), later.

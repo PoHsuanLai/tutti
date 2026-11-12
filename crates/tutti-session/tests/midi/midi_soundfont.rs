@@ -18,12 +18,13 @@
 
 use std::sync::Arc;
 use tutti_fixtures::signal::rms;
+use tutti_session::Root;
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::NodeKey;
 use tutti_midi_runtime::{MidiIngestNode, TimedMidiEvent};
-use tutti_session::{EventSource, MidiRouteRule, Session};
+use tutti_session::{EventInPort, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::MotionEvent;
@@ -72,9 +73,12 @@ fn rig() -> (Session, NodeKey) {
         .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
         .expect("builds");
     let (synth, _) = s.graph().add(unit);
-    s.graph().set_outputs_from(synth);
+    // The dry pair; the unit's other outputs are sends.
+    for c in 0..2 {
+        s.graph().connect(synth.out(c), Root::output(c)).unwrap();
+    }
     let _ = s.update();
-    (s, synth)
+    (s, synth.erase())
 }
 
 /// `frames` frames from the session, in 128-frame blocks.
@@ -199,7 +203,8 @@ fn routed_level(channel: MidiChannel) -> f32 {
     let (inlet, mut device) = s.graph().open_event_inlet(64);
     let (input, _) = s.graph().insert(MidiIngestNode::new(1));
     s.graph()
-        .set_event_sources(input, 0, &[EventSource::new(inlet, 0)]);
+        .connect(inlet.events_out(), EventInPort::new(input, 0))
+        .unwrap();
     let rule = MidiRouteRule::for_channel(channel).to(synth);
     s.midi()
         .set_routes(input, [&rule], None, Some)

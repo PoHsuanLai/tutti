@@ -41,7 +41,7 @@ use tutti_types::UnitParam;
 use tutti_types::{ParamCell, UnitAddr};
 
 use crate::fork::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
-use crate::node::{Node, NodeParts};
+use crate::node::{IntoNode, Node, NodeParts};
 
 /// One param: its address and the cell the node reads.
 struct Slot {
@@ -233,7 +233,7 @@ impl<N: ParamNode> ForkSource for ParamFork<N> {
 
 /// `node` split for insertion as a [`ParamNode`]: the node, its
 /// [`ParamSet`] as its controls, and a [`ParamFork`] as its fork source.
-/// What a `ParamNode`'s [`IntoNode::into_parts`](crate::IntoNode::into_parts) returns:
+/// What a `ParamNode`'s [`IntoNode::into_parts`] returns:
 ///
 /// ```ignore
 /// impl IntoNode for MyFilter {
@@ -253,6 +253,39 @@ pub fn param_parts<N: ParamNode + Clone>(node: N) -> NodeParts<ParamSet> {
         node: Box::new(node),
         controls: fork.params.clone(),
         fork: Some(Box::new(fork)),
+    }
+}
+
+/// A [`ParamNode`] inserted as one: the wrapper that makes `Params(node)` an
+/// [`IntoNode`] whose controls are the node's [`ParamSet`] and
+/// whose fork starts from the values set through it ([`param_parts`]), beside
+/// [`ForkByClone`](crate::ForkByClone) and [`Unforkable`](crate::Unforkable)
+/// for a node with no params. A host's own param'd node needs no hand-written
+/// `IntoNode`:
+///
+/// ```ignore
+/// let (key, params) = session.graph().add(Params(MyFilter::new()));
+/// ```
+///
+/// **A node with params is inserted this way and no other.** `Clone` means
+/// two things here: [`ForkByClone`](crate::ForkByClone) promises the clone
+/// shares nothing, and `param_parts` takes a clone that *shares* the cells.
+/// `ForkByClone(param_node)` compiles (Rust has no way to refuse a type that
+/// implements a trait) and forks onto the live cell, so a param set after
+/// the fork reaches it; `Params` is the one that forks from the values.
+#[derive(Clone, Debug)]
+pub struct Params<N>(pub N);
+
+impl<N: ParamNode + Clone> IntoNode for Params<N> {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        param_parts(self.0)
+    }
+
+    /// The node's own name: the wrapper only says how it is inserted.
+    fn kind() -> &'static str {
+        std::any::type_name::<N>()
     }
 }
 

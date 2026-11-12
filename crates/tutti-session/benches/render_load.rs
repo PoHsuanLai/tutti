@@ -126,11 +126,11 @@ use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unf
 use tutti_nodes::{BusStripNode, ConvolverNode, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-use tutti_session::{EventSource, GraphSource, Session};
+use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{
-    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, PlaybackRate, Resonance,
-    SampleRate, Samples, Seconds,
+    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MaxBlock, PlaybackRate,
+    Resonance, SampleRate, Samples, Seconds,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -194,21 +194,30 @@ fn ir(seed: u32) -> Vec<f32> {
 
 fn connect_stereo(
     s: &mut Session,
-    to: tutti_graph::NodeKey,
+    to: impl Into<tutti_graph::NodeKey>,
     first_port: usize,
-    from: tutti_graph::NodeKey,
+    from: impl Into<tutti_graph::NodeKey>,
 ) {
+    let (to, from) = (to.into(), from.into());
     for c in 0..2 {
         s.graph()
-            .set_source(to, first_port + c, GraphSource::Node(from, c));
+            .set_sources(InPort::new(to, first_port + c), [OutPort::new(from, c)])
+            .unwrap();
     }
 }
 
 /// Adds `from`'s stereo pair to the sources of `to`'s first two ports: the
 /// graph sums what several calls add.
-fn add_stereo(s: &mut Session, to: tutti_graph::NodeKey, from: tutti_graph::NodeKey) {
+fn add_stereo(
+    s: &mut Session,
+    to: impl Into<tutti_graph::NodeKey>,
+    from: impl Into<tutti_graph::NodeKey>,
+) {
+    let (to, from) = (to.into(), from.into());
     for c in 0..2 {
-        s.graph().add_source(to, c, GraphSource::Node(from, c));
+        s.graph()
+            .connect(OutPort::new(from, c), InPort::new(to, c))
+            .unwrap();
     }
 }
 
@@ -246,8 +255,9 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
             sent: 0,
         }));
         s.graph()
-            .set_event_sources(synth, 0, &[EventSource::new(hold, 0)]);
-        strips.push(synth);
+            .connect(hold.events_out(), synth.events_in())
+            .unwrap();
+        strips.push(synth.erase());
     }
 
     let mut tone = tutti_codec::Wave::new(1, SampleRate(RATE));
@@ -292,7 +302,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
             );
         }
         let (pool, _) = s.graph().insert(pool);
-        strips.push(pool);
+        strips.push(pool.erase());
     }
 
     // Each source into its channel strip, and (with the reverb) a send off
@@ -341,9 +351,10 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
     connect_stereo(&mut s, limiter, 0, master);
     for c in 0..2 {
         s.graph()
-            .set_output_source(c, GraphSource::Node(limiter, c));
+            .set_sources(Root::output(c), [OutPort::new(limiter, c)])
+            .unwrap();
     }
-    s.update();
+    let _ = s.update();
     s.transport()
         .motion()
         .try_send(MotionEvent::Play)

@@ -12,9 +12,10 @@ use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Control, Controller, Event, Hand, HostOp, Lifecycle, Loaded,
-    MaxBlock, Normalized, Notice, ParamId, ParameterChanges, PluginError, PluginIo, Prepare,
-    ProcessContext, ProcessOutput, Processor, RenderMode, SampleFormat, SampleRate, Samples, Stage,
+    AudioBuffer, AudioBufferMut, Control, Controller, EditorSize, EditorWindow, Event, Hand,
+    HostOp, Lifecycle, Loaded, MaxBlock, Normalized, Notice, ParamId, ParameterChanges,
+    PluginError, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor, RenderMode,
+    SampleFormat, SampleRate, Samples, Stage,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{Vst2Controller, Vst2Loaded, Vst2Processor};
@@ -678,17 +679,28 @@ impl Driven {
     }
 }
 
-/// **A plugin's `audioMasterIOChanged` is read again, not restarted**: the core
-/// asks for the new latency and layout and tells the host, and no
-/// `effMainsChanged` crosses the seam.
+/// **A plugin's `audioMasterIOChanged` restarts it, and the pins it now declares are
+/// rendered**: the plugin raises its input count after activation (the S7 case), the core
+/// deactivates and activates it again (`effMainsChanged` 0 then 1), re-reads the layout and
+/// the latency, tells the host, and the new Processor renders the plugin's output instead of
+/// the silence a buffer sized for the old pins would get.
 #[test]
-fn an_io_changed_callback_is_read_again_without_a_restart() {
+fn an_io_changed_callback_restarts_the_plugin_and_renders_its_new_pins() {
     let probe = Probe::acquire();
     let mut driven = Driven::activated(&probe);
+    // The probe settles its latency at each resume, so the figure it announces is the one
+    // the restart reads.
+    set_late_latency(2048);
     clear_trace();
     assert_eq!(fire_io_changed(2048, 4), 1, "the host handles it");
     driven.pass();
 
+    let mains: Vec<i32> = trace()
+        .iter()
+        .filter(|(op, _)| *op == MAINS_CHANGED)
+        .map(|(_, value)| *value)
+        .collect();
+    assert_eq!(mains, [0, 1], "suspended, then resumed");
     assert!(
         driven
             .notices
@@ -705,7 +717,6 @@ fn an_io_changed_callback_is_read_again_without_a_restart() {
         "{:?}",
         driven.notices
     );
-    assert_eq!(count_of(MAINS_CHANGED), 0, "no restart");
     assert_eq!(driven.state.stage(), Stage::Active);
     let wiring = driven
         .lifecycle
@@ -717,6 +728,92 @@ fn an_io_changed_callback_is_read_again_without_a_restart() {
         4,
         "the layout was read again"
     );
+    let processor = driven.lifecycle.processor().expect("the processor is back");
+    let out = render_f32(processor, &ProcessContext::new());
+    assert!(
+        out[0].iter().all(|&v| v == 1.0) && out[1].iter().all(|&v| v == 101.0),
+        "a plugin that grew its pins rendered silence: {:?}",
+        &out[0][..4]
+    );
+}
+
+/// **A reset asks the plugin to stop, and the next block starts it again**: `effStopProcess`
+/// from the realtime side, no `effMainsChanged` (a main-thread opcode), and `effStartProcess`
+/// with the next block. The opcodes are the header's (`aeffectx.h`, numbers 71 and 72 as the
+/// trace records them), and the plugin sees them in that order.
+#[test]
+fn a_reset_stops_the_plugin_and_the_next_block_starts_it() {
+    let probe = Probe::acquire();
+    let (mut processor, controller) = probe.activate();
+    render_f32(&mut processor, &ProcessContext::new());
+    clear_trace();
+
+    Processor::reset(&mut processor);
+    assert_eq!(count_of(STOP_PROCESS), 1, "reset stopped the plugin");
+    assert_eq!(count_of(START_PROCESS), 0, "and did not start it");
+    assert_eq!(count_of(MAINS_CHANGED), 0, "without a suspend");
+
+    render_f32(&mut processor, &ProcessContext::new());
+    assert_eq!(count_of(START_PROCESS), 1, "the next block started it");
+    drop(rejoin(processor, controller));
+}
+
+/// **A state carries the program, and a restore selects it before the chunk**: `effSetProgram`
+/// (`aeffect.h`, opcode 2) then `effSetChunk` with `[index]` 1, the program form. The plugin
+/// records what the host sent before acting on it. A restore into a fresh instance (which
+/// starts at program 0) lands in program 1.
+#[test]
+fn a_state_carries_the_program_and_a_restore_selects_it_first() {
+    const SET_PROGRAM: i32 = 2;
+    const SET_CHUNK: i32 = 24;
+    let probe = Probe::acquire();
+    let mut live = probe.load();
+    assert!(live.set_program(&main_thread(), 1));
+    let saved = Control::save_state(&mut live, &main_thread()).expect("saves");
+    drop(live);
+
+    let mut fresh = probe.load();
+    assert_eq!(fresh.current_program(&main_thread()), 0, "a fresh instance");
+    clear_trace();
+    Control::load_state(&mut fresh, &main_thread(), &saved).expect("restores");
+    let sent: Vec<(i32, i32)> = trace()
+        .into_iter()
+        .filter(|(op, _)| matches!(*op, SET_PROGRAM | SET_CHUNK))
+        .collect();
+    assert_eq!(
+        sent,
+        [(SET_PROGRAM, 1), (SET_CHUNK, 1)],
+        "the program, then the program chunk"
+    );
+    assert_eq!(fresh.current_program(&main_thread()), 1);
+}
+
+/// **A plugin's `audioMasterSizeWindow` reaches the editor's resize slot**: the host answers 1
+/// (`aeffectx.h`: "1 if supported"), and the size, `[index]` wide and `[value]` high, comes
+/// out of the controller's `poll_editor_resize_request` once.
+#[test]
+fn a_size_window_request_reaches_the_resize_slot() {
+    let probe = Probe::acquire();
+    let (processor, mut controller) = probe.activate();
+    let answered = with_symbol("tutti_vst2_probe_request_size_window", |p| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
+        let f: extern "C" fn(i32, i32) -> isize = unsafe { std::mem::transmute(p) };
+        f(900, 640)
+    });
+    assert_eq!(answered, 1, "supported");
+    assert_eq!(
+        EditorWindow::poll_editor_resize_request(&mut controller, &main_thread()),
+        Some(EditorSize {
+            width: 900,
+            height: 640
+        })
+    );
+    assert_eq!(
+        EditorWindow::poll_editor_resize_request(&mut controller, &main_thread()),
+        None,
+        "taken once"
+    );
+    drop(rejoin(processor, controller));
 }
 
 /// **A plugin's `audioMasterUpdateDisplay` raised during the activation is told

@@ -416,9 +416,8 @@ pub enum SessionEvent {
         /// Why.
         why: crate::GiveUp,
         /// The last state worth keeping, for a host that offers the user a
-        /// manual reload: the snapshot a reload withheld, else the last one
-        /// captured.
-        snapshot: Option<Vec<u8>>,
+        /// manual reload: the state a reload withheld, else the last good one.
+        state: Option<tutti_plugin::catalog::PluginState>,
     },
 }
 
@@ -562,15 +561,11 @@ impl std::fmt::Debug for SessionEvent {
                 .field("attempts", attempts)
                 .finish(),
             #[cfg(feature = "plugin")]
-            Self::PluginGaveUp {
-                node,
-                why,
-                snapshot,
-            } => f
+            Self::PluginGaveUp { node, why, state } => f
                 .debug_struct("PluginGaveUp")
                 .field("node", node)
                 .field("why", why)
-                .field("snapshot_bytes", &snapshot.as_ref().map(Vec::len))
+                .field("state_bytes", &state.as_ref().map(|s| s.bytes().len()))
                 .finish(),
         }
     }
@@ -637,7 +632,7 @@ pub enum RootTopologyStatus {
 /// ```
 /// use tutti_types::MaxBlock;
 /// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
-/// use tutti_session::{GraphSource, Session};
+/// use tutti_session::{OutPort, Root, Session};
 /// use tutti_nodes::testing::Const;
 ///
 /// // One global output: the mono device takes it as it is, unfolded.
@@ -646,7 +641,7 @@ pub enum RootTopologyStatus {
 ///     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(64)))
 ///     .unwrap();
 /// let (dc, _) = session.graph().insert(Const::mono(0.5));
-/// session.graph().set_output_source(0, GraphSource::Node(dc, 0));
+/// session.graph().set_sources_hard(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
 /// session.update();
 ///
 /// let mut block = [0.0f32; 64];
@@ -1067,7 +1062,8 @@ impl Session {
     /// `modulation`), and, when it is a clip or live input of the
     /// session's (`midi`, feature `midi`), that. A clip or live input
     /// feeding `node` stays, to be re-aimed (`Midi::retarget`) or removed.
-    pub fn remove(&mut self, node: NodeKey) -> bool {
+    pub fn remove(&mut self, node: impl Into<NodeKey>) -> bool {
+        let node = node.into();
         #[cfg(feature = "modulation")]
         self.mods.own.forget_node(node);
         #[cfg(feature = "midi")]

@@ -92,6 +92,48 @@ impl MidiChannel {
         MidiChannel(raw & 0x0F)
     }
 
+    /// The channel or group as an array index, `0..16`: the lane of a table
+    /// with one slot for each of the channels.
+    #[inline]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// All sixteen, in order.
+    ///
+    /// ```
+    /// use tutti_ump::MidiChannel;
+    ///
+    /// assert_eq!(MidiChannel::all().count(), 16);
+    /// assert!(MidiChannel::all().map(MidiChannel::index).eq(0..16));
+    /// ```
+    #[inline]
+    pub fn all() -> impl ExactSizeIterator<Item = MidiChannel> + DoubleEndedIterator + Clone {
+        (0..Self::COUNT).map(MidiChannel)
+    }
+
+    /// The channel a person numbers `number` (1 to 16: hardware and DAW UIs show
+    /// the first as 1), or `None` outside that. The 1-based door; the wire's
+    /// number is [`new`](Self::new)'s. [`Display`](core::fmt::Display) writes
+    /// the same number back.
+    ///
+    /// ```
+    /// use tutti_ump::MidiChannel;
+    ///
+    /// assert_eq!(MidiChannel::numbered(10), Some(MidiChannel::of(9)));
+    /// assert_eq!(MidiChannel::numbered(0), None);
+    /// assert_eq!(MidiChannel::numbered(17), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn numbered(number: u8) -> Option<MidiChannel> {
+        match number.checked_sub(1) {
+            Some(raw) => Self::new(raw),
+            None => None,
+        }
+    }
+
     /// Returns the raw 0-based channel number, for a UMP constructor.
     #[inline]
     #[must_use]
@@ -108,6 +150,14 @@ impl MidiChannel {
     #[must_use]
     pub const fn display_number(self) -> u8 {
         self.0 + 1
+    }
+}
+
+/// The 1-based number a person reads ([`numbered`](MidiChannel::numbered)'s): `MidiChannel::of(9)` is
+/// `10`. [`Debug`](core::fmt::Debug) keeps the wire number.
+impl core::fmt::Display for MidiChannel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&(u16::from(self.0) + 1), f)
     }
 }
 
@@ -185,5 +235,35 @@ mod tests {
     fn the_display_number_is_one_based() {
         assert_eq!(MidiChannel::FIRST.display_number(), 1);
         assert_eq!(MidiChannel::LAST.display_number(), 16);
+    }
+
+    #[test]
+    fn numbered_is_one_based_and_refuses_outside() {
+        for n in 0..=255u8 {
+            match MidiChannel::numbered(n) {
+                Some(v) => {
+                    assert!((1..=16).contains(&n));
+                    assert_eq!(v.get(), n - 1);
+                    assert_eq!(v.to_string(), n.to_string());
+                }
+                None => assert!(n == 0 || n > 16),
+            }
+        }
+    }
+
+    #[test]
+    fn display_is_numbered_and_debug_is_the_wire() {
+        assert_eq!(MidiChannel::of(9).to_string(), "10");
+        assert_eq!(format!("{:?}", MidiChannel::of(9)), "MidiChannel(9)");
+    }
+
+    #[test]
+    fn all_is_every_value_in_order_and_index_is_its_position() {
+        let all: Vec<_> = MidiChannel::all().collect();
+        assert_eq!(all.len(), usize::from(MidiChannel::COUNT));
+        for (i, v) in all.iter().enumerate() {
+            assert_eq!(v.index(), i);
+            assert_eq!(usize::from(v.get()), i);
+        }
     }
 }

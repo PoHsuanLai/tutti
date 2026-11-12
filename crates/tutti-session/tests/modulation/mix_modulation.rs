@@ -14,7 +14,9 @@ use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_modulation::Macro;
 use tutti_nodes::ReconcileError;
 use tutti_nodes::testing::Const;
-use tutti_session::{GraphSource, MixRef, ModRefusal, ModTarget, ParamRef, PassError, Session};
+use tutti_session::{
+    InPort, MixRef, ModRefusal, ModTarget, OutPort, ParamRef, PassError, Root, Session,
+};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, SampleRate, Samples, UnitParam};
 
@@ -80,9 +82,11 @@ fn rig(s: &mut Session) -> NodeKey {
     let g = s.graph();
     let (a, _) = g.insert(Const::mono(A));
     let (halve, _) = g.insert(ForkByClone(Halve));
-    g.set_source(halve, 0, GraphSource::Node(a, 0));
-    g.set_output_source(0, GraphSource::Node(halve, 0));
-    halve
+    g.set_sources(InPort::new(halve, 0), [OutPort::new(a, 0)])
+        .unwrap();
+    g.set_sources(Root::output(0), [OutPort::new(halve, 0)])
+        .unwrap();
+    halve.erase()
 }
 
 fn blend(m: f32) -> f32 {
@@ -120,7 +124,7 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
 
     let mix = MixRef::of(node);
     let mut m = s.mods();
-    m.range(mix, 0.0, 1.0);
+    m.range(mix, Mix(0.0)..Mix(1.0)).unwrap();
     let source = m.macro_(0.5);
     let route = m.route(source, mix, Depth(0.5)).unwrap();
     let target = m.key(mix);
@@ -175,7 +179,7 @@ fn a_removed_node_takes_its_mix_route_with_it() {
     let node = rig(&mut s);
     let mix = MixRef::of(node);
     let mut m = s.mods();
-    m.range(mix, 0.0, 1.0);
+    m.range(mix, Mix(0.0)..Mix(1.0)).unwrap();
     let source = m.macro_(0.5);
     m.route(source, mix, Depth(0.5)).unwrap();
     settle(&mut s);
@@ -217,8 +221,10 @@ fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
     let g = s.graph();
     let (a, _) = g.insert(Const::mono(A));
     let (spread, _) = g.insert(ForkByClone(Spread));
-    g.set_source(spread, 0, GraphSource::Node(a, 0));
-    g.set_output_source(0, GraphSource::Node(spread, 0));
+    g.set_sources(InPort::new(spread, 0), [OutPort::new(a, 0)])
+        .unwrap();
+    g.set_sources(Root::output(0), [OutPort::new(spread, 0)])
+        .unwrap();
     settle(&mut s);
     assert!(
         s.graph().set_mix(spread, Mix::new(0.5)).is_err(),
@@ -227,7 +233,7 @@ fn a_route_onto_the_mix_of_a_node_with_no_pass_is_refused() {
 
     let mix = MixRef::of(spread);
     let mut m = s.mods();
-    m.range(mix, 0.0, 1.0);
+    m.range(mix, Mix(0.0)..Mix(1.0)).unwrap();
     let source = m.macro_(0.5);
     m.route(source, mix, Depth(0.5)).unwrap();
     let target = m.key(mix);

@@ -245,7 +245,7 @@ impl Player {
     /// program in bank 0 (the standard drum set, 128:0, for a drum bank), else
     /// the font's first.
     fn preset_of(&self, channel: MidiChannel) -> usize {
-        let info = &self.channels[usize::from(channel.get())];
+        let info = &self.channels[channel.index()];
         let id = (info.bank_number() << 16) | info.patch_number();
         if let Some(&preset) = self.presets.get(&id) {
             return preset;
@@ -287,7 +287,7 @@ impl Player {
             // Bank Select there), is the held Bank Select, and the Program
             // Change applies it (M1 p.13).
             Voice2::ProgramChange { program, bank } => {
-                let info = &mut self.channels[usize::from(channel.get())];
+                let info = &mut self.channels[channel.index()];
                 if let Some(bank) = bank {
                     info.select_bank_coarse(bank.msb);
                     info.select_bank_fine(bank.lsb);
@@ -316,7 +316,7 @@ impl Player {
     /// Selects the program `channel` plays, in the bank held by Bank Select
     /// (M1 p.13).
     pub(crate) fn program_change(&mut self, channel: MidiChannel, program: U7) {
-        self.channels[usize::from(channel.get())].program_change(program);
+        self.channels[channel.index()].program_change(program);
     }
 
     /// Hands a note or pedal message to the core, and carries out what it
@@ -344,7 +344,7 @@ impl Player {
     /// (`Voicing::step`), not the channel's. Any other controller is ignored.
     fn control(&mut self, channel: MidiChannel, controller: CCNumber, value: U7) {
         let data = i32::from(value.get());
-        let info = &mut self.channels[usize::from(channel.get())];
+        let info = &mut self.channels[channel.index()];
         match controller {
             CCNumber::BANK_SELECT => info.select_bank_coarse(value),
             BANK_SELECT_LSB => info.select_bank_fine(value),

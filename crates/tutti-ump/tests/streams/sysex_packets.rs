@@ -1,21 +1,26 @@
-//! `sysex7_packets` and `SysexMessage::packets`: one payload as SysEx7 packets
+//! `Sysex7Packets` (`SysexMessage::packets` and `checked`): one payload as SysEx7 packets
 //! (M2-104 section 7.7), and `Sysex7Packet::data`.
 
 use tutti_ump::{
-    Message, MidiGroup, Sysex7Packet, SysexAssembler, SysexMessage, SysexStatus, SysexStep, U7,
-    Ump, sysex7_packets,
+    Message, MidiGroup, Sysex7Packet, Sysex7Packets, SysexAssembler, SysexMessage, SysexStatus,
+    SysexStep, Ump,
 };
 
-fn payload(len: usize) -> Vec<U7> {
-    (0..len).map(|i| U7::of((i % 128) as u8)).collect()
+/// The packets of a payload of 7-bit values: the plain-bytes door.
+fn sysex7_packets(group: MidiGroup, payload: &[u8]) -> Sysex7Packets<'_> {
+    Sysex7Packets::checked(group, payload).expect("7-bit bytes")
 }
 
-fn raw(payload: &[U7]) -> Vec<u8> {
-    payload.iter().map(|b| b.get()).collect()
+fn payload(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 128) as u8).collect()
+}
+
+fn raw(payload: &[u8]) -> Vec<u8> {
+    payload.to_vec()
 }
 
 /// Each packet as its status and bytes, read back through `decode`.
-fn decoded(group: MidiGroup, p: &[U7]) -> Vec<(SysexStatus, Vec<u8>)> {
+fn decoded(group: MidiGroup, p: &[u8]) -> Vec<(SysexStatus, Vec<u8>)> {
     sysex7_packets(group, p)
         .map(|ump| {
             let Ok(Message::Sysex7(g, packet)) = ump.decode() else {
@@ -180,8 +185,7 @@ fn a_ref_made_by_hand_names_its_range() {
 #[test]
 fn a_single_packet_is_the_spec_words() {
     let words = |group, payload: &[u8]| {
-        let bytes: Vec<U7> = payload.iter().map(|&b| U7::of(b)).collect();
-        let mut packets = sysex7_packets(MidiGroup::of(group), &bytes);
+        let mut packets = sysex7_packets(MidiGroup::of(group), payload);
         assert_eq!(packets.len(), 1);
         packets.next().unwrap().words().to_vec()
     };
@@ -193,22 +197,14 @@ fn a_single_packet_is_the_spec_words() {
     assert_eq!(words(15, &[1, 2, 3, 4, 5, 6]), [0x3F06_0102, 0x0304_0506]);
 }
 
-/// `Sysex7Packets::checked` is `sysex7_packets` for a payload of plain bytes,
-/// and refuses one with a byte of 128 or more instead of masking it.
+/// `Sysex7Packets::checked` refuses a byte of 128 or more instead of masking
+/// it, and accepts every 7-bit payload.
 #[test]
-fn checked_bytes_are_the_same_packets_and_a_high_bit_is_refused() {
-    use tutti_ump::Sysex7Packets;
-    for len in 0..=20 {
-        let p = payload(len);
-        let plain = raw(&p);
-        let checked = Sysex7Packets::checked(MidiGroup::of(2), &plain).expect("7-bit bytes");
-        assert_eq!(
-            checked.collect::<Vec<Ump>>(),
-            sysex7_packets(MidiGroup::of(2), &p).collect::<Vec<Ump>>(),
-            "{len} bytes"
-        );
-    }
+fn a_high_bit_is_refused_not_masked() {
     assert!(Sysex7Packets::checked(MidiGroup::of(0), &[1, 0x80, 2]).is_none());
     assert!(Sysex7Packets::checked(MidiGroup::of(0), &[0xF7]).is_none());
     assert!(Sysex7Packets::checked(MidiGroup::of(0), &[0x7F]).is_some());
+    for len in 0..=20 {
+        assert!(Sysex7Packets::checked(MidiGroup::of(2), &raw(&payload(len))).is_some());
+    }
 }

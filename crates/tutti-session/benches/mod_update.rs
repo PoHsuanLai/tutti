@@ -20,16 +20,15 @@
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
-use tutti_graph::NodeKey;
 use tutti_modulation::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
-use tutti_session::{GraphSource, ParamRef, Session};
-use tutti_types::{BeatDuration, Depth, Hz, Q, UnitParam};
+use tutti_session::{InPort, Key, OutPort, Root, Session};
+use tutti_types::{BeatDuration, Depth, Hz, Q};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const UPDATES: usize = 2_000;
 
-fn scene(n: usize, modulated: bool) -> (Session, Vec<NodeKey>) {
+fn scene(n: usize, modulated: bool) -> (Session, Vec<Key<SvfFilterNode<f32>>>) {
     let mut s = Session::builder()
         .build_offline(
             SampleRate(48_000.0),
@@ -45,27 +44,26 @@ fn scene(n: usize, modulated: bool) -> (Session, Vec<NodeKey>) {
             Q(0.7),
         ));
         if let Some(&prev) = filters.last() {
-            s.graph().set_source(f, 0, GraphSource::Node(prev, 0));
+            s.graph()
+                .set_sources(InPort::new(f, 0), [OutPort::new(prev, 0)])
+                .unwrap();
         }
         filters.push(f);
     }
     let last = *filters.last().expect("n > 0");
-    s.graph().set_output_source(0, GraphSource::Node(last, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(last, 0)])
+        .unwrap();
     if modulated {
         let mut m = s.mods();
         for (i, &f) in filters.iter().enumerate() {
-            let cutoff = ParamRef::unit(f, UnitParam::Cutoff);
-            m.range(cutoff, 20.0, 20_000.0);
+            let cutoff = f.cutoff();
+            m.range(cutoff, Hz(20.0)..Hz(20_000.0)).unwrap();
             let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.25 + i as f64 / 64.0)));
             m.route(lfo, cutoff, Depth(0.1)).unwrap();
         }
         let follower = m.follower(Follower::new(), filters[0]);
-        m.route(
-            follower,
-            ParamRef::unit(last, UnitParam::Cutoff),
-            Depth(-0.2),
-        )
-        .unwrap();
+        m.route(follower, last.cutoff(), Depth(-0.2)).unwrap();
     }
     for _ in 0..8 {
         let _ = s.update();
@@ -86,8 +84,9 @@ fn measure(label: &str, n: usize, modulated: bool, edit: bool) {
     let mut times = Vec::with_capacity(UPDATES);
     for i in 0..UPDATES {
         if edit {
-            let cutoff = ParamRef::unit(filters[0], UnitParam::Cutoff);
-            s.mods().range(cutoff, 20.0, 20_000.0 + (i % 2) as f32);
+            s.mods()
+                .range(filters[0].cutoff(), Hz(20.0)..Hz(20_000.0 + (i % 2) as f32))
+                .unwrap();
         }
         let t = Instant::now();
         let events = s.update();

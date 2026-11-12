@@ -36,7 +36,7 @@ use tutti_clap_test_plugin::{
     ProcessCapture, STATE_MAGIC,
 };
 use tutti_plugin_types::Control;
-use tutti_plugin_types::{ParamFlags, ParamId, ParamSteps, Request, RescanScope};
+use tutti_plugin_types::{Normalized, ParamFlags, ParamId, ParamSteps, Request, RescanScope};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
 /// wire values the host puts on the FFI, so a failure names what the plugin
@@ -276,7 +276,7 @@ fn host_projects_parameter_metadata_exactly() {
 }
 
 /// A stepped parameter reports the number of positions in its range, not merely
-/// "nonzero". Param 9 ("Mode") spans `0..3`, so it is a 4-way choice.
+/// "nonzero". Param 9 ("Mode") spans `0..22`, so it is a 23-way choice.
 ///
 /// The exact count is asserted because `to_range` branches on it. The host used
 /// to report `1` for every stepped parameter regardless of range, which rendered
@@ -590,6 +590,123 @@ fn host_denormalizes_each_parameter_against_its_own_range() {
     assert_eq!(value_of(b.id), 0.0, "param {} at 0.5", b.id);
 }
 
+/// `params.h`: a `CLAP_PARAM_IS_STEPPED` value is cast to an integer by the
+/// plugin. Param 9 ("Mode") is stepped over `0..22`; every position `k`, sent as
+/// the normalized `k / 22` the UI uses, must reach the plugin on the audio
+/// thread as a value that casts to `k`. In `f32` (`13/22 * 22 = 12.999999`) and
+/// in `f64` (`15/22 * 22`) some positions arrive as `k - epsilon` and the
+/// plugin picks the previous entry.
+#[test]
+fn a_stepped_parameter_automated_at_each_position_reaches_that_position() {
+    let probe = Probe::acquire();
+    let mut inst = probe.activate();
+    let mode = param(2);
+    assert_eq!((mode.min, mode.max), (0.0, 22.0));
+
+    for k in 0..=22u32 {
+        param_reset();
+        let mut params = ParameterChanges::reserved(1, 1);
+        params.add_change(mode.id.into(), 0, f64::from(k) / 22.0);
+        let ctx = ClapProcessContext {
+            params: Some(&params),
+            ..Default::default()
+        };
+        drive_block(&mut inst, 64, &ctx);
+        let cap = read_process_capture();
+        assert_eq!(cap.event_count, 1, "position {k}");
+        assert_eq!(
+            cap.events[0].value.trunc(),
+            f64::from(k),
+            "position {k} of 22 arrived as {}",
+            cap.events[0].value
+        );
+    }
+}
+
+/// The control-thread path (`set_parameter`, a flushed `PARAM_VALUE`) steps the
+/// same way: normalized `k / 22` for the stepped "Mode" reaches the plugin as a
+/// value that casts to `k`.
+#[test]
+fn a_stepped_parameter_set_from_the_control_thread_reaches_that_position() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    let mode = param(2);
+
+    for k in 0..=22u32 {
+        param_reset();
+        let n = Normalized::new(f64::from(k) / 22.0).expect("on 0..=1");
+        Control::set_parameter(&mut loaded, &main_thread(), mode.id.into(), n);
+        let cap = probe.capture();
+        assert_eq!(cap.flush_event_count, 1, "position {k}");
+        assert_eq!(
+            cap.flush_events[0].value.trunc(),
+            f64::from(k),
+            "position {k} of 22 arrived as {}",
+            cap.flush_events[0].value
+        );
+    }
+}
+
+fn set_readonly_param(id: u32) {
+    type F = unsafe extern "C" fn(u32);
+    unsafe {
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
+        let f: libloading::Symbol<F> = lib
+            .get(b"tutti_test_plugin_set_readonly_param\0")
+            .expect("readonly switch present");
+        f(id);
+    }
+}
+
+/// `params.h`: `CLAP_PARAM_IS_READONLY` is "the parameter can't be changed by
+/// the host". A value the host's automation carries for such a parameter is not
+/// sent; the other parameters of the same block still are.
+#[test]
+fn automation_is_not_written_to_a_read_only_parameter() {
+    let probe = Probe::acquire();
+    // After the load: with no handle open, the switch's own would be the last
+    // and closing it would unload the image and reset the switch.
+    let loaded = probe.load();
+    set_readonly_param(param(0).id);
+    let mut inst = loaded
+        .activate_at::<f32>(48_000.0, 512)
+        .map_err(|(_, e)| e)
+        .expect("activates");
+    let (ro, rw) = (param(0), param(1));
+
+    let mut params = ParameterChanges::reserved(2, 1);
+    params.add_change(ro.id.into(), 0, 0.5);
+    params.add_change(rw.id.into(), 0, 0.5);
+    let ctx = ClapProcessContext {
+        params: Some(&params),
+        ..Default::default()
+    };
+    drive_block(&mut inst, 64, &ctx);
+
+    let cap = read_process_capture();
+    assert_eq!(cap.event_count, 1, "only the writable parameter's value");
+    assert_eq!(cap.events[0].param_id, rw.id);
+    set_readonly_param(u32::MAX);
+}
+
+/// The control thread's `set_parameter` does not write a read-only parameter
+/// either, and still writes a writable one.
+#[test]
+fn set_parameter_does_not_write_a_read_only_parameter() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    set_readonly_param(param(0).id);
+    let n = Normalized::new(0.5).expect("on 0..=1");
+
+    Control::set_parameter(&mut loaded, &main_thread(), param(0).id.into(), n);
+    assert_eq!(probe.capture().flush_event_count, 0, "a read-only value");
+
+    Control::set_parameter(&mut loaded, &main_thread(), param(1).id.into(), n);
+    assert_eq!(probe.capture().flush_event_count, 1, "a writable one");
+    set_readonly_param(u32::MAX);
+}
+
 // ---------------------------------------------------------------------------
 // Plugin → host parameter output
 // ---------------------------------------------------------------------------
@@ -704,6 +821,35 @@ fn host_records_a_full_rescan_as_needing_deactivation() {
         requests(inst.loaded_mut()),
         [Request::RescanParams(RescanScope::All)],
         "a full rescan must be reported as its own scope"
+    );
+}
+
+/// A plugin that changes its parameters while it is loaded and not active (a
+/// `params.rescan` after a state load) has the rescan answered: the lifecycle
+/// reads the parameters again rather than dropping the request.
+#[test]
+fn a_rescan_raised_while_only_loaded_is_answered_by_the_lifecycle() {
+    use tutti_plugin_types::{Effect, Event, RestartRules, State, step};
+
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    let _ = requests(&mut loaded);
+
+    probe.command(PARAM_CMD_RESCAN_ALL);
+    loaded.on_main_thread(&main_thread());
+    let raised = requests(&mut loaded);
+    assert_eq!(raised, [Request::RescanParams(RescanScope::All)]);
+
+    let mut state = State::new(RestartRules::CLAP);
+    for request in raised {
+        state = step(state, Event::Request(request)).0;
+    }
+    let (_, effects) = step(state, Event::Tick);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ReadParams(RescanScope::All))),
+        "a loaded plugin's rescan must be read, got {effects:?}"
     );
 }
 

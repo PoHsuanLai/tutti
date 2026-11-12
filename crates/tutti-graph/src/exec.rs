@@ -214,7 +214,7 @@ use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
 use crate::tap::TapWriter;
-use crate::{EdgeId, EventTapId, MeterId, TapId};
+use crate::{EdgeFade, EdgeId, EventTapId, MeterId, TapId};
 use tutti_types::PlayReading;
 
 mod mode_op;
@@ -245,6 +245,11 @@ pub const QUEUE_CAPACITY: usize = 4;
 /// what a session does; it exists so the audio thread's push can never
 /// fail.
 pub const FADE_CAPACITY: usize = 256;
+
+/// How many ended edge fades the executor can have waiting for the editor. A
+/// lane that finds the ring full offers its report again next block, so a
+/// full ring delays an edge's removal and loses nothing.
+const EDGE_FADE_CAPACITY: usize = 1024;
 
 /// A unit, owned. Crate-private, so the only code that can replace or drop
 /// the box is this crate's; its drop is checked against the audio-thread
@@ -621,6 +626,8 @@ pub(crate) struct Channels {
     pub(crate) losses: HeapCons<EventLoss>,
     /// Refusals the log and the ring could not name.
     pub(crate) unreported: Arc<AtomicU64>,
+    /// The edges whose declick fade ended (`EdgeFade`), by the kind that did.
+    pub(crate) edge_fades: HeapCons<(EdgeId, EdgeFade)>,
 }
 
 /// The executor's ends of the rings.
@@ -631,6 +638,7 @@ pub(crate) struct ExecutorEnds {
     play: Arc<AtomicU64>,
     losses: HeapProd<EventLoss>,
     unreported: Arc<AtomicU64>,
+    edge_fades: HeapProd<(EdgeId, EdgeFade)>,
 }
 
 /// Build the rings: the editor's ends and the executor's.
@@ -641,6 +649,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
     let play = Arc::new(AtomicU64::new(0));
     let unreported = Arc::new(AtomicU64::new(0));
     let (loss_tx, loss_rx) = HeapRb::<EventLoss>::new(crate::loss::RING_CAPACITY).split();
+    let (fade_end_tx, fade_end_rx) = HeapRb::<(EdgeId, EdgeFade)>::new(EDGE_FADE_CAPACITY).split();
     (
         Channels {
             to_executor: tx,
@@ -649,6 +658,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
             play: PlayReader(Arc::clone(&play)),
             losses: loss_rx,
             unreported: Arc::clone(&unreported),
+            edge_fades: fade_end_rx,
         },
         ExecutorEnds {
             queue: rx,
@@ -657,6 +667,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
             play,
             losses: loss_tx,
             unreported,
+            edge_fades: fade_end_tx,
         },
     )
 }
@@ -831,6 +842,8 @@ pub struct Executor {
     /// Where each block's log goes, for the editor to drain.
     losses: HeapProd<EventLoss>,
     unreported: Arc<AtomicU64>,
+    /// Where an edge whose declick fade ended is reported.
+    edge_fades: HeapProd<(EdgeId, EdgeFade)>,
     commands: CommandRx,
     /// `seq` of the last commit applied.
     applied: u64,
@@ -936,6 +949,7 @@ impl Executor {
             dropped: Dropped::new(),
             losses: ends.losses,
             unreported: ends.unreported,
+            edge_fades: ends.edge_fades,
             commands,
             applied: 0,
             suspended: false,
@@ -2022,6 +2036,7 @@ impl Executor {
                 dropped,
                 losses,
                 unreported,
+                edge_fades,
                 commands,
                 applied,
                 suspended: _,
@@ -2326,6 +2341,16 @@ impl Executor {
             }
 
             dropped.flush(plan, losses, unreported);
+            // An edge whose declick fade ended this block tells the editor,
+            // which drops it (or its entry) at its next collect. A full
+            // ring keeps the report in the lane for the next block.
+            for (lane, id) in lanes.iter_mut().zip(&plan.sum_lanes) {
+                if let (Some(kind), Some(id)) = (lane.finished(), id)
+                    && edge_fades.try_push((*id, kind)).is_ok()
+                {
+                    lane.acknowledge();
+                }
+            }
             for f in event_fb.iter_mut().flatten() {
                 f.advance(frames);
             }
@@ -2476,8 +2501,11 @@ pub(crate) fn sum_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Size
         if f & SILENT != 0 {
             continue;
         }
-        constant &=
-            f & CONSTANT != 0 && !matches!(weights[k], Weight::Ramp { .. } | Weight::Frames(_));
+        constant &= f & CONSTANT != 0
+            && !matches!(
+                weights[k],
+                Weight::Ramp { .. } | Weight::Frames(_) | Weight::Fade { .. }
+            );
         if live == 0 && s == dst {
             in_place = true;
         } else {

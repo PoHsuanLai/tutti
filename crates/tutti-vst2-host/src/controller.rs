@@ -200,12 +200,12 @@ impl EditorWindow for Vst2Controller {
         ))
     }
 
-    /// Nothing asked: this surface never queues a resize request.
+    /// The plugin's `audioMasterSizeWindow` request, if any: see the instance's.
     fn poll_editor_resize_request(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
+        main: &tutti_plugin_types::MainThread,
     ) -> Option<tutti_plugin_types::EditorSize> {
-        None
+        EditorWindow::poll_editor_resize_request(self.loaded_mut(), main)
     }
 }
 
@@ -226,8 +226,10 @@ impl Loaded for Vst2Loaded {
     type Processor = Vst2Processor;
     type Controller = Vst2Controller;
 
-    /// VST2 has no restart: a change of pins, latency or tail is read again.
-    const RESTARTS: RestartRules = RestartRules::NONE;
+    /// `audioMasterIOChanged` restarts the plugin (deactivate, activate), which re-reads the
+    /// pins the render buffers are sized from and re-declares the node's shape, as CLAP's and
+    /// VST3's `IoChanged` do. A latency or tail change alone is read again.
+    const RESTARTS: RestartRules = RestartRules::VST2;
 
     /// Tells the plugin its rate, block size and precision while it is
     /// suspended, resumes it, starts processing, and splits it.

@@ -2,7 +2,7 @@
 //! message through it.
 
 use crate::scale;
-use tutti_ump::{Address, Attribute, Message, Midi1Parser, MidiGroup, Ump, Voice1, Voice2};
+use tutti_ump::{Address, Attribute, Message, MidiGroup, Ump, Voice1, Voice2, parse_exact};
 
 /// The release velocity a MIDI 1.0 Note On at velocity 0 becomes (M2-104
 /// Appendix D.3.1).
@@ -68,15 +68,15 @@ pub fn widen_message(message: Message) -> Message {
 
 /// The packet for the MIDI 1.0 message at the start of `bytes` (a plugin's or
 /// a file's wire bytes, padding after the message ignored), in `group`: read by
-/// [`Midi1Parser::message`] and [`widen_message`]d, so a channel voice message
+/// [`parse_exact`] and [`widen_message`]d, so a channel voice message
 /// is MIDI 2.0 and a System one is as it is.
 ///
-/// `None` when `Midi1Parser::message` reads none: a SysEx or undefined status,
+/// `None` when `parse_exact` reads none: a SysEx or undefined status,
 /// a message cut short, or a data byte with its top bit set.
 #[inline]
 #[must_use]
 pub fn widen_bytes(group: MidiGroup, bytes: &[u8]) -> Option<Ump> {
-    Midi1Parser::message(group, bytes).map(|message| Ump::from(widen_message(message)))
+    parse_exact(group, bytes).map(|message| Ump::from(widen_message(message)))
 }
 
 /// The channel voice message `ump` carries, as the MIDI 2.0 message it means
@@ -88,8 +88,8 @@ pub fn widen_bytes(group: MidiGroup, bytes: &[u8]) -> Option<Ump> {
 /// packet was sent in.
 #[inline]
 #[must_use]
-pub fn channel_voice(ump: Ump) -> Option<(Address, Voice2)> {
-    match ump.decode().ok().map(widen_message)? {
+pub fn channel_voice(packet: impl Into<Ump>) -> Option<(Address, Voice2)> {
+    match packet.into().decode().ok().map(widen_message)? {
         Message::Midi2(address, voice) => Some((address, voice)),
         _ => None,
     }

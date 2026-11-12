@@ -29,7 +29,7 @@ fn sorts_stably_and_places_late_offsets_last() {
         .map(|e| {
             (
                 match e.1.key_event() {
-                    Some(KeyEvent::On(key) | KeyEvent::Off(key)) => key.note(),
+                    Some(KeyEvent::On(key) | KeyEvent::Off(key)) => key.note().get(),
                     other => panic!("a note, got {other:?}"),
                 },
                 e.0.get(),

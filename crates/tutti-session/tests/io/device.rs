@@ -13,7 +13,8 @@ use tutti_graph::ForkByClone;
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Osc;
 use tutti_session::{
-    Backoff, DevicePolicy, DeviceRestart, GraphSource, Phase, PhaseCx, Session, SessionEvent,
+    Backoff, DevicePolicy, DeviceRestart, InPort, OutPort, Phase, PhaseCx, Root, Session,
+    SessionEvent,
 };
 use tutti_types::{ChannelLayout, Db, Hz, MaxBlock, SampleRate, Samples};
 
@@ -44,7 +45,8 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
         .insert(tutti_nodes::testing::Const::mono(0.5));
     session
         .graph()
-        .set_output_source(0, GraphSource::Node(dc, 0));
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
     let mut tap = session
         .graph()
         .open_output_tap(Samples(1_024))
@@ -102,9 +104,15 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
         Db(0.0),
         Db(0.0),
     ));
-    s.graph().set_source(lim, 0, GraphSource::Node(osc, 0));
-    s.graph().set_output_source(0, GraphSource::Node(osc, 0));
-    s.graph().set_output_source(1, GraphSource::Node(lim, 0));
+    s.graph()
+        .set_sources_hard(InPort::new(lim, 0), [OutPort::new(osc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(osc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(lim, 0)])
+        .unwrap();
     let _ = s.update();
     old.render_block(480).expect("open");
     let _ = s.update();

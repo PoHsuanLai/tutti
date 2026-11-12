@@ -172,7 +172,9 @@ fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
     let _ = tutti_graph::contract::drive_input(unit, &env, &inputs, &[], &[]);
 }
 
-/// `Node::reset` must dispatch nothing.
+/// `Node::reset` must not dispatch `effMainsChanged`: it asks the plugin to forget with
+/// `effStopProcess` (through the render handle, which is the audio thread's), and never
+/// suspends or resumes it.
 ///
 /// It ran `Instance::set_sample_rate`, so pre-fix this saw the full
 /// `effStopProcess` → `effMainsChanged(0)` → `effSetSampleRate` →
@@ -185,7 +187,7 @@ fn process_block(unit: &mut PluginNode<Vst2Loaded>, frames: usize) {
 /// resumes once, and hard-coding that constant would make the test a statement
 /// about the loader instead of about `reset`.
 #[test]
-fn reset_dispatches_no_opcode_to_the_plugin() {
+fn reset_dispatches_no_mains_changed_to_the_plugin() {
     let _guard = lock_probe();
     let mut loaded = load();
 
@@ -635,7 +637,7 @@ fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
     drop(loaded.handle);
 }
 
-/// A plugin's `audioMasterIOChanged` reaches the host's
+/// A plugin's `audioMasterIOChanged` restarts it and reaches the host's
 /// `PluginHandle::on_invalidate` as its new latency and an I/O change, on the
 /// next editor pump (the main-thread tick an in-process plugin has), and the
 /// node's shape declares the new latency.
@@ -653,6 +655,16 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
         .handle
         .on_invalidate(move |e| sink.lock().unwrap().push(e));
 
+    // The restart an `audioMasterIOChanged` asks for resumes the plugin, which settles its
+    // latency there (the probe's late latency): the figure read after it is 300.
+    probe_call(
+        &loaded.path,
+        b"tutti_vst2_probe_set_late_latency\0",
+        |sym| {
+            let f: extern "C" fn(i32) = unsafe { std::mem::transmute(*sym) };
+            f(300);
+        },
+    );
     let answered = probe_call(&loaded.path, b"tutti_vst2_probe_fire_io_changed\0", |sym| {
         let f: extern "C" fn(i32, i32) -> isize = unsafe { std::mem::transmute(*sym) };
         f(300, 2)
@@ -660,6 +672,11 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     assert_eq!(answered, 1);
     assert!(seen.lock().unwrap().is_empty(), "nothing before the pump");
 
+    // The first pump asks the audio thread for the Processor back; the block hands it over
+    // (between blocks), and the next pump restarts the plugin and reads it again.
+    let mut loaded = loaded;
+    loaded.handle.editor_idle(&main_thread());
+    drive_block(&mut loaded.unit);
     loaded.handle.editor_idle(&main_thread());
 
     let seen = seen.lock().unwrap();

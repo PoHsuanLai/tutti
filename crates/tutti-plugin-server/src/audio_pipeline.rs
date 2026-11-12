@@ -547,8 +547,14 @@ impl AudioPipeline {
             // The plugin's MIDI-out travels back to the host so it can re-enter
             // routing, but it is *left in* `plugin_output` and read through
             // `midi_out()` — moving it out here would take the buffer's capacity
-            // with it. `param_changes` / `note_expression` are still dropped (no
-            // host consumer yet). Audio was written back into the slab above.
+            // with it. `param_changes` are not sent to the host (the wire has no
+            // return path for them until the ParamEdit event, doc 029 section
+            // 6.1), but a VST3 plugin's reach the server's own edit controller:
+            // its Processor hands each block's `outputParameterChanges` to the
+            // Controller, which applies them with `setParamNormalized` on the
+            // tick, so a `getState` or an editor reads them. `note_expression`
+            // is still dropped (no host consumer yet). Audio was written back
+            // into the slab above.
             Ok(AudioOutput {
                 latency_us: start.elapsed().as_micros() as u64,
             })

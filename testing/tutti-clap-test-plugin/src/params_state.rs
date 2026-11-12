@@ -32,8 +32,8 @@ use clap_sys::events::{
     clap_event_param_mod, clap_event_param_value, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::params::{
-    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_MODULATABLE, CLAP_PARAM_IS_STEPPED,
-    CLAP_PARAM_RESCAN_VALUES, clap_param_info, clap_plugin_params,
+    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_MODULATABLE, CLAP_PARAM_IS_READONLY,
+    CLAP_PARAM_IS_STEPPED, CLAP_PARAM_RESCAN_VALUES, clap_param_info, clap_plugin_params,
 };
 use clap_sys::ext::state::clap_plugin_state;
 use clap_sys::ext::state_context::{clap_plugin_state_context, clap_plugin_state_context_type};
@@ -130,7 +130,7 @@ static PARAMS: &[ProbeParam] = &[
         name: b"Mode",
         module: b"",
         min: 0.0,
-        max: 3.0,
+        max: 22.0,
         default: 1.0,
         flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
     },
@@ -444,6 +444,22 @@ pub unsafe extern "C" fn tutti_test_plugin_param_capture(out: *mut ParamStateCap
     true
 }
 
+/// The id of the parameter that reports `CLAP_PARAM_IS_READONLY` ("the parameter
+/// can't be changed by the host"), or `u32::MAX` for none. The plugin still
+/// records any `PARAM_VALUE` the host sends it, so a host that writes it is
+/// seen.
+static READONLY_PARAM: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Makes parameter `id` report `CLAP_PARAM_IS_READONLY` from the next
+/// `get_info`; `u32::MAX` (and `tutti_test_plugin_param_reset`) clears it.
+///
+/// # Safety
+/// Not synchronized with a host's parameter reads: set it before the load.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_set_readonly_param(id: u32) {
+    READONLY_PARAM.store(id, Ordering::SeqCst);
+}
+
 /// Clear the parameter/state capture and restore every parameter to its
 /// declared default. The capture is a process-global shared by every test in
 /// the binary, so a test calls this before driving the host.
@@ -454,6 +470,7 @@ pub unsafe extern "C" fn tutti_test_plugin_param_capture(out: *mut ParamStateCap
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_param_reset() {
     with_capture(|cap| *cap = ParamStateCapture::default());
+    READONLY_PARAM.store(u32::MAX, Ordering::SeqCst);
     VALUES_INIT.store(false, Ordering::Release);
     ensure_values_init();
 }
@@ -580,7 +597,12 @@ unsafe extern "C" fn params_get_info(
     // arguments valid per the CLAP ABI.
     let info = unsafe { &mut *info };
     info.id = p.id;
-    info.flags = p.flags;
+    info.flags = p.flags
+        | if p.id == READONLY_PARAM.load(Ordering::SeqCst) {
+            CLAP_PARAM_IS_READONLY
+        } else {
+            0
+        };
     info.cookie = ptr::null_mut();
     let name: &mut [c_char; CLAP_NAME_SIZE] = &mut info.name;
     fill_cstr_array(name, p.name);

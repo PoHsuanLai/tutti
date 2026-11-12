@@ -16,9 +16,9 @@ use tutti_plugin_types::{
     SampleFormat, SampleRate, Samples,
 };
 use tutti_vst3_host::{
-    AudioBuffer, InputEvents, LoadOptions, ParameterChanges, ProcessFailed, ProcessMode,
+    AudioBuffer, InputEvents, Library, LoadOptions, ParameterChanges, ProcessFailed, ProcessMode,
     ProcessOutputRef, TransportInfo, Vst3Controller, Vst3Error, Vst3Loaded, Vst3Processor,
-    Vst3Sample,
+    Vst3Sample, class_id,
 };
 
 /// VST3's activation at the width `T`: `activate_typed`, whose Processor is
@@ -203,7 +203,14 @@ impl<T: Vst3Sample> ActiveExt<T> for Active<T> {
     }
 
     fn load_class(path: &Path, name: &str, rate: f64, frames: usize) -> Result<Self, LoadError> {
-        let loaded = Vst3Loaded::load(&main_thread(), path, LoadOptions::new().class(name))
+        let library = Library::load(path).expect("the bundle opens");
+        let id = (0..library.count_classes())
+            .filter_map(|i| library.class_info(i).ok())
+            .find(|info| info.name == name)
+            .map(|info| class_id(&info))
+            .expect("the bundle exports a class under that name");
+        drop(library);
+        let loaded = Vst3Loaded::load(&main_thread(), path, LoadOptions::new().class_id(id))
             .map_err(LoadError::Load)?;
         loaded
             .activate_at::<T>(rate, frames)

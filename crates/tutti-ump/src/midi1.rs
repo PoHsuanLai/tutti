@@ -323,6 +323,41 @@ pub struct Midi1Parser {
     state: State,
 }
 
+/// The one message at the start of `bytes`: the status byte says how many
+/// bytes count, and any after them (the padding of a fixed three-byte
+/// field, as a CLAP, VST2 or VST3 MIDI event has) are ignored. `None` for a
+/// SysEx or undefined status, a message cut short, or a data byte with its
+/// top bit set.
+///
+/// Stateless, so a free function: [`Midi1Parser`] is the stream reader, and a
+/// padded field fed to its [`feed`](Midi1Parser::feed) would be read as
+/// running status data.
+///
+/// ```
+/// use tutti_ump::{Message, MidiGroup, parse_exact};
+///
+/// assert!(matches!(parse_exact(MidiGroup::FIRST, &[0x90, 60, 100, 0]), Some(Message::Midi1(..))));
+/// assert_eq!(parse_exact(MidiGroup::FIRST, &[0x90, 60]), None);
+/// ```
+#[must_use]
+pub fn parse_exact(group: MidiGroup, bytes: &[u8]) -> Option<Message> {
+    let (&status, data) = bytes.split_first()?;
+    match status {
+        0x80..=0xF3 if status != 0xF0 => {
+            let data = data.get(..usize::from(data_bytes(status)))?;
+            let (d1, d2) = match *data {
+                [d1] => (d1, 0),
+                [d1, d2] => (d1, d2),
+                _ => return None,
+            };
+            short(group, status, d1, d2)
+        }
+        0xF6 => Some(Message::System(group, System::TuneRequest)),
+        0xF8..=0xFF => Midi1Parser::new(group).real_time(status),
+        _ => None,
+    }
+}
+
 impl Midi1Parser {
     /// A parser whose messages are on `group`. MIDI 1.0 has no group: a stream
     /// is one cable, so the group is a property of the port it came in on.
@@ -331,33 +366,6 @@ impl Midi1Parser {
         Self {
             group,
             state: State::Idle,
-        }
-    }
-
-    /// The one message at the start of `bytes`: the status byte says how many
-    /// bytes count, and any after them (the padding of a fixed three-byte
-    /// field, as a CLAP, VST2 or VST3 MIDI event has) are ignored. `None` for a
-    /// SysEx or undefined status, a message cut short, or a data byte with its
-    /// top bit set.
-    ///
-    /// A padded field fed to [`feed`](Self::feed) would be read as running
-    /// status data.
-    #[must_use]
-    pub fn message(group: MidiGroup, bytes: &[u8]) -> Option<Message> {
-        let (&status, data) = bytes.split_first()?;
-        match status {
-            0x80..=0xF3 if status != 0xF0 => {
-                let data = data.get(..usize::from(data_bytes(status)))?;
-                let (d1, d2) = match *data {
-                    [d1] => (d1, 0),
-                    [d1, d2] => (d1, d2),
-                    _ => return None,
-                };
-                short(group, status, d1, d2)
-            }
-            0xF6 => Some(Message::System(group, System::TuneRequest)),
-            0xF8..=0xFF => Self::new(group).real_time(status),
-            _ => None,
         }
     }
 

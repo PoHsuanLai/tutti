@@ -11,6 +11,12 @@ use crate::{CCNumber, MidiChannel, MidiGroup, Ump};
 /// `Midi1` and `Midi2` are different message types on the wire and stay
 /// different here. Utility and Stream messages have no group (M2-104 §2.1.2),
 /// so they carry none.
+///
+/// Exhaustive on purpose, as [`Voice1`] and [`Voice2`] are: the wire format
+/// closes the set of message types, and [`Unknown`] carries a packet no
+/// revision defined (or this crate cannot frame), so a later revision is not a
+/// new variant. A consumer that matches on it, and on the voice messages, is
+/// made to decide what a new message means when one is added here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Message {
     /// Message type `0x0`.
@@ -88,6 +94,29 @@ impl Address {
     #[must_use]
     pub const fn new(group: MidiGroup, channel: MidiChannel) -> Self {
         Address { group, channel }
+    }
+
+    /// The Group and Channel as one table index, `0..256`: the group's
+    /// [`index`](MidiGroup::index) times sixteen, plus the channel's.
+    #[inline]
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.group.index() * MidiChannel::COUNT as usize + self.channel.index()
+    }
+
+    /// The address at table position `index` ([`index`](Self::index)'s
+    /// inverse), or `None` from 256 up.
+    #[inline]
+    #[must_use]
+    pub const fn from_index(index: usize) -> Option<Self> {
+        if index < 256 {
+            Some(Address {
+                group: MidiGroup::masked((index >> 4) as u8),
+                channel: MidiChannel::masked(index as u8),
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -225,6 +254,9 @@ impl System {
 
 /// MIDI 1.0 Channel Voice messages (M2-104 §7.3). A Note On at velocity 0 is
 /// a Note On here; reading it as a Note Off is translation's.
+///
+/// Exhaustive on purpose: MIDI 1.0's channel voice set is closed, and a match
+/// that ignores one is a match that should not compile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Voice1 {
     /// Note Off.
@@ -266,6 +298,7 @@ pub enum Voice1 {
 // ---- System Exclusive ------------------------------------------------------
 
 /// The role of a packet in a System Exclusive message (Tables 18 and 19).
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SysexStatus {
     /// The whole message.
@@ -585,6 +618,9 @@ pub struct Bank {
 
 /// MIDI 2.0 Channel Voice messages (M2-104 §7.4). Values are the wire's
 /// integers; M2-115 scaling is translation's.
+///
+/// Exhaustive on purpose: a message added to the set should break the match of
+/// an instrument that would otherwise ignore it without anyone choosing to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Voice2 {
     /// Registered Per-Note Controller.
@@ -791,6 +827,7 @@ pub enum Letter {
 
 /// Flex Data messages (M2-104 §7.5). Set Tempo, Set Time Signature and Set
 /// Metronome are Group messages and carry no address.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flex {
     /// Set Tempo: units of 10 ns per quarter note.
@@ -956,6 +993,7 @@ pub struct ChordName {
 }
 
 /// The messages that use the Flex text format (Table 16).
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlexTextKind {
     /// Bank 1, status 0.
@@ -1070,6 +1108,7 @@ pub struct DeviceIdentity {
 }
 
 /// The MIDI Protocol of a stream (§7.1.6.2).
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
     /// MIDI 1.0 (`0x01`).

@@ -53,6 +53,10 @@ impl ClapLoaded {
             .gui
             .window_destroyed
             .store(false, std::sync::atomic::Ordering::Release);
+        self.host_state
+            .gui
+            .closed
+            .store(false, std::sync::atomic::Ordering::Release);
 
         let outcome = self
             .plugin
@@ -98,6 +102,10 @@ impl ClapLoaded {
         self.host_state
             .gui
             .window_destroyed
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.host_state
+            .gui
+            .closed
             .store(false, std::sync::atomic::Ordering::Release);
 
         let did_create = self

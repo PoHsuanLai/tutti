@@ -27,9 +27,7 @@ use tutti_types::MaxBlock;
 use tutti_vst2_host::Vst2Loaded;
 
 use tutti_graph::NodeKey;
-use tutti_graph::{
-    Editor, ForkError, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport,
-};
+use tutti_graph::{Editor, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport};
 use tutti_graph::{OutPort, Source};
 use tutti_plugin::{PresetId, RenderMode};
 use tutti_plugin_host::PluginHandle;
@@ -89,14 +87,6 @@ fn reset_probe() {
             f();
         });
     }
-}
-
-fn refuse_chunk_load(refuse: bool) {
-    probe_call(b"tutti_vst2_probe_set_refuse_chunk_load\0", |sym| {
-        // SAFETY: the probe exports this as `extern "C" fn(bool)`.
-        let f: extern "C" fn(bool) = unsafe { std::mem::transmute(sym) };
-        f(refuse);
-    });
 }
 
 fn read_capture() -> ProcessCapture {
@@ -326,54 +316,6 @@ fn a_fork_at_another_rate_tells_the_plugin_its_rate() {
     drop(handle);
 }
 
-/// **A second instance that refuses the live state is a named fork error**:
-/// `PluginForkError::LoadState`, and through the graph a `ForkError::Source`
-/// naming the node's key — never a fork at the plugin's defaults.
-///
-/// The refusal is armed after the live instance stored its chunk, so only the
-/// fork's instance refuses.
-#[test]
-fn a_state_the_second_instance_refuses_is_a_named_fork_error() {
-    let _lock = lock_probe();
-    reset_probe();
-    let _env = ProbeEnv::new(true);
-    let (client, handle) = load();
-    handle
-        .load_state(&main_thread(), &chunk_state(&[9]))
-        .expect("the probe takes a chunk");
-    refuse_chunk_load(true);
-
-    let err = client
-        .fork_instance(&main_thread(), ForkMode::Live)
-        .expect_err("the second instance refuses the state");
-    assert!(
-        matches!(err, PluginForkError::LoadState(_)),
-        "expected LoadState, got {err:?}"
-    );
-
-    let key = NodeKey(4);
-    let editor = live_graph(key, client);
-    match editor.fork(
-        ForkTarget::Node(key),
-        ForkMode::Offline,
-        prepare_at(SAMPLE_RATE),
-    ) {
-        Err(ForkError::Source { key: at, cause }) => {
-            assert_eq!(at, key, "the refusal names the plugin's node");
-            assert!(
-                matches!(
-                    cause.downcast_ref::<PluginForkError>(),
-                    Some(PluginForkError::LoadState(_))
-                ),
-                "the cause is the plugin's: {cause:?}"
-            );
-        }
-        other => panic!("expected ForkError::Source, got {:?}", other.err()),
-    }
-    refuse_chunk_load(false);
-    drop(handle);
-}
-
 /// **A fork source whose live instance is gone says so**, without loading a
 /// second instance: `PluginForkError::LiveGone`. The source holds the live
 /// instance weakly, so it cannot keep a dropped plugin alive either.
@@ -414,7 +356,8 @@ fn a_plugin_handed_back_by_into_client_forks() {
     let _env = ProbeEnv::new(true);
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
-        tutti_fixtures::vst2_probe(),
+        &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
+            .expect("a plugin file"),
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .expect("the probe opens");

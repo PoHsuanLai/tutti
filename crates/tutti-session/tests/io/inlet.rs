@@ -1,7 +1,7 @@
 //! `Graph::open_inlet`: audio a thread of your own pushes into the graph, the
 //! mirror of the tap.
 
-use tutti_session::{GraphSource, InletError, Session};
+use tutti_session::{InletError, OutPort, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -22,8 +22,12 @@ fn pushed_frames_reach_the_outputs_in_order() {
         .graph()
         .open_inlet(ChannelLayout::STEREO, Samples(256), RATE)
         .expect("the producer runs at the graph's rate");
-    s.graph().set_output_source(0, GraphSource::Node(key, 0));
-    s.graph().set_output_source(1, GraphSource::Node(key, 1));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(key, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(key, 1)])
+        .unwrap();
     let mut tap = s
         .graph()
         .open_output_tap(Samples(1_024))

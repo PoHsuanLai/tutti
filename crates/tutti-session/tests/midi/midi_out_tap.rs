@@ -16,7 +16,7 @@ use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiGroup, Ump};
 
-use tutti_session::{Session, SessionEvent, UmpOut};
+use tutti_session::{EventOutPort, Session, SessionEvent, UmpOut};
 
 const RATE: f64 = 48_000.0;
 
@@ -110,7 +110,7 @@ fn a_full_tap_counts_what_it_drops() {
     let clock = s.midi_nodes().unwrap().clock;
     let mut all = s
         .graph()
-        .open_event_tap(clock.into(), TapAlign::Raw, 8_192)
+        .open_event_tap(EventOutPort::new(clock, 0), TapAlign::Raw, 8_192)
         .expect("the clock is in the graph");
     let _ = s.update(); // commits the second tap
     render(&s, 1_100_000);
@@ -170,11 +170,11 @@ fn reopening_one_tap_leaves_the_others_fed() {
     let clock = s.midi_nodes().unwrap().clock;
     let mut first = s
         .graph()
-        .open_event_tap(clock.into(), TapAlign::Raw, 64)
+        .open_event_tap(EventOutPort::new(clock, 0), TapAlign::Raw, 64)
         .unwrap();
     let mut second = s
         .graph()
-        .open_event_tap(clock.into(), TapAlign::Raw, 64)
+        .open_event_tap(EventOutPort::new(clock, 0), TapAlign::Raw, 64)
         .unwrap();
     let _ = s.update();
     s.graph().set_sample_rate(SampleRate(44_100.0));

@@ -267,7 +267,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
     assert!(event.ump.is_note_off());
     assert_eq!(
         event.ump.key_event().map(|key| match key {
-            KeyEvent::On(key) | KeyEvent::Off(key) => key.note(),
+            KeyEvent::On(key) | KeyEvent::Off(key) => key.note().get(),
             KeyEvent::Sustain { .. } => unreachable!("a note-off"),
         }),
         Some(NOTE),
@@ -935,6 +935,41 @@ fn test_host_get_extension_returns_non_null_for_supported() {
             !ptr.is_null(),
             "Extension {CLAP_EXT_POSIX_FD_SUPPORT:?} returned null"
         );
+    }
+}
+
+/// The headers keep a `*_COMPAT` id for each draft that became stable ("The
+/// latest draft is 100% compatible. This compat ID may be removed in 2026"), so
+/// a plugin built against the older header asks the host for that id. The host
+/// answers it with the stable extension's own vtable, as it does for the plugin
+/// side.
+#[test]
+fn test_host_get_extension_answers_the_compat_ids_with_the_stable_vtable() {
+    use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT};
+    use clap_sys::ext::context_menu::{CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT};
+    use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT};
+    use clap_sys::ext::remote_controls::{
+        CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT,
+    };
+    use clap_sys::ext::surround::{CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT};
+    use clap_sys::ext::track_info::{CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT};
+
+    let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+
+    for (stable, compat) in [
+        (CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT),
+        (CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT),
+        (CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT),
+        (CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT),
+        (CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT),
+        (CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT),
+    ] {
+        let stable_ptr = unsafe { get_ext(raw, stable.as_ptr()) };
+        let compat_ptr = unsafe { get_ext(raw, compat.as_ptr()) };
+        assert!(!compat_ptr.is_null(), "{compat:?} returned null");
+        assert_eq!(compat_ptr, stable_ptr, "{compat:?} is {stable:?}'s vtable");
     }
 }
 

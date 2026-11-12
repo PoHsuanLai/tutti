@@ -22,12 +22,11 @@ struct Params(Arc<Core>, HostCallback);
 impl Params {
     /// What a state load raises (`core::NOTICE_ON_LOAD`): the plugin reporting a
     /// parameter move of its own, as `audioMasterAutomate`.
-    fn loaded(&self, bytes: &[u8]) -> bool {
+    fn loaded(&self, bytes: &[u8]) {
         let loaded = self.0.load(bytes).is_ok();
         if loaded && self.0.notice() == core::NOTICE_ON_LOAD {
             self.1.automate(0, 0.5);
         }
-        loaded
     }
 }
 
@@ -67,11 +66,11 @@ impl PluginParameters for Params {
     fn get_bank_data(&self) -> Vec<u8> {
         self.0.save()
     }
-    fn load_preset_data(&self, data: &[u8]) -> bool {
-        self.loaded(data)
+    fn load_preset_data(&self, data: &[u8]) {
+        self.loaded(data);
     }
-    fn load_bank_data(&self, data: &[u8]) -> bool {
-        self.loaded(data)
+    fn load_bank_data(&self, data: &[u8]) {
+        self.loaded(data);
     }
 }
 
@@ -132,6 +131,13 @@ impl Plugin for Shared {
             self.rate,
             self.block,
         );
+    }
+    /// What a plugin does on `effStopProcess`: forgets its signal history. The header gives
+    /// the opcode no meaning beyond "no arguments" (`aeffectx.h`); a delay or reverb that
+    /// clears its buffers when it stops is the practice a host's `reset` relies on.
+    fn stop_process(&mut self) {
+        self.core
+            .reset(&mut self.dsp.lock().unwrap_or_else(|e| e.into_inner()));
     }
     fn can_do(&self, can_do: CanDo) -> api::Supported {
         match can_do {

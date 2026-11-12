@@ -40,11 +40,12 @@
 //!   one notice that its pins, latency or tail moved, so it raises all
 //!   three), and `io_changed` answers 1; `can_do` answers what the host really
 //!   supports.
-//! - `size_window`, `get_input_latency`, `get_output_latency`,
-//!   `get_automation_state` return honest neutral defaults — the wiring
-//!   exists, but `HostState` has no reference to the value each would need
-//!   (see each method's note). The fork owns the answer rather than falling
-//!   through to vst-rs's swallowed 0.
+//! - `size_window` keeps the plugin's requested editor size for the main thread
+//!   (`poll_editor_resize_request`) and answers 1.
+//! - `get_input_latency`, `get_output_latency`, `get_automation_state` return
+//!   honest neutral defaults — `HostState` has no reference to the value each
+//!   would need (see each method's note). The fork owns the answer rather than
+//!   falling through to vst-rs's swallowed 0.
 
 use crate::midi::to_midi;
 use crate::transport_cell::TransportReader;
@@ -135,6 +136,12 @@ pub(crate) struct HostState {
     /// opcodes would be wrong. A request is a level, so ten changes between
     /// two passes are one re-read.
     requests: RequestWord,
+    /// The size the plugin last asked the editor window to take
+    /// (`audioMasterSizeWindow`): width in the high 32 bits, height in the low, `0` for none.
+    /// The latest request wins, as a request is a level; the main thread takes it with
+    /// [`take_size_request`](Self::take_size_request), because the host window is not
+    /// reachable from the plugin's thread.
+    size_request: AtomicU64,
 }
 
 impl HostState {
@@ -155,7 +162,18 @@ impl HostState {
             sample_rate_bits: AtomicU64::new(default_sample_rate.to_bits()),
             offline: std::sync::atomic::AtomicBool::new(false),
             requests: RequestWord::new(),
+            size_request: AtomicU64::new(0),
         }
+    }
+
+    /// The editor size the plugin asked for since the last call, if any: what the shared
+    /// layer's `poll_editor_resize_request` hands the host.
+    pub(crate) fn take_size_request(&self) -> Option<tutti_plugin_types::EditorSize> {
+        let packed = self.size_request.swap(0, Ordering::AcqRel);
+        (packed != 0).then_some(tutti_plugin_types::EditorSize {
+            width: (packed >> 32) as u32,
+            height: packed as u32,
+        })
     }
 
     /// Records the block size the plugin is about to be told, for
@@ -381,13 +399,22 @@ impl Host for HostState {
         }
     }
 
-    /// Neutral default: the plugin's editor-resize request. `HostState`
-    /// has no handle to the editor window or a resize channel (the editor
-    /// lives on `Vst2Loaded`, a separate object), so the resize cannot be
-    /// honoured without a structural change. Returning `false` tells the plugin
-    /// the host declined — honest, and better than the swallowed 0.
-    fn size_window(&self, _index: i32, _value: isize) -> bool {
-        false
+    /// `audioMasterSizeWindow`: `[index]` the new width, `[value]` the new height
+    /// (`aeffectx.h`, "1 if supported"). The request is kept for the main thread, which owns
+    /// the host window (`poll_editor_resize_request`); answering 1 says the host will resize
+    /// it. A size that is not positive is refused (0).
+    fn size_window(&self, index: i32, value: isize) -> bool {
+        let (Ok(width), Ok(height)) = (u32::try_from(index), u32::try_from(value)) else {
+            return false;
+        };
+        if width == 0 || height == 0 {
+            return false;
+        }
+        self.size_request.store(
+            u64::from(width) << 32 | u64::from(height),
+            Ordering::Release,
+        );
+        true
     }
 
     /// Neutral default: real input latency needs the engine's latency
@@ -422,8 +449,10 @@ impl Host for HostState {
     /// `receiveVstMidiEvent`), and serves `audioMasterGetTime`
     /// (`sendVstTimeInfo`).
     ///
-    /// `No`, because the host does not do it: `sizeWindow` (the callback
-    /// answers 0, [`size_window`](Self::size_window)), `supplyIdle`
+    /// `Yes` also for `sizeWindow` (the host honours
+    /// [`size_window`](Self::size_window) through the editor's resize slot).
+    ///
+    /// `No`, because the host does not do it: `supplyIdle`
     /// (`audioMasterIdle` is not routed to anything), `supportShell` and
     /// `shellCategory` (no shell-plugin id enumeration). Everything else is
     /// `Maybe`, VST 2.4's "don't know".
@@ -437,8 +466,9 @@ impl Host for HostState {
             | "sendVstMidiEvent"
             | "sendVstTimeInfo"
             | "receiveVstEvents"
-            | "receiveVstMidiEvent" => Supported::Yes,
-            "sizeWindow" | "supplyIdle" | "supportShell" | "shellCategory" => Supported::No,
+            | "receiveVstMidiEvent"
+            | "sizeWindow" => Supported::Yes,
+            "supplyIdle" | "supportShell" | "shellCategory" => Supported::No,
             _ => Supported::Maybe,
         }
     }
@@ -566,6 +596,30 @@ mod tests {
         );
     }
 
+    /// `audioMasterSizeWindow` (`[index]` width, `[value]` height) is answered 1 and kept for
+    /// the main thread, the latest request winning; a size that is not positive is refused
+    /// and kept nowhere.
+    #[test]
+    fn size_window_keeps_the_latest_request_for_the_main_thread() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert_eq!(host.take_size_request(), None, "nothing asked yet");
+        assert!(host.size_window(640, 480));
+        assert!(host.size_window(800, 600));
+        assert_eq!(
+            host.take_size_request(),
+            Some(tutti_plugin_types::EditorSize {
+                width: 800,
+                height: 600
+            })
+        );
+        assert_eq!(host.take_size_request(), None, "consumed");
+        assert!(!host.size_window(0, 480), "no width");
+        assert!(!host.size_window(640, 0), "no height");
+        assert!(!host.size_window(-1, 480), "a negative width");
+        assert!(!host.size_window(640, -5), "a negative height");
+        assert_eq!(host.take_size_request(), None, "a refusal keeps nothing");
+    }
+
     /// `audioMasterCanDo` claims what tutti does and declines what it does not.
     #[test]
     fn can_do_claims_what_the_host_supports() {
@@ -576,10 +630,11 @@ mod tests {
             "sendVstTimeInfo",
             "receiveVstEvents",
             "receiveVstMidiEvent",
+            "sizeWindow",
         ] {
             assert_eq!(host.can_do(yes), Supported::Yes, "{yes}");
         }
-        for no in ["sizeWindow", "supplyIdle", "supportShell", "shellCategory"] {
+        for no in ["supplyIdle", "supportShell", "shellCategory"] {
             assert_eq!(host.can_do(no), Supported::No, "{no}");
         }
         assert_eq!(host.can_do("somethingNew"), Supported::Maybe);

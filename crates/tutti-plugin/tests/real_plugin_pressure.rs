@@ -370,7 +370,7 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin_host::Plugin
         // formats `EFFECTS` can name.
         let built = tutti_plugin::catalog::Plugin::open(
             Some(&main_thread()),
-            path,
+            &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
             SampleRate::new(SAMPLE_RATE),
         )
         .map(|plugin| {
@@ -1520,7 +1520,7 @@ fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin_host::PluginH
     }
     let built = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
-        path,
+        &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
         SampleRate::new(SAMPLE_RATE),
     )
     .map(|plugin| {

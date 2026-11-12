@@ -402,7 +402,7 @@ impl MpeIngest {
     /// The zone layout in force on `group`: the configured one until an MPE
     /// Configuration Message on that Group changed it.
     pub fn mode_of(&self, group: MidiGroup) -> &MpeMode {
-        &self.groups[usize::from(group.get())].mode
+        &self.groups[group.index()].mode
     }
 
     /// Reconfigure every Group to a new zone layout. Off-RT: call at wiring
@@ -434,12 +434,7 @@ impl MpeIngest {
     /// defaults, as an MCM from the wire would have it. No ranges for
     /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`].
     pub fn zone_defaults(&self, group: MidiGroup, offset: Offset, mut out: impl FnMut(UmpAt)) {
-        send_stops(
-            group,
-            offset,
-            self.groups[usize::from(group.get())].entered,
-            &mut out,
-        );
+        send_stops(group, offset, self.groups[group.index()].entered, &mut out);
         if let MpeMode::Zones(zones) = self.mode_of(group) {
             for config in zones.zones() {
                 send_zone_defaults(config, group, offset, &mut out);
@@ -612,7 +607,7 @@ impl MpeIngest {
         };
         // The Group's channels that changed lose their notes and their record;
         // the other Groups, and the channels that did not change, keep theirs.
-        let state = &mut self.groups[usize::from(group.get())];
+        let state = &mut self.groups[group.index()];
         let changed = state.reconfigure(mode);
         state.entered = 0;
         send_stops(group, offset, changed, out);
@@ -634,7 +629,7 @@ impl MpeIngest {
         let Some(role) = self.role(address) else {
             return Some(*event);
         };
-        let state = &mut self.groups[usize::from(group.get())];
+        let state = &mut self.groups[group.index()];
         let config = match &state.mode {
             MpeMode::Zones(zones) => *zones.zone_of(ch)?,
             _ => return Some(*event),
@@ -828,17 +823,17 @@ mod held {
     impl HeldNotes {
         /// Records that `channel` is playing `note`.
         pub(super) fn bind(&mut self, channel: MidiChannel, note: NoteNumber) {
-            self.0[usize::from(channel.get())] = Some(note);
+            self.0[channel.index()] = Some(note);
         }
 
         /// Frees `channel`.
         pub(super) fn release(&mut self, channel: MidiChannel) {
-            self.0[usize::from(channel.get())] = None;
+            self.0[channel.index()] = None;
         }
 
         /// The note `channel` is playing, if any.
         pub(super) fn note_on(&self, channel: MidiChannel) -> Option<NoteNumber> {
-            self.0[usize::from(channel.get())]
+            self.0[channel.index()]
         }
 
         /// Frees every channel.

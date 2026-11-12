@@ -12,7 +12,7 @@
 use tutti_fixtures::midi::{key_of, m1_note_on};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_graph::{EventInletNode, EventTapReader, Refused, TapAlign, TapEvent};
-use tutti_session::{EventSource, GraphSource, Session};
+use tutti_session::{OutPort, Root, Session};
 use tutti_types::ChannelLayout;
 use tutti_types::{At, Frame, SampleRate};
 use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
@@ -63,11 +63,11 @@ fn pushed_events_come_out_at_their_frames() {
     assert_ne!(key, key2);
     let mut tap = s
         .graph()
-        .open_event_tap(EventSource::new(key, 0), TapAlign::Raw, 64)
+        .open_event_tap(key.events_out(), TapAlign::Raw, 64)
         .expect("the port exists");
     let mut tap2 = s
         .graph()
-        .open_event_tap(EventSource::new(key2, 0), TapAlign::Raw, 64)
+        .open_event_tap(key2.events_out(), TapAlign::Raw, 64)
         .expect("the port exists");
     let _ = s.update();
 
@@ -114,8 +114,11 @@ fn an_export_fork_is_accepted_and_silent() {
     let (key, mut writer) = s.graph().open_event_inlet(8);
     let (hear, ()) = s.graph().insert(ForkByClone(Hear));
     s.graph()
-        .set_event_sources(hear, 0, &[EventSource::new(key, 0)]);
-    s.graph().set_output_source(0, GraphSource::Node(hear, 0));
+        .connect(key.events_out(), hear.events_in())
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(hear, 0)])
+        .unwrap();
     let _ = s.update();
     writer.push(At::NextBlock, note(1)).unwrap();
     let mut fork = s.graph_ref().fork_live().expect("an inlet forks");
@@ -136,4 +139,55 @@ fn an_export_fork_is_accepted_and_silent() {
 fn a_zero_capacity_is_refused() {
     let mut s = session();
     let _ = s.graph().open_event_inlet(0);
+}
+
+/// **An event edge is never faded**: a note-off is a message, not a level
+/// (doc 030, section 4). An audio edge that is cut stays in the plan as a
+/// fading edge and is dropped by a commit of its own when the fade has ended;
+/// an event edge that is cut leaves the plan with the one commit that cuts it,
+/// so nothing is pending after it, and what is pushed afterwards is heard by
+/// nothing.
+#[test]
+fn an_event_edge_is_cut_with_one_commit_and_not_faded() {
+    let mut s = session();
+    let (key, mut writer) = s.graph().open_event_inlet(8);
+    let (hear, ()) = s.graph().insert(ForkByClone(Hear));
+    s.graph()
+        .connect(key.events_out(), hear.events_in())
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(hear, 0)])
+        .unwrap();
+    let _ = s.update();
+
+    writer.push(At::NextBlock, note(1)).unwrap();
+    let mut out = [0.0f32];
+    s.render_frame(&mut out);
+    assert_eq!(out[0], 1.0, "wired: the push is heard");
+
+    assert!(s.graph().disconnect(key.events_out(), hear.events_in()));
+    assert!(
+        s.graph_ref().sources(hear.events_in()).is_empty(),
+        "cut at once"
+    );
+    let _ = s.update();
+    let cut = s.graph().commits_sent();
+    // Past the span an audio edge would fade over.
+    for _ in 0..(2 * tutti_graph::EDGE_DECLICK.get()) {
+        s.render_frame(&mut out);
+    }
+    let _ = s.update();
+    assert_eq!(
+        s.graph().commits_sent(),
+        cut,
+        "no commit collects a fade that ended"
+    );
+
+    writer.push(At::NextBlock, note(2)).unwrap();
+    let mut heard = 0.0;
+    for _ in 0..64 {
+        s.render_frame(&mut out);
+        heard += out[0];
+    }
+    assert_eq!(heard, 0.0, "cut: the push reaches nothing");
 }

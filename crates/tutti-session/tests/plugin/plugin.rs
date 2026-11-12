@@ -14,6 +14,8 @@
 //! skip.
 
 use crate::support;
+use tutti_session::InPort;
+use tutti_session::Root;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,7 +25,7 @@ use support::{clap_probe, plugin_server};
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_plugin::RenderMode;
-use tutti_plugin::catalog::PluginId;
+use tutti_plugin::catalog::{PluginRef, PluginState};
 use tutti_plugin_host::PluginStatus;
 use tutti_session::BufferMaster;
 use tutti_session::{
@@ -73,10 +75,7 @@ fn session_built(
 fn add_probe(s: &mut Session) -> NodeKey {
     s.add_plugin_blocking(
         &main_thread(),
-        PluginLoadRequest {
-            id: PluginId::from_path(clap_probe()),
-            state: None,
-        },
+        PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
     )
     .expect("the reference CLAP plugin loads")
 }
@@ -154,7 +153,7 @@ fn request() -> Bounce<NodeKey, BufferMaster> {
 /// update: returns its node and its realtime latency.
 fn wired_probe(s: &mut Session) -> (NodeKey, Samples) {
     let node = add_probe(s);
-    s.graph().set_outputs_from(node);
+    s.graph().connect(node, Root).unwrap();
     let _ = s.update();
     // Told Realtime by that update (it was never told): the latency it
     // reports realtime.
@@ -231,7 +230,7 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
 fn a_plugin_added_mid_export_is_told_offline() {
     let mut s = session(&[]);
     let (dc, _) = s.graph().insert(tutti_nodes::testing::Const::mono(0.0));
-    s.graph().set_outputs_from(dc);
+    s.graph().connect(dc, Root).unwrap();
     let _ = s.update();
     let job = s.bounce_start(request()).expect("starts");
     assert_eq!(s.render_mode(), RenderMode::Offline);
@@ -367,10 +366,18 @@ fn export_leftovers_drop_on_the_main_thread() {
         .insert(ForkByClone(DropWitness(Arc::clone(&drops))));
     let probe = add_probe(&mut s);
     s.graph()
-        .set_source(probe, 0, tutti_session::GraphSource::Node(witness, 0));
+        .set_sources(
+            InPort::new(probe, 0),
+            [tutti_session::OutPort::new(witness, 0)],
+        )
+        .unwrap();
     s.graph()
-        .set_source(probe, 1, tutti_session::GraphSource::Node(witness, 1));
-    s.graph().set_outputs_from(probe);
+        .set_sources(
+            InPort::new(probe, 1),
+            [tutti_session::OutPort::new(witness, 1)],
+        )
+        .unwrap();
+    s.graph().connect(probe, Root).unwrap();
     let _ = s.update();
     drops.lock().unwrap().clear();
 
@@ -578,7 +585,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
             }
         }
     }
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
     let total_before = s.latency();
 
     // Render into the crash, then through the recovery.
@@ -630,7 +637,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
     // The snapshot is still the node's recovery point: a second failure
     // restores it again.
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
 
     // The state came back.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -907,7 +914,14 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     );
     let (node, _) = wired_probe(&mut s);
     snapshot_now(&mut s, node);
-    let kept = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
+    let kept = s
+        .plugin(node)
+        .unwrap()
+        .state()
+        .last_good()
+        .unwrap()
+        .bytes()
+        .to_vec();
     let mut drive = Drive::new();
     drive.until(&mut s, "a second attempt", |e| {
         matches!(e, SessionEvent::PluginReloading { attempt: 2, .. })
@@ -931,7 +945,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     drive.until(&mut s, "given up", |e| {
         matches!(e, SessionEvent::PluginGaveUp { .. })
     });
-    let Some(SessionEvent::PluginGaveUp { why, snapshot, .. }) = drive
+    let Some(SessionEvent::PluginGaveUp { why, state, .. }) = drive
         .events
         .iter()
         .find(|e| matches!(e, SessionEvent::PluginGaveUp { .. }))
@@ -940,7 +954,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     };
     assert!(why.last.contains("ports differ"), "{why}");
     assert_eq!(
-        snapshot.as_deref(),
+        state.as_ref().map(PluginState::bytes),
         Some(kept.as_slice()),
         "the user's last state goes out with the event"
     );
@@ -966,7 +980,7 @@ fn snapshot_now(s: &mut Session, node: NodeKey) {
             }
         }
     }
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
 }
 
 fn recovered_state(drive: &Drive) -> Vec<tutti_session::StateRestore> {
@@ -1020,7 +1034,14 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         std::thread::sleep(Duration::from_millis(5));
     }
     snapshot_now(&mut s, node);
-    let users = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
+    let users = s
+        .plugin(node)
+        .unwrap()
+        .state()
+        .last_good()
+        .unwrap()
+        .bytes()
+        .to_vec();
     let mut drive = Drive::new();
     drive.until(&mut s, "recovered", |e| {
         matches!(e, SessionEvent::PluginRecovered { .. })
@@ -1039,20 +1060,34 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         2,
         "the attempt with the snapshot failed first"
     );
-    assert!(s.plugin(node).unwrap().snapshot().is_none());
+    assert!(s.plugin(node).unwrap().state().last_good().is_none());
     assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
     // The user's state is kept for the host, not thrown away...
     assert_eq!(
-        s.plugin(node).unwrap().withheld_snapshot(),
+        s.plugin(node)
+            .unwrap()
+            .state()
+            .withheld()
+            .map(PluginState::bytes),
         Some(users.as_slice())
     );
     // ...and the snapshots taken since, of a plugin at its defaults, do not
     // replace it.
     snapshot_now(&mut s, node);
-    let fresh = s.plugin(node).unwrap().snapshot().expect("a new snapshot");
+    let fresh = s
+        .plugin(node)
+        .unwrap()
+        .state()
+        .last_good()
+        .expect("a new snapshot")
+        .bytes();
     assert_ne!(fresh, users.as_slice(), "the plugin is at its defaults");
     assert_eq!(
-        s.plugin(node).unwrap().withheld_snapshot(),
+        s.plugin(node)
+            .unwrap()
+            .state()
+            .withheld()
+            .map(PluginState::bytes),
         Some(users.as_slice()),
         "a default-state snapshot replaced the withheld one"
     );
@@ -1220,10 +1255,18 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
         handle: Arc::clone(&handle),
     }));
     s.graph()
-        .set_source(cancel, 0, tutti_session::GraphSource::Node(probe, 0));
+        .set_sources(
+            InPort::new(cancel, 0),
+            [tutti_session::OutPort::new(probe, 0)],
+        )
+        .unwrap();
     s.graph()
-        .set_source(cancel, 1, tutti_session::GraphSource::Node(probe, 1));
-    s.graph().set_outputs_from(cancel);
+        .set_sources(
+            InPort::new(cancel, 1),
+            [tutti_session::OutPort::new(probe, 1)],
+        )
+        .unwrap();
+    s.graph().connect(cancel, Root).unwrap();
     let _ = s.update();
     let live = servers();
 
@@ -1289,8 +1332,8 @@ fn a_death_after_a_refused_restore_does_not_withhold_the_snapshot() {
             .all(|s| matches!(s, tutti_session::StateRestore::Refused { .. })),
         "{states:?}"
     );
-    assert!(s.plugin(node).unwrap().withheld_snapshot().is_none());
-    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    assert!(s.plugin(node).unwrap().state().withheld().is_none());
+    assert!(s.plugin(node).unwrap().state().last_good().is_some());
 }
 
 /// This process's main thread. Each test is its own process under nextest, so

@@ -345,7 +345,9 @@ a block (the graph's `Event` already has it) and an absolute frame in storage.
 pub struct Translator { /* per (group, channel): RPN, NRPN and Bank Select state */ }
 
 impl Translator {
-    pub fn feed(&mut self, ump: Ump, out: impl FnMut(Ump));
+    pub fn translate(&mut self, packet: impl Into<Ump>) -> Option<Ump>; // at most one (L1g)
+    pub fn flush(&mut self, out: impl FnMut(Address, Ump));
+    pub fn finish(self, out: impl FnMut(Address, Ump));               // flush, then gone
 }
 ```
 
@@ -2965,6 +2967,41 @@ helpers below only build `Ump`s).
   Table 4 and `split_stream` is it walked along a slice.
 - **The `tutti` prelude** under `midi`: `MidiFile`, `Track`, `Tick`, `Message`, `Ump`,
   `NoteNumber`, `TimedMidiEvent` (`MidiChannel` and `MidiGroup` were already in).
+
+### L1g: vocabulary types, part A (`tutti-ump`, `tutti-midi-protocol`)
+
+Breaking, with every workspace caller moved and no forwarders.
+
+- **Indexes.** `MidiChannel::index`/`MidiGroup::index` (`usize`), `all()`, `Address::index` and
+  `Address::from_index` replace the `usize::from(x.get())` noise and the hand-built 16x16 loop in
+  `Translator::flush`. `MidiChannel::numbered(n)` and `MidiGroup::numbered(n)` are the 1-based door
+  (1 to 16); `Display` writes that number, `Debug` the wire raw.
+- **Held keys.** `Key::new(Protocol, Address, NoteNumber) -> Option<Key>` (`None` for a reserved
+  protocol: a key is opened by a channel voice packet, and only M1 and M2 have one),
+  `Key::address()`, `Key::note() -> NoteNumber`, `Key::protocol()`;
+  `Ump::sustain_up(Protocol, Address) -> Option<Ump>` and
+  `KeyEvent::Sustain { protocol, address, down }`. No `m2: bool` with a bare lane.
+- **SysEx.** One packetiser: `SysexMessage::packets`; `Sysex7Packets::checked` is the only door for
+  unchecked bytes; the free `sysex7_packets` is gone. `SysexAssembler` stays a prose contract: the
+  block guard was weighed and not built (see "Why there is no block guard" in its docs): its six
+  callers keep each `SysexRef` until the whole block is pushed, to hand a plugin one pointer per
+  message, and a lending `push` would make each copy first.
+- **`parse_exact`** (free) replaces `Midi1Parser::message`, so `Midi1Parser` has one idiom, the stream.
+- **`#[non_exhaustive]`** on `SysexStatus`, `Flex`, `FlexTextKind`, `Protocol`, `TextKind` and
+  `SmfFormat`; `Message`, `Voice1` and `Voice2` stay exhaustive, with the reason in their docs.
+- **Translation.** `Translator::translate(impl Into<Ump>) -> Option<Ump>` replaces the callback
+  `feed`; `flush` keeps its callback and `finish(self, out)` is the offline caller's. A packet is a
+  `Ump` at every edge (`Translator`, `Narrower::feed`, `midi1`, `channel_voice` take
+  `impl Into<Ump>`). `narrow` returns `Result<Voice1, NoMidi1Form>`.
+  **`widen`/`narrow` stay free functions in `tutti-midi-protocol`** rather than
+  `From<Voice1> for Voice2` / `TryFrom<Voice2> for Voice1`: both types are `tutti-ump`'s, so the
+  impls would live there with the M2-115 scaling and the Note On at velocity 0 rule, which
+  `tutti-ump` deliberately leaves to translation (and which `Translator`/`Narrower` share through
+  `scale`).
+- **Units.** `PitchBendSensitivity::semitones() -> Semitones` (`as_semitones_f32` is gone;
+  `tutti-midi-protocol` depends on `tutti-types`). The `*_to_unit_f32` family keeps bare `f32`: no
+  unit covers a normalized controller value without lending it a meaning that is not the packet's
+  (stated in the module docs, "where the types stop").
 
 ## 11. Testing
 

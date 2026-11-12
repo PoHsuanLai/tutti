@@ -29,12 +29,12 @@ pub enum LoadCause {
     /// The factory exports no audio-processor class.
     #[error("No audio processor classes found in VST3")]
     NoAudioClass,
-    /// The bundle has no audio class with the requested display name.
-    #[error("no audio class named {wanted:?}; this bundle exports {offered:?}")]
+    /// The bundle has no audio class with the requested id.
+    #[error("no audio class with id {wanted:?}; this bundle exports {offered:?}")]
     ClassNotFound {
-        /// The display name asked for.
+        /// The class id asked for (`vst3.<class id>`).
         wanted: String,
-        /// The audio classes the bundle does export.
+        /// The audio classes the bundle does export, each as its id and name.
         offered: Vec<String>,
     },
     /// The class was created but does not implement `IAudioProcessor`.
@@ -125,10 +125,13 @@ mod tests {
         assert!(err.to_string().contains("Plugin file not found"));
 
         let missing = LoadCause::ClassNotFound {
-            wanted: "Reverb".into(),
-            offered: vec!["Delay".into()],
+            wanted: "vst3.0000".into(),
+            offered: vec!["vst3.1111 (\"Delay\")".into()],
         };
         let text = missing.to_string();
-        assert!(text.contains("Reverb") && text.contains("Delay"), "{text}");
+        assert!(
+            text.contains("vst3.0000") && text.contains("Delay"),
+            "{text}"
+        );
     }
 }

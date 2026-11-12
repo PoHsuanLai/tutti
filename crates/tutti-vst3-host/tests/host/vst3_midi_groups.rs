@@ -150,7 +150,8 @@ fn note_on_pitched(group: MidiGroup, channel: MidiChannel, key: u8, pitch: f64) 
 /// **A Group is an event bus, and Groups are not folded into channels**
 /// (M2-104 section 2.1.2, Appendix B.1): Group 0 and Group 1 each play channel
 /// 0, key 60: two notes, on buses 0 and 1, channel 0 both, with ids of their
-/// own; and a controller of Group 1 is a Data event on bus 1.
+/// own; and a controller of Group 1 has no VST3 event (it is dropped and
+/// counted, not sent as a `Data` event).
 #[test]
 fn two_groups_land_on_event_buses_zero_and_one() {
     let mut stager = Stager::new(2);
@@ -167,7 +168,7 @@ fn two_groups_land_on_event_buses_zero_and_one() {
             ),
         ],
     );
-    assert_eq!(seen.len(), 3, "{seen:?}");
+    assert_eq!(seen.len(), 2, "{seen:?}");
     let (id0, id1) = (note_on_id(&seen[0]), note_on_id(&seen[1]));
     assert_ne!(id0, id1);
     assert!(matches!(
@@ -188,19 +189,14 @@ fn two_groups_land_on_event_buses_zero_and_one() {
             ..
         }
     ));
-    assert_eq!(
-        seen[2],
-        Seen::Data {
-            bus: 1,
-            bytes: vec![0xB0, 74, 100]
-        }
-    );
+    assert_eq!(stager.unsendable_dropped(), 1, "the controller");
     assert_eq!(stager.groups_dropped(), 0);
 }
 
 /// **A Group the plugin has no event bus for is dropped and counted**, whole,
-/// and not heard on Group 0's channels. A message that names no Group's
-/// channels (System Real Time) still goes to bus 0 and is not counted.
+/// and not heard on Group 0's channels. A controller and a System message have
+/// no VST3 event whatever their Group: they are counted apart
+/// (`unsendable_dropped`).
 #[test]
 fn a_group_without_an_event_bus_is_dropped_and_counted() {
     let mut stager = Stager::new(1);
@@ -218,7 +214,7 @@ fn a_group_without_an_event_bus_is_dropped_and_counted() {
             midi::timing_clock(group(1)),
         ],
     );
-    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen.len(), 1, "{seen:?}");
     assert!(matches!(
         seen[0],
         Seen::NoteOn {
@@ -227,17 +223,11 @@ fn a_group_without_an_event_bus_is_dropped_and_counted() {
             ..
         }
     ));
+    assert_eq!(stager.groups_dropped(), 1, "the Group 1 note");
     assert_eq!(
-        seen[1],
-        Seen::Data {
-            bus: 0,
-            bytes: vec![0xF8, 0, 0]
-        }
-    );
-    assert_eq!(
-        stager.groups_dropped(),
+        stager.unsendable_dropped(),
         2,
-        "the Group 1 note and the Group 2 CC"
+        "the Group 2 CC and the clock"
     );
 }
 
@@ -487,77 +477,25 @@ fn a_reset_forgets_the_per_note_state() {
     assert!(seen.is_empty(), "the old note is forgotten: {seen:?}");
 }
 
-fn data(bus: i32, bytes: [u8; 3]) -> Seen {
-    Seen::Data {
-        bus,
-        bytes: bytes.to_vec(),
-    }
-}
-
-/// **An RPN is four Control Changes through the stateful narrower** (M2-104
-/// Appendix D.2.3): CC 101 and 100 select, CC 6 and 38 carry the top 14 bits;
-/// the select is not repeated for the same parameter, and is sent in full for
-/// the same channel of another Group (another bus) and after a reset.
+/// **An RPN, a bank and a program change have no VST3 event**: M2-104's MIDI 1.0
+/// Control Changes for them (Appendix D.2.3, D.2.4) would be `Data` events, and
+/// `DataEvent` has the one type `kMidiSysEx` (ivstevents.h). Each message is
+/// dropped whole and counted, on every Group, and nothing is staged.
 #[test]
-fn an_rpn_is_four_control_changes_and_the_select_is_not_repeated() {
-    let rpn = |g: u8, value: u32| midi::registered_controller(group(g), ch(1), 0, 0, value);
+fn an_rpn_and_a_bank_are_dropped_and_counted() {
     let mut stager = Stager::new(2);
-    assert_eq!(
-        block(&mut stager, &[rpn(0, 12 << 25)]),
-        [
-            data(0, [0xB1, 101, 0]),
-            data(0, [0xB1, 100, 0]),
-            data(0, [0xB1, 6, 12]),
-            data(0, [0xB1, 38, 0]),
-        ]
-    );
-    assert_eq!(
-        block(&mut stager, &[rpn(0, 24 << 25)]),
-        [data(0, [0xB1, 6, 24]), data(0, [0xB1, 38, 0])]
-    );
-    let other_group = block(&mut stager, &[rpn(1, 12 << 25)]);
-    assert_eq!(other_group.len(), 4, "{other_group:?}");
-    assert!(
-        other_group
-            .iter()
-            .all(|e| matches!(e, Seen::Data { bus: 1, .. }))
-    );
-
-    stager.reset();
-    assert_eq!(block(&mut stager, &[rpn(0, 12 << 25)]).len(), 4);
-}
-
-/// **A bank is resent only when it changes** (M2-104 Appendix D.2.4).
-#[test]
-fn a_bank_is_resent_only_when_it_changes() {
-    let mut stager = Stager::new(1);
     let bank = 5 << 7 | 9;
-    assert_eq!(
-        block(
-            &mut stager,
-            &[midi::program_change(group(0), ch(0), 3, Some(bank))]
-        ),
-        [
-            data(0, [0xB0, 0, 5]),
-            data(0, [0xB0, 32, 9]),
-            data(0, [0xC0, 3, 0])
-        ]
-    );
-    assert_eq!(
-        block(
-            &mut stager,
-            &[midi::program_change(group(0), ch(0), 4, Some(bank))]
-        ),
-        [data(0, [0xC0, 4, 0])]
-    );
-    assert_eq!(
-        block(
-            &mut stager,
-            &[midi::program_change(group(0), ch(0), 4, Some(6 << 7))]
-        )
-        .len(),
-        3
-    );
+    let messages = [
+        midi::registered_controller(group(0), ch(1), 0, 0, 12 << 25),
+        midi::registered_controller(group(1), ch(1), 0, 0, 12 << 25),
+        midi::program_change(group(0), ch(0), 3, Some(bank)),
+        midi::program_change(group(0), ch(0), 4, None),
+    ];
+    for (i, message) in messages.into_iter().enumerate() {
+        let seen = block(&mut stager, &[message]);
+        assert!(seen.is_empty(), "{seen:?}");
+        assert_eq!(stager.unsendable_dropped(), i as u64 + 1);
+    }
 }
 
 /// A minted id names no `(channel, key)` pair.

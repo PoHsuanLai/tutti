@@ -26,7 +26,7 @@ use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
 use tutti_sampler::testing::settle_threaded;
 use tutti_sampler::{DiskVoice, MemorySource, Placement, StreamPhase};
-use tutti_session::{GraphSource, Session};
+use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, ChannelLayout, Db, InterleavedMut, SampleRate, Samples};
 
@@ -88,8 +88,12 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
         Db(-1.0),
         Db(-0.3),
     ));
-    s.graph().set_source(eff, 0, GraphSource::Node(src, 0));
-    s.graph().set_output_source(2, GraphSource::Node(eff, 0));
+    s.graph()
+        .set_sources(InPort::new(eff, 0), [OutPort::new(src, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(2), [OutPort::new(eff, 0)])
+        .unwrap();
 
     // The voice, on outputs 0 and 1.
     // The stream's handle is held for the whole render: dropping it would end
@@ -101,7 +105,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             let (stream, reader) =
                 settle_threaded(streamer.open(&path, Placement::HEAD)).expect("the stream opens");
             let voice = DiskVoice::from_reader(reader, Beat(1.0), None);
-            (s.graph().insert(voice).0, Some(stream))
+            (s.graph().insert(voice).0.erase(), Some(stream))
         }
         Tier::Memory => {
             let mut wave = tutti_codec::Wave::new(2, tutti_nodes::SampleRate::new(RATE));
@@ -110,11 +114,15 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
             }
             let source = MemorySource::placed(std::sync::Arc::new(wave), Beat(1.0), None)
                 .expect("a placeable wave");
-            (s.graph().insert(source).0, None)
+            (s.graph().insert(source).0.erase(), None)
         }
     };
-    s.graph().set_output_source(0, GraphSource::Node(voice, 0));
-    s.graph().set_output_source(1, GraphSource::Node(voice, 1));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(voice, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(1), [OutPort::new(voice, 1)])
+        .unwrap();
     let _ = s.update();
 
     let declared = s.compensation().preroll(0).expect("a plan was sent");

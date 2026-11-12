@@ -30,7 +30,7 @@
 //! pipeline checks (between the session's steps, every block, between its
 //! stages, and before each file is finalized and put in place; or before it
 //! starts), and [`progress`](BounceHandle::progress) reads its stage and
-//! fraction, [`Stage::Preparing`] included (the session's steps, in the band
+//! fraction, [`Stage::Preparing`](tutti_export::Stage::Preparing) included (the session's steps, in the band
 //! the pipeline leaves it). A cancelled job returns [`BounceError::Cancelled`]
 //! from [`Session::finish_bounce`], drops its token when the render has
 //! stopped, and leaves a file target's path as it was.
@@ -1290,7 +1290,7 @@ impl Figures {
     }
 }
 
-/// How many steps the session reports as [`Stage::Preparing`]: the gather
+/// How many steps the session reports as [`Stage::Preparing`](tutti_export::Stage::Preparing): the gather
 /// (done when the job is made), the fork's build, the edit, the commit and
 /// assembly.
 const PREPARING_STEPS: u32 = 4;
@@ -1962,7 +1962,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Phase, PhaseCx};
+    use crate::{InPort, Phase, PhaseCx, Root};
     use tutti_export::Stage;
     use tutti_tempo::{Shape, TempoPoint};
     use tutti_types::{Bpm, SampleRate};
@@ -1982,7 +1982,7 @@ mod tests {
         let (dc, _) = session
             .graph()
             .insert(tutti_nodes::testing::Const::mono(0.0));
-        session.graph().set_outputs_from(dc);
+        session.graph().connect(dc, Root).unwrap();
         session
     }
 
@@ -2000,7 +2000,7 @@ mod tests {
         let (half, _) = session
             .graph()
             .insert(tutti_nodes::testing::Const::mono(0.5));
-        session.graph().set_outputs_from(half);
+        session.graph().connect(half, Root).unwrap();
         assert!(session.graph().is_edited(), "no update has run");
         let out = planes(session.bounce(short()));
         assert!(out[0].iter().all(|&s| s == 0.5), "the edit is heard");
@@ -2277,8 +2277,9 @@ mod tests {
             ));
         session
             .graph()
-            .set_source(lim, 0, crate::GraphSource::node(dc, 0));
-        session.graph().set_outputs_from(lim);
+            .set_sources(InPort::new(lim, 0), [crate::OutPort::new(dc, 0)])
+            .unwrap();
+        session.graph().connect(lim, Root).unwrap();
         assert_eq!(session.graph_ref().node_latency(lim), Samples(LATENCY));
 
         let request = || {

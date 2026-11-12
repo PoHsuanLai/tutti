@@ -90,6 +90,28 @@ impl Plugin {
         Ok(())
     }
 
+    /// Releases a separate controller whose `initialize` failed, and with it
+    /// every interface taken from it: the plugin then has no controller, as a
+    /// plugin with none. ipluginbase.h: an object whose `initialize` fails is
+    /// released, never terminated, and nothing else is called on it (the
+    /// teardown already skips `terminate` for it: `controller_initialized` is
+    /// false). A no-op for a controller that was initialized, or a same-object
+    /// one.
+    pub fn discard_uninitialized_controller(&mut self) {
+        if matches!(self.controller, ControllerLink::Separate(_)) && !self.controller_initialized {
+            self.controller = ControllerLink::None;
+            self.ext.note_expression = None;
+            self.ext.automation_state = None;
+            self.ext.keyswitch = None;
+            self.ext.unit_info = None;
+            self.ext.remap_param_id = None;
+            self.ext.parameter_function_name = None;
+            self.ext.physical_ui_mapping = None;
+            self.ext.xml_representation = None;
+            self.ext.midi_learn = None;
+        }
+    }
+
     /// Wires the component's connection point directly to the separate
     /// controller's. No-op unless both ends expose `IConnectionPoint`.
     ///

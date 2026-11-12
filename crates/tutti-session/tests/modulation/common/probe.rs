@@ -16,8 +16,14 @@ use std::sync::atomic::Ordering;
 
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_session::SessionNode;
-use tutti_types::UnitParam;
-use tutti_types::{AtomicF32, ChannelLayout};
+use tutti_types::{AtomicF32, ChannelLayout, Drive, Hz, UnitParam};
+
+// A probe's kind is chosen when it is built; its type declares the ones the
+// tests write by key (a probe that does not have one refuses the write).
+tutti_session::declare_params!(ProbeUnit {
+    UnitParam::Cutoff => Hz,
+    UnitParam::Drive => Drive
+});
 
 /// One param (`Cutoff` unless told) whose knob is a cell, and an output that
 /// carries the value the param port reads: the port's frames under

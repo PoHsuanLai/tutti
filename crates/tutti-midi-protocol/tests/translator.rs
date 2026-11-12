@@ -41,11 +41,10 @@ fn run(t: &mut Translator, input: &[Ump]) -> Vec<Vec<Message>> {
     input
         .iter()
         .map(|&ump| {
-            let mut out = Vec::new();
-            t.feed(ump, |u| {
-                out.push(u.decode().expect("the translator sends defined packets"))
-            });
-            out
+            t.translate(ump)
+                .map(|u| u.decode().expect("the translator sends defined packets"))
+                .into_iter()
+                .collect()
         })
         .collect()
 }
@@ -330,7 +329,7 @@ fn other_controllers_are_scaled_min_center_max() {
         let number = |t: &mut Translator| {
             let mut n = (0, 0);
             for &s in &selects {
-                t.feed(s, |_| {});
+                let _ = t.translate(s);
                 let Ok(Message::Midi1(_, Voice1::ControlChange { controller, value })) = s.decode()
                 else {
                     unreachable!()
@@ -369,7 +368,7 @@ fn the_group_and_channel_are_kept() {
         cc_on(a, CCNumber::DATA_ENTRY, 2),
         cc_on(a, CCNumber::DATA_ENTRY_LSB, 0),
     ] {
-        t.feed(ump, |u| out.push(u.decode().unwrap()));
+        out.extend(t.translate(ump).map(|u| u.decode().unwrap()));
     }
     assert_eq!(
         out,
@@ -400,7 +399,7 @@ fn groups_keep_their_own_runs() {
         cc_on(g0, CCNumber::DATA_ENTRY_LSB, 0),
         cc_on(g1, CCNumber::DATA_ENTRY_LSB, 0),
     ] {
-        t.feed(ump, |u| out.push(u.decode().unwrap()));
+        out.extend(t.translate(ump).map(|u| u.decode().unwrap()));
     }
     assert_eq!(
         out,
@@ -521,9 +520,7 @@ fn midi_2_packets_pass_through_unchanged() {
     // A reserved message type (0xE) no definition covers.
     let reserved = Ump([0xE000_0000, 1, 2, 3]);
     for ump in [on0, reserved] {
-        let mut out = Vec::new();
-        t.feed(ump, |u| out.push(u));
-        assert_eq!(out, vec![ump]);
+        assert_eq!(t.translate(ump), Some(ump));
     }
 }
 
@@ -751,7 +748,7 @@ fn flush_sends_a_lone_cc_38_on_its_own_channel() {
         cc_on(a, CCNumber::NRPN_LSB, 2),
         cc_on(a, CCNumber::DATA_ENTRY_LSB, 9),
     ] {
-        t.feed(ump, |_| {});
+        let _ = t.translate(ump);
     }
     let mut sent = Vec::new();
     t.flush(|address, ump| sent.push((address, ump.decode().unwrap())));

@@ -417,22 +417,22 @@ crates/          everything shipped; directory name = package name; no nesting
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
-                 `frame` and `Midi1Parser` (the one reader of MIDI 1.0 bytes, framing and
-                 completing them into `Message`s), the status bytes the hosts use,
+                 `frame`, `Midi1Parser` (the stream reader of MIDI 1.0 bytes, framing and
+                 completing them into `Message`s) and `parse_exact` (the stateless
+                 one-message read), the status bytes the hosts use,
                  `NoteId` (`channel * 128 + note`),
                  `split_stream` (a buffer of concatenated packets into `Ump`s by
                  Table 4, the one walker), and
                  SysEx: `SysexMessage` (a checked `F0 .. F7`), `SysexAssembler`
                  (SysEx7 packets to whole messages over a caller's buffer) and its
-                 inverse `sysex7_packets` (`SysexMessage::packets`,
-                 `Sysex7Packets::checked` for a payload of plain bytes), with
+                 inverse `SysexMessage::packets` (`Sysex7Packets::checked` for a payload of plain bytes), with
                  `Sysex7Packet::data` and `SysexRef::new`; no
                  dependencies but `bytemuck` (and optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen`, `narrow` and `midi1`, the stateful `Translator` and `Narrower`, the M2-115 scaling, and the
+                 stateless `widen`, `narrow` (refusing with a `NoMidi1Form`) and `midi1`, the stateful `Translator` (`translate`, `flush`, `finish`) and `Narrower`, the M2-115 scaling, and the
                  float converters (`u32_to_unit_f32` and kin), and the MPE zone
                  values (`MpeZoneConfig`, `MpeZones`, `MpeMode`, `MpeZone`); depends on
-                 `tutti-ump` alone
+                 `tutti-ump` and `tutti-types`
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
                  pure step: `Voicing::step(channel, message, patch, level) -> &[Command]`
                  (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
@@ -597,6 +597,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
   exports `MidiChannel` behind `midi`. A consumer that persists one with serde
   depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
+  `MidiChannel::index`/`MidiGroup::index` (`usize`), `all()`, `Address::index` and the 1-based
+  `numbered(n)` (which `Display` writes; `Debug` is the wire raw) are the table and display doors.
+  `Key::new(Protocol, Address, NoteNumber)` and `Ump::sustain_up(Protocol, Address)` return `Option` (a reserved protocol has no channel voice packet).
   `MidiGroup::new`, `MidiChannel::new` and `CCNumber::new` return `Option` and
   refuse out of range, like the field types (`U7`, `U14`, `NoteNumber`, ...),
   which have the same shape. `of` is for a literal or a constant (it panics out
@@ -615,10 +618,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   64 KiB cap on one message (the spec sets none), for sizing an assembler. An RPN
   address is `Rpn` (`bank`, `index`, and the named `PITCH_BEND_SENSITIVITY`,
   `MPE_CONFIGURATION`, `PER_NOTE_PITCH_BEND_SENSITIVITY`), never a bare `u8` pair.
-- `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
+- `tutti-midi-protocol` depends on `tutti-ump` and `tutti-types` (layer 0, for `Semitones`), keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. Its functions (`widen`, `narrow`,
-  `midi1`) hold no state; its two translators, `Translator` (MIDI 1.0 in) and
+  `midi1`) hold no state, and take a packet as `impl Into<Ump>` (one input type: `Translator::translate`, `Narrower::feed`, `midi1`, `channel_voice`); `narrow` refuses with a `NoMidi1Form`, and `widen`/`narrow` are free functions because `From`/`TryFrom` between the voice types would sit in `tutti-ump` with the M2-115 scaling; its two translators, `Translator` (MIDI 1.0 in) and
   `Narrower` (MIDI 2.0 out, per group and channel: RPN/NRPN selects, Bank
   Select), are fixed-size values, hold no clock, and allocate nothing after
   `new`. A consumer's call to `widen` is transitional: the stage 3 translator
@@ -922,7 +925,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the spec says, Start of Clip, End of Clip last) are one `ClipFileError` variant each. The SMF reader is our own (doc 017 stage 6b): `winnow` combinators for the
   framing (chunks, variable-length quantities, meta and sysex lengths) with running status threaded as a
   value, in `src/smf/read.rs`; `tutti-ump` decodes a channel message (`Voice1::data_len`,
-  `Midi1Parser::message`); the writer (`src/smf/write.rs`) is a fold of pure functions. The Clip File reader
+  `parse_exact`); the writer (`src/smf/write.rs`) is a fold of pure functions. The Clip File reader
   (`src/clip_file/read.rs`, doc 017 L1b) is a `winnow` grammar over the packets `split_stream` and `Ump::decode`
   made, each M2-116 placement rule one rule of it. No winnow type is in a
   public signature, field or error, and no file but those two `read.rs` names `winnow`
@@ -1131,11 +1134,47 @@ Scalars use `Param<U>`.
   declared ports that differ into the session graph's spec, and the frame's
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
-- `Graph::connect(from, to)` adds `from`'s main output as sources of `to`'s main input,
-  channel by channel, and `Graph::chain` does it down a list; a width mismatch is
-  `ConnectError::Width` (never a truncation: a width change is `connect_bus`).
+- **The session graph has typed keys and one wiring vocabulary** (doc 013, "The
+  session graph's surface"). `Graph::add`/`insert` return a `Key<N>` (a `Copy`
+  `NodeKey` with its node type; every call that takes a node takes
+  `impl Into<NodeKey>`, `Key::erase` gives the plain key). Ports come from keys:
+  `key.out(i)` is an `OutPort`, `key.input(i)` an `InPort`; the root is `Root`
+  (`Root::output(i)` a sink channel, `Root::input(i)` a global input), a value so
+  naming a root channel borrows nothing. `Graph::connect(from, to)` takes two ends
+  of one kind of wire: an `OutPort` into an `InPort` (one channel), a key into a
+  key or into `Root` (a main bus, channel by channel: a width mismatch is
+  `ConnectError::Width`, never a truncation) or a `BusSource` (`key.bus_out(i)`)
+  into a `BusRef` (`key.bus_in(i)`) or `Root` (a bus edge: a width change is one,
+  and into the root it folds to the declared topology, `BusError::RootUndeclared`
+  otherwise). `Graph::chain` does a main bus down a list. All refuse with
+  `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **Event ports are keys' too, and params are typed** (doc 030 step 2c).
+  `key.events_out()` / `key.events_in()` are the main event ports (index 0;
+  **event input 0 is the main event input, where the chase delivers**),
+  `events_out_at(i)` / `events_in_at(i)` take an index. `connect`, `disconnect`,
+  `sources`, `set_sources` and `disconnect_all` cover the `Event` wire (never
+  faded); `set_event_sources`, `event_sources` and `EventSource` are gone, and
+  `open_event_tap(key.events_out(), ..)` takes the port. A node's params are
+  methods of its key (`lp.cutoff()`, `mb.threshold_at(1)`), a `TypedParamRef<U>`
+  that converts into `ParamRef`, generated from the node's declaration
+  (`param_session_node!`, or `declare_params!` for a host's node): `Graph::set_param(lp.cutoff(),
+  Hz(..))` is `#[must_use]` and returns `ParamError`, `Mods::range(target, a..b)`
+  takes a range of the unit (`RangeError` on min > max; `range_raw` for a plugin
+  param). A host's `ParamNode` is inserted as `Params(node)`; `set_node_params`
+  is crate-private. `ForkByClone(param node)` still compiles (Rust cannot refuse
+  it by type): use `Params`.
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
+- **The session graph declicks its wiring** (doc 030 §4, doc 013 "As built
+  (declicked wiring)"): `connect` fades the new edge in over `EDGE_DECLICK`
+  (= `MODE_DECLICK`, 256 frames) unless `.hard()`; `disconnect`, `disconnect_all`,
+  `set_sources` removals and `remove` fade out, and the edge leaves the spec
+  when its lane reports the fade over (`Editor::settle_fades`, from
+  `Phase::Collect`); `disconnect_hard` and `set_sources_hard` cut.
+  `tutti_graph::Editor` fades nothing unless a host sets `EdgeFade`, so the
+  engine's tests and the differential suite keep hard steps; event edges are
+  never faded. A test that renders a session wire for some other reason wires
+  `.hard()`.
 - **The root's channels are declared too** (`MasterTopology`, a pure
   translation into `Session::declare_root_topology` /
   `SessionBuilder::root_topology`): `Unassigned` for independent buses, a named
@@ -1144,7 +1183,7 @@ Scalars use `Param<U>`.
   leave it: `Graph::widen_outputs` refuses to widen a declared root, and a
   declaration the device or file cannot place is `FoldError`, never a silent
   drop (doc 013, "Channel placement"). A declared root is also a bus sink:
-  `Graph::connect_bus_to_root` folds a node's output bus to it (an undeclared
+  `connect(key.bus_out(i), Root)` folds a node's output bus to it (an undeclared
   root refuses, `BusError::RootUndeclared`).
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
@@ -1158,15 +1197,14 @@ Scalars use `Param<U>`.
   global output channel). Several sources into one audio input or output
   channel sum, in source order (`NodeKey`, then port), bit-identically on every
   executor (`Op::Sum`); one source is aliased and none is silence. Summing is
-  the graph's job: never add a node to sum (doc 013 "Audio fan-in sums"). The calls that wire **add** a source
-  (`GraphBuilder::connect`, `Graph::add_source`, `add_output_source`); the
-  `set_` forms (`set_source`, `set_sources`, `set_output_source`,
-  `set_output_sources`) replace the set, and `remove_source` /
-  `disconnect_from` take one out. Silence is the empty set, never a stored
-  `Source::Zero`. A source's weight is an edge's, not a node's (doc 013,
-  "Edge gain"): `Graph::add_source_weighted` / `add_output_source_weighted`
-  add a source with its weight, `set_edge_gain` / `edge_gain` /
-  `clear_edge_gain` take an `EdgeRef`, and a routed modulation moves around
+  the graph's job: never add a node to sum (doc 013 "Audio fan-in sums"). The call that wires
+  **adds** a source (`GraphBuilder::connect`, `Graph::connect`); `Graph::set_sources(to, from)` replaces
+  the set, and `Graph::disconnect(from, to)` / `disconnect_all(to)` take one or all
+  out. Silence is the empty set: there is no silence value to store, and the topology
+  never holds a `Source::Zero`. A source's weight is an edge's, not a node's (doc 013,
+  "Edge gain"): `connect(..)?.gain(amp)` adds a source with its weight, an `Edge`
+  (what `Connection::edges` hands back, and what a modulation target names) carries
+  `set_gain` / `gain` / `clear_gain`, and a routed modulation moves around
   that same gain (its cell is the lane's knob: one writer).
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
   The session's phases run in `SessionPhaseSystems(Phase)`, chained from
@@ -1289,6 +1327,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
+- **Dead crate names:** `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
 - **Dead crate names:** `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and

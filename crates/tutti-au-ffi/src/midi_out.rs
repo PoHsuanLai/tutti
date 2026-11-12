@@ -781,7 +781,7 @@ mod tests {
         let events = unsafe { decode_packet_list_for_test(list) };
         assert_eq!(events.len(), 5);
         let note_on = |e: &WireMidi| match e.ump.key_event() {
-            Some(KeyEvent::On(key)) => Some(key.note()),
+            Some(KeyEvent::On(key)) => Some(key.note().get()),
             _ => None,
         };
         assert_eq!(note_on(&events[0]), Some(60));

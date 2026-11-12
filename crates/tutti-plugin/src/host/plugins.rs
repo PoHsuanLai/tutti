@@ -46,6 +46,7 @@
 
 use crate::host::db_probe::{probe_plugin, probe_record};
 use crate::host::plugin::Plugin;
+use crate::host::plugin_ref::PluginRef;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,31 +59,6 @@ use tutti_plugin_types::MainThread;
 use tutti_plugin_types::PluginDescriptor;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 use tutti_types::SampleRate;
-
-/// Identifies a plugin in a [`Plugins`] catalog by its file path.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct PluginId(PathBuf);
-
-impl PluginId {
-    /// Creates an id from a plugin file path.
-    ///
-    /// The id only resolves through [`Plugins::info`] when a record with this
-    /// exact path is in the catalog.
-    pub fn from_path(path: impl Into<PathBuf>) -> Self {
-        Self(path.into())
-    }
-
-    /// Returns the plugin file path this id wraps.
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl From<PathBuf> for PluginId {
-    fn from(path: PathBuf) -> Self {
-        Self(path)
-    }
-}
 
 /// How a catalog writes its database out: the host's own, or the JSON file.
 type Saver = Arc<dyn Fn(&PluginDb) -> std::io::Result<()> + Send + Sync>;
@@ -380,11 +356,11 @@ impl Plugins {
         self.db = tutti_plugin_db::load(&self.config.db_path);
     }
 
-    /// Iterates the ids and descriptors of all non-blacklisted plugins.
-    pub fn iter(&self) -> impl Iterator<Item = (PluginId, &PluginDescriptor)> {
+    /// Iterates the refs and descriptors of all non-blacklisted plugins.
+    pub fn iter(&self) -> impl Iterator<Item = (PluginRef, &PluginDescriptor)> {
         self.db
             .plugins()
-            .map(|p| (PluginId(p.path.to_path_buf()), p.descriptor))
+            .map(|p| (PluginRef::from(&p), p.descriptor))
     }
 
     /// Iterates all non-blacklisted plugins with their file and format.
@@ -395,20 +371,25 @@ impl Plugins {
         self.db.plugins()
     }
 
-    /// Returns the id of the first non-blacklisted plugin with this display
+    /// Returns the ref of the first non-blacklisted plugin with this display
     /// name.
-    pub fn find(&self, name: &str) -> Option<PluginId> {
+    pub fn find(&self, name: &str) -> Option<PluginRef> {
         self.db
             .plugins()
             .find(|p| p.descriptor.name == name)
-            .map(|p| PluginId(p.path.to_path_buf()))
+            .map(|p| PluginRef::from(&p))
     }
 
-    /// Returns the descriptor of a non-blacklisted plugin by id.
-    pub fn info(&self, id: &PluginId) -> Option<&PluginDescriptor> {
+    /// Returns the descriptor of a non-blacklisted plugin: the one in the
+    /// ref's file with the ref's id, or the file's first when the ref has
+    /// none.
+    pub fn info(&self, plugin: &PluginRef) -> Option<&PluginDescriptor> {
+        // Rows are keyed by canonical path; a ref keeps the path it was given
+        // (a link's extension is what names its format).
+        let file = key(plugin.path());
         self.db
             .plugins()
-            .find(|p| p.path == id.0)
+            .find(|p| p.path == file && plugin.id().is_none_or(|id| p.descriptor.id == id))
             .map(|p| p.descriptor)
     }
 
@@ -454,10 +435,10 @@ impl Plugins {
     pub fn open(
         &self,
         main: Option<&MainThread>,
-        path: impl AsRef<Path>,
+        plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
     ) -> BridgeResult<Plugin> {
-        let path = path.as_ref();
+        let path = plugin.path();
         if self.is_blacklisted(path) {
             let reason = self
                 .db
@@ -470,7 +451,7 @@ impl Plugins {
                 reason,
             });
         }
-        Plugin::open_with(main, &self.audio, path, sample_rate)
+        Plugin::open_with(main, &self.audio, plugin, sample_rate)
     }
 
     /// Blacklists a plugin by path, hiding it from `iter`, `entries` and `find`
@@ -524,7 +505,7 @@ impl Plugins {
     }
 
     /// Probes one plugin file and adds it to the catalog, returning its
-    /// [`PluginId`].
+    /// [`PluginRef`] (the file's first plugin).
     ///
     /// For plugins known by path rather than found by a scan, such as one
     /// shipped inside an application bundle or a file the user picked.
@@ -537,11 +518,20 @@ impl Plugins {
     ///
     /// Returns any error of [`probe_record`], for example when the file
     /// extension is not a plugin format or the probe fails.
-    pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> BridgeResult<PluginId> {
+    pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> BridgeResult<PluginRef> {
         let delta = probe_record(plugin_path)?;
-        let id = PluginId(delta.path().to_path_buf());
+        let key = delta.path().to_path_buf();
         self.apply(delta);
-        Ok(id)
+        self.db
+            .plugins()
+            .find(|p| p.path == key)
+            .map(|p| PluginRef::from(&p))
+            .or_else(|| PluginRef::file(&key))
+            .ok_or_else(|| BridgeError::LoadFailed {
+                path: key,
+                stage: tutti_plugin_types::LoadStage::Opening,
+                reason: "unrecognized plugin extension".to_string(),
+            })
     }
 
     /// Applies a delta to the catalog, such as the one [`probe_record`]
@@ -636,6 +626,45 @@ mod tests {
         )
     }
 
+    /// **A catalog names each plugin of a bundle, and `info` finds the one the
+    /// ref names**, not the file's first: two plugins in one file are two refs
+    /// with their own ids, and a ref with no id is the first.
+    #[test]
+    fn a_bundle_of_two_plugins_is_two_refs_and_info_finds_each() {
+        use tutti_plugin_db::{FileFacts, PluginFormat};
+        use tutti_plugin_types::{PluginClass, PluginDescriptor};
+        let path = std::env::temp_dir().join("tutti-two-plugins.clap");
+        std::fs::write(&path, b"x").unwrap();
+        let describe = |id: &str| PluginDescriptor::new(id, id, PluginClass::Unknown);
+        let row = FileRow::probed(
+            PluginFormat::Clap,
+            &FileFacts::read(&path),
+            vec![describe("one"), describe("two")],
+        );
+        let plugins = catalog_with(&path, row);
+
+        let refs: Vec<_> = plugins.iter().map(|(r, _)| r).collect();
+        let ids: Vec<_> = refs.iter().map(|r| r.id().unwrap()).collect();
+        assert_eq!(ids, ["one", "two"]);
+        assert_eq!(plugins.info(&refs[1]).map(|d| d.id.as_str()), Some("two"));
+        assert_eq!(plugins.find("two"), Some(refs[1].clone()));
+        let by_file = PluginRef::file(&path).unwrap();
+        assert_eq!(plugins.info(&by_file).map(|d| d.id.as_str()), Some("one"));
+        // A ref through a link names the scanned file (macOS's temp dir is
+        // one: `/var` links to `/private/var`).
+        #[cfg(unix)]
+        {
+            let link = std::env::temp_dir().join("tutti-two-plugins-link.clap");
+            std::fs::remove_file(&link).ok();
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            let by_link = PluginRef::file(&link).unwrap();
+            assert_eq!(plugins.info(&by_link).map(|d| d.id.as_str()), Some("one"));
+            std::fs::remove_file(&link).ok();
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
     /// The guarded door refuses a plugin the scanner recorded as a crasher,
     /// and says which one and why.
     ///
@@ -650,7 +679,11 @@ mod tests {
 
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
 
-        match plugins.open(None, &path, SampleRate::new(48_000.0)) {
+        match plugins.open(
+            None,
+            &PluginRef::file(&path).unwrap(),
+            SampleRate::new(48_000.0),
+        ) {
             Err(BridgeError::Blacklisted { path: p, reason }) => {
                 assert_eq!(p, path);
                 assert_eq!(reason, "SIGSEGV during probe");
@@ -685,7 +718,11 @@ mod tests {
         let plugins = catalog_with(&path, row);
 
         let err = plugins
-            .open(None, &path, SampleRate::new(48_000.0))
+            .open(
+                None,
+                &PluginRef::file(&path).unwrap(),
+                SampleRate::new(48_000.0),
+            )
             .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
@@ -721,7 +758,11 @@ mod tests {
         );
         assert!(
             matches!(
-                fresh.open(None, &path, SampleRate::new(48_000.0)),
+                fresh.open(
+                    None,
+                    &PluginRef::file(&path).unwrap(),
+                    SampleRate::new(48_000.0)
+                ),
                 Err(BridgeError::Blacklisted { .. })
             ),
             "unchanged and blacklisted: the door must refuse"
@@ -740,7 +781,11 @@ mod tests {
             "a changed file lifts the blacklist — this is the half that was wrong"
         );
         let err = plugins
-            .open(None, &path, SampleRate::new(48_000.0))
+            .open(
+                None,
+                &PluginRef::file(&path).unwrap(),
+                SampleRate::new(48_000.0),
+            )
             .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
@@ -763,8 +808,12 @@ mod tests {
         let plugins = catalog_with(&path, blacklisted_row(&path, "SIGSEGV during probe"));
         assert!(plugins.is_blacklisted(&path), "fixture should be recorded");
 
-        let err = Plugin::open(None, &path, SampleRate::new(48_000.0))
-            .expect_err("the fixture is not a loadable plugin");
+        let err = Plugin::open(
+            None,
+            &PluginRef::file(&path).unwrap(),
+            SampleRate::new(48_000.0),
+        )
+        .expect_err("the fixture is not a loadable plugin");
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
             "Plugin::open has no catalog and cannot refuse on one, got {err:?}"

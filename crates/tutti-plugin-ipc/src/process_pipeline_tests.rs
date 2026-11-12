@@ -44,6 +44,7 @@ use tutti_types::SampleRate;
 fn no_editor(
     _: &tutti_plugin_types::MainThread,
     path: &std::path::Path,
+    _: &tutti_plugin_types::Load,
 ) -> tutti_plugin_types::BridgeResult<Box<dyn tutti_plugin_types::Editor>> {
     Err(tutti_plugin_types::BridgeError::LoadFailed {
         path: path.to_path_buf(),
@@ -201,7 +202,7 @@ fn bridge_with_server(
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         Arc::clone(host_slab.slab()),
-        std::path::PathBuf::from("test.vst3"),
+        tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         no_editor,
         SampleRate(48_000.0),
     )
@@ -894,7 +895,7 @@ fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread, SlabWriter) {
     let (bridge, bridge_thread) = PluginBridge::new(
         path,
         Arc::clone(host_slab.slab()),
-        std::path::PathBuf::from("test.vst3"),
+        tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         no_editor,
         SampleRate(48_000.0),
     )
@@ -1397,7 +1398,7 @@ fn stamped_server(stall: std::time::Duration, first_only: bool) -> Rig {
     let (bridge, bridge_thread) = PluginBridge::new(
         path.clone(),
         Arc::clone(host_slab.slab()),
-        std::path::PathBuf::from("test.vst3"),
+        tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         no_editor,
         SampleRate(48_000.0),
     )
@@ -1569,7 +1570,7 @@ fn a_refused_chunk_reports_its_midi_lost() {
     let (bridge, _thread) = PluginBridge::new(
         path,
         Arc::clone(slab.slab()),
-        std::path::PathBuf::from("test.vst3"),
+        tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         no_editor,
         SampleRate(48_000.0),
     )
@@ -1700,7 +1701,7 @@ fn two_stale_blocks(
     let (bridge, thread) = PluginBridge::new(
         path.clone(),
         Arc::clone(slab.slab()),
-        std::path::PathBuf::from("test.vst3"),
+        tutti_plugin_types::Origin::new("test.vst3", tutti_plugin_types::Load::new()),
         no_editor,
         SampleRate(48_000.0),
     )

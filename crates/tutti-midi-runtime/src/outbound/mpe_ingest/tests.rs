@@ -279,7 +279,7 @@ fn ranges_after(events: impl IntoIterator<Item = UmpAt>) -> Vec<(u8, u8, f32)> {
             };
             assert_eq!(bank.get(), Rpn::PITCH_BEND_SENSITIVITY.bank().get());
             let range = PitchBendSensitivity::from_rpn_bits(value);
-            (address.channel.get(), index.get(), range.as_semitones_f32())
+            (address.channel.get(), index.get(), range.semitones().get())
         })
         .collect()
 }

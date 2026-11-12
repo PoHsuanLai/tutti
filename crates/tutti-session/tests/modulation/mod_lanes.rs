@@ -33,11 +33,11 @@ use tutti_modulation::{
 use tutti_nodes::automation::{Breakpoint, RecordMode, Trajectory};
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    AudioSide, GraphSource, MixRef, ModInput, ModKeys, ModRefusal, ModTarget, PHASES, ParamRef,
-    PhaseCx, Session, SessionEvent, Take, declare_targets,
+    AudioSide, MixRef, ModInput, ModKeys, ModRefusal, ModTarget, OutPort, PHASES, ParamRef,
+    PhaseCx, Root, Session, SessionEvent, Take, declare_targets,
 };
 use tutti_types::{
-    Amplitude, Beat, Bpm, ChannelLayout, Depth, Hz, SampleRate, Samples, Seconds, UnitParam,
+    Amplitude, Beat, Bpm, ChannelLayout, Depth, Drive, Hz, SampleRate, Samples, Seconds, UnitParam,
 };
 
 use common::probe::{ProbeUnit, Pulse};
@@ -64,7 +64,9 @@ fn rig(outputs: usize) -> (Session, AudioSide) {
 /// Output channel `c` from `nodes[c]`'s port 0.
 fn master(s: &mut Session, nodes: &[NodeKey]) {
     for (c, &n) in nodes.iter().enumerate() {
-        s.graph().set_output_source(c, GraphSource::Node(n, 0));
+        s.graph()
+            .set_sources(Root::output(c), [OutPort::new(n, 0)])
+            .unwrap();
     }
 }
 
@@ -179,12 +181,12 @@ fn an_export_is_the_live_render_on_a_native_param() {
     let (mut s, mut side) = rig(2);
     let (a, _) = s.graph().add(ProbeUnit::new(500.0));
     let (b, _) = s.graph().add(ProbeUnit::of(UnitParam::Volume, 0.5));
-    master(&mut s, &[a, b]);
+    master(&mut s, &[a.erase(), b.erase()]);
     let cutoff = ParamRef::unit(a, UnitParam::Cutoff);
     let volume = ParamRef::unit(b, UnitParam::Volume);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
-    m.range(volume, 0.0, 1.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
+    m.range_raw(volume, 0.0, 1.0).unwrap();
     let sine = m.lfo(Lfo::sine().hz(Hz(3.0)));
     let tri = m.lfo(Lfo::triangle().hz(Hz(5.0)));
     m.route(sine, cutoff, Depth(0.3)).unwrap();
@@ -192,7 +194,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     settle(&mut s);
     // Past the connect's declick, stopped; then the knobs move.
     render_n(&mut side, 2, 1_024, 128);
-    s.graph().set_param(a, UnitParam::Cutoff, 450.0);
+    s.graph().set_param(a.cutoff(), Hz(450.0)).unwrap();
     let _ = s.update();
     // The same write lands on the live side before it plays.
     render_n(&mut side, 2, 128, 128);
@@ -273,10 +275,10 @@ fn a_removed_source_leaves_no_node_and_no_layer() {
         to: 48_000,
         level: 0.5,
     }));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
     let follower = m.follower(Follower::default(), kick);
     m.route(lfo, cutoff, Depth(0.1)).unwrap();
@@ -322,21 +324,21 @@ fn a_removed_source_leaves_no_node_and_no_layer() {
 fn a_knob_written_after_a_route_edit_is_the_knob() {
     let (mut s, mut side) = rig(1);
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
     let route = m.route(lfo, cutoff, Depth(0.3)).unwrap();
     settle(&mut s);
     render(&mut side, 1_024, 128);
 
-    s.graph().set_param(probe, UnitParam::Cutoff, 300.0);
+    s.graph().set_param(probe.cutoff(), Hz(300.0)).unwrap();
     let _ = s.update();
     s.mods().route_mut(route).expect("the route").depth = Depth(0.2);
     let _ = s.update();
     let a = render(&mut side, 2_048, 128);
-    s.graph().set_param(probe, UnitParam::Cutoff, 700.0);
+    s.graph().set_param(probe.cutoff(), Hz(700.0)).unwrap();
     let _ = s.update();
     let b = render(&mut side, 2_048, 128);
 
@@ -371,7 +373,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     let (one, _) = s.graph().add(ProbeUnit::new(0.2));
     let (two, _) = s.graph().add(ProbeUnit::new(0.1));
     let (clip, _) = s.graph().add(ForkByClone(Held { on: 10 }));
-    master(&mut s, &[one, two]);
+    master(&mut s, &[one.erase(), two.erase()]);
     let (c1, c2) = (
         ParamRef::unit(one, UnitParam::Cutoff),
         ParamRef::unit(two, UnitParam::Cutoff),
@@ -383,8 +385,8 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
         release: Seconds(0.2),
     };
     let mut m = s.mods();
-    m.range(c1, 0.0, 1.0);
-    m.range(c2, 0.0, 1.0);
+    m.range_raw(c1, 0.0, 1.0).unwrap();
+    m.range_raw(c2, 0.0, 1.0).unwrap();
     let env = m.note_envelope(NoteEnvelope::new(adsr), clip, 0);
     let zero = m.macro_(0.0);
     m.route(env, c1, Depth(0.5)).unwrap();
@@ -422,12 +424,12 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
 fn a_take_suspends_the_automation_then_restores_it() {
     let (mut s, mut side) = rig(1);
     let (probe, _) = s.graph().add(ProbeUnit::new(300.0));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut lane = Trajectory::new().with_range(0.0, 1_000.0);
     lane.add_breakpoint(Breakpoint::new(Beat(0.0), 800.0));
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     m.automate(cutoff, Arc::new(lane));
     settle(&mut s);
     let last = |out: &[Vec<f32>]| *out[0].last().expect("rendered");
@@ -487,10 +489,10 @@ fn refusals(events: Vec<SessionEvent>) -> Vec<ModRefusal> {
 fn a_follower_downstream_of_its_target_is_refused_by_route() {
     let (mut s, mut side) = rig(1);
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let offset = m.macro_(0.5);
     m.route(offset, cutoff, Depth(0.2)).unwrap();
     settle(&mut s);
@@ -588,11 +590,11 @@ fn host_update(
 fn two_ranges_or_automations_on_one_param_are_refused() {
     let (mut s, mut side) = rig(1);
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff).key();
     let keys = HostKeys {
         bits: cutoff.node().expect("a param target"),
-        node: Cell::new(Some(probe)),
+        node: Cell::new(Some(probe.erase())),
     };
     let one = declare_targets([(cutoff, 0.0, 1_000.0)], []);
     for _ in 0..4 {
@@ -650,10 +652,10 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
 fn a_node_crossfaded_to_another_param_list_keeps_modulating() {
     let (mut s, mut side) = rig(1);
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let offset = m.macro_(1.0);
     m.route(offset, cutoff, Depth(0.25)).unwrap();
     settle(&mut s);
@@ -681,7 +683,7 @@ fn a_node_crossfaded_to_another_param_list_keeps_modulating() {
     let out = render(&mut side, 4_096, 128);
     assert_eq!(*out[0].last().unwrap(), 650.0, "the new node, modulated");
 
-    s.mods().range(cutoff, 0.0, 2_000.0);
+    s.mods().range_raw(cutoff, 0.0, 2_000.0).unwrap();
     let _ = s.update();
     let out = render(&mut side, 1_024, 128);
     assert_eq!(*out[0].last().unwrap(), 900.0, "a later range edit lands");
@@ -700,11 +702,11 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     let (mut s, mut side) = rig(1);
     settle(&mut s);
     let (late, _) = s.graph().add(ForkByClone(Late));
-    s.graph().set_outputs_from(late);
+    s.graph().connect(late, Root).unwrap();
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let offset = m.macro_(1.0);
     m.route(offset, cutoff, Depth(0.1)).unwrap();
 
@@ -732,10 +734,10 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
 fn two_routes_on_one_param_sum_and_removing_one_takes_its_share() {
     let (mut s, mut side) = rig(1);
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let a = m.macro_(1.0);
     let b = m.macro_(1.0);
     m.route(a, cutoff, Depth(0.1)).unwrap();
@@ -760,10 +762,10 @@ fn two_routes_on_one_param_sum_and_removing_one_takes_its_share() {
 fn removing_the_last_route_returns_the_param_to_its_knob() {
     let (mut s, mut side) = rig(1);
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    master(&mut s, &[probe]);
+    master(&mut s, &[probe.erase()]);
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let offset = m.macro_(1.0);
     let route = m.route(offset, cutoff, Depth(0.1)).unwrap();
     settle(&mut s);
@@ -792,7 +794,7 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
     let offset = m.macro_(0.5);
     for param in [UnitParam::Volume, UnitParam::Pan] {
         let at = ParamRef::unit(strip, param);
-        m.range(at, 0.0, 1.0);
+        m.range_raw(at, 0.0, 1.0).unwrap();
         m.route(offset, at, Depth(0.5)).unwrap();
     }
     settle(&mut s);
@@ -832,7 +834,7 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
     let offset = m.macro_(0.5);
     let keys = targets.map(|at| m.key(at));
     for at in targets {
-        m.range(at, 0.0, 1.0);
+        m.range_raw(at, 0.0, 1.0).unwrap();
         m.route(offset, at, Depth(0.5)).unwrap();
     }
     settle(&mut s);
@@ -855,10 +857,10 @@ fn an_added_synth_is_a_modulation_target() {
     let node = PolySynth::new(SynthConfig::default()).expect("builds a synth");
     let cell = node.volume_atomic();
     let (synth, _) = s.graph().add(node);
-    master(&mut s, &[synth, synth]);
+    master(&mut s, &[synth.erase(), synth.erase()]);
     let volume = ParamRef::unit(synth, UnitParam::Volume);
     let mut m = s.mods();
-    m.range(volume, 0.0, 1.0);
+    m.range_raw(volume, 0.0, 1.0).unwrap();
     let offset = m.macro_(1.0);
     m.route(offset, volume, Depth(0.25)).unwrap();
     settle(&mut s);
@@ -897,10 +899,10 @@ fn frame(s: &mut Session, side: &mut AudioSide) {
 /// route's key.
 fn lfo_scene(s: &mut Session, side: &mut AudioSide, rate: f32, depth: f32) -> (ParamRef, RouteKey) {
     let (filter, _) = s.graph().add(ProbeUnit::new(500.0));
-    master(s, &[filter]);
+    master(s, &[filter.erase()]);
     let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().hz(Hz(rate)));
     let route = m.route(lfo, cutoff, Depth(depth)).unwrap();
     for _ in 0..4 {
@@ -945,7 +947,7 @@ fn range_and_depth_edits_send_no_plan_and_a_follower_route_one_commit() {
     );
 
     // The range: clamped to 600..=700, the knob (500) reads 600.
-    s.mods().range(cutoff, 600.0, 700.0);
+    s.mods().range_raw(cutoff, 600.0, 700.0).unwrap();
     for _ in 0..3 {
         frame(&mut s, &mut side);
         assert!(Arc::ptr_eq(&sent(&s), &settled), "a range edit sent a plan");
@@ -954,7 +956,7 @@ fn range_and_depth_edits_send_no_plan_and_a_follower_route_one_commit() {
     let v = render(&mut side, 128, 128);
     assert!(v[0].iter().all(|&x| x == 600.0), "the range clamps: {v:?}");
     // And back to 0..=1000 (a route's depth is a fraction of the span).
-    s.mods().range(cutoff, 0.0, 1_000.0);
+    s.mods().range_raw(cutoff, 0.0, 1_000.0).unwrap();
     frame(&mut s, &mut side);
     assert!(Arc::ptr_eq(&sent(&s), &settled), "a range edit sent a plan");
 
@@ -1052,16 +1054,16 @@ fn a_fork_renders_a_modulated_param_as_live_does() {
         .expect("builds");
     let (written, _) = s.graph().add(ProbeUnit::of(UnitParam::Drive, 1.0));
     let (built, _) = s.graph().add(ProbeUnit::of(UnitParam::Drive, 1.0));
-    master(&mut s, &[written, built]);
+    master(&mut s, &[written.erase(), built.erase()]);
     let mut m = s.mods();
     let offset = m.macro_(1.0);
     for node in [written, built] {
         let drive = ParamRef::unit(node, UnitParam::Drive);
-        m.range(drive, 0.0, 10.0);
+        m.range_raw(drive, 0.0, 10.0).unwrap();
         m.route(offset, drive, Depth(0.2)).unwrap();
     }
     settle(&mut s);
-    s.graph().set_param(written, UnitParam::Drive, 6.0);
+    s.graph().set_param(written.drive(), Drive(6.0)).unwrap();
     let _ = s.update();
 
     // Past the lanes' connect declick (256 frames).

@@ -214,6 +214,27 @@ impl AuLoaded {
     /// list that grew would leave new parameters unwritable.
     pub(crate) fn reread_ranges(&mut self) {
         self.ranges = RangeTable::read(self.unit());
+        // A parameter the list gained has no subscription yet.
+        let ids: Vec<u32> = self.ranges.ids().collect();
+        if let Some(watch) = self.watch_mut() {
+            watch.watch_parameters(ids);
+        }
+    }
+
+    /// The plugin's edits since the last call, normalized against the declared
+    /// ranges, oldest first. A parameter off the table (the AU grew one the
+    /// host has not re-read) is reported as the plain value it was given, as
+    /// the read path does.
+    fn drain_edits(&self, out: &mut Vec<(ParamId, Normalized)>) {
+        let mut heard = Vec::new();
+        self.edits.drain(&mut heard);
+        out.extend(heard.into_iter().map(|(id, plain)| {
+            let normalized = match self.ranges.bounds(id) {
+                Some(bounds) => bounds.to_normalized(plain),
+                None => f64::from(plain),
+            };
+            (ParamId::from(id), Normalized::clamped(normalized))
+        }));
     }
 
     pub(crate) fn range_snapshot(&self) -> RangeTable {
@@ -412,8 +433,15 @@ impl Control for AuLoaded {
         self.write_render_mode(mode.is_offline())
     }
 
+    /// The plugin's own edits (its editor moving a knob), heard through the
+    /// parameter listener `watch_properties` installs. The host's own writes are
+    /// not among them: they name the listener as their sender.
+    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        self.drain_edits(out);
+    }
+
     fn dropped_reported_edits(&self) -> u64 {
-        0
+        self.edits.dropped()
     }
 }
 
@@ -572,8 +600,19 @@ impl Control for AuController {
         false
     }
 
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+        Control::take_reported_edits(&mut **self, main, out);
+    }
+
     fn dropped_reported_edits(&self) -> u64 {
-        0
+        Control::dropped_reported_edits(&**self)
+    }
+
+    /// Applies the writes the Processor handed over for the parameters the AU
+    /// flagged `NonRealTime`, latest value of each in order: they are written
+    /// here, between blocks, and never from the render.
+    fn flush_edits(&mut self, _main: &MainThread) {
+        self.apply_deferred();
     }
 }
 

@@ -150,7 +150,7 @@ enum Filter {
         q: Q,
         m: [f32; 3],
     },
-    /// Four-stage ladder with `tanh` feedback (`LadderFilterNode`'s topology),
+    /// Four-stage ladder with zero-delay `tanh` feedback (`LadderFilterNode`'s topology),
     /// read at the fourth stage: the 24 dB/octave Moog response.
     Ladder,
 }
@@ -763,7 +763,11 @@ impl VoiceBank {
                     c[0] += c_step[0];
                     c[1] += c_step[1];
                     let g1 = c[0];
-                    let u = kernel::tanh(x - c[1] * z3);
+                    // Zero-delay loop, as `tutti_dsp`'s `ladder_step`: the delay-free
+                    // linear solve `(x - k*S) / (1 + k*G^4)`, then the saturator.
+                    let g2 = g1 * g1;
+                    let tail = (V::ONE - g1) * (g1 * (g1 * (g1 * z0 + z1) + z2) + z3);
+                    let u = kernel::tanh((x - c[1] * tail) / (V::ONE + c[1] * g2 * g2));
                     let v = g1 * (u - z0);
                     let lp1 = v + z0;
                     z0 = lp1 + v;

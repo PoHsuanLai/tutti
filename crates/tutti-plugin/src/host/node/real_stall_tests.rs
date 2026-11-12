@@ -127,7 +127,7 @@ fn load_probe(env: &mut ScopedEnv, render_mode: u32) -> (PluginClient, PluginHan
     );
     let client = PluginClient::new(
         BridgeConfig::default(),
-        tutti_fixtures::clap_probe().to_path_buf(),
+        &crate::catalog::PluginRef::file(tutti_fixtures::clap_probe()).expect("a plugin file"),
         SampleRate::new(SAMPLE_RATE),
     )
     .expect("load the reference CLAP plugin through a real plugin-server");

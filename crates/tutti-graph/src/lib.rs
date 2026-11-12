@@ -272,7 +272,7 @@ mod time;
 pub use builder::{GraphBuilder, Renderer, Solo};
 pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
 pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};
-pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, param_parts};
+pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, Params, param_parts};
 pub use cost::{Cost, Schedule, Work};
 pub use editor::{CommitError, Editor, Limits, MAX_ROOT_CHANNELS, MissingSource};
 pub use event::{
@@ -293,7 +293,7 @@ pub use tutti_curve::{Curvature, Exponent, Law};
 // latency pass and is exported as `latency_plan`.
 pub use bus::{Bus, BusRole, Buses, InBus, MAX_BUSES, OutBus};
 pub use bus_edge::{BusError, BusFeed, BusFold, BusRef, BusSide, BusSource, Lowering};
-pub use gain::EdgeGain;
+pub use gain::{EDGE_DECLICK, EdgeFade, EdgeGain};
 pub use graph::{
     Edge, EdgeId, EventTapId, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId, MeterSpec,
     NodeKey, NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec, Topology,

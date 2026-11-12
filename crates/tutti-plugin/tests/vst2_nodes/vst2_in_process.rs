@@ -17,7 +17,6 @@ use tutti_fixtures::main_thread;
 use tutti_plugin_types::Load;
 use tutti_vst2_host::Vst2Loaded;
 
-use tutti_plugin::error::StateError;
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::EditorPresence;
 use tutti_plugin_types::{Normalized, ParamId};
@@ -173,43 +172,10 @@ fn handle_state_roundtrip() {
     );
 }
 
-/// A plugin that refuses a chunk says so, and says why.
-///
-/// The common case in the field: a preset saved by an older build of a plugin,
-/// a truncated file, a chunk belonging to a different plugin. A `-> ()`
-/// signature makes it unreportable — no expression a caller can write tells a
-/// rejected load from an accepted one, and the DAW shows a restored plugin
-/// sitting at its defaults.
-///
-/// The probe refuses an empty blob (`load_bank_data` in
-/// `tutti-vst2-test-plugin` returns `false` for one, deliberately, so a host
-/// can be seen ignoring a refusal). That makes the refusal reachable without a
-/// second plugin or a version skew.
-#[test]
-fn a_refused_chunk_reports_the_refusal() {
-    let _lock = lock_probe();
-    let handle = load_handle(&[]);
-
-    let err = handle
-        .load_state(&main_thread(), &[])
-        .expect_err("the probe refuses an empty chunk");
-
-    // `Rejected` specifically: the plugin was asked and said no. `NoStateRoute`
-    // would mean this backend cannot carry state at all, and `PluginCrashed`
-    // that it is gone — three different things a caller acts on differently,
-    // which is the whole reason this is not a bool.
-    assert!(
-        matches!(err, StateError::Rejected(_)),
-        "an in-process refusal must be Rejected, got {err:?}"
-    );
-    assert!(
-        !err.to_string().is_empty(),
-        "the refusal must carry a message a user can be shown"
-    );
-}
-
-/// A blob the plugin accepts reports success, so the test above is not merely
-/// observing that everything fails.
+/// A restore reports success once the chunk went to the plugin: `effSetChunk` has no
+/// return value in the header (`aeffect.h`), so the host has no refusal to read, and a plugin
+/// that answers 0 after loading (the test plugin does, as a JUCE plugin does) is not told it
+/// failed.
 #[test]
 fn an_accepted_chunk_reports_success() {
     let _lock = lock_probe();
@@ -278,7 +244,7 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     unsafe { std::env::set_var("TUTTI_VST2_PROBE_EDITOR", "1") };
     let plugin = tutti_plugin::catalog::Plugin::open(
         Some(&main_thread()),
-        &staged,
+        &tutti_plugin::catalog::PluginRef::file(staged.clone()).expect("a plugin file"),
         tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
     )
     .expect("Plugin::open should load a .vst in-process");
@@ -371,7 +337,7 @@ fn the_node_carries_midi_on_its_event_ports() {
         }
         let plugin = tutti_plugin::catalog::Plugin::open(
             Some(&main_thread()),
-            &staged,
+            &tutti_plugin::catalog::PluginRef::file(staged.clone()).expect("a plugin file"),
             tutti_plugin_types::SampleRate::new(SAMPLE_RATE),
         )
         .unwrap_or_else(|e| panic!("in-process VST2 load failed for {staged:?}: {e:?}"));

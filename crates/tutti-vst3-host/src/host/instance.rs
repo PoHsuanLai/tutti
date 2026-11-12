@@ -124,7 +124,7 @@ impl<T: Vst3Sample> Staged<T> {
     #[allow(clippy::result_large_err)]
     pub(super) fn stage(
         main: &MainThread,
-        loaded: Vst3Loaded,
+        mut loaded: Vst3Loaded,
         sample_rate: SampleRate,
         block_size: usize,
         mode: ProcessMode,
@@ -135,6 +135,12 @@ impl<T: Vst3Sample> Staged<T> {
                 Vst3Error::NotSupported("Plugin does not support 64-bit processing".to_string()),
             ));
         }
+
+        // The `IMidiMapping` table is read at every activation (and again after
+        // `kMidiCCAssignmentChanged`): ivsteditcontroller.h has the host
+        // rebuild the CC to parameter mapping, and a controller routes only
+        // through it. Published before the Processor's reader is made below.
+        loaded.rebuild_midi_cc_mapping(main);
 
         let num_input_channels = bus_layout(loaded.info.num_inputs);
         let num_output_channels = bus_layout(loaded.info.num_outputs);

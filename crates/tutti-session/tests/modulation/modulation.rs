@@ -20,7 +20,7 @@ use tutti_modulation::{
 };
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, RouteError, Session,
+    ModInput, ModKeys, ModRefusal, OutPort, PHASES, ParamRef, PhaseCx, Root, RouteError, Session,
     SessionEvent,
 };
 use tutti_transport::MotionEvent;
@@ -128,14 +128,18 @@ fn the_8_1_example_renders_its_analytic_values() {
         to: 7_200,
         level: 0.8,
     }));
-    s.graph().set_output_source(0, GraphSource::Node(filter, 0));
-    s.graph().set_output_source(1, GraphSource::Node(pad, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(filter, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(pad, 0)])
+        .unwrap();
 
     let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
     let gain = ParamRef::unit(pad, UnitParam::Volume);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
-    m.range(gain, 0.0, 1.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
+    m.range_raw(gain, 0.0, 1.0).unwrap();
     let wobble = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
     m.route(wobble, cutoff, Depth(0.3)).unwrap();
     let kick = m.follower(Follower::default(), kick_bus);
@@ -263,7 +267,7 @@ fn a_target_placed_one_update_later_resolves_on_that_update() {
     assert!(s.mod_state().lane(HOST_TARGET).is_none());
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    keys.node.set(Some(probe));
+    keys.node.set(Some(probe.erase()));
     update_at(&mut s, now, Some(decl.input(&keys)));
     assert_eq!(
         s.mod_state().unresolved_targets(),
@@ -334,7 +338,7 @@ fn a_refusal_names_the_route_key_the_session_minted() {
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
     assert!(m.clear_range(cutoff));
 
@@ -359,7 +363,7 @@ fn a_refusal_names_the_route_key_the_session_minted() {
         "not repeated while it lasts"
     );
 
-    s.mods().range(cutoff, 0.0, 1_000.0);
+    s.mods().range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let _ = s.update();
     assert_eq!(s.mod_state().refusal(), None, "cleared once it applies");
 }
@@ -391,7 +395,7 @@ fn a_route_onto_an_unranged_target_is_refused_at_the_call() {
     assert_eq!(s.mod_state().refusal(), None);
 
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     assert!(m.route(lfo, cutoff, Depth(0.5)).is_ok());
     let _ = s.update();
     assert_eq!(s.mod_state().refusal(), None, "applies clean");
@@ -406,7 +410,7 @@ fn a_host_and_the_session_cannot_both_declare() {
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     s.mods().macro_(0.5);
     let keys = HostKeys {
-        node: Cell::new(Some(probe)),
+        node: Cell::new(Some(probe.erase())),
     };
     let decl = HostDecl::new(true);
     let events = update_at(&mut s, Instant::now(), Some(decl.input(&keys)));
@@ -429,7 +433,7 @@ fn removing_a_node_forgets_its_declarations() {
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
     m.route(lfo, cutoff, Depth(0.5)).unwrap();
     settle(&mut s);
@@ -495,10 +499,12 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
     assert_eq!(s.latency(), Samples(0), "precondition: nothing latent out");
 
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
-    s.graph().set_output_source(0, GraphSource::Node(probe, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(probe, 0)])
+        .unwrap();
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let follower = m.follower(Follower::default(), late);
     m.route(follower, cutoff, Depth(0.5)).unwrap();
 
@@ -539,7 +545,7 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
     let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
     settle(&mut s);
@@ -568,7 +574,7 @@ fn an_own_edit_after_a_steady_state_applies() {
     let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
     let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
     let mut m = s.mods();
-    m.range(cutoff, 0.0, 1_000.0);
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
     let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
     let route = m.route(lfo, cutoff, Depth(0.5)).unwrap();
     settle(&mut s);
@@ -591,7 +597,7 @@ fn an_own_edit_after_a_steady_state_applies() {
         "the depth edit is republished"
     );
 
-    s.mods().range(cutoff, 0.0, 2_000.0);
+    s.mods().range_raw(cutoff, 0.0, 2_000.0).unwrap();
     let _ = s.update();
     let range = s
         .graph()

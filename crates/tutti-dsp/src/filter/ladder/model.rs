@@ -8,14 +8,20 @@
 //! [`Lti`]) by that definition, and every query is the linearised system's, so
 //! it says nothing about what a loud signal does: past the knee the response
 //! flattens and the resonance is limited, and a loop whose linearisation has a pole
-//! outside the unit circle (a resonance near 1) settles into the saturator's limit
-//! cycle instead of growing. `is_stable` is the small-signal figure: false there.
+//! outside the unit circle (a resonance of 1) settles into the saturator's limit
+//! cycle instead of growing. `is_stable` is the small-signal figure: false there
+//! (from a resonance of 1, `k = 4`, where the continuous ladder self-oscillates).
 //!
 //! One stage is the trapezoidal one-pole `L(z) = g1 (1 + z^-1) / (1 - p z^-1)`
-//! (`g1 = g / (1 + g)`, `p = 1 - 2 g1`); the feedback reads the last stage's state,
-//! `F(z) = 2 g1 z^-1 / (1 - p z^-1)` times the third stage's output, so the
-//! input to the stages is `u = x / (1 + k F L^3)`. The four outputs are
-//! `L^2 u`, `L^4 u`, `(1 - L)^2 u` and `(1 - L)^4 u`.
+//! (`g1 = g / (1 + g)`, `p = 1 - 2 g1`). The resonance loop is closed with no unit
+//! delay (zero-delay feedback), so the stages' input is `u = x / (1 + k L^4)` and
+//! the four outputs are `L^2 u`, `L^4 u`, `(1 - L)^2 u` and `(1 - L)^4 u`. With
+//! `L = (g/(1+g)) (1+z^-1)/(1 - p z^-1)` this is the continuous ladder
+//! `1 / ((1 + s/wc)^4 + k)` under the bilinear map `s/wc = (1/g)(1 - z^-1)/(1 + z^-1)`
+//! prewarped at the cutoff (`1 + s/wc = 1/L`), so the continuous poles
+//! `s = wc (-1 + k^(1/4) e^(i(pi/4 + n pi/2)))` map to the discrete ones and the
+//! loop leaves the unit circle exactly at `k = 4`, as the continuous ladder
+//! self-oscillates.
 
 use core::f64::consts::PI;
 
@@ -133,40 +139,43 @@ impl LadderModel {
         self.coeffs.g / (1.0 + self.coeffs.g)
     }
 
-    /// `(L, F)` at `z^-1 = zi`.
-    fn stage(&self, zi: Complex64) -> (Complex64, Complex64) {
+    /// The stage `L` at `z^-1 = zi`.
+    fn stage(&self, zi: Complex64) -> Complex64 {
         let g1 = self.g1();
         let den = 1.0 - (1.0 - 2.0 * g1) * zi;
-        (g1 * (1.0 + zi) / den, 2.0 * g1 * zi / den)
+        g1 * (1.0 + zi) / den
     }
 
     /// The response at `z^-1 = zi`.
     fn at(&self, zi: Complex64) -> Complex64 {
-        let (l, f) = self.stage(zi);
-        let u = f64::from(self.controls.drive.get()) / (1.0 + self.coeffs.k * f * l * l * l);
+        let l = self.stage(zi);
+        let l2 = l * l;
+        let u = f64::from(self.controls.drive.get()) / (1.0 + self.coeffs.k * l2 * l2);
         let one_minus = 1.0 - l;
         u * match self.controls.ty {
-            LadderType::LP12 => l * l,
-            LadderType::LP24 => l * l * l * l,
+            LadderType::LP12 => l2,
+            LadderType::LP24 => l2 * l2,
             LadderType::HP12 => one_minus * one_minus,
             LadderType::HP24 => (one_minus * one_minus) * (one_minus * one_minus),
         }
     }
 
-    /// The four poles: the roots of `(z - p)^4 + 2 k g1^4 (z + 1)^3`, by
-    /// Durand and Kerner's iteration (control side).
+    /// The four poles: the roots of `1 + k L^4 = 0`, that is
+    /// `(z - p)^4 + k g1^4 (z + 1)^4`, by Durand and Kerner's iteration (control
+    /// side). They are the bilinear images (prewarped at the cutoff) of the
+    /// continuous poles.
     #[must_use]
     pub fn poles(&self) -> [Complex64; 4] {
         let g1 = self.g1();
         let p = 1.0 - 2.0 * g1;
-        let c = 2.0 * self.coeffs.k * g1.powi(4);
-        // Monic coefficients of z^4 .. z^0.
+        let c = self.coeffs.k * g1.powi(4);
+        // Monic coefficients of z^4 .. z^0: (z-p)^4 + c (z+1)^4, over 1 + c.
         let a = [
             1.0,
-            -4.0 * p + c,
-            6.0 * p * p + 3.0 * c,
-            -4.0 * p.powi(3) + 3.0 * c,
-            p.powi(4) + c,
+            (-4.0 * p + 4.0 * c) / (1.0 + c),
+            (6.0 * p * p + 6.0 * c) / (1.0 + c),
+            (-4.0 * p.powi(3) + 4.0 * c) / (1.0 + c),
+            (p.powi(4) + c) / (1.0 + c),
         ];
         let eval = |z: Complex64| {
             a.iter()
@@ -202,8 +211,12 @@ impl System for LadderModel {
         Samples::ZERO
     }
 
-    /// The linearised loop's ring: its slowest pole, `ln(eps) / ln r` frames.
+    /// The linearised loop's ring: unbounded from `k = 4` (the closed form of
+    /// `is_stable`), else its slowest pole, `ln(eps) / ln r` frames.
     fn tail(&self, floor: Db) -> Ring {
+        if !self.is_stable() {
+            return Ring::Unbounded;
+        }
         decay_ring(self.spectral_radius(), 1, floor, self.rate)
     }
 }
@@ -220,11 +233,19 @@ impl Lti for LadderModel {
         }
     }
 
-    /// The largest pole modulus of the linearisation (the roots as the iteration
-    /// found them): at or above 1 the small-signal system is unstable and the
+    /// The largest pole modulus of the linearisation, as the root iteration
+    /// measured it: at or above 1 the small-signal system is unstable and the
     /// saturator is what holds the real filter.
     fn spectral_radius(&self) -> f64 {
         self.poles().iter().map(|p| p.norm()).fold(0.0, f64::max)
+    }
+
+    /// `k < 4`, in closed form: the continuous ladder `1 / ((1 + s)^4 + k)` has
+    /// its poles on the imaginary axis exactly at `k = 4`, and the bilinear map
+    /// takes that axis onto the unit circle, so the measured radius is not needed
+    /// (and its rounding cannot move the threshold).
+    fn is_stable(&self) -> bool {
+        self.coeffs.k < 4.0
     }
 
     /// Infinity: the linearisation has no bound the model can state (past the

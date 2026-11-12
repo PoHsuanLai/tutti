@@ -14,7 +14,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use tutti_plugin_types::{Controller, MainThread, PluginTail, Samples};
-use tutti_rt::ArcLend;
+use tutti_rt::{ArcLend, EditReader};
 
 use crate::error::Result;
 use crate::instance::AuLoaded;
@@ -28,6 +28,9 @@ pub struct AuController {
     /// The range table the Processor lends once per block; republished when the
     /// unit says its parameter list moved.
     pub(crate) ranges: Arc<ArcLend<RangeTable>>,
+    /// The writes the Processor handed over for `NonRealTime` parameters, which
+    /// [`apply_deferred`](Self::apply_deferred) makes between blocks.
+    deferred: EditReader<u64>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -54,11 +57,28 @@ impl DerefMut for AuController {
 }
 
 impl AuController {
-    pub(crate) fn new(loaded: AuLoaded, ranges: Arc<ArcLend<RangeTable>>) -> Self {
+    pub(crate) fn new(
+        loaded: AuLoaded,
+        ranges: Arc<ArcLend<RangeTable>>,
+        deferred: EditReader<u64>,
+    ) -> Self {
         Self {
             loaded,
             ranges,
+            deferred,
             _not_sync: PhantomData,
+        }
+    }
+
+    /// Writes each value the Processor deferred, in order, telling every
+    /// listener but the host's own. A parameter flagged `NonRealTime` is
+    /// changed here, between blocks, because changing it "in real-time will
+    /// cause a glitch or otherwise undesirable effect".
+    pub(crate) fn apply_deferred(&mut self) {
+        let listener = self.loaded.listener();
+        while let Some(word) = self.deferred.pop() {
+            let (id, value) = crate::processor::unpack_deferred(word);
+            let _ = crate::processor::write_now(&listener, self.loaded.unit(), id, value);
         }
     }
 

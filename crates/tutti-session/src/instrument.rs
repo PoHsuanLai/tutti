@@ -30,13 +30,13 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tutti_graph::NodeKey;
-use tutti_graph::{Instrument, ParamSet, Refused};
+use tutti_graph::{EventInletNode, Instrument, ParamSet, Refused};
 use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
 use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, At, Moment, UnitParam};
 use tutti_ump::{MidiChannel, NoteNumber, Ump};
 
-use crate::{Feeder, Graph, GraphSource, Session, SessionNode};
+use crate::{Feeder, Graph, Key, OutPort, Session, SessionNode};
 
 /// Why a node is not an instrument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -95,7 +95,7 @@ pub(crate) struct SharedKeys(Arc<Mutex<MidiKeys>>);
 
 impl SharedKeys {
     /// Opens an inlet in `graph`: its node, and the writer.
-    pub(crate) fn open(graph: &mut Graph) -> (NodeKey, Self) {
+    pub(crate) fn open(graph: &mut Graph) -> (Key<EventInletNode>, Self) {
         let (node, writer) = graph.open_event_inlet(LIVE_INLET_CAPACITY);
         (node, Self(Arc::new(Mutex::new(MidiKeys::new(writer)))))
     }
@@ -146,8 +146,8 @@ impl SharedKeys {
 pub struct InstrumentHandle {
     node: NodeKey,
     main: [u16; 2],
-    strip: NodeKey,
-    queue: NodeKey,
+    strip: Key<BusStripNode>,
+    queue: Key<EventInletNode>,
     keys: SharedKeys,
     strip_params: ParamSet,
 }
@@ -161,7 +161,7 @@ impl InstrumentHandle {
 
     /// The instrument's main pair, the output ports a host plays (the
     /// instrument's `main_outputs`). Feed a wide root from it with
-    /// [`Graph::set_outputs_from_ports`](crate::Graph::set_outputs_from_ports).
+    /// [`Graph::connect`](crate::Graph::connect), one port to one root channel.
     #[must_use]
     pub fn main_outputs(&self) -> [usize; 2] {
         self.main.map(usize::from)
@@ -169,13 +169,13 @@ impl InstrumentHandle {
 
     /// The strip after the main pair: what a mix wires from.
     #[must_use]
-    pub fn out(&self) -> NodeKey {
+    pub fn out(&self) -> Key<BusStripNode> {
         self.strip
     }
 
     /// The queue node before the event input.
     #[must_use]
-    pub fn queue(&self) -> NodeKey {
+    pub fn queue(&self) -> Key<EventInletNode> {
         self.queue
     }
 
@@ -283,6 +283,7 @@ impl Session {
     ) -> Result<(InstrumentHandle, I::Controls), crate::Error> {
         let main = instrument.main_outputs();
         let (node, controls) = self.graph().add(instrument);
+        let node = node.erase();
         match self.instrument_at(node, main) {
             Ok(handle) => Ok((handle, controls)),
             Err(e) => {
@@ -299,8 +300,11 @@ impl Session {
     /// # Errors
     ///
     /// [`Error::NotInstrument`](crate::Error::NotInstrument).
-    pub fn instrument(&mut self, node: NodeKey) -> Result<InstrumentHandle, crate::Error> {
-        self.instrument_at(node, [0, 1])
+    pub fn instrument(
+        &mut self,
+        node: impl Into<NodeKey>,
+    ) -> Result<InstrumentHandle, crate::Error> {
+        self.instrument_at(node.into(), [0, 1])
     }
 
     /// Hosts a loaded plugin as an instrument. Its format says what it is only
@@ -330,8 +334,8 @@ impl Session {
     /// [`Session::remove`](crate::Session::remove).
     pub fn remove_instrument(&mut self, handle: &InstrumentHandle) {
         // The feed into the instrument goes with the queue (`Graph::remove`).
-        self.remove(handle.queue);
-        self.remove(handle.strip);
+        self.remove(handle.queue.erase());
+        self.remove(handle.strip.erase());
     }
 
     fn instrument_at(
@@ -363,10 +367,10 @@ impl Session {
         }
         let graph = self.graph();
         let (queue, keys) = SharedKeys::open(graph);
-        graph.set_feed(node, Feeder::Instrument, vec![queue.into()]);
+        graph.set_feed(node, Feeder::Instrument, vec![queue.events_out()]);
         let (strip, strip_params) = graph.add(BusStripNode::new());
-        graph.set_source(strip, 0, GraphSource::node(node, usize::from(main[0])));
-        graph.set_source(strip, 1, GraphSource::node(node, usize::from(main[1])));
+        graph.connect(OutPort::new(node, usize::from(main[0])), strip.input(0))?;
+        graph.connect(OutPort::new(node, usize::from(main[1])), strip.input(1))?;
         Ok(InstrumentHandle {
             node,
             main,

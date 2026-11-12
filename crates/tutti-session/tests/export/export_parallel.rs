@@ -19,10 +19,11 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
+use tutti_session::Root;
 
 use tutti_export::{Produced, Rendered};
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_session::{Bounce, BounceTail, ExportClock, GraphSource, Range, Session, Stem};
+use tutti_session::{Bounce, BounceTail, ExportClock, InPort, OutPort, Range, Session, Stem};
 use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples, Seconds};
 
@@ -123,11 +124,12 @@ fn export_with(workers: usize, stems: &[usize]) -> (Vec<Rendered>, usize) {
         }));
         session
             .graph()
-            .set_source(sum, i, GraphSource::Node(branch, 0));
-        named.push(branch);
+            .set_sources(InPort::new(sum, i), [OutPort::new(branch, 0)])
+            .unwrap();
+        named.push(branch.erase());
     }
-    named.push(sum);
-    session.graph().set_outputs_from(sum);
+    named.push(sum.erase());
+    session.graph().connect(sum, Root).unwrap();
 
     let mut bounce = Bounce::project()
         .master_buffers()

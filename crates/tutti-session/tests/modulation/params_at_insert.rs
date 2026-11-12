@@ -21,7 +21,7 @@ use tutti_types::MaxBlock;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::NodeKey;
 use tutti_nodes::{DistortionNode, ShapeKind};
-use tutti_session::{GraphSource, ParamRef, Session};
+use tutti_session::{OutPort, ParamRef, Root, Session};
 use tutti_types::AtomicF32;
 use tutti_types::{ChannelLayout, Depth, Drive, SampleRate, Samples, Seconds, UnitParam};
 
@@ -43,7 +43,7 @@ fn session() -> Session {
 fn modulate_drive(s: &mut Session, node: NodeKey) {
     let drive = ParamRef::unit(node, UnitParam::Drive);
     let mut m = s.mods();
-    m.range(drive, 0.0, 10.0);
+    m.range_raw(drive, 0.0, 10.0).unwrap();
     let offset = m.macro_(1.0);
     m.route(offset, drive, Depth(0.1)).unwrap();
     settle(s);
@@ -76,8 +76,8 @@ fn add_addresses_a_hosts_param_node() {
     let unit = ProbeUnit::of(UnitParam::Drive, BASE);
     let cell = unit.knob();
     let (node, _) = s.graph().add(unit);
-    modulate_drive(&mut s, node);
-    assert_knob_is(&s, node, &cell);
+    modulate_drive(&mut s, node.erase());
+    assert_knob_is(&s, node.erase(), &cell);
 }
 
 #[test]
@@ -86,8 +86,8 @@ fn add_addresses_an_engine_node() {
     let node = DistortionNode::new(ShapeKind::Tanh, Drive::new(BASE));
     let cell = node.drive();
     let (key, _) = s.graph().add(node);
-    modulate_drive(&mut s, key);
-    assert_knob_is(&s, key, &cell);
+    modulate_drive(&mut s, key.erase());
+    assert_knob_is(&s, key.erase(), &cell);
 }
 
 /// After a crossfade the lane's knob is the **incoming** node's cell: a
@@ -98,9 +98,11 @@ fn a_crossfade_hands_the_lane_the_incoming_nodes_cell() {
     let outgoing = ProbeUnit::of(UnitParam::Drive, BASE);
     let old = outgoing.knob();
     let (node, _) = s.graph().add(outgoing);
-    s.graph().set_output_source(0, GraphSource::Node(node, 0));
-    modulate_drive(&mut s, node);
-    assert_eq!(knob(&s, node), Some(BASE), "precondition: the lane");
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(node, 0)])
+        .unwrap();
+    modulate_drive(&mut s, node.erase());
+    assert_eq!(knob(&s, node.erase()), Some(BASE), "precondition: the lane");
 
     let incoming = ProbeUnit::of(UnitParam::Drive, 3.0);
     let new = incoming.knob();
@@ -114,6 +116,6 @@ fn a_crossfade_hands_the_lane_the_incoming_nodes_cell() {
         .expect("the crossfade starts");
     settle(&mut s);
     old.store(9.0, Ordering::Release);
-    assert_eq!(knob(&s, node), Some(3.0), "not the outgoing cell");
-    assert_knob_is(&s, node, &new);
+    assert_eq!(knob(&s, node.erase()), Some(3.0), "not the outgoing cell");
+    assert_knob_is(&s, node.erase(), &new);
 }

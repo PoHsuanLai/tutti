@@ -13,7 +13,6 @@
 
 use tutti::export::Written;
 use tutti::prelude::*;
-use tutti::session::{BusRef, BusSource};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -82,19 +81,16 @@ fn song(dir: &std::path::Path) -> Result<Written, tutti::Error> {
     let (reverb, _) = s.graph().add(FreeverbNode::default());
     s.graph().connect(first, filter)?;
     s.graph().connect(second, filter)?; // adds: both clips sum into the filter
-    s.graph().connect_bus(
-        BusSource::Node(BusRef::new(filter, 0)),
-        BusRef::new(reverb, 0),
-    )?;
+    s.graph().connect(filter.bus_out(0), reverb.bus_in(0))?;
     for c in 0..2 {
-        s.graph().set_output_source(c, GraphSource::Node(filter, c));
-        s.graph().add_output_source(c, GraphSource::Node(reverb, c));
+        s.graph().connect(filter.out(c), Root::output(c))?;
+        s.graph().connect(reverb.out(c), Root::output(c))?;
     }
 
     // An LFO on the cutoff: 1 Hz across 200 Hz to 3 kHz.
-    let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
+    let cutoff = filter.cutoff();
     let mut m = s.mods();
-    m.range(cutoff, 200.0, 3_000.0);
+    m.range(cutoff, Hz(200.0)..Hz(3_000.0))?;
     let wobble = m.lfo(Lfo::sine().hz(Hz(1.0)));
     m.route(wobble, cutoff, Depth(0.5))?;
 

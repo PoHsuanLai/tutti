@@ -13,19 +13,16 @@
 use std::f64::consts::{PI, TAU};
 use tutti_types::MaxBlock;
 
-use tutti_graph::NodeKey;
 #[cfg(feature = "modulation")]
 use tutti_modulation::Lfo;
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{MultibandCompressorNode, MultibandControls};
-#[cfg(feature = "modulation")]
-use tutti_session::ParamRef;
-use tutti_session::{GraphSource, Session};
+use tutti_session::{InPort, Key, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
 #[cfg(feature = "modulation")]
 use tutti_types::{BeatDuration, Depth};
-use tutti_types::{Db, Hz, UnitAddr, UnitParam};
+use tutti_types::{CompressionRatio, Db, Hz, Seconds, UnitAddr, UnitParam};
 
 const RATE: f64 = 48_000.0;
 /// The tones' amplitude.
@@ -33,9 +30,6 @@ const A: f64 = 0.4;
 const LOW: f64 = 100.0;
 const HIGH: f64 = 6_000.0;
 const SPLIT: f64 = 1_000.0;
-
-const MAKEUP0: UnitAddr = UnitAddr::new(UnitParam::GainDb, 0);
-const MAKEUP1: UnitAddr = UnitAddr::new(UnitParam::GainDb, 1);
 
 fn warp(f: f64) -> f64 {
     (PI * f / RATE).tan() / (PI * SPLIT / RATE).tan()
@@ -59,7 +53,7 @@ fn expected(hz: f64, g0: f64, g1: f64) -> f64 {
 
 /// An offline stereo session with the rig wired to the outputs, and the
 /// node's controls.
-fn rig() -> (Session, NodeKey, MultibandControls) {
+fn rig() -> (Session, Key<MultibandCompressorNode>, MultibandControls) {
     let mut s = Session::builder()
         .build_offline(
             SampleRate(RATE),
@@ -71,10 +65,14 @@ fn rig() -> (Session, NodeKey, MultibandControls) {
     let (low, _) = g.insert(Osc::sine(Hz(LOW as f32)).with_amplitude(Amplitude(A as f32)));
     let (high, _) = g.insert(Osc::sine(Hz(HIGH as f32)).with_amplitude(Amplitude(A as f32)));
     let (mb, controls) = g.add(MultibandCompressorNode::new(ChannelLayout::STEREO, 2).unwrap());
-    g.set_source(mb, 0, GraphSource::Node(low, 0));
-    g.set_source(mb, 1, GraphSource::Node(high, 0));
-    g.set_output_source(0, GraphSource::Node(mb, 0));
-    g.set_output_source(1, GraphSource::Node(mb, 1));
+    g.set_sources(InPort::new(mb, 0), [OutPort::new(low, 0)])
+        .unwrap();
+    g.set_sources(InPort::new(mb, 1), [OutPort::new(high, 0)])
+        .unwrap();
+    g.set_sources(Root::output(0), [OutPort::new(mb, 0)])
+        .unwrap();
+    g.set_sources(Root::output(1), [OutPort::new(mb, 1)])
+        .unwrap();
     // Unity ratio on both bands: nothing is reduced, the make-ups are the gains.
     for band in 0..2 {
         assert!(
@@ -134,7 +132,7 @@ fn a_write_to_band_1_moves_band_1_only() {
     assert!((l - expected(LOW, 0.0, 0.0)).abs() < 1e-5, "{l}");
     assert!((r - expected(HIGH, 0.0, 0.0)).abs() < 1e-5, "{r}");
 
-    s.graph().set_param(mb, MAKEUP1, 6.0);
+    s.graph().set_param(mb.gain_db_at(1), Db(6.0)).unwrap();
     let (l, r) = measure(&mut s);
     assert!(
         (l - expected(LOW, 0.0, 6.0)).abs() < 1e-5,
@@ -142,7 +140,7 @@ fn a_write_to_band_1_moves_band_1_only() {
     );
     assert!((r - expected(HIGH, 0.0, 6.0)).abs() < 1e-5, "{r}");
 
-    s.graph().set_param(mb, MAKEUP0, -9.0);
+    s.graph().set_param(mb.gain_db_at(0), Db(-9.0)).unwrap();
     let (l, r) = measure(&mut s);
     assert!((l - expected(LOW, -9.0, 6.0)).abs() < 1e-5, "{l}");
     assert!(
@@ -183,14 +181,15 @@ fn the_graph_declares_each_band_and_crossover() {
 #[test]
 fn the_meter_of_band_1_follows_its_threshold() {
     let (mut s, mb, controls) = rig();
-    let at = |kind, band| UnitAddr::new(kind, band);
     for band in 0..2 {
-        s.graph().set_param(mb, at(UnitParam::Ratio, band), 2.0);
-        s.graph().set_param(mb, at(UnitParam::Release, band), 0.001);
-        s.graph().set_param(mb, at(UnitParam::Attack, band), 0.001);
+        let g = s.graph();
+        g.set_param(mb.ratio_at(band), CompressionRatio(2.0))
+            .unwrap();
+        g.set_param(mb.release_at(band), Seconds(0.001)).unwrap();
+        g.set_param(mb.attack_at(band), Seconds(0.001)).unwrap();
     }
-    s.graph().set_param(mb, at(UnitParam::Threshold, 0), 0.0);
-    s.graph().set_param(mb, at(UnitParam::Threshold, 1), -30.0);
+    s.graph().set_param(mb.threshold_at(0), Db(0.0)).unwrap();
+    s.graph().set_param(mb.threshold_at(1), Db(-30.0)).unwrap();
     render(&mut s, 9_600);
     assert!(
         controls.gain_reduction_db(1) > Db(3.0),
@@ -202,7 +201,7 @@ fn the_meter_of_band_1_follows_its_threshold() {
         "{:?}",
         controls.gain_reduction_db(0)
     );
-    s.graph().set_param(mb, at(UnitParam::Threshold, 1), 0.0);
+    s.graph().set_param(mb.threshold_at(1), Db(0.0)).unwrap();
     render(&mut s, 9_600);
     assert!(
         controls.gain_reduction_db(1) < Db(1e-4),
@@ -225,9 +224,9 @@ fn the_meter_of_band_1_follows_its_threshold() {
 #[test]
 fn a_route_to_band_1_modulates_band_1_only() {
     let (mut s, mb, _) = rig();
-    let band1 = ParamRef::unit_at(mb, UnitParam::GainDb, 1);
+    let band1 = mb.gain_db_at(1);
     let mut m = s.mods();
-    m.range(band1, -24.0, 24.0);
+    m.range(band1, Db(-24.0)..Db(24.0)).unwrap();
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
     m.route(lfo, band1, Depth(0.25)).unwrap();
     for _ in 0..4 {
@@ -278,12 +277,12 @@ fn a_route_to_band_1_modulates_band_1_only() {
 #[test]
 fn a_fork_keeps_each_index_to_itself() {
     let (mut s, mb, _) = rig();
-    s.graph().set_param(mb, MAKEUP0, -6.0);
-    s.graph().set_param(mb, MAKEUP1, 6.0);
+    s.graph().set_param(mb.gain_db_at(0), Db(-6.0)).unwrap();
+    s.graph().set_param(mb.gain_db_at(1), Db(6.0)).unwrap();
     render(&mut s, 128);
     let mut fork = s.graph_ref().fork_live().expect("the node forks");
-    s.graph().set_param(mb, MAKEUP0, 12.0);
-    s.graph().set_param(mb, MAKEUP1, -12.0);
+    s.graph().set_param(mb.gain_db_at(0), Db(12.0)).unwrap();
+    s.graph().set_param(mb.gain_db_at(1), Db(-12.0)).unwrap();
 
     let mut out = [Vec::new(), Vec::new()];
     fork.render(24_064 + 9_600, 128, &mut out);
@@ -313,14 +312,13 @@ fn a_fork_keeps_each_index_to_itself() {
 #[test]
 fn a_crossover_write_moves_the_split() {
     let (mut s, mb, _) = rig();
-    s.graph().set_param(mb, MAKEUP1, -60.0);
+    s.graph().set_param(mb.gain_db_at(1), Db(-60.0)).unwrap();
     let (l, _) = measure(&mut s);
     // Band 1 muted by 60 dB: the left is band 0's share alone.
     let (lp, hp) = shares(LOW);
     assert!((l - A * (lp + hp * gain(-60.0))).abs() < 1e-5, "{l}");
 
-    s.graph()
-        .set_param(mb, UnitAddr::new(UnitParam::Cutoff, 0), 150.0);
+    s.graph().set_param(mb.cutoff_at(0), Hz(150.0)).unwrap();
     let (l, _) = measure(&mut s);
     let x4 = ((PI * LOW / RATE).tan() / (PI * 150.0 / RATE).tan()).powi(4);
     let want = A * (1.0 / (1.0 + x4) + x4 / (1.0 + x4) * gain(-60.0));

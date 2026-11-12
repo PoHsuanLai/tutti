@@ -54,8 +54,8 @@ fn ports(s: &Session, input: NodeKey, node: NodeKey) -> BTreeSet<u16> {
         .feed(node, Feeder::Routes)
         .iter()
         .map(|e| {
-            assert_eq!(e.node, input);
-            e.port
+            assert_eq!(e.node(), input);
+            u16::try_from(e.index()).unwrap()
         })
         .collect()
 }
@@ -73,20 +73,20 @@ fn two_rules_on_one_target_take_the_union() {
     let (lead, _) = s.graph().add(ForkByClone(Sink));
     let (pad, _) = s.graph().add(ForkByClone(Sink));
     s.midi()
-        .route(MidiRouteRule::for_channel(MidiChannel::of(2)).to(lead))
+        .route(MidiRouteRule::for_channel(MidiChannel::of(2)).to(lead.erase()))
         .unwrap();
     s.midi()
-        .route(MidiRouteRule::for_channel(MidiChannel::of(5)).to(lead))
+        .route(MidiRouteRule::for_channel(MidiChannel::of(5)).to(lead.erase()))
         .unwrap();
     s.midi()
-        .route(MidiRouteRule::any_channel().to(pad))
+        .route(MidiRouteRule::any_channel().to(pad.erase()))
         .unwrap();
     assert_eq!(
-        ports(&s, input, lead),
+        ports(&s, input, lead.erase()),
         BTreeSet::from([2, 5, channelless()])
     );
     assert_eq!(
-        ports(&s, input, pad),
+        ports(&s, input, pad.erase()),
         (0..u16::try_from(MIDI_INPUT_PORTS).unwrap()).collect()
     );
 }
@@ -97,16 +97,16 @@ fn two_rules_on_one_target_take_the_union() {
 fn a_disabled_rule_routes_nothing_until_it_is_armed() {
     let (mut s, input) = session();
     let (lead, _) = s.graph().add(ForkByClone(Sink));
-    let armed = MidiRouteRule::for_channel(MidiChannel::FIRST).to(lead);
+    let armed = MidiRouteRule::for_channel(MidiChannel::FIRST).to(lead.erase());
     s.midi().set_routes(input, [&armed], None, Some).unwrap();
-    assert!(!ports(&s, input, lead).is_empty(), "armed");
+    assert!(!ports(&s, input, lead.erase()).is_empty(), "armed");
 
     let off = MidiRouteRule::for_channel(MidiChannel::FIRST)
-        .to(lead)
+        .to(lead.erase())
         .disabled();
     s.midi().set_routes(input, [&off], None, Some).unwrap();
-    assert!(ports(&s, input, lead).is_empty(), "disabled");
+    assert!(ports(&s, input, lead.erase()).is_empty(), "disabled");
 
     s.midi().set_routes(input, [&armed], None, Some).unwrap();
-    assert!(!ports(&s, input, lead).is_empty(), "re-armed");
+    assert!(!ports(&s, input, lead.erase()).is_empty(), "re-armed");
 }

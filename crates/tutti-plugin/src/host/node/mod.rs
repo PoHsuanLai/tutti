@@ -99,6 +99,7 @@ mod tests;
 pub use capability_view::TransportView;
 pub(crate) use capability_view::is_declined;
 
+use crate::host::plugin_ref::PluginRef;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -111,9 +112,9 @@ use tutti_plugin_ipc::{
     BridgeConfig, BridgeEvent, Ipc, IpcController, IpcOrigin, Launched, PluginBridge,
 };
 use tutti_plugin_types::{
-    BridgeError, BridgeResult, Features, Load, LoadStage, LoadedPlugin, MaxBlock, Normalized,
-    ParamId, ParameterChanges, PluginDescriptor, PluginInvalidation, PluginTail, Prepare,
-    ResyncClass, SampleFormat,
+    BridgeError, BridgeResult, Features, LoadStage, LoadedPlugin, MaxBlock, Normalized, ParamId,
+    ParameterChanges, PluginDescriptor, PluginInvalidation, PluginTail, Prepare, ResyncClass,
+    SampleFormat,
 };
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
@@ -208,6 +209,8 @@ pub struct PluginClient<S = Unbound> {
     served: IpcController,
     /// Where this instance came from, so a fork can load another of it.
     origin: Option<IpcOrigin>,
+    /// The plugin this is, with the id it reports.
+    plugin: PluginRef,
     /// On a **fork** only: whether it has failed while rendering
     /// ([`fork_health`](PluginClient::fork_health)).
     fork_watch: Option<Arc<ForkWatch>>,
@@ -225,8 +228,12 @@ impl<S> std::fmt::Debug for PluginClient<S> {
 }
 
 impl PluginClient<Unbound> {
-    /// Spawns the plugin-server, loads `plugin_path` and returns the loaded
+    /// Spawns the plugin-server, loads `plugin` and returns the loaded
     /// plugin, [`Unbound`].
+    ///
+    /// `plugin` names the plugin in its file ([`PluginRef::load`]): a scanned
+    /// plugin's ref picks it in a bundle that exports several, and
+    /// [`PluginRef::file`] is the explicit "the file's first".
     ///
     /// Blocks while the subprocess launches and completes its handshake. The
     /// subprocess exits when the graph has dropped the node and every
@@ -238,55 +245,36 @@ impl PluginClient<Unbound> {
     /// Returns [`BridgeError::NotOutOfProcess`] for a VST2 file (it runs in the
     /// host's process: see `Plugin::open`), and a [`BridgeError`] if the
     /// plugin-server cannot be found or spawned, the handshake fails or times out, the
-    /// plugin fails to load, or the IPC bridge cannot be set up.
+    /// plugin fails to load (a ref's id that names no plugin of the file is the
+    /// format's own load failure), or the IPC bridge cannot be set up.
     pub fn new(
         config: BridgeConfig,
-        plugin_path: PathBuf,
+        plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
     ) -> BridgeResult<Self> {
-        Self::new_with_state(config, plugin_path, sample_rate, None).map(|(client, _)| client)
+        Self::open(config, plugin, sample_rate, None).map(|(client, _)| client)
     }
 
     /// [`new`](Self::new), restoring `state` into the plugin **before it is
     /// activated**, the order every format allows and a plugin that takes its
     /// mode from the state at activation needs. The second value is what became
     /// of it: `None` when none was given, else the plugin's refusal as text (the
-    /// plugin is then loaded at its defaults, which beats no plugin).
+    /// plugin is then loaded at its defaults, which beats no plugin). The
+    /// choice of plugin is kept for a fork, which loads the same plugin again.
     ///
     /// # Errors
     ///
     /// As [`new`](Self::new).
-    pub fn new_with_state(
-        config: BridgeConfig,
-        plugin_path: PathBuf,
-        sample_rate: impl Into<SampleRate>,
-        state: Option<&[u8]>,
-    ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
-        Self::open(config, plugin_path, Load::new(), sample_rate, state)
-    }
-
-    /// [`new_with_state`](Self::new_with_state) for the plugin `load` chooses in
-    /// a file that exports several (a CLAP plugin id, a VST3 class name, an AU
-    /// descriptor id); the other constructors load the file's first. The
-    /// choice is kept for a fork, which loads the same plugin again.
-    ///
-    /// # Errors
-    ///
-    /// As [`new`](Self::new); a `load` that names no plugin of the file is the
-    /// format's own load failure.
     pub fn open(
         config: BridgeConfig,
-        plugin_path: PathBuf,
-        load: Load,
+        plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
         state: Option<&[u8]>,
     ) -> BridgeResult<(Self, Option<std::result::Result<(), String>>)> {
+        let plugin_path = plugin.path().to_path_buf();
         // A VST2 plugin is not served (its editor and audio are one object):
         // refused here, typed, before a server is started for it.
-        if matches!(
-            tutti_plugin_db::format_from_path(&plugin_path),
-            Some(tutti_plugin_db::PluginFormat::Vst2)
-        ) {
+        if plugin.format() == tutti_plugin_db::PluginFormat::Vst2 {
             return Err(BridgeError::NotOutOfProcess {
                 path: plugin_path,
                 format: "VST2",
@@ -295,7 +283,7 @@ impl PluginClient<Unbound> {
         let Launched { ipc, restored } = Ipc::launch(
             config,
             plugin_path,
-            load,
+            plugin.load(),
             sample_rate.into(),
             state,
             crate::format::gui::load_gui_instance,
@@ -398,6 +386,12 @@ impl PluginClient<Unbound> {
         };
 
         let origin = ipc.origin().cloned();
+        // The ref carries the id the plugin reports, so a state it saves and a
+        // hand-inserted node name it as a scan would.
+        let plugin = origin
+            .as_ref()
+            .and_then(|o| PluginRef::loaded(&o.path, &descriptor.id))
+            .ok_or_else(|| failed("the served plugin has no file of a plugin format".into()))?;
         let format = ipc.format();
         let served = ipc.controller();
         // Report the FULL input width (main + sidechain/aux input buses) so a
@@ -429,6 +423,7 @@ impl PluginClient<Unbound> {
             invalidate_sink,
             served,
             origin,
+            plugin,
             fork_watch: None,
             state: Unbound {
                 client: Box::new(client),
@@ -466,6 +461,7 @@ impl PluginClient<Unbound> {
             invalidate_sink,
             served,
             origin,
+            plugin,
             fork_watch,
             state: Unbound { client },
         } = self;
@@ -482,6 +478,7 @@ impl PluginClient<Unbound> {
             invalidate_sink,
             served,
             origin,
+            plugin,
             fork_watch,
             state: Bound {
                 node: Box::new((*client).bind(tempo.clone())),
@@ -492,6 +489,11 @@ impl PluginClient<Unbound> {
 }
 
 impl<S> PluginClient<S> {
+    /// The plugin this client is: its file, its format and the id it reports.
+    pub fn plugin(&self) -> &PluginRef {
+        &self.plugin
+    }
+
     /// The shape the plugin's node declares: its channels as audio ports, one
     /// MIDI event input, one MIDI event output if it has MIDI-out, and its
     /// latency and tail now (the node's `shape`). Read before binding, so a

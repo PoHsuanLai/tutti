@@ -44,17 +44,7 @@ impl Format for Vst2 {
     /// VST2 has no sample offset on a parameter: the host's changes land at the
     /// block head.
     const PARAM_TIMING: ParamTiming = ParamTiming::BlockHead;
-    const GAPS: &'static [(&'static str, Gap)] = &[
-        (
-            "reset_clears_the_delay_line",
-            Gap {
-                why: "VST 2.4 has no opcode that clears a plugin's DSP state; \
-                      `Processor::reset` drops only the host's SysEx reassembly",
-                fails_with: "the impulse came out after the reset",
-            },
-        ),
-        NO_TRANSPORT_EVENT,
-    ];
+    const GAPS: &'static [(&'static str, Gap)] = &[NO_TRANSPORT_EVENT];
 
     fn load() -> Self::L {
         tutti_vst2_host::Vst2Loaded::load(&main_thread(), plugin::library())
@@ -121,9 +111,9 @@ impl Format for Au {
     const NAME: &'static str = "au";
     const SURFACE: spec::Surface = spec::AU;
     type L = tutti_au_host::AuLoaded;
-    /// The host writes the last point of each parameter's queue at the block
-    /// head (`AudioUnitSetParameter` with no ramp offset).
-    const PARAM_TIMING: ParamTiming = ParamTiming::BlockHead;
+    /// The host schedules each point as an immediate event at its offset
+    /// (`AudioUnitScheduleParameters`, from the pre-render notify).
+    const PARAM_TIMING: ParamTiming = ParamTiming::SampleAccurate;
     const GAPS: &'static [(&'static str, Gap)] = &[
         ("routing_tag_oracle", NEEDS_THE_BLOB),
         ("reconfigure_keeps_rendering", NEEDS_THE_BLOB),

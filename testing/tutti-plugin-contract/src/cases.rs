@@ -155,7 +155,6 @@ pub fn latency_applied<F: Format>() {
 /// I1): an impulse in the delay line before the reset never comes out after it.
 /// The oracle is the spec's own delay, [`spec::LATENCY`]; the silence after the
 /// reset is longer than it, so a remembered impulse would be heard.
-// VST2 has no opcode that clears state, so the case is its gap.
 pub fn reset_clears_the_delay_line<F: Format>() {
     let mut a = active_with::<F>(Mode::Delay, 128, SampleFormat::Float32);
     let frames = 100;

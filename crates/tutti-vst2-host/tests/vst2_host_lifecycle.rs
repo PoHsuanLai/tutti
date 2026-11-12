@@ -425,7 +425,8 @@ fn can_do_answers_reach_the_plugin() {
     assert_eq!(ask("sendVstTimeInfo"), 1);
     assert_eq!(ask("receiveVstEvents"), 1);
     assert_eq!(ask("receiveVstMidiEvent"), 1);
-    assert_eq!(ask("sizeWindow"), -1);
+    assert_eq!(ask("sizeWindow"), 1);
+    assert_eq!(ask("supplyIdle"), -1);
     assert_eq!(ask("a string no host knows"), 0);
 }
 

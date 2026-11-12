@@ -130,7 +130,7 @@ assert_eq!(tx.queue(&[(Offset::ZERO, on)]), 1);
 let mut block = [(0, Ump([0; 4])); 8];
 assert_eq!(rx.poll_into(&mut block), 1);
 let Some(KeyEvent::On(key)) = block[0].1.key_event() else { panic!("a note-on") };
-assert_eq!(key.note(), 60);
+assert_eq!(key.note(), NoteNumber::of(60));
 ```
 
 ## MPE folded to native per-note messages

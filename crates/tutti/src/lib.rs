@@ -181,11 +181,12 @@ pub use tutti_plugin_host as plugin_host;
 /// The engine's prelude (units, `ChannelLayout`, buffer views, `Engine`,
 /// `Transport`, metering) plus the transport's motion vocabulary, and the
 /// device and sampler handles when those features are on, and the session
-/// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, `GraphSource`, and
+/// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, the wiring (`Key`, `OutPort`, `InPort`, `EventOutPort`, `EventInPort`, `Root`, `Edge`, and a key's typed params, `TypedParamRef`), and
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest` and `PluginId` (`plugin`), and, under `midi`, the names a
+/// `PluginLoadRequest`, `PluginRef`, `PluginState`, `ParamId` and `Normalized`
+/// (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
 /// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`; `MidiChannel` and
 /// `MidiGroup` are always in), with the offline timeline an export runs on.
@@ -253,7 +254,8 @@ pub mod prelude {
     pub use tutti_session::Device;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        ConnectError, GraphSource, HeardTapError, Phase, Session, SessionBuilder, SessionEvent,
+        ConnectError, Edge, EventInPort, EventOutPort, HeardTapError, InPort, Key, OutPort, Phase,
+        Root, Session, SessionBuilder, SessionEvent, TypedParamRef,
     };
 
     // What a session's calls take, by the feature that gates each (design
@@ -263,7 +265,9 @@ pub mod prelude {
     #[cfg(feature = "midi")]
     pub use tutti_midi_runtime::TimedMidiEvent;
     #[cfg(feature = "plugin")]
-    pub use tutti_plugin::catalog::PluginId;
+    pub use tutti_plugin::catalog::{PluginRef, PluginState};
+    #[cfg(feature = "plugin")]
+    pub use tutti_plugin::{Normalized, ParamId};
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::ParamRef;
     #[cfg(all(feature = "session", feature = "plugin"))]

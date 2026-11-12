@@ -909,6 +909,10 @@ impl Editor {
             )
         };
         let live = lowered.as_ref().map_or_else(|| self.spec(), |l| &l.spec);
+        // A fork starts steady: a declick fade the live graph is in the middle
+        // of is over in it (an edge fading out is gone).
+        let settled = live.settled();
+        let live = settled.as_ref().unwrap_or(live);
         let (keys, outputs) = match target {
             // What the global outputs hear, and nothing else: a node no
             // output reaches renders nothing into the fork, so it is neither

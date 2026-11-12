@@ -2,14 +2,13 @@
 
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::{
-    Narrower, PitchBendSensitivity, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16,
-    unit_f32_to_u32, widen, widen_bytes,
+    PitchBendSensitivity, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
+    widen, widen_bytes,
 };
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi};
-use tutti_types::Semitones;
 use tutti_ump::{
-    Address, CCNumber, Message, Midi1Bytes, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn,
-    SysexMessage, Ump, Voice1, Voice2,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, SysexMessage, Ump,
+    Voice1, Voice2,
 };
 use tutti_voicing::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 
@@ -44,8 +43,7 @@ const EXPRESSION_DEFAULTS: [(NoteExpressionType, f64); 4] = [
 /// Encodes UMP events (`(Offset, Ump)`) as VST3 [`Event`]s, keeping the stream's
 /// state across blocks: the per-note state of M2-104 section 7.4
 /// ([`PerNoteState`]: each Group, channel and key's held values, the notes that
-/// respond to them, each channel's bend sensitivity) and the MIDI 2.0 to MIDI
-/// 1.0 state of the raw bytes sent ([`Narrower`]).
+/// respond to them, each channel's bend sensitivity).
 ///
 /// **A Group is an event bus**: its events carry `busIndex` of the Group, and
 /// a Group the plugin has no event input bus for is dropped and counted
@@ -54,10 +52,10 @@ const EXPRESSION_DEFAULTS: [(NoteExpressionType, f64); 4] = [
 #[derive(Debug)]
 pub struct MidiEncoder {
     notes: PerNoteState,
-    narrower: Narrower,
     /// The plugin's event input buses: a Group is the bus of its number.
     buses: usize,
     groups_dropped: u64,
+    unsendable_dropped: u64,
     /// What the last [`encode`](Self::encode) made, reserved for the most one
     /// packet can.
     out: Vec<Event>,
@@ -80,13 +78,10 @@ impl MidiEncoder {
     pub fn new(buses: usize) -> Self {
         let buses = buses.clamp(1, usize::from(MidiGroup::COUNT));
         Self {
-            notes: PerNoteState::new(
-                buses,
-                Semitones(PitchBendSensitivity::MPE_DEFAULT.as_semitones_f32()),
-            ),
-            narrower: Narrower::new(),
+            notes: PerNoteState::new(buses, PitchBendSensitivity::MPE_DEFAULT.semitones()),
             buses,
             groups_dropped: 0,
+            unsendable_dropped: 0,
             out: Vec::with_capacity(MAX_EVENTS),
         }
     }
@@ -100,13 +95,20 @@ impl MidiEncoder {
         self.groups_dropped
     }
 
-    /// The plugin forgot its notes and its MIDI 1.0 state (it was stopped or
-    /// reset): drops what was held per note and forgets which RPN, NRPN and bank
-    /// each channel has had selected, so the next controller selects in full.
-    /// Never allocates.
+    /// Messages dropped because VST3 has no event for them, since the encoder
+    /// was made: a controller, channel pressure, pitch bend, program change,
+    /// RPN or NRPN no `IMidiMapping` parameter took, and a System message. Each
+    /// whole. VST3's `DataEvent` has one type, `kMidiSysEx` (ivstevents.h), so
+    /// a MIDI 1.0 channel message is never sent in one.
+    #[must_use]
+    pub fn unsendable_dropped(&self) -> u64 {
+        self.unsendable_dropped
+    }
+
+    /// The plugin forgot its notes (it was stopped or reset): drops what was
+    /// held per note. Never allocates.
     pub fn reset(&mut self) {
         self.notes.clear();
-        self.narrower.reset();
     }
 
     /// The VST3 events `event` stands for, valid until the next call, at the
@@ -134,19 +136,21 @@ impl MidiEncoder {
     /// not read as a release.
     ///
     /// **Every other message with a MIDI 1.0 form** (controllers, channel pitch
-    /// bend and pressure, program change, an RPN or NRPN) is a `Data` event of
-    /// MIDI 1.0 bytes through the [`Narrower`]: an RPN or NRPN is the Control
-    /// Changes of M2-104 Appendix D.2.3, and a bank is sent only when it
-    /// changes. A single-packet SysEx becomes a `Data` event too.
+    /// bend and pressure, program change, an RPN or NRPN, a System message) has
+    /// no VST3 event: `DataEvent` has the one type `kMidiSysEx` (ivstevents.h),
+    /// and a plugin reads it as SysEx. A controller reaches a plugin as a
+    /// parameter change through `IMidiMapping` (`CcRoute`), before it gets here;
+    /// one that no mapping takes is dropped and counted
+    /// ([`unsendable_dropped`](Self::unsendable_dropped)). A single-packet SysEx
+    /// is a `Data` event.
     ///
     /// The result is empty for a message this host is a sink for, arm by arm in
     /// the encoder: VST3's event list has no raw UMP event, so a message with
     /// no VST3 event and no MIDI 1.0 form, including an unknown packet, goes no
     /// further. A packet of a multi-packet SysEx is empty too: the list
-    /// reassembles it. The several events of one packet are one unit (an RPN's
-    /// select and data, a bank and its program): a caller that cannot stage
-    /// them all drops them all and tells the encoder
-    /// ([`forget_selection`](Self::forget_selection)).
+    /// reassembles it. The several events of one packet (a note and its
+    /// expression values) are one unit: a caller that cannot stage them all
+    /// drops them all.
     pub fn encode(&mut self, event: &UmpAt) -> &[Event] {
         let (at, ump) = event;
         self.out.clear();
@@ -157,12 +161,6 @@ impl MidiEncoder {
             self.message(offset, message);
         }
         &self.out
-    }
-
-    /// The caller dropped what [`encode`](Self::encode) made: the plugin never
-    /// heard its RPN or bank select, so the next controller must select in full.
-    pub fn forget_selection(&mut self) {
-        self.narrower.reset();
     }
 
     fn message(&mut self, offset: i32, message: Message) {
@@ -177,10 +175,10 @@ impl MidiEncoder {
                 Voice1::ControlChange { .. }
                 | Voice1::ProgramChange(_)
                 | Voice1::ChannelPressure(_)
-                | Voice1::PitchBend(_) => self.bytes(offset, address, message),
+                | Voice1::PitchBend(_) => self.unsendable_dropped += 1,
             },
             Message::Midi2(address, voice) => self.voice2(offset, address, voice),
-            Message::System(_, system) => self.out.push(midi1_data(offset, system.bytes())),
+            Message::System(..) => self.unsendable_dropped += 1,
             // VST3 wants a SysEx with its 0xF0 ... 0xF7 delimiters. A
             // single-packet message fits the inline bytes (at most 6 payload,
             // 8 framed); a packet of a multi-packet message cannot stand
@@ -203,25 +201,13 @@ impl MidiEncoder {
     /// The event bus of `address`'s Group, or `None` (counted) when the plugin
     /// has none.
     fn bus_of(&mut self, address: Address) -> Option<i32> {
-        let bus = usize::from(address.group.get());
+        let bus = address.group.index();
         if bus < self.buses {
             i32::try_from(bus).ok()
         } else {
             self.groups_dropped += 1;
             None
         }
-    }
-
-    /// `message` as `Data` events of MIDI 1.0 bytes on its Group's bus,
-    /// through the narrower.
-    fn bytes(&mut self, offset: i32, address: Address, message: Message) {
-        let Some(bus) = self.bus_of(address) else {
-            return;
-        };
-        let out = &mut self.out;
-        self.narrower.feed(message, |bytes| {
-            out.push(on_bus(midi1_data(offset, bytes), bus))
-        });
     }
 
     fn voice2(&mut self, offset: i32, address: Address, voice: Voice2) {
@@ -247,12 +233,10 @@ impl MidiEncoder {
                     self.out.push(on_bus(off, bus));
                 }
             }
-            // CC, channel pressure, channel pitch bend and program change have no
-            // extra resolution VST3 can use: they ride the plugin's parameter
-            // funnel (`CcRoute`) or land as raw Data events, as do an RPN or an
-            // NRPN (the per-note bend sensitivity is consumed by `per_note`).
-            // A Program Change with a bank is three messages. There is no event
-            // for a relative controller; the narrower sends nothing for it.
+            // CC, channel pressure, channel pitch bend and program change ride
+            // the plugin's parameter funnel (`CcRoute`) when `IMidiMapping`
+            // maps them; VST3 has no event for them otherwise (the per-note
+            // bend sensitivity is consumed by `per_note`). Dropped, counted.
             Voice2::ControlChange { .. }
             | Voice2::ChannelPressure(_)
             | Voice2::PitchBend(_)
@@ -260,9 +244,7 @@ impl MidiEncoder {
             | Voice2::Registered { .. }
             | Voice2::Assignable { .. }
             | Voice2::RelativeRegistered { .. }
-            | Voice2::RelativeAssignable { .. } => {
-                self.bytes(offset, address, Message::Midi2(address, voice));
-            }
+            | Voice2::RelativeAssignable { .. } => self.unsendable_dropped += 1,
         }
     }
 
@@ -435,15 +417,6 @@ fn note_off(offset: i32, channel: MidiChannel, note: NoteNumber, velocity: u16) 
     )
 }
 
-/// One MIDI-1 message as the Data event that carries it: its bytes padded to
-/// three.
-pub(super) fn midi1_data(sample_offset: i32, bytes: Midi1Bytes) -> Event {
-    Event::at(
-        sample_offset,
-        Payload::Data(Data::inline(0, bytes.padded())),
-    )
-}
-
 /// The per-note controllers with a VST3 note expression, and the expression
 /// each is: the usual CC assignments, volume 7, pan 10, brightness 74 (CC74,
 /// sound controller #5). The one table the assignable and the registered
@@ -482,26 +455,30 @@ fn note_number(raw: i16) -> NoteNumber {
 }
 
 /// Group 1 and the VST3 channel field, the address of a decoded event.
-fn address(channel: i16) -> Address {
-    Address::first(midi_channel(channel))
+fn address(group: MidiGroup, channel: i16) -> Address {
+    Address::new(group, midi_channel(channel))
 }
 
 /// See [`EventExt::to_midi`](super::EventExt::to_midi).
 pub(super) fn decode(event: &Event) -> Option<WireMidi> {
     let frame = event.sample_offset().max(0).cast_unsigned();
+    // An output event's `busIndex` is the event output bus it left on (ivstevents.h),
+    // and an event bus is a UMP Group, as it is on the input side. A bus past the
+    // 16 Groups names none, and the event is dropped.
+    let group = MidiGroup::new(u8::try_from(event.header.bus_index).ok()?)?;
     // Notes and poly-pressure build native MIDI-2 Channel Voice events so the
     // plugin's f32 velocity and pressure keep their full 16 and 32-bit width.
     let built = match &event.payload {
         Payload::NoteOn(e) => Ump::from(Message::Midi2(
-            address(e.channel),
+            address(group, e.channel),
             Voice2::note_on(note_number(e.pitch), unit_f32_to_u16(e.velocity)),
         )),
         Payload::NoteOff(e) => Ump::from(Message::Midi2(
-            address(e.channel),
+            address(group, e.channel),
             Voice2::note_off(note_number(e.pitch), unit_f32_to_u16(e.velocity)),
         )),
         Payload::PolyPressure(e) => Ump::from(Message::Midi2(
-            address(e.channel),
+            address(group, e.channel),
             Voice2::PolyPressure {
                 note: note_number(e.pitch),
                 value: unit_f32_to_u32(e.pressure),
@@ -517,7 +494,7 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
             // single packet; a message too long for one packet is dropped, not truncated,
             // and so is one with a payload byte of 128 or more (malformed).
             if bytes[0] == 0xF0 {
-                let mut packets = SysexMessage::new(bytes)?.packets(MidiGroup::FIRST);
+                let mut packets = SysexMessage::new(bytes)?.packets(group);
                 if packets.len() != 1 {
                     return None;
                 }
@@ -526,10 +503,10 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
             // Widened to Channel Voice 2 here. System messages pass through unchanged.
             return Some(WireMidi {
                 offset: frame,
-                ump: widen_bytes(MidiGroup::FIRST, bytes)?,
+                ump: widen_bytes(group, bytes)?,
             });
         }
-        Payload::LegacyCcOut(e) => return super::legacy_cc::decode(e, frame),
+        Payload::LegacyCcOut(e) => return super::legacy_cc::decode(e, frame, group),
         // A reassembled SysEx's bytes are in the list's buffer, which the list drains.
         Payload::SysEx(_)
         | Payload::ExpressionValue(_)

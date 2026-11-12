@@ -23,4 +23,6 @@ pub use curves::{
 pub use envelope::EnvelopeFollower;
 pub use gate::{GateControls, GateFamily, GateMember, GateRecurrence};
 pub use key_source::KeySource;
-pub use limiter::{LimiterControls, LimiterFamily, LimiterMember, LimiterRecurrence};
+pub use limiter::{
+    LimiterControls, LimiterFamily, LimiterMember, LimiterRecurrence, Lookahead, LookaheadError,
+};

@@ -8,7 +8,7 @@ use tutti_types::MaxBlock;
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::*;
-use tutti_types::{BusTopology, ChannelLayout, Db, Hz, Q, SampleRate, Samples, Seconds};
+use tutti_types::{ChannelLayout, Db, Hz, Q, SampleRate, Samples, Seconds};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 // A huge finite value (1e30) is left out on purpose: it is a valid number that
@@ -128,17 +128,8 @@ fn sweep() {
                 ..LimiterControls::DEFAULT
             }))
         }));
-        add(probe("limiter lookahead", b, || {
-            Box::new(LimiterNode::new(
-                BusTopology::STEREO,
-                s(b),
-                LimiterControls {
-                    threshold: d(-6.0),
-                    ceiling: d(-1.0),
-                    ..LimiterControls::DEFAULT
-                },
-            ))
-        }));
+        // The lookahead is a `Lookahead`, which refuses a non-finite value by type
+        // (`a_lookahead_keeps_the_range_checked_shape` in tutti-dsp).
         add(probe("limiter release", b, || {
             Box::new(LimiterNode::stereo(LimiterControls {
                 threshold: d(-6.0),

@@ -23,7 +23,6 @@ use tutti_fixtures::Noise;
 use tutti_types::MaxBlock;
 
 use tutti_curve::Law;
-use tutti_dsp::LimiterFamily;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventOut, GraphBuilder, IntoNode, NodeMix, NodeParts, PARAM_DECLICK, ParamIn,
@@ -34,7 +33,8 @@ use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayLineNode,
     DistortionNode, GateControls, GateNode, KeySource, LadderFilterNode, LadderType,
-    LimiterControls, LimiterNode, ModDelayNode, PhaserNode, ShapeKind, SvfFilterNode, SvfType,
+    LimiterControls, LimiterNode, Lookahead, ModDelayNode, PhaserNode, ShapeKind, SvfFilterNode,
+    SvfType,
 };
 use tutti_types::{
     Amplitude, AtomicF32, BeatDuration, BusTopology, ChannelLayout, CompressionRatio, Db, Depth,
@@ -259,7 +259,7 @@ fn cases() -> Vec<Case> {
         LimiterNode::new(
             BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
                 .expect("at most one bus wide"),
-            LimiterFamily::DEFAULT_LOOKAHEAD,
+            Lookahead::DEFAULT,
             LimiterControls::DEFAULT,
         )
     }
@@ -629,7 +629,7 @@ fn block_rate_cases() -> Vec<Case> {
                         ChannelLayout::try_from(w).expect("a test width is small"),
                     )
                     .expect("at most one bus wide"),
-                    LimiterFamily::DEFAULT_LOOKAHEAD,
+                    Lookahead::DEFAULT,
                     LimiterControls {
                         threshold: Db::new(-3.0),
                         ceiling: Db::new(-2.5),

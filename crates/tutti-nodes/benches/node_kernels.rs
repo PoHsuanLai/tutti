@@ -23,13 +23,12 @@ use std::hint::black_box;
 use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_dsp::LimiterFamily;
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
     BrickwallLimiterNode, CompressorControls, CompressorNode, DelayLineNode, DistortionNode,
     FamilyNode, FdnControls, FreeverbNode, GateControls, GateNode, KeySource, LimiterControls,
-    LimiterNode, ShapeKind,
+    LimiterNode, Lookahead, ShapeKind,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds,
@@ -279,7 +278,7 @@ fn limiter(c: &mut Criterion) {
         || {
             LimiterNode::new(
                 BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
-                LimiterFamily::DEFAULT_LOOKAHEAD,
+                Lookahead::DEFAULT,
                 LimiterControls::DEFAULT,
             )
         },

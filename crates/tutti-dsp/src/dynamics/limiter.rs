@@ -82,16 +82,93 @@ impl Default for LimiterControls {
     }
 }
 
-/// The longest window a limiter allocates, in frames: about six minutes at 48 kHz. A
-/// lookahead past it (a prepare must not panic, and an allocation that size would abort)
-/// reads as this.
+/// How far ahead a limiter looks: the delay it runs its gain decision ahead of the
+/// audio by, and so the processing latency it declares to PDC.
+///
+/// A range-checked value (CLAUDE.md, "Range-checked values"): finite, above zero and at
+/// most [`CAP`](Self::CAP). [`new`](Self::new) refuses anything else and never clamps,
+/// since the lookahead is the latency the graph compensates, and a silently different
+/// figure would misalign everything downstream.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct Lookahead(Seconds);
+
+/// A refused lookahead: the raw it carries.
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("{0:?} is not a lookahead: it must be above zero and at most {cap:?}", cap = Lookahead::CAP)]
+pub struct LookaheadError(pub Seconds);
+
+impl Lookahead {
+    /// The lookahead of a limiter built without one: 5 ms, which catches peaks
+    /// transparently for a delay a mix tolerates.
+    pub const DEFAULT: Self = Self(Seconds(0.005));
+    /// The longest lookahead [`new`](Self::new) accepts: one second, far past any
+    /// limiter's (a mastering limiter looks a few to a few tens of milliseconds ahead).
+    pub const CAP: Seconds = Seconds(1.0);
+
+    /// A lookahead of `seconds`, or `None` when it is not finite, not above zero or
+    /// above [`CAP`](Self::CAP). Never clamps.
+    #[must_use]
+    pub const fn new(seconds: Seconds) -> Option<Self> {
+        let s = seconds.get();
+        if s.is_finite() && s > 0.0 && s <= Self::CAP.get() {
+            Some(Self(seconds))
+        } else {
+            None
+        }
+    }
+
+    /// A lookahead for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If [`new`](Self::new) refuses `seconds`.
+    #[must_use]
+    pub const fn of(seconds: Seconds) -> Self {
+        match Self::new(seconds) {
+            Some(l) => l,
+            None => panic!("a lookahead is above zero and at most one second"),
+        }
+    }
+
+    /// The lookahead in seconds.
+    #[must_use]
+    pub const fn get(self) -> Seconds {
+        self.0
+    }
+}
+
+impl Default for Lookahead {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl TryFrom<Seconds> for Lookahead {
+    type Error = LookaheadError;
+
+    fn try_from(seconds: Seconds) -> Result<Self, LookaheadError> {
+        Self::new(seconds).ok_or(LookaheadError(seconds))
+    }
+}
+
+impl From<Lookahead> for Seconds {
+    fn from(lookahead: Lookahead) -> Seconds {
+        lookahead.0
+    }
+}
+
+/// The longest window a limiter allocates, in frames. [`Lookahead`] already bounds the
+/// seconds (one second is 192000 frames at 192 kHz); this guards only against an absurd
+/// rate, since a prepare must not panic and an allocation that size would abort.
 const MAX_LOOKAHEAD_FRAMES: usize = 1 << 24;
 
-/// The lookahead window in frames at `rate`: `ceil(lookahead * rate)`, at least one. The
-/// ring must hold at least the window, so it rounds up; and it is the one figure the
-/// member's latency and the recurrence's delay both are.
-fn lookahead_frames(lookahead: Seconds, rate: SampleRate) -> usize {
+/// The lookahead window in frames at `rate`: `ceil(lookahead * rate)`, at least one (a
+/// lookahead is above zero, so its ceiling is). The ring must hold at least the window,
+/// so it rounds up; and it is the one figure the member's latency and the recurrence's
+/// delay both are.
+fn lookahead_frames(lookahead: Lookahead, rate: SampleRate) -> usize {
     lookahead
+        .get()
         .to_samples_ceil(rate)
         .get()
         .clamp(1, MAX_LOOKAHEAD_FRAMES)
@@ -113,7 +190,7 @@ pub struct LimiterMember {
 impl LimiterMember {
     /// The member of `controls` at `rate`, delaying by `lookahead`: the controls made
     /// runnable.
-    fn of(controls: &LimiterControls, lookahead: Seconds, rate: SampleRate) -> Self {
+    fn of(controls: &LimiterControls, lookahead: Lookahead, rate: SampleRate) -> Self {
         let d = LimiterControls::DEFAULT;
         // `+-inf` are thresholds and ceilings; only a NaN has no level.
         let threshold = if controls.threshold.get().is_nan() {
@@ -188,25 +265,21 @@ impl System for LimiterMember {
 #[derive(Clone, Copy, Debug)]
 pub struct LimiterFamily {
     input: BusTopology,
-    lookahead: Seconds,
+    lookahead: Lookahead,
 }
 
 impl LimiterFamily {
-    /// The lookahead of a limiter built without one: 5 ms, which catches peaks
-    /// transparently for a delay a mix tolerates.
-    pub const DEFAULT_LOOKAHEAD: Seconds = Seconds(0.005);
-
-    /// A limiter on the bus `input`, delaying by `lookahead` (at least one frame), and one
-    /// output bus where it is.
+    /// A limiter on the bus `input`, delaying by `lookahead` (at least one frame at any
+    /// rate), and one output bus where it is.
     #[must_use]
-    pub const fn new(input: BusTopology, lookahead: Seconds) -> Self {
+    pub const fn new(input: BusTopology, lookahead: Lookahead) -> Self {
         Self { input, lookahead }
     }
 
-    /// The lookahead window, as it was asked for: seconds, from which every rate
-    /// derives its own frame count (the count is a `ceil`, so it cannot be recovered).
+    /// The lookahead window, as it was asked for: from its seconds every rate derives
+    /// its own frame count (the count is a `ceil`, so it cannot be recovered).
     #[must_use]
-    pub const fn lookahead(&self) -> Seconds {
+    pub const fn lookahead(&self) -> Lookahead {
         self.lookahead
     }
 }
@@ -293,7 +366,7 @@ pub struct LimiterState {
 /// declares as its latency: the recurrence adds none of its own.
 #[derive(Clone, Copy, Debug)]
 pub struct LimiterRecurrence {
-    lookahead: Seconds,
+    lookahead: Lookahead,
     channels: usize,
 }
 

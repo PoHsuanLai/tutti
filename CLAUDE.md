@@ -836,7 +836,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   must be wired, `Channels::keyed`; `KeySource::Own`, the signal itself, `Channels::same`), the
   lookahead limiter (`LimiterFamily`, `LimiterRecurrence`: threshold and ceiling fast lanes,
   every coefficient landing whole; the lookahead a constructor constant that is the member's
-  latency, `LimiterFamily::new(input, lookahead)`) (a dynamics node is built from its named
+  latency, a checked `Lookahead` (above zero, at most 1 s, never clamped), `LimiterFamily::new(input, Lookahead)`) (a dynamics node is built from its named
   controls struct: `CompressorNode::new(input, key, CompressorControls { .. })`,
   `GateNode::new(input, key, GateControls { .. })`, `LimiterNode::new(input, lookahead,
   LimiterControls { .. })`, each with `mono` and `stereo` shorthands; a gate's closed floor is

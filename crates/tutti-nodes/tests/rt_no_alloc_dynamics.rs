@@ -14,12 +14,11 @@
 //! Lookahead changes are off-RT (`prepare`).
 
 use assert_no_alloc::AllocDisabler;
-use tutti_dsp::LimiterFamily;
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{
     BrickwallLimiterNode, CompressorControls, CompressorNode, GateControls, GateNode, KeySource,
-    LimiterControls, LimiterNode,
+    LimiterControls, LimiterNode, Lookahead,
 };
 use tutti_types::{BusTopology, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
 
@@ -159,7 +158,7 @@ fn limiter_node_wide_6ch_process_is_allocation_free() {
     gate(
         LimiterNode::new(
             BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
-            Seconds::new(0.005),
+            Lookahead::DEFAULT,
             LimiterControls {
                 threshold: Db::new(-3.0),
                 ceiling: Db::new(-0.3),
@@ -347,7 +346,7 @@ fn limiter_node_fed_ceiling_and_threshold_process_is_allocation_free() {
     let mut node = Direct::new(
         LimiterNode::new(
             BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
-            LimiterFamily::DEFAULT_LOOKAHEAD,
+            Lookahead::DEFAULT,
             LimiterControls::DEFAULT,
         ),
         SampleRate(48_000.0),

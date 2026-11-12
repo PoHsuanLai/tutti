@@ -4,7 +4,7 @@
 //! latency and sounds transparent. For a hard clip that costs nothing and distorts,
 //! a safety catch, see [`BrickwallLimiterNode`](super::BrickwallLimiterNode).
 
-use tutti_dsp::{LimiterControls, LimiterFamily};
+use tutti_dsp::{LimiterControls, LimiterFamily, Lookahead};
 use tutti_types::{BusTopology, Db, SampleRate, Seconds};
 
 use crate::reverb::{FamilyNode, NodeFamily, Rings};
@@ -16,7 +16,7 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 /// recurrence; this file holds the cells and how the graph reaches them.
 ///
 /// - [`mono`](Self::mono) and [`stereo`](Self::stereo): one and two channels, at the
-///   default lookahead of 5 ms ([`LimiterFamily::DEFAULT_LOOKAHEAD`]).
+///   default lookahead of 5 ms ([`Lookahead::DEFAULT`]).
 /// - [`new`](Self::new): any width up to one bus (16 channels), on a checked
 ///   [`BusTopology`], at a lookahead of your own.
 ///
@@ -75,7 +75,7 @@ impl LimiterNode {
     ///
     /// **The lookahead is the node's latency**: the audio is delayed by the window so the
     /// gain decision can run ahead of it. Longer catches peaks more transparently and
-    /// delays more; [`LimiterFamily::DEFAULT_LOOKAHEAD`], 5 ms, is a typical compromise.
+    /// delays more; [`Lookahead::DEFAULT`], 5 ms, is a typical compromise.
     /// It is fixed here, because it sizes the delay: the frame count is derived from these
     /// seconds at the rate [`Node::prepare`](tutti_graph::Node::prepare) hands it, and
     /// again at every other rate.
@@ -86,28 +86,20 @@ impl LimiterNode {
     /// `n`-channel one on the engine's order for that width is
     /// `new(BusTopology::assumed(n)?, ..)`, which refuses a width past one bus.
     #[must_use]
-    pub fn new(input: BusTopology, lookahead: Seconds, controls: LimiterControls) -> Self {
+    pub fn new(input: BusTopology, lookahead: Lookahead, controls: LimiterControls) -> Self {
         Self::live(LimiterFamily::new(input, lookahead), controls)
     }
 
     /// A mono limiter at the default lookahead: 1 input, 1 output.
     #[must_use]
     pub fn mono(controls: LimiterControls) -> Self {
-        Self::new(
-            BusTopology::MONO,
-            LimiterFamily::DEFAULT_LOOKAHEAD,
-            controls,
-        )
+        Self::new(BusTopology::MONO, Lookahead::DEFAULT, controls)
     }
 
     /// A stereo limiter at the default lookahead: 2 inputs, 2 outputs, linked.
     #[must_use]
     pub fn stereo(controls: LimiterControls) -> Self {
-        Self::new(
-            BusTopology::STEREO,
-            LimiterFamily::DEFAULT_LOOKAHEAD,
-            controls,
-        )
+        Self::new(BusTopology::STEREO, Lookahead::DEFAULT, controls)
     }
 }
 
@@ -196,7 +188,10 @@ mod tests {
         assert_eq!(ports(LimiterNode::stereo(c)), (2, 2));
         let wide =
             BusTopology::assumed(ChannelLayout::from(6u16)).expect("six channels are one bus");
-        assert_eq!(ports(LimiterNode::new(wide, Seconds(0.002), c)), (6, 6));
+        assert_eq!(
+            ports(LimiterNode::new(wide, Lookahead::of(Seconds(0.002)), c)),
+            (6, 6)
+        );
     }
 
     /// The controls given to a constructor are the cells' values: the shape declares the
@@ -210,7 +205,7 @@ mod tests {
             release: Seconds(0.25),
         };
         let lim = prepared_at(
-            LimiterNode::new(BusTopology::STEREO, Seconds(0.002), c),
+            LimiterNode::new(BusTopology::STEREO, Lookahead::of(Seconds(0.002)), c),
             RATE_44K,
         );
         let shape = lim.shape();
@@ -236,7 +231,11 @@ mod tests {
     #[test]
     fn lookahead_frames_are_the_ceil_of_the_exact_product() {
         let device = SampleRate(48_000.0);
-        let mut lim = LimiterNode::new(BusTopology::STEREO, Seconds(0.1), LimiterControls::DEFAULT);
+        let mut lim = LimiterNode::new(
+            BusTopology::STEREO,
+            Lookahead::of(Seconds(0.1)),
+            LimiterControls::DEFAULT,
+        );
         lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
         assert_eq!(
             lim.shape().latency,
@@ -430,11 +429,7 @@ mod tests {
         let wide =
             BusTopology::assumed(ChannelLayout::from(6u16)).expect("six channels are one bus");
         let mut lim = prepared_at(
-            LimiterNode::new(
-                wide,
-                LimiterFamily::DEFAULT_LOOKAHEAD,
-                LimiterControls::DEFAULT,
-            ),
+            LimiterNode::new(wide, Lookahead::DEFAULT, LimiterControls::DEFAULT),
             RATE_44K,
         );
         let mut out = [0.0f32; 6];

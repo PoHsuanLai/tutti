@@ -110,8 +110,9 @@ pub use dynamics::{
     BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence, CompressorBlock,
     CompressorControls, CompressorFamily, CompressorKernel, CompressorMember, CompressorRecurrence,
     EnvelopeFollower, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence, KeySource,
-    LimiterControls, LimiterCurve, LimiterFamily, LimiterMember, LimiterRecurrence,
-    amplitude_to_db, compute_compressor_gain_reduction, compute_limiter_gain, ramp_db,
+    LimiterControls, LimiterCurve, LimiterFamily, LimiterMember, LimiterRecurrence, Lookahead,
+    LookaheadError, amplitude_to_db, compute_compressor_gain_reduction, compute_limiter_gain,
+    ramp_db,
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{

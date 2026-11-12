@@ -8,7 +8,7 @@ use crate::{Realized, System};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 /// 5 ms at 48 kHz: 240 frames.
-const LOOKAHEAD: Seconds = Seconds(0.005);
+const LOOKAHEAD: Lookahead = Lookahead::of(Seconds(0.005));
 const L: usize = 240;
 /// The longest block `run` hands the runner.
 const CHUNK: usize = 256;
@@ -185,12 +185,10 @@ fn the_member_holds_the_figures_of_its_definition() {
         assert_eq!(m.latency().get(), frames, "at {rate}");
         assert_eq!(m.tail(Db(-60.0)), Ring::Finite(Seconds(0.0)));
     }
-    // Under one frame, or not a time at all, is one frame.
-    for lookahead in [0.0, -1.0, f64::NAN, 1e-9] {
-        let m = LimiterFamily::new(BusTopology::MONO, Seconds(lookahead))
-            .member(&LimiterControls::DEFAULT, RATE);
-        assert_eq!(m.latency().get(), 1, "lookahead {lookahead}");
-    }
+    // A lookahead under one frame is one frame: the window rounds up.
+    let m = LimiterFamily::new(BusTopology::MONO, Lookahead::of(Seconds(1e-9)))
+        .member(&LimiterControls::DEFAULT, RATE);
+    assert_eq!(m.latency().get(), 1);
 
     let m = design().member(&controls(-12.0, -3.0, 0.0002), RATE);
     assert_eq!(
@@ -643,4 +641,45 @@ fn hostile_controls_render_finite() {
         let out = run_mono(&mut k, &x);
         assert!(out.iter().all(|s| s.is_finite()), "{c:?}");
     }
+}
+
+// The shape `check_range_contract` checks is serde's; `Lookahead` has none in the library
+// (nothing persists it), so the check runs on the same `try_from` shape written here.
+impl serde::Serialize for Lookahead {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Lookahead {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Self::try_from(<Seconds as serde::Deserialize>::deserialize(d)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// `Lookahead` keeps the range-checked shape of CLAUDE.md: `new` refuses what is not a
+/// lookahead (not finite, not above zero, past the cap) and never clamps, `of` agrees,
+/// and `TryFrom` carries the refused raw. A silently clamped lookahead would declare a
+/// latency the limiter does not have.
+#[test]
+fn a_lookahead_keeps_the_range_checked_shape() {
+    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        new: Lookahead::new,
+        get: Lookahead::get,
+        of: Some(Lookahead::of),
+        valid: &[Seconds(1e-9), Seconds(0.005), Seconds(0.1), Lookahead::CAP],
+        invalid: &[
+            Seconds(0.0),
+            Seconds(-0.005),
+            Seconds(1.000_001),
+            Seconds(f64::NAN),
+            Seconds(f64::INFINITY),
+            Seconds(f64::NEG_INFINITY),
+        ],
+    });
+    assert_eq!(
+        Lookahead::try_from(Seconds(-1.0)),
+        Err(LookaheadError(Seconds(-1.0)))
+    );
 }

@@ -445,6 +445,7 @@ impl Planner<'_> {
             "doc" => {
                 self.lines(&[
                     r#"RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps"#,
+                    r#"RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked -p tutti-session -p tutti --no-deps --all-features"#,
                     r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract"#,
                     r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-dsp --no-deps --features contract"#,
                     r#"RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-plugin-types --no-deps --features contract"#,

@@ -792,6 +792,15 @@ jobs:
       - run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
+      # The two umbrellas with every feature at once: a workspace build turns on
+      # only what some member's edge enables, so an item behind `plugin`,
+      # `midi-hardware` or `audio-io` and its links are documented by none of the
+      # lines above, and a redundant or broken link there reached main twice
+      # (#684, #695). Per-feature builds (`check-doc-features` below) run without
+      # `--document-private-items`.
+      - run: cargo doc --locked -p tutti-session -p tutti --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings --document-private-items
       # `tutti_graph::contract` (doc 013 §6's harness) is behind the
       # off-by-default `contract` feature, which only dev-dependencies turn on
       # — and rustdoc builds none, so the line above never documents it. The

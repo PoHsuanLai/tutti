@@ -129,6 +129,14 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   is `tutti_midi_runtime::DeviceSlot` (slot index and generation; ephemeral, no serde), which
   `tutti-midi-hardware`'s `HardwareMidiInputs`, `PortInfo`, `InputProducerHandle::slot` and
   `OpenInput::slot` all use.
+- **The playhead is one read** (doc 030 R2): `Session::playhead() -> Playhead`
+  (`tutti-engine`) is the block clock's one `tutti-rt` sequence cell, written once
+  per render call from the transport of the call's first frame, so `beat`,
+  `frame`, `seconds` and `playing` are one instant; `at` is that call's
+  `tutti_rt::monotonic_ns`. `Playhead::beat_now(now)` extrapolates at the tempo
+  in force, clamped to one call's length past `at`. An app reads this, not
+  `TransportSettings::beat` or `MotionFsm::is_playing` (crate-private; the
+  transport's own `Timeline` reads stay for code that is the transport's).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - **Main-thread entries take a token.** An editor, timer, run-loop, state or

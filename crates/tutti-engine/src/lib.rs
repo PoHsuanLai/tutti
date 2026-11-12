@@ -9,7 +9,7 @@ mod block_clock;
 mod engine;
 mod hearing;
 mod output;
-pub use block_clock::{BlockClockReader, BlockReading};
+pub use block_clock::{BlockClockReader, BlockReading, Playhead};
 pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError};
 pub use hearing::{HeardOpen, HeardTapError, HeardTaps};
 pub use output::OutputControl;

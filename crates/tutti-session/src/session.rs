@@ -13,7 +13,7 @@ use tutti_transport::{FadeOut, MotionEvent, QueueFull, ScheduleFull, Transport};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, Samples};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
-use crate::{HeardOpen, HeardTapError, RemoveError};
+use crate::{HeardOpen, HeardTapError, Playhead, RemoveError};
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
 ///
@@ -644,6 +644,9 @@ pub struct Session {
     /// The engine's tap after the fader and the device width it was built
     /// for; `None` detached.
     pub(crate) heard: Option<(tutti_engine::HeardTaps, ChannelLayout)>,
+    /// The engine's block clock, for [`playhead`](Self::playhead); `None`
+    /// detached, where nothing renders.
+    pub(crate) clock: Option<tutti_engine::BlockClockReader>,
     /// The root topology last asked for
     /// ([`declare_root_topology`](Self::declare_root_topology)), applied or not.
     pub(crate) root_request: Option<ChannelTopology>,
@@ -1145,6 +1148,34 @@ impl Session {
     /// The transport: its rate follows the device's.
     pub fn transport(&self) -> &Transport {
         &self.transport
+    }
+
+    /// The playhead, in one read: its beat, the graph frame, the transport
+    /// time, whether it is rolling, and the OS clock reading they were taken
+    /// at ([`Playhead`]). The audio thread writes it once per render call
+    /// through a sequence lock, so the fields are one instant, never a beat
+    /// of one call beside the play state of another.
+    ///
+    /// It moves in block steps; [`beat_now`](Self::beat_now) (or
+    /// [`Playhead::beat_now`] on a snapshot already held) is the beat
+    /// extrapolated to the moment a UI draws. A session with no engine
+    /// rendering (detached, or before the first block) reads
+    /// [`Playhead::default`]: stopped at the origin, with no clock reading
+    /// ([`Playhead::at`] is `None`). An offline bounce renders a fork on
+    /// its own timeline and never moves this one.
+    #[must_use]
+    pub fn playhead(&self) -> Playhead {
+        self.clock
+            .as_ref()
+            .map_or_else(Playhead::default, tutti_engine::BlockClockReader::playhead)
+    }
+
+    /// The playhead's beat now, extrapolated from the last block by
+    /// [`Playhead::beat_now`] on [`tutti_rt::monotonic_ns`], the clock the
+    /// block was stamped on.
+    #[must_use]
+    pub fn beat_now(&self) -> Beat {
+        self.playhead().beat_now(tutti_rt::monotonic_ns())
     }
 
     /// Starts the transport rolling from where it stands, at the next block.

@@ -17,7 +17,7 @@ use super::timed::{ScheduleAudio, Scheduled, TransportCommand};
 use super::walk::TempoAhead;
 use std::sync::atomic::Ordering;
 use tutti_tempo::TempoMap;
-use tutti_types::{Beat, Bpm, SampleRate};
+use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Seconds};
 
 /// [`Transport::audio`] refused: another [`TransportAudio`] over this
 /// transport (or a clone of it) is alive. Drop it (the engine that holds it)
@@ -253,6 +253,18 @@ impl TransportAudio {
     /// [`begin_block`](Self::begin_block) or [`fire`](Self::fire) reported.
     pub fn advance(&mut self, frames: usize, from: &tutti_graph::Transport) {
         self.with_map(|clock, map| clock.advance(frames, from, map));
+    }
+
+    /// The transport time of `beat`, in seconds on the project's tempo map: a
+    /// constant map at `tempo` (the tempo of the block that stands at
+    /// `beat`), a stepped one by its own segments. Audio thread: a lend of
+    /// the map at most, no allocation.
+    pub fn seconds_at(&mut self, beat: Beat, tempo: Bpm) -> Seconds {
+        if self.stepped {
+            self.tempo_map.lend().seconds_at(beat)
+        } else {
+            BeatDuration(beat.get()).to_seconds(tempo)
+        }
     }
 
     /// Publishes the playhead after the block it belongs to is rendered.

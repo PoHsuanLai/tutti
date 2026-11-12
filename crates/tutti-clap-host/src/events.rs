@@ -829,6 +829,14 @@ pub struct InputEventList {
     ports: usize,
     /// Bit `n` is set when note port `n` takes the MIDI dialect only.
     midi_ports: u16,
+    /// Bit `n` is set when note port `n` declares the MIDI dialect at all
+    /// (`supported_dialects & CLAP_NOTE_DIALECT_MIDI`), so it may be sent
+    /// `clap_event_midi`: every port until
+    /// [`set_midi_capable_ports`](Self::set_midi_capable_ports) says otherwise.
+    midi_capable: u16,
+    /// MIDI messages left unsent because their port declares no MIDI dialect:
+    /// see [`midi_refused`](Self::midi_refused).
+    midi_refused: u64,
     /// Messages of a Group the plugin has no note port for: see
     /// [`groups_dropped`](Self::groups_dropped).
     groups_dropped: u64,
@@ -852,6 +860,8 @@ impl InputEventList {
             narrower: Narrower::new(),
             ports: 1,
             midi_ports: 0,
+            midi_capable: u16::MAX,
+            midi_refused: 0,
             groups_dropped: 0,
             sysex: SysexAssembler::new(Box::default(), 0, 0),
         }
@@ -907,6 +917,29 @@ impl InputEventList {
         self.narrower.reset();
     }
 
+    /// Sets which input note ports declare the MIDI dialect, one entry each
+    /// (`note-ports.h`: `CLAP_NOTE_DIALECT_MIDI`, "uses clap_event_midi").
+    /// `clap_event_midi` and `clap_event_midi_sysex` go only to such a port:
+    /// to any other, a controller, bend, program change, pressure, system
+    /// message or SysEx is dropped and counted
+    /// ([`midi_refused`](Self::midi_refused)). A port past the end of the
+    /// list does not; before this is called every port does. Takes effect for
+    /// events added after.
+    pub fn set_midi_capable_ports(&mut self, capable: &[bool]) {
+        self.midi_capable = capable
+            .iter()
+            .take(usize::from(tutti_ump::MidiGroup::COUNT))
+            .enumerate()
+            .fold(0, |mask, (port, &yes)| mask | (u16::from(yes) << port));
+    }
+
+    /// MIDI messages dropped since the list was built because the note port
+    /// they belong to declares no MIDI dialect
+    /// ([`set_midi_capable_ports`](Self::set_midi_capable_ports)).
+    pub fn midi_refused(&self) -> u64 {
+        self.midi_refused
+    }
+
     /// Whether notes to the first input note port go out as `clap_event_midi`:
     /// see [`set_midi_notes`](Self::set_midi_notes).
     pub fn supports_midi_notes(&self) -> bool {
@@ -938,6 +971,8 @@ impl InputEventList {
             narrower: Narrower::new(),
             ports: 1,
             midi_ports: 0,
+            midi_capable: u16::MAX,
+            midi_refused: 0,
             groups_dropped: 0,
             sysex: SysexAssembler::new(Box::default(), 0, 0),
         }
@@ -1096,6 +1131,17 @@ impl InputEventList {
             }
             SysexStep::Held => {}
             SysexStep::Complete(message) => {
+                // The SysEx goes to its Group's note port, as every channel
+                // message does, and only if that port declares the MIDI dialect.
+                let port = ump.group().map_or(0, |g| u16::from(g.get()));
+                if usize::from(port) >= self.ports {
+                    self.groups_dropped += 1;
+                    return self;
+                }
+                if self.midi_capable >> port & 1 == 0 {
+                    self.midi_refused += 1;
+                    return self;
+                }
                 let bytes = self.sysex.message(message).bytes();
                 #[allow(
                     clippy::cast_possible_truncation,
@@ -1110,7 +1156,7 @@ impl InputEventList {
                         type_: CLAP_EVENT_MIDI_SYSEX,
                         flags: 0,
                     },
-                    port_index: 0,
+                    port_index: port,
                     // The reassembler's buffer never grows and nothing in it
                     // moves until `clear` (`SysexAssembler::begin_block`),
                     // which empties `events` in the same call.
@@ -1249,6 +1295,11 @@ impl InputEventList {
     /// `bytes` as MIDI events on `port`, all or none; `false` when they did not
     /// fit.
     fn push_bytes(&mut self, time: u32, port: u16, bytes: &[[u8; 3]]) -> bool {
+        // `clap_event_midi` only to a port that declared the MIDI dialect.
+        if self.midi_capable >> port & 1 == 0 {
+            self.midi_refused += bytes.len() as u64;
+            return false;
+        }
         if self.midi_room() < bytes.len() {
             self.midi_dropped += bytes.len() as u64;
             return false;
@@ -2945,6 +2996,75 @@ mod tests {
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
         assert!((first_param_value(&list) - 0.42).abs() < 1e-6);
+    }
+
+    // --- MIDI only to a port that declares the MIDI dialect (note-ports.h) ---
+
+    fn cc_message(group: u8) -> UmpAt {
+        (
+            Offset::new(0, Samples(64)).expect("inside the block"),
+            Message::Midi1(
+                Address::new(MidiGroup::new(group).unwrap(), MidiChannel::FIRST),
+                Voice1::ControlChange {
+                    controller: CCNumber::of(1),
+                    value: U7::of(64),
+                },
+            )
+            .into(),
+        )
+    }
+
+    /// `note-ports.h`: `clap_event_midi` is for a port that declares
+    /// `CLAP_NOTE_DIALECT_MIDI`. A controller for a port that does not is
+    /// dropped and counted, and a port that does still gets its own.
+    #[test]
+    fn a_controller_is_not_sent_to_a_port_without_the_midi_dialect() {
+        let mut list = InputEventList::new();
+        list.set_note_ports(&[false, false]);
+        list.set_midi_capable_ports(&[false, true]);
+
+        list.add_midi(&cc_message(0));
+        assert!(list.events().is_empty(), "port 0 declared no MIDI");
+        assert_eq!(list.midi_refused(), 1);
+
+        list.add_midi(&cc_message(1));
+        assert_eq!(list.events().len(), 1);
+        assert!(matches!(
+            &list.events()[0],
+            ClapEvent::Midi(m) if m.port_index == 1
+        ));
+    }
+
+    /// `events.h`: a SysEx event names its `port_index`. It goes to the note
+    /// port of its Group, as every channel message does, and not to port 0; and
+    /// not at all to a port that declares no MIDI dialect.
+    #[test]
+    fn sysex_goes_to_its_groups_port_when_that_port_takes_midi() {
+        let sysex = |group: u8| -> UmpAt {
+            let payload = [U7::of(0x7E), U7::of(0x09), U7::of(0x01)];
+            let packets = tutti_ump::sysex7_packets(MidiGroup::new(group).unwrap(), &payload);
+            let ump = packets.into_iter().next().expect("one packet");
+            (Offset::new(0, Samples(64)).expect("inside the block"), ump)
+        };
+        let mut list = InputEventList::new();
+        list.reserve_sysex();
+        list.set_note_ports(&[false, false]);
+        list.set_midi_capable_ports(&[false, true]);
+
+        list.add_midi(&sysex(1));
+        let sent: Vec<u16> = list
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                ClapEvent::MidiSysex { inner, .. } => Some(inner.port_index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [1], "Group 1's SysEx is for port 1");
+
+        list.add_midi(&sysex(0));
+        assert_eq!(list.events().len(), 1, "port 0 declared no MIDI");
+        assert_eq!(list.midi_refused(), 1);
     }
 
     // --- event time is bounded to the block ---

@@ -213,6 +213,10 @@ impl ClapLoaded {
         scratch
             .input_events
             .set_note_ports(&self.midi_note_ports(main));
+        // `clap_event_midi` only to a port that declares the MIDI dialect.
+        scratch
+            .input_events
+            .set_midi_capable_ports(&self.midi_capable_ports(main));
         scratch
             .in_note_expressions
             .reserve_exact(super::config::INPUT_NOTE_EXPRESSIONS);

@@ -1874,6 +1874,22 @@ pub unsafe extern "C" fn tutti_test_plugin_set_preferred_dialect(raw: u32) {
     PREFERRED_DIALECT_OVERRIDE.store(raw, Ordering::SeqCst);
 }
 
+/// Raw `supported_dialects` input note port 0 reports, or
+/// [`PREFERRED_DIALECT_DEFAULT`] for "its own": `CLAP | MIDI`.
+static PORT0_DIALECTS_OVERRIDE: AtomicU32 = AtomicU32::new(PREFERRED_DIALECT_DEFAULT);
+
+/// Force input note port 0's `supported_dialects` to `raw`, to model a plugin
+/// whose port declares `CLAP_NOTE_DIALECT_CLAP` and not `CLAP_NOTE_DIALECT_MIDI`
+/// (`note-ports.h`). Read at the host's next scan of its note ports, which
+/// the host makes at activation. [`PREFERRED_DIALECT_DEFAULT`] clears it.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_set_port0_dialects(raw: u32) {
+    PORT0_DIALECTS_OVERRIDE.store(raw, Ordering::SeqCst);
+}
+
 unsafe extern "C" fn note_ports_count(_plugin: *const clap_plugin, is_input: bool) -> u32 {
     if is_input { 2 } else { 1 }
 }
@@ -1906,6 +1922,10 @@ unsafe extern "C" fn note_ports_get(
     } else {
         info.supported_dialects = CLAP_NOTE_DIALECT_MIDI;
         info.preferred_dialect = CLAP_NOTE_DIALECT_MIDI;
+    }
+    let port0 = PORT0_DIALECTS_OVERRIDE.load(Ordering::SeqCst);
+    if is_input && index == 0 && port0 != PREFERRED_DIALECT_DEFAULT {
+        info.supported_dialects = port0;
     }
     let override_raw = PREFERRED_DIALECT_OVERRIDE.load(Ordering::SeqCst);
     if override_raw != PREFERRED_DIALECT_DEFAULT {

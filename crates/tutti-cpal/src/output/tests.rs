@@ -5,7 +5,7 @@ use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
-use tutti_transport::{MotionEvent, Transport};
+use tutti_transport::{MotionEvent, Timeline, Transport};
 use tutti_types::MaxBlock;
 use tutti_types::{Beat, BeatDuration};
 use tutti_types::{Hz, Q};
@@ -77,7 +77,7 @@ fn test_transport_advances_with_graph() {
     );
 
     let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
-    let actual_beat = transport.settings().beat();
+    let actual_beat = transport.beat();
     assert!(
         (actual_beat - expected_beat).abs() < BeatDuration(1e-6),
         "expected {expected_beat:?}, got {actual_beat:?}"
@@ -113,7 +113,7 @@ fn test_transport_loop_wrapping() {
     // wrap past 4.0, so the beat is 3.99 plus the block, less the loop's
     // length. No seek would leave it at the block's own length, and a wrap
     // counted twice or not at all would miss it.
-    let beat = transport.settings().beat();
+    let beat = transport.beat();
     let expected = Beat(3.99 + 1024.0 * (120.0 / 60.0) / 44100.0 - 4.0);
     assert!(
         (beat - expected).abs() < BeatDuration(1e-6),

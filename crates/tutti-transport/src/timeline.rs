@@ -28,10 +28,14 @@ use tutti_types::Beat;
 /// render's).
 ///
 /// What legitimately remains here is a reader outside the graph, which has
-/// no `Env`: a host's UI, the control-rate modulation driver, a renderer
+/// no `Env`: the control-rate modulation driver, a renderer
 /// deciding what to hand its graph next — including
 /// [`segment_generation`](Self::segment_generation), the one way to tell a
 /// seek to where the playhead already stands from standing still.
+///
+/// A host's UI reads the session's `Playhead` instead: this trait's `beat` and
+/// `is_rolling` are two reads that a stop can fall between, and the position
+/// moves in block steps.
 ///
 /// # What is deliberately NOT here
 ///

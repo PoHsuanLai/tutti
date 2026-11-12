@@ -34,8 +34,8 @@ use tutti_graph::{
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_transport::{
-    FadeOut, LoopEdit, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Then, Transport,
-    TransportCommand,
+    FadeOut, LoopEdit, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Then, Timeline,
+    Transport, TransportCommand,
 };
 use tutti_types::{
     Amplitude, At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples,
@@ -503,7 +503,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     assert!(off_log[0].transport.playing);
     assert!(wrapped, "the loop wrapped");
     // The timeline stands after the last block, where the live clock does.
-    assert!((timeline.beat().get() - live_t.settings().beat().get()).abs() < 1e-9);
+    assert!((timeline.beat().get() - live_t.beat().get()).abs() < 1e-9);
 }
 
 /// The beat walked from each block's `Env` in an offline render starts every block on

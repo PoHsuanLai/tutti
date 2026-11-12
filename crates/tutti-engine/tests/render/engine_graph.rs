@@ -36,7 +36,9 @@ use tutti_graph::{
     Unforkable,
 };
 use tutti_graph::{OutPort, Source};
-use tutti_transport::{FadeOut, LoopEdit, MotionEvent, Then, Transport, TransportCommand};
+use tutti_transport::{
+    FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transport, TransportCommand,
+};
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
 };
@@ -272,7 +274,7 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
             .try_send(MotionEvent::stop())
             .expect("room");
         got.extend(render(&engine, layout, &blocks[3..]));
-        assert!(transport.motion().is_stopped());
+        assert!(!transport.is_rolling());
 
         for f in 0..total {
             let frame: Vec<f32> = (0..src).map(|c| value(f as u64, c)).collect();
@@ -323,7 +325,7 @@ fn a_timed_start_sounds_from_its_exact_frame() {
     let first = out.iter().position(|&x| x != 0.0);
     assert_eq!(first, Some(1_000));
     assert!(out[1_000..].iter().all(|&x| x == 1.0), "and rolls on");
-    assert!(transport.motion().is_playing());
+    assert!(transport.is_rolling());
     assert_eq!(transport.motion().scheduled_outstanding(), 0, "credit back");
 }
 
@@ -372,7 +374,7 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
     assert!(at(36_000 - 1).2, "rolling up to the stop");
     assert!(!at(36_000).2, "stopped from beat 10.5's frame");
     assert!((at(36_000).1 - 10.5).abs() < 1e-9);
-    assert!(m.is_stopped());
+    assert!(!transport.is_rolling());
     assert_eq!(m.scheduled_outstanding(), 0);
     assert_eq!(m.late_command_count(), 0);
 }
@@ -783,7 +785,7 @@ fn env_beats_are_the_closed_form_of_each_segment() {
             transport.settings().set_tempo(Bpm::of(133.0));
         }
         render(&engine, ChannelLayout::MONO, &[n]);
-        published.push(transport.settings().beat().get());
+        published.push(transport.beat().get());
     }
     let frames: usize = blocks.iter().sum();
     let model = model_beats(
@@ -875,7 +877,7 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
         if end < 20_000 {
             // The published playhead is linear too, never inside the loop.
             let want = 3.0 + end as f64 / 24_000.0;
-            let got = transport.settings().beat().get();
+            let got = transport.beat().get();
             assert!((got - want).abs() < 1e-9, "after block {i}: {got}");
         }
     }
@@ -1193,7 +1195,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
             );
         }
         let end = 64 * (i + 1);
-        let got = transport.settings().beat().get();
+        let got = transport.beat().get();
         let want = linear(end);
         wrapped |= end > LOOP_AT && want >= loop_end;
         if !wrapped {
@@ -1208,7 +1210,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
     // Not vacuous: it ran long (~715 beats by the loop's arming, ahead of
     // the loop, which it then plays into and holds).
     assert!(wrapped, "the loop wrapped");
-    let end = transport.settings().beat().get();
+    let end = transport.beat().get();
     assert!(
         (loop_start..loop_end).contains(&end),
         "ends inside the loop, at {end}"
@@ -1386,8 +1388,6 @@ fn a_transport_has_one_playhead_writer() {
 /// a jump its beat cannot show.
 #[test]
 fn a_seek_to_the_same_beat_moves_the_live_generation() {
-    use tutti_transport::Timeline;
-
     let transport = Transport::new(SampleRate::new(SR));
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);
     render(&engine, ChannelLayout::STEREO, &[256]);
@@ -1434,7 +1434,6 @@ fn a_seek_to_the_same_beat_moves_the_live_generation() {
 #[test]
 fn the_playhead_another_thread_reads_never_goes_backwards() {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use tutti_transport::Timeline;
     let transport = Transport::new(SampleRate::new(SR));
     let (engine, _ed) = graph_engine(
         &transport,

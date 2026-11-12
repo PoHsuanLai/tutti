@@ -154,7 +154,7 @@ pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEv
 pub use tutti_dsp::DitherShape;
 #[cfg(feature = "record")]
 pub use tutti_dsp::{DitherSink, DitherSpec};
-pub use tutti_engine::HeardOpen;
+pub use tutti_engine::{HeardOpen, Playhead};
 #[cfg(feature = "export")]
 pub use tutti_export::{
     EventLossPolicy, Normalize, Outcome, Produced, Progress, Rendered, Resample, Stage, Written,

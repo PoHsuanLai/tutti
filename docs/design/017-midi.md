@@ -67,7 +67,7 @@ no production consumer outside its crate; it has no group, mints a `NoteId` on
 decode, and repeats `frame_offset` in each variant. The polysynth, SoundFont,
 the CLAP host and the VST3 host now read `tutti_ump::Message` (stage 2), and
 `PerNoteBendRanges` is `tutti-plugin-types`' and reads the RPN through
-`tutti_ump::decode`: no plugin crate reaches `midi2` or `tutti-midi-types`.
+`Ump::decode`: no plugin crate reaches `midi2` or `tutti-midi-types`.
 `tutti-graph` reads through
 `Ump::is_note_off` (one test kernel takes a data byte by hand); `clip_node`,
 `clip_file` and `tutti-midi-types`' `wire.rs` (`to_midi1_bytes` and `to_midi1_messages`,
@@ -1801,7 +1801,7 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   fragmenter's packets for every length around the 6-byte boundary) is
   `tests/streams/sysex_packets.rs`'s literal cases (one, seven, twelve and thirteen bytes, and
   a long run). The round-trip properties and the fuzz target check the codec only
-  against itself (decode, encode, decode), so a mistake made the same way in both
+  against itself (encode), so a mistake made the same way in both
   directions passes them; the spec-literal tests are what catch it. What the removal
   loses is independent agreement with a second decoder on words no table or figure
   pins, and the name-only comparison of the Flex and Stream families. The fuzz target
@@ -1984,12 +1984,12 @@ impl MidiFile {
     pub fn clip(ticks_per_quarter: u16, track: Track) -> Result<Self>;
     pub fn from_bytes(bytes: &[u8]) -> Result<Self>;   // truncation is Error::Truncated
     pub fn to_bytes(&self) -> Result<Vec<u8>>;
-    pub fn tempo_map(&self) -> &TempoMap;               // tutti_tempo
-    pub fn tempo_map_of(&self, track: usize) -> Option<&TempoMap>;
+    pub fn tempo_map(&self) -> &Arc<TempoMap>;          // tutti_tempo, shared (L1e)
+    pub fn tempo_map_of(&self, track: usize) -> Option<&Arc<TempoMap>>;
     pub fn seconds_at(&self, at: Beat) -> Seconds;      // tempo_map().seconds_at
     pub fn events(&self) -> Option<impl Iterator<Item = (Beat, &FileEvent)>>;  // merged, None for Format 2
 }
-impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
+impl Track { pub fn notes(&self) -> Vec<PairedNote>; }  // allocates and sorts (L1e)
 ```
 
 - **The tempo map is derived, not a field to set.** Set Tempo stays an event of its
@@ -2037,7 +2037,7 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote>; }
   `ClipHeader` and the `write_clip_file*` functions, `read_clip` and `write_clip` are
   deleted; `MidiFile::read` and `write` are the path calls). A tempo or a time
   signature is an event of the track like any other.
-- **A constructor checks what the container can hold** (`Error::InvalidConfig`): events
+- **A constructor checks what the container can hold** (`Error::Config`, a `ConfigError`, L1e): events
   in order, a gap that fits the wire (28 bits in an SMF, 32 in a Clip File), group 0
   MIDI 1.0 messages in an SMF, packets only in a Clip File and not its own structure,
   a Set Tempo of 24 bits, a format 0 file of one track. A write cannot then drop or
@@ -2593,7 +2593,7 @@ lanes. They change no stage above.
   `tutti-polysynth`.
 - **M3, shape.** `tutti-midi-file` (`SmfNote` and `ClipNote` carry `NoteNumber` and
   `U7`; `SmfTimedEvent::msg` is a `Voice1`, so no `midly` type is public and
-  `pub use midly` is gone; the Clip File reader decodes through `tutti_ump::decode`
+  `pub use midly` is gone; the Clip File reader decodes through `Ump::decode`
   and `split_stream`; the `smf` and `clip` modules are private, their functions
   `smf_to_bytes`, `write_smf`, `read_clip` and `write_clip` at the root),
   `SmpteTimecode` with private fields and a refusing `new`, `tutti-midi-hardware`
@@ -2643,7 +2643,7 @@ spec quote. Four parts.
 
 The reader (`tutti-midi-file/src/clip_file/read.rs`) is `winnow` combinators, as the SMF
 reader is. The bytes after `SMF2CLIP` are cut into packets once (`tutti_ump::split_stream`)
-and each is classified once (`tutti_ump::decode`: a DCS, a Null, a DCTPQ, Start or End of
+and each is classified once (`Ump::decode`: a DCS, a Null, a DCTPQ, Start or End of
 Clip, a message), so the grammar runs over a `&[Packet]` token slice and a rule matches a
 whole packet; no bit field is read in it. Each M2-116 placement rule is one rule of the
 grammar and the hand checks of L1 are gone:
@@ -2892,13 +2892,87 @@ the instrument as `Command`s.
   "Rhythm Channels shall not respond"); Soft Pedal (CC 67), which RP-015 resets, is not modelled, so
   there is nothing to reset.
 
+### L4d: state survives a swap of instrument (done)
+
+A crossfade, a replace or an insert at an existing key puts a new node where an instrument was,
+and what a performer set (programs, banks, controllers, wheels) lived only in the outgoing node on
+the audio thread. The graph's **chase** (doc 013, "The chase") carries it: `Node::chase` writes the
+state as UMPs, and the executor delivers them at offset 0 of the successor's first block, ahead of
+every other event there.
+
+- **What is chased**, as MIDI 2.0 Channel Voice messages in the instrument's own Group, only for
+  what differs from a fresh channel (a channel nobody touched writes nothing), in channel order.
+  `Voicing::chase` (once, for both instruments) writes each channel's `ChannelState`: the
+  14-bit controllers (Modulation, Volume, Pan, Expression, Portamento Time) as an MSB then, if
+  nonzero, an LSB; the Portamento switch and the Legato Footswitch; a pending Portamento Control;
+  Channel Pressure; the pitch wheel; RPN 0, 1, 2 and 5 as Registered Controllers with the data
+  words `Voicing::step` reads; and the sustain pedal. The SoundFont adds, per channel, its program
+  and bank as one Program Change with the bank riding along, a Bank Select held for the next
+  Program Change (CC 0 and 32), and the two effect sends (CC 91 and 93). A SoundFont swapped for a
+  polysynth (or back) keeps the controllers; a polysynth has no program.
+- **Not chased.** Sounding notes (a held key is not struck again), the sostenuto's captured keys,
+  the per-note controllers and the key a portamento glides from (`last_key`). A successor built
+  on another program keeps it when the old channel was at the default.
+- **The font's samples** are the unit's `Arc<SoundFont>`, set when the unit is built and never
+  replaced: nothing is published to the audio thread, so no `ArcLend` cell is needed (CLAUDE.md,
+  "Publishing to the audio thread"). A swap of font is a swap of unit, the chase's case.
+
+### L1e: using a file and writing messages (done)
+
+Found writing the plugin example (`crates/tutti/examples/plugin_midi_export.rs`, doc
+[029](029-plugin-api.md) section 3.5 holds the agreements with the plugin API that this lane
+keeps: per-note control is MIDI 2.0's own messages, so no note-expression type exists and the
+helpers below only build `Ump`s).
+
+- **A file into a clip.** `MidiFile::timeline() -> Option<impl Iterator<Item = (Beat, Ump)>>`
+  (`Track::timeline(ticks_per_quarter)` for one sequence; `None` for format 2, which has no
+  one timeline). The rule is in its doc: a `Message` passes as its packet, as stored; a
+  `SysEx` event is its SysEx7 packets (`Sysex7Packets::checked` on `Group 1`) at the event's
+  beat, a divided message or one with an 8-bit byte dropped; `Meta`, `Escape` and `Unknown`
+  are dropped, because the tempo is the file's `TempoMap` and the rest are not messages. The
+  pair is plain `(Beat, Ump)`: `tutti-midi-file` and `tutti-midi-runtime` are both layer 4, so
+  neither names the other's type. `Midi::play_clip` takes `impl IntoIterator<Item = impl
+  Into<TimedMidiEvent>>`, so `play_clip(synth, file.timeline()?)` is the whole call. (A
+  literal `[]` needs its type now: `std::iter::empty::<TimedMidiEvent>()`.)
+- **Writing messages.** `tutti_ump::Message` has named constructors, MIDI 1.0 as the plain
+  name and MIDI 2.0 with a `2`: `note_on`, `note_off`, `control_change`, `program_change`,
+  `pitch_bend` and `note_on2`, `note_off2`, `control_change2`, `program_change2`,
+  `pitch_bend2`. Each takes `impl Into<Address>`: an `Address`, or a bare `MidiChannel` (in
+  `Group 1`, `From<MidiChannel> for Address`), and the typed fields (`NoteNumber`, `U7`,
+  `U14`, the wire's `u16`/`u32` for the 2.0 forms). They scale nothing: M2-115 is translation's.
+  `Address::new(group, channel)` is the pair.
+- **Writing a file.** `Track::new()` is empty (the events are no longer an argument), with a
+  builder: `note(tick, len, channel, note, velocity)` (an On and an Off of release velocity 64,
+  placed by tick so chords and overlaps are fine), `tempo(tick, Bpm)`, `meta(tick, Meta)`,
+  and the strict `push(tick, impl Into<FileEvent>)`, which refuses a tick before the last
+  event with `OutOfOrder { last, at }`. `FromIterator` and `Extend` over `(Tick, FileEvent)`
+  sort stably by tick. `From<Message>` and `From<Meta>` for `FileEvent`, `Tick`'s opt-in
+  `Add`/`Sub`/`AddAssign` with `u64`, `Tick::quarters(n, tpq)` and `Tick::beats(tpq)`.
+- **Tempo.** `MidiFile` holds each map as an `Arc<TempoMap>`, and `tempo_map()` hands out
+  `&Arc<TempoMap>`: `set_tempo_map(file.tempo_map().clone())` is a reference count
+  (`TransportSettings::set_tempo_map` takes `impl Into<Arc<TempoMap>>`, core's, unchanged).
+- **Typed refusals.** `Error::InvalidConfig(String)` is `Error::Config(ConfigError)`:
+  `NoTracks`, `Division`, `SingleTrack`, `TooManyTracks`, `HeaderInSmf`, `OutOfOrder { track,
+  at }`, `Gap`, the header's and the end's own variants, `Refused { track, in_header,
+  refusal: Refusal }` and `TooLarge` (the writer's refusal, which was a `MidiFileParse`
+  string). The reader's parse errors keep their shapes (`MidiFileParse` is the reader's alone).
+- **Doors.** `MidiFile::read_from(impl Read)`, `write_to(impl Write)`, `TryFrom<&[u8]>`;
+  `Track::notes()` returns a `Vec` and says it allocates; `Meta::text_str()`; `#[must_use]` on
+  `Track::new`, `notes`, `smf` and `to_clip` (and `Converted`, whose `dropped` is to be read).
+- **`tutti-ump`.** `Ump::decode()` and `TryFrom<Ump> for Message` replace the free `decode`;
+  `Unknown` is `Display` and `Error`; `Ump` is `Display`, `LowerHex` and `UpperHex` (the
+  meaningful words, `40903C00 80000000`); `Ump::from_words(&[u32])` reads one packet by
+  Table 4 and `split_stream` is it walked along a slice.
+- **The `tutti` prelude** under `midi`: `MidiFile`, `Track`, `Tick`, `Message`, `Ump`,
+  `NoteNumber`, `TimedMidiEvent` (`MidiChannel` and `MidiGroup` were already in).
+
 ## 11. Testing
 
 - **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115
   are analytic tests.
 - **`midi2` was an oracle** until stage 5b part (c), a dev-dependency. What it found is
   spec-pinned tests, and the specification is the only oracle now (§7).
-- **Properties.** `decode` never panics on any words, and `encode(decode(x)) == x`
+- **Properties.** `decode` never panics on any words, and `encode(x.decode()) == x`
   for a canonical `x`.
 - **Fuzzing.** `cargo-fuzz` targets for UMP, SysEx, MIDI-CI and clip files. Only
   `crates/tutti-ump/fuzz/fuzz_targets/decode.rs` exists; the others do not.

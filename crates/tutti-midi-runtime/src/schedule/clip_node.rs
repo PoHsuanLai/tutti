@@ -191,7 +191,7 @@ fn translated(events: impl IntoIterator<Item = TimedMidiEvent>) -> Vec<TimedMidi
                 controller: CCNumber::DATA_ENTRY | CCNumber::DATA_ENTRY_LSB,
                 ..
             },
-        )) = tutti_ump::decode(events[i].event)
+        )) = events[i].event.decode()
         {
             data_entry.insert((address.group, address.channel), i);
         }

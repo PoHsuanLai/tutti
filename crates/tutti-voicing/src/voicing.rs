@@ -53,7 +53,8 @@
 use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32};
 use tutti_types::{Amplitude, Seconds, Semitones};
 use tutti_ump::{
-    Address, Attribute, CCNumber, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, U7, Voice2,
+    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, U7,
+    Ump, Voice2,
 };
 
 use crate::channel::{Bend, ChannelState};
@@ -482,6 +483,40 @@ impl Voicing {
         self.sustain = [false; CHANNELS];
         self.held = [Held::NONE; CHANNELS];
     }
+
+    /// Writes the state of every channel, as the messages that set it, for the
+    /// instrument that takes over (`tutti_graph::Node::chase`): each
+    /// channel's `ChannelState::chase` (the controllers, pressure, wheel and
+    /// registered controllers that differ from a fresh channel's), and a
+    /// pedal that is down as CC 64 at 127. Every message is a MIDI 2.0 Channel
+    /// Voice message in `group`, in channel order, and at most
+    /// [`CHASE_MESSAGES`](Self::CHASE_MESSAGES) of them.
+    ///
+    /// **Not carried:** the notes (a held note is not struck again, so the
+    /// successor has none to follow), the sostenuto's captured keys, the
+    /// per-note controllers and the key a portamento glides from. A program
+    /// and bank are the instrument's, not the core's.
+    pub fn chase(&self, group: MidiGroup, mut emit: impl FnMut(Ump)) {
+        let fresh = ChannelState::new(self.rules.bend_range);
+        for (i, state) in self.channels.iter().enumerate() {
+            let Some(channel) = MidiChannel::new(i as u8) else {
+                continue;
+            };
+            let address = Address { group, channel };
+            let mut send = |v: Voice2| emit(Message::Midi2(address, v).into());
+            state.chase(&fresh, &mut send);
+            if self.sustain[i] {
+                send(Voice2::ControlChange {
+                    controller: CCNumber::SUSTAIN,
+                    value: u32::MAX,
+                });
+            }
+        }
+    }
+
+    /// The most messages [`chase`](Self::chase) writes: every channel's
+    /// [`ChannelState::CHASE_MESSAGES`] and its pedal.
+    pub const CHASE_MESSAGES: usize = CHANNELS * (ChannelState::CHASE_MESSAGES + 1);
 
     /// Where `channel`'s pitch stands now: its wheel over its sensitivity, and
     /// its zone master's if it is a member. What the last
@@ -3201,5 +3236,74 @@ mod tests {
     fn starts_in(cmds: &[Command], v: VoiceId) -> bool {
         cmds.iter()
             .any(|c| matches!(c, Command::Start { id, .. } if *id == v))
+    }
+    // ---- the chase ------------------------------------------------------
+
+    /// A channel's state, whatever a performer set, as a successor reads it
+    /// from the chase: feeding `chase`'s messages to a fresh core leaves every
+    /// channel's [`ChannelState`] equal to the original's (the spec of a
+    /// chase: it sets what was set).
+    #[test]
+    fn a_fresh_core_fed_the_chase_holds_the_same_channel_state() {
+        let mut a = Sim::new(POLY);
+        for (c, n, v) in [
+            (0, 7, 33),
+            (0, 39, 5),
+            (0, 10, 100),
+            (0, 11, 60),
+            (0, 1, 90),
+            (0, 33, 17),
+            (0, 5, 40),
+            (0, 65, 127),
+            (0, 68, 127),
+            (0, 64, 127),
+            (0, 84, 61),
+            (3, 7, 12),
+            (15, 42, 99),
+        ] {
+            a.cc(c, n, v);
+        }
+        let registered = |index: u8, value: u32| Voice2::Registered {
+            bank: U7::of(0),
+            index: U7::of(index),
+            value,
+        };
+        a.send(2, registered(0, (7 << 25) | (25 << 18)), &One);
+        a.send(2, registered(1, 0x1234 << 18), &One);
+        a.send(2, registered(2, 70 << 25), &One);
+        a.send(2, registered(5, (3 << 25) | (64 << 18)), &One);
+        a.send(2, Voice2::PitchBend(0xC000_0000), &One);
+        a.send(2, Voice2::ChannelPressure(0x4000_0000), &One);
+
+        let mut messages = Vec::new();
+        a.core.chase(MidiGroup::of(2), |u| messages.push(u));
+        assert!(messages.len() <= Voicing::CHASE_MESSAGES);
+
+        let mut b = Sim::new(POLY);
+        for ump in messages {
+            let Ok(Message::Midi2(address, voice)) = ump.decode() else {
+                panic!("a chase message is MIDI 2.0 channel voice: {ump:?}");
+            };
+            assert_eq!(address.group, MidiGroup::of(2));
+            b.core.step(address.channel, &voice, &One, &[]);
+        }
+        assert_eq!(b.core.channels(), a.core.channels());
+        // The pedal too: lifting it releases a note that only it holds.
+        let held = b.on(0, 60);
+        assert!(starts_in(&held, id(1)));
+        b.off(0, 60);
+        let up = b.cc(0, 64, 0);
+        assert!(
+            up.contains(&release(1)),
+            "the chased pedal held the note: {up:?}"
+        );
+    }
+
+    /// A core nobody touched has nothing to chase.
+    #[test]
+    fn a_fresh_core_chases_nothing() {
+        let mut n = 0;
+        Voicing::new(POLY).chase(MidiGroup::FIRST, |_| n += 1);
+        assert_eq!(n, 0);
     }
 }

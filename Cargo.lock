@@ -4201,6 +4201,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-protocol",
  "tutti-midi-runtime",
+ "tutti-polysynth",
  "tutti-sf2",
  "tutti-types",
  "tutti-ump",

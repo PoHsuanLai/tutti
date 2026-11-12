@@ -61,7 +61,7 @@ const MAX_FRAMES: u32 = 512;
 // convention.
 use tutti_clap_test_plugin::rt_probe::status;
 use tutti_clap_test_plugin::{StatusMode, WideLayout};
-use tutti_ump::{Data128, Message, MidiChannel, MidiGroup, Sysex8Packet, SysexStatus, Ump, decode};
+use tutti_ump::{Data128, Message, MidiChannel, MidiGroup, Sysex8Packet, SysexStatus, Ump};
 
 /// A block long enough for every offset these tests use.
 const BLOCK: usize = 64;
@@ -360,7 +360,7 @@ fn process_with_every_message_kind_does_not_allocate() {
     ];
     // Every packet is the kind it claims, so none tests nothing.
     for (claimed, words) in &table {
-        let kind = match decode(Ump(*words)) {
+        let kind = match Ump(*words).decode() {
             Ok(Message::Utility(_)) => "utility",
             Ok(Message::System(..)) => "system",
             Ok(Message::Midi1(..)) => "midi1",

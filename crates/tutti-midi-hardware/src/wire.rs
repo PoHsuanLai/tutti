@@ -36,7 +36,7 @@
 
 use tutti_graph::UmpAt;
 use tutti_midi_protocol::Narrower;
-use tutti_ump::{Message, Midi1Parser, Protocol, StreamConfig, Ump, Utility, decode};
+use tutti_ump::{Message, Midi1Parser, Protocol, StreamConfig, Ump, Utility};
 
 /// One device output's wire form: its configuration, the [`Narrower`] that
 /// serves it for as long as it is in MIDI 1.0, and the buffers one batch is
@@ -97,7 +97,7 @@ impl Wire {
                     }
                 }
                 4 if narrows => {
-                    if let Ok(message @ Message::Midi2(address, _)) = decode(ump) {
+                    if let Ok(message @ Message::Midi2(address, _)) = ump.decode() {
                         let out = &mut self.out;
                         self.narrower.feed(message, |bytes| {
                             if let Some(packet) =
@@ -130,7 +130,7 @@ impl Wire {
 /// A Utility packet as the wire carries it: the JR messages when the device
 /// takes them, a NOOP, and nothing else.
 fn utility(ump: Ump, jr: bool) -> Option<Ump> {
-    match decode(ump) {
+    match ump.decode() {
         Ok(Message::Utility(Utility::JrClock(_) | Utility::JrTimestamp(_))) => jr.then_some(ump),
         Ok(Message::Utility(Utility::Noop)) | Err(_) => Some(ump),
         Ok(_) => None,

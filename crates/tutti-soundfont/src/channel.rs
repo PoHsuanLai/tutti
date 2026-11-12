@@ -2,7 +2,7 @@
 // MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
 // LICENSE-RUSTYSYNTH.txt, at the root of this crate.
 
-use tutti_ump::{U7, U14};
+use tutti_ump::{Bank, CCNumber, U7, U14, Voice2};
 
 /// The amount of the default modulators CC 91 to reverb send and CC 93 to
 /// chorus send (SF2 2.04 sections 8.4.8 and 8.4.9): 200 tenths of a percent,
@@ -84,6 +84,63 @@ impl Channel {
             self.bank_number += 128;
         }
         self.patch_number = i32::from(program.get());
+    }
+
+    /// The most messages [`chase`](Self::chase) writes: a Program Change with
+    /// its bank, the Bank Select held for the next one (two controllers) and
+    /// the two sends.
+    pub(crate) const CHASE_MESSAGES: usize = 5;
+
+    /// Writes what this channel holds that a fresh one does not, as the
+    /// messages that set it (the unit's chase, `Node::chase`): the program
+    /// and the bank it plays, as one Program Change with the bank riding
+    /// along; the Bank Select received and not yet applied, which waits for
+    /// the next Program Change (M1 p.13); and the two effect sends.
+    pub(crate) fn chase(&self, emit: &mut impl FnMut(Voice2)) {
+        let fresh = Self::new(self.is_percussion_channel);
+        let cc = |controller: CCNumber, value: u8| Voice2::ControlChange {
+            controller,
+            value: u32::from(value) << 25,
+        };
+        // What the receiver holds as Bank Select once the messages so far
+        // are read: nothing, then the bank's MSB if a Program Change goes.
+        let mut held = fresh.pending_bank;
+        if (self.bank_number, self.patch_number) != (fresh.bank_number, fresh.patch_number) {
+            // `program_change` made the bank number of the held bank's MSB,
+            // plus 128 on the percussion channel.
+            let bank = self.bank_number - if self.is_percussion_channel { 128 } else { 0 };
+            if let (Some(msb), Some(program)) = (
+                u8::try_from(bank).ok().and_then(U7::new),
+                u8::try_from(self.patch_number).ok().and_then(U7::new),
+            ) {
+                emit(Voice2::ProgramChange {
+                    program,
+                    bank: Some(Bank {
+                        msb,
+                        lsb: U7::of(0),
+                    }),
+                });
+                held = with_msb(msb);
+            }
+        }
+        if self.pending_bank != held {
+            emit(cc(
+                CCNumber::BANK_SELECT,
+                (self.pending_bank.get() >> 7) as u8,
+            ));
+            let lsb = (self.pending_bank.get() & 0x7F) as u8;
+            if lsb != 0
+                && let Some(controller) = CCNumber::BANK_SELECT.lsb()
+            {
+                emit(cc(controller, lsb));
+            }
+        }
+        if self.reverb_send != fresh.reverb_send {
+            emit(cc(CCNumber::REVERB_SEND, self.reverb_send));
+        }
+        if self.chorus_send != fresh.chorus_send {
+            emit(cc(CCNumber::CHORUS_SEND, self.chorus_send));
+        }
     }
 
     pub(crate) fn set_reverb_send(&mut self, value: i32) {

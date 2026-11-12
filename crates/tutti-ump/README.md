@@ -2,13 +2,15 @@
 
 The Universal MIDI Packet (M2-104) for the Tutti engine.
 
-- `Ump`: one packet as four `u32` words, `Pod`, with `words()` and
-  `is_note_off()`.
+- `Ump`: one packet as four `u32` words, `Pod`, with `words()`, `from_words()`,
+  `decode()` and `is_note_off()`; `Display` and hex show its words.
 - `MidiGroup`, `MidiChannel`, `CCNumber`: the addresses a packet carries, as
   newtypes so a transposed argument does not compile.
-- `Message`, `decode`, `From<Message> for Ump`, `Unknown`: every message M2-104
+- `Message`, `TryFrom<Ump> for Message`, `From<Message> for Ump`, `Unknown`: every message M2-104
   defines (Utility, System, MIDI 1.0 and 2.0 channel voice, System Exclusive 7
-  and 8, Mixed Data Set, Flex Data, UMP Stream) as a `Copy` value. `decode`
+  and 8, Mixed Data Set, Flex Data, UMP Stream) as a `Copy` value, with named
+  constructors for the common channel voice messages (`Message::note_on`, and
+  `note_on2` for MIDI 2.0). `Ump::decode`
   never panics and ignores reserved bits; a packet no definition covers is
   `Unknown` and keeps its words.
 

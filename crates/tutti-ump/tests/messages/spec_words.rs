@@ -12,7 +12,7 @@ use tutti_ump::{
     Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, Protocol,
     RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, Sysex7Packet, Sysex8Packet,
     SysexStatus, System, TimeSignature, U4, U7, U14, UiHint, Ump, UmpVersion, Utility, Voice1,
-    Voice2, decode,
+    Voice2,
 };
 
 fn g(n: u8) -> MidiGroup {
@@ -45,7 +45,7 @@ fn none() -> Alteration {
 
 /// Decode gives the message, and encode gives the words back.
 fn pin(words: [u32; 4], message: Message) {
-    assert_eq!(decode(Ump(words)), Ok(message), "decode {words:08x?}");
+    assert_eq!(Ump(words).decode(), Ok(message), "decode {words:08x?}");
     assert_eq!(Ump::from(message), Ump(words), "encode {message:?}");
 }
 
@@ -405,7 +405,7 @@ fn the_note_a_message_addresses() {
     let words = |status: u32| [0x4100_0000 | status << 20 | 0x2_0000 | 60 << 8, 0, 0, 0];
     // Status 0x7 is undefined (Table 30).
     for status in (0x0..=0xF).filter(|&status| status != 0x7) {
-        let voice = match decode(Ump(words(status))) {
+        let voice = match Ump(words(status)).decode() {
             Ok(Message::Midi2(_, voice)) => voice,
             other => panic!("status {status:#x}: {other:?}"),
         };

@@ -15,8 +15,9 @@
 //! per-channel controller state, so it can be handed on whole (a SoundFont swap
 //! keeps what a performer set, and takes a new font).
 
+use tutti_midi_protocol::{signed_f32_to_bend_u32, unit_f32_to_u32};
 use tutti_types::{Cents, Pan, Seconds, Semitones};
-use tutti_ump::{CCNumber, NoteNumber, U7, U14};
+use tutti_ump::{CCNumber, NoteNumber, Rpn, U7, U14, Voice2};
 
 /// What a full Modulation Wheel spans until RPN 5 says otherwise: General MIDI
 /// 2 section 3.4.4, "Default Value: 00H/40H (+/-50 cents)" (MSB semitones, LSB
@@ -173,6 +174,99 @@ impl ChannelState {
         let eighths = ((value >> 18) & 0x7F) as f32;
         self.modulation_range = Cents(semitones * 100.0 + eighths * 100.0 / 128.0);
     }
+
+    /// Writes what this value holds that `fresh` does not, as the messages
+    /// that set it (the chase of a node swap, [`Voicing::chase`](crate::Voicing::chase)):
+    /// each 14-bit controller as its MSB then, when nonzero, its LSB (M1
+    /// p.12: an MSB zeroes the LSB), Portamento On and the Legato Footswitch
+    /// as switches, the pending Portamento Control, Channel Pressure, the
+    /// pitch wheel, and RPN 0, 1, 2 and 5 as MIDI 2.0 Registered Controllers
+    /// with the data words [`Voicing::step`](crate::Voicing::step) reads them
+    /// from. A value equal to `fresh`'s is left out, so a channel nobody
+    /// touched writes nothing. At most [`ChannelState::CHASE_MESSAGES`].
+    ///
+    /// Not carried: the key last struck, which a portamento glides from.
+    pub(crate) fn chase(&self, fresh: &Self, mut emit: impl FnMut(Voice2)) {
+        let cc = |controller: CCNumber, value: u8| Voice2::ControlChange {
+            controller,
+            value: u32::from(value) << 25,
+        };
+        let mut fourteen = |msb: CCNumber, now: U14, then: U14| {
+            if now == then {
+                return;
+            }
+            emit(cc(msb, (now.get() >> 7) as u8));
+            if let (Some(lsb), low @ 1..) = (msb.lsb(), (now.get() & 0x7F) as u8) {
+                emit(cc(lsb, low));
+            }
+        };
+        fourteen(CCNumber::MOD_WHEEL, self.modulation, fresh.modulation);
+        fourteen(CCNumber::VOLUME, self.volume, fresh.volume);
+        fourteen(CCNumber::PAN, self.pan, fresh.pan);
+        fourteen(CCNumber::EXPRESSION, self.expression, fresh.expression);
+        fourteen(
+            CCNumber::PORTAMENTO_TIME,
+            self.portamento_time,
+            fresh.portamento_time,
+        );
+        let switch = |on: bool| if on { 127 } else { 0 };
+        if self.portamento != fresh.portamento {
+            emit(cc(CCNumber::PORTAMENTO_SWITCH, switch(self.portamento)));
+        }
+        if self.legato != fresh.legato {
+            emit(cc(CCNumber::LEGATO, switch(self.legato)));
+        }
+        if let Some(key) = self.glide_from {
+            emit(cc(CCNumber::PORTAMENTO_CONTROL, key.get()));
+        }
+        if self.pressure != fresh.pressure {
+            emit(Voice2::ChannelPressure(unit_f32_to_u32(self.pressure)));
+        }
+        if self.bend.position != fresh.bend.position {
+            emit(Voice2::PitchBend(signed_f32_to_bend_u32(
+                self.bend.position,
+            )));
+        }
+        let registered = |rpn: Rpn, value: u32| Voice2::Registered {
+            bank: rpn.bank(),
+            index: rpn.index(),
+            value,
+        };
+        if self.bend.range != fresh.bend.range {
+            // MSB semitones, LSB cents: `bend_sensitivity`'s inverse.
+            let hundredths = (self.bend.range.get() * 100.0).round().clamp(0.0, 12_799.0) as u32;
+            let value = (hundredths / 100) << 25 | (hundredths % 100) << 18;
+            emit(registered(Rpn::PITCH_BEND_SENSITIVITY, value));
+        }
+        if self.bend.fine != fresh.bend.fine {
+            let fourteen = ((self.bend.fine.get() + 1.0) * 8192.0)
+                .round()
+                .clamp(0.0, 16_383.0);
+            emit(registered(
+                Rpn::CHANNEL_FINE_TUNING,
+                (fourteen as u32) << 18,
+            ));
+        }
+        if self.bend.coarse != fresh.bend.coarse {
+            let msb = (self.bend.coarse.get() + 64.0).round().clamp(0.0, 127.0);
+            emit(registered(Rpn::CHANNEL_COARSE_TUNING, (msb as u32) << 25));
+        }
+        if self.modulation_range != fresh.modulation_range {
+            // MSB semitones, LSB 100/128 cent: `set_modulation_range`'s inverse.
+            let cents = self.modulation_range.get().clamp(0.0, 12_700.0);
+            let semitones = (cents / 100.0).floor();
+            let eighths = ((cents - semitones * 100.0) * 128.0 / 100.0)
+                .round()
+                .min(127.0);
+            let value = (semitones as u32) << 25 | (eighths as u32) << 18;
+            emit(registered(Rpn::MODULATION_DEPTH_RANGE, value));
+        }
+    }
+
+    /// The most messages `ChannelState::chase` writes: ten 14-bit halves, two
+    /// switches, a Portamento Control, pressure, the wheel and four registered
+    /// controllers.
+    pub const CHASE_MESSAGES: usize = 19;
 
     /// The Modulation Wheel's position, `0.0..=1.0` (CC 1 and 33).
     #[must_use]

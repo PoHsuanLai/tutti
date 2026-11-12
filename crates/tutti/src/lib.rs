@@ -131,7 +131,7 @@ pub use tutti_modulation as modulation;
 // --- midi -------------------------------------------------------------------
 
 /// The Universal MIDI Packet and its decoded messages (`tutti-ump`): `Ump`,
-/// `Message`, `decode`, `Midi1Parser`. Feature `midi`.
+/// `Message`, `Ump::decode`, `Midi1Parser`. Feature `midi`.
 #[cfg(feature = "midi")]
 pub use tutti_ump as ump;
 
@@ -185,8 +185,10 @@ pub use tutti_plugin_host as plugin_host;
 /// with `device` its `Device`), with the requests a session takes, each
 /// behind the features that gate it: `ParamRef` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
-/// `PluginLoadRequest` and `PluginId` (`plugin`), and `MidiFile` and
-/// `TimedMidiEvent` (`midi`), with the offline timeline an export runs on.
+/// `PluginLoadRequest` and `PluginId` (`plugin`), and, under `midi`, the names a
+/// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
+/// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`; `MidiChannel` and
+/// `MidiGroup` are always in), with the offline timeline an export runs on.
 /// The one `Error`, the sampler's `Clip` and `LoopSetting` (`sampler`), `Wave`
 /// (`codec`), `Format` and `Pcm` (`export`), `Lfo` and `Follower`
 /// (`modulation`) and the common nodes (`dsp`) are there too.
@@ -258,7 +260,7 @@ pub mod prelude {
     // What a session's calls take, by the feature that gates each (design
     // 015 §5): a modulation target, an export, a plugin load, a MIDI file.
     #[cfg(feature = "midi")]
-    pub use tutti_midi_file::MidiFile;
+    pub use tutti_midi_file::{MidiFile, Tick, Track};
     #[cfg(feature = "midi")]
     pub use tutti_midi_runtime::TimedMidiEvent;
     #[cfg(feature = "plugin")]
@@ -271,4 +273,6 @@ pub mod prelude {
     pub use tutti_session::{
         Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
     };
+    #[cfg(feature = "midi")]
+    pub use tutti_ump::{Message, NoteNumber, Ump};
 }

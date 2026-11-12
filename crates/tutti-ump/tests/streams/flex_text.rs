@@ -2,9 +2,7 @@
 //! Complete for up to 12 bytes, else Start, Continue, End, the last padded
 //! with zeros).
 
-use tutti_ump::{
-    Flex, FlexAddress, FlexTextKind, Form, Message, MidiGroup, decode, flex_text_packets,
-};
+use tutti_ump::{Flex, FlexAddress, FlexTextKind, Form, Message, MidiGroup, flex_text_packets};
 
 fn packets(text: &str) -> Vec<(Form, [u8; 12])> {
     flex_text_packets(
@@ -23,7 +21,7 @@ fn packets(text: &str) -> Vec<(Form, [u8; 12])> {
                 form,
                 bytes,
             },
-        )) = decode(ump)
+        )) = ump.decode()
         else {
             panic!("not Flex text");
         };

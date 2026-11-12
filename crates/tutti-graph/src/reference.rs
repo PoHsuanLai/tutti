@@ -116,7 +116,7 @@ use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
 use tutti_types::PlayReading;
 use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1, Voice2, decode,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1, Voice2,
 };
 
 /// One param port's state, as the reference keeps it.
@@ -2164,7 +2164,7 @@ fn ref_key(e: &Event) -> Option<RefKey> {
     let EventKind::Midi(u) = e.kind else {
         return None;
     };
-    match decode(u).ok()? {
+    match u.decode().ok()? {
         Message::Midi1(a, v) => {
             let (g, c) = (a.group.get(), a.channel.get());
             match v {

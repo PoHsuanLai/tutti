@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use tutti_ump::{
     DeviceIdentity, Direction as BlockDirection, FirstGroup, Form, FunctionBlockId,
     FunctionBlockInfo, GroupSpan, Message, Midi1Port, Protocol, Stream, StreamConfig, U7, UiHint,
-    Ump, decode,
+    Ump,
 };
 
 use super::*;
@@ -15,7 +15,7 @@ fn at(base: Instant, ms: u64) -> Instant {
 }
 
 fn msg(u: Ump) -> Message {
-    decode(u).unwrap()
+    u.decode().unwrap()
 }
 
 fn stream(s: Stream) -> Message {

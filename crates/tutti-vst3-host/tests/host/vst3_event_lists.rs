@@ -167,7 +167,7 @@ fn a_sysex_is_detected_by_its_data_type() {
     drain_midi(&list, &mut pool);
     assert_eq!(pool.len(), 1);
     assert!(!matches!(
-        tutti_ump::decode(pool.as_slice()[0].ump),
+        pool.as_slice()[0].ump.decode(),
         Ok(tutti_ump::Message::Sysex7(..))
     ));
 }

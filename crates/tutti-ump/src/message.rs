@@ -38,6 +38,14 @@ pub enum Message {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unknown(pub Ump);
 
+impl core::fmt::Display for Unknown {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "no defined message in the packet {}", self.0)
+    }
+}
+
+impl core::error::Error for Unknown {}
+
 /// A Group and a Channel within it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Address {
@@ -73,6 +81,110 @@ impl Address {
             group: MidiGroup::FIRST,
             channel,
         }
+    }
+
+    /// `channel` in `group`.
+    #[inline]
+    #[must_use]
+    pub const fn new(group: MidiGroup, channel: MidiChannel) -> Self {
+        Address { group, channel }
+    }
+}
+
+/// A channel in the first Group, as [`Address::first`].
+impl From<MidiChannel> for Address {
+    #[inline]
+    fn from(channel: MidiChannel) -> Self {
+        Address::first(channel)
+    }
+}
+
+// ---- Constructors ----------------------------------------------------------
+
+/// Named constructors for the common channel voice messages. Each takes an
+/// [`Address`] or, for the first Group, a bare [`MidiChannel`]
+/// (`impl Into<Address>`), and the typed fields of the message. The plain name
+/// is the MIDI 1.0 form (message type `0x2`, 7-bit data); the `2` form is the
+/// MIDI 2.0 one (type `0x4`, the wire's wider integers, no attribute and no
+/// bank). Neither scales: M2-115 translation is
+/// `tutti-midi-protocol`'s.
+impl Message {
+    /// A MIDI 1.0 Note On. At velocity 0 it is still a Note On here (a
+    /// receiver reads it as a Note Off, M2-104 §7.3.2).
+    #[inline]
+    #[must_use]
+    pub fn note_on(address: impl Into<Address>, note: NoteNumber, velocity: U7) -> Self {
+        Self::Midi1(address.into(), Voice1::NoteOn { note, velocity })
+    }
+
+    /// A MIDI 1.0 Note Off with release `velocity`.
+    #[inline]
+    #[must_use]
+    pub fn note_off(address: impl Into<Address>, note: NoteNumber, velocity: U7) -> Self {
+        Self::Midi1(address.into(), Voice1::NoteOff { note, velocity })
+    }
+
+    /// A MIDI 1.0 Control Change.
+    #[inline]
+    #[must_use]
+    pub fn control_change(address: impl Into<Address>, controller: CCNumber, value: U7) -> Self {
+        Self::Midi1(address.into(), Voice1::ControlChange { controller, value })
+    }
+
+    /// A MIDI 1.0 Program Change.
+    #[inline]
+    #[must_use]
+    pub fn program_change(address: impl Into<Address>, program: U7) -> Self {
+        Self::Midi1(address.into(), Voice1::ProgramChange(program))
+    }
+
+    /// A MIDI 1.0 Pitch Bend, `0x2000` centred.
+    #[inline]
+    #[must_use]
+    pub fn pitch_bend(address: impl Into<Address>, bend: U14) -> Self {
+        Self::Midi1(address.into(), Voice1::PitchBend(bend))
+    }
+
+    /// A MIDI 2.0 Note On with a 16-bit `velocity` and no attribute. Velocity
+    /// 0 is a Note On (§7.4.2).
+    #[inline]
+    #[must_use]
+    pub fn note_on2(address: impl Into<Address>, note: NoteNumber, velocity: u16) -> Self {
+        Self::Midi2(address.into(), Voice2::note_on(note, velocity))
+    }
+
+    /// A MIDI 2.0 Note Off with a 16-bit release `velocity` and no attribute.
+    #[inline]
+    #[must_use]
+    pub fn note_off2(address: impl Into<Address>, note: NoteNumber, velocity: u16) -> Self {
+        Self::Midi2(address.into(), Voice2::note_off(note, velocity))
+    }
+
+    /// A MIDI 2.0 Control Change with a 32-bit `value`.
+    #[inline]
+    #[must_use]
+    pub fn control_change2(address: impl Into<Address>, controller: CCNumber, value: u32) -> Self {
+        Self::Midi2(address.into(), Voice2::ControlChange { controller, value })
+    }
+
+    /// A MIDI 2.0 Program Change with no bank.
+    #[inline]
+    #[must_use]
+    pub fn program_change2(address: impl Into<Address>, program: U7) -> Self {
+        Self::Midi2(
+            address.into(),
+            Voice2::ProgramChange {
+                program,
+                bank: None,
+            },
+        )
+    }
+
+    /// A MIDI 2.0 Pitch Bend, `0x8000_0000` centred.
+    #[inline]
+    #[must_use]
+    pub fn pitch_bend2(address: impl Into<Address>, bend: u32) -> Self {
+        Self::Midi2(address.into(), Voice2::PitchBend(bend))
     }
 }
 

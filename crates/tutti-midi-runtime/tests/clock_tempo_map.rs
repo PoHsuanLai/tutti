@@ -33,7 +33,7 @@ use tutti_midi_runtime::ClockNode;
 use tutti_tempo::{Shape, TempoMap, TempoPoint};
 use tutti_transport::{FadeOut, MotionEvent, Then, Transport};
 use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
-use tutti_ump::{Message, System, U14, decode};
+use tutti_ump::{Message, System, U14};
 
 const SR: f64 = 48_000.0;
 const TICKS_PER_BEAT: f64 = 24.0;
@@ -177,7 +177,7 @@ impl Rig {
             loop {
                 let got = self.out.borrow_mut().poll_into(&mut ring);
                 sent.extend(ring[..got].iter().map(|&(frame, ump)| {
-                    let Ok(Message::System(_, system)) = decode(ump) else {
+                    let Ok(Message::System(_, system)) = ump.decode() else {
                         panic!("the clock sends System messages: {ump:?}")
                     };
                     Sent {

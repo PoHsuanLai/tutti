@@ -4,7 +4,7 @@
 //! decode unchanged.
 
 use libfuzzer_sys::fuzz_target;
-use tutti_ump::{Ump, Unknown, decode};
+use tutti_ump::{Ump, Unknown};
 
 fuzz_target!(|data: &[u8]| {
     let mut bytes = [0u8; 16];
@@ -15,11 +15,11 @@ fuzz_target!(|data: &[u8]| {
         *word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
     }
     let ump = Ump(words);
-    match decode(ump) {
+    match ump.decode() {
         Ok(message) => {
             let canonical = Ump::from(message);
-            assert_eq!(decode(canonical), Ok(message));
-            assert_eq!(Ump::from(decode(canonical).unwrap()), canonical);
+            assert_eq!(canonical.decode(), Ok(message));
+            assert_eq!(Ump::from(canonical.decode().unwrap()), canonical);
         }
         Err(Unknown(back)) => assert_eq!(back, ump),
     }

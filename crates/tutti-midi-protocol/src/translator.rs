@@ -140,7 +140,7 @@ struct Channel {
 ///     translator.feed(ump, |u| out.push(u));
 /// }
 /// assert_eq!(out.len(), 1);
-/// let Ok(Message::Midi2(_, Voice2::Registered { value, .. })) = tutti_ump::decode(out[0]) else {
+/// let Ok(Message::Midi2(_, Voice2::Registered { value, .. })) = out[0].decode() else {
 ///     unreachable!()
 /// };
 /// // Zero-extended: the semitones are the top 7 bits.
@@ -216,7 +216,7 @@ impl Translator {
     /// controller, and is itself absorbed). Never more than once: a clip's
     /// loader puts the result in its source's place.
     pub fn feed(&mut self, ump: Ump, mut out: impl FnMut(Ump)) {
-        let Ok(Message::Midi1(address, voice)) = tutti_ump::decode(ump) else {
+        let Ok(Message::Midi1(address, voice)) = ump.decode() else {
             out(ump);
             return;
         };

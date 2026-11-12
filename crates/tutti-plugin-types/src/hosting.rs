@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, Loaded, MainThread,
-    Normalized, ParamId, PluginError, PluginResult, WindowHandle,
+    Normalized, ParamEdit, ParamId, PluginError, PluginResult, WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -255,9 +255,10 @@ pub trait Editor: EditorWindow + Send {
     /// The plugin refuses the state.
     fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()>;
 
-    /// The parameter edits the user made in the editor since the last poll,
-    /// normalized, for the host to send to the audio instance.
-    fn poll_edits(&mut self, main: &MainThread) -> Vec<(ParamId, f32)>;
+    /// The parameter edits the user made in the editor since the last poll, in
+    /// the order the plugin made them: the changes the host sends to the audio
+    /// instance, and the gesture around them.
+    fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit>;
 
     /// The editor instance's whole state, for the host to give the audio
     /// instance what the user changed in the editor that is not a parameter

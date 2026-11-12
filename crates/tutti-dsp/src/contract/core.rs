@@ -3,7 +3,7 @@
 use std::borrow::Borrow;
 
 use super::harness::{MAX_BLOCK, built, noise, rate_of, render, widths};
-use super::{FamilyCase, Hook, RealizationCase};
+use super::{FamilyCase, Hook, RecurrenceCase};
 use crate::{Capacity, Grows, Recurrence, System};
 
 /// The hooks that return nothing and are not listed, and the listed ones that
@@ -103,7 +103,7 @@ pub(super) mod realization {
     /// frames in (the model's own shortest path, pre-delay included, and the
     /// realization's declared latency),
     /// on the earliest channel, and on no channel before.
-    pub fn arrival<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn arrival<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.static_probes() {
                 let (mut k, network) = built(d, &c, rate);
@@ -127,7 +127,7 @@ pub(super) mod realization {
 
     /// The realization declares the model's own latency (zero for a time-domain
     /// model, a partition for a FIR), never a pre-delay or a tap spacing.
-    pub fn latency<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn latency<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         for rate in d.rates() {
             for c in d.static_probes() {
                 let (k, model) = built(d, &c, rate);
@@ -149,7 +149,7 @@ pub(super) mod realization {
     /// two steady states' (each measured on a realization left at its controls). A
     /// tone, not noise: its steady jumps are small, so a step in a gain or a
     /// jump in a delay is a jump many times them, where noise hides it.
-    pub fn click_free<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn click_free<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let second = rate.get() as usize;
         let tone: Vec<f32> = (0..6 * second)
@@ -192,7 +192,7 @@ pub(super) mod realization {
 
     /// After `reset` the realization renders bit for bit what a freshly built one
     /// does, at the same controls.
-    pub fn reset<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn reset<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
             let probe = noise(9, 8192, 1.0);
@@ -210,7 +210,7 @@ pub(super) mod realization {
 
     /// `fresh()` of a used realization renders bit for bit what a freshly built one
     /// does, at the same controls: state gone, coefficients kept.
-    pub fn fresh<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn fresh<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
             let probe = noise(9, 8192, 1.0);
@@ -233,7 +233,7 @@ pub(super) mod realization {
     /// block-anchored design skips the two cases by saying so, and a stream
     /// grid cannot leave them out. `listed` is whether the macro was given the
     /// group.
-    pub fn cadence<D: RealizationCase>(_: &D, listed: bool) -> Result<(), String> {
+    pub fn cadence<D: RecurrenceCase>(_: &D, listed: bool) -> Result<(), String> {
         match (D::CADENCE.block_independent(), listed) {
             (true, false) => Err(
                 "CADENCE is stream-anchored but the contract does not name BlockIndependent: \
@@ -250,7 +250,7 @@ pub(super) mod realization {
     /// The output does not depend on how the input is cut into blocks: blocks of
     /// 1, 17 and 64 frames render bit for bit what blocks of 512 do (a
     /// time-domain realization; a convolver would declare its own tolerance).
-    pub fn block_independent<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn block_independent<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for c in d.probes() {
             let x = noise(13, 4096, 1.0);
@@ -275,7 +275,7 @@ pub(super) mod realization {
     /// settled reference (built at `b`, used, reset: at `b` with silent state):
     /// a realization retargeted once to `b`; one at `a` retargeted to `b` and
     /// reset mid-ramp; and the `fresh()` of that one.
-    pub fn landed<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn landed<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let probe = noise(9, 8192, 1.0);
         let shape = widths(d);
@@ -321,7 +321,7 @@ pub(super) mod realization {
     /// plain `block_independent` case holds one retarget; this one moves the
     /// controls through the render, where a ramp that restarts at a block's edge
     /// shows.
-    pub fn stream_clock<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn stream_clock<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         const SPAN: usize = 8704;
         let rate = rate_of(d);
         let shape = widths(d);
@@ -358,9 +358,9 @@ pub(super) mod realization {
         Ok(())
     }
 
-    /// Every hook of [`RealizationCase`] that returns a list returns something, or
+    /// Every hook of [`RecurrenceCase`] that returns a list returns something, or
     /// the design says why it cannot ([`FamilyCase::vacant`]).
-    pub fn vacuity<D: RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn vacuity<D: RecurrenceCase>(d: &D) -> Result<(), String> {
         check_vacuity(
             d.vacant(),
             &[
@@ -376,9 +376,6 @@ pub(super) mod realization {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FreeverbFamily;
-    use crate::contract::cases::realization as cases;
-    use crate::testing::flaws::Mutant;
 
     /// A hook that returns nothing and is not listed fails, one that is listed and
     /// returns something fails, a listing without a reason fails, and the other
@@ -403,19 +400,5 @@ mod tests {
         );
         assert!(check_vacuity(&listed, &[(Hook::Steps, 0)]).is_ok());
         assert!(check_vacuity(&[], &[(Hook::Steps, 3)]).is_ok());
-    }
-
-    /// The realization-level case reads the realization hooks of a design: Freeverb
-    /// lists none of them as vacant, so listing one it fills fails.
-    #[test]
-    fn the_realization_vacuity_reads_the_realization_hooks() {
-        let mut m = Mutant::new(FreeverbFamily, |_| {});
-        assert!(cases::vacuity(&m).is_ok());
-        m.vacant = Some(&[(Hook::Steps, "it has none")]);
-        assert!(
-            cases::vacuity(&m)
-                .unwrap_err()
-                .contains("is listed as vacant")
-        );
     }
 }

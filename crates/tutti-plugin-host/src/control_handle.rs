@@ -15,8 +15,8 @@ use tutti_plugin_types::{
 };
 use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{
-    LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginBus, PluginDescriptor, Preset,
-    PresetId, PresetSupport,
+    LayoutSupport, LoadedPlugin, ParamEdit, PluginBus, PluginDescriptor, Preset, PresetId,
+    PresetSupport,
 };
 use tutti_plugin_types::{PluginInvalidation, PluginRefresh};
 
@@ -681,17 +681,15 @@ impl PluginHandle {
 
     // ---- Notify sinks (plugin → host reactions) ----------------------------
 
-    /// Registers a callback invoked when the plugin writes back a
-    /// parameter value internally (preset load, automation, host
-    /// write-back). Fires on the bridge thread for the out-of-process
-    /// backend; on the GUI thread (during `editor_idle`) for the in-process
-    /// VST2 backend. Move heavy work to another thread before touching graph
-    /// state. Replaces any previous callback.
-    pub fn on_parameter_changed<F: Fn(ParamId, Normalized) + Send + Sync + 'static>(
-        &self,
-        f: F,
-    ) -> &Self {
-        self.param_sink.set(move |(id, value)| f(id, value));
+    /// Registers a callback invoked when the plugin edits one of its own
+    /// parameters (its editor, a preset load, its own automation), once per
+    /// [`ParamEdit`]: a gesture's `Begin`, each change and its `End`, in the
+    /// order the plugin made them (doc 029 section 6.1). Fires on the bridge
+    /// thread for the out-of-process backend; on the GUI thread (during
+    /// `editor_idle`) for the in-process one. Move heavy work to another thread
+    /// before touching graph state. Replaces any previous callback.
+    pub fn on_parameter_changed<F: Fn(ParamEdit) + Send + Sync + 'static>(&self, f: F) -> &Self {
+        self.param_sink.set(f);
         self
     }
 

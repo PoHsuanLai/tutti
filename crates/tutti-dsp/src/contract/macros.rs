@@ -1,4 +1,4 @@
-//! `family_contract!` and `realization_contract!`.
+//! `family_contract!` and `recurrence_contract!`.
 
 /// Makes one `#[test]` per case of the family contract for `$design`, an
 /// expression of a [`FamilyCase`](crate::contract::FamilyCase) type, then the
@@ -108,43 +108,142 @@ macro_rules! __family_group {
     };
 }
 
-/// Makes one `#[test]` per case of the realization contract for `$design`, an
-/// expression of a [`RealizationCase`](crate::contract::RealizationCase) type,
-/// then the cases of each group named after it (`Lti`, `reverb`), as
+/// Makes one `#[test]` per case of the recurrence contract for `$design`, an
+/// expression of a [`RecurrenceCase`](crate::contract::RecurrenceCase) type, then
+/// the cases of each group named after it (`Lti`, `reverb`, `BlockIndependent`), as
 /// [`family_contract!`] does.
+///
+/// The cases state the three laws of design 024 section 2.7.4, each a diagram that
+/// commutes, and the macro is laid out by them:
+///
+/// 1. **The recurrence realizes the member**: what the render does is what the
+///    member's queries say (latency, arrival, response, decay, tail, linearity,
+///    stability and, for a reverb, its RT60s, bands and controls).
+/// 2. **The block form is the frame form**: how the input is cut into blocks, and
+///    where a glide's clock starts, changes nothing (`block_independent`,
+///    `stream_clock`, `cadence`).
+/// 3. **The glide lands**: a retarget approaches the member without a click and
+///    comes to rest on it, and `reset` and `fresh` return to silence on that rest
+///    (`landed`, `click_free`, `reset`, `fresh`).
 #[macro_export]
-macro_rules! realization_contract {
+macro_rules! recurrence_contract {
     ($design:expr $(, $group:ident)* $(,)?) => {
+        $crate::__recurrence_realizes!($design $(, $group)*);
+        $crate::__recurrence_blocks!($design $(, $group)*);
+        $crate::__recurrence_glide!($design $(, $group)*);
+    };
+}
+
+/// Law 1 of [`recurrence_contract!`]: the recurrence realizes the member.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __recurrence_realizes {
+    ($design:expr $(, $group:ident)*) => {
         #[test]
-        fn realization_contract_latency() {
+        fn recurrence_contract_latency() {
             $crate::contract::cases::realization::latency(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_arrival() {
+        fn recurrence_contract_arrival() {
             $crate::contract::cases::realization::arrival(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_click_free() {
-            $crate::contract::cases::realization::click_free(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_reset() {
-            $crate::contract::cases::realization::reset(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_fresh() {
-            $crate::contract::cases::realization::fresh(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_landed() {
-            $crate::contract::cases::realization::landed(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_vacuity() {
+        fn recurrence_contract_vacuity() {
             $crate::contract::cases::realization::vacuity(&$design).unwrap();
         }
+        $( $crate::__recurrence_realizes_group!($group, $design); )*
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __recurrence_realizes_group {
+    (BlockIndependent, $design:expr) => {};
+    (Lti, $design:expr) => {
         #[test]
-        fn realization_contract_cadence() {
+        fn recurrence_contract_tail_covers() {
+            $crate::contract::cases::realization::tail_covers(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_stability() {
+            $crate::contract::cases::realization::stability(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_linear() {
+            $crate::contract::cases::realization::linear(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_response() {
+            $crate::contract::cases::realization::response(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_decay() {
+            $crate::contract::cases::realization::decay(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_tail_tight() {
+            $crate::contract::cases::realization::tail_tight(&$design).unwrap();
+        }
+    };
+    (reverb, $design:expr) => {
+        #[test]
+        fn recurrence_contract_rt60() {
+            $crate::contract::cases::realization::rt60(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_band_order() {
+            $crate::contract::cases::realization::band_order(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_wet_only() {
+            $crate::contract::cases::realization::wet_only(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_decorrelated() {
+            $crate::contract::cases::realization::decorrelated(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_line_lengths() {
+            $crate::contract::cases::realization::line_lengths(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_pre_delay() {
+            $crate::contract::cases::realization::pre_delay(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_size() {
+            $crate::contract::cases::realization::size(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_diffusion() {
+            $crate::contract::cases::realization::diffusion(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_freeze() {
+            $crate::contract::cases::realization::freeze(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_width() {
+            $crate::contract::cases::realization::width(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_wet_gain() {
+            $crate::contract::cases::realization::wet_gain(&$design).unwrap();
+        }
+        #[test]
+        fn recurrence_contract_reverb_vacuity() {
+            $crate::contract::cases::realization::reverb_vacuity(&$design).unwrap();
+        }
+    };
+}
+
+/// Law 2 of [`recurrence_contract!`]: the block form is the frame form.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __recurrence_blocks {
+    ($design:expr $(, $group:ident)*) => {
+        #[test]
+        fn recurrence_contract_cadence() {
             let groups = [$(stringify!($group)),*];
             $crate::contract::cases::realization::cadence(
                 &$design,
@@ -152,97 +251,47 @@ macro_rules! realization_contract {
             )
             .unwrap();
         }
-        $( $crate::__realization_group!($group, $design); )*
+        $( $crate::__recurrence_blocks_group!($group, $design); )*
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __realization_group {
+macro_rules! __recurrence_blocks_group {
     (BlockIndependent, $design:expr) => {
         #[test]
-        fn realization_contract_block_independent() {
+        fn recurrence_contract_block_independent() {
             $crate::contract::cases::realization::block_independent(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_stream_clock() {
+        fn recurrence_contract_stream_clock() {
             $crate::contract::cases::realization::stream_clock(&$design).unwrap();
         }
     };
-    (Lti, $design:expr) => {
+    (Lti, $design:expr) => {};
+    (reverb, $design:expr) => {};
+}
+
+/// Law 3 of [`recurrence_contract!`]: the glide lands.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __recurrence_glide {
+    ($design:expr $(, $group:ident)*) => {
         #[test]
-        fn realization_contract_tail_covers() {
-            $crate::contract::cases::realization::tail_covers(&$design).unwrap();
+        fn recurrence_contract_landed() {
+            $crate::contract::cases::realization::landed(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_stability() {
-            $crate::contract::cases::realization::stability(&$design).unwrap();
+        fn recurrence_contract_click_free() {
+            $crate::contract::cases::realization::click_free(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_linear() {
-            $crate::contract::cases::realization::linear(&$design).unwrap();
+        fn recurrence_contract_reset() {
+            $crate::contract::cases::realization::reset(&$design).unwrap();
         }
         #[test]
-        fn realization_contract_response() {
-            $crate::contract::cases::realization::response(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_decay() {
-            $crate::contract::cases::realization::decay(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_tail_tight() {
-            $crate::contract::cases::realization::tail_tight(&$design).unwrap();
-        }
-    };
-    (reverb, $design:expr) => {
-        #[test]
-        fn realization_contract_rt60() {
-            $crate::contract::cases::realization::rt60(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_band_order() {
-            $crate::contract::cases::realization::band_order(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_wet_only() {
-            $crate::contract::cases::realization::wet_only(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_decorrelated() {
-            $crate::contract::cases::realization::decorrelated(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_line_lengths() {
-            $crate::contract::cases::realization::line_lengths(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_pre_delay() {
-            $crate::contract::cases::realization::pre_delay(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_size() {
-            $crate::contract::cases::realization::size(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_diffusion() {
-            $crate::contract::cases::realization::diffusion(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_freeze() {
-            $crate::contract::cases::realization::freeze(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_width() {
-            $crate::contract::cases::realization::width(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_wet_gain() {
-            $crate::contract::cases::realization::wet_gain(&$design).unwrap();
-        }
-        #[test]
-        fn realization_contract_reverb_vacuity() {
-            $crate::contract::cases::realization::reverb_vacuity(&$design).unwrap();
+        fn recurrence_contract_fresh() {
+            $crate::contract::cases::realization::fresh(&$design).unwrap();
         }
     };
 }

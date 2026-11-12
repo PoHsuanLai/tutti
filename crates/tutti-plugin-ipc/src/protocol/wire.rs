@@ -62,58 +62,17 @@ pub mod midi {
     }
 }
 
-/// A [`Normalized`](tutti_plugin_types::Normalized) carried as the `f32` the
-/// wire has always held, as `#[serde(with = "wire::normalized")]`.
-///
-/// `Normalized` is an `f64`, and its own serde encoding is that `f64`; the
-/// parameter messages carry an `f32`, so they go through here.
-///
-/// Every `Normalized` on this wire, whatever its width, is refused on decode
-/// when it is not in `0..=1` (NaN included), as `Normalized::new` refuses: a
-/// peer that sends one is broken, and the frame fails rather than carrying a
-/// value made up for it.
-pub mod normalized {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use tutti_plugin_types::Normalized;
-
-    use super::checked;
-
-    /// Encodes the value as an `f32`.
-    pub fn serialize<S: Serializer>(value: &Normalized, s: S) -> Result<S::Ok, S::Error> {
-        (value.get() as f32).serialize(s)
-    }
-
-    /// Decodes an `f32`, refusing one outside `0..=1`.
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Normalized, D::Error> {
-        checked(f64::from(f32::deserialize(d)?))
-    }
-}
-
-/// An optional [`Normalized`](tutti_plugin_types::Normalized) carried as an
-/// optional `f32`, as `#[serde(with = "wire::normalized_opt")]`.
-pub mod normalized_opt {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use tutti_plugin_types::Normalized;
-
-    use super::checked;
-
-    /// Encodes `Some(v)` as `Some(v as f32)`.
-    pub fn serialize<S: Serializer>(value: &Option<Normalized>, s: S) -> Result<S::Ok, S::Error> {
-        value.map(|v| v.get() as f32).serialize(s)
-    }
-
-    /// Decodes an optional `f32`, refusing a present one outside `0..=1`.
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Normalized>, D::Error> {
-        Option::<f32>::deserialize(d)?
-            .map(|v| checked(f64::from(v)))
-            .transpose()
-    }
-}
-
 /// A [`Normalized`](tutti_plugin_types::Normalized) carried as the `f64` it is,
-/// as `#[serde(with = "wire::normalized_f64")]`, refused on decode outside
-/// `0..=1` as [`normalized`] is.
-pub mod normalized_f64 {
+/// as `#[serde(with = "wire::normalized")]`.
+///
+/// `Normalized` is an `f64` and every parameter value on this wire keeps its
+/// width (a value such as 0.3 arrives as sent; protocol version 31 retired the
+/// `f32` the set, get and changed messages carried).
+///
+/// Every `Normalized` on this wire is refused on decode when it is not in
+/// `0..=1` (NaN included), as `Normalized::new` refuses: a peer that sends one
+/// is broken, and the frame fails rather than carrying a value made up for it.
+pub mod normalized {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tutti_plugin_types::Normalized;
 
@@ -131,9 +90,9 @@ pub mod normalized_f64 {
 }
 
 /// An optional [`Normalized`](tutti_plugin_types::Normalized) carried as an
-/// optional `f64`, as `#[serde(with = "wire::normalized_f64_opt")]`; see
-/// [`normalized_f64`].
-pub mod normalized_f64_opt {
+/// optional `f64`, as `#[serde(with = "wire::normalized_opt")]`; see
+/// [`normalized`].
+pub mod normalized_opt {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tutti_plugin_types::Normalized;
 
@@ -254,25 +213,25 @@ mod tests {
     }
 
     /// **The typed parameter and rate fields encode as bare numbers**: a `u32`
-    /// id, an `f32` value (not the `f64` a `Normalized` holds), an `f64` rate,
-    /// an `Option<f32>` as a tag byte and the value. The expected bytes are
+    /// id, an `f64` value (the width a `Normalized` holds, not an `f32`), an
+    /// `f64` rate, an `Option<f64>` as a tag byte and the value. The expected bytes are
     /// written out from postcard's rules (an integer or a variant tag is a
     /// varint, seven bits a byte with the low group first; a float is its
     /// little-endian bytes), so a layout change fails here instead of as a
     /// desync between two binaries built apart.
     #[test]
     fn typed_parameter_and_rate_fields_keep_their_wire_widths() {
-        use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};
+        use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamEdit, ParamId};
         use tutti_types::SampleRate;
 
         let set = HostMessage::SetParameter {
             param_id: ParamId::new(0x0102_0304),
             value: Normalized::of(0.25),
         };
-        // variant 3, id 0x0102_0304 as a varint, 0.25f32
+        // variant 3, id 0x0102_0304 as a varint, 0.25f64
         assert_eq!(
             postcard::to_allocvec(&set).unwrap(),
-            [3, 0x84, 0x86, 0x88, 0x08, 0, 0, 128, 62]
+            [3, 0x84, 0x86, 0x88, 0x08, 0, 0, 0, 0, 0, 0, 208, 63]
         );
 
         let rate = HostMessage::SetSampleRate {
@@ -298,28 +257,42 @@ mod tests {
         let some = BridgeMessage::ParameterValue {
             value: Some(Normalized::of(0.25)),
         };
-        // variant 3, Some, 0.25f32
-        assert_eq!(postcard::to_allocvec(&some).unwrap(), [3, 1, 0, 0, 128, 62]);
+        // variant 3, Some, 0.25f64
+        assert_eq!(
+            postcard::to_allocvec(&some).unwrap(),
+            [3, 1, 0, 0, 0, 0, 0, 0, 208, 63]
+        );
         let none = BridgeMessage::ParameterValue { value: None };
         assert_eq!(postcard::to_allocvec(&none).unwrap(), [3, 0]);
 
         let changed = BridgeMessage::ParameterChanged {
-            index: ParamId::new(7),
-            value: Normalized::of(0.5),
+            edit: ParamEdit::change(ParamId::new(7), Normalized::of(0.5)),
         };
         // variant 7 (9 until v25 removed `EditorOpened` and `EditorClosed` ahead
-        // of it), index 7, 0.5f32
+        // of it), then the `ParamEdit`: its variant (`Change` is 1), id 7, 0.5f64
+        // and the recording flag (true).
         assert_eq!(
             postcard::to_allocvec(&changed).unwrap(),
-            [7, 7, 0, 0, 0, 63]
+            [7, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]
         );
-
-        let back: BridgeMessage = postcard::from_bytes(&[7, 7, 0, 0, 0, 63]).unwrap();
+        let back: BridgeMessage =
+            postcard::from_bytes(&[7, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]).unwrap();
         assert!(matches!(
             back,
-            BridgeMessage::ParameterChanged { index, value }
-                if index == ParamId::new(7) && value == Normalized::of(0.5)
+            BridgeMessage::ParameterChanged { edit }
+                if edit == ParamEdit::change(ParamId::new(7), Normalized::of(0.5))
         ));
+
+        // A gesture's begin and end hold the id alone: no value is on the wire
+        // to read, and none is made up.
+        let begin = BridgeMessage::ParameterChanged {
+            edit: ParamEdit::Begin(ParamId::new(7)),
+        };
+        assert_eq!(postcard::to_allocvec(&begin).unwrap(), [7, 0, 7]);
+        let end = BridgeMessage::ParameterChanged {
+            edit: ParamEdit::End(ParamId::new(7)),
+        };
+        assert_eq!(postcard::to_allocvec(&end).unwrap(), [7, 2, 7]);
     }
 
     /// A wire value in `0..=1` decodes; one outside it, or NaN, fails the
@@ -327,8 +300,8 @@ mod tests {
     #[test]
     fn a_normalized_outside_the_unit_range_is_refused() {
         use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};
-        let f32_message = |raw: f32| {
-            // variant 3, id 1 (one varint byte each), then the f32.
+        let set_message = |raw: f64| {
+            // variant 3, id 1 (one varint byte each), then the f64.
             let mut bytes = vec![3, 1];
             bytes.extend(raw.to_le_bytes());
             postcard::from_bytes::<HostMessage>(&bytes)
@@ -346,13 +319,13 @@ mod tests {
             })
             .unwrap()
         };
-        let value_of = |raw: f32| {
+        let value_of = |raw: f64| {
             let mut bytes = postcard::to_allocvec(&BridgeMessage::ParameterValue {
                 value: Some(Normalized::of(0.5)),
             })
             .unwrap();
             let end = bytes.len();
-            bytes[end - 4..].copy_from_slice(&raw.to_le_bytes());
+            bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
             postcard::from_bytes::<BridgeMessage>(&bytes)
         };
         let from_text = || {
@@ -363,7 +336,7 @@ mod tests {
         };
 
         assert!(matches!(
-            f32_message(0.25).unwrap(),
+            set_message(0.25).unwrap(),
             HostMessage::SetParameter { value, .. } if value == Normalized::of(0.25)
         ));
         assert!(matches!(
@@ -379,8 +352,8 @@ mod tests {
             BridgeMessage::ParameterValue { value } if value == Some(Normalized::of(0.25))
         ));
         for raw in [7.5, -3.0, f64::NAN, f64::INFINITY] {
-            assert!(f32_message(raw as f32).is_err(), "f32 {raw}");
-            assert!(value_of(raw as f32).is_err(), "optional f32 {raw}");
+            assert!(set_message(raw).is_err(), "set {raw}");
+            assert!(value_of(raw).is_err(), "optional reply {raw}");
             assert!(
                 postcard::from_bytes::<HostMessage>(&f64_tail(&get_text, raw)).is_err(),
                 "f64 {raw}"

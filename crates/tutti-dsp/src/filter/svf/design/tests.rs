@@ -5,7 +5,7 @@ use tutti_types::{Db, Hz, Q};
 use super::*;
 use crate::Family;
 use crate::SvfType;
-use crate::contract::{FamilyCase, Figure, LtiCase, RealizationCase};
+use crate::contract::{FamilyCase, Figure, LtiCase, RecurrenceCase};
 
 const TYPES: [SvfType; 8] = [
     SvfType::LowPass,
@@ -125,7 +125,7 @@ impl LtiCase for SvfFamily<f64> {
     }
 }
 
-impl RealizationCase for SvfFamily<f64> {
+impl RecurrenceCase for SvfFamily<f64> {
     fn probes(&self) -> Vec<SvfControls> {
         vec![
             controls(SvfType::LowPass, 1_000.0, 0.707, 0.0),
@@ -168,7 +168,7 @@ fn a_glides_midpoint_is_stable() {
 // Solved on the stream's 16-frame grid, so the render does not depend on how
 // audio is split: the contract names `BlockIndependent` (the `cadence` case
 // fails if either side is wrong).
-crate::realization_contract!(design(), Lti, BlockIndependent);
+crate::recurrence_contract!(design(), Lti, BlockIndependent);
 
 /// The dead-band: a control moves the design when it passes its epsilon or the
 /// response changes, and not below it.

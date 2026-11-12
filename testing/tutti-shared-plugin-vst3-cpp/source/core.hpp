@@ -28,8 +28,10 @@ constexpr size_t kStateHead = 24;
 // A transport's flags (core.rs, "State"), and how many the log keeps.
 constexpr uint32_t kPlaying = 1, kRecording = 2, kCycle = 4, kTempoValid = 8, kBeatValid = 16;
 constexpr uint32_t kLogTransports = 16;
-// The notice byte (core.rs, "Notice"): none, or an edit on every state load.
-constexpr uint32_t kNoticeOnLoad = 1, kNotices = 2;
+// The notice byte (core.rs, "Notice"): none, an edit on every state load, or one gesture on `aux` on every
+// state load (its begin, a change to each of kGestureValues, its end).
+constexpr uint32_t kNoticeOnLoad = 1, kNoticeGestureOnLoad = 2, kNotices = 3;
+constexpr double kGestureValues[2] = {0.375, 0.625};
 
 inline float tag (uint32_t bus, size_t ch) { return float (bus * 1000 + ch + 1); }
 

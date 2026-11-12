@@ -7,9 +7,9 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Controller, EditorSize, EditorWindow, Loaded,
-    LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Prepare, Preset, PresetId, Processor, Refused, RenderMode, Request, RescanScope,
-    RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
+    LoadedPlugin, Normalized, ParamEdit, ParamId, ParameterInfo, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, Prepare, Preset, PresetId, Processor, Refused, RenderMode, Request,
+    RescanScope, RestartRules, SampleFormat, Samples, Stuck, WindowHandle,
 };
 
 use crate::loaded::Vst2Loaded;
@@ -163,7 +163,7 @@ impl Control for Vst2Controller {
         Control::set_render_mode(self.loaded_mut(), main, mode)
     }
 
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<(ParamId, Normalized)>) {
+    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
         Control::take_reported_edits(self.loaded_mut(), main, out);
     }
 

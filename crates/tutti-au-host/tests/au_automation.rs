@@ -17,8 +17,8 @@ use tutti_au_host::component::find_component;
 use tutti_au_host::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
 use tutti_au_host::{AuController, AuLoaded, AuProcessor};
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Loaded, MainThread, MaxBlock, ParamId, ParameterChanges, PluginIo,
-    Prepare, ProcessContext, ProcessOutput, Processor, SampleRate,
+    AudioBuffer, AudioBufferMut, Loaded, MainThread, MaxBlock, ParamEdit, ParamId,
+    ParameterChanges, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor, SampleRate,
 };
 
 const RATE: f64 = 48_000.0;
@@ -125,10 +125,7 @@ fn a_non_realtime_parameter_is_written_between_blocks_not_by_the_render() {
 }
 
 /// What a listener on another queue is given a moment to deliver.
-fn wait_for_edits(
-    controller: &mut AuController,
-    want: usize,
-) -> Vec<(ParamId, tutti_plugin_types::Normalized)> {
+fn wait_for_edits(controller: &mut AuController, want: usize) -> Vec<ParamEdit> {
     use tutti_plugin_types::Control;
     let main = MainThread::claim().unwrap();
     let mut heard = Vec::new();
@@ -161,11 +158,54 @@ fn an_edit_in_the_plugins_own_editor_is_reported() {
 
     let heard = wait_for_edits(&mut controller, 1);
     assert_eq!(heard.len(), 1, "one edit: {heard:?}");
-    assert_eq!(heard[0].0, ParamId::from(DRY_WET));
+    assert_eq!(heard[0].id(), ParamId::from(DRY_WET));
+    let value = heard[0].value().expect("a value change is a Change");
     assert!(
-        (heard[0].1.get() - 0.25).abs() < 1e-6,
-        "normalized on the declared range: {:?}",
-        heard[0].1
+        (value.get() - 0.25).abs() < 1e-6,
+        "normalized on the declared range: {value:?}"
+    );
+}
+
+/// A gesture the plugin's own editor makes is reported as its three edits, in
+/// the order it made them: the begin
+/// (`kAudioUnitEvent_BeginParameterChangeGesture`), the change, the end
+/// (`EndParameterChangeGesture`, `AudioUnitUtilities.h`), on Dry/Wet's declared
+/// range `[0, 100]`. The begin and the end carry no value in AU. The listener's
+/// queue is serial, so the order is the order of the notifications. One change,
+/// not two: AudioToolbox coalesces the value changes of a parameter that arrive
+/// within the listener's notification interval into the last, while the gesture
+/// events are never merged with them.
+#[test]
+fn a_gesture_in_the_plugins_own_editor_is_reported_in_order() {
+    use tutti_au_ffi::{EventAddress, emit_gesture, set_parameter_notifying};
+
+    let mut au = delay_loaded();
+    assert!(au.watch_properties());
+    let (_processor, mut controller) = activate(au);
+    let global = EventAddress::GLOBAL;
+
+    emit_gesture(controller.unit(), DRY_WET, global, true).unwrap();
+    set_parameter_notifying(controller.unit(), DRY_WET, global, 75.0, 0).unwrap();
+    emit_gesture(controller.unit(), DRY_WET, global, false).unwrap();
+
+    let heard = wait_for_edits(&mut controller, 3);
+    let id = ParamId::from(DRY_WET);
+    assert_eq!(heard.len(), 3, "the gesture, in order: {heard:?}");
+    assert_eq!(heard[0], ParamEdit::Begin(id));
+    assert_eq!(heard[2], ParamEdit::End(id));
+    let ParamEdit::Change {
+        id: changed,
+        value,
+        record,
+    } = heard[1]
+    else {
+        panic!("the middle edit is a change: {heard:?}");
+    };
+    assert_eq!(changed, id);
+    assert!(record);
+    assert!(
+        (value.get() - 0.75).abs() < 1e-6,
+        "on the declared range: {value:?}"
     );
 }
 
@@ -204,6 +244,6 @@ fn the_hosts_own_writes_are_not_reported_as_the_plugins_edits() {
     let mut more = wait_for_edits(&mut controller, 0);
     let mut all = heard;
     all.append(&mut more);
-    let ids: Vec<u32> = all.iter().map(|(id, _)| id.get()).collect();
+    let ids: Vec<u32> = all.iter().map(|e| e.id().get()).collect();
     assert_eq!(ids, [3], "only the plugin's own edit: {all:?}");
 }

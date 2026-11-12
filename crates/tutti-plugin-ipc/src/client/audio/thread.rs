@@ -325,7 +325,10 @@ mod tests {
         let over = 72;
         for round in 1..=2u64 {
             for i in 0..(UNSOLICITED_PARAMS + over) as i32 {
-                inbox.param(ParamId::new(i as u32), Normalized::default());
+                inbox.param(tutti_plugin_types::ParamEdit::change(
+                    ParamId::new(i as u32),
+                    Normalized::default(),
+                ));
             }
             drain_unsolicited(&mut inbox, &channels, &listener);
             assert_eq!(channels.dropped_param_events(), round * over as u64);

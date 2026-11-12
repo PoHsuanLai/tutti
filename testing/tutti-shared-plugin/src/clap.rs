@@ -10,9 +10,10 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
-    CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
-    CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_midi, clap_event_note,
+    CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
+    CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
+    CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING,
+    clap_event_header, clap_event_midi, clap_event_note, clap_event_param_gesture,
     clap_event_param_value, clap_event_transport, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::audio_ports::{
@@ -398,15 +399,60 @@ fn told(t: &clap_event_transport, offset: u32) -> Transport {
     }
 }
 
+/// What `core::NOTICE_GESTURE_ON_LOAD` says: the gesture on `aux`, once after
+/// the state load that selected it, as output events at frame 0 (CLAP has no
+/// call a plugin makes outside `process` and `params.flush` to report an edit).
+unsafe fn report_gesture(me: &Inst, out: *const clap_output_events) {
+    if !me.core.take_gesture() {
+        return;
+    }
+    // SAFETY: the host's output list and its `try_push` are valid for the call.
+    let Some(push) = (unsafe { out.as_ref() }).and_then(|o| o.try_push) else {
+        return;
+    };
+    let header = |size: usize, type_: u16| clap_event_header {
+        size: size as u32,
+        time: 0,
+        space_id: CLAP_CORE_EVENT_SPACE_ID,
+        type_,
+        flags: 0,
+    };
+    let gesture = |type_: u16| clap_event_param_gesture {
+        header: header(size_of::<clap_event_param_gesture>(), type_),
+        param_id: core::AUX,
+    };
+    let value = |value: f64| clap_event_param_value {
+        header: header(size_of::<clap_event_param_value>(), CLAP_EVENT_PARAM_VALUE),
+        param_id: core::AUX,
+        cookie: ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value,
+    };
+    let begin = gesture(CLAP_EVENT_PARAM_GESTURE_BEGIN);
+    let end = gesture(CLAP_EVENT_PARAM_GESTURE_END);
+    let [first, second] = core::GESTURE_VALUES.map(value);
+    // SAFETY: each event is a whole struct whose header names its size and type.
+    unsafe {
+        push(out, &begin.header);
+        push(out, &first.header);
+        push(out, &second.header);
+        push(out, &end.header);
+    }
+}
+
 /// The flush path: a host with no `process` to carry parameter changes (an
 /// inactive plugin) sends them here.
 unsafe extern "C" fn params_flush(
     p: *const clap_plugin,
     input: *const clap_input_events,
-    _out: *const clap_output_events,
+    out: *const clap_output_events,
 ) {
     // SAFETY, for this function's `unsafe` blocks: the host's event list, and its `size` and `get` callbacks, are valid for the call; `get(i)` is called with `i < size`.
     let me = unsafe { inst(p) };
+    unsafe { report_gesture(me, out) };
     let Some(input) = (unsafe { input.as_ref() }) else {
         return;
     };
@@ -562,6 +608,7 @@ unsafe extern "C" fn process(
     }
     let mut guard = me.dsp.lock().unwrap_or_else(|e| e.into_inner());
     let dsp = &mut *guard;
+    unsafe { report_gesture(me, p.out_events) };
     if let Some(t) = unsafe { p.transport.as_ref() } {
         me.core.log_transport(told(t, 0));
     }

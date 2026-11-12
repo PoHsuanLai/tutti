@@ -32,6 +32,7 @@ mod midi_intake;
 mod note_expression;
 mod note_id;
 mod order;
+mod param_edit;
 mod param_unit;
 mod parameters;
 mod pipeline;
@@ -114,6 +115,7 @@ pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };
 pub use note_id::{note_id_to_channel_note, plugin_note_id};
+pub use param_edit::ParamEdit;
 pub use param_unit::{FromPlain, ParamUnit};
 pub use parameters::{
     InvalidNormalized, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,

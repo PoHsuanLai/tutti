@@ -886,7 +886,7 @@ fn absorb(inbox: &mut Unsolicited, msg: BridgeMessage) -> Option<BridgeMessage> 
     match msg {
         BridgeMessage::LatencyChanged { samples } => inbox.latency(samples),
         BridgeMessage::TailChanged { tail } => inbox.tail(tail),
-        BridgeMessage::ParameterChanged { index, value } => inbox.param(index, value),
+        BridgeMessage::ParameterChanged { edit } => inbox.param(edit),
         BridgeMessage::PluginParamValuesChanged => inbox.resync(ResyncKind::ParamValues),
         BridgeMessage::PluginParamTitlesChanged => inbox.resync(ResyncKind::ParamTitles),
         BridgeMessage::PluginIoChanged => inbox.resync(ResyncKind::Io),

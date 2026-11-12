@@ -146,8 +146,12 @@ fn an_editors_edit_reaches_the_processor<F: Format<L = Vst3Loaded>>() {
     let main = main_thread();
     let mut edits = Vec::new();
     a.controller_mut().take_reported_edits(&main, &mut edits);
+    let changes: Vec<_> = edits
+        .iter()
+        .filter_map(|e| e.value().map(|v| (e.id(), v)))
+        .collect();
     assert_eq!(
-        edits,
+        changes,
         [(Param::Aux.id(), Normalized::clamped(0.75))],
         "reported to the host"
     );

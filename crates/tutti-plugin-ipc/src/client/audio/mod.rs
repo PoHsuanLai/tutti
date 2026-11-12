@@ -173,6 +173,16 @@ impl AudioBridge {
         *self.listener.lock() = listener;
     }
 
+    /// Tells the listener of a parameter edit made in the editor instance the
+    /// host holds (it is not the server's to report), on the calling thread.
+    /// A listener must be cheap and never block, as for the bridge thread's.
+    pub(super) fn report_edit(&self, edit: tutti_plugin_types::ParamEdit) {
+        let listener = self.listener.lock().clone();
+        if let Some(listener) = listener {
+            listener(BridgeEvent::ParameterChanged { edit });
+        }
+    }
+
     /// Whether the server died or the bridge lost it. Latched.
     pub fn is_crashed(&self) -> bool {
         self.lifecycle.is_crashed()

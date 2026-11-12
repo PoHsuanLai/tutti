@@ -11,10 +11,10 @@ fn wav(
     channels: impl Into<ChannelLayout>,
     pcm: Pcm,
 ) -> std::io::Result<FileOut> {
-    FileOut::create(
+    Ok(FileOut::create(
+        &Spec::of_width(Format::Wav(pcm), channels.into(), SampleRate(rate)),
         path,
-        &Spec::new(Format::Wav(pcm), channels.into(), SampleRate(rate)),
-    )
+    )?)
 }
 
 /// A WAV sink for the channels `topology` names, so the header's speaker mask
@@ -25,14 +25,10 @@ fn wav_with_topology(
     topology: ChannelTopology,
     pcm: Pcm,
 ) -> std::io::Result<FileOut> {
-    let layout = topology.layout();
-    FileOut::create(
+    Ok(FileOut::create(
+        &Spec::new(Format::Wav(pcm), topology, SampleRate(rate)),
         path,
-        &Spec {
-            topology: Some(topology),
-            ..Spec::new(Format::Wav(pcm), layout, SampleRate(rate))
-        },
-    )
+    )?)
 }
 
 /// A failed open reports *why*, and takes a path without ceremony.
@@ -390,7 +386,7 @@ fn a_flac_take_round_trips_through_the_decoder() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("take.flac");
-    let spec = Spec::new(
+    let spec = Spec::of_width(
         Format::Flac {
             depth: IntDepth::Int16,
             level: FlacLevel::Standard,
@@ -406,7 +402,7 @@ fn a_flac_take_round_trips_through_the_decoder() {
         })
         .collect();
 
-    let mut sink = FileOut::create(&path, &spec).unwrap();
+    let mut sink = FileOut::create(&spec, &path).unwrap();
     assert_eq!(sink.sample_rate(), SampleRate(44_100.0));
     // In blocks of 300 frames, the last one short: the sink is incremental.
     for block in signal.chunks(300 * 2) {

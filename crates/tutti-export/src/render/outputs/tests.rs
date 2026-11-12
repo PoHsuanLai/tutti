@@ -59,11 +59,16 @@ fn run(budget: usize, dir: &std::path::Path) -> (crate::Written, Vec<Vec<f32>>, 
         budget,
     )
     .expect("renders")
-    .finished()
+    .into_finished()
     .expect("not cancelled");
     let mut produced = produced.into_iter();
-    let written = produced.next().unwrap().file().unwrap();
-    let planes = produced.next().unwrap().buffers().unwrap().into_planes();
+    let written = produced.next().unwrap().into_file().unwrap();
+    let planes = produced
+        .next()
+        .unwrap()
+        .into_buffers()
+        .unwrap()
+        .into_planes();
     (written, planes, seen_spill)
 }
 

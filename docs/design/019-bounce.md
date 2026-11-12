@@ -52,8 +52,7 @@ use tutti::prelude::*;
 
 let done = session.bounce(
     Bounce::project()
-        .format(Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard })
-        .master("out/master.flac"),
+        .master("out/master.flac", Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard }),
 )?;       // Bounced<FileMaster>: done.into_master() is the file's `Written`
 ```
 
@@ -62,11 +61,10 @@ Master plus stems, one pass:
 ```rust
 session.bounce(
     Bounce::project()
-        .format(Format::Wav(Pcm::Int24))
-        .master("out/master.wav")
+        .master("out/master.wav", Format::Wav(Pcm::Int24))
         .stem(drums, "out/drums.wav")
         .stem(bass, "out/bass.wav")
-        .stem_with(Stem::new(pad, "out/pad.wav").channels(ChannelLayout::MONO)),
+        .stem_with(Stem::new(pad, "out/pad.wav", Format::Wav(Pcm::Int24)).layout(ChannelLayout::MONO)),
 )?;
 ```
 
@@ -75,11 +73,9 @@ Normalized (master measured, stems left as rendered unless asked):
 ```rust
 session.bounce(
     Bounce::project()
-        .format(Format::Flac { depth: IntDepth::Int16, level: FlacLevel::Standard })
-        .master("out/master.flac")
+        .master("out/master.flac", Format::Flac { depth: IntDepth::Int16, level: FlacLevel::Standard })
         .normalize(Normalize::lufs(Db(-14.0)))
-        .stem(drums, "out/drums.flac")
-        .normalize_stems(StemGain::Shared),   // the master's gain, so stems still sum
+        .stem_with(Stem::new(drums, "out/drums.flac", flac).gain(StemGain::Shared)),   // the master's gain, so stems still sum
 )?;
 ```
 
@@ -114,8 +110,7 @@ bounce starts (`Bounce::try_map`).
 commands
     .spawn(BounceRequest::new(
         Bounce::project()
-            .format(Format::Wav(Pcm::Int24))
-            .master("out/master.wav")
+            .master("out/master.wav", Format::Wav(Pcm::Int24))
             .stem(drums_entity, "out/drums.wav")
             .normalize(Normalize::peak(Db(-1.0))),
     ))
@@ -157,7 +152,7 @@ common case.
 | Worker pool | The session's render pool, when its cost model says parallel pays. | `.serial()` forces the serial render. |
 | Dither | `Dither::Triangular` for every integer width (24-bit included); ignored by float and Vorbis targets. | `.dither(Dither::Off \| Rectangular)` |
 | Event loss | `Fail`: a dropped event fails the bounce. | `.on_event_loss(EventLossPolicy::Allow)` |
-| Normalize | None. | `.normalize(n)`, `.normalize_stems(StemGain)` |
+| Normalize | None. | `.normalize(n)`, per file stem `Stem::gain(StemGain)` |
 | Format | **Required.** `Bounce` has no default format; a missing one is `BounceError::Config(Missing)` at start, before any fork. | `.format(f)`, per-target `Stem::format(f)` |
 | Edit of the fork | None. | `.edit(PrepareEdit)`; runs on the job thread as today. |
 
@@ -458,7 +453,7 @@ makes it unreachable) and the session-only variants.
 | `Export(tutti_export::Error)` | The pipeline's. |
 
 `BounceConfigError` (session-only; moved from export's `ConfigError`):
-`Missing(Field)` (format, a target), `GraphHasNoOutputs`, `NoRange`, `EmptyRange`,
+`GraphHasNoOutputs`, `NoRange`, `EmptyRange`,
 `StemNotInGraph { node }`, `StemNotAudible { node }`, `StemChannelMissing { node,
 channel }`, `DuplicatePath(PathBuf)` (two targets name one file, checked before
 any work), `Placement { target, why }`, `PrepareHookUncommittable(CommitError)`.
@@ -954,3 +949,24 @@ from the text above:
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;
 golden digests, if any, go through `assert_golden`.
+
+**As built (core lane step 10, E1 and E2).** A file master always has its
+format and only a file master has the file's knobs:
+
+- `Bounce::master(path, format)` makes the `FileMaster` (`Bounce::format`,
+  `Missing(Field)` and `Field` are gone). `resample`, `dither`, `normalize` and
+  `stem(node, path)` (a stem in the master's format) are methods of
+  `Bounce<_, FileMaster>` alone, so a `master_buffers` bounce cannot be given a
+  normalize (a `compile_fail` doctest).
+- A stem's kind is in its type: `Stem<N, FileStem>` (`Stem::new(node, path, format)`,
+  with `.gain(StemGain)`) or `Stem<N, BufferStem>` (`Stem::buffers(node)`, which has no
+  gain: a `compile_fail` doctest). `Bounce::normalize_stems`, `Stem::format` and
+  `BounceConfigError::NormalizeBuffers` are gone. A buffer master still writes file
+  stems; those are written with the default dither and no resample.
+- `FileTarget` and `BufferTarget` state their width once (`with_topology(topology)`
+  takes the `Option` no more and replaces the count), as `Spec` does, so a topology of
+  another width than the target cannot be written and the render-start refusal of it is
+  deleted. `Bounce::channels` and `Bounce::file_topology` replace each other.
+- `Produced::file` and `buffers` borrow, `into_file` and `into_buffers` own, so
+  `done.stems()[0].file()` compiles (`Outcome::finished` and `into_finished` the
+  same).

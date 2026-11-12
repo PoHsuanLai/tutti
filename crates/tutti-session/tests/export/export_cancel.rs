@@ -70,11 +70,13 @@ fn rig(at: usize) -> Rig {
     }
 }
 
-/// A bounce of `BLOCKS` graph blocks: 16-bit stereo, nothing trimmed and no
-/// tail (the node reports an unbounded one), on a frozen clock.
+/// The format every file of these bounces is written as.
+const FORMAT: Format = Format::Wav(Pcm::Int16);
+
+/// A bounce of `BLOCKS` graph blocks: stereo, nothing trimmed and no tail
+/// (the node reports an unbounded one), on a frozen clock.
 fn bounce() -> Bounce {
     Bounce::project()
-        .format(Format::Wav(Pcm::Int16))
         .channels(ChannelLayout::STEREO)
         .range(Range::Frames(
             Frame(0),
@@ -86,7 +88,7 @@ fn bounce() -> Bounce {
 }
 
 fn file_request(path: &Path, normalize: Option<Normalize>) -> Bounce<NodeKey, FileMaster> {
-    let bounce = bounce().master(path);
+    let bounce = bounce().master(path, FORMAT);
     match normalize {
         Some(n) => bounce.normalize(n),
         None => bounce,
@@ -198,13 +200,16 @@ fn progress_ends_at_one_in_the_finalizing_stage() {
 /// `normalize` is set (the stem then takes the master's gain, so the pass
 /// keeps both for its measurement).
 fn with_stem(r: &Rig, dir: &Path, normalize: bool) -> Bounce<NodeKey, FileMaster> {
+    let gain = if normalize {
+        tutti_session::StemGain::Shared
+    } else {
+        tutti_session::StemGain::None
+    };
     let bounce = bounce()
-        .master(dir.join("master.wav"))
-        .stem(r.node, dir.join("stem.wav"));
+        .master(dir.join("master.wav"), FORMAT)
+        .stem_with(tutti_session::Stem::new(r.node, dir.join("stem.wav"), FORMAT).gain(gain));
     if normalize {
-        bounce
-            .normalize(Normalize::peak(Db(-6.0)))
-            .normalize_stems(tutti_session::StemGain::Shared)
+        bounce.normalize(Normalize::peak(Db(-6.0)))
     } else {
         bounce
     }

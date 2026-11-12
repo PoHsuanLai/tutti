@@ -54,7 +54,7 @@ impl<W: Write + Seek> AiffWriter<W> {
             })?,
             // The extended float the header states; the one rate that is not
             // narrowed to whole Hz.
-            sample_rate: spec.rate.get(),
+            sample_rate: spec.rate().get(),
             sample_format: match pcm {
                 Pcm::Int16 => SampleFormat::I16,
                 Pcm::Int24 => SampleFormat::I24,

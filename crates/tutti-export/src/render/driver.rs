@@ -43,8 +43,8 @@ impl FileChannels<'_> {
     ///
     /// # Errors
     ///
-    /// [`ConfigError::Placement`] when the file's topology is not as wide as
-    /// the file or cannot take the graph's channels, or the declared root is
+    /// [`ConfigError::Placement`] when the file's topology cannot take the
+    /// graph's channels, or the declared root is
     /// not as wide as the graph, or the graph has more channels than a layout
     /// holds ([`FoldError::TooWide`](tutti_types::FoldError::TooWide)).
     pub(crate) fn fold_from(
@@ -70,13 +70,6 @@ impl FileChannels<'_> {
             };
             return fold.map_err(|e| ConfigError::Placement(e).into());
         };
-        if topology.layout() != self.layout {
-            return Err(ConfigError::Placement(tutti_types::FoldError::Unassigned {
-                src: graph,
-                dst: topology.layout(),
-            })
-            .into());
-        }
         let from = match root {
             Some(root) => root.clone(),
             None => ChannelTopology::for_width(graph),

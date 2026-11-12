@@ -180,7 +180,7 @@ mod measurer {
     fn the_chunked_reading_is_the_analytic_one_and_the_one_shot_one() {
         let rendered = sine(5, 0.1);
         let chunked = measure(&rendered, &CancelToken::new(), &mut |_| {})
-            .finished()
+            .into_finished()
             .expect("not cancelled");
 
         let analytic_lufs = 20.0 * 0.1f32.log10() + 10.0 * 0.625f32.log10();
@@ -216,7 +216,7 @@ mod measurer {
     fn the_cut_does_not_move_the_reading() {
         let rendered = sine(3, 0.25);
         let whole = measure(&rendered, &CancelToken::new(), &mut |_| {})
-            .finished()
+            .into_finished()
             .expect("not cancelled");
         let mut fine = Measurer::new(RATE, rendered.layout()).expect("meterable");
         let frames = rendered.frames().get();

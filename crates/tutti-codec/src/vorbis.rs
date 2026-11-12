@@ -46,7 +46,7 @@ use std::io::{Seek, Write};
 use std::num::{NonZeroU8, NonZeroU32};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
-use tutti_types::{ChannelLayout, ChannelTopology, Interleaved, Speaker};
+use tutti_types::{ChannelLayout, Interleaved, Speaker};
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoder, VorbisEncoderBuilder};
 
 /// Blocks in flight between the caller and the encoder thread.
@@ -101,7 +101,7 @@ impl<W: Write + Seek + Send + 'static> VorbisWriter<W> {
                 max: u16::from(u8::MAX),
             },
         )?;
-        let layout = spec.layout;
+        let layout = spec.layout();
         let order = vorbis_order(spec)?;
         let (jobs, queue) = mpsc::sync_channel(QUEUE);
         let (back, spare) = mpsc::channel();
@@ -228,7 +228,6 @@ fn vorbis_speakers(width: u16) -> Option<&'static [Speaker]> {
 ///
 /// # Errors
 ///
-/// [`SpecError::TopologyWidth`] for a topology of another width than the file,
 /// [`SpecError::VorbisLayout`] for a width Vorbis defines whose speakers the
 /// topology does not name, or does not have.
 fn vorbis_order(spec: &Spec) -> Result<Option<Box<[usize]>>> {
@@ -236,22 +235,11 @@ fn vorbis_order(spec: &Spec) -> Result<Option<Box<[usize]>>> {
     let Some(target) = vorbis_speakers(width) else {
         return Ok(None);
     };
-    let stated = match &spec.topology {
-        Some(t) if t.layout() != spec.layout => {
-            return Err(SpecError::TopologyWidth {
-                topology: t.layout(),
-                file: spec.layout,
-            }
-            .into());
-        }
-        Some(t) => Some(t.clone()),
-        None => ChannelTopology::smpte(spec.layout),
-    };
     let refused = || SpecError::VorbisLayout {
         channels: width,
-        topology: spec.topology.clone(),
+        topology: spec.topology().clone(),
     };
-    let source = stated.ok_or_else(refused)?;
+    let source = spec.topology();
     let have = source.positions();
     let mut taken = vec![false; have.len()];
     let mut order: Vec<Option<usize>> = vec![None; target.len()];

@@ -9,12 +9,12 @@ use tutti_types::SampleRate;
 /// A WAV sink `channels` wide at 48 kHz.
 fn sink(path: &std::path::Path, channels: u16, pcm: Pcm) -> FileOut {
     FileOut::create(
-        path,
-        &Spec::new(
+        &Spec::of_width(
             Format::Wav(pcm),
             ChannelLayout::from(channels),
             SampleRate(48_000.0),
         ),
+        path,
     )
     .expect("sink opens")
 }

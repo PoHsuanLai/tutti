@@ -1,10 +1,21 @@
 //! [`Wave`]: a resident, planar, multichannel sample buffer.
 //!
-//! A buffer only: build it, index it, decode a file into it. Decoding a file
-//! *into* a `Wave` is `Wave::read`, behind the `decode-*` features; the buffer
-//! itself needs none.
+//! A buffer: build it, index it, decode a file into it, write it to a file.
+//! Decoding a file *into* a `Wave` is `Wave::read`, behind the `decode-*`
+//! features, and writing one is `Wave::write`, behind the `encode-*`
+//! features; the buffer itself needs none.
 
+#[cfg(encode)]
+use crate::{Format, Spec};
+#[cfg(encode)]
+use std::path::Path;
 use tutti_types::{ChannelLayout, ChannelTopology};
+#[cfg(encode)]
+use tutti_types::{Interleaved, Samples};
+
+/// Frames written to the encoder at a time by [`Wave::write`].
+#[cfg(encode)]
+const WRITE_CHUNK: usize = 8192;
 
 /// Multichannel audio held in memory, one `Vec<f32>` per channel.
 ///
@@ -118,6 +129,13 @@ impl Wave {
         &self.topology
     }
 
+    /// Returns the width, as a [`ChannelLayout`]: the length of the
+    /// [`topology`](Self::topology).
+    #[inline]
+    pub fn layout(&self) -> ChannelLayout {
+        self.topology.layout()
+    }
+
     /// Creates an all-zero wave `duration` seconds long, rounded to the
     /// nearest frame.
     ///
@@ -224,6 +242,71 @@ impl Wave {
     #[inline]
     pub fn duration(&self) -> tutti_types::Seconds {
         tutti_types::Seconds(self.len as f64 / self.sample_rate.get())
+    }
+
+    /// Returns every sample frame by frame: channel 0 to the last of frame 0,
+    /// then frame 1, and so on, the order of an [`Interleaved`](tutti_types::Interleaved) block.
+    ///
+    /// An iterator and not a `Vec`: a wave is already held whole, and the
+    /// caller that wants flat samples (an encoder, a meter) reads them in
+    /// chunks instead of doubling the memory.
+    pub fn interleaved(&self) -> impl Iterator<Item = f32> + '_ {
+        (0..self.len).flat_map(|frame| self.vec.iter().map(move |channel| channel[frame]))
+    }
+
+    /// Writes the wave as a file of `format` at `path`, at its own rate and
+    /// with its own topology (the speaker mask of a WAV, the channel order of
+    /// an Ogg Vorbis file).
+    ///
+    /// The file is written beside `path` and renamed over it when it is
+    /// whole, as [`Encoder::create_file`](crate::Encoder::create_file) does,
+    /// so a failure leaves what was at `path` as it was. Nothing is
+    /// resampled, dithered or normalized: the samples go as they are, and an
+    /// integer width quantizes them with the format's own rounding.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Spec`](crate::Error::Spec) for a wave the format cannot hold
+    /// (no channels, a rate no header states, a width past the format's
+    /// limit), [`Error::WavTooLarge`](crate::Error::WavTooLarge) for a WAV too
+    /// long for its 32-bit sizes, and the encoder's other errors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "encode-wav", feature = "decode-wav"))] {
+    /// use tutti_codec::{Format, Pcm, Wave};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let dir = tempfile::tempdir()?;
+    /// let path = dir.path().join("ramp.wav");
+    /// let wave = Wave::from_samples(48_000u32, &[0.0, 0.25, 0.5, 0.75]);
+    /// wave.write(&path, Format::Wav(Pcm::Float32))?;
+    /// assert_eq!(Wave::read(&path)?.channel(0), wave.channel(0));
+    /// # Ok(())
+    /// # }
+    /// # }
+    /// ```
+    #[cfg(encode)]
+    pub fn write(&self, path: impl AsRef<Path>, format: Format) -> crate::Result<()> {
+        let spec = Spec::new(format, self.topology.clone(), self.sample_rate);
+        let mut encoder = crate::Encoder::create_file_planned(&spec, path, Samples(self.len))?;
+        let layout = self.layout();
+        let mut flat = Vec::with_capacity(WRITE_CHUNK * usize::from(layout.count()));
+        let mut samples = self.interleaved();
+        loop {
+            flat.clear();
+            flat.extend(
+                samples
+                    .by_ref()
+                    .take(WRITE_CHUNK * usize::from(layout.count())),
+            );
+            if flat.is_empty() {
+                break;
+            }
+            encoder.write(Interleaved::new(&flat, layout))?;
+        }
+        encoder.finish().map(drop)
     }
 
     /// The backing vector of one channel, for the decoder's batch append.

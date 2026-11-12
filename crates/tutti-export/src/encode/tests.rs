@@ -17,9 +17,12 @@ impl Case {
     }
 
     fn target(&self, path: &Path) -> FileTarget {
-        FileTarget::new(path, Format::Wav(self.pcm), self.channels)
-            .with_topology(self.topology.clone())
-            .with_resample(self.resample)
+        let target = FileTarget::new(path, Format::Wav(self.pcm), self.channels);
+        match &self.topology {
+            Some(topology) => target.with_topology(topology.clone()),
+            None => target,
+        }
+        .with_resample(self.resample)
     }
 }
 
@@ -99,15 +102,14 @@ fn the_limit_is_judged_at_the_output_rate() {
 
 /// A topology reaches the file: four channels declare the quad mask `0x33` only
 /// when told they are quad, six declare 5.1 by their width, and a bare four
-/// are unassigned. A topology of another width than the file is refused before
-/// anything is written.
+/// are unassigned.
 ///
 /// This restores the export-level half of the old
 /// `an_export_at_the_limit_succeeds_and_declares_its_mask`; the limit half
 /// lives in `tutti-codec`, where the limit can be lowered.
 #[cfg(feature = "wav")]
 #[test]
-fn the_topology_reaches_the_file_and_must_match_its_width() {
+fn the_topology_reaches_the_file() {
     let dir = tempfile::tempdir().unwrap();
     for (channels, topology, mask) in [
         (4u16, Some(tutti_types::ChannelTopology::quad()), 0x33u32),
@@ -137,21 +139,4 @@ fn the_topology_reaches_the_file_and_must_match_its_width() {
             8 * u32::from(channels)
         );
     }
-
-    let mut cfg = config(2, Pcm::Int24);
-    cfg.topology = Some(tutti_types::ChannelTopology::quad());
-    let path = dir.path().join("bad.wav");
-    let err = open_file(&cfg.target(&path), &cfg.plan(), cfg.rate)
-        .map(drop)
-        .expect_err("a quad topology is not stereo");
-    assert!(
-        matches!(
-            err,
-            Error::Encode(tutti_codec::Error::Spec(
-                tutti_codec::SpecError::TopologyWidth { .. }
-            ))
-        ),
-        "{err}"
-    );
-    assert!(!path.exists());
 }

@@ -73,18 +73,42 @@ impl NormalizeSpec {
     }
 }
 
+/// The width of a target, stated once: a bare count of channels, or the
+/// speakers they feed (whose length is the width). A target cannot hold both,
+/// so a topology of another width than the target is not writable.
+#[derive(Debug, Clone, PartialEq)]
+enum Width {
+    Count(ChannelLayout),
+    Placed(ChannelTopology),
+}
+
+impl Width {
+    fn layout(&self) -> ChannelLayout {
+        match self {
+            Self::Count(layout) => *layout,
+            Self::Placed(topology) => topology.layout(),
+        }
+    }
+
+    fn topology(&self) -> Option<&ChannelTopology> {
+        match self {
+            Self::Count(_) => None,
+            Self::Placed(topology) => Some(topology),
+        }
+    }
+}
+
 /// A file one output is written to: where, in what format and width, and how
 /// it is converted on the way (rate, dither, normalize).
 ///
-/// A format and width the encoder cannot take, and a topology it cannot
-/// place, are refused when the render starts (the file's rate is not known
+/// A format and width the encoder cannot take, and a topology the fold cannot
+/// place the channels into, are refused when the render starts (the file's rate is not known
 /// until then), before any frame is rendered and before the path is touched.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileTarget {
     path: PathBuf,
     format: Format,
-    channels: ChannelLayout,
-    topology: Option<ChannelTopology>,
+    width: Width,
     resample: Option<Resample>,
     dither: Option<DitherShape>,
     normalize: Option<NormalizeSpec>,
@@ -99,8 +123,7 @@ impl FileTarget {
         Self {
             path: path.into(),
             format,
-            channels,
-            topology: None,
+            width: Width::Count(channels),
             resample: None,
             dither: Some(DitherShape::Triangular),
             normalize: None,
@@ -108,11 +131,12 @@ impl FileTarget {
     }
 
     /// Which speaker each file channel feeds: for the WAV speaker mask, Ogg
-    /// Vorbis's channel order and the fold onto the file. `None` is the
-    /// engine's order for the width. Its width must be the file's.
+    /// Vorbis's channel order and the fold onto the file. It replaces the
+    /// width [`new`](Self::new) was given: the file is as wide as the
+    /// topology, and without one it has the engine's order for the width.
     #[must_use]
-    pub fn with_topology(mut self, topology: Option<ChannelTopology>) -> Self {
-        self.topology = topology;
+    pub fn with_topology(mut self, topology: ChannelTopology) -> Self {
+        self.width = Width::Placed(topology);
         self
     }
 
@@ -153,13 +177,13 @@ impl FileTarget {
     /// The file's width.
     #[must_use]
     pub fn channels(&self) -> ChannelLayout {
-        self.channels
+        self.width.layout()
     }
 
     /// The speakers the file's channels feed, if stated.
     #[must_use]
     pub fn topology(&self) -> Option<&ChannelTopology> {
-        self.topology.as_ref()
+        self.width.topology()
     }
 
     /// The rate conversion on the way out, if any.
@@ -186,8 +210,7 @@ impl FileTarget {
 /// [`Rendered`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct BufferTarget {
-    channels: ChannelLayout,
-    topology: Option<ChannelTopology>,
+    width: Width,
 }
 
 impl BufferTarget {
@@ -195,29 +218,28 @@ impl BufferTarget {
     #[must_use]
     pub fn new(channels: ChannelLayout) -> Self {
         Self {
-            channels,
-            topology: None,
+            width: Width::Count(channels),
         }
     }
 
-    /// Which speakers the planes are, for the fold onto them; `None` is the
-    /// engine's order for the width. Its width must be the planes'.
+    /// Which speakers the planes are, for the fold onto them. It replaces the
+    /// width [`new`](Self::new) was given: there is one plane per speaker.
     #[must_use]
-    pub fn with_topology(mut self, topology: Option<ChannelTopology>) -> Self {
-        self.topology = topology;
+    pub fn with_topology(mut self, topology: ChannelTopology) -> Self {
+        self.width = Width::Placed(topology);
         self
     }
 
     /// The planes' width.
     #[must_use]
     pub fn channels(&self) -> ChannelLayout {
-        self.channels
+        self.width.layout()
     }
 
     /// The speakers the planes are, if stated.
     #[must_use]
     pub fn topology(&self) -> Option<&ChannelTopology> {
-        self.topology.as_ref()
+        self.width.topology()
     }
 }
 
@@ -348,8 +370,20 @@ pub enum Produced {
 
 impl Produced {
     /// The file, or `None` for planes.
+    ///
+    /// ```
+    /// # use tutti_export::{Produced, Rendered};
+    /// # use tutti_types::SampleRate;
+    /// let all = vec![Produced::Buffers(
+    ///     Rendered::new(vec![vec![0.0; 4]], SampleRate(48_000.0), 0)?,
+    /// )];
+    /// // Borrowed, so an output in a list is read in place.
+    /// assert!(all[0].file().is_none());
+    /// assert_eq!(all[0].buffers().map(Rendered::channels), Some(1));
+    /// # Ok::<(), tutti_export::RenderedError>(())
+    /// ```
     #[must_use]
-    pub fn file(self) -> Option<Written> {
+    pub fn file(&self) -> Option<&Written> {
         match self {
             Self::File(written) => Some(written),
             Self::Buffers(_) => None,
@@ -358,7 +392,25 @@ impl Produced {
 
     /// The planes, or `None` for a file.
     #[must_use]
-    pub fn buffers(self) -> Option<Rendered> {
+    pub fn buffers(&self) -> Option<&Rendered> {
+        match self {
+            Self::Buffers(rendered) => Some(rendered),
+            Self::File(_) => None,
+        }
+    }
+
+    /// The file, owned, or `None` for planes.
+    #[must_use]
+    pub fn into_file(self) -> Option<Written> {
+        match self {
+            Self::File(written) => Some(written),
+            Self::Buffers(_) => None,
+        }
+    }
+
+    /// The planes, owned, or `None` for a file.
+    #[must_use]
+    pub fn into_buffers(self) -> Option<Rendered> {
         match self {
             Self::Buffers(rendered) => Some(rendered),
             Self::File(_) => None,
@@ -371,8 +423,7 @@ impl Produced {
 #[non_exhaustive]
 pub enum TargetError {
     /// The channels (the graph's, or a tap's lanes) have no place in the
-    /// target's layout: the topology it states cannot take them, or is not as
-    /// wide as the target.
+    /// target's layout: the topology it states cannot take them.
     #[error("the channels cannot be placed into the target's: {0}")]
     Placement(FoldError),
     /// The tap has a lane count other than its [`Placement`]'s width.

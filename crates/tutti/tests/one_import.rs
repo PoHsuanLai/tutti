@@ -93,8 +93,8 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
         &mut tutti::export::Control::none(),
     )
     .expect("a DC graph renders")
-    .finished()
-    .and_then(tutti::export::Produced::buffers)
+    .into_finished()
+    .and_then(tutti::export::Produced::into_buffers)
     .expect("nothing cancels a control with no token");
     assert!(!rendered.planes().is_empty());
     assert!(rendered.planes()[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));

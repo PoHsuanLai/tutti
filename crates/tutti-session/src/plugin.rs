@@ -471,7 +471,7 @@ pub enum PluginLiveness {
 }
 
 /// What happened to a hosted plugin, as the session's
-/// [`SessionEvent::Plugin`](crate::SessionEvent::Plugin) reports it (design 029
+/// [`SessionEvent::Plugin`] reports it (design 029
 /// section 3.3): the node, and what changed.
 ///
 /// One stream carries both what a plugin reports (its own edit of a
@@ -546,7 +546,7 @@ pub enum PluginChange {
         cause: String,
     },
     /// A hosted plugin died or hung and recovery is on
-    /// ([`RecoveryPolicy`](crate::RecoveryPolicy)): its node stays in the
+    /// ([`RecoveryPolicy`]): its node stays in the
     /// graph, silent, and a replacement loads after `delay`. Reported once per
     /// attempt.
     Reloading {

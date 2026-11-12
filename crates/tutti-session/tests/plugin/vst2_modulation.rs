@@ -39,7 +39,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 /// the outputs, its parameter values read.
 fn session_with_probe() -> (Session, NodeKey) {
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(RATE)
         .expect("a detached session builds");
     let node = s

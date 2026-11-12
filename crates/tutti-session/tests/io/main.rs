@@ -5,6 +5,8 @@
 // no longer turns it on).
 #[cfg(feature = "device")]
 mod device;
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod device_input;
 #[cfg(feature = "device")]
 mod device_listing;
 // A restart onto another rate, width or block (the session halves of

@@ -133,6 +133,7 @@ fn mic_with_ring(width: u16, frames: usize) -> (MicIn, TapWriter) {
         sample_rate: SampleRate(48_000.0),
         device_inputs: ChannelLayout::from(width),
         faults: Arc::new(StreamFaults::new()),
+        latency: Arc::new(crate::StreamLatency::new()),
         _stream: StreamHandle(Owned::spawn("test-input", || Ok(())).expect("spawn")),
     };
     (mic, writer)
@@ -164,6 +165,7 @@ fn capture(device: u16, inputs: &[usize], frames: usize) -> (Capture, MicIn, Tap
         sample_rate: SampleRate(48_000.0),
         device_inputs: ChannelLayout::from(device),
         faults: Arc::new(StreamFaults::new()),
+        latency: Arc::new(crate::StreamLatency::new()),
         _stream: StreamHandle(Owned::spawn("test-input", || Ok(())).expect("spawn")),
     };
     (capture, mic, ring)

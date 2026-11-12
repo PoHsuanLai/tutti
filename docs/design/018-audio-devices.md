@@ -18,17 +18,18 @@ Read in the code on `main`; nothing was run against a real card.
   only inside `start` and `restart`. cpal 0.15.3 has `Device::name` and no id,
   and no change notification on any host, so polling is the only portable way.
 - An output that vanishes sets `StreamFaults::disconnected`, and
-  `SessionEvent::DeviceFault` is reported once. Then the callback stops, the
+  `DeviceEvent::Fault` is reported once. Then the callback stops, the
   transport and graph freeze, and nothing restarts, even though the device
   layer supports a restart after a disconnect.
 - A startup failure is terminal (`AudioEngineState::Failed`): an app launched
   with no card never gets audio when one is plugged in.
 - `DeviceSelector::Index` is the position in one enumeration. A hot-plug
   renumbers it, so a saved index can open a different card.
-- `MicIn` is opened at the graph's rate by the host. The session never sees it
-  and `Session::restart` cannot reopen it, so after a 44.1 to 48 kHz restart
-  its old-rate frames feed the new-rate graph: pitch and speed shift, no
-  error.
+- `MicIn` was opened at the graph's rate by the host. The session never saw it
+  and a restart could not reopen it, so after a 44.1 to 48 kHz restart its
+  old-rate frames fed the new-rate graph: pitch and speed shift, no error.
+  (As built, doc 030 step 7: `Session::add_input` opens the mic and its inlet
+  together, and a restart reopens it into the same node.)
 
 ## 2. Four layers
 
@@ -72,10 +73,11 @@ pub trait SnapshotSource { fn poll(&mut self) -> Option<Snapshot>; }
 pub struct DevicePolicy { follow_default, reconnect, retry_startup: bool, poll_interval, backoff: Backoff }
 pub struct Follow;   // step(FollowEvent, &Snapshot, Instant) -> Option<DeviceRestart>, pure
 pub struct DeviceWatch;   // source + roster + Follow; poll(now, &mut Vec<SessionEvent>)
-Session::watch_devices(source, policy, want, running_on)
-SessionEvent::{DeviceLost, DeviceAppeared, DefaultChanged, RestartWanted(DeviceRestart),
-               DeviceRestarted(DeviceRestarted { previous_rate, rate }), RestartFailed(String),
-               OutputsListed(Vec<DeviceId>), OutputsListFailed(String), OutputsListSlow(Duration)}
+LiveSession::watch_devices(source, policy)   // want and running_on are the device's own
+SessionEvent::Device(DeviceEvent::{Lost, Appeared, DefaultChanged, RestartWanted(DeviceRestart),
+               Restarted(DeviceRestarted { previous_rate, rate }), RestartFailed(RestartError),
+               OutputsListed(Vec<DeviceId>), OutputsListFailed(tutti_cpal::Error),
+               OutputsListSlow(Duration)})
 Session::list_outputs(DeviceListing)   // the one-shot startup listing (§4)
 
 // bevy-tutti
@@ -102,13 +104,13 @@ AudioDeviceEvent (message), AudioDeviceState::{output_devices, default_output}
   clear after `settle` with no attempt. A device that flaps faster than
   `settle` is retried at `max`, not on every change.
 - **A failed follow keeps the old spec.** It is the documented state of
-  `Session::restart` (the stream stopped, the old spec and rate kept); the
+  `LiveSession::restart` (the stream stopped, the old spec and rate kept); the
   watch records a strike and tries again after the delay.
 - **The session decides, the host executes.** `Device` is `!Send` and the
   host owns it, so `Poll` reports `RestartWanted(request)` and the host calls
-  `Session::restart` with it. Every restart, wanted or the host's own, tells
+  `LiveSession::restart` with it. Every restart, wanted or the host's own, tells
   the watch the outcome and is reported by the next poll
-  (`DeviceRestarted` or `RestartFailed`); a restart onto a different selector
+  (`Restarted` or `RestartFailed`); a restart onto a different selector
   is the host choosing, and the policy then follows that choice. Bevy's
   system queues `restart_device` for the request.
 - **The mic is the host's.** The session holds no `MicIn`, so it cannot reopen
@@ -140,12 +142,13 @@ AudioDeviceEvent (message), AudioDeviceState::{output_devices, default_output}
   moves the stream only after a fault. Probing can also make a restart meet
   `EBUSY`: a counted strike, then the backoff. Opening every PCM each
   interval is a cost a host opts into; the interval is at least 250 ms.
-- **A policy restart never makes a choice.** `Session::restart` (the host's)
-  records the selector as what the user wants. A restart the policy asked for
-  goes through `Session::restart_wanted`, which never changes it and is
-  dropped when the host has chosen something else since (a stale request).
-  `restart_on` (a custom driver) records no choice and leaves the running
-  device unknown.
+- **A policy restart never makes a choice.** `LiveSession::restart` with a
+  request of the host's records the selector as what the user wants. A request
+  the policy asked for (the `DeviceRestart` of `RestartWanted`) goes through
+  the same call, which then never changes the choice and drops it, returning
+  `Ok(None)`, when the host has chosen something else since (a stale request).
+  A restart onto a custom driver (`Session::restart_on`, behind `testing`)
+  records no choice and leaves the running device unknown.
 - **A host can decline.** Ignoring `RestartWanted` declines it (a strike is
   counted); `Session::hold_device_restarts(true)` (Bevy:
   `AudioGraphRes::hold_device_restarts`) stops the asking while a take is
@@ -158,7 +161,7 @@ AudioDeviceEvent (message), AudioDeviceState::{output_devices, default_output}
   the session's watch when the engine is built.
 - **Startup enumeration is off the frame.** With watching off, the list in
   `AudioDeviceState::output_devices` is empty until a one-shot
-  `DeviceListing` answers (`SessionEvent::OutputsListed`), some frames after
+  `DeviceListing` answers (`DeviceEvent::OutputsListed`), some frames after
   `Startup`; it stays empty if enumeration fails (`OutputsListFailed`) or never
   returns. `OutputsListSlow` is reported once after `LISTING_WARNING` (5 s of
   the phase's clock) and the app logs a warning. The thread is never joined: a
@@ -166,7 +169,7 @@ AudioDeviceEvent (message), AudioDeviceState::{output_devices, default_output}
   detached until the process exits, holding nothing of the app's, so neither a
   frame nor shutdown waits for it. `Device::devices()` stays a public blocking
   call for a host that chooses to make it. An engine whose driver names no
-  device (`build_device_on`) lists nothing. **Still on the frame:** a
+  device (`build_device_on`, behind `testing`) lists nothing. **Still on the frame:** a
   `DeviceSelector::Id` is resolved by listing the host (`host.device()`), in
   the build, in `device_state_init_system`'s `device_name()` and after a
   restart; only a `Default` selector is off it (cpal's ALSA `default` device

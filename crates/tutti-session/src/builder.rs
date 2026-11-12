@@ -1,6 +1,7 @@
 //! [`SessionBuilder`]: one ordered, fallible build of a graph, its engine and
 //! the nodes the engine inserts, offline, on a device, or detached.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use tutti_graph::MAX_ROOT_CHANNELS;
@@ -17,21 +18,28 @@ use crate::{Result, Session};
 ///
 /// ```
 /// use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
-/// use tutti_session::Session;
+/// use tutti_session::{Session, Workers};
 ///
 /// let session = Session::builder()
-///     .outputs_floor(6) // a 5.1 project renders six, whatever the device
-///     .render_workers(1)
+///     .outputs_floor(ChannelLayout::from_count(6)) // a 5.1 project renders six, whatever the device
+///     .render_workers(Workers::SERIAL)
 ///     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))
 ///     .unwrap();
 /// assert_eq!(session.graph_ref().outputs(), 6);
 /// ```
 #[derive(Debug)]
 pub struct SessionBuilder {
-    inputs: usize,
-    outputs_floor: usize,
+    inputs: ChannelLayout,
+    outputs_floor: ChannelLayout,
     root: Option<ChannelTopology>,
-    render_workers: usize,
+    render_workers: Workers,
+    /// The platform host the output and every input the session opens use.
+    #[cfg(feature = "device")]
+    host: tutti_cpal::AudioHost,
+    /// Where the session's inputs open, if not the sound card
+    /// ([`input_opener`](Self::input_opener)).
+    #[cfg(all(feature = "device", feature = "audio-io"))]
+    input_opener: Option<Box<dyn crate::InputOpener>>,
     render_worker_start: Option<crate::RenderWorkerStart>,
     #[cfg(feature = "midi-hardware")]
     midi_hardware: bool,
@@ -68,10 +76,14 @@ impl std::fmt::Debug for MidiBackend {
 impl Default for SessionBuilder {
     fn default() -> Self {
         Self {
-            inputs: 0,
-            outputs_floor: 2,
+            inputs: ChannelLayout::EMPTY,
+            outputs_floor: ChannelLayout::STEREO,
             root: None,
-            render_workers: 1,
+            render_workers: Workers::SERIAL,
+            #[cfg(feature = "device")]
+            host: tutti_cpal::AudioHost::Default,
+            #[cfg(all(feature = "device", feature = "audio-io"))]
+            input_opener: None,
             render_worker_start: None,
             #[cfg(feature = "midi-hardware")]
             midi_hardware: false,
@@ -91,6 +103,64 @@ impl Default for SessionBuilder {
             recovery: Some(crate::RecoveryPolicy::default()),
             spawner: crate::jobs::Spawner::default(),
         }
+    }
+}
+
+/// How many threads render a block, the caller's included
+/// ([`SessionBuilder::render_workers`]).
+///
+/// Serial is [`SERIAL`](Self::SERIAL), a constant and the default: there is
+/// no separate variant for it, so there is one spelling of "the callback
+/// alone" (`Exactly(1)` *is* it). A pool of more threads renders every block
+/// bit-identically to the serial one; it pays when the graph is wide and its
+/// nodes heavy.
+///
+/// ```
+/// use tutti_session::Workers;
+///
+/// assert_eq!(Workers::default(), Workers::SERIAL);
+/// assert_eq!(Workers::of(4).threads(), 4);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Workers {
+    /// One thread for each core the OS reports (one, when it reports none).
+    PerCore,
+    /// This many threads. One renders on the caller alone.
+    Exactly(NonZeroUsize),
+}
+
+impl Workers {
+    /// The callback alone: the default.
+    pub const SERIAL: Self = Self::Exactly(NonZeroUsize::MIN);
+
+    /// `threads` threads, for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If `threads` is zero.
+    #[must_use]
+    pub const fn of(threads: usize) -> Self {
+        match NonZeroUsize::new(threads) {
+            Some(n) => Self::Exactly(n),
+            None => panic!("a render pool has at least one thread: the caller's"),
+        }
+    }
+
+    /// The thread count this asks for, resolved now (`PerCore` reads the
+    /// OS's figure).
+    #[must_use]
+    pub fn threads(self) -> usize {
+        match self {
+            Self::PerCore => std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
+            Self::Exactly(n) => n.get(),
+        }
+    }
+}
+
+impl Default for Workers {
+    fn default() -> Self {
+        Self::SERIAL
     }
 }
 
@@ -114,20 +184,32 @@ struct Parts {
 }
 
 impl SessionBuilder {
-    /// Global graph inputs (hardware or host input channels). Default 0.
-    ///
-    /// A count above `u16::MAX` is refused when the session is built
-    /// ([`FoldError::TooWide`](tutti_types::FoldError::TooWide)).
+    /// Global graph inputs (hardware or host input channels). Default none
+    /// ([`ChannelLayout::EMPTY`]).
     #[must_use]
-    pub fn inputs(mut self, inputs: usize) -> Self {
+    pub fn inputs(mut self, inputs: ChannelLayout) -> Self {
         self.inputs = inputs;
         self
     }
 
-    /// The project's output width: the graph root is at least this wide, and
-    /// at least the device's ([`root_width`]). Default 2.
+    /// The platform audio host the output device and every input the session
+    /// opens (`Session::add_input`, feature `audio-io`) go through.
+    /// Default [`AudioHost::Default`](tutti_cpal::AudioHost::Default); asking for
+    /// one this build cannot reach (JACK without the `jack` feature, or with
+    /// no server running) is refused when the device opens, as
+    /// [`Error::Device`](crate::Error::Device) with
+    /// `HostUnavailable`.
+    #[cfg(feature = "device")]
     #[must_use]
-    pub fn outputs_floor(mut self, outputs: usize) -> Self {
+    pub fn host(mut self, host: tutti_cpal::AudioHost) -> Self {
+        self.host = host;
+        self
+    }
+
+    /// The project's output width: the graph root is at least this wide, and
+    /// at least the device's ([`root_width`]). Default stereo.
+    #[must_use]
+    pub fn outputs_floor(mut self, outputs: ChannelLayout) -> Self {
         self.outputs_floor = outputs;
         self
     }
@@ -144,11 +226,10 @@ impl SessionBuilder {
         self
     }
 
-    /// Threads per block, the callback included: `0` for one per core,
-    /// `1` (the default) to render on the callback alone. Each export gets
-    /// its own pool of the same size.
+    /// Threads per block, the callback included ([`Workers`]): the callback
+    /// alone by default. Each export gets its own pool of the same size.
     #[must_use]
-    pub fn render_workers(mut self, workers: usize) -> Self {
+    pub fn render_workers(mut self, workers: Workers) -> Self {
         self.render_workers = workers;
         self
     }
@@ -165,6 +246,15 @@ impl SessionBuilder {
     #[must_use]
     pub fn render_worker_start(mut self, hook: impl Fn(usize) + Send + Sync + 'static) -> Self {
         self.render_worker_start = Some(crate::RenderWorkerStart::new(hook));
+        self
+    }
+
+    /// Opens the session's inputs ([`Session::add_input`]) through `opener`
+    /// instead of the sound card: a test's own capture, with no device.
+    #[cfg(all(feature = "device", feature = "audio-io", feature = "testing"))]
+    #[must_use]
+    pub fn input_opener(mut self, opener: impl crate::InputOpener + 'static) -> Self {
+        self.input_opener = Some(Box::new(opener));
         self
     }
 
@@ -329,7 +419,7 @@ impl SessionBuilder {
 
         let transport = Transport::new(rate);
         let mut graph = Graph::new(
-            self.input_layout()?,
+            self.inputs,
             outputs,
             rate,
             max_block,
@@ -416,7 +506,7 @@ impl SessionBuilder {
     /// The session over `parts`, `engine` its offline engine if any, with
     /// (`sampler`) a disk streamer when `streamer`.
     fn session(
-        &self,
+        &mut self,
         parts: Parts,
         mut engine: Option<tutti_engine::Engine>,
         streamer: bool,
@@ -477,6 +567,8 @@ impl SessionBuilder {
             output_listing: None,
             #[cfg(feature = "device")]
             outputs_listed: false,
+            #[cfg(all(feature = "device", feature = "audio-io"))]
+            inputs: crate::input::Inputs::new(self.host, self.input_opener.take()),
             #[cfg(feature = "plugin")]
             snapshot_interval: self.snapshot_interval,
             #[cfg(feature = "plugin")]
@@ -534,14 +626,14 @@ impl SessionBuilder {
     ///
     /// [`Error::Output`](crate::Error::Output) when the declared root topology is empty or wider
     /// than the engine renders; there is no device to place it on.
-    pub fn build_detached(self, rate: SampleRate) -> Result<Session> {
-        let outputs = self
-            .root
-            .as_ref()
-            .map_or(self.outputs_floor, |r| r.positions().len());
+    pub fn build_detached(mut self, rate: SampleRate) -> Result<Session> {
+        let outputs = self.root.as_ref().map_or_else(
+            || usize::from(self.outputs_floor.count()),
+            |r| r.positions().len(),
+        );
         let transport = Transport::new(rate);
         let mut graph = Graph::new(
-            self.input_layout()?,
+            self.inputs,
             outputs,
             rate,
             LIVE_MAX_BLOCK,
@@ -583,20 +675,21 @@ impl SessionBuilder {
     /// built over it.
     #[cfg(feature = "device")]
     pub fn build_device(self, device: tutti_cpal::DeviceSelector) -> Result<crate::LiveSession> {
-        let host = tutti_cpal::DeviceHost::open(tutti_cpal::AudioHost::Default)?;
-        let engine = tutti_cpal::AudioEngine::open(host, device)?;
-        self.build_on(engine, |engine, state| engine.start(state))
+        let host = tutti_cpal::DeviceHost::open(self.host)?;
+        let engine = tutti_cpal::AudioEngine::open(host, device.clone())?;
+        self.build_on(engine, device, |engine, state| engine.start(state))
     }
 
     /// [`build_device`](Self::build_device) on a stream driver of the
     /// caller's choosing, `spec` standing for the config its device reports:
     /// the device-free build (a `tutti_cpal::ManualStreamDriver`, for a test
-    /// that renders the callback itself).
+    /// that renders the callback itself). Behind `testing`: a host builds on a
+    /// device.
     ///
     /// # Errors
     ///
     /// When the driver cannot start, or the graph cannot be built.
-    #[cfg(feature = "device")]
+    #[cfg(all(feature = "device", feature = "testing"))]
     pub fn build_device_on<D>(
         self,
         spec: tutti_cpal::OutputSpec,
@@ -606,9 +699,11 @@ impl SessionBuilder {
         D: tutti_cpal::StreamDriver,
         D::Running: 'static,
     {
-        self.build_on(tutti_cpal::AudioEngine::from_spec(spec), |engine, state| {
-            engine.start_with(state, driver)
-        })
+        self.build_on(
+            tutti_cpal::AudioEngine::from_spec(spec),
+            tutti_cpal::DeviceSelector::Default,
+            |engine, state| engine.start_with(state, driver),
+        )
     }
 
     /// Build over an opened `audio_engine` and start it with `start`.
@@ -620,6 +715,7 @@ impl SessionBuilder {
     fn build_on(
         mut self,
         mut audio_engine: tutti_cpal::AudioEngine,
+        chosen: tutti_cpal::DeviceSelector,
         start: impl FnOnce(
             &mut tutti_cpal::AudioEngine,
             Arc<tutti_cpal::AudioCallbackState>,
@@ -638,7 +734,15 @@ impl SessionBuilder {
         session.clock = Some(engine.block_clock());
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(engine));
         start(&mut audio_engine, Arc::clone(&state))?;
-        let device = crate::Device::new(tutti_cpal::TuttiDriver::new(audio_engine, state));
+        #[cfg(feature = "audio-io")]
+        let input_latency = session.inputs.latency();
+        #[cfg(not(feature = "audio-io"))]
+        let input_latency = Arc::default();
+        let device = crate::Device::new(
+            tutti_cpal::TuttiDriver::new(audio_engine, state),
+            chosen,
+            input_latency,
+        );
         session.faults = Some((device.faults(), device.faults().count()));
         Ok(crate::LiveSession::new(session, device))
     }
@@ -660,12 +764,6 @@ impl SessionBuilder {
 
     /// The root's width for `device`: the declared topology's, or else
     /// [`root_width`] of the floor.
-    /// The global input count as a layout, or the refusal of a count none holds.
-    fn input_layout(&self) -> Result<ChannelLayout> {
-        Ok(ChannelLayout::try_from(self.inputs)
-            .map_err(|_| tutti_types::FoldError::TooWide(self.inputs))?)
-    }
-
     fn root_width(&self, device: ChannelLayout) -> usize {
         self.root.as_ref().map_or_else(
             || root_width(self.outputs_floor, device),
@@ -728,8 +826,8 @@ impl SessionBuilder {
 /// `Engine::new` bounds the editor to that many global outputs, so a wider
 /// root would be refused at its first commit and never play. An export's
 /// fork is prepared on its own, with no such cap.
-pub fn root_width(project: usize, device: ChannelLayout) -> usize {
-    project
+pub fn root_width(project: ChannelLayout, device: ChannelLayout) -> usize {
+    usize::from(project.count())
         .max(usize::from(device.count()))
         .clamp(1, MAX_ROOT_CHANNELS)
 }

@@ -87,12 +87,12 @@ finding where the API produces wrong results today, not only friction.
 
 | # | finding | fix | size |
 |---|---|---|---|
-| S1 | `build_device` and every `MicIn::open*` hard-wire `AudioHost::Default`, so JACK is unreachable. A rate-changing restart leaves the host to redo the mic, the inlet and the wiring. `add_inlet(ring, rate)` passes the rate apart from the ring | `SessionBuilder::host(..)`; a `MicConfig` (`Default` plus struct update); a ring that carries its rate; `Session::add_mic`, which the restart reopens | M-L |
-| S2 | Restart is spelled four ways (`restart`, `restart_following`, `restart_wanted`, `restart_on`), with a separate `&mut Device` any session accepts. `watch_devices` takes `want`/`running_on` by hand. Events carry `String` errors | one `DeviceRestart` value with a `follow` hook; `watch_devices` reads the device; typed errors in events | M |
+| S1 | `build_device` and every `MicIn::open*` hard-wire `AudioHost::Default`, so JACK is unreachable. A rate-changing restart leaves the host to redo the mic, the inlet and the wiring. `add_inlet(ring, rate)` passes the rate apart from the ring | `SessionBuilder::host(..)`; a `MicConfig` (`Default` plus struct update); a ring that carries its rate; `Session::add_input`, which the restart reopens | M-L (built, step 7) |
+| S2 | Restart is spelled four ways (`restart`, `restart_following`, `restart_wanted`, `restart_on`), with a separate `&mut Device` any session accepts. `watch_devices` takes `want`/`running_on` by hand. Events carry `String` errors | one `DeviceRestart` value with a `follow` hook; `watch_devices` reads the device; typed errors in events | M (built, step 7) |
 | S3 | **Bug**: `let (s, _) = build_device(..)` drops the `Device` and silences the stream. `#[must_use]` does not fire on a destructure | return a named `#[must_use]` struct (`LiveSession { session, device }`) that also pairs the device with its session for S2 | S |
 | S4 | `InstrumentHandle` and `LiveInput` duplicate `note_on`/`note_off`/`send`/`send_at`/`clock`/`dropped` over `SharedKeys`. `note_on` takes a bare `u16` velocity | one shared keys handle (with the MIDI plan's `MidiKeys`), and a velocity type | S-M |
 | S5 | **Bug**: `Recorder::wait()` hangs forever on a live source. There are three ways to finish, and `Drop` only logs a sink error | sources say finite or live, and `wait` exists only for finite ones; `#[must_use]`; one finish path with one error shape | M |
-| S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S |
+| S6 | `SessionBuilder::inputs`, `outputs_floor` and `render_workers` take a bare `usize` (0 workers means "one per core"). `build_device_on` is a test seam in the public API | `ChannelLayout`; a `Workers` enum; hide the seam behind `testing` | S (built, step 7) |
 | S7 | Removal is spelled `remove`, `remove_instrument`, `GeneralMidi::remove`, `unroute` and `close_*`, returning `bool` or `()`. `insert` against `add` is a trap (`insert` skips the reclaim sweep). `open_event_inlet` panics on a bad capacity | one `remove(key)` on typed keys, returning `Result`; `insert` folded into `add`; a checked capacity | S-M (built, 2d) |
 | S8 | The heard tap's `Backpressure` is a transient error mixed in with permanent ones. `LoadMeter::take` is `Clone`, so two readers split the peaks. tutti-cpal lists devices five ways | split the error; one reader, not `Clone`; one listing (built, §6 item 5) | S |
 
@@ -373,8 +373,44 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
    transport's own `Timeline` reads of beat and rolling stay, for the code
    that is the transport's), and `MotionFsm::motion` is crate-private. The
    example of §1: `let p = s.playhead(); draw(p.beat_now(tutti_rt::monotonic_ns()), p.playing())`.
-7. **Device:** S1 (`add_input`), S2, S6, `Device::latency`, typed event
-   errors.
+7. **Device** (built): S1, S2, S6, `Device::latency`, typed event errors.
+   - S1: `SessionBuilder::host(AudioHost)` is the host of the output and of
+     every input; `Session::add_input(InputConfig) -> Input` opens a
+     `tutti_cpal::MicIn` (opened by a `MicConfig`: host, device, inputs by
+     `Fold::select`, the monitor ring's depth) and its inlet in one call, and a
+     restart reopens each at the graph's new rate into the same inlet node
+     (`Input::node()`, a `Key<InletNode>`; nothing rewired). The ring carries
+     its rate: `tutti_graph::InletRing::pair(width, capacity, rate)`, and
+     `Graph::add_inlet(ring)` refuses one whose rate is not the graph's
+     (`InletError::RateMismatch` stays). `MicIn::open*` are one
+     `open(&MicConfig, rate)` and `open_with_monitor`.
+   - S2: one `DeviceRestart` value (`DeviceRestart::to(device)`, `.max_block`),
+     applied through `LiveSession::restart(request) -> Result<RestartOutcome,
+     RestartError>` (the pair, so no foreign `Device` can be passed;
+     `RestartOutcome::Stale` is a stale request of the policy's, dropped,
+     `Restarted(DeviceRestarted)` the rates before and after). The host's
+     hook for what it holds itself is `LiveSession::on_restart`, set once and run
+     at the end of every restart's hook, and `LiveSession::watch_devices(source,
+     policy)` reads what the device was opened with and runs on. `restart_following`,
+     `restart_wanted` and `Session::restart` are gone; `restart_on`,
+     `Session::watch_devices` (four arguments) and `build_device_on` are behind
+     `testing`. Device events are `SessionEvent::Device(DeviceEvent)`,
+     `#[non_exhaustive]` at both levels: `Fault`, `Lost`, `Appeared`,
+     `DefaultChanged`, `RestartWanted`, `Restarted`, `RestartFailed(RestartError)`
+     (a shared `Error`, its `source()`; `Error::Restart` for `?`),
+     `InputReopenFailed { input, error }`, `OutputsListed`,
+     `OutputsListFailed(tutti_cpal::Error)` and `OutputsListSlow`.
+   - S6: `inputs` and `outputs_floor` take a `ChannelLayout` (so a count no layout
+     holds is unwritable, and `root_width`'s project width is one);
+     `render_workers(Workers)`: `Workers::PerCore`, `Workers::Exactly(NonZeroUsize)`,
+     `Workers::SERIAL` (a constant and the default, so there is one spelling of
+     the callback alone: `Exactly(1)` is it) and `Workers::of(n)`.
+   - `Device::latency() -> DeviceLatency { input, output: Option<Samples> }`, the
+     streams' callback timestamps (output: playback against callback; input:
+     callback against capture, `tutti_cpal::StreamLatency` cells the callbacks
+     record into) at the graph's rate, `None` for a direction not yet reported
+     (after a restart too) and never a zero. `Session::latency()` stays the
+     plan's compensation.
 8. **Takes:** §5 (`TapReader::next_frame`, `Take`, `Punch`).
 9. **Sampler:** A1 to A6.
 10. **Codec and export:** C2, C3, E1, E2, then C4.

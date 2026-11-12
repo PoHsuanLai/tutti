@@ -15,6 +15,7 @@ use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
 use crate::host::{AudioHost, DeviceHost, DeviceSelector};
+use crate::latency::StreamLatency;
 use crate::roster::Direction;
 
 /// Maximum frames per CPAL callback buffer.
@@ -80,6 +81,8 @@ pub struct AudioEngine {
     /// lifecycle test possible.
     target: Option<(DeviceHost, DeviceSelector)>,
     faults: Arc<StreamFaults>,
+    /// The output callback's reported delay, shared with each stream's block.
+    latency: Arc<StreamLatency>,
     running: Option<Box<dyn RunningStream>>,
     /// What the stream last started is running on, kept so that naming it
     /// never enumerates the host.
@@ -139,6 +142,7 @@ impl AudioEngine {
             spec: OutputSpec::from_supported(&config),
             target: Some((host, sel)),
             faults: Arc::new(StreamFaults::new()),
+            latency: Arc::new(StreamLatency::new()),
             running: None,
             opened: Opened::of(&device),
         })
@@ -158,6 +162,7 @@ impl AudioEngine {
             spec,
             target: None,
             faults: Arc::new(StreamFaults::new()),
+            latency: Arc::new(StreamLatency::new()),
             running: None,
             opened: Opened::Supplied,
         }
@@ -175,6 +180,13 @@ impl AudioEngine {
     /// nothing, so a fault such as an unplugged device is reported only here.
     pub fn faults(&self) -> Arc<StreamFaults> {
         Arc::clone(&self.faults)
+    }
+
+    /// The delay the output callback last reported between rendering a block
+    /// and its playing ([`StreamLatency`]): `None` until a callback of the
+    /// running stream reports one, and again after a restart.
+    pub fn latency(&self) -> Arc<StreamLatency> {
+        Arc::clone(&self.latency)
     }
 
     /// Builds a stream on the selected device and starts it. A stream that is
@@ -265,7 +277,10 @@ impl AudioEngine {
         }
         // A restart after a disconnect must report healthy again.
         self.faults.clear();
-        let block = OutputBlock::new(state, self.spec.channels);
+        // The new stream has reported no delay yet.
+        self.latency.reset();
+        let block =
+            OutputBlock::new(state, self.spec.channels).with_latency(Arc::clone(&self.latency));
         let running = driver.open(&self.spec, block, Arc::clone(&self.faults))?;
         self.running = Some(Box::new(running));
         Ok(())

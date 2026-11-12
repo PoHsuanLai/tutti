@@ -11,6 +11,7 @@ use tutti_graph::{
     Cx, Event, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign, TapEvent, Unforkable,
 };
 use tutti_session::{CloseError, EventOutPort, Session};
+use tutti_types::ChannelLayout;
 use tutti_types::{Frame, SampleRate};
 use tutti_ump::Ump;
 
@@ -38,7 +39,7 @@ impl Node for Every4 {
 
 fn session() -> (Session, EventOutPort) {
     let mut s = Session::builder()
-        .outputs_floor(1)
+        .outputs_floor(ChannelLayout::MONO)
         .build_detached(SampleRate(48_000.0))
         .expect("builds");
     let (key, ()) = s.graph().add(Unforkable(Every4));

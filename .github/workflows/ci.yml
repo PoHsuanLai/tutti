@@ -376,7 +376,9 @@ jobs:
       #   tutti-session/device — tests/io/device.rs (the device-free restart and
       #                         watch tests over `ManualStreamDriver`). A
       #                         workspace run turned it on only through the
-      #                         adapter that is now parked.
+      #                         adapter that is now parked. With `audio-io`,
+      #                         tests/io/device_input.rs (the inputs a restart
+      #                         reopens, over a test's own capture).
       #   tutti-au-host/installed-units — linted by the macOS clippy job (the
       #                         crate is empty on Linux) and run only locally
       #                         (`cargo xtask test-au-installed`, part of `test-all`):
@@ -422,7 +424,7 @@ jobs:
         run: |
           cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,audio-io,serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features clap,export,modulation,sampler,dsp,midi-hardware,synth --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings
@@ -470,7 +472,7 @@ jobs:
         run: |
           cargo nextest run --locked -p tutti-cpal --features capture
           cargo nextest run --locked -p tutti-session --features audio-io
-          cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,serde
+          cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,audio-io,serde
           cargo nextest run --locked -p tutti --features clap,export,modulation,sampler,dsp,midi-hardware,synth
           cargo nextest run --locked -p tutti --features audio-io
           cargo nextest run --locked -p tutti --no-default-features --features io

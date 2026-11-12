@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tutti_types::ChannelLayout;
 
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
@@ -100,7 +101,7 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 /// node.
 fn session_with(cause: Option<&str>) -> (Session, NodeKey) {
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     let (node, _) = s.graph().add(ForkByClone(Const::mono(0.0)));
@@ -152,7 +153,7 @@ fn observe(s: &mut Session, frames: usize) -> Vec<(NodeKey, String)> {
 fn a_non_plugin_node_never_marks_the_graph_edited() {
     let _ = main_thread();
     let mut s = Session::builder()
-        .outputs_floor(2)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     s.graph().add(ForkByClone(Const::mono(0.0)));

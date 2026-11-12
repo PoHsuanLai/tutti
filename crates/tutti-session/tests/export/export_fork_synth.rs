@@ -107,8 +107,8 @@ fn sf2(font: &Arc<SoundFont>) -> SoundFontUnit {
 /// (`PolySynth`).
 fn session_with<N: tutti_session::SessionNode>(unit: N) -> (Session, NodeKey) {
     let mut session = Session::builder()
-        .inputs(0)
-        .outputs_floor(2)
+        .inputs(ChannelLayout::EMPTY)
+        .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     session.graph().set_sample_rate(SampleRate(RATE));
@@ -248,8 +248,8 @@ fn an_exported_polysynth_plays_its_clip() {
 fn a_param_on_a_synth_reaches_it_and_its_fork() {
     let peak = |volume: Option<f32>| {
         let mut session = Session::builder()
-            .inputs(0)
-            .outputs_floor(2)
+            .inputs(ChannelLayout::EMPTY)
+            .outputs_floor(ChannelLayout::STEREO)
             .build_detached(SampleRate::DEFAULT)
             .expect("a detached session builds");
         session.graph().set_sample_rate(SampleRate(RATE));

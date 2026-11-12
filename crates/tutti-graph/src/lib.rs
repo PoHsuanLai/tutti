@@ -628,7 +628,7 @@ pub use graph::{
     Valid,
 };
 pub use history::TransportHistory;
-pub use inlet::InletNode;
+pub use inlet::{InletNode, InletRing};
 pub use instrument::Instrument;
 pub use io::{BusIn, BusOut, Channel, Inputs, Io, Outputs, PortKind};
 pub use latency::{

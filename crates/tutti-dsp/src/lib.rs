@@ -104,9 +104,10 @@ pub use dynamics::{
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{
     Biquad, ChannelKernel, Crossover, CrossoverControls, CrossoverDesign, CrossoverError,
-    CrossoverModel, CrossoverTree, DirectForm1, Filter, FilterSizes, Ladder, LadderCoeffs,
-    LadderControls, LadderDesign, LadderModel, LadderType, MAX_SPLITS, PerChannel, Real,
-    SOLVE_CEILING, Svf, SvfCoeffs, SvfControls, SvfDesign, SvfModel, SvfType, fit_to_rate,
+    CrossoverModel, CrossoverTree, DirectForm1, Filter, FilterSizes, Ladder, LadderCoefficients,
+    LadderCoeffs, LadderControls, LadderDesign, LadderModel, LadderType, Lanes, MAX_SPLITS,
+    PerChannel, Real, SOLVE_CEILING, Svf, SvfCoefficients, SvfCoeffs, SvfControls, SvfDesign,
+    SvfModel, SvfType, fit_to_rate, ladder_step, svf_step,
 };
 pub use interp::cubic_hermite;
 pub use model::{

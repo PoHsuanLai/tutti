@@ -12,7 +12,7 @@
 //! `1 / ((1 + s/wc)^4 + k)` under the bilinear map prewarped at the cutoff, with
 //! the resonance where the continuous model puts it.
 
-use crate::Real;
+use crate::{Lanes, Real};
 use tutti_types::{Hz, Resonance, SampleRate};
 
 /// Which tap of the four-stage ladder is taken as the output, and so what
@@ -74,17 +74,20 @@ impl LadderCoeffs {
     }
 }
 
-/// The ladder's two coefficients, narrowed to the state precision `F` and shared
-/// by every channel.
+/// The ladder's two coefficients [`ladder_step`] reads, in the arithmetic `L` it runs
+/// in (a node's state precision, shared by every channel, or the lane bank's `f32x8`).
+/// The fields are named, so a set built by hand cannot swap them.
 ///
 /// `g1` is the one-pole stage gain `G = g / (1 + g)` with `g = tan(π·fc/sr)`, solved
 /// once with the `tan` rather than divided out every sample. The powers of `G` the
 /// zero-delay loop needs are derived in the step from `g1` and `k`, so a glide
 /// interpolates these two and every blended set is a valid ladder.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LadderCoefficients<F: Real> {
-    g1: F,
-    k: F,
+pub struct LadderCoefficients<L: Lanes> {
+    /// The one-pole stage gain `G = g / (1 + g)`.
+    pub g1: L,
+    /// The loop gain, `4 * resonance`: the ladder self-oscillates from `k = 4`.
+    pub k: L,
 }
 
 impl<F: Real> From<&LadderCoeffs> for LadderCoefficients<F> {
@@ -122,21 +125,27 @@ impl<F: Real> LadderCoefficients<F> {
 /// is applied to that solution, `u = tanh(u_lin)`: the standard cheap nonlinear
 /// zero-delay form, exact for small signals (where `tanh x = x`, so the response
 /// is the continuous ladder's bilinear image) and a saturating limit past the knee.
+///
+/// `x` is the driven input (`input * drive`); `saturate` is the nonlinearity on the
+/// solved loop input: `tanh` for a filter node, the lane bank's rational
+/// approximation of it for the polysynth. Written once over [`Lanes`].
+///
+/// `ty` is matched every frame; a caller with a constant type (the lane bank's
+/// `LP24`) has the match folded away by the inlining, so it costs nothing there.
 #[inline(always)]
-pub(crate) fn ladder_step<F: Real>(
-    c: &LadderCoefficients<F>,
+pub fn ladder_step<L: Lanes>(
+    c: &LadderCoefficients<L>,
     ty: LadderType,
-    s: &mut [F; 4],
-    input: F,
-    drive: F,
-) -> F {
-    let x = input * drive;
-    let g1 = c.g1;
+    s: &mut [L; 4],
+    x: L,
+    saturate: impl Fn(L) -> L,
+) -> L {
+    let (g1, k) = (c.g1, c.k);
     let g2 = g1 * g1;
     let g4 = g2 * g2;
-    let one = F::from_f64(1.0);
+    let one = L::from_f32(1.0);
     let tail = (one - g1) * (g1 * (g1 * (g1 * s[0] + s[1]) + s[2]) + s[3]);
-    let u = ((x - c.k * tail) / (one + c.k * g4)).tanh();
+    let u = saturate((x - k * tail) / (one + k * g4));
 
     let v1 = g1 * (u - s[0]);
     let lp1 = v1 + s[0];
@@ -159,7 +168,7 @@ pub(crate) fn ladder_step<F: Real>(
         LadderType::LP24 => lp4,
         LadderType::HP12 => u - lp1 - lp1 + lp2,
         LadderType::HP24 => {
-            u - lp1 * F::from_f64(4.0) + lp2 * F::from_f64(6.0) - lp3 * F::from_f64(4.0) + lp4
+            u - lp1 * L::from_f32(4.0) + lp2 * L::from_f32(6.0) - lp3 * L::from_f32(4.0) + lp4
         }
     }
 }

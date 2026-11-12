@@ -94,7 +94,7 @@ impl<F: Real> ChannelKernel for Ladder<F> {
 
     #[inline(always)]
     fn tick(p: &LadderPoint<F>, s: &mut [F; 4], x: f32) -> [f32; 1] {
-        [ladder_step(&p.c, p.ty, s, F::from_f32(x), p.drive).to_f32()]
+        [ladder_step(&p.c, p.ty, s, F::from_f32(x) * p.drive, Real::tanh).to_f32()]
     }
 }
 

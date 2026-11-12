@@ -3633,6 +3633,7 @@ dependencies = [
  "tutti-dsp",
  "tutti-fixtures",
  "tutti-types",
+ "wide",
 ]
 
 [[package]]

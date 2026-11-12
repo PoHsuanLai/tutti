@@ -337,8 +337,10 @@ impl Recurrence for CompressorRecurrence {
         state: &mut CompressorState,
         _: &mut CompressorTarget,
     ) {
-        coeffs.steps = u32::try_from(GAIN_GLIDE.to_samples_ceil(setup.rate).get())
-            .expect("a glide of 5 ms is a few thousand frames");
+        // 5 ms is a few hundred frames at any real rate; an absurd rate saturates
+        // rather than panic, since a prepare must not.
+        coeffs.steps =
+            u32::try_from(GAIN_GLIDE.to_samples_ceil(setup.rate).get()).unwrap_or(u32::MAX);
         state.gains = vec![0.0; setup.max_block.get()];
     }
 

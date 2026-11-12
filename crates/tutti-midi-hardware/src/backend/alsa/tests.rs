@@ -66,7 +66,8 @@ impl Virtual {
 }
 
 fn plug(name: &str) -> Virtual {
-    let seq = super::client::open(name, true).expect("a sequencer to open (modprobe snd-seq)");
+    let seq = super::client::open(name, true, tutti_alsa_ffi::UmpVersion::Midi2)
+        .expect("a sequencer to open (modprobe snd-seq)");
     let caps = CAP_READ | CAP_SUBS_READ | CAP_WRITE | CAP_SUBS_WRITE;
     seq.open_port("port", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)
         .expect("a port");
@@ -239,7 +240,8 @@ fn a_saved_alsa_device_resolves_by_name_only() {
 fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
     let devices = Watched::open();
     let name = unique("caps");
-    let seq = super::client::open(&name, true).expect("a sequencer to open (modprobe snd-seq)");
+    let seq = super::client::open(&name, true, tutti_alsa_ffi::UmpVersion::Midi2)
+        .expect("a sequencer to open (modprobe snd-seq)");
     let kind = TYPE_MIDI_GENERIC | TYPE_APPLICATION;
     let port = seq.open_port("port", 0, kind).expect("a port");
     let want = format!("{name}: port");
@@ -604,10 +606,14 @@ struct Pumped {
 impl Pumped {
     /// A pump whose events are placed `lead` after they arrived.
     fn open(lead: Duration) -> Self {
+        Self::over(plug(&unique("pump")), lead)
+    }
+
+    /// A pump on `device`'s port 0.
+    fn over(device: Virtual, lead: Duration) -> Self {
         let inlets =
             tutti_midi_runtime::DeviceInlets::new(4, tutti_graph::EventCapacity::of(64), lead);
         let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::clone(&inlets)));
-        let device = plug(&unique("pump"));
         let id = super::enumerate::pack_id(device.0.id(), 0);
         let producer = ports.open_input_port("pump").expect("a slot");
         let mut rig = crate::testing::Rig::over(&inlets, Instant::now());
@@ -640,6 +646,104 @@ impl Pumped {
         }
         None
     }
+}
+
+/// A legacy (non-UMP) sequencer client with a subscribable port, the kind of
+/// source a MIDI 1.0 device or an old application is.
+fn plug_legacy(name: &str) -> Virtual {
+    let seq = tutti_alsa_ffi::Client::open_legacy(name, true)
+        .expect("a sequencer to open (modprobe snd-seq)");
+    let caps = CAP_READ | CAP_SUBS_READ;
+    seq.open_port("port", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)
+        .expect("a port");
+    Virtual(seq)
+}
+
+/// Plays the graph until `count` events have reached it, and returns them.
+fn arrive(pumped: &mut Pumped, count: usize) -> Vec<tutti_ump::Ump> {
+    let deadline = Instant::now() + PATIENCE;
+    let mut got = Vec::new();
+    while got.len() < count {
+        assert!(Instant::now() < deadline, "only {got:?} arrived");
+        pumped.rig.run_to(Instant::now());
+        got.extend(pumped.rig.take().into_iter().map(|(_, _, ump)| ump));
+        std::thread::yield_now();
+    }
+    got
+}
+
+/// A MIDI 1.0 source reaches the graph as MIDI 1.0 UMP (type 2), not converted
+/// to MIDI 2.0 by the kernel: tutti's own `Translator` is the one conversion
+/// (design 017 L6d). A legacy client's Note On and control change, both.
+#[test]
+fn a_legacy_source_arrives_as_midi1_ump_not_converted_by_the_kernel() {
+    use tutti_alsa_ffi::LegacyEvent;
+    let mut pumped = Pumped::over(plug_legacy(&unique("legacy")), Duration::ZERO);
+    let send = |event| {
+        pumped
+            .device
+            .0
+            .send_legacy_to_subscribers(0, event)
+            .unwrap()
+    };
+    send(LegacyEvent::NoteOn {
+        channel: 2,
+        note: 60,
+        velocity: 100,
+    });
+    send(LegacyEvent::Controller {
+        channel: 2,
+        param: 7,
+        value: 90,
+    });
+    let got = arrive(&mut pumped, 2);
+    // The message type is the top nibble of the first word.
+    let words: Vec<u32> = got.iter().map(|u| u.words()[0]).collect();
+    assert_eq!(words, [0x2092_3C64, 0x20B2_075A], "{got:?}");
+}
+
+/// An Endpoint that offers the MIDI 2.0 Protocol is a MIDI 2.0 client: its own
+/// type 4 packet arrives as sent, not narrowed.
+#[test]
+fn a_midi2_endpoint_arrives_as_midi2_ump() {
+    let mut pumped = Pumped::over(
+        plug_ump(&unique("two-in"), tutti_alsa_ffi::PROTO_MIDI2),
+        Duration::ZERO,
+    );
+    // Note On, group 0, channel 0, note 60, velocity 0xC000, no attribute.
+    let note_on = [0x4090_3C00, 0xC000_0000];
+    pumped.device.0.send_to_subscribers(0, &note_on).unwrap();
+    let got = arrive(&mut pumped, 1);
+    assert_eq!(got[0].words(), note_on, "{got:?}");
+}
+
+/// Which sources are opened as MIDI 1.0: a legacy client (no record) and an
+/// Endpoint whose record offers no MIDI 2.0 Protocol. An Endpoint that offers
+/// it is opened as MIDI 2.0 even while it is in MIDI 1.0, since the session
+/// negotiates up and the kernel would narrow what it then sends natively.
+#[test]
+fn only_a_source_that_cannot_speak_midi2_is_opened_as_midi1() {
+    use tutti_alsa_ffi::{PROTO_MIDI1, PROTO_MIDI2, UmpEndpoint, UmpVersion};
+    let record = |protocol, protocol_caps| UmpEndpoint {
+        protocol,
+        protocol_caps,
+        name: None,
+        blocks: Vec::new(),
+    };
+    let version = super::input::version_for;
+    assert_eq!(version(None), UmpVersion::Midi1);
+    assert_eq!(
+        version(Some(&record(PROTO_MIDI1, PROTO_MIDI1))),
+        UmpVersion::Midi1
+    );
+    assert_eq!(
+        version(Some(&record(PROTO_MIDI1, PROTO_MIDI1 | PROTO_MIDI2))),
+        UmpVersion::Midi2
+    );
+    assert_eq!(
+        version(Some(&record(PROTO_MIDI2, PROTO_MIDI1 | PROTO_MIDI2))),
+        UmpVersion::Midi2
+    );
 }
 
 /// Input sent to a pump that has been idle arrives promptly: the pump is woken

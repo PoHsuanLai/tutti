@@ -150,6 +150,39 @@ impl Default for snd_seq_ump_event_t {
     }
 }
 
+/// A legacy `snd_seq_event_t`: the UMP event's prefix, with a 12-byte data
+/// union. Size 28 (asserted below); declared with byte fields only, as it is
+/// handed to alsa-lib and never read back.
+#[cfg(feature = "test-support")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct snd_seq_event_t {
+    /// Event type (`SND_SEQ_EVENT_*`).
+    pub type_: u8,
+    /// Event flags.
+    pub flags: u8,
+    /// Application-defined tag.
+    pub tag: u8,
+    /// Queue id.
+    pub queue: u8,
+    /// `snd_seq_timestamp_t`, opaque.
+    pub time: [u8; 8],
+    /// Sending address.
+    pub source: snd_seq_addr_t,
+    /// Destination address.
+    pub dest: snd_seq_addr_t,
+    /// The data union's bytes: a note (`channel, note, velocity, off, duration`)
+    /// or a control (`channel, 3 pad, param, value`).
+    pub data: [u8; 12],
+}
+
+/// `SND_SEQ_EVENT_NOTEON`.
+#[cfg(feature = "test-support")]
+pub const SND_SEQ_EVENT_NOTEON: u8 = 6;
+/// `SND_SEQ_EVENT_CONTROLLER`.
+#[cfg(feature = "test-support")]
+pub const SND_SEQ_EVENT_CONTROLLER: u8 = 10;
+
 // --- Constants -------------------------------------------------------------
 
 /// `SND_SEQ_OPEN_DUPLEX` — read and write.
@@ -157,6 +190,8 @@ pub const SND_SEQ_OPEN_DUPLEX: c_int = 3;
 /// Non-blocking open.
 pub const SND_SEQ_NONBLOCK: c_int = 1;
 
+/// `SND_SEQ_CLIENT_UMP_MIDI_1_0` — the client speaks UMP with MIDI 1.0 protocol.
+pub const SND_SEQ_CLIENT_UMP_MIDI_1_0: c_int = 1;
 /// `SND_SEQ_CLIENT_UMP_MIDI_2_0` — the client speaks UMP with MIDI 2.0 protocol.
 pub const SND_SEQ_CLIENT_UMP_MIDI_2_0: c_int = 2;
 
@@ -303,6 +338,10 @@ unsafe extern "C" {
         seq: *mut snd_seq_t,
         ev: *mut snd_seq_ump_event_t,
     ) -> c_int;
+
+    /// Send one legacy event immediately, bypassing the queue.
+    #[cfg(feature = "test-support")]
+    pub fn snd_seq_event_output_direct(seq: *mut snd_seq_t, ev: *mut snd_seq_event_t) -> c_int;
 
     // Client enumeration.
     /// Allocate a client-info record; free it with `snd_seq_client_info_free`.
@@ -478,6 +517,11 @@ const _: () = {
     assert!(offset_of!(snd_seq_ump_event_t, source) == 12);
     assert!(offset_of!(snd_seq_ump_event_t, dest) == 14);
     assert!(offset_of!(snd_seq_ump_event_t, ump) == 16);
+    #[cfg(feature = "test-support")]
+    {
+        assert!(size_of::<snd_seq_event_t>() == 28);
+        assert!(offset_of!(snd_seq_event_t, data) == 16);
+    }
 };
 
 #[cfg(test)]

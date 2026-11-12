@@ -553,6 +553,24 @@ core takes an `Instant`; the hardware layer only passes one on).
   the OS reported at open: a backend's output is a `DeviceOut` (a `MidiOut` that is also told
   `follow(protocol)`), `OpenOutput` calls it as the output opens and at each `set_config`, and
   the event list is `Midi20` or `Midi10` by the last call.
+- *One conversion for MIDI 1.0 input (L6(d)).* tutti's own `Translator`, in the ingest node,
+  widens every MIDI 1.0 source on every OS (RPN and NRPN runs assembled into Registered and
+  Assignable Controllers, Bank Select folded into Program Change, a velocity-0 Note On as a
+  Note Off, the M2-115 scaling: M2-104 App. D.3); the OS never up-converts, so the behaviour
+  does not depend on which OS converter a device met. A backend opens an input in the
+  protocol its source can speak. ALSA: `Client::open` takes an `UmpVersion`, and an input
+  whose source is a legacy client (no UMP Endpoint) or an Endpoint whose record offers no
+  MIDI 2.0 Protocol is a MIDI 1.0 UMP client (`SND_SEQ_CLIENT_UMP_MIDI_1_0`), so the kernel
+  hands it type 2; an Endpoint that offers MIDI 2.0 is a MIDI 2.0 client even while it is in
+  MIDI 1.0, because the session negotiates up and the version is fixed for the pump's life (a
+  MIDI 1.0 client would have the kernel narrow what the device then sends natively). An
+  output is always a MIDI 2.0 client; `OpenOutput::queue` narrows. CoreMIDI: an input port
+  is created with `Midi10` for a source whose capability is MIDI 1.0 and `Midi20` otherwise,
+  one port per opened input. Pinned by `tutti-midi-hardware`'s sequencer suite (a legacy
+  client's Note On and control change arrive as type 2, a MIDI 2.0 Endpoint's type 4 as sent)
+  and, through the node, by `tutti-midi-runtime`'s `an_rpn_run_split_across_blocks_is_assembled`
+  (type 2 in, one Registered Controller out). The kernel's `ump_conversion` stays on: it is
+  what turns a legacy client's events into UMP at all.
 - *Received JR (L6(c)).* A JR Clock or JR Timestamp a device sends is dropped at
   `InputProducerHandle::push` (`Ump::is_jr`), not read. §7.2.2.1 leaves the use to the
   Receiver ("the Receiver may use smoothing or averaging of time from each JR Clock message

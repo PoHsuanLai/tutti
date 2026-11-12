@@ -4,18 +4,21 @@
 //!
 //! # UMP over a sequencer that predates it
 //!
-//! `snd_seq_set_client_midi_version(SND_SEQ_CLIENT_UMP_MIDI_2_0)` turns an
-//! ordinary seq client into a **UMP** client: `snd_seq_ump_event_input` /
-//! `_output_direct` then carry four-word UMP messages instead of the legacy
-//! byte-oriented events.
+//! `snd_seq_set_client_midi_version` turns an ordinary seq client into a **UMP**
+//! client: `snd_seq_ump_event_input` / `_output_direct` then carry four-word UMP
+//! messages instead of the legacy byte-oriented events.
 //!
 //! Paired with `snd_seq_set_client_ump_conversion(1)`, the kernel (≥ 6.5)
-//! translates in both directions at the port boundary, so a UMP client can talk
-//! to legacy hardware and a legacy app can talk to this one — neither side
-//! needing to know. That is what makes this backend useful today, when almost no
-//! Linux machine has a native-UMP device: the conversion is the kernel's job,
-//! and unlike a userspace MIDI-1.0 fallback it does not silently drop
-//! MIDI-2-only messages that *are* representable.
+//! translates at the port boundary, so a UMP client can talk to legacy hardware
+//! and a legacy app can talk to this one. That is what makes this backend useful
+//! when almost no Linux machine has a native-UMP device. But **tutti converts
+//! MIDI 1.0 itself** (design 017 L6d): an input on a source that can only speak
+//! MIDI 1.0 (a legacy client, or an Endpoint offering no MIDI 2.0 Protocol) is a
+//! MIDI 1.0 UMP client, so the kernel hands it type 2 packets and the ingest
+//! node's `Translator` widens them (RPN and NRPN runs, Bank Select, velocity-0
+//! Note On, the M2-115 scaling). An input on an Endpoint that offers MIDI 2.0 is
+//! a MIDI 2.0 client, since the session negotiates that Protocol. An output is
+//! always a MIDI 2.0 client; the wire narrows for a MIDI 1.0 endpoint.
 //!
 //! # Threading
 //!
@@ -40,7 +43,7 @@ use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::Result;
 use enumerate::Direction;
 use std::sync::{Mutex, PoisonError};
-use tutti_alsa_ffi::Client;
+use tutti_alsa_ffi::{Client, UmpVersion};
 use tutti_midi_device::{EndpointId, OsDevice};
 
 /// The Linux [`MidiEndpoints`] implementation.
@@ -77,7 +80,7 @@ impl AlsaEndpoints {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if held.is_none() {
-            *held = client::open("tutti-enum", true)
+            *held = client::open("tutti-enum", true, UmpVersion::Midi2)
                 .inspect_err(|e| tracing::debug!("ALSA enumeration: {e}"))
                 .ok();
         }

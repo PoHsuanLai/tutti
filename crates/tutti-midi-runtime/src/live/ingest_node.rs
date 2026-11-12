@@ -378,7 +378,7 @@ impl MidiIngestControls {
     /// hold is counted at the inlet, not here
     /// ([`DeviceInlets`](crate::DeviceInlets)).
     pub fn losses(&self) -> Losses {
-        Losses::new(0, 0, self.dropped.load(Ordering::Relaxed), 0)
+        Losses::refused(self.dropped.load(Ordering::Relaxed))
     }
 
     /// The mode last asked for through [`set_mpe_mode`](Self::set_mpe_mode),

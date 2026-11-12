@@ -195,7 +195,7 @@ impl ClockMaster {
     /// them (a very long block at a very high tempo with MTC on). A host polls
     /// it; nonzero means the receiver missed ticks and should be resynced.
     pub fn losses(&self) -> Losses {
-        Losses::new(0, 0, self.dropped.load(Ordering::Relaxed), 0)
+        Losses::refused(self.dropped.load(Ordering::Relaxed))
     }
 
     /// Adds `n` to [`losses`](Self::losses). Audio thread.

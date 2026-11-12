@@ -243,7 +243,7 @@ fn push_all_answers_how_many_were_taken_and_counts_the_rest_lost() {
     let (mut d, mut tx) = rig(4);
     let events = (0..6).map(|k| (Stamp::NextBlock, note(k)));
     assert_eq!(tx.push_all(events), 4);
-    assert_eq!(tx.counts().losses(), Losses::new(2, 0, 0, 0));
+    assert_eq!(tx.counts().losses(), Losses::lost(2));
     d.block();
     assert_eq!(keys(&d), vec![0, 1, 2, 3]);
 }

@@ -104,7 +104,7 @@ fn the_handle_counts_what_its_queue_dropped() {
         handle.send(Frame(9_000_000 + k), on).unwrap();
     }
     rig.block();
-    assert_eq!(handle.losses(), Losses::new(0, 3, 0, 0));
+    assert_eq!(handle.losses(), Losses::evicted(3));
 }
 
 /// A root of five channels or more fed from an instrument with sends takes its

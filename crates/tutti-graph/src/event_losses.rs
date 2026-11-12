@@ -20,14 +20,15 @@ use std::ops::{Add, AddAssign};
 /// - [`late`](Self::late): found past its frame and delivered at the block's
 ///   first frame. Not a loss of the event, a loss of its time.
 ///
-/// `non_exhaustive`: build one with [`new`](Self::new) or read a holder's.
+/// `non_exhaustive`: build one count at a time ([`Losses::lost`] and its
+/// kin, added together) or read a holder's.
 ///
 /// ```
 /// use tutti_graph::Losses;
 ///
-/// let a = Losses::new(1, 0, 0, 0);
-/// let b = Losses::new(0, 2, 3, 4);
-/// assert_eq!(a + b, Losses::new(1, 2, 3, 4));
+/// let a = Losses::lost(1);
+/// let b = Losses::evicted(2) + Losses::refused(3) + Losses::late(4);
+/// assert_eq!((a + b).dropped(), 6);
 /// assert_eq!([a, b].into_iter().sum::<Losses>().total(), 10);
 /// ```
 #[non_exhaustive]
@@ -45,16 +46,48 @@ pub struct Losses {
 
 impl Losses {
     /// No losses.
-    pub const NONE: Self = Self::new(0, 0, 0, 0);
+    pub const NONE: Self = Self {
+        lost: 0,
+        evicted: 0,
+        refused: 0,
+        late: 0,
+    };
 
-    /// The four counts, in the order of the fields.
+    /// `n` events [lost](Self::lost) and nothing else. A holder with several
+    /// counts adds one constructor per count, so no count is placed by
+    /// position.
     #[must_use]
-    pub const fn new(lost: u64, evicted: u64, refused: u64, late: u64) -> Self {
+    pub const fn lost(n: u64) -> Self {
         Self {
-            lost,
-            evicted,
-            refused,
-            late,
+            lost: n,
+            ..Self::NONE
+        }
+    }
+
+    /// `n` events [evicted](Self::evicted) and nothing else.
+    #[must_use]
+    pub const fn evicted(n: u64) -> Self {
+        Self {
+            evicted: n,
+            ..Self::NONE
+        }
+    }
+
+    /// `n` events [refused](Self::refused) and nothing else.
+    #[must_use]
+    pub const fn refused(n: u64) -> Self {
+        Self {
+            refused: n,
+            ..Self::NONE
+        }
+    }
+
+    /// `n` events [late](Self::late) and nothing else.
+    #[must_use]
+    pub const fn late(n: u64) -> Self {
+        Self {
+            late: n,
+            ..Self::NONE
         }
     }
 
@@ -78,12 +111,12 @@ impl Add for Losses {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self {
-        Self::new(
-            self.lost.saturating_add(rhs.lost),
-            self.evicted.saturating_add(rhs.evicted),
-            self.refused.saturating_add(rhs.refused),
-            self.late.saturating_add(rhs.late),
-        )
+        Self {
+            lost: self.lost.saturating_add(rhs.lost),
+            evicted: self.evicted.saturating_add(rhs.evicted),
+            refused: self.refused.saturating_add(rhs.refused),
+            late: self.late.saturating_add(rhs.late),
+        }
     }
 }
 
@@ -106,18 +139,28 @@ mod tests {
     /// Each field adds to its own field, and `dropped` leaves `late` out.
     #[test]
     fn addition_is_field_wise_and_dropped_excludes_late() {
-        let sum = Losses::new(1, 2, 3, 4) + Losses::new(10, 20, 30, 40);
-        assert_eq!(sum, Losses::new(11, 22, 33, 44));
+        let four = |l, e, r, t| Losses {
+            lost: l,
+            evicted: e,
+            refused: r,
+            late: t,
+        };
+        let sum = four(1, 2, 3, 4) + four(10, 20, 30, 40);
+        assert_eq!(sum, four(11, 22, 33, 44));
         assert_eq!(sum.dropped(), 66);
         assert_eq!(sum.total(), 110);
         let mut acc = Losses::NONE;
-        acc += Losses::new(0, 0, 5, 0);
+        acc += Losses::refused(5);
         assert_eq!(acc.refused, 5);
         assert_eq!(
-            [Losses::new(1, 0, 0, 0), Losses::new(0, 0, 0, 1)]
+            [Losses::lost(1), Losses::late(1)]
                 .into_iter()
                 .sum::<Losses>(),
-            Losses::new(1, 0, 0, 1)
+            Losses {
+                lost: 1,
+                late: 1,
+                ..Losses::NONE
+            }
         );
     }
 }

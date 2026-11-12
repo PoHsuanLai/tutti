@@ -13,9 +13,13 @@
 //! emits it on its offset in that block ([`Env::due`](crate::Env::due)):
 //! [`Stamp::NextBlock`] is the next block's first frame, a [`Stamp::Frame`] is
 //! a frame of the graph's clock and a [`Stamp::Moment`] is a frame with the
-//! rate it was counted at. There is no beat: a producer has no transport and a
-//! beat may never come, which would leave the waiting list's bound unclear, so
-//! the type has no way to say one. An event whose frame has already passed
+//! rate it was counted at. There is no beat. The node could resolve one
+//! against its block's transport, as `Env::due` does, but a beat the transport
+//! never reaches (it is stopped, a loop skips it, a locate jumps past it) would
+//! hold its slot in the bounded waiting list for good, and a frame stamp has no
+//! such case: the clock always reaches it. Musical time is the transport's and
+//! a clip's, which read it every block (`MotionFsm::schedule` for a command,
+//! the MIDI clip for events). So the type has no way to say a beat. An event whose frame has already passed
 //! lands at offset 0 of the block it is found in and is counted late
 //! ([`Losses::late`]); it is not dropped, as no late command is.
 //!
@@ -210,12 +214,12 @@ impl InletCounts {
     #[must_use]
     pub fn losses(&self) -> Losses {
         let c = &*self.0;
-        Losses::new(
-            c.lost.load(Ordering::Relaxed),
-            c.evicted.load(Ordering::Relaxed),
-            c.refused.load(Ordering::Relaxed),
-            c.late.load(Ordering::Relaxed),
-        )
+        Losses {
+            lost: c.lost.load(Ordering::Relaxed),
+            evicted: c.evicted.load(Ordering::Relaxed),
+            refused: c.refused.load(Ordering::Relaxed),
+            late: c.late.load(Ordering::Relaxed),
+        }
     }
 }
 

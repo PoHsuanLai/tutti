@@ -560,6 +560,8 @@ impl SessionBuilder {
             midi_io: parts.midi_io,
             #[cfg(feature = "sampler")]
             disk_streamer,
+            #[cfg(feature = "sampler")]
+            sampler_opens: 0,
             #[cfg(feature = "device")]
             faults: None,
             #[cfg(feature = "device")]

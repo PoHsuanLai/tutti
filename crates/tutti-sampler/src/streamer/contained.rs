@@ -3,6 +3,10 @@
 //! lane. The status cell's own table is `status.rs`'s and the step's is
 //! `record/tests.rs`'s; these drive a streamer, hand-stepped and threaded.
 
+use crate::VoiceWindow;
+
+use crate::testing::loop_frames;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -171,7 +175,7 @@ fn a_decode_fault_is_faulted_and_the_voice_reads_silence() {
     );
 
     let mut voice = prepared(
-        DiskVoice::from_reader(reader, Beat(0.0), None),
+        DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0))),
         SampleRate::new(rate),
         512,
     );
@@ -210,11 +214,7 @@ fn the_end_of_the_file_is_ended_and_a_loop_has_none() {
     assert_eq!(stream.status().phase, StreamPhase::Ended);
 
     stream
-        .set_loop(crate::LoopSetting::On {
-            start: tutti_types::SamplePosition(1_000.0),
-            end: tutti_types::SamplePosition(4_000.0),
-            crossfade_frames: 0,
-        })
+        .set_loop(Some(loop_frames(1_000, 4_000, 0)))
         .expect("the streamer lives");
     let _ = sampler.step_until_settled(1_000);
     assert_eq!(
@@ -371,11 +371,7 @@ fn a_panic_while_a_loop_is_captured_faults_that_stream() {
 
     armed.store(true, Ordering::SeqCst);
     first
-        .set_loop(crate::LoopSetting::On {
-            start: tutti_types::SamplePosition(2_000.0),
-            end: tutti_types::SamplePosition(6_000.0),
-            crossfade_frames: 500,
-        })
+        .set_loop(Some(loop_frames(2000, 6000, 500)))
         .expect("the streamer lives");
     driver.until("the capture to fault its stream", || {
         first.status().phase == StreamPhase::Faulted(StreamFault::Panicked)
@@ -588,9 +584,6 @@ fn a_panicking_decode_fails_that_open_only() {
 /// downgrade.
 #[test]
 fn a_fork_plays_the_loop_as_applied_not_as_asked() {
-    use crate::LoopSetting;
-    use tutti_types::SamplePosition;
-
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = cut_flac(dir.path());
     let meta = tutti_codec::Wave::read_metadata(&path).expect("the cut file has a header");
@@ -602,26 +595,23 @@ fn a_fork_plays_the_loop_as_applied_not_as_asked() {
     .expect("builds");
     let opening = sampler.open(&path, Placement::HEAD);
     let (mut stream, reader) = settle(&mut sampler, opening).expect("a cut file opens");
-    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
+    let voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0)));
 
     // The loop's fade leads in from just before its start, which is past the
     // cut: unreadable.
     let (start, end) = (total as f64 * 0.95, total as f64);
-    let asked = LoopSetting::On {
-        start: SamplePosition(start.floor()),
-        end: SamplePosition(end),
-        crossfade_frames: 100,
-    };
+    let asked = Some(loop_frames(start.floor() as usize, end as usize, 100));
     stream.set_loop(asked).expect("the streamer lives");
     let _ = sampler.step_until_settled(1_000);
 
-    let LoopSetting::On {
-        crossfade_frames, ..
-    } = stream.status().loop_
-    else {
+    let Some(applied) = stream.status().loop_ else {
         panic!("the loop was not applied: {:?}", stream.status().loop_)
     };
-    assert_eq!(crossfade_frames, 0, "the unreadable lead-in plays hard");
+    assert_eq!(
+        applied.crossfade().get(),
+        0,
+        "the unreadable lead-in plays hard"
+    );
     assert_eq!(stream.loop_(), asked, "the handle's copy is the request");
     assert_eq!(
         voice.forked_loop(),
@@ -695,7 +685,7 @@ fn a_fork_of_a_closed_stream_fails_even_after_a_decode_fault() {
         StreamPhase::Faulted(StreamFault::Decode),
         "setup: the stream met its fault first"
     );
-    let voice = DiskVoice::from_reader(reader, Beat(0.0), None);
+    let voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat(0.0)));
     assert!(
         voice
             .fork_copy()

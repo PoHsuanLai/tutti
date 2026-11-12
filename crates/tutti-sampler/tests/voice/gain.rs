@@ -33,9 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_codec::Wave;
 use tutti_graph::{Env, Node, TransportChanges, contract};
-use tutti_sampler::{
-    MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool, VoiceSource,
-};
+use tutti_sampler::{MemorySource, MemorySourceConfig, Playback, SlotId, VoicePool};
 use tutti_types::{
     Amplitude, Beat, Bpm, ChannelLayout, Frame, SamplePosition, SampleRate, Samples,
 };
@@ -113,14 +111,12 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
     .expect("a placeable wave");
 
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                gain: Amplitude::new(play_gain),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            gain: Amplitude::new(play_gain),
+            ..Default::default()
         },
     );
     (pool, clock)
@@ -194,14 +190,12 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
     .expect("a placeable wave");
 
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                gain: Amplitude::new(0.5),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            gain: Amplitude::new(0.5),
+            ..Default::default()
         },
     );
 
@@ -285,14 +279,12 @@ fn gain_scales_every_channel_equally() {
     )
     .expect("a placeable wave");
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                gain: Amplitude::new(0.4),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            gain: Amplitude::new(0.4),
+            ..Default::default()
         },
     );
 
@@ -367,14 +359,12 @@ fn two_half_gain_voices_sum_to_one_full_gain_voice() {
             },
         )
         .expect("a placeable wave");
-        pool.insert_voice(
+        pool.insert(
             SlotId(id),
-            Voice {
-                source: VoiceSource::Memory(source),
-                play: Playback {
-                    gain: Amplitude::new(0.5),
-                    ..Default::default()
-                },
+            source,
+            Playback {
+                gain: Amplitude::new(0.5),
+                ..Default::default()
             },
         );
     }

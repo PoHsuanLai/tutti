@@ -1,5 +1,7 @@
 use super::*;
+use crate::VoiceWindow;
 use crate::testing::MockTransport;
+use crate::testing::loop_frames;
 use tutti_types::Bpm;
 use tutti_types::MaxBlock;
 use tutti_types::Seconds;
@@ -159,11 +161,7 @@ fn one_block_matches_single_frames_across_a_loop_wrap() {
         MemorySource::with_config(
             Arc::clone(&wave),
             MemorySourceConfig {
-                loop_setting: LoopSetting::On {
-                    start: SamplePosition::new(0.0),
-                    end: SamplePosition::new(8.0),
-                    crossfade_frames: 0,
-                },
+                loop_: Some(loop_frames(0, 8, 0)),
                 ..Default::default()
             },
         )
@@ -357,7 +355,7 @@ fn a_loop_reads_through_its_seam_at_a_fractional_rate() {
     use tutti_dsp::cubic_hermite;
     let wave = ramp_wave(64, 44_100.0);
     let mut u = MemorySource::new(wave).expect("a placeable wave");
-    u.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(20.0), 0);
+    u.set_loop(Some(loop_frames(10, 20, 0)));
     u.set_speed(PlaybackRate::new(0.5));
     u.trigger_at(SamplePosition::new(19.5));
     let ticks = frames(&mut u, None, 3);
@@ -421,11 +419,7 @@ fn a_rate_change_lands_on_the_next_block() {
 fn a_crossfaded_loop_plays_the_hand_computed_frames() {
     for (start, resume, lead) in [(10usize, 10usize, 6usize), (2, 6, 2)] {
         let mut u = MemorySource::new(ramp_wave(64, 44_100.0)).expect("a placeable wave");
-        u.set_loop_range(
-            SamplePosition::new(start as f64),
-            SamplePosition::new(30.0),
-            4,
-        );
+        u.set_loop(Some(loop_frames((start as f64) as usize, 30, 4)));
         let got: Vec<f32> = frames(&mut u, None, 30 + 2 * (30 - resume))
             .iter()
             .map(|f| f.0)
@@ -515,22 +509,14 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
 fn a_loop_moved_under_a_looped_cursor_reads_where_the_cursor_is() {
     for toggle in [false, true] {
         let mut u = MemorySource::new(ramp_wave(8_000, 44_100.0)).expect("a placeable wave");
-        u.set_loop_range(
-            SamplePosition::new(1_000.0),
-            SamplePosition::new(3_000.0),
-            0,
-        );
+        u.set_loop(Some(loop_frames(1_000, 3_000, 0)));
         u.trigger_at(SamplePosition::new(2_999.0));
         frames(&mut u, None, 501);
         assert_eq!(u.position().get(), 1_500.0, "wrapped once, to 1500");
         if toggle {
-            u.set_looping(false);
+            u.set_loop(None);
         }
-        u.set_loop_range(
-            SamplePosition::new(2_000.0),
-            SamplePosition::new(4_000.0),
-            0,
-        );
+        u.set_loop(Some(loop_frames(2_000, 4_000, 0)));
         let got: Vec<f32> = frames(&mut u, None, 3).iter().map(|f| f.0).collect();
         assert_eq!(got, [1_501.0, 1_502.0, 1_503.0], "toggled {toggle}");
     }
@@ -587,7 +573,7 @@ fn test_loop_crossfade_integration() {
     let wave = Wave::from_samples(SampleRate::new(44100.0), &samples);
     let mut sampler = MemorySource::new(Arc::new(wave)).expect("a placeable wave");
 
-    sampler.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(90.0), 10);
+    sampler.set_loop(Some(loop_frames(10, 90, 10)));
     sampler.trigger();
 
     for _ in 0..75 {
@@ -613,7 +599,7 @@ fn config_default_matches_new() {
     // normal speed, one-shot — NOT the newtypes' zero default.
     assert_eq!(sampler.gain(), Amplitude::new(1.0));
     assert_eq!(sampler.speed(), PlaybackRate::new(1.0));
-    assert!(!sampler.is_looping());
+    assert!(!sampler.loop_().is_some());
 }
 
 #[test]
@@ -711,7 +697,8 @@ fn placement_gate_applies_src_ratio_exactly_once() {
     // A 48 kHz wave in a 44.1 kHz session.
     let wave = ramp_wave(200_000, 48_000.0);
     let transport = MockTransport::rolling(Beat::new(4.0), Bpm::of(120.0));
-    let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let mut sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     sampler.set_render_rate(SampleRate::new(44_100.0));
     assert!(
         (sampler.src_ratio().get() - (48_000.0 / 44_100.0)).abs() < 1e-4,
@@ -823,7 +810,7 @@ fn stops_at_end_when_not_looping() {
 fn loops_back_when_looping() {
     let wave = ramp_wave(10, 44100.0);
     let mut sampler = MemorySource::new(wave).expect("a placeable wave");
-    sampler.set_looping(true);
+    sampler.set_loop(Some(loop_frames(0, 10, 0)));
 
     let mut out = [0.0f32; 2];
     // Tick exactly 10 times → position reaches 10.0, wraps to 0.0
@@ -856,7 +843,7 @@ fn loops_back_when_looping() {
 fn looping_overshoot_at_double_speed() {
     let wave = ramp_wave(10, 44100.0);
     let mut sampler = MemorySource::new(wave).expect("a placeable wave");
-    sampler.set_looping(true);
+    sampler.set_loop(Some(loop_frames(0, 10, 0)));
     sampler.set_speed(PlaybackRate::new(2.0));
 
     let mut out = [0.0f32; 2];
@@ -930,7 +917,8 @@ fn transport_driven_produces_samples_at_beat_position() {
     // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
     let wave = ramp_wave(44100, 44100.0);
     let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
-    let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let mut sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
 
     let mut output = [0.0f32; 2];
     frame_into(&mut sampler, Some(&transport), &mut output);
@@ -948,7 +936,8 @@ fn transport_driven_produces_samples_at_beat_position() {
 fn transport_stopped_outputs_silence() {
     let wave = ramp_wave(44100, 44100.0);
     let transport = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
-    let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let mut sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
 
     let mut output = [0.0f32; 2];
     frame_into(&mut sampler, Some(&transport), &mut output);
@@ -961,7 +950,8 @@ fn transport_stopped_outputs_silence() {
 fn transport_before_start_beat_outputs_silence() {
     let wave = ramp_wave(44100, 44100.0);
     let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
-    let mut sampler = MemorySource::placed(wave, Beat::new(4.0), None).expect("a placeable wave");
+    let mut sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(4.0))).expect("a placeable wave");
 
     let mut output = [0.0f32; 2];
     frame_into(&mut sampler, Some(&transport), &mut output);
@@ -973,8 +963,11 @@ fn transport_before_start_beat_outputs_silence() {
 fn transport_past_duration_beats_outputs_silence() {
     let wave = ramp_wave(44100, 44100.0);
     let transport = MockTransport::rolling(Beat::new(10.0), Bpm::of(120.0));
-    let mut sampler = MemorySource::placed(wave, Beat::new(0.0), Some(BeatDuration::new(4.0)))
-        .expect("a placeable wave");
+    let mut sampler = MemorySource::placed(
+        wave,
+        VoiceWindow::span(Beat::new(0.0), BeatDuration::new(4.0)),
+    )
+    .expect("a placeable wave");
 
     let mut output = [0.0f32; 2];
     frame_into(&mut sampler, Some(&transport), &mut output);
@@ -986,7 +979,8 @@ fn transport_past_duration_beats_outputs_silence() {
 fn transport_process_block() {
     let wave = ramp_wave(44100, 44100.0);
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let mut sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
 
     let output = planes(&mut sampler, Some(&transport), 4);
 
@@ -997,7 +991,8 @@ fn transport_process_block() {
 fn transport_process_block_silence_when_stopped() {
     let wave = ramp_wave(44100, 44100.0);
     let transport = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
-    let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let mut sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
 
     let output = planes(&mut sampler, Some(&transport), 4);
 
@@ -1015,11 +1010,7 @@ fn clone_preserves_state() {
         MemorySourceConfig {
             gain: Amplitude::new(0.75),
             speed: PlaybackRate::new(1.5),
-            loop_setting: LoopSetting::On {
-                start: SamplePosition::new(0.0),
-                end: SamplePosition::new(100.0),
-                crossfade_frames: 0,
-            },
+            loop_: Some(loop_frames(0, 100, 0)),
             ..Default::default()
         },
     )
@@ -1029,7 +1020,7 @@ fn clone_preserves_state() {
     let cloned = sampler.clone();
     assert_eq!(cloned.gain(), Amplitude::new(0.75));
     assert_eq!(cloned.speed(), PlaybackRate::new(1.5));
-    assert!(cloned.is_looping());
+    assert!(cloned.loop_().is_some());
     assert!(cloned.is_playing());
     assert_eq!(cloned.position(), SamplePosition::new(42.0));
 }
@@ -1091,7 +1082,7 @@ fn looping_wraps_and_continues_producing_audio() {
     // values cyclically (not silence, not garbage).
     let wave = ramp_wave(2, 44100.0);
     let mut sampler = MemorySource::new(wave).expect("a placeable wave");
-    sampler.set_looping(true);
+    sampler.set_loop(Some(loop_frames(0, 2, 0)));
 
     let mut outputs = Vec::new();
     let mut out = [0.0f32; 2];
@@ -1210,7 +1201,7 @@ fn gain_applies_uniformly_across_all_channels() {
 #[test]
 fn six_channel_loop_crossfade_covers_every_channel() {
     let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6u16).expect("a placeable wave");
-    u.set_loop_range(SamplePosition::new(0.0), SamplePosition::new(16.0), 4);
+    u.set_loop(Some(loop_frames(0, 16, 4)));
     let mut out = [0.0f32; 6];
     // Drive past the loop point so the crossfade engages at least once.
     for _ in 0..40 {
@@ -1281,7 +1272,8 @@ fn the_shape_declares_its_gain() {
 #[test]
 fn a_placed_fork_reads_the_renders_transport() {
     let wave = ramp_wave(44_100, 44_100.0);
-    let live = MemorySource::placed(wave, Beat::new(1.0), None).expect("a placeable wave");
+    let live =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(1.0))).expect("a placeable wave");
     let mut fork = tutti_graph::ParamFork::new(&live).fork_node();
     // Beat 1 is where the window opens; half a beat later (11 025
     // frames at 120 BPM) the ramp reads 11 026.

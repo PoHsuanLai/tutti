@@ -27,6 +27,8 @@
 //! nor of a 64-frame piece of one, which voices rendered before their
 //! scratch was sized from `Prepare::max_block`.
 
+use tutti_sampler::VoiceWindow;
+
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
@@ -35,7 +37,7 @@ use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Env, Io, Node, Prepare, Shape, Status, TransportChanges, contract};
 use tutti_graph::{OutPort, Source};
-use tutti_sampler::{MemorySource, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_sampler::{MemorySource, SlotId, VoicePool};
 use tutti_tempo::TempoMap;
 use tutti_transport::{MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_types::{
@@ -63,15 +65,10 @@ fn pool(start: Beat) -> VoicePool {
     for _ in 0..SR as usize {
         wave.push_frame(&[0.5]);
     }
-    let source = MemorySource::placed(Arc::new(wave), start, None).expect("a placeable wave");
+    let source =
+        MemorySource::placed(Arc::new(wave), VoiceWindow::from(start)).expect("a placeable wave");
     let mut pool = VoicePool::new();
-    pool.insert_voice(
-        SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Default::default(),
-        },
-    );
+    pool.insert(SlotId(1), source, Default::default());
     pool
 }
 

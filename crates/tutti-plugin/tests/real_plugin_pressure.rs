@@ -220,7 +220,7 @@ impl GraphUnit {
         for (slot, c) in outs.iter_mut().zip(self.outs.iter_mut()) {
             *slot = &mut c[..size];
         }
-        let transport = tutti_graph::Transport::default();
+        let transport = tutti_graph::TransportPosition::default();
         self.renderer.executor_mut().process(
             size,
             &transport,

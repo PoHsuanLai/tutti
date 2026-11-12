@@ -1,14 +1,14 @@
 #![allow(dead_code)]
-use tutti_tempo::{Shape, TempoPoint};
+use tutti_tempo::{TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, SampleRate};
 
 pub const R: SampleRate = SampleRate(48_000.0);
 
-pub fn pt(beat: f64, tempo: f64, shape: Shape) -> TempoPoint {
+pub fn pt(beat: f64, tempo: f64, shape: Transition) -> TempoPoint {
     TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(tempo),
-        shape,
+        transition: shape,
     }
 }
 

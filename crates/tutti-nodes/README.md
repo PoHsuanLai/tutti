@@ -33,7 +33,7 @@ node without a lock.
   `ModDelayConfig` presets) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
-  adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Wave`, the wave a
+  adapter over a pure `Modulator` (an LFO's is `tutti_modulation::Waveform`, the wave a
   control lane evaluates): an audio generator, whose output feeds a node's
   audio input.
 - **Dry/wet** — the convolver, delay, chorus/flanger, phaser and the two reverbs output their wet signal only; blend with the input through the graph's `set_mix`.

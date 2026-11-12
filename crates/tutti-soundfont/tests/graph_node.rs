@@ -12,7 +12,7 @@ use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
-    Transport,
+    TransportPosition,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_sf2::SoundFont;
@@ -69,7 +69,7 @@ fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
 fn render(ed: Editor, exec: Executor, rate: f64, frames: usize) -> Vec<f32> {
     let mut r = Renderer::new(ed, exec);
     r.set_transport_fn(move |f| {
-        Transport::new(
+        TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(f.get() as f64 / (rate / 2.0)),

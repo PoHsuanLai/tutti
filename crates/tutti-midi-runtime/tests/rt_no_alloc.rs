@@ -8,7 +8,7 @@ use tutti_fixtures::midi;
 use tutti_fixtures::midi::{note_off, registered_rpn};
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventInletNode, EventInletWriter, EventOut, Harmony, LoopRange,
-    Prepare, Transport,
+    Prepare, TransportPosition,
 };
 use tutti_graph::{NodeKey, Stamp};
 use tutti_midi_runtime::{
@@ -90,7 +90,7 @@ fn the_border_nodes_process_without_allocating() {
     let mut out = common::sink(&mut ed, 0, &[(1, 0), (1, 3), (2, 0), (3, 0)]);
     clock.set_enabled(true);
     ed.commit().unwrap();
-    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
     // Warm up outside the gate.
     busy(&mut dev, 0);
@@ -111,7 +111,7 @@ fn the_border_nodes_process_without_allocating() {
             let at = Beat(f64::from(b) * 512.0 / 24_000.0);
             exec.process(
                 512,
-                &Transport::new(true, Bpm::of(120.0), at, None),
+                &TransportPosition::new(true, Bpm::of(120.0), at, None),
                 &[],
                 &mut [],
             );
@@ -156,7 +156,7 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
     let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
     ed.commit().unwrap();
-    let t = Transport::default();
+    let t = TransportPosition::default();
     let mut drain = [(0, Ump([0; 4])); 256];
     bend_range(&mut dev, 0);
     exec.process(512, &t, &[], &mut []);
@@ -208,7 +208,7 @@ fn the_mpe_expression_paths_process_without_allocating() {
     let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 2)]);
     ed.commit().unwrap();
-    let t = Transport::default();
+    let t = TransportPosition::default();
     let mut drain = [(0, Ump([0; 4])); 256];
     gesture(&mut dev, 0);
     exec.process(512, &t, &[], &mut []);
@@ -252,7 +252,7 @@ fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
     let mut dev = device(&mut ed, 4);
     let mut out = common::sink(&mut ed, 0, &[(1, 15)]);
     ed.commit().unwrap();
-    let t = Transport::default();
+    let t = TransportPosition::default();
     let mut drain = [(0, Ump([0; 4])); 256];
     mcm(&mut dev, 0, true);
     exec.process(512, &t, &[], &mut []);
@@ -332,7 +332,7 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
     let mut block = |exec: &mut tutti_graph::Executor, clock: &mut FrameClock| {
         exec.process(
             512,
-            &Transport::new(true, Bpm::of(120.0), clock.beat(), looping),
+            &TransportPosition::new(true, Bpm::of(120.0), clock.beat(), looping),
             &[],
             &mut [],
         );
@@ -399,7 +399,7 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     let mut block = |exec: &mut tutti_graph::Executor| {
         exec.process(
             64,
-            &Transport::new(true, Bpm::of(120.0), beat(f as f64), None),
+            &TransportPosition::new(true, Bpm::of(120.0), beat(f as f64), None),
             &[],
             &mut [],
         );
@@ -459,7 +459,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     // Note-ons less note-offs the sink was sent.
     let mut sounding = 0i64;
     let mut block = |exec: &mut tutti_graph::Executor, rolling: bool, frame: u64| {
-        let t = Transport::new(rolling, Bpm::of(120.0), beat(frame), None);
+        let t = TransportPosition::new(rolling, Bpm::of(120.0), beat(frame), None);
         exec.process(512, &t, &[], &mut []);
         let n = out.poll_into(&mut drain);
         for e in &drain[..n] {
@@ -514,7 +514,7 @@ fn the_event_inlet_processes_without_allocating() {
     ed.insert(NodeKey(1), "timed", queue);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
-    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
     exec.process(512, &t, &[], &mut []);
     let _ = out.poll_into(&mut drain);
@@ -552,7 +552,7 @@ fn the_event_inlet_with_a_full_list_processes_without_allocating() {
     ed.insert(NodeKey(1), "timed", queue);
     let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
     ed.commit().unwrap();
-    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [(0, Ump([0; 4])); 256];
     let on = midi::m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
     let off = midi::m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0));

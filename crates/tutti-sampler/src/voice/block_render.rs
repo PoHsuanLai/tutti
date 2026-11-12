@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use tutti_codec::Wave;
-use tutti_graph::{Env, Node, Offset, Prepare, Transport, TransportChanges, contract};
+use tutti_graph::{Env, Node, Offset, Prepare, TransportChanges, TransportPosition, contract};
 use tutti_types::{
     Amplitude, Beat, Bpm, Cents, ChannelLayout, Frame, FrameClock, PlaybackRate, SampleRate,
     Samples, StretchFactor,
@@ -83,8 +83,8 @@ struct Host {
 }
 
 impl Host {
-    fn transport(&self) -> Transport {
-        Transport::counted(self.playing, self.clock.tempo(), self.clock.origin(), None)
+    fn transport(&self) -> TransportPosition {
+        TransportPosition::counted(self.playing, self.clock.tempo(), self.clock.origin(), None)
     }
 
     fn advance(&mut self, frames: usize) {
@@ -110,7 +110,7 @@ fn apply(host: &mut Host, event: Event) {
     }
 }
 
-fn env(frame: u64, len: usize, transport: Transport, changes: TransportChanges) -> Env {
+fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
     Env {
         frame: Frame(frame),
         sample_rate: SampleRate(SR),

@@ -276,7 +276,7 @@ mod tests {
             assert_eq!(map.constant_tempo(), Some(Bpm::of(bpm)), "{bpm} to the bit");
             let frames = 4.0 * 60.0 * 48_000.0 / bpm;
             assert_eq!(
-                map.frame_at_or_after(Beat(4.0), rate).get(),
+                map.view(rate).frame_at_or_after(Beat(4.0)).get(),
                 tutti_types::first_frame_at_or_after(frames) as u64,
                 "beat 4 at {bpm}"
             );
@@ -287,7 +287,7 @@ mod tests {
     /// taken whole.
     #[test]
     fn a_constant_a_step_and_a_ramp_map_are_each_taken() {
-        use tutti_tempo::{Shape, TempoPoint};
+        use tutti_tempo::{TempoPoint, Transition};
         let s = TransportSettings::new();
         let constant = TempoMap::constant(Bpm::of(75.5)).unwrap();
         s.set_tempo_map(Arc::new(constant));
@@ -298,24 +298,24 @@ mod tests {
                 TempoPoint {
                     beat: Beat(0.0),
                     tempo: Bpm::of(100.0),
-                    shape,
+                    transition: shape,
                 },
                 TempoPoint {
                     beat: Beat(4.0),
                     tempo: Bpm::of(200.0),
-                    shape: Shape::Step,
+                    transition: Transition::Step,
                 },
             ])
             .unwrap()
         };
-        for shape in [Shape::RampTime, Shape::RampBeats] {
+        for shape in [Transition::RampTime, Transition::RampBeats] {
             s.set_tempo_map(Arc::new(constant_of(75.5)));
             s.set_tempo_map(Arc::new(two(shape)));
             assert_eq!(s.tempo_map().constant_tempo(), None);
-            assert_eq!(s.tempo_map().points()[0].shape, shape);
+            assert_eq!(s.tempo_map().points()[0].transition, shape);
         }
 
-        s.set_tempo_map(Arc::new(two(Shape::Step)));
+        s.set_tempo_map(Arc::new(two(Transition::Step)));
         assert_eq!(s.tempo_map().constant_tempo(), None);
     }
 

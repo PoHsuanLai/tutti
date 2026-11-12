@@ -12,7 +12,7 @@ use common::{Kind, TestNode, prepare};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventOut, ForkByClone, GraphBuilder, Io, Node, Prepare,
-    Renderer, Shape, Status, Transport, Unforkable,
+    Renderer, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{Beat, ChannelLayout, Frame, Samples};
@@ -570,7 +570,7 @@ fn renderer_drives_blocks_and_interleaves() {
     let log = Arc::clone(&seen);
     r.set_transport_fn(move |frame| {
         log.lock().unwrap().push(frame);
-        Transport::new(
+        TransportPosition::new(
             true,
             tutti_types::Bpm::of(120.0),
             Beat(frame.0 as f64),

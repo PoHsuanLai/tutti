@@ -20,7 +20,7 @@ use tutti_fixtures::main_thread;
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 use tutti_modulation::{
-    Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity, Wave,
+    Amount, Clock, ControlProgram, Law, Layer, LayerId, LfoShape, Polarity, Waveform,
 };
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::catalog::{Plugin, PluginRef, PluginRole};
@@ -91,7 +91,7 @@ fn main() -> BridgeResult<()> {
                 per_cycle: BeatDuration(4.0),
                 phase: PhaseIncrement(0.0),
             },
-            wave: Wave::Shape {
+            wave: Waveform::Shape {
                 shape: LfoShape::Sine,
                 seed: 0,
             },

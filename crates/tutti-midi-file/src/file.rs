@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tutti_midi_protocol::channel_voice;
-use tutti_tempo::{Shape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_types::{Beat, Bpm, Seconds};
 use tutti_ump::{
     Address, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Sysex7Packets, U7, Ump,
@@ -1181,7 +1181,7 @@ fn tempo_map(
         |(tick, tempo)| TempoPoint {
             beat: tick.beats(ticks_per_quarter),
             tempo,
-            shape: Shape::Step,
+            transition: Transition::Step,
         },
     ))?))
 }

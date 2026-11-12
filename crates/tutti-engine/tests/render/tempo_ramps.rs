@@ -21,7 +21,7 @@ use tutti_engine::Engine;
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, NodeKey, OutPort, Prepare, Shape, Source, Status, Unforkable,
 };
-use tutti_tempo::{Shape as TempoShape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::{
     FadeOut, LoopEdit, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Then, Transport,
 };
@@ -84,12 +84,12 @@ fn graph(log: &Log) -> (Editor, Executor) {
 }
 
 /// `(beat, bpm, shape of the segment that starts there)`; the last is a step.
-fn tempo_map(points: &[(f64, f64, TempoShape)]) -> Arc<TempoMap> {
+fn tempo_map(points: &[(f64, f64, Transition)]) -> Arc<TempoMap> {
     Arc::new(
         TempoMap::new(points.iter().map(|&(beat, bpm, shape)| TempoPoint {
             beat: Beat(beat),
             tempo: Bpm::of(bpm),
-            shape,
+            transition: shape,
         }))
         .expect("a map"),
     )
@@ -98,8 +98,8 @@ fn tempo_map(points: &[(f64, f64, TempoShape)]) -> Arc<TempoMap> {
 /// 120 to 60 BPM over 4 beats, linear in time, then 60 BPM.
 fn down() -> Arc<TempoMap> {
     tempo_map(&[
-        (0.0, 120.0, TempoShape::RampTime),
-        (4.0, 60.0, TempoShape::Step),
+        (0.0, 120.0, Transition::RampTime),
+        (4.0, 60.0, Transition::Step),
     ])
 }
 
@@ -272,8 +272,8 @@ fn the_ramp_stays_within_the_grid_bound_of_the_exact_integral() {
 #[test]
 fn a_ramp_linear_in_beats_is_on_the_integral_at_every_cell_start() {
     let map = tempo_map(&[
-        (0.0, 120.0, TempoShape::RampBeats),
-        (4.0, 60.0, TempoShape::Step),
+        (0.0, 120.0, Transition::RampBeats),
+        (4.0, 60.0, Transition::Step),
     ]);
     let seen = live(&map, 0.0, &[512], 135_000);
     let t_of = |b: f64| 4.0 * (120.0 / (120.0 - 15.0 * b)).ln();
@@ -296,9 +296,9 @@ fn a_ramp_linear_in_beats_is_on_the_integral_at_every_cell_start() {
 #[test]
 fn the_beats_do_not_depend_on_the_block_size() {
     let map = tempo_map(&[
-        (0.0, 120.0, TempoShape::RampTime),
-        (4.0, 60.0, TempoShape::RampBeats),
-        (6.0, 150.0, TempoShape::Step),
+        (0.0, 120.0, Transition::RampTime),
+        (4.0, 60.0, Transition::RampBeats),
+        (6.0, 150.0, Transition::Step),
     ]);
     let total = 175_000;
     let reference = live(&map, 0.0, &[512], total);
@@ -382,9 +382,9 @@ fn a_ramp_block_with_more_than_8_cells_is_split_and_exact() {
 #[test]
 fn an_offline_render_is_the_live_render_with_a_ramp() {
     let map = tempo_map(&[
-        (0.0, 120.0, TempoShape::RampTime),
-        (4.0, 60.0, TempoShape::RampBeats),
-        (6.0, 150.0, TempoShape::Step),
+        (0.0, 120.0, Transition::RampTime),
+        (4.0, 60.0, Transition::RampBeats),
+        (6.0, 150.0, Transition::Step),
     ]);
     let total = 175_000;
     let pattern = [512usize, 300, 77, 2_048];

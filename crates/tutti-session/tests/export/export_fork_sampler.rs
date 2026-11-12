@@ -402,7 +402,7 @@ fn live_disk_playback_is_untouched_while_its_voice_exports() {
             let mut after = 0;
             while after < 8 {
                 let _ = streamer.step_until_settled(64);
-                live.set_transport(tutti_graph::Transport::new(
+                live.set_transport(tutti_graph::TransportPosition::new(
                     true,
                     Bpm::of(120.0),
                     live_clock.beat(),

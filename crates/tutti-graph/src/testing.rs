@@ -25,7 +25,7 @@ use tutti_types::MaxBlock;
 use crate::NodeKey;
 use crate::{
     Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference, Shape,
-    Shapes, Status, Transport, TransportChanges, ValidGraph, compile,
+    Shapes, Status, TransportChanges, TransportPosition, ValidGraph, compile,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, SampleRate, Samples, Tail};
 use tutti_ump::Ump;
@@ -831,7 +831,7 @@ impl Pair {
 
     /// Render one block through both; return (executor, reference) outputs.
     pub fn block(&mut self, frames: usize, input: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-        let transport = Transport::new(
+        let transport = TransportPosition::new(
             true,
             tutti_types::Bpm::of(120.0),
             tutti_types::Beat(0.0),
@@ -845,7 +845,7 @@ impl Pair {
         &mut self,
         frames: usize,
         input: &[f32],
-        transport: &Transport,
+        transport: &TransportPosition,
     ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
         self.block_with_changes(frames, input, transport, &TransportChanges::NONE)
     }
@@ -855,7 +855,7 @@ impl Pair {
         &mut self,
         frames: usize,
         input: &[f32],
-        transport: &Transport,
+        transport: &TransportPosition,
         changes: &TransportChanges,
     ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
         let transport = *transport;

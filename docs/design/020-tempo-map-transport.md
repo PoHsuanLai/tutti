@@ -13,7 +13,7 @@ built; see the as-built notes at §9. Doc 019 (bounce) depends on §6.
 ## Summary
 
 - **One model.** The transport holds an `Arc<TempoMap>`. A block's transport is
-  a pure function of `(map, grid, rate, timeline frame)`: `chord_cell`, one
+  a pure function of `(map, grid, rate, timeline frame)`: `TempoView::chord_cell`, one
   `CellGrid`. `TransportClock` and `OfflineTimeline` call the same walker.
 - **In-block tempo changes are `TransportChanges`.** A cell boundary where the
   chord tempo moves is a change entry. A constant map has no entry, so a
@@ -33,16 +33,16 @@ built; see the as-built notes at §9. Doc 019 (bounce) depends on §6.
 | `tempo_in_effect(asked, in_force)` | `clock.rs` | Hysteresis: a tempo within `TEMPO_EPSILON` (0.001 BPM) of the one in force is the one in force, so ULP noise from a control source does not restart the clock every block. |
 | `Control` | `clock.rs` | The untimed inputs, read once per block: `tempo`, `paused`, loop, `recording`. |
 | `FrameClock` / `TimelineSegment` | `tutti-types` `value/frame_clock.rs`, `timeline.rs` | A frame count on a constant-tempo segment `(origin_frame, origin_beat, tempo, rate)`; the beat is `origin_beat + frames x tempo / (60 x rate)` in closed form. `set_tempo` starts a segment only when the tempo differs; a seek, rate change or loop wrap also restarts. |
-| `TransportClock::begin` | `clock.rs` | Takes a pending seek, then `take_tempo(control.tempo)`, and returns `Transport::counted(playing, tempo, origin, loop)`. |
-| `tutti_graph::Transport` | `tutti-graph/src/node.rs` | `{ playing, tempo: Bpm, looping, recording, position }`; `position` is `At(beat)`, `Counted(SegmentOrigin)` or `Walked`. The beat of a counted position is derived at `tempo`. |
-| `TransportChanges` | `node.rs` | Up to `MAX_TRANSPORT_CHANGES` = 8 timed `(Offset, Transport)` entries per block; offset 0 is refused (the block's own transport covers it). |
+| `TransportClock::begin` | `clock.rs` | Takes a pending seek, then `take_tempo(control.tempo)`, and returns `TransportPosition::counted(playing, tempo, origin, loop)`. |
+| `tutti_graph::TransportPosition` | `tutti-graph/src/node.rs` | `{ playing, tempo: Bpm, looping, recording, position }`; `position` is `At(beat)`, `Counted(SegmentOrigin)` or `Walked`. The beat of a counted position is derived at `tempo`. |
+| `TransportChanges` | `node.rs` | Up to `MAX_TRANSPORT_CHANGES` = 8 timed `(Offset, TransportPosition)` entries per block; offset 0 is refused (the block's own transport covers it). |
 | `Env::transport_at(offset)` | `time.rs` | The change in force at `offset`, rolled to `offset` with `FrameClock` at that transport's tempo. `for_each_beat` walks the pieces frame by frame the same way. |
 | `TransportCommand::Tempo(Bpm)` | `timed.rs` | A timed tempo edit (`MotionFsm::schedule`, with an `At`); it becomes a change entry in the block it falls in. |
-| `OfflineTimeline` | `offline.rs` | One `Bpm` and a `FrameClock`; `graph_block()` returns `Transport::counted(true, tempo, origin, loop)` with `TransportChanges::NONE`. Its docs say "an offline render does not ramp". |
+| `OfflineTimeline` | `offline.rs` | One `Bpm` and a `FrameClock`; `graph_block()` returns `TransportPosition::counted(true, tempo, origin, loop)` with `TransportChanges::NONE`. Its docs say "an offline render does not ramp". |
 
 Evidence for "no map anywhere": `grep TempoMap crates` hits only `tutti-tempo`;
 `tutti-transport` does not depend on `tutti-tempo`; `Cell`, `CellGrid` and
-`chord_cell` have no caller outside it.
+`TempoView::chord_cell` have no caller outside it.
 
 **Readers of `tempo()`** (each is a constant-tempo reader of one segment):
 
@@ -87,7 +87,7 @@ A new `TempoWalk` in `tutti-transport` (crate-private, used by
 
 `begin_block` and `advance` do, in order, for the frames of the block:
 
-1. `cell = chord_cell(map, timeline_frame, grid, rate)`.
+1. `cell = view.chord_cell(timeline_frame, grid)` (a `TempoView` of the map at the rate).
 2. If the cell's tempo differs from the clock's, or the clock is at the first
    frame after a seat, start a segment at the map's beat for the cell
    (`cell.beat` is the map's beat on `cell.start`), with `cell.tempo`.
@@ -95,7 +95,7 @@ A new `TempoWalk` in `tutti-transport` (crate-private, used by
 3. Roll the clock to `cell.end` or the end of the block, whichever is first,
    and repeat.
 
-`chord_cell` is a pure function of the absolute frame, so the cell boundaries
+`TempoView::chord_cell` is a pure function of the absolute frame, so the cell boundaries
 are the same however a caller cuts its blocks. For a step segment the cell's
 tempo is the segment's `bpm0` to the bit, so a constant map and a step interior
 never restart (rule 2 compares tempos, not frames). A ramp restarts once per
@@ -104,10 +104,10 @@ grid, so error does not accumulate (§4).
 
 ### 2.3 How cells reach nodes
 
-The block's own `Transport` is the first piece. Each later cell boundary inside
+The block's own `TransportPosition` is the first piece. Each later cell boundary inside
 the block with a different chord tempo, or a map point that starts inside it
-(`TempoMap::next_change`), is one `TransportChanges::push(offset, Transport)`
-whose `Transport` is `counted(playing, cell.tempo, origin at cell.beat, loop)`.
+(`TempoView::next_change`), is one `TransportChanges::push(offset, TransportPosition)`
+whose `TransportPosition` is `counted(playing, cell.tempo, origin at cell.beat, loop)`.
 `Env::transport_at` and `for_each_beat` need no new semantics: they already walk
 the change in force with `FrameClock`, and each change is a segment origin. A
 node that reads `Cx::transport_at` behind a latent path reads the history, which
@@ -121,7 +121,7 @@ command in the same block.
 |---|---|
 | Grid 128, block 512 | At most 5 cell entries. Fits, with 3 left for commands and points. |
 | Grid 128, block 1024 | Up to 9. Does not fit. |
-| Rule | The engine **splits the block** where the 8th entry would be needed, and renders the two parts in order (the engine already cuts a block at a timed command). A split is exact because `chord_cell` does not depend on where blocks begin; only the cost of an extra `process` call is paid, and only on a ramp. |
+| Rule | The engine **splits the block** where the 8th entry would be needed, and renders the two parts in order (the engine already cuts a block at a timed command). A split is exact because `TempoView::chord_cell` does not depend on where blocks begin; only the cost of an extra `process` call is paid, and only on a ramp. |
 | Alternative | Grow `MAX_TRANSPORT_CHANGES`. Rejected: it widens a `Copy` value every `Env` carries, to serve ramps only. |
 
 Splitting is cheap to state and cannot change the render, which is what lets
@@ -168,8 +168,8 @@ source is turned into a constant-map edit.
 |---|---|
 | Seek / play start at beat `b` | `timeline_frame = map.frame_at_or_after(b)`; the clock is seated at the exact `b` (the playhead is not nudged by up to a frame). The first segment runs to the end of `b`'s cell at that cell's tempo; later cells start on the map's beats. |
 | Loop wrap | Re-seat at the loop start beat as a seek, on the frame that reaches the end, as `FrameClock::advance` does now. |
-| Beat to frame for an event or a range | `frame_at_or_after_with(beat, rate, &mut cursor)`, the engine's one placement rule (`first_frame_at_or_after`, 1e-6 frame tolerance). |
-| Frame to beat | `beat_at_frame_with`. |
+| Beat to frame for an event or a range | `TempoView::frame_at_or_after(beat)`, the engine's one placement rule (`first_frame_at_or_after`, 1e-6 frame tolerance). |
+| Frame to beat | `TempoView::beat_at_frame`. |
 
 **Precision.** `frame_at_or_after` and `beat_at_frame` are exact for the map
 (closed form, `f64`; the 2^32-frame limit in tutti-tempo's docs applies). The
@@ -179,7 +179,7 @@ playhead beat the nodes see is the chord:
 |---|---|
 | Constant or step interior | Today's arithmetic, to the bit. |
 | Step boundary | A step that falls between frames lands on the next frame (`next_change`); the cell's line is within one frame's beat at the larger tempo of the map's. |
-| Ramp, any frame | The chord differs from the curve by a fraction of a frame that shrinks with `grid^2`: about 0.04 frames for 60 to 240 BPM over 8 beats at grid 128 (`chord_cell`'s docs). At every cell start the playhead is the map's beat exactly. |
+| Ramp, any frame | The chord differs from the curve by a fraction of a frame that shrinks with `grid^2`: about 0.04 frames for 60 to 240 BPM over 8 beats at grid 128 (`TempoView::chord_cell`'s docs). At every cell start the playhead is the map's beat exactly. |
 
 A clip placed at a beat through `frame_at_or_after` and the playhead read at
 that frame can therefore disagree by that fraction inside a ramp, and agree
@@ -190,7 +190,7 @@ as an inequality (§8), not a claim of equality.
 
 | Reader | Change |
 |---|---|
-| `tutti-graph` `Transport`, `Env` | No new field. The tempo is the cell's chord. `Playhead::arrives_at` already treats a tempo change inside a block as a continuation; a ramp cell boundary is one. |
+| `tutti-graph` `TransportPosition`, `Env` | No new field. The tempo is the cell's chord. `Playhead::arrives_at` already treats a tempo change inside a block as a continuation; a ramp cell boundary is one. |
 | `tutti-midi-runtime` | Reads `transport.tempo` per segment: MIDI clock follows the chord per cell. Nothing else. |
 | `ClickNode`, `lfo`, `control_lane` | No change; they read `Env`. |
 | `tutti-sampler` | A sampler voice's private `FrameClock` takes its tempo from the `Env` transport of the block (chord per cell); a cell edge is a continuation, not a jump. Where the voice is in its clip is the map's seconds from the clip's start (`BlockClock::seconds`, through a `TempoReader` the node is given), not the beats over the tempo of the moment, which re-seated it at every change (stage 5, the sampler reader). Time-locked sample playback (tempo-independent) is unchanged. |
@@ -214,7 +214,7 @@ first frame:
 declares `tempo_inc: f64` and carries no documentation. Upstream's
 `clap/events.h` (main, checked 2026-11-11) does:
 `double tempo_inc; // tempo increment for each sample and until the next time
-info event`. `tutti-tempo`'s `Shape::RampTime` docs say the same (a constant
+info event`. `tutti-tempo`'s `Transition::RampTime` docs say the same (a constant
 increment per sample). The host sends it with `CLAP_TRANSPORT_HAS_TEMPO`
 (stage 5a, below); before that it always sent `0.0`.
 
@@ -222,9 +222,9 @@ increment per sample). The host sends it with `CLAP_TRANSPORT_HAS_TEMPO`
 `tempo_at(beat)` and `tempo_at_seconds(seconds)` (instantaneous, via
 `Segment::bpm_at_beat` / `bpm_at_sec`), but no frame form, and the cell's
 tempo is the chord (the average over the cell), not the instantaneous tempo at
-its start. The addition is one query, `TempoMap::tempo_at_frame(frame, rate)`
-(`tempo_at_seconds(frame / rate)`, with a `_with` hint form, allocation-free
-like the rest). Then, per transport event at frame `f` with the event running to
+its start. The addition is one query, `TempoView::tempo_at_frame(frame)`
+(`tempo_at_seconds(frame / rate)`, on a view that carries the rate and the hint,
+allocation-free like the rest). Then, per transport event at frame `f` with the event running to
 `g` (the cell end or the block end):
 
 | Quantity | Value |
@@ -255,7 +255,7 @@ both relative to the same origin as the timeline. The session supplies the map
 | `OfflineTimeline::tempo()`, `Timeline::tempo()` | A tempo at a beat: `Timeline` exposes the map or `tempo_at(beat)` |
 
 `MidiFile::seconds_at` is pointed at `TempoMap` (done, [017](017-midi.md) stage 6): the
-file builds a step-only `TempoMap` (`TempoPoint { shape: Step }`) from its tempo events
+file builds a step-only `TempoMap` (`TempoPoint::step`) from its tempo events
 in its constructors, and `seconds_at` is `map.seconds_at`. A file's tempo track is the
 file's data, not the project's, so the file builds its own map and the project adopts it
 on import (an explicit session call), never implicitly. The same figures come out for
@@ -271,10 +271,10 @@ differential suite's `modes` and `tests/executor/parallel.rs`.
 
 **Nothing moves, and the design guarantees it structurally:**
 
-1. A constant map has one point. `chord_cell` returns `seg.bpm0` (the point's
+1. A constant map has one point. `TempoView::chord_cell` returns `seg.bpm0` (the point's
    tempo, to the bit) for every cell, so rule 2 of §2.2 never restarts the
    clock: it runs from the seat with the same `FrameClock` the code uses today,
-   and `Transport::counted(.., tempo, origin, ..)` and `TransportChanges::NONE`
+   and `TransportPosition::counted(.., tempo, origin, ..)` and `TransportChanges::NONE`
    are the values the engine builds today.
 2. A `TempoMap::constant(bpm)` stores `bpm` as given: no multiply and divide
    round trip on the way to the cell.
@@ -359,7 +359,7 @@ published. What landed:
 
 - `TempoWalk` (`tutti-transport/src/walk.rs`, crate-private) is the one walker:
   a map frame beside a `FrameClock`, rolled in cells of `CELL_GRID` = 128 frames
-  (one constant, never a block's length). At a cell's end it asks `chord_cell`
+  (one constant, never a block's length). At a cell's end it asks `TempoView::chord_cell`
   and, when the tempo differs from the clock's, starts a segment on the map's
   beat. A step interior never restarts (the cell carries `bpm0` to the bit);
   there is no hysteresis. `TransportClock` and `OfflineTimeline` both call it.
@@ -394,7 +394,7 @@ published. What landed:
 
 **As built, stage 4 (ramps).**
 
-- **The walker needed no new rule.** `chord_cell` already gives a ramp cell its
+- **The walker needed no new rule.** `TempoView::chord_cell` already gives a ramp cell its
   chord (the map's beat at both ends of the cell, so the cell ends on the map's
   beat) and a step cell its segment's tempo to the bit, and `TempoWalk::roll`
   already restarts when the cell's tempo differs. A ramp is therefore one
@@ -415,17 +415,17 @@ published. What landed:
 - **Dense changes.** A 512-frame block of a ramp carries 3 to 5 changes and
   runs whole; a block that reaches the graph at 1 024 frames or more needs
   more than 8, and the stage 3 cut (`TempoAhead::limit`) splits it where the
-  ninth would begin. The cut cannot change the render (`chord_cell` does not
+  ninth would begin. The cut cannot change the render (`TempoView::chord_cell` does not
   depend on where blocks begin): the beats are the same to the bit at block
   sizes 1, 64, 100, 512, 1 000, 4 096 and ragged.
 - **Seek, wrap and rate change** are as for steps: a seek seats at the exact
   beat and takes the chord of the cell its map frame is in; a loop wrap keeps
   the overshoot past the loop end (under a frame of beats) and takes the cell
   at the loop start, so a pass is the first pass's curve within a frame of beats;
-  a rate change re-seats at the current beat and asks `chord_cell` at the new
+  a rate change re-seats at the current beat and asks `TempoView::chord_cell` at the new
   rate (cells are 128 frames of the new rate).
-- `TempoMap::tempo_at_frame` (the instantaneous tempo on a frame, `_with` for a
-  hint) is added now: the section 5 query the plugin hosts of stage 5 need
+- `TempoView::tempo_at_frame` (the instantaneous tempo on a frame, on a view with
+  its hint) is added now: the section 5 query the plugin hosts of stage 5 need
   for `tempo` and `tempo_inc`. The walker does not use it (a cell's tempo is
   the chord).
 - The engine's no-alloc gate (`a_step_map_is_followed_without_allocating`) has
@@ -516,7 +516,7 @@ not the graph's chord, and CLAP its slope.
   a map of its own with no session (nothing republishes it), for a host or test
   without one. The type names no node or format; the sampler can use it.
 - `PluginClient::bind(self, tempo: TempoReader)`: the bound node owns the
-  reader, lends the map once per block, and keeps a `Cursor` into it; a fork
+  reader, lends the map once per block, and reads it through a `TempoView` made for the block; a fork
   clones the reader on the control side (at the gather). `tutti-session`'s
   `Graph` holds a template reader from the session's settings and binds every
   plugin it inserts or replaces with a clone (`insert_plugin`, `replace_plugin`);
@@ -569,12 +569,12 @@ zeroed the slope when a point lay inside. 5b tells it where things change:
   beats. Each entry's `tempo` is the map's at its beat (a point's beat is taken
   as the point's own when the engine's falls an ulp short), and its `tempo_inc`
   follows 5a's rule over its own stretch, to the next entry or the chunk's end:
-  `TempoMap::tempo_slope_with`, the slope held inside the segment the stretch
+  `TempoView::tempo_slope`, the slope held inside the segment the stretch
   starts in (so a step adds no jump to it, and a ramp that ends in the stretch
   is read to its end). The "point inside the chunk" zero is gone, because a
   stretch holds no point; the stopped zero and the loop-end zero (the stretch's
   last frame is past the loop's end) stay, per entry. The slope is right only
-  because a point ends a stretch: past a ramp's end `tempo_slope_with` holds
+  because a point ends a stretch: past a ramp's end `tempo_slope` holds
   the ramp's own slope, so a per-sample increment over a span that crossed the
   end would extrapolate past it. Every point is an entry, so no stretch does;
   and a point is one entry, even where the engine's beat at its frame is short
@@ -616,7 +616,7 @@ zeroed the slope when a point lay inside. 5b tells it where things change:
 - Tests: `graph_node::walk_tests` through the node (a step at its frame, a
   ramp's end splitting the slope, a ramp chunk's slope and no entry for cell
   edges, stop / start / seek / wrap, a chunk spanning two calls, nine changes,
-  a dropped seek), `tempo_slope_with`, the wire's golden (re-recorded for 23,
+  a dropped seek), `tempo_slope`, the wire's golden (re-recorded for 23,
   derived from the 22 bytes by script) and round trip, the CLAP host's event
   order beside MIDI, the FFI's event validation, a real `plugin-server` echo
   (`clap_transport`; the test plugin's `Transport` mode now echoes the chunk's
@@ -643,7 +643,7 @@ constant-tempo path is left beside it. What went, and what stands in for it:
 |---|---|
 | `TransportCommand::Tempo` | A point in the map (`TransportSettings::set_tempo_map`, or `set_tempo` for a constant one), taken at the next block start. |
 | `TransportSettings::tempo()` and its `AtomicBpm` mirror, and `ClockLinks::tempo` | Nothing: the audio side reads the map it lends (`TransportAudio` seeds the clock from its first point and keeps the block's constant tempo of a constant map). `tempo_in_force` stays: it is what the clock ran at, not an input. |
-| `Transport::samples_per_beat` | `TempoMap::frame_at_or_after(beat, rate)` (no caller outside tests; a beat is not a constant number of frames under a map). |
+| `Transport::samples_per_beat` | `TempoView::frame_at_or_after(beat)` (no caller outside tests; a beat is not a constant number of frames under a map). |
 | `Timeline::tempo() -> Bpm` | `Timeline::tempo_map() -> Arc<TempoMap>`; a tempo is `tempo_map().tempo_at(beat)`. The live transport answers the published map, an `OfflineTimeline` the one it was built on. |
 | `OfflineTimelineConfig::tempo`, `OfflineTimeline::with_tempo_map`, `::tempo()`, `::beats_per_sample()` | `OfflineTimelineConfig::tempo_map: Arc<TempoMap>` (default: 120 BPM constant), one constructor, `new`. |
 
@@ -674,6 +674,21 @@ Doc 013 got its update (the timed-command sentences and the `TransportClock`
 fork row). CLAUDE.md's tutti-tempo paragraph got its sentence at stage 3, and
 its dead-names list the retired items.
 
+### As built (doc 030 step 11, T6)
+
+The queries a reader walks in order are a `TempoView` (`TempoMap::view(rate)`): the
+map, the rate and a lookup hint it owns, with `seconds_at`, `beat_at_seconds`,
+`tempo_at`, `tempo_at_seconds`, `tempo_slope`, `tempo_at_frame`, `beat_at_frame`,
+`frame_at_or_after`, `next_change` and `chord_cell`. The map keeps the four
+rate-free queries (beats and seconds) as one-shot calls. The `_with(&mut Cursor)` twins,
+the frame queries that took a `rate`, `chord_cell` and `chord_cell_with` as free functions
+and `Cursor` itself are gone from the public surface. A view borrows the map a block lends,
+so it lives for one block: the transport's walker, the plugin hosts' transport walk and
+the MIDI clock make one per block (the hint is a speed-up and never changes an answer).
+`tempo::Shape` is `Transition` (the law of the tempo across a segment), `TempoPoint` has
+`step`, `ramp_time` and `ramp_beats`, and a `TempoMapBuilder` (`TempoMap::builder`) writes
+a map whose last point cannot ramp.
+
 ## 10. Decisions
 
 The owner decided these on 2026-11-08; the section is closed.
@@ -683,7 +698,7 @@ The owner decided these on 2026-11-08; the section is closed.
 | Live tempo | Edits republish the map. `set_tempo` is sugar for a constant map; `TransportCommand::Tempo` (the timed form) is retired. A map swap applies at the next block start. A frame-exact timed map swap can be added later without changing the model. |
 | Ramp grid | Cells of 128 frames, one engine constant, never per block. A block that needs more than 8 `TransportChanges` is split by the engine; `MAX_TRANSPORT_CHANGES` stays 8. |
 | Hysteresis | Only for external float tempo sources, turned into a constant-map edit in one place. |
-| Rate change | Re-seats at the current beat, as today; `chord_cell` takes the new rate. |
+| Rate change | Re-seats at the current beat, as today; `TempoView::chord_cell` is asked at the new rate. |
 | Time signature | Not in the map; `TempoMap` is tempo only. |
 | Seek | Seats at the exact beat; `timeline_frame` is `frame_at_or_after`. |
 | Sampler | Beat-locked voices follow the map; time-locked ones ignore it. |

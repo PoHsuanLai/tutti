@@ -17,7 +17,7 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode,
     ForkSource, ForkTarget, Forked, IntoNode, Io, LoopRange, Node, NodeParts, Offset, Prepare,
-    Shape, Status, Transport, Unforkable,
+    Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
@@ -30,12 +30,12 @@ fn beat_of(frame: u64) -> Beat {
     Beat(frame as f64 / FPB)
 }
 
-fn rolling(frame: u64) -> Transport {
-    Transport::new(true, Bpm::of(120.0), beat_of(frame), None)
+fn rolling(frame: u64) -> TransportPosition {
+    TransportPosition::new(true, Bpm::of(120.0), beat_of(frame), None)
 }
 
-fn stopped(frame: u64) -> Transport {
-    Transport::new(false, Bpm::of(120.0), beat_of(frame), None)
+fn stopped(frame: u64) -> TransportPosition {
+    TransportPosition::new(false, Bpm::of(120.0), beat_of(frame), None)
 }
 
 fn on(n: u8) -> Ump {
@@ -1029,7 +1029,7 @@ fn play(exec: &mut Executor, events: &[TimedMidiEvent], passes: u64) {
     });
     for f in 0..len * passes {
         if f % 64 == 0 {
-            let t = Transport::new(true, Bpm::of(120.0), beat_of(f % len), lp);
+            let t = TransportPosition::new(true, Bpm::of(120.0), beat_of(f % len), lp);
             exec.process(64, &t, &[], &mut []);
         }
     }

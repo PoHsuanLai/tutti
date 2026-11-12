@@ -50,7 +50,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, Cx, Editor, Event, EventOut, Executor, ForkByClone, ForkMode, ForkTarget,
     GraphInvalid, Io, Law, Node, PARAM_DECLICK, ParamIn, ParamInput, ParamRamp, ParamRange,
-    ParamSegment, Prepare, Reference, Shape, Status, Transport, Unforkable,
+    ParamSegment, Prepare, Reference, Shape, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
@@ -376,7 +376,7 @@ fn render(exec: &mut Executor, ed: &mut Editor, frames: usize, block: usize) -> 
             let [a, c, d] = &mut b;
             exec.process(
                 n,
-                &Transport::default(),
+                &TransportPosition::default(),
                 &[],
                 &mut [&mut a[..], &mut c[..], &mut d[..]],
             );
@@ -1627,10 +1627,10 @@ fn segment_then_ramp(at: u64, step_at: Option<u64>) -> Vec<(&'static str, Vec<f3
             let [a, c, d] = &mut out;
             let mut bufs = [&mut a[..], &mut c[..], &mut d[..]];
             if side == 0 {
-                exec.process(n, &Transport::default(), &[], &mut bufs);
+                exec.process(n, &TransportPosition::default(), &[], &mut bufs);
                 ed.collect();
             } else {
-                reference.process(n, &Transport::default(), &[], &mut bufs);
+                reference.process(n, &TransportPosition::default(), &[], &mut bufs);
             }
             let [cut, _, _] = out;
             cut
@@ -2411,9 +2411,9 @@ fn run_differential(g: &Gen) {
         let mut b = vec![vec![0.0f32; n]; width];
         {
             let mut ra: Vec<&mut [f32]> = a.iter_mut().map(|c| &mut c[..]).collect();
-            exec.process(n, &Transport::default(), &[], &mut ra);
+            exec.process(n, &TransportPosition::default(), &[], &mut ra);
             let mut rb: Vec<&mut [f32]> = b.iter_mut().map(|c| &mut c[..]).collect();
-            reference.process(n, &Transport::default(), &[], &mut rb);
+            reference.process(n, &TransportPosition::default(), &[], &mut rb);
         }
         ed.collect();
         for (c, (x, y)) in a.iter().zip(&b).enumerate() {

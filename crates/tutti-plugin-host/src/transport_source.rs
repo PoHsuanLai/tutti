@@ -26,8 +26,8 @@
 //! and the host's monotonic clock ([`HostClock`], read once per block; none
 //! for an offline render).
 
-use tutti_graph::{Continuity, Cx, Offset, Transport};
-use tutti_tempo::{Cursor, TempoMap};
+use tutti_graph::{Continuity, Cx, Offset, TransportPosition};
+use tutti_tempo::TempoView;
 use tutti_types::Samples;
 use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin};
 use tutti_types::{Meter, MeterMap};
@@ -159,7 +159,7 @@ impl SteadyTime {
 ///
 /// Reads come a chunk apart, so several of those can land between two of
 /// them. The engine's transport says which: its position is a frame count
-/// on a segment ([`Transport::origin`]), and the host's clock starts a new
+/// on a segment ([`TransportPosition::origin`]), and the host's clock starts a new
 /// segment at a seek, a tempo change, a rate change and a loop wrap, never
 /// at a stop or a start (a stopped clock only stops counting) or a loop
 /// edit. So (`played_between`):
@@ -195,7 +195,7 @@ impl SteadyTime {
 /// from a tempo change alone: a seek forward by less than the chunk plays
 /// at the faster tempo is counted as played, as the gap.
 ///
-/// A transport built by hand ([`Transport::new`]: no frame count, which no
+/// A transport built by hand ([`TransportPosition::new`]: no frame count, which no
 /// engine block carries, and none when walked on to a frame) is read by the
 /// playhead's rule instead (`continued_without_origin`).
 ///
@@ -208,7 +208,7 @@ pub struct ProjectTime {
 /// The read [`ProjectTime`] continues from.
 #[derive(Clone, Copy, Debug)]
 struct ProjectRead {
-    transport: Transport,
+    transport: TransportPosition,
     rate: SampleRate,
     /// The [`SteadyTime`] counter at the read.
     steady: i64,
@@ -220,7 +220,12 @@ impl ProjectTime {
     /// steady counter at `steady`; `None` without a usable tempo and rate.
     /// Reads come in frame order (the counter never goes back). Audio-thread
     /// safe: arithmetic only.
-    pub(crate) fn at(&mut self, t: &Transport, rate: SampleRate, steady: i64) -> Option<f64> {
+    pub(crate) fn at(
+        &mut self,
+        t: &TransportPosition,
+        rate: SampleRate,
+        steady: i64,
+    ) -> Option<f64> {
         let usable = |v: f64| v.is_finite() && v > 0.0;
         let (tempo, hz) = (t.tempo.get(), rate.get());
         if !usable(hz) {
@@ -257,8 +262,8 @@ impl ProjectTime {
 /// `gap` frames later, from their segments (see [`ProjectTime`]); `None` at
 /// a jump.
 fn played_between(
-    (from, a): (&Transport, SegmentOrigin),
-    (to, b): (&Transport, SegmentOrigin),
+    (from, a): (&TransportPosition, SegmentOrigin),
+    (to, b): (&TransportPosition, SegmentOrigin),
     gap: usize,
     rate: SampleRate,
 ) -> Option<usize> {
@@ -295,15 +300,15 @@ fn played_between(
 }
 
 /// [`ProjectTime`]'s reading when a transport has no segment (one built by
-/// hand): the playhead's rule ([`Transport::continuity`]) judged against
+/// hand): the playhead's rule ([`TransportPosition::continuity`]) judged against
 /// the earlier read's loop, so a loop edit moves nothing by itself; a stop
 /// or a start between the reads is [`played_across`]. A move out past an
 /// unchanged loop's end without wrapping re-seats either way.
 fn continued_without_origin(
-    from: &Transport,
+    from: &TransportPosition,
     gap: usize,
     rate: SampleRate,
-    to: &Transport,
+    to: &TransportPosition,
 ) -> Option<usize> {
     if from.looping == to.looping
         && let Some(l) = from.looping
@@ -333,7 +338,12 @@ fn continued_without_origin(
 /// between the reads) is off by `n · |1 − r|` frames, `r` the tempo they
 /// played at over the tempo counted, up to the whole gap at a 2 : 1 change.
 /// `None` for anything else: a move back, or further than the gap plays.
-fn played_across(from: &Transport, gap: usize, rate: SampleRate, to: &Transport) -> Option<usize> {
+fn played_across(
+    from: &TransportPosition,
+    gap: usize,
+    rate: SampleRate,
+    to: &TransportPosition,
+) -> Option<usize> {
     let tempos = match (from.playing, to.playing) {
         (true, false) => [from.tempo, from.tempo],
         (false, true) => [to.tempo, to.tempo],
@@ -355,36 +365,34 @@ fn played_across(from: &Transport, gap: usize, rate: SampleRate, to: &Transport)
 /// or the chunk's end).
 ///
 /// The map's slope, held inside the segment the stretch starts in
-/// ([`TempoMap::tempo_slope_with`]): exact for a
-/// [`RampTime`](tutti_tempo::Shape::RampTime) ramp, whose tempo is linear in
+/// ([`TempoView::tempo_slope`]): exact for a
+/// [`RampTime`](tutti_tempo::Transition::RampTime) ramp, whose tempo is linear in
 /// time, and a step inside the stretch adds no jump to it (a step is an event
 /// of its own). `0.0` when the transport is stopped, when the stretch reaches
 /// the loop's end (its last frame's beat is past `loop_end`: the beat jumps
 /// back there, so no slope describes the stretch), or when a figure is not
 /// usable.
 pub(crate) fn slope(
-    map: &TempoMap,
-    cursor: &mut Cursor,
+    view: &mut TempoView<'_>,
     beat: Beat,
     playing: bool,
     loop_end: Option<Beat>,
-    rate: SampleRate,
     frames: usize,
 ) -> f64 {
-    let rate = rate.get();
+    let rate = view.rate().get();
     if !playing || frames == 0 || !beat.get().is_finite() || !rate.is_finite() || rate <= 0.0 {
         return 0.0;
     }
-    let t0 = map.seconds_at_with(beat, cursor).get();
+    let t0 = view.seconds_at(beat).get();
     if let Some(end) = loop_end {
         let last = tutti_types::Seconds(t0 + (frames - 1) as f64 / rate);
-        if map.beat_at_seconds_with(last, cursor).get() > end.get() {
+        if view.beat_at_seconds(last).get() > end.get() {
             return 0.0;
         }
     }
     let t1 = tutti_types::Seconds(t0 + frames as f64 / rate);
     // `.get()`: the slope is a raw `f64` BPM per sample, for the C ABI.
-    map.tempo_slope_with(tutti_types::Seconds(t0), t1, cursor) / rate
+    view.tempo_slope(tutti_types::Seconds(t0), t1) / rate
 }
 
 impl Snapshot {
@@ -400,25 +408,22 @@ impl Snapshot {
     ///   tempo (not a chord across it), a ramp's curve at that beat.
     ///
     /// A beat that is not finite keeps the transport's tempo.
-    pub fn settle(&mut self, map: &TempoMap, cursor: &mut Cursor) -> Beat {
+    pub fn settle(&mut self, view: &mut TempoView<'_>) -> Beat {
         self.tempo_inc = 0.0;
-        self.loop_seconds = self.looping.map(|(a, b)| {
-            (
-                map.seconds_at_with(a, cursor),
-                map.seconds_at_with(b, cursor),
-            )
-        });
+        self.loop_seconds = self
+            .looping
+            .map(|(a, b)| (view.seconds_at(a), view.seconds_at(b)));
         let mut beat = self.beat;
         if !beat.get().is_finite() {
             return beat;
         }
-        let rate = self.sample_rate.get();
+        let rate = view.rate().get();
         if rate.is_finite() && rate > 0.0 {
-            let points = map.points();
-            let from = map.seconds_at_with(beat, cursor).get();
+            let points = view.map().points();
+            let from = view.seconds_at(beat).get();
             let mut next = points.partition_point(|p| p.beat.get() <= beat.get());
             while let Some(p) = points.get(next) {
-                let ahead = (map.seconds_at_with(p.beat, cursor).get() - from) * rate;
+                let ahead = (view.seconds_at(p.beat).get() - from) * rate;
                 if tutti_types::first_frame_at_or_after(ahead) > 0 {
                     break;
                 }
@@ -426,7 +431,7 @@ impl Snapshot {
                 next += 1;
             }
         }
-        self.tempo = map.tempo_at_with(beat, cursor);
+        self.tempo = view.tempo_at(beat);
         beat
     }
 
@@ -434,15 +439,13 @@ impl Snapshot {
     /// frames from there ([`slope`]). What a reader that sends one transport
     /// per chunk (the in-process VST2 node) is told; the plugin node walks the
     /// chunk's stretches itself (`transport_walk`).
-    pub(crate) fn follow(&mut self, map: &TempoMap, cursor: &mut Cursor, chunk: usize) {
-        let beat = self.settle(map, cursor);
+    pub(crate) fn follow(&mut self, view: &mut TempoView<'_>, chunk: usize) {
+        let beat = self.settle(view);
         self.tempo_inc = slope(
-            map,
-            cursor,
+            view,
             beat,
             self.playing,
             self.looping.map(|(_, end)| end),
-            self.sample_rate,
             chunk,
         );
     }
@@ -481,12 +484,11 @@ impl Snapshot {
 
 /// What a block reads of the project besides its transport: the meter (the
 /// signature and bar) and the tempo map (the tempo and its slope), each lent
-/// once for the block, with the node's cursor into the map. Built per block
-/// from the node's two readers; nothing here allocates.
-pub(crate) struct ProjectMaps<'a> {
+/// once for the block, the tempo map as a view at the block's rate. Built per
+/// block from the node's two readers; nothing here allocates.
+pub(crate) struct ProjectMaps<'a, 'm> {
     pub(crate) meter: &'a MeterMap,
-    pub(crate) tempo: &'a TempoMap,
-    pub(crate) cursor: &'a mut Cursor,
+    pub(crate) tempo: &'a mut TempoView<'m>,
 }
 
 /// [`Snapshot::at`] for a chunk of `chunk` frames, as the plugin ABIs carry
@@ -499,10 +501,10 @@ pub(crate) fn from_cx(
     continuous: i64,
     project: &mut ProjectTime,
     block_ns: Option<i64>,
-    maps: &mut ProjectMaps<'_>,
+    maps: &mut ProjectMaps<'_, '_>,
 ) -> TransportInfo {
     let mut s = Snapshot::at(cx, offset, continuous, project, block_ns);
-    s.follow(maps.tempo, maps.cursor, chunk);
+    s.follow(maps.tempo, chunk);
     transport_info(&s, maps.meter)
 }
 
@@ -656,15 +658,13 @@ impl BlockTransport<'_> {
     }
 
     /// The transport at `offset` for a chunk of `chunk` frames, as the plugin
-    /// ABIs carry it ([`from_cx`]): the tempo and slope from `tempo`, through
-    /// the node's `cursor`.
+    /// ABIs carry it ([`from_cx`]): the tempo and slope from `tempo`.
     pub(crate) fn at(
         &mut self,
         cx: &Cx<'_>,
         offset: Offset,
         chunk: usize,
-        tempo: &TempoMap,
-        cursor: &mut Cursor,
+        tempo: &mut TempoView<'_>,
     ) -> TransportInfo {
         let (meter, steady, project, block_ns) = self.parts();
         from_cx(
@@ -674,11 +674,7 @@ impl BlockTransport<'_> {
             steady.at(offset.index()),
             project,
             block_ns,
-            &mut ProjectMaps {
-                meter,
-                tempo,
-                cursor,
-            },
+            &mut ProjectMaps { meter, tempo },
         )
     }
 }
@@ -687,14 +683,15 @@ impl BlockTransport<'_> {
 mod tests {
     use super::*;
     use std::time::Instant;
-    use tutti_graph::{Env, LoopRange, Transport, TransportChanges, TransportHistory};
+    use tutti_graph::{Env, LoopRange, TransportChanges, TransportHistory, TransportPosition};
+    use tutti_tempo::TempoMap;
     use tutti_types::Latency;
     use tutti_types::{BarNumber, BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_types::{Frame, FrameClock, Samples};
 
     const SR: SampleRate = SampleRate(48_000.0);
 
-    fn env(frame: u64, len: usize, transport: Transport, changes: TransportChanges) -> Env {
+    fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
         Env {
             frame: Frame(frame),
             sample_rate: SR,
@@ -724,8 +721,7 @@ mod tests {
             block_ns,
             &mut ProjectMaps {
                 meter,
-                tempo: map,
-                cursor: &mut Cursor::default(),
+                tempo: &mut map.view(SR),
             },
         )
     }
@@ -776,7 +772,7 @@ mod tests {
     /// over).
     #[test]
     fn the_snapshot_is_env_at_the_frame() {
-        let t = Transport::new(true, Bpm::of(120.0), Beat(2.0), None).with_recording(true);
+        let t = TransportPosition::new(true, Bpm::of(120.0), Beat(2.0), None).with_recording(true);
         let e = env(1_000, 64, t, TransportChanges::NONE);
         let meter = MeterMap::default();
 
@@ -824,7 +820,7 @@ mod tests {
             start: Beat(4.0),
             end: Beat(4.0 + 32.0 / 24_000.0),
         });
-        let t = Transport::counted(
+        let t = TransportPosition::counted(
             true,
             Bpm::of(120.0),
             SegmentOrigin {
@@ -838,7 +834,7 @@ mod tests {
         changes
             .push(
                 at(40, 64),
-                Transport::new(true, Bpm::of(90.0), Beat(16.0), None),
+                TransportPosition::new(true, Bpm::of(90.0), Beat(16.0), None),
             )
             .expect("a change inside the block");
         let e = env(0, 64, t, changes);
@@ -849,12 +845,12 @@ mod tests {
             tutti_tempo::TempoPoint {
                 beat: Beat(0.0),
                 tempo: Bpm::of(120.0),
-                shape: tutti_tempo::Shape::Step,
+                transition: tutti_tempo::Transition::Step,
             },
             tutti_tempo::TempoPoint {
                 beat: Beat(16.0),
                 tempo: Bpm::of(90.0),
-                shape: tutti_tempo::Shape::Step,
+                transition: tutti_tempo::Transition::Step,
             },
         ])
         .expect("a map");
@@ -914,7 +910,7 @@ mod tests {
         let first = env(
             0,
             64,
-            Transport::new(true, Bpm::of(120.0), Beat(2.0), None),
+            TransportPosition::new(true, Bpm::of(120.0), Beat(2.0), None),
             TransportChanges::NONE,
         );
         history.observe(&first);
@@ -922,7 +918,7 @@ mod tests {
         let second = env(
             64,
             64,
-            Transport::new(true, Bpm::of(120.0), Beat(32.0), None),
+            TransportPosition::new(true, Bpm::of(120.0), Beat(32.0), None),
             TransportChanges::NONE,
         );
         history.observe(&second);
@@ -957,7 +953,7 @@ mod tests {
         let e = env(
             0,
             64,
-            Transport::new(true, Bpm::of(120.0), Beat(3.5), None),
+            TransportPosition::new(true, Bpm::of(120.0), Beat(3.5), None),
             TransportChanges::NONE,
         );
         let out = info_at(
@@ -978,18 +974,18 @@ mod tests {
         assert!((out.position.quarters - 3.5).abs() < 1e-9);
     }
 
-    fn point(beat: f64, bpm: f64, shape: tutti_tempo::Shape) -> tutti_tempo::TempoPoint {
+    fn point(beat: f64, bpm: f64, transition: tutti_tempo::Transition) -> tutti_tempo::TempoPoint {
         tutti_tempo::TempoPoint {
             beat: Beat(beat),
             tempo: Bpm::of(bpm),
-            shape,
+            transition,
         }
     }
 
     /// What a plugin is told for a chunk of `chunk` frames starting at `t`'s
     /// beat, over `map`: the transport's own tempo is 120 in every test
     /// below, so any other figure came from the map.
-    fn told(map: &TempoMap, t: Transport, chunk: usize) -> TransportInfo {
+    fn told(map: &TempoMap, t: TransportPosition, chunk: usize) -> TransportInfo {
         let e = env(0, 64, t, TransportChanges::NONE);
         from_cx(
             &cx(&e),
@@ -1000,22 +996,21 @@ mod tests {
             None,
             &mut ProjectMaps {
                 meter: &MeterMap::default(),
-                tempo: map,
-                cursor: &mut Cursor::default(),
+                tempo: &mut map.view(SR),
             },
         )
     }
 
-    fn rolling(beat: f64) -> Transport {
-        Transport::new(true, Bpm::of(120.0), Beat(beat), None)
+    fn rolling(beat: f64) -> TransportPosition {
+        TransportPosition::new(true, Bpm::of(120.0), Beat(beat), None)
     }
 
     /// 120 BPM, then 90 from beat 4 (a step: the new tempo from the point's
     /// own beat, no chord across it).
     fn step_map() -> TempoMap {
         TempoMap::new([
-            point(0.0, 120.0, tutti_tempo::Shape::Step),
-            point(4.0, 90.0, tutti_tempo::Shape::Step),
+            point(0.0, 120.0, tutti_tempo::Transition::Step),
+            point(4.0, 90.0, tutti_tempo::Transition::Step),
         ])
         .expect("a map")
     }
@@ -1026,8 +1021,8 @@ mod tests {
     /// ((120 t + 18.75 t^2) / 60 at t = 0.8).
     fn ramp_map() -> TempoMap {
         TempoMap::new([
-            point(0.0, 120.0, tutti_tempo::Shape::RampTime),
-            point(4.0, 180.0, tutti_tempo::Shape::Step),
+            point(0.0, 120.0, tutti_tempo::Transition::RampTime),
+            point(4.0, 180.0, tutti_tempo::Transition::Step),
         ])
         .expect("a map")
     }
@@ -1079,9 +1074,9 @@ mod tests {
     #[test]
     fn a_stretch_with_a_point_inside_is_told_its_segments_slope() {
         let map = TempoMap::new([
-            point(0.0, 120.0, tutti_tempo::Shape::RampTime),
-            point(4.0, 180.0, tutti_tempo::Shape::RampTime),
-            point(8.0, 60.0, tutti_tempo::Shape::Step),
+            point(0.0, 120.0, tutti_tempo::Transition::RampTime),
+            point(4.0, 180.0, tutti_tempo::Transition::RampTime),
+            point(8.0, 60.0, tutti_tempo::Transition::Step),
         ])
         .expect("a map");
         // 1000 frames at 180 BPM is 0.0625 beat: past beat 4 from 3.99. The
@@ -1109,7 +1104,7 @@ mod tests {
     /// playhead; the tempo is still the map's.
     #[test]
     fn a_stopped_transport_is_told_no_slope() {
-        let stopped = Transport::new(false, Bpm::of(120.0), Beat(1.8), None);
+        let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(1.8), None);
         let got = told(&ramp_map(), stopped, 64);
         assert!((got.timing.tempo - 150.0).abs() < 1e-6);
         assert_eq!(got.timing.tempo_inc, 0.0);
@@ -1121,7 +1116,7 @@ mod tests {
     #[test]
     fn a_chunk_crossing_the_loop_end_is_told_no_slope() {
         let looped = |end: f64| {
-            Transport::new(
+            TransportPosition::new(
                 true,
                 Bpm::of(120.0),
                 Beat(1.8),
@@ -1145,7 +1140,7 @@ mod tests {
     /// 2/3 s, 2 + 8/3 s; a transport that is not looping carries none.
     #[test]
     fn a_loop_is_told_its_bounds_in_seconds_from_the_tempo_map() {
-        let looped = Transport::new(
+        let looped = TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(3.0),
@@ -1211,8 +1206,8 @@ mod tests {
             }
         }
 
-        fn transport(&self) -> Transport {
-            Transport::counted(
+        fn transport(&self) -> TransportPosition {
+            TransportPosition::counted(
                 self.playing,
                 self.clock.tempo(),
                 self.clock.origin(),
@@ -1406,7 +1401,7 @@ mod tests {
 
         // A tempo cannot be zero (`Bpm` refuses it); a rate of zero still
         // leaves no project time.
-        let playing = Transport::new(true, Bpm::of(120.0), Beat(2.0), None);
+        let playing = TransportPosition::new(true, Bpm::of(120.0), Beat(2.0), None);
         assert_eq!(project.at(&playing, SampleRate(0.0), 192), None);
     }
 
@@ -1560,7 +1555,7 @@ mod tests {
                 frame: Frame(frame),
                 sample_rate: SR,
             };
-            Transport::counted(true, Bpm::of(bpm), origin, None)
+            TransportPosition::counted(true, Bpm::of(bpm), origin, None)
         };
         let mut p = ProjectTime::default();
         assert_eq!(p.at(&counted(120.0, 100.0, 0), SR, 0), Some(2_400_000.0));
@@ -1681,25 +1676,27 @@ mod tests {
         };
         let crossing = lp(9.0, b1 + per(16.0, 121.0));
         let behind = lp(5.0, 9.0);
-        let read_after = |looping, playing, to: Transport, rate| {
+        let read_after = |looping, playing, to: TransportPosition, rate| {
             let first = env(
                 0,
                 64,
-                Transport::new(true, Bpm::of(120.0), Beat(10.0), None),
+                TransportPosition::new(true, Bpm::of(120.0), Beat(10.0), None),
                 TransportChanges::NONE,
             );
-            let on = Transport::new(playing, Bpm::of(121.0), Beat(b1), looping);
+            let on = TransportPosition::new(playing, Bpm::of(121.0), Beat(b1), looping);
             let second = env(64, 64, on, TransportChanges::NONE);
             let mut third = env(128, 64, to, TransportChanges::NONE);
             third.sample_rate = rate;
             read_firsts(&[first, second, third])
         };
         let stopped = |moved: f64, looping| {
-            Transport::new(false, Bpm::of(121.0), Beat(b1 + per(moved, 121.0)), looping)
+            TransportPosition::new(false, Bpm::of(121.0), Beat(b1 + per(moved, 121.0)), looping)
         };
         let past = |n: f64| reseat(b1 + per(n, 121.0), 121.0);
-        let faster = Transport::new(false, Bpm::of(242.0), Beat(b1 + per(40.0, 242.0)), None);
-        let rolling = Transport::new(true, Bpm::of(121.0), Beat(b1 + per(64.0, 121.0)), None);
+        let faster =
+            TransportPosition::new(false, Bpm::of(242.0), Beat(b1 + per(40.0, 242.0)), None);
+        let rolling =
+            TransportPosition::new(true, Bpm::of(121.0), Beat(b1 + per(64.0, 121.0)), None);
         let cases = [
             (None, true, rolling, SR, Some(240_128)),
             (crossing, true, stopped(20.0, crossing), SR, past(20.0)),
@@ -1733,7 +1730,7 @@ mod tests {
         let e = env(
             0,
             64,
-            Transport::new(true, Bpm::of(120.0), Beat(0.0), None),
+            TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None),
             TransportChanges::NONE,
         );
         let block_ns = Some(5_000_000_000);

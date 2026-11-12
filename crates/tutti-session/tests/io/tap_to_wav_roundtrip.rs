@@ -24,7 +24,8 @@
 
 use tutti_codec::{FileOut, Format, Pcm, Spec};
 use tutti_graph::{
-    Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
+    Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, TransportPosition,
+    Unforkable,
 };
 use tutti_graph::{NodeKey, TapAlign, TapId};
 use tutti_graph::{OutPort, Source as Origin};
@@ -78,7 +79,7 @@ struct Graph {
 impl Graph {
     /// Renders `n` frames, in blocks.
     fn render(&mut self, n: usize) {
-        let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+        let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
         let (mut left, mut right) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
         let mut left_over = n;
         while left_over > 0 {

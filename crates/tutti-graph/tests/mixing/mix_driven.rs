@@ -24,7 +24,7 @@ use common::{Kind, Pair, SpecBehaviour, bits, driver_value, input_signal, prepar
 use tutti_graph::{
     CompileError, CycleEdge, Edge, Editor, EventOut, ForkMode, ForkTarget, GraphInvalid, GraphSpec,
     InPort, NodeKey, NodeMix, NodeMode, OutPort, PARAM_DECLICK, ParamIn, ParamPorts,
-    ParamPortsError, ParamRange, Source, Topology, Transport, ValidGraph, compile,
+    ParamPortsError, ParamRange, Source, Topology, TransportPosition, ValidGraph, compile,
 };
 use tutti_types::{ChannelLayout, Mix, Tail, UnitAddr, UnitParam};
 
@@ -648,7 +648,7 @@ fn block(exec: &mut tutti_graph::Executor, input: &[f32]) -> Vec<f32> {
     let mut o = vec![0.0f32; input.len()];
     exec.process(
         input.len(),
-        &Transport::default(),
+        &TransportPosition::default(),
         &[input],
         &mut [&mut o[..]],
     );

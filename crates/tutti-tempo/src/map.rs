@@ -1,6 +1,8 @@
+use crate::builder::TempoMapBuilder;
 use crate::error::TempoError;
-use crate::point::{Shape, TempoPoint};
+use crate::point::{TempoPoint, Transition};
 use crate::segment::Seg;
+use crate::view::TempoView;
 use tutti_types::{Beat, BeatDuration, Bpm, Frame, SampleRate, Seconds, first_frame_at_or_after};
 
 /// An immutable tempo map.
@@ -13,11 +15,11 @@ pub struct TempoMap {
     segs: Vec<Seg>,
 }
 
-/// A lookup hint. Audio asks for nearly monotone positions, so the segment
-/// found last time is nearly always right; a wrong hint costs one binary
-/// search and never changes a result.
+/// A lookup hint, owned by a [`TempoView`]. Audio asks for
+/// nearly monotone positions, so the segment found last time is nearly always
+/// right; a wrong hint costs one binary search and never changes a result.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Cursor(usize);
+pub(crate) struct Cursor(usize);
 
 impl TempoMap {
     /// One tempo from beat 0 on.
@@ -27,11 +29,13 @@ impl TempoMap {
     /// [`TempoError::Unrepresentable`] when `tempo` is so small that a beat's
     /// rate underflows.
     pub fn constant(tempo: Bpm) -> Result<Self, TempoError> {
-        Self::new([TempoPoint {
-            beat: Beat(0.0),
-            tempo,
-            shape: Shape::Step,
-        }])
+        Self::new([TempoPoint::step(Beat(0.0), tempo)])
+    }
+
+    /// A [`TempoMapBuilder`] that starts at `first` from beat 0, for a map
+    /// written point by point with no way to end on a ramp.
+    pub fn builder(first: Bpm) -> TempoMapBuilder {
+        TempoMapBuilder::new(first)
     }
 
     /// Build from points sorted by beat. Allocates; control thread only.
@@ -52,7 +56,7 @@ impl TempoMap {
                 return Err(TempoError::BadOrder(i));
             }
         }
-        if pts.last().is_some_and(|p| p.shape != Shape::Step) {
+        if pts.last().is_some_and(|p| p.transition != Transition::Step) {
             return Err(TempoError::RampWithoutEnd);
         }
         // Anchors: a Neumaier-compensated running sum of segment durations, so
@@ -64,7 +68,7 @@ impl TempoMap {
                 Some(n) => (n.tempo.get() / 60.0, n.beat - p.beat),
                 None => (p.tempo.get() / 60.0, BeatDuration(f64::INFINITY)),
             };
-            let s = Seg::new(p.beat, Seconds(sum + comp), p.tempo, r1, p.shape, db);
+            let s = Seg::new(p.beat, Seconds(sum + comp), p.tempo, r1, p.transition, db);
             if i + 1 < pts.len() {
                 if !s.is_sound(db) {
                     return Err(TempoError::Unrepresentable(i));
@@ -108,6 +112,13 @@ impl TempoMap {
             Err(i) => pts.insert(i, point),
         }
         Self::new(pts)
+    }
+
+    /// A [`TempoView`] over this map at `rate`: the frame queries, with a
+    /// lookup hint, for a reader that walks the map in order.
+    #[must_use]
+    pub fn view(&self, rate: SampleRate) -> TempoView<'_> {
+        TempoView::new(self, rate)
     }
 
     /// The points, as built.
@@ -181,15 +192,16 @@ impl TempoMap {
 
     /// Time from beat 0 to `beat` (negative before beat 0, at the first
     /// tempo).
+    ///
+    /// One query from a cold start. A caller that asks many nearby positions
+    /// takes a [`view`](Self::view) instead.
     #[must_use]
     pub fn seconds_at(&self, beat: Beat) -> Seconds {
-        self.seconds_at_with(beat, &mut Cursor::default())
+        self.seconds_at_from(beat, &mut Cursor::default())
     }
 
-    /// [`seconds_at`](Self::seconds_at) with a hint.
-    #[must_use]
     #[inline]
-    pub fn seconds_at_with(&self, beat: Beat, hint: &mut Cursor) -> Seconds {
+    pub(crate) fn seconds_at_from(&self, beat: Beat, hint: &mut Cursor) -> Seconds {
         let s = self.by_beat(beat, hint);
         s.sec0 + s.sec_in(beat - s.beat0)
     }
@@ -197,13 +209,11 @@ impl TempoMap {
     /// The beat `seconds` from beat 0.
     #[must_use]
     pub fn beat_at_seconds(&self, seconds: Seconds) -> Beat {
-        self.beat_at_seconds_with(seconds, &mut Cursor::default())
+        self.beat_at_seconds_from(seconds, &mut Cursor::default())
     }
 
-    /// [`beat_at_seconds`](Self::beat_at_seconds) with a hint.
-    #[must_use]
     #[inline]
-    pub fn beat_at_seconds_with(&self, seconds: Seconds, hint: &mut Cursor) -> Beat {
+    pub(crate) fn beat_at_seconds_from(&self, seconds: Seconds, hint: &mut Cursor) -> Beat {
         let s = self.by_sec(seconds, hint);
         s.beat0 + s.beat_in(seconds - s.sec0)
     }
@@ -212,13 +222,11 @@ impl TempoMap {
     /// reads its new tempo there, and a ramp reads the tempo it was given.
     #[must_use]
     pub fn tempo_at(&self, beat: Beat) -> Bpm {
-        self.tempo_at_with(beat, &mut Cursor::default())
+        self.tempo_at_from(beat, &mut Cursor::default())
     }
 
-    /// [`tempo_at`](Self::tempo_at) with a hint.
-    #[must_use]
     #[inline]
-    pub fn tempo_at_with(&self, beat: Beat, hint: &mut Cursor) -> Bpm {
+    pub(crate) fn tempo_at_from(&self, beat: Beat, hint: &mut Cursor) -> Bpm {
         let s = self.by_beat(beat, hint);
         s.bpm_at_beat(beat - s.beat0)
     }
@@ -226,31 +234,17 @@ impl TempoMap {
     /// The tempo `seconds` from beat 0.
     #[must_use]
     pub fn tempo_at_seconds(&self, seconds: Seconds) -> Bpm {
-        self.tempo_at_seconds_with(seconds, &mut Cursor::default())
+        self.tempo_at_seconds_from(seconds, &mut Cursor::default())
     }
 
-    /// [`tempo_at_seconds`](Self::tempo_at_seconds) with a hint.
-    #[must_use]
     #[inline]
-    pub fn tempo_at_seconds_with(&self, seconds: Seconds, hint: &mut Cursor) -> Bpm {
+    pub(crate) fn tempo_at_seconds_from(&self, seconds: Seconds, hint: &mut Cursor) -> Bpm {
         let s = self.by_sec(seconds, hint);
         s.bpm_at_sec(seconds - s.sec0)
     }
 
-    /// How fast the tempo moves from `from` to `to`, in BPM per second: the
-    /// difference of the two tempos over their distance, **held inside the
-    /// segment `from` is in**. The span stops where that segment ends, so a
-    /// point between the two never adds its jump (a step's change of tempo is
-    /// a transport event of its own, not a slope), and a ramp that ends in the
-    /// span is read to its end. Exact for a [`RampTime`](Shape::RampTime)
-    /// ramp, whose tempo is linear in time; a beat ramp's tempo is
-    /// exponential in time, and this is its chord over the span. `0.0` for a
-    /// step, an empty span, or a span that ends before it begins.
-    ///
-    /// A bare `f64` (BPM per second): no unit covers a tempo's slope, and its
-    /// reader divides it into CLAP's per-sample `tempo_inc` at the C ABI.
-    #[must_use]
-    pub fn tempo_slope_with(&self, from: Seconds, to: Seconds, hint: &mut Cursor) -> f64 {
+    #[inline]
+    pub(crate) fn tempo_slope_from(&self, from: Seconds, to: Seconds, hint: &mut Cursor) -> f64 {
         let s = self.by_sec(from, hint);
         let ds0 = from - s.sec0;
         let ds1 = (to - s.sec0).min(s.dsec);
@@ -262,74 +256,19 @@ impl TempoMap {
         (s.bpm_at_sec(ds1).get() - s.bpm_at_sec(ds0).get()) / span
     }
 
-    /// The tempo on `frame`, counted from beat 0 at `rate`: the curve's
-    /// instantaneous tempo there, not a cell's chord. The slope a reader wants
-    /// over a stretch of frames is the difference of two of these over their
-    /// distance (doc 020, section 5).
-    #[must_use]
-    pub fn tempo_at_frame(&self, frame: Frame, rate: SampleRate) -> Bpm {
-        self.tempo_at_frame_with(frame, rate, &mut Cursor::default())
-    }
-
-    /// [`tempo_at_frame`](Self::tempo_at_frame) with a hint.
-    #[must_use]
     #[inline]
-    pub fn tempo_at_frame_with(&self, frame: Frame, rate: SampleRate, hint: &mut Cursor) -> Bpm {
-        self.tempo_at_seconds_with(Seconds(frame.get() as f64 / rate.get()), hint)
-    }
-
-    /// The beat on `frame`, counted from beat 0 at `rate`.
-    #[must_use]
-    pub fn beat_at_frame(&self, frame: Frame, rate: SampleRate) -> Beat {
-        self.beat_at_frame_with(frame, rate, &mut Cursor::default())
-    }
-
-    /// [`beat_at_frame`](Self::beat_at_frame) with a hint.
-    #[must_use]
-    #[inline]
-    pub fn beat_at_frame_with(&self, frame: Frame, rate: SampleRate, hint: &mut Cursor) -> Beat {
-        self.beat_at_seconds_with(Seconds(frame.get() as f64 / rate.get()), hint)
-    }
-
-    /// The first frame at or after `beat`, by the engine's one placement rule
-    /// ([`first_frame_at_or_after`]): a beat within `FRAME_TOLERANCE` of a frame
-    /// is on it. A beat before frame 0 gives frame 0.
-    ///
-    /// The tolerance is absolute (1e-6 frame) and an `f64` frame count carries
-    /// less than that only below 2^32 frames: 24.8 hours at 48 kHz, 6.2 hours
-    /// at 192 kHz. Past that a frame to beat to frame round trip can land a frame
-    /// off. The same limit is documented on `FRAME_TOLERANCE`; the map does not
-    /// scale it, because the rule is shared with every reader that places a beat.
-    #[must_use]
-    pub fn frame_at_or_after(&self, beat: Beat, rate: SampleRate) -> Frame {
-        self.frame_at_or_after_with(beat, rate, &mut Cursor::default())
-    }
-
-    /// [`frame_at_or_after`](Self::frame_at_or_after) with a hint.
-    #[must_use]
-    #[inline]
-    pub fn frame_at_or_after_with(&self, beat: Beat, rate: SampleRate, hint: &mut Cursor) -> Frame {
-        let frames = self.seconds_at_with(beat, hint).get() * rate.get();
+    pub(crate) fn frame_at_or_after_from(
+        &self,
+        beat: Beat,
+        rate: SampleRate,
+        hint: &mut Cursor,
+    ) -> Frame {
+        let frames = self.seconds_at_from(beat, hint).get() * rate.get();
         Frame(first_frame_at_or_after(frames).max(0) as u64)
     }
 
-    /// The first frame at or after `frame` on which a point of the map starts
-    /// (a step, or the start or end of a ramp), or `None` when there is none
-    /// left. The first point, at beat 0, is not a change.
-    ///
-    /// A renderer cuts a block here: from this frame on the tempo is another
-    /// segment's, and the beat there is [`beat_at_frame`](Self::beat_at_frame)
-    /// (the map's own, so a step that falls between two frames lands on the
-    /// next one).
-    #[must_use]
-    pub fn next_change(&self, frame: Frame, rate: SampleRate) -> Option<Frame> {
-        self.next_change_with(frame, rate, &mut Cursor::default())
-    }
-
-    /// [`next_change`](Self::next_change) with a hint.
-    #[must_use]
     #[inline]
-    pub fn next_change_with(
+    pub(crate) fn next_change_from(
         &self,
         frame: Frame,
         rate: SampleRate,

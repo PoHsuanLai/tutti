@@ -23,8 +23,8 @@ use tutti_types::MaxBlock;
 use tutti_curve::{Breakpoint, Law, Trajectory};
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamIn, Prepare, Shape, Status, Transport,
-    TransportChanges, Unforkable,
+    Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamIn, Prepare, Shape, Status,
+    TransportChanges, TransportPosition, Unforkable,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_modulation::ControlProgram;
@@ -104,7 +104,7 @@ fn graph(lane: ControlLaneNode) -> (Editor, Executor) {
 fn block(
     ed: &mut Editor,
     exec: &mut Executor,
-    t: &Transport,
+    t: &TransportPosition,
     ch: &TransportChanges,
     n: usize,
 ) -> Vec<f32> {
@@ -144,7 +144,7 @@ fn check_rolling(
     });
     let mut all = Vec::new();
     for &n in blocks {
-        let t = Transport::counted(true, TEMPO, clock.origin(), graph_loop);
+        let t = TransportPosition::counted(true, TEMPO, clock.origin(), graph_loop);
         let out = block(&mut ed, &mut exec, &t, &TransportChanges::NONE, n);
         for (i, &v) in out.iter().enumerate() {
             let beat = clock.beat();
@@ -225,14 +225,14 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
     // 128-frame block.
     let (mut ed, mut exec) = graph(automation(curve.clone()));
     let at50 = Offset::new(50, Samples(MAX)).expect("inside");
-    let cases: [(Transport, Transport); 3] = [
+    let cases: [(TransportPosition, TransportPosition); 3] = [
         (
-            Transport::new(true, TEMPO, Beat(0.05), None),
-            Transport::new(true, TEMPO, Beat(0.3), None),
+            TransportPosition::new(true, TEMPO, Beat(0.05), None),
+            TransportPosition::new(true, TEMPO, Beat(0.3), None),
         ),
         (
-            Transport::new(true, TEMPO, Beat(0.12), None),
-            Transport::new(
+            TransportPosition::new(true, TEMPO, Beat(0.12), None),
+            TransportPosition::new(
                 true,
                 Bpm::of(71.0),
                 Beat(0.12 + 50.0 / frames_per_beat()),
@@ -240,15 +240,15 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
             ),
         ),
         (
-            Transport::new(true, TEMPO, Beat(0.45), None),
-            Transport::new(false, TEMPO, Beat(0.45 + 50.0 / frames_per_beat()), None),
+            TransportPosition::new(true, TEMPO, Beat(0.45), None),
+            TransportPosition::new(false, TEMPO, Beat(0.45 + 50.0 / frames_per_beat()), None),
         ),
     ];
     for (k, (t0, t1)) in cases.into_iter().enumerate() {
         let mut ch = TransportChanges::NONE;
         ch.push(at50, t1).expect("room");
         let out = block(&mut ed, &mut exec, &t0, &ch, MAX);
-        let fpb = |t: &Transport| RATE * 60.0 / t.tempo.get();
+        let fpb = |t: &TransportPosition| RATE * 60.0 / t.tempo.get();
         for (i, &v) in out.iter().enumerate() {
             let beat = if i < 50 {
                 t0.beat().get() + i as f64 / fpb(&t0)
@@ -276,7 +276,7 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
     let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
     let mut out = Vec::new();
     for &n in blocks {
-        let t = Transport::counted(true, TEMPO, clock.origin(), None);
+        let t = TransportPosition::counted(true, TEMPO, clock.origin(), None);
         out.extend(block(&mut ed, &mut exec, &t, &TransportChanges::NONE, n));
         clock.advance(Samples(n), None);
     }

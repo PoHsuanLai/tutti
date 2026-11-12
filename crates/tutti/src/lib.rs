@@ -257,7 +257,7 @@ pub mod prelude {
     // `Tail` the types prelude carries: the bounce's policies are
     // `BounceLatency` and `BounceTail`.
     pub use tutti_types::Latency;
-    pub use tutti_types::{At, BarNumber, LoopRange, Meter};
+    pub use tutti_types::{At, BarNumber, LoopRange, LoopRangeError, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     // The device handle and a device's identity.
@@ -292,8 +292,8 @@ pub mod prelude {
     #[cfg(feature = "session")]
     pub use tutti_session::{
         ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Job,
-        JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder,
-        SessionEvent, TypedParamRef, Workers,
+        JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, ScheduleError, Session,
+        SessionBuilder, SessionEvent, TypedParamRef, Workers,
     };
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};

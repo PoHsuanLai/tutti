@@ -11,7 +11,7 @@ use tutti_dsp::{
     NetworkCapacity, Reach, Recurrence, Stage, Start,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
-use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
+use tutti_graph::{Env, PlayClock, Status, TransportChanges, TransportPosition};
 use tutti_graph::{Node, ParamNode, Prepare, Solo};
 use tutti_nodes::{ControlSet, FamilyNode, NodeFamily};
 use tutti_types::MaxBlock;
@@ -198,7 +198,7 @@ impl Rig {
             frame: Frame(self.frame),
             sample_rate: SR,
             block_len: Samples(input.len()),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             changes: TransportChanges::NONE,
             play: PlayClock::ZERO,
         };

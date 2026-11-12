@@ -1607,8 +1607,8 @@ fn span(
                 return Err(BounceConfigError::InvalidRange);
             }
             let (from, to) = (
-                map.frame_at_or_after(a, rate),
-                map.frame_at_or_after(b, rate),
+                map.view(rate).frame_at_or_after(a),
+                map.view(rate).frame_at_or_after(b),
             );
             (a, to.get().saturating_sub(from.get()))
         }
@@ -1619,7 +1619,10 @@ fn span(
             let long = Seconds((b.get() - a.get()).max(0.0)).to_samples(rate);
             (map.beat_at_seconds(a), long.get() as u64)
         }
-        Range::Frames(a, b) => (map.beat_at_frame(a, rate), b.get().saturating_sub(a.get())),
+        Range::Frames(a, b) => (
+            map.view(rate).beat_at_frame(a),
+            b.get().saturating_sub(a.get()),
+        ),
     };
     match usize::try_from(frames) {
         Ok(0) => Err(BounceConfigError::EmptyRange),
@@ -1968,7 +1971,7 @@ mod tests {
     use crate::{InPort, Phase, PhaseCx, Root};
     use tutti_export::Stage;
     use tutti_graph::ForkByClone;
-    use tutti_tempo::{Shape, TempoPoint};
+    use tutti_tempo::{TempoPoint, Transition};
     use tutti_types::{Bpm, SampleRate};
 
     const RATE: SampleRate = SampleRate(48_000.0);
@@ -2034,12 +2037,12 @@ mod tests {
             TempoPoint {
                 beat: Beat(0.0),
                 tempo: Bpm::of(120.0),
-                shape: Shape::Step,
+                transition: Transition::Step,
             },
             TempoPoint {
                 beat: Beat(4.0),
                 tempo: Bpm::of(60.0),
-                shape: Shape::Step,
+                transition: Transition::Step,
             },
         ])
         .expect("two steps")

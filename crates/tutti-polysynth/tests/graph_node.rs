@@ -8,7 +8,7 @@ use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
-    Transport,
+    TransportPosition,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
@@ -69,7 +69,7 @@ fn graph(frame: u64) -> (Editor, Executor) {
 fn render(ed: Editor, exec: Executor, frames: usize) -> Vec<f32> {
     let mut r = Renderer::new(ed, exec);
     r.set_transport_fn(|f| {
-        Transport::new(true, Bpm::of(120.0), Beat(f.get() as f64 / 24_000.0), None)
+        TransportPosition::new(true, Bpm::of(120.0), Beat(f.get() as f64 / 24_000.0), None)
     });
     r.render(frames).swap_remove(0)
 }

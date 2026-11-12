@@ -30,7 +30,7 @@ mod common;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Executor, NodeKey, Prepare};
 use tutti_midi_runtime::ClockNode;
-use tutti_tempo::{Shape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::{FadeOut, MotionEvent, Then, Transport};
 use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{Message, System, U14};
@@ -77,12 +77,12 @@ struct Sent {
     frame: u64,
 }
 
-fn map(points: &[(f64, f64, Shape)]) -> Arc<TempoMap> {
+fn map(points: &[(f64, f64, Transition)]) -> Arc<TempoMap> {
     Arc::new(
         TempoMap::new(points.iter().map(|&(beat, bpm, shape)| TempoPoint {
             beat: Beat(beat),
             tempo: Bpm::of(bpm),
-            shape,
+            transition: shape,
         }))
         .expect("a map"),
     )
@@ -92,15 +92,18 @@ fn map(points: &[(f64, f64, Shape)]) -> Arc<TempoMap> {
 /// 1 443 of the grid, so the step is not on a cell edge), then 150 from 12.
 fn steps() -> Arc<TempoMap> {
     map(&[
-        (0.0, 120.0, Shape::Step),
-        (7.7, 90.0, Shape::Step),
-        (12.0, 150.0, Shape::Step),
+        (0.0, 120.0, Transition::Step),
+        (7.7, 90.0, Transition::Step),
+        (12.0, 150.0, Transition::Step),
     ])
 }
 
 /// 60 to 240 BPM over 8 beats, linear in time, then 240.
 fn ramp() -> Arc<TempoMap> {
-    map(&[(0.0, 60.0, Shape::RampTime), (8.0, 240.0, Shape::Step)])
+    map(&[
+        (0.0, 60.0, Transition::RampTime),
+        (8.0, 240.0, Transition::Step),
+    ])
 }
 
 /// The seconds of beat `b` of `steps()`: each segment takes `60 / bpm` a beat.

@@ -380,7 +380,11 @@ impl ClickNode {
     /// Whether the metronome sounds under `mode`, over a piece of a block
     /// whose transport is `t`, with the count-in flag at `in_preroll`.
     #[inline]
-    fn should_play(mode: MetronomeMode, t: &tutti_graph::Transport, in_preroll: bool) -> bool {
+    fn should_play(
+        mode: MetronomeMode,
+        t: &tutti_graph::TransportPosition,
+        in_preroll: bool,
+    ) -> bool {
         match mode {
             MetronomeMode::Off => false,
             MetronomeMode::Always => t.playing,
@@ -692,13 +696,18 @@ mod tests {
     /// A transport at `beat` that holds it for the whole block (the smallest
     /// tempo, whose step per frame underflows to zero), under `deck`: the
     /// constant beat a test positions the playhead at.
-    fn held(deck: Deck, beat: f64) -> tutti_graph::Transport {
-        tutti_graph::Transport::new(deck.playing, Bpm::of(f64::from_bits(1)), Beat(beat), None)
-            .with_recording(deck.recording)
+    fn held(deck: Deck, beat: f64) -> tutti_graph::TransportPosition {
+        tutti_graph::TransportPosition::new(
+            deck.playing,
+            Bpm::of(f64::from_bits(1)),
+            Beat(beat),
+            None,
+        )
+        .with_recording(deck.recording)
     }
 
     /// A block of `len` frames at `rate` under `transport`, no changes.
-    fn env(rate: f64, len: usize, transport: tutti_graph::Transport) -> Env {
+    fn env(rate: f64, len: usize, transport: tutti_graph::TransportPosition) -> Env {
         Env {
             frame: Frame(0),
             sample_rate: tutti_types::SampleRate(rate),
@@ -918,8 +927,8 @@ mod tests {
 
     /// A transport rolling from `start` so that frame `i` of the block is at
     /// beat `start + i/100` (at 44.1 kHz): 26 460 BPM.
-    fn hundredths_from(start: f64) -> tutti_graph::Transport {
-        tutti_graph::Transport::new(true, Bpm::of(26_460.0), Beat(start), None)
+    fn hundredths_from(start: f64) -> tutti_graph::TransportPosition {
+        tutti_graph::TransportPosition::new(true, Bpm::of(26_460.0), Beat(start), None)
     }
 
     /// A meter change that lands *inside* a notated beat still clicks its
@@ -1028,7 +1037,7 @@ mod tests {
             tutti_types::SampleRate(SR),
         );
         let counted = |host: &FrameClock| {
-            tutti_graph::Transport::counted(true, host.tempo(), host.origin(), None)
+            tutti_graph::TransportPosition::counted(true, host.tempo(), host.origin(), None)
         };
 
         // Latch the beat before it, as a transport rolling into this block
@@ -1103,7 +1112,12 @@ mod tests {
                 FrameClock::new(Beat(START), Bpm::of(BPM), tutti_types::SampleRate(RATE));
             let mut left = Vec::new();
             while left.len() < expected + 2 * len {
-                let t = tutti_graph::Transport::counted(true, host.tempo(), host.origin(), None);
+                let t = tutti_graph::TransportPosition::counted(
+                    true,
+                    host.tempo(),
+                    host.origin(),
+                    None,
+                );
                 let [l, _] = block(&mut node, &env(RATE, len, t));
                 host.advance(Samples(len), None);
                 left.extend(l);
@@ -1253,8 +1267,13 @@ mod tests {
             );
             let mut left = Vec::new();
             for _ in 0..160 {
-                let t = tutti_graph::Transport::counted(true, host.tempo(), host.origin(), None)
-                    .with_recording(true);
+                let t = tutti_graph::TransportPosition::counted(
+                    true,
+                    host.tempo(),
+                    host.origin(),
+                    None,
+                )
+                .with_recording(true);
                 left.extend(block(&mut node, &env(48_000.0, 64, t))[0].clone());
                 host.advance(Samples(64), None);
             }

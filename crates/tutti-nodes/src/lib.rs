@@ -32,7 +32,7 @@
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
-//!   [`Modulator`] (an LFO's is `tutti-modulation`'s [`Wave`]).
+//!   [`Modulator`] (an LFO's is `tutti-modulation`'s [`Waveform`]).
 //! - Signal-driven modulation sources (design doc 014 §6), feeding a
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
@@ -81,12 +81,12 @@ pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode, VolumeOutOf
 
 mod lfo;
 // The `Modulator` trait the modulation node runs, and its impl for
-// `tutti-modulation`'s `Wave` (the one wave function both tiers evaluate).
+// `tutti-modulation`'s `Waveform` (the one wave function both tiers evaluate).
 mod modulator;
-// `LfoNode` is `ModulatorNode<Wave>` — the graph node over a pure
-// `Modulator`. `LfoShape` and `Wave` are re-exported from `tutti-modulation` through
+// `LfoNode` is `ModulatorNode<Waveform>` — the graph node over a pure
+// `Modulator`. `LfoShape` and `Waveform` are re-exported from `tutti-modulation` through
 // `lfo`, so `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Wave};
+pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Waveform};
 pub use modulator::Modulator;
 
 mod delay;

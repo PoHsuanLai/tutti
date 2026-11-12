@@ -25,7 +25,7 @@ use tutti_types::MaxBlock;
 
 use std::time::Duration;
 
-use tutti_graph::{Env, ForkMode, LoopRange, Offset, Transport, TransportChanges};
+use tutti_graph::{Env, ForkMode, LoopRange, Offset, TransportChanges, TransportPosition};
 use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -38,7 +38,7 @@ const ECHO: usize = 6;
 /// 2 recording, 4 loop), loop start, loop end, tempo slope. The slope of
 /// these scenes is always 0: the map behind them (`scene_map`) has steps
 /// only (the slope itself is `the_plugin_is_told_the_maps_tempo_and_slope`).
-fn echo_of(t: &Transport) -> [f64; ECHO] {
+fn echo_of(t: &TransportPosition) -> [f64; ECHO] {
     let flags = f64::from(u8::from(t.playing))
         + 2.0 * f64::from(u8::from(t.recording()))
         + 4.0 * f64::from(u8::from(t.looping.is_some()));
@@ -66,15 +66,15 @@ fn assert_echo(got: [f64; ECHO], want: [f64; ECHO], what: &str) {
 /// inside it. Cycles through a plain roll, a seek, a tempo change inside the
 /// block, a loop that wraps inside the block, recording, and a stop, so every
 /// kind reaches the plugin whatever block a live run happens to collect.
-fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
+fn scene(b: usize, block: usize) -> (TransportPosition, TransportChanges) {
     let base = 4.0 + b as f64;
     let mut changes = TransportChanges::NONE;
-    let rolling = Transport::new(true, Bpm::of(120.0), Beat(base), None);
+    let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(base), None);
     let t = match b % 6 {
         // A plain roll.
         0 => rolling,
         // A seek, far from where the last block left off.
-        1 => Transport::new(true, Bpm::of(120.0), Beat(64.0 + base), None),
+        1 => TransportPosition::new(true, Bpm::of(120.0), Beat(64.0 + base), None),
         // A tempo change inside the block, before the second chunk when the
         // block has one; at the last frame otherwise.
         2 => {
@@ -83,14 +83,14 @@ fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
             changes
                 .push(
                     at,
-                    Transport::new(true, Bpm::of(90.0), Beat(base + 0.5), None),
+                    TransportPosition::new(true, Bpm::of(90.0), Beat(base + 0.5), None),
                 )
                 .expect("a change inside the block");
             rolling
         }
         // A loop 32 frames long from here: it wraps 32 frames in, before a
         // second chunk starts.
-        3 => Transport::new(
+        3 => TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(base),
@@ -102,7 +102,7 @@ fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
         // Recording.
         4 => rolling.with_recording(true),
         // Stopped.
-        _ => Transport::new(false, Bpm::of(100.0), Beat(base), None),
+        _ => TransportPosition::new(false, Bpm::of(100.0), Beat(base), None),
     };
     (t, changes)
 }
@@ -113,11 +113,11 @@ fn scene(b: usize, block: usize) -> (Transport, TransportChanges) {
 /// each frame. (A tempo point is the map's way to say what a transport's
 /// own tempo change says.)
 fn scene_map(blocks: usize) -> tutti_tempo::TempoMap {
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     let point = |beat: f64, bpm: f64| TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
-        shape: Shape::Step,
+        transition: Transition::Step,
     };
     let mut points = vec![point(0.0, 120.0)];
     for b in 0..blocks {
@@ -272,7 +272,7 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
 /// What the blocks in `seen` said for timeline frame `f`: `Env::transport_at`
 /// in the block that held it, or, for a frame before the first block, the
 /// first block's transport, unmoved (`TransportHistory`'s rule).
-fn said_at(seen: &[(Env, Vec<f32>)], f: Option<u64>) -> Transport {
+fn said_at(seen: &[(Env, Vec<f32>)], f: Option<u64>) -> TransportPosition {
     let Some(f) = f else {
         return seen[0].0.transport;
     };
@@ -336,17 +336,17 @@ fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() 
 /// 120 to 180 BPM over the first four beats, tempo linear in time: it climbs
 /// 60 / 76 800 BPM per frame at 48 kHz and is 150 at beat 1.8.
 fn ramp_tempo() -> tutti_transport::TempoReader {
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     let map = TempoMap::new([
         TempoPoint {
             beat: Beat(0.0),
             tempo: Bpm::of(120.0),
-            shape: Shape::RampTime,
+            transition: Transition::RampTime,
         },
         TempoPoint {
             beat: Beat(4.0),
             tempo: Bpm::of(180.0),
-            shape: Shape::Step,
+            transition: Transition::Step,
         },
     ])
     .expect("a map");
@@ -379,7 +379,7 @@ fn the_plugin_is_told_the_maps_tempo_and_slope() {
     // next block's output (the pipeline holds one chunk).
     for playing in [true, true, false, false] {
         // The engine's own transport says 120 whatever the map says.
-        let transport = Transport::new(playing, Bpm::of(120.0), Beat(1.8), None);
+        let transport = TransportPosition::new(playing, Bpm::of(120.0), Beat(1.8), None);
         let changes = TransportChanges::NONE;
         let r = rig.renderer();
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
@@ -418,16 +418,16 @@ fn event_echo(out: &[f32]) -> Vec<[f64; 5]> {
 /// 120 to 180 BPM over beats 0 to 4 (tempo linear in time, 1.6 s), then 180
 /// to 60 over four more (2 s), then a step.
 fn two_ramps() -> tutti_transport::TempoReader {
-    use tutti_tempo::{Shape, TempoMap, TempoPoint};
+    use tutti_tempo::{TempoMap, TempoPoint, Transition};
     let point = |beat: f64, bpm: f64, shape| TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
         shape,
     };
     let map = TempoMap::new([
-        point(0.0, 120.0, Shape::RampTime),
-        point(4.0, 180.0, Shape::RampTime),
-        point(8.0, 60.0, Shape::Step),
+        point(0.0, 120.0, Transition::RampTime),
+        point(4.0, 180.0, Transition::RampTime),
+        point(8.0, 60.0, Transition::Step),
     ])
     .expect("a map");
     tutti_transport::TempoReader::fixed(std::sync::Arc::new(map))
@@ -463,12 +463,12 @@ fn a_ramps_end_inside_a_chunk_is_a_transport_event_at_its_frame() {
     let mut out = vec![vec![0.0f32; CHUNK]; rig.outputs()];
     let mut heard = Vec::new();
     for _ in 0..2 {
-        let transport = Transport::new(true, Bpm::of(150.0), Beat(3.999), None);
+        let transport = TransportPosition::new(true, Bpm::of(150.0), Beat(3.999), None);
         let mut changes = TransportChanges::NONE;
         changes
             .push(
                 offset(frame, CHUNK),
-                Transport::new(true, Bpm::of(180.0), Beat(4.0), None),
+                TransportPosition::new(true, Bpm::of(180.0), Beat(4.0), None),
             )
             .expect("a change");
         let r = rig.renderer();

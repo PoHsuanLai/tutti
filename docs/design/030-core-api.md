@@ -105,11 +105,11 @@ finding where the API produces wrong results today, not only friction.
 | T3 | `Graph::set_param` returns `()` and ignores a missing node or param, although `ParamSet::set` returns `bool`. `set_node_params` is plumbing a user can forget | `Result` and `#[must_use]`; the plumbing made `pub(crate)` | S-M |
 | T4 | A route cannot be found again. `RouteKey`/`SourceKey` are opaque with public `u64`s, there is no `routes()` or `routes_to(target)`, and edits are `route_mut` plus public fields. `route` hard-codes polarity and the curve | private minted keys; iterators; a route builder (`.polarity(..).curve(Law::..)`) | M (built, step 4) |
 | T5 | "Why is nothing modulating" has three channels (`ModState::refusal`, `unresolved_*`, a `SessionEvent`), and the errors name opaque keys | one `problems()` iterator whose `Display` names the node and the param | M (built, step 4) |
-| T6 | `TempoMap` has 8 queries, each doubled by a `_with(&mut Cursor)` twin, and `rate` is passed on every call. `TempoPoint` has no constructors. `tempo::Shape` clashes with `graph::Shape` | a `TempoView` holding rate and cursor; `TempoPoint::{step, ramp_time, ramp_beats}`; a rename; a builder where a trailing ramp cannot be written | M |
+| T6 | `TempoMap` has 8 queries, each doubled by a `_with(&mut Cursor)` twin, and `rate` is passed on every call. `TempoPoint` has no constructors. `tempo::Shape` clashes with `graph::Shape` | a `TempoView` holding rate and cursor; `TempoPoint::{step, ramp_time, ramp_beats}`; a rename; a builder where a trailing ramp cannot be written | M (built, step 11) |
 | T7 | **Bug**: `Law::PowerIn/PowerOut/PowerInOut/Exp(f32)` silently fall back to linear, or clamp, on NaN, p <= 0 or \|k\| > 64 | `Exponent` and `Curvature` range-checked types (`new -> Option`) | S-M |
-| T8 | `LoopRange::new` returns `Option` with no reason, and the session has no loop call | `TryFrom<Range<Beat>>` with a reason; `Session::set_loop` | S |
+| T8 | `LoopRange::new` returns `Option` with no reason, and the session has no loop call | `TryFrom<Range<Beat>>` with a reason; `Session::set_loop` | S (built, step 11) |
 | T9 | `Depth` has a public field, and `-1..1` is unchecked. `ProjectMeter::set_meter`/`ClickSettings::set_meter` take a bare `Arc` where `set_tempo_map` takes `Into`. `OfflineTimeline::advance` takes `usize`. `in_preroll` is a public cell. Click volume clamps. `Lfo::rate` takes beats only. `Mods::record` returns an unmarked `bool`. `Session::mods()` marks the session edited even for a read | each to the conventions; a read view `mods()` and an edit `mods_mut()` | S (built, step 4) |
-| T10 | Name clashes: `graph::Transport` and `transport::Transport`, modulation `Wave` and codec `Wave`, `UnitParam::Depth` and `Depth` | rename the less used side (`TransportPosition`, `Waveform`) | S |
+| T10 | Name clashes: `graph::Transport` and `transport::Transport`, modulation `Wave` and codec `Wave`, `UnitParam::Depth` and `Depth` | rename the less used side (`TransportPosition`, `Waveform`) | S (built, step 11) |
 
 ### 3.3 Sampler, codec, export, custom nodes
 
@@ -493,7 +493,42 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      not `.streamed()` on the clip: the choice is made in the load job, before there is a clip
      to call it on. `Recorded::clip()` is unchanged (resident).
 10. **Codec and export:** C2, C3, E1, E2, then C4.
-11. **Tempo and names:** T6, T8, T10.
+11. **Tempo and names:** T6, T8, T10 (built, step 11).
+   - T6: `TempoMap::view(rate) -> TempoView` owns the rate and the lookup hint; its methods are
+     the frame queries without the `_with` twin or the rate (`seconds_at`, `beat_at_seconds`,
+     `tempo_at`, `tempo_at_seconds`, `tempo_slope`, `tempo_at_frame`, `beat_at_frame`,
+     `frame_at_or_after`, `next_change`, `chord_cell`). The map keeps the four rate-free
+     queries; `Cursor`, the twins, the rate-taking frame queries and the free `chord_cell`
+     are gone. A view borrows the lent map, so it is made per block (a hint lost between
+     blocks costs one binary search). `tutti_tempo::Shape` is `Transition` (the law of the
+     tempo across a segment; `Law` is `tutti-curve`'s and `Shape` the graph's).
+     `TempoPoint::{step, ramp_time, ramp_beats}` take only the point's own beat and tempo,
+     since a ramp's target is the next point's. `TempoMap::builder(first)` writes
+     `step_to` / `ramp_time_to` / `ramp_beats_to`, each adding a step point, so the last point
+     never ramps (a `compile_fail` doctest holds that a ramp has no spelling at the end);
+     `TempoMap::new` still refuses a list that ends on one (`RampWithoutEnd`).
+   - T8: `LoopRange::try_from(a..b)` is the check, with a `LoopRangeError` (`NotFinite`,
+     `Empty`, `Reversed`, each carrying the beats given); `new` stays an `Option` over it
+     (the range-checked table's shape, and many callers), and now also refuses a non-finite
+     bound. `Session::set_loop(LoopRange)` arms a loop over a range and `clear_loop()` disarms it
+     (the bounds are kept, as `LoopEdit` keeps them), two verbs rather than a
+     `set_loop(Option<..>)`, so that clearing is not written as a value that might be absent;
+     each is a `LoopEdit` at `At::NextBlock` and returns `ScheduleFull`.
+   - T10: `tutti_graph::Transport` (about 70 explicit paths against 360 for the transport's
+     own) is `TransportPosition`; modulation's `Wave` is `Waveform`. `UnitParam::Depth` is
+     kept: the variant is the param kind of the `Depth` unit by the same name as every other
+     kind (`Cutoff` for `Hz`, `Mix` for `Mix`), it is used for a phaser's and a delay's depth as
+     well as an LFO's, so `ModDepth` would be wrong for two of three, and it is namespaced by
+     the enum, where nothing reads it beside the type.
+   - **A beat play on a stopped transport** (not a doc 030 row): an `At::Beat` command waits
+     until playback reaches the beat, and a stopped transport has no frames per beat, so a
+     `Play` (or a locate that then rolls) timed at a beat while stopped waits for the playback
+     only it can start and never fires. `Session::schedule` refuses it with
+     `ScheduleError::BeatWhileStopped { beat, event }` (`ScheduleError` is now the call's error,
+     `Full(ScheduleFull)` the other case; `Error::Schedule` carries it), as `TakeError::TransportStopped`
+     does for a punch. A stop or a plain locate at a beat still waits for the beat, which is
+     meaningful. The check reads `Session::playhead()`, a block old: a transport that was
+     started in the same moment reads stopped, and the play is refused rather than lost.
 12. **Instruments:** S4, with the MIDI session's keys handle.
 13. **Test leftovers** (built, #641 by the DSP session): `tutti-nodes`'
     `width_generic_golden.rs` replaced by analytic properties per node.

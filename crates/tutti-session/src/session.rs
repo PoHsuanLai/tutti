@@ -9,11 +9,11 @@ use tutti_graph::NodeKey;
 use tutti_graph::PrerollTable;
 use tutti_nodes::ClickSettings;
 use tutti_tempo::TempoMap;
-use tutti_transport::{FadeOut, MotionEvent, QueueFull, ScheduleFull, Transport};
-use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, Samples};
+use tutti_transport::{FadeOut, LoopEdit, MotionEvent, QueueFull, ScheduleFull, Then, Transport};
+use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, LoopRange, Samples};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
-use crate::{HeardOpen, HeardTapError, Playhead, RemoveError};
+use crate::{HeardOpen, HeardTapError, Playhead, RemoveError, ScheduleError};
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
 ///
@@ -913,12 +913,16 @@ impl Session {
     /// On a session whose audio side an engine holds, or was taken
     /// (`Graph::take_audio_side`, behind the `testing` feature).
     pub fn render_frame(&mut self, output: &mut [f32]) {
-        self.render_frame_at(&tutti_graph::Transport::default(), output);
+        self.render_frame_at(&tutti_graph::TransportPosition::default(), output);
     }
 
     /// [`render_frame`](Self::render_frame) with the transport at
     /// `transport`: what plays a clip in a graph driven by hand.
-    pub fn render_frame_at(&mut self, transport: &tutti_graph::Transport, output: &mut [f32]) {
+    pub fn render_frame_at(
+        &mut self,
+        transport: &tutti_graph::TransportPosition,
+        output: &mut [f32],
+    ) {
         if self.graph.is_edited() {
             self.commit();
         }
@@ -996,11 +1000,66 @@ impl Session {
     /// every [`MotionEvent`] (a locate that then rolls, a stop that returns
     /// to a beat) is timed the same way. The untimed verbs are `At::NextBlock`.
     ///
+    /// A beat is reached by playback: it has a frame only while the transport
+    /// rolls. A command that starts the transport rolling ([`MotionEvent::Play`],
+    /// or a locate that then rolls) timed at a beat while the transport is
+    /// stopped could only fire after the playback it starts, so it is refused
+    /// where it is made. A command that does not start playback (a stop, a
+    /// plain locate) waits for the playback to reach its beat, as any beat
+    /// command does.
+    ///
     /// # Errors
     ///
-    /// [`ScheduleFull`] when the timed-command list is full.
-    pub fn schedule(&self, at: impl Into<At>, event: MotionEvent) -> Result<(), ScheduleFull> {
-        self.transport.motion().schedule(at.into(), event)
+    /// [`ScheduleError::Full`] when the timed-command list is full, and
+    /// [`ScheduleError::BeatWhileStopped`] for the command above.
+    pub fn schedule(&self, at: impl Into<At>, event: MotionEvent) -> Result<(), ScheduleError> {
+        let at = at.into();
+        let starts = matches!(
+            event,
+            MotionEvent::Play
+                | MotionEvent::Locate {
+                    then: Then::Roll,
+                    ..
+                }
+        );
+        if let At::Beat(beat) = at
+            && starts
+            && !self.playhead().playing()
+        {
+            return Err(ScheduleError::BeatWhileStopped { beat, event });
+        }
+        Ok(self.transport.motion().schedule(at, event)?)
+    }
+
+    /// Loops the transport over `range` from the next block, and arms it: the
+    /// engine owns the loop region and takes this as one edit that lands whole
+    /// ([`LoopEdit::over`]). Build the range with `LoopRange::try_from(a..b)`,
+    /// which names why a region is refused.
+    ///
+    /// A playhead already at or past the loop's end does not jump: the loop takes
+    /// effect once the playhead is inside it.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleFull`] when the timed-command list is full; the edit is handed
+    /// back in it.
+    pub fn set_loop(&self, range: LoopRange) -> Result<(), ScheduleFull> {
+        self.transport
+            .motion()
+            .schedule(At::NextBlock, LoopEdit::over(range))
+    }
+
+    /// Stops looping from the next block. The loop's bounds are kept, so
+    /// [`set_loop`](Self::set_loop) with them (or arming through the transport)
+    /// restores it ([`LoopEdit::armed`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleFull`], as [`set_loop`](Self::set_loop).
+    pub fn clear_loop(&self) -> Result<(), ScheduleFull> {
+        self.transport
+            .motion()
+            .schedule(At::NextBlock, LoopEdit::armed(false))
     }
 
     /// Sets a constant project tempo (the project's [`TempoMap`], one step).

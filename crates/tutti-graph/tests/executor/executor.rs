@@ -13,7 +13,7 @@ use common::{Kind, TestNode, prepare};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, Cx, Editor, Executor, IntoNode, Io, Node, NodeParts, Prepare, QUEUE_CAPACITY,
-    Shape, SilenceMask, Status, Transport, Unforkable,
+    Shape, SilenceMask, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Amplitude, ChannelLayout, Latency, Param, Samples, Tail};
@@ -37,7 +37,7 @@ fn wire(ed: &mut Editor, sink: NodeKey, from: NodeKey) {
 fn render(exec: &mut Executor, frames: usize, outs: usize) -> Vec<Vec<f32>> {
     let mut bufs = vec![vec![0.0f32; frames]; outs];
     let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
-    exec.process(frames, &Transport::default(), &[], &mut refs);
+    exec.process(frames, &TransportPosition::default(), &[], &mut refs);
     bufs
 }
 
@@ -353,7 +353,7 @@ fn render_applied_leaves_a_queued_commit_for_the_next_block() {
     queue_two_outputs(&mut ed);
     exec.render_applied(
         16,
-        &Transport::default(),
+        &TransportPosition::default(),
         &tutti_graph::TransportChanges::NONE,
         &[],
         &mut [],
@@ -383,7 +383,7 @@ fn too_few_output_slices_render_silence_in_release() {
     queue_two_outputs(&mut ed);
     let mut bufs = vec![vec![7.0f32; 16]; 1];
     let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
-    exec.process(16, &Transport::default(), &[], &mut refs);
+    exec.process(16, &TransportPosition::default(), &[], &mut refs);
     assert!(bufs[0].iter().all(|&x| x == 0.0));
 }
 
@@ -1012,11 +1012,11 @@ fn a_node_that_claims_no_silence_is_heard_after_silence() {
         let mut exec = out_of_band_graph(node);
         let mut out = vec![0.0f32; 64];
         for _ in 0..10 {
-            exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+            exec.process(64, &TransportPosition::default(), &[], &mut [&mut out[..]]);
             assert!(out.iter().all(|&x| x == 0.0));
         }
         level.store(Amplitude::new(0.5));
-        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+        exec.process(64, &TransportPosition::default(), &[], &mut [&mut out[..]]);
         assert!(
             out.iter().all(|&x| x == 0.5),
             "{inputs}-input node: the out-of-band level must reach the output \
@@ -1041,10 +1041,10 @@ fn a_node_that_claims_silence_is_parked() {
     let mut exec = out_of_band_graph(node);
     let mut out = vec![0.0f32; 64];
     for _ in 0..10 {
-        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+        exec.process(64, &TransportPosition::default(), &[], &mut [&mut out[..]]);
     }
     level.store(Amplitude::new(0.5));
-    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    exec.process(64, &TransportPosition::default(), &[], &mut [&mut out[..]]);
     assert_eq!(calls.load(Ordering::Relaxed), 1, "called once, then parked");
     assert!(out.iter().all(|&x| x == 0.0), "and so never heard again");
 }
@@ -1058,7 +1058,7 @@ fn a_sink_is_never_parked() {
     let calls = Arc::clone(&node.calls);
     let mut exec = out_of_band_graph(node);
     for _ in 0..10 {
-        exec.process(64, &Transport::default(), &[], &mut []);
+        exec.process(64, &TransportPosition::default(), &[], &mut []);
     }
     assert_eq!(calls.load(Ordering::Relaxed), 10, "a sink runs every block");
 }

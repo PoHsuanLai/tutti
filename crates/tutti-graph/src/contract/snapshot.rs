@@ -188,7 +188,7 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
                 frame: tutti_types::Frame(done as u64),
                 sample_rate: SAMPLE_RATE,
                 block_len: tutti_types::Samples(size),
-                transport: crate::node::Transport::default(),
+                transport: crate::node::TransportPosition::default(),
                 changes: crate::node::TransportChanges::NONE,
                 play: crate::PlayClock {
                     start: crate::PlayReading {

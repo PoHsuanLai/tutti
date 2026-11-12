@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use common::{Kind, Pair, TestNode, bits, input_signal, prepare};
 use tutti_graph::{
     Cx, Edge, Editor, Executor, FeedbackFrom, GraphSpec, InPort, Io, Node, NodeKey, Op, OutPort,
-    Plan, Prepare, Shape, Source, Status, Topology, Transport, Unforkable, compile,
+    Plan, Prepare, Shape, Source, Status, Topology, TransportPosition, Unforkable, compile,
 };
 use tutti_types::{ChannelLayout, Samples};
 
@@ -554,7 +554,12 @@ fn flags(n: u64) -> Flags {
 
 fn block(exec: &mut Executor) -> Vec<f32> {
     let mut out = vec![0.0f32; BLOCK];
-    exec.process(BLOCK, &Transport::default(), &[], &mut [out.as_mut_slice()]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[],
+        &mut [out.as_mut_slice()],
+    );
     out
 }
 

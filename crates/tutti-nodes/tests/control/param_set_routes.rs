@@ -22,7 +22,9 @@ use tutti_graph::{
     Prepare, Renderer, Shape, Status, Unforkable,
 };
 use tutti_graph::{OutPort, Source};
-use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
+use tutti_modulation::{
+    Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Waveform,
+};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     CompressorControls, CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterControls,
@@ -141,7 +143,7 @@ fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
             phase: PhaseIncrement(0.0),
             anchor: None,
         },
-        wave: Wave::Shape {
+        wave: Waveform::Shape {
             shape: LfoShape::Sine,
             seed: 0,
         },
@@ -229,7 +231,7 @@ fn render_chorus(
                 per_cycle: BeatDuration(1.0),
                 phase: PhaseIncrement(0.0),
             },
-            wave: Wave::Const(1.0),
+            wave: Waveform::Const(1.0),
             amount: Amount {
                 depth: Depth::of(depth),
                 polarity: Polarity::Bipolar,
@@ -376,7 +378,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
             per_cycle: BeatDuration(1.0),
             phase: PhaseIncrement(0.0),
         },
-        wave: Wave::Const(1.0),
+        wave: Waveform::Const(1.0),
         amount: Amount {
             depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
@@ -479,7 +481,7 @@ where
             per_cycle: BeatDuration(1.0),
             phase: PhaseIncrement(0.0),
         },
-        wave: Wave::Const(1.0),
+        wave: Waveform::Const(1.0),
         amount: Amount {
             depth: Depth::of(depth),
             polarity: Polarity::Bipolar,

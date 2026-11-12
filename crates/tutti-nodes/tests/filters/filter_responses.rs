@@ -5,7 +5,7 @@
 //! block is held by `filter_block_independence.rs`.
 
 use tutti_graph::contract::{drive_input, prepared};
-use tutti_graph::{Env, Node, PlayClock, Transport, TransportChanges};
+use tutti_graph::{Env, Node, PlayClock, TransportChanges, TransportPosition};
 use tutti_nodes::{
     CrossoverNode, EqBandNode, LadderFilterNode, LadderType, SvfControls, SvfFilterNode, SvfType,
 };
@@ -33,7 +33,7 @@ fn gains_db<N: Node + 'static>(node: N, freq: f64, amp: f32) -> Vec<f64> {
             frame: Frame((b * BLOCK) as u64),
             sample_rate: SampleRate(RATE),
             block_len: Samples(BLOCK),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             changes: TransportChanges::NONE,
             play: PlayClock::ZERO,
         };

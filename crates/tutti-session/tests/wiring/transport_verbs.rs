@@ -1,9 +1,11 @@
 //! The session's transport verbs: `set_tempo`, `locate`, `play`, `stop` and
 //! the one timed form, `schedule`.
 
-use tutti_session::Session;
+use tutti_session::{ScheduleError, Session};
 use tutti_transport::{FadeOut, MotionEvent, Timeline};
-use tutti_types::{Beat, Bpm, ChannelLayout, Frame, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{
+    At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, MaxBlock, SampleRate, Samples,
+};
 
 fn offline() -> Session {
     Session::builder()
@@ -116,4 +118,108 @@ fn a_detached_session_reads_a_resting_playhead() {
     assert!(!p.playing());
     assert_eq!((p.beat(), p.frame(), p.at()), (Beat(0.0), Frame(0), None));
     assert_eq!(s.beat_now(), Beat(0.0));
+}
+
+/// **`set_loop` wraps a rolling render at the loop's end.** At 60 BPM a beat is
+/// one second (48 000 frames): looping beats 0 to 1 and rolling for 1.5 s ends
+/// at beat 0.5 (frame 72 000 is half a pass past the wrap at frame 48 000),
+/// where an unlooped transport would read beat 1.5.
+#[test]
+fn set_loop_wraps_a_rolling_render_at_the_loops_end() {
+    let looped = offline();
+    looped.set_tempo(Bpm::of(60.0));
+    looped
+        .set_loop(LoopRange::try_from(Beat(0.0)..Beat(1.0)).unwrap())
+        .unwrap();
+    looped.play().unwrap();
+    render(&looped, 72_000);
+    let beat = looped.transport().beat().get();
+    assert!((beat - 0.5).abs() < 1e-3, "looped: {beat}");
+
+    let free = offline();
+    free.set_tempo(Bpm::of(60.0));
+    free.play().unwrap();
+    render(&free, 72_000);
+    let beat = free.transport().beat().get();
+    assert!((beat - 1.5).abs() < 1e-3, "unlooped: {beat}");
+}
+
+/// **`clear_loop` stops the wrapping and keeps the bounds.** Looped over beats
+/// 0 to 1, half a second in (beat 0.5), the loop is cleared: one more second
+/// rolls on to beat 1.5 instead of wrapping to 0.5; the bounds stay as set.
+#[test]
+fn clear_loop_stops_wrapping_and_keeps_the_bounds() {
+    let s = offline();
+    s.set_tempo(Bpm::of(60.0));
+    let range = LoopRange::try_from(Beat(0.0)..Beat(1.0)).unwrap();
+    s.set_loop(range).unwrap();
+    s.play().unwrap();
+    render(&s, 24_000);
+    s.clear_loop().unwrap();
+    render(&s, 48_000);
+    let beat = s.transport().beat().get();
+    assert!((beat - 1.5).abs() < 1e-3, "{beat}");
+    let region = s.transport().motion().loop_region();
+    assert_eq!(region.bounds(), range, "the bounds are kept");
+    assert!(!region.is_armed());
+}
+
+/// **A play timed at a beat while the transport is stopped is refused where it
+/// is made.** A beat has a frame only while the transport rolls, so such a play
+/// waits for a playback only it can start: sent straight to the transport it
+/// is still pending, and the playhead has not moved, after three seconds
+/// rendered. `Session::schedule` names that, for a play and for a locate that
+/// rolls, sends nothing, and still takes a command that does not start playback
+/// (a stop) and a play timed at a frame.
+#[test]
+fn a_play_at_a_beat_on_a_stopped_transport_is_refused() {
+    let s = offline();
+    s.set_tempo(Bpm::of(60.0));
+
+    // What the refusal is for: the transport itself accepts it, and it never fires.
+    s.transport()
+        .motion()
+        .schedule(At::Beat(Beat(1.0)), MotionEvent::Play)
+        .unwrap();
+    render(&s, 144_000);
+    assert_eq!(s.transport().beat().get(), 0.0, "it never started");
+    assert_eq!(s.transport().motion().scheduled_outstanding(), 1);
+    s.transport().motion().cancel_scheduled();
+    render(&s, 1_000);
+    assert_eq!(s.transport().motion().scheduled_outstanding(), 0);
+
+    assert_eq!(
+        s.schedule(Beat(1.0), MotionEvent::Play),
+        Err(ScheduleError::BeatWhileStopped {
+            beat: Beat(1.0),
+            event: MotionEvent::Play
+        })
+    );
+    let roll = MotionEvent::play_from(Beat(0.0));
+    assert_eq!(
+        s.schedule(Beat(2.0), roll),
+        Err(ScheduleError::BeatWhileStopped {
+            beat: Beat(2.0),
+            event: roll
+        })
+    );
+    assert_eq!(
+        s.transport().motion().scheduled_outstanding(),
+        0,
+        "nothing sent"
+    );
+
+    assert!(s.schedule(Beat(4.0), MotionEvent::stop_unfaded()).is_ok());
+    assert!(s.schedule(Frame(48_000), MotionEvent::Play).is_ok());
+}
+
+/// **The same play is taken once the transport rolls**: a beat is a frame by
+/// then.
+#[test]
+fn a_play_at_a_beat_is_taken_while_rolling() {
+    let s = offline();
+    s.set_tempo(Bpm::of(60.0));
+    s.play().unwrap();
+    render(&s, 1_000);
+    assert!(s.schedule(Beat(4.0), MotionEvent::Play).is_ok());
 }

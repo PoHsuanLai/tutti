@@ -134,7 +134,7 @@ impl core::fmt::Display for GraphEngineError {
 impl std::error::Error for GraphEngineError {}
 
 /// The transport as a graph block sees it.
-type GraphTransport = tutti_graph::Transport;
+type GraphTransport = tutti_graph::TransportPosition;
 
 /// The audio engine: ticks the graph + transport and renders one
 /// output buffer per block from the audio callback.

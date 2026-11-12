@@ -18,7 +18,7 @@
 //! read as written above) and a ramp's coefficient (`k`: beats per second
 //! per second for a time ramp, per beat for a beat ramp).
 
-use crate::point::Shape;
+use crate::point::Transition;
 use tutti_types::{Beat, BeatDuration, Bpm, Seconds};
 
 #[derive(Clone, Copy, Debug)]
@@ -31,7 +31,7 @@ pub(crate) struct Seg {
     pub bpm0: Bpm,
     /// `bpm0 / 60`, in beats per second.
     pub r0: f64,
-    pub shape: Shape,
+    pub transition: Transition,
     /// How long the segment lasts (`INFINITY` for the last).
     pub dsec: Seconds,
     /// `a` (time ramp) or `g` (beat ramp); 0 for a step.
@@ -46,19 +46,23 @@ impl Seg {
         sec0: Seconds,
         bpm0: Bpm,
         r1: f64,
-        shape: Shape,
+        transition: Transition,
         dbeats: BeatDuration,
     ) -> Self {
         let dbeats = dbeats.get();
         let r0 = bpm0.get() / 60.0;
-        let shape = if r0 == r1 { Shape::Step } else { shape };
-        let (k, dsec) = match shape {
-            Shape::Step => (0.0, dbeats / r0),
-            Shape::RampTime => {
+        let transition = if r0 == r1 {
+            Transition::Step
+        } else {
+            transition
+        };
+        let (k, dsec) = match transition {
+            Transition::Step => (0.0, dbeats / r0),
+            Transition::RampTime => {
                 let t = 2.0 * dbeats / (r0 + r1);
                 ((r1 - r0) / t, t)
             }
-            Shape::RampBeats => {
+            Transition::RampBeats => {
                 let g = (r1 - r0) / dbeats;
                 (g, ln_ratio(g, dbeats, r0))
             }
@@ -68,7 +72,7 @@ impl Seg {
             sec0,
             bpm0,
             r0,
-            shape,
+            transition,
             dsec: Seconds(dsec),
             k,
         }
@@ -92,12 +96,12 @@ impl Seg {
         if db < 0.0 {
             return db / self.r0;
         }
-        match self.shape {
-            Shape::Step => db / self.r0,
-            Shape::RampTime => {
+        match self.transition {
+            Transition::Step => db / self.r0,
+            Transition::RampTime => {
                 2.0 * db / (self.r0 + (self.r0 * self.r0 + 2.0 * self.k * db).sqrt())
             }
-            Shape::RampBeats => ln_ratio(self.k, db, self.r0),
+            Transition::RampBeats => ln_ratio(self.k, db, self.r0),
         }
     }
 
@@ -110,10 +114,10 @@ impl Seg {
         if ds < 0.0 {
             return self.r0 * ds;
         }
-        match self.shape {
-            Shape::Step => self.r0 * ds,
-            Shape::RampTime => ds * (self.r0 + 0.5 * self.k * ds),
-            Shape::RampBeats => {
+        match self.transition {
+            Transition::Step => self.r0 * ds,
+            Transition::RampTime => ds * (self.r0 + 0.5 * self.k * ds),
+            Transition::RampBeats => {
                 let y = self.k * ds;
                 if y == 0.0 {
                     self.r0 * ds
@@ -132,10 +136,10 @@ impl Seg {
             return self.bpm0;
         }
         let bpm0 = self.bpm0.get();
-        self.in_range(match self.shape {
-            Shape::Step => bpm0,
-            Shape::RampTime => bpm0 + 60.0 * self.k * ds,
-            Shape::RampBeats => bpm0 * libm::exp(self.k * ds),
+        self.in_range(match self.transition {
+            Transition::Step => bpm0,
+            Transition::RampTime => bpm0 + 60.0 * self.k * ds,
+            Transition::RampBeats => bpm0 * libm::exp(self.k * ds),
         })
     }
 
@@ -148,13 +152,13 @@ impl Seg {
             return self.bpm0;
         }
         let bpm0 = self.bpm0.get();
-        self.in_range(match self.shape {
-            Shape::Step => bpm0,
-            Shape::RampTime => {
+        self.in_range(match self.transition {
+            Transition::Step => bpm0,
+            Transition::RampTime => {
                 let root = (self.r0 * self.r0 + 2.0 * self.k * db).sqrt();
                 bpm0 + 60.0 * (2.0 * self.k * db) / (root + self.r0)
             }
-            Shape::RampBeats => bpm0 + 60.0 * self.k * db,
+            Transition::RampBeats => bpm0 + 60.0 * self.k * db,
         })
     }
 

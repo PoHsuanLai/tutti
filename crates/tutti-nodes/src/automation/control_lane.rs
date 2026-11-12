@@ -9,9 +9,11 @@ use tutti_curve::Piece;
 use tutti_graph::{
     Cost, Cx, Event, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Law, Node,
     NodeParts, Offset, ParamRange, ParamRangeReader, ParamSegment, PlayReading, Prepare, Shape,
-    Status, Transport,
+    Status, TransportPosition,
 };
-use tutti_modulation::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
+use tutti_modulation::{
+    Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Waveform,
+};
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
 use tutti_types::{
     AtomicF32, Beat, Frame, ParamAddr, ParamCell, ParamKey, SamplePosition, Samples, Tail, Unit,
@@ -271,7 +273,7 @@ struct Seen {
     range: (u32, u32),
     /// The frame after the last block, the transport and play clock at its
     /// last frame: how a seek between blocks is told from a roll.
-    end: Option<(Frame, Transport, PlayReading)>,
+    end: Option<(Frame, TransportPosition, PlayReading)>,
 }
 
 /// One target's control lane: it reads a [`ControlProgram`] (published
@@ -471,7 +473,7 @@ impl ControlLaneNode {
 
 /// The transport one frame on from `t`, as the executor's own history rolls
 /// it (`FrameClock` advanced, loop wrapped).
-fn roll_one(t: Transport, rate: tutti_types::SampleRate) -> Transport {
+fn roll_one(t: TransportPosition, rate: tutti_types::SampleRate) -> TransportPosition {
     if !t.playing || tutti_types::frames_per_beat(t.tempo, rate).is_none() {
         return t;
     }
@@ -480,12 +482,12 @@ fn roll_one(t: Transport, rate: tutti_types::SampleRate) -> Transport {
         .looping
         .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
     clock.advance(Samples(1), region);
-    Transport::counted(t.playing, t.tempo, clock.origin(), t.looping)
+    TransportPosition::counted(t.playing, t.tempo, clock.origin(), t.looping)
 }
 
 /// Whether `got` is `expected` (a roll of the last block's last frame):
 /// equal play state, tempo and loop, and the beat within a nanobeat.
-fn continues(expected: &Transport, got: &Transport) -> bool {
+fn continues(expected: &TransportPosition, got: &TransportPosition) -> bool {
     let (a, b) = (expected.beat().get(), got.beat().get());
     expected.playing == got.playing
         && expected.tempo.get().to_bits() == got.tempo.get().to_bits()
@@ -936,8 +938,9 @@ impl Block<'_> {
 /// Whether any of `program`'s moving waves runs on the play clock (a
 /// constant wave, a layer's or its `depth_by`'s, moves on no clock).
 fn has_seconds(program: &ControlProgram) -> bool {
-    let moves =
-        |c: &Clock, w: &Wave| matches!(c, Clock::Seconds { .. }) && !matches!(w, Wave::Const(_));
+    let moves = |c: &Clock, w: &Waveform| {
+        matches!(c, Clock::Seconds { .. }) && !matches!(w, Waveform::Const(_))
+    };
     program.layers().iter().any(|l| {
         moves(&l.clock, &l.wave)
             || l.depth_by

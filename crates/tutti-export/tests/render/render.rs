@@ -160,7 +160,12 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
         // A stopped transport at beat 0: nothing in this graph reads it.
         // That the graph is handed the clock's transport block by block is
         // `graph_source.rs`'s `the_graph_reads_the_render_clocks_transport`.
-        fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+        fn graph_block(
+            &self,
+        ) -> (
+            tutti_graph::TransportPosition,
+            tutti_graph::TransportChanges,
+        ) {
             Default::default()
         }
     }

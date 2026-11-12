@@ -102,7 +102,7 @@ impl Hand {
             frame: tutti_types::Frame(0),
             sample_rate: self.synth.sample_rate,
             block_len: block,
-            transport: tutti_graph::Transport::default(),
+            transport: tutti_graph::TransportPosition::default(),
             changes: tutti_graph::TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };

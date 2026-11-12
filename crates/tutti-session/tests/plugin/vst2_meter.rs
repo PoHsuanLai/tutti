@@ -81,7 +81,7 @@ fn an_in_process_vst2_plugin_is_given_the_project_meter() {
     // One frame at beat 3.5: bar 2 of 7/8 starts there.
     let mut out = [0.0f32; 2];
     s.render_frame_at(
-        &tutti_graph::Transport::new(true, Bpm::of(120.0), Beat(3.5), None),
+        &tutti_graph::TransportPosition::new(true, Bpm::of(120.0), Beat(3.5), None),
         &mut out,
     );
     let cap = read_capture();

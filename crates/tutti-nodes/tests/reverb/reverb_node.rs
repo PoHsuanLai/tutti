@@ -13,8 +13,8 @@ use tutti_dsp::{
 use tutti_fixtures::Noise;
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
-    Env, GraphBuilder, IntoNode, Node, ParamFork, ParamIn, ParamNode, Prepare, Status, Transport,
-    TransportChanges,
+    Env, GraphBuilder, IntoNode, Node, ParamFork, ParamIn, ParamNode, Prepare, Status,
+    TransportChanges, TransportPosition,
 };
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
@@ -59,7 +59,7 @@ impl<N: Node> Rig<N> {
             frame: Frame(self.frame),
             sample_rate: SR,
             block_len: Samples(input.len()),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };

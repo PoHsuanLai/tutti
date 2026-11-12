@@ -11,7 +11,8 @@ use tutti_graph::NodeKey;
 use tutti_graph::ParamNode;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
-    Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
+    Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, TransportPosition,
+    Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_nodes::VbapPannerNode;
@@ -123,7 +124,7 @@ fn render(exec: &mut Executor) -> Vec<Vec<f32>> {
         let mut chunk = vec![vec![0.0f32; n]; 2];
         {
             let mut outs: Vec<&mut [f32]> = chunk.iter_mut().map(Vec::as_mut_slice).collect();
-            let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+            let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
             exec.process(n, &t, &ins, &mut outs);
         }
         for (a, c) in all.iter_mut().zip(chunk) {

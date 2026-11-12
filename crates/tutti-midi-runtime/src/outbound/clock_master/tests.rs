@@ -43,8 +43,8 @@ impl TestTransport {
     fn set_playing(&self, p: bool) {
         self.playing.store(p, Ordering::Release);
     }
-    fn now(&self) -> Transport {
-        Transport::new(
+    fn now(&self) -> TransportPosition {
+        TransportPosition::new(
             self.playing.load(Ordering::Acquire),
             self.tempo,
             Beat(self.beat.load(Ordering::Acquire)),

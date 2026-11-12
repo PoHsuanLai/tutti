@@ -159,7 +159,7 @@ impl TransportAudio {
     /// Reads the untimed inputs for a block and reports the transport at its
     /// first frame. Once per block: a store from the control thread lands at
     /// the next block, never at a cut in this one.
-    pub fn begin_block(&mut self) -> tutti_graph::Transport {
+    pub fn begin_block(&mut self) -> tutti_graph::TransportPosition {
         let tempo = self.tempo_for_block();
         self.control = Control::read(&self.settings, self.motion.loop_region(), tempo);
         self.begin(true)
@@ -202,7 +202,7 @@ impl TransportAudio {
         }
     }
 
-    fn begin(&mut self, take_seek: bool) -> tutti_graph::Transport {
+    fn begin(&mut self, take_seek: bool) -> tutti_graph::TransportPosition {
         let control = self.control;
         self.with_map(|clock, map| clock.begin(&control, take_seek, map))
     }
@@ -219,7 +219,7 @@ impl TransportAudio {
     pub fn tempo_ahead(
         &mut self,
         frames: usize,
-        from: &tutti_graph::Transport,
+        from: &tutti_graph::TransportPosition,
         free: usize,
     ) -> TempoAhead {
         if !self.stepped {
@@ -232,14 +232,14 @@ impl TransportAudio {
     /// [`advance`](Self::advance) rolled to a tempo change from
     /// [`tempo_ahead`](Self::tempo_ahead): the tempo and segment the walk
     /// took there. The inputs read at the block's start stay.
-    pub fn restate(&mut self) -> tutti_graph::Transport {
+    pub fn restate(&mut self) -> tutti_graph::TransportPosition {
         self.begin(false)
     }
 
     /// Applies pending command `i` (late or not: counted when late), then
     /// reports the transport from this frame on under it. The command's own
     /// effect only; the inputs read at the block's start stay.
-    pub fn fire(&mut self, i: usize, late: bool) -> (Applied, tutti_graph::Transport) {
+    pub fn fire(&mut self, i: usize, late: bool) -> (Applied, tutti_graph::TransportPosition) {
         let cmd = self.schedule.take(i, late).command();
         self.motion.apply(cmd);
         let applied = self.settle();
@@ -251,7 +251,7 @@ impl TransportAudio {
 
     /// Advances the playhead `frames` under `from`, the transport the last
     /// [`begin_block`](Self::begin_block) or [`fire`](Self::fire) reported.
-    pub fn advance(&mut self, frames: usize, from: &tutti_graph::Transport) {
+    pub fn advance(&mut self, frames: usize, from: &tutti_graph::TransportPosition) {
         self.with_map(|clock, map| clock.advance(frames, from, map));
     }
 
@@ -424,7 +424,7 @@ mod tests {
     }
 
     /// Roll `frames` as one block, and report the transport at its start.
-    fn roll(a: &mut TransportAudio, frames: usize) -> tutti_graph::Transport {
+    fn roll(a: &mut TransportAudio, frames: usize) -> tutti_graph::TransportPosition {
         let t = a.begin_block();
         a.advance(frames, &t);
         t
@@ -498,12 +498,12 @@ mod tests {
     }
 
     fn steps(points: &[(f64, f64)]) -> std::sync::Arc<TempoMap> {
-        use tutti_tempo::{Shape, TempoPoint};
+        use tutti_tempo::{TempoPoint, Transition};
         std::sync::Arc::new(
             TempoMap::new(points.iter().map(|&(beat, bpm)| TempoPoint {
                 beat: Beat(beat),
                 tempo: Bpm::of(bpm),
-                shape: Shape::Step,
+                transition: Transition::Step,
             }))
             .expect("a map"),
         )
@@ -540,18 +540,18 @@ mod tests {
     /// cell's edge the playhead is on `B` exactly, at the next chord.
     #[test]
     fn a_rate_change_inside_a_ramp_takes_the_chord_at_the_new_rate() {
-        use tutti_tempo::{Shape, TempoPoint};
+        use tutti_tempo::{TempoPoint, Transition};
         let map = std::sync::Arc::new(
             TempoMap::new([
                 TempoPoint {
                     beat: Beat(0.0),
                     tempo: Bpm::of(120.0),
-                    shape: Shape::RampTime,
+                    transition: Transition::RampTime,
                 },
                 TempoPoint {
                     beat: Beat(4.0),
                     tempo: Bpm::of(60.0),
-                    shape: Shape::Step,
+                    transition: Transition::Step,
                 },
             ])
             .expect("a map"),

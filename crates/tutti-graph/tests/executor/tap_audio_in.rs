@@ -2,7 +2,8 @@
 //! or a recorder takes it as it is.
 
 use tutti_graph::{
-    Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
+    Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, TransportPosition,
+    Unforkable,
 };
 use tutti_graph::{NodeKey, TapAlign, TapId};
 use tutti_graph::{OutPort, Source as Origin};
@@ -75,7 +76,7 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
     ed.commit().expect("compiles");
     exec.apply_pending();
     ed.collect();
-    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let t = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut left = [0.0f32; BLOCK];
     let mut right = [0.0f32; BLOCK];
     for block in frames.chunks(BLOCK) {

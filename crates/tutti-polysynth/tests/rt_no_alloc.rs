@@ -468,7 +468,7 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
 #[test]
 fn a_clip_into_a_synth_is_allocation_free() {
     use tutti_graph::NodeKey;
-    use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, Transport};
+    use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, TransportPosition};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
     use tutti_types::{Beat, Bpm, Samples};
 
@@ -514,7 +514,7 @@ fn a_clip_into_a_synth_is_allocation_free() {
     }));
     ed.commit().expect("commits");
     let at = |frame: usize, playing: bool| {
-        Transport::new(playing, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None)
+        TransportPosition::new(playing, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None)
     };
     // Installs the plan (and its first-block setup) outside the gate.
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);

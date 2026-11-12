@@ -5,7 +5,7 @@
 use crate::MAX_NODE_LATENCY;
 use tutti_types::{Frame, Latency, SampleRate, Samples};
 
-use crate::node::{Env, MAX_TRANSPORT_CHANGES, Transport};
+use crate::node::{Env, MAX_TRANSPORT_CHANGES, TransportPosition};
 use crate::time::Offset;
 use tutti_types::PlayReading;
 
@@ -14,7 +14,7 @@ use tutti_types::PlayReading;
 struct Piece {
     frame: Frame,
     rate: SampleRate,
-    transport: Transport,
+    transport: TransportPosition,
     /// The play clock at `frame`. A play start changes `transport.playing`,
     /// so it is always a piece of its own, and between pieces the clock
     /// advances one per frame: the piece's reading rolled forward is exact.
@@ -25,7 +25,7 @@ struct Piece {
 const EMPTY: Piece = Piece {
     frame: Frame::ZERO,
     rate: SampleRate(0.0),
-    transport: Transport::new(
+    transport: TransportPosition::new(
         false,
         tutti_types::Bpm::of(120.0),
         tutti_types::Beat(0.0),
@@ -77,7 +77,7 @@ const _: () = assert!((JUMPS - 1) * CHECKPOINT >= 4 * MAX_NODE_LATENCY.get());
 /// - a block's first frame or a [transport change](Env::changes) inside it
 ///   whose transport differs from that roll: a start, stop, seek, tempo or
 ///   loop edit, an untimed command landing on a block start, a host whose
-///   position is not a frame count ([`Transport::new`]), the first block;
+///   position is not a frame count ([`TransportPosition::new`]), the first block;
 /// - a **checkpoint**: a block's first frame when the newest piece is
 ///   [`CHECKPOINT`](Self::CHECKPOINT) frames or more behind it, so no roll
 ///   (whose cost grows with the loop wraps it walks) is ever longer than
@@ -91,7 +91,7 @@ const _: () = assert!((JUMPS - 1) * CHECKPOINT >= 4 * MAX_NODE_LATENCY.get());
 /// ([`TimelineSegment::beat_at`](tutti_types::TimelineSegment::beat_at) is
 /// relative to its segment's origin, and a wrap lands on the unique frame
 /// that reaches the loop's end). Not a tolerance: the tests compare
-/// `Transport`s with `==`.
+/// `TransportPosition`s with `==`.
 ///
 /// # Size, and the cost of a query
 ///
@@ -232,7 +232,7 @@ impl TransportHistory {
 
     /// The transport `back` frames before frame `start`, when a piece kept
     /// covers that frame; `None` when it is older than every piece.
-    fn before(&self, start: Frame, back: Samples) -> Option<Transport> {
+    fn before(&self, start: Frame, back: Samples) -> Option<TransportPosition> {
         self.piece_before(start, back)
             .map(|(p, into)| roll(p.transport, p.rate, into))
     }
@@ -272,11 +272,11 @@ impl TransportHistory {
 }
 
 /// `t` rolled `frames` on at `rate` while it plays, wrapping at its loop:
-/// the host's clock ([`Transport::clock`]) advanced and read back. The one
+/// the host's clock ([`TransportPosition::clock`]) advanced and read back. The one
 /// walk [`Env::transport_at`] and the history share. A counted position
-/// stays counted; a bare beat's walk has no [`Transport::origin`], since
+/// stays counted; a bare beat's walk has no [`TransportPosition::origin`], since
 /// its frame count is the walk's, not the host's.
-pub(crate) fn roll(t: Transport, rate: SampleRate, frames: Samples) -> Transport {
+pub(crate) fn roll(t: TransportPosition, rate: SampleRate, frames: Samples) -> TransportPosition {
     let r = rate.get();
     // `is_finite` and `> 0.0` together also refuse a NaN.
     let usable = r.is_finite() && r > 0.0;
@@ -310,7 +310,7 @@ impl Env {
         offset: Offset,
         back: Latency,
         history: &TransportHistory,
-    ) -> Transport {
+    ) -> TransportPosition {
         let back = back.samples();
         let here = Samples(offset.index());
         match here.checked_sub(back) {
@@ -365,7 +365,7 @@ mod tests {
     /// Frames per beat at 120 BPM and 48 kHz.
     const FPB: f64 = 24_000.0;
 
-    fn env(frame: u64, len: usize, transport: Transport, changes: TransportChanges) -> Env {
+    fn env(frame: u64, len: usize, transport: TransportPosition, changes: TransportChanges) -> Env {
         Env {
             frame: Frame(frame),
             sample_rate: SR,
@@ -376,13 +376,13 @@ mod tests {
         }
     }
 
-    fn rolling(beat: f64) -> Transport {
-        Transport::new(true, Bpm::of(120.0), Beat(beat), None)
+    fn rolling(beat: f64) -> TransportPosition {
+        TransportPosition::new(true, Bpm::of(120.0), Beat(beat), None)
     }
 
     /// A host that counts frames, at `beat` (its segment's first frame).
-    fn counted(beat: f64, looping: Option<LoopRange>) -> Transport {
-        Transport::counted(
+    fn counted(beat: f64, looping: Option<LoopRange>) -> TransportPosition {
+        TransportPosition::counted(
             true,
             Bpm::of(120.0),
             SegmentOrigin {
@@ -396,7 +396,7 @@ mod tests {
 
     /// The transport at `e`'s end: where a host that counts frames starts
     /// the next block.
-    fn end_of(e: &Env) -> Transport {
+    fn end_of(e: &Env) -> TransportPosition {
         let longer = Env {
             block_len: Samples(e.block_len.get() + 1),
             ..*e
@@ -427,7 +427,7 @@ mod tests {
         }
 
         /// What the block holding absolute frame `f` reported for it.
-        fn truth(&self, f: u64) -> Transport {
+        fn truth(&self, f: u64) -> TransportPosition {
             let i = self.blocks.partition_point(|e| e.frame.get() <= f) - 1;
             let e = &self.blocks[i];
             e.transport_at(e.offset_of(Frame(f)).expect("inside"))
@@ -480,7 +480,7 @@ mod tests {
     fn every_frame_in_reach_reads_what_its_block_said() {
         const REACH: usize = 200;
         let mut p = Played::default();
-        let loop_t = Transport::new(
+        let loop_t = TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat(8.0),
@@ -495,7 +495,7 @@ mod tests {
         tempo
             .push(
                 off(10),
-                Transport::new(true, Bpm::of(90.0), Beat(40.0), None),
+                TransportPosition::new(true, Bpm::of(90.0), Beat(40.0), None),
             )
             .expect("inside");
         let scenes = [
@@ -513,7 +513,7 @@ mod tests {
             ),
             (rolling(40.0), tempo),
             (
-                Transport::new(false, Bpm::of(90.0), Beat(41.0), None),
+                TransportPosition::new(false, Bpm::of(90.0), Beat(41.0), None),
                 TransportChanges::NONE,
             ),
             (rolling(41.0), TransportChanges::NONE),
@@ -549,7 +549,7 @@ mod tests {
         let first = env(
             0,
             64,
-            Transport::new(true, Bpm::of(120.0), Beat(4.0), looping),
+            TransportPosition::new(true, Bpm::of(120.0), Beat(4.0), looping),
             TransportChanges::NONE,
         );
         p.play(first);
@@ -652,7 +652,7 @@ mod tests {
         let at = |back: u64| e.transport_before(off(0), lat(back as usize), &p.history);
         // The clamp hands back the piece as the host gave it (a bare beat);
         // a roll reports it counted. The same transport either way.
-        let same = |a: Transport, b: Transport| {
+        let same = |a: TransportPosition, b: TransportPosition| {
             (a.playing, a.tempo, a.beat(), a.looping, a.recording())
                 == (b.playing, b.tempo, b.beat(), b.looping, b.recording())
         };
@@ -700,14 +700,14 @@ mod tests {
     /// so every frame back reads its block.
     #[test]
     fn a_change_of_one_field_is_a_jump() {
-        let one_field = |t: Transport, k: usize| -> Transport {
+        let one_field = |t: TransportPosition, k: usize| -> TransportPosition {
             let origin = t.origin().expect("counted");
             match k {
-                0 => Transport::counted(false, t.tempo, origin, t.looping),
+                0 => TransportPosition::counted(false, t.tempo, origin, t.looping),
                 1 => t.with_recording(true),
                 2 => {
                     let b = t.beat().get();
-                    Transport::counted(
+                    TransportPosition::counted(
                         t.playing,
                         t.tempo,
                         origin,
@@ -717,7 +717,7 @@ mod tests {
                         }),
                     )
                 }
-                _ => Transport::counted(t.playing, Bpm::of(97.0), origin, t.looping),
+                _ => TransportPosition::counted(t.playing, Bpm::of(97.0), origin, t.looping),
             }
         };
         for k in 0..4 {

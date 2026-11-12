@@ -661,7 +661,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Option<NonZeroU16>`.
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
   and nothing is pinned against another implementation. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
-  Group's sixteen channels** (`SynthConfig::group`, `Settings::with_group`; a message of
+  Group's sixteen channels** (`SynthConfig::with_group`, `Settings::with_group`, the one builder
+  spelling both instruments share with `with_polyphony`; a message of
   another Group is not read, M2-104 section 2.1.2, Appendix B.1), so `step` never sees a
   Group; the ingest node routes by (Group, channel) (`MidiInputPorts`, doc 017 L3). Mono and legato follow
   tutti's named rule (last-note priority over a per-channel stack of held keys),
@@ -958,7 +959,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   an optional feature, on `Bank` only. It keeps every module private
   (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
   `#![forbid(unsafe_code)]`. It has one error type, `tutti_sf2::Error`, with a
-  `Result` alias, and no public four-character-code type. `tutti-soundfont`
+  `Result` alias (a font is read by `SoundFont::open(path)` or `SoundFont::from_reader(impl Read)`),
+  and no public four-character-code type. `tutti-soundfont`
   does not re-export `SoundFont`: its one path is `tutti_sf2::SoundFont` (the
   umbrella `tutti` offers it as `tutti::sf2`). `tutti-soundfont` is the player over it: the
   note logic is `tutti-voicing`'s (`Voicing::step` and its `Rules`, with a
@@ -1192,6 +1194,20 @@ Scalars use `Param<U>`.
   param). A host's `ParamNode` is inserted as `Params(node)`; `set_node_params`
   is crate-private. `ForkByClone(param node)` still compiles (Rust cannot refuse
   it by type): use `Params`.
+- **The session's own modulation** (doc 030 T4, T5, T9; the feature `modulation`):
+  `Session::mods()` reads (`&self`, a `ModsView`: `routes()`, `routes_to(target)`,
+  `sources()`) and `Session::mods_mut()` edits (`Mods`, which marks the declarations
+  edited). A source and a route are named by `ModSourceId` and `ModRouteId`,
+  minted by `Mods` and never built (`tutti_modulation::{SourceKey, RouteKey}` are
+  the compiler's and a host's own minting, for `ModInput`). A route is
+  `Mods::route(RouteSpec::new(source, target, depth).polarity(..).curve(..))` and is
+  edited in place by `route_of(id)?`'s named setters. `Mods::record` is a
+  `#[must_use]` `Result`. **Why nothing modulates has one answer,
+  `ModState::problems()`**: a `Problem` each for a refusal, an unresolved target and
+  an unfed follower, whose `Display` names the node and the param; the event is
+  the same type (`SessionEvent::Modulation(Problem)`). A route's `Depth` is
+  range-checked (`Depth::new -> Option`, `of` for a literal, `clamped` for a lane's
+  value), so the compiler has no refusal for it.
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
 - **The session graph declicks its wiring** (doc 030 §4, doc 013 "As built
@@ -1356,8 +1372,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   it; the parked `bevy-tutti` keeps one mention (`plugin_host/live_resize.rs`), and
   the dated records in `docs/` keep theirs: fix only what claims to be current, and never "update" a reference
   to a new app-side path.
-- **Dead crate names:** `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
-- **Dead crate names:** `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
+- **Dead crate names:** `tutti_polysynth::{Error, Result}` and `tutti_session::Error::Synth` → deleted (`PolySynth::new` is infallible: `SynthConfig::polyphony` is a `NonZeroUsize`), `SynthConfig::{sample_rate, max_voices, mpe_enabled, mpe_pitch_bend_range}` → deleted (the rate is `Node::prepare`'s), `polyphony` and `mpe: MpeMode` (a zone's member range is the per-note range), `PolySynth::{volume_atomic, detune_atomic, spread_atomic}` and `UnisonEngine`'s → the synth's `ParamSet` (`ParamSet::cell`), `PolySynth::{mpe_enabled, set_mpe_enabled}` → `mpe` / `set_mpe(MpeMode)`, `set_volume(f32)`, `set_unison_stereo_spread(f32)`, `set_unison_voice_count(u8)` and `UnisonConfig::voice_count: u8` → `Amplitude`, `Spread` and `UnisonVoices` (1 to 16, refused not clamped), `tutti_sf2::SoundFont::new(&mut R)` → `SoundFont::from_reader(R)` / `SoundFont::open(path)`, `Settings::new(rate)`, `Settings::with_sample_rate` and `Settings::{MAX_POLYPHONY, DEFAULT_POLYPHONY}` → `Settings::new()` and `Polyphony::{MAX, DEFAULT}` (`Polyphony::new -> Option`), `SoundFontUnit::{with_preset, with_sample_rate}` → `select(channel, &Preset)` and `prepare`, `tutti_soundfont::Error::{Io, SampleRateOutOfRange, PolyphonyOutOfRange}` → deleted (`Error::UnplayablePreset` is `select`'s), `tutti_voicing::VoiceView` (and `step`'s sorted slice) → `step`'s `level` lookup, `Holds::*_up`'s `bool` → `Release`, `tutti_midi_device::Direction` → `PortDirection`, `FunctionBlock::new` and `with_midi1`/`with_active`/`with_ui_hint`/`with_midi_ci`/`with_name` → `FunctionBlock::builder(..).build()` (`BlockError`), `DiscoveryData`'s four identity fields → `identity: DeviceIdentity`, `Midi1Parser::message` → `tutti_ump::parse_exact`, `tutti_ump::sysex7_packets` → `SysexMessage::packets` / `Sysex7Packets::checked`, `PitchBendSensitivity::as_semitones_f32` → `semitones() -> Semitones`, `Translator::feed` → `translate` (and `finish` for the offline caller), `Key::new(m2, lane, note)`/`Key::lane`/`Key::is_m2` → `Key::new(Protocol, Address, NoteNumber)`/`address`/`protocol`, `Ump::sustain_up(m2, lane)` and `KeyEvent::Sustain { m2, lane, .. }` → `Protocol` and `Address`, `tutti_ump::decode` → `Ump::decode` (or `Message::try_from(ump)`), `Error::InvalidConfig` of `tutti-midi-file` → `Error::Config(ConfigError)`, `Track::new(events)` → `Track::new()` with its builder or `collect()`, `MidiInputNode` → `MidiIngestNode` (one event input per device slot; a device's thread pushes through `DeviceInput` into an event inlet from `DeviceInlets`, doc 017 E5), `MidiIn`, `HardwareMidiDrain` and `cycle_start_read_all_inputs` → deleted (the same), `MidiQueueNode`, `TimedQueueNode`, `TimedSender`, `TimedSendError` → deleted (doc 017 E4: a control thread sends through `tutti_graph::EventInletNode`'s `EventInletWriter`, with `tutti_midi_runtime::MidiKeys` for the key helpers; `Graph::open_event_inlet` in the session); `ChannelSumNode` → deleted (a port or an output
   channel sums its sources: `Op::Sum`, doc 013 "Audio fan-in sums"); `DownmixNode` → deleted (a bus edge between declared buses folds, `Editor::connect_bus` and the session's `Graph::connect_bus`, doc 013 "Buses and coercion"; a fold that is not a graph's uses `tutti_types::Fold`); `tutti-spatial` → `tutti-nodes` (the panner nodes, `VbapPannerNode`
   and `HrtfBinauralNode`; the algorithms are `tutti-dsp::spatial`); `build_vbap_mix` and
   `VbapMixParts` → deleted (a VBAP mix is a panner per source wired to the output
@@ -1404,7 +1419,20 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `OfflineTimelineConfig::tempo` → deleted (doc 020 stage 6: the project's tempo is one
   `TempoMap`: `TransportSettings::set_tempo` / `set_tempo_map` publish it, `Timeline::tempo_map`
   and `OfflineTimelineConfig::tempo_map` carry it, and a tempo is `TempoMap::tempo_at` a beat).
-  A comment or doc that
+  `Depth(x)` and `Depth::new_clamped` → `Depth::of(x)` / `Depth::new(x)` /
+  `Depth::clamped(x)` (doc 030 T9: `Depth` is range-checked, and has no `+` or `*`);
+  `Lfo::hz(rate)` → `Lfo::rate(Hz)` (`rate` takes a `BeatDuration` or an `Hz`);
+  `ClickSettings::set_volume` clamping → `Result<(), VolumeOutOfRange>`;
+  `OfflineTimeline::advance(usize)` → `advance(Samples)`;
+  `TransportSettings::in_preroll` (a public cell) and `is_in_preroll` → the method
+  `in_preroll()` (`in_preroll_cell()` for the node that reads it);
+  `Session::mods()` as the editor → `mods_mut()`; `Mods::route(source, target,
+  depth)` → `route(RouteSpec)`; `Mods::route_mut` and its public `RouteDecl` fields →
+  `route_of(id)?` setters; `ModState::{refusal, unresolved_targets,
+  unresolved_sources}` → `problems()`; `SessionEvent::{ModulationRefused,
+  ModulationUnresolved}` → `SessionEvent::Modulation(Problem)`; `Mods` returning
+  `tutti_modulation::{SourceKey, RouteKey}` → `ModSourceId` and `ModRouteId`;
+  `CompileError::BadRoute` → deleted (a `Depth` is never NaN). A comment or doc that
   disagrees with the code is the bug.
 - **Dead export names** (doc 019): `tutti-export`'s `ExportConfig`, `RenderConfig`,
   `EncodeConfig` → `Job` plus `Output`/`FileTarget`/`BufferTarget`; `render_to_file`,

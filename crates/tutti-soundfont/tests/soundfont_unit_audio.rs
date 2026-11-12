@@ -14,9 +14,9 @@ use support::Hand;
 use tutti_fixtures::assert_golden;
 use tutti_fixtures::midi::{self, wide_velocity};
 use tutti_graph::Offset;
-use tutti_sf2::SoundFont;
+use tutti_sf2::{Bank, SoundFont};
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::{SampleRate, Samples};
+use tutti_types::Samples;
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
 
 /// Path to the committed test SoundFont.
@@ -30,7 +30,7 @@ fn load_test_soundfont() -> Arc<SoundFont> {
     let mut file = std::fs::File::open(&path)
         .unwrap_or_else(|e| panic!("test soundfont missing at {}: {e}", path.display()));
     Arc::new(
-        SoundFont::new(&mut file)
+        SoundFont::from_reader(&mut file)
             .unwrap_or_else(|e| panic!("test soundfont at {} is malformed: {e}", path.display())),
     )
 }
@@ -93,7 +93,7 @@ fn render_process_blocks(
 #[test]
 fn process_honors_frame_offset_within_block() {
     let sf = load_test_soundfont();
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     const BLOCK: usize = 64;
     const BLOCKS: usize = 6;
     const TOTAL: usize = BLOCK * BLOCKS;
@@ -109,9 +109,8 @@ fn process_honors_frame_offset_within_block() {
     };
 
     let render_at = |offset: u32| {
-        let mut unit = Hand::new(
-            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"),
-        );
+        let mut unit =
+            Hand::new(SoundFontUnit::new(Arc::clone(&sf), settings).expect("create SoundFontUnit"));
         render_process_blocks(&mut unit, BLOCK, BLOCKS, &[note(offset)])
     };
 
@@ -179,7 +178,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     // voices, so with them on the render of two notes together is genuinely not
     // the sum of each alone — the additivity this test rests on is a property
     // of the dry voice mix. Every other setting is the default.
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     const BLOCK: usize = 64;
     // Long enough for a piano attack to clear the noise floor: the fixture's
     // envelope takes ~41 frames to leave zero and several hundred more to reach
@@ -197,9 +196,8 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     };
 
     let render = |events: &[UmpAt]| {
-        let mut unit = Hand::new(
-            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"),
-        );
+        let mut unit =
+            Hand::new(SoundFontUnit::new(Arc::clone(&sf), settings).expect("create SoundFontUnit"));
         render_process_blocks(&mut unit, BLOCK, BLOCKS, events)
     };
 
@@ -273,7 +271,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
 #[test]
 fn event_at_last_frame_of_block_still_applies() {
     let sf = load_test_soundfont();
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     const BLOCK: usize = 64;
     const BLOCKS: usize = 6;
     const LAST: u32 = BLOCK as u32 - 1;
@@ -287,10 +285,10 @@ fn event_at_last_frame_of_block_still_applies() {
     };
 
     let mut unit =
-        Hand::new(SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"));
+        Hand::new(SoundFontUnit::new(Arc::clone(&sf), settings).expect("create SoundFontUnit"));
     let late = render_process_blocks(&mut unit, BLOCK, BLOCKS, &[note(LAST)]);
 
-    let mut unit0 = Hand::new(SoundFontUnit::new(sf, &settings).expect("create SoundFontUnit"));
+    let mut unit0 = Hand::new(SoundFontUnit::new(sf, settings).expect("create SoundFontUnit"));
     let base = render_process_blocks(&mut unit0, BLOCK, BLOCKS, &[note(0)]);
 
     // Applied, not dropped: the note sounds inside the render.
@@ -335,7 +333,7 @@ fn event_at_last_frame_of_block_still_applies() {
 #[test]
 fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     let sf = load_test_soundfont();
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     const BLOCK: usize = 64;
     const BLOCKS: usize = 6;
 
@@ -348,10 +346,10 @@ fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     };
 
     let mut straight =
-        Hand::new(SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create unit"));
+        Hand::new(SoundFontUnit::new(Arc::clone(&sf), settings).expect("create unit"));
     let expected = render_process_blocks(&mut straight, BLOCK, BLOCKS, &[note()]);
 
-    let mut interrupted = Hand::new(SoundFontUnit::new(sf, &settings).expect("create unit"));
+    let mut interrupted = Hand::new(SoundFontUnit::new(sf, settings).expect("create unit"));
     let mut got = render_process_blocks(&mut interrupted, BLOCK, BLOCKS / 2, &[note()]);
     // A re-prepare at the unit's own rate, between blocks.
     tutti_graph::Node::prepare(
@@ -393,9 +391,9 @@ fn midi1_boundary_uses_spec_downscalers() {
 fn test_note_on_produces_audio() {
     let sf = load_test_soundfont();
 
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     let mut unit =
-        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
+        Hand::new(SoundFontUnit::new(sf, settings).expect("Failed to create SoundFontUnit"));
 
     // Play middle C
     unit.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(100));
@@ -411,9 +409,9 @@ fn test_velocity_affects_volume() {
     let sf = load_test_soundfont();
 
     // Soft note
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     let mut unit_soft = Hand::new(
-        SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit"),
+        SoundFontUnit::new(Arc::clone(&sf), settings).expect("Failed to create SoundFontUnit"),
     );
     unit_soft.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(30));
     let samples_soft = render_samples(&mut unit_soft, 2000);
@@ -421,7 +419,7 @@ fn test_velocity_affects_volume() {
 
     // Loud note
     let mut unit_loud =
-        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
+        Hand::new(SoundFontUnit::new(sf, settings).expect("Failed to create SoundFontUnit"));
     unit_loud.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(127));
     let samples_loud = render_samples(&mut unit_loud, 2000);
     let rms_loud = rms(&samples_loud);
@@ -438,9 +436,9 @@ fn test_velocity_affects_volume() {
 fn test_note_off_stops_sound() {
     let sf = load_test_soundfont();
 
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     let mut unit =
-        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
+        Hand::new(SoundFontUnit::new(sf, settings).expect("Failed to create SoundFontUnit"));
 
     // Play note
     unit.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(100));
@@ -469,11 +467,11 @@ fn test_note_off_stops_sound() {
 fn test_polyphony_multiple_notes() {
     let sf = load_test_soundfont();
 
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
 
     // Single note
     let mut unit_single = Hand::new(
-        SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit"),
+        SoundFontUnit::new(Arc::clone(&sf), settings).expect("Failed to create SoundFontUnit"),
     );
     unit_single.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(80));
     let samples_single = render_samples(&mut unit_single, 2000);
@@ -481,7 +479,7 @@ fn test_polyphony_multiple_notes() {
 
     // Chord (3 notes)
     let mut unit_chord =
-        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
+        Hand::new(SoundFontUnit::new(sf, settings).expect("Failed to create SoundFontUnit"));
     unit_chord.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(80)); // C
     unit_chord.note_on(MidiChannel::of(0), NoteNumber::of(64), wide_velocity(80)); // E
     unit_chord.note_on(MidiChannel::of(0), NoteNumber::of(67), wide_velocity(80)); // G
@@ -500,9 +498,9 @@ fn test_polyphony_multiple_notes() {
 fn test_reset_silences_all_notes() {
     let sf = load_test_soundfont();
 
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     let mut unit =
-        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
+        Hand::new(SoundFontUnit::new(sf, settings).expect("Failed to create SoundFontUnit"));
 
     // Play several notes
     unit.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(100));
@@ -535,9 +533,9 @@ fn test_reset_silences_all_notes() {
 fn test_clone_creates_independent_instance() {
     let sf = load_test_soundfont();
 
-    let settings = Settings::new(SampleRate::SR_44K1);
+    let settings = Settings::new();
     let mut unit =
-        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
+        Hand::new(SoundFontUnit::new(sf, settings).expect("Failed to create SoundFontUnit"));
 
     // Play note on original
     unit.note_on(MidiChannel::of(0), NoteNumber::of(60), wide_velocity(100));
@@ -575,32 +573,23 @@ fn digest(samples: &[(f32, f32)]) -> u64 {
     h.finish()
 }
 
-/// A `with_preset` unit's first note-on renders that preset: preset 40
+/// A unit whose channel was `select`ed renders that preset: preset 40
 /// (TimGM6mb's violin) on channel 3 at 44.1 kHz, middle C at velocity 100,
 /// 2048 frames in 64-frame blocks. The digest was recorded on the golden target
-/// from this unit's render; elsewhere only the rate and the sound are
-/// asserted, so the preset itself is pinned only by the glibc golden digest.
-/// A non-integral rate rounds to the nearest hertz (44 100.6 → 44 101).
+/// from this unit's render; elsewhere only the sound is asserted, so the preset
+/// itself is pinned only by the glibc golden digest.
 #[test]
-fn a_preset_units_first_note_on_renders_that_preset() {
-    const PRESET: U7 = U7::of(40);
+fn a_selected_presets_first_note_on_renders_that_preset() {
     const CHANNEL: MidiChannel = MidiChannel::of(3);
-    let rate = tutti_types::SampleRate(44_100.0);
-    let unit = SoundFontUnit::with_preset(load_test_soundfont(), rate, CHANNEL, PRESET)
-        .expect("TimGM6mb builds at 44.1 kHz");
-    assert_eq!(unit.sample_rate(), rate);
-    let fractional = SoundFontUnit::with_preset(
-        load_test_soundfont(),
-        tutti_types::SampleRate(44_100.6),
-        CHANNEL,
-        PRESET,
-    )
-    .expect("TimGM6mb builds at 44.1 kHz");
-    assert_eq!(
-        fractional.sample_rate(),
-        tutti_types::SampleRate(44_101.0),
-        "the rate rounds to the nearest hertz"
-    );
+    let font = load_test_soundfont();
+    let violin = font
+        .presets()
+        .iter()
+        .find(|p| p.bank() == Some(Bank::Melodic(U7::of(0))) && p.patch() == Some(U7::of(40)))
+        .expect("TimGM6mb has the violin at 0:40");
+    let mut unit = SoundFontUnit::new(font.clone(), Settings::new()).expect("builds");
+    unit.select(CHANNEL, violin)
+        .expect("the violin is playable");
 
     let mut hand = Hand::new(unit);
     hand.note_on(CHANNEL, NoteNumber::of(60), wide_velocity(100));

@@ -61,14 +61,14 @@ fn soundfont() -> Arc<SoundFont> {
         )
     });
     Arc::new(
-        SoundFont::new(&mut file)
+        SoundFont::from_reader(&mut file)
             .unwrap_or_else(|e| panic!("test soundfont at {} is malformed: {e}", path.display())),
     )
 }
 
 /// An offline stereo session with a SoundFont synth on the outputs.
 fn rig() -> (Session, NodeKey) {
-    let unit = SoundFontUnit::new(soundfont(), &Settings::new(RATE)).expect("builds the unit");
+    let unit = SoundFontUnit::new(soundfont(), Settings::new()).expect("builds the unit");
     let mut s = Session::builder()
         .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
         .expect("builds");

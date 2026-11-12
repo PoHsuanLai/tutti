@@ -1965,8 +1965,9 @@ pub fn assert_param_fork<N: ParamNode + Clone>(node: N) {
     let live = fork.params().clone();
     let params: Vec<UnitAddr> = live.params().collect();
     assert!(!params.is_empty(), "a ParamNode with no params");
-    // A distinct value per param, away from anything a constructor picks.
-    let set = |i: usize| 0.37 + i as f32 * 1.13;
+    // A distinct value per param, away from anything a constructor picks, and
+    // inside every range-checked unit's range (a `Depth` holds `-1..=1`).
+    let set = |i: usize| 0.37 + i as f32 * 0.11;
     for (i, &p) in params.iter().enumerate() {
         live.set(p, set(i));
     }

@@ -284,7 +284,7 @@ fn ragged(total: usize, max: usize) -> Vec<usize> {
 
 fn amount(depth: f32) -> Amount {
     Amount {
-        depth: Depth(depth),
+        depth: Depth::of(depth),
         polarity: Polarity::Bipolar,
         curve: Law::Linear,
     }

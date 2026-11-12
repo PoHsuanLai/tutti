@@ -183,7 +183,7 @@ pub use tutti_plugin_host as plugin_host;
 /// device and sampler handles when those features are on, and the session
 /// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, the wiring (`Key`, `OutPort`, `InPort`, `EventOutPort`, `EventInPort`, `Root`, `Edge`, and a key's typed params, `TypedParamRef`), and
 /// with `device` its `Device`), with the requests a session takes, each
-/// behind the features that gate it: `ParamRef` (`modulation`),
+/// behind the features that gate it: `ParamRef` and `RouteSpec` (`modulation`),
 /// `Bounce`, `Bounced`, `BounceError`, `Range`, `BounceLatency` and `BounceTail` (`export`),
 /// `PluginLoadRequest`, `PluginRef`, `PluginState`, `ParamId` and `Normalized`
 /// (`plugin`), and, under `midi`, the names a
@@ -268,14 +268,14 @@ pub mod prelude {
     pub use tutti_plugin::catalog::{PluginRef, PluginState};
     #[cfg(feature = "plugin")]
     pub use tutti_plugin::{Normalized, ParamId};
-    #[cfg(all(feature = "session", feature = "modulation"))]
-    pub use tutti_session::ParamRef;
     #[cfg(all(feature = "session", feature = "plugin"))]
     pub use tutti_session::PluginLoadRequest;
     #[cfg(all(feature = "session", feature = "export"))]
     pub use tutti_session::{
         Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
     };
+    #[cfg(all(feature = "session", feature = "modulation"))]
+    pub use tutti_session::{ParamRef, RouteSpec};
     #[cfg(feature = "midi")]
     pub use tutti_ump::{Message, NoteNumber, Ump};
 }

@@ -38,8 +38,6 @@ tutti-dsp = { path = "../tutti-dsp", default-features = false }
 # `f32x8` lanes for the voice bank.
 wide = { version = "1.6", default-features = false }
 
-# Error handling
-thiserror = "2"
 tutti-types = { path = "../tutti-types", default-features = false }
 # `Law`, the shape of the portamento glide.
 tutti-curve = { path = "../tutti-curve" }
@@ -57,6 +55,8 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 criterion.workspace = true
 approx = "0.5"
+# `check_range_contract`'s serde shape, for `UnisonVoices`.
+serde = "1"
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }

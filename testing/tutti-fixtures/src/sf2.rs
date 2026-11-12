@@ -1,7 +1,7 @@
 //! A SoundFont 2 file built in memory, for a test that needs a zone layout the
 //! committed fonts do not have (a key range, a velocity range, an exclusive
 //! class, a long release). One sample: a looped sine, 441 Hz at key 69.
-//! [`bytes`] is the file; a test parses it with `tutti_sf2::SoundFont::new`.
+//! [`bytes`] is the file; a test parses it with `tutti_sf2::SoundFont::from_reader`.
 //!
 //! The generator numbers are the specification's (SF2 2.04 section 8.1.2).
 
@@ -16,6 +16,7 @@ pub mod generator {
     pub const KEY_NUM: u16 = 46;
     pub const VELOCITY: u16 = 47;
     pub const INITIAL_ATTENUATION: u16 = 48;
+    pub const COARSE_TUNE: u16 = 51;
     pub const SAMPLE_ID: u16 = 53;
     pub const SAMPLE_MODES: u16 = 54;
     pub const EXCLUSIVE_CLASS: u16 = 57;

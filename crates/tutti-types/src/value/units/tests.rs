@@ -88,7 +88,6 @@ fn every_new_clamped_passes_nan_and_saturates_infinity() {
     }
     check!(Mix, 0.0, 1.0);
     check!(Feedback, 0.0, 0.99);
-    check!(Depth, -1.0, 1.0);
     check!(Spread, 0.0, 1.0);
     check!(Resonance, 0.0, 1.0);
     check!(Confidence, 0.0, 1.0);

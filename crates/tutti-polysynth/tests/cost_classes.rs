@@ -1,9 +1,10 @@
 //! The synth declares a cost class from its oscillator lanes (doc 013,
-//! "The cost model and coarsening"): `Moderate` up to sixteen (`max_voices` × unison),
+//! "The cost model and coarsening"): `Moderate` up to sixteen (`polyphony` × unison),
 //! `Heavy` past them. Declaring one changes only the parallel schedule:
 //! sibling synths pack into fewer tasks than undeclared ones, and the render
 //! on a pool is bit for bit the serial one.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tutti_fixtures::signal::plane_bits as bits;
 use tutti_types::MaxBlock;
@@ -17,7 +18,7 @@ use tutti_graph::{
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_polysynth::{OscillatorType, PolySynth, SynthConfig, UnisonConfig};
+use tutti_polysynth::{OscillatorType, PolySynth, SynthConfig, UnisonConfig, UnisonVoices};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -32,16 +33,14 @@ const HEAVY: u64 = 2;
 
 fn synth(max_voices: usize, unison: u8) -> PolySynth {
     PolySynth::new(SynthConfig {
-        sample_rate: SampleRate(SR),
         oscillator: OscillatorType::Saw,
-        max_voices,
+        polyphony: NonZeroUsize::new(max_voices).expect("at least one voice"),
         unison: (unison > 1).then(|| UnisonConfig {
-            voice_count: unison,
+            voice_count: UnisonVoices::new(unison).expect("a unison count"),
             ..Default::default()
         }),
         ..Default::default()
     })
-    .expect("synth builds")
 }
 
 /// `node` as a node that declares nothing: the cost model's default.

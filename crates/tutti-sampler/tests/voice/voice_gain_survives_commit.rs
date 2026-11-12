@@ -268,7 +268,7 @@ fn drive_volume(
         },
         wave: tutti_modulation::Wave::Const(1.0),
         amount: Amount {
-            depth: Depth(depth),
+            depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },

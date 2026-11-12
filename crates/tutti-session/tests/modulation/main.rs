@@ -27,3 +27,10 @@ mod indexed_params;
 // A route's range is a range of the target's unit; a backwards one is refused.
 #[cfg(feature = "modulation")]
 mod ranges;
+// A route is found again and edited through a view; its keys are minted
+// (doc 030, T4).
+#[cfg(feature = "modulation")]
+mod routes;
+// One place to ask why nothing modulates (doc 030, T5).
+#[cfg(feature = "modulation")]
+mod problems;

@@ -17,7 +17,7 @@ pub const RATE: SampleRate = SampleRate::SR_44K1;
 
 pub fn timgm6mb() -> Arc<SoundFont> {
     let mut file = std::fs::File::open(tutti_fixtures::asset("soundfonts/TimGM6mb.sf2")).unwrap();
-    Arc::new(SoundFont::new(&mut file).unwrap())
+    Arc::new(SoundFont::from_reader(&mut file).unwrap())
 }
 
 pub use tutti_fixtures::midi::{m1, m2};
@@ -30,11 +30,11 @@ pub struct Rig {
 impl Rig {
     /// A unit at the default settings. Its dry pair is true silence once a voice stops: the effects are not in it.
     pub fn dry(font: &Arc<SoundFont>) -> Self {
-        let settings = Settings::new(RATE);
-        Self::with(font, &settings)
+        let settings = Settings::new();
+        Self::with(font, settings)
     }
 
-    pub fn with(font: &Arc<SoundFont>, settings: &Settings) -> Self {
+    pub fn with(font: &Arc<SoundFont>, settings: Settings) -> Self {
         Self {
             hand: Hand::new(SoundFontUnit::new(Arc::clone(font), settings).unwrap()),
         }

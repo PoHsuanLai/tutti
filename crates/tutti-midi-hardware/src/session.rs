@@ -42,7 +42,7 @@ use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
 use crate::stream::{DeviceStream, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo};
-use tutti_midi_runtime::{DeviceInlets, MidiOut};
+use tutti_midi_runtime::{DeviceInlets, MidiOut, Outgoing};
 use tutti_ump::StreamConfig;
 
 /// The set of open MIDI connections, and the endpoints available to open.
@@ -477,9 +477,16 @@ impl MidiSession {
     /// count names an unbroken **prefix** of `events`. Control-thread only: this
     /// takes a lock and the backends allocate per send.
     pub fn send(&self, events: &[UmpAt]) -> usize {
+        self.send_timed(&Outgoing::now_batch(events))
+    }
+
+    /// [`send`](Self::send) with a time for each event: the device is handed
+    /// each at its [`SendAt`](tutti_midi_runtime::SendAt) (the backend
+    /// schedules it natively), after the conversion to its wire form.
+    pub fn send_timed(&self, events: &[Outgoing]) -> usize {
         let open = self.inner.open();
         match open.output.as_ref() {
-            Some(out) => out.queue(events),
+            Some(out) => out.queue_timed(events),
             None => 0,
         }
     }
@@ -492,6 +499,10 @@ impl MidiSession {
 impl MidiOut for MidiSession {
     fn queue(&self, events: &[UmpAt]) -> usize {
         self.send(events)
+    }
+
+    fn queue_timed(&self, events: &[Outgoing]) -> usize {
+        self.send_timed(events)
     }
 }
 

@@ -13,6 +13,9 @@ mod device_listing;
 // `bevy-tutti`'s `engine::restart` tests), and the MIDI clock's re-rate.
 #[cfg(all(feature = "device", feature = "midi"))]
 mod device_midi_clock;
+// The hardware out is sent at the time of each event's frame.
+#[cfg(all(feature = "device", feature = "midi"))]
+mod device_midi_out_timing;
 #[cfg(feature = "device")]
 mod device_restart;
 // The recorder: its thread, and the pump over a tap and a decoded file.

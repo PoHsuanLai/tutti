@@ -20,3 +20,22 @@ fn a_stamp_after_the_reading_lands_on_it() {
     let clock = Duration::from_secs(5);
     assert_eq!(arrival(os, clock, clock + Duration::from_millis(1)), os);
 }
+
+// `departure` inverts `arrival`: an instant 30 ms after the reading is the
+// clock's reading plus 30 ms, 30 ms before it minus 30 ms, and the clock never
+// reads below zero.
+#[test]
+fn a_departure_is_the_clock_reading_at_the_instant() {
+    let os = Instant::now() + Duration::from_secs(10);
+    let clock = Duration::from_secs(5);
+    let ms = Duration::from_millis;
+    assert_eq!(departure(os, clock, os + ms(30)), Some(clock + ms(30)));
+    assert_eq!(departure(os, clock, os - ms(30)), Some(clock - ms(30)));
+    assert_eq!(departure(os, clock, os), Some(clock));
+    assert_eq!(departure(os, ms(10), os - ms(30)), Some(Duration::ZERO));
+    let stamped = clock - ms(30);
+    assert_eq!(
+        departure(os, clock, arrival(os, clock, stamped)),
+        Some(stamped)
+    );
+}

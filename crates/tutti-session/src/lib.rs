@@ -129,8 +129,8 @@ pub use key::{
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiLoad,
-    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, TakePlacement,
-    UmpOut, drain_receiver_through,
+    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, OutputTiming,
+    TakePlacement, UmpOut, drain_receiver_through,
 };
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;

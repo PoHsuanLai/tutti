@@ -3807,6 +3807,7 @@ dependencies = [
  "atomic_float",
  "criterion",
  "crossbeam-queue",
+ "serde",
  "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",

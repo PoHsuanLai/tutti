@@ -62,7 +62,7 @@
 //!
 //! - `contract` (off by default): the `contract` module, the cases a [`Family`] and
 //!   its [`Realized`] runner are held to, with `family_contract!` and
-//!   `realization_contract!`. Test support: enable it from a dev-dependency.
+//!   `recurrence_contract!`. Test support: enable it from a dev-dependency.
 //!
 //! ## Import paths
 //!

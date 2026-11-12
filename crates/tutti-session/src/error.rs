@@ -210,14 +210,8 @@ pub enum Error {
     )]
     TwoRouteDeclarers(&'static str),
 
-    /// Polyphonic-synth subsystem failure. Wraps `tutti_polysynth::Error`.
-    #[cfg(feature = "synth")]
-    #[error("Synth: {0}")]
-    Synth(#[from] tutti_polysynth::Error),
-
-    /// SoundFont subsystem failure. Wraps `tutti_soundfont::Error`; a
-    /// separate variant from `Synth` because the two are separate
-    /// crates with disjoint failure modes.
+    /// SoundFont subsystem failure. Wraps `tutti_soundfont::Error`. (The
+    /// polyphonic synth has none: a `PolySynth` is built infallibly.)
     #[cfg(feature = "soundfont")]
     #[error("SoundFont: {0}")]
     SoundFont(#[from] tutti_soundfont::Error),

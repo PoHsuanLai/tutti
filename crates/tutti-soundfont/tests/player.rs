@@ -4,14 +4,16 @@
 
 mod support;
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
-use support::rig::{RATE, Rig, timgm6mb};
-use tutti_ump::{Bank, CCNumber, U7, Voice2};
+use support::rig::{Rig, timgm6mb};
+use tutti_fixtures::sf2::generator;
+use tutti_ump::{Bank, CCNumber, MidiChannel, U7, Voice2};
 
+use tutti_fixtures::{RangeContract, check_range_contract};
+use tutti_graph::{Node, Prepare};
 use tutti_sf2::SoundFont;
-use tutti_soundfont::{Error, Settings, SoundFontUnit};
-use tutti_types::SampleRate;
+use tutti_soundfont::{Error, Polyphony, Settings, SoundFontUnit};
+use tutti_types::{MaxBlock, SampleRate, Samples};
 
 /// A unit at the default settings, whose dry pair is true silence once a voice
 /// stops.
@@ -19,24 +21,29 @@ fn dry() -> Rig {
     Rig::dry(&timgm6mb())
 }
 
-fn refused(settings: Settings) -> Error {
-    SoundFontUnit::new(timgm6mb(), &settings).unwrap_err()
+/// A unit prepared by a graph at `rate`, the way `Node::prepare` re-rates it.
+fn prepared_at(rate: SampleRate) -> SoundFontUnit {
+    let mut unit = SoundFontUnit::new(timgm6mb(), Settings::new()).unwrap();
+    unit.prepare(&Prepare::new(rate, MaxBlock::of(Samples(64))));
+    unit
 }
 
 #[test]
-fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
-    for hz in [15_999_u32, 192_001] {
+fn a_graph_re_rates_the_unit_within_16_to_192_khz_and_leaves_it_outside() {
+    let initial = SoundFontUnit::new(timgm6mb(), Settings::new())
+        .unwrap()
+        .sample_rate();
+    for hz in [16_000_u32, 48_000, 192_000] {
         let rate = SampleRate::from(hz);
-        let error = refused(Settings::new(rate));
-        assert!(matches!(error, Error::SampleRateOutOfRange(r) if r == rate));
+        assert_eq!(prepared_at(rate).sample_rate(), rate, "{hz} Hz");
     }
-    for hz in [16_000_u32, 192_000] {
-        let settings = Settings::new(SampleRate::from(hz));
-        assert!(SoundFontUnit::new(timgm6mb(), &settings).is_ok());
+    for hz in [15_999_u32, 192_001] {
+        let unit = prepared_at(SampleRate::from(hz));
+        assert_eq!(unit.sample_rate(), initial, "{hz} Hz is left alone");
     }
 }
 
-// The polyphony is a count of voices that cannot be zero (`NonZeroUsize`), and
+// The polyphony is a count of voices that cannot be zero (`Polyphony`), and
 // one voice is enough: a second note takes the first's place, so two notes
 // sound at the power of one, where a pool of two sounds both (two sines an
 // octave apart add in power, twice the one).
@@ -44,8 +51,8 @@ fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
 fn a_pool_of_one_voice_gives_way_to_the_next_note() {
     let font = support::font::one_preset(vec![vec![]]);
     let level = |voices: usize| {
-        let settings = Settings::new(RATE).with_polyphony(NonZeroUsize::new(voices).unwrap());
-        let mut rig = Rig::with(&font, &settings);
+        let settings = Settings::new().with_polyphony(Polyphony::of(voices));
+        let mut rig = Rig::with(&font, settings);
         rig.note_on(0, 60, 100);
         rig.energy(4096);
         rig.note_on(0, 72, 100);
@@ -62,32 +69,141 @@ fn a_pool_of_one_voice_gives_way_to_the_next_note() {
     );
 }
 
-// A count of voices past `Settings::MAX_POLYPHONY` is refused with its value
-// instead of panicking in the pool's allocation (`usize::MAX` overflows it);
-// the maximum itself and one voice build.
+// A count of voices past `Polyphony::MAX` is not a polyphony (`usize::MAX` would
+// overflow the pool's allocation); the maximum itself and one voice build.
 #[test]
 fn a_polyphony_past_the_maximum_is_refused_and_the_maximum_builds() {
-    let at = |voices: usize| Settings::new(RATE).with_polyphony(NonZeroUsize::new(voices).unwrap());
-    assert!(SoundFontUnit::new(timgm6mb(), &at(1)).is_ok());
-    assert!(SoundFontUnit::new(timgm6mb(), &at(Settings::MAX_POLYPHONY)).is_ok());
-    for too_many in [Settings::MAX_POLYPHONY + 1, usize::MAX] {
-        assert!(
-            matches!(refused(at(too_many)), Error::PolyphonyOutOfRange(n) if n == too_many),
-            "{too_many}"
+    let at = |voices: usize| Settings::new().with_polyphony(Polyphony::of(voices));
+    assert!(SoundFontUnit::new(timgm6mb(), at(1)).is_ok());
+    assert!(SoundFontUnit::new(timgm6mb(), at(Polyphony::MAX)).is_ok());
+    for too_many in [Polyphony::MAX + 1, usize::MAX] {
+        assert_eq!(Polyphony::new(too_many), None, "{too_many}");
+        assert_eq!(
+            Polyphony::try_from(too_many).unwrap_err().to_string(),
+            format!("the polyphony must be between 1 and 4096 voices, but was {too_many}")
         );
     }
 }
 
+/// `Polyphony` keeps the range-checked shape of CLAUDE.md: `new` refuses and
+/// never clamps, `TryFrom` agrees and carries the refused raw, `of` panics.
+/// The checked shape is serde's, which the type has none of in the library:
+/// the check runs on the same `try_from` shape written here.
 #[test]
-fn the_error_names_the_value_it_refused() {
-    let message = refused(Settings::new(SampleRate::from(8_000))).to_string();
-    assert!(message.contains("8000"), "{message}");
+fn a_polyphony_keeps_the_range_checked_shape() {
+    use serde::{Deserialize, Serialize};
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Checked(Polyphony);
+    impl Serialize for Checked {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            self.0.get().serialize(s)
+        }
+    }
+    impl<'de> Deserialize<'de> for Checked {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            let raw = usize::deserialize(d)?;
+            Polyphony::try_from(raw)
+                .map(Checked)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+    impl TryFrom<usize> for Checked {
+        type Error = tutti_soundfont::PolyphonyError;
+        fn try_from(raw: usize) -> Result<Self, Self::Error> {
+            Polyphony::try_from(raw).map(Checked)
+        }
+    }
+    impl From<Checked> for usize {
+        fn from(c: Checked) -> usize {
+            c.0.get()
+        }
+    }
+    check_range_contract(&RangeContract {
+        new: |raw| Polyphony::new(raw).map(Checked),
+        get: |c| c.0.get(),
+        of: Some(|raw| Checked(Polyphony::of(raw))),
+        valid: &[1, 64, Polyphony::MAX],
+        invalid: &[0, Polyphony::MAX + 1, usize::MAX],
+    });
 }
 
 #[test]
-fn the_rate_is_whole_hertz() {
-    let unit = SoundFontUnit::new(timgm6mb(), &Settings::new(SampleRate(44_100.4)));
-    assert_eq!(unit.unwrap().sample_rate(), RATE);
+fn a_unit_prepared_at_a_fractional_rate_renders_at_whole_hertz() {
+    let unit = prepared_at(SampleRate(48_000.4));
+    assert_eq!(unit.sample_rate(), SampleRate(48_000.0));
+}
+
+/// A font of three presets that differ in pitch: `0:0` plays the sine at key
+/// 69 (441 Hz), `2:40` and the percussion bank's `128:0` play it an octave up.
+fn octave_font() -> Arc<SoundFont> {
+    use support::font::{Inst, Preset, font};
+    let preset = |name, bank, program, instrument| Preset {
+        name,
+        bank,
+        program,
+        zones: vec![(vec![], instrument)],
+    };
+    font(
+        &[
+            preset("low", 0, 0, 0),
+            preset("high", 2, 40, 1),
+            preset("drums", 128, 0, 1),
+            // A bank that is not MIDI's (SF2 2.04 section 7.2).
+            preset("unplayable", 129, 0, 1),
+        ],
+        &[
+            Inst {
+                name: "plain",
+                zones: vec![vec![]],
+            },
+            Inst {
+                name: "octave",
+                zones: vec![vec![(generator::COARSE_TUNE, 12)]],
+            },
+        ],
+    )
+}
+
+/// The rising zero crossings in a second of key 69 on channel 0 of `rig`: the
+/// pitch in Hz, as the built sine's 441 Hz or an octave above it.
+fn pitch_of_key_69(rig: &mut Rig) -> usize {
+    rig.note_on(0, 69, 100);
+    let (left, _) = rig.render(44_100);
+    left.windows(2)
+        .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+        .count()
+}
+
+/// `select` applies the preset's bank and its program, as a Bank Select and a
+/// Program Change would: a preset of bank 2 and one of the percussion bank
+/// sound as themselves, and a preset that is not MIDI's is refused and leaves
+/// the channel where it was.
+#[test]
+fn select_applies_a_presets_bank_and_program() {
+    let font = octave_font();
+    let low = pitch_of_key_69(&mut Rig::dry(&font));
+    assert!(
+        (low as i64 - 441).abs() <= 2,
+        "the default is the low preset: {low}"
+    );
+    for (index, name) in [(1, "bank 2, program 40"), (2, "the percussion bank")] {
+        let mut rig = Rig::dry(&font);
+        rig.hand
+            .select(MidiChannel::FIRST, &font.presets()[index])
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let high = pitch_of_key_69(&mut rig);
+        assert!(
+            (high as i64 - 882).abs() <= 3,
+            "{name} plays an octave up: {high}"
+        );
+    }
+    let mut rig = Rig::dry(&font);
+    let refused = rig.hand.select(MidiChannel::FIRST, &font.presets()[3]);
+    assert!(
+        matches!(refused, Err(Error::UnplayablePreset)),
+        "{refused:?}"
+    );
+    assert_eq!(pitch_of_key_69(&mut rig), low, "the channel is unchanged");
 }
 
 #[test]
@@ -727,7 +843,7 @@ fn a_font_with_nothing_playable_is_refused() {
             zones: vec![vec![]],
         }],
     );
-    let error = SoundFontUnit::new(font, &Settings::new(RATE)).unwrap_err();
+    let error = SoundFontUnit::new(font, Settings::new()).unwrap_err();
     assert!(matches!(error, Error::NoPlayablePreset), "{error:?}");
 }
 

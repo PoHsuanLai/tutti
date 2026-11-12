@@ -146,7 +146,7 @@ fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
             seed: 0,
         },
         amount: Amount {
-            depth: Depth(0.25),
+            depth: Depth::of(0.25),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },
@@ -231,7 +231,7 @@ fn render_chorus(
             },
             wave: Wave::Const(1.0),
             amount: Amount {
-                depth: Depth(depth),
+                depth: Depth::of(depth),
                 polarity: Polarity::Bipolar,
                 curve: Law::Linear,
             },
@@ -351,7 +351,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let lfo = LfoNode::new(LfoShape::Sine)
         .with_frequency(Hz(1.0))
-        .with_depth(Depth(0.25));
+        .with_depth(Depth::of(0.25));
     let (n, params) = g.add_with_controls(lfo);
     g.connect_output(n, 0, 0);
     let at = ParamIn {
@@ -375,7 +375,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
         },
         wave: Wave::Const(1.0),
         amount: Amount {
-            depth: Depth(depth),
+            depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },
@@ -478,7 +478,7 @@ where
         },
         wave: Wave::Const(1.0),
         amount: Amount {
-            depth: Depth(depth),
+            depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
             curve: Law::Linear,
         },
@@ -558,7 +558,7 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
 /// depth port, ranged `-8..=8`, drives it to 8 and, separately, to −7.5. Past
 /// 1 the sweep would cross Nyquist and below 0 it would go below 0 Hz;
 /// either puts the all-pass coefficient outside `-1..=1`, where the stages
-/// diverge. Clamped (`Depth::new_clamped` on the depth, the sweep held
+/// diverge. Clamped (`Depth::clamped` on the depth, the sweep held
 /// inside `1 Hz..0.49 sr`) the output stays bounded by what the input and a
 /// 0.5 feedback can make.
 ///
@@ -591,7 +591,7 @@ fn a_phaser_driven_past_its_depth_range_stays_stable() {
     }
     let phaser_at = |knob: f32, depth: f32| {
         let n = PhaserNode::with_channels(ChannelLayout::MONO, 4);
-        n.set_depth(Depth::new(knob));
+        n.set_depth(Depth::clamped(knob));
         render_driven(
             n,
             UnitParam::Depth,

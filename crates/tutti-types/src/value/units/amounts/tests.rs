@@ -6,7 +6,7 @@ use super::*;
 ///
 /// - `Mix + Mix`, `Mix * f32` — a blend *position* does
 ///   not compose or scale; half of a crossfade point is not a crossfade
-///   point. (`Depth` *is* additive and scalable — that is the difference
+///   point. (`Depth` has a sign, and its own range check — that is the difference
 ///   between a position and a signed magnitude.)
 /// - `Feedback * f32` — scaling walks a coefficient across the stability
 ///   bound unchecked. `new_clamped` / `stable_pair` are the ways in.
@@ -70,11 +70,35 @@ fn cross_coupled_feedback_is_bounded_as_a_pair() {
 #[test]
 fn depth_is_signed_because_inversion_is_the_point() {
     assert_eq!(-Depth::FULL, Depth::INVERTED);
-    assert_eq!(Depth::new_clamped(-2.0), Depth::INVERTED);
-    assert_eq!(Depth::new_clamped(2.0), Depth::FULL);
-    // Additive and scalable, unlike `Mix` and `Feedback`.
-    assert_eq!(Depth(0.25) + Depth(0.25), Depth(0.5));
-    assert_eq!(Depth::FULL * 0.5, Depth(0.5));
+    assert_eq!(Depth::clamped(-2.0), Depth::INVERTED);
+    assert_eq!(Depth::clamped(2.0), Depth::FULL);
+}
+
+/// A depth is within `-1..=1`: `new`, `TryFrom`, `of` and serde agree, and
+/// NaN and the infinities are refused. (Serde is a feature here; a workspace
+/// run turns it on through the crates that persist units.)
+#[cfg(feature = "serde")]
+#[test]
+fn depth_keeps_the_range_contract() {
+    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        new: Depth::new,
+        get: Depth::get,
+        of: Some(Depth::of),
+        valid: &[-1.0, -0.5, 0.0, 0.25, 1.0],
+        invalid: &[-1.001, 1.001, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+    });
+}
+
+/// The one saturating constructor maps NaN to `NONE`, and `Unit::from_raw`
+/// (a parameter cell's read) is it: a cell can hold any float and a `Depth`
+/// never leaves its range.
+#[test]
+fn depth_saturates_only_by_name_and_through_a_cell() {
+    assert_eq!(Depth::clamped(f32::NAN), Depth::NONE);
+    assert_eq!(Depth::clamped(f32::INFINITY), Depth::FULL);
+    assert_eq!(Depth::clamped(f32::NEG_INFINITY), Depth::INVERTED);
+    assert_eq!(<Depth as Unit>::from_raw(9.0), Depth::FULL);
+    assert_eq!(<Depth as Unit>::from_raw(-0.5).get(), -0.5);
 }
 
 #[test]
@@ -125,4 +149,21 @@ fn stable_pair_keeps_the_ratio_and_survives_infinity() {
     let (d, c) = Feedback::stable_pair(f32::NAN, 2.0);
     assert!(d.get().is_nan());
     assert_eq!(c, Feedback::MAX_STABLE);
+}
+
+/// Without serde the same refusals hold through `new`, `TryFrom` and `of`.
+#[test]
+fn depth_refuses_what_is_outside_minus_one_to_one() {
+    for bad in [-1.001, 1.001, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(Depth::new(bad), None, "{bad}");
+        assert!(Depth::try_from(bad).is_err(), "{bad}");
+        assert!(
+            std::panic::catch_unwind(|| Depth::of(bad)).is_err(),
+            "{bad}"
+        );
+    }
+    for ok in [-1.0, -0.0, 0.0, 0.5, 1.0] {
+        assert_eq!(Depth::new(ok).map(Depth::get), Some(ok));
+        assert_eq!(f32::from(Depth::try_from(ok).unwrap()), ok);
+    }
 }

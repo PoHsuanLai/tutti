@@ -9,12 +9,8 @@
 //!   [`OscillatorType`], [`FilterType`] and [`SvfMode`], [`Adsr`]
 //!   and [`FilterModConfig`].
 //! - Voice allocation: [`VoiceMode`] and [`AllocationStrategy`].
-//! - [`UnisonConfig`], [`PortamentoConfig`] (with [`PortamentoMode`] and
+//! - [`UnisonConfig`] (with [`UnisonVoices`]), [`PortamentoConfig`] (with [`PortamentoMode`] and
 //!   the `tutti_curve::Law` of its `curve`) and [`Tuning`].
-//! - [`enum@Error`] and [`Result`]: what construction can fail with.
-
-mod error;
-pub use error::{Error, Result};
 
 mod note_id;
 mod voice;
@@ -28,8 +24,8 @@ pub use voice::{AllocationStrategy, VoiceMode};
 mod unison;
 pub(crate) use unison::UnisonEngine;
 pub(crate) use unison::UnisonVoiceParams;
-// Public: `UnisonConfig` appears in `SynthConfig`.
-pub use unison::UnisonConfig;
+// Public: `UnisonConfig` appears in `SynthConfig`, and its count is `UnisonVoices`.
+pub use unison::{UnisonConfig, UnisonVoices, UnisonVoicesError};
 
 mod portamento;
 pub(crate) use portamento::Portamento;

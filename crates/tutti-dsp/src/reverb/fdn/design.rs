@@ -93,7 +93,7 @@ impl FdnControls {
         size: Mix(0.5),
         diffusion: Mix(0.8),
         pre_delay: Seconds(0.0),
-        modulation: Depth(0.3),
+        modulation: Depth::of(0.3),
         rate: Hz(0.5),
         width: StereoWidth::NATURAL,
         wet: Db(0.0),
@@ -377,7 +377,7 @@ impl Grows for FdnFamily {
             size: Mix(1.0),
             diffusion: Mix(1.0),
             pre_delay: MAX_PRE_DELAY,
-            modulation: Depth(1.0),
+            modulation: Depth::of(1.0),
             freeze: false,
             ..FdnControls::DEFAULT
         };

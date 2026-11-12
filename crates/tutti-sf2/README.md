@@ -19,13 +19,13 @@ pitch correction `Cents`. A preset's bank is a `Bank` (a MIDI bank 0 to 127, or
 percussion) and its program a `U7`; a preset whose file values are neither
 cannot be played but is kept, as the specification says (section 7.2), and
 reports `None`. An exclusive class is an `Option<NonZeroU8>`: `None` is class 0.
-The crate's failure type is `Error`, with a `Result` alias.
+`SoundFont::open` reads a path and `SoundFont::from_reader` any `Read`. The
+crate's failure type is `Error`, with a `Result` alias.
 
 ```no_run
-use std::fs::File;
 use tutti_sf2::SoundFont;
 
-let soundfont = SoundFont::new(&mut File::open("piano.sf2")?)?;
+let soundfont = SoundFont::open("piano.sf2")?;
 for preset in soundfont.presets() {
     if let (Some(bank), Some(patch)) = (preset.bank(), preset.patch()) {
         println!("{bank}:{} {}", patch.get(), preset.name());

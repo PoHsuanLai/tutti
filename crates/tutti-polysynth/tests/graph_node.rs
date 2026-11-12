@@ -22,7 +22,6 @@ const BLOCK: usize = 256;
 
 fn saw() -> PolySynth {
     PolySynth::new(SynthConfig {
-        sample_rate: SampleRate(RATE),
         oscillator: OscillatorType::Saw,
         envelope: Adsr {
             attack: Seconds(0.0),
@@ -30,7 +29,6 @@ fn saw() -> PolySynth {
         },
         ..Default::default()
     })
-    .expect("synth builds")
 }
 
 fn note_on_at(frame: u64) -> TimedMidiEvent {

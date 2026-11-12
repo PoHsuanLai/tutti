@@ -18,6 +18,8 @@ use tutti_graph::ForkByClone;
 use tutti_modulation::Lfo;
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{MultibandCompressorNode, MultibandControls};
+#[cfg(feature = "modulation")]
+use tutti_session::RouteSpec;
 use tutti_session::{InPort, Key, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -230,15 +232,19 @@ fn the_meter_of_band_1_follows_its_threshold() {
 fn a_route_to_band_1_modulates_band_1_only() {
     let (mut s, mb, _) = rig();
     let band1 = mb.gain_db_at(1);
-    let mut m = s.mods();
+    let mut m = s.mods_mut();
     m.range(band1, Db(-24.0)..Db(24.0)).unwrap();
     let lfo = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    m.route(lfo, band1, Depth(0.25)).unwrap();
+    m.route(RouteSpec::new(lfo, band1, Depth::of(0.25)))
+        .unwrap();
     for _ in 0..4 {
         let _ = s.update();
     }
-    assert_eq!(s.mod_state().refusal(), None, "the declarations apply");
-    assert_eq!(s.mod_state().unresolved_targets(), &[], "and resolve");
+    assert_eq!(
+        s.mod_state().problems().next(),
+        None,
+        "the declarations apply"
+    );
 
     // 120 BPM: one cycle per half beat is 4 Hz. Past the declick and the
     // make-up ramp's first blocks.

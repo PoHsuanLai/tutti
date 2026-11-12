@@ -29,7 +29,7 @@ use tutti_session::{
 };
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
-use tutti_types::{Beat, Bpm, SampleRate, Seconds};
+use tutti_types::{Beat, Bpm, SampleRate, Samples, Seconds};
 
 const RATE: f64 = 48_000.0;
 
@@ -408,7 +408,7 @@ fn live_disk_playback_is_untouched_while_its_voice_exports() {
                     None,
                 ));
                 live.render(BLOCK, BLOCK, &mut block);
-                live_clock.advance(BLOCK);
+                live_clock.advance(Samples(BLOCK));
                 heard.extend_from_slice(&block[0]);
                 assert!(heard.len() < len, "the live side ran out of file first");
                 if heard.len() > SETTLED {

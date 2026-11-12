@@ -905,7 +905,7 @@ open:
   duplicate key (`DuplicateSource`, `DuplicateRoute`, `DuplicateTarget`); a
   route naming an undeclared source, route or target (`UnknownSource`,
   `UnknownRoute`, `UndeclaredTarget`); a source or route outside its domain
-  (`BadSource`, `BadRoute`); an LFO declared with an anchor
+  (`BadSource`; a route's `Depth` is range-checked, so it has no refusal); an LFO declared with an anchor
   (`AnchorDeclared`); a depth route from or to a signal source
   (`DepthBySignal`); two depth routes to one route (`TwoDepthBy`); a
   `LayerId` collision (`LayerIdCollision`). The cycle refusal is the
@@ -1039,6 +1039,24 @@ unresolved until they land). The old driver is in
 `modulation::legacy`, unscheduled (`LegacyModulationPlugin`), and
 `plugin_bind_params` is no longer scheduled.
 
+*Since doc 030 step 4* the session's own declarations and its reports have
+one surface each. `Session::mods()` reads them (`ModsView`: `routes()`,
+`routes_to(target)`, `sources()`) and `mods_mut()` edits (`Mods`); a source
+and a route are named by `ModSourceId` and `ModRouteId`, which `Mods` mints
+and nothing builds (`SourceKey` and `RouteKey` stay the compiler's
+vocabulary and a host's own minting, in `ModInput`); a route is declared by
+a `RouteSpec` (source, target, depth, then `polarity` and `curve`) and edited
+by `route_of(id)?`'s setters. Why nothing modulates is one list,
+`ModState::problems()`, of one type, `Problem`: `Refused` (the
+`ModRefusal` above and the target it names), `Unresolved` (a target, how
+long it has waited) and `Unfed` (a follower). Its `Display` names the node
+and the param (`Cutoff of node 3`); for a host's declarations, which only
+the host can read, it names the host's key. The event is the same value
+(`SessionEvent::Modulation(Problem)`), sent when a refusal starts or
+changes and when a target passes the unresolved warning. `ModState::refusal`,
+`unresolved_targets` and `unresolved_sources`, `SessionEvent::ModulationRefused`
+and `ModulationUnresolved` are gone.
+
 **A steady frame costs a comparison.** The host applies every frame, and
 most frames change nothing. `Modulation::apply` keeps every input of its
 last kept apply (`Memo`, in `reconcile.rs`, which lists them): the
@@ -1051,7 +1069,7 @@ sent, param ranges and cells, the `Prepare`) and the play clock's epoch
 returns at once, counted by `Modulation::skipped`, with no compile, cycle
 check or diff. Nothing is kept while a target or source is unresolved, so
 the re-apply after a commit still runs. The session keeps its own
-declarations built (`OwnMods`) until an edit through `Session::mods`;
+declarations built (`OwnMods`) until an edit through `Session::mods_mut`;
 `bevy-tutti` keeps the declarations it collected (`modulation::Kept`) and
 collects again only when `note_declaration_changes`, which runs every
 frame whether or not the engine is ready, saw a declaring component

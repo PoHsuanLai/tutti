@@ -21,8 +21,6 @@ pub use capacity::Capacity;
 pub use family::{Channels, Family, Grows};
 pub use lti::Lti;
 pub use reach::{Domain, MaxDecay, MaxDecayError, Reach, TAIL_FLOOR};
-#[cfg(test)]
-pub(crate) use realized::Flaw;
 pub use realized::{Approach, Glide, Lerp, Realized, Recurrence, Start, Steps};
 pub use setup::{Effort, Setup};
 pub use system::{Ring, System};

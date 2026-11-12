@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn the_sweep_runs_from_min_to_max_by_lfo_and_depth() {
         let (lo, hi) = (Hz(200.0), Hz(4_000.0));
-        let at = |lfo: f32, depth: f32| sweep_hz(lo, hi, lfo, Depth(depth)).get();
+        let at = |lfo: f32, depth: f32| sweep_hz(lo, hi, lfo, Depth::of(depth)).get();
         // Depth 1: the whole range.
         assert_eq!(at(-1.0, 1.0), 200.0);
         assert_eq!(at(0.0, 1.0), 2_100.0);
@@ -98,6 +98,6 @@ mod tests {
     #[test]
     fn an_empty_range_is_a_fixed_frequency() {
         let f = Hz(440.0);
-        assert_eq!(sweep_hz(f, f, 0.7, Depth(1.0)).get(), 440.0);
+        assert_eq!(sweep_hz(f, f, 0.7, Depth::of(1.0)).get(), 440.0);
     }
 }

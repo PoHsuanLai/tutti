@@ -5,7 +5,7 @@ use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds};
 
 use super::core::{check_vacuity, every};
 use super::harness::{Burst, WINDOW, built, burst, energy, noise, rate_of, render, rms, widths};
-use super::{Hook, RealizationCase, ReverbCase};
+use super::{Hook, RecurrenceCase, ReverbCase};
 use crate::{Absorption, Band, Lti, Network, NetworkCapacity, Ring, Stage, System};
 
 fn close(a: f32, b: f32, relative: f32) -> bool {
@@ -426,7 +426,7 @@ pub(super) mod realization {
     /// A tone burst in each band, stopped; the energy decay after it has the RT60
     /// the network's `rt60(band)` says, within the realization's tolerance (measured
     /// from 40 to 65 dB down, where the slowest line governs).
-    pub fn rt60<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn rt60<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut measured = 0;
@@ -461,7 +461,7 @@ pub(super) mod realization {
     /// The measured bands fall in the order the network gives them: for every pair
     /// of bands whose network RT60s differ by more than twice the tolerance, the
     /// measured ones are ordered alike (and differ by more than the tolerance).
-    pub fn band_order<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn band_order<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let tol = d.tolerance();
         let mut ordered = 0;
@@ -503,7 +503,7 @@ pub(super) mod realization {
     /// The realization is wet only: with noise in from the first frame, every output
     /// channel is exactly zero until the network's shortest path has been
     /// travelled, so none of the input reaches the output.
-    pub fn wet_only<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn wet_only<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         if !d.wet_only() {
             return Ok(());
         }
@@ -530,7 +530,7 @@ pub(super) mod realization {
     /// A stereo output is decorrelated: the zero-lag correlation of the two
     /// channels' response to noise stays under 0.3. A design with one output
     /// channel has nothing to say.
-    pub fn decorrelated<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn decorrelated<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let (_, outputs) = widths(d);
         if outputs < 2 {
             return Ok(());
@@ -563,7 +563,7 @@ pub(super) mod realization {
     /// chain of four passes the first sample at full size). Pins every line
     /// length, not only the shortest that `arrival` finds. Vacuous (an error) for
     /// a network of another shape.
-    pub fn line_lengths<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn line_lengths<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         use crate::reverb::network::Stage;
         let rate = rate_of(d);
         let mut checked = 0;
@@ -629,7 +629,7 @@ pub(super) mod realization {
     /// A pre-delay moves the first sound by exactly its frames, and `latency()`
     /// stays what it was: pre-delay is part of the wet sound, never latency.
     /// Vacuous for a design with no pre-delay control.
-    pub fn pre_delay<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn pre_delay<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (without, with, by) in d.pre_delay_pairs() {
             let (a, b) = (first_sound(d, &without, rate), first_sound(d, &with, rate));
@@ -648,7 +648,7 @@ pub(super) mod realization {
 
     /// A larger room sounds later: the first sound of `b` is after `a`'s.
     /// Vacuous for a design with no size control.
-    pub fn size<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn size<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         for (a, b) in d.size_pairs() {
             let (fa, fb) = (first_sound(d, &a, rate), first_sound(d, &b, rate));
@@ -662,7 +662,7 @@ pub(super) mod realization {
     /// More diffusion measures denser: in the window from 0.15 to 0.3 s of an
     /// impulse's response the denser controls fill at least 0.15 more of the
     /// frames. Vacuous for a design with no diffusion control.
-    pub fn diffusion<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn diffusion<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let (from, to) = ((0.15 * rate.get()) as usize, (0.3 * rate.get()) as usize);
         let mut x = vec![0.0f32; to + 1];
@@ -686,7 +686,7 @@ pub(super) mod realization {
     /// the lines, then the freeze; a second later the level is `L`, nine seconds
     /// later it is within 0.25 dB of it, and a second of loud noise on top
     /// leaves it there. Vacuous for a design that cannot freeze.
-    pub fn freeze<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn freeze<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let second = rate.get() as usize;
         let level = |out: &[Vec<f32>], from: usize| 10.0 * energy(out, from, second / 5).log10();
@@ -719,7 +719,7 @@ pub(super) mod realization {
     /// Width: at its natural setting the channels are decorrelated and at none
     /// they are one (correlation over 0.999). Vacuous for a design with no width
     /// control.
-    pub fn width<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn width<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let corr = |c: &D::Controls| -> f64 {
             let (mut k, _) = built(d, c, rate);
@@ -749,7 +749,7 @@ pub(super) mod realization {
     /// The wet gain scales the sound: `b` is `a` at `ratio` times the level to
     /// 2%, and exactly silent when the ratio is 0. Vacuous for a design with no
     /// wet gain.
-    pub fn wet_gain<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn wet_gain<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         let rate = rate_of(d);
         let x = noise(12, 1 << 14, 1.0);
         for (a, b, ratio) in d.wet_pairs() {
@@ -773,7 +773,7 @@ pub(super) mod realization {
 
     /// The reverb hooks of the realization level return something, or the design
     /// says why they cannot.
-    pub fn reverb_vacuity<D: ReverbCase + RealizationCase>(d: &D) -> Result<(), String> {
+    pub fn reverb_vacuity<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
         check_vacuity(
             d.vacant(),
             &[
@@ -786,7 +786,7 @@ pub(super) mod realization {
 
     /// The first frame any channel sounds for a unit impulse at frame 0 of the
     /// network `c` designs, in `frames`.
-    fn first_sound<D: RealizationCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize> {
+    fn first_sound<D: RecurrenceCase>(d: &D, c: &D::Controls, rate: SampleRate) -> Option<usize> {
         let (mut k, network) = built(d, c, rate);
         let frames = d.musical_delay(&network) + 4000;
         let mut x = vec![0.0f32; frames];

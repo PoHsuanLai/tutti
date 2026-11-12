@@ -14,6 +14,8 @@
 //! `Mix(-3.0)` build through the public field and `new`. The range a
 //! type documents is what its named constructors and methods produce
 //! (`new_clamped`, `wrapped`, `wrap`), not what a hand-built value holds.
+//! The exceptions are hand-written to the range-checked shape (`new` returns
+//! an `Option`): [`Bpm`] and [`Depth`], which no hand-built value leaves.
 //!
 //! # Non-finite input
 //!
@@ -70,7 +72,7 @@ mod transport;
 // `samples.rs`; the families name it through this import.
 use super::samples::Samples;
 
-pub use amounts::{Depth, Drive, Feedback, Mix, Spread, StereoWidth};
+pub use amounts::{Depth, DepthOutOfRange, Drive, Feedback, Mix, Spread, StereoWidth};
 pub use angles::{ArcDegrees, Azimuth, Direction, Elevation, Phase, PhaseIncrement, Radians};
 pub use level::{Amplitude, Db};
 pub use measures::{Confidence, Correlation, Pan, Velocity};

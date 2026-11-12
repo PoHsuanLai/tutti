@@ -6,24 +6,106 @@
 //! and spread are recomputed only when they change, so the audio thread does an
 //! array index rather than the trigonometry.
 
-use std::sync::Arc;
-use tutti_types::{Amplitude, AtomicF32, Cents, Pan, Param, Phase, Spread};
+use core::fmt;
+use tutti_types::{Amplitude, Cents, Pan, Param, Phase, Spread};
 
-pub(crate) const MAX_UNISON_VOICES: usize = 16;
+pub(crate) const MAX_UNISON_VOICES: usize = UnisonVoices::MAX as usize;
+
+/// How many detuned sub-voices stack on one note: 1 to [`MAX`](Self::MAX).
+///
+/// `1` is plain unison-off. `new` refuses and never clamps; `of` is for a
+/// literal or a constant. Even counts have no centre voice, so the written
+/// pitch is not itself sounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UnisonVoices(u8);
+
+impl UnisonVoices {
+    /// The most sub-voices per note: the stack is sized for it, so nothing
+    /// allocates on the audio thread.
+    pub const MAX: u8 = 16;
+    /// One sub-voice: no stack.
+    pub const ONE: Self = Self(1);
+
+    /// `count` sub-voices, or `None` for none or more than [`MAX`](Self::MAX).
+    #[must_use]
+    pub const fn new(count: u8) -> Option<Self> {
+        if count == 0 || count > Self::MAX {
+            None
+        } else {
+            Some(Self(count))
+        }
+    }
+
+    /// `count` sub-voices, for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is 0 or more than [`MAX`](Self::MAX).
+    #[must_use]
+    pub const fn of(count: u8) -> Self {
+        match Self::new(count) {
+            Some(voices) => voices,
+            None => panic!("a unison stack is 1 to 16 sub-voices"),
+        }
+    }
+
+    /// The number of sub-voices.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for UnisonVoices {
+    fn default() -> Self {
+        Self::ONE
+    }
+}
+
+/// The refused count of [`UnisonVoices`]'s `TryFrom<u8>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnisonVoicesError(pub u8);
+
+impl fmt::Display for UnisonVoicesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "a unison stack is 1 to {} sub-voices, but was {}",
+            UnisonVoices::MAX,
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnisonVoicesError {}
+
+impl TryFrom<u8> for UnisonVoices {
+    type Error = UnisonVoicesError;
+
+    fn try_from(count: u8) -> Result<Self, UnisonVoicesError> {
+        Self::new(count).ok_or(UnisonVoicesError(count))
+    }
+}
+
+impl From<UnisonVoices> for u8 {
+    fn from(voices: UnisonVoices) -> u8 {
+        voices.0
+    }
+}
 
 /// Stacked, detuned copies of a single note — the "supersaw" thickener.
 ///
 /// Every field here multiplies the cost of *each* voice: a synth with
-/// `max_voices: 8` and `voice_count: 7` runs 56 oscillator lanes. The
+/// `polyphony: 8` and `voice_count: 7` runs 56 oscillator lanes. The
 /// sub-voices are summed to a constant-power total, so raising
 /// [`voice_count`](Self::voice_count) thickens the tone without raising the
 /// level.
 #[derive(Debug, Clone)]
 pub struct UnisonConfig {
-    /// Sub-voices per note, 1..=16 (clamped, not rejected). `1` is plain
-    /// unison-off and the default. Even counts have no centre voice, so the
-    /// written pitch is not itself sounded.
-    pub voice_count: u8,
+    /// Sub-voices per note, 1..=16. `1` is plain unison-off and the default.
+    /// Even counts have no centre voice, so the written pitch is not itself
+    /// sounded.
+    pub voice_count: UnisonVoices,
     /// Detune amount in [`Cents`], applied symmetrically: sub-voices are spaced
     /// evenly over ±this value, so the outermost pair sits `2 * detune_cents`
     /// apart and the centre (odd counts only) stays at the written pitch.
@@ -48,7 +130,7 @@ pub struct UnisonConfig {
 impl Default for UnisonConfig {
     fn default() -> Self {
         Self {
-            voice_count: 1,
+            voice_count: UnisonVoices::ONE,
             detune_cents: Cents(0.0),
             stereo_spread: Spread::POINT,
             phase_randomize: false,
@@ -123,16 +205,6 @@ impl UnisonEngine {
         &self.spread
     }
 
-    /// The shared detune atomic (cents), for control-rate modulation.
-    pub fn detune_atomic(&self) -> Arc<AtomicF32> {
-        self.detune.as_atomic()
-    }
-
-    /// The shared stereo-spread atomic (0..1), for control-rate modulation.
-    pub fn spread_atomic(&self) -> Arc<AtomicF32> {
-        self.spread.as_atomic()
-    }
-
     /// Folds any change to the detune/spread atomics back into
     /// `config` and recompute per-voice params. Called once per block. Cheap
     /// when nothing moved (compares against the current config first).
@@ -164,7 +236,7 @@ impl UnisonEngine {
     }
 
     pub fn recompute_params(&mut self) {
-        let count = usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES);
+        let count = usize::from(self.config.voice_count.get());
 
         let amplitude = Amplitude(1.0 / (count as f32).sqrt());
         // A converter, not a divide: `Cents` is `Scalable`, so
@@ -215,7 +287,7 @@ impl UnisonEngine {
             return self.all_params();
         }
 
-        let count = usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES);
+        let count = usize::from(self.config.voice_count.get());
 
         for i in 0..count {
             self.rng_state ^= self.rng_state << 13;
@@ -229,7 +301,7 @@ impl UnisonEngine {
 
     #[inline]
     pub fn voice_count(&self) -> usize {
-        usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES)
+        usize::from(self.config.voice_count.get())
     }
 
     #[inline]
@@ -253,8 +325,8 @@ impl UnisonEngine {
         &self.config
     }
 
-    pub fn set_voice_count(&mut self, count: u8) {
-        self.config.voice_count = count.clamp(1, MAX_UNISON_VOICES as u8);
+    pub fn set_voice_count(&mut self, count: UnisonVoices) {
+        self.config.voice_count = count;
         self.recompute_params();
     }
 
@@ -264,11 +336,8 @@ impl UnisonEngine {
         self.recompute_params();
     }
 
-    pub fn set_stereo_spread(&mut self, spread: f32) {
-        // `new_clamped` rather than an open-coded `clamp(0.0, 1.0)` followed
-        // by the unchecked `Spread(..)` — the constructor is the same bound,
-        // and it was already being used twelve lines up.
-        self.config.stereo_spread = Spread::new_clamped(spread);
+    pub fn set_stereo_spread(&mut self, spread: Spread) {
+        self.config.stereo_spread = spread;
         self.spread.store(self.config.stereo_spread);
         self.recompute_params();
     }

@@ -1,8 +1,8 @@
-//! Test-only support for this crate's unit tests: the signal helpers, and the
-//! deliberately broken designs and realizations the contract's cases are shown to
-//! fail on ([`flaws`]).
+//! Test-only support for this crate's unit tests: the signal helpers and the
+//! network editors.
 
-pub(crate) mod flaws;
+mod networks;
 mod signals;
 
+pub(crate) use networks::map_absorption;
 pub(crate) use signals::{amplitude_at, lock_in};

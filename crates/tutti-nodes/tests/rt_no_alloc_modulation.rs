@@ -180,7 +180,7 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
     let p = phaser.clone();
     gate(phaser, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        p.set_depth(Depth::new(t));
+        p.set_depth(Depth::of(t));
         p.set_feedback(Feedback::new(0.9 * t));
     });
 }
@@ -486,7 +486,7 @@ fn lane_program(k: usize, generation: u32) -> tutti_modulation::ControlProgram {
     use tutti_types::{Beat, BeatDuration, Depth, Hz, Phase, PhaseIncrement};
     let depth = 0.05 + 0.01 * ((k as u32 + generation) % 7) as f32;
     let amount = Amount {
-        depth: Depth(depth),
+        depth: Depth::of(depth),
         polarity: Polarity::Bipolar,
         curve: if k.is_multiple_of(3) {
             Law::PowerIn(Exponent::of(2.0))
@@ -944,7 +944,7 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
             id: LayerId(1),
             source: id,
             amount: Amount {
-                depth: Depth(if k % 2 == 0 { -0.4 } else { 0.4 }),
+                depth: Depth::of(if k % 2 == 0 { -0.4 } else { 0.4 }),
                 polarity: Polarity::Bipolar,
                 curve: Law::Linear,
             },
@@ -1180,7 +1180,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     let route = |s: u64, p, depth: f32| RouteDecl {
         source: SourceKey(s),
         to: RouteTarget::Param(at(p)),
-        depth: Depth(depth),
+        depth: Depth::of(depth),
         polarity: Polarity::Bipolar,
         curve: Law::Linear,
     };
@@ -1280,7 +1280,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     }
     let mut sounded = false;
     for i in 0..40 {
-        routes[0].1.depth = Depth(if i % 2 == 0 { 0.4 } else { 0.1 });
+        routes[0].1.depth = Depth::of(if i % 2 == 0 { 0.4 } else { 0.1 });
         let decl = Declarations {
             sources: &sources,
             routes: &routes,

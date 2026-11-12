@@ -4,10 +4,9 @@ SoundFont (`.sf2`) playback for the Tutti audio engine.
 
 The crate has one type, `SoundFontUnit`: a graph node (`tutti_graph::Node`)
 with no audio inputs, five outputs and one MIDI event input. Build it from a
-decoded `SoundFont` and a `Settings`, choose a preset with
-`program_change` (or build both in one call with
-`SoundFontUnit::with_preset(font, rate, channel, program)`), insert it into a
-graph, and wire a MIDI source (a clip node, a keyboard queue, a hardware
+decoded `SoundFont` and a `Settings` (a `Polyphony` and a `MidiGroup`: the rate
+is the graph's), choose a preset with `select(channel, &Preset)` (its bank and
+program) or `program_change`, insert it into a graph, and wire a MIDI source (a clip node, a keyboard queue, a hardware
 input) to its event input. Each event is
 applied at its own frame offset within the block, to a resolution of 8
 frames.
@@ -34,9 +33,7 @@ This needs a `.sf2` on disk, so it is `no_run`.
 
 ```rust,no_run
 use tutti_types::MaxBlock;
-use std::fs::File;
 use tutti_graph::{OutPort, Source};
-use std::sync::Arc;
 use tutti_types::{SampleRate, Samples};
 use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Prepare};
@@ -44,17 +41,15 @@ use tutti_ump::{MidiChannel, U7};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 
-let mut file = File::open("piano.sf2")?;
-let soundfont = Arc::new(SoundFont::new(&mut file)?);
+let soundfont = SoundFont::open("piano.sf2")?;
 
-let settings = Settings::new(SampleRate::SR_44K1);
-let mut unit = SoundFontUnit::new(soundfont, &settings)?;
+let mut unit = SoundFontUnit::new(soundfont, Settings::new())?;
 unit.program_change(MidiChannel::FIRST, U7::of(0)); // channel 0 → program 0
 
 // Into the graph: no audio input, five outputs, one MIDI event input (wire a
 // clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
 // The graph runs at 48 kHz, so `prepare` rebuilds the synthesizer at 48 kHz,
-// keeping the preset.
+// keeping the preset (the unit has no rate of its own before that).
 let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512))));
 let key = NodeKey(1);
 editor.insert(key, "piano", unit);
@@ -66,13 +61,14 @@ editor.commit()?;
 
 ## Sample rate
 
-The voices are built against one rate and cannot be re-rated. As a
-graph node, the unit follows its graph: when the graph is prepared at another
-rate, the node's `prepare` (on the control thread) replaces its player
-with one built at the new rate over the same shared SoundFont, keeping the
-preset. A fork of the graph for an offline export does the same at the
-export's rate. A rate outside 16–192 kHz leaves the unit
-at its own rate. `SoundFontUnit::with_sample_rate` does the same by hand.
+The voices are built against one rate and cannot be re-rated, and the unit
+has none of its own: `Settings` carries no rate. Until a graph prepares it the
+unit is at 44.1 kHz; when the graph is prepared at another rate, the node's
+`prepare` (on the control thread) replaces its player with one built at the
+graph's rate over the same shared SoundFont, keeping the presets and channel
+state. A note struck by hand (`note_on`) before that is cut with the old
+voices. A fork of the graph for an offline export does the same at the
+export's rate. A rate outside 16–192 kHz leaves the unit at its own rate.
 
 ## MIDI timing resolution: 8 frames
 

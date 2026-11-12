@@ -1,5 +1,5 @@
-//! `plugin-probe <path> <result-file>`: load a plugin just far enough to read its
-//! descriptor, write the outcome to the result file and exit.
+//! `plugin-probe <path> <result-file>`: load a plugin file just far enough to read
+//! the descriptor of every plugin it holds, write the outcome to the result file and exit.
 //!
 //! The result file is the only wire (`tutti_plugin_types::write_result`: a
 //! staging file renamed into place). Plugins print from their init code, so
@@ -12,9 +12,8 @@
 //! result, not an error), `2` for a bad command line, `3` if the result could
 //! not be written.
 //!
-//! Formats are cargo features (`clap`, `vst3`, `vst2`); a probe built without
-//! the one a path names reports that as a failure. Audio Units join when their
-//! host implements `Loaded` (design 021, step 4c).
+//! Formats are cargo features (`clap`, `vst3`, `vst2`, and `au` on macOS); a probe
+//! built without the one a path names reports that as a failure.
 
 #![forbid(unsafe_code)]
 
@@ -35,7 +34,10 @@ fn main() -> ExitCode {
         return ExitCode::from(3);
     };
     let outcome = match describe(&main, Path::new(&path)) {
-        Ok(descriptor) => ProbeOutcome::Described(descriptor),
+        Ok(plugins) if plugins.is_empty() => {
+            ProbeOutcome::Failed("the file holds no plugin".to_string())
+        }
+        Ok(plugins) => ProbeOutcome::Described(plugins),
         Err(message) => ProbeOutcome::Failed(message),
     };
     match write_result(Path::new(&result), &outcome) {

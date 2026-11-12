@@ -14,16 +14,24 @@ use crate::loaded::Vst2Loaded;
 impl InProcess for Vst2Loaded {
     /// # Errors
     ///
-    /// Also refuses a [`Load::plugin`] choice: a VST2 file holds one plugin.
+    /// Also refuses a [`Load::plugin`] that is not `vst2.<uniqueID>` of a plugin the
+    /// file holds: a shell's sub-plugin, or the one plugin of a file that is no shell.
     fn load_in_process(main: &MainThread, path: &Path, load: &Load) -> PluginResult<Self> {
-        if let Some(id) = load.chosen() {
-            return Err(PluginError::Load {
-                stage: LoadStage::Opening,
-                reason: format!("a VST2 file holds one plugin; cannot choose `{id}`"),
-            });
-        }
         let module = native_module_path(path, ModuleKind::Vst2)?;
-        Vst2Loaded::load(main, &module).map_err(plugin_error)
+        match load.chosen() {
+            None => Vst2Loaded::load(main, &module),
+            Some(chosen) => {
+                let id = chosen
+                    .strip_prefix("vst2.")
+                    .and_then(|n| n.parse::<i32>().ok())
+                    .ok_or_else(|| PluginError::Load {
+                        stage: LoadStage::Opening,
+                        reason: format!("`{chosen}` is not a VST2 plugin id (`vst2.<uniqueID>`)"),
+                    })?;
+                Vst2Loaded::load_plugin(main, &module, id)
+            }
+        }
+        .map_err(plugin_error)
     }
 
     fn origin(&self) -> &Origin {

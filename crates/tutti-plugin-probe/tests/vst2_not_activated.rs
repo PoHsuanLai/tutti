@@ -79,7 +79,10 @@ fn a_probe_does_not_activate() {
     drop(active);
 
     reset(&path);
-    let descriptor = describe(&main, &path).expect("probes");
+    let plugins = describe(&main, &path).expect("probes");
+    let [descriptor] = plugins.as_slice() else {
+        panic!("a plugin that is no shell is one plugin: {plugins:?}");
+    };
     assert_eq!(descriptor.name, "Tutti VST2 Probe");
     assert_eq!(capture(&path).resume_count, 0, "a probe resumed the plugin");
 }

@@ -1,0 +1,24 @@
+[package]
+name = "tutti-vst2-shell-plugin"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "A VST2 shell plugin with two sub-plugins, for the host's shell enumeration and sub-plugin choice"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+publish = false
+
+# A loadable VST2 shared library (`VSTPluginMain`) whose category is `kPlugCategShell`
+# when the host answers `audioMasterCurrentId` with 0, and which creates the sub-plugin
+# of the id the host answers otherwise. A separate crate from `tutti-vst2-test-plugin`
+# and `tutti-shared-plugin`: a shell is a property of the whole file (what its entry
+# point answers for each id), so it cannot be a mode of a plugin whose cases expect one
+# plugin. Nothing configures it: the choice is the host's callback, as in the spec.
+#
+# Both crate types, as the other test plugins: the cdylib is what a host dlopens, the
+# rlib lets a test take it as a dev-dependency so cargo builds the cdylib with the test.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tutti-vst2-author = { path = "../tutti-vst2-author" }

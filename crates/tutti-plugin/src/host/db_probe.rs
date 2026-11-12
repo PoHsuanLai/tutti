@@ -49,13 +49,13 @@ pub fn probe_failure(e: BridgeError) -> ProbeFailure {
     }
 }
 
-/// Probe a plugin by spawning a `plugin-probe` subprocess and reading its
-/// descriptor. Falls back to filename-based metadata if the `plugin-probe`
-/// binary is not available.
+/// Probe a plugin file by spawning a `plugin-probe` subprocess and reading the
+/// descriptor of every plugin it holds. Falls back to one filename-based
+/// descriptor if the `plugin-probe` binary is not available.
 pub(crate) fn probe_plugin(
     path: &Path,
     format: PluginFormat,
-) -> Result<PluginDescriptor, ProbeFailure> {
+) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
     interpret_probe(
         probe_metadata_with(&Locator::Search, path, DEFAULT_PROBE_TIMEOUT),
         path,
@@ -67,12 +67,12 @@ pub(crate) fn probe_plugin(
 /// fallback rule is testable without a subprocess — a test that spawns a real
 /// probe depends on whether `target/debug/` happens to be warm.
 fn interpret_probe(
-    result: Result<PluginDescriptor, BridgeError>,
+    result: Result<Vec<PluginDescriptor>, BridgeError>,
     path: &Path,
     format: PluginFormat,
-) -> Result<PluginDescriptor, ProbeFailure> {
+) -> Result<Vec<PluginDescriptor>, ProbeFailure> {
     match result {
-        Ok(descriptor) => Ok(descriptor),
+        Ok(plugins) => Ok(plugins),
         // The only error that means "we could not look", as opposed to "we looked
         // and this plugin is bad". Widening it would hide real failures.
         Err(BridgeError::ProbeNotFound) => {
@@ -80,15 +80,17 @@ fn interpret_probe(
                 "plugin-probe not available, using filename metadata for {:?}",
                 path
             );
-            Ok(probe_plugin_fallback(path, format))
+            Ok(vec![probe_plugin_fallback(path, format)])
         }
         Err(e) => Err(probe_failure(e)),
     }
 }
 
-/// Probes a plugin file into the delta that records it.
+/// Probes a plugin file into the delta that records it: one row holding every
+/// plugin the file has (a CLAP factory's, a VST3 factory's audio classes, an AU
+/// bundle's units, a VST2 shell's sub-plugins).
 ///
-/// Spawns a short-lived `plugin-probe` subprocess to read the plugin's
+/// Spawns a short-lived `plugin-probe` subprocess to read the file's
 /// metadata, so a plugin that crashes while being probed does not take the
 /// caller down. Blocks for up to the deadline (fifteen seconds by default); call
 /// it off the audio and UI threads. The delta puts the same row a scan stores; apply it with
@@ -126,15 +128,12 @@ pub fn probe_record_with(
         reason: "unrecognized plugin extension".to_string(),
     })?;
 
-    let descriptor = probe_metadata_with(locator, path, timeout)?;
+    let plugins = probe_metadata_with(locator, path, timeout)?;
 
     // Keyed like a scan keys it, by canonical path, so an alias and the real
     // path are one row.
     let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    Ok(Delta::put(
-        key,
-        FileRow::probed(format, &facts, vec![descriptor]),
-    ))
+    Ok(Delta::put(key, FileRow::probed(format, &facts, plugins)))
 }
 
 #[cfg(test)]
@@ -226,8 +225,11 @@ mod tests {
         use tutti_plugin_types::BridgeError;
 
         let path = Path::new("/plugins/TAL-NoiseMaker.vst3");
-        let descriptor = interpret_probe(Err(BridgeError::ProbeNotFound), path, PluginFormat::Vst3)
+        let plugins = interpret_probe(Err(BridgeError::ProbeNotFound), path, PluginFormat::Vst3)
             .expect("a missing plugin-probe is a fallback, not an error");
+        let [descriptor] = plugins.as_slice() else {
+            panic!("the filename names one plugin: {plugins:?}");
+        };
 
         assert_eq!(descriptor.name, "TAL-NoiseMaker");
         assert_eq!(descriptor.id, "vst3.tal-noisemaker");
@@ -285,20 +287,23 @@ mod tests {
         assert!(path.exists(), "TUTTI_PROBE_PLUGIN={raw} does not exist");
 
         let format = format_from_path(path).expect("unrecognised plugin extension");
-        let descriptor = probe_plugin(path, format).expect("probe failed");
+        let plugins = probe_plugin(path, format).expect("probe failed");
+        assert!(!plugins.is_empty(), "a file holds a plugin");
 
-        assert!(!descriptor.name.is_empty(), "name should not be empty");
+        for descriptor in &plugins {
+            assert!(!descriptor.name.is_empty(), "name should not be empty");
 
-        // The class must match the format probed — never another format's
-        // vocabulary. `Unknown` is allowed: it is what the filename fallback
-        // reports when no `plugin-probe` is on hand.
-        let class_format = descriptor.class.format_name();
-        assert!(
-            class_format == "unknown" || class_format == format.extension_id(),
-            "a {:?} plugin reported a {class_format} class: {:?}",
-            format,
-            descriptor.class
-        );
-        println!("Probed {path:?}: {descriptor:?}");
+            // The class must match the format probed — never another format's
+            // vocabulary. `Unknown` is allowed: it is what the filename fallback
+            // reports when no `plugin-probe` is on hand.
+            let class_format = descriptor.class.format_name();
+            assert!(
+                class_format == "unknown" || class_format == format.extension_id(),
+                "a {:?} plugin reported a {class_format} class: {:?}",
+                format,
+                descriptor.class
+            );
+        }
+        println!("Probed {path:?}: {plugins:?}");
     }
 }

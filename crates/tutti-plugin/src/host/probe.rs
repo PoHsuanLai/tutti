@@ -1,5 +1,5 @@
 //! One-shot metadata probe: spawn `plugin-probe`, wait for it, read its result
-//! file. A timeout kills the child.
+//! file (the descriptor of every plugin the file holds). A timeout kills the child.
 //!
 //! The wire is the file (`tutti_plugin_types::probe_wire`), not a socket or a
 //! stream. The child's stdout and stderr go to the null device, because plugins
@@ -22,7 +22,7 @@ use tutti_plugin_types::{Helper, Locator, PluginDescriptor, ProbeOutcome, read_r
 pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(5);
 
-/// Reads a plugin's descriptor in a `plugin-probe` subprocess, so a plugin that
+/// Reads the descriptor of every plugin a file holds in a `plugin-probe` subprocess, so a plugin that
 /// crashes or hangs in its init does not take the caller down. `locator` names
 /// the binary (a test passes [`Locator::at`], so none writes the
 /// process-global environment) and `timeout` is the deadline.
@@ -37,7 +37,7 @@ pub fn probe_metadata_with(
     locator: &Locator,
     plugin_path: &Path,
     timeout: Duration,
-) -> BridgeResult<PluginDescriptor> {
+) -> BridgeResult<Vec<PluginDescriptor>> {
     let probe = locator
         .resolve(Helper::Probe)
         .ok_or(BridgeError::ProbeNotFound)?;
@@ -76,7 +76,10 @@ pub fn probe_metadata_with(
         (Ok(None), Waited::Lost(e)) => return Err(BridgeError::Io(e)),
     };
     match outcome {
-        ProbeOutcome::Described(descriptor) => Ok(descriptor),
+        ProbeOutcome::Described(plugins) if plugins.is_empty() => Err(
+            BridgeError::load_from_server(plugin_path, "the file holds no plugin".to_string()),
+        ),
+        ProbeOutcome::Described(plugins) => Ok(plugins),
         ProbeOutcome::Failed(message) => Err(BridgeError::load_from_server(plugin_path, message)),
         // `ProbeOutcome` is `#[non_exhaustive]`: an outcome from a newer probe.
         other => Err(BridgeError::IpcError(format!(
@@ -128,7 +131,7 @@ mod tests {
         Locator::at(path)
     }
 
-    fn probe(locator: &Locator, timeout: Duration) -> BridgeResult<PluginDescriptor> {
+    fn probe(locator: &Locator, timeout: Duration) -> BridgeResult<Vec<PluginDescriptor>> {
         probe_metadata_with(locator, Path::new("/plugins/Some.clap"), timeout)
     }
 

@@ -1,5 +1,5 @@
 //! What `plugin-probe` does, as a library so a test can call it in-process: read
-//! the descriptor of the plugin at a path, by the path's extension.
+//! the descriptor of every plugin the file at a path holds, by the path's extension.
 //!
 //! The binary (`src/main.rs`) is the command line around [`describe`].
 
@@ -8,15 +8,18 @@
 use std::path::Path;
 use tutti_plugin_types::{MainThread, PluginDescriptor};
 
-/// The descriptor of the plugin at `path`, by its extension, or the reason it
-/// could not be read. `main` proves the caller is on the main thread, which
-/// VST2's load needs and the other formats' probes do not.
+/// The descriptor of every plugin the file at `path` holds, by its extension, in
+/// the file's own order, or the reason it could not be read. A CLAP factory
+/// gives each plugin it lists, a VST3 factory each audio class, an AU bundle each
+/// unit it declares, a VST2 shell each sub-plugin; any other file is one plugin.
+/// `main` proves the caller is on the main thread, which VST2's load needs and the
+/// other formats' probes do not.
 ///
 /// # Errors
 ///
 /// The loader's own reason, as text: the file is missing, the format is not
-/// compiled in, or the plugin would not open.
-pub fn describe(main: &MainThread, path: &Path) -> Result<PluginDescriptor, String> {
+/// compiled in, or the file would not open.
+pub fn describe(main: &MainThread, path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     if !path.exists() {
         return Err(format!("Plugin not found: {}", path.display()));
     }
@@ -34,6 +37,8 @@ pub fn describe(main: &MainThread, path: &Path) -> Result<PluginDescriptor, Stri
         "clap" => clap(path),
         #[cfg(feature = "vst2")]
         "vst" | "dll" | "so" => vst2(main, path),
+        #[cfg(all(feature = "au", target_os = "macos"))]
+        "component" => au(path),
         _ => Err(format!("Unsupported format: .{extension}")),
     }
 }
@@ -61,33 +66,45 @@ fn module_of(
 }
 
 #[cfg(feature = "clap")]
-fn clap(path: &Path) -> Result<PluginDescriptor, String> {
+fn clap(path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     use tutti_clap_host::{ClapLoaded, descriptor_of};
     use tutti_plugin_types::EditorPresence;
     use tutti_plugin_types::bundle::ModuleKind;
     let module = module_of(path, ModuleKind::Clap)?;
     let library = (module != path).then_some(module.as_path());
-    let info = ClapLoaded::probe(path, library).map_err(|e| e.to_string())?;
+    let infos = ClapLoaded::probe_all(path, library).map_err(|e| e.to_string())?;
     // A probe does not instantiate, and an editor is a property of an instance.
-    Ok(descriptor_of(&info, EditorPresence::Unknown))
+    Ok(infos
+        .iter()
+        .map(|info| descriptor_of(info, EditorPresence::Unknown))
+        .collect())
 }
 
 #[cfg(feature = "vst3")]
-fn vst3(path: &Path) -> Result<PluginDescriptor, String> {
+fn vst3(path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     use tutti_plugin_types::EditorPresence;
     use tutti_plugin_types::bundle::ModuleKind;
     use tutti_vst3_host::{Vst3Loaded, descriptor_of};
     let module = module_of(path, ModuleKind::Vst3)?;
-    let info = Vst3Loaded::probe(&module).map_err(|e| e.to_string())?;
-    Ok(descriptor_of(&info, EditorPresence::Unknown))
+    let infos = Vst3Loaded::probe_all(&module).map_err(|e| e.to_string())?;
+    Ok(infos
+        .iter()
+        .map(|info| descriptor_of(info, EditorPresence::Unknown))
+        .collect())
 }
 
 /// VST2 has no probe short of a load: the plugin's init runs, it is not
-/// activated, and the instance is dropped.
+/// activated, and the instance is dropped. A shell's sub-plugins are each loaded
+/// the same way.
 #[cfg(feature = "vst2")]
-fn vst2(main: &MainThread, path: &Path) -> Result<PluginDescriptor, String> {
-    use tutti_plugin_types::Control;
+fn vst2(main: &MainThread, path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     use tutti_vst2_host::Vst2Loaded;
-    let loaded = Vst2Loaded::load(main, path).map_err(|e| e.to_string())?;
-    Ok(Control::info(&loaded).clone())
+    Vst2Loaded::describe_all(main, path).map_err(|e| e.to_string())
+}
+
+/// An AU bundle declares its units in its `Info.plist`; each is described from
+/// the registry's component, none created.
+#[cfg(all(feature = "au", target_os = "macos"))]
+fn au(path: &Path) -> Result<Vec<PluginDescriptor>, String> {
+    tutti_au_host::AuLoaded::describe_all(path).map_err(|e| e.to_string())
 }

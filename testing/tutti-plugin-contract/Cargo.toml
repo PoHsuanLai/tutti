@@ -50,6 +50,12 @@ required-features = ["server"]
 [dev-dependencies]
 # `tests/probe.rs` copies the plugin under the file name its `init` reads.
 tempfile = "3"
+# `tests/probe.rs`: a CLAP factory of two plugins and a VST2 shell of two, whose ids
+# and names the probe is held to. Dev-dependencies so cargo builds their cdylibs with
+# the test, and never named in code: a plugin's rlib carries its entry point, and two
+# of them in one test binary do not link.
+tutti-clap-test-plugin = { path = "../tutti-clap-test-plugin" }
+tutti-vst2-shell-plugin = { path = "../tutti-vst2-shell-plugin" }
 
 # AU has no build of the shared plugin: its suite loads an Apple built-in unit
 # (`tests/au.rs`), so the host is a macOS dependency only.

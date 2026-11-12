@@ -56,16 +56,20 @@ fn a_connect_fades_in_from_exactly_zero_and_reaches_unity_at_edge_declick() {
     );
 
     // The ended fade is reported: the next update commits the plain edge.
-    let sent = s.graph_ref().commits_sent();
+    let sent = s.graph_ref().testing().commits_sent();
     let _ = s.update();
     assert_eq!(
-        s.graph_ref().commits_sent(),
+        s.graph_ref().testing().commits_sent(),
         sent + 1,
         "the fade was settled"
     );
     assert!(frames(&mut s, 8).iter().all(|&x| x == 1.0));
     let _ = s.update();
-    assert_eq!(s.graph_ref().commits_sent(), sent + 1, "and only once");
+    assert_eq!(
+        s.graph_ref().testing().commits_sent(),
+        sent + 1,
+        "and only once"
+    );
 }
 
 /// **`.hard()` is the old step**: full weight from the first frame, no entry,
@@ -84,9 +88,13 @@ fn hard_connects_at_full_weight_at_once() {
             .iter()
             .all(|&x| x.to_bits() == 1.0f32.to_bits())
     );
-    let sent = s.graph_ref().commits_sent();
+    let sent = s.graph_ref().testing().commits_sent();
     let _ = s.update();
-    assert_eq!(s.graph_ref().commits_sent(), sent, "nothing to settle");
+    assert_eq!(
+        s.graph_ref().testing().commits_sent(),
+        sent,
+        "nothing to settle"
+    );
 }
 
 /// **A disconnect fades out: its last nonzero frame is inside the span**, the
@@ -102,10 +110,10 @@ fn a_disconnect_fades_out_inside_the_span_and_leaves_the_plan() {
     let _ = s.update();
     assert!(frames(&mut s, 4).iter().all(|&x| x == 1.0));
 
-    assert!(s.graph().disconnect(src.out(0), Root::output(0)));
-    assert!(s.graph_ref().sources(Root::output(0)).is_empty());
+    assert!(s.graph().disconnect(src.out(0), Root::output(0)).unwrap());
+    assert!(s.graph_ref().sources(Root::output(0)).unwrap().is_empty());
     assert!(
-        !s.graph().disconnect(src.out(0), Root::output(0)),
+        !s.graph().disconnect(src.out(0), Root::output(0)).unwrap(),
         "already on its way out"
     );
     let _ = s.update();
@@ -120,10 +128,10 @@ fn a_disconnect_fades_out_inside_the_span_and_leaves_the_plan() {
         "the last nonzero frame {last} is inside the span"
     );
 
-    let sent = s.graph_ref().commits_sent();
+    let sent = s.graph_ref().testing().commits_sent();
     let _ = s.update();
     assert_eq!(
-        s.graph_ref().commits_sent(),
+        s.graph_ref().testing().commits_sent(),
         sent + 1,
         "the edge left the plan"
     );
@@ -142,13 +150,17 @@ fn disconnect_hard_cuts_and_an_unheard_edge_just_goes() {
         .hard();
     let _ = s.update();
     assert!(frames(&mut s, 4).iter().all(|&x| x == 1.0));
-    assert!(s.graph().disconnect_hard(src.out(0), Root::output(0)));
+    assert!(
+        s.graph()
+            .disconnect_hard(src.out(0), Root::output(0))
+            .unwrap()
+    );
     let _ = s.update();
     assert!(frames(&mut s, 4).iter().all(|&x| x == 0.0), "no tail");
 
     // Connected and disconnected inside one edit: nothing was ever heard.
     s.graph().connect(src.out(0), Root::output(0)).unwrap();
-    assert!(s.graph().disconnect(src.out(0), Root::output(0)));
+    assert!(s.graph().disconnect(src.out(0), Root::output(0)).unwrap());
     let _ = s.update();
     assert!(frames(&mut s, SPAN).iter().all(|&x| x == 0.0));
 }
@@ -165,7 +177,7 @@ fn a_reconnect_during_a_fade_out_rises_from_where_it_was() {
         .hard();
     let _ = s.update();
     frames(&mut s, 2);
-    s.graph().disconnect(src.out(0), Root::output(0));
+    s.graph().disconnect(src.out(0), Root::output(0)).unwrap();
     let _ = s.update();
     let down = frames(&mut s, 128);
     s.graph().connect(src.out(0), Root::output(0)).unwrap();
@@ -173,7 +185,10 @@ fn a_reconnect_during_a_fade_out_rises_from_where_it_was() {
     let up = frames(&mut s, 8);
     assert_eq!(up[0], *down.last().unwrap(), "no step at the turn");
     assert!(up[7] > up[0], "rising");
-    assert_eq!(s.graph_ref().sources(Root::output(0)), [src.out(0)]);
+    assert_eq!(
+        s.graph_ref().sources(Root::output(0)).unwrap(),
+        [src.out(0)]
+    );
 }
 
 /// **`set_sources` fades what it removes and what it adds**, and a removed

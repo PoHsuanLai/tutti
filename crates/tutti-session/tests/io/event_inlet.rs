@@ -63,11 +63,13 @@ fn pushed_events_come_out_at_their_frames() {
     assert_ne!(key, key2);
     let mut tap = s
         .graph()
-        .open_event_tap(key.events_out(), TapAlign::Raw, 64)
+        .taps()
+        .open_event(key.events_out(), TapAlign::Raw, 64)
         .expect("the port exists");
     let mut tap2 = s
         .graph()
-        .open_event_tap(key2.events_out(), TapAlign::Raw, 64)
+        .taps()
+        .open_event(key2.events_out(), TapAlign::Raw, 64)
         .expect("the port exists");
     let _ = s.update();
 
@@ -117,7 +119,7 @@ fn an_export_fork_is_accepted_and_silent() {
         .unwrap();
     let _ = s.update();
     writer.push(Stamp::NextBlock, note(1)).unwrap();
-    let mut fork = s.graph_ref().fork_live().expect("an inlet forks");
+    let mut fork = s.graph_ref().testing().fork_live().expect("an inlet forks");
     let mut out = [0.0f32];
     let mut live = 0.0f32;
     for _ in 0..64 {
@@ -153,20 +155,24 @@ fn an_event_edge_is_cut_with_one_commit_and_not_faded() {
     s.render_frame(&mut out);
     assert_eq!(out[0], 1.0, "wired: the push is heard");
 
-    assert!(s.graph().disconnect(key.events_out(), hear.events_in()));
     assert!(
-        s.graph_ref().sources(hear.events_in()).is_empty(),
+        s.graph()
+            .disconnect(key.events_out(), hear.events_in())
+            .unwrap()
+    );
+    assert!(
+        s.graph_ref().sources(hear.events_in()).unwrap().is_empty(),
         "cut at once"
     );
     let _ = s.update();
-    let cut = s.graph().commits_sent();
+    let cut = s.graph().testing().commits_sent();
     // Past the span an audio edge would fade over.
     for _ in 0..(2 * tutti_graph::EDGE_DECLICK.get()) {
         s.render_frame(&mut out);
     }
     let _ = s.update();
     assert_eq!(
-        s.graph().commits_sent(),
+        s.graph().testing().commits_sent(),
         cut,
         "no commit collects a fade that ended"
     );

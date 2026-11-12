@@ -22,7 +22,7 @@
 //! # Where the audio side lives
 //!
 //! `Editor::new` builds the pair. The executor stays here ("local") until
-//! [`take_audio_side`](Graph::take_audio_side) or the session builder hands it
+//! `take_audio_side` or the session builder hands it
 //! to an engine. While it is local, a commit is applied at once on this
 //! thread and its box collected, so a detached graph never meets
 //! back-pressure, and [`Session::render_frame`](crate::Session::render_frame)
@@ -46,16 +46,16 @@ use tutti_graph::Compensation;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{BusRef, BusSource, Buses, EdgeFade, EdgeGain};
 use tutti_graph::{
-    CloseError, EventCapacity, EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec,
-    TapAlign, TapId,
-};
-use tutti_graph::{
-    CommitError, Editor, EventEdge, EventIn, EventOut, EventTapReader, Executor, Fade,
-    GraphInvalid, InletNode, IntoNode, MeterReader, MissingSource, MixError, ModeError, NodeMode,
-    ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, TapWriter, Transport,
+    CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, InletNode,
+    IntoNode, MeterReader, MixError, ModeError, NodeMode, ParamIn, ParamMod, ParamRange, ParamSet,
+    Prepare, TapReader, TapWriter, Transport,
 };
 use tutti_graph::{
     Edge as RawEdge, EdgeId, InPort as RawIn, NodeKey, OutPort as RawOut, Sink, Source,
+};
+use tutti_graph::{
+    EventCapacity, EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec, MissingSource,
+    TapAlign, TapId,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -63,10 +63,18 @@ use tutti_types::MaxBlock;
 use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Samples, Tail};
 
+mod observe;
+#[cfg(feature = "testing")]
+mod testing;
+
+pub use observe::{Meters, Taps};
+#[cfg(feature = "testing")]
+pub use testing::{AudioSide, Testing};
+
 use crate::key::{Bus, BusSink, Fanin, InEnd, Inlet, MainSink, OutEnd, Outlet, Wire};
 use crate::{
     ConnectError, Connection, Edge, EdgeGainError, EventInPort, EventOutPort, InPort, InletError,
-    Key, OutPort, ParamError, ParamUnit, RemoveError, Root, SessionNode, TypedParamRef,
+    Key, NoSuchNode, OutPort, ParamError, ParamUnit, RemoveError, Root, SessionNode, TypedParamRef,
 };
 
 /// The largest block a device's graph is prepared for.
@@ -302,7 +310,7 @@ pub struct Graph {
     /// The id the next event tap takes.
     next_event_tap: u32,
     /// Each open event tap as it was opened (its port, alignment and
-    /// capacity), so [`reopen_event_taps`](Self::reopen_event_taps) can open it
+    /// capacity), so [`Taps::reopen_events`] can open it
     /// again.
     event_taps: BTreeMap<EventTapId, (EventOut, TapAlign, usize)>,
     /// The id the next meter takes (`MASTER_METER` is taken at construction).
@@ -474,7 +482,13 @@ impl Graph {
 
     /// What every node is prepared for: the rate, the largest block, and the
     /// device's callback size when the session knows it.
-    pub fn prepared(&self) -> Prepare {
+    #[cfg(any(
+        feature = "testing",
+        feature = "midi",
+        feature = "plugin",
+        feature = "sampler"
+    ))]
+    pub(crate) fn prepared(&self) -> Prepare {
         *self.editor.prepare()
     }
 
@@ -526,17 +540,6 @@ impl Graph {
             .exec
     }
 
-    /// The audio thread's half, for a test that renders what a device would
-    /// hear: every commit lands on it, and ticking it plays the graph.
-    ///
-    /// # Panics
-    ///
-    /// If the audio side was already taken — by an earlier call, or by the
-    /// engine the session builder built over it.
-    pub fn take_audio_side(&mut self) -> AudioSide {
-        AudioSide::live(self.take_executor())
-    }
-
     /// Build the engine over this graph's audio side, which it takes:
     /// `Engine::new` over the editor and its executor, which bounds the
     /// editor to what the engine can render.
@@ -571,7 +574,7 @@ impl Graph {
     }
 
     /// Whether a re-prepare is between its two commits.
-    pub fn is_repreparing(&self) -> bool {
+    pub(crate) fn is_repreparing(&self) -> bool {
         self.editor.is_repreparing()
     }
 
@@ -681,7 +684,7 @@ impl Graph {
     /// [`InletNode`] (unwired; declare what it feeds like any node), and the
     /// writer is the producer's end: push whole frames with
     /// [`push_interleaved`](TapWriter::push_interleaved) from any one thread. The
-    /// mirror of [`open_tap`](Self::open_tap), which copies the other way.
+    /// mirror of [`Taps::open`], which copies the other way.
     ///
     /// An inlet **does not resample**, and its clock is not the graph's: the
     /// producer must run at the graph's rate, checked here, once, as
@@ -736,7 +739,7 @@ impl Graph {
     /// [`EventInletNode`] (unwired; its one event output feeds what you
     /// connect it to, like any node), and the writer is the producer's end:
     /// [`push`](EventInletWriter::push) at a [`Stamp`](tutti_graph::Stamp) from one
-    /// thread. The inverse of [`open_event_tap`](Self::open_event_tap). `capacity`
+    /// thread. The inverse of [`Taps::open_event`]. `capacity`
     /// is the ring, the waiting list and the port's declared event capacity
     /// (a live input's is `tutti_midi_runtime::LIVE_INLET_CAPACITY`, 256).
     ///
@@ -860,6 +863,9 @@ impl Graph {
                 cause.to_owned(),
             )));
         }
+        if !self.nodes.contains_key(&node) {
+            return Err(ReplaceRefused::Failed(CrossfadeRefused::NoSuchNode(node)));
+        }
         if self.editor.is_repreparing() {
             return Err(ReplaceRefused::Busy(client));
         }
@@ -964,17 +970,6 @@ impl Graph {
         pinned
     }
 
-    /// Whether the graph keeps a reclaimer for `node`
-    /// ([`SessionNode::reclaimer`]): for a test that a path inserts a node
-    /// through [`add`](Self::add). Not API.
-    #[doc(hidden)]
-    pub fn keeps_reclaimer(&self, node: impl Into<NodeKey>) -> bool {
-        let node = node.into();
-        self.nodes
-            .get(&node)
-            .is_some_and(|entry| entry.reclaimer.is_some())
-    }
-
     /// Swaps the unit behind `node` for `incoming` under a `fade` along
     /// `curve` when its shape fits the running unit's, else as a plain swap
     /// on the next commit (`Editor::replace_or_swap`), and hands back its
@@ -1036,11 +1031,13 @@ impl Graph {
                 cause.to_owned(),
             )));
         }
-        if self.editor.is_repreparing() {
-            return Err(ReplaceRefused::Busy(incoming));
-        }
+        // Before `Busy`: a node that is not there is refused at this call, not
+        // parked for a retry that can only fail.
         if !self.nodes.contains_key(&node) {
             return Err(ReplaceRefused::Failed(CrossfadeRefused::NoSuchNode(node)));
+        }
+        if self.editor.is_repreparing() {
+            return Err(ReplaceRefused::Busy(incoming));
         }
         let rate = self.editor.prepare().sample_rate();
         let controls = self
@@ -1157,11 +1154,6 @@ impl Graph {
         id
     }
 
-    /// How many crossfades wait for a re-prepare to resume.
-    pub fn waiting_crossfades(&self) -> usize {
-        self.parked.len()
-    }
-
     /// Try every waiting crossfade again, in request order: one still `Busy`
     /// goes back on the queue, in order.
     pub(crate) fn retry_crossfades(&mut self) -> Vec<Retried> {
@@ -1204,9 +1196,13 @@ impl Graph {
     }
 
     /// How many event inputs `node` declares.
-    pub fn node_event_inputs(&self, node: impl Into<NodeKey>) -> usize {
-        let node = node.into();
-        self.shape(node).map_or(0, |s| usize::from(s.event_in))
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn node_event_inputs(&self, node: impl Into<NodeKey>) -> Result<usize, NoSuchNode> {
+        self.shape_of(node.into()).map(|s| usize::from(s.event_in))
     }
 
     /// Whether `port` names an event output the graph has.
@@ -1221,7 +1217,7 @@ impl Graph {
     }
 
     /// Whether `port` names an event input the graph has.
-    fn check_event_in(&self, port: EventInPort) -> Result<(), ConnectError> {
+    pub(crate) fn check_event_in(&self, port: EventInPort) -> Result<(), ConnectError> {
         if !self.contains(port.node()) {
             return Err(ConnectError::NoSuchNode(port.node()));
         }
@@ -1231,7 +1227,11 @@ impl Graph {
         fits.then_some(()).ok_or(ConnectError::NoSuchEventIn(port))
     }
 
-    fn check_event_wire(&self, from: EventOutPort, to: EventInPort) -> Result<(), ConnectError> {
+    pub(crate) fn check_event_wire(
+        &self,
+        from: EventOutPort,
+        to: EventInPort,
+    ) -> Result<(), ConnectError> {
         self.check_event_out(from)?;
         self.check_event_in(to)?;
         if from.node() == to.node() {
@@ -1469,7 +1469,7 @@ impl Graph {
     /// feeder's sources still in the graph, beside the edges the host wired
     /// there itself (every edge the feeds did not put there), which stay.
     fn write_feeds(&mut self, sink: NodeKey) {
-        if !self.nodes.contains_key(&sink) || self.node_event_inputs(sink) == 0 {
+        if !self.nodes.contains_key(&sink) || self.node_event_inputs(sink) == Ok(0) {
             return;
         }
         let union = self.fed_in_graph(sink);
@@ -1644,24 +1644,6 @@ impl Graph {
         }
     }
 
-    /// A live duplicate of the whole graph that shares no state with it
-    /// (`Editor::fork`, `ForkMode::Live`), as an audio side to render. Each
-    /// node is forked from its own fork source: a `ParamNode` from the
-    /// values its set's cells hold. What an export renders from, so a test
-    /// can check that a control write reaches it.
-    ///
-    /// # Errors
-    ///
-    /// When a node cannot be forked.
-    pub fn fork_live(&self) -> Result<AudioSide, tutti_graph::ForkError> {
-        let (editor, exec) = self.editor.fork(
-            tutti_graph::ForkTarget::Master,
-            tutti_graph::ForkMode::Live,
-            *self.editor.prepare(),
-        )?;
-        Ok(AudioSide::forked(editor, exec))
-    }
-
     // --- Edges ---
 
     /// The graph's raw source for an [`OutPort`].
@@ -1673,6 +1655,29 @@ impl Graph {
             })),
             OutEnd::Input(index) => Some(Source::Global(u16::try_from(index).ok()?)),
         }
+    }
+
+    /// The graph's raw sources for `ports`: a port whose index no `u16` holds is
+    /// a source that does not exist, named, never dropped.
+    fn raw_sources(&self, ports: &[OutPort]) -> Result<Vec<Source>, MissingSource> {
+        ports
+            .iter()
+            .map(|&port| {
+                Self::raw_source(port).ok_or_else(|| match port.end() {
+                    OutEnd::Node(node, _) => MissingSource::Port {
+                        node,
+                        port: u16::MAX,
+                        width: self
+                            .shape(node)
+                            .map_or(0, |s| s.audio_out().count() as usize),
+                    },
+                    OutEnd::Input(_) => MissingSource::Global {
+                        channel: u16::MAX,
+                        width: self.inputs(),
+                    },
+                })
+            })
+            .collect()
     }
 
     /// The graph's raw input port of a node's [`InPort`], `None` for a root
@@ -1713,26 +1718,26 @@ impl Graph {
         }
     }
 
-    fn check_out(&self, port: OutPort) -> Result<(), ConnectError> {
+    pub(crate) fn check_out(&self, port: OutPort) -> Result<(), ConnectError> {
         let fits = match port.end() {
             OutEnd::Node(node, index) => {
                 if !self.contains(node) {
                     return Err(ConnectError::NoSuchNode(node));
                 }
-                index < self.node_outputs(node)
+                index < self.node_outputs(node)?
             }
             OutEnd::Input(index) => index < self.inputs(),
         };
         fits.then_some(()).ok_or(ConnectError::NoSuchOutPort(port))
     }
 
-    fn check_in(&self, port: InPort) -> Result<(), ConnectError> {
+    pub(crate) fn check_in(&self, port: InPort) -> Result<(), ConnectError> {
         let fits = match port.end() {
             InEnd::Node(node, index) => {
                 if !self.contains(node) {
                     return Err(ConnectError::NoSuchNode(node));
                 }
-                index < self.node_inputs(node)
+                index < self.node_inputs(node)?
             }
             InEnd::Output(index) => index < self.outputs(),
         };
@@ -1741,7 +1746,7 @@ impl Graph {
 
     /// Checks one wire from `from` into `to`: both ends exist, and a node does
     /// not feed itself.
-    fn check_wire(&self, from: OutPort, to: InPort) -> Result<(), ConnectError> {
+    pub(crate) fn check_wire(&self, from: OutPort, to: InPort) -> Result<(), ConnectError> {
         self.check_out(from)?;
         self.check_in(to)?;
         match (from.node(), to.node()) {
@@ -1895,7 +1900,11 @@ impl Graph {
     /// (its sources are [`OutPort`]s) or an [`EventInPort`] (its sources are
     /// [`EventOutPort`]s, every edge the graph holds there, a modulation
     /// lane's included).
-    pub fn sources<P: Fanin>(&self, to: P) -> Vec<P::Source> {
+    ///
+    /// # Errors
+    ///
+    /// [`ConnectError`] for a node or port that does not exist.
+    pub fn sources<P: Fanin>(&self, to: P) -> Result<Vec<P::Source>, ConnectError> {
         to.sources(self)
     }
 
@@ -1986,9 +1995,14 @@ impl Graph {
     /// Takes every source out of `to`, their gains with them: whether it fed
     /// anything. (For an [`EventInPort`]: what the caller wired; a feed's
     /// and a modulation lane's edges stay.) Each edge the plan has heard fades out
-    /// ([`disconnect`](Self::disconnect)). A sink that does not exist feeds
-    /// nothing.
-    pub fn disconnect_all<P: Fanin>(&mut self, to: P) -> bool {
+    /// ([`disconnect`](Self::disconnect)).
+    ///
+    /// # Errors
+    ///
+    /// [`ConnectError`] for a node or port that does not exist; nothing
+    /// changes.
+    #[must_use = "the call refuses a node or port that does not exist"]
+    pub fn disconnect_all<P: Fanin>(&mut self, to: P) -> Result<bool, ConnectError> {
         to.disconnect_all(self)
     }
 
@@ -2078,14 +2092,33 @@ impl Graph {
     /// from where the fade has got to. An edge no plan has heard (connected
     /// since the last commit) has nothing to fade and goes at once.
     /// [`disconnect_hard`](Self::disconnect_hard) cuts at a block boundary.
-    pub fn disconnect<F: Outlet, T: Inlet<F::Wire>>(&mut self, from: F, to: T) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`ConnectError`] for a node or port that does not exist; nothing
+    /// changes. An edge that is not there is `Ok(false)`.
+    #[must_use = "the call refuses a node or port that does not exist"]
+    pub fn disconnect<F: Outlet, T: Inlet<F::Wire>>(
+        &mut self,
+        from: F,
+        to: T,
+    ) -> Result<bool, ConnectError> {
         <F::Wire as Wire>::disconnect(self, from.out(), to.sink(), false)
     }
 
     /// [`disconnect`](Self::disconnect) with no fade: the edge is cut at the
     /// next block boundary, as `tutti_graph::Editor` does. For a test, or an
     /// analysis graph nobody listens to.
-    pub fn disconnect_hard<F: Outlet, T: Inlet<F::Wire>>(&mut self, from: F, to: T) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// As [`disconnect`](Self::disconnect).
+    #[must_use = "the call refuses a node or port that does not exist"]
+    pub fn disconnect_hard<F: Outlet, T: Inlet<F::Wire>>(
+        &mut self,
+        from: F,
+        to: T,
+    ) -> Result<bool, ConnectError> {
         <F::Wire as Wire>::disconnect(self, from.out(), to.sink(), true)
     }
 
@@ -2152,19 +2185,44 @@ impl Graph {
 
     /// What feeds a bus edge's sink (an input bus of a node, or the root), in
     /// source order. An edge fading out is no longer a source.
-    pub fn bus_sources(&self, to: impl Inlet<Bus>) -> Vec<BusSource> {
+    ///
+    /// # Errors
+    ///
+    /// [`ConnectError::NoSuchNode`] when the bus's node is not in the graph.
+    pub fn bus_sources(&self, to: impl Inlet<Bus>) -> Result<Vec<BusSource>, ConnectError> {
+        let to = to.sink();
+        if let BusSink::Node(bus) = to
+            && !self.contains(bus.node)
+        {
+            return Err(ConnectError::NoSuchNode(bus.node));
+        }
         let spec = self.editor.spec();
-        let feeds = match to.sink() {
+        let feeds = match to {
             BusSink::Node(bus) => spec.bus_edges.get(&bus),
             BusSink::Root => Some(&spec.root_sources),
         };
-        feeds.map_or_else(Vec::new, |feeds| {
+        Ok(feeds.map_or_else(Vec::new, |feeds| {
             feeds
                 .iter()
                 .filter(|f| f.fade != EdgeFade::Out)
                 .map(|f| f.source)
                 .collect()
-        })
+        }))
+    }
+
+    /// Whether the nodes a bus edge names are in the graph.
+    pub(crate) fn check_bus_nodes(&self, from: BusSource, to: BusSink) -> Result<(), ConnectError> {
+        if let BusSource::Node(bus) = from
+            && !self.contains(bus.node)
+        {
+            return Err(ConnectError::NoSuchNode(bus.node));
+        }
+        if let BusSink::Node(bus) = to
+            && !self.contains(bus.node)
+        {
+            return Err(ConnectError::NoSuchNode(bus.node));
+        }
+        Ok(())
     }
 
     /// The `(output port, input port)` pairs that connect `from`'s main
@@ -2174,7 +2232,7 @@ impl Graph {
         from: NodeKey,
         to: MainSink,
     ) -> Result<Vec<(OutPort, InPort)>, ConnectError> {
-        let (_, out_buses) = self.buses(from).ok_or(ConnectError::NoSuchNode(from))?;
+        let (_, out_buses) = self.buses(from)?;
         let main = |buses: &Buses, node| {
             let (index, bus) = buses.main_bus().ok_or(ConnectError::NoMainBus(node))?;
             let first = buses
@@ -2188,7 +2246,7 @@ impl Graph {
                 if from == to {
                     return Err(ConnectError::Itself(from));
                 }
-                let (in_buses, _) = self.buses(to).ok_or(ConnectError::NoSuchNode(to))?;
+                let (in_buses, _) = self.buses(to)?;
                 let (in_first, in_width) = main(&in_buses, to)?;
                 if out_width != in_width {
                     return Err(ConnectError::Width {
@@ -2300,10 +2358,14 @@ impl Graph {
     }
 
     /// The buses `node` declares, input and output, as its shape holds them
-    /// (`Shape::buses_in`, `buses_out`). `None` when `node` is not in the
-    /// graph.
-    pub fn buses(&self, node: impl Into<NodeKey>) -> Option<(Buses, Buses)> {
-        self.shape(node.into())
+    /// (`Shape::buses_in`, `buses_out`).
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn buses(&self, node: impl Into<NodeKey>) -> Result<(Buses, Buses), NoSuchNode> {
+        self.shape_of(node.into())
             .map(|s| (*s.buses_in(), *s.buses_out()))
     }
 
@@ -2331,14 +2393,16 @@ impl Graph {
         self.editor.set_mode(node, mode)
     }
 
-    /// `node`'s mode, [`NodeMode::Active`] for a node never given one (and for
-    /// a key not in the graph).
-    pub fn mode(&self, node: impl Into<NodeKey>) -> NodeMode {
+    /// `node`'s mode, [`NodeMode::Active`] for a node never given one.
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn mode(&self, node: impl Into<NodeKey>) -> Result<NodeMode, NoSuchNode> {
         let node = node.into();
-        if self.editor.is_leaving(node) {
-            return NodeMode::Active;
-        }
-        self.editor.mode(node)
+        self.shape_of(node)?;
+        Ok(self.editor.mode(node))
     }
 
     /// Sets `node`'s blend with its own aligned input (doc 013, "Bypass and mute
@@ -2373,20 +2437,22 @@ impl Graph {
         self.editor.set_mix(node, mix)
     }
 
-    /// `node`'s mix, [`Mix::WET`] for a node never given one (and for a key not
-    /// in the graph).
+    /// `node`'s mix, [`Mix::WET`] for a node never given one.
     ///
     /// Once the graph has committed the node this reads its live cell, which is
     /// also the knob of a modulation route onto the node's mix (`Mods::route`
     /// (feature `modulation`) with a `MixRef`): the base the route modulates
     /// around, and what the mix returns to when the route goes. It is the base,
     /// not the lane's value.
-    pub fn mix(&self, node: impl Into<NodeKey>) -> Mix {
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn mix(&self, node: impl Into<NodeKey>) -> Result<Mix, NoSuchNode> {
         let node = node.into();
-        if self.editor.is_leaving(node) {
-            return Mix::WET;
-        }
-        self.editor.mix(node)
+        self.shape_of(node)?;
+        Ok(self.editor.mix(node))
     }
 
     /// Removes the gain entries of edges the topology no longer has: an edge
@@ -2408,10 +2474,17 @@ impl Graph {
     // --- Param modulation ---
 
     /// Whether `node` declares `param` modulatable (its shape's params).
-    pub fn declares_param(&self, node: impl Into<NodeKey>, param: impl Into<UnitAddr>) -> bool {
-        let node = node.into();
-        self.shape(node)
-            .is_some_and(|s| s.params.index_of(param).is_some())
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn declares_param(
+        &self,
+        node: impl Into<NodeKey>,
+        param: impl Into<UnitAddr>,
+    ) -> Result<bool, NoSuchNode> {
+        Ok(self.shape_of(node.into())?.params.index_of(param).is_some())
     }
 
     /// Drives `node`'s declared `param` from `source`'s event output 0
@@ -2423,8 +2496,10 @@ impl Graph {
     ///
     /// # Errors
     ///
-    /// Refused, touching nothing, for a NaN bound, with the error the commit
-    /// would otherwise fail on (`GraphInvalid::BadParamRange`).
+    /// Refused, touching nothing, for a NaN bound
+    /// (`GraphInvalid::BadParamRange`) and for a `node` or a `source` that is
+    /// not in the graph (`GraphInvalid::UnknownParamNode`), the errors the
+    /// commit would otherwise fail on.
     pub fn set_param_mod(
         &mut self,
         node: impl Into<NodeKey>,
@@ -2439,6 +2514,11 @@ impl Graph {
         };
         if range.min.is_nan() || range.max.is_nan() {
             return Err(GraphInvalid::BadParamRange { at, range });
+        }
+        for missing in std::iter::once(node).chain(source) {
+            if !self.contains(missing) {
+                return Err(GraphInvalid::UnknownParamNode { at, missing });
+            }
         }
         let want = source.map(|from| EventOut {
             node: from,
@@ -2463,8 +2543,18 @@ impl Graph {
     }
 
     /// Stops modulating `node`'s `param`: it reads its own control again.
-    pub fn clear_param_mod(&mut self, node: impl Into<NodeKey>, param: impl Into<UnitAddr>) {
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn clear_param_mod(
+        &mut self,
+        node: impl Into<NodeKey>,
+        param: impl Into<UnitAddr>,
+    ) -> Result<(), NoSuchNode> {
         let node = node.into();
+        self.shape_of(node)?;
         let at = ParamIn {
             node,
             param: param.into(),
@@ -2472,139 +2562,42 @@ impl Graph {
         if self.editor.spec_mut().params.remove(&at).is_some() {
             self.edited = true;
         }
+        Ok(())
     }
 
-    /// How `node`'s `param` is modulated, as the graph value holds it.
+    /// How `node`'s `param` is modulated, as the graph value holds it: `None`
+    /// when nothing drives it.
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
     pub fn param_mod(
         &self,
         node: impl Into<NodeKey>,
         param: impl Into<UnitAddr>,
-    ) -> Option<ParamMod> {
+    ) -> Result<Option<ParamMod>, NoSuchNode> {
         let node = node.into();
-        self.editor
+        self.shape_of(node)?;
+        Ok(self
+            .editor
             .spec()
             .params
             .get(&ParamIn {
                 node,
                 param: param.into(),
             })
-            .cloned()
+            .cloned())
     }
 
-    // --- Taps ---
-
-    /// Copies `sources`, one lane each, out of the graph into a ring the
-    /// returned reader drains: a tap on any ports, at any width. The tap is
-    /// compiled by the next commit and fed by every block that renders after
-    /// it (a device, [`Session::render`](crate::Session::render) and
-    /// [`Session::render_frame`](crate::Session::render_frame) alike).
-    /// `capacity` is each lane's ring in frames; what the reader does not
-    /// drain in time is counted ([`TapReader::take_lost`]).
-    ///
-    /// [`TapAlign::ToOutput`] delays each lane by the compensation an output
-    /// of the same source gets, so it lines up with what the outputs carry;
-    /// [`TapAlign::Raw`] reads the source as it leaves its node.
-    ///
-    /// This is the **plan tap**: an op of the graph, so it sees the signal
-    /// before the engine's declick fader and the fold to the device width, on
-    /// any ports at any width. To record what the output sounds like, with the
-    /// fade, open [`Session::open_heard_tap`](crate::Session::open_heard_tap)
-    /// instead (the default for a recording); this is the explicit choice of
-    /// the graph's own signal. A block the engine refuses (rendered silent)
-    /// writes no frames here and counts none lost, since the op did not run;
-    /// the heard tap writes the silence.
-    ///
-    /// **Because it is before the declick fader, at a transport stop it shows
-    /// in a recording.** A transport-gated source (a
-    /// clip, the click, a sampler voice) ends on the stop's frame, so the tap
-    /// steps from the source's whole level to silence in one frame where the
-    /// engine's output buffer has faded over the declick (measured: a 0.5 source gives
-    /// a step of 0.5 in the tap and a largest step of about 0.001 in the
-    /// output). A source that keeps running through the stop (live input, a
-    /// tail) has none. A start steps alike in both: `Play` is not declicked.
-    ///
-    /// Every source must exist now, edits not yet committed included: a key
-    /// no node has, a port past the node's width or an input past the graph's
-    /// is refused with [`MissingSource`] and nothing is opened. Only the open
-    /// is checked. A port that narrows or vanishes later (a node replaced by
-    /// one with fewer outputs, a removed node) reads silence, the commit
-    /// succeeds and the reader is not told. A latency
-    /// change that resizes an aligned tap's delay shifts the stream with no
-    /// marker for the reader, as it does an output. What the reader does not
-    /// drain is dropped and counted, and a recording closes up over the gap.
-    ///
-    /// Dropping the reader leaves the tap open until
-    /// [`close_tap`](Self::close_tap) or the session's next
-    /// [`Reclaim`](crate::Phase::Reclaim) phase, which closes it.
-    ///
-    /// # Errors
-    ///
-    /// [`MissingSource`] for the first source that is not in the graph now.
-    pub fn open_tap(
-        &mut self,
-        sources: &[OutPort],
-        align: TapAlign,
-        capacity: Samples,
-    ) -> Result<TapReader, MissingSource> {
-        let sources = sources
-            .iter()
-            .filter_map(|p| Self::raw_source(*p))
-            .collect();
-        let id = TapId(self.next_tap);
-        let reader = self.editor.open_tap(id, sources, align, capacity)?;
-        self.next_tap += 1;
-        self.edited = true;
-        Ok(reader)
+    /// The graph's taps: open and close audio and event copies of it.
+    pub fn taps(&mut self) -> Taps<'_> {
+        Taps { graph: self }
     }
 
-    /// A tap on the graph's global outputs, aligned: lane `c` is output
-    /// channel `c` as the outputs carry it, **post-sum**: a channel several
-    /// sources feed is heard whole, each source delayed to the output time and
-    /// added ([`TapSpec::Outputs`](tutti_graph::TapSpec::Outputs)). It follows
-    /// the outputs when they are re-wired
-    /// ([`set_sources`](Self::set_sources),
-    /// [`connect`](Self::connect)); its width is the
-    /// output count when it was opened, and a later
-    /// [`widen_outputs`](Self::widen_outputs) does not widen it. When the root
-    /// **narrows** (a declared topology narrower than the root was), the lanes
-    /// past the new width read silence, and [`take_lost`](TapReader::take_lost)
-    /// does not count it: the reader keeps the lanes it opened with.
-    ///
-    /// This is the signal the graph produces, before the engine's declick
-    /// fader and the fold to the device's width; see [`open_tap`](Self::open_tap)
-    /// for what that means at a transport stop. To record what is heard, with
-    /// the fade, use [`Session::open_heard_tap`](crate::Session::open_heard_tap).
-    ///
-    /// Refuses with [`MissingSource`] when an output names a source that does
-    /// not exist now (an output wired to a port the node does not have); only
-    /// the open is checked, as for [`open_tap`](Self::open_tap).
-    ///
-    /// # Errors
-    ///
-    /// [`MissingSource`] for the first output source that is not in the graph
-    /// now.
-    pub fn open_output_tap(&mut self, capacity: Samples) -> Result<TapReader, MissingSource> {
-        let id = TapId(self.next_tap);
-        let width = self.outputs();
-        let reader = self.editor.open_output_tap(id, width, capacity)?;
-        self.next_tap += 1;
-        self.edited = true;
-        Ok(reader)
-    }
-
-    /// Closes a tap: its ops leave the plan at the next commit and the ring
-    /// is freed on this side. Dropping the reader closes it at the next
-    /// [`Reclaim`](crate::Phase::Reclaim) phase; this closes it now, with the
-    /// reader still held.
-    ///
-    /// # Errors
-    ///
-    /// [`CloseError::Tap`] when no tap `id` is open (closed already, or never
-    /// opened); nothing changes.
-    pub fn close_tap(&mut self, id: TapId) -> Result<(), CloseError> {
-        self.editor.close_tap(id)?;
-        self.edited = true;
-        Ok(())
+    /// The graph's level meters, the master's included.
+    pub fn meters(&mut self) -> Meters<'_> {
+        Meters { graph: self }
     }
 
     /// Closes the taps whose readers were dropped, and returns how many.
@@ -2615,117 +2608,6 @@ impl Graph {
             self.edited = true;
         }
         reaped
-    }
-
-    /// Opens a tap on one event output of a node and returns its reader: the
-    /// MIDI events the port carries, each with the frame it was due on
-    /// ([`TapEvent`](tutti_graph::TapEvent)), on the clock of the rate the
-    /// graph is prepared at now ([`EventTapReader::rate`]). The tap is
-    /// compiled by the next commit and fed by every block that renders after
-    /// it; a copy of events, the event sibling of [`open_tap`](Self::open_tap).
-    ///
-    /// `capacity` is a count of events. A non-note-off is refused once that
-    /// many are held, a note-off is kept up to
-    /// [`note_off_room`](tutti_graph::note_off_room) of it, and each refusal is
-    /// counted ([`EventTapReader::take_lost`]). `align` is as for a plan tap:
-    /// [`TapAlign::ToOutput`] delays the port by the compensation an output of
-    /// the same node gets, so the frames line up with the audio the graph
-    /// outputs; [`TapAlign::Raw`] reads it as it leaves its node. Ramps,
-    /// segments, harmony and resync are not copied.
-    ///
-    /// The port must exist now, edits not yet committed included
-    /// ([`MissingSource::Node`] or [`MissingSource::EventPort`] otherwise, and
-    /// nothing is opened). One that vanishes later reads no events, counts no
-    /// loss and fails no commit. Dropping the reader leaves the tap open until
-    /// [`close_event_tap`](Self::close_event_tap) or the session's next
-    /// [`Reclaim`](crate::Phase::Reclaim) phase, which closes it.
-    ///
-    /// **A re-prepare at another rate moves the graph's clock to a new scale,**
-    /// so a reader's frames stay on the rate it was opened at only until then;
-    /// the caller that re-rates the graph reopens its taps
-    /// ([`reopen_event_taps`](Self::reopen_event_taps)).
-    ///
-    /// # Errors
-    ///
-    /// [`MissingSource`] for a port that is not in the graph now.
-    pub fn open_event_tap(
-        &mut self,
-        source: EventOutPort,
-        align: TapAlign,
-        capacity: usize,
-    ) -> Result<EventTapReader, MissingSource> {
-        let id = EventTapId(self.next_event_tap);
-        let raw = source.raw().ok_or_else(|| MissingSource::EventPort {
-            node: source.node(),
-            port: u16::MAX,
-            width: self
-                .shape(source.node())
-                .map_or(0, |s| usize::from(s.event_out)),
-        })?;
-        let reader = self.editor.open_event_tap(id, raw, align, capacity)?;
-        self.next_event_tap += 1;
-        self.event_taps.insert(id, (raw, align, capacity));
-        self.edited = true;
-        Ok(reader)
-    }
-
-    /// Closes an event tap: its op leaves the plan at the next commit and the
-    /// ring is freed on this side. Dropping the reader closes it at the next
-    /// [`Reclaim`](crate::Phase::Reclaim) phase; this closes it now, with the
-    /// reader still held.
-    ///
-    /// # Errors
-    ///
-    /// [`CloseError::EventTap`] when no event tap `id` is open; nothing
-    /// changes.
-    pub fn close_event_tap(&mut self, id: EventTapId) -> Result<(), CloseError> {
-        self.editor.close_event_tap(id)?;
-        self.event_taps.remove(&id);
-        self.edited = true;
-        Ok(())
-    }
-
-    /// Opens every event tap again, at the rate the graph is prepared at now,
-    /// and returns the new readers: each replaces the tap of the same
-    /// [`id`](EventTapReader::id), so the reader it supersedes is fed no more.
-    /// What a caller does after a re-prepare at another rate
-    /// ([`set_sample_rate`](Self::set_sample_rate); a device session's restart
-    /// re-rates the graph too), so that one reader's frames are always on one
-    /// scale. A tap whose node was removed since is not reopened and is
-    /// dropped from the graph's list.
-    ///
-    /// The graph cannot do this by itself: a reader belongs to the thread that
-    /// drains it, and the new one has to reach that thread.
-    ///
-    /// Every tap's reader is replaced, a caller's included: one that owns a
-    /// single tap reopens just that one with
-    /// [`reopen_event_tap`](Self::reopen_event_tap), so another owner's reader
-    /// is not superseded and left dead.
-    pub fn reopen_event_taps(&mut self) -> Vec<EventTapReader> {
-        let ids: Vec<EventTapId> = self.event_taps.keys().copied().collect();
-        ids.into_iter()
-            .filter_map(|id| self.reopen_event_tap(id))
-            .collect()
-    }
-
-    /// Opens the event tap `id` again, at the rate the graph is prepared at
-    /// now: the one-tap form of [`reopen_event_taps`](Self::reopen_event_taps),
-    /// for the owner of that tap (the session's hardware MIDI out reopens its
-    /// own and no other). The reader it supersedes is fed no more. `None` for
-    /// an id that is not open, and for a tap whose node was removed since,
-    /// which is dropped from the graph's list.
-    pub fn reopen_event_tap(&mut self, id: EventTapId) -> Option<EventTapReader> {
-        let &(port, align, capacity) = self.event_taps.get(&id)?;
-        self.edited = true;
-        match self.editor.open_event_tap(id, port, align, capacity) {
-            Ok(reader) => Some(reader),
-            Err(_) => {
-                self.event_taps.remove(&id);
-                // Open a moment ago, so there is a tap to close.
-                let _ = self.editor.close_event_tap(id);
-                None
-            }
-        }
     }
 
     /// Closes the event taps whose readers were dropped, and returns how many.
@@ -2740,94 +2622,6 @@ impl Graph {
         reaped
     }
 
-    // --- Meters ---
-
-    /// Declares a level meter on `sources`, one channel each, any node
-    /// ports, and returns its reader, **off** until
-    /// [`enable`](MeterReader::enable). The meter is compiled by the next
-    /// commit and fed by every block that renders after it (a device,
-    /// [`Session::render`](crate::Session::render) and
-    /// [`Session::render_frame`](crate::Session::render_frame) alike).
-    ///
-    /// A meter reads before the engine's fold to the device and its declick.
-    /// It holds the peak since the last
-    /// [`read`](MeterReader::read), so a UI that polls slower than the blocks
-    /// still sees a spike; ballistics are the reader's. One reader per meter:
-    /// a second consumer opens a second meter.
-    ///
-    /// `align` is the tap's choice: [`TapAlign::Raw`] reads each source as it
-    /// leaves its node (a track's level), [`TapAlign::ToOutput`] delays each
-    /// lane by the compensation an output of the same source gets (a ring per
-    /// lane), so it lines up with what the outputs carry.
-    ///
-    /// Every source must exist now, edits not yet committed included
-    /// ([`MissingSource`] otherwise, and nothing is opened). Removing a node a
-    /// meter reads afterwards leaves that channel on silence, and so does
-    /// replacing it with a node that has fewer outputs (the lanes past the
-    /// new width); the commit succeeds either way. Dropping the reader
-    /// leaves the meter open until [`close_meter`](Self::close_meter) or the
-    /// session's next [`Reclaim`](crate::Phase::Reclaim) phase, which closes
-    /// it and frees its cells.
-    ///
-    /// # Errors
-    ///
-    /// [`MissingSource`] for the first source that is not in the graph now.
-    pub fn open_meter(
-        &mut self,
-        sources: &[OutPort],
-        align: TapAlign,
-    ) -> Result<MeterReader, MissingSource> {
-        let sources = sources
-            .iter()
-            .filter_map(|p| Self::raw_source(*p))
-            .collect();
-        self.declare_meter(MeterSpec::Ports { sources, align })
-    }
-
-    /// A raw meter on every output port of `node`: a track's level. Its width is
-    /// the node's output count now; a later re-shape of the node does not
-    /// widen it. A key no node has is [`MissingSource::Node`], not a
-    /// zero-width meter.
-    ///
-    /// # Errors
-    ///
-    /// [`MissingSource`] for the first source that is not in the graph now.
-    pub fn open_node_meter(
-        &mut self,
-        node: impl Into<NodeKey>,
-    ) -> Result<MeterReader, MissingSource> {
-        let node = node.into();
-        if self.shape(node).is_none() {
-            return Err(MissingSource::Node { node });
-        }
-        let sources: Vec<OutPort> = (0..self.node_outputs(node))
-            .map(|port| OutPort::new(node, port))
-            .collect();
-        self.open_meter(&sources, TapAlign::Raw)
-    }
-
-    fn declare_meter(&mut self, spec: MeterSpec) -> Result<MeterReader, MissingSource> {
-        let id = MeterId(self.next_meter);
-        let reader = self.editor.open_meter(id, spec)?;
-        self.next_meter += 1;
-        self.edited = true;
-        Ok(reader)
-    }
-
-    /// Closes a meter: its op leaves the plan at the next commit and its
-    /// cells are freed on this side. Dropping the reader closes it at the
-    /// next [`Reclaim`](crate::Phase::Reclaim) phase; this closes it now, with
-    /// the reader still held.
-    ///
-    /// # Errors
-    ///
-    /// [`CloseError::Meter`] when no meter `id` is open; nothing changes.
-    pub fn close_meter(&mut self, id: MeterId) -> Result<(), CloseError> {
-        self.editor.close_meter(id)?;
-        self.edited = true;
-        Ok(())
-    }
-
     /// Closes the meters whose readers were dropped, and returns how many.
     /// The session's [`Reclaim`](crate::Phase::Reclaim) phase runs it.
     pub(crate) fn reap_meters(&mut self) -> usize {
@@ -2836,24 +2630,6 @@ impl Graph {
             self.edited = true;
         }
         reaped
-    }
-
-    /// The master meter: the level of each global output channel, before
-    /// the engine's fold and declick. Declared and **on** when the graph is
-    /// built, so a host that reads it needs to ask for nothing; it follows
-    /// the outputs as they are re-wired or widened (up to
-    /// [`MAX_ROOT_CHANNELS`](tutti_graph::MAX_ROOT_CHANNELS)). `None` once a
-    /// host has taken it ([`take_master_meter`](Self::take_master_meter)). A
-    /// block the engine refuses runs no op and does not touch it.
-    pub fn master_meter(&mut self) -> Option<&mut MeterReader> {
-        self.master_meter.as_mut()
-    }
-
-    /// Hands the master meter's reader to its one consumer, which owns it
-    /// from here: dropping it closes the meter at the next
-    /// [`Reclaim`](crate::Phase::Reclaim) phase.
-    pub fn take_master_meter(&mut self) -> Option<MeterReader> {
-        self.master_meter.take()
     }
 
     // --- Shape ---
@@ -2872,32 +2648,56 @@ impl Graph {
         self.editor.shapes().get(&node).copied()
     }
 
+    /// The shape of `node`, or the refusal for a key no node has.
+    fn shape_of(&self, node: NodeKey) -> Result<tutti_graph::Shape, NoSuchNode> {
+        if !self.contains(node) {
+            return Err(NoSuchNode::new(node));
+        }
+        self.shape(node).ok_or(NoSuchNode::new(node))
+    }
+
     /// `node`'s input port count.
-    pub fn node_inputs(&self, node: impl Into<NodeKey>) -> usize {
-        let node = node.into();
-        self.shape(node)
-            .map_or(0, |s| s.audio_in().count() as usize)
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn node_inputs(&self, node: impl Into<NodeKey>) -> Result<usize, NoSuchNode> {
+        self.shape_of(node.into())
+            .map(|s| s.audio_in().count() as usize)
     }
 
     /// `node`'s output port count.
-    pub fn node_outputs(&self, node: impl Into<NodeKey>) -> usize {
-        let node = node.into();
-        self.shape(node)
-            .map_or(0, |s| s.audio_out().count() as usize)
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn node_outputs(&self, node: impl Into<NodeKey>) -> Result<usize, NoSuchNode> {
+        self.shape_of(node.into())
+            .map(|s| s.audio_out().count() as usize)
     }
 
     /// The latency `node` reports: the shape the editor holds, read when the
     /// node was inserted (prepared at the graph's rate) and moved since only
     /// by a re-prepare or a hosted plugin's latency change.
-    pub fn node_latency(&self, node: impl Into<NodeKey>) -> Samples {
-        let node = node.into();
-        self.shape(node).map_or(Samples(0), |s| s.latency.samples())
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn node_latency(&self, node: impl Into<NodeKey>) -> Result<Samples, NoSuchNode> {
+        self.shape_of(node.into()).map(|s| s.latency.samples())
     }
 
     /// The tail `node` reports.
-    pub fn node_tail(&self, node: impl Into<NodeKey>) -> Tail {
-        let node = node.into();
-        self.shape(node).map_or(Tail::None, |s| s.tail)
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph.
+    #[must_use = "the call refuses a node that does not exist"]
+    pub fn node_tail(&self, node: impl Into<NodeKey>) -> Result<Tail, NoSuchNode> {
+        self.shape_of(node.into()).map(|s| s.tail)
     }
 
     /// Widen the global outputs to `channels`. New channels read silence.
@@ -3072,32 +2872,6 @@ impl Graph {
         }
     }
 
-    /// The compensation the next commit's plan carries: the spec compiled
-    /// against the shapes, as the commit will compile it. Nothing is
-    /// inserted — PDC is the compiler's. `None` when the spec does not
-    /// compile (the commit will say why).
-    pub fn planned_compensation(&self) -> Option<Compensation> {
-        let valid = self.editor.lowered().ok()?.spec.validate().ok()?;
-        let (plan, _) = tutti_graph::compile(
-            &valid,
-            self.editor.shapes(),
-            self.editor.prepare(),
-            self.editor.base().map(|p| &**p),
-        )
-        .ok()?;
-        Some(compensation_of(&plan))
-    }
-
-    /// The plan last sent to the audio thread (`Editor::base`).
-    pub fn sent_plan(&self) -> Option<Arc<tutti_graph::Plan>> {
-        self.editor.base().cloned()
-    }
-
-    /// How many commits have sent a plan.
-    pub fn commits_sent(&self) -> u64 {
-        self.commits
-    }
-
     /// Whether an edit waits for a commit: what the session's next update
     /// commits on.
     pub fn is_edited(&self) -> bool {
@@ -3106,7 +2880,7 @@ impl Graph {
 
     /// The compensation of the plan sent last: what the session publishes,
     /// since it is what the executor is handed.
-    pub fn sent_compensation(&self) -> Option<Compensation> {
+    pub(crate) fn sent_compensation(&self) -> Option<Compensation> {
         self.editor.base().map(|plan| compensation_of(plan))
     }
 
@@ -3118,7 +2892,11 @@ impl Graph {
     ///
     /// Returns whether the editor's figure moved.
     #[cfg(feature = "plugin")]
-    pub fn refresh_node_latency(&mut self, node: impl Into<NodeKey>, latency: Latency) -> bool {
+    pub(crate) fn refresh_node_latency(
+        &mut self,
+        node: impl Into<NodeKey>,
+        latency: Latency,
+    ) -> bool {
         let node = node.into();
         if !self.nodes.contains_key(&node) {
             return false;
@@ -3128,7 +2906,7 @@ impl Graph {
         // refused one would never be retried (the poll only fires again when
         // the plugin's figure moves).
         let latency = clamp_latency(latency);
-        if self.node_latency(node) == latency.samples() {
+        if self.node_latency(node) == Ok(latency.samples()) {
             return false;
         }
         match self.editor.set_latency(node, latency) {
@@ -3334,105 +3112,5 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
 
     fn feed(&self, source: tutti_modulation::SourceKey) -> Option<tutti_nodes::Feed> {
         self.keys.feed(source)
-    }
-}
-
-/// The audio thread's half of a graph, for a test that renders what a device
-/// would hear: every commit lands on it, and rendering it plays the graph.
-/// Taken with [`Graph::take_audio_side`].
-pub struct AudioSide {
-    exec: Executor,
-    transport: Transport,
-    scratch: Vec<Vec<f32>>,
-    /// A fork's own editor, kept for as long as its executor runs: the
-    /// executor sends its boxes back to it. `None` for the live graph's
-    /// audio side, whose editor stays in the graph.
-    _editor: Option<Editor>,
-}
-
-impl std::fmt::Debug for AudioSide {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AudioSide")
-            .field("exec", &self.exec)
-            .field("transport", &self.transport)
-            .field("_editor", &self._editor)
-            .finish_non_exhaustive()
-    }
-}
-
-impl AudioSide {
-    fn live(exec: Executor) -> Self {
-        Self {
-            exec,
-            transport: Transport::default(),
-            scratch: Vec::new(),
-            _editor: None,
-        }
-    }
-
-    /// A fork's pair, rendered as an audio side.
-    fn forked(editor: Editor, exec: Executor) -> Self {
-        Self {
-            exec,
-            transport: Transport::default(),
-            scratch: Vec::new(),
-            _editor: Some(editor),
-        }
-    }
-
-    /// Renders one frame: `input` one sample per global input, `output` one
-    /// per global output. Commits sent since the last call land first.
-    pub fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        render(
-            &mut self.exec,
-            &mut self.scratch,
-            &self.transport,
-            input,
-            output,
-        );
-    }
-
-    /// The transport every block from here on renders under, as a device's
-    /// engine hands its graph the playhead: a node that reads the transport
-    /// from its `Env` (a placed sampler voice) plays on it. Stopped at beat
-    /// zero until set.
-    pub fn set_transport(&mut self, transport: Transport) {
-        self.transport = transport;
-    }
-
-    /// Renders `frames` frames with no global input into `output`, planar,
-    /// one slice per global output, in the blocks a device would hand over:
-    /// executor blocks of up to `block` frames, each under the transport
-    /// last [set](Self::set_transport) (stopped at beat zero until one is).
-    ///
-    /// # Panics
-    ///
-    /// If `block` is zero, or past the graph's prepared maximum.
-    pub fn render(&mut self, frames: usize, block: usize, output: &mut [Vec<f32>]) {
-        assert!(block > 0, "a zero-frame block");
-        for o in output.iter_mut() {
-            o.clear();
-            o.resize(frames, 0.0);
-        }
-        let exec = &mut self.exec;
-        let mut done = 0;
-        while done < frames {
-            let len = (frames - done).min(block);
-            exec.apply_pending();
-            let (ins, outs) = exec
-                .plan()
-                .map_or((0, 0), |p| (p.global_inputs() as usize, p.global_outputs()));
-            let zeros = vec![0.0f32; len];
-            let inputs: Vec<&[f32]> = (0..ins).map(|_| &zeros[..]).collect();
-            let mut planes: Vec<Vec<f32>> = vec![vec![0.0; len]; outs];
-            let mut slices: Vec<&mut [f32]> = planes.iter_mut().map(|p| &mut p[..]).collect();
-            if exec.plan().is_some() {
-                exec.process(len, &self.transport, &inputs, &mut slices);
-            }
-            for (o, p) in output.iter_mut().zip(&planes) {
-                o[done..done + len].copy_from_slice(p);
-            }
-            done += len;
-        }
     }
 }

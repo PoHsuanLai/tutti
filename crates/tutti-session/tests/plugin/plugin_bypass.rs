@@ -136,7 +136,7 @@ impl Rig {
 #[test]
 fn a_bypassed_plugin_passes_a_click_its_declared_latency_late() {
     let mut r = rig(NodeMode::Bypassed);
-    let latency = r.s.graph_ref().node_latency(r.plugin).0;
+    let latency = r.s.graph_ref().node_latency(r.plugin).unwrap().0;
     assert!(
         latency >= BLOCK,
         "a served plugin's node declares at least its pipeline chunk, got {latency}"

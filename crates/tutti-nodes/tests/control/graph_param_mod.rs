@@ -36,8 +36,9 @@ use tutti_nodes::{
     SvfType,
 };
 use tutti_types::{
-    Amplitude, AtomicF32, BeatDuration, ChannelLayout, CompressionRatio, Db, Depth, Drive,
-    Feedback, Hz, Mix, PhaseIncrement, Q, Resonance, SampleRate, Samples, Seconds, UnitParam,
+    Amplitude, AtomicF32, BeatDuration, BusTopology, ChannelLayout, CompressionRatio, Db, Depth,
+    Drive, Feedback, Hz, Mix, PhaseIncrement, Q, Resonance, SampleRate, Samples, Seconds,
+    UnitParam,
 };
 
 const FRAMES: usize = 24_000;
@@ -416,13 +417,13 @@ fn cases() -> Vec<Case> {
             name: "brickwall ceiling",
             param: UnitParam::Ceiling,
             make: |w, v| {
-                let mut n = BrickwallLimiterNode::with_channels(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
-                    Db::new(0.0),
+                let n = BrickwallLimiterNode::with_bus(
+                    BusTopology::unassigned(
+                        ChannelLayout::try_from(w).expect("a test width is small"),
+                    )
+                    .expect("a test width is one bus"),
+                    Db::new(v.unwrap_or(0.0)),
                 );
-                if let Some(v) = v {
-                    n.set_ceiling(Db::new(v));
-                }
                 parts_of(n)
             },
             lo: -12.0,

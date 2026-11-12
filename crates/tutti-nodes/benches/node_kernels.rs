@@ -29,7 +29,9 @@ use tutti_nodes::{
     BrickwallLimiterNode, CompressorNode, DelayLineNode, DistortionNode, FamilyNode, FdnControls,
     FreeverbNode, GateNode, LimiterNode, ShapeKind,
 };
-use tutti_types::{ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds};
+use tutti_types::{
+    BusTopology, ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds,
+};
 
 const BLOCKS: [usize; 2] = [64, 1024];
 const SR: SampleRate = SampleRate(48_000.0);
@@ -198,14 +200,24 @@ fn brickwall(c: &mut Criterion) {
         c,
         "brickwall",
         "6",
-        || BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-3.0)),
+        || {
+            BrickwallLimiterNode::with_bus(
+                BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
+                Db::new(-3.0),
+            )
+        },
         None,
     );
     run(
         c,
         "brickwall",
         "6_fed",
-        || BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-3.0)),
+        || {
+            BrickwallLimiterNode::with_bus(
+                BusTopology::unassigned(ChannelLayout::from(6u16)).unwrap(),
+                Db::new(-3.0),
+            )
+        },
         Some(ceiling_sweep),
     );
 }

@@ -85,10 +85,3 @@ impl LookaheadRing {
 pub fn fold_peak(peak: f32, x: f32) -> f32 {
     peak.max(x.abs())
 }
-
-/// Clamps `sample` to `+-ceiling_linear`.
-#[inline]
-#[must_use]
-pub fn brickwall_clip(sample: f32, ceiling_linear: f32) -> f32 {
-    sample.clamp(-ceiling_linear, ceiling_linear)
-}

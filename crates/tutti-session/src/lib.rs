@@ -91,15 +91,17 @@ pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
 pub use edge::EdgeGainError;
-pub use error::{ConnectError, Error, HeardTapError, InletError, RemoveError, Result};
+pub use error::{ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]
 pub use graph::ModKeys;
 pub use graph::RenderWorkerStart;
+#[cfg(feature = "testing")]
+pub use graph::{AudioSide, Testing};
 pub use graph::{
-    AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph, LIVE_MAX_BLOCK,
-    ReplaceRefused,
+    Committed, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph, LIVE_MAX_BLOCK, Meters,
+    ReplaceRefused, Taps,
 };
 #[cfg(feature = "midi")]
 pub use instrument::{InstrumentHandle, NotInstrument, SendError};
@@ -142,6 +144,7 @@ pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEv
 pub use tutti_dsp::DitherShape;
 #[cfg(feature = "record")]
 pub use tutti_dsp::{DitherSink, DitherSpec};
+pub use tutti_engine::HeardOpen;
 #[cfg(feature = "export")]
 pub use tutti_export::{
     EventLossPolicy, Normalize, Outcome, Produced, Progress, Rendered, Resample, Stage, Written,

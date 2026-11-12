@@ -8,9 +8,9 @@
 
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
 use crate::host::{AudioHost, DeviceHost};
+use crate::roster::{DeviceId, Direction};
 
 /// What [`DeviceListing::poll`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub enum Listed {
     /// The worker has not answered.
     Pending,
     /// The host's output devices.
-    Devices(Vec<DeviceInfo>),
+    Devices(Vec<DeviceId>),
     /// The enumeration failed, or its thread ended without an answer.
     Failed(String),
 }
@@ -30,7 +30,7 @@ pub enum Listed {
 /// caller's. Its answer, if it ever comes, is discarded.
 #[derive(Debug)]
 pub struct DeviceListing {
-    result: Receiver<Result<Vec<DeviceInfo>>>,
+    result: Receiver<Result<Vec<DeviceId>>>,
     done: bool,
 }
 
@@ -41,7 +41,12 @@ impl DeviceListing {
     /// # Errors
     /// [`Error::InvalidConfig`] when the thread cannot be spawned.
     pub fn outputs(host: AudioHost) -> Result<Self> {
-        Self::spawn_with(move || DeviceHost::open(host)?.output_devices())
+        Self::spawn_with(move || {
+            Ok(DeviceHost::open(host)?
+                .snapshot()?
+                .devices(Direction::Output)
+                .to_vec())
+        })
     }
 
     /// Runs `list` once on a new thread: the seam a test enumerates through.
@@ -49,7 +54,7 @@ impl DeviceListing {
     /// # Errors
     /// [`Error::InvalidConfig`] when the thread cannot be spawned.
     pub fn spawn_with(
-        list: impl FnOnce() -> Result<Vec<DeviceInfo>> + Send + 'static,
+        list: impl FnOnce() -> Result<Vec<DeviceId>> + Send + 'static,
     ) -> Result<Self> {
         let (tx, result) = mpsc::channel();
         std::thread::Builder::new()
@@ -97,7 +102,7 @@ mod tests {
         let (release, held) = mpsc::channel::<()>();
         let mut listing = DeviceListing::spawn_with(move || {
             held.recv().ok();
-            Ok(DeviceInfo::list(["A".to_string()]))
+            Ok(DeviceId::list(["A"]))
         })
         .unwrap();
         assert_eq!(listing.poll(), Listed::Pending);
@@ -112,7 +117,7 @@ mod tests {
                 other => break other,
             }
         };
-        assert_eq!(listed, Listed::Devices(DeviceInfo::list(["A".to_string()])));
+        assert_eq!(listed, Listed::Devices(DeviceId::list(["A"])));
         assert_eq!(listing.poll(), Listed::Pending, "the answer is taken once");
     }
 

@@ -110,7 +110,8 @@ fn a_full_tap_counts_what_it_drops() {
     let clock = s.midi_nodes().unwrap().clock;
     let mut all = s
         .graph()
-        .open_event_tap(EventOutPort::new(clock, 0), TapAlign::Raw, 8_192)
+        .taps()
+        .open_event(EventOutPort::new(clock, 0), TapAlign::Raw, 8_192)
         .expect("the clock is in the graph");
     let _ = s.update(); // commits the second tap
     render(&s, 1_100_000);
@@ -170,17 +171,20 @@ fn reopening_one_tap_leaves_the_others_fed() {
     let clock = s.midi_nodes().unwrap().clock;
     let mut first = s
         .graph()
-        .open_event_tap(EventOutPort::new(clock, 0), TapAlign::Raw, 64)
+        .taps()
+        .open_event(EventOutPort::new(clock, 0), TapAlign::Raw, 64)
         .unwrap();
     let mut second = s
         .graph()
-        .open_event_tap(EventOutPort::new(clock, 0), TapAlign::Raw, 64)
+        .taps()
+        .open_event(EventOutPort::new(clock, 0), TapAlign::Raw, 64)
         .unwrap();
     let _ = s.update();
     s.graph().set_sample_rate(SampleRate(44_100.0));
     let reopened = s
         .graph()
-        .reopen_event_tap(first.id())
+        .taps()
+        .reopen_event(first.id())
         .expect("the tap is open");
     assert_eq!(reopened.rate(), SampleRate(44_100.0));
     assert_eq!(reopened.id(), first.id());

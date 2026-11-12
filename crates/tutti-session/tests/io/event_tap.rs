@@ -73,6 +73,7 @@ fn drain(tap: &mut tutti_graph::EventTapReader) -> Vec<u64> {
 
 fn tap_ops(s: &Session) -> usize {
     s.graph_ref()
+        .testing()
         .sent_plan()
         .expect("a plan was sent")
         .ops()
@@ -90,7 +91,8 @@ fn opening_a_tap_yields_the_events_rendered_since_the_open() {
     frames(1, &mut s);
     let mut tap = s
         .graph()
-        .open_event_tap(source, TapAlign::Raw, 64)
+        .taps()
+        .open_event(source, TapAlign::Raw, 64)
         .expect("the port exists");
     assert_eq!(tap.rate(), SampleRate(48_000.0));
     frames(15, &mut s);
@@ -104,7 +106,8 @@ fn opening_refuses_a_port_the_graph_does_not_have() {
     let (mut s, source) = session();
     assert_eq!(
         s.graph()
-            .open_event_tap(EventOutPort::new(source.node(), 3), TapAlign::Raw, 8)
+            .taps()
+            .open_event(EventOutPort::new(source.node(), 3), TapAlign::Raw, 8)
             .err(),
         Some(MissingSource::EventPort {
             node: source.node(),
@@ -121,13 +124,14 @@ fn closing_the_tap_stops_the_copy() {
     let (mut s, source) = session();
     let mut tap = s
         .graph()
-        .open_event_tap(source, TapAlign::Raw, 64)
+        .taps()
+        .open_event(source, TapAlign::Raw, 64)
         .expect("the port exists");
     frames(6, &mut s);
     assert_eq!(tap_ops(&s), 1);
-    s.graph().close_event_tap(tap.id()).unwrap();
+    s.graph().taps().close_event(tap.id()).unwrap();
     assert_eq!(
-        s.graph().close_event_tap(tap.id()),
+        s.graph().taps().close_event(tap.id()),
         Err(CloseError::EventTap(tap.id())),
         "a closed event tap is not open"
     );
@@ -143,7 +147,8 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
     let (mut s, source) = session();
     let tap = s
         .graph()
-        .open_event_tap(source, TapAlign::Raw, 64)
+        .taps()
+        .open_event(source, TapAlign::Raw, 64)
         .expect("the port exists");
     let _ = s.update();
     assert_eq!(tap_ops(&s), 1, "one op a tap while it is open");
@@ -166,12 +171,13 @@ fn reopening_replaces_the_tap_at_the_new_rate() {
     let (mut s, source) = session();
     let mut old = s
         .graph()
-        .open_event_tap(source, TapAlign::Raw, 64)
+        .taps()
+        .open_event(source, TapAlign::Raw, 64)
         .expect("the port exists");
     frames(5, &mut s);
     assert_eq!(drain(&mut old), vec![0, 4]);
     s.graph().set_sample_rate(SampleRate(44_100.0));
-    let mut readers = s.graph().reopen_event_taps();
+    let mut readers = s.graph().taps().reopen_events();
     assert_eq!(readers.len(), 1);
     let mut new = readers.remove(0);
     assert_eq!(new.id(), old.id());

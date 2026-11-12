@@ -6,8 +6,8 @@ modulation effects, mixing and automation.
 Every node here is a graph node (`tutti_graph::Node`), and a node file holds
 only the adapter: shape, prepare, process, params and fork. The algorithm each
 one runs is a pure function or struct over slices in `tutti-dsp`: the filter
-coefficients and steps (`SvfCoeffs`, `LadderCoeffs`, `Crossover`), the dynamics
-curves and kernels, `Convolver`, `DelayLine` and the waveshaping curves. Build one, insert it
+coefficients and steps (`SvfCoeffs`, `LadderCoeffs`, `CrossoverModel`), the dynamics
+curves and recurrences, `Convolver`, `DelayLine` and the waveshaping curves. Build one, insert it
 into a graph (`tutti_graph::{GraphBuilder, Editor}`), wire it, and the graph
 prepares it at the device rate and renders it. Inserting a node hands back its
 controls, usually a `tutti_graph::ParamSet` addressed by `UnitParam` (a
@@ -24,7 +24,8 @@ node without a lock.
   matrix), over `tutti_dsp::DelayLine`.
 - **Dynamics** — `CompressorNode`, `GateNode`, `BrickwallLimiterNode`,
   `LimiterNode`, and `MultibandCompressorNode` (2 to 4 bands, a linked
-  compressor per band of a `Crossover`). Every setting is an indexed param: a
+  compressor per band of a Linkwitz-Riley crossover, a hand-written node over
+  `Realized<MultibandRecurrence>`). Every setting is an indexed param: a
   threshold, knee, ratio, attack, release and make-up (`GainDb`) per band, a
   `Cutoff` per crossover (27 ports at 4 bands), and a `Bypass` and `Solo`
   toggle per band (`>= 0.5` is on, as every toggle; cells without a port). The
@@ -60,7 +61,7 @@ node without a lock.
 A `*Node` is the graph-facing node; the inner object some are built from,
 `Modulator`, carries no suffix, because it is not a node and
 can be used on its own. The algorithms are `tutti-dsp`'s (`tutti_dsp::DelayLine`,
-`tutti_dsp::Crossover`, …); this crate re-exports only the types in a node's
+`tutti_dsp::CrossoverFamily`, …); this crate re-exports only the types in a node's
 signature: `SvfType`, `LadderType`, `Real`, `CrossoverError`,
 `InterpolationMode` and `ShapeKind`.
 

@@ -265,6 +265,7 @@ pub(crate) fn scale(lane: &mut [f32], gain: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::VoiceWindow;
     use tutti_types::MaxBlock;
 
     /// [`BlockScratch`]'s bytes a frame that do not depend on the width: a
@@ -360,8 +361,11 @@ mod tests {
         let mut wave = tutti_codec::Wave::new(2, SampleRate::new(48_000.0));
         wave.push_frame(&[0.0, 0.0]);
         let wave = std::sync::Arc::new(wave);
-        let source = MemorySource::placed(std::sync::Arc::clone(&wave), Beat::new(0.0), None)
-            .expect("a placeable wave");
+        let source = MemorySource::placed(
+            std::sync::Arc::clone(&wave),
+            VoiceWindow::from(Beat::new(0.0)),
+        )
+        .expect("a placeable wave");
         let mut pool = VoicePool::new();
         let mut node = VoiceNode::new(Voice {
             source: VoiceSource::Memory(source.clone()),

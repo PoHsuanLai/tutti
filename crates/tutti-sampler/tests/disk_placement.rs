@@ -14,18 +14,20 @@
 //! place a wrong value. The expected figures come from the engine's speaker
 //! order (`ChannelTopology::smpte`), not from the placement under test.
 
+use tutti_sampler::VoiceWindow;
+
+use tutti_sampler::testing::loop_frames;
+
 use std::path::Path;
 use tutti_types::MaxBlock;
 
 use tutti_graph::contract;
 use tutti_sampler::testing::{MockTransport, settle};
 use tutti_sampler::{
-    ByHand, Direction, DiskStreamer, DiskVoice, LoopSetting, OpenError, PlaceError, Placement,
-    Stream, StreamReader,
+    ByHand, Direction, DiskStreamer, DiskVoice, Loop, OpenError, PlaceError, Placement, Stream,
+    StreamReader,
 };
-use tutti_types::{
-    Beat, Bpm, ChannelLayout, ChannelTopology, FoldEnd, FoldError, SamplePosition, SampleRate,
-};
+use tutti_types::{Beat, Bpm, ChannelLayout, ChannelTopology, FoldEnd, FoldError, SampleRate};
 
 /// Only inside an `assert_no_alloc` region does this abort.
 #[global_allocator]
@@ -118,7 +120,7 @@ fn stream(channels: u16, mask: u32) -> (tempfile::TempDir, Rig, StreamReader) {
 
 /// The voice that plays `reader`, placed at beat 0 for the file's length.
 fn voice_of(reader: StreamReader) -> DiskVoice {
-    DiskVoice::from_reader(reader, Beat::new(0.0), None)
+    DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)))
 }
 
 /// The last block of a few rendered from `voice`, planar: the ring is full and
@@ -481,12 +483,8 @@ fn lanes<N: tutti_graph::Node>(direct: &contract::Direct<N>) -> Vec<Vec<f32>> {
     (0..8).map(|c| direct.output(c).to_vec()).collect()
 }
 
-fn loop_1000_3000() -> LoopSetting {
-    LoopSetting::On {
-        start: SamplePosition(1_000.0),
-        end: SamplePosition(3_000.0),
-        crossfade_frames: 64,
-    }
+fn loop_1000_3000() -> Option<Loop> {
+    Some(loop_frames(1_000, 3_000, 64))
 }
 
 /// A fork reads a placed file through every one of its paths: forward, looped

@@ -84,6 +84,8 @@ mod plugin;
 mod recorder;
 #[cfg(feature = "plugin")]
 mod recovery;
+#[cfg(feature = "sampler")]
+mod sampler;
 mod session;
 #[cfg(all(feature = "device", feature = "audio-io"))]
 mod take;
@@ -160,6 +162,8 @@ pub use recovery::{
     GiveUp, PortCounts, Recovery, RecoveryAction, RecoveryEvent, RecoveryFailure, RecoveryPolicy,
     ReloadCause,
 };
+#[cfg(feature = "sampler")]
+pub use sampler::{Residency, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerLoad};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]

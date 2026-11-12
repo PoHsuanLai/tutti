@@ -21,7 +21,7 @@ use tutti_graph::NodeKey;
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
     ByHand, DiskStreamer, DiskVoice, MemorySource, Placement, Playback, Stream, StreamReader,
-    Voice, VoiceNode, VoiceSource,
+    Voice, VoiceNode, VoiceSource, VoiceWindow,
 };
 use tutti_session::BufferMaster;
 use tutti_session::{
@@ -117,8 +117,8 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         wave.push_frame(&[tone(i)]);
     }
     let voice = {
-        let source =
-            MemorySource::placed(Arc::new(wave), Beat(3.0), None).expect("a placeable wave");
+        let source = MemorySource::placed(Arc::new(wave), VoiceWindow::from(Beat(3.0)))
+            .expect("a placeable wave");
         let (node, _params) = session.graph().add(source);
         session.graph().connect(node, Root).unwrap();
         node
@@ -128,8 +128,8 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         for i in 0..RATE as usize {
             wave.push_frame(&[tone(i)]);
         }
-        let source =
-            MemorySource::placed(Arc::new(wave), Beat(0.0), None).expect("a placeable wave");
+        let source = MemorySource::placed(Arc::new(wave), VoiceWindow::from(Beat(0.0)))
+            .expect("a placeable wave");
         session.graph().add(source).0
     };
 
@@ -218,7 +218,7 @@ fn streamer_on(path: &Path) -> ((DiskStreamer<ByHand>, Stream), StreamReader) {
 
 /// The live voice of the stream `reader` reads, placed at `beat`.
 fn disk_voice(reader: StreamReader, beat: f64) -> DiskVoice {
-    DiskVoice::from_reader(reader, Beat(beat), None)
+    DiskVoice::from_reader(reader, VoiceWindow::from(Beat(beat)))
 }
 
 fn node_of(source: VoiceSource) -> VoiceNode {
@@ -258,7 +258,8 @@ fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
             wave.push_frame(&[value(i), -value(i)]);
         }
         let memory = node_of(VoiceSource::Memory(
-            MemorySource::placed(Arc::new(wave), Beat(3.0), None).expect("a placeable wave"),
+            MemorySource::placed(Arc::new(wave), VoiceWindow::from(Beat(3.0)))
+                .expect("a placeable wave"),
         ));
         let graph = session.graph();
         let (bare, _) = graph.add(bare);

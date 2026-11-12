@@ -350,7 +350,7 @@ fn stream_at(
     });
     prime(streamer);
 
-    let voice = DiskVoice::from_reader(reader, Beat::new(0.0), None);
+    let voice = DiskVoice::from_reader(reader, VoiceWindow::from(Beat::new(0.0)));
     let voice = contract::prepared(voice, SampleRate(SR), BLOCK);
     clock.seek_seconds(at_sec);
 

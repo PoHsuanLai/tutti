@@ -20,6 +20,8 @@
 //! non-allocation (steady state, a jump's scratch copy and fade) is guarded
 //! in-crate, in `voice::disk_voice`'s tests.
 
+use tutti_sampler::testing::loop_frames;
+
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
@@ -29,12 +31,11 @@ use tutti_graph::contract::Direct;
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
-    Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
-    VoiceCommand, VoiceNode, VoicePool, VoiceSource, VoiceWindow,
+    Direction, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoiceNode, VoicePool,
+    VoiceSource, VoiceWindow,
 };
 use tutti_types::{
-    Beat, BeatDuration, Bpm, Cents, ChannelLayout, PlaybackRate, SamplePosition, SampleRate,
-    Seconds, StretchFactor,
+    Beat, BeatDuration, Bpm, Cents, ChannelLayout, PlaybackRate, SampleRate, Seconds, StretchFactor,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -240,22 +241,19 @@ fn voice_pool_process_steady_state_is_allocation_free() {
     let mut unit = VoicePool::new();
 
     for i in 0..2u128 {
-        let sampler =
-            MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
-        unit.insert_voice(
-            SlotId(i),
-            Voice {
-                play: Playback {
-                    gain: sampler.gain(),
-                    speed: sampler.speed(),
-                    loop_: sampler.loop_setting(),
-                    direction: Direction::Forward,
-                    stretch: StretchFactor::new(1.0),
-                    pitch: Cents::new(0.0),
-                },
-                source: VoiceSource::Memory(sampler),
-            },
-        );
+        let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave");
+        {
+            let play = Playback {
+                gain: sampler.gain(),
+                speed: sampler.speed(),
+                loop_: sampler.loop_(),
+                direction: Direction::Forward,
+                stretch: StretchFactor::new(1.0),
+                pitch: Cents::new(0.0),
+            };
+            unit.insert(SlotId(i), sampler, play);
+        };
     }
     assert_eq!(unit.voice_count(), 2);
 
@@ -289,25 +287,22 @@ fn cloned_voice_pool_with_stretch_is_allocation_free() {
 
     let mut original = VoicePool::new();
 
-    let sampler =
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
-    original.insert_voice(
-        SlotId(0),
-        Voice {
-            play: Playback {
-                gain: sampler.gain(),
-                speed: sampler.speed(),
-                loop_: sampler.loop_setting(),
-                direction: Direction::Forward,
-                // Actually stretching: a unity voice bypasses the filter, so the
-                // scratch would never be touched and the test would pass either
-                // way.
-                stretch: StretchFactor::new(2.0),
-                pitch: Cents::new(0.0),
-            },
-            source: VoiceSource::Memory(sampler),
-        },
-    );
+    let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
+    {
+        let play = Playback {
+            gain: sampler.gain(),
+            speed: sampler.speed(),
+            loop_: sampler.loop_(),
+            direction: Direction::Forward,
+            // Actually stretching: a unity voice bypasses the filter, so the
+            // scratch would never be touched and the test would pass either
+            // way.
+            stretch: StretchFactor::new(2.0),
+            pitch: Cents::new(0.0),
+        };
+        original.insert(SlotId(0), sampler, play);
+    };
 
     let mut rig = Rig::new(original.clone(), 64);
 
@@ -332,22 +327,19 @@ fn voice_pool_one_frame_blocks_are_allocation_free() {
     let mut unit = VoicePool::new();
 
     for i in 0..2u128 {
-        let sampler =
-            MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
-        unit.insert_voice(
-            SlotId(i),
-            Voice {
-                play: Playback {
-                    gain: sampler.gain(),
-                    speed: sampler.speed(),
-                    loop_: sampler.loop_setting(),
-                    direction: Direction::Forward,
-                    stretch: StretchFactor::new(1.0),
-                    pitch: Cents::new(0.0),
-                },
-                source: VoiceSource::Memory(sampler),
-            },
-        );
+        let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave");
+        {
+            let play = Playback {
+                gain: sampler.gain(),
+                speed: sampler.speed(),
+                loop_: sampler.loop_(),
+                direction: Direction::Forward,
+                stretch: StretchFactor::new(1.0),
+                pitch: Cents::new(0.0),
+            };
+            unit.insert(SlotId(i), sampler, play);
+        };
     }
 
     let mut rig = Rig::new(unit, 1);
@@ -391,21 +383,34 @@ fn ragged_at_512<N: Node>(node: N) {
     });
 }
 
-/// A memory voice reading `wave` placed at beat 0, playing `stretch`.
+/// A memory source reading `wave` placed at beat 0, and how it plays:
+/// `stretch`.
+fn placed_parts(wave: &Arc<Wave>, stretch: f32) -> (MemorySource, Playback) {
+    let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
+    let play = Playback {
+        gain: sampler.gain(),
+        speed: sampler.speed(),
+        loop_: sampler.loop_(),
+        direction: Direction::Forward,
+        stretch: StretchFactor::new(stretch),
+        pitch: Cents::new(0.0),
+    };
+    (sampler, play)
+}
+
+/// [`placed_parts`] as a voice.
 fn placed_voice(wave: &Arc<Wave>, stretch: f32) -> Voice {
-    let sampler =
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
+    let (sampler, play) = placed_parts(wave, stretch);
     Voice {
-        play: Playback {
-            gain: sampler.gain(),
-            speed: sampler.speed(),
-            loop_: sampler.loop_setting(),
-            direction: Direction::Forward,
-            stretch: StretchFactor::new(stretch),
-            pitch: Cents::new(0.0),
-        },
         source: VoiceSource::Memory(sampler),
+        play,
     }
+}
+
+/// Inserts `parts` in `pool` at `id`.
+fn insert(pool: &mut VoicePool, id: u128, (source, play): (MemorySource, Playback)) {
+    pool.insert(SlotId(id), source, play);
 }
 
 /// Every memory voice node, re-prepared at a 512-frame `max_block`,
@@ -420,38 +425,34 @@ fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
 
     let mut pool = VoicePool::new();
-    pool.insert_voice(SlotId(0), placed_voice(&wave, 1.0));
-    pool.insert_voice(SlotId(1), placed_voice(&wave, 1.0));
-    pool.insert_voice(SlotId(2), placed_voice(&wave, 2.0));
+    insert(&mut pool, 0, placed_parts(&wave, 1.0));
+    insert(&mut pool, 1, placed_parts(&wave, 1.0));
+    insert(&mut pool, 2, placed_parts(&wave, 2.0));
     ragged_at_512(pool);
 
     // Looped, at unit rate and varispeed (the block read's looped lanes,
     // straight from the wave and gathered), and one placed past the
     // transport (a silent voice the pool skips).
     let looped = |speed: f32| {
-        let mut voice = placed_voice(&wave, 1.0);
-        voice.play.loop_ = LoopSetting::On {
-            start: SamplePosition::new(1_000.0),
-            end: SamplePosition::new(30_000.0),
-            crossfade_frames: 256,
-        };
-        voice.play.speed = PlaybackRate::new(speed);
-        voice
+        let (source, mut play) = placed_parts(&wave, 1.0);
+        play.loop_ = Some(loop_frames(1_000, 30_000, 256));
+        play.speed = PlaybackRate::new(speed);
+        (source, play)
     };
     let mut pool = VoicePool::new();
-    pool.insert_voice(SlotId(0), looped(1.0));
-    pool.insert_voice(SlotId(1), looped(1.37));
-    let late =
-        MemorySource::placed(wave.clone(), Beat::new(1_000.0), None).expect("a placeable wave");
-    let mut silent = placed_voice(&wave, 1.0);
-    silent.source = VoiceSource::Memory(late);
-    pool.insert_voice(SlotId(2), silent);
+    insert(&mut pool, 0, looped(1.0));
+    insert(&mut pool, 1, looped(1.37));
+    let late = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(1_000.0)))
+        .expect("a placeable wave");
+    let (_, silent) = placed_parts(&wave, 1.0);
+    insert(&mut pool, 2, (late, silent));
     ragged_at_512(pool);
 
     ragged_at_512(VoiceNode::new(placed_voice(&wave, 0.5)));
 
     ragged_at_512(
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave"),
+        MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave"),
     );
 
     let free = MemorySource::new(wave.clone()).expect("a placeable wave");
@@ -509,11 +510,12 @@ fn wraps_without_allocating<N: Node>(node: N) {
 fn a_loop_wrap_crossfade_is_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
     let mut pool = VoicePool::new();
-    pool.insert_voice(SlotId(0), placed_voice(&wave, 1.0));
+    insert(&mut pool, 0, placed_parts(&wave, 1.0));
     wraps_without_allocating(pool);
     wraps_without_allocating(VoiceNode::new(placed_voice(&wave, 1.0)));
     wraps_without_allocating(
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave"),
+        MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave"),
     );
 }
 
@@ -582,17 +584,10 @@ fn run_stretch_drain_under_guard() {
     let (unit, handle) = VoicePool::new().with_handle();
     let mut unit = Rig::new(unit, 64);
 
-    let sampler =
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
+    let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
     handle
-        .send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback::default(),
-            }),
-            stretch: None,
-        })
+        .add(SlotId(1), sampler, Playback::default())
         .expect("the command queue has room in a test");
 
     // Drain the Add first, outside the guard.
@@ -609,12 +604,7 @@ fn run_stretch_drain_under_guard() {
     // filter was carried on the command, the drain had nothing to install and
     // this test passed by doing nothing at all.
     handle
-        .send(VoiceCommand::UpdateStretch {
-            id: SlotId(1),
-            stretch_factor: StretchFactor::new(2.0),
-            pitch_cents: Cents::new(0.0),
-            stretch: None,
-        })
+        .set_stretch(SlotId(1), StretchFactor::new(2.0), Cents::new(0.0))
         .expect("the command queue has room in a test");
 
     assert_no_alloc::assert_no_alloc(|| {
@@ -727,20 +717,17 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
         },
     )
     .expect("a placeable wave");
-    reader.insert_voice(
-        SlotId(1),
-        Voice {
-            play: Playback {
-                gain: sampler.gain(),
-                speed: sampler.speed(),
-                loop_: sampler.loop_setting(),
-                direction: Direction::Forward,
-                stretch: StretchFactor::new(1.0),
-                pitch: Cents::new(0.0),
-            },
-            source: VoiceSource::Memory(sampler),
-        },
-    );
+    {
+        let play = Playback {
+            gain: sampler.gain(),
+            speed: sampler.speed(),
+            loop_: sampler.loop_(),
+            direction: Direction::Forward,
+            stretch: StretchFactor::new(1.0),
+            pitch: Cents::new(0.0),
+        };
+        reader.insert(SlotId(1), sampler, play);
+    };
     assert_eq!(reader.shape().audio_out().count(), 6);
     let mut rig = Rig::new(reader, 64);
 
@@ -828,18 +815,15 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
         )
         .expect("a placeable wave");
         handle
-            .send(VoiceCommand::AddVoice {
-                id: SlotId(i),
-                voice: Box::new(Voice {
-                    source: VoiceSource::Memory(sampler),
-                    play: Playback {
-                        // Non-unity: this is the branch that needs a filter.
-                        stretch: StretchFactor::new(2.0),
-                        ..Default::default()
-                    },
-                }),
-                stretch: None,
-            })
+            .add(
+                SlotId(i),
+                sampler,
+                Playback {
+                    // Non-unity: this is the branch that needs a filter.
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+            )
             .expect("the command queue has room in a test");
     }
 
@@ -894,19 +878,16 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
         )
         .expect("a placeable wave");
         handle
-            .send(VoiceCommand::AddVoice {
-                id: SlotId(i),
-                voice: Box::new(Voice {
-                    source: VoiceSource::Memory(sampler),
-                    play: Playback {
-                        // Non-unity: this is what makes a filter resident, and the
-                        // filter is what owns the bank this test is about.
-                        stretch: StretchFactor::new(2.0),
-                        ..Default::default()
-                    },
-                }),
-                stretch: None,
-            })
+            .add(
+                SlotId(i),
+                sampler,
+                Playback {
+                    // Non-unity: this is what makes a filter resident, and the
+                    // filter is what owns the bank this test is about.
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+            )
             .expect("the command queue has room in a test");
     }
     reader.block();
@@ -915,7 +896,7 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
     // Queue the removes outside, drain them inside.
     for i in 0..4u128 {
         handle
-            .send(VoiceCommand::Remove(SlotId(i)))
+            .remove(SlotId(i))
             .expect("the command queue has room in a test");
     }
     assert_no_alloc::assert_no_alloc(|| {
@@ -951,17 +932,14 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
         )
         .expect("a placeable wave");
         handle
-            .send(VoiceCommand::AddVoice {
-                id: SlotId(i),
-                voice: Box::new(Voice {
-                    source: VoiceSource::Memory(sampler),
-                    play: Playback {
-                        stretch: StretchFactor::new(2.0),
-                        ..Default::default()
-                    },
-                }),
-                stretch: None,
-            })
+            .add(
+                SlotId(i),
+                sampler,
+                Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+            )
             .expect("the command queue has room in a test");
     }
     reader.block();
@@ -972,7 +950,7 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
 
     for i in 0..3u128 {
         handle
-            .send(VoiceCommand::Remove(SlotId(i)))
+            .remove(SlotId(i))
             .expect("the command queue has room in a test");
     }
     reader.block();
@@ -1015,22 +993,16 @@ fn an_add_past_the_voice_cap_is_refused_without_allocating() {
                 start: Beat::new(0.0),
                 duration: None,
             });
-        Box::new(Voice {
-            source: VoiceSource::Memory(source),
-            play,
-        })
+        (source, play)
     };
 
     // Fill the pool to its reservation, outside the guard, in batches the
     // command queue holds.
     for batch in 0..(CAP / 32) {
         for i in 0..32 {
+            let (source, play) = voice_over(wave.clone(), Playback::default());
             handle
-                .send(VoiceCommand::AddVoice {
-                    id: SlotId((batch * 32 + i) as u128),
-                    voice: voice_over(wave.clone(), Playback::default()),
-                    stretch: None,
-                })
+                .add(SlotId((batch * 32 + i) as u128), source, play)
                 .expect("the command queue has room in a test");
         }
         rig.block();
@@ -1044,18 +1016,15 @@ fn an_add_past_the_voice_cap_is_refused_without_allocating() {
     // One more, at a new id: stretched, so `send` builds it a filter here.
     let extra = sine_wave(0.5, 48_000.0);
     let extra_weak = Arc::downgrade(&extra);
+    let (source, play) = voice_over(
+        extra,
+        Playback {
+            stretch: StretchFactor::new(2.0),
+            ..Default::default()
+        },
+    );
     handle
-        .send(VoiceCommand::AddVoice {
-            id: SlotId(CAP as u128),
-            voice: voice_over(
-                extra,
-                Playback {
-                    stretch: StretchFactor::new(2.0),
-                    ..Default::default()
-                },
-            ),
-            stretch: None,
-        })
+        .add(SlotId(CAP as u128), source, play)
         .expect("the command queue has room in a test");
 
     assert_no_alloc::assert_no_alloc(|| {
@@ -1100,13 +1069,9 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
         },
     )
     .expect("a placeable wave");
-    reader.node().insert_voice(
-        SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(sampler),
-            play: Playback::default(),
-        },
-    );
+    reader
+        .node()
+        .insert(SlotId(1), sampler, Playback::default());
 
     for _ in 0..16 {
         reader.block();
@@ -1116,20 +1081,13 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     // reclaim and reuse the same buffer.
     for i in 0..8u64 {
         handle
-            .send(VoiceCommand::UpdateLoop {
-                id: SlotId(1),
-                setting: LoopSetting::On {
-                    start: SamplePosition::new(i as f64 * 8.0),
-                    end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
-                    crossfade_frames: 256,
-                },
-            })
+            .set_loop(
+                SlotId(1),
+                Some(loop_frames(i as usize * 8, i as usize * 8 + 4096, 256)),
+            )
             .expect("the command queue has room in a test");
         handle
-            .send(VoiceCommand::UpdateLoop {
-                id: SlotId(1),
-                setting: LoopSetting::Off,
-            })
+            .set_loop(SlotId(1), None)
             .expect("the command queue has room in a test");
     }
 
@@ -1186,7 +1144,10 @@ fn voice_node_command_drain_does_not_allocate() {
     // Queue more than one block's worth, so the drain loop runs repeatedly
     // rather than taking its empty fast path once.
     for i in 0..8u64 {
-        handle.set_placement(Beat::new(i as f64 * 0.25), Some(BeatDuration(4.0)));
+        handle.set_window(VoiceWindow::span(
+            Beat::new(i as f64 * 0.25),
+            BeatDuration(4.0),
+        ));
     }
 
     assert_no_alloc::assert_no_alloc(|| {
@@ -1218,17 +1179,13 @@ fn replacing_a_wave_retires_the_old_one_rather_than_freeing_it_in_the_drain() {
     let old = sine_wave(0.5, 48_000.0);
     let old_weak = Arc::downgrade(&old);
     // `old` moves into the voice: the source holds its only reference.
-    let voice = {
-        let v = placed_voice(&old, 1.0);
+    let (source, play) = {
+        let parts = placed_parts(&old, 1.0);
         drop(old);
-        v
+        parts
     };
     handle
-        .send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(voice),
-            stretch: None,
-        })
+        .add(SlotId(1), source, play)
         .expect("the command queue has room in a test");
     rig.block();
     assert_eq!(rig.node().voice_count(), 1, "the add must have landed");
@@ -1241,10 +1198,7 @@ fn replacing_a_wave_retires_the_old_one_rather_than_freeing_it_in_the_drain() {
     // Swap it out inside the guard.
     let new = sine_wave(0.5, 48_000.0);
     handle
-        .send(VoiceCommand::ReplaceWave {
-            id: SlotId(1),
-            wave: new,
-        })
+        .replace_wave(SlotId(1), new)
         .expect("the command queue has room in a test");
     assert_no_alloc::assert_no_alloc(|| rig.block());
     assert_eq!(
@@ -1263,10 +1217,7 @@ fn replacing_a_wave_retires_the_old_one_rather_than_freeing_it_in_the_drain() {
     let orphan = sine_wave(0.5, 48_000.0);
     let orphan_weak = Arc::downgrade(&orphan);
     handle
-        .send(VoiceCommand::ReplaceWave {
-            id: SlotId(99),
-            wave: orphan,
-        })
+        .replace_wave(SlotId(99), orphan)
         .expect("the command queue has room in a test");
     assert_no_alloc::assert_no_alloc(|| rig.block());
     assert_eq!(orphan_weak.strong_count(), 1, "retired, not freed");

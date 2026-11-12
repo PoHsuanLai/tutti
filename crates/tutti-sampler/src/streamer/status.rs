@@ -17,7 +17,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use crate::voice::LoopSetting;
+use crate::Loop;
 
 /// Why a stream stopped being served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -67,8 +67,8 @@ pub struct StreamStatus {
     /// the one asked for ([`Stream::set_loop`](crate::Stream::set_loop)): a
     /// lead-in that cannot be read plays the loop hard, with no crossfade, and
     /// this says so. It is the loop an export fork of the stream plays.
-    /// [`LoopSetting::Off`] until the streamer has applied one.
-    pub loop_: LoopSetting,
+    /// `None` until the streamer has applied one.
+    pub loop_: Option<Loop>,
     /// Frames the voice needed and the ring could not supply, since the stream
     /// opened: each was read as silence, and the next sounding frames ramp in.
     pub underruns: u64,

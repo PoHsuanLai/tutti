@@ -7,8 +7,11 @@
 //! [`slot`](super::slot), [`command`](super::command), [`pool`](super::pool),
 //! [`node`](super::node).
 
+use crate::testing::loop_frames;
+
 use super::command::*;
-use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
+use super::loop_span::Loop;
+use super::memory_source::{MemorySource, VoiceWindow};
 use super::node::*;
 use super::pool::*;
 use super::types::*;
@@ -19,7 +22,7 @@ use tutti_codec::Wave;
 use tutti_graph::{IntoNode, Node, NodeParts, Prepare};
 use tutti_types::MaxBlock;
 use tutti_types::SampleRate;
-use tutti_types::{Amplitude, Beat, Cents, ChannelLayout, SamplePosition, Seconds, StretchFactor};
+use tutti_types::{Amplitude, Beat, Cents, ChannelLayout, Seconds, StretchFactor};
 
 use crate::voice::memory_source::MemorySourceConfig;
 use tutti_types::{BeatDuration, Bpm, Samples};
@@ -105,7 +108,8 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
     // and the 2048-sample window needs 4096 ticks before anything is emitted.
     let wave = make_wave(48_000);
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     let node = VoiceNode::with_channels(
         Voice {
             source: VoiceSource::Memory(sampler),
@@ -174,7 +178,7 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
     let wave = make_wave(48_000);
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let node = || {
-        let sampler = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+        let sampler = MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
             .expect("a placeable wave");
         VoiceNode::with_channels(
             Voice {
@@ -237,7 +241,7 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
         SlotId(1),
         Voice {
             source: VoiceSource::Memory(
-                MemorySource::placed(make_wave(4096), Beat::new(0.0), None)
+                MemorySource::placed(make_wave(4096), VoiceWindow::from(Beat::new(0.0)))
                     .expect("a placeable wave"),
             ),
             play: Playback::default(),
@@ -266,7 +270,8 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
     add_ram_clip(
         &handle,
         SlotId(2),
-        MemorySource::placed(make_wave(4096), Beat::new(0.0), None).expect("a placeable wave"),
+        MemorySource::placed(make_wave(4096), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave"),
     );
     assert!(
         run(&mut *live, &transport, SR, 64)[0]
@@ -336,7 +341,8 @@ fn a_transport_seek_flushes_stretch_state() {
         .expect("a width the sampler reads")
         .with_handle();
 
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     handle
         .send(VoiceCommand::AddVoice {
             id: SlotId(1),
@@ -428,7 +434,8 @@ fn a_transport_seek_flushes_a_standalone_voice_node() {
     let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::of(120.0));
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     let mut node = VoiceNode::with_channels(
         Voice {
             source: VoiceSource::Memory(sampler),
@@ -492,7 +499,8 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
     let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
 
     let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     let mut node = VoiceNode::with_channels(
         Voice {
             source: VoiceSource::Memory(sampler),
@@ -567,7 +575,8 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
             .collect();
         let wave = Arc::new(Wave::from_samples(SampleRate::new(SR), &data));
 
-        let source = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+        let source = MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave");
         let play = Playback {
             stretch: StretchFactor::new(factor),
             ..Default::default()
@@ -614,8 +623,9 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
     for direction in [Direction::Forward, Direction::Reverse] {
         for via_tick in [false, true] {
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-            let sampler = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
-                .expect("a placeable wave");
+            let sampler =
+                MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
+                    .expect("a placeable wave");
             let mut node = VoiceNode::with_channels(
                 Voice {
                     source: VoiceSource::Memory(sampler),
@@ -673,7 +683,8 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
     const BLOCKS: usize = 8;
 
     use crate::streamer::{RegionBuffer, StreamId};
-    use crate::voice::{DiskSource, DiskVoice, DiskVoiceConfig, VoiceWindow};
+    use crate::voice::VoiceWindow;
+    use crate::voice::disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
     use std::path::PathBuf;
 
     // How far into its source the reader got over a fixed render, at a
@@ -812,7 +823,8 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
         .expect("a width the sampler reads")
         .with_handle();
 
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     handle
         .send(VoiceCommand::AddVoice {
             id: SlotId(1),
@@ -863,8 +875,8 @@ fn add_and_remove_clips() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
-    let sampler =
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
+    let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
     add_ram_clip(&handle, SlotId(1), sampler);
 
     let mut out = [0.0f32; 2];
@@ -885,7 +897,8 @@ fn silence_when_transport_stopped() {
     let transport = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     add_ram_clip(&handle, SlotId(1), sampler);
 
     let mut out = [0.0f32; 2];
@@ -901,8 +914,8 @@ fn clips_sum_together() {
     let wave = make_wave(100);
 
     for i in 0..3 {
-        let sampler =
-            MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
+        let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+            .expect("a placeable wave");
         add_ram_clip(&handle, SlotId(i), sampler);
     }
 
@@ -910,8 +923,8 @@ fn clips_sum_together() {
     tick(&mut unit, &transport, SR, &mut out_3);
 
     let (mut unit2, handle2) = VoicePool::new().with_handle();
-    let sampler =
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
+    let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
     add_ram_clip(&handle2, SlotId(0), sampler);
     let mut out_1 = [0.0f32; 2];
     tick(&mut unit2, &transport, SR, &mut out_1);
@@ -927,7 +940,8 @@ fn clone_snapshots_clips() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     add_ram_clip(&handle, SlotId(1), sampler);
 
     let mut out = [0.0f32; 2];
@@ -946,14 +960,15 @@ fn insert_voice_is_audible_without_channel() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     unit.insert_voice(
         SlotId(1),
         Voice {
             play: Playback {
                 gain: sampler.gain(),
                 speed: sampler.speed(),
-                loop_: sampler.loop_setting(),
+                loop_: sampler.loop_(),
                 direction: Direction::Forward,
                 stretch: StretchFactor::new(1.0),
                 pitch: Cents::new(0.0),
@@ -997,14 +1012,15 @@ fn a_pool_with_no_handle_has_no_channel_and_is_empty() {
     assert_eq!(out[1], 0.0);
 
     // But voices inserted directly (the Populate path) are audible.
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     unit.insert_voice(
         SlotId(1),
         Voice {
             play: Playback {
                 gain: sampler.gain(),
                 speed: sampler.speed(),
-                loop_: sampler.loop_setting(),
+                loop_: sampler.loop_(),
                 direction: Direction::Forward,
                 stretch: StretchFactor::new(1.0),
                 pitch: Cents::new(0.0),
@@ -1022,7 +1038,8 @@ fn update_gain() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(100);
 
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     add_ram_clip(&handle, SlotId(1), sampler);
 
     let mut out_before = [0.0f32; 2];
@@ -1047,7 +1064,8 @@ fn update_stretch_enables_processor() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = make_wave(4096);
 
-    let sampler = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     add_ram_clip(&handle, SlotId(1), sampler);
 
     let mut out = [0.0f32; 2];
@@ -1104,8 +1122,8 @@ fn update_stretch_enables_processor() {
 fn enabling_stretch_mid_flight_changes_the_output() {
     let (mut unit, handle) = VoicePool::new().with_handle();
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let sampler =
-        MemorySource::placed(make_wave(48_000), Beat::new(0.0), None).expect("a placeable wave");
+    let sampler = MemorySource::placed(make_wave(48_000), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
     add_ram_clip(&handle, SlotId(1), sampler);
 
     // Settle the add, then collect a dry reference block.
@@ -1166,8 +1184,8 @@ fn enabling_stretch_mid_flight_changes_the_output() {
 fn a_redundant_stretch_filter_is_retired_not_freed_on_the_audio_thread() {
     let (mut unit, handle) = VoicePool::new().with_handle();
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let sampler =
-        MemorySource::placed(make_wave(4096), Beat::new(0.0), None).expect("a placeable wave");
+    let sampler = MemorySource::placed(make_wave(4096), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
     add_ram_clip(&handle, SlotId(1), sampler);
 
     let mut out = [0.0f32; 2];
@@ -1220,8 +1238,8 @@ fn voice_node_is_a_standalone_graph_node() {
     let wave = make_wave(100);
 
     // Same voice the mixer would hold for one voice.
-    let sampler =
-        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
+    let sampler = MemorySource::placed(wave.clone(), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
     let voice = Voice {
         source: VoiceSource::Memory(sampler),
         play: Playback::default(),
@@ -1240,7 +1258,8 @@ fn voice_node_is_a_standalone_graph_node() {
     );
 
     // It reads the SAME single-voice frame the mixer does for one slot.
-    let sampler2 = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let sampler2 =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
     let (mut mixer, _handle) = VoicePool::new().with_handle();
     mixer.insert_voice(
         SlotId(1),
@@ -1248,7 +1267,7 @@ fn voice_node_is_a_standalone_graph_node() {
             play: Playback {
                 gain: sampler2.gain(),
                 speed: sampler2.speed(),
-                loop_: sampler2.loop_setting(),
+                loop_: sampler2.loop_(),
                 direction: Direction::Forward,
                 stretch: StretchFactor::new(1.0),
                 pitch: Cents::new(0.0),
@@ -1258,7 +1277,8 @@ fn voice_node_is_a_standalone_graph_node() {
     );
     let mut node2 = VoiceNode::new(Voice {
         source: VoiceSource::Memory(
-            MemorySource::placed(make_wave(100), Beat::new(0.0), None).expect("a placeable wave"),
+            MemorySource::placed(make_wave(100), VoiceWindow::from(Beat::new(0.0)))
+                .expect("a placeable wave"),
         ),
         play: Playback::default(),
     });
@@ -1282,7 +1302,8 @@ fn voice_node_is_a_standalone_graph_node() {
 #[test]
 fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
     let wave = make_wave(44_100);
-    let sampler = MemorySource::placed(wave, Beat::new(2.0), None).expect("a placeable wave");
+    let sampler =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(2.0))).expect("a placeable wave");
     let voice = Voice {
         source: VoiceSource::Memory(sampler),
         play: Playback::default(),
@@ -1362,11 +1383,7 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
     handle
         .send(VoiceCommand::UpdateLoop {
             id,
-            setting: LoopSetting::On {
-                start: SamplePosition::new(0.0),
-                end: SamplePosition::new(64.0),
-                crossfade_frames: 0,
-            },
+            setting: Some(loop_frames(0, 64, 0)),
         })
         .expect("the command queue has room in a test");
 
@@ -1375,8 +1392,7 @@ fn loop_on_a_streamerless_streaming_voice_is_not_recorded() {
 
     let play = unit.playback_of(id).expect("slot exists");
     assert_eq!(
-        play.loop_,
-        LoopSetting::Off,
+        play.loop_, None,
         "a loop the streamer was never told about must not be recorded as applied"
     );
 }
@@ -1414,18 +1430,14 @@ fn streaming_voice_of(region: u64) -> Voice {
 }
 
 fn loop_on(id: SlotId) -> VoiceCommand {
-    loop_to(id, 64.0)
+    loop_to(id, 64)
 }
 
 /// The loop command `[0, end)` for slot `id`.
-fn loop_to(id: SlotId, end: f64) -> VoiceCommand {
+fn loop_to(id: SlotId, end: usize) -> VoiceCommand {
     VoiceCommand::UpdateLoop {
         id,
-        setting: LoopSetting::On {
-            start: SamplePosition::new(0.0),
-            end: SamplePosition::new(end),
-            crossfade_frames: 0,
-        },
+        setting: Some(loop_frames(0, end, 0)),
     }
 }
 
@@ -1465,17 +1477,16 @@ fn add_with_stream(
     port: &crate::streamer::StreamerPort,
 ) {
     let stream = stream_of(&voice, port);
+    let VoiceSource::Disk(disk) = voice.source else {
+        unreachable!("a streaming voice")
+    };
     handle
-        .add_streaming(id, voice, stream, None)
+        .add_streaming(id, disk, stream, voice.play)
         .expect("the command queue has room in a test");
 }
 
 fn looped(mut voice: Voice) -> Voice {
-    voice.play.loop_ = LoopSetting::On {
-        start: SamplePosition::new(0.0),
-        end: SamplePosition::new(64.0),
-        crossfade_frames: 0,
-    };
+    voice.play.loop_ = Some(loop_frames(0, 64, 0));
     voice
 }
 
@@ -1494,7 +1505,7 @@ fn a_loop_the_stream_takes_is_recorded() {
     let stream = disk.stream();
     add_with_stream(&handle, id, voice, &commands);
     handle
-        .send(loop_to(id, 32.0))
+        .send(loop_to(id, 32))
         .expect("the command queue has room in a test");
     let sent: Vec<_> = streamer.try_iter().collect();
     assert!(
@@ -1503,22 +1514,22 @@ fn a_loop_the_stream_takes_is_recorded() {
             [
                 crate::streamer::StreamerCommand::SetStreamLoop {
                     stream: a,
-                    range: (0, 64),
-                    ..
+                    looped: first,
                 },
                 crate::streamer::StreamerCommand::SetStreamLoop {
                     stream: b,
-                    range: (0, 32),
-                    ..
+                    looped: second,
                 },
             ] if *a == stream && *b == stream
+                && *first == loop_frames(0, 64, 0)
+                && *second == loop_frames(0, 32, 0)
         ),
         "the add's loop and the update's, set by the handle: {sent:?}"
     );
     one_block(&mut pool);
     assert!(matches!(
         pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::On { end, .. } if end == SamplePosition::new(32.0)
+        Some(l) if l.end() == Samples::new(32)
     ));
     assert_eq!(handle.drops(), PoolDrops::default());
 }
@@ -1539,10 +1550,7 @@ fn the_drain_sends_nothing_to_the_streamer() {
     assert_eq!(streamer.len(), 2, "both set by the handle");
     drop(streamer);
     one_block(&mut pool);
-    assert!(matches!(
-        pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::On { .. }
-    ));
+    assert!(pool.playback_of(id).expect("slot exists").loop_.is_some());
     assert_eq!(handle.drops(), PoolDrops::default());
 }
 
@@ -1559,7 +1567,7 @@ fn a_loop_a_gone_streamer_never_received_is_not_recorded() {
     assert_eq!(handle.drops().loops_streamer_gone, 1);
     assert_eq!(
         pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::Off,
+        None,
         "an add whose loop the streamer never received must not claim it"
     );
 
@@ -1570,47 +1578,14 @@ fn a_loop_a_gone_streamer_never_received_is_not_recorded() {
     assert_eq!(handle.drops().loops_streamer_gone, 2);
     assert_eq!(
         pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::Off,
+        None,
         "an update whose loop the streamer never received must not claim it"
     );
 }
 
-/// A streaming voice inserted with no stream cannot have its loop or its
-/// direction set, so it plays unlooped and forward and says so in the counts:
-/// what it asked for is not recorded either, where `insert_voice` would
-/// otherwise replay it as if it were real. The same for an `AddVoice` through
-/// the handle.
-#[test]
-fn a_streaming_voice_without_a_stream_drops_its_loop_and_direction_and_counts_them() {
-    let mut pool = VoicePool::new();
-    let id = SlotId(5);
-    let mut voice = looped(streaming_voice());
-    voice.play.direction = Direction::Reverse;
-    pool.insert_voice(id, voice);
-    let play = pool.playback_of(id).expect("slot exists");
-    assert_eq!(play.loop_, LoopSetting::Off);
-    assert_eq!(play.direction, Direction::Forward);
-
-    let (mut pool, handle) = pool.with_handle();
-    let drops = handle.drops();
-    assert_eq!((drops.loops_no_streamer, drops.directions_dropped), (1, 1));
-    let mut voice = looped(streaming_voice_of(2));
-    voice.play.direction = Direction::Reverse;
-    handle
-        .send(add(SlotId(6), voice))
-        .expect("the command queue has room in a test");
-    one_block(&mut pool);
-    let play = pool.playback_of(SlotId(6)).expect("slot exists");
-    assert_eq!(play.loop_, LoopSetting::Off);
-    assert_eq!(play.direction, Direction::Forward);
-    let drops = handle.drops();
-    assert_eq!((drops.loops_no_streamer, drops.directions_dropped), (2, 2));
-}
-
-/// The drain's other silent drops are counted, not logged: a loop
-/// turned on for a streaming voice with no stream, and a `ReplaceWave`
-/// aimed at a streaming voice. Clearing a loop there (the add's own
-/// `Off`) loses nothing and is not counted.
+/// The drain's silent drops are counted, not logged: a loop aimed at a
+/// streaming voice whose stream the handle did not pass it to, and a
+/// `ReplaceWave` aimed at a streaming voice.
 #[test]
 fn the_drains_silent_drops_are_counted() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -1625,12 +1600,6 @@ fn the_drains_silent_drops_are_counted() {
         .expect("the command queue has room in a test");
     let mut out = [0.0f32; 2];
     tick(&mut pool, &transport, SR, &mut out);
-    assert_eq!(
-        handle.drops().loops_no_streamer,
-        0,
-        "the add's loop is `Off`: there is nothing to lose without a stream"
-    );
-
     handle
         .send(loop_on(id))
         .expect("the command queue has room in a test");
@@ -1680,10 +1649,7 @@ fn a_handle_send_waits_for_the_streamer() {
         Ok(crate::streamer::StreamerCommand::SetStreamLoop { .. })
     ));
     one_block(&mut pool);
-    assert!(matches!(
-        pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::On { .. }
-    ));
+    assert!(pool.playback_of(id).expect("slot exists").loop_.is_some());
 }
 
 /// An add of a looping streaming voice waits for the streamer's room rather
@@ -1707,10 +1673,12 @@ fn an_add_waits_for_the_streamer() {
     add_with_stream(&handle, SlotId(1), looped(streaming_voice()), &commands);
     let streamer = drainer.join().unwrap();
     one_block(&mut pool);
-    assert!(matches!(
-        pool.playback_of(SlotId(1)).expect("slot exists").loop_,
-        LoopSetting::On { .. }
-    ));
+    assert!(
+        pool.playback_of(SlotId(1))
+            .expect("slot exists")
+            .loop_
+            .is_some()
+    );
     assert!(matches!(
         streamer.try_recv(),
         Ok(crate::streamer::StreamerCommand::SetStreamLoop { .. })
@@ -1856,8 +1824,10 @@ fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
             source: VoiceSource::Memory(
                 MemorySource::placed(
                     Arc::clone(&wave),
-                    Beat::new(start),
-                    len.map(BeatDuration::new),
+                    match len {
+                        Some(d) => VoiceWindow::span(Beat::new(start), BeatDuration::new(d)),
+                        None => VoiceWindow::from(Beat::new(start)),
+                    },
                 )
                 .expect("a placeable wave"),
             ),
@@ -1905,15 +1875,10 @@ fn memory_voice() -> Voice {
 
 /// The loop a streamer's commands leave `stream` on, the last one wins:
 /// `None` cleared, `Some(range)` looping.
-fn last_loop(
-    sent: &[crate::streamer::StreamerCommand],
-    stream: StreamId,
-) -> Option<Option<(u64, u64)>> {
+fn last_loop(sent: &[crate::streamer::StreamerCommand], stream: StreamId) -> Option<Option<Loop>> {
     use crate::streamer::StreamerCommand as B;
     sent.iter().rev().find_map(|c| match c {
-        B::SetStreamLoop {
-            stream: s, range, ..
-        } if *s == stream => Some(Some(*range)),
+        B::SetStreamLoop { stream: s, looped } if *s == stream => Some(Some(*looped)),
         B::ClearStreamLoop { stream: s } if *s == stream => Some(None),
         _ => None,
     })
@@ -1944,7 +1909,7 @@ fn a_loop_for_a_voice_inserted_after_the_handle_is_not_recorded() {
     one_block(&mut pool);
     assert_eq!(
         pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::Off,
+        None,
         "a loop no stream received must not be recorded"
     );
     assert_eq!(handle.drops().loops_not_forwarded, 1);
@@ -1969,10 +1934,7 @@ fn a_loop_forwarded_to_a_replaced_stream_is_not_recorded() {
         .expect("the command queue has room in a test");
     assert_eq!(streamer.len(), 1, "the update, set on the stream held");
     one_block(&mut pool);
-    assert_eq!(
-        pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::Off
-    );
+    assert_eq!(pool.playback_of(id).expect("slot exists").loop_, None);
     assert_eq!(handle.drops().loops_not_forwarded, 1);
 }
 
@@ -1987,31 +1949,25 @@ fn a_full_queue_refuses_a_streaming_loop_or_add_before_the_streamer() {
     add_with_stream(&handle, id, looped(streaming_voice()), &commands);
     fill_queue(&handle, 1, 0);
     let err = handle.send(loop_on(id)).expect_err("the queue is full");
-    assert!(matches!(
-        err,
-        SendError::Full(VoiceCommand::UpdateLoop { .. })
-    ));
+    assert!(matches!(err, SendError::Full));
     assert_eq!(streamer.len(), 1, "only the add's own loop was set");
     let voice = looped(streaming_voice_of(5));
     let stream = stream_of(&voice, &commands);
+    let VoiceSource::Disk(disk) = voice.source else {
+        unreachable!("a streaming voice")
+    };
     let refused = handle
-        .add_streaming(SlotId(5), voice, stream, None)
+        .add_streaming(SlotId(5), disk, stream, voice.play)
         .expect_err("the queue is full");
-    assert!(matches!(
-        refused.error,
-        SendError::Full(VoiceCommand::AddVoice { .. })
-    ));
+    assert!(matches!(refused.error, SendError::Full));
     assert_eq!(
         refused.stream.loop_(),
-        LoopSetting::Off,
+        None,
         "the stream is handed back as it came"
     );
     assert_eq!(streamer.len(), 1, "the refused add set nothing");
     one_block(&mut pool);
-    assert!(matches!(
-        pool.playback_of(id).expect("slot exists").loop_,
-        LoopSetting::On { .. }
-    ));
+    assert!(pool.playback_of(id).expect("slot exists").loop_.is_some());
 }
 
 /// Waits until another thread holds the lock of the stream `handle` holds for
@@ -2061,7 +2017,10 @@ fn an_add_crowded_out_of_the_queue_puts_the_stream_back() {
     let refused = std::thread::spawn(move || {
         let voice = looped(streaming_voice());
         let stream = stream_of(&voice, &port);
-        racer.add_streaming(SlotId(2), voice, stream, None)
+        let VoiceSource::Disk(disk) = voice.source else {
+            unreachable!("a streaming voice")
+        };
+        racer.add_streaming(SlotId(2), disk, stream, voice.play)
     });
     // The add's loop is waiting on the streamer; take the command queue's
     // last slots meanwhile.
@@ -2075,14 +2034,11 @@ fn an_add_crowded_out_of_the_queue_puts_the_stream_back() {
     let Err(refused) = result else {
         panic!("the queue was full")
     };
-    assert!(matches!(
-        refused.error,
-        SendError::Full(VoiceCommand::AddVoice { .. })
-    ));
-    assert_eq!(refused.stream.loop_(), LoopSetting::Off);
+    assert!(matches!(refused.error, SendError::Full));
+    assert_eq!(refused.stream.loop_(), None);
     assert_ne!(
         last_loop(&sent, StreamId(1)),
-        Some(Some((0, 64))),
+        Some(Some(loop_frames(0, 64, 0))),
         "the streamer is left on the refused loop: {sent:?}"
     );
 }
@@ -2201,8 +2157,8 @@ fn a_pool_wider_than_the_sampler_reads_is_refused() {
 #[test]
 fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let sampler =
-        MemorySource::placed(make_wave(4096), Beat::new(0.0), None).expect("a placeable wave");
+    let sampler = MemorySource::placed(make_wave(4096), VoiceWindow::from(Beat::new(0.0)))
+        .expect("a placeable wave");
     let wide = crate::MAX_SAMPLER_CHANNELS + 2;
     let node = VoiceNode::with_channels(
         Voice {
@@ -2514,15 +2470,15 @@ fn a_missing_stretch_filter_reads_dry_not_silent() {
     )
     .expect("a placeable wave");
     // Insert DIRECTLY with no filter, simulating one that has not arrived.
-    unit.insert_voice_with_stretch(
+    unit.insert_voice_inner(
         SlotId(1),
-        Voice {
+        Box::new(Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback {
                 stretch: StretchFactor::new(2.0),
                 ..Default::default()
             },
-        },
+        }),
         None,
     );
 

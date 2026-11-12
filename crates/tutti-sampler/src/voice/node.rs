@@ -2,23 +2,25 @@
 //!
 //! Zero inputs, N outputs, and typed controls ([`VoiceNodeHandle`], what its
 //! `IntoNode` hands back): its gain, a scalar cell the node reads once per
-//! block, and its placement, a published window it reads once per block. For resynth, preview and a single timeline clip, where a
-//! whole pool would be ceremony. It shares `PlaybackSlot` with
+//! block, and its window, loop, speed and play state, published values it
+//! reads once per block. For resynth, preview and a single timeline clip,
+//! where a whole pool would be ceremony. It shares `PlaybackSlot` with
 //! [`VoicePool`](super::pool::VoicePool), so the per-voice read is the same
 //! code in both — a fix in one is a fix in both.
 
 use std::sync::Arc;
 
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
+use crate::streamer::Stream;
 use crate::stretch;
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
-use super::VoiceWindow;
 use super::clock::{BlockClock, Clock};
-use super::command::{PlacementCell, VoiceNodeHandle};
+use super::command::{Steering, SteeringCell, VoiceNodeHandle};
+use super::disk_voice::DiskVoice;
 use super::disk_voice::VoiceHealth;
 use super::slot::{PlaybackSlot, stretch_wanted};
-use super::types::{SlotId, Voice};
+use super::types::{Playback, SlotId, Voice, VoiceSource};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
@@ -43,17 +45,18 @@ use tutti_types::{Amplitude, ChannelLayout, Param, SampleRate, Tail, UnitParam};
 /// - gain — a `Param<Amplitude>` cell, also addressable as
 ///   [`UnitParam::Volume`] through the handle's [`ParamSet`]. The node reads
 ///   it once per block into the voice's `Playback` record and its source.
-/// - placement — a [`Beat`](tutti_types::Beat) and an optional duration:
-///   not a scalar, so the handle publishes it to an `ArcLend` cell the
-///   node reads once per block, latest wins, allocation-free.
+/// - window, loop, speed and play state: not scalars, so the handle publishes
+///   them to an `ArcLend` cell the node reads once per block, latest wins,
+///   allocation-free. A disk voice's loop is its [`Stream`]'s, which the
+///   handle owns ([`VoiceNode::streaming`]).
 ///
 /// # Forks
 ///
 /// The node's fork source keeps a copy of the voice as it was inserted, and a
 /// fork is that copy made to share nothing with the live node
 /// (`Voice::fork_copy`: its own gain cell; a disk voice reading its file
-/// itself), moved to the placement the handle last published and set to the gain
-/// last set, with a stretch filter of its own. It reads its render's
+/// itself), moved to the window, loop and speed the handle last published and
+/// set to the gain last set, with a stretch filter of its own. It reads its render's
 /// transport from its block's `Env`. A disk voice's node
 /// forks only for an offline render.
 pub struct VoiceNode {
@@ -64,14 +67,18 @@ pub struct VoiceNode {
     /// Declared rather than inferred from the voice, so an edge wired against
     /// it cannot be re-arityed under a live graph.
     pub(crate) channels: ChannelLayout,
-    /// A reader of the window the handle publishes, lent once per block; the
+    /// A reader of the steering the handle publishes, lent once per block; the
     /// reader owns the cell (`Reader::cell`), which the handle and the fork
-    /// source share. Empty (`None`) until a handle sets one, so a node driven
-    /// by hand keeps the window it was built with.
-    placement: Reader<Option<VoiceWindow>>,
-    /// The window last applied from `placement`, so a block applies a
-    /// window once, when it changes, rather than every block.
-    applied: Option<VoiceWindow>,
+    /// source share. Empty until a handle sets a field, so a node driven
+    /// by hand keeps what it was built with.
+    steering: Reader<Steering>,
+    /// The steering last applied, so a block applies a field once, when it
+    /// changes, rather than every block.
+    applied: Steering,
+    /// The disk stream of a streaming node, until [`with_handle`](Self::with_handle)
+    /// hands it to the handle: a stream is control-thread only (its drop
+    /// sends on a bounded queue), so the node never keeps one it plays with.
+    stream: Option<Stream>,
     /// The gain the handle writes; read once per block.
     gain: Param<Amplitude>,
     /// The transport as the voice reads it, kept across blocks so a jump is
@@ -120,13 +127,47 @@ impl VoiceNode {
         Self {
             slot,
             channels,
-            placement: PlacementCell::default().reader(),
-            applied: None,
+            steering: SteeringCell::default().reader(),
+            applied: Steering::default(),
+            stream: None,
             gain,
             clock: Clock::new(),
             tempo: None,
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
         }
+    }
+
+    /// A node over a streaming voice, and the [`Stream`] that feeds it: the
+    /// handle ([`with_handle`](Self::with_handle), or the graph's insert)
+    /// takes the stream, so the voice sounds for as long as the handle lives,
+    /// and its loop is set through the handle. `play`'s loop and direction are
+    /// set on the stream first, as [`VoicePoolHandle::add_streaming`](super::VoicePoolHandle::add_streaming)
+    /// sets them; one the stream could not take (its streamer has exited) is
+    /// not claimed by the voice's `Playback`. `voice` is the one built from the
+    /// stream's own reader.
+    ///
+    /// A node never handed to a handle keeps the stream until it is dropped:
+    /// built by hand, drop it on the control thread.
+    #[must_use]
+    pub fn streaming(mut voice: DiskVoice, mut stream: Stream, mut play: Playback) -> Self {
+        if play.loop_ != stream.loop_() && stream.set_loop(play.loop_).is_err() {
+            play.loop_ = stream.loop_();
+        }
+        if play.direction != stream.direction() && stream.set_direction(play.direction).is_err() {
+            play.direction = stream.direction();
+        }
+        voice.set_gain(play.gain);
+        voice.set_speed(play.speed);
+        let width = ChannelLayout::from_count(voice.width() as u16);
+        let mut node = Self::with_channels(
+            Voice {
+                source: VoiceSource::Disk(voice),
+                play,
+            },
+            width,
+        );
+        node.stream = Some(stream);
+        node
     }
 
     /// This node reading the project's tempo map through `tempo`
@@ -142,19 +183,21 @@ impl VoiceNode {
         self
     }
 
-    /// This node with a fresh placement cell, and the handle that drives
+    /// This node with a fresh steering cell, and the handle that drives
     /// it: what [`into_parts`](IntoNode::into_parts) hands the graph and the
-    /// caller. For a host (or a test) that calls the node by hand. A
-    /// placement set through a handle taken before no longer reaches the
-    /// node (its gain still does: that cell is the node's for life).
+    /// caller. For a host (or a test) that calls the node by hand. What was
+    /// set through a handle taken before no longer reaches the node (its
+    /// gain still does: that cell is the node's for life). A streaming node's
+    /// stream moves into the handle.
     pub fn with_handle(mut self) -> (Self, VoiceNodeHandle) {
-        self.placement = PlacementCell::default().reader();
+        self.steering = SteeringCell::default().reader();
         let params = self.param_set();
-        let handle = VoiceNodeHandle {
-            placement: Arc::clone(self.placement.cell()),
-            gain: self.gain.handle(),
+        let handle = VoiceNodeHandle::new(
+            Arc::clone(self.steering.cell()),
+            self.gain.handle(),
             params,
-        };
+            self.stream.take(),
+        );
         (self, handle)
     }
 
@@ -165,12 +208,12 @@ impl VoiceNode {
         self.declared_set()
     }
 
-    /// Apply the published placement, and the gain. Runs at the top of each
+    /// Apply the published steering, and the gain. Runs at the top of each
     /// block.
     ///
     /// Allocation- and free-free by construction: one `ArcLend` read (a
     /// borrow that cannot free, dropped before the block's read), a `Copy`
-    /// window, and a field write when it changed. The pool's drain has to be
+    /// value, and a field write when one changed. The pool's drain has to be
     /// more careful because its commands carry owned payloads (a `Voice`, a
     /// wave, a stretch filter), which is why it retires what it lets go of.
     /// A node takes no such payload: there is nothing for it to drop.
@@ -179,17 +222,9 @@ impl VoiceNode {
     /// drives it (its last frame); `None` reads the cell.
     #[inline]
     fn drain_commands(&mut self, driven: Option<f32>) {
-        let published = *self.placement.lend();
+        let published = *self.steering.lend();
         if published != self.applied {
-            if let Some(window) = published {
-                // Placement is the source's alone: `Playback` has no
-                // placement field (two copies kept in sync by hand is how a
-                // fork reaches the wrong one), so there is exactly one write.
-                self.slot
-                    .voice
-                    .source
-                    .apply_placement(window.start, window.duration);
-            }
+            apply_steering(&mut self.slot.voice, &self.applied, &published);
             self.applied = published;
         }
         // Both halves of the gain: `Playback` is what the memory tier's read
@@ -345,6 +380,17 @@ impl Node for VoiceNode {
         for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
             *slot = ch;
         }
+        if self.applied.stopped {
+            // Silent, and nothing read. A disk voice's ring read by position
+            // is dropped, so the block it resumes in reads from the playhead
+            // as a jump does; a free-running memory voice keeps its cursor.
+            if let VoiceSource::Disk(disk) = &mut self.slot.voice.source {
+                disk.flush();
+            }
+            drop(map);
+            self.tempo = reader;
+            return Status::Modified;
+        }
         // One piece: in a graph, `prepare` sized the scratch for every block.
         if frames <= self.scratch.frames() {
             self.slot
@@ -370,6 +416,34 @@ impl Node for VoiceNode {
     }
 }
 
+/// Applies what `now` publishes over what `was` already had applied, a field
+/// at a time and only the ones that changed (a loop set again would restart
+/// the free-running cursor's lap). A disk voice's loop is its stream's, so
+/// only a memory voice takes one here.
+fn apply_steering(voice: &mut Voice, was: &Steering, now: &Steering) {
+    if now.window != was.window
+        && let Some(window) = now.window
+    {
+        // The window is the source's alone: `Playback` has no window field
+        // (two copies kept in sync by hand is how a fork reaches the wrong
+        // one), so there is exactly one write.
+        voice.source.apply_window(window);
+    }
+    if now.loop_ != was.loop_
+        && let Some(setting) = now.loop_
+        && let VoiceSource::Memory(source) = &mut voice.source
+    {
+        source.set_loop(setting);
+        voice.play.loop_ = setting;
+    }
+    if now.speed != was.speed
+        && let Some(speed) = now.speed
+    {
+        voice.source.apply_speed(speed);
+        voice.play.speed = speed;
+    }
+}
+
 /// A voice node's fork source: see "Forks" on [`VoiceNode`].
 struct VoiceNodeFork {
     /// The voice as inserted. Shares with the live node what a `Voice`
@@ -378,9 +452,9 @@ struct VoiceNodeFork {
     /// with `Voice::fork_copy`, which shares nothing.
     template: Voice,
     channels: ChannelLayout,
-    /// The live node's placement cell, read with `current` when a fork is
+    /// The live node's steering cell, read with `current` when a fork is
     /// taken (an owning read on the control side, never a lend).
-    placement: PlacementCell,
+    steering: SteeringCell,
     /// The node's params: a fork starts from the gain cell, which holds the
     /// gain last set (a modulation lane sends its composite to the
     /// port and never writes the cell).
@@ -392,10 +466,7 @@ struct VoiceNodeFork {
 impl ForkSource for VoiceNodeFork {
     fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         let mut voice = self.template.fork_copy(mode)?;
-        let placed = *self.placement.current();
-        if let Some(window) = placed {
-            voice.source.apply_placement(window.start, window.duration);
-        }
+        apply_steering(&mut voice, &Steering::default(), &self.steering.current());
         let gain = self
             .params
             .get(UnitParam::Volume)
@@ -421,7 +492,7 @@ impl IntoNode for VoiceNode {
         let fork = VoiceNodeFork {
             template: node.slot.voice.as_ref().clone(),
             channels: node.channels,
-            placement: Arc::clone(&handle.placement),
+            steering: Arc::clone(&handle.steering),
             params: handle.params.clone(),
             tempo: node.tempo.clone(),
         };
@@ -436,10 +507,10 @@ impl IntoNode for VoiceNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemorySource, Playback, VoiceSource};
+    use crate::{MemorySource, Playback, VoiceSource, VoiceWindow};
     use tutti_types::Beat;
 
-    /// A window the node held across the next `set_placement` is freed by
+    /// A steering the node held across the next `set_window` is freed by
     /// the next `reclaim`, with no further publish.
     #[test]
     fn reclaim_frees_a_window_a_block_held_across_the_next() {
@@ -454,11 +525,48 @@ mod tests {
         let (mut node, handle) = VoiceNode::new(voice).with_handle();
         {
             // A block in progress across the move.
-            let _held = node.placement.lend();
-            handle.set_placement(Beat::new(1.0), None);
+            let _held = node.steering.lend();
+            handle.set_window(VoiceWindow::from(Beat::new(1.0)));
         }
-        assert_eq!(handle.placement.retired_len(), 1, "pinned until a scan");
+        assert_eq!(handle.steering.retired_len(), 1, "pinned until a scan");
         assert_eq!(tutti_rt::Reclaim::reclaim(&handle), 0);
-        assert_eq!(handle.placement.retired_len(), 0, "freed by the reclaim");
+        assert_eq!(handle.steering.retired_len(), 0, "freed by the reclaim");
+    }
+
+    /// **A streaming node's handle owns its stream.** With every other holder
+    /// gone (the caller moved the stream into the node; nothing keeps it
+    /// apart), the stream stays served for as long as the handle lives, and
+    /// ends with the last clone of it.
+    #[test]
+    fn a_streaming_nodes_handle_owns_its_stream() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("tone.wav");
+        let samples = vec![0.25f32; 4_800];
+        tutti_fixtures::signal::write_wav_f32(&path, SampleRate::new(48_000.0), 1, &samples);
+        let mut streamer =
+            crate::DiskStreamer::manual(SampleRate::new(48_000.0), Default::default())
+                .expect("streamer builds");
+        let opening = streamer.open(&path, crate::Placement::HEAD);
+        let (stream, reader) = crate::testing::settle(&mut streamer, opening).expect("opens");
+        let served = Arc::clone(&reader.status);
+        let voice = crate::DiskVoice::from_reader(reader, crate::VoiceWindow::default());
+
+        let (node, handle) = VoiceNode::streaming(voice, stream, Playback::default()).with_handle();
+        let second = handle.clone();
+        let _ = streamer.step_until_settled(1_000);
+        assert!(!served.closed(), "the handle holds the stream");
+
+        drop(handle);
+        let _ = streamer.step_until_settled(1_000);
+        assert!(!served.closed(), "a clone of the handle still holds it");
+        assert!(
+            second.status().is_some(),
+            "a streaming handle reports its stream"
+        );
+
+        drop(second);
+        let _ = streamer.step_until_settled(1_000);
+        assert!(served.closed(), "the last clone's drop ended the stream");
+        drop(node);
     }
 }

@@ -7,6 +7,8 @@
 //! the largest step between neighbouring samples is bounded analytically, and
 //! a cut shows as a step of the tone's amplitude.
 
+use crate::VoiceWindow;
+
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
@@ -141,8 +143,10 @@ impl Rig {
     ) {
         let mut source = MemorySource::placed(
             Arc::clone(wave),
-            Beat::new(start),
-            duration.map(BeatDuration::new),
+            match duration {
+                Some(d) => VoiceWindow::span(Beat::new(start), BeatDuration::new(d)),
+                None => VoiceWindow::from(Beat::new(start)),
+            },
         )
         .expect("a placeable wave");
         match &mut self.host {
@@ -169,7 +173,7 @@ impl Rig {
             }
             Hosted::Node(node) => {
                 source.set_gain(play.gain);
-                source.set_loop_setting(play.loop_);
+                source.set_loop(play.loop_);
                 source.prepare(&Prepare::new(
                     SampleRate(SR),
                     MaxBlock::of(Samples(self.max_block)),
@@ -732,11 +736,7 @@ fn a_voice_with_its_own_loop_is_judged_by_its_window(host: Host) {
     let w = steps(1, 0.25, 0.5);
     let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     let play = Playback {
-        loop_: super::memory_source::LoopSetting::On {
-            start: tutti_types::SamplePosition(20_000.0),
-            end: tutti_types::SamplePosition((WRAP + 100) as f64),
-            crossfade_frames: 64,
-        },
+        loop_: Some(crate::testing::loop_frames(20_000, WRAP + 100, 64)),
         ..Playback::default()
     };
     rig.place_with(1, &w, 0.0, None, play);

@@ -197,22 +197,50 @@ impl Opening {
     /// allocates, so it is here and not on the audio thread).
     pub fn poll(self) -> Open {
         match self.reply.try_recv() {
-            Ok(Ok(opened)) => Open::Ready(
-                Stream::new(
-                    opened.id,
-                    self.port,
-                    Arc::clone(&opened.status),
-                    Arc::clone(&opened.cells),
-                    Arc::clone(&opened.file),
-                    Arc::clone(&opened.control),
-                ),
-                StreamReader::new(opened),
-            ),
+            Ok(Ok(opened)) => self.ready(opened),
             Ok(Err(error)) => Open::Failed(error),
             Err(TryRecvError::Empty) => Open::Pending(self),
             // The streamer dropped the reply unanswered: its thread is gone.
             Err(TryRecvError::Disconnected) => Open::Failed(OpenError::StreamerGone),
         }
+    }
+
+    /// Blocks until the streamer answers: the open as a job for a thread
+    /// that has nothing else to do (the session's spawner), where
+    /// [`poll`](Self::poll) is for one that has. It sleeps on the reply, so
+    /// no loop of polls is needed; but a streamer nobody drives (a
+    /// `DiskStreamer::manual` no one steps)
+    /// never answers, and this never returns.
+    ///
+    /// # Errors
+    ///
+    /// The open's own failure, as the streamer answered it;
+    /// [`OpenError::StreamerGone`] when the streamer exits first.
+    pub fn wait(self) -> Result<(Stream, StreamReader), OpenError> {
+        match self.reply.recv() {
+            Ok(Ok(opened)) => {
+                let Open::Ready(stream, reader) = self.ready(opened) else {
+                    unreachable!("`ready` answers `Ready`")
+                };
+                Ok((stream, reader))
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(OpenError::StreamerGone),
+        }
+    }
+
+    fn ready(self, opened: Opened) -> Open {
+        Open::Ready(
+            Stream::new(
+                opened.id,
+                self.port,
+                Arc::clone(&opened.status),
+                Arc::clone(&opened.cells),
+                Arc::clone(&opened.file),
+                Arc::clone(&opened.control),
+            ),
+            StreamReader::new(opened),
+        )
     }
 }
 

@@ -81,10 +81,3 @@ pub(crate) fn clamp_finite(value: f32, clamp: impl FnOnce(f32) -> f32) -> f32 {
         value
     }
 }
-
-/// `value` if finite, else `fallback` — for audio-rate param ports, which are
-/// read per sample and fall back to the block's (already sanitised) value.
-#[inline]
-pub(crate) fn finite_or(value: f32, fallback: f32) -> f32 {
-    if value.is_finite() { value } else { fallback }
-}

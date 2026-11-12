@@ -31,10 +31,10 @@ use tutti_graph::{
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Waveform};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
-    BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayLineNode,
-    DistortionNode, GateControls, GateNode, KeySource, LadderFilterNode, LadderType,
-    LimiterControls, LimiterNode, Lookahead, ModDelayNode, PhaserNode, ShapeKind, SvfFilterNode,
-    SvfType,
+    BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayControls,
+    DelayNode, DistortionNode, GateControls, GateNode, InterpolationMode, KeySource,
+    LadderFilterNode, LadderType, LimiterControls, LimiterNode, Lookahead, MaxDelay, ModDelayNode,
+    PhaserNode, ShapeKind, SvfFilterNode, SvfType,
 };
 use tutti_types::{
     Amplitude, AtomicF32, BeatDuration, BusTopology, ChannelLayout, CompressionRatio, Db, Depth,
@@ -50,6 +50,21 @@ const SETTLED: usize = 20_000;
 
 fn noise(seed: u32) -> Vec<f32> {
     Noise::seeded(seed).take(FRAMES).map(|x| 0.8 * x).collect()
+}
+
+/// A delay `w` channels wide: 10 ms of line, a 0.3 ms time and half feedback.
+fn delay_of(w: usize) -> DelayNode {
+    DelayNode::new(
+        BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+            .expect("at most one bus wide"),
+        MaxDelay::of(Seconds::new(0.01)),
+        InterpolationMode::Linear,
+        DelayControls {
+            time: Seconds::new(0.0003),
+            feedback: Feedback::new(0.5),
+            cross_feedback: Feedback::NONE,
+        },
+    )
 }
 
 /// The key a test's lane goes in at: no builder key reaches it.
@@ -219,13 +234,8 @@ fn cases() -> Vec<Case> {
             Resonance::new(0.3),
         )
     }
-    fn delay(w: usize) -> DelayLineNode {
-        DelayLineNode::with_channels(
-            ChannelLayout::try_from(w).expect("a test width is small"),
-            Seconds::new(0.01),
-            Seconds::new(0.0003),
-            Feedback::new(0.5),
-        )
+    fn delay(w: usize) -> DelayNode {
+        delay_of(w)
     }
     fn comp(w: usize) -> CompressorNode {
         CompressorNode::new(
@@ -335,7 +345,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = delay(w);
                 if let Some(v) = v {
-                    n.set_feedback(Feedback::new(v));
+                    assert!(n.param_set().set(UnitParam::Feedback, v));
                 }
                 parts_of(n)
             },
@@ -348,7 +358,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = delay(w);
                 if let Some(v) = v {
-                    n.set_delay_time(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::DelayTime, v));
                 }
                 parts_of(n)
             },
@@ -676,7 +686,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = chorus(w);
                 if let Some(v) = v {
-                    n.set_feedback(Feedback::new(v));
+                    assert!(n.param_set().set(UnitParam::Feedback, v));
                 }
                 parts_of(n)
             },
@@ -730,7 +740,7 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 let n = phaser(w);
                 if let Some(v) = v {
-                    n.set_feedback(Feedback::new(v));
+                    assert!(n.param_set().set(UnitParam::Feedback, v));
                 }
                 parts_of(n)
             },
@@ -809,14 +819,7 @@ fn mix_cases() -> Vec<MixCase> {
     let cases = vec![
         MixCase {
             name: "delay mix",
-            make: |w| {
-                parts_of(DelayLineNode::with_channels(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
-                    Seconds::new(0.01),
-                    Seconds::new(0.0003),
-                    Feedback::new(0.5),
-                ))
-            },
+            make: |w| parts_of(delay_of(w)),
         },
         MixCase {
             name: "chorus mix",

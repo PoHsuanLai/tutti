@@ -3,6 +3,19 @@
 
 use tutti_types::{SampleRate, Seconds};
 
+mod family;
+mod max_delay;
+mod routing;
+mod times;
+
+pub use family::{
+    DELAY_SLEW, DelayCapacity, DelayControls, DelayFamily, DelayMember, DelayRecurrence,
+    MAX_DELAY_CHANNELS,
+};
+pub use max_delay::{MaxDelay, MaxDelayError};
+pub use routing::{Routing, RoutingError};
+pub use times::{ChannelTimes, ChannelTimesError};
+
 /// How a fractional delay position is turned into a sample.
 ///
 /// The cost/quality ladder for a *modulated* delay: a moving delay time lands

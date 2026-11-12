@@ -287,7 +287,7 @@ pub mod prelude {
     // The common nodes (feature `dsp`: the algorithms they run).
     #[cfg(feature = "dsp")]
     pub use tutti_nodes::{
-        CompressorNode, DelayLineNode, FdnNode, FreeverbNode, LadderFilterNode, LimiterNode,
+        CompressorNode, DelayNode, FdnNode, FreeverbNode, LadderFilterNode, LimiterNode,
         SvfFilterNode, SvfType,
     };
 

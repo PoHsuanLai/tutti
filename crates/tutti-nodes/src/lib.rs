@@ -24,7 +24,8 @@
 //!   Linkwitz-Riley 4th-order split (`f64` state, solved on the stream's 16-frame grid), each
 //!   crossover frequency an indexed [`Cutoff`](tutti_types::UnitParam::Cutoff) param, with
 //!   [`CrossoverError`].
-//! - Delay: [`DelayLineNode`] over `tutti_dsp::DelayLine`, with [`InterpolationMode`].
+//! - Delay: [`DelayNode`] over `tutti_dsp::DelayFamily`, with [`InterpolationMode`] and
+//!   [`MaxDelay`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
 //!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
 //!   bands over a Linkwitz-Riley crossover, every setting an indexed param: see
@@ -90,10 +91,13 @@ pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Waveform};
 pub use modulator::Modulator;
 
 mod delay;
-pub use delay::DelayLineNode;
-// `InterpolationMode` is in `DelayLineNode::with_interpolation`'s signature;
+pub use delay::DelayNode;
+// `InterpolationMode` and the delay's controls are in `DelayNode::new`'s signature;
 // the ring itself (`DelayLine`) is `tutti-dsp`'s only.
-pub use tutti_dsp::InterpolationMode;
+pub use tutti_dsp::{
+    ChannelTimes, ChannelTimesError, DelayControls, DelayFamily, InterpolationMode, MaxDelay,
+    MaxDelayError, Routing, RoutingError,
+};
 
 mod distortion;
 pub use distortion::DistortionNode;

@@ -17,13 +17,14 @@
 use tutti_graph::ParamNode;
 use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{
-    BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayLineNode,
-    DistortionNode, EqBandNode, GateControls, GateNode, LadderFilterNode, LadderType, LfoNode,
-    LfoShape, LimiterControls, LimiterNode, ModDelayNode, PhaserNode, ShapeKind, SvfControls,
-    SvfFilterNode, SvfType,
+    BrickwallLimiterNode, BusStripNode, ChannelTimes, CompressorControls, CompressorNode,
+    DelayControls, DelayFamily, DelayNode, DistortionNode, EqBandNode, GateControls, GateNode,
+    InterpolationMode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterControls,
+    LimiterNode, MaxDelay, ModDelayNode, PhaserNode, ShapeKind, SvfControls, SvfFilterNode,
+    SvfType,
 };
 use tutti_types::{
-    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
+    Amplitude, BusTopology, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
     PhaseIncrement, Q, Resonance, Seconds, UnitParam,
 };
 
@@ -123,21 +124,31 @@ fn brickwall_limiter() {
 
 #[test]
 fn delay_line() {
-    IsolateRow::new("DelayLineNode (stereo, ping-pong)", || {
-        let d = DelayLineNode::stereo(
-            Seconds(1.0),
-            Seconds(0.05),
-            Seconds(0.07),
-            Feedback::new(0.5_f32),
-        );
-        d.set_cross_feedback(Feedback::new(0.3_f32));
-        d
+    IsolateRow::new("DelayNode (stereo, ping-pong)", || {
+        let family = DelayFamily::new(
+            BusTopology::STEREO,
+            MaxDelay::of(Seconds(1.0)),
+            InterpolationMode::Linear,
+        )
+        .with_times(ChannelTimes::each(&[Seconds(0.07)]).unwrap())
+        .unwrap();
+        DelayNode::live(
+            family,
+            DelayControls {
+                time: Seconds(0.05),
+                feedback: Feedback::new(0.5_f32),
+                cross_feedback: Feedback::new(0.3_f32),
+            },
+        )
     })
-    .control("delay time (left)", |d| d.set_delay_time_l(Seconds(0.08)))
-    .control("delay time (right)", |d| d.set_delay_time_r(Seconds(0.03)))
-    .control("feedback", |d| d.set_feedback(Feedback::new(0.1_f32)))
+    .control("delay time", |d| {
+        assert!(d.param_set().set(UnitParam::DelayTime, 0.08));
+    })
+    .control("feedback", |d| {
+        assert!(d.param_set().set(UnitParam::Feedback, 0.1));
+    })
     .control("cross feedback", |d| {
-        d.set_cross_feedback(Feedback::new(0.0_f32))
+        assert!(d.param_set().set(UnitParam::CrossFeedback, 0.0));
     })
     .check();
 }

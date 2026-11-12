@@ -1,7 +1,7 @@
 //! Regression gate: modulation + delay nodes must not allocate per-buffer.
 //!
-//! Covers `LfoNode` (free-running and beat-synced), `DelayLineNode` (mono,
-//! stereo cross-fed, 6-wide), and the modulation effects `ModDelayNode`
+//! Covers `LfoNode` (free-running and beat-synced), `DelayNode` (mono,
+//! stereo cross-fed, 6-wide, with its time and feedback lanes fed), and the modulation effects `ModDelayNode`
 //! (chorus and flanger) and `PhaserNode`. They are graph nodes, each
 //! driven alone in a graph by `tutti_graph::contract::BlockRig`: its `prepare`
 //! (which sizes the delay lines and the block scratch) runs when the rig is
@@ -14,11 +14,16 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_fixtures::midi::{m1_note_off, m1_note_on};
 use tutti_graph::IntoNode;
-use tutti_graph::contract::BlockRig;
-use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
+use tutti_graph::ParamNode;
+use tutti_graph::contract::{BlockRig, Direct};
+use tutti_nodes::{
+    DelayControls, DelayNode, InterpolationMode, LfoNode, LfoShape, MaxDelay, ModDelayNode,
+    PhaserNode,
+};
 use tutti_types::MaxBlock;
 use tutti_types::{
-    BeatDuration, ChannelLayout, Depth, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
+    BeatDuration, BusTopology, ChannelLayout, Depth, Feedback, Hz, PhaseIncrement, SampleRate,
+    Seconds, UnitParam,
 };
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
@@ -88,40 +93,38 @@ fn beat_synced_lfo_process_is_allocation_free() {
     );
 }
 
+/// A delay at `time` seconds and `feedback`, `cross` cross-fed, `width` wide, holding up to
+/// two seconds.
+fn delay(width: u16, time: f64, feedback: f32, cross: f32) -> DelayNode {
+    DelayNode::new(
+        BusTopology::assumed(ChannelLayout::from(width)).expect("a test width is one bus"),
+        MaxDelay::of(Seconds::new(2.0)),
+        InterpolationMode::Linear,
+        DelayControls {
+            time: Seconds::new(time),
+            feedback: Feedback::new(feedback),
+            cross_feedback: Feedback::new(cross),
+        },
+    )
+}
+
 #[test]
-fn delay_line_node_process_is_allocation_free() {
+fn delay_node_process_is_allocation_free() {
     // A tap shorter than the gate's warm-up (32 blocks of 64 frames), so the
     // wet-only output is audible when the gate checks it.
-    let node = DelayLineNode::new(
-        Seconds::new(2.0_f64),
-        Seconds::new(0.02_f64),
-        Feedback::new(0.4_f32),
-    );
-    gate(node, 0.5, 2_000, |_| {});
+    gate(delay(1, 0.02, 0.4, 0.0), 0.5, 2_000, |_| {});
 }
 
 #[test]
-fn stereo_delay_line_node_process_is_allocation_free() {
-    let node = DelayLineNode::stereo(
-        Seconds::new(2.0_f64),
-        Seconds::new(0.02_f64),
-        Seconds::new(0.021_f64),
-        Feedback::new(0.4_f32),
-    );
-    gate(node, 0.5, 2_000, |_| {});
+fn stereo_delay_node_process_is_allocation_free() {
+    gate(delay(2, 0.02, 0.4, 0.0), 0.5, 2_000, |_| {});
 }
 
 #[test]
-fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
+fn wide_6ch_delay_node_process_is_allocation_free() {
     // The per-channel delay-line Vec must be built at construction; the wide
     // path must not allocate per buffer.
-    let node = DelayLineNode::with_channels(
-        6u16,
-        Seconds::new(2.0_f64),
-        Seconds::new(0.02_f64),
-        Feedback::new(0.4_f32),
-    );
-    gate(node, 0.5, 2_000, |_| {});
+    gate(delay(6, 0.02, 0.4, 0.0), 0.5, 2_000, |_| {});
 }
 
 #[test]
@@ -151,24 +154,22 @@ fn phaser_node_process_is_allocation_free() {
     gate(PhaserNode::new(4), 0.4, 2_000, |_| {});
 }
 
-/// Every control moved each block: the delay time glides, the chorus depth
+/// Every control moved each block: the delay time glides at its slew, the chorus depth
 /// sweeps, the phaser's coefficient table is re-solved, the cross-fed delay reads
 /// every tap before writing any line. All of it on preallocated scratch.
-/// The moves go through clones of the nodes, which share their cells. (A
-/// moving mix is the graph's: `tutti-graph/tests/rt_no_alloc.rs`.)
+/// The delay's moves go through its `ParamSet`; the others through clones, which share
+/// their cells. (A moving mix is the graph's: `tutti-graph/tests/rt_no_alloc.rs`.)
 #[test]
 fn delay_and_modulation_with_moving_controls_are_allocation_free() {
-    let delay = DelayLineNode::stereo(
-        Seconds::new(1.0_f64),
-        Seconds::new(0.01_f64),
-        Seconds::new(0.02_f64),
-        Feedback::new(0.4_f32),
-    );
-    delay.set_cross_feedback(Feedback::new(0.3));
-    let d = delay.clone();
-    gate(delay, 0.5, 2_000, |i| {
+    // A cross-fed stereo delay whose time and both feedbacks move every block, the
+    // glides in flight on every one.
+    let node = delay(2, 0.01, 0.4, 0.3);
+    let set = node.param_set();
+    gate(node, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
-        d.set_delay_time(tutti_types::Seconds::from_f32(0.005 + 0.03 * t));
+        assert!(set.set(UnitParam::DelayTime, 0.005 + 0.03 * t));
+        assert!(set.set(UnitParam::Feedback, 0.2 + 0.5 * t));
+        assert!(set.set(UnitParam::CrossFeedback, 0.4 * (1.0 - t)));
     });
     let chorus = ModDelayNode::chorus(6u16);
     let c = chorus.clone();
@@ -183,6 +184,43 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
         p.set_depth(Depth::of(t));
         p.set_feedback(Feedback::new(0.9 * t));
     });
+}
+
+/// The delay's time and feedback lanes fed per frame (a flanger's sweep, and a feedback
+/// that moves at audio rate), on the cross-fed stereo and the 6-wide delay, through
+/// `Direct`, which feeds a node's param ports. (`Direct::feed` copies the lane, so it is
+/// fed once, before the gate: the same 64 frames of it play each block.)
+#[test]
+fn a_delay_with_its_lanes_fed_is_allocation_free() {
+    for width in [2u16, 6] {
+        let mut rig = Direct::new(delay(width, 0.01, 0.4, 0.3), SampleRate(48_000.0), 64);
+        for c in rig.inputs_mut() {
+            for (i, x) in c.iter_mut().enumerate() {
+                *x = if i % 2 == 0 { 0.5 } else { -0.5 };
+            }
+        }
+        let tau = std::f32::consts::TAU / 64.0;
+        let time: Vec<f32> = (0..64)
+            .map(|i| 0.01 + 0.004 * (tau * i as f32).sin())
+            .collect();
+        let feedback: Vec<f32> = (0..64)
+            .map(|i| 0.4 + 0.3 * (tau * 3.0 * i as f32).sin())
+            .collect();
+        rig.feed(0, Some(&time));
+        rig.feed(1, Some(&feedback));
+        for _ in 0..32 {
+            rig.block();
+        }
+        assert!(
+            rig.output(0).iter().any(|s| s.abs() > 1e-6),
+            "the delay rendered silence; the gate would walk no DSP"
+        );
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..2_000 {
+                rig.block();
+            }
+        });
+    }
 }
 
 // ---- an event-output lane on the audio thread ---------------------------------

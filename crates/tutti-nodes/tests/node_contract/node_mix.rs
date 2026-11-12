@@ -23,12 +23,14 @@ use tutti_fixtures::signal::bits;
 use tutti_graph::contract::drive;
 use tutti_graph::{IntoNode, Prepare, Solo};
 use tutti_nodes::{
-    CompressorControls, CompressorNode, CrossoverNode, DelayLineNode, FamilyNode, GateControls,
-    GateNode, ModDelayNode, PhaserNode,
+    ChannelTimes, CompressorControls, CompressorNode, CrossoverNode, DelayControls, DelayFamily,
+    DelayNode, FamilyNode, GateControls, GateNode, InterpolationMode, MaxDelay, ModDelayNode,
+    PhaserNode,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
-    ChannelLayout, CompressionRatio, Db, Feedback, Hz, Mix, SampleRate, Samples, Seconds,
+    BusTopology, ChannelLayout, CompressionRatio, Db, Feedback, Hz, Mix, SampleRate, Samples,
+    Seconds,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -189,21 +191,37 @@ fn the_delay_is_blended_by_the_graph() {
     check(
         "delay (stereo, cross-fed)",
         &|| {
-            let d = DelayLineNode::stereo(
-                Seconds(0.1),
-                Seconds(0.013),
-                Seconds(0.021),
-                Feedback::new(0.5),
-            );
-            d.set_cross_feedback(Feedback::new(0.3));
-            d
+            let family = DelayFamily::new(
+                BusTopology::STEREO,
+                MaxDelay::of(Seconds(0.1)),
+                InterpolationMode::Linear,
+            )
+            .with_times(ChannelTimes::each(&[Seconds(0.021)]).unwrap())
+            .unwrap();
+            DelayNode::live(
+                family,
+                DelayControls {
+                    time: Seconds(0.013),
+                    feedback: Feedback::new(0.5),
+                    cross_feedback: Feedback::new(0.3),
+                },
+            )
         },
         2,
         0,
     );
     check(
         "delay (mono)",
-        &|| DelayLineNode::new(Seconds(0.1), Seconds(0.01), Feedback::new(0.4)),
+        &|| {
+            DelayNode::mono(
+                MaxDelay::of(Seconds(0.1)),
+                DelayControls {
+                    time: Seconds(0.01),
+                    feedback: Feedback::new(0.4),
+                    ..DelayControls::DEFAULT
+                },
+            )
+        },
         1,
         0,
     );
@@ -268,8 +286,18 @@ fn the_reverbs_are_blended_by_the_graph() {
 /// `a_mix_change_fades_across_the_next_block`.)
 #[test]
 fn a_mix_move_on_a_delay_ramps_across_the_block() {
-    let make =
-        || DelayLineNode::with_channels(6u16, Seconds(0.1), Seconds(0.0005), Feedback::new(0.3));
+    let make = || {
+        DelayNode::new(
+            BusTopology::assumed(ChannelLayout::from(6u16)).expect("six channels are one bus"),
+            MaxDelay::of(Seconds(0.1)),
+            InterpolationMode::Linear,
+            DelayControls {
+                time: Seconds(0.0005),
+                feedback: Feedback::new(0.3),
+                ..DelayControls::DEFAULT
+            },
+        )
+    };
     let x: Vec<Vec<f32>> = (0..6).map(|c| noise(70 + c, 2 * BLOCK)).collect();
     let wet = {
         let mut s = solo(make());

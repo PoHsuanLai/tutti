@@ -482,7 +482,12 @@ impl Graph {
 
     /// What every node is prepared for: the rate, the largest block, and the
     /// device's callback size when the session knows it.
-    #[cfg(any(feature = "testing", feature = "midi", feature = "plugin"))]
+    #[cfg(any(
+        feature = "testing",
+        feature = "midi",
+        feature = "plugin",
+        feature = "sampler"
+    ))]
     pub(crate) fn prepared(&self) -> Prepare {
         *self.editor.prepare()
     }

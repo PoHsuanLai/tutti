@@ -277,15 +277,8 @@ impl LatencyProbe {
     }
 }
 
-/// The terms of a take's placement, each as the take found it.
-///
-/// ```
-/// use tutti_session::{Terms, Trim};
-/// use tutti_types::Samples;
-///
-/// let terms = Terms::new(Some(Samples(240)), None, Samples(0), Trim::NONE);
-/// assert!(!terms.is_complete(), "the output has not reported");
-/// ```
+/// The terms of a take's placement, each as the take found it: a reading, read
+/// from [`Placement::terms`] or [`Recorded::terms`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Terms {
@@ -304,7 +297,7 @@ pub struct Terms {
 impl Terms {
     /// The terms of a placement.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         in_latency: Option<Samples>,
         out_latency: Option<Samples>,
         inlet_lead: Samples,
@@ -578,6 +571,10 @@ pub enum TakeError {
     /// failure is in the sink.
     #[error("the take's sink failed: {0}")]
     Sink(#[source] Arc<std::io::Error>),
+    /// The sink refused a write, yet its `finalize` reported no error: it broke
+    /// [`Sink`]'s contract, which has `finalize` report the first failure.
+    #[error("the sink refused a write and its finalize reported no error")]
+    SinkRefused,
     /// The take's job panicked or was dropped by the spawner.
     #[error("the take's job did not finish: {0}")]
     Job(#[from] JobFailed),
@@ -731,6 +728,11 @@ impl Session {
     /// pump into `target` on the session's spawner. The take records what the
     /// graph is given by the input, so it is on the graph's clock whatever the
     /// device does; the module docs say where it is placed.
+    ///
+    /// The take's pump holds one spawner job for the whole take: with a custom
+    /// [`spawn_with`](crate::SessionBuilder::spawn_with) over a bounded pool and
+    /// no worker free, the take does not start, and [`Take::finish`] blocks
+    /// until the job runs (the default thread-per-job spawner is unaffected).
     ///
     /// The tap compiles in the next [`update`](Self::update). The pump drops
     /// what comes before the punch-in; [`TakeEvent::Started`] lands in the
@@ -977,11 +979,7 @@ impl Pump {
             return Err(TakeError::Sink(Arc::new(error)));
         }
         if failed {
-            // The sink refused a write and `finalize` has no first error to
-            // give (a sink may close cleanly after refusing).
-            return Err(TakeError::Sink(Arc::new(std::io::Error::other(
-                "the sink refused a write",
-            ))));
+            return Err(TakeError::SinkRefused);
         }
         // A take finished before its punch-in has nothing to place.
         let placement = placement.ok_or(TakeError::NeverStarted)?;
@@ -1051,6 +1049,24 @@ mod tests {
     /// exactly the frames of its window.** Frames 0..100 arrive, 100..150 are
     /// lost, 150..250 arrive: the take holds 250 frames, the lost 50 are zeros
     /// where they were, and the later frames are not shifted back.
+    /// The formula itself, with a start before the clock's origin kept as such
+    /// rather than clamped, and a latency not reported leaving `is_complete`
+    /// false.
+    #[test]
+    fn a_start_before_the_origin_is_stated_not_clamped() {
+        let terms = Terms::new(
+            Some(Samples(240)),
+            Some(Samples(480)),
+            Samples(7),
+            Trim::NONE,
+        );
+        assert_eq!(terms.start(Frame(1_000)), Start::At(Frame(273)));
+        assert_eq!(terms.start(Frame(100)), Start::BeforeOrigin(Samples(627)));
+        assert!(terms.is_complete());
+        let partial = Terms::new(Some(Samples(240)), None, Samples(0), Trim::NONE);
+        assert!(!partial.is_complete());
+    }
+
     #[test]
     fn a_lost_gap_is_silence_in_place_and_counted() {
         let (reader, mut writer) = TapReader::pair(TapId(0), 1, Samples(4096));

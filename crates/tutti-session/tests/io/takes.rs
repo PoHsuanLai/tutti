@@ -12,7 +12,7 @@ use tutti_cpal::{ManualStream, ManualStreamDriver, MicConfig, OutputSpec};
 use tutti_graph::{InletRing, TapWriter};
 use tutti_session::{
     Armed, Input, InputConfig, InputOpener, OpenedInput, Punch, Recorded, Session, SessionEvent,
-    Start, Take, TakeError, TakeEvent, TakeTarget, Terms, Trim,
+    Start, Take, TakeError, TakeEvent, TakeTarget, Trim,
 };
 use tutti_types::{At, Beat, ChannelLayout, Frame, SampleRate, Samples, Sink, SinkFailed};
 
@@ -330,20 +330,6 @@ fn an_unreported_latency_is_stated_unknown_not_zero() {
         "only the lead is known"
     );
     drop(take);
-}
-
-/// The formula itself, with a start before the clock's origin kept as such
-/// rather than clamped.
-#[test]
-fn a_start_before_the_origin_is_stated_not_clamped() {
-    let terms = Terms::new(
-        Some(Samples(240)),
-        Some(Samples(480)),
-        Samples(7),
-        Trim::NONE,
-    );
-    assert_eq!(terms.start(Frame(1_000)), Start::At(Frame(273)));
-    assert_eq!(terms.start(Frame(100)), Start::BeforeOrigin(Samples(627)));
 }
 
 /// **Started lands in the update after the punch-in, then Finished once.** A

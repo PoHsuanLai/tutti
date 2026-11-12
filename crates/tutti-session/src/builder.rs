@@ -266,6 +266,9 @@ impl SessionBuilder {
     /// `std::thread` per job. A job the spawner drops unrun ends as failed,
     /// so a spawner that refuses work loses none silently.
     ///
+    /// A recording take (`Session::record`, feature `audio-io`) holds one job for the whole take:
+    /// over a bounded pool with no worker free it does not start until one is.
+    ///
     /// ```
     /// # use tutti_session::Session;
     /// let builder = Session::builder().spawn_with(|job| {

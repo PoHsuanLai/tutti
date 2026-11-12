@@ -2,11 +2,23 @@
 //! message through it.
 
 use crate::scale;
-use tutti_ump::{Address, Attribute, Message, MidiGroup, Ump, Voice1, Voice2, parse_exact};
+use tutti_ump::{
+    Address, Attribute, Message, MidiGroup, NoteVelocity, U7, Ump, Voice1, Voice2, parse_exact,
+};
 
 /// The release velocity a MIDI 1.0 Note On at velocity 0 becomes (M2-104
 /// Appendix D.3.1).
-const NOTE_ON_ZERO_RELEASE: u16 = 0x8000;
+const NOTE_ON_ZERO_RELEASE: NoteVelocity = NoteVelocity::new(0x8000);
+
+/// A 7-bit velocity as the 16-bit field of a Note On or Note Off, scaled
+/// Min-Center-Max (M2-115 section 3.4): 0 stays 0, 64 is `0x8000` and 127 is
+/// `0xFFFF`. [`narrow_velocity`](crate::narrow_velocity) is its right shift
+/// back.
+#[inline]
+#[must_use]
+pub const fn widen_velocity(velocity: U7) -> NoteVelocity {
+    NoteVelocity::new(scale::upscale(velocity.get() as u32, 7, 16) as u16)
+}
 
 /// The MIDI 2.0 message that means what `voice` means (M2-104 Appendix D.3,
 /// M2-115 section 3). The caller keeps the [`Address`]
@@ -26,12 +38,12 @@ pub fn widen(voice: Voice1) -> Voice2 {
         },
         Voice1::NoteOn { note, velocity } => Voice2::NoteOn {
             note,
-            velocity: scale::velocity(velocity.get()),
+            velocity: widen_velocity(velocity),
             attribute: Attribute::None,
         },
         Voice1::NoteOff { note, velocity } => Voice2::NoteOff {
             note,
-            velocity: scale::velocity(velocity.get()),
+            velocity: widen_velocity(velocity),
             attribute: Attribute::None,
         },
         Voice1::PolyPressure { note, pressure } => Voice2::PolyPressure {

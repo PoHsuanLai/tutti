@@ -747,10 +747,10 @@ impl Voicing {
                 attribute,
             } => {
                 self.begin(channel, note, attribute);
-                self.note_on(channel, note, velocity.max(1), patch, levels);
+                self.note_on(channel, note, velocity.get().max(1), patch, levels);
             }
             Voice2::NoteOff { note, velocity, .. } => {
-                self.note_off(channel, note, velocity, patch, levels);
+                self.note_off(channel, note, velocity.get(), patch, levels);
             }
             Voice2::ControlChange { controller, value } => {
                 let value = narrow_value(value);
@@ -1536,6 +1536,7 @@ mod tests {
     use crate::LIVE_NOTES;
     use tutti_midi_protocol::MpeZoneConfig;
     use tutti_midi_protocol::widen;
+    use tutti_ump::NoteVelocity;
     use tutti_ump::{Attribute, CCNumber, Pitch, RegisteredPerNoteController, U7, Voice1};
 
     /// One voice per note, no group.
@@ -1646,7 +1647,7 @@ mod tests {
                 c,
                 Voice2::NoteOn {
                     note: NoteNumber::of(k),
-                    velocity: 0x8000,
+                    velocity: NoteVelocity::new(0x8000),
                     attribute: Attribute::None,
                 },
                 p,
@@ -1660,7 +1661,7 @@ mod tests {
                 c,
                 Voice2::NoteOff {
                     note: NoteNumber::of(k),
-                    velocity: NEUTRAL_RELEASE,
+                    velocity: NoteVelocity::new(NEUTRAL_RELEASE),
                     attribute: Attribute::None,
                 },
                 p,
@@ -2054,7 +2055,7 @@ mod tests {
             )
         };
         assert_eq!(
-            off(&mut s, 60, 0x1234),
+            off(&mut s, 60, NoteVelocity::new(0x1234)),
             [Command::Release {
                 id: id(1),
                 velocity: 0x1234
@@ -2063,7 +2064,7 @@ mod tests {
         let mut s = Sim::new(POLY);
         s.cc(0, 64, 127);
         s.on(0, 60);
-        off(&mut s, 60, 0x4321);
+        off(&mut s, 60, NoteVelocity::new(0x4321));
         assert_eq!(
             s.cc(0, 64, 0),
             [Command::Release {
@@ -2093,7 +2094,7 @@ mod tests {
         assert_eq!(s.send(0, one, &One), [release(1)]);
         let two = Voice2::NoteOn {
             note: NoteNumber::of(62),
-            velocity: 0,
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::None,
         };
         let c = s.send(0, two, &One);
@@ -2305,7 +2306,7 @@ mod tests {
             0,
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity: 0x3000,
+                velocity: NoteVelocity::new(0x3000),
                 attribute: Attribute::None,
             },
             &One,

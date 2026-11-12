@@ -41,9 +41,16 @@ impl Rig {
         Ok(Self::wired(session, handle))
     }
 
-    /// A rig over a handle the session already made.
+    /// A rig over a handle the session already made, its strip wired to the
+    /// outputs here.
     pub fn wired(mut session: Session, handle: InstrumentHandle) -> Self {
         session.graph().connect(handle.out(), Root).unwrap();
+        Self::played(session, handle)
+    }
+
+    /// A rig over a handle whose strip is wired to the outputs already
+    /// (`add_instrument` does it).
+    pub fn played(mut session: Session, handle: InstrumentHandle) -> Self {
         let _ = session.update();
         Self {
             session,
@@ -112,6 +119,7 @@ impl Rig {
     pub fn clock_of(&self, frame: usize) -> Moment {
         assert!(frame >= self.frame(), "frame {frame} is already rendered");
         self.handle
+            .keys()
             .clock()
             .expect("the queue is prepared")
             .after(Samples(frame - self.frame()))
@@ -121,7 +129,10 @@ impl Rig {
     /// engine's clock.
     pub fn at(&mut self, frame: usize, ump: Ump) {
         let moment = self.clock_of(frame);
-        self.handle.send(moment, ump).expect("the queue has room");
+        self.handle
+            .keys_mut()
+            .push(moment, ump)
+            .expect("the queue has room");
     }
 
     /// First frame at or after `from` whose left or right sample is above

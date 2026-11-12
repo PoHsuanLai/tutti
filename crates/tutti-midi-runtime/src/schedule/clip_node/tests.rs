@@ -1,7 +1,7 @@
 use super::*;
 use tutti_fixtures::midi::{m1_cc, m1_note_on, note_on};
 use tutti_types::Beat;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, U7};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7};
 
 /// **A clip a block still held when `set` replaced it is freed by
 /// the next `reclaim`**, with no further publish.
@@ -81,7 +81,7 @@ fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
                     address,
                     tutti_ump::Voice2::NoteOff {
                         note,
-                        velocity: 0x8000,
+                        velocity: NoteVelocity::new(0x8000),
                         attribute: tutti_ump::Attribute::None,
                     }
                 )

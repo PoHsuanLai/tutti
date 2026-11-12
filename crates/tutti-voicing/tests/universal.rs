@@ -4,7 +4,7 @@
 
 use tutti_midi_protocol::{Addressee, GeneralMidi, Heard, Universal};
 use tutti_types::{Amplitude, Semitones};
-use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, Rpn, U7, U14, Voice2};
+use tutti_ump::{Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, Rpn, U7, U14, Voice2};
 use tutti_voicing::{Command, Patch, Rules, VoiceSpec, Voicing};
 
 struct One;
@@ -32,7 +32,7 @@ fn step(core: &mut Voicing, channel: u8, message: Voice2) -> Vec<Command> {
 fn note_on(key: u8) -> Voice2 {
     Voice2::NoteOn {
         note: NoteNumber::of(key),
-        velocity: 0x8000,
+        velocity: NoteVelocity::new(0x8000),
         attribute: Attribute::None,
     }
 }
@@ -240,7 +240,7 @@ fn general_midi_on_mutes_and_returns_every_channel_to_its_defaults() {
         0,
         Voice2::NoteOff {
             note: NoteNumber::of(64),
-            velocity: 0x8000,
+            velocity: NoteVelocity::new(0x8000),
             attribute: Attribute::None,
         },
     );

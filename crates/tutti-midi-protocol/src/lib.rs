@@ -39,7 +39,7 @@
 //! let on = Voice1::NoteOn { note, velocity: U7::of(64) };
 //! // 7-bit centre 0x40 is 16-bit centre 0x8000 (M2-115 section 3).
 //! let Voice2::NoteOn { velocity, .. } = widen(on) else { unreachable!() };
-//! assert_eq!(velocity, 0x8000);
+//! assert_eq!(velocity.get(), 0x8000);
 //! ```
 //!
 //! [`narrow_velocity`], [`narrow_value`] and [`narrow_bend`] go the other way
@@ -130,4 +130,4 @@ pub use unit::{
 pub use universal::{
     Addressed, Addressee, DeviceId, GeneralMidi, Heard, Read, Universal, UniversalReader, read,
 };
-pub use voice::{channel_voice, widen, widen_bytes, widen_message};
+pub use voice::{channel_voice, widen, widen_bytes, widen_message, widen_velocity};

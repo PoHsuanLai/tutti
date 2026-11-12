@@ -82,7 +82,7 @@ mod tests {
         TransportPosition,
     };
     use tutti_types::{SampleRate, Samples};
-    use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
+    use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7};
 
     use crate::{Settings, SoundFont, SoundFontUnit};
 
@@ -180,7 +180,11 @@ mod tests {
         // At the render's rate first: preparing at another rate drops the
         // voices (they are built against a rate).
         live.prepare(&Prepare::new(LIVE, MaxBlock::of(Samples(64))));
-        live.note_on(MidiChannel::FIRST, NoteNumber::of(60), 0xC800);
+        live.note_on(
+            MidiChannel::FIRST,
+            NoteNumber::of(60),
+            NoteVelocity::new(0xC800),
+        );
         let fork = live
             .fork_template()
             .fork(ForkMode::Live)

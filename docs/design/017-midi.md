@@ -1560,6 +1560,10 @@ Each with the recommendation to take unless the owner says otherwise.
    **Decided in E4:** the lock, as recommended: `InstrumentHandle` and
    `LiveInput` stay `Clone`, because a host hands a handle to a UI thread and
    a feeder, and `Midi::live_input` returns the one it has already.
+   **Reversed in core step 12 (doc 030 S4):** the keys are `MidiKeys`, the inlet's one
+   producer, owned by `InstrumentHandle` or returned once by `Midi::input`; neither is
+   `Clone` (`LiveInput` and `live_input` are gone), and a host that shares them
+   wraps them in its own lock.
 4. **Re-prepare at another rate and the tap. Decided (review of #458).** A
    tap's frames are on the graph clock at the rate prepared when they were
    written, so frames from before and after a re-prepare at another rate are on
@@ -3308,8 +3312,8 @@ such as reassembled SysEx; that is decided when that code is written.
   saved is keyed by the app's own stable id: with the session's `serde` feature
   `MidiRouteRule<AppId>` is `Serialize` and `Deserialize` (its Group and channel read back through
   their range checks), and the app maps its id to a node in `set_routes`' `resolve`.
-- **Not built:** MIDI Time Code out, MIDI-CI and profiles beyond the codec, and the
-  `s.midi().input(target)` that replaces `live_input` (Core's S4). The acceptance program is
+- **Not built:** MIDI Time Code out, MIDI-CI and profiles beyond the codec. The
+  `s.midi().input(target)` that replaces `live_input` is built (Core's S4, step 12). The acceptance program is
   `crates/tutti/examples/midi_all.rs`, run as a test in CI.
 
 ### L7: consumers of decoded messages: as built

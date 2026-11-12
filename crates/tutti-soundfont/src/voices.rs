@@ -7,7 +7,7 @@
 use tutti_midi_protocol::narrow_velocity;
 use tutti_sf2::SoundFont;
 use tutti_types::{Amplitude, Semitones};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteVelocity};
 use tutti_voicing::{ChannelState, Command, VoiceId};
 
 use crate::channel::Channel;
@@ -94,7 +94,7 @@ impl Voices {
                         &RegionPair::new(preset_zone, instrument_zone),
                         i32::from(channel.get()),
                         i32::from(key.get()),
-                        i32::from(narrow_velocity(velocity).get().max(1)),
+                        i32::from(narrow_velocity(NoteVelocity::new(velocity)).get().max(1)),
                     );
                     voice.glide(glide);
                     self.active.push(Slot { id, voice });

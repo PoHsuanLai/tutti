@@ -17,8 +17,7 @@
 //!
 //! **Not built yet, so not here:** MIDI Time Code out, MIDI-CI (discovery,
 //! profiles, property exchange are only a codec: `tutti-midi-device`'s
-//! `CiMessage`), and `s.midi().input(target)` replacing `live_input` (Core's
-//! lane S4 renames it).
+//! `CiMessage`).
 
 use tutti::midi::{self, MidiRouteRule, TakePlacement};
 use tutti::midi_file::{FileEvent, SmfFormat};
@@ -92,9 +91,9 @@ fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
     let zone = MpeZones::new(MpeZoneConfig::lower(7), None).ok_or("one lower zone")?;
     s.midi().set_mpe(MpeMode::Zones(zone));
 
-    // A synth as an instrument, its strip into the master.
-    let (synth, _params) = s.add_instrument(PolySynth::new(SynthConfig::default()))?;
-    s.graph().connect(synth.out(), Root)?;
+    // A synth as an instrument: its strip is wired to the master.
+    let AddedInstrument { handle: synth, .. } =
+        s.add_instrument(PolySynth::new(SynthConfig::default()))?;
 
     // A take: an event tap on the target's live input, read with `drain`.
     let mut take = s.midi().record(synth.node(), EventCapacity::of(256))?;
@@ -108,17 +107,17 @@ fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, _>>()?;
     s.midi().play_clip(synth.node(), timeline)?;
 
-    // Live notes, through the live input (Core's S4 renames it): a MIDI 2.0
-    // note with its 16-bit velocity, and a decoded `Message`, which `send`
-    // takes as it takes a packet.
-    let live = s.midi().live_input(synth.node())?;
+    // Live notes, through the live input's keys: a MIDI 2.0 note with its
+    // 16-bit velocity, and a decoded `Message`, which `push` takes as it takes
+    // a packet.
+    let mut live = s.midi().input(synth.node())?;
     live.note_on(
         Stamp::NextBlock,
         MidiChannel::of(1),
         NoteNumber::of(72),
-        0xC000,
+        NoteVelocity::new(0xC000),
     )?;
-    live.send(
+    live.push(
         Stamp::NextBlock,
         Message::note_on(MidiChannel::of(1), NoteNumber::of(76), U7::of(90)),
     )?;

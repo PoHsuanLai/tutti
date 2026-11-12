@@ -116,14 +116,6 @@ pub enum MidiEvent {
         /// The bar line it takes effect on.
         beat: tutti_types::Beat,
     },
-    /// A Set Tempo could not be taken: the map cannot hold the result (a tempo so
-    /// slow that a segment's duration overflows). The tempo in force stays.
-    TempoRefused {
-        /// The tempo sent.
-        tempo: tutti_types::Bpm,
-        /// Why the map refused it.
-        error: tutti_tempo::TempoError,
-    },
     /// The session stopped following ([`Midi::unfollow_tempo`](crate::Midi::unfollow_tempo)):
     /// the project's own tempo and meter are published again, from the next
     /// block, at the beat the transport is then at.

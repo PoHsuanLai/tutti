@@ -38,7 +38,7 @@
 use std::sync::Arc;
 
 use tutti_engine::Playhead;
-use tutti_graph::{EventTapReader, NodeKey};
+use tutti_graph::EventTapReader;
 use tutti_midi_runtime::{Followed, TempoFollower};
 use tutti_tempo::{TempoError, TempoMap, Transition};
 use tutti_transport::{ProjectMeter, TransportSettings};
@@ -54,13 +54,10 @@ pub(crate) const FOLLOW_TAP_CAPACITY: usize = 256;
 
 /// What [`Midi::follow_tempo`](crate::Midi::follow_tempo) follows.
 ///
-/// The source is a Group's Flex Data of the session's MIDI input node, the
+/// The source is a Group's Flex Data of the session's MIDI input node ([`MidiNodes::input`](crate::MidiNodes::input)), the
 /// only source built; MIDI Clock and MTC are later sources of the same call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FollowTempo {
-    /// The ingest node whose Group's messages are followed: the session's
-    /// [`MidiNodes::input`](crate::MidiNodes::input).
-    pub input: NodeKey,
     /// The Group followed. A Group is a cable of its own (M2-104 §2.1.2,
     /// Appendix B.1); the Group must be one the input hears
     /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
@@ -175,7 +172,11 @@ impl Follow {
                         out.push(MidiEvent::TempoFollowed { tempo, beat }.into());
                     }
                     Ok(None) => {}
-                    Err(error) => out.push(MidiEvent::TempoRefused { tempo, error }.into()),
+                    // The builder refuses only a tempo whose segment duration overflows
+                    // an `f64` (below ~1e-300 bpm); a `Bpm` from `flex_tempo` is at least
+                    // 1.397 bpm (field `u32::MAX`), so this is not reached: nothing is
+                    // published and nothing reported.
+                    Err(_) => {}
                 },
                 Followed::Meter(signature) => {
                     let at = next_bar_line(&self.meter, beat);

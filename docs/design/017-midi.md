@@ -3362,11 +3362,11 @@ What the decoded messages are consumed by, one item each.
   (pure: `step(Ump) -> Option<Followed>`, a `Bpm` or a `TimeSignature`; the Group's Set
   Tempo and Set Time Signature, which are Group messages (§7.5.3, §7.5.4); `TempoSource`
   is an enum, `Flex` first) is the `ClockFollower` row, scoped to Flex. The session's
-  `s.midi().follow_tempo(FollowTempo { input, group, meter })` opens an event tap on the
+  `s.midi().follow_tempo(FollowTempo { group, meter })` opens an event tap on the
   ingest node's channelless port of that Group, drains it in `Phase::Poll` and overlays
   the project's tempo map and meter at the next block start (the meter at the next bar
   line); `unfollow_tempo` restores them. Off by default, one follower at a time, events
-  `MidiEvent::{TempoFollowed, MeterFollowed, TempoRefused, TempoUnfollowed}`. The
+  `MidiEvent::{TempoFollowed, MeterFollowed, TempoUnfollowed}`. The
   placement, the ramp cut, the late-publish rule and the restore are doc 020 §11.
 - **Not built: following MIDI Clock, MTC and MMC.** The inbound sync decoders
   (`MidiClockDecoder::tempo_bpm`, `MtcDecoder`) have no consumer in the session; they

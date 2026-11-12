@@ -240,11 +240,6 @@ pub enum MidiError {
     #[error("{0:?} is not a clip or live input of this session's")]
     NotSessionMidi(tutti_graph::NodeKey),
 
-    /// `Midi::follow_tempo` named an input that is not the session's MIDI input
-    /// node ([`MidiNodes::input`](crate::MidiNodes::input)).
-    #[error("{0:?} is not the session's MIDI input")]
-    NoSuchInput(tutti_graph::NodeKey),
-
     /// `Midi::follow_tempo` named a Group the MIDI input does not hear
     /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
     #[error("the MIDI input does not hear Group {}", .0.get())]

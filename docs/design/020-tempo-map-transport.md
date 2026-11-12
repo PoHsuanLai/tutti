@@ -805,14 +805,12 @@ The audio thread never sees a map edit.
 
 ### 11.5 Surface
 
-`Midi::follow_tempo(FollowTempo { input, group, meter }) -> Result<(), MidiError>`
-(`NoSuchInput`, `NoMidiInput`, `GroupNotHeard`), `Midi::unfollow_tempo() ->
+`Midi::follow_tempo(FollowTempo { group, meter }) -> Result<(), MidiError>`
+(`NoMidiInput`, `GroupNotHeard`; the input node is the session's own), `Midi::unfollow_tempo() ->
 Result<(), MidiError>` (`NotFollowing`), and the events
 `MidiEvent::{TempoFollowed { tempo, beat }, MeterFollowed { signature, beat },
-TempoRefused { tempo, error }, TempoUnfollowed}`. `beat` is where the step was placed
-(for a meter, the bar line), so a host can draw it. `TempoRefused` is for a map that
-cannot hold the result (a tempo so slow that a segment overflows); no Flex tempo
-reaches it. `Playhead::span` (`tutti-engine`) is the one addition outside the
+TempoUnfollowed}`. `beat` is where the step was placed
+(for a meter, the bar line), so a host can draw it. `Playhead::span` (`tutti-engine`) is the one addition outside the
 session and the runtime.
 
 **Not in scope:** bounce-time following, following and leading at once (an app that is

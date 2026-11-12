@@ -1588,7 +1588,7 @@ impl Midi<'_> {
 
     // --- Following an outside tempo ---
 
-    /// Follows the tempo (and, if `follow.meter`, the time signature) the MIDI
+    /// Follows the tempo (and, if `follow.meter`, the time signature) the session's MIDI
     /// input's `follow.group` sends as Flex Data Set Tempo and Set Time Signature
     /// (M2-104 §7.5.3, §7.5.4): the session reads them from an event tap on
     /// that Group's channelless port in each
@@ -1619,15 +1619,11 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`MidiError::NoSuchInput`] when `follow.input` is not the session's MIDI
-    /// input node, [`MidiError::NoMidiInput`] when the session has none, and
+    /// [`MidiError::NoMidiInput`] when the session has no MIDI input node, and
     /// [`MidiError::GroupNotHeard`] for a Group the input does not hear. Nothing
     /// changes.
     pub fn follow_tempo(&mut self, follow: FollowTempo) -> Result<()> {
         let nodes = self.nodes.ok_or(MidiError::NoMidiInput)?;
-        if follow.input != nodes.input {
-            return Err(MidiError::NoSuchInput(follow.input));
-        }
         let port = nodes
             .input_ports
             .channelless(follow.group)
@@ -1640,7 +1636,8 @@ impl Midi<'_> {
                 tutti_graph::TapAlign::Raw,
                 FOLLOW_TAP_CAPACITY,
             )
-            .map_err(|_| MidiError::NoSuchInput(follow.input))?;
+            // The Group's port was just found on the input: a refusal is a port it lacks.
+            .map_err(|_| MidiError::GroupNotHeard(follow.group))?;
         let core = tutti_midi_runtime::TempoFollower::new(
             tutti_midi_runtime::TempoSource::Flex(follow.group),
             follow.meter,

@@ -464,7 +464,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  `SynthConfig::mpe`: `SessionInstrument::bind_mpe`, which every instrument
                  `add_instrument` takes states), `record(target, capacity)` (a
                  take: an event tap on the live input, placed by `TakePlacement`),
-                 `follow_tempo(FollowTempo { input, group, meter })` / `unfollow_tempo` (a Flex
+                 `follow_tempo(FollowTempo { group, meter })` / `unfollow_tempo` (a Flex
                  Set Tempo and Set Time Signature of one Group, read from an event tap on the
                  ingest node in `Phase::Poll` through `tutti-midi-runtime`'s pure
                  `TempoFollower`, overlaid on the project's tempo map and meter at the next

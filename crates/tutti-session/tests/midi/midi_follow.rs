@@ -65,13 +65,8 @@ fn play(s: &Session) {
 }
 
 fn follow(s: &mut Session, group: MidiGroup, meter: bool) {
-    let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     s.midi()
-        .follow_tempo(FollowTempo {
-            input,
-            group,
-            meter,
-        })
+        .follow_tempo(FollowTempo { group, meter })
         .expect("follows");
     // The update that commits the tap.
     let _ = s.update();
@@ -444,24 +439,13 @@ fn a_repeated_tempo_adds_no_point() {
     assert!(Arc::ptr_eq(&s.transport().settings().tempo_map(), &map));
 }
 
-/// **The refusals name what was wrong and change nothing**: an input that is not
-/// the session's, a Group it does not hear.
+/// **The refusals name what was wrong and change nothing**: a Group the input
+/// does not hear, and an unfollow with nothing followed.
 #[test]
 fn follow_refusals() {
     let (mut s, _fake) = rig();
-    let input = s.midi_nodes().unwrap().input;
-    let clock = s.midi_nodes().unwrap().clock;
     assert!(matches!(
         s.midi().follow_tempo(FollowTempo {
-            input: clock,
-            group: MidiGroup::FIRST,
-            meter: false
-        }),
-        Err(MidiError::NoSuchInput(k)) if k == clock
-    ));
-    assert!(matches!(
-        s.midi().follow_tempo(FollowTempo {
-            input,
             group: MidiGroup::of(3),
             meter: false
         }),

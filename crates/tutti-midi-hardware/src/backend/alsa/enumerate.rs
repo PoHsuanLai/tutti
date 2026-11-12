@@ -148,10 +148,10 @@ fn endpoint_of(port: PortEntry) -> EndpointInfo {
 ///
 /// A client with a UMP Endpoint record speaks the protocol the record says it
 /// has in use (the kernel runs the USB discovery and keeps the outcome there),
-/// and declares the blocks it lists. One with no record is legacy, reached
-/// through the kernel's converter: MIDI 1.0, with no blocks. The distinction
-/// is real and worth recording: a per-note controller sent to a converted
-/// legacy port is dropped in translation, not carried. Having a block is not
+/// and declares the blocks it lists. One with no record is legacy, a MIDI 1.0
+/// source: MIDI 1.0, with no blocks. The distinction
+/// is real and worth recording: a per-note controller sent to a legacy
+/// port is dropped in translation, not carried. Having a block is not
 /// having the MIDI 2.0 Protocol: an Endpoint that offers both and is in MIDI
 /// 1.0 reads as MIDI 1.0.
 pub(super) fn capability_of(ump: Option<&UmpEndpoint>) -> UmpCapability {

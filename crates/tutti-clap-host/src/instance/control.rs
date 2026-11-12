@@ -17,8 +17,8 @@ use tutti_plugin_types::{
 
 use super::controller::ClapController;
 use super::lifecycle::plugin_error;
-use crate::events::ParamBounds;
 use super::{ClapLoaded, polling::WorkRan};
+use crate::events::ParamBounds;
 use crate::types::{AudioPortFlags, PluginInfo};
 
 /// What the two editor answers mean for the three capability bits.

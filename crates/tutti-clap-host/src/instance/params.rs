@@ -5,8 +5,8 @@
 //! happens on the `process` path, not here.
 
 use super::ClapLoaded;
-use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::events::ParamBounds;
+use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{ClapParamFlags, ClapParamInfo};
 #[cfg(feature = "clap-extras")]
 use crate::types::{Color, ParamAutomationState};

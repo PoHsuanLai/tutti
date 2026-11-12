@@ -33,8 +33,8 @@ use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    Normalized, ParamId, ParamRange, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi, note_id_for,
-    note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
+    Normalized, ParamId, ParamRange, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi,
+    note_id_for, note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;

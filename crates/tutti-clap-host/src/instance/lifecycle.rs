@@ -416,7 +416,9 @@ mod tests {
             for frames in [512usize, 4096] {
                 let mut scratch = AudioScratch::new(SampleFormat::Float32);
                 let table = RangeTable {
-                    ranges: (0..params).map(|id| ParamBounds::continuous(id, 0.0, 1.0)).collect(),
+                    ranges: (0..params)
+                        .map(|id| ParamBounds::continuous(id, 0.0, 1.0))
+                        .collect(),
                     claims: true,
                 };
                 reserve_input_events(&mut scratch, &table, frames);
@@ -462,7 +464,9 @@ mod tests {
         const FRAMES: usize = 512;
         let mut scratch = AudioScratch::new(SampleFormat::Float32);
         let table = RangeTable {
-            ranges: (0..PARAMS).map(|id| ParamBounds::continuous(id, 0.0, 1.0)).collect(),
+            ranges: (0..PARAMS)
+                .map(|id| ParamBounds::continuous(id, 0.0, 1.0))
+                .collect(),
             claims: true,
         };
         reserve_input_events(&mut scratch, &table, FRAMES);

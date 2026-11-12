@@ -96,7 +96,328 @@
 //! [`IntoNode`], which also says whether it can be forked: wrap a plain node
 //! in [`ForkByClone`] or [`Unforkable`], or implement `IntoNode` to hand out
 //! typed controls. [`ParamNode`] and [`param_parts`] cover a node whose
-//! controls are `Param<U>` cells addressed by [`ParamSet`].
+//! controls are `Param<U>` cells addressed by [`ParamSet`]. Every example
+//! below is a doctest: it compiles and runs.
+//!
+//! ## The shortest node
+//!
+//! A gain: one mono channel in and out, `Io::channel(c).map(..)` applying a
+//! function to each sample whether the executor gave the node separate
+//! buffers or one it works in place.
+//!
+//! ```
+//! use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
+//! use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+//!
+//! #[derive(Clone)]
+//! struct Gain(f32);
+//!
+//! impl Node for Gain {
+//!     fn shape(&self) -> Shape {
+//!         Shape::through_unassigned(ChannelLayout::MONO)
+//!     }
+//!     fn prepare(&mut self, _: &Prepare) {}
+//!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+//!         let g = self.0;
+//!         io.channel(0).map(|x| x * g);
+//!         Status::Modified
+//!     }
+//!     fn reset(&mut self) {}
+//! }
+//!
+//! let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+//! let gain = g.add(ForkByClone(Gain(0.5)));
+//! g.pipe_input(gain).pipe_output(gain);
+//! let mut r = g
+//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .expect("builds");
+//! assert_eq!(r.render_input(&[&[1.0; 8]])[0], [0.5; 8]);
+//! ```
+//!
+//! `ForkByClone` says the clone shares nothing with the original, so an
+//! export can fork the node; a node that cannot be copied is `Unforkable`.
+//!
+//! ## Shape
+//!
+//! [`Shape`] is everything the compiler needs to know about a node before it
+//! runs: its audio ports and buses ([`Shape::through_unassigned`],
+//! [`Shape::source_unassigned`], [`Shape::buses`] for a node with a
+//! sidechain or several buses), its event ports ([`with_events`](Shape::with_events)),
+//! its [`Cost`] ([`with_cost`](Shape::with_cost): a cheap node says so, one that
+//! says nothing is `Heavy`, worth a thread), its **processing** latency
+//! ([`with_latency`](Shape::with_latency), which feeds delay compensation: a
+//! musical delay is not latency) and its **tail**, the ceiling on how long it
+//! keeps sounding after its input stops ([`with_tail`](Shape::with_tail)).
+//! A node that changes width declares its buses; the graph never guesses a
+//! dry path.
+//!
+//! A ducker has a main input and a mono sidechain, so its shape is two
+//! buses in and one out. The sidechain is read through the handle the shape
+//! issued, not by index:
+//!
+//! ```
+//! use tutti_graph::{Bus, BusRole, Buses, Cost, Cx, InBus, Io, Node, Prepare, Shape, Status};
+//! use tutti_types::{BusTopology, ChannelLayout, Latency, Samples, Tail};
+//!
+//! struct Ducker {
+//!     key: InBus,
+//! }
+//!
+//! impl Ducker {
+//!     fn ports() -> Shape {
+//!         let mono = BusTopology::unassigned(ChannelLayout::MONO).unwrap();
+//!         let ins = Buses::main(mono)
+//!             .with(Bus::new(mono, BusRole::Sidechain))
+//!             .unwrap();
+//!         Shape::buses(ins, Buses::unassigned(ChannelLayout::MONO))
+//!             .with_cost(Cost::Light)
+//!             .with_latency(Latency::new(Samples(0)))
+//!             .with_tail(Tail::None)
+//!     }
+//!     fn new() -> Self {
+//!         Self { key: Self::ports().input_bus(1).expect("the sidechain is the second bus") }
+//!     }
+//! }
+//!
+//! impl Node for Ducker {
+//!     fn shape(&self) -> Shape {
+//!         Self::ports()
+//!     }
+//!     fn prepare(&mut self, _: &Prepare) {}
+//!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+//!         // The main input in place or not, the sidechain by its handle.
+//!         let (inputs, mut outputs) = io.split();
+//!         let key = inputs.bus(self.key);
+//!         for (o, k) in outputs.get(0).iter_mut().zip(key.get(0)) {
+//!             *o = (1.0 - k.abs().min(1.0)) * *o;
+//!         }
+//!         Status::Modified
+//!     }
+//!     fn reset(&mut self) {}
+//! }
+//!
+//! let shape = Ducker::new().shape();
+//! assert_eq!(shape.audio_in().count(), 2);
+//! assert_eq!(shape.audio_out().count(), 1);
+//! assert_eq!(shape.cost, Cost::Light);
+//! ```
+//!
+//! ## A node with params
+//!
+//! A param is a `Param<U>` cell in the node, in a unit (never a bare float).
+//! [`declare_params!`] states the node's params once, next to the cells: what a
+//! host reaches by address, what the graph may modulate (the shape's ports)
+//! and the unit each is in. `process` reads a driven param **through the
+//! declaration** (`declared_param`), never by a port index, so reordering the
+//! rows cannot swap which param a node reads. A lane on the port overrides the
+//! cell for the block (`last_frame` for a block-rate control, `frames` for
+//! per-sample); undriven, the node reads its own cell.
+//!
+//! The node is inserted as [`Params`]`(node)`, never `ForkByClone`: its fork
+//! must start from the values set through its [`ParamSet`], not share the
+//! live cell. (`ForkByClone(param_node)` still compiles, Rust having no way
+//! to refuse the type; see [`Params`].) In a session it is
+//! `graph.add(Params(node))`, which returns the key and the [`ParamSet`] and
+//! gives the key its typed param methods from the declaration.
+//!
+//! ```
+//! use tutti_graph::{
+//!     Cx, GraphBuilder, Io, Node, ParamNode, ParamSet, Params, Prepare, Shape, Status,
+//!     declare_params,
+//! };
+//! use tutti_types::{Amplitude, ChannelLayout, MaxBlock, Param, SampleRate, Samples, UnitParam};
+//!
+//! #[derive(Clone)]
+//! struct Volume {
+//!     level: Param<Amplitude>,
+//! }
+//!
+//! declare_params!([] Volume, n {
+//!     Volume => Amplitude = &n.level,
+//! });
+//!
+//! impl Node for Volume {
+//!     fn shape(&self) -> Shape {
+//!         Shape::through_unassigned(ChannelLayout::MONO)
+//!             .with_param_addrs(self.declared_ports().as_slice())
+//!     }
+//!     fn prepare(&mut self, _: &Prepare) {}
+//!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+//!         let level = self
+//!             .declared_param::<{ UnitParam::Volume as u16 }>(&io)
+//!             .last_frame()
+//!             .unwrap_or_else(|| self.level.load().get());
+//!         io.channel(0).map(|x| x * level);
+//!         Status::Modified
+//!     }
+//!     fn reset(&mut self) {}
+//!     fn param_base(&self, port: usize) -> Option<f32> {
+//!         self.declared_base(port)
+//!     }
+//! }
+//!
+//! impl ParamNode for Volume {
+//!     fn param_set(&self) -> ParamSet {
+//!         self.declared_set()
+//!     }
+//!     fn fork_fresh(&self) -> Self {
+//!         let mut fork = self.clone();
+//!         fork.level.detach();
+//!         fork
+//!     }
+//! }
+//!
+//! let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+//! let (volume, controls) = g.add_with_controls(Params(Volume { level: Param::new(Amplitude(1.0)) }));
+//! g.pipe_input(volume).pipe_output(volume);
+//! let mut r = g
+//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .expect("builds");
+//! assert_eq!(r.render_input(&[&[1.0; 4]])[0], [1.0; 4]);
+//! // A host sets it by address; the next block reads the cell.
+//! assert!(controls.set(UnitParam::Volume, 0.25));
+//! assert_eq!(r.render_input(&[&[1.0; 4]])[0], [0.25; 4]);
+//! ```
+//!
+//! ## Events in and out
+//!
+//! Events travel on ports the shape declares. A node reads an input with
+//! [`Io::sub_blocks`], which splits the block at the events' offsets so it is
+//! sample-accurate by construction, and writes an output with
+//! [`Io::event_out`]. Here a source emits a note-on at frame 3 and a gate
+//! opens on it:
+//!
+//! ```
+//! use tutti_graph::{
+//!     Cx, Event, EventKind, ForkByClone, GraphBuilder, Io, Node, Offset, Prepare, Shape, Status,
+//! };
+//! use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+//! use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump};
+//!
+//! #[derive(Clone)]
+//! struct Pulse;
+//!
+//! impl Node for Pulse {
+//!     fn shape(&self) -> Shape {
+//!         Shape::EMPTY.with_events(0, 1).with_event_capacity(4)
+//!     }
+//!     fn prepare(&mut self, _: &Prepare) {}
+//!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+//!         let on = Message::note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(100));
+//!         if let Some(at) = io.offset(3) {
+//!             let _ = io.event_out(0).push(Event::midi(at, Ump::from(on)));
+//!         }
+//!         Status::Silent
+//!     }
+//!     fn reset(&mut self) {}
+//! }
+//!
+//! #[derive(Clone)]
+//! struct Gate {
+//!     open: bool,
+//! }
+//!
+//! impl Node for Gate {
+//!     fn shape(&self) -> Shape {
+//!         Shape::source_unassigned(ChannelLayout::MONO).with_events(1, 0)
+//!     }
+//!     fn prepare(&mut self, _: &Prepare) {}
+//!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+//!         for (range, events) in io.sub_blocks(0) {
+//!             for e in events {
+//!                 if let EventKind::Midi(_) = e.kind {
+//!                     self.open = true;
+//!                 }
+//!             }
+//!             io.output(0)[range].fill(f32::from(u8::from(self.open)));
+//!         }
+//!         Status::Modified
+//!     }
+//!     fn reset(&mut self) {
+//!         self.open = false;
+//!     }
+//! }
+//!
+//! let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+//! let pulse = g.add(ForkByClone(Pulse));
+//! let gate = g.add(ForkByClone(Gate { open: false }));
+//! g.connect_events(pulse, 0, gate, 0).pipe_output(gate);
+//! let mut r = g
+//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .expect("builds");
+//! assert_eq!(r.render(6)[0], [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+//! # let _ = Offset::ZERO;
+//! ```
+//!
+//! ## Status and tail
+//!
+//! `process` returns a [`Status`] that tells the executor what it may skip:
+//! `Modified` (outputs written, no claim), `Masked` (some channels silent or
+//! constant, a claim the node must back), `Silent` (wrote nothing, output is
+//! silence this block), `Idle` (silent with no pending activity: park me until
+//! an input arrives), `Constant`, and `Bypass` (the output is the input, the
+//! executor copies).
+//!
+//! [`Shape::tail`] is the node's ceiling. A node whose ring-out follows its
+//! params narrows it each block with [`Io::report_tail`]: the report is
+//! measured from the last non-quiet input, must cover the ring-out and err
+//! long, and only ever moves the silence skip (the plan, delay compensation
+//! and export read the ceiling).
+//!
+//! ```
+//! use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
+//! use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples, Tail};
+//!
+//! /// A feedback echo whose ring-out is `taps` repeats of `period` frames.
+//! #[derive(Clone)]
+//! struct Echo {
+//!     taps: usize,
+//!     period: usize,
+//!     on: bool,
+//! }
+//!
+//! impl Node for Echo {
+//!     fn shape(&self) -> Shape {
+//!         // The ceiling: never longer than this, whatever the params.
+//!         Shape::through_unassigned(ChannelLayout::MONO)
+//!             .with_tail(Tail::Finite(Samples(8 * 4_800)))
+//!     }
+//!     fn prepare(&mut self, _: &Prepare) {}
+//!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+//!         if !self.on {
+//!             // Switched off: the output is the input.
+//!             return Status::Bypass;
+//!         }
+//!         // The ring-out follows the params, so say it; err long.
+//!         io.report_tail(Tail::Finite(Samples(self.taps * self.period)));
+//!         io.channel(0).map(|x| x);
+//!         Status::Modified
+//!     }
+//!     fn reset(&mut self) {}
+//! }
+//!
+//! let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+//! let echo = g.add(ForkByClone(Echo { taps: 3, period: 4_800, on: false }));
+//! g.pipe_input(echo).pipe_output(echo);
+//! let mut r = g
+//!     .renderer(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(64))))
+//!     .expect("builds");
+//! assert_eq!(r.render_input(&[&[0.5; 4]])[0], [0.5; 4]);
+//! ```
+//!
+//! ## What not to do
+//!
+//! - **Share state outside ports.** Nodes communicate only through ports: two
+//!   nodes sharing an `Arc<Mutex<_>>` or a cursor are unordered when a block's
+//!   tasks run on a worker pool, and the render stops being bit-identical to
+//!   the serial one. Share through an edge, or make it one node.
+//! - **Allocate, lock or block in `process`.** It runs on the audio thread:
+//!   size every buffer in `prepare` (against [`Prepare::max_block`]), and
+//!   publish non-scalar state to it through `tutti_rt`'s `ArcLend`, never by
+//!   swapping an `Arc` the audio thread then drops.
+//! - **Report a musical delay as latency.** Latency is processing delay only.
+//! - **Read a driven param by port index.** Use the declaration
+//!   (`declared_param`), above.
 //!
 //! Several mistakes are ruled out by types:
 //!
@@ -346,6 +667,6 @@ pub use tutti_types::PlayReading;
 /// What [`declare_params!`] expands to, and nothing a caller names.
 #[doc(hidden)]
 pub mod __private {
-    pub use crate::declare::{Cells, Row, Visit, base, ports, row, set};
+    pub use crate::declare::{Cells, Row, Visit, base, input, ports, row, set};
     pub use tutti_types::{UnitAddr, UnitParam};
 }

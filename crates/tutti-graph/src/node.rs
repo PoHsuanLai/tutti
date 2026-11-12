@@ -322,6 +322,26 @@ impl Shape {
         Self::buses(Buses::unplaced(width), Buses::unplaced(width)).with_ports(width, width)
     }
 
+    /// `inputs` channels in and `outputs` out that name no speaker: a node built
+    /// for widths, not placements (a sum of `inputs` channels into one). Past a
+    /// bus's width ([`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS)) a side's
+    /// channels are ports with no bus, reached by port. Unequal widths have no
+    /// dry path to fold ([`PassError`](crate::PassError)).
+    ///
+    /// ```
+    /// use tutti_graph::Shape;
+    /// use tutti_types::ChannelLayout;
+    ///
+    /// // A sum of 24 channels into one: wider than a bus, so the inputs are ports.
+    /// let s = Shape::unassigned(ChannelLayout::from_count(24), ChannelLayout::MONO);
+    /// assert_eq!(s.audio_in().count(), 24);
+    /// assert_eq!(s.audio_out().count(), 1);
+    /// ```
+    #[must_use]
+    pub const fn unassigned(inputs: ChannelLayout, outputs: ChannelLayout) -> Self {
+        Self::buses(Buses::unplaced(inputs), Buses::unplaced(outputs)).with_ports(inputs, outputs)
+    }
+
     /// No audio input, one bus of `topology` out: nothing passes.
     #[must_use]
     pub const fn source(topology: BusTopology) -> Self {

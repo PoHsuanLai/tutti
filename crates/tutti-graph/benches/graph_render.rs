@@ -150,11 +150,10 @@ struct Sum(usize);
 
 impl Node for Sum {
     fn shape(&self) -> Shape {
-        Shape::buses(
-            tutti_graph::Buses::unassigned(
-                ChannelLayout::try_from(self.0).expect("a test width is small"),
-            ),
-            tutti_graph::Buses::unassigned(ChannelLayout::MONO),
+        // The fan reaches 512 channels, past a bus's width: ports, not a bus.
+        Shape::unassigned(
+            ChannelLayout::try_from(self.0).expect("a fan width fits a layout"),
+            ChannelLayout::MONO,
         )
     }
     fn prepare(&mut self, _p: &Prepare) {}

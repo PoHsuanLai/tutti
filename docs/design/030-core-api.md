@@ -294,7 +294,7 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      `NoSuchModSource`, `NoSuchModRoute`, `NoSuchMidiRoute`); `Graph::add`
      (a `SessionNode`) is the one way a node enters; `open_event_inlet` takes an
      `EventCapacity`. Doc 013, "As built (removal)".
-3. **Node authoring:** N1, N4.
+3. **Node authoring** (3b, built): N1's rest, N3, N4.
    - N1 (built, pulled before 2d): a node's params are declared once, next to
      its `Param<U>` cells, by `tutti_graph::declare_params!`, which writes the
      `HasParam`/`HasParams` impls (the unit is the cell's, checked), the
@@ -304,7 +304,23 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      session's `ParamValue`) and `Scalar` moved to `tutti-graph`; the session's
      `declare_params!` table, `Declared` and the `*_PARAMS` lists are gone. The
      port order a node's `process` reads (`Io::param(k)`) is the declaration's
-     row order; a node that indexes by position still does so by hand.
+     row order.
+   - N1's rest (3b, built): `process` reads a driven param through the
+     declaration too: the macro writes `declared_param::<{ UnitParam::K as u16
+     }>(&io)` and `declared_param_at::<..>(&io, index)` (a `ParamInput`; a kind
+     the node does not declare does not compile, and a row after a `;` or an
+     absent `Option` cell reads `Base`), which resolve the kind to its port by
+     walking the rows, once per call. Every engine node moved to it; the
+     `block_driven(io, k)` helpers are `ParamInput::last_frame`. Associated
+     port consts were weighed and left: an `Option` row makes a port's index a
+     runtime fact, so a const would be wrong for the node that has it absent.
+   - N3 (3b, as far as types reach): no bound refuses `ForkByClone(param
+     node)`. It would need "`N` declares no params", a negative bound; a
+     sealed marker the macro implements can be required but not forbidden. The
+     rule stays documented (`Params`, CLAUDE.md) and no runtime check was added.
+   - N4 (3b, built): `tutti-graph`'s crate docs have "Writing a node": the
+     shortest node, `Shape`, a param'd node, events in and out, `Status` and
+     `report_tail`, and what not to do, every example a doctest.
 4. **Modulation:** T4, T5, T9 (T1's typed range landed in 2c).
 5. **Graph surface 2** (doc 013): facets, plumbing, the failure rule; S8.
    Then the deferred chase injection: preallocate the inject capacity of each

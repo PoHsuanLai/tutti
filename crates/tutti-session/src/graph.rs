@@ -651,7 +651,8 @@ impl Graph {
     /// that is only an [`IntoNode`] does not compile here: a host's own is
     /// wrapped as [`ForkByClone`](tutti_graph::ForkByClone) or
     /// [`Unforkable`](tutti_graph::Unforkable), or is a
-    /// [`Params`](tutti_graph::Params), or implements [`SessionNode`].
+    /// [`Params`](tutti_graph::Params), or implements [`SessionNode`]. Writing
+    /// the node is `tutti_graph`'s crate guide ("Writing a node").
     pub fn add<N: SessionNode>(&mut self, node: N) -> (Key<N>, N::Controls) {
         let (key, controls) = self.place(node.bind_tempo(&self.tempo));
         self.address::<N>(key.erase(), &controls);

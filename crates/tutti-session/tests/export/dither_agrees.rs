@@ -63,8 +63,8 @@ fn samples(path: &std::path::Path) -> Vec<i16> {
 }
 
 fn record(path: &std::path::Path, dither: Option<DitherShape>) {
-    let spec = Spec::new(Format::Wav(Pcm::Int16), ChannelLayout::STEREO, RATE);
-    let file = FileOut::create(path, &spec).expect("creates");
+    let spec = Spec::of_width(Format::Wav(Pcm::Int16), ChannelLayout::STEREO, RATE);
+    let file = FileOut::create(&spec, path).expect("creates");
     let spec = dither.map(|shape| DitherSpec {
         shape,
         lsb: IntDepth::Int16.lsb(),

@@ -165,8 +165,8 @@ fn main() -> tutti_export::Result<()> {
                 Output::master(cfg.file_target(dir.join(&name), None)),
                 &mut Control::none(),
             )?
-            .finished()
-            .and_then(tutti_export::Produced::file)
+            .into_finished()
+            .and_then(tutti_export::Produced::into_file)
             .expect("nothing cancels a control with no token");
             println!("wrote {name} ({} bytes)", w.bytes);
             count += 1;

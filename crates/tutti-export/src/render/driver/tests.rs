@@ -67,7 +67,7 @@ fn render(
     })
     .unwrap()
     .0
-    .finished()
+    .into_finished()
     .expect("not cancelled");
     out
 }

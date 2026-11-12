@@ -146,8 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let job = session.bounce_start(
         Bounce::project()
             .range(Range::Beats(Beat(0.0), Beat(4.0)))
-            .format(Format::Wav(Pcm::Int24))
-            .master(out.as_path()),
+            .master(out.as_path(), Format::Wav(Pcm::Int24)),
     )?;
     let written = session.finish_bounce(job.run())?.into_master();
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);

@@ -33,12 +33,12 @@ use tutti_types::{ChannelLayout, FiniteSource, Pull, SampleRate, Samples, Source
 
 fn wav(path: &std::path::Path) -> FileOut {
     FileOut::create(
-        path,
-        &Spec::new(
+        &Spec::of_width(
             Format::Wav(Pcm::Float32),
             ChannelLayout::STEREO,
             SampleRate(48_000.0),
         ),
+        path,
     )
     .expect("sink opens")
 }

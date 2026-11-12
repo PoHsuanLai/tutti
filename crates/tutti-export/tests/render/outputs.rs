@@ -120,7 +120,10 @@ fn flac(path: &std::path::Path, depth: IntDepth) -> FileTarget {
 }
 
 fn planes(produced: Produced) -> Vec<Vec<f32>> {
-    produced.buffers().expect("a buffers output").into_planes()
+    produced
+        .into_buffers()
+        .expect("a buffers output")
+        .into_planes()
 }
 
 /// Decodes a file with `symphonia`, which shares no code with the encoders,
@@ -231,13 +234,13 @@ fn two_outputs_of_different_formats_are_each_their_own_quantization_of_one_pass(
         &mut Control::none(),
     )
     .expect("renders")
-    .finished()
+    .into_finished()
     .expect("not cancelled");
     assert_eq!(produced.len(), 3);
     let mut produced = produced.into_iter();
     let (wa, wb) = (
-        produced.next().unwrap().file().unwrap(),
-        produced.next().unwrap().file().unwrap(),
+        produced.next().unwrap().into_file().unwrap(),
+        produced.next().unwrap().into_file().unwrap(),
     );
     assert_eq!((wa.path.as_path(), wb.path.as_path()), (&*a, &*b));
     let held = planes(produced.next().unwrap());
@@ -308,7 +311,7 @@ fn a_tap_renders_the_signal_of_the_node_it_is_on() {
         &mut Control::none(),
     )
     .expect("renders")
-    .finished()
+    .into_finished()
     .expect("not cancelled");
     let [master, before, after]: [Vec<Vec<f32>>; 3] = produced
         .into_iter()
@@ -362,7 +365,7 @@ fn a_tap_is_drained_and_gated_like_the_master() {
         &mut Control::none(),
     )
     .expect("renders")
-    .finished()
+    .into_finished()
     .expect("not cancelled");
     let got = planes(produced.into_iter().next().unwrap());
     assert_eq!(got[0].len(), 2_000);
@@ -529,10 +532,10 @@ fn stems_that_take_the_masters_gain_still_sum_to_it() {
         &mut Control::none(),
     )
     .expect("renders")
-    .finished()
+    .into_finished()
     .expect("not cancelled")
     .into_iter()
-    .map(|p| p.file().expect("files"));
+    .map(|p| p.into_file().expect("files"));
     let (master, sa, sb) = (
         produced.next().unwrap(),
         produced.next().unwrap(),

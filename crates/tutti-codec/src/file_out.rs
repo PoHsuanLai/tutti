@@ -7,6 +7,7 @@ use std::path::Path;
 use tutti_types::{ChannelLayout, Interleaved, SampleRate, Sink, SinkFailed};
 
 use crate::encoder::Encoder;
+use crate::error::Result;
 use crate::spec::Spec;
 
 /// A file sink: the [`Sink`] a recording writes into, as a file of any
@@ -58,10 +59,10 @@ use crate::spec::Spec;
 /// use tutti_codec::{FileOut, Format, Pcm, Spec};
 /// use tutti_types::{ChannelLayout, SampleRate, Sink};
 ///
-/// # fn main() -> std::io::Result<()> {
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let dir = tempfile::tempdir()?;
-/// let spec = Spec::new(Format::Wav(Pcm::Int24), ChannelLayout::STEREO, SampleRate(48_000.0));
-/// let mut out = FileOut::create(dir.path().join("tone.wav"), &spec)?;
+/// let spec = Spec::of_width(Format::Wav(Pcm::Int24), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let mut out = FileOut::create(&spec, dir.path().join("tone.wav"))?;
 /// out.write(&[0.5, -0.5, 0.25, -0.25]).expect("the write lands"); // two stereo frames
 /// out.finalize()?;
 /// # Ok(())
@@ -80,9 +81,9 @@ pub struct FileOut {
 impl std::fmt::Debug for FileOut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileOut")
-            .field("layout", &self.spec.layout)
-            .field("sample_rate", &self.spec.rate)
-            .field("format", &self.spec.format)
+            .field("layout", &self.spec.layout())
+            .field("sample_rate", &self.spec.rate())
+            .field("format", &self.spec.format())
             .field("failed", &self.first_error.is_some())
             .finish_non_exhaustive()
     }
@@ -94,10 +95,10 @@ impl FileOut {
     ///
     /// # Errors
     ///
-    /// The `io::Error` from creating the file (a missing directory, a
-    /// permission denial), or the codec's error from the header (the
-    /// [`Spec`] cannot be written, or the disk is full) as an `io::Error`.
-    pub fn create(path: impl AsRef<Path>, spec: &Spec) -> std::io::Result<Self> {
+    /// [`Error::Io`](crate::Error::Io) from creating the file (a missing directory, a permission
+    /// denial) or the header (a full disk), and the codec's other errors when
+    /// the [`Spec`] cannot be written.
+    pub fn create(spec: &Spec, path: impl AsRef<Path>) -> Result<Self> {
         let sink = BufWriter::new(File::create(path.as_ref())?);
         Ok(Self {
             encoder: Encoder::create(spec, sink)?,
@@ -119,7 +120,7 @@ impl FileOut {
     /// slow, and nothing downstream can detect it.
     #[must_use]
     pub fn sample_rate(&self) -> SampleRate {
-        self.spec.rate
+        self.spec.rate()
     }
 
     /// Lowers the number of frames a WAV file may hold to `frames`
@@ -138,7 +139,7 @@ impl FileOut {
 
 impl Sink for FileOut {
     fn layout(&self) -> ChannelLayout {
-        self.spec.layout
+        self.spec.layout()
     }
 
     /// Writes flat interleaved samples **already at this sink's own width**:
@@ -150,13 +151,13 @@ impl Sink for FileOut {
     /// [`SinkFailed`], and the detail of the first is reported once, from
     /// [`finalize`](Sink::finalize). Swallowing it would leave a disk-full
     /// mid-take looking like a complete recording.
-    fn write(&mut self, frames: &[f32]) -> Result<(), SinkFailed> {
+    fn write(&mut self, frames: &[f32]) -> std::result::Result<(), SinkFailed> {
         if self.first_error.is_some() {
             return Err(SinkFailed); // already failed; the file is being abandoned
         }
         // `Interleaved` views whole frames only: a trailing part of one is
         // ignored, so an odd slice cannot rotate the file's channels.
-        let block = Interleaved::new(frames, self.spec.layout);
+        let block = Interleaved::new(frames, self.spec.layout());
         match self.encoder.write(block) {
             Ok(()) => Ok(()),
             Err(e) => {

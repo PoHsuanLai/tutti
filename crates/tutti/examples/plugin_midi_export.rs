@@ -112,7 +112,7 @@ fn play_to_file(
     out: &Path,
 ) -> Result<Written, Box<dyn std::error::Error>> {
     play(plugin, state, midi, |bounce| {
-        bounce.format(Format::Wav(Pcm::Int24)).master(out)
+        bounce.master(out, Format::Wav(Pcm::Int24))
     })
 }
 

@@ -521,10 +521,13 @@ crates/          everything shipped; directory name = package name; no nesting
                  topology, built on the control side). `#![forbid(unsafe_code)]`.
                  The width folds are gone (every caller builds a `Fold`)
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
-                 `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
+                 `Flac { depth, level }`, `Vorbis { quality }`), `Spec` (a format, a
+                 topology, a rate: the topology is the one statement of the width, and
+                 the constructors take `(spec, target)`), and `Encoder`
                  over a `Write + Seek` sink, and `FileOut` (the file sink: the
                  `Sink` over an `Encoder`, any `Format`); the `Pcm` widths and
-                 their one quantization. In: `Wave` (the resident sample buffer), `Wave::read`,
+                 their one quantization. In: `Wave` (the resident sample buffer, which saves itself with
+                 `Wave::write(path, format)`), `Wave::read`,
                  `Wave::read_metadata`, `FileIn` (the streaming `Source`, `FileOut`'s mirror),
                  `DecodeError`, `can_decode`. Depends on `tutti-types` alone
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
@@ -1591,6 +1594,22 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `BounceError::Cancelled`; the bounce's `Latency` and `Tail` → `BounceLatency` and `BounceTail` (the graph's `tutti_types::{Latency, Tail}` keep their names); `Transport`'s public `settings` and `motion` fields → `Transport::settings()` and
   `Transport::motion()` (and the session's `play`, `stop`, `locate`, `schedule`, `set_tempo`). `bevy-tutti`'s `ExportRequest`,
   `ExportPlugin`, `ExportDone` and `ExportInFlight` stay until step 7 un-parks it.
+  Core lane step 10 (doc 030 C2, C3, E1, E2): `tutti_codec::Spec`'s public `format`, `layout`,
+  `rate` and optional `topology` fields and `SpecError::TopologyWidth` → private fields with
+  `Spec::new(format, topology, rate)` / `Spec::of_width(format, layout, rate)` and the getters
+  `format()`, `topology()`, `layout()`, `rate()`; `FileOut::create(path, &spec) -> io::Result` →
+  `FileOut::create(&spec, path) -> tutti_codec::Result` (`MicIn::matching_sink` the same,
+  `TakeError::Open` carries the codec's `Error`); `Bounce::format(..)` and
+  `BounceConfigError::Missing(Field)` (and `Field`) → `Bounce::master(path, format)`; `.normalize`,
+  `.dither`, `.resample` on a `master_buffers` bounce and `BounceConfigError::NormalizeBuffers` for a
+  master → unwritable (they are `Bounce<_, FileMaster>`'s); `BounceConfigError::NormalizeBuffers`
+  for a stem and `Bounce::normalize_stems(StemGain)` → `Stem<N, FileStem>::gain(StemGain)` (a
+  `Stem::buffers` stem, a `Stem<N, BufferStem>`, has none); `Stem::new(node, path)` and
+  `Stem::format(..)` → `Stem::new(node, path, format)`; `FileTarget::with_topology(Option<_>)` and
+  `BufferTarget::with_topology(Option<_>)` → `with_topology(topology)`, which replaces the width
+  (the render-start refusal of a topology of another width is deleted); `Bounce::stem` is a `FileMaster`'s (the master's format), and
+  `stem_with` is any bounce's; `Produced::{file, buffers}(self)` and `Outcome::finished(self)` →
+  borrowing `file`, `buffers`, `finished` and owning `into_file`, `into_buffers`, `into_finished`.
 
 - **Dead plugin-event and callback names** (doc 029 step 2): `SessionEvent::{PluginDied,
   PluginLatencyChanged, PluginReloading, PluginRecovered, PluginGaveUp}` →

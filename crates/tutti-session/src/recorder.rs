@@ -236,8 +236,8 @@ pub enum PumpPass {
 /// executor.process(3, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 ///
 /// let dir = tempfile::tempdir().expect("temp dir");
-/// let spec = Spec::new(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate(48_000.0));
-/// let sink = FileOut::create(dir.path().join("take.wav"), &spec).expect("sink opens");
+/// let spec = Spec::of_width(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let sink = FileOut::create(&spec, dir.path().join("take.wav")).expect("sink opens");
 ///
 /// // `new` checks the widths agree, before a frame moves.
 /// let mut pump = PumpLoop::new(reader, sink, Samples(1024)).expect("stereo into stereo");
@@ -433,8 +433,8 @@ where
 ///
 /// # fn go(reader: tutti_graph::TapReader) -> Result<(), Box<dyn std::error::Error>> {
 /// // A stereo tap and a stereo sink pair: a tap is a `Source` as it is.
-/// let spec = Spec::new(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate(48_000.0));
-/// let rec = Recorder::start(reader, FileOut::create("master.wav", &spec)?)?;
+/// let spec = Spec::of_width(Format::Wav(Pcm::Float32), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let rec = Recorder::start(reader, FileOut::create(&spec, "master.wav")?)?;
 /// // ... later ...
 /// rec.finish()?;
 /// # Ok(())

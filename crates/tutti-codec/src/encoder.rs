@@ -38,7 +38,7 @@ use tutti_types::{ChannelLayout, Interleaved, Samples};
 /// use tutti_codec::{Encoder, Format, Pcm, Spec};
 /// use tutti_types::{ChannelLayout, Interleaved, SampleRate};
 ///
-/// let spec = Spec::new(Format::Wav(Pcm::Int16), ChannelLayout::STEREO, SampleRate(48_000.0));
+/// let spec = Spec::of_width(Format::Wav(Pcm::Int16), ChannelLayout::STEREO, SampleRate(48_000.0));
 /// let mut encoder = Encoder::create(&spec, Cursor::new(Vec::new()))?;
 /// encoder.write(Interleaved::new(&[0.5, -0.5, 0.25, -0.25], ChannelLayout::STEREO))?;
 /// let wav = encoder.finish()?.into_inner();
@@ -82,7 +82,7 @@ enum Inner<W: Write + Seek + Send + 'static> {
 impl<W: Write + Seek + Send + 'static> Inner<W> {
     #[cfg_attr(not(encode), expect(unused_variables))]
     fn open(spec: &Spec, sink: W) -> Result<Self> {
-        match spec.format {
+        match spec.format() {
             #[cfg(feature = "encode-wav")]
             Format::Wav(pcm) => Ok(Self::Wav(crate::WavWriter::create(spec, pcm, sink)?)),
             #[cfg(feature = "encode-aiff")]
@@ -114,7 +114,7 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
         spec.channels()?;
         Ok(Self {
             inner: Inner::open(spec, sink)?,
-            layout: spec.layout,
+            layout: spec.layout(),
             staged: None,
             first_error: None,
         })
@@ -330,7 +330,7 @@ impl Encoder<BufWriter<File>> {
         path: impl AsRef<Path>,
         frames: Samples,
     ) -> Result<Self> {
-        if let Some(limit_frames) = spec.format.max_frames(spec.layout)
+        if let Some(limit_frames) = spec.format().max_frames(spec.layout())
             && frames.get() as u64 > limit_frames
         {
             return Err(Error::WavTooLarge { limit_frames });

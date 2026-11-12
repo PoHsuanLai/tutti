@@ -44,7 +44,7 @@ impl std::error::Error for Error {}
 /// disposed: Apple warns that disposing the last client may make the MIDI server
 /// exit and fail every later client creation, and coremidi 0.9 stopped disposing
 /// its own for the same reason. A failed creation is not cached.
-fn shared_raw_client() -> Result<MIDIClientRef, i32> {
+pub(crate) fn shared_raw_client() -> Result<MIDIClientRef, i32> {
     static CLIENT: Mutex<Option<MIDIClientRef>> = Mutex::new(None);
     let mut slot = CLIENT
         .lock()

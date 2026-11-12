@@ -12,11 +12,11 @@ use tutti::types::{ChannelLayout, SampleRate, Sink};
 #[test]
 fn io_reaches_a_wav_sink_without_a_format_feature() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let spec = Spec::new(
+    let spec = Spec::of_width(
         Format::Wav(Pcm::Int16),
         ChannelLayout::STEREO,
         SampleRate(48_000.0),
     );
-    let sink = FileOut::create(dir.path().join("take.wav"), &spec);
+    let sink = FileOut::create(&spec, dir.path().join("take.wav"));
     sink.expect("a WAV sink opens").finalize().expect("closes");
 }

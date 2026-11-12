@@ -114,18 +114,10 @@ pub enum SpecError {
         /// The most the format holds.
         max: u16,
     },
-    /// The channel topology and the file differ in width.
-    #[error("the topology is {topology:?} wide but the file has {file:?}")]
-    TopologyWidth {
-        /// The topology's layout.
-        topology: ChannelLayout,
-        /// The file's layout.
-        file: ChannelLayout,
-    },
     /// A file of 3 to 8 channels that Ogg Vorbis cannot place: the format
     /// fixes what those widths mean (Vorbis I, 4.3.9), and the spec's topology
-    /// is not that layout, or is absent where the engine has no default order
-    /// for the width.
+    /// is not that layout (a width the engine places by no order names no
+    /// speakers).
     #[error(
         "Ogg Vorbis gives {channels} channels a fixed speaker layout, and this file's \
          topology ({topology:?}) is not it; state the speakers (or use a width past 8, \
@@ -134,8 +126,8 @@ pub enum SpecError {
     VorbisLayout {
         /// The file's width.
         channels: u16,
-        /// The topology the spec stated, or `None` for the engine's default.
-        topology: Option<ChannelTopology>,
+        /// The topology the spec stated.
+        topology: ChannelTopology,
     },
 }
 

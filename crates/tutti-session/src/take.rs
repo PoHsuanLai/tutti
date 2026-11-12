@@ -565,7 +565,7 @@ pub enum TakeError {
     },
     /// The file could not be created.
     #[error("the take's file could not be created: {0}")]
-    Open(#[source] Arc<std::io::Error>),
+    Open(#[source] Arc<tutti_codec::Error>),
     /// The sink failed: a write, or closing it (for a WAV, the header is then
     /// left unpatched and the file unreadable). What was written before the
     /// failure is in the sink.
@@ -872,7 +872,7 @@ fn open_target(
 ) -> Result<(Box<dyn DynSink>, Option<PathBuf>), TakeError> {
     match target.kind {
         TargetKind::File { path, format } => {
-            let file = FileOut::create(&path, &Spec::new(format, layout, rate))
+            let file = FileOut::create(&Spec::of_width(format, layout, rate), &path)
                 .map_err(|e| TakeError::Open(Arc::new(e)))?;
             Ok((Box::new(file), Some(path)))
         }

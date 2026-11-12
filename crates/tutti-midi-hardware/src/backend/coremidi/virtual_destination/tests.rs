@@ -1,31 +1,36 @@
+use super::super::CoreMidiEndpoints;
 use super::*;
+use crate::endpoints::MidiEndpoints;
 use std::sync::mpsc;
-use tutti_ump::{MidiChannel, MidiGroup, split_stream};
+use std::time::Duration;
+use tutti_graph::Offset;
+use tutti_ump::{DiscoveryFilter, Message, MidiChannel, MidiGroup, Protocol, Stream, UmpVersion};
 
+/// **A packet sent to the destination reaches its callback, every message of
+/// it, in order** (M2-104 §7.1: a UMP Stream message has no MIDI 1.0 form, so
+/// this endpoint is the only way one arrives). An output port of this process
+/// sends an Endpoint Discovery and a MIDI 2.0 note to the destination, as
+/// another app would; CoreMIDI delivers them on its own thread with a null
+/// connection reference, which the receive block must not read.
 #[test]
-fn create_ump_destination() {
-    let dst = UmpVirtualDestination::new("Test UMP Dest", |_| {}).expect("creates");
-    assert_eq!(dst.name(), "Test UMP Dest");
-}
+fn a_packet_sent_to_the_destination_reaches_its_callback() {
+    let (tx, rx) = mpsc::channel();
+    let name = "tutti-vdest-delivery";
+    let _destination = UmpVirtualDestination::new(name, move |ump| {
+        let _ = tx.send(ump);
+    })
+    .expect("a virtual UMP destination");
+    let backend = CoreMidiEndpoints::new();
+    let id = backend
+        .outputs()
+        .into_iter()
+        .find(|e| e.name.contains(name))
+        .expect("the virtual destination is listed")
+        .id;
+    let out = backend.open_output(id).expect("opens");
+    out.follow(Protocol::Midi2);
 
-/// The decode half of the receive path, driven directly.
-///
-/// A CoreMIDI packet is a packed word stream; this is the exact transform the
-/// receive callback applies to `packet.data()`. Tested here rather than over a
-/// live endpoint because two *virtual* CoreMIDI endpoints in one process are
-/// not connected to each other — a virtual source publishes to clients that
-/// explicitly connect to it, so a source→destination round trip in-process
-/// delivers nothing and would make the test vacuous. Real delivery needs a
-/// second process or hardware, which belongs in manual QA, not `cargo test`.
-///
-/// UMP Stream (type 0xF) is the message family that motivates this endpoint:
-/// it has no MIDI-1.0 encoding, so it can only arrive this way.
-#[test]
-fn packet_words_decode_to_ump_stream_and_channel_voice() {
-    use tutti_fixtures::midi::note_on;
-    use tutti_ump::{DiscoveryFilter, Message, Stream, UmpVersion};
-
-    let discovery = tutti_ump::Ump::from(Message::Stream(Stream::EndpointDiscovery {
+    let discovery = Ump::from(Message::Stream(Stream::EndpointDiscovery {
         version: UmpVersion { major: 1, minor: 1 },
         filter: DiscoveryFilter {
             endpoint_info: true,
@@ -35,44 +40,16 @@ fn packet_words_decode_to_ump_stream_and_channel_voice() {
             stream_configuration: true,
         },
     }));
-    let note = note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
-
-    // One packet carrying both, concatenated exactly as CoreMIDI delivers.
-    let mut packet_words = Vec::new();
-    packet_words.extend_from_slice(discovery.words());
-    packet_words.extend_from_slice(note.words());
-
-    let decoded: Vec<_> = split_stream(&packet_words).collect();
-    assert_eq!(decoded, vec![discovery, note]);
-    assert_eq!(decoded[0].message_type(), 0xF); // UMP Stream
-    assert_eq!(decoded[1].message_type(), 0x4); // Channel Voice 2
-}
-
-/// The callback wiring: whatever the decode yields must reach the caller's
-/// closure. Exercises the `FnMut(Ump)` seam `new` installs.
-#[test]
-fn callback_receives_each_decoded_event() {
-    let (tx, rx) = mpsc::channel();
-    let sink = move |event: Ump| {
-        let _ = tx.send(event);
-    };
-
-    let note = tutti_fixtures::midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        tutti_fixtures::midi::MID_VELOCITY,
+    let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
+    assert_eq!(
+        out.queue(&[(Offset::ZERO, discovery), (Offset::ZERO, note)]),
+        2
     );
-    let clock = tutti_fixtures::midi::timing_clock(MidiGroup::FIRST);
-    let mut words = Vec::new();
-    words.extend_from_slice(note.words());
-    words.extend_from_slice(clock.words());
 
-    // The body of the receive callback, verbatim.
-    for event in split_stream(&words) {
-        sink(event);
-    }
-
-    assert_eq!(rx.recv().expect("note"), note);
-    assert_eq!(rx.recv().expect("clock"), clock);
+    let wait = Duration::from_secs(2);
+    let got = [
+        rx.recv_timeout(wait).expect("the discovery arrives"),
+        rx.recv_timeout(wait).expect("the note arrives"),
+    ];
+    assert_eq!(got, [discovery, note]);
 }

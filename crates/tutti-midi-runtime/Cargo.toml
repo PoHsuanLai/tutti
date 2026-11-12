@@ -49,6 +49,10 @@ tutti-tempo = { path = "../tutti-tempo" }
 name = "clip_node"
 harness = false
 
+[[bench]]
+name = "ingest"
+harness = false
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

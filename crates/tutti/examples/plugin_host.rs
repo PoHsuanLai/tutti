@@ -84,7 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run();
     let node = session.add_plugin(&main, loaded)?;
 
-    // 4. Wire it: the plugin's outputs feed the root's channels.
+    // 4. Wire it: the plugin's outputs feed the root's channels. `node` is a
+    //    `Key<PluginNode>`: ports come from it as from any node's key
+    //    (`node.out(0)`, `node.events_in()`), and with `modulation`
+    //    `node.param(id)` is the reference a route targets.
     session.graph().connect(node, Root)?;
 
     // 5. Play. An instrument takes a note on its event input: middle C for the

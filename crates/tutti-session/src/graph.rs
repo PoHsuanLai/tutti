@@ -796,7 +796,10 @@ impl Graph {
     /// and declares its latency in its `Shape`. Capture its controls first:
     /// the plugin is out of reach once inserted.
     #[cfg(feature = "plugin")]
-    pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> NodeKey {
+    pub fn insert_plugin(
+        &mut self,
+        client: Box<tutti_plugin::handles::PluginClient>,
+    ) -> Key<crate::PluginNode> {
         let node = NodeKey::fresh();
         let hosted = crate::plugin::HostedPlugin::new(client.handle(), client.plugin().clone())
             .with_controls(client.controls());
@@ -811,15 +814,15 @@ impl Graph {
         );
         self.plugins.insert(node, hosted);
         self.edited = true;
-        node
+        Key::new(node)
     }
 
     /// Hosts a plugin the host inserted itself (an in-process plugin, a
     /// wrapper around one): `handle` gets the session's health watch,
     /// snapshots and render mode at `node`, as
     /// [`Session::add_plugin`](crate::Session::add_plugin)'s do. Its latency
-    /// is whatever its node's shape declared at insert. Returns `false`
-    /// (and hosts nothing) when `node` is not in the graph.
+    /// is whatever its node's shape declared at insert. Returns the node's
+    /// key as a plugin's, [`Key<PluginNode>`](crate::PluginNode).
     ///
     /// `plugin` is which plugin it is, which the handle does not know (the
     /// file it came from): the one the host opened, and the ref its states
@@ -829,20 +832,25 @@ impl Graph {
     /// reader of the session's tempo map, `session.transport().settings
     /// .tempo_reader()`, so the plugin is told the project's tempo; this
     /// method binds nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`NoSuchNode`] when `node` is not in the graph
+    /// (nothing is hosted).
     #[cfg(feature = "plugin")]
     pub fn host_plugin(
         &mut self,
         node: impl Into<NodeKey>,
         handle: tutti_plugin_host::PluginHandle,
         plugin: tutti_plugin::catalog::PluginRef,
-    ) -> bool {
+    ) -> Result<Key<crate::PluginNode>, crate::NoSuchNode> {
         let node = node.into();
         if !self.nodes.contains_key(&node) {
-            return false;
+            return Err(crate::NoSuchNode::new(node));
         }
         self.plugins
             .insert(node, crate::plugin::HostedPlugin::new(handle, plugin));
-        true
+        Ok(Key::new(node))
     }
 
     /// Swap the plugin at `node` for `client`, as [`replace`](Self::replace)

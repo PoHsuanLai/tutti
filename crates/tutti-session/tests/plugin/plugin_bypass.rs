@@ -101,7 +101,10 @@ fn rig(mode: NodeMode) -> Rig {
         .unwrap();
     g.set_mode(plugin, mode).expect("the plugin node is there");
     let _ = s.update();
-    Rig { s, plugin }
+    Rig {
+        s,
+        plugin: plugin.erase(),
+    }
 }
 
 impl Rig {

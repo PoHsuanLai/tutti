@@ -81,6 +81,7 @@ fn add_probe(s: &mut Session) -> NodeKey {
         PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
     )
     .expect("the reference CLAP plugin loads")
+    .erase()
 }
 
 /// The probe's own latency (without the pipeline's chunk), as its node's

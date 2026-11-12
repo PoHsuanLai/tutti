@@ -150,7 +150,7 @@ pub use params::{ParamError, RangeError, TypedParamRef};
 #[cfg(feature = "plugin")]
 pub use plugin::{
     Plugin, PluginChange, PluginEvent, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded,
-    PluginParamRead, PluginParamsRead, PluginReload, PluginReloaded, PluginSnapshot,
+    PluginNode, PluginParamRead, PluginParamsRead, PluginReload, PluginReloaded, PluginSnapshot,
     PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore, StateView,
 };
 

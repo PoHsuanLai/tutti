@@ -54,7 +54,7 @@ fn session_with_probe() -> (Session, NodeKey) {
         s.plugin(node).is_ok_and(|p| p.params().is_ready()),
         "an in-process plugin's values are read as it opens"
     );
-    (s, node)
+    (s, node.erase())
 }
 
 /// One update at `now`, every phase, as a frame of a host.

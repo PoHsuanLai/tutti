@@ -49,7 +49,7 @@ fn session_with_probe() -> (Session, NodeKey, libloading::Library) {
         .expect("the in-process VST2 loads");
     s.graph().connect(node, Root).unwrap();
     let _ = s.update();
-    (s, node, image)
+    (s, node.erase(), image)
 }
 
 /// **`typed` round-trips plain values through VST2's own map**, and refuses the

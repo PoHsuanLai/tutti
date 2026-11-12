@@ -64,7 +64,7 @@ fn detached() -> Session {
 }
 
 /// Loads the probe into `s` and puts it on the outputs.
-fn add_probe(s: &mut Session) -> NodeKey {
+fn add_probe(s: &mut Session) -> tutti_session::Key<tutti_session::PluginNode> {
     let node = s
         .add_plugin_blocking(
             &main_thread(),
@@ -146,7 +146,7 @@ impl Drive {
 }
 
 /// Updates until the plugin at `node` has its parameter values read.
-fn wait_for_values(drive: &mut Drive, s: &mut Session, node: NodeKey) {
+fn wait_for_values(drive: &mut Drive, s: &mut Session, node: impl Into<NodeKey> + Copy) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !s.plugin(node).is_ok_and(|p| p.params().is_ready()) {
         assert!(
@@ -177,7 +177,7 @@ fn lane_of(drive: &mut Drive, s: &mut Session, target: ParamRef) -> NodeKey {
     }
 }
 
-fn gain_value(s: &Session, node: NodeKey) -> Option<Normalized> {
+fn gain_value(s: &Session, node: impl Into<NodeKey> + Copy) -> Option<Normalized> {
     s.plugin(node)
         .expect("hosted")
         .handle()
@@ -210,7 +210,7 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
     drive.update(&mut s);
     wait_for_values(&mut drive, &mut s, node);
 
-    let gain = ParamRef::plugin(node, GAIN);
+    let gain = node.param(ParamId::new(GAIN));
     {
         let mut m = s.mods_mut();
         m.range_raw(gain, 0.0, 1.0).unwrap();
@@ -276,7 +276,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     let node = add_probe(&mut s);
     drive.update(&mut s);
     wait_for_values(&mut drive, &mut s, node);
-    let gain = ParamRef::plugin(node, GAIN);
+    let gain = node.param(ParamId::new(GAIN));
     {
         let mut m = s.mods_mut();
         m.range_raw(gain, 0.0, 1.0).unwrap();
@@ -361,7 +361,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     drive.update(&mut s);
     wait_for_values(&mut drive, &mut s, node);
 
-    let gain = ParamRef::plugin(node, GAIN);
+    let gain = node.param(ParamId::new(GAIN));
     {
         let mut m = s.mods_mut();
         m.range_raw(gain, 0.0, 1.0).unwrap();

@@ -118,9 +118,7 @@ pub use modulation::{
     UNRESOLVED_WARNING, declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
-#[doc(hidden)]
-pub use params::Declared as __Declared;
-pub use params::{HasParam, HasParams, ParamError, ParamValue, RangeError, Scalar, TypedParamRef};
+pub use params::{ParamError, RangeError, TypedParamRef};
 #[cfg(feature = "plugin")]
 pub use plugin::{
     HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
@@ -146,10 +144,10 @@ pub use tutti_dsp::{DitherSink, DitherSpec};
 pub use tutti_export::{
     EventLossPolicy, Normalize, Outcome, Produced, Progress, Rendered, Resample, Stage, Written,
 };
-pub use tutti_graph::{BusError, BusRef, BusSource, Buses, MissingSource};
+pub use tutti_graph::{
+    BusError, BusRef, BusSource, Buses, HasParam, HasParams, MissingSource, ParamUnit, Scalar,
+};
 pub use tutti_graph::{MixError, ModeError, NodeMode, PassError};
-#[doc(hidden)]
-pub use tutti_types::UnitParam as __UnitParam;
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]

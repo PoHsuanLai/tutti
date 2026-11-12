@@ -20,7 +20,7 @@ use tutti_types::AtomicF32;
 
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{BeatDuration, ChannelLayout, Depth, Hz, Param, PhaseIncrement, SampleRate};
-use tutti_types::{Latency, Tail, UnitParam};
+use tutti_types::{Latency, Tail};
 
 // The waveform vocabulary is tutti-modulation's floor, re-exported so `use
 // tutti_nodes::LfoShape` resolves.
@@ -94,8 +94,8 @@ impl core::fmt::Display for LfoMode {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over the depth ([`UnitParam::Depth`]) and, free-running, the rate
-/// ([`UnitParam::Rate`], in [`Hz`]); a beat-synced node's rate cell holds a
+/// over the depth ([`UnitParam::Depth`](tutti_types::UnitParam::Depth)) and, free-running, the rate
+/// ([`UnitParam::Rate`](tutti_types::UnitParam::Rate), in [`Hz`]); a beat-synced node's rate cell holds a
 /// span in beats, which is not a `Rate`, so it has no address there (set it
 /// with [`set_beats_per_cycle`](Self::set_beats_per_cycle)). A fork starts
 /// from the values last set through the set and every other cell at its value
@@ -368,24 +368,23 @@ impl<M: Modulator> ModulatorNode<M> {
     }
 }
 
-/// The params a [`ModulatorNode`] lets the graph modulate, in port order:
-/// its depth and, while free-running, its rate (a beat-synced node declares
-/// only the depth, as its [`ParamSet`] addresses only the depth). Both are
-/// read once per block, so a driven port is read on the block's last frame.
-/// The mode is fixed once the node is live (`with_*` only), so its shape
-/// never changes.
-pub const LFO_PARAMS: [UnitParam; 2] = [UnitParam::Depth, UnitParam::Rate];
+// The params a [`ModulatorNode`] lets the graph modulate, in port order: its
+// depth and, while free-running, its rate (a beat-synced node declares only
+// the depth: its rate cell holds beats per cycle, which a `Rate` in `Hz`
+// written by address would silently reinterpret). Both are read once per
+// block, so a driven port is read on the block's last frame. The mode is fixed
+// once the node is live (`with_*` only), so its shape never changes.
+tutti_graph::declare_params!([M: Modulator + Send + 'static] ModulatorNode<M>, n {
+    Depth => Depth = &n.depth,
+    Rate => Hz = matches!(n.mode, LfoMode::FreeRunning).then_some(&n.frequency),
+});
 
 impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
     fn shape(&self) -> Shape {
-        let ports = match self.mode {
-            LfoMode::FreeRunning => 2,
-            LfoMode::BeatSynced => 1,
-        };
         Shape::source_unassigned(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unbounded)
-            .with_params(&LFO_PARAMS[..ports])
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -447,11 +446,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match (k, self.mode) {
-            (0, _) => Some(self.depth.load().get()),
-            (1, LfoMode::FreeRunning) => Some(self.frequency.load().get()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
@@ -461,12 +456,7 @@ impl<M: Modulator + Clone + Send + 'static> ParamNode for ModulatorNode<M> {
     /// address would silently reinterpret — the pun
     /// [`set_frequency`](Self::set_frequency) refuses too.
     fn param_set(&self) -> ParamSet {
-        let set = ParamSet::builder().param(UnitParam::Depth, self.depth.as_atomic());
-        match self.mode {
-            LfoMode::FreeRunning => set.param(UnitParam::Rate, self.frequency.as_atomic()),
-            LfoMode::BeatSynced => set,
-        }
-        .build()
+        self.declared_set()
     }
 
     /// A clone with every control cell detached (at its value now), at cycle
@@ -512,10 +502,11 @@ mod tests {
     use tutti_graph::contract::{Direct, assert_param_fork};
     use tutti_graph::{Solo, Transport};
     use tutti_types::MaxBlock;
+    use tutti_types::UnitParam;
     use tutti_types::{Beat, Bpm, Samples};
 
     /// **The ports and their bases.** A free-running LFO declares its depth
-    /// and rate ([`LFO_PARAMS`]), each port's base its cell; a beat-synced
+    /// and rate, each port's base its cell; a beat-synced
     /// one declares only its depth, as its `ParamSet` addresses only that
     /// (its rate cell holds beats per cycle, not `Hz`).
     #[test]
@@ -523,7 +514,10 @@ mod tests {
         let free = LfoNode::new(LfoShape::Sine)
             .with_frequency(Hz(2.0))
             .with_depth(Depth(0.25));
-        assert_eq!(free.shape().params.as_slice(), &LFO_PARAMS[..]);
+        assert_eq!(
+            free.shape().params.as_slice(),
+            &[UnitParam::Depth, UnitParam::Rate][..]
+        );
         assert_eq!(free.param_base(0), Some(0.25));
         assert_eq!(free.param_base(1), Some(2.0));
         let synced = LfoNode::new(LfoShape::Sine)

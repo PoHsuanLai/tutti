@@ -17,7 +17,7 @@ use tutti_graph::{
 use tutti_transport::TempoReader;
 use tutti_types::{
     Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
-    SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
+    SamplePosition, SampleRate, Samples, SrcRatio, Tail,
 };
 
 use super::clock::{BlockClock, Clock};
@@ -190,7 +190,7 @@ impl Default for MemorySourceConfig {
 /// # As a graph node
 ///
 /// A graph [`Node`]: no inputs, [`channels`](Self::channels) outputs. It is
-/// a [`ParamNode`] whose one param is its gain ([`UnitParam::Volume`]), so it
+/// a [`ParamNode`] whose one param is its gain ([`UnitParam::Volume`](tutti_types::UnitParam::Volume)), so it
 /// goes in through [`param_parts`]: its controls are that [`ParamSet`], and a
 /// fork of it ([`fork_fresh`](ParamNode::fork_fresh)) shares nothing — its own
 /// gain cell at the authored value — and plays on its render's `Env`.
@@ -1543,9 +1543,9 @@ impl Node for MemorySource {
             // placed or free-running, against `SvfFilterNode`'s 7.2 and
             // `Heavy`'s 256 (doc 013, "The cost model and coarsening").
             .with_cost(tutti_graph::Cost::Moderate)
-            // Its gain, as a voice's ([`VOICE_PARAMS`](super::VOICE_PARAMS)):
-            // block-rate, read on the block's last frame.
-            .with_params(&super::VOICE_PARAMS)
+            // Its gain, as a voice's: block-rate, read on the block's last
+            // frame.
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     /// The session rate: the conversion from the wave's rate is derived from
@@ -1623,16 +1623,19 @@ impl Node for MemorySource {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        (k == 0).then(|| self.gain.load().get())
+        self.declared_base(k)
     }
 }
 
+// Its gain, as `UnitParam::Volume`.
+tutti_graph::declare_params!([] MemorySource, n {
+    Volume => Amplitude = &n.gain,
+});
+
 impl ParamNode for MemorySource {
-    /// Its gain, as [`UnitParam::Volume`].
+    /// Its gain, as [`UnitParam::Volume`](tutti_types::UnitParam::Volume).
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Volume, self.gain.as_atomic())
-            .build()
+        self.declared_set()
     }
 
     /// A copy that shares nothing: its own gain cell (at the value this

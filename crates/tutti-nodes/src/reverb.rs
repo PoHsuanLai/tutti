@@ -20,12 +20,12 @@ use tutti_dsp::{
     MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
-    Bus, BusRole, Buses, Cost, Cx, IntoNode, Io, Node, NodeParts, OutBus, ParamNode, ParamSet,
-    Prepare, Shape, Status,
+    Bus, BusRole, Buses, Cost, Cx, HasParam, HasParams, IntoNode, Io, Node, NodeParts, OutBus,
+    ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail, UnitAddr, UnitParam};
+use tutti_types::{Db, Latency, MaxBlock, Mix, SampleRate, Samples, Tail};
 
-use crate::params::{At, ControlSet, Params};
+use crate::params::{At, ControlSet, HasControl, HasControls, Params};
 
 /// The level the wet signal has fallen to when the declared tail ends, and below
 /// which the node parks: 60 dB under what it carried, the figure the General MIDI
@@ -70,30 +70,14 @@ pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'st
 #[derive(Clone, Copy, Debug)]
 pub struct FreeverbSet;
 
-impl ControlSet for FreeverbSet {
-    type Controls = FreeverbControls;
-
-    fn addrs(&self) -> &'static [UnitAddr] {
-        const ADDRS: [UnitAddr; 2] = [
-            UnitAddr::first(UnitParam::RoomSize),
-            UnitAddr::first(UnitParam::Damping),
-        ];
-        &ADDRS
-    }
+control_set! {
+    FreeverbSet(_s): FreeverbControls = FreeverbControls::GENERAL_MIDI;
+    live: (all);
+    RoomSize => Mix = room,
+    Damping => Mix = damp;
 
     fn defaults(&self) -> FreeverbControls {
         FreeverbControls::GENERAL_MIDI
-    }
-
-    fn flatten(&self, c: &FreeverbControls, out: &mut [f32]) {
-        out.copy_from_slice(&[c.room.get(), c.damp.get()]);
-    }
-
-    fn assemble(&self, v: &[f32]) -> FreeverbControls {
-        FreeverbControls {
-            room: Mix(v[0]),
-            damp: Mix(v[1]),
-        }
     }
 
     /// A bigger room and less damping ring longer.
@@ -609,6 +593,17 @@ impl<D: NodeDesign> ParamNode for DesignNode<D> {
         fork
     }
 }
+
+/// A design node has the params its [`ControlSet`] declares, in the units its
+/// `Controls` hold them in.
+impl<D: NodeDesign, const P: u16> HasParam<P> for DesignNode<D>
+where
+    D::Set: HasControl<P>,
+{
+    type Unit = <D::Set as HasControl<P>>::Unit;
+}
+
+impl<D: NodeDesign, const P: u16> HasParams<P> for DesignNode<D> where D::Set: HasControls<P> {}
 
 /// Inserted with its [`ParamSet`] as its controls and a fork that starts from
 /// the values last set through it ([`tutti_graph::param_parts`]).

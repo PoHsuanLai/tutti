@@ -433,7 +433,15 @@ fn the_panner_declares_its_params() {
     node.elevation.store(Elevation(20.0));
     node.spread.store(Spread(0.3));
     node.width.store(StereoWidth(1.5));
-    assert_eq!(node.shape().params.as_slice(), &VBAP_PANNER_PARAMS[..]);
+    assert_eq!(
+        node.shape().params.as_slice(),
+        &[
+            UnitParam::Azimuth,
+            UnitParam::Elevation,
+            UnitParam::Spread,
+            UnitParam::StereoWidth,
+        ][..]
+    );
     let bases: Vec<_> = (0..5).map(|k| node.param_base(k)).collect();
     assert_eq!(
         bases,

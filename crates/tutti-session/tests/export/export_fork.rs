@@ -34,7 +34,7 @@ use tutti_session::{
     PreparedGraph, Range, Root, Session, Stem,
 };
 use tutti_types::ChannelLayout;
-use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Seconds, Tail, UnitParam};
+use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Seconds, Tail};
 
 const RATE: f64 = 48_000.0;
 
@@ -853,9 +853,7 @@ impl Node for Level {
 
 impl ParamNode for Level {
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Volume, self.0.as_atomic())
-            .build()
+        self.declared_set()
     }
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
@@ -864,7 +862,7 @@ impl ParamNode for Level {
     }
 }
 
-tutti_session::declare_params!(Level { UnitParam::Volume => Amplitude });
+tutti_graph::declare_params!([] Level, n { Volume => Amplitude = &n.0 });
 
 /// **An export does not wait for a slow fork, and is the graph as it was
 /// when it started.** A node whose fork build blocks until released (the

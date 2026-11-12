@@ -2,9 +2,9 @@
 //! last set through the node's `ParamSet` and shares no cell with the live
 //! node, in either direction (`assert_param_fork`).
 
-use tutti_graph::ParamNode;
 use tutti_graph::contract::{SAMPLE_RATE, assert_param_fork};
-use tutti_nodes::{HRTF_BINAURAL_PARAMS, HrtfBinauralNode, VBAP_PANNER_PARAMS, VbapPannerNode};
+use tutti_graph::{Node, ParamNode};
+use tutti_nodes::{HrtfBinauralNode, VbapPannerNode};
 use tutti_types::SampleRate;
 
 fn hrtf() -> HrtfBinauralNode {
@@ -27,13 +27,21 @@ fn hrtf_forks_from_its_params() {
 /// so a host reaches the cell a lane rides on.
 #[test]
 fn a_panner_declares_every_param_it_reads() {
-    let vbap = VbapPannerNode::stereo().param_set();
-    for p in VBAP_PANNER_PARAMS {
-        assert!(vbap.get(p).is_some(), "VBAP: {p:?} is not in its ParamSet");
+    let vbap = VbapPannerNode::stereo();
+    assert_eq!(vbap.shape().params.as_slice().len(), 4);
+    for p in vbap.shape().params.as_slice() {
+        assert!(
+            vbap.param_set().get(*p).is_some(),
+            "VBAP: {p:?} is not in its ParamSet"
+        );
     }
-    let hrtf = hrtf().param_set();
-    for p in HRTF_BINAURAL_PARAMS {
-        assert!(hrtf.get(p).is_some(), "HRTF: {p:?} is not in its ParamSet");
+    let hrtf = hrtf();
+    assert_eq!(hrtf.shape().params.as_slice().len(), 3);
+    for p in hrtf.shape().params.as_slice() {
+        assert!(
+            hrtf.param_set().get(*p).is_some(),
+            "HRTF: {p:?} is not in its ParamSet"
+        );
     }
 }
 

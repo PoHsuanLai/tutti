@@ -632,6 +632,7 @@ pub enum RootTopologyStatus {
 /// ```
 /// use tutti_types::MaxBlock;
 /// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+/// use tutti_graph::ForkByClone;
 /// use tutti_session::{OutPort, Root, Session};
 /// use tutti_nodes::testing::Const;
 ///

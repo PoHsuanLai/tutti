@@ -25,7 +25,7 @@ use tutti_graph::{IntoNode, Prepare, Solo};
 use tutti_nodes::{
     ChannelTimes, CompressorControls, CompressorNode, CrossoverNode, DelayControls, DelayFamily,
     DelayNode, FamilyNode, GateControls, GateNode, InterpolationMode, MaxDelay, ModDelayNode,
-    PhaserNode,
+    PhaserControls, PhaserNode, Stages,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{
@@ -243,7 +243,7 @@ fn the_chorus_flanger_and_phaser_are_blended_by_the_graph() {
     );
     check(
         "phaser (stereo, 4 stages)",
-        &|| PhaserNode::with_channels(ChannelLayout::STEREO, 4),
+        &|| PhaserNode::stereo(Stages::of(4), PhaserControls::DEFAULT),
         2,
         0,
     );

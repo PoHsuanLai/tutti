@@ -1,5 +1,6 @@
-//! The phaser's swept first-order all-pass chain: the coefficient for a sweep
-//! position and the per-sample stage loop.
+//! The pure pieces of the phaser's swept first-order all-pass chain: the coefficient for a
+//! sweep position and the per-sample stage loop ([`PhaserRecurrence`](crate::PhaserRecurrence)
+//! calls both).
 
 use tutti_types::{Depth, Hz};
 
@@ -24,12 +25,12 @@ const SWEEP_FLOOR_HZ: f32 = 1.0;
 /// One first-order all-pass coefficient for a sweep position.
 ///
 /// `tan` of the normalised centre, folded into the all-pass form. It is solved
-/// only at the control points — every 16 samples and a block's last sample —
-/// and interpolated between, rather than per sample and channel.
+/// only at the control points — every 16 frames of the stream — and
+/// interpolated between, rather than per sample and channel.
 ///
 /// The sweep is held inside `SWEEP_FLOOR_HZ..=0.49 · sr` first. Outside it
 /// `tan` of the normalised frequency is negative (a sweep below 0 Hz, which a
-/// negative `Depth` reaches: `set_depth` allows down to −1) or past its
+/// negative `Depth` reaches: a depth is held in −1..=1) or past its
 /// pole (above Nyquist), `|c|` exceeds 1 and the all-pass diverges. Every
 /// sweep a depth in `0..=1` makes lies in `[min_hz, max_hz]`, inside the hold
 /// (`min_hz >= 20`, `max_hz <= 0.90` of Nyquist), so the hold changes nothing

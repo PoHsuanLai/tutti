@@ -20,8 +20,8 @@ use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, ChannelTimes, CompressorControls, CompressorNode,
     DelayControls, DelayFamily, DelayNode, DistortionNode, EqBandNode, GateControls, GateNode,
     InterpolationMode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterControls,
-    LimiterNode, MaxDelay, ModDelayNode, PhaserNode, ShapeKind, SvfControls, SvfFilterNode,
-    SvfType,
+    LimiterNode, MaxDelay, ModDelayNode, PhaserControls, PhaserNode, ShapeKind, Stages,
+    SvfControls, SvfFilterNode, SvfType,
 };
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
@@ -193,13 +193,21 @@ fn chorus() {
 #[test]
 fn phaser() {
     IsolateRow::new("PhaserNode (stereo, 4 stages)", || {
-        let p = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
-        p.set_feedback(Feedback::new(0.3_f32));
-        p
+        PhaserNode::stereo(
+            Stages::of(4),
+            PhaserControls {
+                feedback: Feedback::new(0.3_f32),
+                ..PhaserControls::DEFAULT
+            },
+        )
     })
-    .control("rate", |p| p.set_rate(Hz(3.0)))
-    .control("depth", |p| p.set_depth(Depth::clamped(0.2)))
-    .control("feedback", |p| p.set_feedback(Feedback::new(0.7_f32)))
+    .control("rate", |p| assert!(p.param_set().set(UnitParam::Rate, 3.0)))
+    .control("depth", |p| {
+        assert!(p.param_set().set(UnitParam::Depth, 0.2))
+    })
+    .control("feedback", |p| {
+        assert!(p.param_set().set(UnitParam::Feedback, 0.7));
+    })
     .check();
 }
 

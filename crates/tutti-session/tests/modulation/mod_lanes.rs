@@ -937,9 +937,9 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
     let (chorus, _) = s.graph().add(tutti_nodes::ModDelayNode::chorus(
         tutti_types::BusTopology::STEREO,
     ));
-    let (phaser, _) = s.graph().add(tutti_nodes::PhaserNode::with_channels(
-        ChannelLayout::STEREO,
-        4,
+    let (phaser, _) = s.graph().add(tutti_nodes::PhaserNode::stereo(
+        tutti_nodes::Stages::of(4),
+        tutti_nodes::PhaserControls::DEFAULT,
     ));
     // The phaser's mix is the graph's (`MixRef`), not a param of the node.
     let targets = [

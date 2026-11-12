@@ -13,7 +13,8 @@ use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, ParamNode, ParamSet};
 use tutti_nodes::{
     DelayControls, DelayNode, InterpolationMode, LadderFilterNode, LadderType, MaxDelay,
-    ModDelayControls, ModDelayNode, PhaserNode, Stagger, SvfFilterNode, SvfType, Sweep,
+    ModDelayControls, ModDelayNode, PhaserControls, PhaserNode, Stages, Stagger, SvfFilterNode,
+    SvfType, Sweep, SweepRange,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, Q, Resonance, SampleRate, Seconds,
@@ -171,10 +172,17 @@ fn chorus(layout: ChannelLayout) -> ModDelayNode {
 }
 
 fn phaser(layout: ChannelLayout) -> PhaserNode {
-    let node = PhaserNode::with_channels(layout, 6);
-    node.set_rate(Hz::new(2.0));
-    node.set_feedback(Feedback::new(0.5));
-    node
+    PhaserNode::new(
+        BusTopology::assumed(layout).expect("a test width is one bus"),
+        Stages::of(6),
+        SweepRange::DEFAULT,
+        Stagger::NONE,
+        PhaserControls {
+            rate: Hz::new(2.0),
+            ..PhaserControls::DEFAULT
+        },
+    )
+    .expect("a step fits any width")
 }
 
 /// The SVF's channels are independent whether its cutoff is held, swept by a

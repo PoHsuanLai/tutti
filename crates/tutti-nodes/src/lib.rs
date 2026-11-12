@@ -31,7 +31,8 @@
 //!   bands over a Linkwitz-Riley crossover, every setting an indexed param: see
 //!   [`BAND_PARAMS`]) with its [`MultibandControls`].
 //! - Modulation effects: [`ModDelayNode`] (over `tutti_dsp::ModDelayFamily`, its [`Sweep`] and
-//!   [`Stagger`] checked) and [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
+//!   [`Stagger`] checked) and [`PhaserNode`] (over `tutti_dsp::PhaserFamily`, its [`Stages`] and
+//!   [`SweepRange`] checked); [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
 //!   [`Modulator`] (an LFO's is `tutti-modulation`'s [`Waveform`]).
 //! - Signal-driven modulation sources (design doc 014 §6), feeding a
@@ -147,8 +148,12 @@ pub use spatial::{HrtfBinauralNode, VbapError, VbapPannerNode};
 
 mod modulation;
 pub use modulation::{ModDelayNode, PhaserNode};
-// The sweep, its stagger and the controls are in `ModDelayNode::new`'s signature.
-pub use tutti_dsp::{ModDelayControls, ModDelayFamily, Stagger, StaggerError, Sweep, SweepError};
+// The sweep, its stagger and the controls are in `ModDelayNode::new`'s and `PhaserNode::new`'s
+// signatures.
+pub use tutti_dsp::{
+    ModDelayControls, ModDelayFamily, PhaserControls, PhaserFamily, Stages, StagesError, Stagger,
+    StaggerError, Sweep, SweepError, SweepRange, SweepRangeError,
+};
 
 // The signal-driven sources a `tutti_modulation::compile` declaration describes
 // (`SourceNode`): nodes that send a raw value into control lanes.

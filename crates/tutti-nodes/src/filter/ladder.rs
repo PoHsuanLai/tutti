@@ -12,7 +12,7 @@
 use tutti_dsp::{Ladder, LadderControls, LadderDesign, LadderType, Real};
 use tutti_types::{ChannelLayout, Drive, Hz, Resonance};
 
-use super::NodeKernel;
+use super::NodeRecurrence;
 use super::filter_bus;
 use crate::reverb::DesignNode;
 
@@ -132,7 +132,7 @@ control_set! {
     }
 }
 
-impl<F: Real> NodeKernel for Ladder<F> {
+impl<F: Real> NodeRecurrence for Ladder<F> {
     type Set = LadderSet;
 
     fn set(&self, initial: &LadderControls) -> LadderSet {

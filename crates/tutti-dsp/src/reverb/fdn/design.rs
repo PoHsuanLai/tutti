@@ -24,12 +24,12 @@ use tutti_types::{Amplitude, BusTopology, Db, Depth, Hz, Mix, SampleRate, Second
 
 use core::num::NonZeroU32;
 
-use crate::reverb::fdn::kernel::{CHUNK, FdnKernel};
+use crate::reverb::fdn::recurrence::{CHUNK, FdnRecurrence};
 use crate::reverb::network::{
     Absorption, Fdn, Gains, Inline, Line, MAX_LINES, Matrix, Modulation, Network, NetworkSizes,
     OutputMap, Stage, pre_delay_frames,
 };
-use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Realized, Ring, Sizes};
+use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Ring, Sizes};
 
 /// The line lengths at 44.1 kHz for a room size of 0.5 (the scale is
 /// `0.5 + size`), values near primes, so the delays share few factors.
@@ -190,8 +190,8 @@ impl Default for FdnDesign {
     }
 }
 
-/// The absorption with its band gains scaled as [`FdnKernel`] scales them (peak at
-/// most 0.9999), so the network carries the gains the kernel runs.
+/// The absorption with its band gains scaled as [`FdnRecurrence`] scales them (peak at
+/// most 0.9999), so the network carries the gains the recurrence runs.
 fn rescaled(a: Absorption, rate: SampleRate) -> Absorption {
     let Absorption::Bands {
         low,
@@ -205,7 +205,7 @@ fn rescaled(a: Absorption, rate: SampleRate) -> Absorption {
     let pole = crossover
         .map(|f| libm::exp(-std::f64::consts::TAU * f64::from(f.get()) / rate.get()) as f32);
     let [low, mid, high] =
-        crate::reverb::fdn::kernel::rescale_bands([low.get(), mid.get(), high.get()], pole);
+        crate::reverb::fdn::recurrence::rescale_bands([low.get(), mid.get(), high.get()], pole);
     Absorption::Bands {
         low: Amplitude(low),
         mid: Amplitude(mid),
@@ -229,12 +229,12 @@ impl Design for FdnDesign {
     type Model = Network;
     type Bounds = NetworkSizes;
     type Range = MaxDecay;
-    type Realization = Realized<FdnKernel>;
+    type Recurrence = FdnRecurrence;
 
-    // The grid the render is a function of: the kernel ramps in whole chunks
+    // The grid the render is a function of: the recurrence ramps in whole chunks
     // counted from the last reset (doc 024 section 4.4). The *design* is still
     // sampled once per block; a grid finer than that would redesign per chunk
-    // for nothing the kernel needs (doc 022), so this names the render's clock
+    // for nothing the recurrence needs (doc 022), so this names the render's clock
     // and not a schedule for `design_into` (doc 024 Q27).
     const CADENCE: Cadence = Cadence::stream(match NonZeroU32::new(CHUNK as u32) {
         Some(n) => n,
@@ -249,8 +249,8 @@ impl Design for FdnDesign {
         Network::new(rate)
     }
 
-    fn realization(&self) -> Realized<FdnKernel> {
-        Realized::new(FdnKernel::new(), &self.blank(SampleRate::DEFAULT))
+    fn recurrence(&self) -> FdnRecurrence {
+        FdnRecurrence::new()
     }
 
     fn design_into(&self, c: &FdnControls, rate: SampleRate, out: &mut Network) {

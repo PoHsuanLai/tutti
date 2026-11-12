@@ -6,7 +6,7 @@
 //! as `chroma_alloc.rs` does. The check is generic over a [`Design`], so a later
 //! design runs it on its own controls.
 
-use tutti_dsp::{Design, Effect, FreeverbControls, FreeverbDesign};
+use tutti_dsp::{Design, FreeverbControls, FreeverbDesign};
 use tutti_fixtures::{ThreadCounting, allocations};
 use tutti_types::{Mix, SampleRate};
 
@@ -53,12 +53,12 @@ fn freeverb_design_allocates_nothing() {
 /// beforehand.
 #[test]
 fn freeverb_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, FreeverbKernel, Network, Realization, Realized, Setup};
+    use tutti_dsp::{Ceiling, FreeverbRecurrence, Network, Realized, Setup};
     use tutti_types::{MaxBlock, Samples};
 
     let rate = SampleRate(48_000.0);
     let design = FreeverbDesign;
-    let mut realization = design.realization();
+    let mut realization = design.realized();
     realization.prepare(
         &design.bounds(&Ceiling::at(rate).unwrap()),
         &Setup {
@@ -77,11 +77,11 @@ fn freeverb_retargets_and_renders_without_allocating() {
         let n = allocations(|| {
             design.design_into(&c, rate, &mut network);
             realization.retarget(&network);
-            Effect::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
+            realization.process(&[&input], &mut [&mut left, &mut right], 64);
         });
         assert_eq!(n, 0, "the block allocated");
     }
-    let _: Realized<FreeverbKernel> = realization;
+    let _: Realized<FreeverbRecurrence> = realization;
 }
 
 /// `design_into` builds no value of the network's size (about 56 KB): it runs
@@ -108,12 +108,12 @@ fn design_into_needs_no_network_sized_stack() {
 /// following blocks, which allocate nothing either.
 #[test]
 fn the_fdn_retargets_and_renders_without_allocating() {
-    use tutti_dsp::{Ceiling, FdnControls, FdnDesign, Network, Realization, Setup};
+    use tutti_dsp::{Ceiling, FdnControls, FdnDesign, Network, Setup};
     use tutti_types::{Db, Depth, Hz, MaxBlock, Samples, Seconds, StereoWidth};
 
     let rate = SampleRate(48_000.0);
     let design = FdnDesign::new(8, Seconds(8.0), true).unwrap();
-    let mut realization = design.realization();
+    let mut realization = design.realized();
     realization.prepare(
         &design.bounds(&Ceiling::at(rate).unwrap()),
         &Setup {
@@ -144,7 +144,7 @@ fn the_fdn_retargets_and_renders_without_allocating() {
         let n = allocations(|| {
             design.design_into(&c, rate, &mut network);
             realization.retarget(&network);
-            Effect::process(&mut realization, &[&input], &mut [&mut left, &mut right]);
+            realization.process(&[&input], &mut [&mut left, &mut right], 64);
         });
         assert_eq!(n, 0, "the block allocated");
     }

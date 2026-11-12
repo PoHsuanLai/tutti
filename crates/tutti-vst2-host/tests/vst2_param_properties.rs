@@ -138,7 +138,7 @@ fn load_probe() -> (Active, std::path::PathBuf) {
 /// plugin writes.
 use tutti_vst2_test_plugin::{
     PROBE_INT_RANGE, PROBE_INT_STEP_PARAM, PROBE_KEY_NAME, PROBE_MIDI_PROGRAM, PROBE_NAMED_KEY,
-    PROBE_PARAM_CATEGORY,
+    PROBE_PARAM_CATEGORY, PROBE_SWITCH_PARAM,
 };
 
 /// The default probe — like every real plugin measured — declines all six
@@ -224,15 +224,23 @@ fn an_answering_plugin_round_trips_every_property_field() {
     let (min, max, step, large_step) = PROBE_INT_RANGE;
     let range = props
         .integer_range
-        .expect("probe declares USES_INT_STEP for this parameter");
+        .expect("probe declares USES_INTEGER_MIN_MAX for this parameter");
     assert_eq!(range.min, min);
     assert_eq!(range.max, max);
-    assert_eq!(range.step, step);
-    assert_eq!(range.large_step, large_step);
+    let steps = props
+        .integer_steps
+        .expect("probe declares USES_INT_STEP for this parameter");
+    assert_eq!(steps.step, step);
+    assert_eq!(steps.large_step, large_step);
     // Derived, not asserted independently of the range above.
-    assert_eq!(range.step_count(), Some(((max - min) / step) as u32));
+    assert_eq!(
+        range.step_count(steps.step),
+        Some(((max - min) / step) as u32)
+    );
 
-    let category = props.category.expect("probe declares USES_CATEGORY");
+    let category = props
+        .category
+        .expect("probe declares SUPPORTS_DISPLAY_CATEGORY");
     assert_eq!(category.index, PROBE_PARAM_CATEGORY as u16);
     assert_eq!(category.label, "Filter Envelope Section");
     assert_eq!(category.parameter_count, 2);
@@ -266,7 +274,9 @@ fn ungated_integer_fields_are_not_reported_as_a_range() {
         .parameter_properties(pid(0))
         .expect("probe answers for every parameter");
 
+    assert!(!props.flags.uses_integer_min_max);
     assert!(!props.flags.uses_int_step);
+    assert_eq!(props.integer_steps, None);
     assert_eq!(
         props.integer_range, None,
         "the plugin left 999/-999 in the integer fields and did NOT declare \
@@ -677,7 +687,7 @@ fn a_declared_integer_range_reaches_the_shared_parameter_info() {
 
     let mut declined = 0usize;
     for (i, info) in listed.iter().enumerate() {
-        if i == PROBE_INT_STEP_PARAM as usize {
+        if i == PROBE_INT_STEP_PARAM as usize || i == PROBE_SWITCH_PARAM as usize {
             continue;
         }
         assert_eq!(
@@ -700,6 +710,23 @@ fn a_declared_integer_range_reaches_the_shared_parameter_info() {
         declined > 0,
         "every parameter declared a range, so the gate is never exercised"
     );
+}
+
+/// `kVstParameterIsSwitch` reaches the shared parameter info as a toggle, over
+/// the real FFI boundary and with poison in the integer fields.
+#[test]
+fn a_declared_switch_reaches_the_shared_parameter_info_as_a_toggle() {
+    let _guard = lock_probe();
+    let (instance, path) = load_probe();
+    set_answer_param_properties(&path, true);
+
+    let listed = instance.loaded().parameter_list();
+    assert!(listed.len() > PROBE_SWITCH_PARAM as usize);
+    let switch = &listed[PROBE_SWITCH_PARAM as usize];
+    assert_eq!(switch.steps, ParamSteps::Toggle);
+    assert_eq!(switch.range.bounds(), None);
+
+    reset_switches(&path);
 }
 
 /// A plugin that declines the opcode reports normalized bounds and unknown

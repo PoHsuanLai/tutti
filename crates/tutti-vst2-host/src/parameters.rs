@@ -18,6 +18,7 @@ use tutti_plugin_types::{
 };
 
 use crate::loaded::Vst2Loaded;
+use crate::param_properties::{IntegerRange, IntegerSteps};
 
 impl Vst2Loaded {
     /// Confirm a caller-supplied id addresses a parameter this plugin declares,
@@ -165,9 +166,14 @@ impl Vst2Loaded {
     /// `Continuous`: the plugin said nothing about steps, which is not the same
     /// as saying the parameter is freely variable.
     ///
-    /// Note the two are *independent*. `USES_INT_STEP` gates the range;
-    /// `USES_FLOAT_STEP` gates a granularity that carries no bounds. A plugin
-    /// declaring only the latter gets steps without a plain range.
+    /// The flags are *independent*. `USES_INTEGER_MIN_MAX` gates the range, and
+    /// a range alone makes the value an integer in `min..=max`
+    /// ([`ParamSteps::Enumerated`] of `span + 1`, `Toggle` for a span of 1);
+    /// `USES_INT_STEP`, when also declared, divides the span; `USES_INT_STEP`
+    /// without a range has no span to count and stays `Unknown`;
+    /// `USES_FLOAT_STEP` gates a granularity that carries no bounds and is not
+    /// mapped to [`ParamSteps`]. `IS_SWITCH` reads as [`ParamSteps::Toggle`],
+    /// whatever else is declared.
     ///
     /// `AUTOMATABLE` is probed, not assumed. VST2 answers it with
     /// `effCanBeAutomated` (opcode 26), one dispatch per parameter, so the flag
@@ -228,11 +234,11 @@ impl Vst2Loaded {
         // `step_count` is `None` for a range the plugin declared but that
         // cannot be stepped through (non-positive step, inverted bounds); that
         // is unreported, not continuous.
-        let steps = match int_range.and_then(|r| r.step_count()) {
-            Some(0) | None => ParamSteps::Unknown,
-            Some(1) => ParamSteps::Toggle,
-            Some(n) => ParamSteps::Enumerated(n.saturating_add(1)),
-        };
+        let steps = declared_steps(
+            props.as_ref().is_some_and(|q| q.flags.is_switch),
+            int_range,
+            props.as_ref().and_then(|q| q.integer_steps),
+        );
 
         let label = self.instance.get_parameter_label(id);
         let measures = declared_measures(&label, &range);
@@ -254,7 +260,7 @@ impl Vst2Loaded {
             },
             known: ParamFlags::AUTOMATABLE,
             // `effGetParameterProperties` carries the category under
-            // `USES_CATEGORY`. The "numbered from 1, so 0 means uncategorised"
+            // `SUPPORTS_DISPLAY_CATEGORY`. The "numbered from 1, so 0 means uncategorised"
             // rule is already applied in the decoder — `category` is `None` for
             // a zero index — so there is no sentinel left to check here. A
             // category with an empty label yields no group, which is the same
@@ -298,6 +304,25 @@ impl Vst2Loaded {
     }
 }
 
+/// The shared steps of a parameter's declared switch, integer range and
+/// integer steps. A switch is two-state whatever else it declares; a range
+/// alone is stepped by 1; an integer step without a range has no span.
+fn declared_steps(
+    is_switch: bool,
+    range: Option<IntegerRange>,
+    steps: Option<IntegerSteps>,
+) -> ParamSteps {
+    if is_switch {
+        return ParamSteps::Toggle;
+    }
+    let step = steps.map_or(1, |s| s.step);
+    match range.and_then(|r| r.step_count(step)) {
+        Some(0) | None => ParamSteps::Unknown,
+        Some(1) => ParamSteps::Toggle,
+        Some(n) => ParamSteps::Enumerated(n.saturating_add(1)),
+    }
+}
+
 /// What a VST2 parameter's label says it measures (doc 023 §5.2): the closed
 /// list of [`ParamUnit::from_label`], and **only** over a plain range that fits,
 /// which is what `effGetParameterProperties` gives when the plugin answers it.
@@ -311,6 +336,61 @@ fn declared_measures(label: &str, range: &ParamRange) -> Option<ParamUnit> {
 pub(crate) fn index_of(id: ParamId, count: usize) -> Option<i32> {
     let index = i32::try_from(id.get()).ok()?;
     ((index as usize) < count).then_some(index)
+}
+
+#[cfg(test)]
+mod steps_tests {
+    use super::*;
+    use crate::param_properties::ParameterProperties;
+    use tutti_vst2_ffi::api;
+
+    fn decode(
+        flags: i32,
+        min: i32,
+        max: i32,
+        step: i32,
+    ) -> (bool, Option<IntegerRange>, Option<IntegerSteps>) {
+        let raw = api::ParameterProperties {
+            step_float: 0.0,
+            small_step_float: 0.0,
+            large_step_float: 0.0,
+            label: [0; 64],
+            flags,
+            min_integer: min,
+            max_integer: max,
+            step_integer: step,
+            large_step_integer: 0,
+            short_label: [0; 8],
+            display_index: 0,
+            category: 0,
+            num_parameters_in_category: 0,
+            reserved: 0,
+            category_label: [0; api::consts::MAX_CATEGORY_LABEL],
+            future: [0; 16],
+        };
+        let p = ParameterProperties::decode(0, &raw);
+        (p.flags.is_switch, p.integer_range, p.integer_steps)
+    }
+
+    fn steps_of(flags: i32, min: i32, max: i32, step: i32) -> ParamSteps {
+        let (sw, r, s) = decode(flags, min, max, step);
+        declared_steps(sw, r, s)
+    }
+
+    /// Literal header bits: `1<<1` alone (range 0..4) is five positions, a
+    /// span of 1 is a toggle, `1<<1 | 1<<3` divides the span, `1<<3` alone has
+    /// no span, and `1<<0` wins.
+    #[test]
+    fn a_range_alone_is_enumerated_and_a_step_divides_it() {
+        assert_eq!(steps_of(1 << 1, 0, 4, 0), ParamSteps::Enumerated(5));
+        assert_eq!(steps_of(1 << 1, 0, 1, 0), ParamSteps::Toggle);
+        assert_eq!(
+            steps_of((1 << 1) | (1 << 3), 0, 100, 25),
+            ParamSteps::Enumerated(5)
+        );
+        assert_eq!(steps_of(1 << 3, 0, 4, 1), ParamSteps::Unknown);
+        assert_eq!(steps_of((1 << 0) | (1 << 1), 0, 4, 0), ParamSteps::Toggle);
+    }
 }
 
 #[cfg(test)]

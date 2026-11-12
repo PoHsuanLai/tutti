@@ -74,4 +74,9 @@ impl ParamNode for Bands {
     }
 }
 
-tutti_session::declare_params!(Bands { UnitParam::Threshold => [Db] });
+// Its knobs are raw atomics, not `Param<Db>` cells a declaration could check
+// the unit against, so its typed side is written by hand.
+impl tutti_session::HasParam<{ UnitParam::Threshold as u16 }> for Bands {
+    type Unit = Db;
+}
+impl tutti_session::HasParams<{ UnitParam::Threshold as u16 }> for Bands {}

@@ -291,6 +291,16 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      node)` by type. `Take::record` and `Trajectory::with_range` are not typed yet.
    - 2d: removal (S7).
 3. **Node authoring:** N1, N4.
+   - N1 (built, pulled before 2d): a node's params are declared once, next to
+     its `Param<U>` cells, by `tutti_graph::declare_params!`, which writes the
+     `HasParam`/`HasParams` impls (the unit is the cell's, checked), the
+     node's `ParamSet` and its shape's param ports (`declared_set`,
+     `declared_ports`, `declared_base`); the `DesignNode` families' controls
+     are one `control_set!` each. `HasParam`, `HasParams`, `ParamUnit` (was the
+     session's `ParamValue`) and `Scalar` moved to `tutti-graph`; the session's
+     `declare_params!` table, `Declared` and the `*_PARAMS` lists are gone. The
+     port order a node's `process` reads (`Io::param(k)`) is the declaration's
+     row order; a node that indexes by position still does so by hand.
 4. **Modulation:** T4, T5, T9 (T1's typed range landed in 2c).
 5. **Graph surface 2** (doc 013): facets, plumbing, the failure rule; S8.
    Then the deferred chase injection: preallocate the inject capacity of each

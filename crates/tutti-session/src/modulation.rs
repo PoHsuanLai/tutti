@@ -43,7 +43,7 @@ use tutti_types::{Depth, ParamAddr, UnitAddr, UnitParam};
 
 use crate::Edge;
 use crate::ModKeys;
-use crate::ParamValue;
+use crate::ParamUnit;
 use crate::RangeError;
 use crate::graph::Graph;
 
@@ -194,15 +194,15 @@ impl From<Edge> for ModTarget {
 /// [`MixRef`] ([`Mix`](tutti_types::Mix)). Sealed.
 pub trait Ranged: Into<ModTarget> + ranged::Sealed {
     /// The unit of the target's value.
-    type Unit: crate::params::Scalar;
+    type Unit: crate::Scalar;
 }
 
 mod ranged {
     pub trait Sealed {}
 }
 
-impl<U: crate::params::Scalar> ranged::Sealed for crate::TypedParamRef<U> {}
-impl<U: crate::params::Scalar> Ranged for crate::TypedParamRef<U> {
+impl<U: crate::Scalar> ranged::Sealed for crate::TypedParamRef<U> {}
+impl<U: crate::Scalar> Ranged for crate::TypedParamRef<U> {
     type Unit = U;
 }
 impl ranged::Sealed for Edge {}

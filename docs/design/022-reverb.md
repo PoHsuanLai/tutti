@@ -810,7 +810,8 @@ re-exported (`FdnDesign`, `FdnControls`, `FreeverbDesign`, `FreeverbControls`).
 `ReverbParams::addrs` is a method and `ReverbParams::new` moved to
 `ReverbDesign::params(&self, initial)`, because the FDN's ports depend on the
 design (the freeze is a port only where the design can freeze). The session
-registers `FdnNode` (`tutti-session` `param_session_node!`).
+registers `FdnNode` (`tutti-session` `param_session_node!`); its params, and the
+unit of each, are `FdnSet`'s own declaration (`control_set!`).
 
 **Deviations from the text.**
 

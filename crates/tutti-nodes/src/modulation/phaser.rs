@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::AtomicF32;
-use tutti_types::{Tail, UnitParam};
+use tutti_types::Tail;
 
 use super::shared::{LfoDrive, LinearMod};
 use crate::ramp::block_driven;
@@ -79,8 +79,8 @@ struct PhaserControls {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]), `N` in and `N` out, with no latency.
-/// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`]),
-/// depth ([`UnitParam::Depth`]) and feedback ([`UnitParam::Feedback`]); a fork starts from the values last set through it.
+/// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`](tutti_types::UnitParam::Rate)),
+/// depth ([`UnitParam::Depth`](tutti_types::UnitParam::Depth)) and feedback ([`UnitParam::Feedback`](tutti_types::UnitParam::Feedback)); a fork starts from the values last set through it.
 /// The graph prepares it at the device rate before its first block. Its tail
 /// is [`Tail::Unknown`] (the feedback recirculates), so it is never skipped.
 pub struct PhaserNode {
@@ -272,7 +272,7 @@ impl PhaserNode {
     /// most the scratch's length (the prepared maximum block).
     ///
     /// `driven` is the block's rate, depth and feedback from the
-    /// node's param ports ([`PHASER_PARAMS`] order), each `None` where
+    /// node's param ports (its declared params order), each `None` where
     /// nothing drives it.
     fn render(
         &mut self,
@@ -356,11 +356,16 @@ impl PhaserNode {
     }
 }
 
-/// The params a [`PhaserNode`] lets the graph modulate, in port order: all
-/// three of its controls. Each is block-rate in the node (read once per
-/// block and ramped across it), so a driven port is read the same way
-/// (`block_driven`).
-pub const PHASER_PARAMS: [UnitParam; 3] = [UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback];
+// The params a [`PhaserNode`] lets the graph modulate, in port order: all
+// three of its controls. Each is block-rate in the node (read once per
+// block and ramped across it), so a driven port is read the same way
+// (`block_driven`).
+tutti_graph::declare_params!([] PhaserNode, n {
+    Rate => Hz = &n.lfo.rate,
+    // A fraction of the sweep.
+    Depth => Depth = &n.controls.depth,
+    Feedback => Feedback = &n.controls.feedback,
+});
 
 impl Node for PhaserNode {
     fn shape(&self) -> Shape {
@@ -368,7 +373,7 @@ impl Node for PhaserNode {
         Shape::through_unassigned(width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
-            .with_params(&PHASER_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -413,22 +418,13 @@ impl Node for PhaserNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.lfo.rate.load().get()),
-            1 => Some(self.controls.depth.load().get()),
-            2 => Some(self.controls.feedback.load().get()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for PhaserNode {
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Rate, self.lfo.rate.as_atomic())
-            .param(UnitParam::Depth, self.controls.depth.as_atomic())
-            .param(UnitParam::Feedback, self.controls.feedback.as_atomic())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with every control cell detached (at its value now), its
@@ -480,6 +476,7 @@ mod tests {
     use super::*;
     use crate::test_support::drive_frames;
     use tutti_graph::contract::{assert_param_fork, prepared};
+    use tutti_types::UnitParam;
 
     /// `node`, prepared at `sr` for blocks of up to 1024 frames.
     fn at(node: PhaserNode, sr: f64) -> PhaserNode {

@@ -8,11 +8,10 @@
 //! cells and how a block reads them.
 
 use tutti_dsp::{Real, Svf, SvfControls, SvfDesign, SvfType};
-use tutti_types::{ChannelLayout, Db, Hz, Q, UnitAddr, UnitParam};
+use tutti_types::{ChannelLayout, Db, Hz, Q};
 
 use super::NodeKernel;
 use super::filter_bus;
-use crate::params::ControlSet;
 use crate::reverb::DesignNode;
 
 /// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
@@ -73,7 +72,7 @@ use crate::reverb::DesignNode;
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`](tutti_graph::IntoNode)): inserted, its controls are
-/// a [`ParamSet`](tutti_graph::ParamSet) over cutoff, Q and gain by [`UnitParam`],
+/// a [`ParamSet`](tutti_graph::ParamSet) over cutoff, Q and gain by [`UnitParam`](tutti_types::UnitParam),
 /// and a fork of it starts from the values last set through that set. Its tail is
 /// [`Tail::Unknown`](tutti_types::Tail::Unknown): a resonant filter rings on after
 /// its input stops, for as long as its Q says, so the graph's tail fold must not
@@ -136,37 +135,19 @@ impl<F: Real> SvfFilterNode<F> {
 #[derive(Clone, Copy, Debug)]
 pub struct SvfSet(SvfType);
 
-impl ControlSet for SvfSet {
-    type Controls = SvfControls;
+control_set! {
+    SvfSet(s): SvfControls = SvfControls { ty: s.0, ..SvfControls::DEFAULT };
+    live: (all);
+    Cutoff => Hz = freq,
+    Q => Q = q,
+    GainDb => Db = gain;
 
     fn moved(&self, applied: &SvfControls, target: &SvfControls) -> bool {
         target.moved_from(applied)
     }
 
-    fn addrs(&self) -> &'static [UnitAddr] {
-        const ADDRS: [UnitAddr; 3] = [
-            UnitAddr::first(UnitParam::Cutoff),
-            UnitAddr::first(UnitParam::Q),
-            UnitAddr::first(UnitParam::GainDb),
-        ];
-        &ADDRS
-    }
-
     fn defaults(&self) -> SvfControls {
         SvfControls::DEFAULT
-    }
-
-    fn flatten(&self, c: &SvfControls, out: &mut [f32]) {
-        out.copy_from_slice(&[c.freq.get(), c.q.get(), c.gain.get()]);
-    }
-
-    fn assemble(&self, v: &[f32]) -> SvfControls {
-        SvfControls {
-            ty: self.0,
-            freq: Hz(v[0]),
-            q: Q(v[1]),
-            gain: Db(v[2]),
-        }
     }
 }
 
@@ -185,6 +166,7 @@ mod tests {
     use crate::test_support::{RATE, drive_block, prepared};
     use tutti_graph::contract::{assert_param_fork, drive};
     use tutti_graph::{Node, ParamNode};
+    use tutti_types::UnitParam;
     use tutti_types::{SampleRate, Tail};
 
     /// `node`, prepared at 44.1 kHz, over a mono `input` in one block.

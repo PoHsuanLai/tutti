@@ -16,5 +16,5 @@ mod vbap;
 
 pub(crate) use target::AngleSmoother;
 
-pub use hrtf::{HRTF_BINAURAL_PARAMS, HrtfBinauralNode};
-pub use vbap::{VBAP_PANNER_PARAMS, VbapError, VbapPannerNode};
+pub use hrtf::HrtfBinauralNode;
+pub use vbap::{VbapError, VbapPannerNode};

@@ -45,8 +45,8 @@ node without a lock.
   convolution against a caller-supplied HRIR sphere), both steered by their
   params (bearing, height, spread and width, or the blend), de-zippered. A mix of several panned sources
   is plain fan-in: wire each panner's outputs to the same graph ports.
-- **Param ports** — each modulatable node declares its params (its
-  `*_PARAMS` list: `DELAY_PARAMS`, …) as param ports, filled per
+- **Param ports** — each modulatable node declares its params once, with its
+  cells (`tutti_graph::declare_params!`), as param ports, filled per
   frame from one event source each (read through `Io::param`).
 - **Modulation** — the `automation` module's `ControlLaneNode`, which
   evaluates a `tutti_modulation::ControlProgram` into a param port (design doc 014),

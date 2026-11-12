@@ -3,6 +3,7 @@
 mod multiband_params;
 mod node_mix;
 mod node_mode;
+mod param_units;
 mod reverb_nodes;
 mod silenced_event;
 // A sampler node the graph adds reads the session's tempo map (doc 020, stage 5).

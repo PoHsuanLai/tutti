@@ -258,26 +258,26 @@ pub struct ParameterProperties {
     pub label: [u8; MAX_LABEL],
     /// Bit flags found in `ParameterFlags`.
     pub flags: i32,
-    /// Lowest integer value, when `USES_INT_STEP` is set.
+    /// Lowest integer value, when `USES_INTEGER_MIN_MAX` is set.
     pub min_integer: i32,
-    /// Highest integer value, when `USES_INT_STEP` is set.
+    /// Highest integer value, when `USES_INTEGER_MIN_MAX` is set.
     pub max_integer: i32,
-    /// Integer step increment.
+    /// Integer step increment, when `USES_INT_STEP` is set.
     pub step_integer: i32,
-    /// Coarse integer step.
+    /// Coarse integer step, when `USES_INT_STEP` is set.
     pub large_step_integer: i32,
     /// Short label, for narrow UI slots (recommended 6 chars + delimiter).
     pub short_label: [u8; MAX_SHORT_LABEL],
-    /// Preferred display position, when `USES_INDEX` is set.
+    /// Preferred display position, when `SUPPORTS_DISPLAY_INDEX` is set.
     pub display_index: i16,
     /// Category this parameter belongs to (1-based; 0 = uncategorised), when
-    /// `USES_CATEGORY` is set.
+    /// `SUPPORTS_DISPLAY_CATEGORY` is set.
     pub category: i16,
     /// How many parameters share this parameter's category.
     pub num_parameters_in_category: i16,
     /// Reserved by the spec; plugins must leave it zero.
     pub reserved: i16,
-    /// Name of the category, when `USES_CATEGORY` is set.
+    /// Name of the category, when `SUPPORTS_DISPLAY_CATEGORY` is set.
     pub category_label: [u8; MAX_CATEGORY_LABEL],
     /// Reserved for future use.
     pub future: [u8; 16],
@@ -1125,31 +1125,40 @@ bitflags! {
 }
 
 bitflags! {
-    /// Flags in [`ParameterProperties::flags`] — VST 2.4's `VstParameterFlags`.
+    /// Flags in [`ParameterProperties::flags`] — VST 2.4's `VstParameterFlags`
+    /// (`aeffectx.h`).
     ///
-    /// These are what make the rest of the struct meaningful: the integer range
-    /// fields, the display index and the category fields are all *only* valid
-    /// when the corresponding bit is set. A host that reads `min_integer` /
-    /// `max_integer` without checking `USES_INT_STEP` reads whatever the plugin
-    /// happened to leave there — usually zero, so the parameter silently
-    /// collapses to the degenerate range 0..0.
+    /// These are what make the rest of the struct meaningful: the integer
+    /// range, the steps, the display index and the category fields are each
+    /// *only* valid when their own bit is set. A host that reads `min_integer` /
+    /// `max_integer` without checking `USES_INTEGER_MIN_MAX` reads whatever the
+    /// plugin happened to leave there. The range and the integer step are
+    /// separate bits: a plugin may declare either without the other.
     pub struct ParameterFlags: i32 {
-        /// `step_integer`, `min_integer` and `max_integer` are valid.
-        const USES_INT_STEP = 1;
-        /// `step_float`, `small_step_float` and `large_step_float` are valid.
-        const USES_FLOAT_STEP = 1 << 1;
-        /// `display_index` is valid.
-        const USES_INDEX = 1 << 2;
-        /// `category`, `num_parameters_in_category` and `category_label` are
-        /// valid. Categories are 1-based; 0 means the parameter is
-        /// uncategorised even when this bit is set.
-        const USES_CATEGORY = 1 << 3;
-        /// The parameter can be ramped — a host moving it may interpolate
-        /// between values rather than stepping. The doc here used to read "the
-        /// parameter cannot be automated", which is the opposite of what the
-        /// bit means and describes no VST2 flag at all; the name and the value
-        /// (`kVstParameterCanRamp`) were always right.
-        const CAN_RAMP = 1 << 4;
+        /// `kVstParameterIsSwitch` (`1 << 0`): the parameter is a switch
+        /// (on/off).
+        const IS_SWITCH = 1;
+        /// `kVstParameterUsesIntegerMinMax` (`1 << 1`): `min_integer` and
+        /// `max_integer` are valid.
+        const USES_INTEGER_MIN_MAX = 1 << 1;
+        /// `kVstParameterUsesFloatStep` (`1 << 2`): `step_float`,
+        /// `small_step_float` and `large_step_float` are valid.
+        const USES_FLOAT_STEP = 1 << 2;
+        /// `kVstParameterUsesIntStep` (`1 << 3`): `step_integer` and
+        /// `large_step_integer` are valid.
+        const USES_INT_STEP = 1 << 3;
+        /// `kVstParameterSupportsDisplayIndex` (`1 << 4`): `display_index` is
+        /// valid.
+        const SUPPORTS_DISPLAY_INDEX = 1 << 4;
+        /// `kVstParameterSupportsDisplayCategory` (`1 << 5`): `category`,
+        /// `num_parameters_in_category` and `category_label` are valid.
+        /// Categories are 1-based; 0 means the parameter is uncategorised even
+        /// when this bit is set.
+        const SUPPORTS_DISPLAY_CATEGORY = 1 << 5;
+        /// `kVstParameterCanRamp` (`1 << 6`): the parameter value can ramp
+        /// up/down — a host moving it may interpolate between values rather
+        /// than stepping.
+        const CAN_RAMP = 1 << 6;
     }
 }
 
@@ -1415,16 +1424,19 @@ mod tests {
         );
     }
 
-    /// Pin the flag bit values against `aeffectx.h`. These gate whether the
-    /// integer-range and category fields are readable at all, so a wrong bit
-    /// makes the host trust uninitialised plugin memory.
+    /// Pin the flag bit values against `aeffectx.h` (`VstParameterFlags`),
+    /// each as the header's literal shift. These gate whether the integer-range
+    /// and category fields are readable at all, so a wrong bit makes the host
+    /// trust uninitialised plugin memory.
     #[test]
     fn parameter_flag_bits_match_the_header() {
-        assert_eq!(ParameterFlags::USES_INT_STEP.bits(), 1);
-        assert_eq!(ParameterFlags::USES_FLOAT_STEP.bits(), 2);
-        assert_eq!(ParameterFlags::USES_INDEX.bits(), 4);
-        assert_eq!(ParameterFlags::USES_CATEGORY.bits(), 8);
-        assert_eq!(ParameterFlags::CAN_RAMP.bits(), 16);
+        assert_eq!(ParameterFlags::IS_SWITCH.bits(), 1 << 0);
+        assert_eq!(ParameterFlags::USES_INTEGER_MIN_MAX.bits(), 1 << 1);
+        assert_eq!(ParameterFlags::USES_FLOAT_STEP.bits(), 1 << 2);
+        assert_eq!(ParameterFlags::USES_INT_STEP.bits(), 1 << 3);
+        assert_eq!(ParameterFlags::SUPPORTS_DISPLAY_INDEX.bits(), 1 << 4);
+        assert_eq!(ParameterFlags::SUPPORTS_DISPLAY_CATEGORY.bits(), 1 << 5);
+        assert_eq!(ParameterFlags::CAN_RAMP.bits(), 1 << 6);
         assert_eq!(MidiProgramFlags::IS_OMNI.bits(), 1);
     }
 

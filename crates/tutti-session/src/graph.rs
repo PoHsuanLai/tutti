@@ -65,7 +65,7 @@ use tutti_types::{Samples, Tail};
 use crate::key::{Bus, BusSink, Fanin, InEnd, Inlet, MainSink, OutEnd, Outlet, Wire};
 use crate::{
     ConnectError, Connection, Edge, EdgeGainError, EventInPort, EventOutPort, InPort, InletError,
-    Key, OutPort, ParamError, ParamValue, Root, SessionNode, TypedParamRef,
+    Key, OutPort, ParamError, ParamUnit, Root, SessionNode, TypedParamRef,
 };
 
 /// The largest block a device's graph is prepared for.
@@ -1601,7 +1601,7 @@ impl Graph {
     /// declare it, or has none addressed: a node inserted with
     /// [`insert`](Self::insert)); nothing is written.
     #[must_use = "a refused write changed nothing"]
-    pub fn set_param<U: ParamValue>(
+    pub fn set_param<U: ParamUnit>(
         &mut self,
         param: TypedParamRef<U>,
         value: U,

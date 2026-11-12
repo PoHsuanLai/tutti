@@ -2,19 +2,19 @@ use super::error::{Result, VbapError};
 use tutti_dsp::{SpeakerLayout, VbapGains};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
-use tutti_types::{ChannelLayout, ChannelTopology, Fold, UnitParam};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold};
 
 use super::panner::VbapPanner;
 use crate::buses::main_bus;
 use crate::ramp::{LastGood, block_driven};
 
-/// The params a [`VbapPannerNode`] lets the graph modulate, in port order.
-pub const VBAP_PANNER_PARAMS: [UnitParam; 4] = [
-    UnitParam::Azimuth,
-    UnitParam::Elevation,
-    UnitParam::Spread,
-    UnitParam::StereoWidth,
-];
+// The params a [`VbapPannerNode`] lets the graph modulate, in port order.
+tutti_graph::declare_params!([] VbapPannerNode, n {
+    Azimuth => Azimuth = &n.azimuth,
+    Elevation => Elevation = &n.elevation,
+    Spread => Spread = &n.spread,
+    StereoWidth => StereoWidth = &n.width,
+});
 
 /// The last finite value each control cell held.
 #[derive(Clone, Copy, Debug)]
@@ -34,10 +34,10 @@ struct Held {
 /// ([`for_topology`](Self::for_topology), with
 /// [`ChannelTopology::for_width`] for a bare count). It is a graph node
 /// (`tutti_graph::Node` and [`ParamNode`]); inserting it hands back its
-/// [`ParamSet`] ([`UnitParam::Azimuth`], [`Elevation`](UnitParam::Elevation),
-/// [`Spread`](UnitParam::Spread) and [`StereoWidth`](UnitParam::StereoWidth)),
+/// [`ParamSet`] ([`UnitParam::Azimuth`](tutti_types::UnitParam::Azimuth), [`Elevation`](tutti_types::UnitParam::Elevation),
+/// [`Spread`](tutti_types::UnitParam::Spread) and [`StereoWidth`](tutti_types::UnitParam::StereoWidth)),
 /// which move the source lock-free while it renders, and a graph's control
-/// lanes may drive all four ([`VBAP_PANNER_PARAMS`]).
+/// lanes may drive all four .
 /// Position changes are de-zippered over 50 ms. A mono source presents the
 /// same sample on both inputs. Rendering allocates nothing and reports no
 /// latency.
@@ -309,7 +309,7 @@ impl Node for VbapPannerNode {
         Shape::buses(main_bus(ChannelLayout::STEREO), main_bus(self.layout))
             .with_ports(ChannelLayout::STEREO, self.layout)
             .with_tail(Tail::Unknown)
-            .with_params(&VBAP_PANNER_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
             // A ramped gain pair per output channel and frame, and the
             // smoother stepped per frame: measured 10.9 ns per frame and
             // channel at stereo, 4.3 at 5.1 while the source moves, against
@@ -367,25 +367,14 @@ impl Node for VbapPannerNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.azimuth.load().get()),
-            1 => Some(self.elevation.load().get()),
-            2 => Some(self.spread.load().get()),
-            3 => Some(self.width.load().get()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for VbapPannerNode {
     /// The bearing, height, spread and width.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Azimuth, self.azimuth.cell())
-            .param(UnitParam::Elevation, self.elevation.cell())
-            .param(UnitParam::Spread, self.spread.cell())
-            .param(UnitParam::StereoWidth, self.width.cell())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with its four cells detached (at their values now) and its

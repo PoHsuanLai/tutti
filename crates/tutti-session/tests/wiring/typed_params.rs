@@ -115,9 +115,7 @@ impl Node for Mine {
 
 impl ParamNode for Mine {
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Cutoff, self.cutoff.as_atomic())
-            .build()
+        self.declared_set()
     }
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
@@ -126,7 +124,7 @@ impl ParamNode for Mine {
     }
 }
 
-tutti_session::declare_params!(Mine { UnitParam::Cutoff => Hz });
+tutti_graph::declare_params!([] Mine, n { Cutoff => Hz = &n.cutoff });
 
 /// **A host's `ParamNode` is inserted as `Params(node)` and nothing more**:
 /// no `IntoNode` and no `SessionNode` of its own. Its params are addressed

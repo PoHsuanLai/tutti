@@ -232,6 +232,7 @@ mod compile;
 pub mod contract;
 mod controls;
 mod cost;
+mod declare;
 mod editor;
 mod event;
 mod event_inlet;
@@ -274,6 +275,7 @@ pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
 pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};
 pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, Params, param_parts};
 pub use cost::{Cost, Schedule, Work};
+pub use declare::{HasParam, HasParams, ParamUnit, Scalar};
 pub use editor::{CommitError, Editor, Limits, MAX_ROOT_CHANNELS, MissingSource};
 pub use event::{
     Event, EventDensity, EventKind, EventOrderError, EventRejected, EventWriter, Harmony,
@@ -338,3 +340,10 @@ pub use tap::{TapReader, TapWriter};
 pub use time::{Continuity, Due, Offset, Playhead};
 pub use tutti_rt::BlockWaits;
 pub use tutti_types::PlayReading;
+
+/// What [`declare_params!`] expands to, and nothing a caller names.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::declare::{Cells, Row, Visit, base, ports, row, set};
+    pub use tutti_types::{UnitAddr, UnitParam};
+}

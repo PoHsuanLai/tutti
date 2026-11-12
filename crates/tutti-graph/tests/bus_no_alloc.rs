@@ -13,7 +13,7 @@ use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
 use tutti_graph::{
     Bus, BusRef, BusRole, BusSource, Buses, Cx, Edge, Editor, Executor, InPort, Io, Node, NodeKey,
-    NodeMode, OutPort, Prepare, Shape, Source, Status, Transport, Unforkable,
+    NodeMode, OutPort, Prepare, Shape, Source, Status, TransportPosition, Unforkable,
 };
 use tutti_types::{BusTopology, ChannelLayout, ChannelTopology, Latency, Mix, Samples};
 
@@ -134,7 +134,7 @@ fn rig(workers: usize) -> (Editor, Executor) {
 
 fn gate(workers: usize) {
     let (mut ed, mut exec) = rig(workers);
-    let t = Transport::default();
+    let t = TransportPosition::default();
     let input: Vec<Vec<f32>> = (0..6)
         .map(|c| (0..BLOCK).map(|i| ((i + c) as f32 * 0.07).sin()).collect())
         .collect();

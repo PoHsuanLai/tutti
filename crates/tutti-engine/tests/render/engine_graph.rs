@@ -222,7 +222,12 @@ fn graph_engine_render_is_bit_identical_to_the_executor() {
             let len = (n - done).min(512);
             let mut planar = vec![vec![0.0f32; len]; 3];
             let mut outs: Vec<&mut [f32]> = planar.iter_mut().map(Vec::as_mut_slice).collect();
-            exec.process(len, &tutti_graph::Transport::default(), &[], &mut outs);
+            exec.process(
+                len,
+                &tutti_graph::TransportPosition::default(),
+                &[],
+                &mut outs,
+            );
             want.extend((0..len).flat_map(|i| planar.iter().map(move |ch| ch[i])));
             done += len;
         }

@@ -27,7 +27,7 @@ use tutti_types::MaxBlock;
 use common::{WORKERS, test_pool};
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, TransportChanges, Unforkable,
+    Cx, Editor, Io, Node, Prepare, Shape, Status, TransportChanges, TransportPosition, Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -104,13 +104,18 @@ fn render_probes(workers: usize, entry: Entry) {
         let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
         match entry {
             Entry::Process => {
-                exec.process(MAX_BLOCK, &Transport::default(), &[&input], &mut outs);
+                exec.process(
+                    MAX_BLOCK,
+                    &TransportPosition::default(),
+                    &[&input],
+                    &mut outs,
+                );
             }
             Entry::RenderApplied => {
                 exec.apply_pending();
                 exec.render_applied(
                     MAX_BLOCK,
-                    &Transport::default(),
+                    &TransportPosition::default(),
                     &TransportChanges::NONE,
                     &[&input],
                     &mut outs,

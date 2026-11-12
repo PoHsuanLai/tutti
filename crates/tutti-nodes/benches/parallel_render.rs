@@ -45,7 +45,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{Edge, InPort, OutPort, Source};
-use tutti_graph::{Editor, Executor, Prepare, Transport, Unforkable};
+use tutti_graph::{Editor, Executor, Prepare, TransportPosition, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_types::{ChannelLayout, Hz, Q, SampleRate, Samples};
@@ -250,7 +250,7 @@ fn mixed(lanes: usize, depth: usize, fan: usize, light: bool, workers: usize) ->
 }
 
 fn block(exec: &mut Executor, input: &[f32], out: &mut [f32]) {
-    let t = Transport::default();
+    let t = TransportPosition::default();
     exec.process(FRAMES, &t, &[input], &mut [out]);
 }
 

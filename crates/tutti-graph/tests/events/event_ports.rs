@@ -28,7 +28,7 @@ use tutti_types::MaxBlock;
 use tutti_graph::NodeSpec;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, EventSlotCapacity, GraphSpec, Io,
-    Node, Op, Prepare, Reference, Shape, Shapes, Status, Transport, Unforkable, ValidGraph,
+    Node, Op, Prepare, Reference, Shape, Shapes, Status, TransportPosition, Unforkable, ValidGraph,
     compile,
 };
 use tutti_graph::{NodeKey, Topology};
@@ -190,7 +190,7 @@ impl Rig {
         seen.lock().unwrap().clear();
         let prep = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(max)));
         let (valid, shapes) = self.spec();
-        let transport = Transport::default();
+        let transport = TransportPosition::default();
         let dropped = if executor {
             let (mut ed, mut exec) = Editor::with_event_capacity(prep, default_cap);
             let (plan, delta) = compile(&valid, &shapes, &prep, None).expect("compiles");
@@ -758,7 +758,7 @@ fn a_fifo_whose_bound_a_swap_lowered_delivers_its_backlog_on_time() {
     g.connect_events(at(1, 0), EventEdge::Direct(out(2, 0)));
     g.connect_events(at(1, 0), EventEdge::Direct(out(3, 0)));
     ed.commit().expect("commits");
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     for _ in 0..4 {
         exec.process(64, &transport, &[], &mut []);
     }
@@ -810,7 +810,7 @@ fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
     g.connect_events(at(1, 0), EventEdge::Direct(out(3, 0)));
     g.connect_events(at(1, 1), EventEdge::feedback(out(2, 0), Samples(LEN)));
     ed.commit().expect("commits");
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     for _ in 0..LEN / 16 {
         exec.process(16, &transport, &[], &mut []);
     }
@@ -896,7 +896,7 @@ fn a_flush_into_a_port_a_lowered_bound_widened_drops_nothing() {
     g.connect_events(at(1, 0), EventEdge::Direct(out(3, 0)));
     g.connect_events(at(1, 0), EventEdge::Direct(out(4, 0)));
     ed.commit().expect("commits");
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     for _ in 0..4 {
         exec.process(64, &transport, &[], &mut []);
     }

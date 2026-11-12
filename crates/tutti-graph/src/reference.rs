@@ -106,8 +106,8 @@ use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::mode::{MODE_DECLICK, NodeMix, NodeMode};
 use crate::node::{
-    ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
-    TransportChanges,
+    ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, TransportChanges,
+    TransportPosition,
 };
 use crate::param::{PARAM_DECLICK, ParamIn, ParamInput, ParamRange};
 use crate::plan::DelayKey;
@@ -288,7 +288,7 @@ impl Reference {
     /// otherwise counts one per frame.
     fn play_clock(
         &mut self,
-        transport: &Transport,
+        transport: &TransportPosition,
         changes: &TransportChanges,
         frames: usize,
     ) -> PlayClock {
@@ -1050,7 +1050,7 @@ impl Reference {
     pub fn process(
         &mut self,
         frames: usize,
-        transport: &Transport,
+        transport: &TransportPosition,
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
@@ -1066,14 +1066,14 @@ impl Reference {
     pub fn process_with_changes(
         &mut self,
         frames: usize,
-        transport: &Transport,
+        transport: &TransportPosition,
         changes: &TransportChanges,
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
         // The block's transport pieces, cut here by hand rather than through
         // `Env::segments`, so the executor's cut has an independent check.
-        let mut pieces: Vec<(usize, usize, Transport)> = Vec::new();
+        let mut pieces: Vec<(usize, usize, TransportPosition)> = Vec::new();
         let mut cut = 0;
         let mut t = *transport;
         for c in changes.as_slice() {
@@ -2331,7 +2331,7 @@ struct Traversal {
 }
 
 /// What `t` traverses in `len` frames at `tempo` and `rate`.
-fn traverse(t: &Transport, tempo: f64, rate: f64, len: usize) -> Traversal {
+fn traverse(t: &TransportPosition, tempo: f64, rate: f64, len: usize) -> Traversal {
     let beat = t.beat().get();
     let usable = |x: f64| x.is_finite() && x > 0.0;
     if !t.playing || !usable(tempo) || !usable(rate) {
@@ -2370,7 +2370,7 @@ fn traverse(t: &Transport, tempo: f64, rate: f64, len: usize) -> Traversal {
 
 /// The beat intervals a playhead at `t.beat` covers moving `dist` beats
 /// forward, wrapping at `t`'s loop.
-fn walk(t: &Transport, dist: f64) -> Vec<(f64, f64)> {
+fn walk(t: &TransportPosition, dist: f64) -> Vec<(f64, f64)> {
     let (mut pos, mut left) = (t.beat().get(), dist.max(0.0));
     let mut path = Vec::new();
     while left > 0.0 {
@@ -2401,13 +2401,13 @@ fn walk(t: &Transport, dist: f64) -> Vec<(f64, f64)> {
 #[derive(Default)]
 struct RefPlayhead {
     history: Vec<(f64, f64)>,
-    last: Option<(Transport, f64, usize)>,
-    now: Option<Transport>,
+    last: Option<(TransportPosition, f64, usize)>,
+    now: Option<TransportPosition>,
 }
 
 impl RefPlayhead {
     /// Record the block about to be rendered.
-    fn observe(&mut self, t: &Transport, rate: f64, len: usize) {
+    fn observe(&mut self, t: &TransportPosition, rate: f64, len: usize) {
         let now = t.beat().get();
         let walked = self.last.and_then(|(p, prate, plen)| {
             if p.looping != t.looping {
@@ -2499,7 +2499,7 @@ impl Reference {
         &self,
         cmd: &mut RefCommand,
         arrival: Latency,
-        pieces: &[(usize, usize, Transport)],
+        pieces: &[(usize, usize, TransportPosition)],
         frames: usize,
     ) -> Option<Option<Offset>> {
         let start = self.frame.get();

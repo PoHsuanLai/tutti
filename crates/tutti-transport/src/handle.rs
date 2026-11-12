@@ -183,7 +183,8 @@ mod tests {
         let beat = b
             .settings
             .tempo_map()
-            .frame_at_or_after(Beat(1.0), b.sample_rate());
+            .view(b.sample_rate())
+            .frame_at_or_after(Beat(1.0));
         assert_eq!(beat.get(), 24_000, "one beat at 120 BPM and 48 kHz");
     }
 

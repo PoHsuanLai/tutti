@@ -26,7 +26,7 @@ use common::{Kind, Pair, SpecBehaviour, TestNode, bits, prepare};
 use tutti_graph::{
     CommitError, CrossfadeCurve, Cx, Edge, Editor, EventOut, ForkMode, ForkTarget, GraphInvalid,
     GraphSpec, InPort, Io, MixError, Node, NodeKey, NodeMix, NodeMode, OutPort, ParamIn, PassError,
-    Prepare, Shape, Source, Status, Topology, Transport, Unforkable,
+    Prepare, Shape, Source, Status, Topology, TransportPosition, Unforkable,
 };
 use tutti_types::{ChannelLayout, Mix, Tail};
 
@@ -264,13 +264,28 @@ fn dry_is_the_aligned_input_bit_for_bit_and_the_node_keeps_running() {
     let input: Vec<f32> = (0..BLOCK as u64).map(wave).collect();
     let mut o = vec![0.0f32; BLOCK];
     for _ in 0..6 {
-        exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+        exec.process(
+            BLOCK,
+            &TransportPosition::default(),
+            &[&input],
+            &mut [&mut o[..]],
+        );
         assert_eq!(bits(&[o.clone()]), bits(std::slice::from_ref(&input)));
     }
     ed.set_mix(key(1), Mix::new(0.5)).expect("a node");
     // The ramp block, then a steady one: `y = 3 x`, `x̂ = x` (no latency).
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
     for i in 0..BLOCK {
         assert_eq!(
             o[i].to_bits(),
@@ -557,7 +572,7 @@ fn a_mix_stored_mid_block_lands_on_the_next_block() {
         let mut got = Vec::new();
         for _ in 0..8 {
             let mut o = vec![0.0f32; BLOCK];
-            exec.process(BLOCK, &Transport::default(), &[], &mut [&mut o[..]]);
+            exec.process(BLOCK, &TransportPosition::default(), &[], &mut [&mut o[..]]);
             got.extend(o);
         }
         // The hook's output is 1.0, so `y = 3`, `x̂ = 1`.
@@ -643,7 +658,12 @@ fn set_mix_does_not_change_the_plan() {
     let input: Vec<f32> = (0..BLOCK as u64).map(wave).collect();
     let mut o = vec![0.0f32; BLOCK];
     for _ in 0..3 {
-        exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+        exec.process(
+            BLOCK,
+            &TransportPosition::default(),
+            &[&input],
+            &mut [&mut o[..]],
+        );
     }
     assert_eq!(
         bits(&[o.clone()]),
@@ -696,23 +716,43 @@ fn a_fork_copies_the_mix() {
     let (mut ed, mut exec) = solo(None);
     let input: Vec<f32> = (0..BLOCK as u64).map(wave).collect();
     let mut o = vec![0.0f32; BLOCK];
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
     ed.set_mix(key(1), Mix::new(0.5)).expect("a node");
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
 
     let (fed, mut fexec) = ed
         .fork(ForkTarget::Master, ForkMode::Offline, prepare(MAX_BLOCK))
         .expect("forks");
     assert_eq!(fed.mix(key(1)), Mix::new(0.5));
     let mut f = vec![0.0f32; BLOCK];
-    fexec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut f[..]]);
+    fexec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut f[..]],
+    );
     for i in 0..BLOCK {
         assert_eq!(
             f[i].to_bits(),
             blend(3.0 * input[i], input[i], 0.5).to_bits()
         );
     }
-    exec.process(BLOCK, &Transport::default(), &[&input], &mut [&mut o[..]]);
+    exec.process(
+        BLOCK,
+        &TransportPosition::default(),
+        &[&input],
+        &mut [&mut o[..]],
+    );
     for i in 0..BLOCK {
         assert_eq!(
             o[i].to_bits(),

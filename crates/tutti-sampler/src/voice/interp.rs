@@ -92,7 +92,7 @@ use crate::PlaceError;
 /// Pure arithmetic: no allocation, no locks — safe on the audio thread.
 #[inline]
 pub fn window_position(
-    transport: &tutti_graph::Transport,
+    transport: &tutti_graph::TransportPosition,
     start_beat: Beat,
     duration: Option<BeatDuration>,
     source_rate: SampleRate,
@@ -790,7 +790,7 @@ pub(crate) fn interpolate_taps(
 mod tests {
     use super::*;
     use crate::MAX_SAMPLER_CHANNELS;
-    use tutti_graph::{Env, Offset, Transport, TransportChanges};
+    use tutti_graph::{Env, Offset, TransportChanges, TransportPosition};
     use tutti_types::{PlaybackRate, Seconds, SrcRatio};
 
     /// [`super::read_frame`] with the placement a reader of `out`'s width has.
@@ -862,7 +862,7 @@ mod tests {
         ] {
             let src = SrcRatio::for_rates(SampleRate::new(file_rate), SampleRate::new(session));
             let rate = PlaybackRate::new(speed);
-            let transport = Transport::new(true, Bpm::of(120.0), Beat(4.0), None);
+            let transport = TransportPosition::new(true, Bpm::of(120.0), Beat(4.0), None);
 
             // Memory's split: the wave's own rate, times varispeed alone.
             let memory = window_position(
@@ -906,7 +906,7 @@ mod tests {
     /// cannot read stale material by ignoring a `None`.
     #[test]
     fn window_position_is_none_outside_the_window() {
-        let stopped = Transport::new(false, Bpm::of(120.0), Beat(4.0), None);
+        let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(4.0), None);
         assert!(
             window_position(
                 &stopped,
@@ -919,7 +919,7 @@ mod tests {
             "a stopped transport has no position"
         );
 
-        let rolling = Transport::new(true, Bpm::of(120.0), Beat(2.0), None);
+        let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(2.0), None);
         assert!(
             window_position(
                 &rolling,
@@ -1335,7 +1335,11 @@ mod tests {
     }
 
     /// A block of `len` frames at 48 kHz under `transport`, with `changes`.
-    fn env(len: usize, transport: Transport, changes: &[(usize, Transport)]) -> Env {
+    fn env(
+        len: usize,
+        transport: TransportPosition,
+        changes: &[(usize, TransportPosition)],
+    ) -> Env {
         let mut c = TransportChanges::NONE;
         for &(at, to) in changes {
             c.push(Offset::new(at, Samples(len)).unwrap(), to).unwrap();
@@ -1353,8 +1357,8 @@ mod tests {
     /// 120 BPM at 48 kHz: 24 000 frames a beat.
     const FPB: f64 = 24_000.0;
 
-    fn rolling(beat: f64) -> Transport {
-        Transport::new(true, Bpm::of(120.0), Beat(beat), None)
+    fn rolling(beat: f64) -> TransportPosition {
+        TransportPosition::new(true, Bpm::of(120.0), Beat(beat), None)
     }
 
     /// A gate over a 48 kHz source at unit rate, for `window`.
@@ -1380,7 +1384,7 @@ mod tests {
     /// mid-block, a stopped transport, a stop and a seek inside the block.
     #[test]
     fn place_sounds_iff_a_frame_has_a_position() {
-        let stopped = Transport::new(false, Bpm::of(120.0), Beat(1.0), None);
+        let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(1.0), None);
         let span = |start: f64, frames: f64| {
             gate(VoiceWindow::span(Beat(start), BeatDuration(frames / FPB)))
         };
@@ -1439,7 +1443,7 @@ mod tests {
     /// it there.
     #[test]
     fn a_seek_and_a_stop_inside_a_block_land_on_their_frames() {
-        let stopped = Transport::new(false, Bpm::of(120.0), Beat(2.5), None);
+        let stopped = TransportPosition::new(false, Bpm::of(120.0), Beat(2.5), None);
         let env = env(64, rolling(1.0), &[(32, rolling(2.0)), (48, stopped)]);
         let got = placed(&env, gate(VoiceWindow::default()));
         for (i, p) in got.iter().enumerate() {
@@ -1462,7 +1466,7 @@ mod tests {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        let t = Transport::new(true, Bpm::of(120.0), Beat(1.0 - 20.0 / FPB), looping);
+        let t = TransportPosition::new(true, Bpm::of(120.0), Beat(1.0 - 20.0 / FPB), looping);
         let env = env(64, t, &[]);
         let got = placed(&env, gate(VoiceWindow::default()));
         for (i, p) in got.iter().enumerate() {

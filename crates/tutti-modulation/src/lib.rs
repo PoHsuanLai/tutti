@@ -15,7 +15,7 @@ pub use compile::{
 pub use curve::{Curve, CurveSegment};
 pub use program::{
     Amount, Clock, ControlProgram, Corners, DepthBy, InputLayer, Layer, LayerId, MAX_LANE_INPUTS,
-    MAX_LANE_LAYERS, PeriodPoint, ProgramError, ProgramTime, RateAnchor, SourceId, Wave,
+    MAX_LANE_LAYERS, PeriodPoint, ProgramError, ProgramTime, RateAnchor, SourceId, Waveform,
 };
 pub use shape::{LfoShape, Polarity, shape};
 pub use sources::{Follower, Lfo, LfoRate, Macro, NoteEnvelope};

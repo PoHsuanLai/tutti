@@ -34,7 +34,9 @@ use std::sync::atomic::Ordering;
 
 use tutti_codec::Wave;
 use tutti_graph::NodeKey;
-use tutti_graph::{EventOut, ForkMode, ForkTarget, ParamIn, ParamRange, Prepare, Solo, Transport};
+use tutti_graph::{
+    EventOut, ForkMode, ForkTarget, ParamIn, ParamRange, Prepare, Solo, TransportPosition,
+};
 use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polarity};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
@@ -59,8 +61,8 @@ fn flat_wave(len: usize) -> Arc<Wave> {
 }
 
 /// Rolling at 120 BPM from beat 0, as a host counting frames reports it.
-fn rolling(frame: Frame) -> Transport {
-    Transport::new(true, Bpm::of(120.0), Beat(frame.0 as f64 / 24_000.0), None)
+fn rolling(frame: Frame) -> TransportPosition {
+    TransportPosition::new(true, Bpm::of(120.0), Beat(frame.0 as f64 / 24_000.0), None)
 }
 
 /// One voice over a flat 1.0 wave, placed from beat 0, alone in a graph on a
@@ -269,7 +271,7 @@ fn drive_volume(
             per_cycle: BeatDuration(1.0),
             phase: PhaseIncrement(0.0),
         },
-        wave: tutti_modulation::Wave::Const(1.0),
+        wave: tutti_modulation::Waveform::Const(1.0),
         amount: Amount {
             depth: Depth::of(depth),
             polarity: Polarity::Bipolar,

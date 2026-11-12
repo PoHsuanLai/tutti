@@ -45,7 +45,7 @@ use tutti_ump::{Message, MidiGroup, System, U7, U14, Ump};
 
 use crate::{SmpteFrameRate, SmpteTimecode};
 use atomic_float::AtomicF64;
-use tutti_graph::{Offset, Transport};
+use tutti_graph::{Offset, TransportPosition};
 use tutti_types::{
     Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, first_frame_at_or_after,
 };
@@ -312,7 +312,12 @@ impl ClockMaster {
     ///
     /// Events come out in the order generated, not by offset: in each pass
     /// (the block cut at a loop wrap) the MTC quarter-frames follow its ticks.
-    pub fn tick(&self, transport: &Transport, block: Samples, emit: &mut impl FnMut(UmpAt)) {
+    pub fn tick(
+        &self,
+        transport: &TransportPosition,
+        block: Samples,
+        emit: &mut impl FnMut(UmpAt),
+    ) {
         // The passes below index and split by frame count.
         let block_size = block.get();
         // Once per block: a rate moved mid-block would split it in two. A

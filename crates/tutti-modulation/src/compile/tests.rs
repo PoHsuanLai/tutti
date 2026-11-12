@@ -34,7 +34,7 @@ fn ranged(min: f32, max: f32) -> TargetDecl {
 
 fn lfo(shape: LfoShape, clock: Clock) -> Source {
     Source::Lfo {
-        wave: Wave::Shape { shape, seed: 0 },
+        wave: Waveform::Shape { shape, seed: 0 },
         clock,
     }
 }
@@ -506,7 +506,7 @@ fn an_anchor_is_carried_until_a_play_start() {
     assert_eq!(anchor(&c4), None, "a play start drops it");
 
     *rig.source_mut(10) = Source::Lfo {
-        wave: Wave::Shape {
+        wave: Waveform::Shape {
             shape: LfoShape::Sine,
             seed: 0,
         },
@@ -713,7 +713,7 @@ fn each_refusal_fires_by_name() {
         },
         lfo(LfoShape::Sine, seconds(f32::NAN)),
         Source::Lfo {
-            wave: Wave::Const(f32::NAN),
+            wave: Waveform::Const(f32::NAN),
             clock: beats(1.0),
         },
     ];
@@ -725,7 +725,7 @@ fn each_refusal_fires_by_name() {
         );
     }
     let anchored = Source::Lfo {
-        wave: Wave::Shape {
+        wave: Waveform::Shape {
             shape: LfoShape::Sine,
             seed: 0,
         },
@@ -790,14 +790,14 @@ fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
         sources.push((
             SourceKey(2 * k),
             Source::Lfo {
-                wave: Wave::Shape { shape, seed: 0 },
+                wave: Waveform::Shape { shape, seed: 0 },
                 clock: free,
             },
         ));
         sources.push((
             SourceKey(2 * k + 1),
             Source::Lfo {
-                wave: Wave::Shape { shape, seed: 0 },
+                wave: Waveform::Shape { shape, seed: 0 },
                 clock: synced,
             },
         ));
@@ -980,7 +980,7 @@ fn a_value_that_is_not_finite_is_refused() {
         let constant = [(
             SourceKey(1),
             Source::Lfo {
-                wave: Wave::Const(v),
+                wave: Waveform::Const(v),
                 clock: beats(1.0),
             },
         )];

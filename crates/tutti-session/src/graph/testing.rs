@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use tutti_graph::{Compensation, Editor, Executor, NodeKey, Prepare, Transport};
+use tutti_graph::{Compensation, Editor, Executor, NodeKey, Prepare, TransportPosition};
 
 use super::{Graph, render};
 
@@ -117,7 +117,7 @@ impl Testing<'_> {
 /// Taken with [`Graph::take_audio_side`] or [`Testing::fork_live`].
 pub struct AudioSide {
     exec: Executor,
-    transport: Transport,
+    transport: TransportPosition,
     scratch: Vec<Vec<f32>>,
     /// A fork's own editor, kept for as long as its executor runs: the
     /// executor sends its boxes back to it. `None` for the live graph's
@@ -139,7 +139,7 @@ impl AudioSide {
     pub(super) fn live(exec: Executor) -> Self {
         Self {
             exec,
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             scratch: Vec::new(),
             _editor: None,
         }
@@ -149,7 +149,7 @@ impl AudioSide {
     pub(super) fn forked(editor: Editor, exec: Executor) -> Self {
         Self {
             exec,
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             scratch: Vec::new(),
             _editor: Some(editor),
         }
@@ -171,7 +171,7 @@ impl AudioSide {
     /// engine hands its graph the playhead: a node that reads the transport
     /// from its `Env` (a placed sampler voice) plays on it. Stopped at beat
     /// zero until set.
-    pub fn set_transport(&mut self, transport: Transport) {
+    pub fn set_transport(&mut self, transport: TransportPosition) {
         self.transport = transport;
     }
 

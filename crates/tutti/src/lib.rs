@@ -43,6 +43,13 @@ pub use tutti_engine as engine;
 /// machine, timed commands, the offline timeline.
 pub use tutti_transport as transport;
 
+/// The project's tempo (`tutti-tempo`): `TempoMap`, the points and builder it is
+/// made from, and the `TempoView` a reader walks it with. What
+/// `Session::set_tempo_map` takes.
+pub mod tempo {
+    pub use tutti_tempo::{TempoMap, TempoMapBuilder, TempoPoint, TempoView, Transition};
+}
+
 /// Load metering (`tutti-metering`): `LoadMeter`. Level meters are the
 /// graph's (`MeterReader`, `Editor::open_meter`).
 pub use tutti_metering as metering;
@@ -248,6 +255,7 @@ pub mod prelude {
     pub use tutti_metering::{LoadMeter, LoadReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
+    pub use tutti_tempo::TempoMap;
     pub use tutti_transport::{
         FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, OfflineTimeline,
         OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,
@@ -257,7 +265,7 @@ pub mod prelude {
     // `Tail` the types prelude carries: the bounce's policies are
     // `BounceLatency` and `BounceTail`.
     pub use tutti_types::Latency;
-    pub use tutti_types::{At, BarNumber, LoopRange, Meter};
+    pub use tutti_types::{At, BarNumber, LoopRange, LoopRangeError, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     // The device handle and a device's identity.
@@ -292,8 +300,8 @@ pub mod prelude {
     #[cfg(feature = "session")]
     pub use tutti_session::{
         ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Job,
-        JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder,
-        SessionEvent, TypedParamRef, Workers,
+        JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, ScheduleError, Session,
+        SessionBuilder, SessionEvent, TypedParamRef, Workers,
     };
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::{Device, DeviceEvent, DeviceRestart, LiveSession, RestartOutcome};

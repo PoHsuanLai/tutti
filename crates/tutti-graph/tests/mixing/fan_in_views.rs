@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use common::{Kind, TestNode, prepare};
 use tutti_graph::{
     Edge, Feed, FeedbackFrom, InPort, InputDelay, Node, NodeKey, NodeSpec, OutPort, OutputDelay,
-    Reference, Source, Topology, Transport, delays, graph_tail, latency_plan,
+    Reference, Source, Topology, TransportPosition, delays, graph_tail, latency_plan,
 };
 use tutti_types::{ChannelLayout, Samples, Tail};
 
@@ -240,7 +240,12 @@ fn render(t: Topology, kinds: BTreeMap<NodeKey, Kind>, input: &[f32], blocks: us
         } else {
             vec![&input[b * BLOCK..(b + 1) * BLOCK]]
         };
-        reference.process(BLOCK, &Transport::default(), &ins, &mut [&mut block[..]]);
+        reference.process(
+            BLOCK,
+            &TransportPosition::default(),
+            &ins,
+            &mut [&mut block[..]],
+        );
         all.extend(block);
     }
     all

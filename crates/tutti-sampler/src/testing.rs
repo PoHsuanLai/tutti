@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use tutti_graph::{Env, Node, Transport, TransportChanges, contract};
+use tutti_graph::{Env, Node, TransportChanges, TransportPosition, contract};
 use tutti_types::{Beat, Bpm, Frame, SampleRate, Samples};
 
 use crate::Loop;
@@ -109,8 +109,8 @@ impl MockTransport {
     }
 
     /// The transport as a block's `Env` carries it: here, now.
-    pub fn transport(&self) -> Transport {
-        Transport::new(self.is_rolling(), self.tempo(), self.beat(), None)
+    pub fn transport(&self) -> TransportPosition {
+        TransportPosition::new(self.is_rolling(), self.tempo(), self.beat(), None)
     }
 
     /// A block of `frames` at `rate` starting where the playhead stands.

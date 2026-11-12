@@ -129,7 +129,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     probe_switch::<u32>(b"tutti_vst2_probe_set_automate_burst\0", 1);
     let mut out = [0.0f32; 2];
     s.render_frame_at(
-        &tutti_graph::Transport::new(
+        &tutti_graph::TransportPosition::new(
             false,
             tutti_types::Bpm::of(120.0),
             tutti_types::Beat(0.0),

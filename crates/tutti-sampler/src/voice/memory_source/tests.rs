@@ -484,7 +484,7 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     changes
         .push(
             Offset::new(40, Samples(64)).unwrap(),
-            tutti_graph::Transport::new(false, Bpm::of(120.0), stop_beat, None),
+            tutti_graph::TransportPosition::new(false, Bpm::of(120.0), stop_beat, None),
         )
         .unwrap();
     env.changes = changes;

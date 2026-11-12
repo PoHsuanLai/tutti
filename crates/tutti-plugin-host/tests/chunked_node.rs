@@ -20,7 +20,7 @@ use tutti_fixtures::main_thread;
 use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{
-    Env, Event, Harmony, Node, Offset, ParamRamp, PlayClock, Transport, TransportChanges,
+    Env, Event, Harmony, Node, Offset, ParamRamp, PlayClock, TransportChanges, TransportPosition,
 };
 use tutti_plugin_host::{InProcClient, NodeControls, PluginNode, load_client};
 use tutti_plugin_types::{
@@ -30,7 +30,7 @@ use tutti_plugin_types::{
     PluginError, PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused, RestartRules,
     Samples, Speaker, Stuck, WindowHandle,
 };
-use tutti_tempo::{Shape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
 use tutti_types::{Beat, Bpm, Frame, SampleRate};
 use tutti_ump::{MidiChannel, MidiGroup};
@@ -355,13 +355,13 @@ fn tempo(to_90: Option<f64>) -> TempoReader {
     let mut points = vec![TempoPoint {
         beat: Beat(0.0),
         tempo: Bpm::of(120.0),
-        shape: Shape::Step,
+        transition: Transition::Step,
     }];
     if let Some(beat) = to_90 {
         points.push(TempoPoint {
             beat: Beat(beat),
             tempo: Bpm::of(90.0),
-            shape: Shape::Step,
+            transition: Transition::Step,
         });
     }
     TempoReader::fixed(Arc::new(TempoMap::new(points).expect("a map")))
@@ -408,7 +408,7 @@ fn run_block_with(
         frame: Frame(frame),
         sample_rate: SR,
         block_len: Samples(len),
-        transport: Transport::new(playing, bpm, beat, None),
+        transport: TransportPosition::new(playing, bpm, beat, None),
         changes: TransportChanges::NONE,
         play: PlayClock::ZERO,
     };
@@ -708,7 +708,7 @@ fn a_chunked_processors_lost_midi_reaches_the_graphs_event_losses() {
     exec.apply_pending();
     editor.collect();
 
-    exec.process(100, &Transport::default(), &[], &mut []);
+    exec.process(100, &TransportPosition::default(), &[], &mut []);
     // One chunk completed in the block (64 of its 100 frames).
     assert_eq!(rig.frames(), [64, 36]);
     let lost: u32 = editor
@@ -765,12 +765,12 @@ fn a_tempo_ramp_across_a_block_boundary_gives_the_chunks_slope() {
             TempoPoint {
                 beat: Beat(0.0),
                 tempo: Bpm::of(120.0),
-                shape: Shape::RampTime,
+                transition: Transition::RampTime,
             },
             TempoPoint {
                 beat: Beat(100.0),
                 tempo: Bpm::of(90.0),
-                shape: Shape::Step,
+                transition: Transition::Step,
             },
         ])
         .expect("a map"),
@@ -832,13 +832,13 @@ fn transport_changes_past_the_bound_are_dropped_and_counted() {
     let mut points = vec![TempoPoint {
         beat: Beat(0.0),
         tempo: Bpm::of(120.0),
-        shape: Shape::Step,
+        transition: Transition::Step,
     }];
     for i in 0..12u32 {
         points.push(TempoPoint {
             beat: Beat(4.0 + (4.5 + 4.0 * f64::from(i)) * BEATS_PER_FRAME),
             tempo: Bpm::of(100.0 - f64::from(i)),
-            shape: Shape::Step,
+            transition: Transition::Step,
         });
     }
     let map = TempoReader::fixed(Arc::new(TempoMap::new(points).expect("a map")));

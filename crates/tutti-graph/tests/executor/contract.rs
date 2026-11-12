@@ -405,8 +405,8 @@ impl Node for BeatEcho {
 }
 
 /// A rolling transport at beat 2, 120 BPM at 48 kHz: 24 000 frames a beat.
-fn rolling_at_two() -> tutti_graph::Transport {
-    tutti_graph::Transport::new(
+fn rolling_at_two() -> tutti_graph::TransportPosition {
+    tutti_graph::TransportPosition::new(
         true,
         tutti_types::Bpm::of(120.0),
         tutti_types::Beat(2.0),
@@ -432,7 +432,7 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
     changes
         .push(
             Offset::new(2, Samples(4)).unwrap(),
-            tutti_graph::Transport::new(true, Bpm::of(120.0), Beat(10.0), None),
+            tutti_graph::TransportPosition::new(true, Bpm::of(120.0), Beat(10.0), None),
         )
         .unwrap();
     let env = Env {

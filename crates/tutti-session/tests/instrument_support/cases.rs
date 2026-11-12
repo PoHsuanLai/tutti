@@ -471,7 +471,7 @@ pub fn a_fork_starts_silent_and_plays<S: Subject>() {
     let mut peak = 0.0f32;
     for i in 0..80u32 {
         let beat = f64::from(i) * BLOCK as f64 / 24_000.0;
-        fork.set_transport(tutti_graph::Transport::new(
+        fork.set_transport(tutti_graph::TransportPosition::new(
             true,
             tutti_types::Bpm::of(120.0),
             tutti_types::Beat(beat),

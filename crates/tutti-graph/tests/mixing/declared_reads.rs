@@ -14,7 +14,7 @@ use common::prepare;
 use tutti_graph::{
     Cx, Editor, Event, EventOut, Executor, IntoNode, Io, Law, Node, NodeKey, NodeParts, OutPort,
     ParamIn, ParamInput, ParamNode, ParamSegment, ParamSet, Prepare, Shape, Source, Status,
-    Transport, declare_params, param_parts,
+    TransportPosition, declare_params, param_parts,
 };
 use tutti_types::{Amplitude, ChannelLayout, Db, Hz, Param, Q, Samples, UnitAddr, UnitParam};
 
@@ -147,7 +147,7 @@ fn render(to: &[(UnitAddr, f32)]) -> [Vec<f32>; 4] {
     let mut outs = [(); 4].map(|()| vec![0.0; 64]);
     {
         let mut refs: Vec<&mut [f32]> = outs.iter_mut().map(|o| &mut o[..]).collect();
-        exec.process(64, &Transport::default(), &[], &mut refs);
+        exec.process(64, &TransportPosition::default(), &[], &mut refs);
     }
     ed.collect();
     outs

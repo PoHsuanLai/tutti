@@ -96,7 +96,8 @@ use crate::fork::Unforkable;
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::node::{
-    Cx, Env, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
+    Cx, Env, IntoNode, Node, Prepare, Resolution, Shape, Status, TransportChanges,
+    TransportPosition,
 };
 use crate::param::{ParamIn, ParamInput};
 use crate::spec::{EventIn, EventOut};
@@ -1221,10 +1222,10 @@ fn block_of(blocks: &[usize], frame: u64) -> (u64, u64) {
 /// The transport for the block `[bs, bs + n)`: stopped until `start` (when
 /// there is one), then rolling from beat 0 at 120 BPM — a timed start, as a
 /// change inside its block when it falls inside one.
-fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, TransportChanges) {
-    let stopped = Transport::default();
+fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (TransportPosition, TransportChanges) {
+    let stopped = TransportPosition::default();
     let rolling = |at: u64| {
-        Transport::new(
+        TransportPosition::new(
             true,
             Bpm::of(120.0),
             Beat((at - start.unwrap_or(0)) as f64 / FRAMES_PER_BEAT as f64),
@@ -1752,7 +1753,7 @@ pub fn drive(
         frame: Frame(0),
         sample_rate: rate,
         block_len: Samples(frames),
-        transport: Transport::default(),
+        transport: TransportPosition::default(),
         changes: TransportChanges::NONE,
         play: crate::PlayClock::ZERO,
     };
@@ -1893,7 +1894,7 @@ pub fn assert_honest_tail(node: &mut dyn Node, rate: SampleRate) {
         frame: Frame(frame),
         sample_rate: rate,
         block_len: Samples(BLOCK),
-        transport: Transport::default(),
+        transport: TransportPosition::default(),
         changes: TransportChanges::NONE,
         play: crate::PlayClock::ZERO,
     };
@@ -2096,12 +2097,12 @@ impl BlockRig {
 
     /// One block, transport stopped. Allocation-free.
     pub fn block(&mut self) {
-        self.block_in(&Transport::default());
+        self.block_in(&TransportPosition::default());
     }
 
     /// One block under `transport` (a rolling one, for a node that reads
     /// the transport from its `Env`). Allocation-free.
-    pub fn block_in(&mut self, transport: &Transport) {
+    pub fn block_in(&mut self, transport: &TransportPosition) {
         let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
         for (slot, c) in ins.iter_mut().zip(&self.inputs) {
             *slot = c;
@@ -2129,7 +2130,7 @@ pub struct Direct<N: ?Sized> {
     frames: usize,
     len: usize,
     frame: Frame,
-    transport: Transport,
+    transport: TransportPosition,
     inputs: Vec<Vec<f32>>,
     params: Vec<Option<Vec<f32>>>,
     outputs: Vec<Vec<f32>>,
@@ -2203,7 +2204,7 @@ impl<N: Node + ?Sized> Direct<N> {
             frames,
             len: frames,
             frame: Frame(0),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             inputs: vec![vec![0.0; frames]; ins],
             outputs: vec![vec![0.0; frames]; outs],
             lost: 0,
@@ -2253,7 +2254,7 @@ impl<N: Node + ?Sized> Direct<N> {
     /// The transport of every block from the next one on: its position is
     /// the next block's first frame's (a rolling transport is **not**
     /// advanced from block to block; set it again to move it).
-    pub fn set_transport(&mut self, transport: Transport) {
+    pub fn set_transport(&mut self, transport: TransportPosition) {
         self.transport = transport;
     }
 

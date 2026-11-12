@@ -14,7 +14,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, EventEdge, EventIn, EventOut, Executor, Io, Node, Prepare, Schedule, Shape,
-    Status, Transport, Unforkable,
+    Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
@@ -143,7 +143,7 @@ fn render(exec: &mut Executor) -> Vec<Vec<f32>> {
         {
             let mut outs: Vec<&mut [f32]> = chunk.iter_mut().map(Vec::as_mut_slice).collect();
             let beat = frame as f64 * BPM / 60.0 / SR;
-            let t = Transport::new(true, Bpm::of(BPM), Beat(beat), None);
+            let t = TransportPosition::new(true, Bpm::of(BPM), Beat(beat), None);
             exec.process(n, &t, &[], &mut outs);
         }
         for (a, c) in all.iter_mut().zip(chunk) {

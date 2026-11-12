@@ -37,7 +37,7 @@ use tutti_codec::Wave;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, NodeKey, OutPort, Prepare, Source};
 use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool};
-use tutti_tempo::{Shape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::{Beat, BeatDuration, Bpm, ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -50,12 +50,12 @@ const SCALE: f32 = 131_072.0;
 const E: f64 = 0.08;
 const BLOCKS: [usize; 6] = [1, 64, 100, 512, 1_000, 4_096];
 
-fn map(points: &[(f64, f64, Shape)]) -> Arc<TempoMap> {
+fn map(points: &[(f64, f64, Transition)]) -> Arc<TempoMap> {
     Arc::new(
         TempoMap::new(points.iter().map(|&(beat, bpm, shape)| TempoPoint {
             beat: Beat(beat),
             tempo: Bpm::of(bpm),
-            shape,
+            transition: shape,
         }))
         .expect("a map"),
     )
@@ -65,9 +65,9 @@ fn map(points: &[(f64, f64, Shape)]) -> Arc<TempoMap> {
 /// 431 of the grid, so the step is not on a cell edge), then 180 from 4.
 fn steps() -> Arc<TempoMap> {
     map(&[
-        (0.0, 120.0, Shape::Step),
-        (2.3, 60.0, Shape::Step),
-        (4.0, 180.0, Shape::Step),
+        (0.0, 120.0, Transition::Step),
+        (2.3, 60.0, Transition::Step),
+        (4.0, 180.0, Transition::Step),
     ])
 }
 
@@ -79,7 +79,10 @@ fn step_seconds(b: f64) -> f64 {
 
 /// 60 to 240 BPM over 8 beats, linear in time, then 240.
 fn ramp() -> Arc<TempoMap> {
-    map(&[(0.0, 60.0, Shape::RampTime), (8.0, 240.0, Shape::Step)])
+    map(&[
+        (0.0, 60.0, Transition::RampTime),
+        (8.0, 240.0, Transition::Step),
+    ])
 }
 
 /// The seconds of beat `b` of `ramp()`: `r0` = 1, `r1` = 4 beats/s, `D` = 8.
@@ -255,7 +258,7 @@ fn a_ramp_puts_a_clips_frames_within_the_grid_bound_of_the_maps() {
 /// pins the figure through a bound reader.
 #[test]
 fn a_constant_map_keeps_the_clip_where_it_was() {
-    let m = map(&[(0.0, 120.0, Shape::Step)]);
+    let m = map(&[(0.0, 120.0, Transition::Step)]);
     let frames = 48_000;
     for block in BLOCKS {
         let out = render(&m, Some((1.0, None)), frames, block);

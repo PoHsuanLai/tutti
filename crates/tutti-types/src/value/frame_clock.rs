@@ -32,23 +32,91 @@ use super::samples::Samples;
 use super::timeline::TimelineSegment;
 use super::units::{Beat, BeatDuration, Bpm, SampleRate};
 
-/// A loop region on the timeline: `start..end`, guaranteed non-empty and
-/// correctly ordered.
+/// A loop region on the timeline: `start..end`, guaranteed finite, non-empty
+/// and correctly ordered.
 ///
-/// The check lives in the constructor, so `None` means "not a usable loop"
-/// rather than "a loop you must validate". A consumer holding one of these
-/// needs no `end > start` guard of its own, and `wrap` relies on exactly that.
+/// The check lives in the constructor ([`TryFrom<Range<Beat>>`], which names
+/// the reason a region is refused as a [`LoopRangeError`]; [`new`](Self::new)
+/// is the same check as an `Option`), so a consumer holding one of these needs
+/// no `end > start` guard of its own, and `wrap` relies on exactly that.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopRange {
     start: Beat,
     end: Beat,
 }
 
+/// Why a [`LoopRange`] was refused. A beat is the raw the region was given.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LoopRangeError {
+    /// A bound is NaN or infinite.
+    NotFinite {
+        /// The start given.
+        start: Beat,
+        /// The end given.
+        end: Beat,
+    },
+    /// The end is the start: a loop of no length.
+    Empty {
+        /// The beat both bounds are at.
+        at: Beat,
+    },
+    /// The end is before the start.
+    Reversed {
+        /// The start given.
+        start: Beat,
+        /// The end given.
+        end: Beat,
+    },
+}
+
+impl std::fmt::Display for LoopRangeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFinite { start, end } => write!(
+                f,
+                "a loop's bounds must be finite beats, not {}..{}",
+                start.get(),
+                end.get()
+            ),
+            Self::Empty { at } => write!(
+                f,
+                "a loop cannot be empty (both bounds at beat {})",
+                at.get()
+            ),
+            Self::Reversed { start, end } => write!(
+                f,
+                "a loop's end ({}) must come after its start ({})",
+                end.get(),
+                start.get()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LoopRangeError {}
+
+impl TryFrom<std::ops::Range<Beat>> for LoopRange {
+    type Error = LoopRangeError;
+
+    fn try_from(range: std::ops::Range<Beat>) -> Result<Self, LoopRangeError> {
+        let (start, end) = (range.start, range.end);
+        if !(start.get().is_finite() && end.get().is_finite()) {
+            Err(LoopRangeError::NotFinite { start, end })
+        } else if end == start {
+            Err(LoopRangeError::Empty { at: start })
+        } else if end < start {
+            Err(LoopRangeError::Reversed { start, end })
+        } else {
+            Ok(Self { start, end })
+        }
+    }
+}
+
 impl LoopRange {
-    /// Creates a region, or returns `None` if it is empty or inverted.
+    /// Creates a region, or returns `None` if it is not finite, empty or
+    /// inverted. [`TryFrom<Range<Beat>>`] is the same check with the reason.
     pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Option<Self> {
-        let (start, end) = (start.into(), end.into());
-        (end > start).then_some(Self { start, end })
+        Self::try_from(start.into()..end.into()).ok()
     }
 
     /// Returns the first beat of the region, inclusive.
@@ -428,6 +496,50 @@ mod tests {
     use super::*;
 
     const SR: SampleRate = SampleRate(48_000.0);
+
+    /// A region is refused with the reason it is wrong: an end before the
+    /// start is `Reversed`, equal bounds `Empty`, a NaN or infinite bound
+    /// `NotFinite`; an ordered finite pair is the region, and `new` agrees with
+    /// `try_from` on every case.
+    #[test]
+    fn loop_range_try_from_names_the_reason() {
+        let (a, b) = (Beat(2.0), Beat(6.0));
+        assert_eq!(
+            LoopRange::try_from(b..a),
+            Err(LoopRangeError::Reversed { start: b, end: a })
+        );
+        assert_eq!(
+            LoopRange::try_from(a..a),
+            Err(LoopRangeError::Empty { at: a })
+        );
+        for (start, end) in [
+            (Beat(f64::NAN), b),
+            (a, Beat(f64::NAN)),
+            (a, Beat(f64::INFINITY)),
+            (Beat(f64::NEG_INFINITY), b),
+        ] {
+            assert!(
+                matches!(
+                    LoopRange::try_from(start..end),
+                    Err(LoopRangeError::NotFinite { .. })
+                ),
+                "{start:?}..{end:?}"
+            );
+        }
+        let ok = LoopRange::try_from(a..b).unwrap();
+        assert_eq!((ok.start(), ok.end()), (a, b));
+        for (start, end) in [(b, a), (a, a), (a, Beat(f64::NAN)), (a, b)] {
+            assert_eq!(
+                LoopRange::new(start, end),
+                LoopRange::try_from(start..end).ok()
+            );
+        }
+        assert!(
+            LoopRangeError::Reversed { start: b, end: a }
+                .to_string()
+                .contains("after its start")
+        );
+    }
 
     /// Only a move that crosses the end wraps; a playhead already at or past
     /// the end runs on, and one from before the start wraps at the end.

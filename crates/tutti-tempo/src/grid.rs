@@ -1,4 +1,3 @@
-use crate::{Cursor, Shape, TempoMap};
 use std::fmt;
 use tutti_types::{Beat, Bpm, Frame, SampleRate};
 
@@ -102,69 +101,5 @@ impl Cell {
     pub fn beat_at(&self, frame: Frame, rate: SampleRate) -> Beat {
         let n = frame.get() as f64 - self.start.get() as f64;
         Beat(self.beat.get() + n * self.tempo.get() / (60.0 * rate.get()))
-    }
-}
-
-/// The cell holding `frame`.
-///
-/// Cell boundaries are the multiples of `grid` and the frames where the map's
-/// points start ([`TempoMap::next_change`]); a cell never crosses either. After
-/// a point the cells go back to the same absolute multiples: a cell that starts
-/// on a point ends on the next multiple, not `grid` frames on.
-///
-/// A pure function of `(map, frame, grid, rate)`: where a caller's blocks begin
-/// and end cannot change it, so the same map gives identical cells at identical
-/// absolute frames at any buffer size. A render that has to stop sooner (a
-/// transport command) stops inside the cell and carries on with the same cell.
-///
-/// A cell starts on the map's beat. A ramp cell ends on the map's beat too, so
-/// the chord is the map's average tempo over the cell (a ramp segment shorter
-/// than a frame gives a tempo between its ends' and the next segment's). A step
-/// cell keeps its step's tempo to the bit, so one that ends where the next
-/// segment starts ends on its own line, which is less than one frame's beat
-/// from the map's beat at that frame, measured at the larger of the two tempos;
-/// the next cell starts on the map's.
-///
-/// Inside a ramp the chord differs from the curve by a fraction of a frame that
-/// shrinks with the square of `grid` (about 0.04 frames for 60 to 240 BPM over
-/// 8 beats at 128).
-#[must_use]
-pub fn chord_cell(map: &TempoMap, frame: Frame, grid: CellGrid, rate: SampleRate) -> Cell {
-    chord_cell_with(map, frame, grid, rate, &mut Cursor::default())
-}
-
-/// [`chord_cell`] with a hint.
-#[must_use]
-pub fn chord_cell_with(
-    map: &TempoMap,
-    frame: Frame,
-    grid: CellGrid,
-    rate: SampleRate,
-    hint: &mut Cursor,
-) -> Cell {
-    let (seg, cut, next_cut) = map.by_frame(frame, rate, hint);
-    let on_grid = frame.get() / grid.get() * grid.get();
-    let start = on_grid.max(cut);
-    let end = on_grid
-        .saturating_add(grid.get())
-        .min(next_cut.unwrap_or(u64::MAX));
-    let beat_on = |f: u64, hint: &mut Cursor| map.beat_at_frame_with(Frame(f), rate, hint);
-    let b0 = beat_on(start, hint).get();
-    let tempo = match seg.shape {
-        Shape::Step => seg.bpm0,
-        // The map's beat at both ends, not this segment's closed form: a
-        // segment shorter than a frame ends inside its last cell, and its
-        // form past that point is not the map's.
-        Shape::RampTime | Shape::RampBeats => {
-            let chord =
-                (beat_on(end, hint).get() - b0) * 60.0 * rate.get() / (end - start).max(1) as f64;
-            Bpm::new(chord).unwrap_or(seg.bpm0)
-        }
-    };
-    Cell {
-        start: Frame(start),
-        end: Frame(end),
-        beat: Beat(b0),
-        tempo,
     }
 }

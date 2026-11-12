@@ -41,7 +41,7 @@ pub enum Polarity {
 /// [`LfoShape::evaluate_periodic`]. The last two are *stepped* — their value
 /// depends on the cycle index, so a caller must branch on
 /// [`LfoShape::is_random`] first, or evaluate any shape at an unwrapped
-/// position through [`Wave::raw_at`](crate::Wave::raw_at).
+/// position through [`Waveform::raw_at`](crate::Waveform::raw_at).
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LfoShape {
@@ -60,10 +60,10 @@ pub enum LfoShape {
     SawtoothDown,
     /// Stepped noise: one value per cycle, held across it, a hash of the cycle
     /// index and a seed, so it needs the unwrapped position, not just the
-    /// phase ([`is_random`](Self::is_random) is true; [`Wave::raw_at`]
+    /// phase ([`is_random`](Self::is_random) is true; [`Waveform::raw_at`]
     /// evaluates it).
     ///
-    /// [`Wave::raw_at`]: crate::Wave::raw_at
+    /// [`Waveform::raw_at`]: crate::Waveform::raw_at
     Random,
     /// [`Random`](Self::Random)'s steps, linearly interpolated across the cycle
     /// instead of held: from the previous cycle's step to this one's.
@@ -74,7 +74,7 @@ impl LfoShape {
     /// True for shapes whose output depends on the cycle index (and a seed),
     /// not just the phase. Callers must branch on this before
     /// [`LfoShape::evaluate_periodic`], or evaluate through
-    /// [`Wave::raw_at`](crate::Wave::raw_at), which takes every shape.
+    /// [`Waveform::raw_at`](crate::Waveform::raw_at), which takes every shape.
     #[inline]
     #[must_use]
     pub fn is_random(&self) -> bool {

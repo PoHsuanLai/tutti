@@ -127,7 +127,7 @@ whole reason these algorithms need no engine vocabulary.
 ```rust
 use tutti_types::MaxBlock;
 use tutti_measure::correlate;
-use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, TransportPosition, Unforkable};
 use tutti_graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, StereoPlanes};
 use tutti_graph::NodeKey;
@@ -160,7 +160,7 @@ editor.collect();
 
 // The audio-callback side: a block of 2 frames.
 let (mut l, mut r) = ([0.0f32; 2], [0.0f32; 2]);
-let transport = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+let transport = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
 executor.process(2, &transport, &[], &mut [&mut l[..], &mut r[..]]);
 
 // The analysis side: two interleaved frames, deinterleaved.

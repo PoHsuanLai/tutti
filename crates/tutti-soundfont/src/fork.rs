@@ -78,7 +78,8 @@ mod tests {
     use tutti_fixtures::midi;
     use tutti_graph::contract::drive_input;
     use tutti_graph::{
-        Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, Transport, TransportChanges,
+        Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, TransportChanges,
+        TransportPosition,
     };
     use tutti_types::{SampleRate, Samples};
     use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7};
@@ -125,7 +126,7 @@ mod tests {
                 frame: tutti_types::Frame(frame),
                 sample_rate: rate,
                 block_len: Samples(64),
-                transport: Transport::default(),
+                transport: TransportPosition::default(),
                 changes: TransportChanges::NONE,
                 play: tutti_graph::PlayClock::ZERO,
             };
@@ -209,7 +210,7 @@ mod tests {
                 frame: tutti_types::Frame(frame),
                 sample_rate: rate,
                 block_len: Samples(64),
-                transport: Transport::default(),
+                transport: TransportPosition::default(),
                 changes: TransportChanges::NONE,
                 play: tutti_graph::PlayClock::ZERO,
             };

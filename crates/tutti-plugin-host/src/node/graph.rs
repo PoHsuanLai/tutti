@@ -125,7 +125,6 @@ where
         let Self {
             client: this,
             tempo,
-            cursor,
         } = self;
         let size = io.frames();
         // The MIDI a reset or a re-prepare dropped with the chunk in flight.
@@ -165,6 +164,7 @@ where
         let sends = features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
         // One lend of the project's tempo map for the block, ended with it.
         let map = tempo.lend();
+        let mut view = map.view(cx.env.sample_rate);
         let mut lost = 0u64;
 
         if let Some(chunk) = chunk {
@@ -246,7 +246,7 @@ where
                         // `at < size` here: the piece has frames.
                         let offset = Offset::new(at, Samples(size)).expect("inside the block");
                         let mut s = Snapshot::at(cx, offset, steady.at(at), project, block_ns);
-                        let settled = s.settle(&map, cursor);
+                        let settled = s.settle(&mut view);
                         this.walk.begin(&s, settled);
                         this.chunk_info = transport_info(&s, meter);
                     }
@@ -256,11 +256,10 @@ where
                         steady,
                         block_ns,
                         meter,
-                        tempo: &map,
                     };
                     let over = this.walk.scan(
                         &call,
-                        cursor,
+                        &mut view,
                         project,
                         &mut this.chunk_info,
                         &mut this.changes,
@@ -269,14 +268,8 @@ where
                         phase,
                     );
                     if completes {
-                        this.walk.finish(
-                            &map,
-                            cursor,
-                            cx.env.sample_rate,
-                            chunk,
-                            &mut this.chunk_info,
-                            &mut this.changes,
-                        );
+                        this.walk
+                            .finish(&mut view, chunk, &mut this.chunk_info, &mut this.changes);
                     }
                     this.params.count_transport_dropped(over);
                 } else if phase == 0 {
@@ -411,7 +404,7 @@ where
         io.count_lost(midi_dropped);
         // Built before the plugin is entered: `drive_f32` publishes it to the
         // cell `audioMasterGetTime` reads, then calls `process`.
-        let transport = this.transport.block(cx, size, features, &map, cursor);
+        let transport = this.transport.block(cx, size, features, &mut view);
         // The graph's buffers go to the plugin as they are: the Processor
         // reads them through the channel tables below. Scoped so the tables
         // release `io` before the event output is taken.

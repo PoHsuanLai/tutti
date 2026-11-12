@@ -203,11 +203,11 @@ impl PlayReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::{Transport, TransportChanges};
+    use crate::node::{TransportChanges, TransportPosition};
     use tutti_types::{Beat, Bpm, SampleRate};
 
-    fn t(playing: bool) -> Transport {
-        Transport::new(playing, Bpm::of(120.0), Beat(0.0), None)
+    fn t(playing: bool) -> TransportPosition {
+        TransportPosition::new(playing, Bpm::of(120.0), Beat(0.0), None)
     }
 
     fn env(first: bool, changes: &[(usize, bool)], play: PlayClock) -> Env {

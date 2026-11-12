@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use tutti_graph::{Env, Transport, TransportChanges};
+    use tutti_graph::{Env, TransportChanges, TransportPosition};
     use tutti_types::Beat;
     use tutti_types::Frame;
     use tutti_types::{Bpm, FrameClock, SampleRate, Samples};
@@ -17,7 +17,7 @@ mod tests {
             frame: Frame(0),
             sample_rate: SR,
             block_len: Samples(len),
-            transport: Transport::counted(true, host.tempo(), host.origin(), looping),
+            transport: TransportPosition::counted(true, host.tempo(), host.origin(), looping),
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };

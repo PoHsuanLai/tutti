@@ -88,7 +88,12 @@ pub trait RenderClock: Send + Sync {
     /// while every `Env` reader held beat zero, a
     /// desync that renders without an error. A clock that moves must say where
     /// it is.
-    fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges);
+    fn graph_block(
+        &self,
+    ) -> (
+        tutti_graph::TransportPosition,
+        tutti_graph::TransportChanges,
+    );
 
     /// Renders `frames` through `exec` under this clock, then advance the
     /// clock by it: [`graph_block`](Self::graph_block),
@@ -129,9 +134,14 @@ impl RenderClock for FrozenClock {
     fn advance(&self, _frames: tutti_types::Samples) {}
 
     /// Stopped at beat zero, every block: "this graph has no transport".
-    fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+    fn graph_block(
+        &self,
+    ) -> (
+        tutti_graph::TransportPosition,
+        tutti_graph::TransportChanges,
+    ) {
         (
-            tutti_graph::Transport::default(),
+            tutti_graph::TransportPosition::default(),
             tutti_graph::TransportChanges::NONE,
         )
     }

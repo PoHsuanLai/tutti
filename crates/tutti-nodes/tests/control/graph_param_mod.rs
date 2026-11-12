@@ -28,7 +28,7 @@ use tutti_graph::{
     Editor, EventOut, GraphBuilder, IntoNode, NodeMix, NodeParts, PARAM_DECLICK, ParamIn,
     ParamNode, ParamRange, Prepare, Renderer,
 };
-use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
+use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Waveform};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayLineNode,
@@ -63,7 +63,7 @@ fn konst(depth: f32) -> Layer {
             per_cycle: BeatDuration(1.0),
             phase: PhaseIncrement(0.0),
         },
-        wave: Wave::Const(1.0),
+        wave: Waveform::Const(1.0),
         amount: Amount {
             depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
@@ -923,7 +923,7 @@ fn plain_distortion(d: f32) -> Vec<f32> {
 /// lose (doc 014 §4.2: one writer per knob).
 ///
 /// Changed in doc 014 §12.6: the offset was an audio source added to the
-/// node's base by the port; it is now the lane's constant layer (`Wave::Const`,
+/// node's base by the port; it is now the lane's constant layer (`Waveform::Const`,
 /// a twentieth of the port's 0..10 span), added to the knob by the lane.
 #[test]
 fn an_authored_write_moves_the_base_under_modulation() {

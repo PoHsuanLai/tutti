@@ -172,7 +172,7 @@ fn by_hand(start: Beat) -> Run {
             frame: Frame(left.len() as u64),
             sample_rate: SampleRate(SR),
             block_len: Samples(HAND),
-            transport: tutti_graph::Transport::counted(true, TEMPO, host.origin(), None),
+            transport: tutti_graph::TransportPosition::counted(true, TEMPO, host.origin(), None),
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };

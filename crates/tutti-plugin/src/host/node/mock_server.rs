@@ -18,7 +18,7 @@ use tutti_plugin_types::{
     ChannelLayout, EditorPresence, Features, LoadedPlugin, MaxBlock, ParamId, ParameterChanges,
     ParameterInfo, PluginBus, PluginClass, PluginDescriptor, PluginTail, Prepare, SampleFormat,
 };
-use tutti_tempo::{Shape, TempoMap, TempoPoint};
+use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
@@ -243,7 +243,7 @@ pub(super) fn tempo(beat: f64) -> TempoReader {
     let point = |beat: f64, bpm: f64| TempoPoint {
         beat: Beat(beat),
         tempo: Bpm::of(bpm),
-        shape: Shape::Step,
+        transition: Transition::Step,
     };
     TempoReader::fixed(Arc::new(
         TempoMap::new(vec![point(0.0, 120.0), point(beat, 90.0)]).expect("a map"),

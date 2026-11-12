@@ -73,7 +73,7 @@
 //! **It does not split blocks at a loop wrap.** The whole-block promise is
 //! what keeps an out-of-process plugin's declared latency constant, so a
 //! transport that loops inside a block is reported through
-//! [`Transport::looping`](crate::Transport) and a node that cares computes
+//! [`TransportPosition::looping`](crate::TransportPosition) and a node that cares computes
 //! the wrap position itself.
 //!
 //! # The silence skip
@@ -211,8 +211,8 @@ use crate::loss::{Dropped, EventLoss};
 use crate::meter::{MeterWriter, meter_op};
 use crate::mode::{BypassLine, ModeState};
 use crate::node::{
-    ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, Node, Prepare, SilenceMask, Status, Transport,
-    TransportChanges,
+    ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, Node, Prepare, SilenceMask, Status,
+    TransportChanges, TransportPosition,
 };
 use crate::par::{Block, Par, Pool};
 use crate::param::{ParamInput, ParamState};
@@ -1991,7 +1991,7 @@ impl Executor {
     pub fn process(
         &mut self,
         frames: usize,
-        transport: &Transport,
+        transport: &TransportPosition,
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
@@ -2013,7 +2013,7 @@ impl Executor {
     pub fn process_with_changes(
         &mut self,
         frames: usize,
-        transport: &Transport,
+        transport: &TransportPosition,
         changes: &TransportChanges,
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
@@ -2049,7 +2049,7 @@ impl Executor {
     pub fn render_applied(
         &mut self,
         frames: usize,
-        transport: &Transport,
+        transport: &TransportPosition,
         changes: &TransportChanges,
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
@@ -3572,7 +3572,7 @@ mod tests {
             frame: exec.frame,
             sample_rate: prepare.sample_rate(),
             block_len: Samples(64),
-            transport: Transport::default(),
+            transport: TransportPosition::default(),
             changes: TransportChanges::NONE,
             play: crate::PlayClock::ZERO,
         };
@@ -3587,7 +3587,7 @@ mod tests {
         assert_eq!(ed.commands_outstanding(), 1, "it waits");
 
         // Then the commit lands, and the command with it.
-        exec.process(64, &Transport::default(), &[], &mut []);
+        exec.process(64, &TransportPosition::default(), &[], &mut []);
         assert_eq!(seen.load(Ordering::Relaxed), 1);
         assert_eq!(ed.commands_outstanding(), 0);
         assert_eq!(exec.unrouted_command_count(), 0);

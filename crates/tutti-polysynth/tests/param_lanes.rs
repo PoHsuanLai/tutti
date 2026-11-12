@@ -10,11 +10,11 @@ use tutti_types::MaxBlock;
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Editor, EventEdge, EventIn, EventOut, ParamIn, ParamRange, Prepare, Renderer, Transport,
+    Editor, EventEdge, EventIn, EventOut, ParamIn, ParamRange, Prepare, Renderer, TransportPosition,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polarity, Wave};
+use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polarity, Waveform};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig, UnisonVoices};
 use tutti_types::{
@@ -56,7 +56,7 @@ fn constant(depth: f32) -> ControlProgram {
             per_cycle: BeatDuration(1.0),
             phase: PhaseIncrement(0.0),
         },
-        wave: Wave::Const(1.0),
+        wave: Waveform::Const(1.0),
         amount: Amount {
             depth: Depth::of(depth),
             polarity: Polarity::Bipolar,
@@ -137,7 +137,7 @@ fn render_with_knob(synth: PolySynth, drive: Option<Drive>) -> ([Vec<f32>; 2], O
     }
     let mut r = Renderer::new(ed, exec);
     r.set_transport_fn(|f| {
-        Transport::new(true, Bpm::of(120.0), Beat(f.get() as f64 / 24_000.0), None)
+        TransportPosition::new(true, Bpm::of(120.0), Beat(f.get() as f64 / 24_000.0), None)
     });
     let mut out = r.render(FRAMES);
     let right = out.swap_remove(1);

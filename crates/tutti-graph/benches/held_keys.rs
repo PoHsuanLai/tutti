@@ -9,7 +9,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventOut, Executor, Io, Node, Offset, Prepare, Shape,
-    Status, Transport, Unforkable,
+    Status, TransportPosition, Unforkable,
 };
 use tutti_types::{SampleRate, Samples};
 
@@ -83,7 +83,7 @@ fn rig(k: u32, sinks: u64) -> Executor {
 
 fn bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("held_keys");
-    let transport = Transport::default();
+    let transport = TransportPosition::default();
     for (name, k, sinks) in [
         ("quiet_1_edge", 0u32, 1u64),
         ("quiet_16_edges", 0, 16),

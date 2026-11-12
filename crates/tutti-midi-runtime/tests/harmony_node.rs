@@ -12,7 +12,7 @@ use tutti_types::MaxBlock;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Harmony,
-    Io, LoopRange, Node, Prepare, Shape, Status, Transport,
+    Io, LoopRange, Node, Prepare, Shape, Status, TransportPosition,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{HarmonyControls, HarmonyNode, TimedHarmony};
@@ -84,12 +84,12 @@ fn at(frame: u64, h: Harmony) -> TimedHarmony {
     TimedHarmony::new(beat_of(frame), h)
 }
 
-fn rolling(frame: u64) -> Transport {
-    Transport::new(true, Bpm::of(120.0), beat_of(frame), None)
+fn rolling(frame: u64) -> TransportPosition {
+    TransportPosition::new(true, Bpm::of(120.0), beat_of(frame), None)
 }
 
 /// Render one block of `len` frames with the transport at `frame`.
-fn block(exec: &mut Executor, len: usize, t: Transport) {
+fn block(exec: &mut Executor, len: usize, t: TransportPosition) {
     let mut out = vec![0.0f32; len];
     exec.process(len, &t, &[], &mut [&mut out[..]]);
 }
@@ -156,7 +156,7 @@ fn a_seek_restates_the_context_and_a_stop_sends_nothing() {
     block(
         &mut exec,
         512,
-        Transport::new(false, Bpm::of(120.0), beat_of(512), None),
+        TransportPosition::new(false, Bpm::of(120.0), beat_of(512), None),
     );
     block(&mut exec, 512, rolling(31_000));
     let seen = seen.lock().unwrap();
@@ -177,7 +177,7 @@ fn a_loop_wrap_restates_the_context_at_the_wrap() {
     block(
         &mut exec,
         512,
-        Transport::new(true, Bpm::of(120.0), beat_of(35_800), lp),
+        TransportPosition::new(true, Bpm::of(120.0), beat_of(35_800), lp),
     );
     let seen = seen.lock().unwrap();
     let at_wrap: Vec<Harmony> = seen.iter().filter(|s| s.0 == 200).map(|s| s.1).collect();
@@ -208,7 +208,7 @@ fn a_loop_pass_restates_only_what_changed() {
         block(
             &mut exec,
             2_048,
-            Transport::new(true, Bpm::of(120.0), beat_of(start), lp),
+            TransportPosition::new(true, Bpm::of(120.0), beat_of(start), lp),
         );
 
         seen.lock().unwrap().clone()
@@ -249,7 +249,7 @@ fn a_change_on_the_loops_start_is_each_passs_context() {
     block(
         &mut exec,
         2_048,
-        Transport::new(true, Bpm::of(120.0), beat_of(12_000), lp),
+        TransportPosition::new(true, Bpm::of(120.0), beat_of(12_000), lp),
     );
     let want: Vec<(u64, Harmony)> = (0..6)
         .flat_map(|k| [(375 * k, C), (375 * k + 200, G)])

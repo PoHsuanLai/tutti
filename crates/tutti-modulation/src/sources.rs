@@ -8,7 +8,7 @@
 
 use tutti_types::{BeatDuration, Hz, PhaseIncrement, Seconds};
 
-use crate::{Adsr, Clock, LfoShape, Source, Wave};
+use crate::{Adsr, Clock, LfoShape, Source, Waveform};
 
 /// How an [`Lfo`] keeps time.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -119,7 +119,7 @@ impl From<Lfo> for Source {
             },
         };
         Source::Lfo {
-            wave: Wave::Shape {
+            wave: Waveform::Shape {
                 shape: lfo.shape,
                 seed: lfo.seed,
             },

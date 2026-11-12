@@ -37,7 +37,7 @@ fn layer(id: u64, clock: Clock, shape: LfoShape, amount: Amount) -> Layer {
     Layer {
         id: LayerId(id),
         clock,
-        wave: Wave::Shape { shape, seed: 0 },
+        wave: Waveform::Shape { shape, seed: 0 },
         amount,
         depth_by: None,
     }
@@ -351,7 +351,7 @@ fn depth_by_scales_the_offset_and_adds_its_corners() {
     let scaled = |depth_clock| Layer {
         depth_by: Some(DepthBy {
             clock: depth_clock,
-            wave: Wave::Shape {
+            wave: Waveform::Shape {
                 shape: LfoShape::Square,
                 seed: 0,
             },
@@ -396,15 +396,15 @@ fn a_program_holds_the_frozen_curve() {
 /// meets each step at the cycle's start.
 #[test]
 fn random_waves_replay_by_cycle() {
-    let w = Wave::Shape {
+    let w = Waveform::Shape {
         shape: LfoShape::Random,
         seed: 0,
     };
-    let s = Wave::Shape {
+    let s = Waveform::Shape {
         shape: LfoShape::Random,
         seed: 7,
     };
-    let smooth = Wave::Shape {
+    let smooth = Waveform::Shape {
         shape: LfoShape::RandomSmooth,
         seed: 0,
     };
@@ -427,7 +427,7 @@ fn random_waves_replay_by_cycle() {
 #[test]
 fn random_steps_cover_the_range() {
     for seed in [0, 7] {
-        let w = Wave::Shape {
+        let w = Waveform::Shape {
             shape: LfoShape::Random,
             seed,
         };
@@ -470,7 +470,7 @@ fn a_drawn_wave_follows_its_points() {
             curve: Law::Linear,
         },
     ]);
-    let w = Wave::Drawn(Arc::clone(&points));
+    let w = Waveform::Drawn(Arc::clone(&points));
     let near = |c: f64, want: f32| {
         let v = w.raw_at(c, false);
         assert!((v - want).abs() < 1e-6, "at {c}: {v} vs {want}");
@@ -512,7 +512,7 @@ fn new_refuses_what_a_lane_cannot_hold() {
         ProgramError::DuplicateLayer(LayerId(4))
     );
     let bad = Layer {
-        wave: Wave::Drawn(Arc::from(vec![
+        wave: Waveform::Drawn(Arc::from(vec![
             PeriodPoint {
                 at: Phase(0.5),
                 value: 0.0,
@@ -543,10 +543,10 @@ fn new_refuses_what_a_lane_cannot_hold() {
 #[test]
 fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
     let scaled = |by| Layer {
-        wave: Wave::Const(1.0),
+        wave: Waveform::Const(1.0),
         depth_by: Some(DepthBy {
             clock: beats(4.0),
-            wave: Wave::Shape {
+            wave: Waveform::Shape {
                 shape: LfoShape::Sine,
                 seed: 0,
             },
@@ -582,13 +582,13 @@ fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
 #[test]
 fn the_unit_depth_by_is_half_raw_plus_one_in_f64() {
     for raw in [-1.0f32, -0.7, 0.0, 1e-7, 0.3, 0.9, 1.0] {
-        let held = Wave::Drawn(Arc::from(vec![PeriodPoint {
+        let held = Waveform::Drawn(Arc::from(vec![PeriodPoint {
             at: Phase(0.0),
             value: raw,
             curve: Law::Linear,
         }]));
         let l = Layer {
-            wave: Wave::Const(1.0),
+            wave: Waveform::Const(1.0),
             depth_by: Some(DepthBy {
                 clock: beats(4.0),
                 wave: held,
@@ -621,7 +621,7 @@ fn a_constant_wave_needs_no_clock() {
         phase: PhaseIncrement(0.0),
     };
     let c = Layer {
-        wave: Wave::Const(-1.0),
+        wave: Waveform::Const(-1.0),
         ..layer(1, dead, LfoShape::Sine, amount(0.5))
     };
     assert!(c.is_constant());
@@ -633,7 +633,7 @@ fn a_constant_wave_needs_no_clock() {
     let scaled = Layer {
         depth_by: Some(DepthBy {
             clock: beats(1.0),
-            wave: Wave::Shape {
+            wave: Waveform::Shape {
                 shape: LfoShape::Sine,
                 seed: 0,
             },
@@ -654,7 +654,7 @@ fn new_refuses_a_nan() {
         ..l()
     };
     let nan_const = Layer {
-        wave: Wave::Const(f32::NAN),
+        wave: Waveform::Const(f32::NAN),
         ..l()
     };
     let nan_depth_by = Layer {
@@ -664,7 +664,7 @@ fn new_refuses_a_nan() {
                 phase: PhaseIncrement(f32::NAN),
                 anchor: None,
             },
-            wave: Wave::Const(0.0),
+            wave: Waveform::Const(0.0),
             amount: DepthBy::UNIT,
         }),
         ..l()

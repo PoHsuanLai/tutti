@@ -1026,7 +1026,7 @@ impl PluginInstance {
 
     /// The sub-plugins of a shell (`effGetPlugCategory` is `kPlugCategShell`), by walking
     /// `effShellGetNextPlugin` until it answers 0 (`aeffectx.h`: "[return value]: next
-    /// plugin's uniqueID"). The walk is capped at [`MAX_SHELL_PLUGINS`] and stops at a
+    /// plugin's uniqueID"). The walk is capped at `MAX_SHELL_PLUGINS` and stops at a
     /// repeated id, so a plugin that never answers 0 cannot hold the caller forever. A plugin
     /// that is not a shell answers 0 at once and gives none.
     pub fn shell_plugins(&self, _main: &MainThread) -> Vec<ShellPlugin> {

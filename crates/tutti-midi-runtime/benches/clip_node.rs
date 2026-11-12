@@ -22,7 +22,7 @@ const FRAMES_PER_BEAT: f64 = 24_000.0;
 const BLOCK: usize = 512;
 
 fn at(frame: u64, e: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(Beat(frame as f64 / FRAMES_PER_BEAT), e)
+    TimedMidiEvent::new(Beat(frame as f64 / FRAMES_PER_BEAT), e).unwrap()
 }
 
 fn key(i: u32) -> (MidiChannel, u8) {

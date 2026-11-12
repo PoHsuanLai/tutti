@@ -77,4 +77,4 @@ pub use endpoint::{
 };
 pub use id::{DeviceId, DeviceInfo, EndpointId, Identity, PortDirection};
 pub use name::{BlockName, EndpointName, Name, NameError, ProductInstanceId};
-pub use table::{DeviceEvent, DeviceTable, OsChange, OsDevice, Resolved};
+pub use table::{BindPolicy, DeviceEvent, DeviceTable, OsChange, OsDevice, Resolved};

@@ -47,7 +47,7 @@ fn off(n: u8) -> Ump {
 }
 
 fn at(frame: u64, e: Ump) -> TimedMidiEvent {
-    TimedMidiEvent::new(beat_of(frame), e)
+    TimedMidiEvent::new(beat_of(frame), e).unwrap()
 }
 
 /// What a sink heard: the keys it holds, offs for keys it does not hold
@@ -1013,7 +1013,7 @@ fn spread_clip(r: &mut Rng, overlap: bool) -> (Vec<TimedMidiEvent>, usize, usize
 fn span(events: &[TimedMidiEvent]) -> u64 {
     let last = events
         .iter()
-        .map(|e| (e.beat.0 * FPB).round() as u64)
+        .map(|e| (e.beat().0 * FPB).round() as u64)
         .max()
         .unwrap_or(0);
     (last / 64 + 2) * 64
@@ -1064,7 +1064,7 @@ fn the_loss_count_is_exact_through_loops_and_replacements() {
         play(&mut exec, &first, passes);
         let (mut ons, mut ccs) = (ons1 * passes as usize, ccs1 * passes as usize);
         if replace {
-            controls.set_events(second.clone());
+            controls.set(second.clone());
             play(&mut exec, &second, 1);
             ons += ons2;
             ccs += ccs2;

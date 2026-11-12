@@ -86,7 +86,11 @@ fn play<M: Master>(
     // packets they are: the clip translates them when it is loaded.
     let timeline = file
         .timeline()
-        .ok_or("a format 2 file has no one timeline")?;
+        .ok_or("a format 2 file has no one timeline")?
+        .map(|(beat, packet)| {
+            TimedMidiEvent::new(beat, packet).ok_or("a beat of the file is not finite")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     s.midi().play_clip(synth, timeline)?;
     report(s.update());
 

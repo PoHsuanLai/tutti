@@ -45,11 +45,11 @@ pub(crate) const RATE: f64 = 44_100.0;
 
 /// A list of ports over `slots` inlets of 64 events, with no lead.
 pub(crate) fn ports(slots: usize) -> Arc<HardwareMidiInputs> {
-    Arc::new(HardwareMidiInputs::new(Arc::new(DeviceInlets::new(
+    Arc::new(HardwareMidiInputs::new(DeviceInlets::new(
         slots,
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
-    ))))
+    )))
 }
 
 /// `(slot, absolute frame, event)` of every event the sink received.

@@ -3,9 +3,17 @@ use tutti_fixtures::midi;
 use tutti_ump::MidiChannel;
 use tutti_ump::MidiGroup;
 
-fn us_per_tick(bpm: f64) -> u64 {
+/// Any instant: only the differences between arrivals matter.
+fn base() -> Instant {
+    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *BASE.get_or_init(Instant::now)
+}
+
+fn us_per_tick(bpm: f64) -> Duration {
     // 1 beat = PPQN ticks; 1 beat at bpm = 60/bpm seconds = 60_000_000/bpm us
-    (60_000_000.0 / (bpm * f64::from(System::TIMING_CLOCKS_PER_QUARTER))) as u64
+    Duration::from_micros(
+        (60_000_000.0 / (bpm * f64::from(System::TIMING_CLOCKS_PER_QUARTER))) as u64,
+    )
 }
 
 /// 24 ticks is one beat, and the count keeps accumulating across beats.
@@ -14,15 +22,15 @@ fn test_basic_beat_counting() {
     let mut clock = MidiClockDecoder::new();
     clock.start_msg();
     assert_eq!(clock.transport_state(), ClockTransportState::Playing);
-    assert!((clock.beat_position() - 0.0).abs() < 0.001);
+    assert!((clock.beat_position().get() - 0.0).abs() < 0.001);
 
     let interval = us_per_tick(120.0);
-    let mut ts = 0u64;
+    let mut ts = base();
     for _ in 0..24 {
         clock.tick(ts);
         ts += interval;
     }
-    assert!((clock.beat_position() - 1.0).abs() < 0.001);
+    assert!((clock.beat_position().get() - 1.0).abs() < 0.001);
 
     // Three more beats' worth: the position accumulates rather than
     // wrapping or resetting at the beat boundary.
@@ -31,44 +39,44 @@ fn test_basic_beat_counting() {
         ts += interval;
     }
     assert!(
-        (clock.beat_position() - 4.0).abs() < 0.001,
+        (clock.beat_position().get() - 4.0).abs() < 0.001,
         "96 ticks / 24 PPQN = 4 beats, got {}",
-        clock.beat_position()
+        clock.beat_position().get()
     );
 }
 
 #[test]
 fn song_position_then_continue_resumes_at_spp_times_six_ticks() {
     let mut clock = MidiClockDecoder::new();
-    assert!(clock.feed(&midi::song_position(MidiGroup::FIRST, 0x0123), 0));
+    assert!(clock.feed(&midi::song_position(MidiGroup::FIRST, 0x0123), base()));
     // 0x0123 sixteenths = 291 × 6 ticks.
-    assert!((clock.beat_position() - 291.0 * 6.0 / 24.0).abs() < 1e-9);
-    assert!(clock.feed(&midi::continue_msg(MidiGroup::FIRST), 0));
-    let mut ts = 0;
+    assert!((clock.beat_position().get() - 291.0 * 6.0 / 24.0).abs() < 1e-9);
+    assert!(clock.feed(&midi::continue_msg(MidiGroup::FIRST), base()));
+    let mut ts = base();
     for _ in 0..24 {
         clock.feed(&midi::timing_clock(MidiGroup::FIRST), ts);
         ts += us_per_tick(120.0);
     }
-    assert!((clock.beat_position() - (291.0 * 6.0 / 24.0 + 1.0)).abs() < 1e-9);
+    assert!((clock.beat_position().get() - (291.0 * 6.0 / 24.0 + 1.0)).abs() < 1e-9);
     // A Start begins at zero whatever the pointer said.
     clock.feed(&midi::start(MidiGroup::FIRST), ts);
-    assert_eq!(clock.beat_position(), 0.0);
+    assert_eq!(clock.beat_position().get(), 0.0);
 }
 
 #[test]
 fn feed_dispatches_transport_events_like_the_direct_methods() {
     let mut clock = MidiClockDecoder::new();
     // Start via a real System packet, then advance a beat of clock ticks.
-    assert!(clock.feed(&midi::start(MidiGroup::FIRST), 0));
+    assert!(clock.feed(&midi::start(MidiGroup::FIRST), base()));
     assert_eq!(clock.transport_state(), ClockTransportState::Playing);
 
     let interval = us_per_tick(120.0);
-    let mut ts = 0u64;
+    let mut ts = base();
     for _ in 0..24 {
         assert!(clock.feed(&midi::timing_clock(MidiGroup::FIRST), ts));
         ts += interval;
     }
-    assert!((clock.beat_position() - 1.0).abs() < 0.001);
+    assert!((clock.beat_position().get() - 1.0).abs() < 0.001);
 
     assert!(clock.feed(&midi::stop(MidiGroup::FIRST), ts));
     assert_eq!(clock.transport_state(), ClockTransportState::Stopped);
@@ -92,7 +100,7 @@ fn tempo_is_derived_from_the_tick_interval() {
         clock.start_msg();
 
         let interval = us_per_tick(bpm);
-        let mut ts = 0u64;
+        let mut ts = base();
         // Two beats' worth — enough for the estimate to stabilize.
         for _ in 0..48 {
             clock.tick(ts);
@@ -115,15 +123,15 @@ fn test_start_resets_position() {
     clock.start_msg();
 
     let interval = us_per_tick(120.0);
-    let mut ts = 0u64;
+    let mut ts = base();
     for _ in 0..48 {
         clock.tick(ts);
         ts += interval;
     }
-    assert!(clock.beat_position() > 1.0);
+    assert!(clock.beat_position().get() > 1.0);
 
     clock.start_msg();
-    assert!((clock.beat_position() - 0.0).abs() < 0.001);
+    assert!((clock.beat_position().get() - 0.0).abs() < 0.001);
 }
 
 #[test]
@@ -132,12 +140,12 @@ fn test_stop_pauses_counting() {
     clock.start_msg();
 
     let interval = us_per_tick(120.0);
-    let mut ts = 0u64;
+    let mut ts = base();
     for _ in 0..24 {
         clock.tick(ts);
         ts += interval;
     }
-    let pos_before_stop = clock.beat_position();
+    let pos_before_stop = clock.beat_position().get();
 
     clock.stop_msg();
     for _ in 0..24 {
@@ -146,7 +154,7 @@ fn test_stop_pauses_counting() {
     }
     // Position should not advance while stopped
     assert!(
-        (clock.beat_position() - pos_before_stop).abs() < 0.001,
+        (clock.beat_position().get() - pos_before_stop).abs() < 0.001,
         "Position should not advance while stopped"
     );
 }
@@ -157,12 +165,12 @@ fn test_continue_resumes() {
     clock.start_msg();
 
     let interval = us_per_tick(120.0);
-    let mut ts = 0u64;
+    let mut ts = base();
     for _ in 0..24 {
         clock.tick(ts);
         ts += interval;
     }
-    let pos_at_stop = clock.beat_position();
+    let pos_at_stop = clock.beat_position().get();
 
     clock.stop_msg();
     // Tick while stopped
@@ -178,7 +186,7 @@ fn test_continue_resumes() {
     }
     // Should have advanced by 1 beat from the stop position
     assert!(
-        (clock.beat_position() - (pos_at_stop + 1.0)).abs() < 0.001,
+        (clock.beat_position().get() - (pos_at_stop + 1.0)).abs() < 0.001,
         "Continue should resume from stop position"
     );
 }
@@ -195,7 +203,7 @@ fn test_reset() {
     clock.start_msg();
 
     let interval = us_per_tick(120.0);
-    let mut ts = 0u64;
+    let mut ts = base();
     for _ in 0..48 {
         clock.tick(ts);
         ts += interval;
@@ -203,6 +211,6 @@ fn test_reset() {
 
     clock.reset();
     assert!(clock.tempo_bpm().is_none());
-    assert!((clock.beat_position() - 0.0).abs() < 0.001);
+    assert!((clock.beat_position().get() - 0.0).abs() < 0.001);
     assert_eq!(clock.transport_state(), ClockTransportState::Stopped);
 }

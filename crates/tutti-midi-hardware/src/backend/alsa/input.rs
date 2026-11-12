@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use super::enumerate::unpack_id;
 use super::poll::ErrorRun;
-use crate::InputProducerHandle;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
+use crate::{InputProducerHandle, Pushed};
 use tutti_alsa_ffi::{
     CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC, Wait,
 };
@@ -94,7 +94,7 @@ impl Drop for AlsaInput {
 
 /// The error for an id [`unpack_id`] refuses.
 pub(super) fn not_minted(id: EndpointId) -> crate::error::Error {
-    crate::error::Error::MidiPort(format!("{id:?} is not an ALSA endpoint id"))
+    crate::error::Error::port(format!("{id:?} is not an ALSA endpoint id"))
 }
 
 /// Opens `id` for input and starts pumping its events into `producer`.
@@ -131,7 +131,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     seq.connect_from(port, src_client, src_port)?;
 
     let (stop_tx, stop_rx) = UnixStream::pair()
-        .map_err(|e| crate::error::Error::MidiDevice(format!("MIDI pump stop pair: {e}")))?;
+        .map_err(|e| crate::error::Error::device_from("MIDI pump stop pair", e))?;
     let polls = Poller::new(&seq, stop_rx.as_raw_fd())?;
     let died = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&died);
@@ -143,7 +143,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
             let _ending: mpsc::Sender<()> = ending;
             pump(seq, polls, clock, stop_rx, flag, producer);
         })
-        .map_err(|e| crate::error::Error::MidiDevice(format!("spawn MIDI pump: {e}")))?;
+        .map_err(|e| crate::error::Error::device_from("spawn MIDI pump", e))?;
 
     Ok(Box::new(AlsaInput {
         stop: Some(stop_tx),
@@ -243,7 +243,7 @@ fn pump(
         // swallowing three words of zeros.
         let decoded = split_stream(&words).next();
         if let Some(event) = decoded
-            && !producer.push(event, now)
+            && producer.push(event, now) == Pushed::Full
         {
             tracing::debug!("MIDI input ring full, dropping event");
         }

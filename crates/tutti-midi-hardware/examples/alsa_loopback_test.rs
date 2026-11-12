@@ -24,7 +24,7 @@ use common::Listener;
 
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::Offset;
-use tutti_midi_hardware::{DeviceInlets, HardwareMidiInputs, MidiSession};
+use tutti_midi_hardware::{DeviceInlets, MidiSession};
 use tutti_midi_protocol::channel_voice;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, Ump};
 
@@ -40,15 +40,14 @@ fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware
 
 fn main() {
     // One inlet slot, 256 events, each event placed 20 ms after it arrived.
-    let inlets = Arc::new(DeviceInlets::new(
+    let inlets = DeviceInlets::new(
         1,
         tutti_graph::EventCapacity::of(256),
         Duration::from_millis(20),
-    ));
-    let pm = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
+    );
     // The graph's side: the engine's part, played on the wall clock.
     let mut graph = Listener::over(&inlets);
-    let io = MidiSession::open(pm.clone()).expect("open MIDI");
+    let io = MidiSession::open(Arc::clone(&inlets)).expect("open MIDI");
 
     let inputs = io.inputs();
     let outputs = io.outputs();

@@ -26,8 +26,6 @@ use tutti_graph::Losses;
 use tutti_midi_runtime::{DeviceInput, DeviceSlot, InletCounts};
 use tutti_ump::Ump;
 
-use super::PortId;
-
 /// The producer end of one port: the driver thread's. Owns the inlet's only
 /// writer. It is `Send`, so it moves to the thread the OS delivers on, and
 /// **not** `Clone`: [`push`](Self::push) takes `&mut self`, so an inlet has
@@ -46,7 +44,6 @@ use super::PortId;
 /// [`open_input_port`](super::HardwareMidiInputs::open_input_port).
 pub struct InputProducerHandle {
     input: DeviceInput,
-    port: PortId,
     /// Whether the port delivers: shared with the port's entry.
     active: Arc<AtomicBool>,
     /// Where the device's UMP Stream messages go: not into the graph.
@@ -65,7 +62,7 @@ pub(crate) const STREAM_CAPACITY: usize = 512;
 impl core::fmt::Debug for InputProducerHandle {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("InputProducerHandle")
-            .field("port", &self.port)
+            .field("slot", &self.input.slot())
             .finish_non_exhaustive()
     }
 }
@@ -81,11 +78,11 @@ impl InputProducerHandle {
     /// port's stream ring, which the control side reads
     /// ([`HardwareMidiInputs::drain_stream`](super::HardwareMidiInputs::drain_stream)),
     /// and one the ring has no room for is counted
-    /// ([`PortInfo::stream_lost`](super::PortInfo::stream_lost)) and returns
-    /// `true`: it was not lost from the inlet.
+    /// ([`PortInfo::stream_lost`](super::PortInfo::stream_lost)) and is
+    /// `Diverted` all the same: it was not lost from the inlet.
     ///
     /// A **JR Clock or JR Timestamp** (type `0x0`, M2-104 §7.2.2) is dropped
-    /// here too, and returns `true`. The session asks for JR Timestamps off, and
+    /// here too, and is `Diverted`. The session asks for JR Timestamps off, and
     /// a device that sends them anyway has them ignored: the placement of an
     /// event is its OS arrival stamp, and §7.2.2.1 leaves what a Receiver does
     /// with JR to it ("the Receiver may use smoothing or averaging of time from
@@ -95,36 +92,78 @@ impl InputProducerHandle {
     /// time the OS has already stamped; and nothing downstream reads a
     /// timestamp utility message, so one that reached the graph would be noise.
     ///
-    /// Returns `false` when the device's inlet is full; the event is then
-    /// dropped, not queued, and counted
+    /// Returns what became of it: [`Pushed::Sent`] into the graph's inlet,
+    /// [`Pushed::Diverted`] (not music, or the port is paused, so nothing was
+    /// lost for want of room), or [`Pushed::Full`] when the device's inlet is
+    /// full: the event is then dropped, not queued, and counted
     /// ([`HardwareMidiInputs::losses`](super::HardwareMidiInputs::losses)).
     /// An **inactive** port ([`set_port_active`](super::HardwareMidiInputs::set_port_active))
-    /// discards the event and returns `true`: it was not lost for want of room.
-    /// Lock-free and allocation-free, so it is safe to call from a driver
-    /// callback.
+    /// discards the event and is `Diverted`. Lock-free and allocation-free, so
+    /// it is safe to call from a driver callback.
     #[inline]
-    pub fn push(&mut self, event: Ump, timestamp: Instant) -> bool {
+    pub fn push(&mut self, event: Ump, timestamp: Instant) -> Pushed {
         if !self.active.load(Ordering::Acquire) {
-            return true;
+            return Pushed::Diverted;
         }
         if event.is_stream() {
             if self.stream.try_push(event).is_err() {
                 self.stream_lost.fetch_add(1, Ordering::Relaxed);
             }
-            return true;
+            return Pushed::Diverted;
         }
         if event.is_jr() {
-            return true;
+            return Pushed::Diverted;
         }
-        self.input.push(event, timestamp)
+        if self.input.push(event, timestamp) {
+            Pushed::Sent
+        } else {
+            Pushed::Full
+        }
     }
 
-    /// The identity of the port this handle feeds: the key to pass to
+    /// The identity of the port this handle feeds, and the slot it holds
+    /// until it drops: the key to pass to
     /// [`HardwareMidiInputs`](super::HardwareMidiInputs)' `set_port_active` or
     /// `remove_input_port`.
     #[must_use]
-    pub fn port_id(&self) -> PortId {
-        self.port
+    pub fn slot(&self) -> DeviceSlot {
+        self.input.slot()
+    }
+}
+
+/// What [`InputProducerHandle::push`] did with an event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use = "`Full` is a lost event: a caller counts or logs it"]
+pub enum Pushed {
+    /// The event went into the device's inlet, for the graph.
+    Sent,
+    /// The event was kept out of the graph on purpose (a UMP Stream message,
+    /// a JR message, or any event of a paused port): nothing was lost.
+    Diverted,
+    /// The device's inlet had no room: the event is dropped, and counted as
+    /// lost.
+    Full,
+}
+
+/// The UMP Stream messages of one port, drained as they are read
+/// ([`HardwareMidiInputs::drain_stream`](super::HardwareMidiInputs::drain_stream)):
+/// one ring lock per step, none held across the caller's work.
+#[derive(Debug)]
+pub struct StreamDrain {
+    port: Option<Arc<HardwareMidiInput>>,
+}
+
+impl StreamDrain {
+    pub(super) fn new(port: Option<Arc<HardwareMidiInput>>) -> Self {
+        Self { port }
+    }
+}
+
+impl Iterator for StreamDrain {
+    type Item = Ump;
+
+    fn next(&mut self) -> Option<Ump> {
+        self.port.as_ref()?.pop_stream()
     }
 }
 
@@ -132,40 +171,30 @@ impl InputProducerHandle {
 /// the counts of its inlet. There is no output counterpart here: outbound MIDI
 /// rides an event tap to a [`MidiOut`](tutti_midi_runtime::MidiOut) sink.
 pub(crate) struct HardwareMidiInput {
-    id: PortId,
     name: String,
     active: Arc<AtomicBool>,
     counts: InletCounts,
-    slot: DeviceSlot,
     /// The reading end of the stream ring; control side, one reader at a time.
     stream: Mutex<HeapCons<Ump>>,
     stream_lost: Arc<AtomicU64>,
 }
 
 impl HardwareMidiInput {
-    /// A port named `name` over `input`, and the producer handle for it, both
-    /// named `port`.
-    pub(crate) fn new(
-        name: impl Into<String>,
-        input: DeviceInput,
-        port: PortId,
-    ) -> (Self, InputProducerHandle) {
+    /// A port named `name` over `input`, and the producer handle for it.
+    pub(crate) fn new(name: impl Into<String>, input: DeviceInput) -> (Self, InputProducerHandle) {
         let active = Arc::new(AtomicBool::new(true));
         let stream_lost = Arc::new(AtomicU64::new(0));
         let (stream_in, stream_out) = HeapRb::<Ump>::new(STREAM_CAPACITY).split();
         (
             Self {
-                id: port,
                 name: name.into(),
                 active: Arc::clone(&active),
                 counts: input.counts(),
-                slot: input.slot(),
                 stream: Mutex::new(stream_out),
                 stream_lost: Arc::clone(&stream_lost),
             },
             InputProducerHandle {
                 input,
-                port,
                 active,
                 stream: stream_in,
                 stream_lost,
@@ -183,24 +212,16 @@ impl HardwareMidiInput {
         self.stream_lost.load(Ordering::Relaxed)
     }
 
-    /// Hands every Stream message held to `take`, oldest first.
-    pub(crate) fn drain_stream(&self, mut take: impl FnMut(Ump)) {
-        let mut ring = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
-        while let Some(ump) = ring.try_pop() {
-            take(ump);
-        }
-    }
-
-    pub(crate) fn id(&self) -> PortId {
-        self.id
+    /// The oldest Stream message held, if any.
+    pub(crate) fn pop_stream(&self) -> Option<Ump> {
+        self.stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_pop()
     }
 
     pub(crate) fn name(&self) -> &str {
         &self.name
-    }
-
-    pub(crate) fn slot(&self) -> DeviceSlot {
-        self.slot
     }
 
     #[inline]

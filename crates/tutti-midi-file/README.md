@@ -63,8 +63,9 @@ assert_eq!((notes[0].start, notes[0].end), (Tick(0), Tick(1_440)));
 
 A clip plays a file's messages as they are: `file.timeline()` is `(Beat, Ump)`
 pairs (channel messages as their packets, SysEx as SysEx7 packets, meta events
-dropped: the tempo is [`MidiFile::tempo_map`]), which `play_clip` takes
-directly.
+dropped: the tempo is [`MidiFile::tempo_map`]), which a caller turns into
+`tutti-midi-runtime`'s `TimedMidiEvent`s (`TimedMidiEvent::new(beat, ump)`) for
+`play_clip`.
 
 ### Tempo is the wire's
 

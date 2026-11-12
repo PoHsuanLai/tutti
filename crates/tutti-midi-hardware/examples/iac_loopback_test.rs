@@ -18,7 +18,7 @@ use common::Listener;
 
 use tutti_fixtures::midi::note_on;
 use tutti_graph::Offset;
-use tutti_midi_hardware::{DeviceInlets, HardwareMidiInputs, MidiSession};
+use tutti_midi_hardware::{DeviceInlets, MidiSession};
 use tutti_midi_protocol::channel_voice;
 use tutti_ump::{
     Address, Attribute, CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Ump,
@@ -43,15 +43,14 @@ fn voice(voice: Voice2) -> Message {
 
 fn main() {
     // One inlet slot, 256 events, each event placed 20 ms after it arrived.
-    let inlets = Arc::new(DeviceInlets::new(
+    let inlets = DeviceInlets::new(
         1,
         tutti_graph::EventCapacity::of(256),
         Duration::from_millis(20),
-    ));
-    let pm = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
+    );
     // The graph's side: the engine's part, played on the wall clock.
     let mut graph = Listener::over(&inlets);
-    let io = MidiSession::open(pm.clone()).expect("open MIDI");
+    let io = MidiSession::open(Arc::clone(&inlets)).expect("open MIDI");
 
     let inputs = io.inputs();
     let Some(iac_input) = inputs.iter().find(|d| d.name.contains("IAC")) else {
@@ -69,7 +68,7 @@ fn main() {
     );
     println!("Connected inputs: {:?}", io.connected_input_names());
 
-    io.connect_output_by_name("IAC").unwrap();
+    io.connect_output("IAC").unwrap();
     thread::sleep(Duration::from_millis(200));
 
     // Whatever was buffered before the test.

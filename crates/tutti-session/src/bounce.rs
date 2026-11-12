@@ -2265,17 +2265,19 @@ mod tests {
     /// default), they are the 480 frames of programme alone.
     #[test]
     fn an_untrimmed_bounce_renders_the_latency_past_the_programme() {
-        use tutti_types::{ChannelLayout, Db};
+        use tutti_types::Db;
         const DURATION: usize = 480;
         const LATENCY: usize = 240;
         let mut session = session();
         let (dc, _) = session
             .graph()
             .add(ForkByClone(tutti_nodes::testing::Const::mono(0.25)));
-        let (lim, _) = session.graph().add(tutti_nodes::LimiterNode::with_channels(
-            ChannelLayout::MONO,
-            Db(-6.0),
-            Db(-1.0),
+        let (lim, _) = session.graph().add(tutti_nodes::LimiterNode::mono(
+            tutti_nodes::LimiterControls {
+                threshold: Db(-6.0),
+                ceiling: Db(-1.0),
+                ..tutti_nodes::LimiterControls::DEFAULT
+            },
         ));
         session
             .graph()

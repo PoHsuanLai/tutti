@@ -245,16 +245,16 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
 fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
     use tutti_graph::Source;
     use tutti_graph::{GraphBuilder, Prepare};
-    use tutti_nodes::LimiterNode;
+    use tutti_nodes::{LimiterControls, LimiterNode};
     use tutti_types::Latency;
     use tutti_types::{ChannelLayout, Db, Samples, Seconds};
 
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let (lim, _) = g.add_with_controls(LimiterNode::with_channels(
-        ChannelLayout::MONO,
-        Db(-1.0),
-        Db(-0.3),
-    ));
+    let (lim, _) = g.add_with_controls(LimiterNode::mono(LimiterControls {
+        threshold: Db(-1.0),
+        ceiling: Db(-0.3),
+        ..LimiterControls::DEFAULT
+    }));
     g.connect_input(0, lim, 0);
     g.connect_output(lim, 0, 0);
     g.add_output(0, Source::Global(0));

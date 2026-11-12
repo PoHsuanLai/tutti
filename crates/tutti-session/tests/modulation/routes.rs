@@ -155,12 +155,12 @@ fn reading_the_declarations_needs_only_a_shared_session() {
 fn recording_where_nothing_is_automated_is_refused() {
     use std::sync::Arc;
     use tutti_nodes::automation::{RecordMode, Trajectory};
-    use tutti_session::{NoAutomation, Take};
+    use tutti_session::{AutomationTake, NoAutomation};
 
     let mut s = session();
     let a = filter(&mut s);
     let mut m = s.mods_mut();
-    let take = || Take::record(RecordMode::Touch, 0.0, 1.0);
+    let take = || AutomationTake::record(RecordMode::Touch, 0.0, 1.0);
     assert_eq!(
         m.record(a, take()),
         Err(NoAutomation {

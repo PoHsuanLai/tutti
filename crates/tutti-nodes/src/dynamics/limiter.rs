@@ -4,612 +4,307 @@
 //! latency and sounds transparent. For a hard clip that costs nothing and distorts,
 //! a safety catch, see [`BrickwallLimiterNode`](super::BrickwallLimiterNode).
 
-use std::sync::Arc;
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::ChannelLayout;
-use tutti_types::{Amplitude, AtomicF32, AtomicF64};
+use tutti_dsp::{LimiterControls, LimiterFamily, Lookahead};
+use tutti_types::{BusTopology, Db, SampleRate, Seconds};
 
-use crate::ramp::LastGood;
-use tutti_dsp::{LimiterBlock, LimiterKernel, LookaheadRing, amplitude_to_db, fold_peak};
-use tutti_types::Latency;
-use tutti_types::UnitParam;
-use tutti_types::{Db, Param, SampleRate, Samples, Seconds, Tail};
+use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
-/// The lane's length before the graph prepares the node.
-const DEFAULT_LANE: usize = 512;
-
-/// Lookahead limiter with gain reduction linked across channels. 2 inputs, 2
-/// outputs by default.
+/// A lookahead limiter: `N` audio inputs and `N` outputs, with gain reduction **linked**
+/// across all channels.
 ///
-/// A limiter is a compressor at an effectively infinite ratio: nothing is
-/// allowed past the ceiling: the output is bounded by it (a gain divide and a
-/// product can in principle round one ulp past).
+/// A [`FamilyNode`] over [`LimiterFamily`], the delay and the gain being the family's
+/// recurrence; this file holds the cells and how the graph reaches them.
+///
+/// - [`mono`](Self::mono) and [`stereo`](Self::stereo): one and two channels, at the
+///   default lookahead of 5 ms ([`Lookahead::DEFAULT`]).
+/// - [`new`](Self::new): any width up to one bus (16 channels), on a checked
+///   [`BusTopology`], at a lookahead of your own.
+///
+/// A limiter is a compressor at an effectively infinite ratio: nothing is allowed past
+/// the ceiling: the output is bounded by it (a gain divide and a product can in principle
+/// round one ulp past).
 ///
 /// # The curve
 ///
-/// The threshold drives the input. With `drive = ceiling - threshold` in dB,
-/// the gain at a linked peak is `min(drive, ceiling / peak)`, so the output
-/// is `min(peak * drive, ceiling)`: under the threshold the signal is
-/// moved by the drive (boosted when the ceiling is above the threshold,
-/// attenuated when below), and a louder one settles at the ceiling. The curve
-/// is continuous and monotonic, with its knee at the threshold. With the
-/// defaults (-6 dB threshold, -0.3 dB ceiling) a quiet signal is raised by
-/// 5.7 dB and the output reaches -0.3 dB when the input reaches -6 dB. The
-/// gain is then smoothed (instant attack, `release`) and its minimum over
-/// the lookahead window applied. The **lookahead** is what makes that possible
-/// without distortion — the audio is delayed by the lookahead window while the
-/// gain decision runs ahead of it, so reduction is already in place when a peak
-/// arrives rather than chasing it.
+/// The threshold drives the input. With `drive = ceiling - threshold` in dB, the gain at a
+/// linked peak is `min(drive, ceiling / peak)`, so the output is
+/// `min(peak * drive, ceiling)`: under the threshold the signal is moved by the drive
+/// (boosted when the ceiling is above the threshold, attenuated when below), and a louder
+/// one settles at the ceiling. The curve is continuous and monotonic, with its knee at the
+/// threshold. With [`LimiterControls::DEFAULT`] (-6 dB threshold, -0.3 dB ceiling) a
+/// quiet signal is raised by 5.7 dB and the output reaches -0.3 dB when the input reaches
+/// -6 dB. The gain is then smoothed (instant attack, `release`) and its minimum over the
+/// lookahead window applied. The **lookahead** is what makes that possible without
+/// distortion: the audio is delayed by the lookahead window while the gain decision runs
+/// ahead of it, so the reduction is already in place when a peak arrives rather than
+/// chasing it.
 ///
-/// That delay is real latency: the node declares it in its [`Shape`], and the
-/// graph's PDC compensates a dry path mixed against it.
+/// That delay is real latency: the node declares it in its [`Shape`](tutti_graph::Shape),
+/// and the graph's PDC compensates a dry path mixed against it. It declares no tail: a tail
+/// excludes latency, and what the delay holds when the input stops comes out within it.
+/// The release shapes gain, and gain applied to silence is silence.
 ///
-/// The minimum gain over the lookahead window is tracked with a
-/// monotonic deque (`tutti_dsp::LookaheadRing`), so each sample costs O(1) amortized regardless of
-/// lookahead length. Nothing in the RT path allocates: the rings and the gain
-/// lane are sized at construction, and again when the graph prepares it.
+/// The envelope starts at 0, so the first audio after a prepare or a reset fades in over
+/// about one release time.
 ///
-/// # Modulated params
+/// # Controls
 ///
-/// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
-/// and the threshold (both dB) are modulatable by the graph,
-/// in that port order: a per-frame value on
-/// the param port ([`Io::param`](tutti_graph::Io::param)) overrides its cell
-/// per sample. Unmodulated, the node reads its cells once per block, which
-/// is the common case; the arity never changes.
+/// Threshold, ceiling and release are live [`Params`](crate::Params) shared across clones,
+/// set through the node's [`ParamSet`](tutti_graph::ParamSet) or the graph's `set_param`
+/// (a release under 1 ms reads as 1 ms, and a NaN threshold or ceiling is ignored).
+///
+/// **The threshold and the ceiling are read per frame** when the graph drives them: a lane
+/// on their ports is the recurrence's own ([`Feed`](tutti_dsp::Feed) lanes 0 and 1), and
+/// the cell is the base a frame nobody drives (or a non-finite one) is read at. **The
+/// release is on the stream grid** (16 frames from the last reset,
+/// [`Family::CADENCE`](tutti_dsp::Family::CADENCE)): a cell write or a driven port is
+/// sampled at the grid's solve frame, so it reaches the render within 16 frames and the
+/// render does not depend on how the stream is cut into blocks. Every coefficient lands
+/// whole: a glided ceiling would let a sample past the new one.
 ///
 /// # In a graph
 ///
-/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over threshold, ceiling and release, and a fork of it starts from the
-/// values last set through that set. The graph prepares it at the device
-/// rate before its first block, which sizes the ring.
-pub struct LimiterNode {
-    threshold_db: Param<Db>,
-    ceiling_db: Param<Db>,
-    release: Param<Seconds>,
-    /// The last finite release, driven or written: a NaN release would
-    /// make the envelope's coefficient NaN, and the envelope NaN for good
-    /// (see [`LastGood`]).
-    good_release: LastGood,
-
-    ring: LookaheadRing,
-    /// The lookahead window **as requested**, which is the only form a rate
-    /// change can be re-derived from.
-    ///
-    /// The ring's frame count is a lossy view of this: it is `_ceil`ed, so
-    /// recovering seconds by dividing the count by the rate returns a slightly
-    /// *longer* window than was asked for. Re-ceiling that at a new rate ratchets
-    /// the lookahead up a little on every re-`prepare`, and the drift
-    /// accumulates rather than cancelling — 5.000 ms becomes 5.011, then 5.021,
-    /// then 5.034 across a few device changes. Keeping the request means every
-    /// derivation starts from the same number, so the count is a pure function
-    /// of (`lookahead`, `sample_rate`) and rate changes commute.
-    ///
-    /// Same reason `release` is a `Param<Seconds>` and the compressor and gate
-    /// keep their `AttackRelease` in [`Seconds`]: the derived coefficient is
-    /// never the recoverable form.
-    lookahead: Seconds,
-    /// Audio channel width. Gain reduction is linked across all channels (peak
-    /// = max-abs over the frame), matching the stereo-linked design.
-    layout: ChannelLayout,
-    /// [`layout`](Self::layout)'s count, cached as the iteration stride.
-    ///
-    /// The layout is the *declaration*; this is the arithmetic derived from it.
-    /// They are kept as separate fields because `process` loops over the
-    /// channels, and deriving the count there would put a `match` in the loop.
-    /// Set once at construction, so the two can never disagree.
-    channels: usize,
-    /// The per-frame lane a block works in (peak level, then window-min
-    /// gain), sized to the prepared `MaxBlock`; a longer block runs in
-    /// lane-sized chunks.
-    lane: Vec<f32>,
-    gain_reduction_db: Db,
-    sample_rate: SampleRate,
-    kernel: LimiterKernel,
-}
-
-impl std::fmt::Debug for LimiterNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LimiterNode")
-            .field("threshold_db", &self.threshold_db)
-            .field("ceiling_db", &self.ceiling_db)
-            .field("release", &self.release)
-            .field("good_release", &self.good_release)
-            .field("ring", &self.ring)
-            .field("lookahead", &self.lookahead)
-            .field("layout", &self.layout)
-            .field("channels", &self.channels)
-            .field("gain_reduction_db", &self.gain_reduction_db)
-            .field("sample_rate", &self.sample_rate)
-            .field("kernel", &self.kernel)
-            .finish_non_exhaustive()
-    }
-}
-
-// The params a [`LimiterNode`] lets the graph modulate, in port order.
-// The ceiling and threshold are read per sample; the release is
-// block-rate in the node, so a driven port is read once per block
-// (`ParamInput::last_frame`).
-tutti_graph::declare_params!([] LimiterNode, n {
-    Ceiling => Db = &n.ceiling_db,
-    Threshold => Db = &n.threshold_db,
-    Release => Seconds = &n.release,
-});
+/// A graph node ([`IntoNode`](tutti_graph::IntoNode)): inserted, a fork of it starts from
+/// the values last set through its [`ParamSet`](tutti_graph::ParamSet). The graph prepares
+/// it at the device rate before its first block, which sizes the delay.
+pub type LimiterNode = FamilyNode<LimiterFamily>;
 
 impl LimiterNode {
-    /// Builds a stereo lookahead limiter with a 5 ms lookahead and 100 ms
-    /// release.
+    /// A limiter on the bus `input`, as wide as it, delaying by `lookahead` (at least one
+    /// frame) and running at `controls`.
     ///
-    /// `ceiling_db` is the hard output bound and `threshold_db` the input
-    /// level that reaches it, both in [`Db`] and typically negative. The
-    /// threshold drives the input: signal under it is moved by
-    /// `ceiling_db - threshold_db` (a boost when the ceiling is above the
-    /// threshold, as with the usual `-6` and `-0.3`), and signal over it is
-    /// held at the ceiling. A mastering limiter often sits at a ceiling of
-    /// `-0.3` to leave inter-sample headroom. Adjust the window with
-    /// [`with_lookahead`](Self::with_lookahead) and the recovery with
-    /// [`with_release`](Self::with_release).
+    /// **The lookahead is the node's latency**: the audio is delayed by the window so the
+    /// gain decision can run ahead of it. Longer catches peaks more transparently and
+    /// delays more; [`Lookahead::DEFAULT`], 5 ms, is a typical compromise.
+    /// It is fixed here, because it sizes the delay: the frame count is derived from these
+    /// seconds at the rate [`Node::prepare`](tutti_graph::Node::prepare) hands it, and
+    /// again at every other rate.
     ///
-    /// The lookahead ring is sized at the rate [`Node::prepare`] hands it.
-    pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
-        Self::with_channels(ChannelLayout::STEREO, threshold_db, ceiling_db)
-    }
-
-    /// An `n`-channel lookahead limiter (clamped to at least mono), with gain
-    /// reduction **linked** across all channels.
-    ///
-    /// The peak is the max-abs over the whole frame and one gain is applied to
-    /// every channel, so a loud peak in one channel ducks them all together and
-    /// the image does not shift — the surround generalization of the stereo
-    /// design. Parameters are as [`new`](Self::new).
-    ///
-    /// The lookahead ring is sized in frames from the 5 ms window, and the
-    /// envelope follower's coefficients are derived the same way, at the
-    /// rate [`Node::prepare`] hands it; both are re-derived from the stored
-    /// window whenever the graph re-prepares it at a new rate.
-    pub fn with_channels(
-        channels: impl Into<ChannelLayout>,
-        threshold_db: impl Into<Db>,
-        ceiling_db: impl Into<Db>,
-    ) -> Self {
-        let layout = channels.into();
-        // An empty layout would leave the rings empty and make
-        // the shape report no channels, so clamp to at least mono.
-        let layout = ChannelLayout::from_count(layout.count().max(1));
-        let n = usize::from(layout.count());
-        let lookahead_secs = Seconds(0.005);
-        // `_ceil`, the allocation form: the ring must hold at *least* the
-        // lookahead, and nearest-rounding under-allocates for half of all
-        // inputs.
-        let lookahead_samples = lookahead_secs.to_samples_ceil(SampleRate::DEFAULT).get();
-
-        Self {
-            threshold_db: Param::new(threshold_db.into()),
-            ceiling_db: Param::new(ceiling_db.into()),
-            release: Param::new(Seconds(0.1)),
-            good_release: LastGood::fixed(0.1),
-            ring: LookaheadRing::new(n, lookahead_samples),
-            lookahead: lookahead_secs,
-            layout,
-            channels: n,
-            lane: vec![0.0; DEFAULT_LANE],
-            gain_reduction_db: Db::UNITY,
-            sample_rate: SampleRate::DEFAULT,
-            kernel: LimiterKernel::new(Seconds(0.1), SampleRate::DEFAULT),
-        }
-    }
-
-    /// The audio width this limiter was built for.
-    pub fn layout(&self) -> ChannelLayout {
-        self.layout
-    }
-
-    /// Sets the lookahead window in [`Seconds`], reallocating the rings.
-    ///
-    /// **This is the node's latency**: the audio is delayed by the window so
-    /// the gain decision can run ahead of it. Longer catches peaks more
-    /// transparently and delays more; the 5 ms default is a typical
-    /// compromise. Clamped to at least one frame.
-    ///
-    /// Allocates and clears the rings, so call it during setup — never on a
-    /// live node.
+    /// The gain is linked: the peak is the loudest channel of the frame, and every channel
+    /// is scaled by the one gain, so a loud peak in one ducks them all together and the
+    /// image does not shift. `new(BusTopology::STEREO, ..)` is [`stereo`](Self::stereo); an
+    /// `n`-channel one on the engine's order for that width is
+    /// `new(BusTopology::assumed(n)?, ..)`, which refuses a width past one bus.
     #[must_use]
-    pub fn with_lookahead(mut self, lookahead: impl Into<Seconds>) -> Self {
-        // Keep the request, not just the count it derives: `prepare`
-        // re-derives from this, and a count is `_ceil`ed and so cannot round-trip
-        // back to the seconds that produced it.
-        self.lookahead = lookahead.into();
-        // Ceil: a lookahead ring must hold at least the requested window.
-        let samples = self.lookahead.to_samples_ceil(self.sample_rate);
-        self.ring.resize(samples.get().max(1));
-        self
+    pub fn new(input: BusTopology, lookahead: Lookahead, controls: LimiterControls) -> Self {
+        Self::live(LimiterFamily::new(input, lookahead), controls)
     }
 
-    /// Sets how fast the limiter recovers after reduction, in [`Seconds`],
-    /// floored at 1 ms.
-    ///
-    /// Short releases are louder but pump audibly on dense material; longer
-    /// ones sound transparent and hold reduction through a passage.
+    /// A mono limiter at the default lookahead: 1 input, 1 output.
     #[must_use]
-    pub fn with_release(self, release_secs: impl Into<Seconds>) -> Self {
-        self.release.store(Self::floor_release(release_secs.into()));
-        self
+    pub fn mono(controls: LimiterControls) -> Self {
+        Self::new(BusTopology::MONO, Lookahead::DEFAULT, controls)
     }
 
-    /// The shared threshold cell in [`Db`] — where reduction begins.
-    ///
-    /// **A threshold the graph feeds overrides this per sample.** Shared
-    /// across clones.
-    pub fn threshold(&self) -> Arc<AtomicF32> {
-        self.threshold_db.as_atomic()
-    }
-
-    /// The shared ceiling cell in [`Db`] — the hard bound the output is not
-    /// allowed to exceed.
-    ///
-    /// **A ceiling the graph feeds overrides this per sample.**
-    pub fn ceiling(&self) -> Arc<AtomicF32> {
-        self.ceiling_db.as_atomic()
-    }
-
-    /// The shared release-time cell in [`Seconds`].
-    ///
-    /// Read once per block to recompute the envelope coefficients. The attack
-    /// is fixed at zero — a limiter must not let a peak through.
-    pub fn release_time(&self) -> Arc<AtomicF64> {
-        self.release.as_atomic()
-    }
-
-    /// Sets the threshold in [`Db`], unclamped.
-    ///
-    /// While the graph modulates the threshold this sets the *base* its
-    /// modulation rides on.
-    pub fn set_threshold(&self, db: impl Into<Db>) {
-        self.threshold_db.store(db.into());
-    }
-
-    /// Sets the output ceiling in [`Db`], unclamped.
-    pub fn set_ceiling(&self, db: impl Into<Db>) {
-        self.ceiling_db.store(db.into());
-    }
-
-    /// Sets the release time in [`Seconds`], floored at 1 ms.
-    pub fn set_release(&self, secs: impl Into<Seconds>) {
-        self.release.store(Self::floor_release(secs.into()));
-    }
-
-    /// A release time as the setters store it: floored at 1 ms. Shared by
-    /// the setters and a driven port's value, so a driven negative release
-    /// releases at the floor rather than instantly.
-    #[inline]
-    fn floor_release(secs: Seconds) -> Seconds {
-        Seconds(secs.get().max(0.001))
-    }
-
-    /// [`floor_release`](Self::floor_release) for a driven port's `f32`.
-    #[inline]
-    fn clamp_release(secs: f32) -> f32 {
-        secs.max(0.001)
-    }
-
-    /// The gain reduction currently applied, in [`Db`] — a **measurement**, for
-    /// driving a reduction meter.
-    ///
-    /// [`Db::UNITY`] means nothing is being reduced. This is the window
-    /// minimum, so it reflects the lookahead decision rather than the
-    /// instantaneous peak.
-    pub fn gain_reduction_db(&self) -> Db {
-        self.gain_reduction_db
-    }
-
-    #[inline]
-    /// `driven` is the block's release from the node's param port when a
-    /// lane drives it; `None` reads the cell.
-    fn update_coefficients(&mut self, driven: Option<f32>) {
-        // The setter's floor at the point of use, so a driven value (or a
-        // raw `ParamSet` write) gets it too; after the `LastGood` read,
-        // which needs to see a NaN that `max` would hide.
-        let release = Self::clamp_release(
-            self.good_release
-                .read(driven.unwrap_or_else(|| self.release.load().to_f32())),
-        );
-        self.kernel.update_coefficients(Seconds::from_f32(release));
+    /// A stereo limiter at the default lookahead: 2 inputs, 2 outputs, linked.
+    #[must_use]
+    pub fn stereo(controls: LimiterControls) -> Self {
+        Self::new(BusTopology::STEREO, Lookahead::DEFAULT, controls)
     }
 }
 
-impl Node for LimiterNode {
-    /// `channels` in and out, ceiling, threshold and release modulatable,
-    /// in that port order. Its latency is the lookahead ring's, at the
-    /// prepared rate: the audio is delayed by the window.
-    ///
-    /// It has no tail. A tail excludes latency, and the ring is a pure
-    /// delay of exactly that latency: when the input stops it holds the last
-    /// `lookahead` frames, which come out within the latency PDC compensates.
-    /// The release envelope adds nothing after them: it shapes gain, and gain
-    /// applied to silence is silence.
-    fn shape(&self) -> Shape {
-        Shape::through_unassigned(self.layout)
-            .with_cost(tutti_graph::Cost::Moderate)
-            .with_latency(Latency::new(Samples(self.ring.lookahead_samples())))
-            .with_tail(Tail::None)
-            .with_param_addrs(self.declared_ports().as_slice())
-    }
+/// The limiter's controls: the threshold and the ceiling, which are read per frame, and the
+/// release. A threshold and a ceiling of `+-inf` are levels, and a NaN is not.
+///
+/// The ports are in this order: threshold, ceiling, release.
+#[derive(Clone, Copy, Debug)]
+pub struct LimiterSet;
 
-    fn prepare(&mut self, p: &Prepare) {
-        // Re-derive the frame count from the *requested* window, so the
-        // wall-clock lookahead survives a rate change. Deriving it from the
-        // ring's current count instead would re-ceil an already-ceiled value and
-        // ratchet the window up on every call — see the `lookahead` field.
-        let sample_rate = p.sample_rate();
-        self.sample_rate = sample_rate;
-        self.kernel
-            .set_sample_rate(sample_rate, self.release.load());
-        let new_samples = self.lookahead.to_samples_ceil(sample_rate).get();
-        self.ring.resize(new_samples.max(1));
-        let lane_len = p.max_block().get().max(1);
-        if self.lane.len() != lane_len {
-            self.lane = vec![0.0; lane_len];
-        }
-    }
+control_set! {
+    LimiterSet(_s): LimiterControls = LimiterControls::DEFAULT;
+    live: (all);
+    Threshold => Db = threshold { fast, not_nan },
+    Ceiling => Db = ceiling { fast, not_nan },
+    Release => Seconds = release { whole };
 
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames();
-        self.update_coefficients(
-            self.declared_param::<{ UnitParam::Release as u16 }>(&io)
-                .last_frame(),
-        );
-        let (ceiling_fed, threshold_fed) = (
-            self.declared_param::<{ UnitParam::Ceiling as u16 }>(&io)
-                .frames(),
-            self.declared_param::<{ UnitParam::Threshold as u16 }>(&io)
-                .frames(),
-        );
-        let base_threshold = self.threshold_db.load();
-        let base_ceiling = self.ceiling_db.load();
-        let (inputs, mut outputs) = io.split();
-        let block = LimiterBlock::new(base_threshold, base_ceiling, threshold_fed, ceiling_fed);
-
-        // Borrowed in place, so a panic caught outside leaves the lane intact.
-        let lane = &mut self.lane;
-        let mut last_gain = None;
-        let mut start = 0;
-        while start < size {
-            let end = (start + lane.len()).min(size);
-            let gains = &mut lane[..end - start];
-
-            // Linked peak: the max-abs over the frame, taken a channel at a
-            // time (`max` is exact, so the order does not matter).
-            gains.fill(0.0);
-            for c in 0..self.channels {
-                for (p, &x) in gains.iter_mut().zip(&inputs.get(c)[start..end]) {
-                    *p = fold_peak(*p, x);
-                }
-            }
-
-            // The recursive half: the envelope and the sliding minimum, one
-            // frame at a time; each frame's peak becomes its window-min gain.
-            for (k, p) in gains.iter_mut().enumerate() {
-                let envelope = self.kernel.gain(&block, start + k, *p);
-                *p = self.ring.push_gain(envelope);
-            }
-            last_gain = gains.last().copied();
-
-            for c in 0..self.channels {
-                self.ring.delay_scaled(
-                    c,
-                    &inputs.get(c)[start..end],
-                    gains,
-                    &mut outputs.get(c)[start..end],
-                );
-            }
-            start = end;
-        }
-
-        // Metering only, read after the block, so the block's last frame is
-        // the only one that is converted. Reported as a positive magnitude,
-        // the sign convention `CompressorNode::gain_reduction_db` also
-        // follows.
-        //
-        // `amplitude_to_db` owns the `log10(0)` guard, so silence pins at
-        // `Db::FLOOR` rather than `-inf`, the same floor the detector path
-        // above uses.
-        if let Some(min_gain) = last_gain {
-            self.gain_reduction_db = -amplitude_to_db(Amplitude::new(min_gain));
-        }
-        Status::Modified
-    }
-
-    fn reset(&mut self) {
-        self.ring.clear();
-        self.kernel.reset();
-        self.gain_reduction_db = Db::UNITY;
-    }
-
-    fn param_base(&self, k: usize) -> Option<f32> {
-        self.declared_base(k)
+    fn defaults(&self) -> LimiterControls {
+        LimiterControls::DEFAULT
     }
 }
 
-impl ParamNode for LimiterNode {
-    /// Threshold, ceiling and release.
-    fn param_set(&self) -> ParamSet {
-        self.declared_set()
+/// A limiter rings on only as a gain (it scales its delayed input), and a tail excludes
+/// the latency the delay is, so it declares no tail and never parks.
+impl NodeFamily for LimiterFamily {
+    type Set = LimiterSet;
+
+    const RINGS: Rings = Rings::Silent;
+    const SAMPLING: tutti_dsp::Cadence = <Self as tutti_dsp::Family>::CADENCE;
+
+    fn set(&self, _: &LimiterControls) -> LimiterSet {
+        LimiterSet
     }
 
-    /// A clone with its three cells detached, its ring and envelope
-    /// cleared.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.threshold_db.detach();
-        fork.ceiling_db.detach();
-        fork.release.detach();
-        Node::reset(&mut fork);
-        fork
-    }
-}
-
-/// Inserted with its [`ParamSet`] as its controls and a fork from the values
-/// last set through it ([`tutti_graph::param_parts`]).
-impl IntoNode for LimiterNode {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-/// Shares the control cells (the template [`tutti_graph::param_parts`]
-/// forks from); the ring and envelope are copied.
-impl Clone for LimiterNode {
-    fn clone(&self) -> Self {
-        Self {
-            threshold_db: self.threshold_db.handle(),
-            ceiling_db: self.ceiling_db.handle(),
-            release: self.release.handle(),
-            good_release: self.good_release,
-            ring: self.ring.clone(),
-            // Carried, not re-derived: a clone may be prepared at a different
-            // rate, so a clone that lost the request would re-derive its
-            // lookahead from the ceiled count.
-            lookahead: self.lookahead,
-            layout: self.layout,
-            channels: self.channels,
-            lane: self.lane.clone(),
-            gain_reduction_db: self.gain_reduction_db,
-            sample_rate: self.sample_rate,
-            kernel: self.kernel.clone(),
-        }
-    }
+    fn capacity(&self, _: SampleRate) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
-    use tutti_dsp::compute_limiter_gain;
     use tutti_graph::contract::{assert_param_fork, drive};
-    use tutti_types::MaxBlock;
+    use tutti_graph::{Node, ParamNode, Prepare};
+    use tutti_types::{Amplitude, ChannelLayout, Latency, MaxBlock, Samples, Tail, UnitParam};
+
+    /// The usual mastering limiter at the default lookahead, as the node's own tests make
+    /// it: stereo, at `threshold` and `ceiling`, with the default release.
+    fn limiter(threshold: Db, ceiling: Db) -> LimiterNode {
+        LimiterNode::stereo(LimiterControls {
+            threshold,
+            ceiling,
+            ..LimiterControls::DEFAULT
+        })
+    }
+
+    /// `limiter` with a release of `release` seconds.
+    fn limiter_releasing(threshold: Db, ceiling: Db, release: f64) -> LimiterNode {
+        LimiterNode::stereo(LimiterControls {
+            threshold,
+            ceiling,
+            release: Seconds(release),
+        })
+    }
+
+    fn amplitude_to_db(a: f32) -> f32 {
+        tutti_dsp::amplitude_to_db(Amplitude::new(a)).get()
+    }
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
     #[test]
     fn a_limiter_fork_shares_no_cell() {
-        assert_param_fork(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)));
+        assert_param_fork(limiter(Db::new(-6.0), Db::new(-0.3)));
     }
 
-    /// A limiter is **born at the placeholder rate**, and `prepare` is
-    /// what makes its lookahead a wall-clock 5 ms rather than a frame count.
-    ///
-    /// This is the invariant the constructor docs promise, asserted as the
-    /// *duration* the ring holds rather than as a frame count, because the
-    /// count is supposed to change with the rate and only the duration is
-    /// supposed to survive. Both halves matter and neither implies the other:
-    ///
-    /// - Uncorrected, the ring holds 221 frames — which is 5 ms at 44100 and
-    ///   only 4.6 ms at 48000. That is the documented failure: a limiter that
-    ///   sees a peak later than its reported latency promises.
-    /// - Corrected, the count grows to 240 so the duration stays 5 ms.
-    ///
-    /// Asserted through the shape's declared latency, the same figure PDC
-    /// compensates against, so a regression here is a regression in what the graph is told —
-    /// not merely in a private field.
+    /// Each constructor's ports: `mono` is one channel in and out, `stereo` two, and
+    /// `new` any width on its bus, with no key bus (a limiter limits what it delays).
+    #[test]
+    fn each_constructor_declares_its_ports() {
+        let c = LimiterControls::DEFAULT;
+        let ports = |n: LimiterNode| {
+            let shape = n.shape();
+            (shape.audio_in().count(), shape.audio_out().count())
+        };
+        assert_eq!(ports(LimiterNode::mono(c)), (1, 1));
+        assert_eq!(ports(LimiterNode::stereo(c)), (2, 2));
+        let wide =
+            BusTopology::assumed(ChannelLayout::from(6u16)).expect("six channels are one bus");
+        assert_eq!(
+            ports(LimiterNode::new(wide, Lookahead::of(Seconds(0.002)), c)),
+            (6, 6)
+        );
+    }
+
+    /// The controls given to a constructor are the cells' values: the shape declares the
+    /// ports in the set's order (threshold, ceiling, release), no tail, the latency of the
+    /// lookahead the constructor was given, and a base for each that is the control's.
+    #[test]
+    fn the_constructor_controls_are_the_cells_and_the_lookahead_is_the_latency() {
+        let c = LimiterControls {
+            threshold: Db(-9.0),
+            ceiling: Db(-2.0),
+            release: Seconds(0.25),
+        };
+        let lim = prepared_at(
+            LimiterNode::new(BusTopology::STEREO, Lookahead::of(Seconds(0.002)), c),
+            RATE_44K,
+        );
+        let shape = lim.shape();
+        assert_eq!(
+            shape.params.as_slice(),
+            &[UnitParam::Threshold, UnitParam::Ceiling, UnitParam::Release][..]
+        );
+        assert_eq!(shape.tail, Tail::None, "a tail excludes latency");
+        // 2 ms at 44.1 kHz is 88.2 frames, rounded up.
+        assert_eq!(shape.latency, Latency::new(Samples(89)));
+        assert_eq!(lim.param_base(0), Some(-9.0), "the threshold's base");
+        assert_eq!(lim.param_base(1), Some(-2.0), "the ceiling's base");
+        assert_eq!(lim.param_base(2), Some(0.25), "the release's base");
+        // A shorthand's lookahead is the default's: 5 ms is 220.5 frames, rounded up.
+        let mono = prepared_at(LimiterNode::mono(c), RATE_44K);
+        assert_eq!(mono.shape().latency, Latency::new(Samples(221)));
+    }
+
+    /// A limiter is **born at the placeholder rate**, and `prepare` is what makes its
+    /// lookahead a wall-clock duration rather than a frame count: the window is `ceil`ed
+    /// from the *exact* product (0.1 s at 48 kHz is 4800 frames, where the `f32` nearest
+    /// 0.1 would make 4801).
     #[test]
     fn lookahead_frames_are_the_ceil_of_the_exact_product() {
-        // 0.1 s at 48 kHz: `0.1 * 48000` is 4800 in f64, so ceil is 4800. The
-        // f32 nearest 0.1 times 48000 is 4800.00007, which ceils to 4801.
-        let device = tutti_types::SampleRate(48_000.0);
-        let mut lim = LimiterNode::new(Db::new(-6.0), Db::new(-0.3)).with_lookahead(Seconds(0.1));
+        let device = SampleRate(48_000.0);
+        let mut lim = LimiterNode::new(
+            BusTopology::STEREO,
+            Lookahead::of(Seconds(0.1)),
+            LimiterControls::DEFAULT,
+        );
         lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
         assert_eq!(
-            lim.ring.lookahead_samples(),
-            (0.1_f64 * 48_000.0).ceil() as usize
+            lim.shape().latency,
+            Latency::new(Samples((0.1_f64 * 48_000.0).ceil() as usize))
         );
-        assert_eq!(lim.ring.lookahead_samples(), 4800);
+        assert_eq!(lim.shape().latency.samples().get(), 4800);
     }
 
+    /// The lookahead is a duration, and `prepare` is what preserves it: the count is
+    /// right for the placeholder rate and short at the device's until the node is prepared,
+    /// then it is the same wall-clock window; and the graph is told the corrected figure,
+    /// the one PDC compensates against. Repeated rate changes land on the same count each
+    /// time (the count is `ceil`ed, so re-deriving it from the count rather than from the
+    /// request would ratchet it up).
     #[test]
     fn lookahead_is_a_duration_and_prepare_is_what_preserves_it() {
         const LOOKAHEAD: Seconds = Seconds(0.005);
-        let device = tutti_types::SampleRate(48_000.0);
+        let device = SampleRate(48_000.0);
+        let mut lim = limiter(Db::new(-6.0), Db::new(-0.3));
 
-        let mut lim = LimiterNode::new(Db::new(-6.0), Db::new(-0.3));
-
-        // Born at the placeholder: the count is right for 44100 and wrong for
-        // the device the node is about to run on.
-        let born = lim.ring.lookahead_samples();
+        let frames = |lim: &LimiterNode| lim.shape().latency.samples().get();
+        let born = frames(&lim);
         assert_eq!(
             born,
             LOOKAHEAD.to_samples_ceil(SampleRate::DEFAULT).get(),
-            "construction must size the ring at the placeholder rate"
+            "construction sizes the delay at the placeholder rate"
         );
         let born_secs = born as f64 / device.get();
         assert!(
             born_secs < LOOKAHEAD.get() * 0.95,
-            "an uncorrected ring must be audibly short at {device:?} — that is \
-             the hazard the constructor documents; got {born_secs:.5}s of the \
-             {:.5}s asked for",
+            "an uncorrected delay is audibly short at {device:?}: {born_secs:.5}s of the {:.5}s",
             LOOKAHEAD.get()
         );
 
-        // The correction: same wall-clock window, more frames.
         lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
-        let fixed = lim.ring.lookahead_samples();
-        assert_eq!(
-            fixed,
-            LOOKAHEAD.to_samples_ceil(device).get(),
-            "prepare must re-derive the frame count at the new rate"
-        );
+        let fixed = frames(&lim);
+        assert_eq!(fixed, LOOKAHEAD.to_samples_ceil(device).get());
         assert!(
             fixed > born,
-            "a higher rate needs more frames for the same duration ({born} -> {fixed})"
+            "a higher rate needs more frames ({born} -> {fixed})"
         );
-        let fixed_secs = fixed as f64 / device.get();
-        assert!(
-            (fixed_secs - LOOKAHEAD.get()).abs() < 1e-4,
-            "the wall-clock lookahead must survive the rate change; got {fixed_secs:.5}s"
-        );
+        assert!(((fixed as f64 / device.get()) - LOOKAHEAD.get()).abs() < 1e-4);
 
-        // And the graph is told the corrected figure, not the placeholder one.
-        assert_eq!(
-            lim.shape().latency,
-            Latency::new(Samples(fixed)),
-            "reported latency must track the resized ring"
-        );
-
-        // Repeated rate changes must land on the same count each time. The
-        // window is `_ceil`ed, so re-deriving it from the ring's *count* rather
-        // than from the stored request re-rounds an already-rounded value and
-        // ratchets the lookahead up a little on every call — a drift that
-        // accumulates instead of cancelling. Going back and forth pins that the
-        // derivation is a pure function of (request, rate).
         for _ in 0..4 {
             lim.prepare(&Prepare::new(
                 SampleRate::DEFAULT,
                 MaxBlock::of(Samples(64)),
             ));
             assert_eq!(
-                lim.ring.lookahead_samples(),
+                frames(&lim),
                 born,
-                "returning to the original rate must return the original count"
+                "back to the original rate, the original count"
             );
             lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
             assert_eq!(
-                lim.ring.lookahead_samples(),
+                frames(&lim),
                 fixed,
-                "a rate change must not accumulate rounding across calls"
+                "a rate change does not accumulate rounding"
             );
         }
     }
 
-    /// The limiter's output ends exactly its latency after its input:
-    /// nothing rings once the lookahead is compensated, so it declares no
-    /// tail. A tone over the threshold (so the release envelope is mid-swing
-    /// when the input stops) leaves its last non-zero frame `lookahead`
-    /// frames after the last input frame, and silence after that.
+    /// The limiter's output ends exactly its latency after its input: nothing rings once
+    /// the lookahead is compensated, so it declares no tail. A tone over the threshold (so
+    /// the release envelope is mid-swing when the input stops) leaves its last non-zero
+    /// frame `lookahead` frames after the last input frame, and silence after that.
     #[test]
     fn the_limiter_stops_at_its_latency_and_declares_no_tail() {
-        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
+        let mut lim = prepared_at(limiter(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
         let shape = lim.shape();
         let n = shape.latency.samples().get();
         assert!(n > 1, "a lookahead to compensate");
@@ -632,129 +327,84 @@ mod tests {
         );
     }
 
+    /// A control written through the node's `ParamSet` reaches the render: the ceiling set
+    /// to -20 dB bounds what comes out of the delay from the grid's next solve (16 frames)
+    /// on, at the new ceiling and not the old.
     #[test]
-    fn test_limiter_reduces_loud_signal() {
-        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
-
-        let loud = 1.0f32;
-        let mut out = [0.0f32; 2];
-
-        for _ in 0..500 {
-            tick(&mut lim, &[loud, loud], &mut out);
-        }
-
-        let ceiling_lin = Db::new(-0.3).to_amplitude().get();
-        assert!(
-            out[0].abs() <= ceiling_lin + 0.05,
-            "Output {:.4} should be near ceiling {:.4}",
-            out[0].abs(),
-            ceiling_lin
+    fn a_ceiling_set_by_address_reaches_the_limiter() {
+        // A release of 5 ms: the envelope starts at 0, and settles within the warm-up.
+        let mut lim = prepared_at(
+            limiter_releasing(Db::new(-6.0), Db::new(-0.3), 0.005),
+            RATE_44K,
         );
-    }
-
-    #[test]
-    fn test_limiter_passes_quiet_signal() {
-        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
-
-        let quiet = 0.1f32;
+        let latency = lim.shape().latency.samples().get();
         let mut out = [0.0f32; 2];
-
-        for _ in 0..500 {
-            tick(&mut lim, &[quiet, quiet], &mut out);
-        }
-
-        assert!(
-            out[0].abs() > 0.01,
-            "Quiet signal should pass through, got {}",
-            out[0]
-        );
-    }
-
-    #[test]
-    fn test_limiter_stereo_linked() {
-        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
-
-        let mut out = [0.0f32; 2];
-
-        for _ in 0..500 {
-            tick(&mut lim, &[1.0, 0.1], &mut out);
-        }
-
-        if out[0].abs() > 0.001 && out[1].abs() > 0.001 {
-            let in_ratio = 0.1 / 1.0;
-            let out_ratio = out[1].abs() / out[0].abs();
-            assert!(
-                (in_ratio - out_ratio).abs() < 0.2,
-                "Stereo link: in_ratio={in_ratio}, out_ratio={out_ratio}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_limiter_reset() {
-        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
-
-        let mut out = [0.0f32; 2];
-        for _ in 0..500 {
+        for _ in 0..2_000 {
             tick(&mut lim, &[1.0, 1.0], &mut out);
         }
+        let old = Db(-0.3).to_amplitude().get();
+        assert!(out[0] > 0.9 * old, "limited at the old ceiling: {}", out[0]);
 
-        lim.reset();
-        assert_eq!(lim.gain_reduction_db(), Db::UNITY);
-    }
-
-    // ── Modulated params (the graph's param feed) ───────────────────────────
-
-    /// The shape declares ceiling, threshold and release, and never changes the arity: a modulatable limiter is as
-    /// wide as it was built. (Doc 014 §12.6 widened the list: a route onto
-    /// any of these was refused once the frame-rate driver went.)
-    #[test]
-    fn the_shape_declares_ceiling_threshold_and_release() {
-        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3));
-        assert_eq!(
-            l.shape().params.as_slice(),
-            &[UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release][..]
-        );
-        assert_eq!(
-            (l.shape().audio_in().count(), l.shape().audio_out().count()),
-            (6, 6)
-        );
-        assert_eq!(l.param_base(0), Some(-0.3), "the ceiling's base");
-        assert_eq!(l.param_base(1), Some(-6.0), "the threshold's base");
-        assert_eq!(
-            l.param_base(2),
-            Some(l.release_time().load(std::sync::atomic::Ordering::Acquire) as f32),
-            "the release's base"
-        );
-    }
-
-    #[test]
-    fn limiter_unmodulated_matches_held_constant() {
-        // A node whose fed ceiling and threshold are held at the same values
-        // as a plain node's atomics must produce identical output.
-        let mut plain = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
-
-        let mut modn = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
-
-        let mut plain_out = [0.0f32; 2];
-        let mut mod_out = [0.0f32; 2];
-        for n in 0..2000 {
-            // Mix of loud and quiet to exercise gain reduction + release.
-            let s = if n % 400 < 200 { 0.9 } else { 0.05 };
-            tick(&mut plain, &[s, s], &mut plain_out);
-            // Held: ceiling = -0.3, threshold = -6.0.
-            tick_fed(&mut modn, &[s, s], &[Some(-0.3), Some(-6.0)], &mut mod_out);
-            assert!(
-                (plain_out[0] - mod_out[0]).abs() < 1e-6
-                    && (plain_out[1] - mod_out[1]).abs() < 1e-6,
-                "modulated-held output diverges from plain at sample {n}: {:?} vs {:?}",
-                plain_out,
-                mod_out
-            );
+        assert!(lim.param_set().set(UnitParam::Ceiling, -20.0));
+        let new = Db(-20.0).to_amplitude().get();
+        // What is fed from now on, after the solve, leaves a lookahead later.
+        for i in 0..16 + latency + 64 {
+            tick(&mut lim, &[1.0, 1.0], &mut out);
+            if i >= 16 + latency {
+                assert!(out[0].abs() <= new * (1.0 + 1e-6), "frame {i}: {}", out[0]);
+            }
         }
+        assert!(out[0] > 0.9 * new, "and it is the new ceiling: {}", out[0]);
     }
 
-    // ── Width-native (N-channel) ─────────────────────────────────────────────
+    /// A driven ceiling lane is the ceiling of each frame, **not the one the stream's
+    /// 16-frame grid samples**: a lane that is 0 dB on even frames and -20 dB on odd ones
+    /// (the grid's frames are all even) bounds what comes out of the delay for frame `i` by
+    /// frame `i`'s own ceiling, which a ceiling read at the grid's frames, always 0 dB, would
+    /// not.
+    #[test]
+    fn a_fed_ceiling_is_the_one_read_per_frame() {
+        let mut lim = prepared_at(
+            limiter_releasing(Db::new(-6.0), Db::new(-0.3), 0.005),
+            RATE_44K,
+        );
+        let latency = lim.shape().latency.samples().get();
+        let lane = |i: usize| if i.is_multiple_of(2) { 0.0f32 } else { -20.0 };
+        let low = Db(-20.0).to_amplitude().get();
+        let mut out = [0.0f32; 2];
+        let mut outputs = Vec::new();
+        for i in 0..4_000 {
+            tick_fed(&mut lim, &[1.0, 1.0], &[None, Some(lane(i))], &mut out);
+            outputs.push(out[0]);
+        }
+        let mut reached = false;
+        for (i, &y) in outputs.iter().enumerate().skip(latency) {
+            let bound = Db(lane(i - latency)).to_amplitude().get() * (1.0 + 1e-6);
+            assert!(y.abs() <= bound, "frame {i}: {y} over {bound}");
+            reached |= i > 2_000 && (i - latency) % 2 == 1 && y.abs() > 0.9 * low;
+        }
+        assert!(
+            reached,
+            "the -20 dB frames were limited to their own ceiling"
+        );
+    }
+
+    /// A threshold lane is the threshold of its frame: a quiet signal is moved by the drive
+    /// (the ceiling over the threshold in dB), so a fed -30 dB against the cell's -10 dB
+    /// raises it by 24 dB and not 4.
+    #[test]
+    fn a_fed_threshold_is_the_one_read_per_frame() {
+        let mut lim = prepared_at(
+            limiter_releasing(Db::new(-10.0), Db::new(-6.0), 0.001),
+            RATE_44K,
+        );
+        let mut out = [0.0f32; 2];
+        for _ in 0..4_000 {
+            tick_fed(&mut lim, &[0.01, 0.01], &[Some(-30.0), None], &mut out);
+        }
+        let gain_db = amplitude_to_db(out[0] / 0.01);
+        assert!((gain_db - 24.0).abs() < 1e-2, "{gain_db} dB");
+    }
 
     /// A stereo limiter fed on one channel only limits that channel and
     /// leaves the other silent: the graph hands an unconnected input
@@ -762,7 +412,7 @@ mod tests {
     /// always handed every input it declares).
     #[test]
     fn limiter_leaves_an_unfed_channel_silent() {
-        let mut lim = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
+        let mut lim = prepared_at(limiter(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
         let mut out = [0.0f32; 2];
         // Run past the 5 ms lookahead so the delayed signal emerges.
         for _ in 0..500 {
@@ -772,176 +422,32 @@ mod tests {
         assert_eq!(out[1], 0.0, "ch1 carries a signal it was never fed");
     }
 
+    /// A loud transient on one channel of a six-channel limiter reduces ALL channels by the
+    /// same linked gain (max-abs across the frame), preserving the inter-channel ratios.
     #[test]
-    fn limiter_with_channels_reports_arity() {
-        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3));
-        assert_eq!(l.shape().audio_in().count(), 6);
-        assert_eq!(l.shape().audio_out().count(), 6);
-    }
-
-    #[test]
-    fn limiter_with_channels_2_matches_new() {
-        let mut a = prepared_at(LimiterNode::new(Db::new(-6.0), Db::new(-0.3)), RATE_44K);
-        let mut b = prepared_at(
-            LimiterNode::with_channels(ChannelLayout::STEREO, Db::new(-6.0), Db::new(-0.3)),
-            RATE_44K,
-        );
-        let mut oa = [0.0f32; 2];
-        let mut ob = [0.0f32; 2];
-        for i in 0..2000 {
-            let s = if i % 400 < 200 { 0.95 } else { 0.05 };
-            tick(&mut a, &[s, s * 0.5], &mut oa);
-            tick(&mut b, &[s, s * 0.5], &mut ob);
-            assert_eq!(oa[0].to_bits(), ob[0].to_bits(), "L bit-diff at {i}");
-            assert_eq!(oa[1].to_bits(), ob[1].to_bits(), "R bit-diff at {i}");
-        }
-    }
-
-    #[test]
-    fn wide_limiter_gain_is_linked_across_all_channels() {
-        // A loud transient on one channel must reduce ALL channels by the same
-        // linked gain (max-abs across the frame), preserving inter-channel ratios.
+    fn a_wide_limiter_links_the_gain_across_all_channels() {
+        let wide =
+            BusTopology::assumed(ChannelLayout::from(6u16)).expect("six channels are one bus");
         let mut lim = prepared_at(
-            LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3)),
+            LimiterNode::new(wide, Lookahead::DEFAULT, LimiterControls::DEFAULT),
             RATE_44K,
         );
         let mut out = [0.0f32; 6];
-        // ch0 loud, others at half — the whole frame should be limited together.
+        // ch0 loud, the others at half: the whole frame is limited together.
         let inp = [1.0f32, 0.5, 0.5, 0.5, 0.5, 0.5];
         for _ in 0..500 {
             tick(&mut lim, &inp, &mut out);
         }
-        // Once limiting, every channel keeps its input ratio to ch0.
-        if out[0].abs() > 1e-3 {
-            for c in 1..6 {
-                let ratio = out[c].abs() / out[0].abs();
-                assert!(
-                    (ratio - 0.5).abs() < 0.1,
-                    "ch{c} not linked to ch0: ratio {ratio}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_limiter_sliding_minimum_releases_after_window() {
-        let mut lim = prepared_at(
-            LimiterNode::new(Db::new(-12.0), Db::new(-0.3)).with_lookahead(Seconds::new(0.002)),
-            RATE_44K,
-        );
-
-        let mut out = [0.0f32; 2];
-        tick(&mut lim, &[1.0, 1.0], &mut out);
-        let reduction_after_transient = lim.gain_reduction_db();
-        assert!(
-            reduction_after_transient > Db::UNITY,
-            "Loud input should trigger gain reduction"
-        );
-
-        for _ in 0..20000 {
-            tick(&mut lim, &[0.0, 0.0], &mut out);
-        }
-        assert!(
-            lim.gain_reduction_db() < Db(0.5),
-            "After long quiet, gain reduction should release: {}",
-            lim.gain_reduction_db()
-        );
-    }
-
-    /// The gain-reduction meter reports the block's last frame, and a block
-    /// longer than the lane runs in lane-sized chunks with the same result.
-    ///
-    /// The input steps from 0.2 to 0.8 at frame 600 of 1024, so the window
-    /// minimum differs between the block's first and last frame. The output
-    /// is the lookahead-delayed input times the window-min gain, so the last
-    /// frame's gain is `out / delayed input`, and the meter is that gain in
-    /// dB.
-    #[test]
-    fn the_meter_reports_the_blocks_last_frame_whatever_the_lane() {
-        for lane in [None, Some(100)] {
-            let mut lim = prepared_at(LimiterNode::new(Db::new(-12.0), Db::new(-0.3)), RATE_44K);
-            if let Some(n) = lane {
-                lim.lane.truncate(n);
-            }
-            let latency = lim.ring.lookahead_samples();
-            let input: Vec<f32> = (0..1024).map(|i| if i < 600 { 0.2 } else { 0.8 }).collect();
-            let out = drive(&mut lim, RATE_44K, &[&input, &input], &[]).remove(0);
-            let gain = out[1023] / input[1023 - latency];
-            let expected = -amplitude_to_db(Amplitude::new(gain)).get();
-            assert!(expected > 1.0, "the loud half is being reduced: {expected}");
+        assert!(out[0].abs() > 1e-3, "{}", out[0]);
+        for (c, &y) in out.iter().enumerate().skip(1) {
+            let ratio = y.abs() / out[0].abs();
             assert!(
-                (lim.gain_reduction_db().get() - expected).abs() < 1e-3,
-                "lane {lane:?}: meter {} against the last frame's {expected}",
-                lim.gain_reduction_db().get()
+                (ratio - 0.5).abs() < 1e-5,
+                "ch{c} not linked to ch0: ratio {ratio}"
             );
         }
     }
 
-    /// Each frame of output is the input delayed by the declared latency,
-    /// times the minimum of the envelope over the window that starts at that
-    /// delayed sample's own frame and ends at the current one (`latency + 1`
-    /// frames).
-    ///
-    /// The window used to be `latency` frames, ending one frame short of
-    /// the delayed sample's own target: by then the envelope had released one
-    /// step, and a peak could pass the ceiling. Correcting the window changes
-    /// this property, it does not weaken it: the expected gain is still
-    /// computed independently and compared at 1e-6.
-    ///
-    /// The test computes the envelope itself from the documented math: it
-    /// starts at 0, a lower target is taken at once (no attack), a higher
-    /// one is approached by the one-pole release, and the target is
-    /// `compute_limiter_gain` of the frame's peak. The input is quiet, steps
-    /// above the threshold at frame 300 and falls back at 700, so the gain
-    /// changes at the step, along the window and through the release.
-    #[test]
-    fn each_frame_is_scaled_by_its_own_window_minimum_gain() {
-        let release = 0.001;
-        let (threshold, ceiling) = (Db(-12.0), Db(-0.3));
-        for lane in [None, Some(100)] {
-            let mut lim = prepared_at(
-                LimiterNode::new(threshold, ceiling).with_release(Seconds::new(release)),
-                RATE_44K,
-            );
-            if let Some(n) = lane {
-                lim.lane.truncate(n);
-            }
-            let latency = lim.ring.lookahead_samples();
-            let input: Vec<f32> = (0..1200)
-                .map(|i| if (300..700).contains(&i) { 0.8 } else { 0.05 })
-                .collect();
-            let out = drive(&mut lim, RATE_44K, &[&input, &input], &[]).remove(0);
-
-            let coeff = Seconds(release).one_pole_coeff(RATE_44K);
-            let mut envelope = 0.0f32;
-            let envelopes: Vec<f32> = input
-                .iter()
-                .map(|&x| {
-                    let target = compute_limiter_gain(
-                        amplitude_to_db(Amplitude::new(x)),
-                        threshold,
-                        ceiling,
-                    )
-                    .get();
-                    envelope = if target < envelope {
-                        target
-                    } else {
-                        envelope + coeff * (target - envelope)
-                    };
-                    envelope
-                })
-                .collect();
-            for (i, &y) in out.iter().enumerate() {
-                let delayed = if i < latency { 0.0 } else { input[i - latency] };
-                let window = &envelopes[i.saturating_sub(latency)..=i];
-                let gain = window.iter().copied().fold(f32::INFINITY, f32::min);
-                assert!(
-                    (y - delayed * gain).abs() <= 1e-6,
-                    "lane {lane:?}, frame {i}: {y} against {delayed} x {gain}"
-                );
-            }
-        }
-    }
     /// How close the one-pole envelope gets to a steady target: it stops when
     /// a step rounds away, about `1 / coeff` ulps short (44 ulps at 1 ms).
     const SETTLED: f32 = 2e-5;
@@ -965,15 +471,14 @@ mod tests {
     fn loud_noise_stays_at_the_ceiling() {
         let ceiling = Db(-6.0);
         let limit = ceiling.to_amplitude().get();
-        let mut lim = prepared_at(LimiterNode::new(ceiling, ceiling), RATE_44K);
-        let latency = lim.ring.lookahead_samples();
+        let mut lim = prepared_at(limiter(ceiling, ceiling), RATE_44K);
+        let latency = lim.shape().latency.samples().get();
         let mut seed = 7;
-        let (mut input, mut output) = (Vec::new(), Vec::new());
+        let mut output = Vec::new();
         for _ in 0..40 {
             let l = noise(&mut seed, 1024, 4.0);
             let r = noise(&mut seed, 1024, 4.0);
             output.extend(drive(&mut lim, RATE_44K, &[&l, &r], &[]).remove(0));
-            input.extend(l);
         }
         let mut limited = 0;
         for (i, &y) in output.iter().enumerate().skip(latency) {
@@ -990,10 +495,7 @@ mod tests {
         let ceiling = Db(-6.0);
         let limit = ceiling.to_amplitude().get();
         for (level, want) in [(0.25f32, 1.0f32), (1.0, limit), (3.0, limit / 3.0)] {
-            let mut lim = prepared_at(
-                LimiterNode::new(ceiling, ceiling).with_release(Seconds::new(0.001)),
-                RATE_44K,
-            );
+            let mut lim = prepared_at(limiter_releasing(ceiling, ceiling, 0.001), RATE_44K);
             let x = vec![level; 1024];
             let mut out = Vec::new();
             for _ in 0..16 {
@@ -1017,10 +519,7 @@ mod tests {
         let (threshold, ceiling) = (Db(-3.0), Db(-9.0));
         let (t, c) = (threshold.to_amplitude().get(), ceiling.to_amplitude().get());
         for (level, gain) in [(0.1f32, c / t), (2.0, c / 2.0)] {
-            let mut lim = prepared_at(
-                LimiterNode::new(threshold, ceiling).with_release(Seconds::new(0.001)),
-                RATE_44K,
-            );
+            let mut lim = prepared_at(limiter_releasing(threshold, ceiling, 0.001), RATE_44K);
             let x = vec![level; 1024];
             let mut out = Vec::new();
             for _ in 0..16 {
@@ -1037,10 +536,7 @@ mod tests {
 
     /// The steady-state output level in dB of a constant input at `in_db`.
     fn steady_out_db(threshold: Db, ceiling: Db, in_db: f32) -> f32 {
-        let mut lim = prepared_at(
-            LimiterNode::new(threshold, ceiling).with_release(Seconds::new(0.001)),
-            RATE_44K,
-        );
+        let mut lim = prepared_at(limiter_releasing(threshold, ceiling, 0.001), RATE_44K);
         let level = Db(in_db).to_amplitude().get();
         let x = vec![level; 1024];
         let mut out = Vec::new();
@@ -1054,7 +550,7 @@ mod tests {
             out.iter().all(|y| y.abs() <= ceiling_lin * (1.0 + 1e-6)),
             "threshold {threshold:?}, ceiling {ceiling:?}, in {in_db}: past the ceiling"
         );
-        amplitude_to_db(Amplitude::new(out[1023])).get()
+        amplitude_to_db(out[1023])
     }
 
     /// Threshold, ceiling pairs covering a boost, a cut, and no drive.
@@ -1122,11 +618,8 @@ mod tests {
     fn a_nan_input_does_not_poison_the_gain() {
         let ceiling = Db(-6.0);
         let limit = ceiling.to_amplitude().get();
-        let mut lim = prepared_at(
-            LimiterNode::new(ceiling, ceiling).with_release(Seconds::new(0.001)),
-            RATE_44K,
-        );
-        let latency = lim.ring.lookahead_samples();
+        let mut lim = prepared_at(limiter_releasing(ceiling, ceiling, 0.001), RATE_44K);
+        let latency = lim.shape().latency.samples().get();
         let mut x = vec![1.0f32; 1024];
         x[10] = f32::NAN;
         let out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);
@@ -1144,13 +637,25 @@ mod tests {
         }
     }
 
-    /// A NaN fed to the peak fold yields a non-NaN peak. Separate from the
-    /// `LimiterCurve::gain` guard, which has its own test in `utils.rs`.
+    /// A control written NaN is ignored (read as the last value it held): the limiter keeps
+    /// its ceiling and its output stays finite and bounded, where a NaN ceiling would make
+    /// the gain a NaN and keep it so.
     #[test]
-    fn a_nan_fed_to_the_peak_fold_is_ignored() {
-        assert_eq!(fold_peak(0.5, f32::NAN), 0.5);
-        assert_eq!(fold_peak(0.0, f32::NAN), 0.0);
-        assert_eq!(fold_peak(0.5, -0.75), 0.75);
+    fn a_nan_write_keeps_the_last_ceiling_and_threshold() {
+        let mut lim = prepared_at(
+            limiter_releasing(Db::new(-6.0), Db::new(-6.0), 0.005),
+            RATE_44K,
+        );
+        let set = lim.param_set();
+        assert!(set.set(UnitParam::Ceiling, f32::NAN));
+        assert!(set.set(UnitParam::Threshold, f32::NAN));
+        let limit = Db(-6.0).to_amplitude().get();
+        let mut out = [0.0f32; 2];
+        // 5 ms is 220 frames: 6 000 is 27 time constants, the envelope has settled.
+        for _ in 0..6_000 {
+            tick(&mut lim, &[1.0, 1.0], &mut out);
+        }
+        assert!((out[0] - limit).abs() <= 1e-4, "{}", out[0]);
     }
 
     /// Silence, a burst, silence, at thresholds so low that `10^((ceiling -
@@ -1159,10 +664,7 @@ mod tests {
     #[test]
     fn a_very_low_threshold_never_produces_a_nan() {
         for threshold in [f32::NEG_INFINITY, -800.0, -150.0] {
-            let mut lim = prepared_at(
-                LimiterNode::new(Db(threshold), Db(-6.0)).with_release(Seconds::new(0.001)),
-                RATE_44K,
-            );
+            let mut lim = prepared_at(limiter_releasing(Db(threshold), Db(-6.0), 0.001), RATE_44K);
             let mut x = vec![0.0f32; 1024];
             x[300..400].fill(2.0);
             x[400..500].fill(-0.001);

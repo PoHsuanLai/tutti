@@ -15,6 +15,17 @@ const RATE: SampleRate = SampleRate(48_000.0);
 // asks for an allocation no machine has (a delay line, a lookahead ring).
 const BAD: [f32; 5] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, -1e30];
 
+/// A compressor at -12 dB, 4:1, 10 ms and 100 ms, the knee and makeup at the default's.
+fn compressor_at_twelve() -> CompressorControls {
+    CompressorControls {
+        threshold: Db(-12.0),
+        ratio: tutti_types::CompressionRatio::new_clamped(4.0),
+        attack: Seconds::from_f32(0.01),
+        release: Seconds::from_f32(0.1),
+        ..CompressorControls::DEFAULT
+    }
+}
+
 fn finite(node: &mut dyn Node) -> bool {
     let width = usize::from(node.shape().audio_in().count());
     let mut ok = true;
@@ -60,58 +71,71 @@ fn sweep() {
         for pos in 0..4 {
             let v = |i: usize, ok: f32| if i == pos { b } else { ok };
             add(probe(&format!("compressor arg{pos}"), b, || {
-                Box::new(CompressorNode::stereo(
-                    d(v(0, -12.0)),
-                    tutti_types::CompressionRatio::new_clamped(if pos == 1 { b } else { 4.0 }),
-                    s(v(2, 0.01)),
-                    s(v(3, 0.1)),
-                ))
+                Box::new(CompressorNode::stereo(CompressorControls {
+                    threshold: d(v(0, -12.0)),
+                    ratio: tutti_types::CompressionRatio::new_clamped(if pos == 1 {
+                        b
+                    } else {
+                        4.0
+                    }),
+                    attack: s(v(2, 0.01)),
+                    release: s(v(3, 0.1)),
+                    ..CompressorControls::DEFAULT
+                }))
             }));
             add(probe(&format!("gate arg{pos}"), b, || {
-                Box::new(GateNode::stereo(
-                    d(v(0, -40.0)),
-                    s(v(1, 0.01)),
-                    s(v(2, 0.05)),
-                    s(v(3, 0.1)),
-                ))
+                Box::new(GateNode::stereo(GateControls {
+                    threshold: d(v(0, -40.0)),
+                    attack: s(v(1, 0.01)),
+                    hold: s(v(2, 0.05)),
+                    release: s(v(3, 0.1)),
+                    range: d(-80.0),
+                }))
             }));
         }
         add(probe("compressor knee", b, || {
-            Box::new(
-                CompressorNode::stereo(
-                    d(-12.0),
-                    tutti_types::CompressionRatio::new_clamped(4.0),
-                    s(0.01),
-                    s(0.1),
-                )
-                .with_soft_knee(d(b)),
-            )
+            Box::new(CompressorNode::stereo(CompressorControls {
+                knee: d(b),
+                ..compressor_at_twelve()
+            }))
         }));
         add(probe("compressor makeup", b, || {
-            Box::new(
-                CompressorNode::stereo(
-                    d(-12.0),
-                    tutti_types::CompressionRatio::new_clamped(4.0),
-                    s(0.01),
-                    s(0.1),
-                )
-                .with_makeup(d(b)),
-            )
+            Box::new(CompressorNode::stereo(CompressorControls {
+                makeup: d(b),
+                ..compressor_at_twelve()
+            }))
         }));
         add(probe("gate range", b, || {
-            Box::new(GateNode::stereo(d(-40.0), s(0.01), s(0.05), s(0.1)).with_range(d(b)))
+            Box::new(GateNode::stereo(GateControls {
+                threshold: d(-40.0),
+                attack: s(0.01),
+                hold: s(0.05),
+                release: s(0.1),
+                range: d(b),
+            }))
         }));
         add(probe("limiter thr", b, || {
-            Box::new(LimiterNode::new(d(b), d(-1.0)))
+            Box::new(LimiterNode::stereo(LimiterControls {
+                threshold: d(b),
+                ceiling: d(-1.0),
+                ..LimiterControls::DEFAULT
+            }))
         }));
         add(probe("limiter ceil", b, || {
-            Box::new(LimiterNode::new(d(-6.0), d(b)))
+            Box::new(LimiterNode::stereo(LimiterControls {
+                threshold: d(-6.0),
+                ceiling: d(b),
+                ..LimiterControls::DEFAULT
+            }))
         }));
-        add(probe("limiter lookahead", b, || {
-            Box::new(LimiterNode::new(d(-6.0), d(-1.0)).with_lookahead(s(b)))
-        }));
+        // The lookahead is a `Lookahead`, which refuses a non-finite value by type
+        // (`a_lookahead_keeps_the_range_checked_shape` in tutti-dsp).
         add(probe("limiter release", b, || {
-            Box::new(LimiterNode::new(d(-6.0), d(-1.0)).with_release(s(b)))
+            Box::new(LimiterNode::stereo(LimiterControls {
+                threshold: d(-6.0),
+                ceiling: d(-1.0),
+                release: s(b),
+            }))
         }));
         add(probe("brickwall", b, || {
             Box::new(BrickwallLimiterNode::new(d(b)))

@@ -85,6 +85,8 @@ mod recorder;
 #[cfg(feature = "plugin")]
 mod recovery;
 mod session;
+#[cfg(all(feature = "device", feature = "audio-io"))]
+mod take;
 #[cfg(feature = "device")]
 mod watch;
 
@@ -116,7 +118,7 @@ pub use graph::{
     ReplaceRefused, Taps,
 };
 #[cfg(all(feature = "device", feature = "audio-io"))]
-pub use input::{Input, InputConfig, InputOpener, OpenedInput};
+pub use input::{Input, InputConfig, InputOpener, OpenedInput, Trim};
 #[cfg(feature = "midi")]
 pub use instrument::{InstrumentHandle, NotInstrument, SendError, SessionInstrument};
 pub use jobs::{Job, JobFailed};
@@ -136,9 +138,10 @@ pub use midi_event::MidiEvent;
 pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    MixRef, ModRefusal, ModRouteId, ModSourceId, ModState, ModTarget, Mods, ModsView, NoAutomation,
-    NoSuchModRoute, NoSuchModSource, ParamRef, Problem, Ranged, RouteError, RouteInfo, RouteMut,
-    RouteSpec, SourceInfo, SourceName, Take, TargetName, UNRESOLVED_WARNING, declare_targets,
+    AutomationTake, MixRef, ModRefusal, ModRouteId, ModSourceId, ModState, ModTarget, Mods,
+    ModsView, NoAutomation, NoSuchModRoute, NoSuchModSource, ParamRef, Problem, Ranged, RouteError,
+    RouteInfo, RouteMut, RouteSpec, SourceInfo, SourceName, TargetName, UNRESOLVED_WARNING,
+    declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
 pub use params::{ParamError, RangeError, TypedParamRef};
@@ -159,6 +162,11 @@ pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
+#[cfg(all(feature = "device", feature = "audio-io"))]
+pub use take::{
+    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeError,
+    TakeEvent, TakeId, TakeTarget, Terms, Window,
+};
 #[cfg(any(feature = "record", feature = "export"))]
 pub use tutti_dsp::DitherShape;
 #[cfg(feature = "record")]

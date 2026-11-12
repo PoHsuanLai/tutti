@@ -22,7 +22,7 @@ use tutti_graph::NodeKey;
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
-use tutti_nodes::{BusStripNode, EqBandNode, LimiterNode, SvfType};
+use tutti_nodes::{BusStripNode, EqBandNode, LimiterControls, LimiterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, Db, Hz, InterleavedMut, Q, SampleRate, Samples};
@@ -54,7 +54,15 @@ fn build_engine_with_chain() -> Engine {
     );
     // The limiter's lookahead ring is sized at the prepared rate, on the
     // control thread, when the commit prepares it: outside the gate.
-    ed.insert(limiter, "limiter", LimiterNode::new(Db(-1.0), Db(-0.3)));
+    ed.insert(
+        limiter,
+        "limiter",
+        LimiterNode::stereo(LimiterControls {
+            threshold: Db(-1.0),
+            ceiling: Db(-0.3),
+            ..LimiterControls::DEFAULT
+        }),
+    );
     let topology = &mut ed.spec_mut().topology;
     let mut wire = |node: NodeKey, port: u16, from: NodeKey, out: u16| {
         topology.edges.insert(

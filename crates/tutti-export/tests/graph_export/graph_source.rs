@@ -180,10 +180,13 @@ fn limited() -> GraphBuilder {
             .with_amplitude(Amplitude(0.9))
             .with_layout(ChannelLayout::STEREO),
     );
-    let (lim, _) = g.add_with_controls(
-        tutti_nodes::LimiterNode::with_channels(ChannelLayout::STEREO, Db(-6.0), Db(-1.0))
-            .with_lookahead(tutti_types::Seconds(0.005)),
-    );
+    let (lim, _) = g.add_with_controls(tutti_nodes::LimiterNode::stereo(
+        tutti_nodes::LimiterControls {
+            threshold: Db(-6.0),
+            ceiling: Db(-1.0),
+            ..tutti_nodes::LimiterControls::DEFAULT
+        },
+    ));
     g.pipe(src, lim).pipe_output(lim);
     g
 }

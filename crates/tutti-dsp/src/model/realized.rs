@@ -242,8 +242,11 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
         into: usize,
     );
 
-    /// The processing latency, in frames: never a pre-delay or a tap spacing
-    /// (musical delay is not latency). Zero for a time-domain recurrence.
+    /// The processing latency the recurrence adds **beyond its member's**, in frames:
+    /// never a pre-delay or a tap spacing (musical delay is not latency). Zero for a
+    /// recurrence that adds none, which is every time-domain one: a limiter's lookahead is
+    /// the member's ([`System::latency`](crate::System::latency)), and the node declares
+    /// the sum of the two (design 024 section 2.7.2).
     fn latency(&self) -> Samples {
         Samples::ZERO
     }
@@ -352,8 +355,9 @@ impl<R: Recurrence> Realized<R> {
         self.into = 0;
     }
 
-    /// The processing latency, in frames: never a pre-delay or a tap spacing
-    /// (musical delay is not latency).
+    /// The processing latency the recurrence adds beyond its member's, in frames
+    /// ([`Recurrence::latency`]): never a pre-delay or a tap spacing (musical delay is
+    /// not latency).
     #[must_use]
     pub fn latency(&self) -> Samples {
         self.recurrence.latency()

@@ -63,6 +63,11 @@ pub struct InputConfig {
     /// monitored input is heard now and not late. A longer one rides out a
     /// longer stall of the graph's callback at that much latency.
     pub capacity: Samples,
+    /// The manual trim of a take's placement, for a device that misreports its
+    /// latency: set once per input and kept across restarts, so it is on the
+    /// config and not on the [`Input`] (a plain value naming a node). It is one
+    /// of the terms a take states ([`Terms::offset`](crate::Terms::offset)).
+    pub offset: Trim,
 }
 
 impl Default for InputConfig {
@@ -71,7 +76,46 @@ impl Default for InputConfig {
             device: DeviceSelector::Default,
             channels: None,
             capacity: Samples(MONITOR_RING_FRAMES),
+            offset: Trim::NONE,
         }
+    }
+}
+
+/// A manual shift of where a take is placed, either way: a trim that can only
+/// move later could not undo a device that reports too much latency.
+///
+/// ```
+/// use tutti_session::Trim;
+/// use tutti_types::Samples;
+///
+/// assert_eq!(Trim::default(), Trim::NONE);
+/// assert_eq!(Trim::Earlier(Samples(64)).frames(), -64);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trim {
+    /// Place the take this many frames later than the reported latencies say.
+    Later(Samples),
+    /// Place it this many frames earlier.
+    Earlier(Samples),
+}
+
+impl Trim {
+    /// No trim.
+    pub const NONE: Trim = Trim::Later(Samples::ZERO);
+
+    /// The trim as a signed frame count, positive for later.
+    #[must_use]
+    pub fn frames(self) -> i128 {
+        match self {
+            Self::Later(n) => n.get() as i128,
+            Self::Earlier(n) => -(n.get() as i128),
+        }
+    }
+}
+
+impl Default for Trim {
+    fn default() -> Self {
+        Self::NONE
     }
 }
 
@@ -94,6 +138,13 @@ impl InputConfig {
     #[must_use]
     pub fn capacity(mut self, capacity: Samples) -> Self {
         self.capacity = capacity;
+        self
+    }
+
+    /// This config with a manual placement trim ([`InputConfig::offset`]).
+    #[must_use]
+    pub fn offset(mut self, offset: Trim) -> Self {
+        self.offset = offset;
         self
     }
 }
@@ -126,6 +177,13 @@ pub struct OpenedInput {
     pub ring: InletRing,
     /// Whatever keeps the capture stream running; dropping it stops capture.
     pub keep: Box<dyn Any + Send>,
+    /// The fixed lead of the ring, in frames at the ring's rate: how long a
+    /// frame sits in it before the graph can pop it, by construction (a ring
+    /// the producer prefills). A ring that is not prefilled has none: `0` is
+    /// that statement, not a missing figure; the capture's own delay is
+    /// [`Device::latency`](crate::Device::latency)'s `input`. A take states it
+    /// as [`Terms::inlet_lead`](crate::Terms::inlet_lead).
+    pub lead: Samples,
 }
 
 impl std::fmt::Debug for OpenedInput {
@@ -157,14 +215,18 @@ impl InputOpener for Capture {
         Ok(OpenedInput {
             ring,
             keep: Box::new(mic),
+            // The monitor ring starts empty.
+            lead: Samples::ZERO,
         })
     }
 }
 
 /// One input the session holds: what to reopen, and the stream while it runs.
-struct Held {
-    node: Key<InletNode>,
-    config: InputConfig,
+pub(crate) struct Held {
+    pub(crate) node: Key<InletNode>,
+    pub(crate) config: InputConfig,
+    /// The lead of the ring the opener gave last.
+    pub(crate) lead: Samples,
     keep: Option<Box<dyn Any + Send>>,
 }
 
@@ -176,6 +238,11 @@ pub(crate) struct Inputs {
     latency: Arc<StreamLatency>,
     opener: Box<dyn InputOpener>,
     held: Vec<Held>,
+    /// Where the output stream's callback reports its delay, once the session
+    /// has a device ([`Device::latency`](crate::Device::latency)'s `output`).
+    output_latency: Option<Arc<StreamLatency>>,
+    /// The takes begun, for their ids.
+    takes: u64,
 }
 
 impl std::fmt::Debug for Inputs {
@@ -194,7 +261,30 @@ impl Inputs {
             latency: Arc::new(StreamLatency::new()),
             opener: opener.unwrap_or_else(|| Box::new(Capture)),
             held: Vec::new(),
+            output_latency: None,
+            takes: 0,
         }
+    }
+
+    /// The cell the output stream reports into, for a take's placement.
+    pub(crate) fn set_output_latency(&mut self, latency: Arc<StreamLatency>) {
+        self.output_latency = Some(latency);
+    }
+
+    /// The input whose inlet node is `node`.
+    pub(crate) fn held(&self, node: Key<InletNode>) -> Option<&Held> {
+        self.held.iter().find(|h| h.node == node)
+    }
+
+    /// What a take reads the device's delay through.
+    pub(crate) fn latency_probe(&self) -> crate::take::LatencyProbe {
+        crate::take::LatencyProbe::new(Arc::clone(&self.latency), self.output_latency.clone())
+    }
+
+    /// The next take's id.
+    pub(crate) fn next_take(&mut self) -> u64 {
+        self.takes += 1;
+        self.takes
     }
 
     /// The cell the capture callbacks report into.
@@ -237,6 +327,7 @@ impl Session {
         self.inputs.held.push(Held {
             node,
             config,
+            lead: opened.lead,
             keep: Some(opened.keep),
         });
         Ok(Input { node })
@@ -276,6 +367,7 @@ impl Session {
         self.graph
             .crossfade(input.node, node, REOPEN_FADE, CrossfadeCurve::default())?;
         input.keep = Some(opened.keep);
+        input.lead = opened.lead;
         Ok(())
     }
 }

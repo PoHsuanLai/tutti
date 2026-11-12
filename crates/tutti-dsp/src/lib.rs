@@ -29,9 +29,10 @@
 //!   [`Filter`] family, run by [`PerChannel`]; [`Real`], the `f32` or `f64` their state
 //!   runs in, and the [`Biquad`] section they share.
 //! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`]; the
-//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`LimiterKernel`] with
-//!   its block (and [`CompressorKernel`], the multiband's bands');
-//!   the limiter's [`LookaheadRing`]; the brickwall clipper as a family
+//!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`CompressorKernel`],
+//!   the multiband's bands'; the lookahead limiter as a family ([`LimiterFamily`], run by
+//!   [`LimiterRecurrence`], its threshold and ceiling lanes of the [`Feed`], its lookahead
+//!   the member's latency); the brickwall clipper as a family
 //!   ([`BrickwallFamily`], run by [`BrickwallRecurrence`], its ceiling a per-frame lane of
 //!   the [`Feed`]); and the compressor ([`CompressorFamily`], run by
 //!   [`CompressorRecurrence`], keyed, its threshold a lane, its makeup gliding over
@@ -109,8 +110,9 @@ pub use dynamics::{
     BrickwallControls, BrickwallFamily, BrickwallMember, BrickwallRecurrence, CompressorBlock,
     CompressorControls, CompressorFamily, CompressorKernel, CompressorMember, CompressorRecurrence,
     EnvelopeFollower, GAIN_GLIDE, GateControls, GateFamily, GateMember, GateRecurrence, KeySource,
-    LimiterBlock, LimiterCurve, LimiterKernel, LookaheadRing, amplitude_to_db,
-    compute_compressor_gain_reduction, compute_limiter_gain, fold_peak, ramp_db,
+    LimiterControls, LimiterCurve, LimiterFamily, LimiterMember, LimiterRecurrence, Lookahead,
+    LookaheadError, amplitude_to_db, compute_compressor_gain_reduction, compute_limiter_gain,
+    ramp_db,
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{

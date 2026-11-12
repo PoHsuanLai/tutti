@@ -13,8 +13,8 @@
 //! `a_rerate_keeps_the_published_compensation_in_step_with_the_plan`.
 
 use tutti_graph::ForkByClone;
-use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
+use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_types::{ChannelLayout, Db, SampleRate, Samples};
 
@@ -29,7 +29,11 @@ fn detached() -> Session {
 
 /// A limiter's lookahead is the latency; the one the engine ships.
 fn limiter() -> LimiterNode {
-    LimiterNode::with_channels(ChannelLayout::MONO, Db(-1.0), Db(-0.3))
+    LimiterNode::mono(LimiterControls {
+        threshold: Db(-1.0),
+        ceiling: Db(-0.3),
+        ..LimiterControls::DEFAULT
+    })
 }
 
 /// ch0 through a limiter, ch1 dry: ch1's source must pre-roll to match.

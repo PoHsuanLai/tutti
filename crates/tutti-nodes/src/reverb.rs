@@ -168,7 +168,7 @@ enum Mode<C> {
 /// algorithm's cells, and a fork starts from the values set with a
 /// [`Realized::fresh`] realization, silent (the graph's preroll warms it).
 ///
-/// **Latency** is the realization's, never a pre-delay. **The tail** is a ceiling
+/// **Latency** is the member's plus the realization's, never a pre-delay. **The tail** is a ceiling
 /// ([`Shape::tail`], the design's worst case at the longest decay) that the
 /// node narrows each block with [`Io::report_tail`] to what its current
 /// network rings, held at the longer figure until a shorter decay has been
@@ -190,6 +190,10 @@ pub struct FamilyNode<F: NodeFamily> {
     current: u64,
     /// The ceiling: what `Shape::tail` declares, in frames.
     ceiling: u64,
+    /// The processing latency the node declares: the family's own (a member's
+    /// [`System::latency`], the blank's, so it does not move with a control) and what the
+    /// realization adds to it ([`Realized::latency`]).
+    latency: Samples,
     rate: SampleRate,
     channels: Channels,
     /// The output bus, every band of it.
@@ -259,6 +263,7 @@ impl<F: NodeFamily> FamilyNode<F> {
             applied: None,
             current: 0,
             ceiling: 0,
+            latency: Samples::ZERO,
             rate,
             channels,
             out,
@@ -288,6 +293,17 @@ impl<F: NodeFamily> FamilyNode<F> {
             },
         );
         self.applied = None;
+        // Latency has one home per cause (design 024 section 2.7.2): the member's and the
+        // realization's, summed here once. It is the blank member's: a latency that moved
+        // with a control would be a shape the graph cannot follow (the contract's `latency`
+        // case holds every member to it).
+        self.latency = Samples(
+            self.family
+                .blank(self.rate)
+                .latency()
+                .get()
+                .saturating_add(self.realization.latency().get()),
+        );
         self.ceiling = match self.mode {
             Mode::Live => frames(capacity.tail(), self.rate),
             Mode::Fixed(controls) => {
@@ -362,13 +378,11 @@ impl<F: NodeFamily> FamilyNode<F> {
         self.ring = self.ring.max(current).min(self.ceiling);
         io.report_tail(tail_of(self.ring));
 
-        // The realization's latency before the tail starts (a tail excludes
-        // latency).
+        // The latency before the tail starts (a tail excludes latency).
         let owed = if self.ring == UNBOUNDED {
             UNBOUNDED
         } else {
-            self.ring
-                .saturating_add(self.realization.latency().get() as u64)
+            self.ring.saturating_add(self.latency.get() as u64)
         };
         let live = if owed == UNBOUNDED {
             size as u64
@@ -527,7 +541,7 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
         };
         ports(self.channels)
             .with_cost(cost(self.realization.effort()))
-            .with_latency(Latency::new(self.realization.latency()))
+            .with_latency(Latency::new(self.latency))
             .with_tail(match F::RINGS {
                 Rings::Tracks => tail_of(self.ceiling),
                 Rings::Unknown => Tail::Unknown,
@@ -633,6 +647,7 @@ impl<F: NodeFamily> Clone for FamilyNode<F> {
             applied: self.applied,
             current: self.current,
             ceiling: self.ceiling,
+            latency: self.latency,
             rate: self.rate,
             channels: self.channels,
             out: self.out,

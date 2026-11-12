@@ -26,8 +26,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
-    BrickwallLimiterNode, CompressorNode, DelayLineNode, DistortionNode, FamilyNode, FdnControls,
-    FreeverbNode, GateNode, LimiterNode, ShapeKind,
+    BrickwallLimiterNode, CompressorControls, CompressorNode, DelayLineNode, DistortionNode,
+    FamilyNode, FdnControls, FreeverbNode, GateControls, GateNode, KeySource, LimiterControls,
+    LimiterNode, Lookahead, ShapeKind,
 };
 use tutti_types::{
     BusTopology, ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds,
@@ -267,14 +268,20 @@ fn limiter(c: &mut Criterion) {
         c,
         "limiter",
         "2",
-        || LimiterNode::new(Db::new(-6.0), Db::new(-0.3)),
+        || LimiterNode::stereo(LimiterControls::DEFAULT),
         None,
     );
     run(
         c,
         "limiter",
         "6",
-        || LimiterNode::with_channels(ChannelLayout::from(6u16), Db::new(-6.0), Db::new(-0.3)),
+        || {
+            LimiterNode::new(
+                BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
+                Lookahead::DEFAULT,
+                LimiterControls::DEFAULT,
+            )
+        },
         None,
     );
     // Over the threshold on every frame, and not at all: the two branches of
@@ -283,15 +290,21 @@ fn limiter(c: &mut Criterion) {
         c,
         "limiter",
         "2_quiet",
-        || LimiterNode::new(Db::new(6.0), Db::new(6.0)),
+        || {
+            LimiterNode::stereo(LimiterControls {
+                threshold: Db::new(6.0),
+                ceiling: Db::new(6.0),
+                ..LimiterControls::DEFAULT
+            })
+        },
         None,
     );
     run(
         c,
         "limiter",
         "2_fed",
-        || LimiterNode::new(Db::new(-6.0), Db::new(-0.3)),
-        Some(ceiling_sweep),
+        || LimiterNode::stereo(LimiterControls::DEFAULT),
+        Some(threshold_sweep),
     );
 }
 
@@ -300,32 +313,39 @@ fn threshold_sweep(n: usize) -> Vec<f32> {
     (0..n).map(|i| -30.0 + 20.0 * i as f32 / n as f32).collect()
 }
 
+/// The gate the dynamics rows run: -12 dB, 1 ms, 10 ms, 100 ms, closing to -80 dB.
+fn gate_controls() -> GateControls {
+    GateControls {
+        threshold: Db::new(-12.0),
+        attack: Seconds::new(0.001),
+        hold: Seconds::new(0.01),
+        release: Seconds::new(0.1),
+        range: Db::new(-80.0),
+    }
+}
+
+/// The compressor the dynamics rows run: -20 dB, 4:1, 1 ms, 100 ms.
+fn compressor_controls() -> CompressorControls {
+    CompressorControls {
+        threshold: Db::new(-20.0),
+        ratio: CompressionRatio::new(4.0),
+        attack: Seconds::new(0.001),
+        release: Seconds::new(0.1),
+        ..CompressorControls::DEFAULT
+    }
+}
+
 fn dynamics(c: &mut Criterion) {
-    run(
-        c,
-        "gate",
-        "2",
-        || {
-            GateNode::stereo(
-                Db::new(-12.0),
-                Seconds::new(0.001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            )
-        },
-        None,
-    );
+    run(c, "gate", "2", || GateNode::stereo(gate_controls()), None);
     run(
         c,
         "gate",
         "6",
         || {
-            GateNode::with_bus(
+            GateNode::new(
                 BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
-                Db::new(-12.0),
-                Seconds::new(0.001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
+                KeySource::Sidechain,
+                gate_controls(),
             )
         },
         None,
@@ -334,28 +354,14 @@ fn dynamics(c: &mut Criterion) {
         c,
         "gate",
         "2_fed",
-        || {
-            GateNode::stereo(
-                Db::new(-12.0),
-                Seconds::new(0.001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            )
-        },
+        || GateNode::stereo(gate_controls()),
         Some(threshold_sweep),
     );
     run(
         c,
         "compressor",
         "2",
-        || {
-            CompressorNode::stereo(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.001),
-                Seconds::new(0.1),
-            )
-        },
+        || CompressorNode::stereo(compressor_controls()),
         None,
     );
     run(
@@ -363,13 +369,10 @@ fn dynamics(c: &mut Criterion) {
         "compressor",
         "6",
         || {
-            CompressorNode::with_bus(
-                tutti_types::BusTopology::assumed(tutti_types::ChannelLayout::from(6u16))
-                    .expect("at most one bus wide"),
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.001),
-                Seconds::new(0.1),
+            CompressorNode::new(
+                BusTopology::assumed(ChannelLayout::from(6u16)).expect("at most one bus wide"),
+                KeySource::Sidechain,
+                compressor_controls(),
             )
         },
         None,
@@ -378,14 +381,7 @@ fn dynamics(c: &mut Criterion) {
         c,
         "compressor",
         "2_fed",
-        || {
-            CompressorNode::stereo(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.001),
-                Seconds::new(0.1),
-            )
-        },
+        || CompressorNode::stereo(compressor_controls()),
         Some(threshold_sweep),
     );
 }

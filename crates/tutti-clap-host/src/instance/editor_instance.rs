@@ -14,18 +14,16 @@ use tutti_plugin_types::{
 };
 
 use super::ClapLoaded;
-use crate::ClapEvent;
+use crate::types::ClapParamFlags;
+use crate::{ClapEvent, ParamBounds};
 
 fn editor_error(reason: String) -> PluginError {
     PluginError::Editor(EditorError::PluginError(reason))
 }
 
 /// Look up declared bounds for `id` in a table sorted by id.
-fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
-    table
-        .binary_search_by_key(&id, |(k, _)| *k)
-        .ok()
-        .map(|i| table[i].1)
+fn lookup_range(table: &[ParamBounds], id: u32) -> Option<&ParamBounds> {
+    ParamBounds::find(table, id)
 }
 
 /// One editor-originated output event → the host's `(address, normalized)` pair,
@@ -49,15 +47,15 @@ fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
 ///
 /// Free function rather than a closure so the conversion is reachable without a
 /// real plugin behind an FFI boundary.
-fn param_edit_from_event(ranges: &[(u32, (f64, f64))], event: ClapEvent) -> Option<(ParamId, f32)> {
+fn param_edit_from_event(ranges: &[ParamBounds], event: ClapEvent) -> Option<(ParamId, f32)> {
     let ClapEvent::ParamValue(v) = event else {
         return None;
     };
     let normalized = match lookup_range(ranges, v.param_id) {
-        Some((min, max)) => ParamRange::Plain {
-            min,
-            max,
-            default: min,
+        Some(b) => ParamRange::Plain {
+            min: b.min,
+            max: b.max,
+            default: b.min,
         }
         .to_normalized(v.value),
         None => v.value,
@@ -87,7 +85,7 @@ pub struct ClapEditor {
     /// because `ClapLoaded::parameter_range` is a linear scan that makes one
     /// FFI call per parameter to find one id — acceptable once at load, not on
     /// every knob movement.
-    param_ranges: Vec<(u32, (f64, f64))>,
+    param_ranges: Vec<ParamBounds>,
 }
 
 impl ClapEditor {
@@ -119,16 +117,18 @@ impl ClapEditor {
 }
 
 /// The plugin's declared plain-unit bounds per parameter id, sorted by id.
-fn read_param_ranges(main: &MainThread, inner: &ClapLoaded) -> Vec<(u32, (f64, f64))> {
-    let mut ranges: Vec<(u32, (f64, f64))> = inner
-        .parameter_list(main)
+fn read_param_ranges(main: &MainThread, inner: &ClapLoaded) -> Vec<ParamBounds> {
+    let mut ranges: Vec<ParamBounds> = inner
+        .native_parameters(main)
         .into_iter()
-        .filter_map(|p| {
-            let id = p.id.get();
-            p.bounds().map(|b| (id, b))
+        .map(|p| ParamBounds {
+            id: p.id,
+            min: p.min_value,
+            max: p.max_value,
+            stepped: p.flags.contains(ClapParamFlags::STEPPED),
         })
         .collect();
-    ranges.sort_unstable_by_key(|(id, _)| *id);
+    ranges.sort_unstable_by_key(|b| b.id);
     ranges
 }
 
@@ -145,12 +145,7 @@ impl Editor for ClapEditor {
         // to convert against, and inventing `0..=1` would rescale a parameter
         // the plugin never described.
         let plain = match lookup_range(&self.param_ranges, id.get()) {
-            Some((min, max)) => ParamRange::Plain {
-                min,
-                max,
-                default: min,
-            }
-            .to_plain(value.get()),
+            Some(b) => b.plain(value.get()),
             None => value.get(),
         };
         self.inner.set_plain_value(main, id.get(), plain);
@@ -318,7 +313,7 @@ mod tests {
     /// distinguishable from a pass-through. Both halves matter — against
     /// `0..=1` bounds the plain and normalized domains coincide and every
     /// assertion below would hold with the conversion deleted.
-    const CUTOFF: (u32, (f64, f64)) = (7, (20.0, 20_000.0));
+    const CUTOFF: ParamBounds = ParamBounds::continuous(7, 20.0, 20_000.0);
 
     /// The editor's plain value is normalized before it leaves for the audio
     /// instance.
@@ -331,7 +326,7 @@ mod tests {
     #[test]
     fn a_plain_editor_value_is_normalized_against_the_declared_range() {
         let ranges = [CUTOFF];
-        let (id, (min, max)) = CUTOFF;
+        let ParamBounds { id, min, max, .. } = CUTOFF;
 
         let at_min = param_edit_from_event(&ranges, ClapEvent::param_value(0, id, min));
         assert_eq!(at_min, Some((id.into(), 0.0)));
@@ -353,7 +348,7 @@ mod tests {
     #[test]
     fn the_normalize_is_the_inverse_of_the_set_parameter_denormalize() {
         let ranges = [CUTOFF];
-        let (id, (min, max)) = CUTOFF;
+        let ParamBounds { id, min, max, .. } = CUTOFF;
         let range = ParamRange::Plain {
             min,
             max,

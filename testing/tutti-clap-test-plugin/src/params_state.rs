@@ -130,7 +130,7 @@ static PARAMS: &[ProbeParam] = &[
         name: b"Mode",
         module: b"",
         min: 0.0,
-        max: 3.0,
+        max: 22.0,
         default: 1.0,
         flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
     },

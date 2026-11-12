@@ -17,6 +17,7 @@ use tutti_plugin_types::{
 
 use super::controller::ClapController;
 use super::lifecycle::plugin_error;
+use crate::events::ParamBounds;
 use super::{ClapLoaded, polling::WorkRan};
 use crate::types::{AudioPortFlags, PluginInfo};
 
@@ -98,15 +99,11 @@ fn normalize(range: Option<(f64, f64)>, plain: f64) -> f64 {
     }
 }
 
-/// The inverse of [`normalize`].
-fn denormalize(range: Option<(f64, f64)>, value: Normalized) -> f64 {
-    match range {
-        Some((min, max)) => ParamRange::Plain {
-            min,
-            max,
-            default: min,
-        }
-        .to_plain(value.get()),
+/// The inverse of [`normalize`]: the plain value, in `f64`, with a stepped
+/// parameter on its integer step.
+fn denormalize(bounds: Option<ParamBounds>, value: Normalized) -> f64 {
+    match bounds {
+        Some(bounds) => bounds.plain(value.get()),
         None => value.get(),
     }
 }
@@ -293,14 +290,14 @@ impl Control for ClapLoaded {
     /// Applied now, as a flushed `PARAM_VALUE` event. CLAP events carry the
     /// plain value, so the declared range denormalizes it.
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        let plain = denormalize(self.parameter_range(main, id.get()), value);
+        let plain = denormalize(self.parameter_bounds(main, id.get()), value);
         self.set_plain_value(main, id.get(), plain);
     }
 
     /// The plugin's own display string. `value_to_text` takes a plain value, so
     /// the same range conversion `set_parameter` applies is applied here.
     fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        let plain = denormalize(self.parameter_range(main, id.get()), value);
+        let plain = denormalize(self.parameter_bounds(main, id.get()), value);
         self.value_to_text(main, id.get(), plain)
     }
 

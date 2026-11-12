@@ -33,7 +33,7 @@ use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi, note_id_for,
+    Normalized, ParamId, ParamRange, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi, note_id_for,
     note_id_to_channel_note, push_sysex, sysex_assembler, sysex_packets,
 };
 
@@ -47,6 +47,79 @@ use tutti_ump::{
     SysexStep, U7, Ump, Voice1, Voice2,
 };
 use tutti_voicing::{NoteControl, NoteEvent, PerNoteState};
+
+/// One parameter's declared plain range and whether it is stepped: what a
+/// normalized host value is denormalized against (`clap_param_info`'s
+/// `min_value`, `max_value` and `CLAP_PARAM_IS_STEPPED`).
+///
+/// The bounds stay `f64`, as the plugin declares them. A stepped parameter's
+/// value is an integer (`params.h`: "the double value is converted to integer
+/// using a cast"), so [`plain`](Self::plain) lands on the step the normalized
+/// value names: a bare `min + n * (max - min)` gives `k - epsilon` for some
+/// `k / steps`, which the plugin's cast then takes to the previous step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamBounds {
+    /// The parameter's `clap_id`.
+    pub id: u32,
+    /// `min_value`.
+    pub min: f64,
+    /// `max_value`.
+    pub max: f64,
+    /// `CLAP_PARAM_IS_STEPPED`.
+    pub stepped: bool,
+}
+
+impl ParamBounds {
+    /// A continuous parameter.
+    #[must_use]
+    pub const fn continuous(id: u32, min: f64, max: f64) -> Self {
+        Self {
+            id,
+            min,
+            max,
+            stepped: false,
+        }
+    }
+
+    /// A `CLAP_PARAM_IS_STEPPED` parameter.
+    #[must_use]
+    pub const fn stepped(id: u32, min: f64, max: f64) -> Self {
+        Self {
+            id,
+            min,
+            max,
+            stepped: true,
+        }
+    }
+
+    /// The entry for `id` in a table sorted by id.
+    pub(crate) fn find(table: &[Self], id: u32) -> Option<&Self> {
+        table
+            .binary_search_by_key(&id, |b| b.id)
+            .ok()
+            .map(|i| &table[i])
+    }
+
+    /// `normalized` (`0..=1`) as the plugin's plain value, in `f64`, inside the
+    /// declared bounds (inverted or non-finite bounds are a malformed plugin
+    /// and never panic or produce NaN). A stepped parameter's value is rounded
+    /// to the nearest integer, so the plugin's truncation reads the step the
+    /// normalized value names.
+    #[must_use]
+    pub fn plain(&self, normalized: f64) -> f64 {
+        let plain = ParamRange::Plain {
+            min: self.min,
+            max: self.max,
+            default: self.min,
+        }
+        .to_plain(normalized);
+        if self.stepped && self.max > self.min {
+            plain.round().clamp(self.min, self.max)
+        } else {
+            plain
+        }
+    }
+}
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.
@@ -1317,38 +1390,20 @@ impl InputEventList {
     pub fn add_param_changes(
         &mut self,
         changes: &ParameterChanges,
-        ranges: &[(u32, f32, f32)],
+        ranges: &[ParamBounds],
         plugin_claims_params: bool,
     ) -> &mut Self {
         let mut pushed = 0usize;
         for queue in &changes.queues {
             let param_id = queue.param_id.get();
-            let range = ranges
-                .binary_search_by_key(&param_id, |&(id, _, _)| id)
-                .ok()
-                .map(|i| &ranges[i]);
+            let range = ParamBounds::find(ranges, param_id);
             if range.is_none() && plugin_claims_params {
                 continue;
             }
             let mut pushed_here = false;
             for point in &queue.points {
                 let value = match range {
-                    Some(&(_, min, max)) => {
-                        // CLAP normalizes automation to f64 `0..=1`; the plain
-                        // range is f32, so the product is computed in f32.
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            reason = "normalized 0..=1 from CLAP; the plain range is f32"
-                        )]
-                        let normalized = point.value.get() as f32;
-                        let plain = min + normalized * (max - min);
-                        // `f32::clamp` panics when `lo > hi`, and `min`/`max`
-                        // come straight from the plugin's own reported
-                        // `min_value`/`max_value` (lifecycle.rs:93). A plugin
-                        // reporting inverted bounds is malformed, but it must
-                        // not panic the audio thread — order the bounds first.
-                        plain.clamp(min.min(max), min.max(max)) as f64
-                    }
+                    Some(bounds) => bounds.plain(point.value.get()),
                     None => point.value.get(),
                 };
                 let event = ClapEvent::param_value(
@@ -1392,25 +1447,12 @@ impl InputEventList {
         &mut self,
         param_id: u32,
         value: f64,
-        ranges: &[(u32, f32, f32)],
+        ranges: &[ParamBounds],
         plugin_claims_params: bool,
     ) -> &mut Self {
-        let range = ranges
-            .binary_search_by_key(&param_id, |&(id, _, _)| id)
-            .ok()
-            .map(|i| &ranges[i]);
+        let range = ParamBounds::find(ranges, param_id);
         let plain = match range {
-            Some(&(_, min, max)) => {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "normalized 0..=1; the plain range is f32"
-                )]
-                let normalized = value as f32;
-                let plain = min + normalized * (max - min);
-                // Ordered bounds: the plugin's own `min`/`max` may be inverted,
-                // and `f32::clamp` panics when `lo > hi`.
-                plain.clamp(min.min(max), min.max(max)) as f64
-            }
+            Some(bounds) => bounds.plain(value),
             // No table entry and the plugin claims parameters: the table is
             // short, and raw `0..1` into an unknown range is silent and audible.
             None if plugin_claims_params => return self,
@@ -2253,7 +2295,11 @@ mod tests {
     /// denormalizes against its own parameter's range.
     #[test]
     fn add_param_changes_finds_each_range_in_a_sorted_list() {
-        let ranges = [(1, 0.0, 1.0), (5, 0.0, 10.0), (9, 100.0, 1100.0)];
+        let ranges = [
+            ParamBounds::continuous(1, 0.0, 1.0),
+            ParamBounds::continuous(5, 0.0, 10.0),
+            ParamBounds::continuous(9, 100.0, 1100.0),
+        ];
         let mut changes = ParameterChanges::reserved(2, 1);
         changes.add_change(9u32.into(), 0, 0.5);
         changes.add_change(5u32.into(), 1, 0.25);
@@ -2805,8 +2851,47 @@ mod tests {
         let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(9u32.into(), 0, 0.25);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 100.0, 1100.0)], true);
+        list.add_param_changes(&changes, &[ParamBounds::continuous(9, 100.0, 1100.0)], true);
         assert!((first_param_value(&list) - 350.0).abs() < 1e-6);
+    }
+
+    /// `params.h`: a `CLAP_PARAM_IS_STEPPED` value is cast to an integer by the
+    /// plugin (trunc). Step `k` of `n` is normalized `k / n`; denormalized
+    /// naively that is `k - epsilon` for some `(k, n)` (13 of 22 in `f32`, 15 of
+    /// 22 in `f64`), which the cast takes to step `k - 1`. Every step of every
+    /// span up to 199 must reach the plugin as a value whose cast is `k`.
+    #[test]
+    fn a_stepped_parameter_reaches_the_plugin_on_the_step_the_host_named() {
+        for n in 2..=199u32 {
+            let bounds = [ParamBounds::stepped(9, 0.0, f64::from(n))];
+            for k in 0..=n {
+                let mut changes = ParameterChanges::reserved(1, 1);
+                changes.add_change(9u32.into(), 0, f64::from(k) / f64::from(n));
+                let mut list = InputEventList::new();
+                list.add_param_changes(&changes, &bounds, true);
+                assert_eq!(
+                    first_param_value(&list).trunc(),
+                    f64::from(k),
+                    "step {k} of {n}"
+                );
+            }
+        }
+    }
+
+    /// The edit path (`add_param_edit`) steps the same way, and a range whose
+    /// top step needs more than 24 bits is not narrowed to `f32`.
+    #[test]
+    fn a_stepped_edit_is_computed_in_f64_from_the_plugins_own_range() {
+        let bounds = [ParamBounds::stepped(4, 0.0, 22.0)];
+        let mut list = InputEventList::new();
+        list.add_param_edit(4, 13.0 / 22.0, &bounds, true);
+        assert_eq!(first_param_value(&list).trunc(), 13.0);
+
+        // 0..=16_777_217 is not representable in f32 at the top step.
+        let wide = [ParamBounds::stepped(5, 0.0, 16_777_217.0)];
+        let mut list = InputEventList::new();
+        list.add_param_edit(5, 1.0, &wide, true);
+        assert_eq!(first_param_value(&list), 16_777_217.0);
     }
 
     #[test]
@@ -2815,7 +2900,7 @@ mod tests {
         let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(9u32.into(), 0, 1.5);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 0.0, 10.0)], true);
+        list.add_param_changes(&changes, &[ParamBounds::continuous(9, 0.0, 10.0)], true);
         assert!((first_param_value(&list) - 10.0).abs() < 1e-6);
     }
 
@@ -2827,7 +2912,7 @@ mod tests {
         let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(9u32.into(), 0, 0.5);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 10.0, 0.0)], true);
+        list.add_param_changes(&changes, &[ParamBounds::continuous(9, 10.0, 0.0)], true);
         let v = first_param_value(&list);
         assert!((0.0..=10.0).contains(&v), "value {v} escaped the range");
     }

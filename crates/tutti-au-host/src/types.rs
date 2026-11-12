@@ -201,6 +201,8 @@ pub const K_AUDIO_UNIT_PARAMETER_FLAG_METER_READ_ONLY: u32 =
     sys::kAudioUnitParameterFlag_MeterReadOnly;
 /// `kAudioUnitParameterFlag_CanRamp`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_CAN_RAMP: u32 = sys::kAudioUnitParameterFlag_CanRamp;
+/// `kAudioUnitParameterFlag_NonRealTime`: parameter flag bit (`AudioUnitParameterInfo::flags`).
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_NON_REAL_TIME: u32 = sys::kAudioUnitParameterFlag_NonRealTime;
 /// `kAudioUnitParameterFlag_OmitFromPresets`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_OMIT_FROM_PRESETS: u32 =
     sys::kAudioUnitParameterFlag_OmitFromPresets;

@@ -187,6 +187,10 @@ pub struct AuParameter {
     /// (`kAudioUnitParameterFlag_CanRamp`) — i.e. whether a scheduled
     /// automation ramp is honoured or applied as a step at the block boundary.
     pub can_ramp: bool,
+    /// Whether the AU flagged this parameter `kAudioUnitParameterFlag_NonRealTime`:
+    /// changing it "in real-time will cause a glitch or otherwise undesirable
+    /// effect", so a host writes it between blocks and never from the render.
+    pub non_realtime: bool,
     /// Whether the AU asks that this parameter be left out of saved presets
     /// (`kAudioUnitParameterFlag_OmitFromPresets`).
     pub omit_from_presets: bool,
@@ -583,6 +587,7 @@ pub fn info_at(unit: &Unit, addr: ParamAddress, param_id: u32) -> Result<AuParam
         clump: (raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CLUMP != 0).then_some(raw.clumpID),
         values_have_strings: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_VALUES_HAVE_STRINGS != 0,
         can_ramp: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_CAN_RAMP != 0,
+        non_realtime: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_NON_REAL_TIME != 0,
         omit_from_presets: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_OMIT_FROM_PRESETS != 0,
         meta: MetaScope::from_flags(raw.flags),
     })

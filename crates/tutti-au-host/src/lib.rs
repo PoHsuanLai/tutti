@@ -39,11 +39,15 @@ pub mod midi_out;
 mod instance;
 
 #[cfg(target_os = "macos")]
+mod automation;
+#[cfg(target_os = "macos")]
 mod control;
 #[cfg(target_os = "macos")]
 mod controller;
 #[cfg(target_os = "macos")]
 mod editor_instance;
+#[cfg(target_os = "macos")]
+mod edits;
 #[cfg(target_os = "macos")]
 mod hosting;
 #[cfg(target_os = "macos")]

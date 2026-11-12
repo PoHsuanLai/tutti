@@ -131,9 +131,9 @@ use tutti_types::{Latency, SampleRate};
 use super::{Bound, PluginClient, Unbound};
 use tutti_plugin_host::{ForkedSources, PluginControls};
 use tutti_plugin_ipc::{IpcOrigin, Launched, OfflineWait, PluginBridge, PluginRenderFault};
-use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::RenderMode;
 use tutti_plugin_types::StateError;
+use tutti_plugin_types::{PluginFailure, PluginForkError};
 
 /// Whether a forked instance has failed while rendering: its
 /// `tutti_graph::ForkHealth` probe. See "When the fork fails while
@@ -173,7 +173,7 @@ impl ForkHealth for ForkWatch {
             };
             return Some((ForkFaultKind::TimedOut, ForkCause::new(cause)));
         }
-        let crashed = |cause: String| {
+        let crashed = |cause: PluginFailure| {
             let cause = PluginRenderFault::Crashed { cause };
             (ForkFaultKind::Crashed, ForkCause::new(cause))
         };
@@ -184,9 +184,7 @@ impl ForkHealth for ForkWatch {
             && bridge.is_crashed()
         {
             return Some(crashed(
-                bridge
-                    .crash_cause()
-                    .unwrap_or_else(|| "no cause latched".to_string()),
+                bridge.crash_cause().unwrap_or(PluginFailure::Unreported),
             ));
         }
         if let Some((rate, reason)) = self.wait.refusal() {

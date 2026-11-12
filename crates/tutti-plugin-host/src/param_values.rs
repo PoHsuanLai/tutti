@@ -198,7 +198,10 @@ mod tests {
     use crate::ParameterChangeSink;
     use tutti_plugin_types::ParameterInfo;
     use tutti_plugin_types::StateError;
-    use tutti_plugin_types::{AnyThread, AutomationMode, EditorError, Health, RenderMode};
+    use tutti_plugin_types::{
+        AnyThread, AutomationMode, EditorError, Health, PluginFailure, RenderMode,
+        TerminationReason,
+    };
     use tutti_plugin_types::{Normalized, ParamId};
 
     /// A backend listing `params` (address, value); a value of `None` is a
@@ -251,7 +254,7 @@ mod tests {
         fn is_crashed(&self) -> bool {
             false
         }
-        fn crash_cause(&self) -> Option<String> {
+        fn crash_cause(&self) -> Option<PluginFailure> {
             None
         }
         fn rate_refusal(&self) -> Option<(tutti_types::SampleRate, String)> {
@@ -260,7 +263,7 @@ mod tests {
         fn block_counts(&self) -> tutti_plugin_types::BlockCounts {
             tutti_plugin_types::BlockCounts::default()
         }
-        fn terminate(&self, _cause: &str) {}
+        fn terminate(&self, _reason: TerminationReason) {}
     }
 
     /// A handle over [`FakeParams`], and the sink its reports go through

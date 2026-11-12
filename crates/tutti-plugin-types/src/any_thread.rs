@@ -7,8 +7,8 @@
 //! [`MainThread`](crate::MainThread).
 
 use crate::{
-    AutomationMode, BlockCounts, EditorError, Normalized, ParamId, ParameterInfo, RenderMode,
-    SampleRate, StateError,
+    AutomationMode, BlockCounts, EditorError, Normalized, ParamId, ParameterInfo, PluginFailure,
+    RenderMode, SampleRate, StateError, TerminationReason,
 };
 
 /// What a loaded plugin answers from any thread, without a main-thread token.
@@ -124,7 +124,7 @@ pub trait Health: Send + Sync {
     /// Why the plugin died, when it can say. `Some` only when
     /// [`is_crashed`](Self::is_crashed) is `true`. Latched at the detection
     /// site, so it answers even for a crash before the host listened.
-    fn crash_cause(&self) -> Option<String>;
+    fn crash_cause(&self) -> Option<PluginFailure>;
 
     /// The sample rate the plugin refused and its reason, while it is refused.
     /// An in-process plugin cannot refuse.
@@ -136,8 +136,9 @@ pub trait Health: Send + Sync {
     /// does not. An in-process plugin has no budget to miss.
     fn block_counts(&self) -> BlockCounts;
 
-    /// Ends the plugin's server process, latching `cause` as why it is dead
+    /// Ends the plugin's server process, latching
+    /// [`PluginFailure::Terminated`] with `reason` as why it is dead
     /// (unless it already died of something else). An in-process
     /// plugin has no process to end.
-    fn terminate(&self, cause: &str);
+    fn terminate(&self, reason: TerminationReason);
 }

@@ -73,7 +73,7 @@ impl std::fmt::Debug for Subscription {
 
 /// What a plugin reported, through whichever of the three listeners heard it
 /// ([`PluginHandle::subscribe`](crate::PluginHandle::subscribe)).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Notice {
     /// The plugin edited one of its own parameters.

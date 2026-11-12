@@ -311,7 +311,7 @@ pub mod prelude {
     #[cfg(feature = "plugin")]
     pub use tutti_plugin::catalog::{Catalog, Hosting, PluginRef, PluginState};
     #[cfg(feature = "plugin")]
-    pub use tutti_plugin::{Normalized, ParamId};
+    pub use tutti_plugin::{Normalized, ParamId, PluginFailure};
     #[cfg(all(feature = "session", feature = "export"))]
     pub use tutti_session::{
         Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
@@ -321,7 +321,10 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::{ParamRef, RouteSpec};
     #[cfg(all(feature = "session", feature = "plugin"))]
-    pub use tutti_session::{Plugin, PluginChange, PluginEvent, PluginLoadRequest};
+    pub use tutti_session::{
+        Plugin, PluginChange, PluginEvent, PluginLoadRequest, PortCounts, RecoveryFailure,
+        ReloadCause,
+    };
     #[cfg(all(feature = "session", feature = "sampler"))]
     pub use tutti_session::{SamplerEvent, SamplerLoad};
     #[cfg(feature = "midi")]

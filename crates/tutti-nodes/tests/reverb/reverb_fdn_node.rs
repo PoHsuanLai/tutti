@@ -1,4 +1,4 @@
-//! `DesignNode<FdnDesign>` as the graph runs it (design 022 step 1c): its ports
+//! `FamilyNode<FdnFamily>` as the graph runs it (design 022 step 1c): its ports
 //! (the freeze only where the design can freeze), its tail (the network's own,
 //! unbounded while frozen), the freeze itself, a modulated decay, and
 //! `ReverbKind`. Every figure is from the network's own queries or the
@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
-use tutti_dsp::{Design, FdnControls, FdnDesign, System};
+use tutti_dsp::{Family, FdnControls, FdnFamily, System};
 use tutti_graph::contract::{Driven, assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
     Env, GraphBuilder, Node, ParamIn, ParamNode, PlayClock, Prepare, Status, Transport,
@@ -15,7 +15,7 @@ use tutti_graph::{
 };
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_nodes::{DesignNode, FdnNode, ReverbKind, SpawnedReverb};
+use tutti_nodes::{FamilyNode, FdnNode, ReverbKind, SpawnedReverb};
 use tutti_types::{
     AtomicF32, ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Seconds, Tail, UnitAddr,
     UnitParam,
@@ -24,16 +24,16 @@ use tutti_types::{
 const SR: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 64;
 
-fn plain() -> FdnDesign {
-    FdnDesign::default()
+fn plain() -> FdnFamily {
+    FdnFamily::default()
 }
 
-fn freezable() -> FdnDesign {
-    FdnDesign::new(8, Seconds(8.0), true).unwrap()
+fn freezable() -> FdnFamily {
+    FdnFamily::new(8, Seconds(8.0), true).unwrap()
 }
 
-fn node(design: FdnDesign, c: FdnControls) -> FdnNode {
-    prepared(DesignNode::live(design, c), SR, BLOCK)
+fn node(design: FdnFamily, c: FdnControls) -> FdnNode {
+    prepared(FamilyNode::live(design, c), SR, BLOCK)
 }
 
 struct Rig {
@@ -83,8 +83,8 @@ fn finite(d: &Driven) -> usize {
 }
 
 /// The network's own tail at -60 dB in frames at 48 kHz.
-fn tail_of(design: &FdnDesign, c: &FdnControls) -> usize {
-    let tutti_dsp::Ring::Finite(s) = design.design(c, SR).tail(Db(-60.0)) else {
+fn tail_of(design: &FdnFamily, c: &FdnControls) -> usize {
+    let tutti_dsp::Ring::Finite(s) = design.member(c, SR).tail(Db(-60.0)) else {
         panic!("finite")
     };
     (s.get() * SR.get()).ceil() as usize
@@ -271,7 +271,7 @@ fn a_modulated_decay_is_read_at_the_end_and_its_peak_sets_the_tail() {
 #[test]
 fn a_lane_driving_the_decay_changes_how_long_it_rings() {
     let ring = |decay: f32| -> f64 {
-        let node = DesignNode::live(plain(), FdnControls::DEFAULT);
+        let node = FamilyNode::live(plain(), FdnControls::DEFAULT);
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
         let (n, _) = g.add_with_controls(node);
         g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -320,8 +320,8 @@ fn a_lane_driving_the_decay_changes_how_long_it_rings() {
 /// harness's fork checks over every cell of both designs.
 #[test]
 fn a_fork_shares_no_cell() {
-    assert_param_fork(DesignNode::live(plain(), FdnControls::DEFAULT));
-    assert_param_fork(DesignNode::live(freezable(), FdnControls::DEFAULT));
+    assert_param_fork(FamilyNode::live(plain(), FdnControls::DEFAULT));
+    assert_param_fork(FamilyNode::live(freezable(), FdnControls::DEFAULT));
 }
 
 /// A non-finite write to any cell reads as unchanged: the render equals one that

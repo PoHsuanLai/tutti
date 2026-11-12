@@ -1,6 +1,6 @@
 //! The contract is public under the `contract` feature (design 024 section 6), and
 //! a family outside this crate runs it: a gain, the smallest system with a
-//! frequency response, through `design_contract!` and `realization_contract!`,
+//! frequency response, through `family_contract!` and `realization_contract!`,
 //! against the `Lti` group (the reverb group is for a `Network`).
 //!
 //! The gain slews to a new value over 64 frames from the first frame since the
@@ -11,10 +11,10 @@
 use std::num::NonZeroU32;
 use std::ops::Range;
 
-use tutti_dsp::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase};
+use tutti_dsp::contract::{FamilyCase, Figure, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
-    Cadence, Ceiling, Channels, Complex64, Design, Glide, Lti, Recurrence, Ring, Sizes, Start,
-    System, design_contract, realization_contract,
+    Cadence, Channels, Complex64, Family, Glide, Lti, Recurrence, Ring, Start, System,
+    family_contract, realization_contract,
 };
 use tutti_types::BusTopology;
 use tutti_types::{Db, Hz, SampleRate, Samples};
@@ -51,28 +51,8 @@ impl Lti for GainModel {
     }
 }
 
-/// A gain has no sizes to allocate.
 #[derive(Clone, Copy, Debug)]
-struct NoSizes;
-
-impl Sizes for NoSizes {
-    type Source = GainModel;
-
-    fn measure(_: &GainModel, _: Db) -> Self {
-        NoSizes
-    }
-
-    fn tail(&self) -> Ring {
-        Ring::Finite(tutti_types::Seconds::new(0.0))
-    }
-
-    fn dominates(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct GainDesign;
+struct GainFamily;
 
 /// The recurrence: `y = g x` at the gain as it stands, the gain slewed over 64 frames
 /// from the last reset by a [`Glide`] (γ), toward the gain the model asks for (κ).
@@ -82,8 +62,8 @@ struct GainRecurrence;
 const SLEW: u32 = 64;
 
 impl Recurrence for GainRecurrence {
-    type Model = GainModel;
-    type Bounds = NoSizes;
+    type Member = GainModel;
+    type Capacity = ();
     type Target = f32;
     type Coeffs = Glide<f32>;
     type State = ();
@@ -121,11 +101,9 @@ impl Recurrence for GainRecurrence {
     }
 }
 
-impl Design for GainDesign {
+impl Family for GainFamily {
     type Controls = f32;
-    type Model = GainModel;
-    type Bounds = NoSizes;
-    type Range = ();
+    type Member = GainModel;
     type Recurrence = GainRecurrence;
     // The slew counts frames from the last reset: a per-frame stream grid.
     const CADENCE: Cadence = Cadence::stream(NonZeroU32::MIN);
@@ -138,7 +116,7 @@ impl Design for GainDesign {
         GainModel { gain: 0.0 }
     }
 
-    fn design_into(&self, g: &f32, _: SampleRate, out: &mut GainModel) {
+    fn member_into(&self, g: &f32, _: SampleRate, out: &mut GainModel) {
         out.gain = if g.is_finite() {
             g.clamp(0.0, 0.9)
         } else {
@@ -146,16 +124,14 @@ impl Design for GainDesign {
         };
     }
 
-    fn bounds(&self, _: &Ceiling<()>) -> NoSizes {
-        NoSizes
-    }
-
     fn recurrence(&self) -> GainRecurrence {
         GainRecurrence
     }
 }
 
-impl DesignCase for GainDesign {
+impl FamilyCase for GainFamily {
+    fn capacity(&self, _: SampleRate) {}
+
     fn reachable(&self) -> Vec<f32> {
         vec![0.1, 0.25, 0.5, 0.75, 0.9]
     }
@@ -169,7 +145,7 @@ impl DesignCase for GainDesign {
     }
 }
 
-impl RealizationCase for GainDesign {
+impl RealizationCase for GainFamily {
     fn probes(&self) -> Vec<f32> {
         vec![0.3, 0.8]
     }
@@ -183,7 +159,7 @@ impl RealizationCase for GainDesign {
     }
 }
 
-impl LtiCase for GainDesign {
+impl LtiCase for GainFamily {
     /// A gain is its value at every frequency.
     fn figures(&self) -> Vec<Figure<f32>> {
         [0.1, 0.5, 0.9]
@@ -202,10 +178,10 @@ impl LtiCase for GainDesign {
 
 mod design {
     use super::*;
-    design_contract!(GainDesign, Lti);
+    family_contract!(GainFamily, Lti);
 }
 
 mod realization {
     use super::*;
-    realization_contract!(GainDesign, Lti, BlockIndependent);
+    realization_contract!(GainFamily, Lti, BlockIndependent);
 }

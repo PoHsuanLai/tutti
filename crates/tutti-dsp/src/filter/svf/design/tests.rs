@@ -3,9 +3,9 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{Db, Hz, Q};
 
 use super::*;
-use crate::Design;
+use crate::Family;
 use crate::SvfType;
-use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
+use crate::contract::{FamilyCase, Figure, LtiCase, RealizationCase};
 
 const TYPES: [SvfType; 8] = [
     SvfType::LowPass,
@@ -27,11 +27,13 @@ fn controls(ty: SvfType, freq: f32, q: f32, gain: f32) -> SvfControls {
     }
 }
 
-fn design() -> SvfDesign<f64> {
-    SvfDesign::new(BusTopology::MONO)
+fn design() -> SvfFamily<f64> {
+    SvfFamily::new(BusTopology::MONO)
 }
 
-impl DesignCase for SvfDesign<f64> {
+impl FamilyCase for SvfFamily<f64> {
+    fn capacity(&self, _: SampleRate) {}
+
     fn reachable(&self) -> Vec<SvfControls> {
         let mut all = Vec::new();
         for ty in TYPES {
@@ -75,7 +77,7 @@ impl DesignCase for SvfDesign<f64> {
 /// map, which puts `s = j` at the cutoff exactly): a low-pass and a high-pass
 /// are `Q` there, an all-pass is unity, a bell is its gain, a shelf is its
 /// gain at the far end, and a low-pass at DC is unity.
-impl LtiCase for SvfDesign<f64> {
+impl LtiCase for SvfFamily<f64> {
     fn figures(&self) -> Vec<Figure<SvfControls>> {
         let rate = SampleRate(48_000.0);
         let at = |c: SvfControls, freq: f32, gain: f64| Figure {
@@ -123,7 +125,7 @@ impl LtiCase for SvfDesign<f64> {
     }
 }
 
-impl RealizationCase for SvfDesign<f64> {
+impl RealizationCase for SvfFamily<f64> {
     fn probes(&self) -> Vec<SvfControls> {
         vec![
             controls(SvfType::LowPass, 1_000.0, 0.707, 0.0),
@@ -156,7 +158,7 @@ impl RealizationCase for SvfDesign<f64> {
     }
 }
 
-crate::design_contract!(design(), Lti);
+crate::family_contract!(design(), Lti);
 
 #[test]
 fn a_glides_midpoint_is_stable() {
@@ -189,7 +191,7 @@ fn a_control_moves_the_design_only_past_its_dead_band() {
 fn a_blend_arrives_on_the_new_set_at_its_last_frame() {
     let d = design();
     let rate = SampleRate(48_000.0);
-    let model = |hz| d.design(&controls(SvfType::LowPass, hz, 0.707, 0.0), rate);
+    let model = |hz| d.member(&controls(SvfType::LowPass, hz, 0.707, 0.0), rate);
     let mut blended = d.realized();
     blended.retarget(&model(500.0));
     blended.retarget(&model(5_000.0));

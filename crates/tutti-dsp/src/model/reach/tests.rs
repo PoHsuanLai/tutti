@@ -38,34 +38,24 @@ fn a_max_decay_keeps_the_range_checked_shape() {
     });
 }
 
-/// A ceiling refuses what it cannot hold and never clamps.
+/// A reach refuses what it cannot hold and never clamps.
 #[test]
-fn a_ceiling_refuses_what_it_cannot_hold() {
-    #[derive(Clone, Copy)]
-    struct Never;
-    impl Range for Never {
-        const DEFAULT: Self = Never;
-        fn valid(&self) -> bool {
-            false
-        }
-    }
+fn a_reach_refuses_what_it_cannot_hold() {
     let rate = SampleRate(48_000.0);
     let (decay, floor) = (MaxDecay::DEFAULT, Db(-60.0));
-    let c = Ceiling::new(rate, decay, floor).unwrap();
+    let c = Reach::new(rate, decay, floor).unwrap();
     assert_eq!(
-        (c.rate(), c.range(), c.max_decay(), c.floor()),
+        (c.rate(), c.domain(), c.max_decay(), c.floor()),
         (rate, decay, Seconds::new(8.0), floor)
     );
-    assert_eq!(Ceiling::at(rate), Some(c));
+    assert_eq!(Reach::at(rate), Some(c));
     for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert!(
-            Ceiling::<MaxDecay>::at(SampleRate(bad)).is_none(),
+            Reach::<MaxDecay>::at(SampleRate(bad)).is_none(),
             "rate {bad}"
         );
     }
-    assert!(Ceiling::new(rate, Never, floor).is_none());
-    assert!(Ceiling::<()>::at(rate).is_some());
     for bad in [0.0, 3.0, f32::NAN, f32::NEG_INFINITY] {
-        assert!(Ceiling::new(rate, decay, Db(bad)).is_none(), "floor {bad}");
+        assert!(Reach::new(rate, decay, Db(bad)).is_none(), "floor {bad}");
     }
 }

@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = session.add_plugin_blocking(&main, PluginLoadRequest::new(plugin))?;
 
     // 4. Wire it: the plugin's outputs feed the root's channels.
-    session.graph().set_outputs_from(node);
+    session.graph().connect(node, Root)?;
 
     // 5. Play. An instrument takes a note on its event input: middle C for the
     //    first two beats, as a clip on the project's timeline.

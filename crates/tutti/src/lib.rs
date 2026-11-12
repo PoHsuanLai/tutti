@@ -256,9 +256,9 @@ pub mod prelude {
     pub use tutti_session::Device;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Key,
-        NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder, SessionEvent,
-        TypedParamRef,
+        ConnectError, Edge, EventInPort, EventOutPort, HeardOpen, HeardTapError, InPort, Job,
+        JobFailed, Key, NoSuchNode, OutPort, Phase, Playhead, Root, Session, SessionBuilder,
+        SessionEvent, TypedParamRef,
     };
 
     // What a session's calls take, by the feature that gates each (design

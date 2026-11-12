@@ -70,7 +70,7 @@ impl fmt::Debug for Job {
 /// Why a job ended without a result.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub(crate) enum JobFailed {
+pub enum JobFailed {
     /// The work panicked; `message` is the panic's, when it was a string.
     #[error("a session job panicked: {message}")]
     Panicked {

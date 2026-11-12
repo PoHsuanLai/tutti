@@ -106,7 +106,7 @@ pub use graph::{
 };
 #[cfg(feature = "midi")]
 pub use instrument::{InstrumentHandle, NotInstrument, SendError};
-pub use jobs::Job;
+pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
     Inlet, Key, MainBus, MainSink, OutPort, Outlet, Root, Weighted, Wire,

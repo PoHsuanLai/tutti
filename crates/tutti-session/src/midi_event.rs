@@ -4,7 +4,7 @@
 
 /// A MIDI event of the session, one per thing that happened.
 ///
-/// A variant about one device carries its [`DeviceId`](tutti_midi_hardware::DeviceId)
+/// A variant about one device carries its `DeviceId`
 /// as a field; a count over every input or the output has no device, and is its
 /// own variant. Reported in the order they were seen, from `Phase::Poll` and
 /// `Phase::MidiOut`.

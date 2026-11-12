@@ -229,7 +229,7 @@ param_session_node!(tutti_nodes::VbapPannerNode, tutti_nodes::HrtfBinauralNode);
 /// The synth as a graph node: one MIDI event input, and its live params
 /// (master volume, unison detune and spread) as a `ParamSet`, so a param
 /// write reaches it and a fork of it starts from what was set. It follows the
-/// session's MPE mode ([`SessionNode::bind_mpe`]).
+/// session's MPE mode (`SessionNode::bind_mpe`).
 #[cfg(feature = "synth")]
 impl SessionNode for tutti_polysynth::PolySynth {
     fn params(controls: &ParamSet) -> Option<ParamSet> {

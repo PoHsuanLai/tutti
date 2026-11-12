@@ -4,7 +4,7 @@ use tutti_graph::EventInletNode;
 use tutti_graph::EventKind;
 use tutti_graph::contract::Direct;
 use tutti_types::{Frame, SampleRate};
-use tutti_ump::MidiGroup;
+use tutti_ump::{MidiGroup, Ump};
 
 fn rig() -> (Direct<EventInletNode>, MidiKeys) {
     let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);

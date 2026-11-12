@@ -628,7 +628,7 @@ pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
 /// How often a rising count of events the hardware inputs' inlets dropped is
 /// reported at most
-/// ([`MidiEvent::InputsDropped`](crate::MidiEvent::InputsDropped), feature `midi-hardware`):
+/// (`MidiEvent::InputsDropped`, feature `midi-hardware`):
 /// a stalled audio callback with a busy controller drops on every update.
 pub const MIDI_INPUT_DROP_REPORT: Duration = Duration::from_secs(1);
 

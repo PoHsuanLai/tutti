@@ -157,7 +157,7 @@ pub enum MidiError {
     #[error("MIDI file: {0}")]
     File(#[from] tutti_midi_file::Error),
 
-    /// A message was not queued ([`SendError::Full`]).
+    /// A message was not queued ([`SendError::Full`](crate::SendError::Full)).
     #[error("MIDI send: {0}")]
     Send(#[from] crate::SendError),
 

@@ -156,7 +156,7 @@ pub use tutti_midi_file as midi_file;
 /// `MidiChannel`, `MidiGroup`, `NoteNumber`), a timed event, what a live input
 /// is sent with (`Stamp`) and a take read with (`TapEvent`, `EventTapReader`),
 /// the session's route rule, events and errors (`MidiRouteRule`, `MidiEvent`,
-/// [`midi::Error`](midi::Error)), and under `midi-hardware` a device (`DeviceId`,
+/// `midi::Error`), and under `midi-hardware` a device (`DeviceId`,
 /// `DeviceInfo`) and what a saved one resolves to (`Resolution`). The
 /// lower layers (`Translator`, `Narrower`, `SysexAssembler`, `ClockMap`) are
 /// by path through [`ump`], [`midi_protocol`] and [`midi_runtime`]; the

@@ -16,17 +16,20 @@ use tutti_midi_device::EndpointId;
 /// Returned as a tuple rather than the `FakeCounters` struct so each test
 /// names only the counter it uses — `(s, _, opens)` says at a glance that
 /// this one is about opens.
+/// Inlets for four devices of 64 events, with no lead.
+fn inlets() -> Arc<DeviceInlets> {
+    DeviceInlets::new(
+        4,
+        tutti_graph::EventCapacity::of(64),
+        std::time::Duration::ZERO,
+    )
+}
+
 fn session() -> (MidiSession, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let (backend, counters) = FakeBackend::build();
-    let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(
-            4,
-            tutti_graph::EventCapacity::of(64),
-            std::time::Duration::ZERO,
-        ),
-    )));
+    let inlets = inlets();
     (
-        MidiSession::open_over(backend, ports).unwrap(),
+        MidiSession::open_over(backend, inlets).unwrap(),
         counters.sent,
         counters.opens,
     )
@@ -86,25 +89,26 @@ fn connecting_an_open_input_is_idempotent() {
 #[test]
 fn by_name_matching_is_case_insensitive_substring() {
     let (s, _, _) = session();
-    s.connect_input_by_name("keystep").unwrap();
+    s.connect_input("keystep").unwrap();
     assert_eq!(s.connected_input_names(), vec!["Keystep Pro".to_string()]);
 }
 
 #[test]
 fn connecting_an_absent_device_is_an_error_not_a_silent_noop() {
     let (backend, counters) = FakeBackend::build();
-    let s = MidiSession::open_over(
-        backend,
-        Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-            tutti_midi_runtime::DeviceInlets::new(
-                4,
-                tutti_graph::EventCapacity::of(64),
-                std::time::Duration::ZERO,
-            ),
-        ))),
-    )
-    .unwrap();
-    assert!(s.connect_input_by_name("nonexistent").is_err());
+    let s = MidiSession::open_over(backend, inlets()).unwrap();
+    // A name that matches nothing says what it searched, so a typo shows what
+    // was there.
+    let Err(Error::NoDeviceNamed { name, searched }) = s.connect_input("nonexistent") else {
+        panic!("a name that matches no input is NoDeviceNamed");
+    };
+    assert_eq!(name, "nonexistent");
+    assert_eq!(searched, ["IAC Bus 1", "Keystep Pro"], "the inputs, by id");
+    // The output side searches the outputs.
+    let Err(Error::NoDeviceNamed { searched, .. }) = s.connect_output("nonexistent") else {
+        panic!("a name that matches no output is NoDeviceNamed");
+    };
+    assert_eq!(searched, ["IAC Bus 1", "Synth A"], "the outputs, by id");
     // An id that was listed and is gone: the shape of a stale id.
     let gone = input(&s, "IAC Bus 1");
     let events = s.devices().subscribe();
@@ -123,10 +127,39 @@ fn disconnecting_closes_only_the_named_input() {
     let (s, _, _) = session();
     s.connect_input(&input(&s, "Keystep Pro")).unwrap();
     s.connect_input(&input(&s, "IAC Bus 1")).unwrap();
-    s.disconnect_input_by_name("iac");
+    s.disconnect_input("iac");
     assert_eq!(s.connected_input_names(), vec!["Keystep Pro".to_string()]);
     s.disconnect_all_inputs();
     assert!(!s.is_any_input_connected());
+}
+
+/// **A name and an id pick the same device**: one `connect` and one
+/// `disconnect` take either, and a name that matches several devices
+/// disconnects the lowest id among the open ones (the choice is not the map's
+/// order).
+#[test]
+fn a_query_by_id_and_by_name_reach_the_same_device() {
+    let (s, _, _) = session();
+    let keystep = input(&s, "Keystep Pro");
+    s.connect_input("pro").unwrap();
+    assert!(s.is_input_connected(&keystep), "by name");
+    assert!(s.disconnect_input(&keystep), "by id");
+    assert!(!s.disconnect_input("pro"), "nothing is open to close");
+
+    // Both open inputs' names contain an "s"; the disconnect closes the
+    // lowest id.
+    let iac = input(&s, "IAC Bus 1");
+    s.connect_input(&keystep).unwrap();
+    s.connect_input(&iac).unwrap();
+    assert!(
+        iac < keystep,
+        "the fixture's ids: {iac:?} below {keystep:?}"
+    );
+    assert!(s.disconnect_input("s"));
+    assert!(
+        s.is_input_connected(&keystep) && !s.is_input_connected(&iac),
+        "the lowest id went"
+    );
 }
 
 /// **The reason the sink is an `Option`.** With nothing connected, `send`
@@ -143,9 +176,17 @@ fn sending_with_no_output_accepts_nothing() {
 #[test]
 fn sending_reaches_a_connected_output() {
     let (s, sent, _) = session();
-    s.connect_output_by_name("synth a").unwrap();
-    assert!(s.is_output_connected());
-    assert_eq!(s.output_device_name(), Some("Synth A".to_string()));
+    s.connect_output("synth a").unwrap();
+    let output = s.output().expect("the output is open");
+    assert_eq!(output.name, "Synth A");
+    let synth_a = s
+        .outputs()
+        .into_iter()
+        .find(|d| d.name == "Synth A")
+        .unwrap()
+        .id;
+    assert_eq!(output.id, synth_a);
+    assert_eq!(output.config, s.output().unwrap().config);
     assert_eq!(s.send(&[note(), note()]), 2);
     assert_eq!(sent.load(Ordering::SeqCst), 2);
 }
@@ -165,17 +206,11 @@ fn sending_reaches_a_connected_output() {
 fn a_refusing_output_reports_zero_accepted() {
     let (backend, counters) = FakeBackend::build_accepting(0);
     let sent = counters.sent;
-    let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(
-            4,
-            tutti_graph::EventCapacity::of(64),
-            std::time::Duration::ZERO,
-        ),
-    )));
-    let s = MidiSession::open_over(backend, ports).unwrap();
-    s.connect_output_by_name("synth a").unwrap();
+    let inlets = inlets();
+    let s = MidiSession::open_over(backend, inlets).unwrap();
+    s.connect_output("synth a").unwrap();
 
-    assert!(s.is_output_connected(), "the output is open");
+    assert!(s.output().is_some(), "the output is open");
     assert_eq!(s.send(&[note(), note()]), 0, "the device accepted none");
     assert_eq!(
         sent.load(Ordering::SeqCst),
@@ -188,15 +223,9 @@ fn a_refusing_output_reports_zero_accepted() {
 #[test]
 fn a_partial_accept_reports_what_landed() {
     let (backend, _counters) = FakeBackend::build_accepting(1);
-    let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(
-            4,
-            tutti_graph::EventCapacity::of(64),
-            std::time::Duration::ZERO,
-        ),
-    )));
-    let s = MidiSession::open_over(backend, ports).unwrap();
-    s.connect_output_by_name("synth a").unwrap();
+    let inlets = inlets();
+    let s = MidiSession::open_over(backend, inlets).unwrap();
+    s.connect_output("synth a").unwrap();
 
     assert_eq!(s.send(&[note(), note(), note()]), 1);
 }
@@ -204,10 +233,10 @@ fn a_partial_accept_reports_what_landed() {
 #[test]
 fn disconnecting_output_stops_delivery() {
     let (s, sent, _) = session();
-    s.connect_output_by_name("synth a").unwrap();
+    s.connect_output("synth a").unwrap();
     s.send(&[note()]);
     s.disconnect_output();
-    assert!(!s.is_output_connected());
+    assert!(s.output().is_none());
     assert_eq!(s.send(&[note()]), 0);
     assert_eq!(
         sent.load(Ordering::SeqCst),
@@ -224,8 +253,9 @@ fn connecting_a_second_output_replaces_the_first() {
     let output = |name: &str| s.outputs().into_iter().find(|d| d.name == name).unwrap().id;
     s.connect_output(&output("Synth A")).unwrap();
     s.connect_output(&output("IAC Bus 1")).unwrap();
-    assert_eq!(s.output_device(), Some(output("IAC Bus 1")));
-    assert_eq!(s.output_device_name(), Some("IAC Bus 1".to_string()));
+    let open = s.output().expect("one output is open");
+    assert_eq!(open.id, output("IAC Bus 1"));
+    assert_eq!(open.name, "IAC Bus 1");
 }
 
 /// The `MidiOut` impl must route to the same place as the inherent `send`,
@@ -234,7 +264,7 @@ fn connecting_a_second_output_replaces_the_first() {
 #[test]
 fn the_midi_out_impl_routes_to_the_open_output() {
     let (s, sent, _) = session();
-    s.connect_output_by_name("synth a").unwrap();
+    s.connect_output("synth a").unwrap();
     MidiOut::queue(&s, &[note()]);
     assert_eq!(sent.load(Ordering::SeqCst), 1);
 }
@@ -254,7 +284,7 @@ fn hot_plug_cycles_keep_the_port_set_bounded() {
         assert_eq!(s.ports().list_input_ports().len(), 1, "cycle {cycle}");
         s.connect_input(&input(&s, "Keystep Pro")).unwrap();
         assert_eq!(s.ports().list_input_ports().len(), 2, "cycle {cycle}");
-        assert_eq!(s.ports().slot_count(), 2, "cycle {cycle}");
+        assert_eq!(s.ports().port_count(), 2, "cycle {cycle}");
     }
     assert_eq!(
         opens.load(Ordering::SeqCst),
@@ -264,7 +294,7 @@ fn hot_plug_cycles_keep_the_port_set_bounded() {
 
     s.disconnect_all_inputs();
     assert!(s.ports().list_input_ports().is_empty());
-    assert_eq!(s.ports().slot_count(), 0, "the set shrinks back to nothing");
+    assert_eq!(s.ports().port_count(), 0, "the set shrinks back to nothing");
 }
 
 /// A backend whose connections, and itself, log their drop, and which can
@@ -310,7 +340,7 @@ impl MidiEndpoints for LoggingBackend {
         producer: InputProducerHandle,
     ) -> Result<Box<dyn InputConnection>> {
         if self.refuse {
-            return Err(Error::MidiDevice("refused".into()));
+            return Err(Error::device("refused"));
         }
         Ok(Box::new(LoggingConnection {
             log: Arc::clone(&self.log),
@@ -318,7 +348,7 @@ impl MidiEndpoints for LoggingBackend {
         }))
     }
     fn open_output(&self, _id: EndpointId) -> Result<Box<dyn DeviceOut>> {
-        Err(Error::MidiDevice("no outputs".into()))
+        Err(Error::device("no outputs"))
     }
 }
 
@@ -328,15 +358,9 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
         log: Arc::clone(&log),
         refuse,
     };
-    let ports = Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(
-            4,
-            tutti_graph::EventCapacity::of(16),
-            std::time::Duration::ZERO,
-        ),
-    )));
+    let inlets = inlets();
     (
-        MidiSession::open_over(Box::new(backend), ports).unwrap(),
+        MidiSession::open_over(Box::new(backend), inlets).unwrap(),
         log,
     )
 }
@@ -367,5 +391,5 @@ fn a_refused_open_leaves_no_port() {
     }
     assert!(!s.is_any_input_connected());
     assert!(s.ports().list_input_ports().is_empty());
-    assert_eq!(s.ports().slot_count(), 0);
+    assert_eq!(s.ports().port_count(), 0);
 }

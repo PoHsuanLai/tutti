@@ -160,11 +160,11 @@ impl Rig {
 }
 
 fn inputs(slots: usize, capacity: u32) -> Arc<HardwareMidiInputs> {
-    Arc::new(HardwareMidiInputs::new(Arc::new(DeviceInlets::new(
+    Arc::new(HardwareMidiInputs::new(DeviceInlets::new(
         slots,
         tutti_graph::EventCapacity::of(capacity),
         Duration::ZERO,
-    ))))
+    )))
 }
 
 fn note() -> Ump {
@@ -175,7 +175,7 @@ fn note() -> Ump {
 /// thread would, each arriving at `at`.
 fn feed(port: &mut InputProducerHandle, count: usize, at: Instant) {
     for _ in 0..count {
-        port.push(note(), at);
+        let _ = port.push(note(), at);
     }
 }
 

@@ -281,17 +281,16 @@ impl SessionBuilder {
             // One event inlet for each device, which its thread pushes into
             // for the frame the engine's block clock puts its arrival on: a
             // block later, so no event is late (the lead, doc 017 E5).
-            let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
+            let inlets = tutti_midi_runtime::DeviceInlets::new(
                 self.midi_devices,
                 crate::midi::MIDI_INPUT_INLET_CAPACITY,
                 crate::midi::input_lead(quantum.unwrap_or(max_block).samples(), rate),
-            ));
-            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(inlets));
+            );
             let io = match backend {
                 Some(MidiBackend(backend)) => {
-                    tutti_midi_hardware::MidiSession::open_over(backend, ports)?
+                    tutti_midi_hardware::MidiSession::open_over(backend, inlets)?
                 }
-                None => tutti_midi_hardware::MidiSession::open(ports)?,
+                None => tutti_midi_hardware::MidiSession::open(inlets)?,
             };
             // Subscribed before anything can plug in unseen: `Phase::Poll`
             // is this subscription's only reader.
@@ -327,12 +326,24 @@ impl SessionBuilder {
         let midi = {
             // One event input for each device slot; the session wires a
             // device's inlet to its slot as the device connects.
-            let (input, input_controls) = graph.add(
-                tutti_midi_runtime::MidiIngestNode::new(self.midi_devices)
-                    .hearing(self.midi_ports)
-                    .with_mpe(self.mpe_mode),
-            );
-            let (clock, clock_master) = graph.add(tutti_midi_runtime::ClockNode::new());
+            let ingest = tutti_midi_runtime::MidiIngestNode::new(self.midi_devices)
+                .hearing(self.midi_ports)
+                .with_mpe(self.mpe_mode);
+            // A slot a new device takes starts over in the node, with no call
+            // from here: it follows the inlets' epochs. Both are built from
+            // `midi_devices`, so their slot counts agree.
+            #[cfg(feature = "midi-hardware")]
+            let ingest = match &midi_io {
+                Some(io) => ingest
+                    .following(io.ports().inlets())
+                    .expect("the ingest node and the inlets are built with one slot count"),
+                None => ingest,
+            };
+            let (input, input_controls) = graph.add(ingest);
+            let (clock, clock_master) = graph.add(tutti_midi_runtime::ClockNode::new(
+                tutti_ump::MidiGroup::FIRST,
+                rate,
+            ));
             // The hardware out: a tap on the clock's event output, aligned to
             // the outputs' time so MIDI leaves with the audio (doc 017, E3).
             let tap = graph

@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Voice1::NoteOff { note, velocity }
             };
             let message = Message::Midi1(Address::first(MidiChannel::FIRST), voice);
-            TimedMidiEvent::from((Beat(beat), Ump::from(message)))
+            TimedMidiEvent::new(Beat(beat), Ump::from(message)).expect("a finite beat")
         };
         session
             .midi()

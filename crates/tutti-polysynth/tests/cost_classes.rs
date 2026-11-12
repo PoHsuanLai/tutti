@@ -74,6 +74,7 @@ fn notes(k: u64) -> Vec<TimedMidiEvent> {
                     0xFFFF,
                 ),
             )
+            .unwrap()
         })
         .collect()
 }

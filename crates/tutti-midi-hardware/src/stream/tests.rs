@@ -4,9 +4,9 @@
 //! producer.
 
 use super::*;
-use crate::HardwareMidiInputs;
 use crate::MidiSession;
 use crate::test_support::{FakeBackend, FakeCounters, endpoint};
+use crate::{HardwareMidiInputs, Pushed};
 use std::sync::Arc;
 use std::time::Duration;
 use tutti_midi_device::{
@@ -30,14 +30,12 @@ struct Wire {
 
 fn session_over(os: UmpCapability, direction: PortDirection, device: Endpoint) -> Wire {
     let (backend, counters) = FakeBackend::build_with(vec![], vec![], usize::MAX);
-    let ports = Arc::new(HardwareMidiInputs::new(Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(
-            4,
-            tutti_graph::EventCapacity::of(64),
-            Duration::ZERO,
-        ),
-    )));
-    let session = MidiSession::open_over(backend, ports).unwrap();
+    let inlets = tutti_midi_runtime::DeviceInlets::new(
+        4,
+        tutti_graph::EventCapacity::of(64),
+        Duration::ZERO,
+    );
+    let session = MidiSession::open_over(backend, inlets).unwrap();
     let mut info = endpoint(7, "Wire");
     info.capability = os;
     counters.plug(info, direction);
@@ -66,7 +64,7 @@ impl Wire {
     /// devices the tick settled.
     fn tick(&mut self, ms: u64) -> (Vec<Stream>, Vec<(DeviceId, DeviceStream)>) {
         let now = self.at(ms);
-        let settled = self.session.poll(now);
+        let settled: Vec<_> = self.session.poll(now).collect();
         let sent: Vec<Stream> = self
             .counters
             .take_sent(self.raw)
@@ -296,17 +294,17 @@ fn stream_messages_never_reach_the_graph() {
     use tutti_fixtures::midi::note_on;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
+    let inlets = tutti_midi_runtime::DeviceInlets::new(
         2,
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
-    ));
+    );
     let ports = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let start = Instant::now();
     let mut rig = Rig::over(&inlets, start);
     rig.run(1);
     let mut producer = ports.open_input_port("dev").unwrap();
-    let port = producer.port_id();
+    let port = producer.slot();
     rig.apply();
     let stream = tutti_ump::Ump::from(Message::Stream(Stream::EndpointDiscovery {
         version: tutti_midi_device::UMP_VERSION,
@@ -320,13 +318,12 @@ fn stream_messages_never_reach_the_graph() {
     }));
     let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
     let arrival = rig.origin + Duration::from_millis(1);
-    assert!(producer.push(stream, arrival));
-    assert!(producer.push(note, arrival));
+    assert_eq!(producer.push(stream, arrival), Pushed::Diverted);
+    assert_eq!(producer.push(note, arrival), Pushed::Sent);
     rig.run(8);
     let heard: Vec<_> = rig.take().into_iter().map(|(_, _, ump)| ump).collect();
     assert_eq!(heard, [note]);
-    let mut said = Vec::new();
-    ports.drain_stream(port, |ump| said.push(ump));
+    let said: Vec<_> = ports.drain_stream(port).collect();
     assert_eq!(said, [stream]);
 }
 
@@ -451,7 +448,7 @@ fn the_output_follows_the_negotiated_protocol() {
     wire.session.send(&note);
     assert_eq!(received(&wire)[0].message_type(), 2);
     assert_eq!(
-        wire.session.output_config().map(|c| c.protocol),
+        wire.session.output().map(|o| o.config.protocol),
         Some(Protocol::Midi1)
     );
 }
@@ -514,7 +511,7 @@ fn static_blocks_are_not_re_read_and_others_are() {
         wire.session.connect_input(&wire.id.clone()).unwrap();
         settle(&mut wire);
         send_ump(&wire, moved_block(6), 40);
-        let changed = wire.session.poll(wire.at(40));
+        let changed: Vec<_> = wire.session.poll(wire.at(40)).collect();
         let first_group = || {
             wire.session.stream(&wire.id).unwrap().capability().blocks[0]
                 .first_group()
@@ -539,11 +536,11 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     use tutti_fixtures::midi::note_on;
     use tutti_ump::{MidiChannel, MidiGroup, Utility};
 
-    let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
+    let inlets = tutti_midi_runtime::DeviceInlets::new(
         2,
         tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
-    ));
+    );
     let ports = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let mut rig = Rig::over(&inlets, Instant::now());
     rig.run(1);
@@ -552,9 +549,12 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
     let arrival = rig.origin + Duration::from_millis(1);
     for jr in [Utility::JrClock(10), Utility::JrTimestamp(20)] {
-        assert!(producer.push(Ump::from(Message::Utility(jr)), arrival));
+        assert_eq!(
+            producer.push(Ump::from(Message::Utility(jr)), arrival),
+            Pushed::Diverted
+        );
     }
-    assert!(producer.push(note, arrival));
+    assert_eq!(producer.push(note, arrival), Pushed::Sent);
     rig.run(8);
     let heard: Vec<_> = rig.take().into_iter().map(|(_, _, ump)| ump).collect();
     assert_eq!(heard, [note]);

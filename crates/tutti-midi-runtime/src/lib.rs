@@ -16,23 +16,26 @@ mod schedule;
 mod sync;
 mod traits;
 
-pub use clock_map::{ClockMap, ClockReading, GAIN, Observed, RESYNC};
+pub use clock_map::{ClockMap, ClockReading, GAIN, InvalidRate, Observed, RESYNC};
 pub use ledger::{NoteLedger, Sending};
 pub use live::{
-    ArrivalClock, CHANNELLESS_PORT, DeviceInlets, DeviceInput, DeviceSlot, InletChange,
+    ArrivalClock, CHANNELLESS_PORT, Changes, DeviceInlets, DeviceInput, DeviceSlot, InletChange,
     LIVE_INLET_CAPACITY, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY,
     MIDI_INPUT_PORTS, MidiIngestControls, MidiIngestNode, MidiInputPorts, MidiKeys, MidiMailbox,
-    MidiReceiver, MidiSender, NoFreeSlot, RouteRule, compile_routes,
+    MidiReceiver, MidiSender, MpeIngest, NoFreeSlot, RouteRule, SlotCountMismatch, compile_routes,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
-    JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest,
+    JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream,
 };
 pub use schedule::{
     CLIP_EVENT_DENSITY, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode, MidiClipControls,
     MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
-pub use sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode};
+pub use sync::{
+    ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
+    UnknownFrameRate,
+};
 pub use traits::MidiOut;
 // The counts a device's inlet keeps, as `DeviceInput::counts` returns them.
 pub use tutti_graph::InletCounts;

@@ -32,7 +32,7 @@ Pure MIDI values live in `tutti-ump` and `tutti-midi-protocol`; OS ports live in
 - [`MidiClockDecoder`], [`MtcDecoder`], [`SmpteTimecode`] and
   [`SmpteFrameRate`]: the inbound half of sync (Beat Clock and MTC decoders),
   beside the master that sends them.
-- [`MpeIngest`]: the input-edge transform that rewrites classic-MPE channel
+- [`MpeIngest`]: the inbound state (`live`) that rewrites classic-MPE channel
   spread into native MIDI 2.0 per-note messages.
 
 The MPE zone types (`MpeMode`, `MpeZoneConfig`, ...) are

@@ -7834,7 +7834,7 @@ fourth.
   is the notes it started: it ends them (note-off on the frame) when
   playback stops, jumps by more than half a frame from where the last
   segment left off, wraps its loop, or the clip is replaced
-  (`MidiClipControls::set_events`, through `RtPublish`). A note-off the port
+  (`MidiClipControls::set`, through `RtPublish`). A note-off the port
   refuses stays owed and goes out the next block.
 - **`PolySynth: Node + IntoNode`**: one MIDI event input, stereo out, the
   release as its tail, `Resolution::Sample`; a native fork source. The
@@ -7866,7 +7866,7 @@ fourth.
   synth, a SoundFont player or a plugin inserted as a graph node) plays
   through the session's clip for that target (`Midi::play_clip`, a
   `MidiClipNode` wired to its event input through the session's feeds;
-  `SequencedClips`), edited in place with `set_events`; a target with no
+  `SequencedClips`), edited in place with `set`; a target with no
   event input takes no MIDI. Found in review and fixed: removing a clip node (the last
   install gone, or the target off the event path) sends an all-notes-off
   through the target's port, as the port path does; a loop that wraps exactly

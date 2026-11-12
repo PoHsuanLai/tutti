@@ -1,4 +1,10 @@
 use super::*;
+use tutti_ump::{MidiGroup, U7};
+
+/// A quarter-frame data byte as the packet a device sends it in.
+fn quarter(byte: u8) -> Ump {
+    Message::System(MidiGroup::FIRST, System::TimeCode(U7::of(byte))).into()
+}
 
 fn make_quarter_frame(piece: u8, nibble: u8) -> u8 {
     (piece << 4) | (nibble & 0x0F)
@@ -17,7 +23,7 @@ fn feed_timecode(decoder: &mut MtcDecoder, h: u8, m: u8, s: u8, f: u8, rate: u8)
         make_quarter_frame(7, hours_high_and_rate),
     ];
     for d in data {
-        decoder.feed(d);
+        assert!(decoder.feed(&quarter(d)));
     }
 }
 
@@ -25,11 +31,11 @@ fn feed_timecode(decoder: &mut MtcDecoder, h: u8, m: u8, s: u8, f: u8, rate: u8)
 #[test]
 fn joining_mid_cycle_waits_for_the_next_piece_zero() {
     let mut decoder = MtcDecoder::new();
-    decoder.feed(make_quarter_frame(3, 5));
+    assert!(decoder.feed(&quarter(make_quarter_frame(3, 5))));
     assert_eq!(decoder.timecode(), None);
     // Pieces 4..=7 follow the unknown start; they must not assemble.
     for piece in 4..8 {
-        decoder.feed(make_quarter_frame(piece, 0));
+        assert!(decoder.feed(&quarter(make_quarter_frame(piece, 0))));
     }
     assert_eq!(decoder.timecode(), None);
     feed_timecode(&mut decoder, 1, 2, 3, 4, 1);
@@ -91,7 +97,7 @@ fn test_no_timecode_before_8_messages() {
     assert!(decoder.timecode().is_none());
 
     for piece in 0..7 {
-        decoder.feed(make_quarter_frame(piece, 0));
+        assert!(decoder.feed(&quarter(make_quarter_frame(piece, 0))));
     }
     assert!(decoder.timecode().is_none());
 }
@@ -102,7 +108,7 @@ fn test_out_of_sequence_pieces_discarded() {
     // A gap (0,1,3,…) must not assemble a timecode from mismatched
     // nibble slots — the partial frame is discarded at the gap.
     for piece in [0u8, 1, 3, 4, 5, 6, 7] {
-        decoder.feed(make_quarter_frame(piece, 0));
+        assert!(decoder.feed(&quarter(make_quarter_frame(piece, 0))));
     }
     assert!(
         decoder.timecode().is_none(),
@@ -114,8 +120,8 @@ fn test_out_of_sequence_pieces_discarded() {
 fn test_resyncs_on_next_piece_zero() {
     let mut decoder = MtcDecoder::new();
     // Feed a broken run, then a clean full frame: the clean one wins.
-    decoder.feed(make_quarter_frame(0, 0));
-    decoder.feed(make_quarter_frame(2, 0)); // gap → discard, wait for 0
+    assert!(decoder.feed(&quarter(make_quarter_frame(0, 0))));
+    assert!(decoder.feed(&quarter(make_quarter_frame(2, 0)))); // gap → discard, wait for 0
     assert!(decoder.timecode().is_none());
 
     feed_timecode(&mut decoder, 1, 2, 3, 4, 3);
@@ -304,7 +310,7 @@ fn reserved_bits_of_the_quarter_frames_are_ignored() {
         (3 << 1) | 0x8, // hours high bit 0 clear, rate 3, bit 3 reserved
     ];
     for (piece, nibble) in nibbles.into_iter().enumerate() {
-        decoder.feed(make_quarter_frame(piece as u8, nibble));
+        assert!(decoder.feed(&quarter(make_quarter_frame(piece as u8, nibble))));
     }
     let tc = decoder.timecode().expect("not a corrupt frame");
     // 1:02:03:04 and the receiver's +2 frames.
@@ -312,4 +318,30 @@ fn reserved_bits_of_the_quarter_frames_are_ignored() {
         (tc.hours(), tc.minutes(), tc.seconds(), tc.frames()),
         (1, 2, 3, 6)
     );
+}
+
+/// **Only a Quarter Frame is a piece.** Any other packet (a Timing Clock, a
+/// note) is reported unrecognised and assembles nothing, even in the middle of
+/// a cycle: a decoder fed the whole input stream must not mistake its
+/// neighbours for pieces.
+#[test]
+fn a_packet_that_is_not_a_quarter_frame_is_ignored() {
+    let mut decoder = MtcDecoder::new();
+    let clock: Ump = Message::System(MidiGroup::FIRST, System::TimingClock).into();
+    for piece in 0..4 {
+        assert!(decoder.feed(&quarter(make_quarter_frame(piece, 0))));
+    }
+    assert!(!decoder.feed(&clock), "a Timing Clock is not a piece");
+    for piece in 4..8 {
+        assert!(decoder.feed(&quarter(make_quarter_frame(piece, 0))));
+    }
+    assert!(
+        decoder.timecode().is_some(),
+        "the clock between pieces neither counted nor broke the cycle"
+    );
+    let mut fresh = MtcDecoder::new();
+    for _ in 0..8 {
+        assert!(!fresh.feed(&clock));
+    }
+    assert_eq!(fresh.timecode(), None);
 }

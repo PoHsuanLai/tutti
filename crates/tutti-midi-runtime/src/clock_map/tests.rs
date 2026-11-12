@@ -172,7 +172,7 @@ fn a_reading_that_goes_backwards_is_rejected() {
 fn a_rate_change_keeps_the_instant_of_the_anchor() {
     let t0 = base();
     let mut map = map_at(t0, 48_000);
-    assert!(map.set_rate(SampleRate(44_100.0)));
+    assert_eq!(map.set_rate(SampleRate(44_100.0)), Ok(()));
     assert_eq!(map.rate(), SampleRate(44_100.0));
     assert_eq!(map.frame_at(t0), Some(Frame(44_100)));
     assert_eq!(
@@ -192,6 +192,9 @@ fn a_rate_that_is_not_finite_and_positive_is_refused() {
     }
     let mut map = map_at(t0, 0);
     let before = map;
-    assert!(!map.set_rate(SampleRate(0.0)));
+    assert_eq!(
+        map.set_rate(SampleRate(0.0)),
+        Err(InvalidRate(SampleRate(0.0)))
+    );
     assert_eq!(map, before);
 }

@@ -119,7 +119,7 @@ impl UmpVirtualDestination {
     /// As [`new`](Self::new).
     pub fn with_producer(name: &str, mut producer: crate::InputProducerHandle) -> Result<Self> {
         Self::stamped(name, move |event, arrived| {
-            if !producer.push(event, arrived) {
+            if producer.push(event, arrived) == crate::Pushed::Full {
                 debug!("UMP input ring full, dropping event");
             }
         })

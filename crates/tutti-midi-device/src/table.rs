@@ -72,6 +72,47 @@ pub enum Resolved {
     Missing,
 }
 
+/// Which resolutions [`Resolved::bind`] takes without asking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindPolicy {
+    /// Only an [`Exact`](Resolved::Exact) device: the one that is safe to bind
+    /// unasked.
+    ExactOnly,
+    /// An exact device, or the only present device of the saved name
+    /// ([`SameName`](Resolved::SameName)), which may be another unit of the
+    /// same model: for an app that has nothing to ask with.
+    OrSameName,
+}
+
+impl Resolved {
+    /// The device to bind without asking, by `policy`: the exact one, or (under
+    /// [`BindPolicy::OrSameName`]) the one of the same name. `None` for
+    /// everything else: the candidates of an [`Ambiguous`](Self::Ambiguous)
+    /// resolution are for an app to ask about
+    /// ([`into_candidates`](Self::into_candidates)), and a missing device has
+    /// nothing to bind.
+    #[must_use]
+    pub fn bind(self, policy: BindPolicy) -> Option<DeviceInfo> {
+        match (self, policy) {
+            (Self::Exact(info), _) | (Self::SameName(info), BindPolicy::OrSameName) => Some(info),
+            _ => None,
+        }
+    }
+
+    /// Every present device that could be the saved one, ordered by id: the
+    /// one of an [`Exact`](Self::Exact) or [`SameName`](Self::SameName)
+    /// resolution, the several of an [`Ambiguous`](Self::Ambiguous) one, and
+    /// none of a [`Missing`](Self::Missing) one. What an app that asks lists.
+    #[must_use]
+    pub fn into_candidates(self) -> Vec<DeviceInfo> {
+        match self {
+            Self::Exact(info) | Self::SameName(info) => vec![info],
+            Self::Ambiguous(candidates) => candidates,
+            Self::Missing => Vec::new(),
+        }
+    }
+}
+
 /// Whether a device that goes `now` still carries what `saved` used it for.
 fn serves(now: PortDirection, saved: PortDirection) -> bool {
     (now.is_input() || !saved.is_input()) && (now.is_output() || !saved.is_output())

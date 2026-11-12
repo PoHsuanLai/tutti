@@ -2,7 +2,7 @@
 //! one event port per Group and channel.
 //!
 //! A hardware device reaches the graph through an event inlet of its own
-//! ([`DeviceInlets`](crate::DeviceInlets)), each event already on its frame
+//! ([`DeviceInlets`]), each event already on its frame
 //! (the device's thread stamps it, `tutti-graph`'s event inlet holds it until
 //! its block); the node has one event input per device slot, so what it reads
 //! is what the inlets emitted. Each block it translates every slot's events,
@@ -27,14 +27,17 @@
 //! Translation runs on every event, wired or not: both stages are stateful
 //! assemblers, and skipping an event corrupts the ones after it.
 //!
-//! A slot whose device changed is restarted
-//! ([`MidiIngestControls::restart_slot`]): its translator and its MPE state
-//! start empty, so one device's half-sent run is not completed by the next.
+//! A slot whose device changed is restarted by the node itself: built
+//! [`following`](MidiIngestNode::following) the [`DeviceInlets`] its inputs
+//! are fed from, it compares each slot's epoch (which the inlets bump as each
+//! device takes the slot) with the one it last saw every block, and a slot that
+//! differs starts empty, translator and MPE state, so one device's half-sent
+//! run is not completed by the next.
 //!
 //! Its fork is silent: an offline render reads no wire.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_graph::{Losses, UmpAt};
 
 use tutti_graph::{
@@ -46,8 +49,9 @@ use tutti_midi_protocol::Translator;
 use tutti_rt::{ArcLend, Reader};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
+use super::mpe_ingest::MpeIngest;
 use super::order::{BLANK, in_offset_order, offset_of};
-use crate::outbound::mpe_ingest::MpeIngest;
+use crate::live::device_inlets::DeviceInlets;
 
 /// The port that carries a Group's events with no channel: after its sixteen
 /// channel ports. For the first Group (and a node that hears only it); Group
@@ -203,9 +207,9 @@ const PORTS_PER_GROUP: usize = MIDI_INPUT_PORTS;
 pub struct MidiIngestNode {
     /// One translation state per device slot.
     devices: Box<[Device]>,
-    /// How many times each slot was restarted
-    /// ([`MidiIngestControls::restart_slot`]), as the node last saw it.
-    restarts: Arc<[AtomicU32]>,
+    /// The slots' epochs ([`MidiIngestNode::following`]); `None` for a node
+    /// whose slots no inlets hand out, which never restarts one.
+    epochs: Option<Arc<[AtomicU64]>>,
     /// What the block sends: the translated events, which may outnumber the
     /// ones read (a member channel's bend range fans out over its zone).
     out: Box<[UmpAt]>,
@@ -229,8 +233,8 @@ pub struct MidiIngestNode {
 struct Device {
     translator: Translator,
     mpe: MpeIngest,
-    /// The slot's restart count this state was last reset at.
-    restarted: u32,
+    /// The slot's epoch this state was last reset at.
+    epoch: u64,
 }
 
 impl Device {
@@ -238,15 +242,15 @@ impl Device {
         Self {
             translator: Translator::new(),
             mpe: MpeIngest::new(mode),
-            restarted: 0,
+            epoch: 0,
         }
     }
 
     /// Empty, as for a device that has not sent anything.
-    fn restart(&mut self, mode: MpeMode, restarted: u32) {
+    fn restart(&mut self, mode: MpeMode, epoch: u64) {
         self.translator.reset();
         self.mpe = MpeIngest::new(mode);
-        self.restarted = restarted;
+        self.epoch = epoch;
     }
 }
 
@@ -273,7 +277,7 @@ impl MidiIngestNode {
             devices: (0..devices)
                 .map(|_| Device::new(MpeMode::Disabled))
                 .collect(),
-            restarts: (0..devices).map(|_| AtomicU32::new(0)).collect(),
+            epochs: None,
             out: vec![BLANK; tutti_graph::note_off_room(MIDI_INPUT_EVENT_CAPACITY)]
                 .into_boxed_slice(),
             ports: MidiInputPorts::FIRST_GROUP,
@@ -287,6 +291,27 @@ impl MidiIngestNode {
     #[must_use]
     pub fn devices(&self) -> usize {
         self.devices.len()
+    }
+
+    /// Restart a slot's translator and MPE state when a device takes it, as
+    /// `inlets` hand the slots out: the node reads each slot's epoch once per
+    /// block (a relaxed load of a cell the control side stores to when a
+    /// device opens), so no one has to tell it. The slots are the inlets' own,
+    /// so the node must have as many.
+    ///
+    /// # Errors
+    ///
+    /// [`SlotCountMismatch`] when the node and the inlets have different
+    /// numbers of slots.
+    pub fn following(mut self, inlets: &DeviceInlets) -> Result<Self, SlotCountMismatch> {
+        if inlets.slots() != self.devices.len() {
+            return Err(SlotCountMismatch {
+                node: self.devices.len(),
+                inlets: inlets.slots(),
+            });
+        }
+        self.epochs = Some(inlets.epochs());
+        Ok(self)
     }
 
     /// Hear the Groups of `ports` (the first Group alone by default): each
@@ -333,15 +358,35 @@ impl MidiIngestNode {
     }
 }
 
-/// The host's handle on a [`MidiIngestNode`]: its MPE mode, and which device
-/// slots start over. Cheap to clone.
+/// A [`MidiIngestNode`] and the [`DeviceInlets`] it was to follow have
+/// different numbers of slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotCountMismatch {
+    /// The node's event inputs.
+    pub node: usize,
+    /// The inlets' slots.
+    pub inlets: usize,
+}
+
+impl std::fmt::Display for SlotCountMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the ingest node has {} device slots and the inlets {}",
+            self.node, self.inlets
+        )
+    }
+}
+
+impl std::error::Error for SlotCountMismatch {}
+
+/// The host's handle on a [`MidiIngestNode`]: its MPE mode. Cheap to clone.
 #[derive(Clone, Debug)]
 pub struct MidiIngestControls {
     /// What the node reads; the controls publish to it and read it back with
     /// `ArcLend::current`.
     request: Arc<ArcLend<Option<MpeMode>>>,
     dropped: Arc<AtomicU64>,
-    restarts: Arc<[AtomicU32]>,
 }
 
 impl MidiIngestControls {
@@ -355,28 +400,13 @@ impl MidiIngestControls {
         self.request.publish(Some(mode));
     }
 
-    /// Starts device slot `slot` over from the next block: its translator and
-    /// its MPE state are emptied, as for a device that has sent nothing. What
-    /// a new device taking the slot needs, so the previous one's half-sent
-    /// RPN or held MPE notes are not carried into it. `false` for a slot the
-    /// node has no input for. Control thread; lock-free.
-    pub fn restart_slot(&self, slot: usize) -> bool {
-        match self.restarts.get(slot) {
-            Some(count) => {
-                count.fetch_add(1, Ordering::Relaxed);
-                true
-            }
-            None => false,
-        }
-    }
-
     /// What the node has lost since it was built, in events: all of it
     /// `refused`, the translated events that found no room past the node's
     /// capacity in one block. An event's
     /// translation (a bend range or an MPE reset fans out over a zone) is
     /// dropped whole rather than cut partway. What a device's inlet could not
     /// hold is counted at the inlet, not here
-    /// ([`DeviceInlets`](crate::DeviceInlets)).
+    /// ([`DeviceInlets`]).
     pub fn losses(&self) -> Losses {
         Losses::refused(self.dropped.load(Ordering::Relaxed))
     }
@@ -415,10 +445,12 @@ impl Node for MidiIngestNode {
         // Before any event is translated, stated or not.
         let reset = self.adopt_mpe_request();
         let mode = self.mpe_mode;
-        for (device, restarts) in self.devices.iter_mut().zip(self.restarts.iter()) {
-            let restarts = restarts.load(Ordering::Relaxed);
-            if restarts != device.restarted {
-                device.restart(mode, restarts);
+        if let Some(epochs) = &self.epochs {
+            for (device, epoch) in self.devices.iter_mut().zip(epochs.iter()) {
+                let epoch = epoch.load(Ordering::Acquire);
+                if epoch != device.epoch {
+                    device.restart(mode, epoch);
+                }
             }
         }
         let block_len = cx.env.block_len;
@@ -543,7 +575,6 @@ impl IntoNode for MidiIngestNode {
         let controls = MidiIngestControls {
             request: Arc::clone(self.mpe_request.cell()),
             dropped: Arc::clone(&self.dropped),
-            restarts: Arc::clone(&self.restarts),
         };
         NodeParts {
             node: Box::new(self),

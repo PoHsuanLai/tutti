@@ -3,10 +3,10 @@
 //!
 //! - [`MidiClockDecoder`] — 24-PPQN **MIDI Beat Clock** (0xF8 + Start/Stop/
 //!   Continue) → transport state, beat position, inferred tempo. Feed each
-//!   relevant [`Ump`](tutti_ump::Ump) with its host timestamp via
+//!   relevant [`Ump`](tutti_ump::Ump) with its arrival `Instant` via
 //!   [`MidiClockDecoder::feed`], or call the per-message methods directly.
 //! - [`MtcDecoder`] — **MIDI Time Code** quarter-frames → an assembled
-//!   [`SmpteTimecode`]. Feed the 0xF1 data byte via [`MtcDecoder::feed`].
+//!   [`SmpteTimecode`]. Feed each [`Ump`](tutti_ump::Ump) via [`MtcDecoder::feed`].
 //! - [`SmpteFrameRate`] — the SMPTE frame-rate enum shared by MTC.
 //!
 //! Beat Clock gives musical position/tempo; MTC gives wall-clock SMPTE position —
@@ -19,4 +19,4 @@ mod smpte;
 
 pub use clock::{ClockTransportState, MidiClockDecoder};
 pub use mtc::{MtcDecoder, SmpteTimecode};
-pub use smpte::SmpteFrameRate;
+pub use smpte::{SmpteFrameRate, UnknownFrameRate};

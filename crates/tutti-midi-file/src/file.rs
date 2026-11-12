@@ -1017,7 +1017,7 @@ impl MidiFile {
 impl MidiFile {
     /// The file's one timeline as the packets a clip plays, `(Beat, Ump)` in
     /// order ([`events`](Self::events)' order), for
-    /// `Midi::play_clip(target, file.timeline()?)`. `None` for a format 2
+    /// `Midi::play_clip` (each pair through `TimedMidiEvent::new`). `None` for a format 2
     /// file, which has no one timeline: read each [`Track`] with
     /// [`Track::timeline`].
     ///

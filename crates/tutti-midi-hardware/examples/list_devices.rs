@@ -52,7 +52,7 @@ fn main() -> Result<(), Error> {
         match events.recv_timeout(left) {
             Ok(event) => println!("  {event:?}"),
             Err(RecvTimeoutError::Timeout) => {}
-            Err(ended) => return Err(Error::MidiPort(ended.to_string())),
+            Err(ended) => return Err(Error::port_from("the device watch ended", ended)),
         }
     }
     Ok(())

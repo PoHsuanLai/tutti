@@ -90,7 +90,8 @@ fn render_with_knob(synth: PolySynth, drive: Option<Drive>) -> ([Vec<f32>; 2], O
     let note = TimedMidiEvent::new(
         Beat(0.0),
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
-    );
+    )
+    .unwrap();
     ed.insert(NodeKey(1), "clip", MidiClipNode::new([note]));
     let params = ed.insert(SYNTH, "synth", synth);
     ed.spec_mut().connect_events(

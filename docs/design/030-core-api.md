@@ -531,6 +531,8 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      for the next block (`play`, a rolling locate, `stop`), or else what the playhead last
      rendered (a transport started through `transport()`), so a play at a beat straight
      after `play()` is taken.
+   - The `tutti` umbrella has a `tempo` module (`TempoMap`, `TempoMapBuilder`, `TempoPoint`,
+     `Transition`, `TempoView`) and `TempoMap` in its prelude, since `Session::set_tempo_map` takes one.
 12. **Instruments:** S4, with the MIDI session's keys handle.
 13. **Test leftovers** (built, #641 by the DSP session): `tutti-nodes`'
     `width_generic_golden.rs` replaced by analytic properties per node.

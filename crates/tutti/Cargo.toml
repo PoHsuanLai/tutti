@@ -18,6 +18,7 @@ categories = ["multimedia::audio"]
 # a file should not link ALSA, and one that only reads a .mid should not link
 # CoreMIDI.
 tutti-transport = { path = "../tutti-transport" }
+tutti-tempo = { path = "../tutti-tempo" }
 tutti-metering = { path = "../tutti-metering" }
 tutti-engine = { path = "../tutti-engine" }
 tutti-types = { path = "../tutti-types", default-features = false }

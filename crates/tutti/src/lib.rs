@@ -43,6 +43,13 @@ pub use tutti_engine as engine;
 /// machine, timed commands, the offline timeline.
 pub use tutti_transport as transport;
 
+/// The project's tempo (`tutti-tempo`): `TempoMap`, the points and builder it is
+/// made from, and the `TempoView` a reader walks it with. What
+/// `Session::set_tempo_map` takes.
+pub mod tempo {
+    pub use tutti_tempo::{TempoMap, TempoMapBuilder, TempoPoint, TempoView, Transition};
+}
+
 /// Load metering (`tutti-metering`): `LoadMeter`. Level meters are the
 /// graph's (`MeterReader`, `Editor::open_meter`).
 pub use tutti_metering as metering;
@@ -248,6 +255,7 @@ pub mod prelude {
     pub use tutti_metering::{LoadMeter, LoadReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
+    pub use tutti_tempo::TempoMap;
     pub use tutti_transport::{
         FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, OfflineTimeline,
         OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,

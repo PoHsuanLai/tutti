@@ -1,7 +1,7 @@
 use super::*;
 use std::io::{Cursor, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tutti_types::SampleRate;
+use tutti_types::{ChannelTopology, SampleRate};
 
 /// A sink that is slow to write and says when it is dropped.
 struct Watched {
@@ -37,7 +37,7 @@ impl Drop for Watched {
 #[test]
 fn a_dropped_writer_has_stopped_its_thread() {
     let dropped = Arc::new(AtomicBool::new(false));
-    let spec = Spec::new(
+    let spec = Spec::of_width(
         crate::Format::Vorbis {
             quality: Quality::LOWEST,
         },
@@ -63,16 +63,16 @@ fn a_dropped_writer_has_stopped_its_thread() {
     );
 }
 
+/// A spec of `width` channels: the speakers `topology` names, or, without
+/// one, the engine's own order for the width (unassigned where it has none).
 fn vorbis_spec(width: u16, topology: Option<ChannelTopology>) -> Spec {
-    Spec {
-        topology,
-        ..Spec::new(
-            crate::Format::Vorbis {
-                quality: Quality::HIGHEST,
-            },
-            ChannelLayout::from(width),
-            SampleRate(44_100.0),
-        )
+    let format = crate::Format::Vorbis {
+        quality: Quality::HIGHEST,
+    };
+    let rate = SampleRate(44_100.0);
+    match topology {
+        Some(topology) => Spec::new(format, topology, rate),
+        None => Spec::of_width(format, ChannelLayout::from(width), rate),
     }
 }
 
@@ -130,7 +130,7 @@ fn a_rear_stands_in_only_for_a_missing_side() {
 
 /// A width Vorbis defines is refused when the file cannot say which speakers it
 /// holds (3, 4, 5 and 7 have no engine default), or says speakers that are not
-/// Vorbis's layout; the topology of another width is refused as for WAV.
+/// Vorbis's layout.
 #[test]
 fn a_width_with_no_vorbis_layout_is_refused() {
     for width in [3u16, 4, 5, 7] {
@@ -144,10 +144,6 @@ fn a_width_with_no_vorbis_layout_is_refused() {
     assert!(matches!(
         vorbis_order(&vorbis_spec(6, Some(unassigned))),
         Err(Error::Spec(SpecError::VorbisLayout { channels: 6, .. }))
-    ));
-    assert!(matches!(
-        vorbis_order(&vorbis_spec(6, Some(ChannelTopology::quad()))),
-        Err(Error::Spec(SpecError::TopologyWidth { .. }))
     ));
 }
 
@@ -265,7 +261,7 @@ mod round_trip {
             let spec = vorbis_spec(case.width, topology.clone());
             let source: Vec<Speaker> = match case.source {
                 Some(s) => s.to_vec(),
-                None => ChannelTopology::smpte(spec.layout)
+                None => ChannelTopology::smpte(spec.layout())
                     .unwrap()
                     .positions()
                     .to_vec(),
@@ -292,7 +288,7 @@ mod round_trip {
             let mut w =
                 VorbisWriter::create(&spec, Quality::HIGHEST, Cursor::new(Vec::new())).unwrap();
             for block in samples.chunks(1_024 * width) {
-                w.write(Interleaved::new(block, spec.layout)).unwrap();
+                w.write(Interleaved::new(block, spec.layout())).unwrap();
             }
             let bytes = w.finish().unwrap().into_inner();
             let dir = tempfile::tempdir().unwrap();

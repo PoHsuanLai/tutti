@@ -348,8 +348,20 @@ pub enum Produced {
 
 impl Produced {
     /// The file, or `None` for planes.
+    ///
+    /// ```
+    /// # use tutti_export::{Produced, Rendered};
+    /// # use tutti_types::SampleRate;
+    /// let all = vec![Produced::Buffers(
+    ///     Rendered::new(vec![vec![0.0; 4]], SampleRate(48_000.0), 0)?,
+    /// )];
+    /// // Borrowed, so an output in a list is read in place.
+    /// assert!(all[0].file().is_none());
+    /// assert_eq!(all[0].buffers().map(Rendered::channels), Some(1));
+    /// # Ok::<(), tutti_export::RenderedError>(())
+    /// ```
     #[must_use]
-    pub fn file(self) -> Option<Written> {
+    pub fn file(&self) -> Option<&Written> {
         match self {
             Self::File(written) => Some(written),
             Self::Buffers(_) => None,
@@ -358,7 +370,25 @@ impl Produced {
 
     /// The planes, or `None` for a file.
     #[must_use]
-    pub fn buffers(self) -> Option<Rendered> {
+    pub fn buffers(&self) -> Option<&Rendered> {
+        match self {
+            Self::Buffers(rendered) => Some(rendered),
+            Self::File(_) => None,
+        }
+    }
+
+    /// The file, owned, or `None` for planes.
+    #[must_use]
+    pub fn into_file(self) -> Option<Written> {
+        match self {
+            Self::File(written) => Some(written),
+            Self::Buffers(_) => None,
+        }
+    }
+
+    /// The planes, owned, or `None` for a file.
+    #[must_use]
+    pub fn into_buffers(self) -> Option<Rendered> {
         match self {
             Self::Buffers(rendered) => Some(rendered),
             Self::File(_) => None,

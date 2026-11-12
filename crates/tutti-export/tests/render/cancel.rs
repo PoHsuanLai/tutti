@@ -168,7 +168,7 @@ fn run(
 ) -> Run {
     let RunMany { outcome, seen } = run_many(config, normalize, &[path], cancel_at);
     Run {
-        outcome: outcome.map(|mut produced| produced.remove(0).file().expect("a file output")),
+        outcome: outcome.map(|mut produced| produced.remove(0).into_file().expect("a file output")),
         seen,
     }
 }

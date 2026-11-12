@@ -158,7 +158,7 @@ pub fn fork_offline(live: &Editor, rate: SampleRate) -> RenderGraph {
 /// The value of a render nothing could have cancelled.
 fn finished<T>(outcome: Outcome<T>) -> T {
     outcome
-        .finished()
+        .into_finished()
         .expect("a control with no token is never cancelled")
 }
 
@@ -188,7 +188,7 @@ pub fn render_to_file(
 ) -> Result<Written> {
     let job = config.job()?;
     let output = Output::master(config.file_target(path.as_ref(), None));
-    render_output(graph, job, clock, output).map(|p| p.file().expect("a file output"))
+    render_output(graph, job, clock, output).map(|p| p.into_file().expect("a file output"))
 }
 
 /// `config`'s render into memory (not resampled, not dithered).
@@ -199,7 +199,7 @@ pub fn render_to_buffers(
 ) -> Result<Rendered> {
     let job = config.buffers_job()?;
     let output = Output::master(config.buffer_target());
-    render_output(graph, job, clock, output).map(|p| p.buffers().expect("a buffers output"))
+    render_output(graph, job, clock, output).map(|p| p.into_buffers().expect("a buffers output"))
 }
 
 /// `config`'s render into a file at `path`, normalized by `normalize`.
@@ -212,7 +212,7 @@ pub fn render_normalized_to_file(
 ) -> Result<Written> {
     let job = config.job()?;
     let output = Output::master(config.file_target(path.as_ref(), Some(normalize)));
-    render_output(graph, job, clock, output).map(|p| p.file().expect("a file output"))
+    render_output(graph, job, clock, output).map(|p| p.into_file().expect("a file output"))
 }
 
 /// `config`'s render into a file at `path` (normalized when `normalize` is
@@ -229,7 +229,7 @@ pub fn render_file_under(
     let job = config.job()?;
     let output = Output::master(config.file_target(path.as_ref(), normalize));
     render_one(graph.borrow_mut(), &job, clock, output, control)
-        .map(|o| o.map(|p| p.file().expect("a file output")))
+        .map(|o| o.map(|p| p.into_file().expect("a file output")))
 }
 
 /// `config`'s render into memory under `control`, as the render returns it.
@@ -242,5 +242,5 @@ pub fn render_buffers_under(
     let job = config.buffers_job()?;
     let output = Output::master(config.buffer_target());
     render_one(graph.borrow_mut(), &job, clock, output, control)
-        .map(|o| o.map(|p| p.buffers().expect("a buffers output")))
+        .map(|o| o.map(|p| p.into_buffers().expect("a buffers output")))
 }

@@ -126,11 +126,11 @@ finding where the API produces wrong results today, not only friction.
 | A5 | `DiskStreamer::open` can only be polled in a sleep loop. `take_disk_streamer` and the detached session | a blocking open on the spawner, landing in `update()`; the take kept until `bevy-tutti` un-parks | S (built, step 9) |
 | A6 | `Clip` (from #632) covers memory only | `Clip` also streams from disk past a size threshold, or with `.streamed()` | M (built, step 9) |
 | C1 | **Bug**: `Wave::read` silently assumes 44.1 kHz when the container has no rate | refuse with `DecodeError`, or take the rate as an argument | S |
-| C2 | Saving a `Wave` takes a hand-built `Spec` and hand interleaving, and `Rendered` and `Wave` do not convert | `Wave::write(path, format)`, `layout`, `interleaved`, and `From<Rendered> for Wave` | M |
-| C3 | `Spec` holds a `layout` and an optional `topology` that must agree. Codec constructors disagree on argument order and error type | `Spec` from a topology alone; one constructor shape | S |
+| C2 | Saving a `Wave` takes a hand-built `Spec` and hand interleaving, and `Rendered` and `Wave` do not convert | `Wave::write(path, format)`, `layout`, `interleaved`, and `From<Rendered> for Wave` | M (built, step 10) |
+| C3 | `Spec` holds a `layout` and an optional `topology` that must agree. Codec constructors disagree on argument order and error type | `Spec` from a topology alone; one constructor shape | S (built, step 10) |
 | C4 | "Finite positive rate" is re-checked in four places and skipped in two. `Wave` counts in `usize` | check once at `SampleRate` construction if the unit rule allows (a distinct range); `Samples` in `Wave` | L |
-| E1 | `Bounce` takes `format` at runtime (`Missing(Format)`) and accepts file-only knobs (`NormalizeBuffers`) on a buffer master | `master(path, format)`; the file knobs only on `Bounce<_, FileMaster>` | M |
-| E2 | Stem accessors consume `self`, so `done.stems()[0].file()` does not compile | borrowing accessors and `into_*` for the owned ones | S |
+| E1 | `Bounce` takes `format` at runtime (`Missing(Format)`) and accepts file-only knobs (`NormalizeBuffers`) on a buffer master | `master(path, format)`; the file knobs only on `Bounce<_, FileMaster>` | M (built, step 10) |
+| E2 | Stem accessors consume `self`, so `done.stems()[0].file()` does not compile | borrowing accessors and `into_*` for the owned ones | S (built, step 10) |
 
 ### 3.4 Live recording and the playhead (owner-approved 2026-11-12)
 
@@ -492,7 +492,35 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      through) and lands `SamplerEvent::ClipLoaded`. The force is the `Residency` argument,
      not `.streamed()` on the clip: the choice is made in the load job, before there is a clip
      to call it on. `Recorded::clip()` is unchanged (resident).
-10. **Codec and export:** C2, C3, E1, E2, then C4.
+10. **Codec and export:** C2, C3, E1, E2 (built), then C4.
+   - C3: `Spec` has private fields and one statement of width, its topology
+     (`Spec::new(format, topology, rate)`; `Spec::of_width(format, layout, rate)` is the
+     engine's order for the width, unassigned where it has none, as the old `None`
+     topology was; `layout()` is derived). `SpecError::TopologyWidth` is gone with the
+     disagreement. The codec's constructors are `(spec, target)`: `Encoder::create(spec,
+     sink)`, `create_file(spec, path)`, `create_file_planned(spec, path, frames)` and
+     `FileOut::create(spec, path)` (it was `(path, spec)`); the error is `tutti_codec::Error`
+     for writing (`FileOut::create` and `MicIn::matching_sink` return it, no longer an
+     `io::Error`, and `TakeError::Open` carries it) and `DecodeError` for reading.
+   - C2: `Wave::write(path, Format)` writes at the wave's own rate and topology (staged
+     beside the path, as `Encoder::create_file` does); `Wave::layout()`; `Wave::interleaved()`
+     is an iterator (a wave is held whole, so a `Vec` would double it; `write` reads it in
+     chunks). `From<Rendered> for Wave` is infallible: `Rendered::new` now refuses more
+     planes than a layout holds (`RenderedError::TooWide`), the one thing a `Wave` could
+     not take. A render keeps no topology, so the wave's is the engine's order for the
+     width, as `Wave::new`'s.
+   - E1: `Bounce::master(path, format)` makes a `FileMaster` that always has its format;
+     `Bounce::format` and `BounceConfigError::Missing(Field)` (and `Field`) are gone.
+     `resample`, `dither`, `normalize` and the format-sharing `stem(node, path)` are on
+     `Bounce<_, FileMaster>` alone, so a buffer master cannot be given them (a
+     `compile_fail` doctest). A file stem always has its format
+     (`Stem::new(node, path, format)`; `Stem::format` is gone), so a buffer master can still
+     write file stems; those stems take the default dither and no resample. `NormalizeBuffers`
+     stays for the one case a type does not yet rule out: a `StemGain` other than `None`
+     with a stem held in memory.
+   - E2: `Produced::file` and `buffers` borrow (`Option<&Written>`, `Option<&Rendered>`),
+     `into_file` and `into_buffers` own; `Outcome::finished` borrows and `into_finished`
+     owns.
 11. **Tempo and names:** T6, T8, T10.
 12. **Instruments:** S4, with the MIDI session's keys handle.
 13. **Test leftovers** (built, #641 by the DSP session): `tutti-nodes`'

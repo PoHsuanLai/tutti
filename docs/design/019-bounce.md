@@ -52,8 +52,7 @@ use tutti::prelude::*;
 
 let done = session.bounce(
     Bounce::project()
-        .format(Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard })
-        .master("out/master.flac"),
+        .master("out/master.flac", Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard }),
 )?;       // Bounced<FileMaster>: done.into_master() is the file's `Written`
 ```
 
@@ -62,11 +61,10 @@ Master plus stems, one pass:
 ```rust
 session.bounce(
     Bounce::project()
-        .format(Format::Wav(Pcm::Int24))
-        .master("out/master.wav")
+        .master("out/master.wav", Format::Wav(Pcm::Int24))
         .stem(drums, "out/drums.wav")
         .stem(bass, "out/bass.wav")
-        .stem_with(Stem::new(pad, "out/pad.wav").channels(ChannelLayout::MONO)),
+        .stem_with(Stem::new(pad, "out/pad.wav", Format::Wav(Pcm::Int24)).layout(ChannelLayout::MONO)),
 )?;
 ```
 
@@ -75,8 +73,7 @@ Normalized (master measured, stems left as rendered unless asked):
 ```rust
 session.bounce(
     Bounce::project()
-        .format(Format::Flac { depth: IntDepth::Int16, level: FlacLevel::Standard })
-        .master("out/master.flac")
+        .master("out/master.flac", Format::Flac { depth: IntDepth::Int16, level: FlacLevel::Standard })
         .normalize(Normalize::lufs(Db(-14.0)))
         .stem(drums, "out/drums.flac")
         .normalize_stems(StemGain::Shared),   // the master's gain, so stems still sum
@@ -114,8 +111,7 @@ bounce starts (`Bounce::try_map`).
 commands
     .spawn(BounceRequest::new(
         Bounce::project()
-            .format(Format::Wav(Pcm::Int24))
-            .master("out/master.wav")
+            .master("out/master.wav", Format::Wav(Pcm::Int24))
             .stem(drums_entity, "out/drums.wav")
             .normalize(Normalize::peak(Db(-1.0))),
     ))
@@ -458,7 +454,7 @@ makes it unreachable) and the session-only variants.
 | `Export(tutti_export::Error)` | The pipeline's. |
 
 `BounceConfigError` (session-only; moved from export's `ConfigError`):
-`Missing(Field)` (format, a target), `GraphHasNoOutputs`, `NoRange`, `EmptyRange`,
+`GraphHasNoOutputs`, `NoRange`, `EmptyRange`,
 `StemNotInGraph { node }`, `StemNotAudible { node }`, `StemChannelMissing { node,
 channel }`, `DuplicatePath(PathBuf)` (two targets name one file, checked before
 any work), `Placement { target, why }`, `PrepareHookUncommittable(CommitError)`.
@@ -954,3 +950,20 @@ from the text above:
 Test policy applies throughout: every new case must be able to fail (checked once, said in the PR); no existing
 test is relaxed; the parallel path is compared to the serial render bit for bit;
 golden digests, if any, go through `assert_golden`.
+
+**As built (core lane step 10, E1 and E2).** A file master always has its
+format and only a file master has the file's knobs:
+
+- `Bounce::master(path, format)` makes the `FileMaster` (`Bounce::format`,
+  `Missing(Field)` and `Field` are gone). `resample`, `dither`, `normalize` and
+  `stem(node, path)` (a stem in the master's format) are methods of
+  `Bounce<_, FileMaster>` alone, so a `master_buffers` bounce cannot be given a
+  normalize (a `compile_fail` doctest), and `NormalizeBuffers` is left for the one
+  case that is still a value: a `StemGain` other than `None` with a stem held in
+  memory.
+- A file stem always has its format (`Stem::new(node, path, format)`;
+  `Stem::format` is gone), so a buffer master still writes file stems. Those stems
+  are written with the default dither and no resample.
+- `Produced::file` and `buffers` borrow, `into_file` and `into_buffers` own, so
+  `done.stems()[0].file()` compiles (`Outcome::finished` and `into_finished` the
+  same).

@@ -128,8 +128,8 @@ fn to_buffers(mut graph: RenderGraph, cfg: &Case) -> Rendered {
         &mut Control::none(),
     )
     .expect("renders")
-    .finished()
-    .and_then(tutti_export::Produced::buffers)
+    .into_finished()
+    .and_then(tutti_export::Produced::into_buffers)
     .expect("nothing cancels a control with no token")
 }
 
@@ -148,8 +148,8 @@ fn to_file(
         &mut Control::none(),
     )
     .expect("writes")
-    .finished()
-    .and_then(tutti_export::Produced::file)
+    .into_finished()
+    .and_then(tutti_export::Produced::into_file)
     .expect("nothing cancels a control with no token")
 }
 

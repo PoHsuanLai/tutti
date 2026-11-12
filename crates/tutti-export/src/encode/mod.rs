@@ -38,11 +38,15 @@ pub(crate) fn output_rate(target: &FileTarget, render_rate: SampleRate) -> Sampl
 /// What the file is written as: the target's format, width and speaker order at
 /// the output rate.
 fn spec(target: &FileTarget, source_rate: SampleRate) -> Spec {
-    Spec {
-        format: target.format(),
-        layout: target.channels(),
-        rate: output_rate(target, source_rate),
-        topology: target.topology().cloned(),
+    let rate = output_rate(target, source_rate);
+    match target.topology() {
+        // A topology of another width than the file is the fold's to refuse,
+        // before any file is begun (`fold_from`); the file is the target's
+        // width either way.
+        Some(topology) if topology.layout() == target.channels() => {
+            Spec::new(target.format(), topology.clone(), rate)
+        }
+        _ => Spec::of_width(target.format(), target.channels(), rate),
     }
 }
 
@@ -60,7 +64,7 @@ pub(crate) fn open_file(
     source_rate: SampleRate,
 ) -> Result<Chain> {
     let spec = spec(target, source_rate);
-    let planned = StreamingResampler::output_frames(source_rate, spec.rate, plan.output_length);
+    let planned = StreamingResampler::output_frames(source_rate, spec.rate(), plan.output_length);
     let encoder = Encoder::create_file_planned(&spec, target.path(), planned)?;
     Chain::new(target, source_rate, encoder, &spec)
 }
@@ -251,7 +255,7 @@ impl Chain {
         let encoder = EncoderSink {
             encoder,
             layout,
-            counts_clipping: spec.format.int_depth().is_some(),
+            counts_clipping: spec.format().int_depth().is_some(),
             clipped: 0,
             frames: Samples(0),
             error: None,

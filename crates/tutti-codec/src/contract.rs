@@ -7,7 +7,7 @@ use std::io::{BufWriter, Cursor, Seek, Write};
 use tutti_types::{ChannelLayout, Interleaved, SampleRate};
 
 fn spec(format: Format) -> Spec {
-    Spec::new(format, ChannelLayout::STEREO, SampleRate(44_100.0))
+    Spec::of_width(format, ChannelLayout::STEREO, SampleRate(44_100.0))
 }
 
 /// `frames` stereo frames of a sawtooth under a hash: exact in binary and not

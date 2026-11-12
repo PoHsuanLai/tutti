@@ -7,17 +7,17 @@
 //! a speaker has no WAVE bit or the order differs. Samples are never
 //! reordered, so file channel `n` is always the engine's channel `n`.
 //!
-//! A writer that is given only a width uses [`default_channel_mask`], which is
-//! [`channel_mask`] of [`ChannelTopology::smpte`], so it never guesses where
-//! the engine declines to: 1 channel is `0x4` (`KSAUDIO_SPEAKER_MONO`), 2 is
-//! `0x3`, 6 is `0x60F` (`KSAUDIO_SPEAKER_5POINT1_SURROUND`), and every other
-//! width is `0`, including 8 (tutti's 7.1 is `... SL SR BL BR`, WAVE's would be
+//! A spec built from a width alone (`Spec::of_width`) states the engine's own
+//! order ([`ChannelTopology::smpte`]) and so never guesses where the engine
+//! declines to: 1 channel is `0x4` (`KSAUDIO_SPEAKER_MONO`), 2 is `0x3`, 6 is
+//! `0x60F` (`KSAUDIO_SPEAKER_5POINT1_SURROUND`), and every other width is `0`,
+//! including 8 (tutti's 7.1 is `... SL SR BL BR`, WAVE's would be
 //! `... BL BR SL SR`) and 4 (quad and B-format are both four channels).
 //! Quad's `0x33` (`KSAUDIO_SPEAKER_QUAD`) needs the caller to pass
 //! [`ChannelTopology::quad`].
 
 use crate::wave_mask::bit_of;
-use tutti_types::{ChannelLayout, ChannelTopology};
+use tutti_types::ChannelTopology;
 
 /// The speaker mask a WAV file declares for `topology`, or `0` (unassigned)
 /// when a speaker has no WAVE bit or the speakers are not in ascending bit
@@ -33,13 +33,6 @@ pub(crate) fn channel_mask(topology: &ChannelTopology) -> u32 {
     mask
 }
 
-/// [`channel_mask`] of the engine's own order for a bare width
-/// ([`ChannelTopology::smpte`]), `0` for a width that has none.
-#[must_use]
-pub(crate) fn default_channel_mask(layout: ChannelLayout) -> u32 {
-    ChannelTopology::smpte(layout).map_or(0, |t| channel_mask(&t))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,7 +44,13 @@ mod tests {
     /// bit for.
     #[test]
     fn masks_match_ksmedia_and_are_zero_where_they_cannot_be_stated() {
-        let m = |n: u16| default_channel_mask(ChannelLayout::from(n));
+        let m = |n: u16| {
+            let layout = tutti_types::ChannelLayout::from(n);
+            channel_mask(
+                &ChannelTopology::smpte(layout)
+                    .unwrap_or_else(|| ChannelTopology::unassigned(layout)),
+            )
+        };
         assert_eq!(m(1), 0x4);
         assert_eq!(m(2), 0x3);
         assert_eq!(m(6), 0x60F);
@@ -65,7 +64,7 @@ mod tests {
         assert_eq!(m(12), 0);
         assert_eq!(channel_mask(&ChannelTopology::quad()), 0x33);
         assert_eq!(
-            channel_mask(&ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap()),
+            channel_mask(&ChannelTopology::smpte(tutti_types::ChannelLayout::from(6u16)).unwrap()),
             0x60F
         );
         use Speaker::*;

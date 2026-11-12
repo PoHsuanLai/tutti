@@ -273,12 +273,13 @@ fn a_stem_that_cannot_be_placed_is_refused_not_truncated() {
             .connect(OutPort::new(wide, channel), Root::output(channel))
             .unwrap();
     }
-    let to_mono = Stem::new(wide.erase(), dir.path().join("mono.wav")).layout(ChannelLayout::MONO);
-    let wrong_width = Stem::new(wide.erase(), dir.path().join("two.wav")).topology(
+    let to_mono = Stem::new(wide.erase(), dir.path().join("mono.wav"), float_wav())
+        .layout(ChannelLayout::MONO);
+    let wrong_width = Stem::new(wide.erase(), dir.path().join("two.wav"), float_wav()).topology(
         tutti_types::ChannelTopology::for_width(ChannelLayout::STEREO),
     );
     for stem in [to_mono, wrong_width] {
-        let b = bounce(0.01).format(float_wav()).stem_with(stem);
+        let b = bounce(0.01).stem_with(stem);
         match refused(&mut session, b) {
             BounceError::Export(Error::Target { output: 1, why }) => {
                 assert!(
@@ -311,10 +312,9 @@ fn every_target_has_the_same_length_and_a_stem_its_own_format() {
     let done = session
         .bounce(
             base(0.25)
-                .format(Format::Wav(Pcm::Int16))
+                .master(&master, Format::Wav(Pcm::Int16))
                 .resample(Resample::to(44_100_u32))
-                .master(&master)
-                .stem_with(Stem::new(node.erase(), &stem).format(float_wav())),
+                .stem_with(Stem::new(node.erase(), &stem, float_wav())),
         )
         .expect("renders");
     assert_eq!(done.stems().len(), 1);
@@ -363,8 +363,7 @@ fn shared_gain_keeps_the_balance_and_each_measures_its_own() {
         let done = session
             .bounce(
                 base(0.1)
-                    .format(float_wav())
-                    .master(&paths[0])
+                    .master(&paths[0], float_wav())
                     .normalize(target)
                     .stem(loud.erase(), &paths[1])
                     .stem(quiet.erase(), &paths[2])
@@ -444,8 +443,7 @@ fn a_request_that_cannot_work_is_refused_by_name() {
         why(
             &mut session,
             base(0.01)
-                .format(float_wav())
-                .master(path("m.wav"))
+                .master(path("m.wav"), float_wav())
                 .stem(node.erase(), path("s.wav"))
                 .normalize_stems(StemGain::Shared),
         ),
@@ -461,15 +459,10 @@ fn a_request_that_cannot_work_is_refused_by_name() {
         BounceConfigError::NormalizeBuffers
     );
     assert_eq!(
-        why(&mut session, bounce(0.01).stem(node.erase(), path("s.wav"))),
-        tutti_session::BounceConfigError::Missing(tutti_session::Field::Format)
-    );
-    assert_eq!(
         why(
             &mut session,
             base(0.01)
-                .format(float_wav())
-                .master(path("one.wav"))
+                .master(path("one.wav"), float_wav())
                 .stem(node.erase(), path("one.wav")),
         ),
         BounceConfigError::DuplicatePath(path("one.wav"))
@@ -478,8 +471,7 @@ fn a_request_that_cannot_work_is_refused_by_name() {
         why(
             &mut session,
             base(0.01)
-                .format(float_wav())
-                .master(path("m.wav"))
+                .master(path("m.wav"), float_wav())
                 .stem(node.erase(), path("two.wav"))
                 .stem(node.erase(), path("two.wav")),
         ),

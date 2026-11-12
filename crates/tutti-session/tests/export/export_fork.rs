@@ -186,8 +186,8 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
             &mut Control::none(),
         )
         .expect("renders")
-        .finished()
-        .and_then(Produced::buffers)
+        .into_finished()
+        .and_then(Produced::into_buffers)
         .expect("nothing cancels a control with no token")
         .into_planes()
     };

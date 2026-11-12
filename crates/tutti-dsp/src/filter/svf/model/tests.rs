@@ -158,8 +158,6 @@ fn prototype(ty: SvfType, s: Complex64, q: f64, gain_db: f64) -> Complex64 {
 /// and frequencies from 20 Hz to 23.9 kHz, to 1e-9 of the larger magnitude (the
 /// model reads its response from the trapezoidal coefficients, so the two share
 /// nothing but the algebra; the margin over `f64` rounding is the near-Nyquist `tan`).
-/// A model whose `g` was not prewarped (`pi fc / rate` for `tan`) is off by far
-/// more at every cutoff above a few hundred hertz.
 #[test]
 fn the_svf_model_is_the_prewarped_bilinear_image_of_the_analog_prototype() {
     let rate = 48_000.0;

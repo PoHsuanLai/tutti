@@ -16,7 +16,7 @@ use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiGroup, Ump};
 
-use tutti_session::{EventOutPort, Session, SessionEvent, UmpOut};
+use tutti_session::{EventOutPort, MidiEvent, Session, SessionEvent, UmpOut};
 
 const RATE: f64 = 48_000.0;
 
@@ -141,7 +141,7 @@ fn a_full_tap_counts_what_it_drops() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, SessionEvent::MidiOutDropped(n) if *n == dropped)),
+            .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::OutputDropped { total }) if *total == dropped)),
         "and reported: {events:?}"
     );
 }

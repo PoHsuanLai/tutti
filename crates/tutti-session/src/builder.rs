@@ -166,7 +166,7 @@ impl SessionBuilder {
         self
     }
 
-    /// Open the OS MIDI layer ([`Session::midi_io`]) and feed the engine's
+    /// Open the OS MIDI layer (reached through [`Session::midi`](crate::Session::midi): `connect_input`, `connect_output`, `devices`) and feed the engine's
     /// MIDI ingest node, an event inlet for each connected device. Default off.
     #[cfg(feature = "midi-hardware")]
     #[must_use]
@@ -190,7 +190,11 @@ impl SessionBuilder {
         self
     }
 
-    /// The MPE mode the engine's MIDI input ingests in. Default `Disabled`.
+    /// The session's MPE mode to begin with: what the engine's MIDI input
+    /// ingests in, and what a synth added through
+    /// [`Session::add_instrument`](crate::Session::add_instrument) is built
+    /// to follow ([`Midi::set_mpe`](crate::Midi::set_mpe) changes it later).
+    /// Default `Disabled`.
     #[cfg(feature = "midi")]
     #[must_use]
     pub fn mpe_mode(mut self, mode: tutti_midi_protocol::MpeMode) -> Self {
@@ -426,12 +430,14 @@ impl SessionBuilder {
             #[cfg(feature = "midi")]
             midi: parts.midi,
             #[cfg(all(feature = "midi", not(feature = "midi-hardware")))]
-            midi_state: crate::midi::MidiState::with_hardware_tap(parts.midi_tap),
+            midi_state: crate::midi::MidiState::with_hardware_tap(parts.midi_tap)
+                .with_mpe(self.mpe_mode),
             #[cfg(feature = "midi-hardware")]
             midi_state: crate::midi::MidiState::with_device_events(
                 parts.device_events,
                 parts.midi_tap,
-            ),
+            )
+            .with_mpe(self.mpe_mode),
             #[cfg(feature = "modulation")]
             mods: crate::modulation::ModSession::new(self.unresolved_warning),
             #[cfg(feature = "midi-hardware")]

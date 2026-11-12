@@ -41,6 +41,7 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # where it saw those.
 tracing = "0.1"
 thiserror.workspace = true
+serde = { version = "1", optional = true, features = ["derive"] }
 
 # The sound card. Off: offline only, and no ALSA headers needed.
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
@@ -85,6 +86,9 @@ midi = [
     "dep:tutti-midi-file",
 ]
 midi-hardware = ["midi", "dep:tutti-midi-hardware"]
+# `serde` for `MidiRouteRule<T>` (keyed by the app's own stable id, not a
+# `NodeKey`): its Group and channel are `tutti-ump`'s, with its `serde`.
+serde = ["midi", "dep:serde", "tutti-ump/serde"]
 sampler = ["dep:tutti-sampler"]
 soundfont = ["midi", "dep:tutti-soundfont"]
 synth = ["dep:tutti-polysynth"]
@@ -123,6 +127,8 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "decode-wav", "decode-flac"] }
 # An independent reader for the WAV files the recorder tests write.
 hound = "3.5"
+# `MidiRouteRule`'s serde round trip (`tests/midi/midi_front.rs`).
+serde_json = "1"
 # `test-support`'s hand-stepped streamer, and the WAV reader the disk voice's
 # fork reads its file with (`export_fork_sampler`).
 tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support", "wav"] }

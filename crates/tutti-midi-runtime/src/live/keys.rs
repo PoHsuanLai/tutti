@@ -11,7 +11,7 @@
 use std::ops::{Deref, DerefMut};
 
 use tutti_graph::{EventCapacity, EventInletWriter, Refused, Stamp};
-use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
+use tutti_ump::{Address, Message, MidiChannel, MidiGroup, NoteNumber, Voice2};
 
 /// The ring a live input's inlet is opened with, in events (it is also the
 /// waiting list's size and the port's declared capacity).
@@ -82,8 +82,7 @@ impl MidiKeys {
             group: self.group,
             channel,
         };
-        self.writer
-            .push(at, Ump::from(Message::Midi2(address, voice)))
+        self.writer.push(at, Message::Midi2(address, voice))
     }
 }
 

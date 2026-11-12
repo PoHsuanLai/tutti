@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tutti_graph::NodeKey;
 use tutti_graph::{EventInletNode, Instrument, Losses, ParamSet, Refused, Stamp};
+use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
 use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, Moment, UnitParam};
@@ -111,7 +112,7 @@ impl SharedKeys {
         self.keys().clock()
     }
 
-    pub(crate) fn send(&self, at: impl Into<Stamp>, ump: Ump) -> Result<(), SendError> {
+    pub(crate) fn send(&self, at: impl Into<Stamp>, ump: impl Into<Ump>) -> Result<(), SendError> {
         Ok(self.keys().push(at, ump)?)
     }
 
@@ -201,7 +202,7 @@ impl InstrumentHandle {
     /// # Errors
     ///
     /// [`SendError::Full`] when the queue is full.
-    pub fn send(&self, at: impl Into<Stamp>, ump: Ump) -> Result<(), SendError> {
+    pub fn send(&self, at: impl Into<Stamp>, ump: impl Into<Ump>) -> Result<(), SendError> {
         self.keys.send(at, ump)
     }
 
@@ -257,19 +258,57 @@ impl InstrumentHandle {
     }
 }
 
+/// What [`Session::add_instrument`] takes: a graph [`Instrument`] that states
+/// how it is built in the session's MPE mode
+/// ([`Midi::set_mpe`](crate::Midi::set_mpe)). `add_instrument` is the one
+/// place the session's mode applies: a node added with `Graph::add` keeps its
+/// own configuration.
+pub trait SessionInstrument: Instrument + SessionNode {
+    /// `self`, built to play in `mode`. Required, with no default, so an
+    /// instrument says whether it reads MPE: one that does not returns itself
+    /// unchanged and says so in its impl.
+    #[must_use]
+    fn bind_mpe(self, mode: MpeMode) -> Self;
+}
+
+/// The synth plays per-note pitch and expression in the session's zones: the
+/// session's mode replaces its `SynthConfig::mpe`.
+#[cfg(feature = "synth")]
+impl SessionInstrument for tutti_polysynth::PolySynth {
+    fn bind_mpe(mut self, mode: MpeMode) -> Self {
+        self.set_mpe(mode);
+        self
+    }
+}
+
+/// The SoundFont player reads no MPE: its voices follow channel controllers
+/// (SF2 has no per-note expression), so the mode leaves it as it is.
+#[cfg(feature = "soundfont")]
+impl SessionInstrument for tutti_soundfont::SoundFontUnit {
+    fn bind_mpe(self, _mode: MpeMode) -> Self {
+        self
+    }
+}
+
 impl Session {
-    /// Adds `instrument` to the graph and makes it playable.
+    /// Adds `instrument` to the graph and makes it playable. It is built in
+    /// the session's MPE mode ([`Midi::set_mpe`](crate::Midi::set_mpe)) through
+    /// [`SessionInstrument::bind_mpe`], which wins over its own configuration.
+    /// This is the one place the session's mode applies: a node added with
+    /// `Graph::add` keeps what it was built with.
     ///
     /// # Errors
     ///
     /// [`Error::NotInstrument`](crate::Error::NotInstrument) when its shape has
     /// no event input or lacks the output its main pair names (the node is
     /// removed again).
-    pub fn add_instrument<I: Instrument + SessionNode>(
+    pub fn add_instrument<I: SessionInstrument>(
         &mut self,
         instrument: I,
     ) -> Result<(InstrumentHandle, I::Controls), crate::Error> {
         let main = instrument.main_outputs();
+        // The session's MPE mode, over whatever the instrument was configured with.
+        let instrument = instrument.bind_mpe(*self.midi_state.mpe());
         let (node, controls) = self.graph().add(instrument);
         let node = node.erase();
         match self.instrument_at(node, main) {

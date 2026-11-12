@@ -49,6 +49,15 @@ impl NoSuchNode {
     }
 }
 
+/// The disk streamer's own failure (its thread would not start), as the
+/// session's sampler error.
+#[cfg(feature = "sampler")]
+impl From<tutti_sampler::Error> for Error {
+    fn from(error: tutti_sampler::Error) -> Self {
+        Self::Sampler(crate::SamplerError::Streamer(error))
+    }
+}
+
 impl From<NoSuchNode> for ConnectError {
     fn from(e: NoSuchNode) -> Self {
         Self::NoSuchNode(e.node())
@@ -340,10 +349,10 @@ pub enum Error {
     #[error("SoundFont: {0}")]
     SoundFont(#[from] tutti_soundfont::Error),
 
-    /// Sampler subsystem failure. Wraps `tutti_sampler::Error`.
+    /// A sampler call or open did not go through ([`SamplerError`](crate::SamplerError)).
     #[cfg(feature = "sampler")]
-    #[error("Sampler: {0}")]
-    Sampler(#[from] tutti_sampler::Error),
+    #[error(transparent)]
+    Sampler(#[from] crate::SamplerError),
 
     /// Spatial-audio subsystem failure. Wraps `tutti_nodes::VbapError`
     /// (VBAP speaker-layout construction). HRTF has its own error type and

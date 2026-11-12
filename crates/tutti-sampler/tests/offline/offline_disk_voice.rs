@@ -11,6 +11,10 @@
 //! Each render hands its node blocks of `BLOCK` frames on a render clock that
 //! counts frames (as an export's does), moved after each.
 
+use tutti_sampler::VoiceWindow;
+
+use tutti_sampler::testing::loop_frames;
+
 use std::cell::Cell;
 use std::path::Path;
 use std::sync::Arc;
@@ -19,10 +23,10 @@ use tutti_types::MaxBlock;
 use tutti_graph::{Env, ForkHealth, ForkMode, IntoNode, Node, Prepare, TransportChanges, contract};
 use tutti_sampler::testing::settle;
 use tutti_sampler::{
-    ByHand, DiskStreamer, DiskVoice, LoopSetting, Placement, Playback, Stream, StreamReader, Voice,
+    ByHand, DiskStreamer, DiskVoice, Loop, Placement, Playback, Stream, StreamReader, Voice,
     VoiceNode, VoiceSource,
 };
-use tutti_types::{Beat, Bpm, Frame, FrameClock, LoopRange, SamplePosition, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, Frame, FrameClock, LoopRange, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -85,7 +89,7 @@ fn reverse(rig: &mut Rig) {
 
 /// The live voice of the stream `reader` reads, placed at `beat`.
 fn live_voice(reader: StreamReader, beat: f64) -> DiskVoice {
-    DiskVoice::from_reader(reader, Beat(beat), None)
+    DiskVoice::from_reader(reader, VoiceWindow::from(Beat(beat)))
 }
 
 /// A render's transport: a frame clock at 120 BPM (counted, as an export's
@@ -289,11 +293,7 @@ fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
 
     for fade in [0usize, 100] {
         rig.stream
-            .set_loop(LoopSetting::On {
-                start: SamplePosition(1_000.0),
-                end: SamplePosition(3_000.0),
-                crossfade_frames: fade,
-            })
+            .set_loop(Some(loop_frames(1_000, 3_000, fade)))
             .expect("the streamer is alive");
         let _ = rig.streamer.step_until_settled(1_000);
 
@@ -373,11 +373,7 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
         (0.0, 2_281.0, 256, false),
     ] {
         rig.stream
-            .set_loop(LoopSetting::On {
-                start: SamplePosition(start),
-                end: SamplePosition(end),
-                crossfade_frames: fade,
-            })
+            .set_loop(Some(loop_frames(start as usize, end as usize, fade)))
             .expect("the streamer is alive");
         let _ = rig.streamer.step_until_settled(1_000);
 
@@ -655,7 +651,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         what: &'static str,
         file_rate: u32,
         speed: f32,
-        loop_: LoopSetting,
+        loop_: Option<Loop>,
         reverse: bool,
         paged: bool,
     }
@@ -664,7 +660,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             what: "1.5x varispeed",
             file_rate: SR as u32,
             speed: 1.5,
-            loop_: LoopSetting::Off,
+            loop_: None,
             reverse: false,
             paged: false,
         },
@@ -672,7 +668,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             what: "a 24 kHz file at 48 kHz",
             file_rate: 24_000,
             speed: 1.0,
-            loop_: LoopSetting::Off,
+            loop_: None,
             reverse: false,
             paged: false,
         },
@@ -680,11 +676,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             what: "a crossfaded loop at 1.5x",
             file_rate: SR as u32,
             speed: 1.5,
-            loop_: LoopSetting::On {
-                start: SamplePosition(3_000.0),
-                end: SamplePosition(7_001.0),
-                crossfade_frames: 700,
-            },
+            loop_: Some(loop_frames(3_000, 7_001, 700)),
             reverse: false,
             paged: false,
         },
@@ -692,11 +684,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             what: "a crossfaded loop at 1.5x, paged",
             file_rate: SR as u32,
             speed: 1.5,
-            loop_: LoopSetting::On {
-                start: SamplePosition(3_000.0),
-                end: SamplePosition(7_001.0),
-                crossfade_frames: 700,
-            },
+            loop_: Some(loop_frames(3_000, 7_001, 700)),
             reverse: false,
             paged: true,
         },
@@ -704,11 +692,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             what: "a hard loop at 1.5x, paged",
             file_rate: SR as u32,
             speed: 1.5,
-            loop_: LoopSetting::On {
-                start: SamplePosition(3_000.0),
-                end: SamplePosition(7_001.0),
-                crossfade_frames: 0,
-            },
+            loop_: Some(loop_frames(3_000, 7_001, 0)),
             reverse: false,
             paged: true,
         },
@@ -716,7 +700,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             what: "reversed",
             file_rate: SR as u32,
             speed: 1.0,
-            loop_: LoopSetting::Off,
+            loop_: None,
             reverse: true,
             paged: false,
         },
@@ -732,7 +716,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             config.buffer_config.cache_max_entries = 1;
         }
         let (mut rig, reader) = streamer_with(&path, config);
-        if case.loop_ != LoopSetting::Off {
+        if case.loop_.is_some() {
             rig.stream
                 .set_loop(case.loop_)
                 .expect("the streamer is alive");
@@ -749,11 +733,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             let (mut second, second_reader) =
                 settle(&mut rig.streamer, opening).expect("the file opens");
             second
-                .set_loop(LoopSetting::On {
-                    start: SamplePosition(500.0),
-                    end: SamplePosition(900.0),
-                    crossfade_frames: 100,
-                })
+                .set_loop(Some(loop_frames(500, 900, 100)))
                 .expect("the streamer is alive");
             let _ = rig.streamer.step_until_settled(1_000);
             _second = Some((second, second_reader));
@@ -768,10 +748,11 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             wave.push_frame(&[value(i), -value(i)]);
         }
         let clock = clock_at(SR);
-        let mut source = tutti_sampler::MemorySource::placed(Arc::new(wave), Beat(1.0), None)
-            .expect("a placeable wave");
+        let mut source =
+            tutti_sampler::MemorySource::placed(Arc::new(wave), VoiceWindow::from(Beat(1.0)))
+                .expect("a placeable wave");
         source.set_speed(tutti_types::PlaybackRate::new(case.speed));
-        source.set_loop_setting(case.loop_);
+        source.set_loop(case.loop_);
         let mut memory: Box<dyn Node> = if case.reverse {
             Box::new(VoiceNode::with_channels(
                 Voice {

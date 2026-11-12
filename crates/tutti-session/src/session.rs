@@ -239,6 +239,10 @@ pub enum SessionEvent {
     /// See [`MidiEvent`](crate::MidiEvent).
     #[cfg(feature = "midi")]
     Midi(crate::MidiEvent),
+    /// A stream an [`open_stream`](Session::open_stream) started opened or
+    /// failed to. See [`SamplerEvent`](crate::SamplerEvent).
+    #[cfg(feature = "sampler")]
+    Sampler(crate::SamplerEvent),
     /// A hosted plugin's event, by area (design 029 section 3.3, design 030
     /// convention 1): what the plugin reported (its own edit of a parameter, a
     /// new tail) and every transition of its life (died, reloading, recovered,
@@ -286,6 +290,8 @@ impl std::fmt::Debug for SessionEvent {
             Self::Modulation(problem) => f.debug_tuple("Modulation").field(problem).finish(),
             #[cfg(feature = "midi")]
             Self::Midi(event) => f.debug_tuple("Midi").field(event).finish(),
+            #[cfg(feature = "sampler")]
+            Self::Sampler(event) => f.debug_tuple("Sampler").field(event).finish(),
             Self::EventsDropped {
                 node,
                 port,
@@ -439,6 +445,9 @@ pub struct Session {
     pub(crate) midi_io: Option<tutti_midi_hardware::MidiSession>,
     #[cfg(feature = "sampler")]
     pub(crate) disk_streamer: Option<tutti_sampler::DiskStreamer>,
+    /// The last [`SamplerLoad`](crate::SamplerLoad) minted.
+    #[cfg(feature = "sampler")]
+    pub(crate) sampler_opens: u64,
     /// The device's fault record, shared with the [`Device`](crate::Device),
     /// and the count the last poll saw.
     #[cfg(feature = "device")]
@@ -1151,12 +1160,6 @@ impl Session {
     #[cfg(feature = "sampler")]
     pub fn take_disk_streamer(&mut self) -> Option<tutti_sampler::DiskStreamer> {
         self.disk_streamer.take()
-    }
-
-    /// The disk streamer the builder made, while the session holds it.
-    #[cfg(feature = "sampler")]
-    pub fn disk_streamer(&self) -> Option<&tutti_sampler::DiskStreamer> {
-        self.disk_streamer.as_ref()
     }
 }
 

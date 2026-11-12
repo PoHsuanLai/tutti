@@ -30,6 +30,7 @@ use super::decode::panic_message;
 use super::io::refill::Refilled;
 use super::prefetch::RegionOut;
 use super::status::{Served, StatusCell, StreamFault};
+use crate::Loop;
 use crate::voice::Direction;
 use tutti_types::{SampleRate, Samples, SrcRatio};
 
@@ -181,14 +182,6 @@ impl Drop for Record {
     }
 }
 
-/// A loop the control side asked for: `(start, end)` in file frames and the
-/// crossfade in frames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct LoopAsk {
-    pub(super) range: (u64, u64),
-    pub(super) crossfade_frames: usize,
-}
-
 /// A command as the pure step sees it: data, with the file work already done.
 pub(super) enum Cmd {
     /// A stream the driver has built, in [`Phase::Opening`].
@@ -198,7 +191,7 @@ pub(super) enum Cmd {
     /// End the stream.
     Close(StreamId),
     /// Set (`Some`) or clear (`None`) the stream's loop.
-    Loop(StreamId, Option<LoopAsk>),
+    Loop(StreamId, Option<Loop>),
     /// Turn the stream to a direction.
     Direction(StreamId, Direction),
 }
@@ -213,7 +206,7 @@ pub(super) enum Effect {
     Freed(StreamId),
     /// Capture this loop into the stream's ring and record it as applied
     /// (`handle_loop`): it reads the file.
-    Loop(StreamId, Option<LoopAsk>),
+    Loop(StreamId, Option<Loop>),
     /// Turn the stream's ring to this direction (`handle_direction`): a
     /// mapping change, which reads the file for the fade's record.
     Direction(StreamId, Direction),

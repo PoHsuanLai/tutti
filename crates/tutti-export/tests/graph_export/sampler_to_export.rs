@@ -58,7 +58,7 @@ use tutti_codec::{Format, Pcm};
 use tutti_dsp::DitherShape;
 use tutti_export::{RenderGraph, Setup};
 use tutti_graph::GraphBuilder;
-use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
 use tutti_tempo::TempoMap;
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
@@ -107,7 +107,8 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     // and read as an attenuation bug rather than an exhausted source.
     let wave = tone((SR * DUR_S) as usize * 4);
 
-    let source = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
+    let source =
+        MemorySource::placed(wave, VoiceWindow::from(Beat::new(0.0))).expect("a placeable wave");
 
     let play = Playback {
         stretch: StretchFactor::new(stretch),
@@ -119,13 +120,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     // `insert_voice` directly rather than through the handle: this is the
     // control thread, there is no audio thread to hand a command to, and going
     // through the channel would need a pump step that proves nothing here.
-    pool.insert_voice(
-        SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play,
-        },
-    );
+    pool.insert(SlotId(1), source, play);
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let (id, _handle) = g.add_with_controls(pool);

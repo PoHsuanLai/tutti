@@ -226,7 +226,8 @@ pub use tutti_plugin_host as plugin_host;
 /// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`, `MidiRouteRule` and
 /// `MidiEvent`; `MidiChannel` and `MidiGroup` are always in, `Stamp` and
 /// `TapEvent` are the graph's; the MIDI error is `midi::Error`), with the offline timeline an export runs on.
-/// The one `Error`, the sampler's `Clip` and `LoopSetting` (`sampler`), `Wave`
+/// The one `Error`, the sampler's `Clip` and `Loop` (`sampler`; with `session`, the
+/// `SamplerEvent` and `SamplerLoad` of a stream's open), `Wave`
 /// (`codec`), `Format` and `Pcm` (`export`), `Lfo` and `Follower`
 /// (`modulation`) and the common nodes (`dsp`) are there too.
 /// `Result`, `Sample` and `Unit` are left out because each would shadow a
@@ -264,7 +265,7 @@ pub mod prelude {
     pub use tutti_cpal::{AudioHost, DeviceId, TuttiDriver};
 
     #[cfg(feature = "sampler")]
-    pub use tutti_sampler::{Clip, LoopSetting, Playback, Voice, VoiceWindow};
+    pub use tutti_sampler::{Clip, Loop, Playback, Voice, VoiceWindow};
 
     // The file formats a program names: a decoded wave, and what a bounce
     // writes.
@@ -321,6 +322,8 @@ pub mod prelude {
     pub use tutti_session::{ParamRef, RouteSpec};
     #[cfg(all(feature = "session", feature = "plugin"))]
     pub use tutti_session::{Plugin, PluginChange, PluginEvent, PluginLoadRequest};
+    #[cfg(all(feature = "session", feature = "sampler"))]
+    pub use tutti_session::{SamplerEvent, SamplerLoad};
     #[cfg(feature = "midi")]
     pub use tutti_ump::{Message, NoteNumber, Ump};
 }

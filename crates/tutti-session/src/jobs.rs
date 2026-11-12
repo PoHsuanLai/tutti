@@ -11,10 +11,15 @@
 //! when the session is gone, so it stops writing what no one will land.
 
 #![cfg_attr(
-    not(any(test, feature = "midi", all(feature = "device", feature = "audio-io"))),
+    not(any(
+        test,
+        feature = "midi",
+        feature = "sampler",
+        all(feature = "device", feature = "audio-io")
+    )),
     expect(
         dead_code,
-        reason = "the MIDI file and SoundFont loads (feature `midi`) and the take's pump (features `device` and `audio-io`) are the spawner's users"
+        reason = "the MIDI file and SoundFont loads (feature `midi`), the sampler's opens (feature `sampler`) and the take's pump (features `device` and `audio-io`) are the spawner's users"
     )
 )]
 
@@ -251,10 +256,10 @@ impl Jobs {
     /// relies on `update()` running on the claiming thread, as a plugin host's
     /// does.
     #[cfg_attr(
-        not(any(test, feature = "midi")),
+        not(any(test, feature = "midi", feature = "sampler")),
         expect(
             dead_code,
-            reason = "the MIDI loads (feature `midi`) are the one-result jobs' users"
+            reason = "the MIDI loads (feature `midi`) and the sampler's opens (feature `sampler`) are the one-result jobs' users"
         )
     )]
     pub(crate) fn submit<R, W, L>(&mut self, work: W, land: L)

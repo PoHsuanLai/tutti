@@ -737,17 +737,16 @@ fn timeline() -> Arc<OfflineTimeline> {
 /// clip track renders). It reads whatever transport its blocks' `Env` carry:
 /// here, the render clock's.
 fn placed_pool(cents: f32) -> tutti_sampler::VoicePool {
-    use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-    let source = MemorySource::placed(tone(), Beat(0.0), None).expect("a placeable wave");
+    use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
+    let source =
+        MemorySource::placed(tone(), VoiceWindow::from(Beat(0.0))).expect("a placeable wave");
     let mut pool = VoicePool::new();
-    pool.insert_voice(
+    pool.insert(
         SlotId(1),
-        Voice {
-            source: VoiceSource::Memory(source),
-            play: Playback {
-                pitch: tutti_types::Cents::new(cents),
-                ..Default::default()
-            },
+        source,
+        Playback {
+            pitch: tutti_types::Cents::new(cents),
+            ..Default::default()
         },
     );
     pool
@@ -874,12 +873,12 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
 /// and holds no clock: it reads the render's transport from its `Env`.
 #[test]
 fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
-    use tutti_sampler::MemorySource;
+    use tutti_sampler::{MemorySource, VoiceWindow};
 
     // Live, the voice plays on another transport, somewhere else.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let (k, _params) = g.add_with_controls(
-        MemorySource::placed(tone(), Beat(0.0), None).expect("a placeable wave"),
+        MemorySource::placed(tone(), VoiceWindow::from(Beat(0.0))).expect("a placeable wave"),
     );
     g.pipe_output(k);
     let (live, mut exec) = g

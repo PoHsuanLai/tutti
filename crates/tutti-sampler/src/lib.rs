@@ -5,22 +5,23 @@
 //! ## Main types
 //!
 //! - [`MemorySource`]: in-memory playback of a [`Wave`], configured with
-//!   [`MemorySourceConfig`], [`LoopSetting`] and [`VoiceWindow`].
+//!   [`MemorySourceConfig`], [`Loop`] and [`VoiceWindow`].
 //! - [`DiskVoice`]: disk-streamed playback, built from the [`StreamReader`] a
 //!   [`DiskStreamer::open`] answers with.
 //! - [`DiskStreamer`]: owns the streamer thread; a stream it opens is a
 //!   [`Stream`] (the control side: steer it, drop it to end it) and a
-//!   [`StreamReader`] (the voice's), [`Status`] out.
+//!   [`StreamReader`] (the voice's).
 //! - [`Voice`], [`VoiceSource`], [`Playback`]: a voice of either tier and its
 //!   control state.
 //! - [`VoicePool`] with [`VoicePoolHandle`], and [`VoiceNode`] with
 //!   [`VoiceNodeHandle`]: the graph nodes that play voices, and their
-//!   control-thread handles ([`VoiceCommand`]).
+//!   control-thread handles (add, steer and remove voices; a node's handle
+//!   owns the disk stream that feeds it).
+//! - [`Clip`]: one sample placed on the timeline, resident or streamed.
+//! - [`Loop`]: the one checked loop every tier takes.
 //! - [`stretch::Unit`]: the phase-vocoder time stretch and pitch shift.
-//! - [`Source`] and `probe`: the tier choice and the header probe that
-//!   informs it.
-//! - [`voice::interp`]: the block interpolation and transport-placement
-//!   helpers the voices share.
+//! - `probe`: the header probe that informs a caller's tier choice (the
+//!   sampler never decides the tier on its own).
 //!
 //! ## License
 //!
@@ -83,7 +84,7 @@ pub use tutti_codec::Wave;
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
 // share. Bevy-free apart from the asset loader, gated inside.
-pub mod voice;
+mod voice;
 
 // Planar block scratch and its kernels: the voices render into it, the
 // stretch filter reads and writes it. Crate-level because both use it.
@@ -106,8 +107,8 @@ pub mod stretch;
 // heavily in their own docs, and privatizing it turns 31 of those into dangling
 // references. It is a real internal namespace, not a redundant path.
 pub use voice::{
-    Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource, MemorySourceConfig,
-    Playback, PoolDrops, PoolTooWide, SlotId, StreamingAddError, Voice, VoiceCommand, VoiceNode,
+    Direction, DiskVoice, DiskVoiceControls, Loop, LoopError, MemorySource, MemorySourceConfig,
+    Playback, PoolDrops, PoolTooWide, SendError, SlotId, StreamingAddError, Voice, VoiceNode,
     VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, memory_voice,
     voice_width,
 };
@@ -123,9 +124,9 @@ pub use voice::{VoicePoolNode, VoicePoolRef};
 pub(crate) mod streamer;
 
 pub use streamer::{
-    Block, DiskStreamer, DiskStreamerConfig, LoopError, Open, OpenError, Opening, Placement,
-    RefusedPlacement, Running, Stream, StreamFault, StreamFile, StreamId, StreamPhase,
-    StreamReader, StreamStatus, StreamerGone,
+    Block, DiskStreamer, DiskStreamerConfig, Open, OpenError, Opening, Placement, RefusedPlacement,
+    Running, Stream, StreamFault, StreamFile, StreamId, StreamPhase, StreamReader, StreamStatus,
+    StreamerGone,
 };
 
 // The hand-driven streamer cycle, alongside `DiskStreamer::manual`: its driver
@@ -133,12 +134,9 @@ pub use streamer::{
 #[cfg(any(test, feature = "test-support"))]
 pub use streamer::{ByHand, StepOutcome};
 
-mod ports;
-pub use ports::{Source, Status};
-
 // Header-only probe: what a file is, and whether *this build's* streamer can
-// stream it. Public because the tier decision is the caller's
-// (`Source`'s doc: "the sampler never decides the tier on its own") but the
+// stream it. Public because the tier decision is the caller's or the
+// session's, never the sampler's alone, but the
 // streamability half of it is this crate's own capability — so the host and the
 // streamer read one function rather than two copies of a rule.
 //

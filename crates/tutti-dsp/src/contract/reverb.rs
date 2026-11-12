@@ -531,7 +531,7 @@ pub(super) mod realization {
     /// channels' response to noise stays under 0.3. A design with one output
     /// channel has nothing to say.
     pub fn decorrelated<D: ReverbCase + RecurrenceCase>(d: &D) -> Result<(), String> {
-        let (_, outputs) = widths(d);
+        let outputs = widths(d).outputs;
         if outputs < 2 {
             return Ok(());
         }

@@ -818,9 +818,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `Family`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
   `SvfFamily<F>`, `LadderFamily<F>` and `CrossoverFamily` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
-  written once), the dynamics curves, followers and kernels and the brickwall clipper
+  written once), the dynamics curves, followers and kernels, the brickwall clipper
   (`BrickwallFamily`, `BrickwallRecurrence`: the first dynamics family on the model, its
-  ceiling a fast lane), the partitioned
+  ceiling a fast lane) and the compressor (`CompressorFamily`, `CompressorRecurrence`: keyed
+  by `Channels::keyed`, its threshold a fast lane, its makeup gliding over `GAIN_GLIDE`; the
+  block `CompressorKernel` stays for the multiband), the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the

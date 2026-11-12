@@ -4041,6 +4041,7 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
+ "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
  "tutti-ump",

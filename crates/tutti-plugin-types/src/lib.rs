@@ -11,6 +11,8 @@ mod bridge_error;
 pub mod bundle;
 mod channels;
 mod classification;
+#[cfg(feature = "contract")]
+pub mod contract;
 mod descriptor;
 mod driver;
 mod editor;
@@ -33,6 +35,7 @@ mod note_expression;
 mod note_id;
 mod order;
 mod param_edit;
+mod param_mapping;
 mod param_unit;
 mod parameters;
 mod pipeline;
@@ -116,6 +119,7 @@ pub use note_expression::{
 };
 pub use note_id::{note_id_to_channel_note, plugin_note_id};
 pub use param_edit::ParamEdit;
+pub use param_mapping::ParamMapping;
 pub use param_unit::{FromPlain, ParamUnit};
 pub use parameters::{
     InvalidNormalized, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,

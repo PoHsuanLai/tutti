@@ -17,8 +17,8 @@ use tutti_au_ffi::{
 };
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    AudioBufferMut, PlayheadWatch, PluginError, PluginIo, PluginResult, ProcessContext,
-    ProcessOutput, Processor, TransportInfo, is_usable,
+    AudioBufferMut, ParamMapping, PlayheadWatch, PluginError, PluginIo, PluginResult,
+    ProcessContext, ProcessOutput, Processor, TransportInfo, is_usable,
 };
 use tutti_rt::{EditWriter, Reader};
 use tutti_ump::SysexAssembler;
@@ -424,7 +424,7 @@ impl AuProcessor {
                 let (Some(bounds), Some(last)) = (table.bounds(id), queue.points.last()) else {
                     continue;
                 };
-                let plain = bounds.to_plain(last.value.get());
+                let plain = bounds.plain(last.value) as f32;
                 if table.is_non_realtime(id) {
                     // A full ring counts the refusal; the next point of the
                     // parameter carries its value again.

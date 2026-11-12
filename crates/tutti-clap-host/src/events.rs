@@ -33,8 +33,9 @@ use std::ptr;
 use tutti_clap_ffi::{EventRef, EventSink, PluginEvent};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    Normalized, ParamEdit, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, WireMidi,
-    note_id_to_channel_note, plugin_note_id, push_sysex, sysex_assembler, sysex_packets,
+    Normalized, ParamEdit, ParamId, ParamMapping, RtMidiEvents, SYSEX_MESSAGE_CAPACITY,
+    StableOrder, WireMidi, note_id_to_channel_note, plugin_note_id, push_sysex, sysex_assembler,
+    sysex_packets,
 };
 
 use crate::types::RtNoteExpressions;
@@ -117,26 +118,21 @@ impl ParamBounds {
         (self.min.is_finite() && self.max.is_finite() && self.max > self.min)
             .then_some((self.min, self.max))
     }
+}
 
-    /// `normalized` (`0..=1`) as the plugin's plain value, in `f64`, inside the
-    /// declared bounds. CLAP has no normalized value of its own (`params.h`
-    /// speaks plain `double`s only), so the position is this crate's, linear
-    /// over `[min, max]`: the one place the mapping is written. A degenerate or
-    /// non-finite span yields `min` when that is finite and `0.0` otherwise, and
-    /// NaN is `0.0` normalized, so the result is always finite. A stepped
-    /// parameter's value is rounded to the nearest integer, so the plugin's
-    /// truncation reads the step the normalized value names.
-    #[must_use]
-    pub fn plain(&self, normalized: f64) -> f64 {
-        let n = if normalized.is_nan() {
-            0.0
-        } else {
-            normalized.clamp(0.0, 1.0)
-        };
+/// CLAP has no normalized value of its own (`params.h` speaks plain `double`s
+/// only), so the position is this crate's: linear over `[min, max]`, the one
+/// place the map is written. A degenerate or non-finite span yields `min` when
+/// that is finite and `0.0` otherwise, so the plain value is always finite and
+/// inside the declared bounds. A stepped parameter's value is rounded to the
+/// nearest integer, so the plugin's truncation reads the step the position
+/// names (and `plain(normalized(step))` is `step`).
+impl ParamMapping for ParamBounds {
+    fn plain(&self, value: Normalized) -> f64 {
         let Some((min, max)) = self.span() else {
             return if self.min.is_finite() { self.min } else { 0.0 };
         };
-        let plain = min + n * (max - min);
+        let plain = min + value.get() * (max - min);
         if self.stepped {
             plain.round().clamp(min, max)
         } else {
@@ -144,17 +140,16 @@ impl ParamBounds {
         }
     }
 
-    /// The inverse of [`plain`](Self::plain): `plain` clamped into the bounds,
-    /// as a position on `0..=1`. `0.0` for NaN and for a degenerate span.
-    #[must_use]
-    pub fn normalized(&self, plain: f64) -> f64 {
+    /// `plain` clamped into the bounds, as a position on `0..=1`. `0.0` for
+    /// NaN and for a degenerate span.
+    fn normalized(&self, plain: f64) -> Normalized {
         let Some((min, max)) = self.span() else {
-            return 0.0;
+            return Normalized::of(0.0);
         };
         if plain.is_nan() {
-            return 0.0;
+            return Normalized::of(0.0);
         }
-        (plain.clamp(min, max) - min) / (max - min)
+        Normalized::clamped((plain.clamp(min, max) - min) / (max - min))
     }
 }
 
@@ -394,9 +389,9 @@ impl ClapEvent {
             Self::ParamValue(v) => {
                 let normalized = match ParamBounds::find(ranges, v.param_id) {
                     Some(b) => b.normalized(v.value),
-                    None => v.value,
+                    None => Normalized::clamped(v.value),
                 };
-                let heard = ParamEdit::change(v.param_id.into(), Normalized::clamped(normalized));
+                let heard = ParamEdit::change(v.param_id.into(), normalized);
                 Some(if v.header.flags & CLAP_EVENT_DONT_RECORD != 0 {
                     heard.unrecorded()
                 } else {
@@ -1519,7 +1514,7 @@ impl InputEventList {
             let mut pushed_here = false;
             for point in &queue.points {
                 let value = match range {
-                    Some(bounds) => bounds.plain(point.value.get()),
+                    Some(bounds) => bounds.plain(point.value),
                     None => point.value.get(),
                 };
                 let event = ClapEvent::param_value(
@@ -1571,7 +1566,7 @@ impl InputEventList {
             return self;
         }
         let plain = match range {
-            Some(bounds) => bounds.plain(value),
+            Some(bounds) => bounds.plain(Normalized::clamped(value)),
             // No table entry and the plugin claims parameters: the table is
             // short, and raw `0..1` into an unknown range is silent and audible.
             None if plugin_claims_params => return self,
@@ -2998,23 +2993,15 @@ mod tests {
     }
 
     /// CLAP has no normalized value, so the host's position is the line over the
-    /// declared range, and its inverse reads a plain value back to the position
-    /// it came from; the ends are the ends, and a stepped value inverts too.
+    /// declared range: the ends are the ends and the middle is the middle (the
+    /// laws of the map are `mapping_contract!`'s, below).
     #[test]
-    fn the_host_position_is_the_line_over_the_declared_range_and_inverts() {
+    fn the_host_position_is_the_line_over_the_declared_range() {
         let cutoff = ParamBounds::continuous(1, 20.0, 20_000.0);
-        assert_eq!(cutoff.plain(0.0), 20.0);
-        assert_eq!(cutoff.plain(1.0), 20_000.0);
-        assert_eq!(cutoff.plain(0.5), 10_010.0);
-        assert_eq!(cutoff.normalized(10_010.0), 0.5);
-        assert_eq!(cutoff.normalized(-5.0), 0.0, "below the range clamps");
-        assert_eq!(cutoff.normalized(1e9), 1.0, "above the range clamps");
-
-        let steps = ParamBounds::stepped(2, 0.0, 22.0);
-        for k in 0..=22u32 {
-            let n = steps.normalized(f64::from(k));
-            assert_eq!(steps.plain(n), f64::from(k), "step {k}");
-        }
+        assert_eq!(cutoff.plain(Normalized::of(0.0)), 20.0);
+        assert_eq!(cutoff.plain(Normalized::of(1.0)), 20_000.0);
+        assert_eq!(cutoff.plain(Normalized::of(0.5)), 10_010.0);
+        assert_eq!(cutoff.normalized(10_010.0).get(), 0.5);
     }
 
     /// A malformed range never makes a NaN or an infinity: the conversions are
@@ -3029,19 +3016,35 @@ mod tests {
             (5.0, 1.0),
         ] {
             let bounds = ParamBounds::continuous(1, min, max);
-            for v in [0.0, 0.5, 1.0, f64::NAN] {
+            for v in [0.0, 0.5, 1.0] {
                 assert!(
-                    bounds.plain(v).is_finite(),
+                    bounds.plain(Normalized::of(v)).is_finite(),
                     "plain({v}) over [{min}, {max}]"
                 );
-                assert!(
-                    bounds.normalized(v).is_finite(),
-                    "normalized({v}) over [{min}, {max}]"
-                );
             }
+            assert_eq!(bounds.normalized(f64::NAN).get(), 0.0);
         }
-        assert_eq!(ParamBounds::continuous(1, 3.0, 3.0).plain(0.5), 3.0);
+        assert_eq!(
+            ParamBounds::continuous(1, 3.0, 3.0).plain(Normalized::of(0.5)),
+            3.0
+        );
     }
+
+    // The map's laws, on a continuous and a stepped parameter (a stepped one
+    // names its steps: each reads back as itself, which a truncating `plain`
+    // would not, see `a_stepped_parameter_reaches_the_plugin_on_the_step...`).
+    tutti_plugin_types::mapping_contract!(
+        continuous_map,
+        ParamBounds::continuous(1, 20.0, 20_000.0)
+    );
+    tutti_plugin_types::mapping_contract!(
+        stepped_map,
+        ParamBounds::stepped(2, 0.0, 22.0),
+        steps = [
+            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+            16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0
+        ]
+    );
 
     /// The edit path (`add_param_edit`) steps the same way, and a range whose
     /// top step needs more than 24 bits is not narrowed to `f32`.

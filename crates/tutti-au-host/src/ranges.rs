@@ -12,6 +12,7 @@
 #![cfg(target_os = "macos")]
 
 use tutti_au_ffi::Unit;
+use tutti_plugin_types::{Normalized, ParamMapping};
 
 use crate::parameters;
 
@@ -35,46 +36,46 @@ impl ParamBounds {
         let (min, max) = (f64::from(self.min), f64::from(self.max));
         (min.is_finite() && max.is_finite() && max > min).then_some((min, max))
     }
+}
 
-    /// Maps a normalized `0..=1` value onto `[min, max]`, narrowed to the `f32`
-    /// that `AudioUnitSetParameter` takes.
+/// **This is AU's own conversion, and it is linear.** An AU has no normalized
+/// value (`AudioUnitGetParameter` and `AudioUnitSetParameter` speak plain
+/// `Float32` only), so the position is the host's, over the declared span. The
+/// display-curve flags (`DisplayLogarithmic`, ..., `AudioUnitProperties.h`) are
+/// *display scales*: the header gives them no formula, so they stay
+/// `DisplayCurve` hints for a UI and do not bend this mapping. The one curve the
+/// platform defines is `AUParameterValueFromLinear` (`AudioUnitUtilities.h`),
+/// keyed on the unit, which this crate does not call.
+impl ParamMapping for ParamBounds {
+    /// Maps a position onto `[min, max]`, narrowed to the `f32` that
+    /// `AudioUnitSetParameter` takes (and widened back, so the value is the one
+    /// the unit is given).
     ///
-    /// **This is AU's own conversion, and it is linear.** An AU has no
-    /// normalized value (`AudioUnitGetParameter` and `AudioUnitSetParameter`
-    /// speak plain `Float32` only), so the position is the host's, over the
-    /// declared span. The display-curve flags (`DisplayLogarithmic`, ...,
-    /// `AudioUnitProperties.h`) are *display scales*: the header gives them no
-    /// formula, so they stay `DisplayCurve`
-    /// hints for a UI and do not bend this mapping. The one curve the platform
-    /// defines is `AUParameterValueFromLinear` (`AudioUnitUtilities.h`), keyed
-    /// on the unit, which this crate does not call.
-    ///
-    /// Guards: a non-finite or non-increasing range yields `min` when finite
-    /// and `0.0` otherwise, and NaN is `0.0` normalized, so the result is always
-    /// finite and inside `[min, max]` (both came from an `f32`).
-    pub(crate) fn to_plain(self, normalized: f64) -> f32 {
-        let n = if normalized.is_nan() {
-            0.0
-        } else {
-            normalized.clamp(0.0, 1.0)
-        };
+    /// A non-finite or non-increasing range yields `min` when finite and `0.0`
+    /// otherwise, so the result is always finite and inside `[min, max]` (both
+    /// came from an `f32`).
+    fn plain(&self, value: Normalized) -> f64 {
         let Some((min, max)) = self.span() else {
-            return if self.min.is_finite() { self.min } else { 0.0 };
+            return if self.min.is_finite() {
+                f64::from(self.min)
+            } else {
+                0.0
+            };
         };
-        (min + n * (max - min)) as f32
+        f64::from((min + value.get() * (max - min)) as f32)
     }
 
-    /// Inverse of [`to_plain`](Self::to_plain): the AU's plain value back onto
-    /// normalized `0..=1`, the read direction of the same boundary. `0.0` for
-    /// NaN and for a range with no span.
-    pub(crate) fn to_normalized(self, plain: f32) -> f64 {
+    /// The AU's plain value back onto `0..=1`, the read direction of the same
+    /// boundary: clamped into the range, `0.0` for NaN and for a range with no
+    /// span.
+    fn normalized(&self, plain: f64) -> Normalized {
         let Some((min, max)) = self.span() else {
-            return 0.0;
+            return Normalized::of(0.0);
         };
         if plain.is_nan() {
-            return 0.0;
+            return Normalized::of(0.0);
         }
-        (f64::from(plain).clamp(min, max) - min) / (max - min)
+        Normalized::clamped((plain.clamp(min, max) - min) / (max - min))
     }
 }
 
@@ -147,17 +148,21 @@ impl RangeTable {
 mod tests {
     use super::*;
 
+    fn n(v: f64) -> Normalized {
+        Normalized::of(v)
+    }
+
     #[test]
-    fn to_plain_maps_onto_the_declared_range_not_identity() {
+    fn plain_maps_onto_the_declared_range_not_identity() {
         let cutoff = ParamBounds {
             min: 10.0,
             max: 22_050.0,
         };
-        assert_eq!(cutoff.to_plain(0.0), 10.0);
-        assert_eq!(cutoff.to_plain(1.0), 22_050.0);
-        assert_eq!(cutoff.to_plain(0.5), 11_030.0);
+        assert_eq!(cutoff.plain(n(0.0)), 10.0);
+        assert_eq!(cutoff.plain(n(1.0)), 22_050.0);
+        assert_eq!(cutoff.plain(n(0.5)), 11_030.0);
         // Not 1.0: 1 Hz, an inaudible filter.
-        assert_ne!(cutoff.to_plain(1.0), 1.0);
+        assert_ne!(cutoff.plain(n(1.0)), 1.0);
 
         // Negative minima (AUDelay Feedback is [-99.9, 99.9]) must map too; the
         // old clamp to [0,1] made the entire negative half unreachable.
@@ -165,42 +170,21 @@ mod tests {
             min: -99.9,
             max: 99.9,
         };
-        assert!((feedback.to_plain(0.0) - -99.9).abs() < 1e-3);
-        assert!(feedback.to_plain(0.5).abs() < 1e-3);
-        assert!((feedback.to_plain(1.0) - 99.9).abs() < 1e-3);
-
-        // Out-of-range input is clamped to the declared endpoints, never past.
-        assert_eq!(cutoff.to_plain(-5.0), 10.0);
-        assert_eq!(cutoff.to_plain(9.0), 22_050.0);
+        assert!((feedback.plain(n(0.0)) - -99.9).abs() < 1e-3);
+        assert!(feedback.plain(n(0.5)).abs() < 1e-3);
+        assert!((feedback.plain(n(1.0)) - 99.9).abs() < 1e-3);
 
         // A degenerate range yields `min` rather than NaN/inf.
         let degenerate = ParamBounds { min: 3.0, max: 3.0 };
-        assert_eq!(degenerate.to_plain(0.5), 3.0);
+        assert_eq!(degenerate.plain(n(0.5)), 3.0);
     }
 
-    /// The live-path half: this `to_plain`'s return value goes straight into
+    /// The live-path half: `plain`'s value goes straight into
     /// `AudioUnitSetParameter` on a running unit, so a NaN escaping here is a NaN
-    /// in a live filter coefficient.
-    ///
-    /// `normalized` comes over IPC and the bounds come from the plugin's own
-    /// `kAudioUnitProperty_ParameterInfo`, so neither is trusted. Clamping does not
-    /// substitute for the check: `f32::clamp` returns NaN for NaN, and `max <= min`
-    /// is `false` when either bound is NaN.
+    /// in a live filter coefficient. The bounds come from the plugin's own
+    /// `kAudioUnitProperty_ParameterInfo`, so they are not trusted.
     #[test]
-    fn nan_never_reaches_a_live_au_parameter() {
-        let cutoff = ParamBounds {
-            min: 10.0,
-            max: 22_050.0,
-        };
-
-        assert!(
-            cutoff.to_plain(f64::NAN).is_finite(),
-            "a NaN automation point must not reach AudioUnitSetParameter"
-        );
-        assert_eq!(cutoff.to_plain(f64::INFINITY), 22_050.0);
-        assert_eq!(cutoff.to_plain(f64::NEG_INFINITY), 10.0);
-
-        // Bounds the AU itself reported as non-finite.
+    fn a_malformed_range_never_reaches_a_live_au_parameter_as_non_finite() {
         for (min, max) in [
             (f32::NAN, 1.0),
             (0.0, f32::NAN),
@@ -208,37 +192,50 @@ mod tests {
             (0.0, f32::INFINITY),
         ] {
             let broken = ParamBounds { min, max };
-            for v in [0.0, 0.5, 1.0, f64::NAN] {
+            for v in [0.0, 0.5, 1.0] {
                 assert!(
-                    broken.to_plain(v).is_finite(),
-                    "to_plain({v}) with bounds [{min}, {max}] returned non-finite"
+                    broken.plain(n(v)).is_finite(),
+                    "plain({v}) with bounds [{min}, {max}] returned non-finite"
                 );
             }
+            assert_eq!(broken.normalized(0.5).get(), 0.0);
         }
     }
 
-    /// AU's position is the line over the declared range, and its inverse reads
-    /// a plain value back to the position it came from. The display curves
-    /// (`DisplayLogarithmic`, ...) are display hints and bend neither: a log
-    /// cutoff's midpoint is the arithmetic one.
+    /// AU's position is the line over the declared range. The display curves
+    /// (`DisplayLogarithmic`, ...) are display hints and do not bend it: a log
+    /// cutoff's midpoint is the arithmetic one. (The laws of the map are
+    /// `mapping_contract!`'s, below.)
     #[test]
-    fn the_position_is_the_line_and_inverts() {
+    fn the_position_is_the_line() {
         let cutoff = ParamBounds {
             min: 10.0,
             max: 22_050.0,
         };
-        assert_eq!(cutoff.to_normalized(10.0), 0.0);
-        assert_eq!(cutoff.to_normalized(22_050.0), 1.0);
-        assert_eq!(cutoff.to_normalized(11_030.0), 0.5);
-        for n in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            let back = cutoff.to_normalized(cutoff.to_plain(n));
-            assert!((back - n).abs() < 1e-6, "{n} came back as {back}");
-        }
-        assert_eq!(cutoff.to_normalized(-1.0), 0.0, "below the range clamps");
-        assert_eq!(cutoff.to_normalized(1e9), 1.0, "above the range clamps");
-        assert_eq!(cutoff.to_normalized(f32::NAN), 0.0);
-        assert_eq!(ParamBounds { min: 3.0, max: 3.0 }.to_normalized(3.0), 0.0);
+        assert_eq!(cutoff.normalized(10.0).get(), 0.0);
+        assert_eq!(cutoff.normalized(22_050.0).get(), 1.0);
+        assert_eq!(cutoff.normalized(11_030.0).get(), 0.5);
+        assert_eq!(
+            ParamBounds { min: 3.0, max: 3.0 }.normalized(3.0).get(),
+            0.0
+        );
     }
+
+    tutti_plugin_types::mapping_contract!(
+        cutoff_map,
+        ParamBounds {
+            min: 10.0,
+            max: 22_050.0
+        }
+    );
+    tutti_plugin_types::mapping_contract!(
+        feedback_map,
+        ParamBounds {
+            min: -99.9,
+            max: 99.9
+        }
+    );
+    tutti_plugin_types::mapping_contract!(one_point_map, ParamBounds { min: 3.0, max: 3.0 });
 
     #[test]
     fn a_table_finds_ids_by_binary_search() {

@@ -1,8 +1,8 @@
 //! [`Realized`]: the one runner of every effect (design 024 section 2.7, amendments
 //! C), over a [`Recurrence`] that holds what differs between effects.
 //!
-//! A processor is maps. The design is the family φ
-//! ([`Design::design_into`](crate::Design::design_into)); the recurrence's
+//! A processor is maps. The family is φ
+//! ([`Family::member_into`](crate::Family::member_into)); the recurrence's
 //! [`coefficients_into`](Recurrence::coefficients_into) is κ, from a member of the
 //! family to the coefficient point it asks for; [`Approach`] is γ, the glide of the
 //! coefficients in flight toward that point; [`Recurrence::run`] is K, the per-frame
@@ -13,7 +13,7 @@ use core::ops::Range;
 
 use tutti_types::Samples;
 
-use super::{Effort, Setup};
+use super::{Capacity, Effort, Setup};
 
 impl Lerp for f32 {
     #[inline]
@@ -116,7 +116,7 @@ impl<T: Lerp> Glide<T> {
 
 impl Glide<f32> {
     /// Aims at `to` in `steps`. A target already aimed at leaves the glide as it is
-    /// (a model sent again every block does not stretch it).
+    /// (a member sent again every block does not stretch it).
     pub fn aim_by(&mut self, to: f32, steps: Steps) {
         if to == self.to {
             return;
@@ -184,10 +184,11 @@ impl<T: Lerp> Approach for Glide<T> {
 /// way to its first state, s₀ ([`start`](Self::start), [`prepare`](Self::prepare),
 /// [`clear`](Self::clear)). [`Realized`] runs them.
 pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
-    /// The member of the family it realizes: the model.
-    type Model;
-    /// The worst-case sizes it allocates from.
-    type Bounds;
+    /// The member of the family it realizes.
+    type Member;
+    /// The worst-case sizes it allocates from ([`Grows::reach`](crate::Grows::reach)):
+    /// `()` for a recurrence whose state does not grow.
+    type Capacity: Capacity;
     /// The coefficient point a member asks for: what κ writes and γ is aimed at.
     type Target: Clone + core::fmt::Debug + Send;
     /// What approaches a target.
@@ -198,17 +199,17 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
     /// Frames run with one coefficient step while the coefficients move.
     const STEP: usize;
 
-    /// The coefficients, state and target of an unprepared runner, at rest on `model`
-    /// (the design's blank). Control side; allocates.
-    fn start(&self, model: &Self::Model) -> Start<Self>;
+    /// The coefficients, state and target of an unprepared runner, at rest on `member`
+    /// (the family's blank). Control side; allocates.
+    fn start(&self, member: &Self::Member) -> Start<Self>;
 
-    /// Sizes `coeffs`, `state` and `target` for `setup` from the worst case `bounds`,
+    /// Sizes `coeffs`, `state` and `target` for `setup` from the worst case `capacity`,
     /// and keeps what the recurrence itself needs of them. Control side; allocates.
-    /// A recurrence that allocates nothing from [`Bounds`](Self::Bounds) leaves the
+    /// A recurrence that allocates nothing from [`Capacity`](Self::Capacity) leaves the
     /// default.
     fn prepare(
         &mut self,
-        _bounds: &Self::Bounds,
+        _capacity: &Self::Capacity,
         _setup: &Setup,
         _coeffs: &mut Self::Coeffs,
         _state: &mut Self::State,
@@ -219,7 +220,7 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
     /// κ: writes the coefficient point `member` asks for into `target`, in place.
     /// Audio thread, no allocation. `false` for a member this recurrence cannot run,
     /// and then the target is as it was and the runner keeps the current aim.
-    fn coefficients_into(&self, member: &Self::Model, target: &mut Self::Target) -> bool;
+    fn coefficients_into(&self, member: &Self::Member, target: &mut Self::Target) -> bool;
 
     /// Clears the state to silence.
     fn clear(&self, state: &mut Self::State);
@@ -280,7 +281,7 @@ pub(crate) enum Flaw {
 }
 
 /// The one runner: a [`Recurrence`]'s coefficients approaching the target κ asks of
-/// each new model, run a step at a time while they move and in one run once they
+/// each new member, run a step at a time while they move and in one run once they
 /// have landed.
 ///
 /// The steps are counted from the first frame since the last [`reset`](Self::reset)
@@ -290,7 +291,7 @@ pub(crate) enum Flaw {
 /// `reset` lands and clears.
 ///
 /// Nothing is allocated after [`prepare`](Self::prepare): everything is sized there
-/// from the [`Bounds`](Recurrence::Bounds), and `retarget`, `process` and `reset`
+/// from the [`Capacity`](Recurrence::Capacity), and `retarget`, `process` and `reset`
 /// never allocate, lock or wait.
 #[derive(Clone, Debug)]
 pub struct Realized<R: Recurrence> {
@@ -299,7 +300,7 @@ pub struct Realized<R: Recurrence> {
     state: R::State,
     /// The coefficient point κ last wrote.
     target: R::Target,
-    /// Whether a model has been retargeted since `prepare`.
+    /// Whether a member has been retargeted since `prepare`.
     landed: bool,
     /// Frames run of the current step.
     into: usize,
@@ -308,14 +309,14 @@ pub struct Realized<R: Recurrence> {
 }
 
 impl<R: Recurrence> Realized<R> {
-    /// A runner of `recurrence`, at rest on `model`. Control side; allocates.
+    /// A runner of `recurrence`, at rest on `member`. Control side; allocates.
     #[must_use]
-    pub fn new(recurrence: R, model: &R::Model) -> Self {
+    pub fn new(recurrence: R, member: &R::Member) -> Self {
         let Start {
             coeffs,
             state,
             target,
-        } = recurrence.start(model);
+        } = recurrence.start(member);
         Self {
             recurrence,
             coeffs,
@@ -340,11 +341,11 @@ impl<R: Recurrence> Realized<R> {
         (&self.recurrence, &mut self.coeffs, &mut self.state)
     }
 
-    /// Sizes the runner for `setup`, from the worst case `bounds`. Control side;
-    /// allocates. A runner never inspects a model to allocate.
-    pub fn prepare(&mut self, bounds: &R::Bounds, setup: &Setup) {
+    /// Sizes the runner for `setup`, from the worst case `capacity`. Control side;
+    /// allocates. A runner never inspects a member to allocate.
+    pub fn prepare(&mut self, capacity: &R::Capacity, setup: &Setup) {
         self.recurrence.prepare(
-            bounds,
+            capacity,
             setup,
             &mut self.coeffs,
             &mut self.state,
@@ -354,11 +355,11 @@ impl<R: Recurrence> Realized<R> {
         self.into = 0;
     }
 
-    /// Moves toward `model`, once per block whose model changed: κ writes the target
+    /// Moves toward `member`, once per block whose member changed: κ writes the target
     /// it asks for and γ is aimed at it. Audio thread: never allocates or waits. A
-    /// model the recurrence cannot run leaves the aim as it was.
-    pub fn retarget(&mut self, model: &R::Model) {
-        if self.recurrence.coefficients_into(model, &mut self.target) {
+    /// member the recurrence cannot run leaves the aim as it was.
+    pub fn retarget(&mut self, member: &R::Member) {
+        if self.recurrence.coefficients_into(member, &mut self.target) {
             self.coeffs.aim(&self.target);
         }
         if !self.landed {
@@ -394,7 +395,7 @@ impl<R: Recurrence> Realized<R> {
     }
 
     /// A runner of the same type, prepared for the same setup and retargeted to the
-    /// same model, with empty state: what a fork runs. A clone, reset. Control
+    /// same member, with empty state: what a fork runs. A clone, reset. Control
     /// side; allocates.
     #[must_use]
     pub fn fresh(&self) -> Self {

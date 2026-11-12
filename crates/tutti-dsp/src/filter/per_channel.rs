@@ -1,4 +1,4 @@
-//! [`Filter`]: the filters' one [`Design`], over a [`ChannelRecurrence`], and
+//! [`Filter`]: the filters' one [`Family`], over a [`ChannelRecurrence`], and
 //! [`PerChannel`], the one [`Recurrence`] that runs such a recurrence's channels each alone
 //! (design 024 section 4.3a).
 //!
@@ -12,11 +12,8 @@ use core::ops::Range;
 
 use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 
-use super::sizes::FilterSizes;
 use crate::control::{COEFF_STREAM, lane_group};
-use crate::{
-    Cadence, Ceiling, Channels, Design, Effort, Glide, LANES, Lerp, Recurrence, Start, System,
-};
+use crate::{Cadence, Channels, Effort, Family, Glide, LANES, Lerp, Recurrence, Start, System};
 
 /// The most outputs one input channel makes: a crossover's bands.
 const MAX_OUTPUTS: usize = 6;
@@ -26,8 +23,8 @@ const MAX_OUTPUTS: usize = 6;
 pub trait ChannelRecurrence: Clone + core::fmt::Debug + Send + 'static {
     /// The plain values of the filter's controls.
     type Controls: Copy + PartialEq + Send;
-    /// The system the controls describe.
-    type Model: System + Copy + core::fmt::Debug + Send;
+    /// The system the controls describe: a member of the family.
+    type Member: System + Copy + core::fmt::Debug + Send;
     /// What the step reads: the model's own coefficients in the state's precision.
     /// A glide blends two of them ([`Lerp`]).
     type Coeffs: Lerp + Send;
@@ -48,24 +45,24 @@ pub trait ChannelRecurrence: Clone + core::fmt::Debug + Send + 'static {
         1
     }
 
-    /// An empty model at `rate`: what [`design_into`](Self::design_into) writes into.
-    fn blank(&self, rate: SampleRate) -> Self::Model;
+    /// An empty member at `rate`: what [`member_into`](Self::member_into) writes into.
+    fn blank(&self, rate: SampleRate) -> Self::Member;
 
-    /// Writes the model for `controls` at `rate` into `out` ([`Design::design_into`]).
-    fn design_into(&self, controls: &Self::Controls, rate: SampleRate, out: &mut Self::Model);
+    /// Writes the member for `controls` at `rate` into `out` ([`Family::member_into`]).
+    fn member_into(&self, controls: &Self::Controls, rate: SampleRate, out: &mut Self::Member);
 
     /// The coefficients the step reads, from `model`.
-    fn coeffs(&self, model: &Self::Model) -> Self::Coeffs;
+    fn coeffs(&self, model: &Self::Member) -> Self::Coeffs;
 
     /// One sample `x` through one channel's `state` at coefficients `c`.
     fn tick(c: &Self::Coeffs, state: &mut Self::State, x: f32) -> Self::Frame;
 }
 
-/// The [`Design`] of a filter over a [`ChannelRecurrence`], on one input bus.
+/// The [`Family`] of a filter over a [`ChannelRecurrence`], on one input bus.
 ///
 /// Solved every 16 frames on the stream clock, at the first frame of each segment
 /// (doc 024 Q27), so the render is a function of the stream and not of how it is cut
-/// into blocks. The design is only `Model::new(controls)`; a family's own checks stay
+/// into blocks. The member is only `Member::new(controls)`; a family's own checks stay
 /// in its constructor.
 #[derive(Clone, Copy, Debug)]
 pub struct Filter<R> {
@@ -91,11 +88,9 @@ impl<R> Filter<R> {
     }
 }
 
-impl<R: ChannelRecurrence> Design for Filter<R> {
+impl<R: ChannelRecurrence> Family for Filter<R> {
     type Controls = R::Controls;
-    type Model = R::Model;
-    type Bounds = FilterSizes<R::Model>;
-    type Range = ();
+    type Member = R::Member;
     type Recurrence = PerChannel<R>;
 
     const CADENCE: Cadence = COEFF_STREAM;
@@ -107,16 +102,12 @@ impl<R: ChannelRecurrence> Design for Filter<R> {
             .expect("a recurrence makes at least one output")
     }
 
-    fn blank(&self, rate: SampleRate) -> R::Model {
+    fn blank(&self, rate: SampleRate) -> R::Member {
         self.recurrence.blank(rate)
     }
 
-    fn design_into(&self, controls: &R::Controls, rate: SampleRate, out: &mut R::Model) {
-        self.recurrence.design_into(controls, rate, out);
-    }
-
-    fn bounds(&self, _: &Ceiling<()>) -> FilterSizes<R::Model> {
-        FilterSizes::NONE
+    fn member_into(&self, controls: &R::Controls, rate: SampleRate, out: &mut R::Member) {
+        self.recurrence.member_into(controls, rate, out);
     }
 
     fn recurrence(&self) -> PerChannel<R> {
@@ -129,11 +120,11 @@ impl<R: ChannelRecurrence> Design for Filter<R> {
 }
 
 /// The [`Recurrence`] of a [`ChannelRecurrence`]: one state per channel (`len()` is the audio
-/// width, built with the design and never resized) and a [`Glide`] of the coefficients
+/// width, built with the family and never resized) and a [`Glide`] of the coefficients
 /// every channel shares.
 #[derive(Clone, Debug)]
 ///
-/// The outputs are the design's bands in order ([`Channels`]): band `o` is the
+/// The outputs are the family's bands in order ([`Channels`]): band `o` is the
 /// `o`-th run of `width` output slices, and channel `c`'s output `o` is channel `c`
 /// of it.
 pub struct PerChannel<C> {
@@ -181,15 +172,15 @@ impl<C: ChannelRecurrence> PerChannel<C> {
 }
 
 impl<C: ChannelRecurrence> Recurrence for PerChannel<C> {
-    type Model = C::Model;
-    type Bounds = FilterSizes<C::Model>;
+    type Member = C::Member;
+    type Capacity = ();
     type Target = C::Coeffs;
     type Coeffs = Glide<C::Coeffs>;
     type State = Vec<C::State>;
 
     const STEP: usize = 1;
 
-    fn start(&self, model: &C::Model) -> Start<Self> {
+    fn start(&self, model: &C::Member) -> Start<Self> {
         let at = self.recurrence.coeffs(model);
         Start {
             coeffs: Glide::landed(at).by(C::STEPS),
@@ -199,7 +190,7 @@ impl<C: ChannelRecurrence> Recurrence for PerChannel<C> {
     }
 
     /// κ: the coefficients the step reads at `model`. Every model is one it can run.
-    fn coefficients_into(&self, model: &C::Model, target: &mut C::Coeffs) -> bool {
+    fn coefficients_into(&self, model: &C::Member, target: &mut C::Coeffs) -> bool {
         *target = self.recurrence.coeffs(model);
         true
     }
@@ -264,7 +255,7 @@ pub(crate) mod tests {
     use tutti_types::SampleRate;
 
     use super::*;
-    use crate::contract::DesignCase;
+    use crate::contract::FamilyCase;
 
     /// The glide's midpoint between two reachable controls is itself stable: an impulse
     /// through the recurrence with the half-way coefficients held decays (the last
@@ -276,7 +267,7 @@ pub(crate) mod tests {
     where
         R: ChannelRecurrence,
         R::Controls: core::fmt::Debug,
-        Filter<R>: DesignCase<Controls = R::Controls, Model = R::Model>,
+        Filter<R>: FamilyCase<Controls = R::Controls, Member = R::Member>,
     {
         const FRAMES: usize = 150_000;
         const WINDOW: usize = 1_000;
@@ -289,8 +280,8 @@ pub(crate) mod tests {
                 all[rng.gen_range(0..all.len())],
             );
             let (from, to) = (
-                d.recurrence.coeffs(&d.design(&a, rate)),
-                d.recurrence.coeffs(&d.design(&b, rate)),
+                d.recurrence.coeffs(&d.member(&a, rate)),
+                d.recurrence.coeffs(&d.member(&b, rate)),
             );
             let mid = from.lerp(&to, R::STEPS / 2, R::STEPS);
             let mut state = R::State::default();

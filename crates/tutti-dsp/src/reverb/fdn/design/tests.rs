@@ -2,12 +2,12 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::*;
-use crate::contract::{DesignCase, Hook, LtiCase, RealizationCase, ReverbCase};
+use crate::contract::{FamilyCase, Hook, LtiCase, RealizationCase, ReverbCase};
 use crate::reverb::network::{Band, Fdn, Matrix, Network, Stage};
 use crate::{Lti as _, Realized, System as _};
 
-fn freezable() -> FdnDesign {
-    FdnDesign::new(8, MaxDecay::DEFAULT.get(), true).unwrap()
+fn freezable() -> FdnFamily {
+    FdnFamily::new(8, MaxDecay::DEFAULT.get(), true).unwrap()
 }
 
 fn base() -> FdnControls {
@@ -20,7 +20,11 @@ fn with(f: impl FnOnce(&mut FdnControls)) -> FdnControls {
     c
 }
 
-impl DesignCase for FdnDesign {
+impl FamilyCase for FdnFamily {
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
+    }
+
     fn reachable(&self) -> Vec<FdnControls> {
         let mut all = Vec::new();
         for low in [0.2, 1.0, 8.0] {
@@ -92,17 +96,17 @@ impl DesignCase for FdnDesign {
     }
 }
 
-impl LtiCase for FdnDesign {
+impl LtiCase for FdnFamily {
     fn marginal(&self, c: &FdnControls) -> bool {
         self.freezable && c.freeze
     }
 
     fn fill(&self, rate: SampleRate, trips: f32) -> usize {
-        (trips * self.bounds(&self.ceiling(rate)).line) as usize
+        (trips * self.capacity(rate).line) as usize
     }
 }
 
-impl ReverbCase for FdnDesign {
+impl ReverbCase for FdnFamily {
     fn tolerance(&self) -> f32 {
         0.15
     }
@@ -141,7 +145,7 @@ impl ReverbCase for FdnDesign {
     /// to peak at 0.9999, as the kernel does, so the decay asked for is not the
     /// decay the network has, and there is no figure to hold it to.
     fn requested_rt60(&self, c: &FdnControls, rate: SampleRate, band: Band) -> Option<Seconds> {
-        let n = self.design(c, rate);
+        let n = self.member(c, rate);
         if let Some(Stage::Fdn(f)) = n.stages.first()
             && let Some(l) = f.lines.first()
             && !(self.freezable && c.freeze)
@@ -227,15 +231,15 @@ impl ReverbCase for FdnDesign {
 
 mod freezable_design {
     use super::*;
-    crate::design_contract!(freezable(), Lti, reverb);
+    crate::family_contract!(freezable(), Grows, Lti, reverb);
 }
 
 mod plain_design {
     use super::*;
-    crate::design_contract!(FdnDesign::default(), Lti, reverb);
+    crate::family_contract!(FdnFamily::default(), Grows, Lti, reverb);
 }
 
-impl RealizationCase for FdnDesign {
+impl RealizationCase for FdnFamily {
     fn probes(&self) -> Vec<FdnControls> {
         vec![
             base(),
@@ -309,7 +313,7 @@ crate::realization_contract!(freezable(), Lti, reverb, BlockIndependent);
 #[test]
 fn the_fdn_declares_its_stream_grid() {
     assert_eq!(
-        FdnDesign::CADENCE,
+        FdnFamily::CADENCE,
         Cadence::stream(NonZeroU32::new(CHUNK as u32).unwrap())
     );
 }
@@ -317,7 +321,7 @@ fn the_fdn_declares_its_stream_grid() {
 use crate::contract::cases::realization as cases;
 use crate::testing::flaws::{Defect, Defective};
 
-fn defective(defect: Defect) -> Defective<FdnDesign> {
+fn defective(defect: Defect) -> Defective<FdnFamily> {
     Defective {
         inner: freezable(),
         defect,
@@ -464,8 +468,8 @@ fn no_hook_of_the_fdn_is_vacuous() {
     assert!(ReverbCase::pre_delay(&d, &with(|c| c.pre_delay = Seconds(0.1))).get() > 0.0);
 }
 
-fn design_of(d: &FdnDesign, c: &FdnControls) -> Network {
-    d.design(c, SampleRate(48_000.0))
+fn design_of(d: &FdnFamily, c: &FdnControls) -> Network {
+    d.member(c, SampleRate(48_000.0))
 }
 
 fn fdn_of(n: &Network) -> &Fdn {
@@ -512,7 +516,7 @@ fn diffusion_is_the_reflection_vector() {
 /// design that is not freezable ignores it.
 #[test]
 fn a_freeze_is_lossless_and_takes_no_input() {
-    let (d, plain) = (freezable(), FdnDesign::default());
+    let (d, plain) = (freezable(), FdnFamily::default());
     let frozen = with(|c| c.freeze = true);
     let n = design_of(&d, &frozen);
     let f = fdn_of(&n);
@@ -534,7 +538,7 @@ fn a_freeze_is_lossless_and_takes_no_input() {
 /// fraction.
 #[test]
 fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
-    let d = FdnDesign::default();
+    let d = FdnFamily::default();
     let mut last = vec![0.0f32; 8];
     for size in [0.0, 0.3, 0.6, 1.0] {
         let n = design_of(&d, &with(|c| c.size = Mix(size)));
@@ -543,7 +547,7 @@ fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
         assert!(lengths.iter().zip(&last).all(|(a, b)| a > b));
         last = lengths;
     }
-    let at = |hz| d.design(&base(), SampleRate(hz));
+    let at = |hz| d.member(&base(), SampleRate(hz));
     let (a, b) = (at(44_100.0), at(88_200.0));
     for (x, y) in fdn_of(&a).lines.iter().zip(fdn_of(&b).lines.iter()) {
         assert!((y.length - 2.0 * x.length).abs() <= 1.0);
@@ -554,14 +558,14 @@ fn lengths_are_whole_frames_that_grow_with_size_and_rate() {
 #[test]
 fn a_configuration_refuses_what_it_cannot_hold() {
     let ok = Seconds(8.0);
-    assert!(FdnDesign::new(8, ok, false).is_some());
-    assert!(FdnDesign::new(16, ok, true).is_some());
+    assert!(FdnFamily::new(8, ok, false).is_some());
+    assert!(FdnFamily::new(16, ok, true).is_some());
     for lines in [0, 1, 7, 17, 18] {
-        assert!(FdnDesign::new(lines, ok, false).is_none(), "{lines}");
+        assert!(FdnFamily::new(lines, ok, false).is_none(), "{lines}");
     }
     for bad in [0.0, 0.01, 60.001, f32::NAN, f32::INFINITY] {
         assert!(
-            FdnDesign::new(8, Seconds::from_f32(bad), false).is_none(),
+            FdnFamily::new(8, Seconds::from_f32(bad), false).is_none(),
             "{bad}"
         );
     }
@@ -579,13 +583,13 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
-        &d.bounds(&Ceiling::at(rate).unwrap()),
+        &d.reach(&Reach::at(rate).unwrap()),
         &Setup {
             rate,
             max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
         },
     );
-    let net = d.design(
+    let net = d.member(
         &with(|c| {
             c.decay = [Seconds(2.0); 3];
             c.diffusion = Mix(0.0);
@@ -639,14 +643,14 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
     let d = freezable();
     let mut k = d.realized();
     k.prepare(
-        &d.bounds(&Ceiling::at(rate).unwrap()),
+        &d.reach(&Reach::at(rate).unwrap()),
         &Setup {
             rate,
             max_block: tutti_types::MaxBlock::of(tutti_types::Samples(64)),
         },
     );
     let at = |diffusion: f32, freeze: bool| {
-        d.design(
+        d.member(
             &with(|c| {
                 c.diffusion = Mix(diffusion);
                 c.freeze = freeze;
@@ -685,10 +689,10 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
 /// decay, not a flat figure.
 #[test]
 fn the_bounds_dominate_where_rounding_matters() {
-    let d = FdnDesign::default();
+    let d = FdnFamily::default();
     let rate = SampleRate(192_000.0);
-    let ceiling = Ceiling::at(rate).unwrap();
-    let bound = d.bounds(&ceiling);
+    let reach = Reach::at(rate).unwrap();
+    let bound = d.reach(&reach);
     for k in 1..100 {
         let c = FdnControls {
             decay: [d.max_decay(); 3],
@@ -698,7 +702,7 @@ fn the_bounds_dominate_where_rounding_matters() {
             modulation: Depth(1.0),
             ..FdnControls::DEFAULT
         };
-        let tail = d.design(&c, rate).tail(ceiling.floor());
+        let tail = d.member(&c, rate).tail(reach.floor());
         assert!(
             bound.tail.covers(tail),
             "diffusion {k}%: {tail:?} over {:?}",

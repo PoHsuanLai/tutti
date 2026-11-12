@@ -1,10 +1,10 @@
-//! The feedback delay network as a [`DesignNode`], and [`ReverbKind`], which
+//! The feedback delay network as a [`FamilyNode`], and [`ReverbKind`], which
 //! spawns the node of either reverb (design 022 step 1c).
 
-use tutti_dsp::{FdnControls, FdnDesign, FreeverbControls, FreeverbDesign};
-use tutti_types::{Db, Depth, Hz, Mix, Seconds, StereoWidth};
+use tutti_dsp::{FdnControls, FdnFamily, FreeverbControls, FreeverbFamily, NetworkCapacity};
+use tutti_types::{Db, Depth, Hz, Mix, SampleRate, Seconds, StereoWidth};
 
-use crate::reverb::{DesignNode, FreeverbNode, NodeDesign};
+use crate::reverb::{FamilyNode, FreeverbNode, NodeFamily};
 
 /// The FDN's controls: the three decays, the size (a move lands over seconds by
 /// design: half a frame per 32-frame chunk, about 6 s for the longest line going
@@ -38,7 +38,7 @@ control_set! {
     }
 }
 
-impl NodeDesign for FdnDesign {
+impl NodeFamily for FdnFamily {
     type Set = FdnSet;
 
     fn set(&self, _: &FdnControls) -> FdnSet {
@@ -46,10 +46,14 @@ impl NodeDesign for FdnDesign {
             freezable: self.freezable(),
         }
     }
+
+    fn capacity(&self, rate: SampleRate, floor: Db) -> NetworkCapacity {
+        self.grown(rate, floor)
+    }
 }
 
 /// The feedback delay network as a graph node: mono in, stereo out.
-pub type FdnNode = DesignNode<FdnDesign>;
+pub type FdnNode = FamilyNode<FdnFamily>;
 
 /// Which reverb to spawn: the choice is explicit and built on the control side.
 /// It only spawns the matching node ([`spawn`](Self::spawn)); there is no
@@ -61,7 +65,7 @@ pub enum ReverbKind {
     /// The feedback delay network, built to this design: three band decays, a
     /// size, a diffusion, a pre-delay, a modulation, a width, a wet gain and
     /// (if the design is freezable) a freeze.
-    Fdn(FdnDesign),
+    Fdn(FdnFamily),
 }
 
 /// The node [`ReverbKind::spawn`] made.
@@ -83,12 +87,12 @@ impl ReverbKind {
     #[must_use]
     pub fn spawn(self) -> SpawnedReverb {
         match self {
-            ReverbKind::Freeverb => SpawnedReverb::Freeverb(DesignNode::live(
-                FreeverbDesign,
+            ReverbKind::Freeverb => SpawnedReverb::Freeverb(FamilyNode::live(
+                FreeverbFamily,
                 FreeverbControls::GENERAL_MIDI,
             )),
             ReverbKind::Fdn(design) => {
-                SpawnedReverb::Fdn(DesignNode::live(design, FdnControls::DEFAULT))
+                SpawnedReverb::Fdn(FamilyNode::live(design, FdnControls::DEFAULT))
             }
         }
     }

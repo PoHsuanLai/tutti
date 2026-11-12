@@ -23,8 +23,8 @@ pub const COEFF_INTERVAL: usize = 16;
 /// [`COEFF_INTERVAL`] as a block-anchored [`Cadence`]: solved every 16 frames from
 /// the start of each block, last frame of each step. Only the phaser still runs on
 /// it; the SVF, the ladder and the crossover are on the stream grid
-/// ([`SvfDesign::CADENCE`](crate::SvfDesign), [`LadderDesign::CADENCE`](crate::LadderDesign),
-/// [`CrossoverDesign::CADENCE`](crate::CrossoverDesign)).
+/// ([`SvfFamily::CADENCE`](crate::SvfFamily), [`LadderFamily::CADENCE`](crate::LadderFamily),
+/// [`CrossoverFamily::CADENCE`](crate::CrossoverFamily)).
 pub const COEFF_CADENCE: Cadence =
     Cadence::every(NonZeroU32::new(COEFF_INTERVAL as u32).expect("the interval is positive"));
 

@@ -8,23 +8,24 @@
 //! by side):
 //!
 //! - **The model** (design 024, `model/`): the traits every family answers to. A
-//!   [`Design`] maps a family's controls to its [`Model`](Design::Model) and states its
-//!   buses ([`Channels`]); a [`System`] is what every model answers (its
+//!   [`Family`] maps a family's controls to its [`Member`](Family::Member) and states its
+//!   buses ([`Channels`]); a [`System`] is what every member answers (its
 //!   [`latency`](System::latency) and [`tail`](System::tail)), and [`Lti`] the class of
 //!   a linear time-invariant one ([`frequency_response`](Lti::frequency_response),
 //!   [`spectral_radius`](Lti::spectral_radius), [`l1_norm`](Lti::l1_norm),
-//!   [`hinf_norm`](Lti::hinf_norm), with [`Complex64`]). A [`Recurrence`] runs a model:
+//!   [`hinf_norm`](Lti::hinf_norm), with [`Complex64`]). A [`Recurrence`] runs a member:
 //!   its [`coefficients_into`](Recurrence::coefficients_into) asks for the coefficient point
-//!   of a model, its [`Approach`] (a [`Glide`]) moves the coefficients there, and its
+//!   of a member, its [`Approach`] (a [`Glide`]) moves the coefficients there, and its
 //!   [`run`](Recurrence::run) is the per-frame math; [`Realized`] is the one runner of
-//!   them. [`Ceiling`] (with a family's
-//!   [`Range`], [`MaxDecay`] for a reverb), [`Effort`] and [`Cadence`] are the
-//!   engineering that sizes and schedules it.
-//! - **Filters** (`filter/`): the SVF ([`SvfDesign`], [`SvfModel`], [`SvfType`]), the
-//!   ladder ([`LadderDesign`], [`LadderModel`], [`LadderType`]) and the Linkwitz-Riley
-//!   crossover ([`CrossoverDesign`], [`CrossoverModel`]; [`Crossover`], the block
+//!   them. A family whose state grows with its member is also [`Grows`]: its
+//!   [`reach`](Grows::reach) over a [`Reach`] (with a family's [`Domain`], [`MaxDecay`] for a
+//!   reverb) is a [`Capacity`], what its recurrence allocates; [`Effort`] and [`Cadence`]
+//!   are the engineering that schedules it.
+//! - **Filters** (`filter/`): the SVF ([`SvfFamily`], [`SvfModel`], [`SvfType`]), the
+//!   ladder ([`LadderFamily`], [`LadderModel`], [`LadderType`]) and the Linkwitz-Riley
+//!   crossover ([`CrossoverFamily`], [`CrossoverModel`]; [`Crossover`], the block
 //!   processor the multiband node still runs), each a [`ChannelRecurrence`] under the one
-//!   [`Filter`] design, run by [`PerChannel`]; [`Real`], the `f32` or `f64` their state
+//!   [`Filter`] family, run by [`PerChannel`]; [`Real`], the `f32` or `f64` their state
 //!   runs in, and the [`Biquad`] section they share.
 //! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the
 //!   gain curves ([`LimiterCurve`] and the `compute_*` functions); [`CompressorKernel`],
@@ -32,8 +33,8 @@
 //!   [`LookaheadRing`].
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
-//!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkSizes`] worst case; and two
-//!   designs over it, [`FreeverbDesign`] (run by [`FreeverbRecurrence`]) and [`FdnDesign`]
+//!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkCapacity`] worst case; and two
+//!   families over it, [`FreeverbFamily`] (run by [`FreeverbRecurrence`]) and [`FdnFamily`]
 //!   (run by [`FdnRecurrence`]). [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula
 //!   both ways.
 //! - **Convolution**: [`Convolver`] over a shared [`IrSpectra`].
@@ -59,8 +60,8 @@
 //!
 //! ## Feature flags
 //!
-//! - `contract` (off by default): the `contract` module, the cases a [`Design`] and
-//!   its [`Realized`] runner are held to, with `design_contract!` and
+//! - `contract` (off by default): the `contract` module, the cases a [`Family`] and
+//!   its [`Realized`] runner are held to, with `family_contract!` and
 //!   `realization_contract!`. Test support: enable it from a dev-dependency.
 //!
 //! ## Import paths
@@ -105,29 +106,29 @@ pub use dynamics::{
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{
-    Biquad, ChannelRecurrence, Crossover, CrossoverControls, CrossoverDesign, CrossoverError,
-    CrossoverModel, CrossoverTree, DirectForm1, Filter, FilterSizes, Ladder, LadderCoefficients,
-    LadderCoeffs, LadderControls, LadderDesign, LadderModel, LadderType, Lanes, MAX_SPLITS,
-    PerChannel, Real, SOLVE_CEILING, Svf, SvfCoefficients, SvfCoeffs, SvfControls, SvfDesign,
-    SvfModel, SvfType, fit_to_rate, ladder_step, svf_step,
+    Biquad, ChannelRecurrence, Crossover, CrossoverControls, CrossoverError, CrossoverFamily,
+    CrossoverModel, CrossoverTree, DirectForm1, Filter, Ladder, LadderCoefficients, LadderCoeffs,
+    LadderControls, LadderFamily, LadderModel, LadderType, Lanes, MAX_SPLITS, PerChannel, Real,
+    SOLVE_CEILING, Svf, SvfCoefficients, SvfCoeffs, SvfControls, SvfFamily, SvfModel, SvfType,
+    fit_to_rate, ladder_step, svf_step,
 };
 pub use interp::cubic_hermite;
 pub use model::{
-    Anchor, Approach, Cadence, Ceiling, Channels, Design, Effort, Glide, Lerp, Lti, MaxDecay,
-    MaxDecayError, Period, Range, Realized, Recurrence, Ring, Setup, Sizes, Start, Step, Steps,
+    Anchor, Approach, Cadence, Capacity, Channels, Domain, Effort, Family, Glide, Grows, Lerp, Lti,
+    MaxDecay, MaxDecayError, Period, Reach, Realized, Recurrence, Ring, Setup, Start, Step, Steps,
     System,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::swept::SweptLines;
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
-pub use reverb::fdn::design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
+pub use reverb::fdn::design::{FdnControls, FdnFamily, MAX_PRE_DELAY, MIN_DECAY};
 pub use reverb::fdn::recurrence::FdnRecurrence;
-pub use reverb::freeverb::design::{FreeverbControls, FreeverbDesign};
+pub use reverb::freeverb::design::{FreeverbControls, FreeverbFamily};
 pub use reverb::freeverb::recurrence::{Freeverb, FreeverbRecurrence};
 pub use reverb::network::{
     Absorption, AllPass, AllPassForm, Band, Fdn, FirSummary, Full, Gains, Inline, Line,
     MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation, Network,
-    NetworkSizes, OutputMap, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
+    NetworkCapacity, OutputMap, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use rustfft::num_complex::Complex64;
 pub use smoother::Smoother;

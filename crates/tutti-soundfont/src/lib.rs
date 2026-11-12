@@ -97,7 +97,8 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// [`reset`](tutti_graph::Node::reset) cuts every voice, forgets the pedals
 /// and held keys, returns the performance controllers (modulation,
 /// expression, bend) to their defaults and mutes the effects; the bank,
-/// program, volume and pan a host selected stay. The unit declares the longest
+/// program, volume and pan a host selected stay, and so do the master volume,
+/// balance and tuning a Universal message set. The unit declares the longest
 /// release any of its voices can have, and the effects' ring-out, as its tail,
 /// so an offline render that stops at the last note-off keeps the release.
 ///
@@ -313,9 +314,16 @@ impl SoundFontUnit {
     /// ([`channel_voice`]), so the player reads one form. Only the unit's own
     /// Group is read ([`Settings::with_group`]): a message in another Group
     /// addresses another channel space (M2-104 Appendix B.1), so it is not
-    /// this unit's, whichever channel it names. This is a sink, so a message that is not channel voice (a clock,
-    /// sysex, one `decode` cannot frame) is unused, not an error.
+    /// this unit's, whichever channel it names.
+    ///
+    /// The Group's System Exclusive is read too
+    /// ([`Player::universal`](crate::player::Player)): a Universal message
+    /// addressed to this unit ([`Settings::with_device`]) or to all of them is
+    /// the note logic's. This is a sink, so a message that is neither (a clock,
+    /// a manufacturer's sysex, one `decode` cannot frame) is unused, not an
+    /// error.
     fn apply_event(&mut self, ump: Ump) {
+        self.player.universal(ump);
         if let Some((address, voice)) = channel_voice(ump)
             && address.group == self.player.group()
         {

@@ -9,12 +9,13 @@
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
 use crate::note_id::PerNoteMap;
-use tutti_midi_protocol::{MpeZones, u16_to_unit_f32, unit_f32_to_u16};
+use tutti_midi_protocol::{Heard, MpeZones, u16_to_unit_f32, unit_f32_to_u16};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber};
 use tutti_voicing::{
-    ChannelState, Command, Glide, Mode, NoteControl, Order, Patch, Rules, Steal, VoiceSpec, Voicing,
+    ChannelState, Command, Glide, MasterGain, Mode, NoteControl, Order, Patch, Rules, Steal,
+    VoiceSpec, Voicing,
 };
 
 pub use tutti_voicing::VoiceId;
@@ -360,6 +361,12 @@ impl VoiceAllocator {
         });
         self.commands.clear();
         self.commands.extend_from_slice(cmds);
+        self.carry_out(strike)
+    }
+
+    /// Carries out the commands the core returned, which are in
+    /// `self.commands`: the slot table follows them and each leaves its gate.
+    fn carry_out(&mut self, strike: Option<(NoteId, f32)>) -> AllocationResult {
         let mut result = AllocationResult::Unavailable;
         for i in 0..self.commands.len() {
             match self.commands[i] {
@@ -621,6 +628,21 @@ impl VoiceAllocator {
     /// [`ChannelState`]): the controllers a voice's render reads.
     pub(crate) fn channel_state(&self, channel: MidiChannel) -> &ChannelState {
         self.core.channel(channel)
+    }
+
+    /// Runs a Universal System Exclusive message the synth heard through the
+    /// core and carries out what it returns (a retune of every channel, the
+    /// notes a General MIDI System On cuts).
+    pub(crate) fn universal(&mut self, heard: Heard) {
+        let commands = self.core.universal(heard);
+        self.commands.clear();
+        self.commands.extend_from_slice(commands);
+        self.carry_out(None);
+    }
+
+    /// The gain the Master Volume and Balance set (`Voicing::master_gain`).
+    pub(crate) fn master_gain(&self) -> MasterGain {
+        self.core.master_gain()
     }
 
     /// Runs a message that starts and releases no note (a bend, a sensitivity,

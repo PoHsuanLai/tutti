@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use tutti_midi_protocol::DeviceId;
 use tutti_ump::MidiGroup;
 
 /// The most voices a unit sounds at once: 1 to [`MAX`](Self::MAX).
@@ -108,6 +109,7 @@ impl From<Polyphony> for usize {
 pub struct Settings {
     polyphony: Polyphony,
     group: MidiGroup,
+    device: DeviceId,
 }
 
 impl Default for Settings {
@@ -123,6 +125,7 @@ impl Settings {
         Self {
             polyphony: Polyphony::DEFAULT,
             group: MidiGroup::FIRST,
+            device: DeviceId::DEFAULT,
         }
     }
 
@@ -138,6 +141,23 @@ impl Settings {
     pub const fn with_group(mut self, group: MidiGroup) -> Self {
         self.group = group;
         self
+    }
+
+    /// These settings answering to the Universal System Exclusive device id
+    /// `device` besides the all-call (M1 p.40): a message addressed to it, or to
+    /// all, is read (Master Volume, Balance and Tuning, General MIDI System On
+    /// and Off). Master Volume and Balance keep what arrives on this id apart
+    /// from what arrives on the all-call (M1 p.57).
+    #[must_use]
+    pub const fn with_device(mut self, device: DeviceId) -> Self {
+        self.device = device;
+        self
+    }
+
+    /// The device id this unit answers to besides the all-call.
+    #[must_use]
+    pub const fn device(&self) -> DeviceId {
+        self.device
     }
 
     /// The Group this unit plays.

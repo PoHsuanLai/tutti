@@ -6,7 +6,7 @@ use core::fmt;
 use std::num::NonZeroUsize;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_midi_protocol::MpeMode;
+use tutti_midi_protocol::{DeviceId, MpeMode};
 use tutti_types::Adsr;
 use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
 use tutti_ump::MidiGroup;
@@ -259,6 +259,12 @@ pub struct SynthConfig {
     /// section 2.1.2, Appendix B.1), so its channels' notes, wheels, pedals and
     /// MPE zones are not another Group's. Default the first.
     pub group: MidiGroup,
+    /// The Universal System Exclusive device id this synth answers to besides
+    /// the all-call (M1 p.40): a message addressed to it, or to all, is read
+    /// (Master Volume, Balance and Tuning, General MIDI System On and Off).
+    /// Master Volume and Balance keep what arrives on this id apart from what
+    /// arrives on the all-call (M1 p.57). Default [`DeviceId::DEFAULT`].
+    pub device: DeviceId,
 }
 
 impl SynthConfig {
@@ -276,6 +282,14 @@ impl SynthConfig {
     #[must_use]
     pub fn with_group(mut self, group: MidiGroup) -> Self {
         self.group = group;
+        self
+    }
+
+    /// This config answering to the Universal System Exclusive device id
+    /// `device`.
+    #[must_use]
+    pub fn with_device(mut self, device: DeviceId) -> Self {
+        self.device = device;
         self
     }
 
@@ -309,6 +323,7 @@ impl Default for SynthConfig {
             filter_mod: FilterModConfig::default(),
             mpe: MpeMode::Disabled,
             group: MidiGroup::FIRST,
+            device: DeviceId::DEFAULT,
         }
     }
 }

@@ -615,3 +615,43 @@ fn mono_and_legato_event_paths_are_allocation_free() {
         });
     }
 }
+
+/// Universal System Exclusive on the audio thread: the packets are
+/// reassembled, read, and carried out (a retune of every channel, a master
+/// gain ramp, a General MIDI reset that cuts every voice) with no allocation.
+#[test]
+fn polysynth_universal_sysex_is_allocation_free() {
+    let mut synth = Hand::new(PolySynth::new(SynthConfig {
+        polyphony: NonZeroUsize::new(8).unwrap(),
+        oscillator: OscillatorType::Saw,
+        ..Default::default()
+    }));
+    let message = |bytes: &[u8]| -> Vec<Ump> {
+        tutti_ump::SysexMessage::new(bytes)
+            .unwrap()
+            .packets(MidiGroup::FIRST)
+            .collect()
+    };
+    let mut round = Vec::new();
+    round.extend([note_on(0, 60, 100), note_on(0, 64, 100)]);
+    for bytes in [
+        &[0xF0, 0x7F, 0x7F, 0x04, 0x01, 0x00, 0x20, 0xF7][..],
+        &[0xF0, 0x7F, 0x7F, 0x04, 0x02, 0x00, 0x10, 0xF7],
+        &[0xF0, 0x7F, 0x7F, 0x04, 0x03, 0x00, 0x30, 0xF7],
+        &[0xF0, 0x7F, 0x7F, 0x04, 0x04, 0x00, 0x44, 0xF7],
+        &[
+            0xF0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7F, 0x00, 0x41, 0xF7,
+        ],
+        &[0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7],
+    ] {
+        round.extend(message(bytes));
+    }
+    synth.queue_midi(&round);
+    synth.block(64);
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..200 {
+            synth.queue_midi(&round);
+            synth.block(64);
+        }
+    });
+}

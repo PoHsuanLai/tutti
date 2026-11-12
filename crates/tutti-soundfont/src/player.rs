@@ -15,11 +15,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tutti_midi_protocol::narrow_value;
+use tutti_midi_protocol::{Universal, UniversalReader, narrow_value};
 use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Semitones};
 use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2};
-use tutti_voicing::{Rules, Voicing};
+use tutti_voicing::{MasterGain, Rules, Voicing};
 
 use crate::array_math::ArrayMath;
 use crate::channel::Channel;
@@ -133,8 +133,11 @@ const RATES: std::ops::RangeInclusive<i32> = 16_000..=192_000;
 ///   followed).
 fn rules(polyphony: usize) -> Rules {
     // The bend ranges are General MIDI's 2 semitones until RPN 0 says
-    // otherwise (`Rules::poly`'s).
-    Rules::poly(polyphony).with_exclusive_groups(true)
+    // otherwise (`Rules::poly`'s). The percussion channel is key-based, so the
+    // master tuning leaves it (CA-025, GM2 section 4.2).
+    Rules::poly(polyphony)
+        .with_exclusive_groups(true)
+        .with_percussion(Player::PERCUSSION_CHANNEL)
 }
 
 /// The player. Its voices are built against a rate and cannot be re-rated in
@@ -151,6 +154,12 @@ pub(crate) struct Player {
     channels: Vec<Channel>,
     voicing: Voicing,
     voices: Voices,
+    /// The Group's Universal System Exclusive, reassembled and filtered by
+    /// device id.
+    universal: UniversalReader,
+    /// The master gain the last chunk ended at: each chunk ramps from it to
+    /// the gain now ([`Voicing::master_gain`]).
+    master_applied: MasterGain,
 
     /// The chunk being read out, a plane each (see [`Plane`]).
     block: [Vec<f32>; Plane::COUNT],
@@ -229,6 +238,8 @@ impl Player {
             channels,
             voicing: Voicing::new(rules(polyphony)),
             voices: Voices::new(&render, polyphony),
+            universal: UniversalReader::new(settings.group(), settings.device()),
+            master_applied: MasterGain::UNITY,
             block: std::array::from_fn(|_| vec![0_f32; render.block_len()]),
             block_heard: Heard::default(),
             heard: Heard::default(),
@@ -310,6 +321,27 @@ impl Player {
             | Voice2::PerNoteManagement { .. } => self.dispatch(channel, message),
             // An Assignable Controller (NRPN) names nothing here.
             _ => {}
+        }
+    }
+
+    /// Reads one packet's Universal System Exclusive: a message addressed to
+    /// this unit or to all of them is the note logic's (`Voicing::universal`:
+    /// the master volume, balance and tuning, and the notes a General MIDI
+    /// System On cuts), and General MIDI On or Off also returns every
+    /// channel's program, bank and sends to a fresh unit's: program 0 of bank 0
+    /// (the standard drum set, bank 128, on the percussion channel), RP-003.
+    /// Every UMP of the Group is taken, not only the SysEx7 packets: a message
+    /// of the Group ends an open SysEx (M2-104 section 7.7.1).
+    pub(crate) fn universal(&mut self, ump: Ump) {
+        let Some(heard) = self.universal.push(ump) else {
+            return;
+        };
+        let commands = self.voicing.universal(heard);
+        self.voices.execute(commands, &self.font);
+        if matches!(heard.message, Universal::GeneralMidi(_)) {
+            self.channels = (0..MidiChannel::COUNT)
+                .map(|i| Channel::new(i == Self::PERCUSSION_CHANNEL.get()))
+                .collect();
         }
     }
 
@@ -471,14 +503,18 @@ impl Player {
             plane.fill(0_f32);
         }
         self.block_heard = Heard::default();
+        // The Master Volume and Balance (M1 p.57) ramp across the chunk with
+        // the voices' own gains, on every plane: the sends carry them too.
+        let (from, to) = (self.master_applied, self.voicing.master_gain());
+        self.master_applied = to;
         for voice in self.voices.iter() {
             let (prev_l, cur_l) = (
-                MASTER_VOLUME * voice.previous_mix_gain_left,
-                MASTER_VOLUME * voice.current_mix_gain_left,
+                MASTER_VOLUME * from.left.get() * voice.previous_mix_gain_left,
+                MASTER_VOLUME * to.left.get() * voice.current_mix_gain_left,
             );
             let (prev_r, cur_r) = (
-                MASTER_VOLUME * voice.previous_mix_gain_right,
-                MASTER_VOLUME * voice.current_mix_gain_right,
+                MASTER_VOLUME * from.right.get() * voice.previous_mix_gain_right,
+                MASTER_VOLUME * to.right.get() * voice.current_mix_gain_right,
             );
             let mut write = |plane: Plane, previous: f32, current: f32| {
                 if write_block(
@@ -534,6 +570,7 @@ impl Player {
         // the new player's, which has no voice.
         player.voicing = self.voicing.clone();
         player.voicing.forget_notes();
+        player.master_applied = self.master_applied;
         Some(player)
     }
 

@@ -53,7 +53,9 @@
 
 use std::num::NonZeroU16;
 
-use tutti_midi_protocol::{MpeZones, bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32};
+use tutti_midi_protocol::{
+    GeneralMidi, Heard, MpeZones, Universal, bend_u32_to_signed_f32, narrow_value, u32_to_unit_f32,
+};
 use tutti_types::{Amplitude, Seconds, Semitones};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, U7,
@@ -61,6 +63,7 @@ use tutti_ump::{
 };
 
 use crate::channel::{Bend, ChannelState};
+use crate::master::{Master, MasterGain};
 use crate::per_note::{MAX_EVENTS as NOTE_EVENTS, NOTE_CONTROLS};
 use crate::{Controller, Effect, Holds, NoteControl, NoteEvent, PerNoteState, Phase, Stop};
 
@@ -75,6 +78,10 @@ fn bend_sensitivity(value: u32) -> Semitones {
     let cents = ((value >> 18) & 0x7F) as f32;
     Semitones(semitones + cents / 100.0)
 }
+
+/// What a pitch wheel spans after General MIDI System On: "Pitch Bend (default
+/// range = +-2 semitones)", RP-003.
+const GENERAL_MIDI_BEND_RANGE: Semitones = Semitones(2.0);
 
 /// The most voices one note may start. A patch that asks for more is cut short.
 const MAX_SPECS: usize = 32;
@@ -185,6 +192,12 @@ pub struct Rules {
     /// What a full Per-Note Pitch Bend spans on a channel until RPN 0/7 says
     /// otherwise (M2-104 section 7.4.13 gives no default).
     pub per_note_bend_range: Semitones,
+    /// The channel a key-based instrument plays percussion on, if it has one.
+    /// The Master Fine and Coarse Tuning leave it as it is: CA-025 asks that
+    /// the message "NOT result in MIDI note-shifting" for key-based instruments
+    /// (each key a different sound), and GM2 section 4.2 recommends that it "will
+    /// not alter sounds assigned to Rhythm Channels".
+    pub percussion: Option<MidiChannel>,
 }
 
 impl Rules {
@@ -208,6 +221,7 @@ impl Rules {
             sostenuto: true,
             bend_range: Semitones(2.0),
             per_note_bend_range: Semitones(48.0),
+            percussion: None,
         }
     }
 
@@ -279,6 +293,14 @@ impl Rules {
     #[must_use]
     pub const fn with_per_note_bend_range(mut self, range: Semitones) -> Self {
         self.per_note_bend_range = range;
+        self
+    }
+
+    /// These rules with `channel` as the percussion channel: the master tuning
+    /// does not move it ([`Rules::percussion`]).
+    #[must_use]
+    pub const fn with_percussion(mut self, channel: MidiChannel) -> Self {
+        self.percussion = Some(channel);
         self
     }
 }
@@ -513,6 +535,8 @@ pub struct Voicing {
     /// What each channel has been told that outlives its notes.
     channels: [ChannelState; CHANNELS],
     zones: Option<MpeZones>,
+    /// The device's own volume, balance and tuning (Universal Device Control).
+    master: Master,
     next: u64,
     strike: u64,
     held: [Held; CHANNELS],
@@ -539,6 +563,7 @@ impl Clone for Voicing {
             sustain: self.sustain,
             channels: self.channels,
             zones: self.zones,
+            master: self.master,
             next: self.next,
             strike: self.strike,
             held: self.held,
@@ -564,6 +589,7 @@ impl Voicing {
             sustain: [false; CHANNELS],
             channels: [ChannelState::new(rules.bend_range); CHANNELS],
             zones: None,
+            master: Master::new(),
             next: 1,
             strike: 0,
             held: [Held::NONE; CHANNELS],
@@ -589,6 +615,7 @@ impl Voicing {
         self.forget_notes();
         self.per_note.clear();
         self.channels = [ChannelState::new(self.rules.bend_range); CHANNELS];
+        self.master = Master::new();
     }
 
     /// Forgets every note, pedal and held key, and keeps the channels'
@@ -615,7 +642,9 @@ impl Voicing {
     ///
     /// **Not carried:** the notes (a held note is not struck again, so the
     /// successor has none to follow), the sostenuto's captured keys, the
-    /// per-note controllers and the key a portamento glides from. A program
+    /// per-note controllers, the key a portamento glides from and the
+    /// device's master volume, balance and tuning (System Exclusive, which no
+    /// channel message says). A program
     /// and bank are the instrument's, not the core's.
     pub fn chase(&self, group: MidiGroup, mut emit: impl FnMut(Ump)) {
         let fresh = ChannelState::new(self.rules.bend_range);
@@ -774,6 +803,89 @@ impl Voicing {
         self.deliver();
         self.settle();
         &self.out
+    }
+
+    /// Reads one Universal System Exclusive message the instrument heard
+    /// ([`UniversalReader`](tutti_midi_protocol::UniversalReader) says who it was
+    /// for), and returns what to do. The slice is valid until the next call.
+    ///
+    /// - **Master Volume and Balance** (M1 p.57) change the
+    ///   [`master_gain`](Self::master_gain), which the instrument reads when it renders; no
+    ///   command.
+    /// - **Master Fine and Coarse Tuning** (CA-025) move every channel's pitch:
+    ///   a [`Command::Retune`] for each channel but the percussion one
+    ///   ([`Rules::percussion`]).
+    /// - **General MIDI System On and Off** (M1 p.52, GM2 section 4.9): "all
+    ///   currently sounding Notes immediately mute" ([`Command::Cut`] for each),
+    ///   and the device returns to its initial status: each channel's
+    ///   controllers back to their defaults ([`ChannelState::new`], which is
+    ///   RP-015's reset and more: volume 100, pan centre, no registered
+    ///   parameter kept), the pedals up, the held keys forgotten, and the master
+    ///   tuning, volume and balance sent to all devices back to their defaults. On
+    ///   is General MIDI System Level 1's status, a wheel that spans 2 semitones
+    ///   (RP-003); Off is the instrument's own initialized mode, the
+    ///   [`Rules::bend_range`] it was built with. A [`Command::Retune`] follows for
+    ///   every channel.
+    /// - Identity Request and Reply are the device inquiry's (M1 p.40), a message
+    ///   on a wire the instrument does not own: no command.
+    pub fn universal(&mut self, heard: Heard) -> &[Command] {
+        self.out.clear();
+        self.events.clear();
+        self.retired.clear();
+        match heard.message {
+            Universal::MasterVolume(volume) => self.master.set_volume(heard.to, volume),
+            Universal::MasterBalance(balance) => self.master.set_balance(heard.to, balance),
+            Universal::MasterFineTuning(fine) => {
+                self.master.set_fine(fine);
+                self.retune_all();
+            }
+            Universal::MasterCoarseTuning(coarse) => {
+                self.master.set_coarse(coarse);
+                self.retune_all();
+            }
+            Universal::GeneralMidi(mode) => self.general_midi(mode),
+            // The inquiry's, and any message a later version reads.
+            _ => {}
+        }
+        &self.out
+    }
+
+    /// The gain the instrument's output is multiplied by: the Master Volume and
+    /// Balance sent to this device and to all of them (M1 p.57). Unity until a
+    /// message says otherwise.
+    #[must_use]
+    pub fn master_gain(&self) -> MasterGain {
+        self.master.gain()
+    }
+
+    /// Tells the instrument where every channel's pitch stands now.
+    fn retune_all(&mut self) {
+        for i in 0..CHANNELS {
+            if self.rules.percussion.is_some_and(|p| p.index() == i) {
+                continue;
+            }
+            if let Some(channel) = MidiChannel::new(i as u8) {
+                let bend = self.pitch(i);
+                self.push(Command::Retune { channel, bend });
+            }
+        }
+    }
+
+    /// General MIDI System On or Off (see [`universal`](Self::universal)).
+    fn general_midi(&mut self, mode: GeneralMidi) {
+        for i in 0..self.notes.len() {
+            let id = self.notes[i].id;
+            self.push(Command::Cut(id));
+        }
+        self.forget_notes();
+        self.per_note.clear();
+        let range = match mode {
+            GeneralMidi::On => GENERAL_MIDI_BEND_RANGE,
+            GeneralMidi::Off => self.rules.bend_range,
+        };
+        self.channels = [ChannelState::new(range); CHANNELS];
+        self.master.reset_to_general_midi();
+        self.retune_all();
     }
 
     /// Carries out a Registered Controller's data word on `channel`; `message`
@@ -1369,11 +1481,19 @@ impl Voicing {
             .then(|| usize::from(zone.master_channel().get()))
     }
 
-    /// Where `channel`'s pitch stands: its own wheel, and its master's.
+    /// Where `channel`'s pitch stands: its own wheel, its zone master's, and
+    /// the device's master tuning (CA-025), which the percussion channel does
+    /// not take.
     fn pitch(&self, channel: usize) -> Semitones {
         let own = self.channels[channel].bend.semitones();
-        self.master_of(channel)
-            .map_or(own, |m| own + self.channels[m].bend.semitones())
+        let zoned = self
+            .master_of(channel)
+            .map_or(own, |m| own + self.channels[m].bend.semitones());
+        if self.rules.percussion.is_some_and(|p| p.index() == channel) {
+            zoned
+        } else {
+            zoned + self.master.tuning()
+        }
     }
 
     /// Changes the wheel or the sensitivity of `channel`, and tells the

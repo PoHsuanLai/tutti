@@ -49,7 +49,7 @@ use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use tutti_coremidi_ffi::{UmpEndpointInfo, ump_endpoints};
 use tutti_midi_device::{EndpointId, Identity, OsDevice};
-use tutti_midi_runtime::MidiOut;
+use tutti_midi_runtime::{MidiOut, Outgoing, SendAt};
 use tutti_ump::{Protocol, split_stream};
 
 mod host_time;
@@ -413,16 +413,24 @@ impl CoreMidiOutput {
     /// The inherent-method-plus-thin-trait-impl idiom `MidiSender` already uses:
     /// a caller holding the concrete type gets the `OSStatus`, while the erased
     /// [`MidiOut`] stays the ring-shaped `queue`.
-    fn send_ump(&self, words: &[u32]) -> Result<()> {
+    fn send_ump(&self, words: &[u32], at: SendAt) -> Result<()> {
         if words.is_empty() {
             return Ok(());
         }
+        // CoreMIDI holds a packet stamped in the future until then; 0 is now.
+        // The host clock is read afresh with each send, so the pairing neither
+        // drifts nor spans a sleep (`Instant` and `mach_absolute_time` differ
+        // there).
+        let time = match at {
+            SendAt::Now => 0,
+            SendAt::At(instant) => host_time::Pairing::now().host_time_of(instant),
+        };
         let cm_protocol = if self.midi2.load(Ordering::Relaxed) {
             CmProtocol::Midi20
         } else {
             CmProtocol::Midi10
         };
-        let buffer = EventBuffer::new(cm_protocol).with_packet(0, words);
+        let buffer = EventBuffer::new(cm_protocol).with_packet(time, words);
         self.port
             .send(&self.destination, &buffer)
             .map_err(|status| Error::CoreMidi {
@@ -449,9 +457,15 @@ impl MidiOut for CoreMidiOutput {
     /// contiguous run matches, and would deliver a note-off whose note-on never
     /// left. The ALSA backend's `queue` behaves identically.
     fn queue(&self, events: &[UmpAt]) -> usize {
+        self.queue_timed(&Outgoing::now_batch(events))
+    }
+
+    /// Each packet is stamped with the host time of its [`SendAt`] and CoreMIDI
+    /// schedules it.
+    fn queue_timed(&self, events: &[Outgoing]) -> usize {
         let mut accepted = 0;
-        for (_, ump) in events {
-            if let Err(e) = self.send_ump(ump.words()) {
+        for event in events {
+            if let Err(e) = self.send_ump(event.ump.words(), event.send) {
                 tracing::debug!("CoreMIDI send: {e}");
                 break;
             }

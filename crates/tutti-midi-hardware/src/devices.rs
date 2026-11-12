@@ -18,7 +18,7 @@ use tutti_midi_device::{
     DeviceEvent, DeviceId, DeviceInfo, DeviceTable, EndpointId, Identity, OsChange, OsDevice,
     PortDirection, Resolved,
 };
-use tutti_midi_runtime::{DeviceSlot, MidiOut};
+use tutti_midi_runtime::{DeviceSlot, MidiOut, Outgoing};
 use tutti_ump::StreamConfig;
 
 use crate::HardwareMidiInputs;
@@ -716,9 +716,15 @@ impl OpenOutput {
 /// counts as taken, and one of several packets counts when all went.
 impl MidiOut for OpenOutput {
     fn queue(&self, events: &[UmpAt]) -> usize {
+        self.queue_timed(&Outgoing::now_batch(events))
+    }
+
+    /// Each packet goes to the device at its [`SendAt`](tutti_midi_runtime::SendAt),
+    /// which the conversion keeps with the event it came from.
+    fn queue_timed(&self, events: &[Outgoing]) -> usize {
         let mut wire = self.wire();
         wire.convert(events);
-        let taken = self.sink.queue(wire.batch());
+        let taken = self.sink.queue_timed(wire.batch());
         wire.accepted(taken)
     }
 }

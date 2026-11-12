@@ -239,6 +239,31 @@ impl Client {
     /// `snd_seq_ump_event_output_direct`'s code, or `-EINVAL` when this
     /// client's id is not an address byte.
     pub fn send_to_subscribers(&self, port: u8, words: &[u32]) -> Result<()> {
+        self.send_ump_event(port, words, None)
+    }
+
+    /// Sends one UMP message to everything subscribed to `port`, held by
+    /// `queue` until the queue's real time reaches `at` (a time since the
+    /// queue started: [`QueueClock::now`]); an `at` already past is delivered
+    /// at once. The queue must be this client's own ([`start_queue`](Self::start_queue)):
+    /// another client's gives `-EINVAL`.
+    ///
+    /// # Errors
+    ///
+    /// `snd_seq_ump_event_output_direct`'s code, or `-EINVAL` when this
+    /// client's id or the queue's is not an address byte.
+    pub fn send_to_subscribers_at(
+        &self,
+        port: u8,
+        words: &[u32],
+        queue: &QueueClock,
+        at: Duration,
+    ) -> Result<()> {
+        self.send_ump_event(port, words, Some((queue.queue, at)))
+    }
+
+    /// The one send: direct, or scheduled on a queue of this client's.
+    fn send_ump_event(&self, port: u8, words: &[u32], on: Option<(i32, Duration)>) -> Result<()> {
         if words.is_empty() {
             return Ok(());
         }
@@ -269,24 +294,39 @@ impl Client {
             queue: sys::SND_SEQ_QUEUE_DIRECT,
             ..Default::default()
         };
+        if let Some((queue, at)) = on {
+            ev.queue = u8::try_from(queue).map_err(|_| Error {
+                operation,
+                code: EINVAL,
+            })?;
+            // Absolute (`SND_SEQ_TIME_MODE_ABS` is the clear bit), real time.
+            ev.flags = sys::SND_SEQ_TIME_STAMP_REAL;
+            // A queue's real time counts seconds in a `c_uint`: saturate at
+            // its end rather than wrap to the past.
+            let secs = u32::try_from(at.as_secs()).unwrap_or(u32::MAX);
+            ev.time[..4].copy_from_slice(&secs.to_ne_bytes());
+            ev.time[4..].copy_from_slice(&at.subsec_nanos().to_ne_bytes());
+        }
         copy_words(&mut ev.ump, words);
 
         // SAFETY: `self.seq` is open; `ev` is a fully initialised event of the
         // measured layout (the compile-time asserts in `sys`), which alsa-lib
-        // reads and does not retain.
+        // reads and does not retain. `output_direct` hands it to the kernel
+        // without buffering, and the kernel holds it until `ev.time` on the
+        // queue named in `ev.queue`.
         let rc = unsafe { sys::snd_seq_ump_event_output_direct(self.seq, &mut ev) };
         check(rc, operation).map(drop)
     }
 
-    /// Starts a queue of this client's own and makes `port` stamp each event it
-    /// receives with that queue's real time, at the moment the kernel delivers
-    /// it. The returned clock reads that queue, and the queue closes with this
-    /// client.
+    /// Allocates and starts a queue of this client's own: a real-time clock
+    /// that counts from zero now, read with [`QueueClock::now`] and used to
+    /// schedule sends ([`send_to_subscribers_at`](Self::send_to_subscribers_at)).
+    /// It closes with this client.
     ///
     /// # Errors
     ///
     /// The code of the call that failed.
-    pub fn stamp_port(&self, port: i32) -> Result<QueueClock> {
+    pub fn start_queue(&self) -> Result<QueueClock> {
         // SAFETY: `self.seq` is open.
         let rc = unsafe { sys::snd_seq_alloc_queue(self.seq) };
         let queue = check(rc, "snd_seq_alloc_queue")?;
@@ -306,6 +346,23 @@ impl Client {
         // SAFETY: `self.seq` is open.
         let rc = unsafe { sys::snd_seq_drain_output(self.seq) };
         check(rc, "snd_seq_drain_output")?;
+        Ok(QueueClock {
+            queue,
+            status: StatusRecord::new()?,
+        })
+    }
+
+    /// Starts a queue of this client's own and makes `port` stamp each event it
+    /// receives with that queue's real time, at the moment the kernel delivers
+    /// it. The returned clock reads that queue, and the queue closes with this
+    /// client.
+    ///
+    /// # Errors
+    ///
+    /// The code of the call that failed.
+    pub fn stamp_port(&self, port: i32) -> Result<QueueClock> {
+        let clock = self.start_queue()?;
+        let queue = clock.queue;
         self.edit_port(port, |info| {
             // SAFETY: `info` is a live record, filled from this client's port.
             unsafe {
@@ -314,10 +371,7 @@ impl Client {
                 sys::snd_seq_port_info_set_timestamp_queue(info, queue);
             }
         })?;
-        Ok(QueueClock {
-            queue,
-            status: StatusRecord::new()?,
-        })
+        Ok(clock)
     }
 
     /// Reads one of this client's ports into a record, lets `edit` change it,

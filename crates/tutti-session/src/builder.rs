@@ -736,7 +736,17 @@ impl SessionBuilder {
         let mut session = self.session(parts, None, true)?;
         session.load = engine.take_load_meter();
         session.heard = Some((engine.heard_taps(), spec.channels));
-        session.clock = Some(engine.block_clock());
+        let clock = engine.block_clock();
+        // The hardware out is timed by the session's one clock reader and the
+        // stream's latency, read on every drain.
+        #[cfg(feature = "midi")]
+        session
+            .midi_state
+            .set_output_clock(crate::midi::OutputClockSource::new(
+                clock.clone(),
+                audio_engine.latency(),
+            ));
+        session.clock = Some(clock);
         #[cfg(feature = "audio-io")]
         session.inputs.set_output_latency(audio_engine.latency());
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(engine));

@@ -111,14 +111,20 @@ already measured.
   and a `DesignNode` **solves at a lane's corners** as well as on its grid (section 4.5). (B5) IAMF
   re-tested on B1 to B4: every stage is a kernel, an edge gain or a control source, with no new trait
   (section 4.10). Section 10, "Step 2b as built, and the lanes after it", carries them.
-- **Amendments C of 2026-11-12: the names are the words that explain them** (section 2.7).
-  The docs explained each trait in the language of signals and systems (a parameterized
-  family of systems, each computed by a recurrence), but the code used other words for the
-  same things, and four names (`Realization`, `Realized`, `Kernel`, `Effect`) stood for one
-  idea. (C1) `Design` becomes **`Family`**, its model a **`Member`**. (C2) `Kernel` becomes
-  **`Recurrence`**. (C3) `Effect` folds into **`Realization`**. (C4) `Sizes` and `Bounds`
-  become **`Capacity`**, `Range` becomes **`Domain`** and `Ceiling` becomes **`Reach`**.
-  Renames only: no algorithm, render or test assertion changes.
+- **Amendments C of 2026-11-12: the maps, and the code as their composition** (section 2.7).
+  The pattern written as maps between sets, each with its domain and codomain: the family
+  `φ : C × fs → M`, the coefficients `κ : M → Θ`, the recurrence `K : Θ × S × X → Y × S`,
+  the system `T_m` it denotes, the transfer function `H` (LTI) or linearisation `L`, the
+  capacity maps `need` and `reach`, the glide `γ` and the cadence `σ`; a processor is
+  `T̃(γ(κ ∘ φ ∘ c), x)`. **Every map is one function with that signature**, a trait states
+  only the structure a set needs (affine `Θ`, an `H`, a capacity lattice), and tests are
+  the diagrams that must commute. (C1) `Kernel` becomes **`Recurrence`** (`coefficients`,
+  `initial`, `run`; no `aim`), the glide is generic in the runner, and `Realization` and
+  `Effect` go: `Realized<R>` is the one runner and takes the frame count, so a generator
+  (`X = 1`) and an instrument (`X = E*`) run on it; a multirate system is a `Transducer`,
+  built with the stretcher. (C2) `Design` splits into **`Family`** (`member`) and, only where
+  state grows, **`Grows`** (`need`, `reach`, `Capacity`, `Domain`, `Reach`). (C3) The contract
+  becomes the diagrams. No render changes.
 - **The contract is written once per class** (section 6): every LTI realization
   inherits the impulse-response-against-response, ring-time-against-decay,
   linearity and shift-invariance checks; every static map inherits the level
@@ -337,56 +343,217 @@ Four rules decide which word a name uses (the owner's decision of 2026-11-11).
 A name that disagrees with this table is a rename to schedule, not a reason to read the
 table loosely.
 
-### 2.7 Amendments C: one sentence, its words as the names (2026-11-12)
+### 2.7 Amendments C: the maps, and the code as their composition (2026-11-12)
 
-Everything in this document is one idea from signals and systems: **a parameterized family
-of discrete-time systems, each member computed by a recurrence over its state.** Sections 2.1
-and 2.5 already explain the traits in those words; the code used others (`Design`, `Kernel`,
-`Sizes`, `Ceiling`) and four names for the thing that processes audio. The owner found the
-names unintuitive; the fix is to name each piece with the word that explains it, so the
-types read as the sentence:
+Everything in this document is one idea: **a family of discrete-time systems indexed by
+controls, each member computed by a recurrence over its state.** Sections 2.1 to 2.5 say so
+in prose. This section writes it down as maps between sets, each with its domain and
+codomain, and makes that the rule for the code: **every map below is one named function
+with exactly that signature, and a processor is visibly their composition.** A trait exists
+only to state the structure a set must have for a map to apply (an affine coefficient
+space for the glide, a transfer function for the LTI queries, a capacity for state that
+grows), never to bundle a lifecycle.
 
-> A **`Family`** maps controls to a **`Member`**, a `System`; a **`Recurrence`** computes the
-> member frame by frame; a **`Realization`** runs it over blocks within a **`Capacity`**,
-> sized for the **`Reach`** a node asks of the family's **`Domain`**.
+The section was reached by writing the DSP as a functional program (the owner asked how it
+would read in Haskell) and pressure-testing it against every row of section 3 and the
+processors doc 028 plans. It replaces an earlier draft of this amendment that only renamed the
+traits.
 
-Each word is the textbook one: a family of systems indexed by parameters, a member of it, a
-recurrence (difference equation) `(state, input) -> (state, output)`, a realization (one
-structure computing a system), its capacity (the worst member its state must hold).
+#### 2.7.1 The sets
 
-| Now | Becomes | Why |
+| Symbol | Set | SVF | FDN reverb |
+|---|---|---|---|
+| `fs ∈ ℝ₊` | the sample rate | | |
+| `C` | the controls: a product of intervals of typed units | `(f_c, Q) ∈ (0, fs/2) × ℝ₊` | decay, size, damping, ... |
+| `D ⊆ C` | a **domain**: the part of `C` a node promises to reach | all of `C` | decay up to `MaxDecay` |
+| `M` | the **members**: what fixes one system | the response type and `(g, k)` | the `Network` |
+| `Θ` | the **coefficients**: the part of a member the recurrence reads per frame; an affine space when it glides | `(g, k) ∈ ℝ²` | gains, filter coefficients, delay lengths |
+| `X = ℝ^nᵢ`, `Y = ℝ^nₒ` | input and output frames (one value per channel at an instant) | `ℝ → ℝ` | `ℝ² → ℝ²` |
+| `S` (or `S_κ`) | the state; indexed by a capacity `κ` when its size depends on the member | `ℝ²`, two integrators | the delay lines, `S_κ` |
+| `𝒦` | the **capacities**: a lattice under `≤` (`dominates`) | a single point | line lengths |
+| `X^ℕ`, `Y^ℕ` | signals: sequences of frames | | |
+
+#### 2.7.2 The maps
+
+```
+φ : C × ℝ₊ → M                         the family            (member)
+κ : M → Θ                              the coefficients      (coefficients)
+K : Θ × S × X → Y × S,  s₀ ∈ S         the recurrence        (run, initial)
+T : M → (X^ℕ → Y^ℕ)                    the system it denotes (the runner, written once)
+    T_m(x)ₙ = yₙ  where  (yₙ, sₙ₊₁) = K(κ(m), sₙ, xₙ)
+H : M → (ℂ → ℂ^{nₒ×nᵢ})                the transfer function (only if T_m is LTI)
+L : M → M_lin                          the linearisation     (only if T_m is not linear)
+need  : M → 𝒦                          what a member's state needs (only if S is indexed)
+reach : 𝒫(C) × ℝ₊ → 𝒦                  what a domain needs, monotone
+γ : Θ^ℕ → Θ^ℕ                          the glide: a causal system on Θ
+σ : blocks of host time → C^ℕ           the cadence: how controls become one per frame
+```
+
+The whole processor is one composition:
+
+```
+P : C^ℕ × X^ℕ → Y^ℕ
+P(c, x) = T̃( γ(κ ∘ φ ∘ c), x )         with c = σ(the host's control writes)
+```
+
+where `T̃` is `K` read with the coefficients `θₙ` of frame `n` (a time-varying system; at
+a held control it is `T_m`). What each map is, and the condition it must meet:
+
+- **`φ` is pure and total on `C`.** No state, no time, no allocation for a family whose
+  member is small; a member too large to build on the audio thread is written in place
+  (`member_into`, the reverb's `Network`).
+- **`K` is the algorithm, one frame.** Its block form `run` over a frame range is an
+  optimisation and must equal `K` applied frame by frame. `s₀` is the only lifecycle fact
+  an author states: `prepare`, `reset` and `fresh` all return to it.
+- **`T` is written once.** Block independence is a theorem, not something each family
+  proves: for any `K`, running `x` then `x′` from the state `x` left equals running
+  `x ++ x′`. Only `σ` can break it, by sampling controls on the host's block grid
+  (section 4.5's `Anchor`).
+- **`H` exists iff `T_m` is linear and commutes with the delay `z⁻¹`.** Then
+  `H_m(z) = C(zI − A)⁻¹B + D` for the state-space form of `K`, and every class-1 query is a
+  function of `H_m`: the response `ω ↦ H_m(e^{jω})`, the spectral radius of `A`, the norms,
+  the ring time. A nonlinear member (the ladder's `tanh`, a compressor) has no `H`; it
+  offers `L`, and the analysis applies to `H ∘ L` (the ladder's small-signal model).
+- **`γ` needs `Θ` affine** (a convex combination of two coefficient points is one): that
+  is the `Lerp` assumption, and the one place it is stated. A family whose coefficients
+  are not affine (an impulse response swapped live, an HRIR face) glides by crossfading
+  two states instead, which is a different `γ` on `Θ × Θ × [0, 1]`, not a different
+  recurrence.
+- **`need` and `reach` meet one condition:** `need(φ(c, fs)) ≤ reach(D, fs)` for every
+  `c ∈ D`. That is the whole correctness of `Capacity`, `Domain` and `Reach`, and a family
+  whose state has one size (the SVF, the ladder, the crossover) has no `need` at all.
+
+#### 2.7.3 The shapes are the input set
+
+A processor, a generator and an instrument differ only in `X`:
+
+| Shape | `X` (one frame of input) | Example |
 |---|---|---|
-| trait `Design` | **`Family`** | it is the set of systems the controls index, `c -> S_D(c, fs)`; "design" read as a noun suggested a drawing |
-| `Design::Model` | **`Family::Member`** (bound `System`) | `Member` is the word for one system of a family |
-| `design`, `design_into` | **`member`**, **`member_into`** | the member at these controls and rate |
-| `Design::Bounds`, trait `Sizes`, `Realization::Bounds`, `Kernel::Bounds` | **`Capacity`** (trait, and the associated type of each) | what a realization allocates for the worst member it must hold; `Sizes`, `Bounds` and the reverb's `NetworkSizes` were three names for it |
-| `NetworkSizes`, `FilterSizes` | **`NetworkCapacity`**, **`FilterCapacity`** | the same |
-| `Design::bounds(&ceiling)` | **`Family::capacity(&reach)`** | measured from the family over the reach |
-| `Design::Range`, trait `Range` | **`Family::Domain`**, trait **`Domain`** | the part of the control space a node may reach (`MaxDecay` is one) |
-| `Ceiling<R>` | **`Reach<D>`** | a domain at a rate and a tail floor: how far into the family a node must be able to go |
-| trait `Kernel` | **`Recurrence`** | the per-frame difference equation; "kernel" is an impulse response in this field (section 2.5 already said so) |
-| `ChannelKernel`, `FreeverbKernel`, `FdnKernel`, the reverb node test's `EchoKernel` | **`ChannelRecurrence`**, **`FreeverbRecurrence`**, **`FdnRecurrence`**, `EchoRealization` | the same (`EchoKernel` is a `Realization`) |
-| the type parameter `K` of `Realized<K>`, `Filter<K>`, `Flawed<K>` and the contract harness | **`R`** | it stood for Kernel; the old word would live on in every signature |
-| trait `Effect<M>` | folded into **`Realization<M>`** (`process` moves onto it) | every realization built has the planar block shape; section 2.4 item 4 kept `process` off `Realization` for a generator or a resampler that does not exist as a realization yet, and a second trait for an unbuilt shape is the indirection this section removes. When one is built it gets its own realization trait then |
-| `NodeDesign`, `DesignNode<D>` | **`NodeFamily`**, **`FamilyNode<F>`** | the node over a family |
-| `SvfDesign`, `LadderDesign`, `CrossoverDesign`, `FreeverbDesign`, `FdnDesign` | **`SvfFamily`**, **`LadderFamily`**, **`CrossoverFamily`**, **`FreeverbFamily`**, **`FdnFamily`** | the SVF family, the ladder family |
-| `design_contract!`, `DesignCase` | **`family_contract!`**, **`FamilyCase`** | the cases a family is held to |
+| effect | `ℝ^nᵢ` (main and side-chain channels) | every filter, dynamics, delay, reverb |
+| generator | `1`, or `ℕ` (the frame's time) | LFO: `K : Θ × Phase × ℕ → ℝ × Phase`; the click, noise |
+| instrument | `E* × 1`: the events landing on this frame | `V ≫ B`: `V : E* × S_V → Cmd* × S_V` is `tutti-voicing`'s step, `B` the voice bank |
 
-**Kept:** `System`, `Lti` and every class trait; `Realization<M>` and `Realized<K>` (the
-realization of a recurrence); `Setup`, `Effort`, `Cadence`, `Channels`, `Glide`, `Lerp`,
-`Approach`, `Steps` (`Glide` is the engineering word for the interpolation of the parameters
-between two members, and reads as what it does); `realization_contract!`, `RealizationCase`,
-`Figure`; `Filter<K>`. The dynamics kernels (`CompressorKernel`, `GateKernel`,
-`LimiterKernel`) and `VbapKernel` are not `Kernel` impls; each becomes a `Recurrence` (or
-keeps a plain name) in its family lane. After the rename PR, a search for `Kernel` finds only
-those four.
+So the one runner covers all three once it takes the frame count from the call, not from
+`input[0].len()`. Events split a block at their offsets the way the cadence grid already
+does. **One shape is not a recurrence of this kind:** a multirate system (the resampler by
+`L/M`, the stretcher, the formant pitch shifter) has output frame `n` depend on input up to
+`⌊nM/L⌋ + d`, so it consumes and produces different counts. It is a `Transducer` (await an
+input frame or yield an output frame), every `K` embeds in it, and it is built when the
+stretcher lane first needs it, from that code.
 
-**How it lands.** One PR, after the ladder fix and before the dynamics lane, so no lane is
-written against the old names: the renames in `tutti-dsp`, `tutti-nodes` and their tests,
-CLAUDE.md's `tutti-dsp` paragraph, and sections 2.1, 2.5 and the code names throughout this
-document (dated records in other documents keep theirs). The glossary's "Was" column gains the
-names above. Nothing changes but names and the one trait fold, so no render, digest or
-assertion moves.
+#### 2.7.4 Tests are diagrams that commute
+
+Every family's contract is a set of equations between paths through the maps above. Three
+hold for every family, and the contract states each once:
+
+1. **The recurrence realizes the model:** the impulse response of `T_m` is `Z⁻¹(H_m)`
+   (class 1), or the level sweep of `T_m` is `f` (class 3), within a stated tolerance. This
+   is what section 6's class cases check from inside and the scipy judge
+   (`crates/tutti-dsp/examples/verify_dsp.py`) from outside.
+2. **The block form is the frame form:** `run` over any cut of a range equals `K` frame by
+   frame.
+3. **The glide lands:** for a held target, `γ` reaches `κ(φ(c))` in the steps it declares.
+
+And each family states its own **design diagram**, the equation that says its `φ` is right.
+For the SVF:
+
+```
+              φ                    H
+  C × fs ──────────→ M ──────────────────→ (ℂ → ℂ)
+     │                                         ↑
+     │  the analog prototype                   │  the bilinear map, prewarped:
+     │  H_a(s) = 1 / (s² + k s + 1)            │  s = (1/g)(z − 1)/(z + 1)
+     └─────────────────→ (ℂ → ℂ) ──────────────┘
+```
+
+`H_{φ(c)} = β_g(H_{a,c})`. The ladder's version of this diagram,
+`the_lp24_model_is_the_prewarped_bilinear_image_of_the_continuous_ladder`, is the test that
+caught the unit delay in its feedback path. A family whose `φ` has no closed-form reference
+(the FDN's) states the property its design guarantees instead (the decay at each band).
+
+#### 2.7.5 The code: one function per map
+
+```rust
+// φ — a family: controls in, member out.
+pub trait Family {
+    type Controls: Copy;
+    type Member: System;
+    fn member(&self, c: &Self::Controls, fs: SampleRate) -> Self::Member;
+    fn member_into(&self, c: &Self::Controls, fs: SampleRate, out: &mut Self::Member) { .. }
+    fn channels(&self) -> Channels;
+}
+
+// κ, K, s₀ — the recurrence. Coefficients are an input; it owns no glide.
+pub trait Recurrence {
+    type Member: System;
+    type Coefficients;            // Θ
+    type State: Clone;            // S (sized when the recurrence was built)
+    const STEP: usize;
+    fn coefficients(&self, m: &Self::Member) -> Self::Coefficients;            // κ
+    fn initial(&self, setup: &Setup) -> Self::State;                           // s₀
+    fn run(&self, θ: &Self::Coefficients, s: &mut Self::State,
+           input: &[&[f32]], output: &mut [&mut [f32]], frames: Range<usize>); // K, block form
+    fn latency(&self) -> Samples { Samples::ZERO }
+    fn effort(&self) -> Effort { Effort::default() }
+}
+
+// H — only for an LTI member (today's `Lti`, unchanged: the queries are functions of H).
+// L — only for a nonlinear member with a small-signal model.
+pub trait Linearisable { type Linear: Lti; fn linearise(&self) -> Self::Linear; }
+
+// need, reach — only for a family whose state grows with the member.
+pub trait Grows: Family {
+    type Capacity: Capacity;      // a lattice: `dominates`
+    type Domain: Domain;
+    fn need(m: &Self::Member) -> Self::Capacity;
+    fn reach(&self, r: &Reach<Self::Domain>) -> Self::Capacity;
+}
+
+// γ — generic over affine coefficients; no family writes one.
+pub struct Glide<Θ: Lerp> { .. }
+
+// T̃ — the one runner: P = T̃ ∘ (γ ∘ κ ∘ φ, id). Takes the frame count from the call.
+pub struct Realized<R: Recurrence> { recurrence: R, coefficients: Glide<..>, state: R::State, blank: R::State }
+```
+
+What this changes against main:
+
+| Main | Becomes | Why (the map it was hiding) |
+|---|---|---|
+| trait `Design` (five associated types) | **`Family`** (`Controls`, `Member`) and, only where state grows, **`Grows`** | `φ` is all of the family; `Bounds` and `Range` were `need` and `reach`, forced on every filter as `FilterSizes` and `Range = ()` |
+| `Design::Model`, `design`, `design_into` | **`Member`**, **`member`**, **`member_into`** | `φ`'s codomain is the set of members |
+| trait `Kernel` with `start`, `prepare`, `aim`, `clear` | **`Recurrence`** with `coefficients` (`κ`), `initial` (`s₀`) and `run` (`K`) | `aim` coupled the glide `γ` into each kernel; `clear`, `prepare` and `start` were three ways of reaching `s₀` |
+| `Kernel::Coeffs: Approach` | **`Coefficients`**, glided by the runner's `Glide` (affine) or a crossfade | `γ` is one map over `Θ`, not a per-family method |
+| `Sizes`, `Bounds`, `NetworkSizes`, `FilterSizes` | **`Capacity`**, `NetworkCapacity`; `FilterSizes` deleted | `𝒦`; a filter's capacity is a single point |
+| `Range`, `Ceiling<R>`, `bounds(&ceiling)` | **`Domain`**, **`Reach<D>`**, **`reach`** | `D ⊆ C` and the monotone map `reach` |
+| traits `Realization<M>` and `Effect<M>` | deleted; **`Realized<R>`** is the one runner, a struct | the lifecycle is derived from `s₀`, and the shape is `X`; the trait's only production implementer was `Realized<K>`, the others test doubles, which become recurrences or the runner's flaws |
+| `Realized::process` reads `input[0].len()` | the frame count is an argument | a generator has `X = 1` |
+| `NodeDesign`, `DesignNode<D>`, `*Design` | **`NodeFamily`**, **`FamilyNode<F>`**, `SvfFamily`, `LadderFamily`, `CrossoverFamily`, `FreeverbFamily`, `FdnFamily` | the node over a family |
+| `design_contract!`, `DesignCase`, `realization_contract!`, `RealizationCase` | **`family_contract!`** (`φ`'s diagram), **`recurrence_contract!`** (laws 1 to 3) | the contract is the diagrams of section 2.7.4 |
+
+**Kept:** `System`, `Lti` and every class trait (the class is the structure of `T_m`);
+`Setup`, `Effort`, `Cadence` (`σ`), `Channels`, `Lerp`, `Steps`, `Figure`, `Filter<R>` (the
+recurrence of a filter run per channel, `PerChannel`). The dynamics kernels and `VbapKernel`
+become `Recurrence`s in their family lanes.
+
+#### 2.7.6 How it lands
+
+This section is the target; the code moves in steps, each a PR that changes no render:
+
+1. **The maps without the renames' churn first:** `Recurrence` replaces `Kernel` (`aim` out,
+   `initial` in, the glide generic in the runner), `Realized` takes the frame count, and
+   `Realization`/`Effect` go. The four migrated families (SVF, ladder, crossover, the two
+   reverbs) move in the same PR, since they are the trait's only implementers.
+2. **`Design` splits** into `Family` and `Grows`, with the renames of section 2.7.5, and
+   CLAUDE.md's `tutti-dsp` paragraph follows.
+3. **The contract becomes the diagrams:** `family_contract!` states each family's design
+   diagram, `recurrence_contract!` laws 1 to 3.
+
+They go after the ladder fix and before the dynamics lane, so no lane is written against
+the old traits. The first lane that builds a generator on the runner (the control sources)
+checks section 2.7.3's claim, and the stretcher lane builds `Transducer`. Section 2.1's table
+and the code names throughout this document are updated with step 2; dated records in other
+documents keep theirs.
 
 ## 3. The inventory
 

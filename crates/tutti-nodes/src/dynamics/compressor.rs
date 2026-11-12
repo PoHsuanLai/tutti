@@ -2,8 +2,7 @@
 //! makeup gain.
 
 use tutti_dsp::{CompressorControls, CompressorFamily, KeySource};
-use tutti_graph::ParamNode;
-use tutti_types::{BusTopology, CompressionRatio, Db, SampleRate, Seconds, UnitParam};
+use tutti_types::{BusTopology, CompressionRatio, Db, SampleRate, Seconds};
 
 use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
@@ -14,29 +13,30 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 /// A [`FamilyNode`] over [`CompressorFamily`], the detector and the gain being the
 /// family's recurrence; this file holds the cells and how the graph reaches them.
 ///
-/// - [`mono`](Self::mono): 2 inputs (audio, key), 1 output.
-/// - [`stereo`](Self::stereo): 4 inputs (L, R, key L, key R), 2 outputs, linked gain.
-/// - [`with_bus`](Self::with_bus): any width up to one bus (16 channels), on a checked
-///   [`BusTopology`]; the key is as wide.
-/// - [`own_key`](Self::own_key): the same without a key bus; the detector listens to the
-///   signal itself.
+/// - [`new`](Self::new): any width up to one bus (16 channels), on a checked
+///   [`BusTopology`], with the [`KeySource`] and the [`CompressorControls`] you give it.
+/// - [`mono`](Self::mono): 2 inputs (audio, key), 1 output, a side-chain key.
+/// - [`stereo`](Self::stereo): 4 inputs (L, R, key L, key R), 2 outputs, linked gain, a
+///   side-chain key.
 ///
 /// # The key
 ///
-/// The detector listens to a [`KeySource`], chosen when the node is built. `mono`, `stereo` and
-/// `with_bus` have a **side-chain** key, a second bus after the audio inputs, **and it must
-/// be wired**: the graph feeds an unconnected input silence, which compresses nothing, so
-/// a compressor whose key nobody wired does nothing. Wire it with a bus edge, for example
+/// The detector listens to a [`KeySource`], chosen when the node is built. `mono` and
+/// `stereo` have a **side-chain** key (as does `new` with [`KeySource::Sidechain`]), a
+/// second bus after the audio inputs, **and it must be wired**: the graph feeds an
+/// unconnected input silence, which compresses nothing, so a compressor whose key nobody
+/// wired does nothing. Wire it with a bus edge, for example
 /// `graph.connect(kick.bus_out(0), comp.bus_in(1))` in `tutti-session`, or each key channel
 /// into the inputs after the audio. A compressor that should listen to its own signal, as
-/// an ordinary compressor does, is `own_key`, which has no key bus and needs nothing wired.
+/// an ordinary compressor does, is `new(.., KeySource::Own, ..)`, which has no key bus and
+/// needs nothing wired.
 ///
 /// The node declares no tail: the release decays after the key goes silent, but it only
 /// scales, so a silent input is a silent output.
 ///
 /// # Controls
 ///
-/// Threshold, knee, ratio, attack, release and makeup (as [`UnitParam::GainDb`]) are live
+/// Threshold, knee, ratio, attack, release and makeup (as [`UnitParam::GainDb`](tutti_types::UnitParam::GainDb)) are live
 /// [`Params`](crate::Params) shared across clones, set through the node's
 /// [`ParamSet`](tutti_graph::ParamSet) or the graph's `set_param` (a knee under 0 reads as
 /// 0, a ratio under 1 as 1 and a time under 0 as 0: a compressor does not expand).
@@ -58,135 +58,48 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 pub type CompressorNode = FamilyNode<CompressorFamily>;
 
 impl CompressorNode {
+    /// A compressor on the bus `input`, its detector on `key`, running at `controls`.
+    ///
+    /// The main bus keeps its speaker placement; a [`KeySource::Sidechain`] is a second bus
+    /// as wide, which is a level to read, not a placement, so it has none. **A side-chain key
+    /// must be wired** (see the [type](CompressorNode)); a [`KeySource::Own`] compressor
+    /// listens to its own signal and has no key bus. `new(BusTopology::STEREO, ..)` is
+    /// [`stereo`](Self::stereo) for a side-chain; an `n`-channel one on the engine's order
+    /// for that width is `new(BusTopology::assumed(n)?, ..)`, which refuses a width past
+    /// one bus.
+    ///
+    /// The controls are as [`CompressorControls`] says, and are the cells' values: the
+    /// threshold (`Db`, typically negative, since 0 dB is full scale), the knee width, the
+    /// ratio (`4.0` is 4 dB in for 1 dB out above the threshold; at least 1, no expansion),
+    /// the envelope times (short attacks catch transients, long releases sound smoother)
+    /// and the makeup gain (applied after the reduction, unconditionally). The envelope's
+    /// one-pole coefficients are derived from the times at the rate
+    /// [`Node::prepare`](tutti_graph::Node::prepare) hands it.
+    /// [`CompressorControls::DEFAULT`] does nothing (ratio 1, threshold 0 dB), so a caller
+    /// names what it wants: `CompressorControls { threshold, ratio, ..CompressorControls::DEFAULT }`.
+    #[must_use]
+    pub fn new(input: BusTopology, key: KeySource, controls: CompressorControls) -> Self {
+        Self::live(CompressorFamily::new(input, key), controls)
+    }
+
     /// Mono + mono side-chain: 2 inputs (audio, key), 1 output.
     ///
-    /// `threshold_db` is the level in [`Db`] above which reduction begins, typically
-    /// negative, since 0 dB is full scale. `ratio` is the [`CompressionRatio`]: `4.0` means
-    /// 4 dB in yields 1 dB out above the threshold, and it reads as at least `1.0` (no
-    /// expansion). `attack` and `release` are [`Seconds`] envelope times: short attacks
-    /// catch transients, long releases sound smoother.
-    ///
-    /// **The key is a side-chain that must be wired** (see the [type](CompressorNode)); for a
-    /// compressor that listens to its own signal use [`own_key`](Self::own_key).
-    ///
-    /// Knee is hard and makeup is 0 dB; add them with
-    /// [`with_soft_knee`](Self::with_soft_knee) / [`with_makeup`](Self::with_makeup). The
-    /// envelope's one-pole coefficients are derived from the times at the rate
-    /// [`Node::prepare`](tutti_graph::Node::prepare) hands it.
+    /// **The key is a side-chain that must be wired** (see the [type](CompressorNode)); for
+    /// a compressor that listens to its own signal use [`new`](Self::new) with
+    /// [`KeySource::Own`].
     #[must_use]
-    pub fn mono(
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::with_bus(BusTopology::MONO, threshold_db, ratio, attack, release)
+    pub fn mono(controls: CompressorControls) -> Self {
+        Self::new(BusTopology::MONO, KeySource::Sidechain, controls)
     }
 
     /// Stereo + stereo side-chain: 4 inputs (L, R, key L, key R), 2 outputs.
     ///
     /// The gain is **linked**: one reduction computed from the loudest key channel and
-    /// applied to both, so the stereo image does not shift when one side is louder.
-    /// Parameters are as [`mono`](Self::mono), and so is the key: a side-chain that must be
-    /// wired (use [`own_key`](Self::own_key) for one that listens to its own signal).
+    /// applied to both, so the stereo image does not shift when one side is louder. The key
+    /// is as [`mono`](Self::mono)'s: a side-chain that must be wired.
     #[must_use]
-    pub fn stereo(
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::with_bus(BusTopology::STEREO, threshold_db, ratio, attack, release)
-    }
-
-    /// A compressor on the bus `input`, with a key as wide: the main bus keeps its
-    /// speaker placement, the key (a level to read, not a placement) has none.
-    /// `with_bus(BusTopology::STEREO, ..)` is [`stereo`](Self::stereo); an `n`-channel one on
-    /// the engine's order for that width is `with_bus(BusTopology::assumed(n)?, ..)`, which
-    /// refuses a width past one bus. Parameters and the key are as
-    /// [`mono`](Self::mono).
-    #[must_use]
-    pub fn with_bus(
-        input: BusTopology,
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::keyed(
-            KeySource::Sidechain,
-            input,
-            threshold_db,
-            ratio,
-            attack,
-            release,
-        )
-    }
-
-    /// A compressor on the bus `input` whose detector listens to **its own signal**: no key
-    /// bus, so `width` audio inputs and `width` outputs, and nothing to wire. The signal
-    /// that is measured is the signal that is shaped, as in an ordinary compressor.
-    /// Parameters are as [`mono`](Self::mono).
-    #[must_use]
-    pub fn own_key(
-        input: BusTopology,
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::keyed(KeySource::Own, input, threshold_db, ratio, attack, release)
-    }
-
-    fn keyed(
-        key: KeySource,
-        input: BusTopology,
-        threshold_db: impl Into<Db>,
-        ratio: impl Into<CompressionRatio>,
-        attack: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::live(
-            CompressorFamily::new(input, key),
-            CompressorControls {
-                threshold: threshold_db.into(),
-                ratio: ratio.into(),
-                attack: attack.into(),
-                release: release.into(),
-                ..CompressorControls::DEFAULT
-            },
-        )
-    }
-
-    /// Softens the threshold over a `knee_db`-wide band in [`Db`], read as at least 0.
-    ///
-    /// The ratio eases in across the knee rather than switching on at the threshold, which
-    /// is what makes compression on vocals and busses sound gradual instead of grabbing.
-    /// `0.0` is a hard knee, the default. Typical musical values are 6 to 12 dB; the band
-    /// straddles the threshold, so half sits below it.
-    #[must_use]
-    pub fn with_soft_knee(self, knee_db: impl Into<Db>) -> Self {
-        self.cell(UnitParam::Knee, knee_db.into().get());
-        self
-    }
-
-    /// Adds `makeup_db` of output gain in [`Db`], applied after reduction.
-    ///
-    /// Compression lowers the peaks, so makeup restores the perceived level. Applied
-    /// unconditionally, including when nothing is being reduced.
-    #[must_use]
-    pub fn with_makeup(self, makeup_db: impl Into<Db>) -> Self {
-        self.cell(UnitParam::GainDb, makeup_db.into().get());
-        self
-    }
-
-    /// Writes one control's cell: the controls are the cells, and the node designs from
-    /// them at its first block.
-    fn cell(&self, kind: UnitParam, value: f32) {
-        assert!(
-            self.param_set().set(kind, value),
-            "a compressor has a {kind:?} control"
-        );
+    pub fn stereo(controls: CompressorControls) -> Self {
+        Self::new(BusTopology::STEREO, KeySource::Sidechain, controls)
     }
 }
 
@@ -233,30 +146,32 @@ mod tests {
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use tutti_graph::contract::{assert_param_fork, drive};
     use tutti_graph::{Node, ParamNode};
+    use tutti_types::UnitParam;
+
+    /// The controls of a compressor the tests name four of, the others at the default's.
+    fn four(threshold: f32, ratio: f32, attack: f64, release: f64) -> CompressorControls {
+        CompressorControls {
+            threshold: Db::new(threshold),
+            ratio: CompressionRatio::new(ratio),
+            attack: Seconds::new(attack),
+            release: Seconds::new(release),
+            ..CompressorControls::DEFAULT
+        }
+    }
 
     fn comp(threshold: f32, ratio: f32, attack: f64, release: f64) -> CompressorNode {
-        CompressorNode::mono(
-            Db::new(threshold),
-            CompressionRatio::new(ratio),
-            Seconds::new(attack),
-            Seconds::new(release),
-        )
+        CompressorNode::mono(four(threshold, ratio, attack, release))
     }
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
     #[test]
     fn a_fork_shares_no_cell() {
-        assert_param_fork(
-            CompressorNode::stereo(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.001),
-                Seconds::new(0.1),
-            )
-            .with_soft_knee(Db::new(6.0))
-            .with_makeup(Db::new(3.0)),
-        );
+        assert_param_fork(CompressorNode::stereo(CompressorControls {
+            knee: Db::new(6.0),
+            makeup: Db::new(3.0),
+            ..four(-20.0, 4.0, 0.001, 0.1)
+        }));
     }
 
     /// A block longer than 64 frames renders whole: the gain lane is sized from the
@@ -304,12 +219,10 @@ mod tests {
     #[test]
     fn an_own_key_compressor_listens_to_its_signal() {
         let mk = || {
-            CompressorNode::own_key(
+            CompressorNode::new(
                 BusTopology::MONO,
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
+                KeySource::Own,
+                four(-20.0, 4.0, 0.0001, 0.1),
             )
         };
         let shape = mk().shape();
@@ -355,7 +268,10 @@ mod tests {
     fn test_compressor_soft_knee_differs_from_hard_knee() {
         let mut hard = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
         let mut soft = prepared_at(
-            comp(-20.0, 4.0, 0.0001, 0.1).with_soft_knee(Db::new(12.0)),
+            CompressorNode::mono(CompressorControls {
+                knee: Db::new(12.0),
+                ..four(-20.0, 4.0, 0.0001, 0.1)
+            }),
             RATE_44K,
         );
         let mut hard_out = [0.0f32];
@@ -375,7 +291,10 @@ mod tests {
     #[test]
     fn test_compressor_makeup_gain() {
         let mut with = prepared_at(
-            comp(-20.0, 4.0, 0.0001, 0.1).with_makeup(Db::new(6.0)),
+            CompressorNode::mono(CompressorControls {
+                makeup: Db::new(6.0),
+                ..four(-20.0, 4.0, 0.0001, 0.1)
+            }),
             RATE_44K,
         );
         let mut without = prepared_at(comp(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
@@ -423,12 +342,7 @@ mod tests {
     #[test]
     fn test_compressor_stereo_reduces_on_loud_sidechain() {
         let mut node = prepared_at(
-            CompressorNode::stereo(
-                Db::new(-20.0),
-                CompressionRatio::new(4.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.1),
-            ),
+            CompressorNode::stereo(four(-20.0, 4.0, 0.0001, 0.1)),
             RATE_44K,
         );
         let mut output = [0.0f32; 2];
@@ -439,35 +353,60 @@ mod tests {
         assert!(output[0] < 0.5);
     }
 
-    /// `2 * width` inputs (audio, then key) and `width` outputs, at every width.
+    /// `2 * width` inputs (audio, then key) and `width` outputs for a side-chain compressor
+    /// and `width` inputs for an own-key one, at every width, from `new` and from the
+    /// shorthands: the shorthands are a side-chain key at their width.
     #[test]
-    fn test_compressor_stereo_channel_count() {
-        for (node, width) in [
-            (comp(-20.0, 4.0, 0.001, 0.1), 1u16),
+    fn the_constructors_and_the_key_choice_are_the_port_layout() {
+        let c = four(-20.0, 4.0, 0.001, 0.1);
+        let wide = BusTopology::assumed(tutti_types::ChannelLayout::from(4u16))
+            .expect("at most one bus wide");
+        for (node, inputs, outputs) in [
+            (CompressorNode::mono(c), 2, 1),
+            (CompressorNode::stereo(c), 4, 2),
+            (CompressorNode::new(wide, KeySource::Sidechain, c), 8, 4),
             (
-                CompressorNode::stereo(
-                    Db::new(-20.0),
-                    CompressionRatio::new(4.0),
-                    Seconds::new(0.001),
-                    Seconds::new(0.1),
-                ),
+                CompressorNode::new(BusTopology::MONO, KeySource::Own, c),
+                1,
+                1,
+            ),
+            (
+                CompressorNode::new(BusTopology::STEREO, KeySource::Own, c),
+                2,
                 2,
             ),
-            (
-                CompressorNode::with_bus(
-                    tutti_types::BusTopology::assumed(tutti_types::ChannelLayout::from(4u16))
-                        .expect("at most one bus wide"),
-                    Db::new(-20.0),
-                    CompressionRatio::new(4.0),
-                    Seconds::new(0.001),
-                    Seconds::new(0.1),
-                ),
-                4,
-            ),
+            (CompressorNode::new(wide, KeySource::Own, c), 4, 4),
         ] {
             let shape = node.shape();
-            assert_eq!(shape.audio_in().count(), 2 * width);
-            assert_eq!(shape.audio_out().count(), width);
+            assert_eq!(
+                (shape.audio_in().count(), shape.audio_out().count()),
+                (inputs, outputs)
+            );
+        }
+    }
+
+    /// The controls given to a constructor are the cells' values, all six of them (the
+    /// knee and makeup too, which the old positional constructors left to builders).
+    #[test]
+    fn the_constructor_controls_reach_the_cells() {
+        let c = CompressorControls {
+            threshold: Db(-18.0),
+            knee: Db(6.0),
+            ratio: CompressionRatio(3.0),
+            attack: Seconds(0.002),
+            release: Seconds(0.25),
+            makeup: Db(2.5),
+        };
+        for node in [
+            CompressorNode::stereo(c),
+            CompressorNode::new(BusTopology::MONO, KeySource::Own, c),
+        ] {
+            let bases: Vec<_> = (0..6).map(|k| node.param_base(k)).collect();
+            assert_eq!(
+                bases,
+                [-18.0, 6.0, 3.0, 0.002, 0.25, 2.5].map(Some),
+                "threshold, knee, ratio, attack, release, makeup"
+            );
         }
     }
 

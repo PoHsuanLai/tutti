@@ -2,8 +2,7 @@
 //! its own signal.
 
 use tutti_dsp::{GateControls, GateFamily, KeySource};
-use tutti_graph::ParamNode;
-use tutti_types::{BusTopology, Db, SampleRate, Seconds, UnitParam};
+use tutti_types::{BusTopology, Db, SampleRate, Seconds};
 
 use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
@@ -18,14 +17,15 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 ///
 /// The detector listens to a [`KeySource`], chosen when the node is built:
 ///
-/// - [`mono`](Self::mono), [`stereo`](Self::stereo) and [`with_bus`](Self::with_bus) have a
-///   **side-chain** key: a second bus, as wide as the signal, after the audio inputs.
+/// - [`mono`](Self::mono) and [`stereo`](Self::stereo) (and [`new`](Self::new) with
+///   [`KeySource::Sidechain`]) have a **side-chain** key: a second bus, as wide as the
+///   signal, after the audio inputs.
 ///   **It must be wired**: the graph feeds an unconnected input silence, and a gate keyed
 ///   by silence stays closed (at its range). Wire it with a bus edge, for example
 ///   `graph.connect(kick.bus_out(0), gate.bus_in(1))` in `tutti-session`, or each key
 ///   channel into the inputs after the audio.
-/// - [`own_key`](Self::own_key) has no key bus: the gate listens to its own signal, as an
-///   ordinary gate does, and needs nothing wired.
+/// - [`new`](Self::new) with [`KeySource::Own`] has no key bus: the gate listens to its own
+///   signal, as an ordinary gate does, and needs nothing wired.
 ///
 /// The node declares no tail: the release decays after the key goes silent, but it only
 /// scales, so a silent input is a silent output.
@@ -54,121 +54,53 @@ use crate::reverb::{FamilyNode, NodeFamily, Rings};
 pub type GateNode = FamilyNode<GateFamily>;
 
 impl GateNode {
+    /// A gate on the bus `input`, its detector on `key`, running at `controls`.
+    ///
+    /// The main bus keeps its speaker placement; a [`KeySource::Sidechain`] is a second bus
+    /// as wide, which is a level to read, not a placement, so it has none. **A side-chain key
+    /// must be wired** (see the [type](GateNode)); a [`KeySource::Own`] gate listens to its
+    /// own signal and has no key bus. `new(BusTopology::STEREO, ..)` is
+    /// [`stereo`](Self::stereo) for a side-chain; an `n`-channel one on the engine's order for
+    /// that width is `new(BusTopology::assumed(n)?, ..)`, which refuses a width past one bus.
+    ///
+    /// The controls are as [`GateControls`] says, and are the cells' values: the threshold
+    /// (the key level in [`Db`] at or above which the gate opens), the times (`attack` how
+    /// fast it opens, `hold` how long it stays open after the key falls back below the
+    /// threshold, which is what stops a gate chattering on a key hovering at it, and
+    /// `release` how fast it then closes) and the `range`, how far a closed gate attenuates.
+    ///
+    /// **The range is not defaulted for you.** [`GateControls::DEFAULT`] has a range of
+    /// 0 dB, a gate that passes everything (what a non-finite control falls back to), where
+    /// the gate this node has always been built as closes to **-80 dB**, effectively
+    /// silent. A caller that wants a gate writes the range:
+    /// `GateControls { threshold, range: Db(-80.0), ..GateControls::DEFAULT }`. A gentler
+    /// `-12.0` ducks the signal without removing it, which sounds more natural on drums and
+    /// room mics.
+    ///
+    /// The attack and release coefficients and the hold count are derived from the times at
+    /// the rate [`Node::prepare`](tutti_graph::Node::prepare) hands it.
+    #[must_use]
+    pub fn new(input: BusTopology, key: KeySource, controls: GateControls) -> Self {
+        Self::live(GateFamily::new(input, key), controls)
+    }
+
     /// Mono + mono side-chain: 2 inputs (audio, key), 1 output.
     ///
-    /// `threshold_db` is the key level in [`Db`] at or above which the gate opens. `attack`
-    /// is how fast it opens, `hold` how long it stays open after the key falls back below
-    /// the threshold, and `release` how fast it then closes, all [`Seconds`]. Hold is what
-    /// stops a gate chattering on a key hovering at the threshold.
-    ///
-    /// The closed floor is -80 dB; set it with [`with_range`](Self::with_range). **The key
-    /// is a side-chain that must be wired** (see the [type](GateNode)); for a gate that
-    /// listens to its own signal use [`own_key`](Self::own_key).
-    ///
-    /// The attack and release coefficients and the hold count are derived from the times
-    /// at the rate [`Node::prepare`](tutti_graph::Node::prepare) hands it.
+    /// **The key is a side-chain that must be wired** (see the [type](GateNode)); for a gate
+    /// that listens to its own signal use [`new`](Self::new) with [`KeySource::Own`].
     #[must_use]
-    pub fn mono(
-        threshold_db: impl Into<Db>,
-        attack: impl Into<Seconds>,
-        hold: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::with_bus(BusTopology::MONO, threshold_db, attack, hold, release)
+    pub fn mono(controls: GateControls) -> Self {
+        Self::new(BusTopology::MONO, KeySource::Sidechain, controls)
     }
 
     /// Stereo + stereo side-chain: 4 inputs (L, R, key L, key R), 2 outputs.
     ///
     /// The gate is **linked**: one open/closed decision from the loudest key channel,
-    /// applied to both, so the two channels always gate together. Parameters are as
-    /// [`mono`](Self::mono), and so is the key: a side-chain that must be wired (use
-    /// [`own_key`](Self::own_key) for one that listens to its own signal).
+    /// applied to both, so the two channels always gate together. The key is as
+    /// [`mono`](Self::mono)'s: a side-chain that must be wired.
     #[must_use]
-    pub fn stereo(
-        threshold_db: impl Into<Db>,
-        attack: impl Into<Seconds>,
-        hold: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::with_bus(BusTopology::STEREO, threshold_db, attack, hold, release)
-    }
-
-    /// A gate on the bus `input` with a side-chain key as wide: the main bus keeps its
-    /// speaker placement, the key (a level to read, not a placement) has none.
-    /// `with_bus(BusTopology::STEREO, ..)` is [`stereo`](Self::stereo); an `n`-channel one on
-    /// the engine's order for that width is `with_bus(BusTopology::assumed(n)?, ..)`, which
-    /// refuses a width past one bus. Parameters and the key are as [`mono`](Self::mono).
-    #[must_use]
-    pub fn with_bus(
-        input: BusTopology,
-        threshold_db: impl Into<Db>,
-        attack: impl Into<Seconds>,
-        hold: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::keyed(
-            KeySource::Sidechain,
-            input,
-            threshold_db,
-            attack,
-            hold,
-            release,
-        )
-    }
-
-    /// A gate on the bus `input` whose detector listens to **its own signal**: no key bus,
-    /// so `width` audio inputs and `width` outputs, and nothing to wire. The gate closes
-    /// when the signal itself falls under the threshold. Parameters are as
-    /// [`mono`](Self::mono).
-    #[must_use]
-    pub fn own_key(
-        input: BusTopology,
-        threshold_db: impl Into<Db>,
-        attack: impl Into<Seconds>,
-        hold: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::keyed(KeySource::Own, input, threshold_db, attack, hold, release)
-    }
-
-    fn keyed(
-        key: KeySource,
-        input: BusTopology,
-        threshold_db: impl Into<Db>,
-        attack: impl Into<Seconds>,
-        hold: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self::live(
-            GateFamily::new(input, key),
-            GateControls {
-                threshold: threshold_db.into(),
-                attack: attack.into(),
-                hold: hold.into(),
-                release: release.into(),
-                range: Db(-80.0),
-            },
-        )
-    }
-
-    /// Sets how far the gate attenuates when closed, in [`Db`], read as at most `0.0`.
-    ///
-    /// This is a *floor*, not a mute: `-80.0` (the default) is effectively silent, while a
-    /// gentler `-12.0` ducks the signal without removing it, which sounds more natural on
-    /// drums and room mics. `0.0` disables the gate's effect entirely.
-    #[must_use]
-    pub fn with_range(self, range_db: impl Into<Db>) -> Self {
-        self.cell(UnitParam::Range, range_db.into().get().min(0.0));
-        self
-    }
-
-    /// Writes one control's cell: the controls are the cells, and the node designs from
-    /// them at its first block.
-    fn cell(&self, kind: UnitParam, value: f32) {
-        assert!(
-            self.param_set().set(kind, value),
-            "a gate has a {kind:?} control"
-        );
+    pub fn stereo(controls: GateControls) -> Self {
+        Self::new(BusTopology::STEREO, KeySource::Sidechain, controls)
     }
 }
 
@@ -214,29 +146,39 @@ mod tests {
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use tutti_graph::contract::{assert_param_fork, drive};
     use tutti_graph::{Node, ParamNode};
+    use tutti_types::UnitParam;
+
+    /// The controls of a gate the tests name four of: the closed floor is -80 dB (the
+    /// node's range before it was a control), not `GateControls::DEFAULT`'s 0 dB.
+    fn four(threshold: f32, attack: f64, hold: f64, release: f64) -> GateControls {
+        GateControls {
+            threshold: Db::new(threshold),
+            attack: Seconds::new(attack),
+            hold: Seconds::new(hold),
+            release: Seconds::new(release),
+            range: Db(-80.0),
+        }
+    }
+
+    fn with_range(c: GateControls, range: f32) -> GateControls {
+        GateControls {
+            range: Db(range),
+            ..c
+        }
+    }
 
     fn gate(threshold: f32, attack: f64, hold: f64, release: f64) -> GateNode {
-        GateNode::mono(
-            Db::new(threshold),
-            Seconds::new(attack),
-            Seconds::new(hold),
-            Seconds::new(release),
-        )
+        GateNode::mono(four(threshold, attack, hold, release))
     }
 
     /// A fork starts from the values last set through the node's `ParamSet` and shares no
     /// cell with it.
     #[test]
     fn a_fork_shares_no_cell() {
-        assert_param_fork(
-            GateNode::stereo(
-                Db::new(-30.0),
-                Seconds::new(0.001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            )
-            .with_range(Db::new(-20.0)),
-        );
+        assert_param_fork(GateNode::stereo(with_range(
+            four(-30.0, 0.001, 0.01, 0.1),
+            -20.0,
+        )));
     }
 
     /// A block longer than 64 frames renders whole: the gain lane is sized from the
@@ -272,7 +214,7 @@ mod tests {
     #[test]
     fn a_quiet_side_chain_closes_the_gate() {
         let mut node = prepared_at(
-            gate(-20.0, 0.001, 0.001, 0.001).with_range(Db::new(-60.0)),
+            GateNode::mono(with_range(four(-20.0, 0.001, 0.001, 0.001), -60.0)),
             RATE_44K,
         );
         let mut out = [0.0f32];
@@ -291,7 +233,7 @@ mod tests {
     #[test]
     fn a_range_over_zero_reads_as_zero() {
         let mut node = prepared_at(
-            gate(-20.0, 0.001, 0.01, 0.1).with_range(Db::new(10.0)),
+            GateNode::mono(with_range(four(-20.0, 0.001, 0.01, 0.1), 10.0)),
             RATE_44K,
         );
         let mut out = [0.0f32];
@@ -311,7 +253,7 @@ mod tests {
     #[test]
     fn the_range_attenuates_rather_than_mutes() {
         let mut node = prepared_at(
-            gate(-20.0, 0.001, 0.001, 0.001).with_range(Db::new(-12.0)),
+            GateNode::mono(with_range(four(-20.0, 0.001, 0.001, 0.001), -12.0)),
             RATE_44K,
         );
         let mut out = [0.0f32];
@@ -340,15 +282,7 @@ mod tests {
 
     #[test]
     fn a_stereo_gate_is_linked() {
-        let mut node = prepared_at(
-            GateNode::stereo(
-                Db::new(-20.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
+        let mut node = prepared_at(GateNode::stereo(four(-20.0, 0.0001, 0.01, 0.1)), RATE_44K);
         let mut out = [0.0f32; 2];
         for _ in 0..500 {
             tick(&mut node, &[0.8, 0.3, 0.9, 0.001], &mut out);
@@ -361,28 +295,51 @@ mod tests {
     }
 
     /// `2 * width` inputs (audio, then key) and `width` outputs for a side-chain gate, and
-    /// `width` inputs for an own-key one, at every width.
+    /// `width` inputs for an own-key one, at every width, from `new` and from the
+    /// shorthands: the shorthands are a side-chain key at their width.
     #[test]
-    fn the_key_choice_is_the_port_layout() {
-        let t = |s: BusTopology, own: bool| {
-            let (th, a, h, r) = (
-                Db::new(-20.0),
-                Seconds::new(0.001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            );
-            let node = if own {
-                GateNode::own_key(s, th, a, h, r)
-            } else {
-                GateNode::with_bus(s, th, a, h, r)
-            };
+    fn the_constructors_and_the_key_choice_are_the_port_layout() {
+        let c = four(-20.0, 0.001, 0.01, 0.1);
+        let wide = BusTopology::assumed(tutti_types::ChannelLayout::from(4u16))
+            .expect("at most one bus wide");
+        for (node, inputs, outputs) in [
+            (GateNode::mono(c), 2, 1),
+            (GateNode::stereo(c), 4, 2),
+            (GateNode::new(wide, KeySource::Sidechain, c), 8, 4),
+            (GateNode::new(BusTopology::MONO, KeySource::Own, c), 1, 1),
+            (GateNode::new(BusTopology::STEREO, KeySource::Own, c), 2, 2),
+            (GateNode::new(wide, KeySource::Own, c), 4, 4),
+        ] {
             let shape = node.shape();
-            (shape.audio_in().count(), shape.audio_out().count())
+            assert_eq!(
+                (shape.audio_in().count(), shape.audio_out().count()),
+                (inputs, outputs)
+            );
+        }
+    }
+
+    /// The controls given to a constructor are the cells' values, the range too (which the
+    /// old positional constructors fixed at -80 dB and left to a builder).
+    #[test]
+    fn the_constructor_controls_reach_the_cells() {
+        let c = GateControls {
+            threshold: Db(-35.0),
+            attack: Seconds(0.002),
+            hold: Seconds(0.03),
+            release: Seconds(0.25),
+            range: Db(-15.0),
         };
-        assert_eq!(t(BusTopology::MONO, false), (2, 1));
-        assert_eq!(t(BusTopology::STEREO, false), (4, 2));
-        assert_eq!(t(BusTopology::MONO, true), (1, 1));
-        assert_eq!(t(BusTopology::STEREO, true), (2, 2));
+        for node in [
+            GateNode::stereo(c),
+            GateNode::new(BusTopology::MONO, KeySource::Own, c),
+        ] {
+            let bases: Vec<_> = (0..5).map(|k| node.param_base(k)).collect();
+            assert_eq!(
+                bases,
+                [-35.0, 0.002, 0.03, 0.25, -15.0].map(Some),
+                "threshold, attack, hold, release, range"
+            );
+        }
     }
 
     /// An own-key gate listens to its signal: a loud one passes, one under the threshold is
@@ -390,14 +347,11 @@ mod tests {
     #[test]
     fn an_own_key_gate_listens_to_its_signal() {
         let mk = || {
-            GateNode::own_key(
+            GateNode::new(
                 BusTopology::MONO,
-                Db::new(-20.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.001),
-                Seconds::new(0.001),
+                KeySource::Own,
+                with_range(four(-20.0, 0.0001, 0.001, 0.001), -40.0),
             )
-            .with_range(Db::new(-40.0))
         };
         let mut out = [0.0f32];
         let mut node = prepared_at(mk(), RATE_44K);
@@ -416,7 +370,7 @@ mod tests {
     /// release, range), with the cells as their bases, no latency and no tail.
     #[test]
     fn gate_declares_its_params() {
-        let m = gate(-20.0, 0.0001, 0.01, 0.1).with_range(Db::new(-30.0));
+        let m = GateNode::mono(with_range(four(-20.0, 0.0001, 0.01, 0.1), -30.0));
         let shape = m.shape();
         assert_eq!(
             shape.params.as_slice(),

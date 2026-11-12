@@ -849,7 +849,14 @@ list (normal and build edges; dev-dependencies may go anywhere).
   its makeup gliding over `GAIN_GLIDE`; the block `CompressorKernel` stays for the
   multiband) and the noise gate (`GateFamily`, `GateRecurrence`: threshold a fast lane, the
   range gliding over `GAIN_GLIDE`), both on a typed `KeySource` (`KeySource::Sidechain`, a key bus that
-  must be wired, `Channels::keyed`; `KeySource::Own`, the signal itself, `Channels::same`), the partitioned
+  must be wired, `Channels::keyed`; `KeySource::Own`, the signal itself, `Channels::same`), the
+  lookahead limiter (`LimiterFamily`, `LimiterRecurrence`: threshold and ceiling fast lanes,
+  every coefficient landing whole; the lookahead a constructor constant that is the member's
+  latency, a checked `Lookahead` (above zero, at most 1 s, never clamped), `LimiterFamily::new(input, Lookahead)`) (a dynamics node is built from its named
+  controls struct: `CompressorNode::new(input, key, CompressorControls { .. })`,
+  `GateNode::new(input, key, GateControls { .. })`, `LimiterNode::new(input, lookahead,
+  LimiterControls { .. })`, each with `mono` and `stereo` shorthands; a gate's closed floor is
+  the caller's: `GateControls::DEFAULT`'s range is 0 dB), the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, which also states `converts` and `output_frames`, the

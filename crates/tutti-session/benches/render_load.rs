@@ -123,7 +123,7 @@ impl Variant {
 
 use tutti_fixtures::midi;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
-use tutti_nodes::{BusStripNode, ConvolverNode, LimiterNode};
+use tutti_nodes::{BusStripNode, ConvolverNode, LimiterControls, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_session::{InPort, OutPort, Root, Session, Workers};
@@ -341,11 +341,11 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     for strip in &sums {
         add_stereo(&mut s, master, *strip);
     }
-    let (limiter, _) = s.graph().add(LimiterNode::with_channels(
-        ChannelLayout::STEREO,
-        Db(-1.0),
-        Db(0.0),
-    ));
+    let (limiter, _) = s.graph().add(LimiterNode::stereo(LimiterControls {
+        threshold: Db(-1.0),
+        ceiling: Db(0.0),
+        ..LimiterControls::DEFAULT
+    }));
     connect_stereo(&mut s, limiter, 0, master);
     for c in 0..2 {
         s.graph()

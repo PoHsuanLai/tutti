@@ -17,9 +17,10 @@
 use tutti_graph::ParamNode;
 use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{
-    BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode,
-    GateNode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterNode, ModDelayNode,
-    PhaserNode, ShapeKind, SvfControls, SvfFilterNode, SvfType,
+    BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayLineNode,
+    DistortionNode, EqBandNode, GateControls, GateNode, LadderFilterNode, LadderType, LfoNode,
+    LfoShape, LimiterControls, LimiterNode, ModDelayNode, PhaserNode, ShapeKind, SvfControls,
+    SvfFilterNode, SvfType,
 };
 use tutti_types::{
     Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Pan,
@@ -29,14 +30,14 @@ use tutti_types::{
 #[test]
 fn compressor() {
     IsolateRow::new("CompressorNode (stereo)", || {
-        CompressorNode::stereo(
-            Db(-20.0),
-            CompressionRatio::new(4.0),
-            Seconds(0.005),
-            Seconds(0.05),
-        )
-        .with_soft_knee(Db(3.0))
-        .with_makeup(Db(2.0))
+        CompressorNode::stereo(CompressorControls {
+            threshold: Db(-20.0),
+            knee: Db(3.0),
+            ratio: CompressionRatio::new(4.0),
+            attack: Seconds(0.005),
+            release: Seconds(0.05),
+            makeup: Db(2.0),
+        })
     })
     .control("threshold", |c| {
         assert!(c.param_set().set(UnitParam::Threshold, -30.0));
@@ -62,8 +63,13 @@ fn compressor() {
 #[test]
 fn gate() {
     IsolateRow::new("GateNode (stereo)", || {
-        GateNode::stereo(Db(-15.0), Seconds(0.001), Seconds(0.005), Seconds(0.02))
-            .with_range(Db(-40.0))
+        GateNode::stereo(GateControls {
+            threshold: Db(-15.0),
+            attack: Seconds(0.001),
+            hold: Seconds(0.005),
+            release: Seconds(0.02),
+            range: Db(-40.0),
+        })
     })
     .control("threshold", |g| {
         assert!(g.param_set().set(UnitParam::Threshold, -35.0));
@@ -86,11 +92,21 @@ fn gate() {
 #[test]
 fn limiter() {
     IsolateRow::new("LimiterNode (stereo)", || {
-        LimiterNode::new(Db(-6.0), Db(-3.0))
+        LimiterNode::stereo(LimiterControls {
+            threshold: Db(-6.0),
+            ceiling: Db(-3.0),
+            ..LimiterControls::DEFAULT
+        })
     })
-    .control("threshold", |l| l.set_threshold(Db(-12.0)))
-    .control("ceiling", |l| l.set_ceiling(Db(-9.0)))
-    .control("release", |l| l.set_release(Seconds(0.3)))
+    .control("threshold", |l| {
+        assert!(l.param_set().set(UnitParam::Threshold, -12.0));
+    })
+    .control("ceiling", |l| {
+        assert!(l.param_set().set(UnitParam::Ceiling, -9.0));
+    })
+    .control("release", |l| {
+        assert!(l.param_set().set(UnitParam::Release, 0.3));
+    })
     .check();
 }
 

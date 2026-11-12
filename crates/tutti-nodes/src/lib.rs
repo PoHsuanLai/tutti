@@ -115,6 +115,9 @@ pub use dynamics::{
     BAND_PARAMS, BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode,
     MultibandCompressorNode, MultibandControls,
 };
+// The types in the dynamics nodes' constructors: the controls a node is built at, and the
+// key a compressor or a gate listens to.
+pub use tutti_dsp::{CompressorControls, GateControls, KeySource, LimiterControls, Lookahead};
 
 // The mixer strip: volume, stereo balance, mute. Ungated: a fader is not a
 // spatial concept.

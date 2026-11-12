@@ -79,7 +79,7 @@ verified or not.
 | Area | What the code has | Where |
 |---|---|---|
 | Filters | Simper's trapezoidal SVF, eight responses (`SvfType`: low/high/band-pass, notch, all-pass, bell, low and high shelf); a four-stage ladder, `u = tanh(x - k * s[3])` with the feedback taken from the last stage's stored state and four linear stages; LR crossovers; one SVF band per `EqBandNode` | `tutti-dsp/src/filter/` |
-| Dynamics | compressor with external sidechain, multiband, gate, a lookahead limiter (`LimiterKernel` over a monotonic-minimum window; the detector `fold_peak` is the max-abs of the frame) and a brickwall clamp, envelope followers | `tutti-dsp/src/dynamics/`, `tutti-nodes/src/dynamics/` |
+| Dynamics | compressor with external sidechain, multiband, gate, a lookahead limiter (`LimiterFamily`: a monotonic-minimum window over the lookahead; the detector is the max-abs of the frame) and a brickwall clamp, envelope followers | `tutti-dsp/src/dynamics/`, `tutti-nodes/src/dynamics/` |
 | Modulation, delay | chorus and flanger (one swept delay), phaser (swept all-pass chain), interpolated delay line | `swept_delay.rs`, `allpass.rs`, `delay.rs` |
 | Reverb | Freeverb, an FDN, a partitioned convolver; the doc 022 `Network` | `reverb.rs`, `fdn.rs`, `convolver.rs`, `network/` |
 | Nonlinear | `Shaper`: `Tanh`, `Atan`, `Softsign`, `HardClip`, `Crush`, `SoftCrush`, each one line, no oversampling and no antialiasing | `waveshape.rs` |

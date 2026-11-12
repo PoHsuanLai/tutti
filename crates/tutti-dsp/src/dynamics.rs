@@ -1,5 +1,5 @@
 //! Dynamics algorithms: the envelope followers, the gain curves, the
-//! compressor, gate and limiter kernels, and the limiter's lookahead ring.
+//! compressor, gate, limiter and brickwall families, and the limiter's lookahead ring.
 
 mod brickwall;
 mod compressor;
@@ -23,5 +23,6 @@ pub use curves::{
 pub use envelope::EnvelopeFollower;
 pub use gate::{GateControls, GateFamily, GateMember, GateRecurrence};
 pub use key_source::KeySource;
-pub use limiter::{LimiterBlock, LimiterKernel};
-pub use lookahead::{LookaheadRing, fold_peak};
+pub use limiter::{
+    LimiterControls, LimiterFamily, LimiterMember, LimiterRecurrence, Lookahead, LookaheadError,
+};

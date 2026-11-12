@@ -31,8 +31,9 @@ use tutti_graph::{
 use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
-    BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, GateNode,
-    LadderFilterNode, LadderType, LimiterNode, ModDelayNode, PhaserNode, ShapeKind, SvfFilterNode,
+    BrickwallLimiterNode, BusStripNode, CompressorControls, CompressorNode, DelayLineNode,
+    DistortionNode, GateControls, GateNode, KeySource, LadderFilterNode, LadderType,
+    LimiterControls, LimiterNode, Lookahead, ModDelayNode, PhaserNode, ShapeKind, SvfFilterNode,
     SvfType,
 };
 use tutti_types::{
@@ -227,30 +228,39 @@ fn cases() -> Vec<Case> {
         )
     }
     fn comp(w: usize) -> CompressorNode {
-        CompressorNode::with_bus(
+        CompressorNode::new(
             BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
                 .expect("at most one bus wide"),
-            Db::new(-20.0),
-            CompressionRatio::new(8.0),
-            Seconds::new(0.001),
-            Seconds::new(0.05),
+            KeySource::Sidechain,
+            CompressorControls {
+                threshold: Db::new(-20.0),
+                ratio: CompressionRatio::new(8.0),
+                attack: Seconds::new(0.001),
+                release: Seconds::new(0.05),
+                ..CompressorControls::DEFAULT
+            },
         )
     }
     fn gate(w: usize) -> GateNode {
-        GateNode::with_bus(
+        GateNode::new(
             BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
                 .expect("at most one bus wide"),
-            Db::new(-30.0),
-            Seconds::new(0.001),
-            Seconds::new(0.004),
-            Seconds::new(0.02),
+            KeySource::Sidechain,
+            GateControls {
+                threshold: Db::new(-30.0),
+                attack: Seconds::new(0.001),
+                hold: Seconds::new(0.004),
+                release: Seconds::new(0.02),
+                range: Db::new(-80.0),
+            },
         )
     }
     fn lim(w: usize) -> LimiterNode {
-        LimiterNode::with_channels(
-            ChannelLayout::try_from(w).expect("a test width is small"),
-            Db::new(-6.0),
-            Db::new(-0.3),
+        LimiterNode::new(
+            BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
+                .expect("at most one bus wide"),
+            Lookahead::DEFAULT,
+            LimiterControls::DEFAULT,
         )
     }
     let mut cases = vec![
@@ -395,7 +405,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = lim(w);
                 if let Some(v) = v {
-                    n.set_ceiling(Db::new(v));
+                    assert!(n.param_set().set(UnitParam::Ceiling, v));
                 }
                 parts_of(n)
             },
@@ -408,7 +418,7 @@ fn cases() -> Vec<Case> {
             make: |w, v| {
                 let n = lim(w);
                 if let Some(v) = v {
-                    n.set_threshold(Db::new(v));
+                    assert!(n.param_set().set(UnitParam::Threshold, v));
                 }
                 parts_of(n)
             },
@@ -472,25 +482,33 @@ fn cases() -> Vec<Case> {
 /// (its last frame per block).
 fn block_rate_cases() -> Vec<Case> {
     fn comp(w: usize) -> CompressorNode {
-        CompressorNode::with_bus(
+        CompressorNode::new(
             BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
                 .expect("at most one bus wide"),
-            Db::new(-20.0),
-            CompressionRatio::new(8.0),
-            Seconds::new(0.001),
-            Seconds::new(0.05),
+            KeySource::Sidechain,
+            CompressorControls {
+                threshold: Db::new(-20.0),
+                ratio: CompressionRatio::new(8.0),
+                attack: Seconds::new(0.001),
+                release: Seconds::new(0.05),
+                ..CompressorControls::DEFAULT
+            },
         )
     }
     // Near the noise's peak, no hold: the gate opens and shuts all the
     // time, so its times are heard.
     fn gate(w: usize) -> GateNode {
-        GateNode::with_bus(
+        GateNode::new(
             BusTopology::assumed(ChannelLayout::try_from(w).expect("a test width is small"))
                 .expect("at most one bus wide"),
-            Db::new(-3.0),
-            Seconds::new(0.001),
-            Seconds::new(0.0),
-            Seconds::new(0.02),
+            KeySource::Sidechain,
+            GateControls {
+                threshold: Db::new(-3.0),
+                attack: Seconds::new(0.001),
+                hold: Seconds::new(0.0),
+                release: Seconds::new(0.02),
+                range: Db::new(-80.0),
+            },
         )
     }
     fn chorus(w: usize) -> ModDelayNode {
@@ -606,13 +624,20 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 // Threshold and ceiling near the noise's peak: the limiter
                 // lets go between peaks, so its release is heard.
-                let n = LimiterNode::with_channels(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
-                    Db::new(-3.0),
-                    Db::new(-2.5),
+                let n = LimiterNode::new(
+                    BusTopology::assumed(
+                        ChannelLayout::try_from(w).expect("a test width is small"),
+                    )
+                    .expect("at most one bus wide"),
+                    Lookahead::DEFAULT,
+                    LimiterControls {
+                        threshold: Db::new(-3.0),
+                        ceiling: Db::new(-2.5),
+                        ..LimiterControls::DEFAULT
+                    },
                 );
                 if let Some(v) = v {
-                    n.set_release(tutti_types::Seconds::from_f32(v));
+                    assert!(n.param_set().set(UnitParam::Release, v));
                 }
                 parts_of(n)
             },

@@ -32,8 +32,9 @@ ramps and the graph shape. Here they take plain typed values per call.
   solo gliding over `GAIN_GLIDE`).
 - **Convolution** — `Convolver`, a uniform or non-uniform partitioned FFT
   convolution over an IR's shared, read-only `IrSpectra`.
-- **Delay** — `DelayLine`, a fractional-read ring with an `InterpolationMode`,
-  and `SweptLines`, the chorus and flanger kernel (the LFO's sine solved every
+- **Delay** — `DelayLine`, a fractional-read ring with an `InterpolationMode`;
+  `DelayFamily`, the feedback delay (a checked `MaxDelay`, `Routing` and
+  `ChannelTimes`, its time and feedback per-frame lanes); and `SweptLines`, the chorus and flanger kernel (the LFO's sine solved every
   `COEFF_INTERVAL` samples and interpolated between).
 - **Waveshaping** — `ShapeKind`, six memoryless curves with block kernels.
 - **Reverb** — the reverb model of design 022, a `Network` with analytic queries

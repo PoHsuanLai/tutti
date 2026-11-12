@@ -12,10 +12,13 @@
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{GraphBuilder, IntoNode, Node, Prepare};
 use tutti_nodes::testing::Through;
-use tutti_nodes::{CrossoverNode, DelayLineNode, ModDelayNode, MultibandCompressorNode};
+use tutti_nodes::{
+    ChannelTimes, CrossoverNode, DelayControls, DelayFamily, DelayNode, InterpolationMode,
+    MaxDelay, ModDelayNode, MultibandCompressorNode,
+};
 use tutti_types::Latency;
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, Feedback, Hz, Mix, Seconds};
+use tutti_types::{BusTopology, ChannelLayout, Feedback, Hz, Mix, Seconds};
 use tutti_types::{SampleRate, Samples};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -121,10 +124,13 @@ fn crossover_and_multiband_report_zero_latency_and_respond_at_frame_0() {
 /// that 0 is true.
 #[test]
 fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
-    let node = DelayLineNode::new(
-        Seconds::new(1.0_f64),
-        Seconds::new(0.5_f64),
-        Feedback::new(0.0_f32),
+    let node = DelayNode::mono(
+        MaxDelay::of(Seconds::new(1.0_f64)),
+        DelayControls {
+            time: Seconds::new(0.5_f64),
+            feedback: Feedback::new(0.0_f32),
+            ..DelayControls::DEFAULT
+        },
     );
 
     assert_eq!(
@@ -147,11 +153,19 @@ fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 /// at its own time.
 #[test]
 fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
-    let node = DelayLineNode::stereo(
-        Seconds::new(1.0_f64),
-        Seconds::new(0.25_f64),
-        Seconds::new(0.5_f64),
-        Feedback::new(0.0_f32),
+    let family = DelayFamily::new(
+        BusTopology::STEREO,
+        MaxDelay::of(Seconds::new(1.0_f64)),
+        InterpolationMode::Linear,
+    )
+    .with_times(ChannelTimes::each(&[Seconds::new(0.5_f64)]).unwrap())
+    .unwrap();
+    let node = DelayNode::live(
+        family,
+        DelayControls {
+            time: Seconds::new(0.25_f64),
+            ..DelayControls::DEFAULT
+        },
     );
 
     assert_eq!(
@@ -208,10 +222,13 @@ fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
 #[test]
 fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
-    let echo = DelayLineNode::new(
-        Seconds::new(1.0_f64),
-        Seconds::new(0.5_f64),
-        Feedback::new(0.3_f32),
+    let echo = DelayNode::mono(
+        MaxDelay::of(Seconds::new(1.0_f64)),
+        DelayControls {
+            time: Seconds::new(0.5_f64),
+            feedback: Feedback::new(0.3_f32),
+            ..DelayControls::DEFAULT
+        },
     );
     let (echo, _) = g.add_with_controls(echo);
     g.spec_mut().set_mix(echo, Mix::new(0.5_f32));
@@ -391,15 +408,21 @@ mod convolver {
         let latency = conv.latency_samples();
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
         let (conv, _) = g.add_with_controls(conv);
-        let (echo_a, _) = g.add_with_controls(DelayLineNode::new(
-            Seconds::new(1.0_f64),
-            Seconds::new(0.5_f64),
-            Feedback::new(0.0_f32),
+        let (echo_a, _) = g.add_with_controls(DelayNode::mono(
+            MaxDelay::of(Seconds::new(1.0_f64)),
+            DelayControls {
+                time: Seconds::new(0.5_f64),
+                feedback: Feedback::new(0.0_f32),
+                ..DelayControls::DEFAULT
+            },
         ));
-        let (echo_b, _) = g.add_with_controls(DelayLineNode::new(
-            Seconds::new(1.0_f64),
-            Seconds::new(0.5_f64),
-            Feedback::new(0.0_f32),
+        let (echo_b, _) = g.add_with_controls(DelayNode::mono(
+            MaxDelay::of(Seconds::new(1.0_f64)),
+            DelayControls {
+                time: Seconds::new(0.5_f64),
+                feedback: Feedback::new(0.0_f32),
+                ..DelayControls::DEFAULT
+            },
         ));
         let dry = g.add(Through::mono());
         g.connect_input(0, conv, 0)

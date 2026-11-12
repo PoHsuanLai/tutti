@@ -1,7 +1,7 @@
 //! Universal System Exclusive messages (M1 pp.34 to 57): the ones an instrument
 //! or a device inquiry reads, as typed values.
 //!
-//! [`read`] turns a whole SysEx message ([`SysexMessage`], which
+//! [`read()`](fn@read) turns a whole SysEx message ([`SysexMessage`], which
 //! `tutti_ump::SysexAssembler` hands out) into a [`Read`]. It is a pure parse of
 //! one message: no state, no allocation. [`UniversalReader`] is the instrument's
 //! edge: it takes every UMP of one Group, reassembles the SysEx7 packets, reads
@@ -11,7 +11,7 @@
 //! # What is read
 //!
 //! - Identity Request and Identity Reply (the Device Inquiry, M1 p.40; the
-//!   reply is a [`DeviceIdentity`](tutti_ump::DeviceIdentity)).
+//!   reply is a [`DeviceIdentity`]).
 //! - General MIDI System On and Off (M1 p.52, `09 01` and `09 02`).
 //! - Master Volume and Master Balance (M1 p.57, `04 01` and `04 02`).
 //! - Master Fine Tuning and Master Coarse Tuning (CA-025, `04 03` and `04 04`).
@@ -110,7 +110,7 @@ pub struct Addressed {
     pub message: Universal,
 }
 
-/// What [`read`] made of one SysEx message.
+/// What [`read()`](fn@read) made of one SysEx message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Read {
     /// A Universal message this crate reads.

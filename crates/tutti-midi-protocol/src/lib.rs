@@ -25,7 +25,7 @@
 //! edge that forwards what it does not read (a plugin host's MIDI output).
 //! [`widen_bytes`] is the same for the wire bytes of one MIDI 1.0 message.
 //!
-//! [`read`] parses one whole System Exclusive message as a Universal one
+//! [`read()`](fn@read) parses one whole System Exclusive message as a Universal one
 //! ([`Universal`]: Identity Request and Reply, General MIDI On and Off, Master
 //! Volume, Balance, Fine and Coarse Tuning), and [`UniversalReader`] is an
 //! instrument's edge for it: a Group's UMPs in, the messages addressed to the

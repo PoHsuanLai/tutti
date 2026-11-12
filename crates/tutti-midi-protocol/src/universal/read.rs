@@ -16,7 +16,7 @@
 //! gets here (`SysexMessage` checked it), and a field is read as the unit type
 //! that holds it, so no rule masks or shifts a byte. A message that matches no
 //! rule is not an error to the caller: [`parse`] returns `None`, and
-//! [`read`](super::read) says whether it was Universal at all.
+//! [`read()`](fn@super::read) says whether it was Universal at all.
 
 use winnow::Parser;
 use winnow::combinator::{alt, eof, fail, preceded, seq};

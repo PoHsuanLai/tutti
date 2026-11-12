@@ -52,6 +52,107 @@ pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
     }
 }
 
+/// That a [`ControlSet`] has a control of the kind `P` (a packed
+/// [`UnitAddr`] at index 0), in the unit `Unit`: what
+/// `control_set!` writes from the family's own `Controls` fields, and what
+/// the typed key of a [`DesignNode`](crate::DesignNode) reads
+/// ([`HasParam`](tutti_graph::HasParam)).
+pub trait HasControl<const P: u16> {
+    /// The unit the control's value is in.
+    type Unit: tutti_graph::ParamUnit;
+}
+
+/// That a [`ControlSet`] has several controls of the kind `P`, numbered from 0.
+pub trait HasControls<const P: u16>: HasControl<P> {}
+
+/// Writes a family's [`ControlSet`] from its `Controls` fields, once: the
+/// addresses, the conversion to the `f32`s the ports carry and back, and the
+/// unit of each control ([`HasControl`]). The unit a row states is checked
+/// against the field's own type (`flatten` reads it as that unit), so a
+/// mismatch does not compile.
+///
+/// ```text
+/// control_set! {
+///     SvfSet(s): SvfControls = SvfControls { ty: s.0, ..SvfControls::DEFAULT };
+///     live: (all);
+///     Cutoff => Hz = freq,
+///     Q => Q = q,
+///     GainDb => Db = gain;
+///     // the rest of the `ControlSet` impl:
+///     fn defaults(&self) -> SvfControls { SvfControls::DEFAULT }
+/// }
+/// ```
+///
+/// The first line names the set, its binding (`s`, for the next expressions)
+/// and its `Controls`, with the controls [`assemble`](ControlSet::assemble)
+/// starts from (the parts the ports do not carry). `live` is how many of the
+/// rows the set has (`all`, or an expression: a design that cannot freeze
+/// leaves off the freeze). A row is `Kind => Unit = field`, a single control;
+/// `Kind[0] => Unit = field[0]` the first of several of a kind (`HasControls`),
+/// and `Kind[i]` with `i` above 0 the others.
+macro_rules! control_set {
+    (
+        $set:ident($s:ident): $controls:ty = $base:expr;
+        live: ($($live:tt)+);
+        $($kind:ident $([$ix:tt])? => $unit:ty = $f:ident $([$pi:literal])?),+ ;
+        $($items:tt)*
+    ) => {
+        impl $crate::params::ControlSet for $set {
+            type Controls = $controls;
+
+            #[allow(unused_variables)]
+            fn addrs(&self) -> &'static [tutti_types::UnitAddr] {
+                const ALL: &[tutti_types::UnitAddr] = &[$(
+                    control_set!(@addr $kind $([$ix])?)
+                ),+];
+                let $s = self;
+                &ALL[..control_set!(@live ALL, $($live)+)]
+            }
+
+            fn flatten(&self, c: &$controls, out: &mut [f32]) {
+                let all = [$(
+                    <$unit as tutti_graph::ParamUnit>::to_cell(c.$f $([$pi])?)
+                ),+];
+                out.copy_from_slice(&all[..out.len()]);
+            }
+
+            #[allow(unused_variables)]
+            fn assemble(&self, v: &[f32]) -> $controls {
+                let $s = self;
+                let mut c: $controls = $base;
+                let mut cells = v.iter().copied();
+                $(
+                    if let Some(x) = cells.next() {
+                        c.$f $([$pi])? = <$unit as tutti_graph::ParamUnit>::from_cell(x);
+                    }
+                )+
+                c
+            }
+
+            $($items)*
+        }
+        $( control_set!(@has $set; $kind $([$ix])? => $unit); )+
+    };
+    (@addr $kind:ident) => { tutti_types::UnitAddr::first(tutti_types::UnitParam::$kind) };
+    (@addr $kind:ident [$ix:tt]) => {
+        tutti_types::UnitAddr::new(tutti_types::UnitParam::$kind, $ix)
+    };
+    (@live $all:ident, all) => { $all.len() };
+    (@live $all:ident, $($live:tt)+) => { $($live)+ };
+    (@has $set:ident; $kind:ident => $unit:ty) => {
+        impl $crate::params::HasControl<{ tutti_types::UnitParam::$kind as u16 }> for $set {
+            type Unit = $unit;
+        }
+    };
+    (@has $set:ident; $kind:ident [0] => $unit:ty) => {
+        impl $crate::params::HasControl<{ tutti_types::UnitParam::$kind as u16 }> for $set {
+            type Unit = $unit;
+        }
+        impl $crate::params::HasControls<{ tutti_types::UnitParam::$kind as u16 }> for $set {}
+    };
+    (@has $set:ident; $kind:ident [$ix:tt] => $unit:ty) => {};
+}
+
 /// Where in a block a node reads its controls, and what it last designed from.
 #[derive(Clone, Copy, Debug)]
 pub struct At<C> {

@@ -25,7 +25,9 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
   `reset`: declared latency and tail in the shape). A node with params is a
-  `Node` + `ParamNode`, inserted through `param_parts`; a plain one is
+  `Node` + `ParamNode`, inserted through `param_parts`, its params declared
+  once with `tutti_graph::declare_params!` next to its `Param<U>` fields (the
+  `ParamSet`, the shape's ports and the key's units come from it); a plain one is
   inserted `ForkByClone` or `Unforkable`. An internal filter that is never a
   graph node (the sampler's `stretch::Unit`) has plain methods, not a trait.
 - Do not compare a render against another reference render in a new test:
@@ -1150,8 +1152,13 @@ Scalars use `Param<U>`.
   faded); `set_event_sources`, `event_sources` and `EventSource` are gone, and
   `open_event_tap(key.events_out(), ..)` takes the port. A node's params are
   methods of its key (`lp.cutoff()`, `mb.threshold_at(1)`), a `TypedParamRef<U>`
-  that converts into `ParamRef`, generated from the node's declaration
-  (`param_session_node!`, or `declare_params!` for a host's node): `Graph::set_param(lp.cutoff(),
+  that converts into `ParamRef`, generated from the node's own declaration of
+  its params (`tutti_graph::declare_params!` next to its `Param<U>` cells, doc 030
+  N1: the unit is checked against the cell's type, and the same table gives its
+  `ParamSet` and shape's ports; a `DesignNode` family declares them in its
+  `ControlSet`, `control_set!`; a host's node uses the graph's macro, and
+  `param_session_node!` only lists the engine's nodes as `SessionNode`s):
+  `Graph::set_param(lp.cutoff(),
   Hz(..))` is `#[must_use]` and returns `ParamError`, `Mods::range(target, a..b)`
   takes a range of the unit (`RangeError` on min > max; `range_raw` for a plugin
   param). A host's `ParamNode` is inserted as `Params(node)`; `set_node_params`

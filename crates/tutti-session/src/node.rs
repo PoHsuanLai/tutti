@@ -2,11 +2,6 @@
 //! nodes as ones.
 
 use tutti_graph::{ForkByClone, IntoNode, Node, ParamNode, ParamSet, Params, Unforkable};
-#[allow(unused_imports)]
-use tutti_types::{
-    Amplitude, Azimuth, Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix,
-    Pan, Q, Resonance, Seconds, Spread, StereoWidth, UnitParam,
-};
 
 /// A node that may enter a session's graph: it declares its own ports (event
 /// ports included), its controls and its fork ([`IntoNode`]), and says which
@@ -90,18 +85,16 @@ impl std::fmt::Debug for Reclaimer {
 }
 
 /// Each listed type is a [`SessionNode`] whose controls are its
-/// [`ParamSet`], with the params it declares: a kind and the unit its value is
-/// in, from which its [`Key`](crate::Key)'s param methods are generated
-/// ([`declare_params!`](crate::declare_params)). The `ParamSet` the node
-/// builds is held against the declaration by `tests::declarations_match`.
+/// [`ParamSet`]. The params it has, and the unit of each, are the node's own
+/// declaration (`tutti_graph::declare_params!`, or its control set's), from
+/// which its [`Key`](crate::Key)'s param methods come.
 macro_rules! param_session_node {
-    ($($ty:ty { $($decl:tt)* }),* $(,)?) => {$(
+    ($($ty:ty),* $(,)?) => {$(
         impl SessionNode for $ty {
             fn params(controls: &ParamSet) -> Option<ParamSet> {
                 Some(controls.clone())
             }
         }
-        crate::declare_params!($ty { $($decl)* });
     )*};
 }
 
@@ -113,8 +106,7 @@ impl<N: Node + Send + 'static> SessionNode for Unforkable<N> {}
 
 /// A host's [`ParamNode`], inserted as one: its [`ParamSet`] as its controls
 /// and its params reached by address, forked from the values set. Its typed
-/// param methods come from
-/// [`declare_params!`](crate::declare_params).
+/// param methods come from its own `tutti_graph::declare_params!`.
 impl<N: ParamNode + Clone + Send + 'static> SessionNode for Params<N> {
     fn params(controls: &ParamSet) -> Option<ParamSet> {
         Some(controls.clone())
@@ -122,102 +114,42 @@ impl<N: ParamNode + Clone + Send + 'static> SessionNode for Params<N> {
 }
 
 param_session_node!(
-    tutti_nodes::SvfFilterNode<f32> {
-        UnitParam::Cutoff => Hz, UnitParam::Q => Q, UnitParam::GainDb => Db
-    },
-    tutti_nodes::SvfFilterNode<f64> {
-        UnitParam::Cutoff => Hz, UnitParam::Q => Q, UnitParam::GainDb => Db
-    },
-    tutti_nodes::EqBandNode<f32> {
-        UnitParam::Cutoff => Hz, UnitParam::Q => Q, UnitParam::GainDb => Db
-    },
-    tutti_nodes::EqBandNode<f64> {
-        UnitParam::Cutoff => Hz, UnitParam::Q => Q, UnitParam::GainDb => Db
-    },
-    // The ladder's resonance is addressed as `Q`, in `Resonance`.
-    tutti_nodes::LadderFilterNode<f32> {
-        UnitParam::Cutoff => Hz, UnitParam::Q => Resonance, UnitParam::Drive => Drive
-    },
-    tutti_nodes::LadderFilterNode<f64> {
-        UnitParam::Cutoff => Hz, UnitParam::Q => Resonance, UnitParam::Drive => Drive
-    },
-    // The compressor's make-up gain is addressed as `GainDb`.
-    tutti_nodes::CompressorNode {
-        UnitParam::Threshold => Db,
-        UnitParam::Ratio => CompressionRatio,
-        UnitParam::Attack => Seconds,
-        UnitParam::Release => Seconds,
-        UnitParam::GainDb => Db
-    },
-    tutti_nodes::GateNode {
-        UnitParam::Threshold => Db, UnitParam::Attack => Seconds, UnitParam::Release => Seconds
-    },
-    tutti_nodes::LimiterNode {
-        UnitParam::Threshold => Db, UnitParam::Ceiling => Db, UnitParam::Release => Seconds
-    },
-    tutti_nodes::BrickwallLimiterNode { UnitParam::Ceiling => Db },
-    tutti_nodes::DistortionNode { UnitParam::Drive => Drive },
-    tutti_nodes::BusStripNode { UnitParam::Volume => Amplitude, UnitParam::Pan => Pan },
-    // One cutoff per split.
-    tutti_nodes::CrossoverNode { UnitParam::Cutoff => [Hz] },
+    tutti_nodes::SvfFilterNode<f32>,
+    tutti_nodes::SvfFilterNode<f64>,
+    tutti_nodes::EqBandNode<f32>,
+    tutti_nodes::EqBandNode<f64>,
+    tutti_nodes::LadderFilterNode<f32>,
+    tutti_nodes::LadderFilterNode<f64>,
+    tutti_nodes::CompressorNode,
+    tutti_nodes::GateNode,
+    tutti_nodes::LimiterNode,
+    tutti_nodes::BrickwallLimiterNode,
+    tutti_nodes::DistortionNode,
+    tutti_nodes::BusStripNode,
+    tutti_nodes::CrossoverNode,
 );
 
 /// The multiband compressor: its params by address, its band meters beside
-/// them in its controls. Per band: a threshold, knee, ratio, attack, release,
-/// gain, bypass and solo; a cutoff per split.
+/// them in its controls.
 impl SessionNode for tutti_nodes::MultibandCompressorNode {
     fn params(controls: &tutti_nodes::MultibandControls) -> Option<ParamSet> {
         Some(controls.params().clone())
     }
 }
-crate::declare_params!(tutti_nodes::MultibandCompressorNode {
-    UnitParam::Cutoff => [Hz],
-    UnitParam::Threshold => [Db],
-    UnitParam::Knee => [Db],
-    UnitParam::Ratio => [CompressionRatio],
-    UnitParam::Attack => [Seconds],
-    UnitParam::Release => [Seconds],
-    UnitParam::GainDb => [Db],
-    UnitParam::Bypass => [bool],
-    UnitParam::Solo => [bool]
-});
-
-// The delay, modulation and LFO nodes. The chorus and flanger's depth is a
-// swing in seconds, the phaser's and the LFO's a fraction.
+// The delay, modulation and LFO nodes, and the two reverbs (wet only: their
+// blend is the graph's mix). The convolution reverb has no param addressed (its
+// wet gain is a linear trim with no `UnitParam`).
 param_session_node!(
-    tutti_nodes::DelayLineNode { UnitParam::Feedback => Feedback, UnitParam::DelayTime => Seconds },
-    tutti_nodes::ModDelayNode {
-        UnitParam::Rate => Hz, UnitParam::Depth => Seconds, UnitParam::Feedback => Feedback
-    },
-    tutti_nodes::PhaserNode {
-        UnitParam::Rate => Hz, UnitParam::Depth => Depth, UnitParam::Feedback => Feedback
-    },
-    // A beat-synced LFO has no rate.
-    tutti_nodes::LfoNode { UnitParam::Depth => Depth, UnitParam::Rate => Hz },
+    tutti_nodes::DelayLineNode,
+    tutti_nodes::ModDelayNode,
+    tutti_nodes::PhaserNode,
+    tutti_nodes::LfoNode,
+    tutti_nodes::FreeverbNode,
+    tutti_nodes::FdnNode,
 );
 
-// The two reverbs (wet only: their blend is the graph's mix): the room and damping (Freeverb) or the
-// decays, size, diffusion, pre-delay, modulation, width, wet gain and (if the
-// design can freeze) freeze (the FDN), unless it is the fixed General MIDI send.
-param_session_node!(
-    tutti_nodes::FreeverbNode { UnitParam::RoomSize => Mix, UnitParam::Damping => Mix },
-    tutti_nodes::FdnNode {
-        UnitParam::Decay => [Seconds],
-        UnitParam::RoomSize => Mix,
-        UnitParam::Diffusion => Mix,
-        UnitParam::DelayTime => Seconds,
-        UnitParam::Depth => Depth,
-        UnitParam::Rate => Hz,
-        UnitParam::StereoSpread => StereoWidth,
-        UnitParam::GainDb => Db,
-        UnitParam::Freeze => bool
-    },
-);
-
-// The convolution reverb: wet only; its blend is the graph's mix. Its wet
-// gain has no address.
 #[cfg(feature = "convolution")]
-param_session_node!(tutti_nodes::ConvolverNode {});
+param_session_node!(tutti_nodes::ConvolverNode);
 
 /// An automation lane as a graph node: no controls, the beat read from its
 /// block's `Env`.
@@ -259,25 +191,13 @@ impl SessionNode for tutti_soundfont::SoundFontUnit {}
 
 // The two panners: bearing and height, and the VBAP spread and width or the
 // HRTF blend, as a `ParamSet`.
-param_session_node!(
-    tutti_nodes::VbapPannerNode {
-        UnitParam::Azimuth => Azimuth,
-        UnitParam::Elevation => Elevation,
-        UnitParam::Spread => Spread,
-        UnitParam::StereoWidth => StereoWidth
-    },
-    tutti_nodes::HrtfBinauralNode {
-        UnitParam::Azimuth => Azimuth, UnitParam::Elevation => Elevation, UnitParam::Wet => Mix
-    },
-);
+param_session_node!(tutti_nodes::VbapPannerNode, tutti_nodes::HrtfBinauralNode);
 
 // The synth as a graph node: one MIDI event input, and its live params
 // (master volume, unison detune and spread) as a `ParamSet`, so a param
 // write reaches it and a fork of it starts from what was set.
 #[cfg(feature = "synth")]
-param_session_node!(tutti_polysynth::PolySynth {
-    UnitParam::Volume => Amplitude, UnitParam::Detune => Cents, UnitParam::StereoSpread => Spread
-});
+param_session_node!(tutti_polysynth::PolySynth);
 
 /// A voice as a graph node: its params (the gain) addressed by its set, so a
 /// param write reaches the cell the node reads and a fork starts from the
@@ -297,8 +217,6 @@ impl SessionNode for tutti_sampler::VoiceNode {
         Some(Reclaimer::new(move || controls.reclaim()))
     }
 }
-#[cfg(feature = "sampler")]
-crate::declare_params!(tutti_sampler::VoiceNode { UnitParam::Volume => Amplitude });
 
 /// A pool as a graph node; its controls are its `VoicePoolHandle`.
 #[cfg(feature = "sampler")]
@@ -319,8 +237,6 @@ impl SessionNode for tutti_sampler::MemorySource {
         Some(controls.clone())
     }
 }
-#[cfg(feature = "sampler")]
-crate::declare_params!(tutti_sampler::MemorySource { UnitParam::Volume => Amplitude });
 
 /// A [`Clip`](tutti_sampler::Clip) as a graph node: the placed clip reader it
 /// builds, its gain addressed by its set.
@@ -334,8 +250,6 @@ impl SessionNode for tutti_sampler::Clip {
         Some(controls.clone())
     }
 }
-#[cfg(feature = "sampler")]
-crate::declare_params!(tutti_sampler::Clip { UnitParam::Volume => Amplitude });
 
 /// A streamed voice as a graph node; its controls are its
 /// `DiskVoiceControls`.
@@ -393,104 +307,5 @@ mod tests {
                 tutti_nodes::automation::Trajectory::new()
             )
         ));
-    }
-
-    /// The declared kinds held against what the node builds: every address of
-    /// its `ParamSet` is a declared kind (at index 0, unless several are
-    /// declared), and every declared kind is built (the maximal configuration
-    /// of the node: a freezable FDN, a free-running LFO).
-    fn declared_matches<N: SessionNode + crate::params::Declared>(node: N, what: &str) {
-        let (_, controls) = node.into_node();
-        let set = N::params(&controls).expect("a node with params");
-        let built: Vec<_> = set.params().collect();
-        for addr in &built {
-            let declared = N::KINDS.iter().find(|(kind, _)| *kind == addr.param);
-            let Some((_, many)) = declared else {
-                panic!("{what}: builds {addr:?}, which it does not declare");
-            };
-            assert!(
-                *many || addr.index == 0,
-                "{what}: {addr:?} is one of several"
-            );
-        }
-        for (kind, _) in N::KINDS {
-            assert!(
-                built.iter().any(|addr| addr.param == *kind),
-                "{what}: declares {kind:?}, which it does not build"
-            );
-        }
-    }
-
-    /// **Each engine node's declaration of its params (the kinds a `Key`'s
-    /// methods are generated from) is the `ParamSet` the node builds**: a kind
-    /// declared and not built, or built and not declared, fails here.
-    #[test]
-    fn declarations_match_what_the_nodes_build() {
-        use tutti_nodes::*;
-        use tutti_types::{
-            ChannelLayout, CompressionRatio, Db, Drive, Feedback, Hz, Q, Resonance, Seconds,
-        };
-        declared_matches(
-            SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(1e3), Q(0.7)),
-            "svf f32",
-        );
-        declared_matches(
-            SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1e3), Q(0.7)),
-            "svf f64",
-        );
-        declared_matches(
-            EqBandNode::<f32>::new(SvfType::LowPass, Hz(1e3), Q(0.7), Db(3.0)),
-            "eq band",
-        );
-        declared_matches(
-            LadderFilterNode::<f32>::new(LadderType::LP24, Hz(1e3), Resonance::new(0.3)),
-            "ladder",
-        );
-        declared_matches(
-            CompressorNode::mono(
-                Db(-20.0),
-                CompressionRatio(4.0),
-                Seconds(0.01),
-                Seconds(0.1),
-            ),
-            "compressor",
-        );
-        declared_matches(
-            GateNode::mono(Db(-40.0), Seconds(0.001), Seconds(0.01), Seconds(0.1)),
-            "gate",
-        );
-        declared_matches(LimiterNode::new(Db(-6.0), Db(-1.0)), "limiter");
-        declared_matches(BrickwallLimiterNode::new(Db(-1.0)), "brickwall limiter");
-        declared_matches(
-            DistortionNode::new(ShapeKind::Tanh, Drive::new(2.0)),
-            "distortion",
-        );
-        declared_matches(BusStripNode::new(), "strip");
-        declared_matches(
-            CrossoverNode::new(ChannelLayout::STEREO, &[Hz(500.0), Hz(2e3)]).unwrap(),
-            "crossover",
-        );
-        declared_matches(
-            MultibandCompressorNode::new(ChannelLayout::STEREO, 3).unwrap(),
-            "multiband",
-        );
-        declared_matches(
-            DelayLineNode::new(Seconds(1.0), Seconds(0.2), Feedback::new(0.3)),
-            "delay",
-        );
-        declared_matches(ModDelayNode::chorus(ChannelLayout::STEREO), "chorus");
-        declared_matches(PhaserNode::new(4), "phaser");
-        declared_matches(LfoNode::new(LfoShape::Sine), "free-running lfo");
-        declared_matches(
-            FreeverbNode::live(FreeverbDesign, FreeverbControls::GENERAL_MIDI),
-            "live freeverb",
-        );
-        declared_matches(
-            FdnNode::live(
-                FdnDesign::new(8, Seconds(8.0), true).unwrap(),
-                FdnControls::DEFAULT,
-            ),
-            "freezable fdn",
-        );
     }
 }

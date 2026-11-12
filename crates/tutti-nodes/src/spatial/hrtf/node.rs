@@ -6,7 +6,6 @@
 use tutti_dsp::{HRTF_LATENCY, HRTF_STEP, HrtfBinaural, HrtfBinauralError};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::Latency;
-use tutti_types::UnitParam;
 use tutti_types::{
     Azimuth, BusTopology, Direction, Elevation, Mix, Param, SampleRate, Samples, Tail,
 };
@@ -14,22 +13,25 @@ use tutti_types::{
 use crate::ramp::{LastGood, block_driven};
 use crate::spatial::target::AngleSmoother;
 
-/// The params an [`HrtfBinauralNode`] lets the graph modulate, in port order.
-pub const HRTF_BINAURAL_PARAMS: [UnitParam; 3] =
-    [UnitParam::Azimuth, UnitParam::Elevation, UnitParam::Wet];
+// The params an [`HrtfBinauralNode`] lets the graph modulate, in port order.
+tutti_graph::declare_params!([] HrtfBinauralNode, n {
+    Azimuth => Azimuth = &n.azimuth,
+    Elevation => Elevation = &n.elevation,
+    Wet => Mix = &n.blend,
+});
 
 /// A binaural panner for headphones: FFT convolution against a measured HRIR
 /// sphere, stereo in, stereo out.
 ///
 /// Build it with [`new`](Self::new) from the dataset bytes. The input pair is
 /// folded to mono, placed at the commanded bearing and height, and blended
-/// against the (equally delayed) dry mono by the blend ([`UnitParam::Wet`]:
+/// against the (equally delayed) dry mono by the blend ([`UnitParam::Wet`](tutti_types::UnitParam::Wet):
 /// 1.0, the default, is full HRTF, 0.0 the dry mono).
 /// It is a graph node (`tutti_graph::Node` and [`ParamNode`]); inserting it
-/// hands back its [`ParamSet`] ([`UnitParam::Azimuth`],
-/// [`Elevation`](UnitParam::Elevation) and [`Wet`](UnitParam::Wet)), which
+/// hands back its [`ParamSet`] ([`UnitParam::Azimuth`](tutti_types::UnitParam::Azimuth),
+/// [`Elevation`](tutti_types::UnitParam::Elevation) and [`Wet`](tutti_types::UnitParam::Wet)), which
 /// move the source lock-free while it renders, and a graph's control lanes
-/// may drive all three ([`HRTF_BINAURAL_PARAMS`]).
+/// may drive all three .
 /// Position changes are de-zippered over 50 ms, and each step of the glide
 /// crossfades between the filters on either side of it. The filter for a
 /// direction is blended across the sphere face that direction crosses. A
@@ -161,7 +163,7 @@ impl HrtfBinauralNode {
 impl Node for HrtfBinauralNode {
     fn shape(&self) -> Shape {
         Shape::through(BusTopology::STEREO)
-            .with_params(&HRTF_BINAURAL_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
             .with_latency(Latency::new(Samples(HRTF_LATENCY)))
             .with_tail(match self.panner.ring_out() {
                 0 => Tail::None,
@@ -222,23 +224,14 @@ impl Node for HrtfBinauralNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.azimuth.load().get()),
-            1 => Some(self.elevation.load().get()),
-            2 => Some(self.blend.load().get()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for HrtfBinauralNode {
     /// The bearing, height and blend.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Azimuth, self.azimuth.cell())
-            .param(UnitParam::Elevation, self.elevation.cell())
-            .param(UnitParam::Wet, self.blend.cell())
-            .build()
+        self.declared_set()
     }
 
     /// A clone (a rebuilt renderer) with its three cells detached at their

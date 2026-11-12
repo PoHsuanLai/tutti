@@ -311,24 +311,27 @@ impl MultibandCompressorNode {
             .get(band)
             .map_or(Db::UNITY, |b| b.reduction.load())
     }
-
-    /// The param ports, in port order, and how many.
-    fn port_addrs(&self) -> ([UnitAddr; MAX_PORTS], usize) {
-        let mut addrs = [UnitAddr::first(UnitParam::Cutoff); MAX_PORTS];
-        let mut n = 0;
-        for b in 0..self.bands.len() {
-            for kind in BAND_PARAMS {
-                addrs[n] = UnitAddr::new(kind, b as u8);
-                n += 1;
-            }
-        }
-        for i in 0..self.bands.len() - 1 {
-            addrs[n] = Splits::addr(i);
-            n += 1;
-        }
-        (addrs, n)
-    }
 }
+
+// The params, band by band in the order of `BAND_PARAMS` (the render reads
+// port `band * PER_BAND + k`), then a toggle pair per band that is no port,
+// then one crossover per split. A band's make-up gain is addressed as
+// `GainDb`.
+tutti_graph::declare_params!([] MultibandCompressorNode, n {
+    [b in 0..n.bands.len()] {
+        Threshold => Db = &n.bands[b].core.threshold.threshold,
+        Knee => Db = &n.bands[b].core.threshold.knee,
+        Ratio => CompressionRatio = &n.bands[b].core.ratio,
+        Attack => Seconds = &n.bands[b].core.timing.attack,
+        Release => Seconds = &n.bands[b].core.timing.release,
+        GainDb => Db = &n.bands[b].core.makeup_db;
+        Bypass => bool = &n.bands[b].bypass,
+        Solo => bool = &n.bands[b].solo,
+    },
+    [i in 0..n.bands.len() - 1] {
+        Cutoff => Hz = n.splits.param(i),
+    },
+});
 
 impl Node for MultibandCompressorNode {
     /// `channels` in, `channels` out; zero latency; a param port for each
@@ -338,11 +341,10 @@ impl Node for MultibandCompressorNode {
     /// for each, per channel. The tail is [`Tail::Unknown`], as the other IIR
     /// filters': the crossover rings after the input stops.
     fn shape(&self) -> Shape {
-        let (addrs, n) = self.port_addrs();
         Shape::through_unassigned(self.layout)
             .with_cost(Cost::Heavy)
             .with_tail(Tail::Unknown)
-            .with_param_addrs(&addrs[..n])
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -472,21 +474,7 @@ impl Node for MultibandCompressorNode {
     }
 
     fn param_base(&self, port: usize) -> Option<f32> {
-        let Some(band) = self
-            .bands
-            .get(port / PER_BAND)
-            .filter(|_| port < self.bands.len() * PER_BAND)
-        else {
-            return self.splits.base(port - self.bands.len() * PER_BAND);
-        };
-        Some(match port % PER_BAND {
-            0 => band.core.threshold.threshold.load().get(),
-            1 => band.core.threshold.knee.load().get(),
-            2 => band.core.ratio.load().get(),
-            3 => band.core.timing.attack.load().to_f32(),
-            4 => band.core.timing.release.load().to_f32(),
-            _ => band.core.makeup_db.load().get(),
-        })
+        self.declared_base(port)
     }
 }
 
@@ -507,44 +495,9 @@ impl Clone for MultibandCompressorNode {
 }
 
 impl ParamNode for MultibandCompressorNode {
-    /// Every address in the type's table, the bands' then the crossovers'.
+    /// Every param declared, the bands' then the crossovers'.
     fn param_set(&self) -> ParamSet {
-        let mut set = ParamSet::builder();
-        for (b, band) in self.bands.iter().enumerate() {
-            let b = b as u8;
-            let core = &band.core;
-            set = set
-                .param(
-                    UnitAddr::new(UnitParam::Threshold, b),
-                    core.threshold.threshold.as_atomic(),
-                )
-                .param(
-                    UnitAddr::new(UnitParam::Knee, b),
-                    core.threshold.knee.as_atomic(),
-                )
-                .param(UnitAddr::new(UnitParam::Ratio, b), core.ratio.as_atomic())
-                .param(
-                    UnitAddr::new(UnitParam::Attack, b),
-                    core.timing.attack.as_atomic(),
-                )
-                .param(
-                    UnitAddr::new(UnitParam::Release, b),
-                    core.timing.release.as_atomic(),
-                )
-                .param(
-                    UnitAddr::new(UnitParam::GainDb, b),
-                    core.makeup_db.as_atomic(),
-                )
-                .param(
-                    UnitAddr::new(UnitParam::Bypass, b),
-                    Arc::clone(&band.bypass),
-                )
-                .param(UnitAddr::new(UnitParam::Solo, b), Arc::clone(&band.solo));
-        }
-        for i in 0..self.bands.len() - 1 {
-            set = set.param(Splits::addr(i), self.splits.cell(i));
-        }
-        set.build()
+        self.declared_set()
     }
 
     /// A clone with every cell detached at its value (the meters too) and

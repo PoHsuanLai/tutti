@@ -107,8 +107,8 @@ pub mod stretch;
 // references. It is a real internal namespace, not a redundant path.
 pub use voice::{
     Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource, MemorySourceConfig,
-    Playback, PoolDrops, PoolTooWide, SlotId, StreamingAddError, VOICE_PARAMS, Voice, VoiceCommand,
-    VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, memory_voice,
+    Playback, PoolDrops, PoolTooWide, SlotId, StreamingAddError, Voice, VoiceCommand, VoiceNode,
+    VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, memory_voice,
     voice_width,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback

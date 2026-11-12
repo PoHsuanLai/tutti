@@ -162,9 +162,7 @@ impl VoiceNode {
     /// The cells the node reads, so a set taken before the node is inserted
     /// addresses the inserted node (it is the set the handle carries).
     pub fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Volume, self.gain.as_atomic())
-            .build()
+        self.declared_set()
     }
 
     /// Apply the published placement, and the gain. Runs at the top of each
@@ -178,7 +176,7 @@ impl VoiceNode {
     /// A node takes no such payload: there is nothing for it to drop.
     ///
     /// `driven` is the block's gain from the node's param port when a lane
-    /// drives it (its last frame, [`VOICE_PARAMS`]); `None` reads the cell.
+    /// drives it (its last frame); `None` reads the cell.
     #[inline]
     fn drain_commands(&mut self, driven: Option<f32>) {
         let published = *self.placement.lend();
@@ -289,11 +287,13 @@ impl From<Voice> for VoiceNode {
     }
 }
 
-/// The param a [`VoiceNode`] lets the graph modulate: its gain, as
-/// [`UnitParam::Volume`]. Block-rate in the voice (read once per block, as
-/// its cell is), so a driven port is read the same way: its value on the
-/// block's last frame.
-pub const VOICE_PARAMS: [UnitParam; 1] = [UnitParam::Volume];
+// The param a `VoiceNode` lets the graph modulate: its gain, as
+// `UnitParam::Volume`. Block-rate in the voice (read once per block, as its
+// cell is), so a driven port is read the same way: its value on the block's
+// last frame.
+tutti_graph::declare_params!([] VoiceNode, n {
+    Volume => Amplitude = &n.gain,
+});
 
 impl Node for VoiceNode {
     /// No inputs, [`channels`](Self::channels) outputs; a generator, never
@@ -302,7 +302,7 @@ impl Node for VoiceNode {
         Shape::source_unassigned(self.channels)
             .with_tail(Tail::Unbounded)
             .with_cost(self.cost())
-            .with_params(&VOICE_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     /// The rate the voice's source and its stretch filter run at, and the
@@ -363,7 +363,7 @@ impl Node for VoiceNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        (k == 0).then(|| self.gain.load().get())
+        self.declared_base(k)
     }
 }
 

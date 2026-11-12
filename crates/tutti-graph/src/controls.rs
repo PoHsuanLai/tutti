@@ -267,6 +267,11 @@ pub fn param_parts<N: ParamNode + Clone>(node: N) -> NodeParts<ParamSet> {
 /// let (key, params) = session.graph().add(Params(MyFilter::new()));
 /// ```
 ///
+/// Its params are declared once, next to its cells, with
+/// [`declare_params!`](crate::declare_params): the macro writes the
+/// [`ParamSet`], the shape's ports and the typed [`HasParam`](crate::HasParam)
+/// impls a session key's methods come from.
+///
 /// **A node with params is inserted this way and no other.** `Clone` means
 /// two things here: [`ForkByClone`](crate::ForkByClone) promises the clone
 /// shares nothing, and `param_parts` takes a clone that *shares* the cells.

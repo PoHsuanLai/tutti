@@ -10,9 +10,9 @@
 
 use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::Tail;
 use tutti_types::{AtomicF32, AtomicF64};
 use tutti_types::{ChannelLayout, Feedback, Hz, Phase, PhaseIncrement, SampleRate, Seconds};
-use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, TimeMod};
 use crate::ramp::block_driven;
@@ -176,8 +176,8 @@ struct ModDelayControls {
 /// A graph node ([`IntoNode`]), `N` in and `N` out, with zero latency: the
 /// modulated delay is the effect's sound, not processing latency, and PDC would
 /// otherwise delay every other path by the base delay. Inserted, its controls
-/// are a [`ParamSet`] over rate ([`UnitParam::Rate`]), depth
-/// ([`UnitParam::Depth`]) and feedback ([`UnitParam::Feedback`]); a fork starts from the values last set through it. The
+/// are a [`ParamSet`] over rate ([`UnitParam::Rate`](tutti_types::UnitParam::Rate)), depth
+/// ([`UnitParam::Depth`](tutti_types::UnitParam::Depth)) and feedback ([`UnitParam::Feedback`](tutti_types::UnitParam::Feedback)); a fork starts from the values last set through it. The
 /// graph prepares it at the device rate, which sizes the lines, before its
 /// first block.
 ///
@@ -365,7 +365,7 @@ impl ModDelayNode {
     /// most the phase scratch's length.
     ///
     /// `driven` is the block's rate, depth and feedback from the
-    /// node's param ports ([`MOD_DELAY_PARAMS`] order), each `None` where
+    /// node's param ports (its declared params order), each `None` where
     /// nothing drives it.
     fn render(
         &mut self,
@@ -424,12 +424,16 @@ impl ModDelayNode {
     }
 }
 
-/// The params a [`ModDelayNode`] lets the graph modulate, in port order:
-/// all three of its controls. Each is block-rate in the node (read once per
-/// block and ramped across it), so a driven port is read the same way
-/// (`block_driven`).
-pub const MOD_DELAY_PARAMS: [UnitParam; 3] =
-    [UnitParam::Rate, UnitParam::Depth, UnitParam::Feedback];
+// The params a [`ModDelayNode`] lets the graph modulate, in port order:
+// all three of its controls. Each is block-rate in the node (read once per
+// block and ramped across it), so a driven port is read the same way
+// (`block_driven`).
+tutti_graph::declare_params!([] ModDelayNode, n {
+    Rate => Hz = &n.lfo.rate,
+    // The swing, in seconds.
+    Depth => Seconds = &n.controls.depth,
+    Feedback => Feedback = &n.controls.feedback,
+});
 
 impl Node for ModDelayNode {
     fn shape(&self) -> Shape {
@@ -438,7 +442,7 @@ impl Node for ModDelayNode {
         Shape::through_unassigned(width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(self.tail())
-            .with_params(&MOD_DELAY_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -486,22 +490,13 @@ impl Node for ModDelayNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match k {
-            0 => Some(self.lfo.rate.load().get()),
-            1 => Some(self.controls.depth.load().to_f32()),
-            2 => Some(self.controls.feedback.load().get()),
-            _ => None,
-        }
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for ModDelayNode {
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Rate, self.lfo.rate.as_atomic())
-            .param(UnitParam::Depth, self.controls.depth.as_atomic())
-            .param(UnitParam::Feedback, self.controls.feedback.as_atomic())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with every control cell detached (at its value now), its
@@ -549,6 +544,7 @@ mod tests {
     use super::*;
     use crate::test_support::{drive_frames, noise, prepared as at_48k};
     use tutti_graph::contract::assert_param_fork;
+    use tutti_types::UnitParam;
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it (see

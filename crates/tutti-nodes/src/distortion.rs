@@ -30,7 +30,6 @@ use std::sync::Arc;
 use tutti_dsp::{ShapeKind, Shaper};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::AtomicF32;
-use tutti_types::UnitParam;
 use tutti_types::{ChannelLayout, Drive, Param, Tail};
 
 /// Stereo waveshaping distortion. 2 inputs, 2 outputs.
@@ -52,8 +51,10 @@ pub struct DistortionNode {
     layout: ChannelLayout,
 }
 
-/// The params a [`DistortionNode`] lets the graph modulate, in port order.
-pub const DISTORTION_PARAMS: [UnitParam; 1] = [UnitParam::Drive];
+// The params a [`DistortionNode`] lets the graph modulate, in port order.
+tutti_graph::declare_params!([] DistortionNode, n {
+    Drive => Drive = &n.drive,
+});
 
 impl DistortionNode {
     /// Builds a stereo waveshaper of `kind` at `drive`.
@@ -140,7 +141,7 @@ impl Clone for DistortionNode {
 }
 
 impl Node for DistortionNode {
-    /// `channels` in and out, drive modulatable ([`DISTORTION_PARAMS`]).
+    /// `channels` in and out, drive modulatable .
     /// The shapers carry no z-state, so the output stops with the input.
     ///
     /// The cost is the curve's, measured by doc 013's fixed-plus-per-frame
@@ -157,7 +158,7 @@ impl Node for DistortionNode {
         Shape::through_unassigned(width)
             .with_cost(cost)
             .with_tail(Tail::None)
-            .with_params(&DISTORTION_PARAMS)
+            .with_param_addrs(self.declared_ports().as_slice())
     }
 
     /// Nothing is rate-dependent: the curves are memoryless.
@@ -214,16 +215,14 @@ impl Node for DistortionNode {
     fn reset(&mut self) {}
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        (k == 0).then(|| self.drive.load().get())
+        self.declared_base(k)
     }
 }
 
 impl ParamNode for DistortionNode {
     /// The drive.
     fn param_set(&self) -> ParamSet {
-        ParamSet::builder()
-            .param(UnitParam::Drive, self.drive())
-            .build()
+        self.declared_set()
     }
 
     /// A clone with its drive cell detached.
@@ -249,6 +248,7 @@ mod tests {
     use super::*;
     use crate::test_support::{RATE, tick};
     use tutti_graph::contract::{assert_param_fork, drive};
+    use tutti_types::UnitParam;
 
     fn process_mono_through(node: &mut DistortionNode, input: &[f32]) -> Vec<f32> {
         let mut out = vec![0.0f32; input.len()];

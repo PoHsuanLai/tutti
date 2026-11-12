@@ -1,7 +1,9 @@
 //! Parametric EQ band: an SVF with a mono layout and an EQ band's constructor.
 
 use tutti_dsp::Real;
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_graph::{
+    Cx, HasParam, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+};
 use tutti_types::{ChannelLayout, Db, Hz, Q};
 
 use super::svf::SvfFilterNode;
@@ -85,6 +87,14 @@ impl<F: Real + 'static> ParamNode for EqBandNode<F> {
             svf: self.svf.fork_fresh(),
         }
     }
+}
+
+/// A band has the params of the filter inside it, in its units.
+impl<F: Real, const P: u16> HasParam<P> for EqBandNode<F>
+where
+    SvfFilterNode<F>: HasParam<P>,
+{
+    type Unit = <SvfFilterNode<F> as HasParam<P>>::Unit;
 }
 
 /// Inserted as the inner filter is: its [`ParamSet`] as its controls, and a

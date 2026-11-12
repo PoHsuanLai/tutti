@@ -183,7 +183,7 @@ pub mod midi {
     pub use tutti_session::RouteDeclarer;
     #[cfg(feature = "session")]
     pub use tutti_session::{
-        AddedInstrument, InstrumentHandle, Midi, MidiEvent, MidiLoad, MidiRouteRule,
+        AddedInstrument, FollowTempo, InstrumentHandle, Midi, MidiEvent, MidiLoad, MidiRouteRule,
         SessionInstrument, TakePlacement,
     };
 

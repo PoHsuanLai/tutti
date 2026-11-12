@@ -16,6 +16,7 @@ mod outbound;
 mod output_plan;
 mod schedule;
 mod sync;
+mod tempo_follower;
 mod traits;
 
 pub use clock_map::{ClockMap, ClockReading, GAIN, InvalidRate, Observed, RESYNC};
@@ -44,6 +45,7 @@ pub use sync::{
     ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
     UnknownFrameRate,
 };
+pub use tempo_follower::{Followed, TempoFollower, TempoSource};
 pub use traits::MidiOut;
 // The counts a device's inlet keeps, as `DeviceInput::counts` returns them.
 pub use tutti_graph::InletCounts;

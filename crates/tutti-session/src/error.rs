@@ -54,6 +54,18 @@ pub enum ScheduleError {
     },
 }
 
+/// The session refused to set the project tempo. Nothing is published.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum TempoError {
+    /// The session follows a live tempo (`Midi::follow_tempo`, feature
+    /// `midi`), which owns the published map until `unfollow_tempo`: a map set now would be
+    /// overwritten by the next live step, and unfollowing restores the map in
+    /// force when following began.
+    #[error("the session follows a live tempo; unfollow_tempo first")]
+    Following,
+}
+
 /// A query or a control named a node the graph does not have: removed already,
 /// or never added. Nothing is changed or read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
@@ -247,6 +259,15 @@ pub enum MidiError {
     /// `Midi::retarget_input` named a target with no live input.
     #[error("{0:?} has no live input")]
     NoLiveInput(tutti_graph::NodeKey),
+
+    /// `Midi::follow_tempo` named a Group the MIDI input does not hear
+    /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
+    #[error("the MIDI input does not hear Group {}", .0.get())]
+    GroupNotHeard(tutti_ump::MidiGroup),
+
+    /// `Midi::unfollow_tempo` with no tempo being followed.
+    #[error("the session is not following a tempo")]
+    NotFollowing,
 
     /// The hardware input's routes have one declarer: the session's own
     /// (`Midi::route`, `Midi::set_route_fallback`) or a host's

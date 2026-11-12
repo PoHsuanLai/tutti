@@ -14,7 +14,7 @@ use tutti_transport::{FadeOut, LoopEdit, MotionEvent, QueueFull, ScheduleFull, T
 use tutti_types::{At, Beat, Bpm, ChannelLayout, ChannelTopology, LoopRange, Samples};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
-use crate::{HeardOpen, HeardTapError, Playhead, RemoveError, ScheduleError};
+use crate::{HeardOpen, HeardTapError, Playhead, RemoveError, ScheduleError, TempoError};
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
 ///
@@ -704,6 +704,19 @@ impl Session {
                 ) {
                     self.commit();
                 }
+                // The tempo the session follows is read after the devices:
+                // what a device sent in the block before is in its tap.
+                #[cfg(feature = "midi")]
+                {
+                    let follow = crate::midi_follow::FollowCx {
+                        settings: self.transport.settings(),
+                        meter: &self.click_settings.project_meter(),
+                        playhead: self.playhead(),
+                    };
+                    if self.midi_state.follow_phase(&follow, &mut self.graph, out) {
+                        self.commit();
+                    }
+                }
                 #[cfg(feature = "device")]
                 self.device_poll(cx.now, out)
             }
@@ -881,6 +894,8 @@ impl Session {
             state: &mut self.midi_state,
             nodes: self.midi.as_ref(),
             jobs: &mut self.jobs,
+            settings: self.transport.settings(),
+            meter: self.click_settings.project_meter(),
             #[cfg(feature = "midi-hardware")]
             io: self.midi_io.as_ref(),
         }
@@ -1089,14 +1104,40 @@ impl Session {
     /// Sets a constant project tempo (the project's [`TempoMap`], one step).
     /// The engine takes it at the next block. A tempo that is not finite and
     /// positive leaves the map as it was.
-    pub fn set_tempo(&self, bpm: Bpm) {
+    ///
+    /// # Errors
+    ///
+    /// [`TempoError::Following`] while the session follows a live tempo:
+    /// nothing is published.
+    pub fn set_tempo(&self, bpm: Bpm) -> std::result::Result<(), TempoError> {
+        self.tempo_is_ours()?;
         self.transport.settings().set_tempo(bpm);
+        Ok(())
     }
 
     /// Publishes `map` as the project's tempo (steps and ramps): the engine
     /// takes it at the next block. A map by value works: `map.into()`.
-    pub fn set_tempo_map(&self, map: impl Into<Arc<TempoMap>>) {
+    ///
+    /// # Errors
+    ///
+    /// [`TempoError::Following`] while the session follows a live tempo:
+    /// nothing is published.
+    pub fn set_tempo_map(
+        &self,
+        map: impl Into<Arc<TempoMap>>,
+    ) -> std::result::Result<(), TempoError> {
+        self.tempo_is_ours()?;
         self.transport.settings().set_tempo_map(map);
+        Ok(())
+    }
+
+    /// Refuses a tempo the app sets while a live tempo owns the map.
+    fn tempo_is_ours(&self) -> std::result::Result<(), TempoError> {
+        #[cfg(feature = "midi")]
+        if self.midi_state.is_following() {
+            return Err(TempoError::Following);
+        }
+        Ok(())
     }
 
     /// The per-channel compensation of the plan sent last, by output channel:

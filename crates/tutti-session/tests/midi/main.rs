@@ -29,3 +29,9 @@ mod midi_front;
 // File loads as jobs: a MIDI file and a SoundFont land as events in `update()`.
 #[cfg(feature = "midi")]
 mod loads;
+// The session follows a live Flex Set Tempo and Set Time Signature (doc 020, doc 017 L7c).
+#[cfg(feature = "midi-hardware")]
+mod midi_follow;
+// A map published with its step behind the playhead moves no beat.
+#[cfg(feature = "midi")]
+mod follow_late_publish;

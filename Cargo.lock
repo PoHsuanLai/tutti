@@ -3798,6 +3798,7 @@ dependencies = [
  "tutti-midi-protocol",
  "tutti-types",
  "tutti-ump",
+ "winnow 1.0.4",
 ]
 
 [[package]]

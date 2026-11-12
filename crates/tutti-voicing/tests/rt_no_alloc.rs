@@ -5,11 +5,11 @@
 use std::num::NonZeroU16;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
-use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
+use tutti_midi_protocol::{Addressee, GeneralMidi, Heard, MpeZoneConfig, MpeZones, Universal};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::{
     Attribute, CCNumber, MidiChannel, NoteNumber, NoteVelocity, RegisteredPerNoteController, U7,
-    Voice2,
+    U14, Voice2,
 };
 use tutti_voicing::{
     Command, Mode, Order, Patch, PerNoteState, Rules, Steal, VoiceId, VoiceSpec, Voicing,
@@ -220,6 +220,46 @@ fn per_note_state_is_allocation_free() {
             if round % 131 == 130 {
                 state.clear();
             }
+        }
+    });
+}
+
+/// The Universal messages: master volume, balance and tuning, and a General
+/// MIDI reset that cuts every voice, allocate nothing.
+#[test]
+fn universal_is_allocation_free() {
+    let mut core = Voicing::new(Rules::poly(6).with_percussion(MidiChannel::of(9)));
+    let on = |k: u8| Voice2::NoteOn {
+        note: NoteNumber::of(k),
+        velocity: NoteVelocity::new(0x8000),
+        attribute: Attribute::None,
+    };
+    assert_no_alloc(|| {
+        for round in 0..200u16 {
+            for k in 40..46 {
+                let level = |_: VoiceId| Some(Amplitude(1.0));
+                std::hint::black_box(core.step(MidiChannel::of(0), on(k), &Grouped, level));
+            }
+            for message in [
+                Universal::MasterVolume(U14::masked(round)),
+                Universal::MasterBalance(U14::masked(round * 3)),
+                Universal::MasterFineTuning(U14::masked(round * 7)),
+                Universal::MasterCoarseTuning(U7::of((round % 128) as u8)),
+                Universal::IdentityRequest,
+                Universal::GeneralMidi(if round % 2 == 0 {
+                    GeneralMidi::On
+                } else {
+                    GeneralMidi::Off
+                }),
+            ] {
+                let to = if round % 3 == 0 {
+                    Addressee::Own
+                } else {
+                    Addressee::All
+                };
+                std::hint::black_box(core.universal(Heard { to, message }));
+            }
+            std::hint::black_box(core.master_gain());
         }
     });
 }

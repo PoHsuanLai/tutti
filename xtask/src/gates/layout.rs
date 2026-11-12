@@ -188,13 +188,19 @@ const CODEC_LIBS: &[&str] = &["symphonia", "flacenc", "aifc", "vorbis_rs"];
 const ENCODERS: &[&str] = &["flacenc", "aifc", "vorbis_rs", "md-5"];
 
 /// A crate that names `winnow`, and the parser modules that may.
-pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[(
-    "tutti-midi-file",
-    &[
-        "crates/tutti-midi-file/src/smf/read.rs",
-        "crates/tutti-midi-file/src/clip_file/read.rs",
-    ],
-)];
+pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[
+    (
+        "tutti-midi-file",
+        &[
+            "crates/tutti-midi-file/src/smf/read.rs",
+            "crates/tutti-midi-file/src/clip_file/read.rs",
+        ],
+    ),
+    (
+        "tutti-midi-protocol",
+        &["crates/tutti-midi-protocol/src/universal/read.rs"],
+    ),
+];
 
 /// The crates that can reach a C library through `export-ogg`.
 const OGG_PACKAGES: &[&str] = &["tutti-session", "tutti", "bevy-tutti"];
@@ -829,6 +835,24 @@ mod tests {
                 .iter()
                 .all(|l| !l.contains("winnow"))
         );
+        // The Universal SysEx grammar is the protocol crate's one parser module.
+        m.files.insert(
+            "crates/tutti-midi-protocol/src/universal/read.rs".into(),
+            "use winnow::Parser;\n".into(),
+        );
+        assert!(
+            check(&m, &NoCargo)
+                .findings
+                .iter()
+                .all(|l| !l.contains("winnow"))
+        );
+        m.files.insert(
+            "crates/tutti-midi-protocol/src/universal.rs".into(),
+            "use winnow::Parser;\n".into(),
+        );
+        assert!(check(&m, &NoCargo).findings.iter().any(|l| {
+            l.contains("crates/tutti-midi-protocol/src/universal.rs names winnow outside")
+        }));
     }
 
     #[test]

@@ -3375,3 +3375,69 @@ What the decoded messages are consumed by, one item each.
 - **Not built: following MIDI Clock, MTC and MMC.** The inbound sync decoders
   (`MidiClockDecoder::tempo_bpm`, `MtcDecoder`) have no consumer in the session; they
   are other sources of the same follower (doc 020 §11.1), later.
+
+### L7b: Universal System Exclusive: as built (part 1)
+
+- **The parser.** `tutti_midi_protocol::read(SysexMessage) -> Read` is a pure parse of one
+  whole message, a `winnow` grammar in `src/universal/read.rs` (the crate's one parser
+  module, listed in `check-layout`'s `WINNOW_HOMES`; no `winnow` type is in a public
+  signature). `Read::Universal(Addressed { to: Recipient, message: Universal })` (`Recipient::{AllCall, Device(SysexDeviceId)}`; a `SysexDeviceId` is `00` to `7E` and refuses `7F`) for
+  what is read, `Read::Unread` for another Universal sub-id or one of ours that is cut short
+  or has bytes after its end, `Read::Foreign` for a manufacturer's id; none is an error, so a
+  stream is never dropped for a message nobody reads. `Universal` is `#[non_exhaustive]`:
+  Identity Request and Reply (`06 01`, `06 02`, M1 p.40: the reply is `tutti_ump::DeviceIdentity`,
+  a one-byte or `00 xx yy` manufacturer, family and member LSB first), General MIDI On and Off
+  (`09 01`, `09 02`, M1 p.52), Master Volume and Balance (`04 01`, `04 02`, 14 bits LSB first,
+  M1 p.57), Master Fine Tuning (`04 03`) and Master Coarse Tuning (`04 04 00 msb`, CA-025).
+  MIDI-CI (`7E dev 0D`) is Universal too and is `Unread` here: the CI codec's decode is
+  untouched, and L8's move to `winnow` can reuse the header rules (`7E`/`7F`, device id).
+  **Not read:** GM2 System On (`09 03`, L10(d): it needs the GM2 differences) and MTS (part 2).
+- **The device id.** `DeviceId` wraps a `U7` (its range is the whole raw, so `new` does not
+  refuse): `ALL_CALL` is `7F` ("if `<device ID>` = 7FH then the device should respond
+  regardless of what `<device ID>` it is set to", M1 p.40) and `DEFAULT` is `00`. The
+  receiver's own id is an instrument setting, `SynthConfig::device` /
+  `Settings::with_device`, default `SysexDeviceId::DEFAULT`: the spec calls it the id "which
+  matches its knob on the front panel", so it is configuration, not something to derive.
+  `UniversalReader::new(group, device)` is the instrument's edge: it takes every UMP of one
+  Group (M2-104 §7.7.1: any other message of the Group ends an open SysEx), reassembles with a
+  `SysexAssembler` it owns (32 bytes a message, nothing allocated after `new`, an overlong
+  message dropped and counted), and answers `Heard { to: Addressee::{All, Own}, message }` only
+  for the all-call and its own id. Master Volume and Balance keep the two apart (below).
+- **The note logic.** `Voicing::universal(Heard) -> &[Command]` is the pure step; it holds
+  `Master` (`master.rs`), the device's volume, balance and tuning. **Master Fine and Coarse
+  Tuning** add to every channel's pitch in `pitch()` (CA-025: "the total displacement [...] is
+  [the] summation" of the master and the channel's RPN tuning), as the existing `Command::Retune`
+  (one per channel), so the instruments' retune path carries them and no instrument keeps a
+  second tuning state; `Rules::percussion` (`with_percussion`) names a key-based channel the
+  master tuning leaves (CA-025, GM2 §4.2), the SoundFont's channel 10. **Master Volume and
+  Balance** keep a scalar for the device's own id and one for the all-call (M1 p.57, "three
+  volume and two balance scalars"), multiplied into `Voicing::master_gain() -> MasterGain {
+  left, right }`, which the instrument reads when it renders. The volume curve is GM2 §4.1's
+  (the square of the value, `(v / 16383)^2`); the balance's is ours, since M1 gives none: the
+  amplifier knob attenuates the side it turns from, linearly, and `0x2000` is unity on both
+  sides. **General MIDI On and Off** cut every sounding note (`Command::Cut`) and return the
+  device to its initial status: `ChannelState::new` on every channel (RP-015's Reset All
+  Controllers and the GM defaults of RP-003 and GM2 §3.3), the pedals up, the master tuning,
+  volume and balance sent to all devices back to default (the own-id scalars are the knob and
+  stay), and a `Retune` for every channel. On is General MIDI 1's wheel, 2 semitones; Off is
+  the instrument's own initialized mode, `Rules::bend_range`.
+  `Voicing::chase` does not carry the master values (System Exclusive; no channel message says
+  them), and `Voicing::reset` returns them to default.
+- **The instruments.** `PolySynth` and `SoundFontUnit` each own a `UniversalReader`, feed it
+  every UMP of their Group, and give `Heard` to the core. `PolySynth` carries the commands out
+  through the gates it already has (`VoiceAllocator::universal`, sharing `carry_out` with the
+  note messages); the SoundFont's `Player::universal` executes them on its voices and, for GM On
+  or Off, sets every `Channel` to a fresh one (program 0, bank 0, bank 128 on channel 10, no
+  sends). Both ramp the master gain linearly across each control step (PolySynth) or 8-frame
+  chunk (SoundFont) from the last step's gain to the new one, so a Master Volume never steps
+  the output; at unity it is the identity, bit for bit. The SoundFont multiplies it into every
+  plane, so the sends carry it and a balance reaches the reverb send through the two sides'
+  gains it sums. `reset` (the graph's) keeps the master values, like the volume and pan a host
+  selected.
+- **System Reset (FF).** Nothing new: the ingest node already acts on it per Group (L6(f):
+  releases held state, resets the translator, does not echo it, M1 p.33), and what reaches an
+  instrument is the Note Offs and pedal-ups it made. An instrument has no output to echo to.
+- **Part 2, not built:** the MIDI Tuning Standard (bulk dump, single note change, scale/octave
+  forms, RPN 3 and 4) into the tuning table. It needs `PolySynth`'s `Tuning` (a construction
+  value read at every note-on) to become state the core's commands can change, and the
+  SoundFont's `tune`; the master tuning above is the semitone offset that composes with it.

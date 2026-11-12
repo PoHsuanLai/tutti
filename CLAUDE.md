@@ -727,7 +727,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `FlexTextAssembler<B>` (a buffer the caller sizes, one open message per Group, UTF-8
   without a BOM, zero only as padding in a Complete or End packet; it lends the text from the
   `push` that completes it and counts `dropped` and `invalid` apart).
-- `tutti-midi-protocol` depends on `tutti-ump` and `tutti-types` (layer 0, for `Semitones`), keeps every module
+- `tutti-midi-protocol` depends on `tutti-ump`, `tutti-types` (layer 0, for `Semitones`) and `winnow` (named only in `universal/read.rs`, a listed parser module: `check-layout`), keeps every module
   private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
   it) and is `#![forbid(unsafe_code)]`. Its functions (`widen`, `narrow`,
   `midi1`) hold no state, and take a packet as `impl Into<Ump>` (one input type: `Translator::translate`, `Narrower::feed`, `midi1`, `channel_voice`); `narrow` refuses with a `NoMidi1Form`, and `widen`/`narrow` are free functions because `From`/`TryFrom` between the voice types would sit in `tutti-ump` with the M2-115 scaling; its two translators, `Translator` (MIDI 1.0 in) and
@@ -743,6 +743,14 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `MpeMode` holds only a checked `MpeZones`; their `serde` forms read back through the same
   checks. The state that drives a zone from incoming MIDI is `tutti-midi-runtime`'s
   `MpeIngest`.
+  **Universal System Exclusive is read here** (doc 017, "L7b"): `read(SysexMessage) -> Read`
+  (a `winnow` grammar: `Read::Universal(Addressed { device, message })`, `Unread` for a Universal
+  message it does not read or that is malformed, `Foreign` for a manufacturer's; never an error)
+  over `Universal` (`#[non_exhaustive]`: Identity Request and Reply, General MIDI On and Off,
+  Master Volume, Balance, Fine and Coarse Tuning), and `UniversalReader::new(group, SysexDeviceId)` (a device's own id, `00` to `7E`: `7F` is the all-call, a header's `Recipient::AllCall`, and no device's own),
+  an instrument's edge (every UMP of one Group in, `Heard { to: Addressee::{All, Own}, message }`
+  out for the all-call `7F` and its own id only, M1 p.40). MIDI-CI's decode stays
+  `tutti-midi-device`'s and reads none of this.
 - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types`
   only, keeps every module private (`tutti_voicing::Voicing`; CI runs the
   per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`
@@ -759,6 +767,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   only for a note message (liveness is read there). `VoiceId` has a private
   field (`new`, `get`: every `u64` is a voice) and `VoiceSpec::group` is an
   `Option<NonZeroU16>`.
+  **Universal System Exclusive is the core's too** (doc 017, "L7b"): `Voicing::universal(Heard)
+  -> &[Command]` reads Master Fine and Coarse Tuning into every channel's pitch (a `Retune` each;
+  `Rules::percussion` names the key-based channel it leaves), General MIDI On and Off (cuts the
+  notes, fresh channels, `Retune`s), and holds Master Volume and Balance as
+  `Voicing::master_gain() -> MasterGain`, which an instrument multiplies into its output; the
+  instrument keeps a `tutti_midi_protocol::UniversalReader` and its own device id
+  (`SynthConfig::device`, `Settings::with_device`) and never parses SysEx itself.
   The spec is the only oracle: a rule gets a test from the spec and a mutation,
   and nothing is pinned against another implementation. A Relative Registered Controller (section 7.4.8) is added to the word the channel state reads back for RPN 0, 1, 2 and 5, saturating (`ChannelState::registered_word`); any other relative message is ignored. The per-note controller state (M2-104 section 7.4) is `PerNoteState`, which `Voicing` uses and a plugin host uses too. **An instrument plays one
   Group's sixteen channels** (`SynthConfig::with_group`, `Settings::with_group`, the one builder

@@ -4,7 +4,7 @@ use tutti_types::{Db, Seconds};
 
 use super::*;
 use crate::contract::cases::design as cases;
-use crate::contract::{DesignCase, Figure, Hook, LtiCase, ReverbCase};
+use crate::contract::{FamilyCase, Figure, Hook, LtiCase, ReverbCase};
 use crate::reverb::network::Band;
 use crate::testing::flaws::{Mutant, map_absorption, map_fdn};
 use crate::{Lti as _, System as _};
@@ -16,7 +16,11 @@ fn controls(room: f32, damp: f32) -> FreeverbControls {
     }
 }
 
-impl DesignCase for FreeverbDesign {
+impl FamilyCase for FreeverbFamily {
+    fn capacity(&self, rate: SampleRate) -> NetworkCapacity {
+        self.reach(&self.reach_at(rate))
+    }
+
     fn reachable(&self) -> Vec<FreeverbControls> {
         let steps = [0.0, 0.25, 0.5, 0.75, 1.0];
         let mut all: Vec<_> = steps
@@ -55,7 +59,7 @@ impl DesignCase for FreeverbDesign {
     }
 }
 
-impl ReverbCase for FreeverbDesign {
+impl ReverbCase for FreeverbFamily {
     /// 15%. The measured figure is the energy slope 40 to 65 dB down, where
     /// a bank of combs of 1116 to 1640 frames (a 1.47 ratio in rate) has
     /// not yet settled on the slowest: it lands 5 to 11% under the network's
@@ -102,7 +106,7 @@ impl ReverbCase for FreeverbDesign {
     // The freeze case still asserts that no control reaches a lossless loop.
 }
 
-impl LtiCase for FreeverbDesign {
+impl LtiCase for FreeverbFamily {
     /// `|H_L(0)| = 0.015 sum_left 1 / (1 - g_loop)`: at DC each comb is
     /// `0.015 z^-D / (1 - g_loop z^-D)` with the one-pole at its DC gain (the
     /// loop gain `g_loop = room * 0.28 + 0.7`), the eight left combs add, and
@@ -128,14 +132,14 @@ impl LtiCase for FreeverbDesign {
     }
 
     fn fill(&self, rate: SampleRate, trips: f32) -> usize {
-        (trips * self.bounds(&self.ceiling(rate)).line) as usize
+        (trips * self.capacity(rate).line) as usize
     }
 }
 
-crate::design_contract!(FreeverbDesign, Lti, reverb);
+crate::family_contract!(FreeverbFamily, Grows, Lti, reverb);
 
-fn mutant(f: fn(&mut Network)) -> Mutant<FreeverbDesign> {
-    Mutant::new(FreeverbDesign, f)
+fn mutant(f: fn(&mut Network)) -> Mutant<FreeverbFamily> {
+    Mutant::new(FreeverbFamily, f)
 }
 
 #[track_caller]
@@ -195,13 +199,13 @@ fn a_defective_freeverb_fails_its_case() {
     let m = mutant(|n| n.stages = Inline::new());
     fails(cases::density(&m), "modal density");
 
-    // bounds: one line short.
+    // reach: one line short.
     let mut m = mutant(|_| {});
-    m.bounds = |b| NetworkSizes {
+    m.capacity = |b| NetworkCapacity {
         lines: b.lines - 1,
         ..b
     };
-    fails(cases::bounds_dominate(&m), "does not dominate");
+    fails(cases::reach_covers_need(&m), "does not dominate");
 
     // pure: the design reads a counter, as a clock would be read.
     let m = mutant(|n| {
@@ -265,14 +269,14 @@ fn a_defective_freeverb_fails_the_lti_design_cases() {
     // peak (the bound is 2 to 4 times the peak, so a half would not be), and
     // one 50 times it is far over (checked where the grid resolves the poles).
     let low = Lying {
-        inner: FreeverbDesign,
+        inner: FreeverbFamily,
         tail: 1.0,
         hinf: 0.1,
         l1: 1.0,
     };
     fails(cases::norms(&low), "over hinf_norm");
     let high = Lying {
-        inner: FreeverbDesign,
+        inner: FreeverbFamily,
         tail: 1.0,
         hinf: 50.0,
         l1: 50.0,
@@ -292,7 +296,7 @@ fn a_defective_freeverb_fails_the_lti_design_cases() {
 /// feedback and the input gain.
 #[test]
 fn the_general_midi_controls_give_todays_coefficients_to_the_bit() {
-    let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
+    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
     let Stage::Fdn(fdn) = &n.stages[0] else {
         panic!("the first stage is the combs")
     };
@@ -338,7 +342,7 @@ fn the_network_has_the_lines_of_a_freeverb_built_at_the_rate() {
         let rate = SampleRate(hz);
         let reverb = Freeverb::new(rate);
         let figures = reverb.figures();
-        let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, rate);
+        let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, rate);
         assert_eq!(n.rate, SampleRate(hz.round()));
         let Stage::Fdn(fdn) = &n.stages[0] else {
             panic!()
@@ -389,7 +393,7 @@ fn a_gain(n: &Network) -> f32 {
 /// delay is their sum, a figure fixed by the definition.
 #[test]
 fn the_tunings_and_the_stereo_spread_are_freeverbs() {
-    let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
+    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
     let Stage::Fdn(fdn) = &n.stages[0] else {
         panic!()
     };
@@ -425,7 +429,7 @@ fn the_tunings_and_the_stereo_spread_are_freeverbs() {
 /// -60 dB is the longest line, the all-passes' trains and that RT60.
 #[test]
 fn the_general_midi_network_decays_as_the_definition_says() {
-    let n = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
+    let n = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, SampleRate(44_100.0));
     let low = -3.0 * 1640.0 / (44_100.0 * libm::log10(0.84));
     assert!(
         (n.rt60(Band::Low).get() - low).abs() < 1e-5,
@@ -446,22 +450,22 @@ fn the_general_midi_network_decays_as_the_definition_says() {
 
 use crate::Ring;
 
-/// The bounds of Freeverb are the design at room 1, whatever the ceiling's
+/// The bounds of Freeverb are the design at room 1, whatever the reach's
 /// decay: it has no decay control to cap.
 #[test]
 fn the_bounds_are_the_largest_design() {
-    let ceiling = Ceiling::at(SampleRate(48_000.0)).unwrap();
-    let b = FreeverbDesign.bounds(&ceiling);
-    let room_one = FreeverbDesign.design(&controls(1.0, 0.0), SampleRate(48_000.0));
-    assert_eq!(b, NetworkSizes::measure(&room_one, ceiling.floor()));
+    let reach = Reach::at(SampleRate(48_000.0)).unwrap();
+    let b = FreeverbFamily.reach(&reach);
+    let room_one = FreeverbFamily.member(&controls(1.0, 0.0), SampleRate(48_000.0));
+    assert_eq!(b, NetworkCapacity::need(&room_one, reach.floor()));
     assert_eq!((b.lines, b.stages, b.outputs), (16, 5, 2));
-    let short = Ceiling::new(
+    let short = Reach::new(
         SampleRate(48_000.0),
         MaxDecay::new(Seconds(0.5)).unwrap(),
         Db(-60.0),
     )
     .unwrap();
-    assert_eq!(FreeverbDesign.bounds(&short), b);
+    assert_eq!(FreeverbFamily.reach(&short), b);
 }
 
 /// A non-finite control takes the General MIDI value and a control out of
@@ -469,13 +473,13 @@ fn the_bounds_are_the_largest_design() {
 #[test]
 fn a_hostile_control_is_made_safe() {
     let rate = SampleRate(44_100.0);
-    let gm = FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, rate);
+    let gm = FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, rate);
     assert_eq!(
-        FreeverbDesign.design(&controls(f32::NAN, f32::INFINITY), rate),
+        FreeverbFamily.member(&controls(f32::NAN, f32::INFINITY), rate),
         gm
     );
     assert_eq!(
-        FreeverbDesign.design(&controls(9.0, -2.0), rate),
-        FreeverbDesign.design(&controls(1.0, 0.0), rate)
+        FreeverbFamily.member(&controls(9.0, -2.0), rate),
+        FreeverbFamily.member(&controls(1.0, 0.0), rate)
     );
 }

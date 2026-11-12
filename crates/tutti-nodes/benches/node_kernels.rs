@@ -26,7 +26,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
-    BrickwallLimiterNode, CompressorNode, DelayLineNode, DesignNode, DistortionNode, FdnControls,
+    BrickwallLimiterNode, CompressorNode, DelayLineNode, DistortionNode, FamilyNode, FdnControls,
     FreeverbNode, GateNode, LimiterNode, ShapeKind,
 };
 use tutti_types::{ChannelLayout, CompressionRatio, Db, Drive, Feedback, SampleRate, Seconds};
@@ -384,7 +384,7 @@ fn reverb(c: &mut Criterion) {
         c,
         "reverb",
         "fdn",
-        || DesignNode::live(tutti_nodes::FdnDesign::default(), FdnControls::DEFAULT),
+        || FamilyNode::live(tutti_nodes::FdnFamily::default(), FdnControls::DEFAULT),
         None,
     );
 }

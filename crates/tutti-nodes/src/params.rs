@@ -1,4 +1,4 @@
-//! One reader for the cells of every [`DesignNode`](crate::DesignNode) family
+//! One reader for the cells of every [`FamilyNode`](crate::FamilyNode) family
 //! (doc 024 section 2.6).
 //!
 //! A family writes a [`ControlSet`]: its addresses, and the conversion between its
@@ -55,7 +55,7 @@ pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
 /// That a [`ControlSet`] has a control of the kind `P` (a packed
 /// [`UnitAddr`] at index 0), in the unit `Unit`: what
 /// `control_set!` writes from the family's own `Controls` fields, and what
-/// the typed key of a [`DesignNode`](crate::DesignNode) reads
+/// the typed key of a [`FamilyNode`](crate::FamilyNode) reads
 /// ([`HasParam`](tutti_graph::HasParam)).
 pub trait HasControl<const P: u16> {
     /// The unit the control's value is in.

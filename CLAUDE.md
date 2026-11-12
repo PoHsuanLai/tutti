@@ -770,8 +770,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   each) and thiserror, and `rand` under the `contract` feature only), keeps every
   module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it; `contract`, behind the off-by-default `contract`
-  feature, is the one public module: the cases a `Design` and its `Realized` runner are
-  held to, `design_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
+  feature, is the one public module: the cases a `Family` and its `Realized` runner are
+  held to, `family_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
   cosine windows (`CosineWindow`, `Window`), the STFT's `StftGeometry`, `Grid` and
@@ -785,8 +785,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the filters' one
-  `Design`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
-  `SvfDesign<F>`, `LadderDesign<F>` and `CrossoverDesign` its aliases), whose channels run
+  `Family`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
+  `SvfFamily<F>`, `LadderFamily<F>` and `CrossoverFamily` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
   written once), the dynamics curves, followers and kernels, the partitioned
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
@@ -795,35 +795,38 @@ list (normal and build edges; dev-dependencies may go anywhere).
   one figure of a resampled length; `ChunkSize`), the dither noise
   (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
   the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
-  `FreeverbRecurrence`, the `Recurrence` of `FreeverbDesign`), the feedback delay network
-  (`FdnDesign`, `FdnRecurrence`: both run by `Realized`, whose glides step between
+  `FreeverbRecurrence`, the `Recurrence` of `FreeverbFamily`), the feedback delay network
+  (`FdnFamily`, `FdnRecurrence`: both run by `Realized`, whose glides step between
   `retarget`s in 32-frame chunks counted from the last reset, so the output does
   not depend on the block length), the
-  model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
-  to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
+  model of doc 024 (the `model` module, exported at the root: a `Family` maps controls
+  (φ, `member_into`) to a `Member`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
   and a stability test, all bounds stated as such); a `Recurrence` is one
-  realization of a model (its `coefficients_into` writes the coefficient point a model asks for,
+  realization of a member (its `coefficients_into` writes the coefficient point a member asks for,
   its `Approach` glides to it, its `run` is the per-frame math), and `Realized<R>` is the one
   runner over it, with the planar block shape `process(input, output, frames)`;
   the coefficients approach each new point by an `Approach` (a `Glide` of a `Lerp`
   set, or the FDN's own, a glide a field); prepared from a
-  `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
-  over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` (a period and an anchor: only a
+  `Setup` and the recurrence's `Capacity`, moved to each member by `retarget`; a family whose
+  state grows with its member is also `Grows`, whose `reach` over a `Reach<D>` (the
+  family's `Domain`, `MaxDecay` for a reverb) is a `Capacity` (`need` of a member, the lattice
+  `dominates`; the one condition is `need(φ(c)) ≤ reach(D)`), and a family that does not
+  grow has capacity `()`; `Effort` and `Cadence` (a period and an anchor: only a
   stream-anchored one is block independent) are the
   engineering that sizes and schedules it), the reverb model of doc 022 (`Network`,
-  a `System` and an `Lti`, with `Bounds` and `FreeverbDesign`: a plain
+  a `System` and an `Lti`, with `NetworkCapacity` and `FreeverbFamily`: a plain
   fixed-capacity description with analytic queries, never an instruction stream
-  a realization must follow; a `Design` writes its model in place, `design_into`, because a
+  a realization must follow; a `Family` writes its member in place, `member_into`, because a
   `Network` is too large to build on an audio thread), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
-  them (shape, prepare, process, params, fork; `DesignNode<D: NodeDesign>` is
-  the one node over every reverb `Design`, with `FreeverbNode` and `FdnNode`
-  its two instances and `ReverbKind` the choice between them; a design node is
+  them (shape, prepare, process, params, fork; `FamilyNode<F: NodeFamily>` is
+  the one node over every reverb and filter `Family`, with `FreeverbNode` and `FdnNode`
+  its two reverb instances and `ReverbKind` the choice between them; a family node is
   the wet signal alone, and its dry/wet is the graph's mix, `Editor::set_mix`), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`, `FdnControls`,
-  `FdnDesign`, `FreeverbControls`, `FreeverbDesign`).
+  `FdnFamily`, `FreeverbControls`, `FreeverbFamily`).
 - `tutti-measure` depends on `tutti-types` and `tutti-dsp` alone among workspace
   crates (its outside deps are `ebur128`, the only place it is pulled, and
   `thiserror`; `tutti-graph` is a dev-dependency only, for the README's tap
@@ -1176,7 +1179,7 @@ Scalars use `Param<U>`.
   that converts into `ParamRef`, generated from the node's own declaration of
   its params (`tutti_graph::declare_params!` next to its `Param<U>` cells, doc 030
   N1: the unit is checked against the cell's type, and the same table gives its
-  `ParamSet` and shape's ports; a `DesignNode` family declares them in its
+  `ParamSet` and shape's ports; a `FamilyNode` family declares them in its
   `ControlSet`, `control_set!`; a host's node uses the graph's macro, and
   `param_session_node!` only lists the engine's nodes as `SessionNode`s):
   `Graph::set_param(lp.cutoff(),

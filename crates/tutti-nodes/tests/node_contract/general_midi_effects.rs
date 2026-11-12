@@ -1,5 +1,5 @@
 //! The two effect nodes behind a SoundFont unit's sends: the General MIDI
-//! chorus (`ModDelayConfig::GENERAL_MIDI_CHORUS`) and `DesignNode`. Every
+//! chorus (`ModDelayConfig::GENERAL_MIDI_CHORUS`) and `FamilyNode`. Every
 //! figure is from the definition of the effect (a wet-only line is a delayed
 //! copy, a reverb's tail covers its ring-out), not from another render.
 

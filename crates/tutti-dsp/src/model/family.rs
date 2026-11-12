@@ -1,0 +1,182 @@
+//! [`Family`]: the pure function from a family's controls to a member, and
+//! [`Grows`], the engineering that sizes what runs it.
+
+use tutti_types::{BusTopology, SampleRate};
+
+use super::{Cadence, Domain, Reach, Realized, Recurrence, System};
+
+/// The buses a [`Family`] is made for: its input, and its outputs, which are one
+/// topology repeated `bands` times, band-major (a crossover's), or once (every
+/// other family). Its node declares exactly these buses, so the graph's dry path
+/// folds the input onto band 0 by speaker, and the runner's outputs are the
+/// bands in order: band `b` is the `b`-th run of [`output`](Self::output)'s width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Channels {
+    input: BusTopology,
+    output: BusTopology,
+    bands: u8,
+}
+
+impl Channels {
+    /// One output bus where the input is: a filter's.
+    #[must_use]
+    pub const fn same(input: BusTopology) -> Self {
+        Self::new(input, input)
+    }
+
+    /// `input` in, `output` out: a reverb's stereo from a mono centre.
+    #[must_use]
+    pub const fn new(input: BusTopology, output: BusTopology) -> Self {
+        Self {
+            input,
+            output,
+            bands: 1,
+        }
+    }
+
+    /// The input's speakers once per band, `bands` of them (a crossover's), or
+    /// `None` for no band.
+    #[must_use]
+    pub const fn bands(input: BusTopology, bands: u8) -> Option<Self> {
+        if bands == 0 {
+            return None;
+        }
+        Some(Self {
+            input,
+            output: input,
+            bands,
+        })
+    }
+
+    /// The input bus.
+    #[must_use]
+    pub const fn input(&self) -> BusTopology {
+        self.input
+    }
+
+    /// One band of the output.
+    #[must_use]
+    pub const fn output(&self) -> BusTopology {
+        self.output
+    }
+
+    /// How many bands the output repeats: 1 but for a split.
+    #[must_use]
+    pub const fn band_count(&self) -> usize {
+        self.bands as usize
+    }
+
+    /// The input's channels.
+    #[must_use]
+    pub const fn input_width(&self) -> usize {
+        self.input.layout().count() as usize
+    }
+
+    /// Every output channel, all bands.
+    #[must_use]
+    pub const fn output_width(&self) -> usize {
+        self.output.layout().count() as usize * self.bands as usize
+    }
+}
+
+/// The family of a processor: φ, the pure function from its controls to a member
+/// (design 024 section 2.7.2), and the [`Recurrence`] that runs the members.
+///
+/// This is φ, the family: controls to a member (design 024 section 2.7.2). The pure half
+/// is [`member_into`](Self::member_into): no audio, no state and no
+/// graph type. The member is the description the recurrence is held to
+/// ([`Recurrence::coefficients_into`], κ, reads it, and the contract measures the
+/// render against the member's queries); nothing here forces a runtime shape on the
+/// recurrence. A family whose recurrence allocates from the member it runs says how
+/// much in [`Grows`]; one whose state has one size says nothing.
+pub trait Family: Clone + Send {
+    /// Plain values in tutti units, one struct per family.
+    type Controls: Copy + PartialEq + Send;
+
+    /// The system a set of controls describes: a member of the family.
+    type Member: System + Clone + Send;
+
+    /// What runs this family's members: the recurrence [`Realized`] runs.
+    type Recurrence: Recurrence<Member = Self::Member>;
+
+    /// The grid on which `theta` is sampled, and so whether a render depends
+    /// on how audio is split into blocks ([`Cadence::block_independent`]). The
+    /// contract's block-independence cases run iff it is.
+    const CADENCE: Cadence = Cadence::BLOCK;
+
+    /// The widths of the signal this family takes and gives.
+    fn channels(&self) -> Channels;
+
+    /// An empty member at `rate`: what [`member_into`](Self::member_into) writes
+    /// into.
+    fn blank(&self, rate: SampleRate) -> Self::Member;
+
+    /// φ: writes the member for `controls` at `rate` into `out`, replacing all of
+    /// it.
+    ///
+    /// Pure and allocation-free: the same controls give the same member, with
+    /// no clock, no state and no heap. It writes **in place** because a reverb
+    /// `Network` is about 56 KB, too large to build as a value on an audio
+    /// thread (whose stack may be 512 KB); a node writes into a member it owns.
+    /// Total: a control outside its range is clamped and a non-finite one takes the
+    /// family's default, so the member is always one the family can run.
+    fn member_into(&self, controls: &Self::Controls, rate: SampleRate, out: &mut Self::Member);
+
+    /// The member for `controls` at `rate`, as a value: a test, a UI and the
+    /// control side call this; an audio thread calls
+    /// [`member_into`](Self::member_into).
+    fn member(&self, controls: &Self::Controls, rate: SampleRate) -> Self::Member {
+        let mut member = self.blank(rate);
+        self.member_into(controls, rate, &mut member);
+        member
+    }
+
+    /// An unprepared recurrence for this family. Control side; allocates.
+    fn recurrence(&self) -> Self::Recurrence;
+
+    /// An unprepared runner of this family's recurrence, at rest on the family's blank
+    /// member. Control side; allocates.
+    fn realized(&self) -> Realized<Self::Recurrence> {
+        Realized::new(self.recurrence(), &self.blank(SampleRate::DEFAULT))
+    }
+}
+
+/// A [`Family`] whose recurrence allocates from the member it runs, so it must be
+/// built for a worst case (design 024 section 2.7.2): `need`, `reach` and the
+/// condition between them.
+///
+/// [`Capacity::need`](crate::Capacity::need) is `need : M → 𝒦`, what one member's state
+/// needs. [`reach`](Self::reach) is `reach : 𝒫(C) × ℝ₊ → 𝒦`, what every member of a
+/// [`Domain`] at a rate needs, monotone in the domain. They meet one condition, the whole
+/// correctness of [`Capacity`](crate::Capacity), [`Domain`] and [`Reach`]: for every control
+/// `c` in the domain, `need(φ(c)) ≤ reach(D)`
+/// ([`Capacity::dominates`](crate::Capacity::dominates) is the `≤`). A family whose state
+/// has one size (a filter) does not implement this: its recurrence's capacity is `()`.
+pub trait Grows: Family {
+    /// The family's own limit on a control ([`Reach::domain`]): the `D ⊆ C` that
+    /// [`reach`](Self::reach) is taken over.
+    type Domain: Domain;
+
+    /// The worst case of [`Family::member_into`] over the controls'
+    /// declared domain (and the limits in `reach`): what the recurrence allocates
+    /// for and what the node declares as its tail ceiling.
+    fn reach(&self, reach: &Reach<Self::Domain>) -> <Self::Recurrence as Recurrence>::Capacity;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A split's outputs are its input's speakers once per band, so its width
+    /// is the input's times the bands; any other family has one output bus.
+    #[test]
+    fn a_split_repeats_its_input_once_per_band() {
+        let stereo = BusTopology::STEREO;
+        let split = Channels::bands(stereo, 3).expect("three bands");
+        assert_eq!((split.output(), split.band_count()), (stereo, 3));
+        assert_eq!((split.input_width(), split.output_width()), (2, 6));
+        assert_eq!(Channels::bands(stereo, 0), None);
+        let same = Channels::same(stereo);
+        assert_eq!((same.band_count(), same.output_width()), (1, 2));
+    }
+}

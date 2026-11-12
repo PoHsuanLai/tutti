@@ -3,8 +3,8 @@
 use std::borrow::Borrow;
 
 use super::harness::{MAX_BLOCK, built, noise, rate_of, render, widths};
-use super::{DesignCase, Hook, RealizationCase};
-use crate::{Sizes, System};
+use super::{FamilyCase, Hook, RealizationCase};
+use crate::{Capacity, Grows, Recurrence, System};
 
 /// The hooks that return nothing and are not listed, and the listed ones that
 /// do return something: an error naming the first, or `Ok`.
@@ -35,7 +35,7 @@ pub(super) fn check_vacuity(
     Ok(())
 }
 
-pub(super) fn every<D: DesignCase>(d: &D) -> Vec<D::Controls> {
+pub(super) fn every<D: FamilyCase>(d: &D) -> Vec<D::Controls> {
     let mut all = d.reachable();
     all.extend(d.hostile());
     all
@@ -45,14 +45,20 @@ pub(super) fn every<D: DesignCase>(d: &D) -> Vec<D::Controls> {
 pub(super) mod design {
     use super::*;
 
-    /// `bounds()` dominates `design()` in every figure for every control.
-    pub fn bounds_dominate<D: DesignCase>(d: &D) -> Result<(), String> {
-        for rate in d.rates() {
-            let ceiling = d.ceiling(rate);
-            let bound = d.bounds(&ceiling);
-            for c in every(d) {
-                let n = d.design(&c, rate);
-                let size = D::Bounds::measure(n.borrow(), ceiling.floor());
+    /// The family's `reach` covers `need` of every member: `need(φ(c)) ≤ reach(D)`
+    /// for every control, in every figure (design 024 section 2.7.2). Only a
+    /// [`Grows`] family has a `need`.
+    pub fn reach_covers_need<F>(f: &F) -> Result<(), String>
+    where
+        F: FamilyCase + Grows,
+        F::Member: Borrow<<<F::Recurrence as Recurrence>::Capacity as Capacity>::Source>,
+    {
+        for rate in f.rates() {
+            let reach = f.reach_at(rate);
+            let bound = f.reach(&reach);
+            for c in every(f) {
+                let n = f.member(&c, rate);
+                let size = <F::Recurrence as Recurrence>::Capacity::need(n.borrow(), reach.floor());
                 if !bound.dominates(&size) {
                     return Err(format!("{bound:?} does not dominate {size:?}"));
                 }
@@ -64,14 +70,14 @@ pub(super) mod design {
     /// The same controls give the same network, however often they are asked.
     ///
     /// The no-allocation half is `tests/network_alloc.rs`.
-    pub fn pure<D: DesignCase>(d: &D) -> Result<(), String>
+    pub fn pure<D: FamilyCase>(d: &D) -> Result<(), String>
     where
-        D::Model: PartialEq,
+        D::Member: PartialEq,
     {
         for rate in d.rates() {
             for c in every(d) {
-                let (a, b) = (d.design(&c, rate), d.design(&c, rate));
-                if a != b || a != d.clone().design(&c, rate) {
+                let (a, b) = (d.member(&c, rate), d.member(&c, rate));
+                if a != b || a != d.clone().member(&c, rate) {
                     return Err("two designs of the same controls differ".into());
                 }
             }
@@ -79,9 +85,9 @@ pub(super) mod design {
         Ok(())
     }
 
-    /// Every hook of [`DesignCase`] that returns a list returns something, or the
-    /// design says why it cannot ([`DesignCase::vacant`]).
-    pub fn vacuity<D: DesignCase>(d: &D) -> Result<(), String> {
+    /// Every hook of [`FamilyCase`] that returns a list returns something, or the
+    /// design says why it cannot ([`FamilyCase::vacant`]).
+    pub fn vacuity<D: FamilyCase>(d: &D) -> Result<(), String> {
         if d.reachable().is_empty() {
             return Err("no reachable controls".into());
         }
@@ -164,7 +170,7 @@ pub(super) mod realization {
             let (mut k, _) = built(d, &a, rate);
             let shape = widths(d);
             let mut out = render(&mut k, shape, &tone[..3 * second], 64);
-            k.retarget(&d.design(&b, rate));
+            k.retarget(&d.member(&b, rate));
             let after = render(&mut k, shape, &tone[3 * second..], 64);
             for (all, more) in out.iter_mut().zip(after) {
                 all.extend(more);
@@ -291,7 +297,7 @@ pub(super) mod realization {
 
             let (mut mid, _) = built(d, &a, rate);
             render(&mut mid, shape, &noise(7, 6000, 1.0), 64);
-            mid.retarget(&d.design(&b, rate));
+            mid.retarget(&d.member(&b, rate));
             render(&mut mid, shape, &noise(6, 100, 1.0), 64);
             let mut forked = mid.fresh();
             mid.reset();
@@ -322,7 +328,7 @@ pub(super) mod realization {
         let x = noise(13, 6 * SPAN, 1.0);
         let mut checked = 0;
         for (a, b) in d.steps() {
-            let models = [d.design(&a, rate), d.design(&b, rate)];
+            let models = [d.member(&a, rate), d.member(&b, rate)];
             let run = |block: usize| {
                 let (mut k, _) = built(d, &a, rate);
                 let mut out: Vec<Vec<f32>> = vec![Vec::new(); shape.1];
@@ -353,7 +359,7 @@ pub(super) mod realization {
     }
 
     /// Every hook of [`RealizationCase`] that returns a list returns something, or
-    /// the design says why it cannot ([`DesignCase::vacant`]).
+    /// the design says why it cannot ([`FamilyCase::vacant`]).
     pub fn vacuity<D: RealizationCase>(d: &D) -> Result<(), String> {
         check_vacuity(
             d.vacant(),
@@ -370,7 +376,7 @@ pub(super) mod realization {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FreeverbDesign;
+    use crate::FreeverbFamily;
     use crate::contract::cases::realization as cases;
     use crate::testing::flaws::Mutant;
 
@@ -403,7 +409,7 @@ mod tests {
     /// lists none of them as vacant, so listing one it fills fails.
     #[test]
     fn the_realization_vacuity_reads_the_realization_hooks() {
-        let mut m = Mutant::new(FreeverbDesign, |_| {});
+        let mut m = Mutant::new(FreeverbFamily, |_| {});
         assert!(cases::vacuity(&m).is_ok());
         m.vacant = Some(&[(Hook::Steps, "it has none")]);
         assert!(

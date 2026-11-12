@@ -928,7 +928,40 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
 // Entry point.
 // ---------------------------------------------------------------------------
 
+/// How many times the host called `clap_entry.init` and `clap_entry.deinit` on
+/// this image, written by the entry itself before it does anything else: what
+/// `entry.h`'s pairing rule ("`init` ... `deinit`", a second `init` only after
+/// `deinit`) is checked against.
+static ENTRY_INITS: AtomicU32 = AtomicU32::new(0);
+static ENTRY_DEINITS: AtomicU32 = AtomicU32::new(0);
+/// Whether `get_factory` answers null (a plugin whose factory is not there),
+/// the host's error path after a successful `init`.
+static FACTORY_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// `(inits, deinits)`: the entry calls this image has seen.
+///
+/// # Safety
+/// `inits` and `deinits` are valid for a `u32` write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_entry_calls(inits: *mut u32, deinits: *mut u32) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        *inits = ENTRY_INITS.load(Ordering::SeqCst);
+        *deinits = ENTRY_DEINITS.load(Ordering::SeqCst);
+    }
+}
+
+/// Makes the entry's `get_factory` answer null (non-zero) or the factory (0).
+///
+/// # Safety
+/// Not synchronized with a host load of this image.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tutti_test_plugin_set_factory_refused(refused: u32) {
+    FACTORY_REFUSED.store(refused != 0, Ordering::SeqCst);
+}
+
 unsafe extern "C" fn entry_init(_plugin_path: *const c_char) -> bool {
+    ENTRY_INITS.fetch_add(1, Ordering::SeqCst);
     // Read the out-of-process switches once, here, rather than per instance:
     // this runs before the factory can create anything, so no `process()` call
     // can observe a half-configured probe. Harmless in the in-process suites —
@@ -937,10 +970,12 @@ unsafe extern "C" fn entry_init(_plugin_path: *const c_char) -> bool {
     true
 }
 
-unsafe extern "C" fn entry_deinit() {}
+unsafe extern "C" fn entry_deinit() {
+    ENTRY_DEINITS.fetch_add(1, Ordering::SeqCst);
+}
 
 unsafe extern "C" fn entry_get_factory(factory_id: *const c_char) -> *const c_void {
-    if factory_id.is_null() {
+    if factory_id.is_null() || FACTORY_REFUSED.load(Ordering::SeqCst) {
         return ptr::null();
     }
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and

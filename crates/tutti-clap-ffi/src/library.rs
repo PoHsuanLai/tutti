@@ -183,12 +183,12 @@ pub fn chars_to_string(field: &[c_char]) -> String {
 /// Global registry for CLAP entry init/deinit lifecycle.
 ///
 /// The CLAP spec requires `clap_entry.init()` once when a library is first
-/// loaded and `clap_entry.deinit()` once when it is finally unloaded. Many
-/// plugins do not tolerate repeated init/deinit cycles within one process.
-/// This registry calls `init()` exactly once per library path *per loaded
-/// image*, for as long as that image stays mapped. `deinit()` is not called,
-/// matching real-world DAW behaviour where plugins run in subprocesses that
-/// exit cleanly.
+/// loaded and `clap_entry.deinit()` once when it is finally unloaded
+/// (`entry.h`: a second `init` is legal only after `deinit`). This registry
+/// calls `init()` exactly once per library path *per loaded image*, for as long
+/// as that image stays mapped, and `deinit()` once when the last claim on the
+/// image is released, while the image is still mapped, whether the claim ends
+/// with the [`Bundle`] or on an early error after a successful `init`.
 ///
 /// The value is a `Weak`, not a `bool`: `probe` dlopens a library, registers
 /// the path, reads the descriptor, then drops the library, so a plain flag
@@ -207,24 +207,42 @@ fn registry() -> MutexGuard<'static, Registry> {
 }
 
 /// Liveness token of one initialised entry: its existence proves the image
-/// is still mapped and initialised.
-struct LiveEntry;
+/// is still mapped and initialised. Its drop is the entry's `deinit`.
+struct LiveEntry {
+    deinit: Option<DeinitFn>,
+}
 
-/// RAII guard for entry lifetime. Does not deinit on drop, but releases the
-/// registry's claim that the path is initialised.
+impl Drop for LiveEntry {
+    fn drop(&mut self) {
+        if let Some(deinit) = self.deinit {
+            // SAFETY: the image's own `clap_entry.deinit`, answering the one
+            // `init` that created this token. The image is still mapped: a
+            // claim is released before the `libloading::Library` of the
+            // `Bundle` that holds it (`Bundle`'s drop and `open`'s locals drop
+            // it first), and the registry lock is held, so no opener runs
+            // `init` against this image meanwhile.
+            unsafe { deinit() };
+        }
+    }
+}
+
+/// RAII guard for entry lifetime. The last guard on an image runs its
+/// `deinit` and releases the registry's claim that the path is initialised.
 struct EntryGuard {
     _live: Arc<LiveEntry>,
 }
 
 type InitFn = unsafe extern "C" fn(*const c_char) -> bool;
+type DeinitFn = unsafe extern "C" fn();
 
 #[cfg(test)]
 fn entry_registry_acquire(
     path: &Path,
     init_fn: InitFn,
+    deinit_fn: Option<DeinitFn>,
     path_cstr: &CString,
 ) -> Result<EntryGuard, LoadError> {
-    acquire_in(&mut registry(), path, init_fn, path_cstr)
+    acquire_in(&mut registry(), path, init_fn, deinit_fn, path_cstr)
 }
 
 /// The entry claim for `path` on a registry the caller already holds locked.
@@ -240,6 +258,7 @@ fn acquire_in(
     registry: &mut Registry,
     path: &Path,
     init_fn: InitFn,
+    deinit_fn: Option<DeinitFn>,
     path_cstr: &CString,
 ) -> Result<EntryGuard, LoadError> {
     let map = registry.get_or_insert_with(HashMap::new);
@@ -251,7 +270,7 @@ fn acquire_in(
     if !unsafe { init_fn(path_cstr.as_ptr()) } {
         return Err(LoadError::EntryInit);
     }
-    let live = Arc::new(LiveEntry);
+    let live = Arc::new(LiveEntry { deinit: deinit_fn });
     map.insert(path.to_path_buf(), Arc::downgrade(&live));
     Ok(EntryGuard { _live: live })
 }
@@ -288,12 +307,14 @@ impl std::fmt::Debug for Bundle {
 impl Drop for Bundle {
     fn drop(&mut self) {
         let _registry = registry();
-        // SAFETY: each is dropped once, here, and never used again. The
-        // library goes first (the image unmaps), then the claim that the image
-        // is initialised, so no opener sees the claim outlive its image.
+        // SAFETY: each is dropped once, here, and never used again. The claim
+        // goes first: if it is the last on the image its `deinit` runs while
+        // the image is still mapped (`entry.h`), and then the library goes
+        // (the image unmaps). Both are under the registry lock, so no opener
+        // sees the claim released and the image still mapped, or the reverse.
         unsafe {
-            ManuallyDrop::drop(&mut self.library);
             ManuallyDrop::drop(&mut self._entry);
+            ManuallyDrop::drop(&mut self.library);
         }
     }
 }
@@ -343,7 +364,13 @@ impl Bundle {
         })?;
         let path_cstr = CString::new(bundle_path.to_string_lossy().as_ref())
             .map_err(|e| LoadError::InvalidPath(e.to_string()))?;
-        let entry_guard = acquire_in(&mut registry, bundle_path, init_fn, &path_cstr)?;
+        let entry_guard = acquire_in(
+            &mut registry,
+            bundle_path,
+            init_fn,
+            entry.deinit,
+            &path_cstr,
+        )?;
 
         let get_factory = entry.get_factory.ok_or(LoadError::MissingFunction {
             stage: Stage::Factory,
@@ -565,12 +592,12 @@ mod tests {
         let cstr = std::ffi::CString::new("/test/h6-reinit-after-unload.clap").unwrap();
 
         // Stands in for `probe()`: acquire, then drop (library unloaded).
-        let guard = entry_registry_acquire(path, reinit_counting_init, &cstr).unwrap();
+        let guard = entry_registry_acquire(path, reinit_counting_init, None, &cstr).unwrap();
         assert_eq!(REINIT_CALLS.load(Ordering::SeqCst), 1);
         drop(guard);
 
         // Stands in for the `load()` that follows the scan.
-        let guard = entry_registry_acquire(path, reinit_counting_init, &cstr).unwrap();
+        let guard = entry_registry_acquire(path, reinit_counting_init, None, &cstr).unwrap();
         assert_eq!(
             REINIT_CALLS.load(Ordering::SeqCst),
             2,
@@ -586,16 +613,52 @@ mod tests {
         let path = Path::new("/test/h6-shared-while-live.clap");
         let cstr = std::ffi::CString::new("/test/h6-shared-while-live.clap").unwrap();
 
-        let first = entry_registry_acquire(path, shared_counting_init, &cstr).unwrap();
-        let second = entry_registry_acquire(path, shared_counting_init, &cstr).unwrap();
+        let first = entry_registry_acquire(path, shared_counting_init, None, &cstr).unwrap();
+        let second = entry_registry_acquire(path, shared_counting_init, None, &cstr).unwrap();
         assert_eq!(SHARED_CALLS.load(Ordering::SeqCst), 1);
 
         // Dropping one of two guards must not release the claim.
         drop(first);
-        let third = entry_registry_acquire(path, shared_counting_init, &cstr).unwrap();
+        let third = entry_registry_acquire(path, shared_counting_init, None, &cstr).unwrap();
         assert_eq!(SHARED_CALLS.load(Ordering::SeqCst), 1);
         drop(second);
         drop(third);
+    }
+
+    static ORDER: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn ordered_init(_path: *const c_char) -> bool {
+        ORDER.lock().unwrap().push("init");
+        true
+    }
+
+    unsafe extern "C" fn ordered_deinit() {
+        ORDER.lock().unwrap().push("deinit");
+    }
+
+    /// `entry.h`: `deinit` answers `init`, once, when the last claim on the
+    /// image goes, and a second `init` is legal only after it. Two overlapping
+    /// claims share one `init` and one `deinit`, run when the second is
+    /// released; a later claim starts the cycle again.
+    #[test]
+    fn deinit_runs_once_when_the_last_claim_is_released_and_before_a_second_init() {
+        let path = Path::new("/test/c1-deinit-pairs-init.clap");
+        let cstr = std::ffi::CString::new("/test/c1-deinit-pairs-init.clap").unwrap();
+
+        let first =
+            entry_registry_acquire(path, ordered_init, Some(ordered_deinit), &cstr).unwrap();
+        let second =
+            entry_registry_acquire(path, ordered_init, Some(ordered_deinit), &cstr).unwrap();
+        assert_eq!(*ORDER.lock().unwrap(), ["init"]);
+        drop(first);
+        assert_eq!(*ORDER.lock().unwrap(), ["init"], "a claim is still held");
+        drop(second);
+        assert_eq!(*ORDER.lock().unwrap(), ["init", "deinit"]);
+
+        let third =
+            entry_registry_acquire(path, ordered_init, Some(ordered_deinit), &cstr).unwrap();
+        drop(third);
+        assert_eq!(*ORDER.lock().unwrap(), ["init", "deinit", "init", "deinit"]);
     }
 
     /// A failed `init` must not register the path, or the next acquire would
@@ -605,9 +668,9 @@ mod tests {
         let path = Path::new("/test/h6-failed-init.clap");
         let cstr = std::ffi::CString::new("/test/h6-failed-init.clap").unwrap();
 
-        assert!(entry_registry_acquire(path, failing_init, &cstr).is_err());
+        assert!(entry_registry_acquire(path, failing_init, None, &cstr).is_err());
 
-        let guard = entry_registry_acquire(path, after_failure_counting_init, &cstr).unwrap();
+        let guard = entry_registry_acquire(path, after_failure_counting_init, None, &cstr).unwrap();
         assert_eq!(
             AFTER_FAILURE_CALLS.load(Ordering::SeqCst),
             1,

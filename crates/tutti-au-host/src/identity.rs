@@ -48,28 +48,31 @@
 //! set. That reordering is the reason this property is worth reading at all,
 //! and it is what the round-trip test pins.
 //!
-//! # Why `kAudioUnitProperty_HostMIDIProtocol` is not here
+//! # `kAudioUnitProperty_HostMIDIProtocol` is not written
 //!
-//! It governs a delivery path this crate does not host. Apple's header
-//! specifies the order: set `HostMIDIProtocol`, then
-//! `kAudioUnitProperty_MIDIOutputEventListCallback`, then initialize. That
-//! callback is the UMP route; [`crate::midi_out`] installs the legacy
-//! `MIDIOutputCallback` instead, so there is nothing downstream of the
-//! declaration.
+//! The header's order is: set `HostMIDIProtocol`, then read
+//! `kAudioUnitProperty_AudioUnitMIDIProtocol`, then initialize, so a unit may
+//! match its input protocol to the host's and spare a conversion; and it names
+//! the protocol the host wants the unit's MIDI *output* delivered in. This host
+//! takes output through the legacy `MIDIOutputCallback` ([`crate::midi_out`]),
+//! MIDI 1.0 bytes, so MIDI 2.0 is not what it wants delivered, and writing the
+//! property at all breaks that callback: measured on macOS 26.6, once
+//! `HostMIDIProtocol` has been written (at load or at activation) a callback
+//! installed before `initialize` is refused its withdrawal with -4
+//! (`au_midi_out`'s `install_then_withdraw_leaves_the_au_renderable`). So input
+//! reads the unit's own protocol as it stands
+//! ([`AuLoaded::initialize`](crate::AuLoaded::initialize)): a unit that says
+//! MIDI 2.0 is sent UMP through `MusicDeviceMIDIEventList`, any other (MIDI 1.0,
+//! or no answer before macOS 12) keeps `MusicDeviceMIDIEvent`
+//! ([`AuProcessor::send_midi`](crate::processor::AuProcessor::send_midi)).
+//! The write belongs with the output lane that moves the output to
+//! `kAudioUnitProperty_MIDIOutputEventListCallback`, whose header order is
+//! `HostMIDIProtocol`, the callback, initialize.
 //!
-//! Do **not** justify this by comparing it to
-//! `kAudioUnitProperty_AudioUnitMIDIProtocol` (64). The two are independent by
-//! design: 64 is the AU's protocol, 65 the host's, and the framework converts
-//! between them, so 64's value says nothing about whether 65 is needed.
-//!
-//! One measured trap if this is ever implemented: the header says twice that 65
+//! The two properties are independent: 64 is the AU's protocol, 65 the host's,
+//! and the framework converts between them, so 64's value says nothing about
+//! whether 65 was needed. One trap for that lane: the header says twice that 65
 //! cannot be changed after initialize, but 0 of 55 units enforce that.
-//!
-//! The related point that *does* matter is upstream of this property:
-//! [`AuProcessor::send_midi`](crate::processor::AuProcessor::send_midi) down-converts
-//! MIDI 2.0 to MIDI 1.0 because AUv2's `MusicDeviceMIDIEvent` takes legacy
-//! channel-voice bytes and has no UMP form. Carrying MIDI 2.0 resolution into an
-//! AU requires the AUv3 event-list entry point, not this property.
 
 #![cfg(target_os = "macos")]
 

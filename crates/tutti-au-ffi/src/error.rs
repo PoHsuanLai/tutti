@@ -38,6 +38,9 @@ pub enum Error {
     /// usable (a plist that does not decode, a size the property does not
     /// have). The text says which.
     Invalid(String),
+    /// A system function this macOS does not have (one added after the host's
+    /// minimum deployment target, looked up at run time).
+    Unavailable(&'static str),
     /// A render call failed; `last` is the unit's own last-render-error
     /// property, when it reports one.
     RenderFailed {
@@ -56,7 +59,7 @@ impl Error {
         match self {
             Error::Os(e) => Some(e.status),
             Error::RenderFailed { status, .. } => Some(*status),
-            Error::Invalid(_) => None,
+            Error::Invalid(_) | Error::Unavailable(_) => None,
         }
     }
 }
@@ -66,6 +69,7 @@ impl fmt::Display for Error {
         match self {
             Error::Os(e) => e.fmt(f),
             Error::Invalid(why) => write!(f, "invalid: {why}"),
+            Error::Unavailable(function) => write!(f, "{function} is not available on this macOS"),
             Error::RenderFailed {
                 function, status, ..
             } => write!(f, "{function} failed with OSStatus {status}"),

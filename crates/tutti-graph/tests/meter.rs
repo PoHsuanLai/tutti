@@ -13,8 +13,9 @@ use tutti_graph::testing as common;
 use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
 use tutti_graph::{
-    CommitError, Cx, Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked,
-    IntoNode, Io, Level, MeterReader, Node, NodeParts, Op, Shape, Status, Transport, Unforkable,
+    CloseError, CommitError, Cx, Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget,
+    Forked, IntoNode, Io, Level, MeterReader, Node, NodeParts, Op, Shape, Status, Transport,
+    Unforkable,
 };
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_graph::{MeterId, MeterSpec, NodeKey};
@@ -343,11 +344,15 @@ fn a_closed_meter_leaves_no_op() {
     commit(&mut r);
     assert_eq!(meter_ops(&r), (never + 2, 2), "one op a meter, any width");
 
-    r.ed.close_meter(a.id());
-    r.ed.close_meter(a.id());
+    r.ed.close_meter(a.id()).unwrap();
+    assert_eq!(
+        r.ed.close_meter(a.id()),
+        Err(CloseError::Meter(a.id())),
+        "a closed meter is not open"
+    );
     commit(&mut r);
     assert_eq!(meter_ops(&r), (never + 1, 1));
-    r.ed.close_meter(MeterId(2));
+    r.ed.close_meter(MeterId(2)).unwrap();
     commit(&mut r);
     assert_eq!(meter_ops(&r), (never, 0));
     assert!(a.is_closed(), "the writer was freed with the old plan");
@@ -708,7 +713,7 @@ fn a_meter_can_be_redeclared() {
     );
     assert_eq!(level(&mut second), vec![(0.5, 0.5, 32)], "the second block");
 
-    r.ed.close_meter(MeterId(1));
+    r.ed.close_meter(MeterId(1)).unwrap();
     commit(&mut r);
     let mut third =
         r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![out(1)]))
@@ -745,7 +750,7 @@ fn a_meter_cannot_change_its_width_under_its_cells() {
             capacity: 2
         })
     );
-    r.ed.close_meter(MeterId(1));
+    r.ed.close_meter(MeterId(1)).unwrap();
 
     let _master =
         r.ed.open_meter(MeterId(2), MeterSpec::Outputs)

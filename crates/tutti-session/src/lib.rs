@@ -91,7 +91,7 @@ pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
 pub use edge::EdgeGainError;
-pub use error::{ConnectError, Error, HeardTapError, InletError, Result};
+pub use error::{ConnectError, Error, HeardTapError, InletError, RemoveError, Result};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]
@@ -110,12 +110,13 @@ pub use key::{
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi,
-    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, UmpOut, drain_receiver_through,
+    MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule, NoSuchMidiRoute, UmpOut,
+    drain_receiver_through,
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    MixRef, ModRefusal, ModState, ModTarget, Mods, ParamRef, Ranged, RouteError, Take,
-    UNRESOLVED_WARNING, declare_targets,
+    MixRef, ModRefusal, ModState, ModTarget, Mods, NoSuchModRoute, NoSuchModSource, ParamRef,
+    Ranged, RouteError, Take, UNRESOLVED_WARNING, declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
 pub use params::{ParamError, RangeError, TypedParamRef};
@@ -147,7 +148,7 @@ pub use tutti_export::{
 pub use tutti_graph::{
     BusError, BusRef, BusSource, Buses, HasParam, HasParams, MissingSource, ParamUnit, Scalar,
 };
-pub use tutti_graph::{MixError, ModeError, NodeMode, PassError};
+pub use tutti_graph::{CloseError, EventCapacity, MixError, ModeError, NodeMode, PassError};
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]

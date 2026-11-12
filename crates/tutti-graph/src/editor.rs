@@ -332,6 +332,31 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
+/// What [`Editor::close_tap`], [`Editor::close_event_tap`] and
+/// [`Editor::close_meter`] found not open: the id that was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CloseError {
+    /// No plan tap with this id is open.
+    Tap(TapId),
+    /// No event tap with this id is open.
+    EventTap(EventTapId),
+    /// No meter with this id is open.
+    Meter(MeterId),
+}
+
+impl std::fmt::Display for CloseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tap(id) => write!(f, "no tap {} is open", id.0),
+            Self::EventTap(id) => write!(f, "no event tap {} is open", id.0),
+            Self::Meter(id) => write!(f, "no meter {} is open", id.0),
+        }
+    }
+}
+
+impl std::error::Error for CloseError {}
+
 /// Why [`Editor::open_tap`], [`Editor::open_event_tap`] or
 /// [`Editor::open_meter`] refused: a source that
 /// does not exist in the spec **at the time of the call**, edits not yet
@@ -719,10 +744,19 @@ impl Editor {
 
     /// Removes a tap: its ops leave the plan at the next commit and its
     /// producers are freed on the control side.
-    pub fn close_tap(&mut self, id: TapId) {
+    ///
+    /// # Errors
+    ///
+    /// [`CloseError::Tap`] when no such tap is open (never opened, or closed
+    /// already); nothing changes.
+    pub fn close_tap(&mut self, id: TapId) -> Result<(), CloseError> {
+        if !self.spec.topology.taps.contains_key(&id) {
+            return Err(CloseError::Tap(id));
+        }
         self.pending_taps.retain(|(k, _)| *k != id);
         self.tap_readers.remove(&id);
         self.spec_mut().topology.taps.remove(&id);
+        Ok(())
     }
 
     /// Refuses a spec whose tap lanes disagree with the width the tap was
@@ -755,7 +789,8 @@ impl Editor {
             .map(|(&id, _)| id)
             .collect();
         for &id in &gone {
-            self.close_tap(id);
+            // Open: the reader table named it.
+            let _ = self.close_tap(id);
         }
         gone.len()
     }
@@ -829,10 +864,18 @@ impl Editor {
 
     /// Removes an event tap: its op leaves the plan at the next commit and
     /// its producer is freed on the control side.
-    pub fn close_event_tap(&mut self, id: EventTapId) {
+    ///
+    /// # Errors
+    ///
+    /// [`CloseError::EventTap`] when no such tap is open; nothing changes.
+    pub fn close_event_tap(&mut self, id: EventTapId) -> Result<(), CloseError> {
+        if !self.spec.topology.event_taps.contains_key(&id) {
+            return Err(CloseError::EventTap(id));
+        }
         self.pending_event_taps.retain(|(k, _)| *k != id);
         self.event_tap_readers.remove(&id);
         self.spec_mut().topology.event_taps.remove(&id);
+        Ok(())
     }
 
     /// Closes every event tap whose [`EventTapReader`] was dropped, and
@@ -847,7 +890,8 @@ impl Editor {
             .map(|(&id, _)| id)
             .collect();
         for &id in &gone {
-            self.close_event_tap(id);
+            // Open: the reader table named it.
+            let _ = self.close_event_tap(id);
         }
         gone.len()
     }
@@ -903,10 +947,18 @@ impl Editor {
     /// Removes a meter: its op leaves the plan at the next commit and its
     /// cells are freed on the control side. Its reader keeps what it held and
     /// reads silence after.
-    pub fn close_meter(&mut self, id: MeterId) {
+    ///
+    /// # Errors
+    ///
+    /// [`CloseError::Meter`] when no such meter is open; nothing changes.
+    pub fn close_meter(&mut self, id: MeterId) -> Result<(), CloseError> {
+        if !self.spec.topology.meters.contains_key(&id) {
+            return Err(CloseError::Meter(id));
+        }
         self.pending_meters.retain(|(k, _)| *k != id);
         self.meter_readers.remove(&id);
         self.spec_mut().topology.meters.remove(&id);
+        Ok(())
     }
 
     /// Refuses a spec with a meter wider than the cells it was opened with.
@@ -949,7 +1001,8 @@ impl Editor {
             .map(|(&id, _)| id)
             .collect();
         for &id in &gone {
-            self.close_meter(id);
+            // Open: the reader table named it.
+            let _ = self.close_meter(id);
         }
         gone.len()
     }

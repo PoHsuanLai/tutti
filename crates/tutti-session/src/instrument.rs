@@ -36,7 +36,7 @@ use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, At, Moment, UnitParam};
 use tutti_ump::{MidiChannel, NoteNumber, Ump};
 
-use crate::{Feeder, Graph, Key, OutPort, Session, SessionNode};
+use crate::{Feeder, Graph, Key, OutPort, RemoveError, Session, SessionNode};
 
 /// Why a node is not an instrument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -287,7 +287,7 @@ impl Session {
         match self.instrument_at(node, main) {
             Ok(handle) => Ok((handle, controls)),
             Err(e) => {
-                self.remove(node);
+                let _ = self.remove(node); // added a moment ago, so it is there
                 Err(e)
             }
         }
@@ -323,7 +323,7 @@ impl Session {
     ) -> Result<InstrumentHandle, crate::Error> {
         let node = self.add_plugin(main, loaded).map_err(crate::Error::from)?;
         self.instrument(node).inspect_err(|_| {
-            self.remove(node);
+            let _ = self.remove(node); // added a moment ago, so it is there
         })
     }
 
@@ -332,10 +332,17 @@ impl Session {
     /// added it or the caller had it, and can be made an instrument again
     /// ([`instrument`](Self::instrument)); remove it with
     /// [`Session::remove`](crate::Session::remove).
-    pub fn remove_instrument(&mut self, handle: &InstrumentHandle) {
+    ///
+    /// # Errors
+    ///
+    /// [`RemoveError::NoSuchNode`] naming the first of the queue and the strip
+    /// that is not in the graph (the handle was removed already). The other
+    /// is removed all the same.
+    pub fn remove_instrument(&mut self, handle: &InstrumentHandle) -> Result<(), RemoveError> {
         // The feed into the instrument goes with the queue (`Graph::remove`).
-        self.remove(handle.queue.erase());
-        self.remove(handle.strip.erase());
+        let queue = self.remove(handle.queue.erase());
+        let strip = self.remove(handle.strip.erase());
+        queue.and(strip)
     }
 
     fn instrument_at(

@@ -276,13 +276,15 @@ pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};
 pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, Params, param_parts};
 pub use cost::{Cost, Schedule, Work};
 pub use declare::{HasParam, HasParams, ParamUnit, Scalar};
-pub use editor::{CommitError, Editor, Limits, MAX_ROOT_CHANNELS, MissingSource};
+pub use editor::{CloseError, CommitError, Editor, Limits, MAX_ROOT_CHANNELS, MissingSource};
 pub use event::{
     Event, EventDensity, EventKind, EventOrderError, EventRejected, EventWriter, Harmony,
     HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,
     SortedEvents, SubBlocks, UmpAt, note_off_room,
 };
-pub use event_inlet::{EventInletNode, EventInletWriter, InletCounts, Refused};
+pub use event_inlet::{
+    EventCapacity, EventCapacityError, EventInletNode, EventInletWriter, InletCounts, Refused,
+};
 pub use event_tap::{EventTapReader, EventTapWriter, TapEvent};
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};

@@ -85,13 +85,13 @@ fn main() -> Result<(), tutti::Error> {
             MaxBlock::of(Samples(BLOCK)),
         )
         .expect("builds");
-    let (saw, _) = s.graph().insert(ForkByClone(Osc::saw(Hz(110.0))));
+    let (saw, _) = s.graph().add(ForkByClone(Osc::saw(Hz(110.0))));
     let (filter, _) = s.graph().add(SvfFilterNode::<f64>::new(
         SvfType::LowPass,
         Hz(1_000.0),
         Q(0.7),
     ));
-    let (kick, _) = s.graph().insert(ForkByClone(Kick));
+    let (kick, _) = s.graph().add(ForkByClone(Kick));
     s.graph()
         .set_sources(InPort::new(filter, 0), [OutPort::new(saw, 0)])
         .unwrap();

@@ -57,8 +57,8 @@ fn rig() -> Rig {
         )
         .expect("builds");
     let g = s.graph();
-    let (a, _) = g.insert(Const::mono(A));
-    let (halve, _) = g.insert(ForkByClone(Halve));
+    let (a, _) = g.add(ForkByClone(Const::mono(A)));
+    let (halve, _) = g.add(ForkByClone(Halve));
     g.set_sources_hard(InPort::new(halve, 0), [OutPort::new(a, 0)])
         .unwrap();
     g.set_sources_hard(Root::output(0), [OutPort::new(halve, 0)])
@@ -179,7 +179,7 @@ fn a_missing_node_and_a_bad_mix_are_refused() {
     }
     assert_eq!(r.s.graph_ref().mix(r.halve), Mix::new(0.5));
 
-    assert!(r.s.graph().remove(r.halve));
+    r.s.graph().remove(r.halve).unwrap();
     assert_eq!(
         r.s.graph().set_mix(r.halve, Mix::DRY),
         Err(MixError::NoSuchNode { node: r.halve })

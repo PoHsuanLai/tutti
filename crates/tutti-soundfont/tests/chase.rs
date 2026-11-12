@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Buses, Chase, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventInletNode, EventInletWriter,
-    EventKind, EventOut, Executor, Fade, Io, Node, OutPort, Prepare, Shape, Source, Status,
-    Transport, Unforkable,
+    Buses, Chase, CrossfadeCurve, Cx, Editor, EventCapacity, EventEdge, EventIn, EventInletNode,
+    EventInletWriter, EventKind, EventOut, Executor, Fade, Io, Node, OutPort, Prepare, Shape,
+    Source, Status, Transport, Unforkable,
 };
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_sf2::SoundFont;
@@ -57,7 +57,7 @@ struct Rig {
 impl Rig {
     fn new(instrument: impl tutti_graph::IntoNode) -> Self {
         let (mut ed, exec) = Editor::new(Prepare::new(RATE, MaxBlock::of(Samples(BLOCK))));
-        let (inlet, tx) = EventInletNode::pair(256);
+        let (inlet, tx) = EventInletNode::pair(EventCapacity::of(256));
         ed.insert(NodeKey(1), "inlet", Unforkable(inlet));
         ed.insert(NodeKey(2), "instrument", instrument);
         ed.spec_mut().connect_events(

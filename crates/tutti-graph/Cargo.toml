@@ -55,6 +55,8 @@ assert_no_alloc = { version = "1", default-features = false, optional = true }
 # `tutti-nodes` uses for `testing`).
 tutti-graph = { path = ".", features = ["contract", "testing"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# `check_range_contract` for `EventCapacity`, whose serde shape the test writes.
+serde = "1"
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 proptest = "1.9.0"

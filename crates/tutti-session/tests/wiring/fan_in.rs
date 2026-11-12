@@ -6,6 +6,7 @@
 //! Every figure is analytic: constants of exactly representable values, whose
 //! sum is exact in `f32`.
 
+use tutti_graph::ForkByClone;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_types::MaxBlock;
@@ -46,10 +47,10 @@ struct Rig {
 fn rig() -> Rig {
     let mut s = offline();
     let g = s.graph();
-    let (a, _) = g.insert(Const::mono(A));
-    let (b, _) = g.insert(Const::mono(B));
-    let (c, _) = g.insert(Const::mono(C));
-    let (sink, _) = g.insert(Through::mono());
+    let (a, _) = g.add(ForkByClone(Const::mono(A)));
+    let (b, _) = g.add(ForkByClone(Const::mono(B)));
+    let (c, _) = g.add(ForkByClone(Const::mono(C)));
+    let (sink, _) = g.add(ForkByClone(Through::mono()));
     g.set_sources_hard(Root::output(0), [OutPort::new(sink, 0)])
         .unwrap();
     let _ = s.update();

@@ -8,8 +8,9 @@
 //! is a tap opened after the first render and one closed by name
 //! (`Graph::close_tap`).
 
+use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
-use tutti_session::{OutPort, Root, Session};
+use tutti_session::{CloseError, OutPort, Root, Session};
 use tutti_types::{SampleRate, Samples};
 
 /// A detached one-output session playing a constant 0.25.
@@ -18,7 +19,7 @@ fn session() -> Session {
         .outputs_floor(1)
         .build_detached(SampleRate(48_000.0))
         .expect("builds");
-    let (dc, _) = s.graph().insert(Const::mono(0.25));
+    let (dc, _) = s.graph().add(ForkByClone(Const::mono(0.25)));
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
         .unwrap();
@@ -60,7 +61,12 @@ fn closing_the_tap_stops_the_copy() {
         .expect("the sources exist");
     let mut out = [0.0f32];
     s.render_frame(&mut out);
-    s.graph().close_tap(reader.id());
+    s.graph().close_tap(reader.id()).unwrap();
+    assert_eq!(
+        s.graph().close_tap(reader.id()),
+        Err(CloseError::Tap(reader.id())),
+        "a closed tap is not open"
+    );
     s.render_frame(&mut out);
     s.render_frame(&mut out);
 

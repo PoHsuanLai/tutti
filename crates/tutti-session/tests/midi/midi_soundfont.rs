@@ -22,7 +22,7 @@ use tutti_session::Root;
 use tutti_types::MaxBlock;
 
 use tutti_fixtures::midi::{note_off, note_on};
-use tutti_graph::NodeKey;
+use tutti_graph::{EventCapacity, NodeKey};
 use tutti_midi_runtime::{MidiIngestNode, TimedMidiEvent};
 use tutti_session::{EventInPort, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
@@ -200,8 +200,8 @@ fn preview_still_sounds_under_an_installed_clip() {
 fn routed_level(channel: MidiChannel) -> f32 {
     let (mut s, synth) = rig();
     // The device's inlet, wired to the ingest node's one event input.
-    let (inlet, mut device) = s.graph().open_event_inlet(64);
-    let (input, _) = s.graph().insert(MidiIngestNode::new(1));
+    let (inlet, mut device) = s.graph().open_event_inlet(EventCapacity::of(64));
+    let (input, _) = s.graph().add(MidiIngestNode::new(1));
     s.graph()
         .connect(inlet.events_out(), EventInPort::new(input, 0))
         .unwrap();

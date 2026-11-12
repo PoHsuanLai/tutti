@@ -5,6 +5,7 @@ use tutti_graph::{
     Cx, InBus, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::ChannelLayout;
+use tutti_types::UnitParam;
 use tutti_types::{AtomicF32, AtomicF64};
 
 use super::params::AttackRelease;
@@ -13,7 +14,7 @@ use tutti_dsp::{GateBlock, GateKernel};
 use tutti_types::{Db, Param, SampleRate, Seconds, Tail};
 
 use crate::buses::keyed;
-use crate::ramp::{LastGood, block_driven};
+use crate::ramp::LastGood;
 
 /// Shared gate state used by the per-sample gain computation.
 #[derive(Clone, Debug)]
@@ -390,12 +391,18 @@ impl Node for GateNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        self.core
-            .update_coefficients([block_driven(&io, 1), block_driven(&io, 2)]);
+        self.core.update_coefficients([
+            self.declared_param::<{ UnitParam::Attack as u16 }>(&io)
+                .last_frame(),
+            self.declared_param::<{ UnitParam::Release as u16 }>(&io)
+                .last_frame(),
+        ]);
         let block = self.core.begin_block();
         // A modulated threshold overrides the cell per sample; the cell is
         // the base the graph's modulation rides on.
-        let threshold_fed = io.param(0).frames();
+        let threshold_fed = self
+            .declared_param::<{ UnitParam::Threshold as u16 }>(&io)
+            .frames();
         let (inputs, mut outputs) = io.split();
 
         // Detector sample-outer (a recursive envelope with a hold counter),

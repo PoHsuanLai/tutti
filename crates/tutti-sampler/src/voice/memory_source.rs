@@ -15,6 +15,7 @@ use tutti_graph::{
     param_parts,
 };
 use tutti_transport::TempoReader;
+use tutti_types::UnitParam;
 use tutti_types::{
     Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
     SamplePosition, SampleRate, Samples, SrcRatio, Tail,
@@ -190,7 +191,7 @@ impl Default for MemorySourceConfig {
 /// # As a graph node
 ///
 /// A graph [`Node`]: no inputs, [`channels`](Self::channels) outputs. It is
-/// a [`ParamNode`] whose one param is its gain ([`UnitParam::Volume`](tutti_types::UnitParam::Volume)), so it
+/// a [`ParamNode`] whose one param is its gain ([`UnitParam::Volume`]), so it
 /// goes in through [`param_parts`]: its controls are that [`ParamSet`], and a
 /// fork of it ([`fork_fresh`](ParamNode::fork_fresh)) shares nothing — its own
 /// gain cell at the authored value — and plays on its render's `Env`.
@@ -1569,10 +1570,9 @@ impl Node for MemorySource {
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        self.driven_gain = io
-            .param(0)
-            .frames()
-            .and_then(|v| v.last().copied())
+        self.driven_gain = self
+            .declared_param::<{ UnitParam::Volume as u16 }>(&io)
+            .last_frame()
             .map(|v| Amplitude(v.max(0.0)));
         // Lent for the block and given back after it: the render borrows the
         // whole source.
@@ -1633,7 +1633,7 @@ tutti_graph::declare_params!([] MemorySource, n {
 });
 
 impl ParamNode for MemorySource {
-    /// Its gain, as [`UnitParam::Volume`](tutti_types::UnitParam::Volume).
+    /// Its gain, as [`UnitParam::Volume`].
     fn param_set(&self) -> ParamSet {
         self.declared_set()
     }

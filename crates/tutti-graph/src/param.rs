@@ -330,6 +330,15 @@ pub enum ParamInput<'a> {
 }
 
 impl<'a> ParamInput<'a> {
+    /// The value on the block's **last** frame, when modulated: what a
+    /// block-rate control reads, and where a block-rate cell's own ramp ends.
+    /// `None`: nothing modulates it, read the cell.
+    #[inline]
+    #[must_use]
+    pub fn last_frame(self) -> Option<f32> {
+        self.frames().and_then(|v| v.last().copied())
+    }
+
     /// The per-frame values, when modulated.
     #[inline]
     #[must_use]

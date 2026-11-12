@@ -30,6 +30,7 @@ use std::sync::Arc;
 use tutti_dsp::{ShapeKind, Shaper};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::AtomicF32;
+use tutti_types::UnitParam;
 use tutti_types::{ChannelLayout, Drive, Param, Tail};
 
 /// Stereo waveshaping distortion. 2 inputs, 2 outputs.
@@ -166,7 +167,9 @@ impl Node for DistortionNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let drive = io.param(0).frames();
+        let drive = self
+            .declared_param::<{ UnitParam::Drive as u16 }>(&io)
+            .frames();
         let (inputs, mut outputs) = io.split();
         // Both paths are channel-major, each loop compiled for its curve
         // (`ShapeKind::shape_block` and friends). The curve is memoryless, so a sample's value depends

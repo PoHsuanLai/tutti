@@ -1,7 +1,7 @@
 //! The mixer strip — volume and stereo balance — as one addressable unit.
 //!
 //! A mixer bus applies two things to a summed signal: a fader and a balance.
-//! [`BusStripNode`] is both in one node, addressed by [`UnitParam`](tutti_types::UnitParam) through
+//! [`BusStripNode`] is both in one node, addressed by [`UnitParam`] through
 //! the [`ParamSet`] it is inserted with, so a host sets it with the same
 //! generic machinery it uses for a filter cutoff and needs no downcast. A
 //! strip's mute is not here: muting is graph state, `NodeMode::Muted`
@@ -9,7 +9,7 @@
 //! are graph state").
 //!
 //! Every scalar lives in a cell the node's [`ParamSet`] addresses by
-//! [`UnitParam`](tutti_types::UnitParam) — the same shape every other node in this crate uses — so a
+//! [`UnitParam`] — the same shape every other node in this crate uses — so a
 //! host has one param path to the strip, not a second set of handles beside
 //! it.
 //!
@@ -36,6 +36,7 @@ use tutti_dsp::balance_gains;
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::UnitParam;
 use tutti_types::{Amplitude, ChannelLayout, Pan, Param, Tail};
 
 // The params a [`BusStripNode`] lets the graph modulate, in port order.
@@ -52,8 +53,8 @@ tutti_graph::declare_params!([] BusStripNode, n {
 /// There is deliberately no mute: it is `NodeMode::Muted`, which the graph
 /// holds for any node.
 ///
-/// Params, by address through its [`ParamSet`]: [`UnitParam::Volume`](tutti_types::UnitParam::Volume) (linear
-/// amplitude) and [`UnitParam::Pan`](tutti_types::UnitParam::Pan) (`-1..1`). The set refuses anything
+/// Params, by address through its [`ParamSet`]: [`UnitParam::Volume`] (linear
+/// amplitude) and [`UnitParam::Pan`] (`-1..1`). The set refuses anything
 /// else, which is what lets a host push params without knowing the node type.
 ///
 /// Every control is read **once per block**; no cell is loaded per sample.
@@ -391,7 +392,12 @@ impl Node for BusStripNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let (volume, pan) = (io.param(0).frames(), io.param(1).frames());
+        let (volume, pan) = (
+            self.declared_param::<{ UnitParam::Volume as u16 }>(&io)
+                .frames(),
+            self.declared_param::<{ UnitParam::Pan as u16 }>(&io)
+                .frames(),
+        );
         let (inputs, mut outputs) = io.split();
         self.render(&inputs, &mut outputs, size, volume, pan);
         Status::Modified

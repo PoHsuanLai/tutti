@@ -18,7 +18,8 @@ use tutti_types::{
 };
 
 use crate::controls::{ParamSet, Params};
-use crate::param::{MAX_PARAM_PORTS, ParamPorts};
+use crate::io::Io;
+use crate::param::{MAX_PARAM_PORTS, ParamInput, ParamPorts};
 
 mod sealed {
     pub trait Sealed {}
@@ -248,6 +249,35 @@ pub fn base(walk: impl FnOnce(Visit<'_>) -> bool, k: usize) -> Option<f32> {
     found
 }
 
+/// The block's read of the param declared at `addr`: the port its row is,
+/// counted among the declaration's ports as [`ports`] counts them, so a
+/// reordered row moves the read with it. A param the node has no port for
+/// (a row after a `;`, or an `Option` cell that is `None`) reads
+/// [`ParamInput::Base`].
+#[doc(hidden)]
+pub fn input<'a>(
+    walk: impl FnOnce(Visit<'_>) -> bool,
+    io: &Io<'a>,
+    p: u16,
+    index: u8,
+) -> ParamInput<'a> {
+    let addr = UnitAddr::try_from(p | u16::from(index) << 8)
+        .expect("`HasParam<P>` is declared only for a `UnitParam` kind");
+    let (mut next, mut found) = (0, None);
+    walk(&mut |row| {
+        if !row.port {
+            return true;
+        }
+        if row.addr == addr {
+            found = Some(next);
+            return false;
+        }
+        next += 1;
+        true
+    });
+    found.map_or(ParamInput::Base, |k| io.param(k))
+}
+
 /// Declares a node's params once, next to its cells: what a host reaches by
 /// address (its [`ParamSet`]), what the graph may modulate (its shape's
 /// ports), and the unit each is in (a typed key's
@@ -314,6 +344,48 @@ pub fn base(walk: impl FnOnce(Visit<'_>) -> bool, k: usize) -> Option<f32> {
 /// `declared_base` (port `k`'s cell value, for
 /// [`Node::param_base`](crate::Node::param_base)), and the type's
 /// [`HasParam`] impls.
+///
+/// # Reading a driven param
+///
+/// `process` reads a param through the declaration, never by a port index:
+/// `declared_param::<{ UnitParam::Cutoff as u16 }>(&io)` (`declared_param_at`
+/// with the group's `index` for a repeated kind) is the [`ParamInput`] of the
+/// port whose row names that kind, so reordering or inserting a row moves the
+/// read with it. A kind the node does not declare does not compile. It walks
+/// the rows (a handful of loads), so read it once per block, not per frame.
+///
+/// ```
+/// use tutti_graph::{declare_params, Cx, Io, Node, Prepare, Shape, Status};
+/// use tutti_types::{Amplitude, ChannelLayout, Hz, Param, UnitParam};
+///
+/// struct Tone {
+///     level: Param<Amplitude>,
+///     freq: Param<Hz>,
+/// }
+///
+/// // Declared in this order; the reads below do not depend on it.
+/// declare_params!([] Tone, n {
+///     Cutoff => Hz = &n.freq,
+///     Volume => Amplitude = &n.level,
+/// });
+///
+/// impl Node for Tone {
+///     fn shape(&self) -> Shape {
+///         Shape::source_unassigned(ChannelLayout::MONO)
+///             .with_param_addrs(self.declared_ports().as_slice())
+///     }
+///     fn prepare(&mut self, _: &Prepare) {}
+///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+///         let level = self
+///             .declared_param::<{ UnitParam::Volume as u16 }>(&io)
+///             .last_frame()
+///             .unwrap_or_else(|| self.level.load().get());
+///         io.output(0).fill(level);
+///         Status::Modified
+///     }
+///     fn reset(&mut self) {}
+/// }
+/// ```
 #[macro_export]
 macro_rules! declare_params {
     ([$($g:tt)*] $ty:ty, $n:ident { $($rows:tt)* }) => {
@@ -341,6 +413,34 @@ macro_rules! declare_params {
             #[allow(dead_code)]
             fn declared_base(&self, k: usize) -> Option<f32> {
                 $crate::__private::base(|visit| self.declared_visit(visit), k)
+            }
+
+            /// What this block reads for the param of kind `P` (a
+            /// `UnitParam` as `u16`), through the port its row declares.
+            /// Does not compile for a kind the node does not declare.
+            #[allow(dead_code)]
+            fn declared_param<'a, const P: u16>(
+                &self,
+                io: &$crate::Io<'a>,
+            ) -> $crate::ParamInput<'a>
+            where
+                Self: $crate::HasParam<P>,
+            {
+                $crate::__private::input(|visit| self.declared_visit(visit), io, P, 0)
+            }
+
+            /// [`declared_param`](Self::declared_param) for the group row
+            /// `index` of kind `P` (a band's threshold).
+            #[allow(dead_code)]
+            fn declared_param_at<'a, const P: u16>(
+                &self,
+                io: &$crate::Io<'a>,
+                index: u8,
+            ) -> $crate::ParamInput<'a>
+            where
+                Self: $crate::HasParams<P>,
+            {
+                $crate::__private::input(|visit| self.declared_visit(visit), io, P, index)
             }
         }
         $crate::declare_params!(@has [$($g)*] $ty; [] $($rows)*);

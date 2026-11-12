@@ -126,6 +126,7 @@ fn read_param_ranges(main: &MainThread, inner: &ClapLoaded) -> Vec<ParamBounds> 
             min: p.min_value,
             max: p.max_value,
             stepped: p.flags.contains(ClapParamFlags::STEPPED),
+            read_only: p.flags.contains(ClapParamFlags::READONLY),
         })
         .collect();
     ranges.sort_unstable_by_key(|b| b.id);
@@ -144,7 +145,11 @@ impl Editor for ClapEditor {
         // matching the loader: `ParamRange::Normalized` means there is nothing
         // to convert against, and inventing `0..=1` would rescale a parameter
         // the plugin never described.
-        let plain = match lookup_range(&self.param_ranges, id.get()) {
+        let bounds = lookup_range(&self.param_ranges, id.get());
+        if bounds.is_some_and(|b| b.read_only) {
+            return;
+        }
+        let plain = match bounds {
             Some(b) => b.plain(value.get()),
             None => value.get(),
         };

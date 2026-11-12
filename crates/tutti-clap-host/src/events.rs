@@ -67,6 +67,9 @@ pub struct ParamBounds {
     pub max: f64,
     /// `CLAP_PARAM_IS_STEPPED`.
     pub stepped: bool,
+    /// `CLAP_PARAM_IS_READONLY`: "the parameter can't be changed by the host",
+    /// so no value is ever written to it.
+    pub read_only: bool,
 }
 
 impl ParamBounds {
@@ -78,6 +81,7 @@ impl ParamBounds {
             min,
             max,
             stepped: false,
+            read_only: false,
         }
     }
 
@@ -89,7 +93,15 @@ impl ParamBounds {
             min,
             max,
             stepped: true,
+            read_only: false,
         }
+    }
+
+    /// This parameter, read-only (`CLAP_PARAM_IS_READONLY`).
+    #[must_use]
+    pub const fn with_read_only(mut self) -> Self {
+        self.read_only = true;
+        self
     }
 
     /// The entry for `id` in a table sorted by id.
@@ -1400,6 +1412,10 @@ impl InputEventList {
             if range.is_none() && plugin_claims_params {
                 continue;
             }
+            // `params.h`: a read-only parameter "can't be changed by the host".
+            if range.is_some_and(|b| b.read_only) {
+                continue;
+            }
             let mut pushed_here = false;
             for point in &queue.points {
                 let value = match range {
@@ -1451,6 +1467,9 @@ impl InputEventList {
         plugin_claims_params: bool,
     ) -> &mut Self {
         let range = ParamBounds::find(ranges, param_id);
+        if range.is_some_and(|b| b.read_only) {
+            return self;
+        }
         let plain = match range {
             Some(bounds) => bounds.plain(value),
             // No table entry and the plugin claims parameters: the table is

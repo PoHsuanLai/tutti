@@ -647,6 +647,66 @@ fn a_stepped_parameter_set_from_the_control_thread_reaches_that_position() {
     }
 }
 
+fn set_readonly_param(id: u32) {
+    type F = unsafe extern "C" fn(u32);
+    unsafe {
+        let lib = libloading::Library::new(tutti_fixtures::clap_probe())
+            .expect("re-open reference plugin");
+        let f: libloading::Symbol<F> = lib
+            .get(b"tutti_test_plugin_set_readonly_param\0")
+            .expect("readonly switch present");
+        f(id);
+    }
+}
+
+/// `params.h`: `CLAP_PARAM_IS_READONLY` is "the parameter can't be changed by
+/// the host". A value the host's automation carries for such a parameter is not
+/// sent; the other parameters of the same block still are.
+#[test]
+fn automation_is_not_written_to_a_read_only_parameter() {
+    let probe = Probe::acquire();
+    // After the load: with no handle open, the switch's own would be the last
+    // and closing it would unload the image and reset the switch.
+    let loaded = probe.load();
+    set_readonly_param(param(0).id);
+    let mut inst = loaded
+        .activate_at::<f32>(48_000.0, 512)
+        .map_err(|(_, e)| e)
+        .expect("activates");
+    let (ro, rw) = (param(0), param(1));
+
+    let mut params = ParameterChanges::reserved(2, 1);
+    params.add_change(ro.id.into(), 0, 0.5);
+    params.add_change(rw.id.into(), 0, 0.5);
+    let ctx = ClapProcessContext {
+        params: Some(&params),
+        ..Default::default()
+    };
+    drive_block(&mut inst, 64, &ctx);
+
+    let cap = read_process_capture();
+    assert_eq!(cap.event_count, 1, "only the writable parameter's value");
+    assert_eq!(cap.events[0].param_id, rw.id);
+    set_readonly_param(u32::MAX);
+}
+
+/// The control thread's `set_parameter` does not write a read-only parameter
+/// either, and still writes a writable one.
+#[test]
+fn set_parameter_does_not_write_a_read_only_parameter() {
+    let probe = Probe::acquire();
+    let mut loaded = probe.load();
+    set_readonly_param(param(0).id);
+    let n = Normalized::new(0.5).expect("on 0..=1");
+
+    Control::set_parameter(&mut loaded, &main_thread(), param(0).id.into(), n);
+    assert_eq!(probe.capture().flush_event_count, 0, "a read-only value");
+
+    Control::set_parameter(&mut loaded, &main_thread(), param(1).id.into(), n);
+    assert_eq!(probe.capture().flush_event_count, 1, "a writable one");
+    set_readonly_param(u32::MAX);
+}
+
 // ---------------------------------------------------------------------------
 // Plugin → host parameter output
 // ---------------------------------------------------------------------------

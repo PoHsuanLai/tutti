@@ -261,6 +261,7 @@ impl ClapLoaded {
                 min: p.min_value,
                 max: p.max_value,
                 stepped: p.flags.contains(ClapParamFlags::STEPPED),
+                read_only: p.flags.contains(ClapParamFlags::READONLY),
             })
             .collect();
         // Sorted by id: `add_param_changes` finds each queue's range by

@@ -298,7 +298,12 @@ impl Control for ClapLoaded {
     /// Applied now, as a flushed `PARAM_VALUE` event. CLAP events carry the
     /// plain value, so the declared range denormalizes it.
     fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
-        let plain = denormalize(self.parameter_bounds(main, id.get()), value);
+        let bounds = self.parameter_bounds(main, id.get());
+        // A read-only parameter "can't be changed by the host" (`params.h`).
+        if bounds.is_some_and(|b| b.read_only) {
+            return;
+        }
+        let plain = denormalize(bounds, value);
         self.set_plain_value(main, id.get(), plain);
     }
 

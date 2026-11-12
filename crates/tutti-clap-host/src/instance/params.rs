@@ -177,6 +177,7 @@ impl ClapLoaded {
                     min: info.min_value,
                     max: info.max_value,
                     stepped: info.flags.contains(ClapParamFlags::STEPPED),
+                    read_only: info.flags.contains(ClapParamFlags::READONLY),
                 });
             }
         }

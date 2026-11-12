@@ -14,7 +14,8 @@ use tutti_midi_file::{
 };
 use tutti_types::{Beat, Bpm};
 use tutti_ump::{
-    Address, Message, MidiChannel, MidiGroup, NoteNumber, SysexStatus, U7, Ump, Voice1,
+    Address, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, SysexStatus, U7, Ump,
+    Voice1,
 };
 
 const TPQ: u16 = 480;
@@ -262,7 +263,11 @@ fn a_format_2_file_has_no_timeline_but_each_track_has() {
 #[test]
 fn a_clip_files_timeline_is_its_packets_as_stored_without_the_header() {
     let program = Message::program_change2(MidiChannel::FIRST, U7::of(5));
-    let note = Message::note_on2(MidiChannel::FIRST, NoteNumber::of(60), 0xFFFF);
+    let note = Message::note_on2(
+        MidiChannel::FIRST,
+        NoteNumber::of(60),
+        NoteVelocity::new(0xFFFF),
+    );
     let track = Track {
         header: vec![(Tick(0), program.into())],
         events: vec![(Tick(240), note.into())],

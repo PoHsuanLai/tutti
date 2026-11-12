@@ -7,8 +7,8 @@ use tutti_midi_protocol::{
 };
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, WireMidi, plugin_note_id};
 use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, SysexMessage, Ump,
-    Voice1, Voice2,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity, Rpn,
+    SysexMessage, Ump, Voice1, Voice2,
 };
 use tutti_voicing::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 
@@ -229,7 +229,7 @@ impl MidiEncoder {
             // matched by channel and pitch, as MIDI's is.
             Voice2::NoteOff { note, velocity, .. } => {
                 if let Some(bus) = self.bus_of(address) {
-                    let off = note_off(offset, address.channel, note, velocity);
+                    let off = note_off(offset, address.channel, note, velocity.get());
                     self.out.push(on_bus(off, bus));
                 }
             }
@@ -275,7 +275,7 @@ impl MidiEncoder {
                     // note-on that cannot be 0 (velocity 0 -> 1). CLAP carries the
                     // 0. A widened MIDI 1.0 Note On at velocity 0 never gets here:
                     // it arrives as a Note Off.
-                    let velocity = velocity.map_or(1, |v| v.max(1));
+                    let velocity = velocity.map_or(1, |v| v.get().max(1));
                     self.out.push(on_bus(
                         note_on(offset, channel, note, velocity, plugin_note_id(id)),
                         bus,
@@ -464,11 +464,17 @@ pub(super) fn decode(event: &Event) -> Option<WireMidi> {
     let built = match &event.payload {
         Payload::NoteOn(e) => Ump::from(Message::Midi2(
             address(group, e.channel),
-            Voice2::note_on(note_number(e.pitch), unit_f32_to_u16(e.velocity)),
+            Voice2::note_on(
+                note_number(e.pitch),
+                NoteVelocity::new(unit_f32_to_u16(e.velocity)),
+            ),
         )),
         Payload::NoteOff(e) => Ump::from(Message::Midi2(
             address(group, e.channel),
-            Voice2::note_off(note_number(e.pitch), unit_f32_to_u16(e.velocity)),
+            Voice2::note_off(
+                note_number(e.pitch),
+                NoteVelocity::new(unit_f32_to_u16(e.velocity)),
+            ),
         )),
         Payload::PolyPressure(e) => Ump::from(Message::Midi2(
             address(group, e.channel),

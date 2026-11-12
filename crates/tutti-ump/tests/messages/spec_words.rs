@@ -10,7 +10,7 @@ use tutti_ump::{
     CCNumber, ChordBass, ChordName, ChordPitch, ChordType, Data128, DeltaTicks, DeviceIdentity,
     Direction, DiscoveryFilter, EndpointInfo, FirstGroup, Flex, FlexAddress, FlexTextKind, Form,
     FunctionBlockId, FunctionBlockInfo, GroupSpan, KeySignature, Letter, Message, Metronome,
-    Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, Protocol,
+    Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, NoteVelocity, Protocol,
     RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, Sysex7Packet, Sysex8Packet,
     SysexStatus, System, TimeSignature, U4, U7, U14, UiHint, Ump, UmpVersion, Utility, Voice1,
     Voice2,
@@ -256,7 +256,7 @@ fn midi2_note_and_pressure() {
         [0x4192_3C03, 0xABCD_1234, 0, 0],
         v(Voice2::NoteOn {
             note: note(60),
-            velocity: 0xABCD,
+            velocity: NoteVelocity::new(0xABCD),
             attribute: Attribute::Pitch(0x1234),
         }),
     );
@@ -264,7 +264,7 @@ fn midi2_note_and_pressure() {
         [0x4182_3C00, 0x8000_0000, 0, 0],
         v(Voice2::NoteOff {
             note: note(60),
-            velocity: 0x8000,
+            velocity: NoteVelocity::new(0x8000),
             attribute: Attribute::None,
         }),
     );
@@ -272,7 +272,7 @@ fn midi2_note_and_pressure() {
         [0x4192_3C01, 0x0000_BEEF, 0, 0],
         v(Voice2::NoteOn {
             note: note(60),
-            velocity: 0,
+            velocity: NoteVelocity::MIN,
             attribute: Attribute::Manufacturer(0xBEEF),
         }),
     );
@@ -280,7 +280,7 @@ fn midi2_note_and_pressure() {
         [0x4182_3C02, 0x1111_2222, 0, 0],
         v(Voice2::NoteOff {
             note: note(60),
-            velocity: 0x1111,
+            velocity: NoteVelocity::new(0x1111),
             attribute: Attribute::Profile(0x2222),
         }),
     );

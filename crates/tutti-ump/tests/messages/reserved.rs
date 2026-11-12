@@ -14,9 +14,9 @@
 use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, BlockSelect, ChordBass, ChordName,
     ChordPitch, ChordType, Direction, EndpointInfo, Flex, FlexAddress, FlexTextKind, Form,
-    KeySignature, Letter, Message, Midi1Port, MidiChannel, MidiGroup, NoteNumber, Protocol,
-    RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, U4, U7, Ump, UmpVersion,
-    Unknown, Utility, Voice2,
+    KeySignature, Letter, Message, Midi1Port, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
+    Protocol, RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, U4, U7, Ump,
+    UmpVersion, Unknown, Utility, Voice2,
 };
 
 /// `dirty` decodes to the message `clean` encodes, and re-encoding gives
@@ -242,7 +242,7 @@ fn reserved_values_are_kept() {
             },
             Voice2::NoteOn {
                 note: n(60),
-                velocity: 0xABCD,
+                velocity: NoteVelocity::new(0xABCD),
                 attribute: Attribute::Reserved {
                     kind: 4,
                     data: 0x1234,
@@ -259,7 +259,7 @@ fn reserved_values_are_kept() {
             },
             Voice2::NoteOff {
                 note: n(60),
-                velocity: 1,
+                velocity: NoteVelocity::new(1),
                 attribute: Attribute::Reserved {
                     kind: 0xFF,
                     data: 0xFFFF,

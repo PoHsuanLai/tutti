@@ -43,8 +43,8 @@ use tutti_midi_protocol::{
     Narrower, PitchBendSensitivity, narrow, u16_to_unit_f32, u32_to_unit_f32, widen, widen_bytes,
 };
 use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Rpn, SysexAssembler,
-    SysexStep, U7, Ump, Voice1, Voice2,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity, Rpn,
+    SysexAssembler, SysexStep, U7, Ump, Voice1, Voice2,
 };
 use tutti_voicing::{NoteControl, NoteEvent, PerNoteState};
 
@@ -672,7 +672,10 @@ impl ClapEvent {
                     offset: e.header.time,
                     ump: voice2(
                         channel,
-                        Voice2::note_on(note, unit_f32_to_u16(e.velocity as f32)),
+                        Voice2::note_on(
+                            note,
+                            NoteVelocity::new(unit_f32_to_u16(e.velocity as f32)),
+                        ),
                     ),
                 })
             }
@@ -684,7 +687,10 @@ impl ClapEvent {
                     offset: e.header.time,
                     ump: voice2(
                         channel,
-                        Voice2::note_off(note, unit_f32_to_u16(e.velocity as f32)),
+                        Voice2::note_off(
+                            note,
+                            NoteVelocity::new(unit_f32_to_u16(e.velocity as f32)),
+                        ),
                     ),
                 })
             }
@@ -1286,7 +1292,7 @@ impl InputEventList {
                     time,
                     i16::from(address.channel.get()),
                     i16::from(note.get()),
-                    f64::from(u16_to_unit_f32(velocity)),
+                    f64::from(u16_to_unit_f32(velocity.get())),
                 )
                 .addressed(port, -1);
                 let off = if self.midi_ports >> port & 1 != 0 {
@@ -1389,7 +1395,7 @@ impl InputEventList {
                     time,
                     i16::from(channel.get()),
                     i16::from(note.get()),
-                    velocity.map_or(0.0, |v| f64::from(u16_to_unit_f32(v))),
+                    velocity.map_or(0.0, |v| f64::from(u16_to_unit_f32(v.get()))),
                 )
                 .into_midi_dialect(port, None),
                 (Voice2::PolyPressure { .. }, _) => narrow(voice)
@@ -1420,7 +1426,7 @@ impl InputEventList {
                         time,
                         i16::from(channel.get()),
                         i16::from(note.get()),
-                        velocity.map_or(0.0, |v| f64::from(u16_to_unit_f32(v))),
+                        velocity.map_or(0.0, |v| f64::from(u16_to_unit_f32(v.get()))),
                     )
                     .addressed(port, plugin_note_id(id));
                     push(&mut self.events, Some(on));
@@ -2325,7 +2331,7 @@ mod tests {
             | Voice2::AssignablePerNote { note, .. } => note,
             _ => return None,
         };
-        let on = Message::Midi2(address, Voice2::note_on(note, 0x8000));
+        let on = Message::Midi2(address, Voice2::note_on(note, NoteVelocity::new(0x8000)));
         Some((event.0, Ump::from(on)))
     }
 
@@ -2587,7 +2593,7 @@ mod tests {
         match message(&midi) {
             Message::Midi2(address, Voice2::NoteOff { note, velocity, .. }) => {
                 assert_eq!((address.channel.get(), note.get()), (3, 61));
-                assert_eq!(velocity, fx::MID_VELOCITY);
+                assert_eq!(velocity, NoteVelocity::new(fx::MID_VELOCITY));
             }
             other => panic!("expected a MIDI 2.0 Note Off, got {other:?}"),
         }
@@ -3763,7 +3769,7 @@ mod tests {
         let midi = clap.to_midi().expect("note off -> midi");
         match message(&midi) {
             Message::Midi2(_, Voice2::NoteOff { velocity, .. }) => {
-                let vel = u16_to_unit_f32(velocity);
+                let vel = u16_to_unit_f32(velocity.get());
                 assert!((vel - 0.5).abs() < 0.01, "release velocity {vel}");
             }
             other => panic!("expected CV2 NoteOff, got {other:?}"),
@@ -3847,7 +3853,7 @@ mod tests {
             Message::Midi2(address, Voice2::NoteOn { note, velocity, .. }) => {
                 assert_eq!(address.channel.get(), 2);
                 assert_eq!(note.get(), 64);
-                let velocity = u16_to_unit_f32(velocity);
+                let velocity = u16_to_unit_f32(velocity.get());
                 assert!((velocity - 0.75).abs() < 0.01, "velocity {velocity}");
             }
             other => panic!("expected CV2 NoteOn, got {other:?}"),

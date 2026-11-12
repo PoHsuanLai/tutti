@@ -569,7 +569,7 @@ let synth = s.add_plugin(done)?;             // main thread: NodeKey; controls a
 **MIDI.**
 
 ```rust
-let live = s.midi().live_input(synth)?;           // an event inlet fed into synth; returns a LiveInput
+let keys = s.midi().input(synth)?;                  // an event inlet fed into synth; returns its MidiKeys
 s.midi().play_clip(synth, events)?;               // one MidiClipNode per target, updated in place
 s.midi().route(MidiRouteRule::any_channel().to(synth)); // `midi-hardware`
 ```

@@ -12,7 +12,7 @@ use tutti_graph::{
 use tutti_midi_protocol::MpeMode;
 use tutti_session::{MidiError, Session, SessionInstrument, SessionNode, TakePlacement};
 use tutti_types::{ChannelLayout, Frame, InterleavedMut, MaxBlock, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, Ump};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Ump};
 
 const RATE: f64 = 48_000.0;
 
@@ -84,7 +84,7 @@ impl Node for Latent {
 
 /// **A take reads what was played through the live input, frame for frame, and
 /// the target still hears it.** A note on at frame 600 and off at 900, sent
-/// through `live_input`, are what `record`'s reader drains: the packets as
+/// through `input`, are what `record`'s reader drains: the packets as
 /// sent, on those frames, in order (the frames are the graph's own, **not**
 /// delayed by the 256 frames of latency another path of this graph has); a
 /// second drain is empty; and the tap target heard both as well.
@@ -99,10 +99,11 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
         .midi()
         .record(target, EventCapacity::of(64))
         .expect("the tap takes MIDI");
-    let live = s.midi().live_input(target).expect("the same live input");
+    let mut live = s.midi().input(target).expect("the take left the keys");
     let _ = s.update();
     let (c, k) = (MidiChannel::of(2), NoteNumber::of(60));
-    live.note_on(Frame(600), c, k, 0x8000).unwrap();
+    live.note_on(Frame(600), c, k, NoteVelocity::new(0x8000))
+        .unwrap();
     live.note_off(Frame(900), c, k).unwrap();
     blocks(&s, 3);
 

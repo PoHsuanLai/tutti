@@ -3,8 +3,10 @@
 //! core rules of section 3.2, each over every value (128 seven-bit values and
 //! 16,384 fourteen-bit values).
 
-use tutti_midi_protocol::widen;
-use tutti_ump::{Address, Attribute, CCNumber, Message, NoteNumber, U7, U14, Ump, Voice1, Voice2};
+use tutti_midi_protocol::{narrow_velocity, widen, widen_velocity};
+use tutti_ump::{
+    Address, Attribute, CCNumber, Message, NoteNumber, NoteVelocity, U7, U14, Ump, Voice1, Voice2,
+};
 
 /// M2-115 section 3.3 stated bit by bit: up to the centre a left shift; above
 /// it, the low `src - 1` bits repeated, most significant first, into the
@@ -31,7 +33,7 @@ fn velocity(v: u8) -> u16 {
         note: NoteNumber::of(60),
         velocity: U7::of(v),
     }) {
-        Voice2::NoteOff { velocity, .. } => velocity,
+        Voice2::NoteOff { velocity, .. } => velocity.get(),
         other => panic!("{other:?}"),
     }
 }
@@ -66,6 +68,21 @@ fn m2_115_table_5_velocity() {
         (127, 0xFFFF),
     ] {
         assert_eq!(velocity(v), want, "velocity {v}");
+    }
+}
+
+/// `widen_velocity`, the public door of the same scaling, at the anchors of
+/// M2-115 section 3.2 (the minimum, the centre and the maximum keep their
+/// places) and at Table 5's rows; `narrow_velocity` inverts it on every 7-bit
+/// value.
+#[test]
+fn widen_velocity_keeps_the_anchors_and_narrow_inverts_it() {
+    for (v, want) in [(0, 0x0000), (5, 0x0A00), (64, 0x8000), (127, 0xFFFF)] {
+        assert_eq!(widen_velocity(U7::of(v)), NoteVelocity::new(want), "{v}");
+    }
+    for v in 0..=127 {
+        assert_eq!(narrow_velocity(widen_velocity(U7::of(v))), U7::of(v));
+        assert_eq!(widen_velocity(U7::of(v)).get(), velocity(v), "{v}");
     }
 }
 
@@ -145,7 +162,7 @@ fn a_note_on_at_velocity_0_is_a_note_off_at_the_centre() {
         }),
         Voice2::NoteOff {
             note: NoteNumber::of(60),
-            velocity: 0x8000,
+            velocity: NoteVelocity::new(0x8000),
             attribute: Attribute::None,
         }
     );
@@ -156,7 +173,7 @@ fn a_note_on_at_velocity_0_is_a_note_off_at_the_centre() {
         }),
         Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity: 0x0200,
+            velocity: NoteVelocity::new(0x0200),
             attribute: Attribute::None,
         }
     );
@@ -168,7 +185,7 @@ fn a_note_on_at_velocity_0_is_a_note_off_at_the_centre() {
             }),
             Voice2::NoteOn {
                 note: NoteNumber::of(61),
-                velocity: velocity(v),
+                velocity: NoteVelocity::new(velocity(v)),
                 attribute: Attribute::None,
             },
             "{v}"

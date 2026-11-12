@@ -10,7 +10,7 @@
 
 use tutti_midi_protocol::{MpeMode, MpeZone, MpeZoneConfig, MpeZones, widen};
 use tutti_ump::{
-    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
+    Address, Bank, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity,
     RegisteredPerNoteController, Rpn, Sysex7Packets, System, U7, U14, Ump, Utility, Voice1, Voice2,
     parse_exact,
 };
@@ -139,7 +139,7 @@ pub fn wide_velocity(v: u8) -> u16 {
     let Voice2::NoteOff { velocity, .. } = widen(off) else {
         unreachable!("a Note Off widens to a Note Off")
     };
-    velocity
+    velocity.get()
 }
 
 /// A 7-bit Control Change value as the 32-bit value M2-115 section 3 gives it.
@@ -169,7 +169,7 @@ pub fn note_on(group: MidiGroup, channel: MidiChannel, n: u8, velocity: u16) -> 
         channel,
         Voice2::NoteOn {
             note: NoteNumber::of(n),
-            velocity,
+            velocity: NoteVelocity::new(velocity),
             attribute: tutti_ump::Attribute::None,
         },
     )
@@ -182,7 +182,7 @@ pub fn note_off(group: MidiGroup, channel: MidiChannel, n: u8, velocity: u16) ->
         channel,
         Voice2::NoteOff {
             note: NoteNumber::of(n),
-            velocity,
+            velocity: NoteVelocity::new(velocity),
             attribute: tutti_ump::Attribute::None,
         },
     )

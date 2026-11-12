@@ -8,8 +8,8 @@ use tutti_midi_protocol::{
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
 use tutti_types::Samples;
 use tutti_ump::{
-    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, Sysex7Packets,
-    SysexStatus, System, U7, U14, Ump, Voice2,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity,
+    Sysex7Packets, SysexStatus, System, U7, U14, Ump, Voice2,
 };
 use tutti_vst3_ffi::EventList;
 
@@ -61,7 +61,10 @@ fn encode_live(event: &UmpAt) -> (i32, Option<Event>) {
         }
         _ => return (-1, encoder.encode(event).first().copied()),
     };
-    let on = Message::Midi2(address, Voice2::note_on(note, midi::MID_VELOCITY));
+    let on = Message::Midi2(
+        address,
+        Voice2::note_on(note, NoteVelocity::new(midi::MID_VELOCITY)),
+    );
     let started = match encoder.encode(&(event.0, Ump::from(on))).first() {
         Some(Event {
             payload: Payload::NoteOn(on),
@@ -755,7 +758,7 @@ fn note_on_velocity_round_trips_at_full_width() {
     let back = vst3.to_midi().expect("round-trips");
     match back.ump.decode().expect("decodes") {
         Message::Midi2(_, Voice2::NoteOn { velocity: raw, .. }) => {
-            let velocity = u16_to_unit_f32(raw);
+            let velocity = u16_to_unit_f32(raw.get());
             let expected = velocity_u16 as f32 / u16::MAX as f32;
             // f32 velocity carries far more than 7 bits — error stays tiny.
             assert!(
@@ -1098,7 +1101,7 @@ mod message {
             address(2),
             Voice2::NoteOn {
                 note: note(60),
-                velocity: 0,
+                velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
         ));
@@ -1131,7 +1134,7 @@ mod message {
                 address(1),
                 Voice2::NoteOn {
                     note: note(60),
-                    velocity: midi::MID_VELOCITY,
+                    velocity: NoteVelocity::new(midi::MID_VELOCITY),
                     attribute,
                 },
             ));
@@ -1338,7 +1341,7 @@ mod message {
                 address(2),
                 Voice2::NoteOff {
                     note: note(60),
-                    velocity: midi::MID_VELOCITY,
+                    velocity: NoteVelocity::new(midi::MID_VELOCITY),
                     attribute: Attribute::None,
                 }
             ))
@@ -1385,7 +1388,7 @@ mod message {
                 ch,
                 Voice2::NoteOn {
                     note: note(60),
-                    velocity: 0xFFFF,
+                    velocity: NoteVelocity::new(0xFFFF),
                     attribute: Attribute::Reserved { kind: 9, data: 1 },
                 },
             ),

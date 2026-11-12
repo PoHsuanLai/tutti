@@ -4,7 +4,7 @@ use tutti_graph::EventInletNode;
 use tutti_graph::EventKind;
 use tutti_graph::contract::Direct;
 use tutti_types::{Frame, SampleRate};
-use tutti_ump::{MidiGroup, Ump};
+use tutti_ump::{MidiGroup, NoteVelocity, Ump};
 
 fn rig() -> (Direct<EventInletNode>, MidiKeys) {
     let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
@@ -33,7 +33,7 @@ fn the_key_helpers_match_explicit_events() {
         Stamp::NextBlock,
         MidiChannel::FIRST,
         NoteNumber::of(60),
-        wide_velocity(100),
+        NoteVelocity::new(wide_velocity(100)),
     )
     .unwrap();
     keys.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
@@ -53,8 +53,13 @@ fn the_key_helpers_match_explicit_events() {
 #[test]
 fn a_note_on_at_velocity_zero_stays_a_note_on() {
     let (mut d, mut keys) = rig();
-    keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 0)
-        .unwrap();
+    keys.note_on(
+        Stamp::NextBlock,
+        MidiChannel::FIRST,
+        NoteNumber::of(60),
+        NoteVelocity::MIN,
+    )
+    .unwrap();
     d.block();
     assert_eq!(
         sent(&d),
@@ -68,8 +73,13 @@ fn a_note_on_at_velocity_zero_stays_a_note_on() {
 fn a_full_ring_refuses_through_the_helper() {
     let (_d, mut keys) = rig();
     for _ in 0..LIVE_INLET_CAPACITY.slots() {
-        keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 1)
-            .unwrap();
+        keys.note_on(
+            Stamp::NextBlock,
+            MidiChannel::FIRST,
+            NoteNumber::of(60),
+            NoteVelocity::new(1),
+        )
+        .unwrap();
     }
     assert_eq!(
         keys.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60)),
@@ -86,8 +96,13 @@ fn the_helpers_send_on_the_keys_group() {
     let mut d = Direct::new(node, SampleRate(48_000.0), 64);
     let mut keys = MidiKeys::new(writer, group);
     assert_eq!(keys.group(), group);
-    keys.note_on(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60), 5)
-        .unwrap();
+    keys.note_on(
+        Stamp::NextBlock,
+        MidiChannel::FIRST,
+        NoteNumber::of(60),
+        NoteVelocity::new(5),
+    )
+    .unwrap();
     keys.note_off(Frame(0), MidiChannel::FIRST, NoteNumber::of(60))
         .unwrap();
     d.block();

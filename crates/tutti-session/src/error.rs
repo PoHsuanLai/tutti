@@ -221,16 +221,16 @@ pub enum MidiError {
     #[error("SoundFont instrument: {0}")]
     Instrument(#[from] tutti_soundfont::Error),
 
-    /// A message was not queued ([`SendError::Full`](crate::SendError::Full)).
+    /// A message was not queued ([`Refused::Full`](tutti_graph::Refused::Full)).
     #[error("MIDI send: {0}")]
-    Send(#[from] crate::SendError),
+    Send(#[from] tutti_graph::Refused),
 
     /// There is no such route rule ([`Midi::unroute`](crate::Midi::unroute)).
     #[error(transparent)]
     NoSuchRoute(#[from] crate::NoSuchMidiRoute),
 
     /// A MIDI call named a target that is not in the graph, or takes no
-    /// MIDI (it has no event input): `Midi::play_clip`, `Midi::live_input`,
+    /// MIDI (it has no event input): `Midi::play_clip`, `Midi::input`,
     /// `Midi::retarget`, `Midi::record`.
     #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
     NoEventInput(tutti_graph::NodeKey),
@@ -247,10 +247,18 @@ pub enum MidiError {
     #[error("the session has no OS MIDI layer; build it with `midi_hardware()`")]
     NoHardware,
 
-    /// `Midi::retarget` named a node that is not a clip or live input of
-    /// the session's.
-    #[error("{0:?} is not a clip or live input of this session's")]
+    /// `Midi::retarget` named a node that is not a clip of the session's.
+    #[error("{0:?} is not a clip of this session's")]
     NotSessionMidi(tutti_graph::NodeKey),
+
+    /// `Midi::input` found the keys of the target's live input handed out
+    /// already: they are the inlet's one producer.
+    #[error("the live input of {0:?} has been taken")]
+    InputTaken(tutti_graph::NodeKey),
+
+    /// `Midi::retarget_input` named a target with no live input.
+    #[error("{0:?} has no live input")]
+    NoLiveInput(tutti_graph::NodeKey),
 
     /// `Midi::follow_tempo` named a Group the MIDI input does not hear
     /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
@@ -310,7 +318,7 @@ midi_cause_into_error!(
     #[cfg(feature = "midi-hardware")]
     tutti_midi_hardware::Error,
     tutti_midi_file::Error,
-    crate::SendError,
+    tutti_graph::Refused,
     crate::NoSuchMidiRoute,
 );
 

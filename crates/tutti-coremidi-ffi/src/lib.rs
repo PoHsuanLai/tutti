@@ -6,10 +6,12 @@
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+mod destination;
 mod host_clock;
 mod source;
 mod ump_endpoints;
 
+pub use destination::UmpDestination;
 pub use host_clock::{Timebase, host_ticks};
 pub use source::{Error, UmpSource};
 pub use ump_endpoints::{UmpBlockInfo, UmpEndpointInfo, ump_endpoints};

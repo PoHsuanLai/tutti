@@ -9,22 +9,23 @@
 //! all. It can only arrive over a MIDI-2.0-protocol endpoint, which is what this
 //! publishes.
 //!
-//! [`UmpVirtualDestination`] creates one such endpoint with
-//! `MIDIDestinationCreateWithProtocol` and hands every received UMP message to a
-//! callback. Unlike the source side, the safe `coremidi` wrapper *does*
-//! expose this (`Client::virtual_destination_with_protocol`), so no unsafe FFI
-//! bridge is needed here.
+//! [`UmpVirtualDestination`] creates one such endpoint and hands every received
+//! UMP message to a callback. The endpoint and its receive block are
+//! `tutti-coremidi-ffi`'s (`UmpDestination`): the safe `coremidi` wrapper's
+//! `virtual_destination_with_protocol` reads the null reference constant
+//! CoreMIDI passes a virtual destination as a reference, and so aborts on the
+//! first packet. This module names the endpoint and puts its errors in this
+//! crate's.
 //!
 //! CoreMIDI delivers a packet as a *packed word stream* — several concatenated
 //! UMP messages with no separators, each one's length implied by its type nibble.
 //! [`split_stream`] walks that.
 
-use coremidi::{EventList, Protocol, VirtualDestination};
 use tracing::debug;
+use tutti_coremidi_ffi::UmpDestination;
 use tutti_ump::{Ump, split_stream};
 
-use super::shared_client;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// A CoreMIDI virtual destination that speaks the **MIDI 2.0 (UMP) protocol**.
 ///
@@ -37,7 +38,7 @@ use crate::error::{Error, Result};
 pub struct UmpVirtualDestination {
     // Retained purely to own the endpoint's lifetime — the callback installed at
     // creation is what actually does the work.
-    _destination: VirtualDestination,
+    _destination: UmpDestination,
     name: String,
 }
 
@@ -59,8 +60,8 @@ impl UmpVirtualDestination {
     ///
     /// # Errors
     ///
-    /// [`Error::CoreMidi`] if CoreMIDI refuses either the client or the
-    /// destination endpoint.
+    /// [`Error::CoreMidi`](crate::Error::CoreMidi) if CoreMIDI refuses either
+    /// the client or the destination endpoint.
     pub fn new<F>(name: &str, mut on_event: F) -> Result<Self>
     where
         F: FnMut(Ump) + Send + 'static,
@@ -74,30 +75,13 @@ impl UmpVirtualDestination {
     where
         F: FnMut(Ump, std::time::Instant) + Send + 'static,
     {
-        let client = shared_client().map_err(|status| Error::CoreMidi {
-            operation: "create client (ump destination)",
-            status,
+        let destination = UmpDestination::new(name, move |timestamp, words| {
+            let arrived = super::host_time::Pairing::now().instant_of(timestamp);
+            // One packet carries several concatenated UMP messages.
+            for event in split_stream(words) {
+                on_event(event, arrived);
+            }
         })?;
-
-        let destination = client
-            .virtual_destination_with_protocol(
-                name,
-                Protocol::Midi20,
-                move |event_list: &EventList| {
-                    let pairing = super::host_time::Pairing::now();
-                    for packet in event_list.iter() {
-                        let arrived = pairing.instant_of(packet.timestamp());
-                        // One packet carries several concatenated UMP messages.
-                        for event in split_stream(packet.data()) {
-                            on_event(event, arrived);
-                        }
-                    }
-                },
-            )
-            .map_err(|status| Error::CoreMidi {
-                operation: "create ump virtual destination",
-                status,
-            })?;
 
         debug!(name, "Created native-UMP virtual MIDI destination");
         Ok(Self {

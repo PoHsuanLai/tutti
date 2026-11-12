@@ -124,7 +124,7 @@ pub use strip::BusStripNode;
 // The reverb: any `tutti_dsp::Family` as a node, and the Freeverb send (mono in,
 // stereo wet out) the SoundFont player's General MIDI setup uses.
 mod reverb;
-pub use params::{At, ControlSet, Params};
+pub use params::{At, Control, ControlRead, ControlSet, ControlValid, Params};
 pub use reverb::{FamilyNode, FreeverbNode, NodeFamily, Rings};
 
 // The feedback delay network as a `FamilyNode`, and the choice between the two.

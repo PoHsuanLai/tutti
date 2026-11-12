@@ -383,7 +383,7 @@ impl<F: NodeFamily> FamilyNode<F> {
 
     /// Renders `frames` of the block through the realization: the main input, the
     /// key bus of a keyed family and the lanes of the controls the family reads per frame
-    /// ([`ControlSet::fast`]), each cut to `frames`.
+    /// ([`ControlRead::Fast`](crate::ControlRead::Fast)), each cut to `frames`.
     fn render(&mut self, io: &mut Io<'_>, frames: Frames<usize>) {
         if frames.is_empty() {
             return;

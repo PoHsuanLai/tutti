@@ -8,7 +8,7 @@
 //! designed to the cell's value, each read through [`LastGood`]. Sanitising
 //! (floors, clamps, whole-set validation) is the design's, never the reader's.
 //!
-//! A control the family reads **per frame** is [`fast`](ControlSet::fast): the
+//! A control the family reads **per frame** is [`ControlRead::Fast`]: the
 //! recurrence takes its port's frames from the [`Feed`](tutti_dsp::Feed) lanes
 //! (`Params::lanes`), and the reader sees only its cell, the base the member is
 //! designed at.
@@ -68,7 +68,7 @@ pub trait ControlSet: Clone + core::fmt::Debug + Send + 'static {
 
 /// How the reader takes a control from its cell and its port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Read {
+pub enum ControlRead {
     /// Glides from the controls last designed to its cell's value across the block,
     /// or reads its port at the solve frame when a lane drives it.
     Glide,
@@ -85,7 +85,7 @@ pub enum Read {
 /// The values a control accepts: what it does not is read as the last value it
 /// accepted (`LastGood`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Valid {
+pub enum ControlValid {
     /// Finite values.
     Finite,
     /// Everything but NaN: a ceiling in dB is valid at `+-inf`.
@@ -96,23 +96,23 @@ pub enum Valid {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Control {
     /// How it is read.
-    pub read: Read,
+    pub read: ControlRead,
     /// Which values it accepts.
-    pub valid: Valid,
+    pub valid: ControlValid,
 }
 
 impl Control {
     /// A control that glides and accepts finite values: a row with no flags.
     pub const GLIDE: Self = Self {
-        read: Read::Glide,
-        valid: Valid::Finite,
+        read: ControlRead::Glide,
+        valid: ControlValid::Finite,
     };
 
     /// The row flag `whole`: a moved cell lands whole.
     #[must_use]
     pub const fn whole(self) -> Self {
         Self {
-            read: Read::Whole,
+            read: ControlRead::Whole,
             ..self
         }
     }
@@ -121,7 +121,7 @@ impl Control {
     #[must_use]
     pub const fn fast(self) -> Self {
         Self {
-            read: Read::Fast,
+            read: ControlRead::Fast,
             ..self
         }
     }
@@ -130,7 +130,7 @@ impl Control {
     #[must_use]
     pub const fn not_nan(self) -> Self {
         Self {
-            valid: Valid::NotNan,
+            valid: ControlValid::NotNan,
             ..self
         }
     }
@@ -139,18 +139,18 @@ impl Control {
     #[must_use]
     pub fn accepts(self, v: f32) -> bool {
         match self.valid {
-            Valid::Finite => v.is_finite(),
-            Valid::NotNan => !v.is_nan(),
+            ControlValid::Finite => v.is_finite(),
+            ControlValid::NotNan => !v.is_nan(),
         }
     }
 
-    /// How many of `controls` are [`Read::Fast`]; `const`, for the macro's check
+    /// How many of `controls` are [`ControlRead::Fast`]; `const`, for the macro's check
     /// against [`MAX_LANES`].
     #[must_use]
     pub const fn fast_count(controls: &[Self]) -> usize {
         let (mut i, mut n) = (0, 0);
         while i < controls.len() {
-            if matches!(controls[i].read, Read::Fast) {
+            if matches!(controls[i].read, ControlRead::Fast) {
                 n += 1;
             }
             i += 1;
@@ -313,7 +313,7 @@ impl<S: ControlSet> Params<S> {
     ///
     /// # Panics
     ///
-    /// If `set` has more [`Read::Fast`] controls than a [`Feed`](tutti_dsp::Feed) has
+    /// If `set` has more [`ControlRead::Fast`] controls than a [`Feed`](tutti_dsp::Feed) has
     /// lanes ([`MAX_LANES`]): only a hand-written [`ControlSet`] can, since
     /// `control_set!` refuses it at compile time.
     #[must_use]
@@ -327,7 +327,7 @@ impl<S: ControlSet> Params<S> {
         let (mut fast, mut fast_len) = ([0; MAX_LANES], 0);
         for k in 0..n {
             controls[k] = set.control(k);
-            if controls[k].read == Read::Fast {
+            if controls[k].read == ControlRead::Fast {
                 assert!(
                     fast_len < MAX_LANES,
                     "more fast controls than a Feed has lanes"
@@ -394,8 +394,8 @@ impl<S: ControlSet> Params<S> {
     /// The controls at `at.frame`: each cell, or the value its port carries when the
     /// graph modulates it, read through [`LastGood`] so a value the control refuses
     /// ([`Control::accepts`]: non-finite by default) reads as unchanged. A
-    /// [`Read::Fast`] control is its cell whatever its port carries, and a
-    /// [`Read::Whole`] one is not ramped.
+    /// [`ControlRead::Fast`] control is its cell whatever its port carries, and a
+    /// [`ControlRead::Whole`] one is not ramped.
     pub(crate) fn read(&mut self, io: &Io<'_>, at: At<S::Controls>) -> S::Controls {
         let n = self.cells.len();
         let mut from = [0.0; MAX_CONTROLS];
@@ -406,8 +406,8 @@ impl<S: ControlSet> Params<S> {
         for (k, v) in value[..n].iter_mut().enumerate() {
             let control = self.controls[k];
             let lane = match control.read {
-                Read::Fast => None,
-                Read::Glide | Read::Whole => io.param(k).frames(),
+                ControlRead::Fast => None,
+                ControlRead::Glide | ControlRead::Whole => io.param(k).frames(),
             };
             *v = match lane {
                 Some(lane) => {
@@ -418,7 +418,7 @@ impl<S: ControlSet> Params<S> {
                     let x = self.cells[k].load(Relaxed);
                     let to = self.good[k].read_if(x, control.accepts(x));
                     match at.applied {
-                        Some(_) if control.read == Read::Glide => {
+                        Some(_) if control.read == ControlRead::Glide => {
                             Ramp::new(from[k], to, at.block).at(at.frame)
                         }
                         _ => to,
@@ -433,10 +433,10 @@ impl<S: ControlSet> Params<S> {
     /// of the block.
     pub(crate) fn driven(&self, io: &Io<'_>) -> bool {
         (0..self.cells.len())
-            .any(|k| self.controls[k].read != Read::Fast && io.param(k).frames().is_some())
+            .any(|k| self.controls[k].read != ControlRead::Fast && io.param(k).frames().is_some())
     }
 
-    /// The per-frame lanes of the [`Read::Fast`] controls, for the
+    /// The per-frame lanes of the [`ControlRead::Fast`] controls, for the
     /// [`Feed`](tutti_dsp::Feed): the port's frames in the port's own unit, `None` where
     /// nothing drives it. They are the block's, so a caller slices them by the frames it
     /// renders.

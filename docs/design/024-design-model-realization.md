@@ -1832,9 +1832,9 @@ pub struct DesignNode<D: NodeDesign> { /* design, realization, params: Params<D:
 `DesignNode` is `FamilyNode`; `PARKS: bool` is `const RINGS: Rings`, `Rings { Tracks, Unknown, Silent }`
 (`Tracks` is the old `PARKS = true`, `Unknown` the old `false`, `Silent` declares `Tail::None` and never
 parks: a memoryless or gain-only family whose detector must see every block). `ControlSet` gained
-`control(k) -> Control`, how the reader takes control `k`: a `Read` (`Glide`, the default; `Whole`, a moved cell
+`control(k) -> Control`, how the reader takes control `k`: a `ControlRead` (`Glide`, the default; `Whole`, a moved cell
 lands without a ramp; `Fast`, read per frame into `Feed.lanes` in row order, section 2.7.3 and Q3, the cell the
-base) and a `Valid` (`Finite`, the default; `NotNan`, which `LastGood` applies). A control is declared once, by
+base) and a `ControlValid` (`Finite`, the default; `NotNan`, which `LastGood` applies). A control is declared once, by
 its `control_set!` row (`Ceiling => Db = ceiling { fast, not_nan }`): the macro writes `control` from the same rows
 as the addresses, so the two cannot disagree, a flag that is not one of `whole`, `fast`, `not_nan` does not
 compile, and more fast rows than `MAX_LANES` fail a `const` assertion (core's review of #676: the first draft had

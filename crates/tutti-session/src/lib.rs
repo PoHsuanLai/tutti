@@ -15,13 +15,14 @@
 //! use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
 //! use tutti_graph::ForkByClone;
 //! use tutti_nodes::testing::Osc;
-//! use tutti_session::Session;
+//! use tutti_session::{Root, Session};
 //!
 //! let mut s = Session::builder()
+//!     .outputs_floor(1)
 //!     .build_offline(SampleRate(48_000.0), ChannelLayout::MONO, MaxBlock::of(Samples(512)))
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
-//! s.graph().set_outputs_from(osc);
+//! s.graph().connect(osc, Root).unwrap();
 //! s.update(); // commits: the graph was edited
 //!
 //! let mut block = vec![0.0f32; 512];
@@ -63,11 +64,13 @@ mod general_midi;
 mod graph;
 #[cfg(feature = "midi")]
 mod instrument;
+mod key;
 #[cfg(feature = "midi")]
 mod midi;
 #[cfg(feature = "modulation")]
 mod modulation;
 mod node;
+mod params;
 #[cfg(feature = "plugin")]
 mod plugin;
 #[cfg(feature = "record")]
@@ -87,7 +90,7 @@ pub use bounce::{
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted, LiveSession};
-pub use edge::{EdgeGainError, EdgeRef, EdgeSink};
+pub use edge::EdgeGainError;
 pub use error::{ConnectError, Error, HeardTapError, InletError, Result};
 #[cfg(feature = "soundfont")]
 pub use general_midi::GeneralMidi;
@@ -95,11 +98,15 @@ pub use general_midi::GeneralMidi;
 pub use graph::ModKeys;
 pub use graph::RenderWorkerStart;
 pub use graph::{
-    AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, EventSource, Feeder, Graph,
-    GraphSource, LIVE_MAX_BLOCK, ReplaceRefused,
+    AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph, LIVE_MAX_BLOCK,
+    ReplaceRefused,
 };
 #[cfg(feature = "midi")]
 pub use instrument::{InstrumentHandle, NotInstrument, SendError};
+pub use key::{
+    Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, Fanin, InPort,
+    Inlet, Key, MainBus, MainSink, OutPort, Outlet, Root, Weighted, Wire,
+};
 #[cfg(feature = "midi")]
 pub use midi::{
     LiveInput, MIDI_INPUT_DEVICES, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi,
@@ -107,14 +114,18 @@ pub use midi::{
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    MixRef, ModRefusal, ModState, ModTarget, Mods, ParamRef, RouteError, Take, UNRESOLVED_WARNING,
-    declare_targets,
+    MixRef, ModRefusal, ModState, ModTarget, Mods, ParamRef, Ranged, RouteError, Take,
+    UNRESOLVED_WARNING, declare_targets,
 };
 pub use node::{Reclaimer, SessionNode};
+#[doc(hidden)]
+pub use params::Declared as __Declared;
+pub use params::{HasParam, HasParams, ParamError, ParamValue, RangeError, Scalar, TypedParamRef};
 #[cfg(feature = "plugin")]
 pub use plugin::{
     HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
     PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore,
+    StateView,
 };
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};
@@ -137,6 +148,8 @@ pub use tutti_export::{
 };
 pub use tutti_graph::{BusError, BusRef, BusSource, Buses, MissingSource};
 pub use tutti_graph::{MixError, ModeError, NodeMode, PassError};
+#[doc(hidden)]
+pub use tutti_types::UnitParam as __UnitParam;
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};
 #[cfg(feature = "device")]

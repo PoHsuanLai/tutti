@@ -9,13 +9,14 @@ use tutti_types::MaxBlock;
 
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::MAX_ROOT_CHANNELS;
+use tutti_graph::Params;
 use tutti_graph::{
     Cx, ForkByClone, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
     Unforkable,
 };
 use tutti_nodes::testing::{Const, Osc, Through};
 use tutti_session::{
-    Crossfade, CrossfadeRefused, EventSource, Feeder, GraphSource, Session, SessionEvent,
+    Crossfade, CrossfadeRefused, EventInPort, Feeder, InPort, OutPort, Root, Session, SessionEvent,
     SessionNode, root_width,
 };
 use tutti_types::{ChannelLayout, Drive, Hz, InterleavedMut, SampleRate, Samples, Seconds};
@@ -98,18 +99,7 @@ impl ParamNode for Knob {
     }
 }
 
-impl IntoNode for Knob {
-    type Controls = ParamSet;
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-impl SessionNode for Knob {
-    fn params(controls: &ParamSet) -> Option<ParamSet> {
-        Some(controls.clone())
-    }
-}
+tutti_session::declare_params!(Knob { UnitParam::Drive => Drive });
 
 /// A node that cannot run above 90 kHz: its `prepare` panics there, which is
 /// how a re-prepare poisons an editor.
@@ -185,7 +175,7 @@ impl<const IN: u16, const OUT: u16> Node for Events<IN, OUT> {
 
 // ---- the graph's own vocabulary ----------------------------------------------
 
-/// Every [`GraphSource`] arm survives a write and a read-back, on a node
+/// Every [`OutPort`] kind survives a write and a read-back, on a node
 /// port and on a global output: the translation to the spec's spelling and
 /// back is total and lossless. (Moved from `bevy-tutti`'s
 /// `AudioGraphRes` tests, whose methods now delegate here.)
@@ -200,26 +190,23 @@ fn every_source_reads_back_as_written() {
     let (stereo, _) = graph.insert(Const::frame(&[1.0, 2.0]));
     let (sink, _) = graph.insert(Through::mono());
     for source in [
-        GraphSource::Node(stereo, 1),
-        GraphSource::Node(stereo, 0),
-        GraphSource::Input(0),
-        GraphSource::Silence,
+        OutPort::new(stereo, 1),
+        OutPort::new(stereo, 0),
+        Root::input(0),
     ] {
-        graph.set_source(sink, 0, source);
-        let held: Vec<GraphSource> = match source {
-            GraphSource::Silence => Vec::new(),
-            one => vec![one],
-        };
-        assert_eq!(graph.sources(sink, 0), held, "node port");
-        graph.set_output_source(1, source);
-        assert_eq!(graph.output_sources(1), held, "global output");
+        graph
+            .set_sources_hard(InPort::new(sink, 0), [source])
+            .unwrap();
+        let held = vec![source];
+        assert_eq!(graph.sources(InPort::new(sink, 0)), held, "node port");
+        graph.set_sources_hard(Root::output(1), [source]).unwrap();
+        assert_eq!(graph.sources(Root::output(1)), held, "global output");
     }
 }
 
 /// Silence is stored as the empty set, never as a `Source::Zero` (which the
-/// compiler's validation refuses), whichever setter wrote it: a port or output
-/// set to `Silence`, an output feed with no usable port, and a fresh or widened
-/// root. `planned_compensation` is `None` when the spec does not validate.
+/// compiler's validation refuses), whichever call wrote it: a port or output
+/// set to no sources, a cleared sink, and a fresh or widened root. `planned_compensation` is `None` when the spec does not validate.
 #[test]
 fn every_setter_stores_silence_as_the_empty_set() {
     let mut s = detached(2);
@@ -228,21 +215,31 @@ fn every_setter_stores_silence_as_the_empty_set() {
     let (src, _) = graph.insert(Const::frame(&[1.0, 2.0]));
     assert!(graph.planned_compensation().is_some(), "fresh root");
 
-    graph.set_source(sink, 0, GraphSource::Node(src, 0));
-    graph.set_source(sink, 0, GraphSource::Silence);
-    assert!(graph.planned_compensation().is_some(), "set_source Silence");
+    graph
+        .set_sources_hard(InPort::new(sink, 0), [OutPort::new(src, 0)])
+        .unwrap();
+    graph.set_sources_hard(InPort::new(sink, 0), []).unwrap();
+    assert!(
+        graph.planned_compensation().is_some(),
+        "set_sources of none"
+    );
 
-    graph.set_output_source(0, GraphSource::Node(src, 0));
-    graph.set_output_source(0, GraphSource::Silence);
-    assert!(graph.planned_compensation().is_some(), "set_output_source");
+    graph
+        .set_sources_hard(Root::output(0), [OutPort::new(src, 0)])
+        .unwrap();
+    assert!(graph.disconnect_all(Root::output(0)));
+    assert!(graph.planned_compensation().is_some(), "disconnect_all");
 
-    graph.set_outputs_from(src);
-    graph.set_outputs_from_ports(src, &[]);
-    assert!(graph.planned_compensation().is_some(), "no usable port");
+    graph.connect(src, Root).unwrap().hard();
+    graph.disconnect(src, Root);
+    assert!(
+        graph.planned_compensation().is_some(),
+        "disconnected main bus"
+    );
 
     graph.widen_outputs(4).expect("widens");
     assert!(graph.planned_compensation().is_some(), "widened root");
-    assert_eq!(graph.output_sources(3), []);
+    assert_eq!(graph.sources(Root::output(3)), []);
 }
 
 /// `remove` says whether the node was there, so removing a node twice is a
@@ -320,7 +317,9 @@ fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
 fn an_edit_between_updates_is_committed_by_the_next() {
     let mut s = detached(1);
     let (a, _) = s.graph().insert(Const::mono(1.0));
-    s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
+        .unwrap();
     let _ = s.update();
     let sent = s.graph_ref().commits_sent();
     let plan = s
@@ -329,7 +328,9 @@ fn an_edit_between_updates_is_committed_by_the_next() {
         .expect("the first update sent a plan");
 
     let (b, _) = s.graph().insert(Const::mono(2.0));
-    s.graph().set_output_source(0, GraphSource::Node(b, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(b, 0)])
+        .unwrap();
     assert!(s.graph_ref().is_edited());
     let _ = s.update();
     assert!(!s.graph_ref().is_edited(), "the update committed the edit");
@@ -347,7 +348,9 @@ fn an_edit_between_updates_is_committed_by_the_next() {
 fn an_update_with_no_edit_sends_no_plan() {
     let mut s = detached(1);
     let (a, _) = s.graph().insert(Const::mono(1.0));
-    s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
+        .unwrap();
     let _ = s.update();
     let sent = s.graph_ref().commits_sent();
     let plan = s
@@ -369,18 +372,18 @@ fn an_update_with_no_edit_sends_no_plan() {
 #[test]
 fn a_crossfade_on_a_removed_node_is_refused_naming_it() {
     let mut s = detached(1);
-    let (knob, _) = s.graph().add(Knob::new());
+    let (knob, _) = s.graph().add(Params(Knob::new()));
     s.graph().remove(knob);
     let refused = s
         .graph()
         .crossfade(
             knob,
-            Knob::at(3.0),
+            Params(Knob::at(3.0)),
             Seconds(0.005),
             CrossfadeCurve::EqualAmplitude,
         )
         .expect_err("the node is gone");
-    assert_eq!(refused, CrossfadeRefused::NoSuchNode(knob));
+    assert_eq!(refused, CrossfadeRefused::NoSuchNode(knob.erase()));
 }
 
 /// **A crossfade refused `Busy` during a re-prepare lands on a later
@@ -396,8 +399,10 @@ fn a_crossfade_on_a_removed_node_is_refused_naming_it() {
 fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
     let mut s = detached(1);
     let mut side = s.graph().take_audio_side();
-    let (knob, old) = s.graph().add(Knob::new());
-    s.graph().set_output_source(0, GraphSource::Node(knob, 0));
+    let (knob, old) = s.graph().add(Params(Knob::new()));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(knob, 0)])
+        .unwrap();
     assert!(s.update().is_empty());
     let mut out = [0.0f32];
     side.tick(&[], &mut out);
@@ -407,14 +412,15 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
     // the executor has not run it yet.
     s.graph().set_sample_rate(SampleRate(44_100.0));
     let fade = Seconds(0.005);
-    let waiting =
-        match s
-            .graph()
-            .crossfade(knob, Knob::at(3.0), fade, CrossfadeCurve::EqualAmplitude)
-        {
-            Ok(Crossfade::Waiting(id)) => id,
-            other => panic!("the crossfade waits for the re-prepare: {other:?}"),
-        };
+    let waiting = match s.graph().crossfade(
+        knob,
+        Params(Knob::at(3.0)),
+        fade,
+        CrossfadeCurve::EqualAmplitude,
+    ) {
+        Ok(Crossfade::Waiting(id)) => id,
+        other => panic!("the crossfade waits for the re-prepare: {other:?}"),
+    };
     assert_eq!(s.graph_ref().waiting_crossfades(), 1);
 
     // Update by update through the re-prepare: the executor checks its units
@@ -433,7 +439,7 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
     let events = s.update();
     let controls = match events.as_slice() {
         [SessionEvent::CrossfadeLanded { node, id, controls }] => {
-            assert_eq!((*node, *id), (knob, waiting));
+            assert_eq!((*node, *id), (knob.erase(), waiting));
             controls
                 .downcast_ref::<ParamSet>()
                 .expect("the incoming knob's controls")
@@ -449,7 +455,7 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
     assert!(controls.set(UnitParam::Drive, 8.0));
     side.tick(&[], &mut out);
     assert_eq!(out[0], 8.0, "its controls steer it");
-    s.graph().set_param(knob, UnitParam::Drive, 9.0);
+    s.graph().set_param(knob.drive(), Drive(9.0)).unwrap();
     side.tick(&[], &mut out);
     assert_eq!(out[0], 9.0, "and its params are addressed");
 }
@@ -461,7 +467,7 @@ fn a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update() {
 #[test]
 fn a_crossfade_on_a_poisoned_graph_is_refused() {
     let mut s = detached(1);
-    let (knob, _) = s.graph().add(Knob::new());
+    let (knob, _) = s.graph().add(Params(Knob::new()));
     s.graph().add(Unforkable(Grenade));
     let _ = s.update();
     // Both halves run here (the executor is local); the second panics in
@@ -469,7 +475,7 @@ fn a_crossfade_on_a_poisoned_graph_is_refused() {
     s.graph().set_sample_rate(SampleRate(96_000.0));
     let refused = s.graph().crossfade(
         knob,
-        Knob::at(3.0),
+        Params(Knob::at(3.0)),
         Seconds(0.005),
         CrossfadeCurve::EqualAmplitude,
     );
@@ -489,13 +495,17 @@ fn a_crossfade_on_a_poisoned_graph_is_refused() {
 #[test]
 fn every_param_write_path_reaches_a_fork() {
     let mut s = detached(2);
-    let (k0, _) = s.graph().add(Knob::new());
-    let (k1, c1) = s.graph().add(Knob::new());
-    s.graph().set_output_source(0, GraphSource::Node(k0, 0));
-    s.graph().set_output_source(1, GraphSource::Node(k1, 0));
+    let (k0, _) = s.graph().add(Params(Knob::new()));
+    let (k1, c1) = s.graph().add(Params(Knob::new()));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(k0, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(k1, 0)])
+        .unwrap();
     let _ = s.update();
 
-    s.graph().set_param(k0, UnitParam::Drive, 5.0);
+    s.graph().set_param(k0.drive(), Drive(5.0)).unwrap();
     assert!(c1.set(UnitParam::Drive, 4.0));
     let mut live = [0.0f32; 2];
     s.render_frame(&mut live);
@@ -520,26 +530,29 @@ fn move_feeds_moves_every_feeders_sources() {
     let (new, _) = g.insert(ForkByClone(Events::<1, 0>));
     let (clip, _) = g.insert(ForkByClone(Events::<0, 1>));
     let (route, _) = g.insert(ForkByClone(Events::<0, 1>));
-    g.set_feed(old, Feeder::Sequencer, vec![clip.into()]);
-    g.set_feed(old, Feeder::Routes, vec![EventSource::new(route, 0)]);
+    g.set_feed(old, Feeder::Sequencer, vec![clip.events_out()]);
+    g.set_feed(old, Feeder::Routes, vec![route.events_out()]);
     let both = {
-        let mut v = vec![EventSource::from(clip), EventSource::from(route)];
-        v.sort_by_key(|e| e.node.0);
+        let mut v = vec![clip.events_out(), route.events_out()];
+        v.sort();
         v
     };
     assert_eq!(g.fed(old), both, "each feeder kept its own entry");
-    let mut edges = g.event_sources(old, 0);
-    edges.sort_by_key(|e| e.node.0);
+    let mut edges = g.sources(EventInPort::new(old, 0));
+    edges.sort();
     assert_eq!(edges, both, "the union is the sink's event edges");
 
     g.move_feeds(old, new);
-    assert_eq!(g.feed(new, Feeder::Sequencer), [EventSource::from(clip)]);
-    assert_eq!(g.feed(new, Feeder::Routes), [EventSource::from(route)]);
+    assert_eq!(g.feed(new, Feeder::Sequencer), [clip.events_out()]);
+    assert_eq!(g.feed(new, Feeder::Routes), [route.events_out()]);
     assert!(g.fed(old).is_empty(), "the old sink is fed by nothing");
-    let mut edges = g.event_sources(new, 0);
-    edges.sort_by_key(|e| e.node.0);
+    let mut edges = g.sources(EventInPort::new(new, 0));
+    edges.sort();
     assert_eq!(edges, both, "the new sink's edges are the union");
-    assert!(g.event_sources(old, 0).is_empty(), "and the old's are gone");
+    assert!(
+        g.sources(EventInPort::new(old, 0)).is_empty(),
+        "and the old's are gone"
+    );
     assert_eq!(s.update().len(), 0);
     assert!(!s.graph_ref().is_edited(), "it commits");
 }
@@ -580,7 +593,12 @@ fn an_offline_session_renders_a_sines_analytic_rms() {
         .build_offline(RATE, ChannelLayout::MONO, MaxBlock::of(Samples(512)))
         .expect("builds");
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
-    s.graph().set_outputs_from(osc);
+    for c in 0..s.graph_ref().outputs() {
+        s.graph()
+            .connect(osc.out(0), Root::output(c))
+            .unwrap()
+            .hard();
+    }
     let _ = s.update();
     let out = pull(&s, ChannelLayout::MONO, 48_000, 512);
     let rms = (out.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / out.len() as f64).sqrt();
@@ -611,9 +629,15 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
         .expect("builds");
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(440.0))));
     let (late, _) = s.graph().add(ForkByClone(Late::<N>::new()));
-    s.graph().set_source(late, 0, GraphSource::Node(osc, 0));
-    s.graph().set_output_source(0, GraphSource::Node(osc, 0));
-    s.graph().set_output_source(1, GraphSource::Node(late, 0));
+    s.graph()
+        .set_sources_hard(InPort::new(late, 0), [OutPort::new(osc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(osc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(late, 0)])
+        .unwrap();
     let _ = s.update();
     assert_eq!(s.latency(), Samples(N), "the total is published");
     assert_eq!(
@@ -699,7 +723,9 @@ fn an_update_frees_what_a_block_held_across_a_replacement() {
 
     let mut s = detached(1);
     let (dc, _) = s.graph().insert(Const::mono(0.5));
-    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
     let _ = s.update();
 
     let meter = s.click_settings().project_meter();
@@ -823,7 +849,9 @@ fn replace_under_a_held_borrow(controls: &PublishedControls) {
 fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
     let mut s = detached(1);
     let (node, first) = s.graph().add(Published::new());
-    s.graph().set_output_source(0, GraphSource::Node(node, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(node, 0)])
+        .unwrap();
     let _ = s.update();
     assert_eq!(Arc::strong_count(&first.token), 2, "the graph keeps one");
 

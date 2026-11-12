@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use tutti_session::Root;
 
 use tutti_codec::{Format, Pcm};
 use tutti_export::{GRAPH_MAX_BLOCK, Normalize, Stage};
@@ -60,10 +61,10 @@ fn rig(at: usize) -> Rig {
         handle: Arc::clone(&handle),
     };
     let (node, _) = session.graph().add(ForkByClone(node));
-    session.graph().set_outputs_from(node);
+    session.graph().connect(node, Root).unwrap();
     Rig {
         session,
-        node,
+        node: node.erase(),
         blocks,
         handle,
     }

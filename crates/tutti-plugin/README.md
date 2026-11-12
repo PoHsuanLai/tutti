@@ -27,7 +27,7 @@ subprocess against a real `.vst3` / `.clap` on disk.
 use tutti_types::MaxBlock;
 use tutti_types::SampleRate;
 use tutti_graph::{Editor, Prepare};
-use tutti_plugin::catalog::Plugin;
+use tutti_plugin::catalog::{Plugin, PluginRef};
 use tutti_types::Samples;
 use tutti_graph::NodeKey;
 use tutti_transport::TempoReader;
@@ -35,7 +35,8 @@ use tutti_types::Bpm;
 
 // `sample_rate` takes anything convertible to `SampleRate` — the engine's
 // unit type, not a bare rate that could be a block size.
-let plugin = Plugin::open(None, "/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
+let file = PluginRef::file("/usr/lib/vst3/MyPlugin.vst3").expect("a plugin file");
+let plugin = Plugin::open(None, &file, SampleRate::new(48_000.0))?;
 println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 
 // Two handles, one subprocess: keep the control surface before the node goes

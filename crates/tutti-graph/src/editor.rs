@@ -54,7 +54,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::MAX_NODE_LATENCY;
-use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Source};
+use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Sink, Source};
 use crate::{EventTapId, EventTapSpec, MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec};
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::{Latency, Samples};
@@ -72,7 +72,7 @@ use crate::exec::{
 };
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
-use crate::gain::{EdgeGain, GainCell};
+use crate::gain::{EdgeFade, EdgeGain, GainCell};
 use crate::meter::{MeterReader, MeterWriter};
 use crate::mode::{MixError, ModeCell, ModeError, ModeState, NodeMix, NodeMode};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
@@ -211,12 +211,7 @@ pub enum CommitError {
 
 /// What a re-prepare's second half builds: the plan, the resume delta, every
 /// unit, and the weights of the bus lanes the plan has.
-type Resumed = (
-    Plan,
-    Delta,
-    BTreeMap<NodeKey, Box<dyn Node>>,
-    BTreeMap<EdgeId, Amplitude>,
-);
+type Resumed = (Plan, Delta, BTreeMap<NodeKey, Box<dyn Node>>, BusLanes);
 
 /// The widest graph root a host folds to its device: mono through 7.1. The
 /// engine's fold scratch holds this many channels, so it bounds its editor's
@@ -542,6 +537,9 @@ pub struct Editor {
     /// (`src/mode.rs`), shared with the running unit. Written from the spec
     /// by every commit, and by [`set_mode`](Self::set_mode) at once.
     mode_cells: BTreeMap<NodeKey, ModeCell>,
+    /// Nodes [`remove_declicked`](Self::remove_declicked) is keeping until
+    /// the edges they feed have faded out.
+    leaving: BTreeSet<NodeKey>,
     /// [`revision`](Self::revision): moved by every call that can change
     /// what a reader of the editor sees.
     revision: u64,
@@ -1002,6 +1000,7 @@ impl Editor {
             param_ranges: BTreeMap::new(),
             edge_gains: BTreeMap::new(),
             mode_cells: BTreeMap::new(),
+            leaving: BTreeSet::new(),
             revision: 0,
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
@@ -1239,7 +1238,7 @@ impl Editor {
     fn lower_and_validate(
         spec: &GraphSpec,
         shapes: &Shapes,
-    ) -> Result<(ValidGraph, BTreeMap<EdgeId, Amplitude>), CommitError> {
+    ) -> Result<(ValidGraph, BusLanes), CommitError> {
         if !spec.has_bus_edges() {
             let valid = spec.validate().map_err(CommitError::Invalid)?;
             return Ok((valid, BTreeMap::new()));
@@ -1738,6 +1737,260 @@ impl Editor {
         Ok(())
     }
 
+    /// Sets edge `id`'s declick fade ([`EdgeFade`]). A control, like the base:
+    /// it stores into the lane's cell and the spec and marks nothing for
+    /// commit, and the executor reads it at the start of a block. An edge with
+    /// no entry gets one (unity, the default range), which is structural.
+    ///
+    /// The fade is the lane's: it starts when the kind the lane reads is not
+    /// the one it last acted on, and its end is reported through
+    /// [`settle_fades`](Self::settle_fades), which finishes it in the spec
+    /// (an `Out` edge is removed, an `In` one forgets the fade). A host that
+    /// never sets one never has a fade.
+    ///
+    /// # Errors
+    ///
+    /// [`GraphInvalid::GainWithoutEdge`] when `id` is not an edge of the
+    /// spec, and [`GraphInvalid::GainOnBusLane`] for a lane of a bus edge
+    /// (fade the bus edge with [`set_bus_fade`](Self::set_bus_fade)).
+    pub fn set_edge_fade(&mut self, id: EdgeId, fade: EdgeFade) -> Result<(), GraphInvalid> {
+        self.check_gain_edge(id)?;
+        self.touch();
+        let gain = EdgeGain {
+            fade,
+            ..self.spec.gains.get(&id).copied().unwrap_or_default()
+        };
+        self.spec.set_edge_gain(id, gain);
+        if let Some(cell) = self.edge_gains.get(&id) {
+            cell.store_fade(fade);
+        }
+        if let Some((committed, _)) = &mut self.committed
+            && let Some(g) = committed.gains.get_mut(&id)
+        {
+            g.fade = fade;
+        }
+        Ok(())
+    }
+
+    /// Sets the declick fade of the bus edge `from -> to` (`None`: the root):
+    /// every lane of its fold fades by [`set_edge_fade`](Self::set_edge_fade)'s
+    /// rule. Unlike an edge's, a bus edge's fade is part of the spec's
+    /// structure (its lanes are made at the commit), so the next commit
+    /// recompiles. Returns whether the bus edge was there and changed.
+    pub fn set_bus_fade(&mut self, from: BusSource, to: Option<BusRef>, fade: EdgeFade) -> bool {
+        self.touch();
+        self.spec.set_bus_fade(from, to, fade)
+    }
+
+    /// Whether edge `id` has been sent in a plan, so that a fade out of it
+    /// starts from a weight that was heard. An edge added since the last
+    /// commit has not, and fading it out is just removing it.
+    #[must_use]
+    pub fn edge_is_live(&self, id: EdgeId) -> bool {
+        self.plan.is_some()
+            && self
+                .committed
+                .as_ref()
+                .is_none_or(|(spec, _)| spec.has_edge(id))
+    }
+
+    /// As [`edge_is_live`](Self::edge_is_live) for the bus edge `from -> to`
+    /// (`None`: the root).
+    #[must_use]
+    pub fn bus_edge_is_live(&self, from: BusSource, to: Option<BusRef>) -> bool {
+        self.plan.is_some()
+            && self
+                .committed
+                .as_ref()
+                .is_none_or(|(spec, _)| spec.bus_fade(from, to).is_some())
+    }
+
+    /// Finishes, in the spec, every declick fade the executor has reported
+    /// ended since the last call: an edge that faded `Out` is removed (with
+    /// its entry, and a bus edge with its lanes), an edge or bus edge that
+    /// faded `In` forgets the fade (and its entry, when it carries nothing
+    /// else: a plain edge again), and a node
+    /// [`remove_declicked`](Self::remove_declicked) kept goes once no edge it
+    /// feeds is left. Returns whether the spec changed, which a caller commits.
+    /// A report for an edge since reconnected, disconnected or given another
+    /// fade is stale and ignored.
+    ///
+    /// Control thread. Cheap when nothing ended: a pop of an empty ring.
+    pub fn settle_fades(&mut self) -> bool {
+        let mut changed = false;
+        while let Some((id, kind)) = self.channels.edge_fades.try_pop() {
+            changed |= self.settle_edge(id, kind);
+        }
+        if !self.leaving.is_empty() {
+            let gone: Vec<NodeKey> = self
+                .leaving
+                .iter()
+                .copied()
+                .filter(|&k| !self.feeds_anything(k))
+                .collect();
+            for key in gone {
+                self.leaving.remove(&key);
+                self.remove(key);
+                changed = true;
+            }
+        }
+        if changed {
+            self.touch();
+        }
+        changed
+    }
+
+    fn settle_edge(&mut self, id: EdgeId, kind: EdgeFade) -> bool {
+        if self.spec.has_edge(id) {
+            let Some(g) = self.spec.gains.get(&id).copied().filter(|g| g.fade == kind) else {
+                return false;
+            };
+            return match kind {
+                EdgeFade::Out => match (id.sink, id.from) {
+                    (Sink::Port(at), from) => self.spec.disconnect(at, from),
+                    (Sink::Output(c), Edge::Direct(s)) => {
+                        self.spec.disconnect_output(usize::from(c), s)
+                    }
+                    (Sink::Output(_), Edge::Feedback(_)) => false,
+                },
+                EdgeFade::In => {
+                    let plain = g.base.get().to_bits() == 1.0f32.to_bits()
+                        && g.source.is_none()
+                        && g.range == EdgeGain::DEFAULT_RANGE;
+                    if plain {
+                        self.spec.clear_edge_gain(id);
+                    } else {
+                        self.spec.set_edge_gain(
+                            id,
+                            EdgeGain {
+                                fade: EdgeFade::None,
+                                ..g
+                            },
+                        );
+                    }
+                    true
+                }
+                EdgeFade::None => false,
+            };
+        }
+        if !self.spec.has_bus_edges() {
+            return false;
+        }
+        let Some((from, to, fade)) = self.spec.feed_of_lane(&self.shapes, id) else {
+            return false;
+        };
+        if fade != kind {
+            return false;
+        }
+        match kind {
+            EdgeFade::Out => match to {
+                Some(to) => self.spec.disconnect_bus(from, to),
+                None => self.spec.disconnect_bus_from_root(from),
+            },
+            EdgeFade::In => self.spec.set_bus_fade(from, to, EdgeFade::None),
+            EdgeFade::None => false,
+        }
+    }
+
+    /// Whether any audio edge, direct or bus, leaves `key`.
+    fn feeds_anything(&self, key: NodeKey) -> bool {
+        let spec = &self.spec;
+        let from_key = |s: &Source| matches!(s, Source::Node(p) if p.node == key);
+        spec.topology
+            .edges
+            .values()
+            .flatten()
+            .any(|e| matches!(e, Edge::Direct(s) if from_key(s)))
+            || spec.topology.outputs.iter().flatten().any(from_key)
+            || spec
+                .bus_edges
+                .values()
+                .flatten()
+                .chain(&spec.root_sources)
+                .any(|f| matches!(f.source, BusSource::Node(b) if b.node == key))
+    }
+
+    /// Whether `key` is being kept by
+    /// [`remove_declicked`](Self::remove_declicked) until its output fades.
+    #[must_use]
+    pub fn is_leaving(&self, key: NodeKey) -> bool {
+        self.leaving.contains(&key)
+    }
+
+    /// [`remove`](Self::remove) with the node's output edges faded out
+    /// instead of cut: every audio edge or bus edge that leaves `key` and has
+    /// been sent in a plan is marked [`EdgeFade::Out`] and stays, so the node
+    /// keeps rendering while it fades, and the node goes (in
+    /// [`settle_fades`](Self::settle_fades)) once the last of them has. Its
+    /// input edges, event edges, params and gain drivers go at once: what is
+    /// heard is the output's fade. Returns whether the node was removed now,
+    /// which is when no such edge was sent.
+    pub fn remove_declicked(&mut self, key: NodeKey) -> bool {
+        let t = &self.spec.topology;
+        let mut edges: BTreeSet<EdgeId> = BTreeSet::new();
+        for (&at, list) in &t.edges {
+            for &e in list {
+                if matches!(e, Edge::Direct(Source::Node(p)) if p.node == key) {
+                    let id = EdgeId {
+                        sink: Sink::Port(at),
+                        from: e,
+                    };
+                    if at.node != key && self.edge_is_live(id) {
+                        edges.insert(id);
+                    }
+                }
+            }
+        }
+        for (c, list) in t.outputs.iter().enumerate() {
+            for &s in list {
+                if matches!(s, Source::Node(p) if p.node == key) {
+                    let id = EdgeId {
+                        sink: Sink::Output(c as u16),
+                        from: Edge::Direct(s),
+                    };
+                    if self.edge_is_live(id) {
+                        edges.insert(id);
+                    }
+                }
+            }
+        }
+        let mut feeds: Vec<(BusSource, Option<BusRef>)> = Vec::new();
+        for (&to, list) in &self.spec.bus_edges {
+            for f in list {
+                if matches!(f.source, BusSource::Node(b) if b.node == key)
+                    && to.node != key
+                    && self.bus_edge_is_live(f.source, Some(to))
+                {
+                    feeds.push((f.source, Some(to)));
+                }
+            }
+        }
+        for f in &self.spec.root_sources {
+            if matches!(f.source, BusSource::Node(b) if b.node == key)
+                && self.bus_edge_is_live(f.source, None)
+            {
+                feeds.push((f.source, None));
+            }
+        }
+        if edges.is_empty() && feeds.is_empty() {
+            self.remove(key);
+            return true;
+        }
+        self.remove_keeping(key, Some((&edges, &feeds)));
+        for id in edges {
+            let gain = EdgeGain {
+                fade: EdgeFade::Out,
+                ..self.spec.gains.get(&id).copied().unwrap_or_default()
+            };
+            self.spec.set_edge_gain(id, gain);
+        }
+        for (from, to) in feeds {
+            self.spec.set_bus_fade(from, to, EdgeFade::Out);
+        }
+        self.leaving.insert(key);
+        false
+    }
+
     /// Whether edge `id` is one the author may weight: an edge of the spec,
     /// and not a lane a bus edge produces (its weight is the fold's).
     fn check_gain_edge(&self, id: EdgeId) -> Result<(), GraphInvalid> {
@@ -2024,6 +2277,7 @@ impl Editor {
             if let Some(g) = self.spec.gains.get(id) {
                 Self::carry_base(&self.committed, *id, cell, g.base);
                 cell.store_range(g.range);
+                cell.store_fade(g.fade);
             }
         }
         for (&node, cells) in &self.param_ranges {
@@ -2036,17 +2290,38 @@ impl Editor {
     /// Removes `key` and every edge that touches it. Output channels it fed
     /// are left empty (silence).
     pub fn remove(&mut self, key: NodeKey) {
+        self.remove_keeping(key, None);
+    }
+
+    /// [`remove`](Self::remove), or with `keep` the audio edges and bus edges
+    /// out of `key` that [`remove_declicked`](Self::remove_declicked) fades
+    /// out: then the node, its taps and meters and its own tables stay, and
+    /// everything else that touches it goes.
+    fn remove_keeping(
+        &mut self,
+        key: NodeKey,
+        keep: Option<(&BTreeSet<EdgeId>, &[(BusSource, Option<BusRef>)])>,
+    ) {
         self.touch();
+        let leaving = keep.is_some();
+        let no_edges = BTreeSet::new();
+        let (kept_edges, kept_feeds) = keep.unwrap_or((&no_edges, &[]));
         // A bus edge that touches the node goes with it, as its edges do.
-        self.spec
-            .root_sources
-            .retain(|f| !matches!(f.source, BusSource::Node(b) if b.node == key));
+        self.spec.root_sources.retain(|f| {
+            !matches!(f.source, BusSource::Node(b) if b.node == key)
+                || kept_feeds.contains(&(f.source, None))
+        });
         self.spec.bus_edges.retain(|to, sources| {
-            sources.retain(|f| !matches!(f.source, BusSource::Node(b) if b.node == key));
+            sources.retain(|f| {
+                !matches!(f.source, BusSource::Node(b) if b.node == key)
+                    || kept_feeds.contains(&(f.source, Some(*to)))
+            });
             to.node != key && !sources.is_empty()
         });
         let t = &mut self.spec.topology;
-        t.nodes.remove(&key);
+        if !leaving {
+            t.nodes.remove(&key);
+        }
         t.edges.retain(|at, edges| {
             if at.node == key {
                 return false;
@@ -2058,38 +2333,50 @@ impl Editor {
                     Edge::Direct(_) => None,
                 };
                 from != Some(key)
+                    || kept_edges.contains(&EdgeId {
+                        sink: Sink::Port(*at),
+                        from: *e,
+                    })
             });
             // A port left with no edge is an unfed port: no key.
             !edges.is_empty()
         });
-        for sources in &mut t.outputs {
+        for (c, sources) in t.outputs.iter_mut().enumerate() {
             // A channel that lost its only source is empty: silence.
-            sources.retain(|s| !matches!(s, Source::Node(p) if p.node == key));
+            sources.retain(|s| {
+                !matches!(s, Source::Node(p) if p.node == key)
+                    || kept_edges.contains(&EdgeId {
+                        sink: Sink::Output(c as u16),
+                        from: Edge::Direct(*s),
+                    })
+            });
         }
-        // A key is the author's and can be inserted again after a removal, so
-        // a tap left naming it would read the new node.
-        for spec in t.taps.values_mut() {
-            if let TapSpec::Ports { sources, .. } = spec {
-                for s in sources {
-                    if matches!(s, Source::Node(p) if p.node == key) {
-                        *s = Source::Zero;
+        if !leaving {
+            // A key is the author's and can be inserted again after a removal, so
+            // a tap left naming it would read the new node.
+            for spec in t.taps.values_mut() {
+                if let TapSpec::Ports { sources, .. } = spec {
+                    for s in sources {
+                        if matches!(s, Source::Node(p) if p.node == key) {
+                            *s = Source::Zero;
+                        }
                     }
                 }
             }
-        }
-        // And an event tap, which then reads nothing.
-        for spec in t.event_taps.values_mut() {
-            if spec.source.is_some_and(|s| s.node == key) {
-                spec.source = None;
+            // And an event tap, which then reads nothing.
+            for spec in t.event_taps.values_mut() {
+                if spec.source.is_some_and(|s| s.node == key) {
+                    spec.source = None;
+                }
             }
-        }
-        // A key is the author's and can be inserted again after a removal, so
-        // a meter left naming it would read the new node.
-        for spec in t.meters.values_mut() {
-            if let MeterSpec::Ports { sources, .. } = spec {
-                for s in sources {
-                    if matches!(s, Source::Node(p) if p.node == key) {
-                        *s = Source::Zero;
+            // A key is the author's and can be inserted again after a removal, so
+            // a meter left naming it would read the new node.
+            for spec in t.meters.values_mut() {
+                if let MeterSpec::Ports { sources, .. } = spec {
+                    for s in sources {
+                        if matches!(s, Source::Node(p) if p.node == key) {
+                            *s = Source::Zero;
+                        }
                     }
                 }
             }
@@ -2124,6 +2411,9 @@ impl Editor {
             .collect();
         for id in stale {
             self.spec.gains.remove(&id);
+        }
+        if leaving {
+            return;
         }
         self.spec.modes.remove(&key);
         self.spec.mixes.remove(&key);
@@ -2721,7 +3011,7 @@ impl Editor {
         plan: Plan,
         delta: Delta,
         units: BTreeMap<NodeKey, Box<dyn Node>>,
-        bus_weights: &BTreeMap<EdgeId, Amplitude>,
+        bus_weights: &BusLanes,
     ) {
         self.touch();
         self.fades_out += starting(&delta);
@@ -2761,8 +3051,10 @@ impl Editor {
             .map(|id| {
                 // A lane a bus edge made: the fold's static weight, in a cell
                 // of its own that nothing writes and no one is handed.
-                if let Some(&w) = bus_weights.get(&id) {
-                    return (id, GainCell::new(w, EdgeGain::DEFAULT_RANGE));
+                if let Some(&(w, fade)) = bus_weights.get(&id) {
+                    let cell = GainCell::new(w, EdgeGain::DEFAULT_RANGE);
+                    cell.store_fade(fade);
+                    return (id, cell);
                 }
                 let gain = self.spec.gains.get(&id).copied().unwrap_or_default();
                 let cell = self
@@ -2771,6 +3063,7 @@ impl Editor {
                     .or_insert_with(|| GainCell::new(gain.base, gain.range));
                 Self::carry_base(committed, id, cell, gain.base);
                 cell.store_range(gain.range);
+                cell.store_fade(gain.fade);
                 (id, cell.clone())
             })
             .collect();
@@ -2823,6 +3116,10 @@ impl Editor {
         self.plan = Some(plan);
     }
 }
+
+/// The weighted lanes a lowering made, by edge: the fold's weight and the fade
+/// the lane runs.
+type BusLanes = BTreeMap<EdgeId, (Amplitude, EdgeFade)>;
 
 /// Param port `at`'s range as `spec` holds it: unbounded without an entry.
 fn range_of(spec: &GraphSpec, at: ParamIn) -> ParamRange {

@@ -15,7 +15,7 @@ use tutti_graph::Op;
 use tutti_graph::TapAlign;
 use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::Const;
-use tutti_session::{GraphSource, MissingSource, Session};
+use tutti_session::{MissingSource, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -79,7 +79,8 @@ fn render_click(frames: usize) -> Vec<f32> {
     let click = s.click_node().expect("the builder inserts the click");
     for port in 0..2 {
         s.graph()
-            .set_output_source(port, GraphSource::Node(click, port));
+            .set_sources_hard(Root::output(port), [OutPort::new(click, port)])
+            .unwrap();
     }
     let _ = s.update();
     run(&s, frames, 512, true)
@@ -180,7 +181,8 @@ fn render_voice(cents: f32, frames: usize, block: usize) -> Vec<f32> {
     let (voice, _handle) = s.graph().insert(voice(cents));
     for port in 0..2 {
         s.graph()
-            .set_output_source(port, GraphSource::Node(voice, port));
+            .set_sources_hard(Root::output(port), [OutPort::new(voice, port)])
+            .unwrap();
     }
     let _ = s.update();
     run(&s, frames, block, false)
@@ -299,8 +301,12 @@ fn an_offline_render_feeds_the_master_meter() {
     let mut s = offline();
     let mut meter = s.take_master_meter().expect("declared at the build");
     let (dc, _) = s.graph().insert(Const::mono(0.5));
-    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
-    s.graph().set_output_source(1, GraphSource::Node(dc, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(dc, 0)])
+        .unwrap();
     let _ = s.update();
     let mut block = vec![0.0f32; 128 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
@@ -317,7 +323,8 @@ fn an_offline_render_feeds_the_master_meter() {
     let (dc, _) = detached.graph().insert(Const::mono(0.5));
     detached
         .graph()
-        .set_output_source(0, GraphSource::Node(dc, 0));
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
     let mut frame = [0.0f32];
     detached.render_frame(&mut frame);
     assert_eq!(meter.read()[0].peak.get(), 0.5);
@@ -342,29 +349,34 @@ fn opening_a_tap_or_meter_on_a_missing_source_is_refused() {
     );
     assert_eq!(
         s.graph()
-            .open_tap(&[GraphSource::Node(a, 1)], TapAlign::Raw, Samples(64))
+            .open_tap(&[OutPort::new(a, 1)], TapAlign::Raw, Samples(64))
             .err(),
         Some(MissingSource::Port {
-            node: a,
+            node: a.erase(),
             port: 1,
             width: 1
         })
     );
     assert_eq!(
-        s.graph()
-            .open_meter(&[GraphSource::Input(0)], TapAlign::Raw)
-            .err(),
+        s.graph().open_meter(&[Root::input(0)], TapAlign::Raw).err(),
         Some(MissingSource::Global {
             channel: 0,
             width: 0
         })
     );
-    s.graph().set_output_source(0, GraphSource::Node(a, 5));
-    assert!(
-        s.graph().open_output_tap(Samples(64)).is_err(),
-        "an output wired to a missing port"
+    // An output cannot be wired to a missing port in the first place: the
+    // wiring call refuses it and the output tap has nothing to refuse.
+    assert_eq!(
+        s.graph()
+            .set_sources_hard(Root::output(0), [OutPort::new(a, 5)])
+            .err(),
+        Some(tutti_session::ConnectError::NoSuchOutPort(OutPort::new(
+            a, 5
+        )))
     );
-    s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
+        .unwrap();
     s.graph()
         .open_node_meter(a)
         .expect("it exists, uncommitted");
@@ -382,16 +394,15 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
     let mut s = offline();
     let (a, _) = s.graph().insert(Const::mono(0.5));
     let (b, _) = s.graph().insert(Const::mono(0.25));
-    s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
+        .unwrap();
     // The meters are the only edit of the second update.
     let _ = s.update();
     let mut track = s.graph().open_node_meter(a).expect("the sources exist");
     let mut other = s
         .graph()
-        .open_meter(
-            &[GraphSource::Node(a, 0), GraphSource::Node(b, 0)],
-            TapAlign::Raw,
-        )
+        .open_meter(&[OutPort::new(a, 0), OutPort::new(b, 0)], TapAlign::Raw)
         .expect("the sources exist");
     track.enable();
     other.enable();
@@ -447,7 +458,9 @@ fn a_dropped_meter_reader_leaves_the_plan_at_the_reclaim_phase() {
 fn an_offline_render_feeds_an_output_tap() {
     let mut s = offline();
     let (dc, _) = s.graph().insert(Const::mono(0.5));
-    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
     // The tap is the only edit of the second update.
     let _ = s.update();
     let mut tap = s
@@ -476,7 +489,9 @@ fn an_output_tap_follows_a_rewired_output() {
     let mut s = offline();
     let (a, _) = s.graph().insert(Const::mono(0.5));
     let (b, _) = s.graph().insert(Const::mono(0.25));
-    s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(a, 0)])
+        .unwrap();
     let mut tap = s
         .graph()
         .open_output_tap(Samples(1_024))
@@ -484,7 +499,9 @@ fn an_output_tap_follows_a_rewired_output() {
     let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
-    s.graph().set_output_source(0, GraphSource::Node(b, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(b, 0)])
+        .unwrap();
     let _ = s.update();
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
 
@@ -535,7 +552,9 @@ fn a_detached_render_feeds_a_tap() {
         .build_detached(SampleRate(RATE))
         .expect("builds");
     let (dc, _) = s.graph().insert(Const::mono(0.5));
-    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
     let mut tap = s
         .graph()
         .open_output_tap(Samples(16))
@@ -594,8 +613,12 @@ fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
     use tutti_types::{At, Frame};
     let mut s = offline();
     let (gate, _) = s.graph().add(tutti_graph::Unforkable(Gated));
-    s.graph().set_output_source(0, GraphSource::Node(gate, 0));
-    s.graph().set_output_source(1, GraphSource::Node(gate, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(gate, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(gate, 0)])
+        .unwrap();
     let mut tap = s
         .graph()
         .open_output_tap(Samples(16_384))
@@ -651,8 +674,12 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
     use tutti_types::{At, Frame};
     let mut s = offline();
     let (gate, _) = s.graph().add(tutti_graph::Unforkable(Gated));
-    s.graph().set_output_source(0, GraphSource::Node(gate, 0));
-    s.graph().set_output_source(1, GraphSource::Node(gate, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(gate, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(gate, 0)])
+        .unwrap();
     let mut plan = s
         .graph()
         .open_output_tap(Samples(16_384))
@@ -706,8 +733,12 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
 fn render_feeds_the_heard_tap_and_a_fork_does_not() {
     let mut s = offline();
     let (dc, _) = s.graph().insert(Const::mono(0.5));
-    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
-    s.graph().set_output_source(1, GraphSource::Node(dc, 0));
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(dc, 0)])
+        .unwrap();
     let _ = s.update();
     let tap = s.open_heard_tap(Samples(1_024)).expect("an engine");
     assert_eq!(

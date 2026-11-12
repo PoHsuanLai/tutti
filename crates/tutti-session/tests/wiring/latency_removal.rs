@@ -14,7 +14,7 @@
 use tutti_graph::ForkByClone;
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Const;
-use tutti_session::{GraphSource, Session};
+use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_types::{ChannelLayout, Db, SampleRate, Samples};
 
 #[test]
@@ -30,9 +30,15 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
         Db(-1.0),
         Db(-0.3),
     ));
-    s.graph().set_source(lim, 0, GraphSource::Node(src, 0));
-    s.graph().set_output_source(0, GraphSource::Node(lim, 0));
-    s.graph().set_output_source(1, GraphSource::Node(dry, 0));
+    s.graph()
+        .set_sources_hard(InPort::new(lim, 0), [OutPort::new(src, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(0), [OutPort::new(lim, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources_hard(Root::output(1), [OutPort::new(dry, 0)])
+        .unwrap();
     let _ = s.update();
 
     let before = s.latency();
@@ -47,6 +53,14 @@ fn the_published_latency_shrinks_when_the_latency_bearing_node_leaves() {
     );
 
     assert!(s.remove(lim));
+    // The limiter's output fades out over 256 frames before the node goes,
+    // and the figure with it.
+    for _ in 0..6 {
+        for _ in 0..64 {
+            s.render_frame(&mut [0.0; 2]);
+        }
+        let _ = s.update();
+    }
     let _ = s.update();
     assert!(s.latency() < before, "the figure shrank");
     assert_eq!(

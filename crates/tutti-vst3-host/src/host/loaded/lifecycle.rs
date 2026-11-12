@@ -39,7 +39,7 @@ impl Vst3Loaded {
     }
 
     /// Loads a VST3 plugin: the bundle's first audio class, or the one
-    /// [`LoadOptions::class`] names. It stays loaded (not activated) until
+    /// [`LoadOptions::class_id`] names. It stays loaded (not activated) until
     /// [`Loaded::activate`](tutti_plugin_types::Loaded::activate), and a GUI-only
     /// host never activates it.
     ///
@@ -47,20 +47,19 @@ impl Vst3Loaded {
     ///
     /// Returns [`Vst3Error::LoadFailed`] if the file is missing, the DSO can't
     /// be opened, the factory is empty, no audio class is found (the message
-    /// lists what the bundle does export when a named class is missing, since
-    /// a near-miss on a display name is the likely cause), or the component
+    /// lists the bundle's classes by id and name when the class id is missing), or the component
     /// cannot be created; returns [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
     pub fn load(main: &MainThread, path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
         Self::reap_retired();
         let path = path.as_ref();
-        let class_name = options.class.as_deref();
+        let class_id = options.class_id.as_deref();
         check_exists(path)?;
         let library = Library::load(path)?;
         ensure_has_classes(&library, path)?;
 
-        let class = match class_name {
-            Some(wanted) => find_audio_class_named(&library, path, wanted)?,
+        let class = match class_id {
+            Some(wanted) => find_audio_class_by_id(&library, path, wanted)?,
             None => find_audio_class(&library, path)?,
         };
         let plugin = library
@@ -85,7 +84,7 @@ impl Vst3Loaded {
         // initialized (`reconcile_bus_counts`).
         let info = build_plugin_info_raw(&library, &class);
 
-        let load = match options.class {
+        let load = match options.class_id {
             Some(class) => tutti_plugin_types::Load::new().plugin(class),
             None => tutti_plugin_types::Load::new(),
         };
@@ -405,22 +404,33 @@ pub(super) fn build_plugin_info_raw(library: &Library, class: &AudioClass) -> Pl
     // the "1.0.0" placeholder rather than showing an empty version field.
     let version = class.version.clone().unwrap_or_else(|| "1.0.0".to_string());
 
-    PluginInfo::new(
-        format!("vst3.{}", cid_to_string(&class.cid.map(|b| b as u8))),
-        class.name.clone(),
-    )
-    .vendor(vendor)
-    .version(version)
-    .audio_io(0, 0)
-    .bus_channels(Vec::new(), Vec::new())
-    .midi(false)
-    .midi_output(false)
-    .f64_support(false)
-    .sub_categories(class.sub_categories.clone())
+    PluginInfo::new(id_of(&class.cid), class.name.clone())
+        .vendor(vendor)
+        .version(version)
+        .audio_io(0, 0)
+        .bus_channels(Vec::new(), Vec::new())
+        .midi(false)
+        .midi_output(false)
+        .f64_support(false)
+        .sub_categories(class.sub_categories.clone())
 }
 
-/// The audio class named `wanted`, or a `LoadFailed` naming what is on offer.
-pub(super) fn find_audio_class_named(
+/// The id a class has in the catalog and in a [`Load`](tutti_plugin_types::Load):
+/// `vst3.<class id>`, the value of the descriptor's `id`.
+pub(super) fn id_of(cid: &[i8; 16]) -> String {
+    format!("vst3.{}", cid_to_string(&cid.map(|b| b as u8)))
+}
+
+/// The id of a class as `Library::class_info` reports it: what a descriptor of
+/// that class carries as its `id`, and what [`LoadOptions::class_id`] takes.
+#[must_use]
+pub fn class_id(info: &tutti_vst3_ffi::ClassInfo) -> String {
+    id_of(&info.cid)
+}
+
+/// The audio class with id `wanted` (`vst3.<class id>`), or a `LoadFailed`
+/// listing the bundle's audio classes by id and name.
+pub(super) fn find_audio_class_by_id(
     library: &Library,
     path: &Path,
     wanted: &str,
@@ -432,7 +442,7 @@ pub(super) fn find_audio_class_named(
 
     audio
         .iter()
-        .find(|info| info.name == wanted)
+        .find(|info| id_of(&info.cid) == wanted)
         .map(|info| AudioClass {
             cid: info.cid,
             name: info.name.clone(),
@@ -445,7 +455,10 @@ pub(super) fn find_audio_class_named(
             stage: LoadStage::Factory,
             cause: LoadCause::ClassNotFound {
                 wanted: wanted.to_string(),
-                offered: audio.iter().map(|i| i.name.clone()).collect(),
+                offered: audio
+                    .iter()
+                    .map(|i| format!("{} ({:?})", id_of(&i.cid), i.name))
+                    .collect(),
             },
         })
 }

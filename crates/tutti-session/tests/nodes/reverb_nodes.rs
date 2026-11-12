@@ -3,7 +3,7 @@
 //! unbounded where it can freeze).
 
 use tutti_nodes::{DesignNode, FdnControls, FdnDesign, FdnNode};
-use tutti_session::Session;
+use tutti_session::{ParamError, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, SampleRate, Samples, Seconds, Tail, UnitAddr, UnitParam};
 
@@ -27,8 +27,8 @@ fn set_param_reaches_the_decay_it_names() {
         FdnControls::DEFAULT,
     ));
     let at = |i| UnitAddr::new(UnitParam::Decay, i);
-    s.graph().set_param(node, at(1), 5.0);
-    s.graph().set_param(node, UnitParam::Freeze, 1.0);
+    s.graph().set_param(node.decay_at(1), Seconds(5.0)).unwrap();
+    s.graph().set_param(node.freeze(), true).unwrap();
     assert_eq!(cells.get(at(1)), Some(5.0), "low");
     assert_eq!(cells.get(at(0)), Some(2.0), "mid untouched");
     assert_eq!(cells.get(at(2)), Some(1.2), "high untouched");
@@ -37,7 +37,10 @@ fn set_param_reaches_the_decay_it_names() {
     let (plain, cells) = s
         .graph()
         .add::<FdnNode>(DesignNode::live(FdnDesign::default(), FdnControls::DEFAULT));
-    s.graph().set_param(plain, UnitParam::Freeze, 1.0);
+    assert!(matches!(
+        s.graph().set_param(plain.freeze(), true),
+        Err(ParamError::NoSuchParam { .. })
+    ));
     assert_eq!(cells.get(UnitParam::Freeze), None, "no freeze to write");
 }
 

@@ -32,9 +32,9 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
-use tutti_session::{AudioSide, GraphSource, Session};
+use tutti_session::{AudioSide, InPort, Key, OutPort, Root, Session};
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, Seconds};
 
 const RATE: f64 = 48_000.0;
 
@@ -60,7 +60,7 @@ struct Scene {
     session: Session,
     side: AudioSide,
     filter: NodeKey,
-    drive: NodeKey,
+    drive: Key<DistortionNode>,
 }
 
 /// A saw through a low-pass and a waveshaper on the left channel, the same
@@ -83,23 +83,28 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     let g = session.graph();
     let (osc, _) = g.add(saw());
     let (filter, _) = g.add(low_pass(1_200.0));
-    g.set_source(filter, 0, GraphSource::Node(osc, 0));
+    g.set_sources_hard(InPort::new(filter, 0), [OutPort::new(osc, 0)])
+        .unwrap();
     let (drive, _) = g.add(shaper(drive));
-    g.set_source(drive, 0, GraphSource::Node(filter, 0));
+    g.set_sources_hard(InPort::new(drive, 0), [OutPort::new(filter, 0)])
+        .unwrap();
     let right = if with_limiter {
         let (lim, _) = g.add(limiter());
-        g.set_source(lim, 0, GraphSource::Node(osc, 0));
-        lim
+        g.set_sources_hard(InPort::new(lim, 0), [OutPort::new(osc, 0)])
+            .unwrap();
+        lim.erase()
     } else {
-        osc
+        osc.erase()
     };
-    g.set_output_source(0, GraphSource::Node(drive, 0));
-    g.set_output_source(1, GraphSource::Node(right, 0));
+    g.set_sources_hard(Root::output(0), [OutPort::new(drive, 0)])
+        .unwrap();
+    g.set_sources_hard(Root::output(1), [OutPort::new(right, 0)])
+        .unwrap();
     let _ = session.update();
     Scene {
         session,
         side,
-        filter,
+        filter: filter.erase(),
         drive,
     }
 }
@@ -202,7 +207,8 @@ fn a_param_write_lands_on_the_next_blocks_first_frame() {
     let before = render(&mut s.side, 2_048, 256);
     s.session
         .graph()
-        .set_param(s.drive, UnitParam::Drive, Drive(6.0).0);
+        .set_param(s.drive.drive(), Drive(6.0))
+        .unwrap();
     let _ = s.session.update();
     let after = render(&mut s.side, 2_048, 256);
 
@@ -354,8 +360,8 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 fn pdc_is_the_compilers() {
     let mut s = scene(true);
     assert_eq!(
-        s.session.graph().output_sources(0),
-        [GraphSource::Node(s.drive, 0)],
+        s.session.graph().sources(Root::output(0)),
+        [s.drive.out(0)],
         "nothing is spliced in; the plan delays the channel"
     );
     assert!(

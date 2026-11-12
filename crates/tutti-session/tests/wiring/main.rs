@@ -3,13 +3,16 @@
 mod bus_edges;
 mod compensation;
 mod connect;
+mod declick;
 mod edge_gain;
 mod engine;
+mod event_ports;
 mod fan_in;
 mod graph;
 mod latency_removal;
 mod loop_region;
-mod outputs_from;
 mod root_topology;
 mod scene_render;
 mod transport_verbs;
+mod typed_params;
+mod vocabulary;

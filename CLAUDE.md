@@ -1128,11 +1128,47 @@ Scalars use `Param<U>`.
   declared ports that differ into the session graph's spec, and the frame's
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
-- `Graph::connect(from, to)` adds `from`'s main output as sources of `to`'s main input,
-  channel by channel, and `Graph::chain` does it down a list; a width mismatch is
-  `ConnectError::Width` (never a truncation: a width change is `connect_bus`).
+- **The session graph has typed keys and one wiring vocabulary** (doc 013, "The
+  session graph's surface"). `Graph::add`/`insert` return a `Key<N>` (a `Copy`
+  `NodeKey` with its node type; every call that takes a node takes
+  `impl Into<NodeKey>`, `Key::erase` gives the plain key). Ports come from keys:
+  `key.out(i)` is an `OutPort`, `key.input(i)` an `InPort`; the root is `Root`
+  (`Root::output(i)` a sink channel, `Root::input(i)` a global input), a value so
+  naming a root channel borrows nothing. `Graph::connect(from, to)` takes two ends
+  of one kind of wire: an `OutPort` into an `InPort` (one channel), a key into a
+  key or into `Root` (a main bus, channel by channel: a width mismatch is
+  `ConnectError::Width`, never a truncation) or a `BusSource` (`key.bus_out(i)`)
+  into a `BusRef` (`key.bus_in(i)`) or `Root` (a bus edge: a width change is one,
+  and into the root it folds to the declared topology, `BusError::RootUndeclared`
+  otherwise). `Graph::chain` does a main bus down a list. All refuse with
+  `ConnectError` (a missing node or port, a node fed by itself) and store nothing.
+- **Event ports are keys' too, and params are typed** (doc 030 step 2c).
+  `key.events_out()` / `key.events_in()` are the main event ports (index 0;
+  **event input 0 is the main event input, where the chase delivers**),
+  `events_out_at(i)` / `events_in_at(i)` take an index. `connect`, `disconnect`,
+  `sources`, `set_sources` and `disconnect_all` cover the `Event` wire (never
+  faded); `set_event_sources`, `event_sources` and `EventSource` are gone, and
+  `open_event_tap(key.events_out(), ..)` takes the port. A node's params are
+  methods of its key (`lp.cutoff()`, `mb.threshold_at(1)`), a `TypedParamRef<U>`
+  that converts into `ParamRef`, generated from the node's declaration
+  (`param_session_node!`, or `declare_params!` for a host's node): `Graph::set_param(lp.cutoff(),
+  Hz(..))` is `#[must_use]` and returns `ParamError`, `Mods::range(target, a..b)`
+  takes a range of the unit (`RangeError` on min > max; `range_raw` for a plugin
+  param). A host's `ParamNode` is inserted as `Params(node)`; `set_node_params`
+  is crate-private. `ForkByClone(param node)` still compiles (Rust cannot refuse
+  it by type): use `Params`.
 - A headless `Session` declares through its own spec, keyed by
   `NodeKey`, and `Session::update()` commits iff the graph was edited.
+- **The session graph declicks its wiring** (doc 030 §4, doc 013 "As built
+  (declicked wiring)"): `connect` fades the new edge in over `EDGE_DECLICK`
+  (= `MODE_DECLICK`, 256 frames) unless `.hard()`; `disconnect`, `disconnect_all`,
+  `set_sources` removals and `remove` fade out, and the edge leaves the spec
+  when its lane reports the fade over (`Editor::settle_fades`, from
+  `Phase::Collect`); `disconnect_hard` and `set_sources_hard` cut.
+  `tutti_graph::Editor` fades nothing unless a host sets `EdgeFade`, so the
+  engine's tests and the differential suite keep hard steps; event edges are
+  never faded. A test that renders a session wire for some other reason wires
+  `.hard()`.
 - **The root's channels are declared too** (`MasterTopology`, a pure
   translation into `Session::declare_root_topology` /
   `SessionBuilder::root_topology`): `Unassigned` for independent buses, a named
@@ -1141,7 +1177,7 @@ Scalars use `Param<U>`.
   leave it: `Graph::widen_outputs` refuses to widen a declared root, and a
   declaration the device or file cannot place is `FoldError`, never a silent
   drop (doc 013, "Channel placement"). A declared root is also a bus sink:
-  `Graph::connect_bus_to_root` folds a node's output bus to it (an undeclared
+  `connect(key.bus_out(i), Root)` folds a node's output bus to it (an undeclared
   root refuses, `BusError::RootUndeclared`).
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
@@ -1155,15 +1191,14 @@ Scalars use `Param<U>`.
   global output channel). Several sources into one audio input or output
   channel sum, in source order (`NodeKey`, then port), bit-identically on every
   executor (`Op::Sum`); one source is aliased and none is silence. Summing is
-  the graph's job: never add a node to sum (doc 013 "Audio fan-in sums"). The calls that wire **add** a source
-  (`GraphBuilder::connect`, `Graph::add_source`, `add_output_source`); the
-  `set_` forms (`set_source`, `set_sources`, `set_output_source`,
-  `set_output_sources`) replace the set, and `remove_source` /
-  `disconnect_from` take one out. Silence is the empty set, never a stored
-  `Source::Zero`. A source's weight is an edge's, not a node's (doc 013,
-  "Edge gain"): `Graph::add_source_weighted` / `add_output_source_weighted`
-  add a source with its weight, `set_edge_gain` / `edge_gain` /
-  `clear_edge_gain` take an `EdgeRef`, and a routed modulation moves around
+  the graph's job: never add a node to sum (doc 013 "Audio fan-in sums"). The call that wires
+  **adds** a source (`GraphBuilder::connect`, `Graph::connect`); `Graph::set_sources(to, from)` replaces
+  the set, and `Graph::disconnect(from, to)` / `disconnect_all(to)` take one or all
+  out. Silence is the empty set: there is no silence value to store, and the topology
+  never holds a `Source::Zero`. A source's weight is an edge's, not a node's (doc 013,
+  "Edge gain"): `connect(..)?.gain(amp)` adds a source with its weight, an `Edge`
+  (what `Connection::edges` hands back, and what a modulation target names) carries
+  `set_gain` / `gain` / `clear_gain`, and a routed modulation moves around
   that same gain (its cell is the lane's knob: one writer).
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
   The session's phases run in `SessionPhaseSystems(Phase)`, chained from

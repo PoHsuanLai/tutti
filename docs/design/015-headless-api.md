@@ -155,7 +155,7 @@ The ordered bootstrap in `build_on`, step by step:
 
 - `insert`, `insert_plugin`, `replace_plugin`, `replace` (with
   `ReplaceRefused`) and `remove`;
-- `set_event_sources`, which keeps other owners' edges;
+- `set_sources` on an `EventInPort` (was `set_event_sources`), which keeps other owners' edges;
 - `set_source`, `set_output_source`, `set_outputs_from`, `widen_outputs`;
 - `set_param_mod`, `clear_param_mod`, `param_mod`;
 - `latency_plan`, `planned_compensation`, `sent_compensation`,
@@ -531,8 +531,8 @@ device.stop(); device.start()?;
 ```rust
 let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
 let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
-s.graph().set_source(filter, 0, GraphSource::node(pad, 0));
-s.graph().set_outputs_from(filter);
+s.graph().connect(pad.out(0), filter.input(0))?;
+s.graph().connect(filter, Root)?;
 s.graph().crossfade(filter, other_filter, Seconds(0.005))?;  // retried by update() while Busy
 ```
 
@@ -561,7 +561,7 @@ plugin's parameter edits arrive through `PluginParamValues` and become
 knob writes at the next update.
 
 ```rust
-let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path(path), state: None }); // &self; Send; rate from the session
+let job = s.plugin_load(PluginLoadRequest::new(PluginRef::file(path)?)); // &self; Send; rate from the session
 let done = job.run();                        // any thread
 let synth = s.add_plugin(done)?;             // main thread: NodeKey; controls and meter captured
 ```
@@ -887,8 +887,8 @@ let (mut s, _device) = Session::builder().build_device(DeviceSelector::Default)?
 let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
 let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
 let (kick_bus, _) = s.graph().insert(BusStripNode::new());
-s.graph().set_source(filter, 0, GraphSource::node(pad, 0));
-s.graph().set_outputs_from(filter);
+s.graph().connect(pad.out(0), filter.input(0))?;
+s.graph().connect(filter, Root)?;
 
 let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
 let gain = ParamRef::unit(pad, UnitParam::Volume);
@@ -924,9 +924,9 @@ use tutti::prelude::*;
 let mut s = Session::builder()
     .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, MaxBlock::of(Samples(512)))?;
 
-let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path("Synth.clap"), state: None });
+let job = s.plugin_load(PluginLoadRequest::new(PluginRef::file("Synth.clap").ok_or("not a plugin")?));
 let synth = s.add_plugin(job.run())?;
-s.graph().set_outputs_from(synth);
+s.graph().connect(synth, Root)?;
 
 let file = MidiFile::read("song.mid")?;                 // tutti-midi-file: sniffs SMF vs Clip File
 let tempo = file.tempo().unwrap_or(Bpm::of(120.0));         // the tempo at beat 0; an SMF always has one
@@ -1864,7 +1864,7 @@ addition). Specifics:
   reordering the constant reorders the expectation.
 - **The prelude** gains the session's requests behind their features
   (`ExportRequest`, `ExportOutput`, `ExportConfig`, `PluginLoadRequest`,
-  `PluginId`, `ParamRef`, `MidiFile`, `TimedMidiEvent`, `GraphSource`, the
+  `PluginRef`, `PluginState`, `ParamRef`, `MidiFile`, `TimedMidiEvent`, `GraphSource`, the
   offline timeline). **Deviation:** §5.1 and §5.2 moved from
   `tutti-session/examples` to `tutti/examples` so they can use
   `tutti::prelude::*`: `tutti-session` cannot dev-depend on `tutti`, which

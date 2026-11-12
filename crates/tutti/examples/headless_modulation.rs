@@ -16,6 +16,7 @@
 //! modulation sources) is named through `tutti::`.
 
 use std::sync::Arc;
+use tutti::prelude::{InPort, OutPort, Root};
 
 use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti::nodes::testing::Osc;
@@ -91,14 +92,18 @@ fn main() -> Result<(), tutti::Error> {
         Q(0.7),
     ));
     let (kick, _) = s.graph().insert(ForkByClone(Kick));
-    s.graph().set_source(filter, 0, GraphSource::Node(saw, 0));
-    s.graph().set_output_source(0, GraphSource::Node(filter, 0));
+    s.graph()
+        .set_sources(InPort::new(filter, 0), [OutPort::new(saw, 0)])
+        .unwrap();
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(filter, 0)])
+        .unwrap();
 
-    let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
-    let resonance = ParamRef::unit(filter, UnitParam::Q);
+    let cutoff = filter.cutoff();
+    let resonance = filter.q();
     let mut m = s.mods();
-    m.range(cutoff, 100.0, 4_000.0);
-    m.range(resonance, 0.5, 8.0);
+    m.range(cutoff, Hz(100.0)..Hz(4_000.0))?;
+    m.range(resonance, Q(0.5)..Q(8.0))?;
     let wobble = m.lfo(Lfo::sine().hz(Hz(2.0)));
     let sweep = m.route(wobble, cutoff, Depth(0.2))?;
     let hits = m.follower(Follower::default(), kick);

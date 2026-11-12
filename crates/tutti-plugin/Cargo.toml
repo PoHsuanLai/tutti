@@ -25,16 +25,20 @@ default = []
 # `PluginDb` from your own store.
 json = ["tutti-plugin-db/json"]
 
+# `PluginRef` and `PluginState` derive `Serialize` and `Deserialize`: a project
+# file keeps them.
+serde = ["dep:serde"]
+
 # In-process GUI support (loads plugin library in host for editor only)
 vst3 = ["dep:tutti-vst3-host"]
 clap = ["dep:tutti-clap-host"]
 au = ["dep:tutti-au-host"]
 
 # In-process VST2 hosting (audio + native editor on the host process).
-# Unlike VST3/CLAP/AU, VST2 is always in-process: its `AEffect` fuses the
-# editor and audio processor into one instance, so the editor cannot live
-# in a different process from the audio. There is no subprocess VST2 path
-# here.
+# Unlike VST3/CLAP/AU, VST2 is in-process today: its `AEffect` fuses the
+# editor and audio processor into one instance, so it has no editor-only
+# instance for the host to load. Serving it with its editor in the server
+# is design 029 §6.5.
 vst2 = ["dep:tutti-vst2-host"]
 
 [dependencies]
@@ -68,6 +72,8 @@ tutti-plugin-db = { path = "../tutti-plugin-db" }
 
 # Logging
 tracing = "0.1"
+
+serde = { version = "1", features = ["derive"], optional = true }
 
 # In-process plugin GUI (optional — loads plugin library for editor only).
 # `tutti-vst2-host` is different: it owns the audio path too (single in-process

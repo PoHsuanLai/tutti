@@ -10,7 +10,7 @@
 use tutti_graph::{
     Cx, Event, Io, MissingSource, Node, Op, Prepare, Shape, Status, TapAlign, TapEvent, Unforkable,
 };
-use tutti_session::{EventSource, Session};
+use tutti_session::{EventOutPort, Session};
 use tutti_types::{Frame, SampleRate};
 use tutti_ump::Ump;
 
@@ -36,13 +36,13 @@ impl Node for Every4 {
     fn reset(&mut self) {}
 }
 
-fn session() -> (Session, EventSource) {
+fn session() -> (Session, EventOutPort) {
     let mut s = Session::builder()
         .outputs_floor(1)
         .build_detached(SampleRate(48_000.0))
         .expect("builds");
     let (key, ()) = s.graph().insert(Unforkable(Every4));
-    (s, EventSource::new(key, 0))
+    (s, key.events_out())
 }
 
 fn frames(n: usize, s: &mut Session) {
@@ -104,10 +104,10 @@ fn opening_refuses_a_port_the_graph_does_not_have() {
     let (mut s, source) = session();
     assert_eq!(
         s.graph()
-            .open_event_tap(EventSource::new(source.node, 3), TapAlign::Raw, 8)
+            .open_event_tap(EventOutPort::new(source.node(), 3), TapAlign::Raw, 8)
             .err(),
         Some(MissingSource::EventPort {
-            node: source.node,
+            node: source.node(),
             port: 3,
             width: 1
         })

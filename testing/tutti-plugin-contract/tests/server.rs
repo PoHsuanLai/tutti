@@ -25,7 +25,7 @@ fn through_server<F: Format>(path: PathBuf) {
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", tutti_fixtures::plugin_server()) };
     let client = PluginClient::new(
         BridgeConfig::default(),
-        path,
+        &tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file"),
         tutti_plugin_types::SampleRate::new(48_000.0),
     )
     .unwrap_or_else(|e| panic!("{}: the server loads the plugin: {e:?}", F::NAME));

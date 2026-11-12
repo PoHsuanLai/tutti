@@ -24,8 +24,8 @@ use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
-use tutti_plugin::catalog::PluginId;
-use tutti_session::{GraphSource, NodeMode, PluginLoadRequest, Session};
+use tutti_plugin::catalog::PluginRef;
+use tutti_session::{InPort, NodeMode, OutPort, PluginLoadRequest, Root, Session};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -90,16 +90,15 @@ fn rig(mode: NodeMode) -> Rig {
     let plugin = s
         .add_plugin_blocking(
             &main_thread(),
-            PluginLoadRequest {
-                id: PluginId::from_path(clap_probe()),
-                state: None,
-            },
+            PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");
     let g = s.graph();
     let (click, _) = g.insert(ForkByClone(Click::default()));
-    g.set_source(plugin, 0, GraphSource::Node(click, 0));
-    g.set_output_source(0, GraphSource::Node(plugin, 0));
+    g.set_sources_hard(InPort::new(plugin, 0), [OutPort::new(click, 0)])
+        .unwrap();
+    g.set_sources_hard(Root::output(0), [OutPort::new(plugin, 0)])
+        .unwrap();
     g.set_mode(plugin, mode).expect("the plugin node is there");
     let _ = s.update();
     Rig { s, plugin }

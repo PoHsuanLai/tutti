@@ -43,6 +43,9 @@ pub mod consts {
     pub const MAX_PARAM_STR_LEN: usize = 32;
     pub const MAX_LABEL: usize = 64;
     pub const MAX_SHORT_LABEL: usize = 8;
+    /// `kVstMaxCategLabelLen` (`aeffectx.h`): the width of
+    /// `VstParameterProperties::categoryLabel`.
+    pub const MAX_CATEGORY_LABEL: usize = 24;
     pub const MAX_PRODUCT_STR_LEN: usize = 64;
     pub const MAX_VENDOR_STR_LEN: usize = 64;
 
@@ -240,8 +243,8 @@ pub struct AEffect {
 /// Every field is written by the *plugin* into a buffer the host owns, so the
 /// layout must match the header byte for byte — a reordered field means the
 /// plugin writes `flags` where the host reads `minInteger`. Field order below
-/// is verified against `aeffectx.h`, and `size_of` is pinned to the measured
-/// 136 bytes by a test in this module.
+/// is verified against `aeffectx.h`, and the size (152 bytes) and every
+/// offset are pinned to the header's figures by tests in this module.
 #[repr(C)]
 #[derive(Debug)]
 pub struct ParameterProperties {
@@ -275,7 +278,7 @@ pub struct ParameterProperties {
     /// Reserved by the spec; plugins must leave it zero.
     pub reserved: i16,
     /// Name of the category, when `USES_CATEGORY` is set.
-    pub category_label: [u8; MAX_SHORT_LABEL],
+    pub category_label: [u8; MAX_CATEGORY_LABEL],
     /// Reserved for future use.
     pub future: [u8; 16],
 }
@@ -1341,15 +1344,18 @@ mod tests {
     /// Pin the wire size of every struct the *plugin* fills in for us.
     ///
     /// These are host-allocated buffers a plugin writes through a raw pointer,
-    /// so the size and field order are the contract. The numbers are measured
-    /// against `aeffectx.h` layout on a 64-bit target, not copied from the
-    /// header text — a field inserted, widened or reordered changes one of them
+    /// so the size and field order are the contract. The numbers are the
+    /// header's: `sizeof`/`offsetof` of the `aeffectx.h` structs compiled by a C
+    /// compiler, never the Rust structs measuring themselves (that is how
+    /// `categoryLabel` sat at 8 bytes instead of `kVstMaxCategLabelLen` = 24,
+    /// and a plugin wrote 16 bytes past the host's buffer). A field inserted,
+    /// widened or reordered changes one of them
     /// and the plugin then writes past, or into the middle of, what we read.
     /// Nothing else in the process can detect that: the dispatch still returns
     /// 1 and the garbage looks like data.
     #[test]
     fn plugin_written_structs_keep_their_measured_layout() {
-        assert_eq!(mem::size_of::<ParameterProperties>(), 136);
+        assert_eq!(mem::size_of::<ParameterProperties>(), 152);
         assert_eq!(mem::size_of::<MidiProgramName>(), 80);
         assert_eq!(mem::size_of::<MidiKeyName>(), 80);
         assert_eq!(mem::size_of::<MidiProgramCategory>(), 76);
@@ -1381,7 +1387,7 @@ mod tests {
             108
         );
         assert_eq!(mem::offset_of!(ParameterProperties, category_label), 112);
-        assert_eq!(mem::offset_of!(ParameterProperties, future), 120);
+        assert_eq!(mem::offset_of!(ParameterProperties, future), 136);
     }
 
     /// The MIDI structs put a host-written index first and plugin-written data

@@ -87,12 +87,14 @@ impl Plugin {
         // before the first server is spawned, on the test's own thread.
         unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", tutti_fixtures::plugin_server()) };
         let session = offline_session();
-        let loaded = session
-            .plugin_load(PluginLoadRequest {
-                id: tutti_plugin::catalog::PluginId::from_path(path),
-                state,
-            })
-            .run();
+        let plugin = tutti_plugin::catalog::PluginRef::file(path).expect("a plugin file");
+        let request = match state {
+            Some(bytes) => PluginLoadRequest::new(plugin.clone())
+                .restoring(tutti_plugin::catalog::PluginState::new(plugin, bytes))
+                .expect("the state is the plugin's own"),
+            None => PluginLoadRequest::new(plugin),
+        };
+        let loaded = session.plugin_load(request).run();
         (session, loaded)
     }
 

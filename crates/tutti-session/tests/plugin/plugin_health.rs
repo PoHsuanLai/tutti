@@ -97,10 +97,14 @@ fn session_with(cause: Option<&str>) -> (Session, NodeKey) {
         .build_detached(SampleRate::DEFAULT)
         .expect("a detached session builds");
     let (node, _) = s.graph().insert(Const::mono(0.0));
-    assert!(s.graph().host_plugin(node, handle_with(cause)));
+    assert!(s.graph().host_plugin(
+        node,
+        handle_with(cause),
+        tutti_plugin::catalog::PluginRef::file("fake.clap").expect("a plugin file"),
+    ));
     // The insert is an edit: send it, so the flag starts clear.
     s.commit();
-    (s, node)
+    (s, node.erase())
 }
 
 /// `Phase::Plugins` at `t0 + ms`: the deaths it reported.

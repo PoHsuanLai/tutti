@@ -38,14 +38,27 @@ pub enum InletError {
     },
 }
 
-/// Why [`Graph::connect`](crate::Graph::connect) or
+/// Why [`Graph::connect`](crate::Graph::connect),
+/// [`Graph::set_sources`](crate::Graph::set_sources) or
 /// [`Graph::chain`](crate::Graph::chain) refused; nothing is stored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ConnectError {
     /// A node is not in the graph.
     #[error("{0:?} is not in the graph")]
     NoSuchNode(tutti_graph::NodeKey),
+    /// An output port that the node (or the graph's input) does not have.
+    #[error("no such output port: {0:?}")]
+    NoSuchOutPort(crate::OutPort),
+    /// An input port that the node (or the graph's output) does not have.
+    #[error("no such input port: {0:?}")]
+    NoSuchInPort(crate::InPort),
+    /// An event output that the node does not have.
+    #[error("no such event output: {0:?}")]
+    NoSuchEventOut(crate::EventOutPort),
+    /// An event input that the node does not have.
+    #[error("no such event input: {0:?}")]
+    NoSuchEventIn(crate::EventInPort),
     /// A node feeds itself: a node cannot be its own source.
     #[error("{0:?} cannot feed itself")]
     Itself(tutti_graph::NodeKey),
@@ -55,10 +68,10 @@ pub enum ConnectError {
     NoMainBus(tutti_graph::NodeKey),
     /// The two main buses are not the same width. A connection never
     /// truncates or zero-fills: a width change is a bus edge
-    /// ([`Graph::connect_bus`](crate::Graph::connect_bus)).
+    /// ([`Graph::connect`](crate::Graph::connect)).
     #[error(
         "{from:?}'s main output is {from_width} wide and {to:?}'s main input {to_width}; \
-         a width change is a bus edge (`connect_bus`)"
+         a width change is a bus edge"
     )]
     Width {
         /// The source node.
@@ -70,6 +83,23 @@ pub enum ConnectError {
         /// Its main input's width.
         to_width: usize,
     },
+    /// A main bus is wider than the root it connects to: a connection never
+    /// truncates.
+    #[error(
+        "{from:?}'s main output is {from_width} wide and the root {root_width}; \
+         a width change is a bus edge"
+    )]
+    RootNarrow {
+        /// The source node.
+        from: tutti_graph::NodeKey,
+        /// Its main output's width.
+        from_width: usize,
+        /// The root's width.
+        root_width: usize,
+    },
+    /// A bus edge was refused.
+    #[error(transparent)]
+    Bus(#[from] tutti_graph::BusError),
 }
 
 /// Every subsystem's error, so `?` propagates across crate boundaries.
@@ -197,7 +227,15 @@ pub enum Error {
     #[error(transparent)]
     Connect(#[from] ConnectError),
 
-    /// A bus edge was refused ([`Graph::connect_bus`](crate::Graph::connect_bus)).
+    /// A param write was refused ([`Graph::set_param`](crate::Graph::set_param)).
+    #[error(transparent)]
+    Param(#[from] crate::ParamError),
+
+    /// A modulation range was refused (`Mods::range`).
+    #[error(transparent)]
+    Range(#[from] crate::RangeError),
+
+    /// A bus edge was refused ([`Graph::connect`](crate::Graph::connect)).
     #[error(transparent)]
     Bus(#[from] tutti_graph::BusError),
 

@@ -161,6 +161,19 @@ pub enum StateError {
     #[error("this backend has no state route")]
     NoStateRoute,
 
+    /// The state belongs to another plugin than the one it was offered to. Raised
+    /// by `tutti-plugin`'s `PluginState` checks, before the plugin is asked:
+    /// a request that restores a state, and a hosted plugin's `restore`.
+    /// Nothing was sent to the plugin. Both sides are described as text (the
+    /// plugin's id, or its path when it has none).
+    #[error("this state belongs to {found}, not to {expected}")]
+    OtherPlugin {
+        /// The plugin the state was offered to.
+        expected: String,
+        /// The plugin the state was saved from.
+        found: String,
+    },
+
     /// The state exceeded what the transport will carry, in either direction.
     ///
     /// A distinct variant rather than a [`Rejected`](Self::Rejected) string

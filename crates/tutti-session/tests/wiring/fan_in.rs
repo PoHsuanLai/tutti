@@ -7,7 +7,7 @@
 //! sum is exact in `f32`.
 
 use tutti_nodes::testing::{Const, Through};
-use tutti_session::{GraphSource, Session};
+use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
@@ -50,23 +50,39 @@ fn rig() -> Rig {
     let (b, _) = g.insert(Const::mono(B));
     let (c, _) = g.insert(Const::mono(C));
     let (sink, _) = g.insert(Through::mono());
-    g.set_output_source(0, GraphSource::Node(sink, 0));
+    g.set_sources_hard(Root::output(0), [OutPort::new(sink, 0)])
+        .unwrap();
     let _ = s.update();
     assert!(!s.graph_ref().is_edited());
-    Rig { s, a, b, c, sink }
+    Rig {
+        s,
+        a: a.erase(),
+        b: b.erase(),
+        c: c.erase(),
+        sink: sink.erase(),
+    }
 }
 
-fn node(k: tutti_graph::NodeKey) -> GraphSource {
-    GraphSource::Node(k, 0)
+fn node(k: tutti_graph::NodeKey) -> OutPort {
+    OutPort::new(k, 0)
 }
 
 /// A second source on a port is a second addend, in source order.
 #[test]
 fn add_source_adds_an_addend() {
     let mut r = rig();
-    r.s.graph().add_source(r.sink, 0, node(r.b));
-    r.s.graph().add_source(r.sink, 0, node(r.a));
-    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.a), node(r.b)]);
+    r.s.graph()
+        .connect(node(r.b), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
+    r.s.graph()
+        .connect(node(r.a), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
+    assert_eq!(
+        r.s.graph_ref().sources(InPort::new(r.sink, 0)),
+        [node(r.a), node(r.b)]
+    );
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
 }
 
@@ -75,14 +91,22 @@ fn add_source_adds_an_addend() {
 #[test]
 fn remove_source_goes_back_to_one() {
     let mut r = rig();
-    r.s.graph().add_source(r.sink, 0, node(r.a));
-    r.s.graph().add_source(r.sink, 0, node(r.b));
+    r.s.graph()
+        .connect(node(r.a), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
+    r.s.graph()
+        .connect(node(r.b), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
-    r.s.graph().remove_source(r.sink, 0, node(r.b));
-    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.a)]);
+    r.s.graph()
+        .disconnect_hard(node(r.b), InPort::new(r.sink, 0));
+    assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.a)]);
     assert!(left(&mut r.s).iter().all(|&x| x == A));
-    r.s.graph().remove_source(r.sink, 0, node(r.a));
-    assert!(r.s.graph_ref().sources(r.sink, 0).is_empty());
+    r.s.graph()
+        .disconnect_hard(node(r.a), InPort::new(r.sink, 0));
+    assert!(r.s.graph_ref().sources(InPort::new(r.sink, 0)).is_empty());
     assert!(left(&mut r.s).iter().all(|&x| x == 0.0));
 }
 
@@ -91,22 +115,34 @@ fn remove_source_goes_back_to_one() {
 #[test]
 fn set_sources_replaces_the_set() {
     let mut r = rig();
-    r.s.graph().add_source(r.sink, 0, node(r.a));
-    r.s.graph().add_source(r.sink, 0, node(r.b));
-    r.s.graph().set_sources(r.sink, 0, &[node(r.c)]);
-    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.c)]);
+    r.s.graph()
+        .connect(node(r.a), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
+    r.s.graph()
+        .connect(node(r.b), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.c)])
+        .unwrap();
+    assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.c)]);
     assert!(left(&mut r.s).iter().all(|&x| x == C));
 
-    r.s.graph().set_sources(r.sink, 0, &[node(r.b), node(r.a)]);
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.b), node(r.a)])
+        .unwrap();
     assert_eq!(
-        r.s.graph_ref().sources(r.sink, 0),
+        r.s.graph_ref().sources(InPort::new(r.sink, 0)),
         [node(r.a), node(r.b)],
         "listed in any order, held in the graph's"
     );
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
 
-    r.s.graph().set_source(r.sink, 0, node(r.c));
-    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.c)]);
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.c)])
+        .unwrap();
+    assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.c)]);
     assert!(left(&mut r.s).iter().all(|&x| x == C));
 }
 
@@ -115,10 +151,15 @@ fn set_sources_replaces_the_set() {
 #[test]
 fn a_source_twice_is_one_source() {
     let mut r = rig();
-    r.s.graph().set_sources(r.sink, 0, &[node(r.a), node(r.a)]);
-    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.a)]);
-    r.s.graph().add_source(r.sink, 0, node(r.a));
-    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.a)]);
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a), node(r.a)])
+        .unwrap();
+    assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.a)]);
+    r.s.graph()
+        .connect(node(r.a), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
+    assert_eq!(r.s.graph_ref().sources(InPort::new(r.sink, 0)), [node(r.a)]);
     assert!(left(&mut r.s).iter().all(|&x| x == A));
 }
 
@@ -127,31 +168,51 @@ fn a_source_twice_is_one_source() {
 #[test]
 fn an_unchanged_set_marks_nothing_edited() {
     let mut r = rig();
-    r.s.graph().set_sources(r.sink, 0, &[node(r.a), node(r.b)]);
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a), node(r.b)])
+        .unwrap();
     assert!(r.s.graph_ref().is_edited(), "a change");
     let _ = r.s.update();
-    r.s.graph().set_sources(r.sink, 0, &[node(r.b), node(r.a)]);
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.b), node(r.a)])
+        .unwrap();
     assert!(!r.s.graph_ref().is_edited(), "the same set, reordered");
-    r.s.graph().add_source(r.sink, 0, node(r.a));
+    r.s.graph()
+        .connect(node(r.a), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
     assert!(!r.s.graph_ref().is_edited(), "a source it holds");
-    r.s.graph().remove_source(r.sink, 0, node(r.c));
+    r.s.graph()
+        .disconnect_hard(node(r.c), InPort::new(r.sink, 0));
     assert!(!r.s.graph_ref().is_edited(), "a source it lacks");
-    r.s.graph().add_source(r.sink, 0, GraphSource::Silence);
-    assert!(!r.s.graph_ref().is_edited(), "silence is no source");
-    r.s.graph().add_source(r.sink, 0, node(r.c));
+    r.s.graph()
+        .connect(node(r.c), InPort::new(r.sink, 0))
+        .unwrap()
+        .hard();
     assert!(r.s.graph_ref().is_edited(), "a new source");
 }
 
-/// Silence is the empty set: a lone `Silence` clears the port, and
-/// `add_source` of it adds nothing.
+/// Silence is the empty set: an empty `set_sources` and `disconnect_all` clear
+/// the port, and nothing stores a `Source::Zero`.
 #[test]
 fn silence_is_the_empty_set() {
     let mut r = rig();
-    r.s.graph().set_sources(r.sink, 0, &[node(r.a), node(r.b)]);
-    r.s.graph().set_sources(r.sink, 0, &[GraphSource::Silence]);
-    assert!(r.s.graph_ref().sources(r.sink, 0).is_empty());
-    r.s.graph().add_source(r.sink, 0, GraphSource::Silence);
-    assert!(r.s.graph_ref().sources(r.sink, 0).is_empty());
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a), node(r.b)])
+        .unwrap();
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [])
+        .unwrap();
+    assert!(r.s.graph_ref().sources(InPort::new(r.sink, 0)).is_empty());
+    r.s.graph()
+        .set_sources_hard(InPort::new(r.sink, 0), [node(r.a)])
+        .unwrap();
+    assert!(r.s.graph().disconnect_all(InPort::new(r.sink, 0)));
+    assert!(
+        !r.s.graph().disconnect_all(InPort::new(r.sink, 0)),
+        "already empty"
+    );
+    assert!(r.s.graph_ref().sources(InPort::new(r.sink, 0)).is_empty());
     assert!(
         r.s.graph_ref().planned_compensation().is_some(),
         "no `Source::Zero` is stored: the spec validates"
@@ -159,42 +220,47 @@ fn silence_is_the_empty_set() {
     assert!(left(&mut r.s).iter().all(|&x| x == 0.0));
 }
 
-/// Silence is the sum's zero: listed beside a source it is dropped, so the
-/// set is that source and the render is its figure.
 #[test]
-fn silence_beside_a_source_adds_nothing() {
-    let mut r = rig();
-    r.s.graph()
-        .set_sources(r.sink, 0, &[node(r.a), GraphSource::Silence]);
-    assert_eq!(r.s.graph_ref().sources(r.sink, 0), [node(r.a)]);
-    assert!(r.s.graph_ref().planned_compensation().is_some());
-    assert!(left(&mut r.s).iter().all(|&x| x == A));
-}
-
-#[test]
-#[should_panic(expected = "cannot feed its own input")]
 fn a_node_cannot_be_its_own_source() {
     let mut r = rig();
-    r.s.graph().add_source(r.sink, 0, node(r.sink));
+    assert_eq!(
+        r.s.graph()
+            .connect(node(r.sink), InPort::new(r.sink, 0))
+            .err(),
+        Some(tutti_session::ConnectError::Itself(r.sink))
+    );
+    assert!(!r.s.graph_ref().is_edited(), "nothing was stored");
 }
 
 /// A global output channel is a sink too: its sources sum.
 #[test]
 fn an_output_channel_sums_its_sources() {
     let mut r = rig();
-    r.s.graph().set_output_sources(0, &[node(r.b)]);
-    r.s.graph().add_output_source(0, node(r.a));
-    assert_eq!(r.s.graph_ref().output_sources(0), [node(r.a), node(r.b)]);
+    r.s.graph()
+        .set_sources_hard(Root::output(0), [node(r.b)])
+        .unwrap();
+    r.s.graph()
+        .connect(node(r.a), Root::output(0))
+        .unwrap()
+        .hard();
+    assert_eq!(
+        r.s.graph_ref().sources(Root::output(0)),
+        [node(r.a), node(r.b)]
+    );
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
 
-    r.s.graph().remove_output_source(0, node(r.b));
-    assert_eq!(r.s.graph_ref().output_sources(0), [node(r.a)]);
+    r.s.graph().disconnect_hard(node(r.b), Root::output(0));
+    assert_eq!(r.s.graph_ref().sources(Root::output(0)), [node(r.a)]);
     assert!(left(&mut r.s).iter().all(|&x| x == A));
 
-    r.s.graph().set_output_sources(0, &[node(r.c), node(r.a)]);
+    r.s.graph()
+        .set_sources_hard(Root::output(0), [node(r.c), node(r.a)])
+        .unwrap();
     assert!(left(&mut r.s).iter().all(|&x| x == A + C));
-    r.s.graph().set_output_source(0, node(r.c));
-    assert_eq!(r.s.graph_ref().output_sources(0), [node(r.c)]);
+    r.s.graph()
+        .set_sources_hard(Root::output(0), [node(r.c)])
+        .unwrap();
+    assert_eq!(r.s.graph_ref().sources(Root::output(0)), [node(r.c)]);
     assert!(left(&mut r.s).iter().all(|&x| x == C));
 }
 
@@ -202,11 +268,16 @@ fn an_output_channel_sums_its_sources() {
 #[test]
 fn an_unchanged_output_set_marks_nothing_edited() {
     let mut r = rig();
-    r.s.graph().set_output_sources(0, &[node(r.sink)]);
+    r.s.graph()
+        .set_sources_hard(Root::output(0), [node(r.sink)])
+        .unwrap();
     assert!(!r.s.graph_ref().is_edited());
-    r.s.graph().add_output_source(0, node(r.sink));
+    r.s.graph()
+        .connect(node(r.sink), Root::output(0))
+        .unwrap()
+        .hard();
     assert!(!r.s.graph_ref().is_edited());
-    r.s.graph().remove_output_source(0, node(r.a));
+    r.s.graph().disconnect_hard(node(r.a), Root::output(0));
     assert!(!r.s.graph_ref().is_edited());
 }
 
@@ -215,13 +286,18 @@ fn an_unchanged_output_set_marks_nothing_edited() {
 #[test]
 fn the_output_tap_hears_the_sum() {
     let mut r = rig();
-    r.s.graph().set_output_sources(0, &[node(r.a), node(r.b)]);
+    r.s.graph()
+        .set_sources_hard(Root::output(0), [node(r.a), node(r.b)])
+        .unwrap();
     let mut tap =
         r.s.graph()
             .open_output_tap(Samples(1_024))
             .expect("the sources exist");
     assert!(left(&mut r.s).iter().all(|&x| x == A + B));
-    r.s.graph().add_output_source(0, node(r.c));
+    r.s.graph()
+        .connect(node(r.c), Root::output(0))
+        .unwrap()
+        .hard();
     assert!(left(&mut r.s).iter().all(|&x| x == A + B + C));
 
     let mut got = vec![f32::NAN; 128 * 2];

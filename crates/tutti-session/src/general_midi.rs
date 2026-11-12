@@ -13,21 +13,20 @@
 //! [`NodeMode`](tutti_graph::NodeMode) act on the whole mix, effects included.
 //! Nothing else is needed to hear it; nothing here is required either: a host
 //! that wants a different reverb, two units into one chorus or no chorus wires
-//! the unit's outputs itself, through [`Graph::set_source`](crate::Graph::set_source).
+//! the unit's outputs itself, through [`Graph::connect`](crate::Graph::connect).
 
-use tutti_graph::NodeKey;
 use tutti_graph::ParamSet;
 use tutti_nodes::{BusStripNode, FreeverbNode, ModDelayConfig, ModDelayNode};
 use tutti_soundfont::SoundFontUnit;
 use tutti_types::{Amplitude, ChannelLayout, UnitParam};
 
-use crate::{GraphSource, InstrumentHandle, Session};
+use crate::{InstrumentHandle, Key, OutPort, Session};
 
 /// A SoundFont unit wired to its chorus and reverb, and what they sum to.
 ///
 /// What [`Session::add_general_midi`] adds. The mix is `out()`'s ports 0 and 1
 /// (left and right). It is not wired to the graph's outputs: that is the host's
-/// (`Graph::set_output_source`), since a second setup must not take the first's
+/// (`Graph::connect` into `Root`), since a second setup must not take the first's
 /// place.
 ///
 /// The [`instrument`](Self::instrument) is the unit's handle as any
@@ -40,9 +39,9 @@ use crate::{GraphSource, InstrumentHandle, Session};
 #[derive(Clone, Debug)]
 pub struct GeneralMidi {
     instrument: InstrumentHandle,
-    chorus: NodeKey,
-    reverb: NodeKey,
-    strip: NodeKey,
+    chorus: Key<ModDelayNode>,
+    reverb: Key<FreeverbNode>,
+    strip: Key<BusStripNode>,
     strip_params: ParamSet,
 }
 
@@ -55,20 +54,20 @@ impl GeneralMidi {
 
     /// The chorus: the unit's chorus send in, the wet chorus out.
     #[must_use]
-    pub fn chorus(&self) -> NodeKey {
+    pub fn chorus(&self) -> Key<ModDelayNode> {
         self.chorus
     }
 
     /// The reverb: the unit's reverb send in, the wet reverb out.
     #[must_use]
-    pub fn reverb(&self) -> NodeKey {
+    pub fn reverb(&self) -> Key<FreeverbNode> {
         self.reverb
     }
 
     /// The mix after the fader: dry pair, chorus and reverb summed, on ports 0
     /// (left) and 1 (right).
     #[must_use]
-    pub fn out(&self) -> NodeKey {
+    pub fn out(&self) -> Key<BusStripNode> {
         self.strip
     }
 
@@ -82,7 +81,12 @@ impl GeneralMidi {
     /// strip, the chorus, the reverb and the fader.
     pub fn remove(self, session: &mut Session) {
         session.remove_instrument(&self.instrument);
-        for node in [self.instrument.node(), self.chorus, self.reverb, self.strip] {
+        for node in [
+            self.instrument.node(),
+            self.chorus.erase(),
+            self.reverb.erase(),
+            self.strip.erase(),
+        ] {
             session.remove(node);
         }
     }
@@ -116,15 +120,15 @@ impl Session {
         let (reverb, _) = graph.insert(FreeverbNode::general_midi());
         let (strip, strip_params) = graph.add(BusStripNode::new());
         // The unit's outputs: dry L/R, chorus send L/R, reverb send.
-        graph.set_source(chorus, 0, GraphSource::node(unit, 2));
-        graph.set_source(chorus, 1, GraphSource::node(unit, 3));
-        graph.set_source(reverb, 0, GraphSource::node(unit, 4));
+        graph.connect(OutPort::new(unit, 2), chorus.input(0))?;
+        graph.connect(OutPort::new(unit, 3), chorus.input(1))?;
+        graph.connect(OutPort::new(unit, 4), reverb.input(0))?;
         // The fader's inputs sum the dry pair, the chorus and the reverb,
         // each stereo, left on port 0 and right on port 1.
-        let dry = instrument.out();
+        let dry = instrument.out().erase();
         for (channel, port) in [(0, 0), (1, 1)] {
-            for node in [dry, chorus, reverb] {
-                graph.add_source(strip, port, GraphSource::node(node, channel));
+            for node in [dry, chorus.erase(), reverb.erase()] {
+                graph.connect(OutPort::new(node, channel), strip.input(port))?;
             }
         }
         Ok(GeneralMidi {

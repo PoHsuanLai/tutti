@@ -23,8 +23,8 @@ use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber};
 
 use tutti_session::{
-    Error, EventSource, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, SendError,
-    Session, SessionEvent, SessionNode, UmpOut,
+    Error, EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx,
+    SendError, Session, SessionEvent, SessionNode, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -88,7 +88,7 @@ fn offline() -> Session {
 fn tap(s: &mut Session) -> (NodeKey, Seen) {
     let seen = Seen::default();
     let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
-    (node, seen)
+    (node.erase(), seen)
 }
 
 /// A note-on/note-off pair as timed events.
@@ -208,7 +208,7 @@ fn a_target_without_an_event_input_takes_no_clip() {
         )));
     assert!(matches!(
         s.midi().play_clip(dc, std::iter::empty::<TimedMidiEvent>()),
-        Err(Error::NoEventInput(n)) if n == dc
+        Err(Error::NoEventInput(n)) if n == dc.erase()
     ));
     s.remove(dc);
     assert!(matches!(
@@ -241,10 +241,10 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     let _ = s.update();
     assert_eq!(s.midi().clip(new), Some(clip), "the same clip");
     assert_eq!(s.midi().live_input(new).unwrap().node, live.node);
-    let mut fed = s.graph_ref().event_sources(new, 0);
-    fed.sort_by_key(|e| e.node);
-    let mut want = vec![EventSource::from(clip), EventSource::from(live.node)];
-    want.sort_by_key(|e| e.node);
+    let mut fed = s.graph_ref().sources(EventInPort::new(new, 0));
+    fed.sort_by_key(|e| e.node());
+    let mut want = vec![EventOutPort::new(clip, 0), EventOutPort::new(live.node, 0)];
+    want.sort_by_key(|e| e.node());
     assert_eq!(fed, want);
 
     live.send(
@@ -330,8 +330,8 @@ fn route_rules_wire_the_hardware_input() {
             .feed(n, Feeder::Routes)
             .iter()
             .map(|e| {
-                assert_eq!(e.node, input);
-                e.port
+                assert_eq!(e.node(), input);
+                u16::try_from(e.index()).unwrap()
             })
             .collect();
         p.sort();
@@ -384,8 +384,8 @@ fn a_route_rule_names_a_group() {
             .feed(n, Feeder::Routes)
             .iter()
             .map(|e| {
-                assert_eq!(e.node, input);
-                e.port
+                assert_eq!(e.node(), input);
+                u16::try_from(e.index()).unwrap()
             })
             .collect();
         p.sort();
@@ -954,17 +954,18 @@ fn another_devices_removal_leaves_a_held_input_open() {
 /// **The feeds are partial, as audio's declarations are: an edge a host
 /// wired on a fed event input stays.** A host wires its own clip into the
 /// tap's event input 0 by hand; the session's sequencer then feeds the tap
-/// too, and both notes play. A host's later `set_event_sources` on that
+/// too, and both notes play. A host's later `set_sources` on that
 /// input sets its own edges beside the sequencer's; the sequencer's clip
 /// re-aimed elsewhere leaves the host's edges where they are.
 #[test]
 fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     use tutti_midi_runtime::MidiClipNode;
 
-    let sorted = |mut v: Vec<EventSource>| {
-        v.sort_by_key(|e| (e.node.0, e.port));
+    let sorted = |mut v: Vec<EventOutPort>| {
+        v.sort();
         v
     };
+    let input = |synth| EventInPort::new(synth, 0);
     let mut s = offline();
     let (synth, seen) = tap(&mut s);
     let (other, _) = tap(&mut s);
@@ -973,15 +974,17 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         Beat(1.0 / 3.0),
         BeatDuration(1.0),
     )));
-    s.graph().set_event_sources(synth, 0, &[hand.into()]);
+    s.graph()
+        .set_sources(input(synth), [hand.events_out()])
+        .unwrap();
     let clip = s
         .midi()
         .play_clip(synth, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
         .unwrap();
     let _ = s.update();
     assert_eq!(
-        sorted(s.graph_ref().event_sources(synth, 0)),
-        sorted(vec![hand.into(), clip.into()]),
+        sorted(s.graph_ref().sources(input(synth))),
+        sorted(vec![hand.events_out(), EventOutPort::new(clip, 0)]),
         "the sequencer's clip joins the hand-wired one"
     );
     roll(&s, 9_000);
@@ -990,17 +993,19 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     assert_eq!(ons, vec![(8_000, 60), (8_000, 62)], "both play");
 
     let (hand2, _) = s.graph().add(MidiClipNode::new([]));
-    s.graph().set_event_sources(synth, 0, &[hand2.into()]);
+    s.graph()
+        .set_sources(input(synth), [hand2.events_out()])
+        .unwrap();
     assert_eq!(
-        sorted(s.graph_ref().event_sources(synth, 0)),
-        sorted(vec![hand2.into(), clip.into()]),
+        sorted(s.graph_ref().sources(input(synth))),
+        sorted(vec![hand2.events_out(), EventOutPort::new(clip, 0)]),
         "the host's call sets its own edges, beside the feed's"
     );
 
     s.midi().retarget(clip, other).unwrap();
     assert_eq!(
-        s.graph_ref().event_sources(synth, 0),
-        vec![hand2.into()],
+        s.graph_ref().sources(input(synth)),
+        vec![hand2.events_out()],
         "the feed's edge goes, the host's stays"
     );
 }

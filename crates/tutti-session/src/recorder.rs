@@ -197,7 +197,7 @@ pub enum PumpPass {
 /// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 /// use tutti_session::{PumpLoop, PumpPass};
 /// use tutti_graph::{OutPort, Source};
-/// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, Sink};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, MaxBlock, SampleRate, Samples, Sink};
 /// use tutti_graph::NodeKey;
 /// use tutti_graph::{TapAlign, TapId};
 ///

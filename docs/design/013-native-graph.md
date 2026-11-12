@@ -5997,7 +5997,8 @@ commit, like any wiring change:
   source goes with its key, so the old source's past audio is never played
   out of the new wiring (the rule `DelayKey` already states).
 - **No automatic declick of audio wiring** in `Editor` (**superseded for the
-  session graph** by [doc 030](030-core-api.md) §4, 2026-11-12: the session's
+  session graph**, built: see "As built (declicked wiring)" under Edge gain, and
+  [doc 030](030-core-api.md) §4: the session's
   `connect`/`disconnect` fade over `EDGE_DECLICK` unless `.hard()`): a source connected at
   full level steps in. A host that wants a declick wires the edge with a
   weight of `0.0` and ramps it to `1.0` (Edge gain), and ramps down before
@@ -6583,6 +6584,50 @@ Where the build chose:
   `the_base_is_the_lanes_knob_and_a_route_returns_to_it` (base 0.5, route,
   analytic figure around it, base moved while routed, route gone, base).
   `bevy-tutti` (parked) would carry the weight in `PortSources` entries.
+
+**As built (declicked wiring, doc 030 §4).** The session graph's wiring fades;
+`Editor` fades nothing unless asked. What is there:
+
+- **`EdgeFade { None, In, Out }`** is a field of `EdgeGain` and a control of the
+  lane, in the lane's cell beside the base (`Editor::set_edge_fade`; no
+  recompile once the entry exists). A lane *starts* a fade when the kind it
+  reads differs from the one it last acted on, from the weight its previous
+  block ended on (a new lane has none: `In` starts at `0.0`, `Out` at its base),
+  and runs it over `EDGE_DECLICK` (`= MODE_DECLICK`, 256 frames) counted in
+  frames across blocks: `w(j) = start + (goal - start) * j / 256`, `goal` from
+  frame 256 on. `In` goes to the base the lane reads, `Out` to `0.0` and stays
+  there. It is a new `Weight::Fade` of the existing lane, not a new op: the
+  kernels, `par.rs`'s claims and `CONSTANT` (a fading addend is not constant)
+  are the lane's, so a parallel render equals the serial one bit for bit
+  (`edge_fade::parallel_equals_serial_for_a_graph_mid_fade`) and a block mid-fade
+  allocates nothing (`rt_no_alloc::{fading_edges,parallel_fading_edges}_are_allocation_free`).
+- **The end is reported on a ring, not in the commit box.** A commit's box
+  returns only with a commit; a lane reports its ended fade when it ends. The
+  executor pushes `(EdgeId, EdgeFade)` on a fixed ring after the block (a lane
+  whose push fails offers it again next block) and `Editor::settle_fades`
+  drains it: an `Out` edge leaves the spec with its entry, an `In` edge forgets
+  the fade (and its entry, if it carries nothing else), and a stale report (the
+  edge since reconnected or re-faded) is ignored. The session calls it from
+  `Phase::Collect` and commits when it changed the spec. The delay ring of a
+  fading-out edge lives until the edge leaves the plan.
+- **Bus edges fade per lane**: `BusFeed::fade` is the feed's, the lowering gives
+  every lane of the fold an entry with it (so a lane of weight `1.0` is a
+  weighted lane while it fades), and a lane's report settles the feed.
+- **Removing a node** (`Editor::remove_declicked`): the node's output edges and
+  bus edges that a plan has heard are marked `Out` and stay with the node, which
+  keeps rendering; its input edges, event edges and params go at once; the node
+  goes in `settle_fades` when no edge leaves it. `Editor::remove` is the cut.
+- **A fork starts steady**: `Editor::fork` drops an `Out` edge and ends an `In`.
+- **Not faded:** event edges; a lane a modulation drives (its frames are the
+  param port's: a driven lane's fade is over at its first block, a hard step);
+  an edge no plan has heard (`Editor::edge_is_live`), which is removed at once.
+  The reference interpreter does not model fades (`Editor` never sets one in the
+  differential suite).
+- **Session surface:** `connect` fades in, `Connection::hard` does not;
+  `disconnect`, `disconnect_all`, `set_sources` removals and `remove` fade out,
+  `disconnect_hard` and `set_sources_hard` cut. An edge fading out is no source
+  (`sources`, `bus_sources`, `edge_gain` ignore it) and `connect` brings it back
+  from where the fade had got to.
 
 #### Bypass and mute are graph state
 
@@ -10450,11 +10495,46 @@ Decided 2026-11-08 (SoundFont stage 3b). The reverb and chorus left
 
 ## The session graph's surface
 
-Decided 2026-11-12. `tutti_session::Graph` has 97 public methods: one wiring
+Decided 2026-11-12. `tutti_session::Graph` had 97 public methods: one wiring
 idea spelled once per kind of sink, ports as bare `usize`, and the session's
 own plumbing on the same type as `connect`. This section is the target; two
-lanes reach it after the umbrella's prelude lane (which adds `Graph::connect`
+lanes reach it after the umbrella's prelude lane (which added `Graph::connect`
 and `Graph::chain` over node keys, shaped as the first piece of it).
+
+**Built (lane 2a): typed keys, ports and the one vocabulary; the facets, the
+plumbing and the failure rule are the next lane.** What is there:
+
+- `Key<N>` (`Copy`, a `NodeKey` with `PhantomData<fn() -> N>`, `Key::erase`,
+  `From<Key<N>> for NodeKey`); `Graph::add` and `insert` return `(Key<N>,
+  N::Controls)`, and every `Graph` and `Session` method that takes a node takes
+  `impl Into<NodeKey>`.
+- `OutPort` and `InPort` are the session's own values (a node's port or a global
+  channel; the index is a `usize` inside them, a count and not a unit), made by
+  `key.out(i)`, `key.input(i)`, `OutPort::new(node, i)`, `InPort::new(node, i)`.
+- **The root is a value, `Root`, not a `g.output(i)` method**: a method takes
+  `&Graph`, and `s.graph().connect(osc.out(0), s.graph().output(0))` borrows the
+  session twice. `Root::output(i)` is a sink channel, `Root::input(i)` a global
+  input, and `Root` itself is the sink of a main bus and of a bus edge.
+- `Graph::connect(from, to)` is generic over two sealed traits, `Outlet` and
+  `Inlet<W>`, and a kind of wire `W` (`Channel`, `MainBus`, `Bus`): only two ends
+  of the same kind connect, so a key into a port does not compile. It returns a
+  `Connection` (borrowing the graph) whose `gain(Amplitude)` weights the edges it
+  added (a non-finite gain takes them out again) and exists for `Channel` and
+  `MainBus` alone: a bus edge's lanes carry the fold's weights. The `Edge` value
+  (`Connection::edges`, `Edge::new(from, to)`, a modulation target) carries
+  `set_gain`, `gain` and `clear_gain`, so `set_edge_gain` and its kin are gone.
+- `disconnect(from, to)`, `disconnect_all(to)`, `set_sources(to, from)` and
+  `sources(to)` do the rest; `bus_sources(to)` reads a bus edge's sources and
+  `connect_by_index` is the by-index bus edge. A main bus connected to `Root`
+  wires channel `c` to output `c` and refuses a bus wider than the root
+  (`ConnectError::RootNarrow`), where `set_outputs_from` wrapped.
+- Gone: `GraphSource` (and with it `Silence`: the empty set is silence),
+  `EdgeRef`/`EdgeSink`, `set_source`, `add_source`, `remove_source`, the
+  `*_output_source*` and `*_weighted` families, `connect_bus_to_root*`,
+  `set_outputs_from(_ports)` and `root_bus_sources`.
+- Every one of these refuses with `ConnectError` (a missing node or port, a node
+  fed by itself) where it used to panic or store a dangling edge; the failure
+  rule for the rest of `Graph` is the next lane's.
 
 - **Typed ports.** `OutPort` and `InPort` are values made from a node's key
   (`lp.out(0)`, `verb.input(1)`; with typed keys, `Key<N>`, the node's own
@@ -10593,3 +10673,15 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
      out-of-process plugins. Without a known quantum the chunk is the graph's
      `MaxBlock`. An offline fork waits for every chunk, so its chunk is its
      `MaxBlock` and its declared latency says so.
+
+### As built (event ports and typed params, doc 030 step 2c)
+
+`Key<N>` has `events_out()`, `events_in()` (port 0, the main event input:
+the chase delivers there) and `events_out_at(i)`, `events_in_at(i)`, returning
+`EventOutPort` / `EventInPort`. The sealed wire kind `Event` makes `connect`,
+`disconnect`, `sources`, `set_sources` and `disconnect_all` cover event edges
+(the last three through the sealed `Fanin`); they are never faded. A feed
+(`set_feed`) still owns its edges on input 0, and a hand-wired edge on a fed
+input stays when the feed drops it. Params: `declare_params!` states a node's
+kinds and units; `Key` methods are generated from `HasParam<const P: u16>`;
+`Params(node)` is the wrapper for a host's `ParamNode`.

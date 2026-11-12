@@ -95,7 +95,7 @@ impl FileOut {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] from creating the file (a missing directory, a permission
+    /// [`Error::Io`](crate::Error::Io) from creating the file (a missing directory, a permission
     /// denial) or the header (a full disk), and the codec's other errors when
     /// the [`Spec`] cannot be written.
     pub fn create(spec: &Spec, path: impl AsRef<Path>) -> Result<Self> {

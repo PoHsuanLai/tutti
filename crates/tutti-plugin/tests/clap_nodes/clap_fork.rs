@@ -636,7 +636,7 @@ fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Re
     );
     render_to_buffers(graph, &config, &tutti_transport::FrozenClock).map(|outcome| {
         outcome
-            .finished()
+            .into_finished()
             .expect("nothing cancels a control with no token")
     })
 }
@@ -722,7 +722,7 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     );
     let rendered = render_to_buffers(graph, &config, timeline.as_ref())
         .expect("the fork exports")
-        .finished()
+        .into_finished()
         .expect("nothing cancels a control with no token");
     let onset = rendered.planes()[0].iter().position(|&s| s != 0.0);
     assert_eq!(
@@ -805,7 +805,7 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
         );
         render_to_buffers(graph, &config, timeline.as_ref()).map(|outcome| {
             outcome
-                .finished()
+                .into_finished()
                 .expect("nothing cancels a control with no token")
         })
     };
@@ -1219,7 +1219,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     );
     let rendered = render_to_buffers(graph, &config, &tutti_transport::FrozenClock)
         .expect("a fork whose latency settled exports without a fault")
-        .finished()
+        .into_finished()
         .expect("nothing cancels a control with no token");
     let plane = &rendered.planes()[0];
     assert!(!plane.is_empty());
@@ -1305,7 +1305,7 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
         );
         let rendered = render_to_buffers(graph, &config, &tutti_transport::FrozenClock)
             .expect("the fork exports")
-            .finished()
+            .into_finished()
             .expect("nothing cancels a control with no token");
         (rendered.into_planes(), parallel)
     };

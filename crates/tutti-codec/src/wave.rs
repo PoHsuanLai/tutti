@@ -2,7 +2,7 @@
 //!
 //! A buffer: build it, index it, decode a file into it, write it to a file.
 //! Decoding a file *into* a `Wave` is `Wave::read`, behind the `decode-*`
-//! features, and writing one is [`Wave::write`], behind the `encode-*`
+//! features, and writing one is `Wave::write`, behind the `encode-*`
 //! features; the buffer itself needs none.
 
 #[cfg(encode)]
@@ -245,7 +245,7 @@ impl Wave {
     }
 
     /// Returns every sample frame by frame: channel 0 to the last of frame 0,
-    /// then frame 1, and so on, the order of an [`Interleaved`] block.
+    /// then frame 1, and so on, the order of an [`Interleaved`](tutti_types::Interleaved) block.
     ///
     /// An iterator and not a `Vec`: a wave is already held whole, and the
     /// caller that wants flat samples (an encoder, a meter) reads them in

@@ -445,7 +445,7 @@ pub struct Session {
     pub(crate) midi_io: Option<tutti_midi_hardware::MidiSession>,
     #[cfg(feature = "sampler")]
     pub(crate) disk_streamer: Option<tutti_sampler::DiskStreamer>,
-    /// The last [`SamplerOpen`](crate::SamplerOpen) minted.
+    /// The last [`SamplerLoad`](crate::SamplerLoad) minted.
     #[cfg(feature = "sampler")]
     pub(crate) sampler_opens: u64,
     /// The device's fault record, shared with the [`Device`](crate::Device),

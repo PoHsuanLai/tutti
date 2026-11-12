@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use tutti_sampler::{OpenError, Placement, StreamPhase};
 use tutti_session::{
-    OutPort, Residency, Root, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerOpen, Session,
+    OutPort, Residency, Root, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerLoad, Session,
     SessionEvent,
 };
 use tutti_transport::MotionEvent;
@@ -67,7 +67,7 @@ fn an_open_lands_opened_with_the_calls_id() {
     let second = s.open_stream(&path, Placement::HEAD).expect("a streamer");
     assert_ne!(first, second);
 
-    let mut opened: Vec<SamplerOpen> = landed(&mut s, 2)
+    let mut opened: Vec<SamplerLoad> = landed(&mut s, 2)
         .into_iter()
         .map(|event| match event {
             SamplerEvent::Opened { id, stream, reader } => {
@@ -119,7 +119,7 @@ fn a_session_without_a_streamer_refuses_an_open_at_the_call() {
 }
 
 /// The clip `load_clip` landed for `id`, from the events of one `update()` run.
-fn clip_of(events: Vec<SamplerEvent>, id: SamplerOpen) -> tutti_sampler::Clip {
+fn clip_of(events: Vec<SamplerEvent>, id: SamplerLoad) -> tutti_sampler::Clip {
     let mut events = events.into_iter();
     match events.next() {
         Some(SamplerEvent::ClipLoaded { id: got, clip }) => {

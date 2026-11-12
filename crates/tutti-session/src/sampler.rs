@@ -5,7 +5,7 @@
 //! The streamer opens a file on a thread of its own, so an open takes as long
 //! as the file's header and its first reads. [`Session::open_stream`] starts
 //! one and returns at once; the stream lands as
-//! [`SamplerEvent::Opened`] with the call's [`SamplerOpen`], under
+//! [`SamplerEvent::Opened`] with the call's [`SamplerLoad`], under
 //! [`SessionEvent::Sampler`] (design 030,
 //! convention 1), or as [`SamplerEvent::OpenFailed`] with the reason.
 
@@ -16,12 +16,12 @@ use tutti_sampler::{Clip, OpenError, PlaceError, Placement, ProbeError, Stream, 
 use crate::jobs::JobFailed;
 use crate::{Session, SessionEvent};
 
-/// An open [`Session::open_stream`] started, named so the event that lands it
-/// can be matched to the call: [`SamplerEvent::Opened`] and
+/// A load ([`Session::open_stream`] or [`Session::load_clip`]) the session
+/// started, named so the event that lands it can be matched to the call: [`SamplerEvent::Opened`] and
 /// [`SamplerEvent::OpenFailed`] carry it. The session mints it; it names
 /// nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SamplerOpen(u64);
+pub struct SamplerLoad(u64);
 
 /// Past how many bytes of decoded audio [`Residency::Auto`] streams a file
 /// instead of holding it: 32 MiB of 32-bit floats, 95 seconds of 44.1 kHz
@@ -63,7 +63,7 @@ pub enum SamplerEvent {
     /// stream ends it.
     Opened {
         /// The id [`Session::open_stream`] returned.
-        id: SamplerOpen,
+        id: SamplerLoad,
         /// The control side of the stream.
         stream: Stream,
         /// The voice's side of the stream.
@@ -74,14 +74,14 @@ pub enum SamplerEvent {
     /// decided ([`Clip::is_streamed`]).
     ClipLoaded {
         /// The id [`Session::load_clip`] returned.
-        id: SamplerOpen,
+        id: SamplerLoad,
         /// The clip, at beat 0 until placed.
         clip: Clip,
     },
     /// An open or a load did not finish, and will not.
     OpenFailed {
         /// The id [`Session::open_stream`] or [`Session::load_clip`] returned.
-        id: SamplerOpen,
+        id: SamplerLoad,
         /// Why.
         error: SamplerError,
     },
@@ -143,14 +143,14 @@ impl Session {
         &mut self,
         path: impl Into<PathBuf>,
         place: Placement,
-    ) -> Result<SamplerOpen, SamplerError> {
+    ) -> Result<SamplerLoad, SamplerError> {
         let streamer = self
             .disk_streamer
             .as_ref()
             .ok_or(SamplerError::NoStreamer)?;
         let opening = streamer.open(&path.into(), place);
         self.sampler_opens += 1;
-        let id = SamplerOpen(self.sampler_opens);
+        let id = SamplerLoad(self.sampler_opens);
         self.jobs.submit(
             move || opening.wait(),
             move |_, done, events| {
@@ -201,12 +201,12 @@ impl Session {
         &mut self,
         path: impl Into<PathBuf>,
         residency: Residency,
-    ) -> Result<SamplerOpen, SamplerError> {
+    ) -> Result<SamplerLoad, SamplerError> {
         if residency == Residency::Streamed && self.disk_streamer.is_none() {
             return Err(SamplerError::NoStreamer);
         }
         self.sampler_opens += 1;
-        let id = SamplerOpen(self.sampler_opens);
+        let id = SamplerLoad(self.sampler_opens);
         let path: PathBuf = path.into();
         let at = path.clone();
         let can_stream = self.disk_streamer.is_some();
@@ -254,7 +254,7 @@ impl Session {
     /// The second half of a streamed [`load_clip`](Self::load_clip): the open,
     /// started here because the streamer is the session's, and waited for on
     /// the spawner.
-    fn stream_clip(&mut self, id: SamplerOpen, path: PathBuf, events: &mut Vec<SessionEvent>) {
+    fn stream_clip(&mut self, id: SamplerLoad, path: PathBuf, events: &mut Vec<SessionEvent>) {
         let Some(streamer) = &self.disk_streamer else {
             events.push(
                 SamplerEvent::OpenFailed {

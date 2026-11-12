@@ -479,7 +479,7 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      last clone, and the session's reclaimer keeps a clone for as long as the node is in the
      graph. A disk voice's loop is set on the stream; `stop` is a gate on the node (silent,
      nothing read), which a free-running voice resumes from where it stopped.
-   - A5: `Session::open_stream(path, Placement) -> Result<SamplerOpen, SamplerError>`
+   - A5: `Session::open_stream(path, Placement) -> Result<SamplerLoad, SamplerError>`
      opens on the spawner (`Opening::wait` sleeps on the reply) and lands
      `SessionEvent::Sampler(SamplerEvent::Opened { id, stream, reader } | OpenFailed { id, error })`;
      `Error::Sampler(SamplerError)` is the one error variant. `take_disk_streamer` stays

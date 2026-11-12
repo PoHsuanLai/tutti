@@ -160,7 +160,7 @@ pub use recorder::{Finite, IDLE_PARK, Live, PumpLoop, PumpPass, Recorder, Record
 #[cfg(feature = "plugin")]
 pub use recovery::{GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy};
 #[cfg(feature = "sampler")]
-pub use sampler::{Residency, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerOpen};
+pub use sampler::{Residency, STREAM_ABOVE_BYTES, SamplerError, SamplerEvent, SamplerLoad};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]

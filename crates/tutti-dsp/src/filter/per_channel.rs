@@ -14,7 +14,9 @@ use tutti_types::{BusTopology, ChannelLayout, SampleRate};
 
 use super::sizes::FilterSizes;
 use crate::control::{COEFF_STREAM, lane_group};
-use crate::{Cadence, Ceiling, Channels, Design, Effort, Glide, LANES, Lerp, Recurrence, System};
+use crate::{
+    Cadence, Ceiling, Channels, Design, Effort, Glide, LANES, Lerp, Recurrence, Start, System,
+};
 
 /// The most outputs one input channel makes: a crossover's bands.
 const MAX_OUTPUTS: usize = 6;
@@ -187,13 +189,13 @@ impl<C: ChannelRecurrence> Recurrence for PerChannel<C> {
 
     const STEP: usize = 1;
 
-    fn start(&self, model: &C::Model) -> (Glide<C::Coeffs>, Vec<C::State>, C::Coeffs) {
+    fn start(&self, model: &C::Model) -> Start<Self> {
         let at = self.recurrence.coeffs(model);
-        (
-            Glide::landed(at).by(C::STEPS),
-            vec![C::State::default(); self.width],
-            at,
-        )
+        Start {
+            coeffs: Glide::landed(at).by(C::STEPS),
+            state: vec![C::State::default(); self.width],
+            target: at,
+        }
     }
 
     /// κ: the coefficients the step reads at `model`. Every model is one it can run.

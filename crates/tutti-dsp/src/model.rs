@@ -20,6 +20,6 @@ pub use design::{Channels, Design, Sizes};
 pub use lti::Lti;
 #[cfg(test)]
 pub(crate) use realized::Flaw;
-pub use realized::{Approach, Glide, Lerp, Realized, Recurrence, Steps};
+pub use realized::{Approach, Glide, Lerp, Realized, Recurrence, Start, Steps};
 pub use setup::{Effort, Setup};
 pub use system::{Ring, System};

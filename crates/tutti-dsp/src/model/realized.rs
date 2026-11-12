@@ -200,7 +200,7 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
 
     /// The coefficients, state and target of an unprepared runner, at rest on `model`
     /// (the design's blank). Control side; allocates.
-    fn start(&self, model: &Self::Model) -> (Self::Coeffs, Self::State, Self::Target);
+    fn start(&self, model: &Self::Model) -> Start<Self>;
 
     /// Sizes `coeffs`, `state` and `target` for `setup` from the worst case `bounds`,
     /// and keeps what the recurrence itself needs of them. Control side; allocates.
@@ -251,6 +251,18 @@ pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
     }
 }
 
+/// A recurrence at rest, as [`Recurrence::start`] hands it to the runner: s₀ with the
+/// coefficients it starts on and the target they are aimed at.
+#[derive(Clone, Debug)]
+pub struct Start<R: Recurrence> {
+    /// γ's state, landed.
+    pub coeffs: R::Coeffs,
+    /// s₀.
+    pub state: R::State,
+    /// The coefficient point the coefficients rest on.
+    pub target: R::Target,
+}
+
 /// A deliberate flaw the contract's mutation records plant in a runner (design 024
 /// section 6.1): test-only.
 #[cfg(test)]
@@ -299,7 +311,11 @@ impl<R: Recurrence> Realized<R> {
     /// A runner of `recurrence`, at rest on `model`. Control side; allocates.
     #[must_use]
     pub fn new(recurrence: R, model: &R::Model) -> Self {
-        let (coeffs, state, target) = recurrence.start(model);
+        let Start {
+            coeffs,
+            state,
+            target,
+        } = recurrence.start(model);
         Self {
             recurrence,
             coeffs,

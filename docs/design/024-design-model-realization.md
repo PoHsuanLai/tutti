@@ -505,7 +505,7 @@ pub trait Recurrence: Clone + Debug + Send + 'static {
     type Coeffs: Approach<Target = Self::Target> + Clone + Debug + Send;  // γ's state
     type State: Clone + Debug + Send;   // S
     const STEP: usize;
-    fn start(&self, m: &Self::Model) -> (Self::Coeffs, Self::State, Self::Target);       // s₀ at rest
+    fn start(&self, m: &Self::Model) -> Start<Self>;  // s₀ at rest: a named { coeffs, state, target }
     fn prepare(&mut self, b: &Self::Bounds, setup: &Setup,
                c: &mut Self::Coeffs, s: &mut Self::State, t: &mut Self::Target) { .. } // s₀ sized
     fn coefficients_into(&self, m: &Self::Model, t: &mut Self::Target) -> bool;          // κ, in place

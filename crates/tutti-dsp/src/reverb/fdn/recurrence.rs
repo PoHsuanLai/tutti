@@ -43,7 +43,7 @@ use core::ops::Range;
 
 use super::design::CROSSOVER;
 use crate::reverb::network::{Absorption, Band, Matrix, Network, NetworkSizes, Stage};
-use crate::{Approach, Effort, Glide, Recurrence, Setup, Steps};
+use crate::{Approach, Effort, Glide, Recurrence, Setup, Start, Steps};
 
 /// The frames between control updates: every ramp advances once a chunk.
 pub(crate) const CHUNK: usize = 32;
@@ -453,12 +453,12 @@ impl Recurrence for FdnRecurrence {
 
     const STEP: usize = CHUNK;
 
-    fn start(&self, _: &Network) -> (FdnCoeffs, FdnState, FdnTarget) {
-        (
-            FdnCoeffs::new(self.max_lines, ramp(self.rate)),
-            FdnState::new(self),
-            FdnTarget::new(self.max_lines),
-        )
+    fn start(&self, _: &Network) -> Start<Self> {
+        Start {
+            coeffs: FdnCoeffs::new(self.max_lines, ramp(self.rate)),
+            state: FdnState::new(self),
+            target: FdnTarget::new(self.max_lines),
+        }
     }
 
     fn prepare(

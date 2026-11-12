@@ -114,7 +114,8 @@ pub use filter::{
 pub use interp::cubic_hermite;
 pub use model::{
     Anchor, Approach, Cadence, Ceiling, Channels, Design, Effort, Glide, Lerp, Lti, MaxDecay,
-    MaxDecayError, Period, Range, Realized, Recurrence, Ring, Setup, Sizes, Step, Steps, System,
+    MaxDecayError, Period, Range, Realized, Recurrence, Ring, Setup, Sizes, Start, Step, Steps,
+    System,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::swept::SweptLines;

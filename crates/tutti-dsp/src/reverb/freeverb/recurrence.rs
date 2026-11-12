@@ -25,7 +25,7 @@ use core::ops::Range;
 
 use crate::reverb::fdn::recurrence::{CHUNK, ramp};
 use crate::reverb::network::{Absorption, Network, NetworkSizes, Stage};
-use crate::{Approach, Effort, Glide, Recurrence, Setup, Steps};
+use crate::{Approach, Effort, Glide, Recurrence, Setup, Start, Steps};
 
 /// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
 /// damping the only figures that move (`set_combs`).
@@ -325,19 +325,19 @@ impl Recurrence for FreeverbRecurrence {
 
     const STEP: usize = CHUNK;
 
-    fn start(&self, _: &Network) -> (FreeverbCoeffs, Freeverb, FreeverbTarget) {
-        (
-            FreeverbCoeffs {
+    fn start(&self, _: &Network) -> Start<Self> {
+        Start {
+            coeffs: FreeverbCoeffs {
                 feedback: Glide::landed(Freeverb::ROOM_FEEDBACK),
                 damp: Glide::landed(Freeverb::DAMPING),
                 ramp: ramp(SampleRate::DEFAULT.get()),
             },
-            Freeverb::new(SampleRate::DEFAULT),
-            FreeverbTarget {
+            state: Freeverb::new(SampleRate::DEFAULT),
+            target: FreeverbTarget {
                 feedback: Freeverb::ROOM_FEEDBACK,
                 damp: Freeverb::DAMPING,
             },
-        )
+        }
     }
 
     /// Re-tunes the lines when the graph runs at another rate than they were

@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use tutti_dsp::{
     Approach, Ceiling, Channels, Design, Effort, FirSummary, MaxDecay, Network, NetworkSizes,
-    Recurrence, Sizes, Stage,
+    Recurrence, Sizes, Stage, Start,
 };
 use tutti_graph::contract::{Driven, assert_honest_tail, drive_input, prepared};
 use tutti_graph::{Env, PlayClock, Status, Transport, TransportChanges};
@@ -67,10 +67,14 @@ impl Recurrence for EchoRecurrence {
 
     const STEP: usize = 1;
 
-    fn start(&self, _: &Network) -> (NoCoeffs, EchoLine, ()) {
+    fn start(&self, _: &Network) -> Start<Self> {
         let echo = self.echo;
         let line = vec![0.0; echo.claimed.max(echo.actual) + echo.latency + 1];
-        (NoCoeffs, EchoLine { line, at: 0 }, ())
+        Start {
+            coeffs: NoCoeffs,
+            state: EchoLine { line, at: 0 },
+            target: (),
+        }
     }
 
     fn coefficients_into(&self, _: &Network, _: &mut ()) -> bool {

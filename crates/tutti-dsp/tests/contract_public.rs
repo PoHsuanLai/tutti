@@ -13,8 +13,8 @@ use std::ops::Range;
 
 use tutti_dsp::contract::{DesignCase, Figure, Hook, LtiCase, RealizationCase};
 use tutti_dsp::{
-    Cadence, Ceiling, Channels, Complex64, Design, Glide, Lti, Recurrence, Ring, Sizes, System,
-    design_contract, realization_contract,
+    Cadence, Ceiling, Channels, Complex64, Design, Glide, Lti, Recurrence, Ring, Sizes, Start,
+    System, design_contract, realization_contract,
 };
 use tutti_types::BusTopology;
 use tutti_types::{Db, Hz, SampleRate, Samples};
@@ -90,8 +90,12 @@ impl Recurrence for GainRecurrence {
 
     const STEP: usize = 1;
 
-    fn start(&self, model: &GainModel) -> (Glide<f32>, (), f32) {
-        (Glide::landed(model.gain).by(SLEW), (), model.gain)
+    fn start(&self, model: &GainModel) -> Start<Self> {
+        Start {
+            coeffs: Glide::landed(model.gain).by(SLEW),
+            state: (),
+            target: model.gain,
+        }
     }
 
     fn coefficients_into(&self, model: &GainModel, target: &mut f32) -> bool {

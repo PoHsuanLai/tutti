@@ -13,7 +13,7 @@ use crate::reverb::network::{
 };
 use crate::{
     Absorption, Approach, Band, Ceiling, Channels, Design, Effort, Lti, MaxDecay, Network,
-    NetworkSizes, Realized, Recurrence, Ring, Setup, Sizes, Stage, System, loop_gain,
+    NetworkSizes, Realized, Recurrence, Ring, Setup, Sizes, Stage, Start, System, loop_gain,
 };
 
 /// A design whose model is a reverb [`Network`] and whose recurrence runs it: what a
@@ -276,8 +276,12 @@ impl Recurrence for Unrun {
 
     const STEP: usize = 1;
 
-    fn start(&self, _: &Network) -> (NoCoeffs, (), ()) {
-        (NoCoeffs, (), ())
+    fn start(&self, _: &Network) -> Start<Self> {
+        Start {
+            coeffs: NoCoeffs,
+            state: (),
+            target: (),
+        }
     }
     fn coefficients_into(&self, _: &Network, _: &mut ()) -> bool {
         false
@@ -807,35 +811,32 @@ impl<R: Recurrence<Model = Network, Bounds = NetworkSizes>> Recurrence for Flawe
 
     const STEP: usize = R::STEP;
 
-    fn start(
-        &self,
-        model: &Network,
-    ) -> (
-        FlawedCoeffs<R::Coeffs>,
-        FlawedState<R::State>,
-        FlawedTarget<R::Target>,
-    ) {
-        let (coeffs, state, target) = self.inner.start(model);
-        (
-            FlawedCoeffs {
+    fn start(&self, model: &Network) -> Start<Self> {
+        let Start {
+            coeffs,
+            state,
+            target,
+        } = self.inner.start(model);
+        Start {
+            coeffs: FlawedCoeffs {
                 inner: coeffs,
                 retargets: 0,
                 keep: false,
             },
-            FlawedState {
+            state: FlawedState {
                 inner: state,
                 samples: 0,
                 held: [0.0; 8],
                 runaway: 1.0,
             },
-            FlawedTarget {
+            target: FlawedTarget {
                 off: target.clone(),
                 inner: target,
                 two_steps: false,
                 accepted: false,
                 retargets: 0,
             },
-        )
+        }
     }
 
     fn prepare(
@@ -1264,8 +1265,17 @@ impl<R: Recurrence<Model = Network>> Recurrence for Lie<R> {
 
     const STEP: usize = R::STEP;
 
-    fn start(&self, model: &Scaled<Network>) -> (R::Coeffs, R::State, R::Target) {
-        self.0.start(&model.inner)
+    fn start(&self, model: &Scaled<Network>) -> Start<Self> {
+        let Start {
+            coeffs,
+            state,
+            target,
+        } = self.0.start(&model.inner);
+        Start {
+            coeffs,
+            state,
+            target,
+        }
     }
     fn prepare(
         &mut self,

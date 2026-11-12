@@ -12,7 +12,9 @@ use std::ffi::{CStr, c_char, c_void};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, CLAP_PORT_AMBISONIC, clap_host_ambisonic};
+use clap_sys::ext::ambisonic::{
+    CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT, CLAP_PORT_AMBISONIC, clap_host_ambisonic,
+};
 use clap_sys::ext::audio_ports::{
     CLAP_EXT_AUDIO_PORTS, CLAP_PORT_MONO, CLAP_PORT_STEREO, clap_host_audio_ports,
 };
@@ -20,8 +22,8 @@ use clap_sys::ext::audio_ports_config::{
     CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
 };
 use clap_sys::ext::context_menu::{
-    CLAP_EXT_CONTEXT_MENU, clap_context_menu_builder, clap_context_menu_target,
-    clap_host_context_menu,
+    CLAP_EXT_CONTEXT_MENU, CLAP_EXT_CONTEXT_MENU_COMPAT, clap_context_menu_builder,
+    clap_context_menu_target, clap_host_context_menu,
 };
 use clap_sys::ext::draft::resource_directory::{
     CLAP_EXT_RESOURCE_DIRECTORY, clap_host_resource_directory,
@@ -43,18 +45,25 @@ use clap_sys::ext::note_ports::{
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_host_params};
 #[cfg(unix)]
 use clap_sys::ext::posix_fd_support::{CLAP_EXT_POSIX_FD_SUPPORT, clap_host_posix_fd_support};
-use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
-use clap_sys::ext::remote_controls::{CLAP_EXT_REMOTE_CONTROLS, clap_host_remote_controls};
+use clap_sys::ext::preset_load::{
+    CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_host_preset_load,
+};
+use clap_sys::ext::remote_controls::{
+    CLAP_EXT_REMOTE_CONTROLS, CLAP_EXT_REMOTE_CONTROLS_COMPAT, clap_host_remote_controls,
+};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_host_state};
-use clap_sys::ext::surround::{CLAP_EXT_SURROUND, CLAP_PORT_SURROUND, clap_host_surround};
+use clap_sys::ext::surround::{
+    CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT, CLAP_PORT_SURROUND, clap_host_surround,
+};
 use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_host_tail};
 use clap_sys::ext::thread_check::{CLAP_EXT_THREAD_CHECK, clap_host_thread_check};
 use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
 use clap_sys::ext::track_info::{
-    CLAP_EXT_TRACK_INFO, CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL, CLAP_TRACK_INFO_HAS_TRACK_COLOR,
-    CLAP_TRACK_INFO_HAS_TRACK_NAME, CLAP_TRACK_INFO_IS_FOR_BUS, CLAP_TRACK_INFO_IS_FOR_MASTER,
-    CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK, clap_host_track_info, clap_track_info,
+    CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT, CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL,
+    CLAP_TRACK_INFO_HAS_TRACK_COLOR, CLAP_TRACK_INFO_HAS_TRACK_NAME, CLAP_TRACK_INFO_IS_FOR_BUS,
+    CLAP_TRACK_INFO_IS_FOR_MASTER, CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK, clap_host_track_info,
+    clap_track_info,
 };
 use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_host_voice_info};
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, clap_beattime};
@@ -564,6 +573,15 @@ extern "C" fn host_get_extension(
             CLAP_EXT_TUNING             => HOST_TUNING,
             CLAP_EXT_RESOURCE_DIRECTORY => HOST_RESOURCE_DIRECTORY,
             CLAP_EXT_UNDO               => HOST_UNDO,
+            // The draft ids the stable ones replaced: each header says "the
+            // latest draft is 100% compatible", so an older plugin asking
+            // for the compat id gets the same vtable.
+            CLAP_EXT_PRESET_LOAD_COMPAT     => HOST_PRESET_LOAD,
+            CLAP_EXT_REMOTE_CONTROLS_COMPAT => HOST_REMOTE_CONTROLS,
+            CLAP_EXT_TRACK_INFO_COMPAT      => HOST_TRACK_INFO,
+            CLAP_EXT_CONTEXT_MENU_COMPAT    => HOST_CONTEXT_MENU,
+            CLAP_EXT_AMBISONIC_COMPAT       => HOST_AMBISONIC,
+            CLAP_EXT_SURROUND_COMPAT        => HOST_SURROUND,
         );
         #[cfg(unix)]
         if id == CLAP_EXT_POSIX_FD_SUPPORT {

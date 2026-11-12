@@ -47,7 +47,7 @@ pub(crate) const RATE: f64 = 44_100.0;
 pub(crate) fn ports(slots: usize) -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(Arc::new(DeviceInlets::new(
         slots,
-        64,
+        tutti_graph::EventCapacity::of(64),
         Duration::ZERO,
     ))))
 }
@@ -188,8 +188,10 @@ impl Rig {
     }
 
     /// Renders blocks until the graph's clock reaches OS time `now`: the audio
-    /// thread of a test that runs on the wall clock.
-    #[cfg(feature = "sequencer-tests")]
+    /// thread of a test that runs on the wall clock. Only the ALSA backend's
+    /// sequencer tests use it, so it has their gate: without alsa-lib 1.2.10
+    /// (`alsa_ump`) there is no ALSA backend to test.
+    #[cfg(all(feature = "sequencer-tests", target_os = "linux", alsa_ump))]
     pub(crate) fn run_to(&mut self, now: Instant) {
         let due = (now.saturating_duration_since(self.origin).as_secs_f64() * RATE) as u64;
         while self.frames + Self::BLOCK as u64 <= due {

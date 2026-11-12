@@ -24,11 +24,12 @@ use tutti_types::MaxBlock;
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{EventCapacity, NodeKey};
 use tutti_midi_runtime::{MidiIngestNode, TimedMidiEvent};
+use tutti_session::Stamp;
 use tutti_session::{EventInPort, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::MotionEvent;
-use tutti_types::{At, Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -181,7 +182,7 @@ fn preview_still_sounds_under_an_installed_clip() {
         .expect("a synth takes a live input");
     let _ = s.update();
     live.send(
-        At::NextBlock,
+        Stamp::NextBlock,
         note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
     )
     .unwrap();
@@ -213,7 +214,7 @@ fn routed_level(channel: MidiChannel) -> f32 {
 
     device
         .push(
-            At::NextBlock,
+            Stamp::NextBlock,
             note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, u16::MAX),
         )
         .expect("room");

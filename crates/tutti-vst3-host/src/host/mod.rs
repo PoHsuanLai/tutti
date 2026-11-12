@@ -25,6 +25,7 @@ mod hosting;
 mod instance;
 mod library;
 mod loaded;
+mod mapping;
 mod midi_learn;
 mod midi_mapping;
 mod processor;
@@ -37,6 +38,7 @@ pub use controller::Vst3Controller;
 pub use editor_instance::Vst3Editor;
 pub use library::{ClassInfo, FactoryFlags, FactoryInfo, Library};
 pub use loaded::{LoadOptions, RestartOutcome, Vst3Loaded, class_id};
+pub use mapping::ControllerMapping;
 pub use processor::{ProcessFailed, ProcessorAny, Vst3Processor};
 
 /// Editor-lifecycle internals, exposed for the conformance tests. Both are

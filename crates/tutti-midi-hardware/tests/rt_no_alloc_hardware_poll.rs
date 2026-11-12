@@ -159,10 +159,10 @@ impl Rig {
     }
 }
 
-fn inputs(slots: usize, capacity: usize) -> Arc<HardwareMidiInputs> {
+fn inputs(slots: usize, capacity: u32) -> Arc<HardwareMidiInputs> {
     Arc::new(HardwareMidiInputs::new(Arc::new(DeviceInlets::new(
         slots,
-        capacity,
+        tutti_graph::EventCapacity::of(capacity),
         Duration::ZERO,
     ))))
 }
@@ -227,7 +227,7 @@ fn hardware_input_over_capacity_is_allocation_free() {
             rig.run(512);
         }
     });
-    assert!(inputs.dropped_events() > 0, "the rings were full");
+    assert!(inputs.losses().lost > 0, "the rings were full");
 }
 
 /// A block size sweep, since the inlet resolves each event against the block's

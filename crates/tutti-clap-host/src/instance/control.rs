@@ -10,9 +10,9 @@ use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence, EditorSize,
     EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit, ParamId,
-    ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor, PluginError,
-    PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples, TimerId,
-    WindowHandle,
+    ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass, PluginDescriptor,
+    PluginError, PluginResult, PluginTail, PresetId, RenderMode, Request, RescanScope, Samples,
+    TimerId, WindowHandle,
 };
 
 use super::controller::ClapController;
@@ -89,16 +89,16 @@ pub fn descriptor_of(info: &PluginInfo, editor: EditorPresence) -> PluginDescrip
 /// range table.
 fn normalize(bounds: Option<ParamBounds>, plain: f64) -> f64 {
     match bounds {
-        Some(bounds) => bounds.normalized(plain),
+        Some(bounds) => bounds.normalized(plain).get(),
         None => plain,
     }
 }
 
 /// The inverse of [`normalize`]: the plain value, in `f64`, with a stepped
 /// parameter on its integer step.
-fn denormalize(bounds: Option<ParamBounds>, value: Normalized) -> f64 {
+pub(super) fn denormalize(bounds: Option<ParamBounds>, value: Normalized) -> f64 {
     match bounds {
-        Some(bounds) => bounds.plain(value.get()),
+        Some(bounds) => bounds.plain(value),
         None => value.get(),
     }
 }
@@ -302,21 +302,21 @@ impl Control for ClapLoaded {
         self.set_plain_value(main, id.get(), plain);
     }
 
-    /// Plain from [`ParamBounds::plain`], which CLAP's own range owns (stepped
-    /// values on their integer). `None` for an id the plugin does not declare.
+    /// Plain from [`ParamBounds`]'s [`ParamMapping`], which CLAP's own range
+    /// owns (stepped values on their integer). `None` for an id the plugin does
+    /// not declare.
     fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
-        Some(self.parameter_bounds(main, id.get())?.plain(value.get()))
+        Some(self.parameter_bounds(main, id.get())?.plain(value))
     }
 
-    /// The inverse, [`ParamBounds::normalized`].
+    /// The inverse, [`ParamMapping::normalized`].
     fn parameter_normalized(
         &self,
         main: &MainThread,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
-        let bounds = self.parameter_bounds(main, id.get())?;
-        Some(Normalized::clamped(bounds.normalized(plain)))
+        Some(self.parameter_bounds(main, id.get())?.normalized(plain))
     }
 
     /// The plugin's own display string. `value_to_text` takes a plain value, so

@@ -46,6 +46,8 @@ tutti-graph = { path = "../tutti-graph" }
 # The README's editor example takes any `raw-window-handle` window.
 raw-window-handle = "0.6"
 tutti-clap-ffi = { path = "../tutti-clap-ffi", features = ["test-support"] }
+# `mapping_contract!`: the laws `ParamBounds` is held to.
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 # The integration tests re-open the reference plugin's library themselves (the
 # crate forbids `unsafe`; a test may use it).
 libloading = "0.8"

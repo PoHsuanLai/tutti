@@ -557,6 +557,7 @@ mod declare;
 mod editor;
 mod event;
 mod event_inlet;
+mod event_losses;
 mod event_tap;
 mod exec;
 mod fade;
@@ -605,7 +606,9 @@ pub use event::{
 };
 pub use event_inlet::{
     EventCapacity, EventCapacityError, EventInletNode, EventInletWriter, InletCounts, Refused,
+    Stamp,
 };
+pub use event_losses::Losses;
 pub use event_tap::{EventTapReader, EventTapWriter, TapEvent};
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};

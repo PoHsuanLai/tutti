@@ -7,8 +7,8 @@ use instrument_support::Rig;
 use tutti_graph::{
     Cx, ForkByClone, Instrument, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status,
 };
-use tutti_session::Root;
 use tutti_session::SessionNode;
+use tutti_session::{Losses, Root};
 use tutti_types::ChannelLayout;
 
 /// Output `c` is the constant `c + 1`, whatever it is played.
@@ -88,7 +88,7 @@ fn a_pair_past_the_outputs_is_refused() {
 /// and the handle says so.
 #[test]
 fn the_handle_counts_what_its_queue_dropped() {
-    use tutti_types::{At, Frame};
+    use tutti_types::Frame;
     let mut session = instrument_support::rig::offline_session();
     let (handle, ()) = session
         .add_instrument(Dressed(ForkByClone(Five)))
@@ -96,15 +96,15 @@ fn the_handle_counts_what_its_queue_dropped() {
     let mut rig = Rig::wired(session, handle.clone());
     let on = instrument_support::midi::note_on(0, 60, 100);
     for k in 0..256u64 {
-        handle.send(At::Frame(Frame(1_000_000 + k)), on).unwrap();
+        handle.send(Frame(1_000_000 + k), on).unwrap();
     }
     rig.block();
-    assert_eq!(handle.dropped(), 0);
+    assert_eq!(handle.losses(), Losses::NONE);
     for k in 0..3u64 {
-        handle.send(At::Frame(Frame(9_000_000 + k)), on).unwrap();
+        handle.send(Frame(9_000_000 + k), on).unwrap();
     }
     rig.block();
-    assert_eq!(handle.dropped(), 3);
+    assert_eq!(handle.losses(), Losses::evicted(3));
 }
 
 /// A root of five channels or more fed from an instrument with sends takes its

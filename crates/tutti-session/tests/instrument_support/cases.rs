@@ -6,6 +6,7 @@
 //! render with another render.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use tutti_session::Stamp;
 
 use tutti_types::{Amplitude, At, Frame, Tail};
 
@@ -144,30 +145,11 @@ pub fn a_frame_already_past_plays_at_the_next_block<S: Subject>() {
     rig.render_to(rig.t(3 * BLOCK));
     let next = rig.frame();
     // The origin of the clock, long gone.
-    assert!(
-        rig.handle
-            .send(At::Frame(Frame(1)), note_on(0, 60, 100))
-            .is_ok()
-    );
+    assert!(rig.handle.send(Frame(1), note_on(0, 60, 100)).is_ok());
     rig.render_to(next + 4_000);
     let first = rig.onset(next).expect("a late note still sounds");
     let w = window::<S>(&rig, next);
     assert!(w.contains(&first), "first sound at {first}, wanted {w:?}");
-}
-
-/// **A beat is refused**, with the reason, and queues nothing: resolving a
-/// beat needs the transport, which a send from a control thread does not
-/// have.
-pub fn a_beat_is_refused<S: Subject>() {
-    let mut rig = S::rig();
-    let err = rig
-        .handle
-        .send(At::Beat(tutti_types::Beat(1.0)), note_on(0, 60, 100))
-        .expect_err("a beat is refused");
-    assert_eq!(err, tutti_session::SendError::Beat);
-    let from = rig.frame();
-    rig.render_to(from + 4_000);
-    assert_eq!(rig.peak(from..from + 4_000), 0.0, "the refused note sounds");
 }
 
 /// **A note-off releases**: held, then released at `OFF`, the output is
@@ -353,7 +335,7 @@ fn rate_change_instant<S: Subject>(send_after_the_change: bool) {
     assert_eq!(read.rate(), super::rig::RATE);
     let send = |rig: &mut Rig| {
         rig.handle
-            .send_at(read.after(tutti_types::Samples(AHEAD)), note_on(0, 60, 100))
+            .send(read.after(tutti_types::Samples(AHEAD)), note_on(0, 60, 100))
             .expect("the queue has room");
     };
     if !send_after_the_change {
@@ -507,12 +489,12 @@ pub fn sending_allocates_nothing<S: Subject>() {
     let on = note_on(0, 64, 100);
     let off = note_off(0, 64);
     let ok = assert_no_alloc::assert_no_alloc(|| {
-        let a = rig.handle.send(At::NextBlock, on).is_ok();
+        let a = rig.handle.send(Stamp::NextBlock, on).is_ok();
         rig.session.render(&mut tutti_types::InterleavedMut::new(
             &mut buf,
             tutti_types::ChannelLayout::STEREO,
         ));
-        let b = rig.handle.send(At::NextBlock, off).is_ok();
+        let b = rig.handle.send(Stamp::NextBlock, off).is_ok();
         rig.session.render(&mut tutti_types::InterleavedMut::new(
             &mut buf,
             tutti_types::ChannelLayout::STEREO,

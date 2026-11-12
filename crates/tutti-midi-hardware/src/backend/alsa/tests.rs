@@ -255,7 +255,11 @@ fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
 fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 16, Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(16),
+            Duration::ZERO,
+        ),
     )));
     let name = unique("held");
     let device = plug(&name);
@@ -348,7 +352,11 @@ fn an_idle_devices_does_not_wake_itself() {
 fn the_engines_own_clients_are_not_listed() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 16, Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(16),
+            Duration::ZERO,
+        ),
     )));
     let name = unique("own");
     let device = plug(&name);
@@ -596,7 +604,11 @@ struct Pumped {
 impl Pumped {
     /// A pump whose events are placed `lead` after they arrived.
     fn open(lead: Duration) -> Self {
-        let inlets = std::sync::Arc::new(tutti_midi_runtime::DeviceInlets::new(4, 64, lead));
+        let inlets = std::sync::Arc::new(tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(64),
+            lead,
+        ));
         let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::clone(&inlets)));
         let device = plug(&unique("pump"));
         let id = super::enumerate::pack_id(device.0.id(), 0);
@@ -693,7 +705,11 @@ fn dropping_an_input_stops_a_blocked_pump_promptly() {
 fn an_input_whose_pump_fails_reads_as_gone() {
     let devices = Watched::open();
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 16, Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(16),
+            Duration::ZERO,
+        ),
     )));
     let name = unique("dies");
     let device = plug(&name);
@@ -894,7 +910,11 @@ fn a_device_on_the_sequencer_is_negotiated_through_the_pump_and_the_output() {
     let device = plug_ump(&name, tutti_alsa_ffi::PROTO_MIDI1);
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let ports = std::sync::Arc::new(HardwareMidiInputs::new(std::sync::Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 64, Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(64),
+            Duration::ZERO,
+        ),
     )));
     let session = crate::MidiSession::open(ports).unwrap();
     let want = format!("{name}: port");

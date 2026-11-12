@@ -152,7 +152,8 @@ fn every_stage_declares_its_own_tail() {
 #[test]
 fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     use tutti_fixtures::sf2::{Inst, Preset, bytes, generator};
-    use tutti_types::{At, InterleavedMut};
+    use tutti_session::Stamp;
+    use tutti_types::InterleavedMut;
     use tutti_ump::{
         Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
     };
@@ -210,11 +211,11 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
             },
         );
         handle
-            .send(At::NextBlock, Ump::from(message))
+            .send(Stamp::NextBlock, Ump::from(message))
             .expect("room");
     }
     handle
-        .note_on(At::NextBlock, channel, NoteNumber::of(69), 0xC800)
+        .note_on(Stamp::NextBlock, channel, NoteNumber::of(69), 0xC800)
         .expect("room");
     let mut heard = Vec::new();
     let block = |session: &mut Session, heard: &mut Vec<f32>| {
@@ -228,7 +229,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     }
     let off = heard.len();
     handle
-        .note_off(At::NextBlock, channel, NoteNumber::of(69))
+        .note_off(Stamp::NextBlock, channel, NoteNumber::of(69))
         .expect("room");
     while heard.len() < off + summed + 20_000 {
         block(&mut session, &mut heard);
@@ -296,7 +297,7 @@ fn muting_the_setup_silences_the_wet_path_too() {
     };
     let (mut session, gm) = short_release_setup();
     let handle = gm.instrument().clone();
-    let at = tutti_types::At::NextBlock;
+    let at = tutti_session::Stamp::NextBlock;
     let cc = |controller: u8| {
         let message = Message::Midi1(
             Address {

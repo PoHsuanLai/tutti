@@ -109,7 +109,7 @@ impl Rig {
                 tutti_graph::EventInletNode::pair(tutti_midi_runtime::LIVE_INLET_CAPACITY);
             let from = g.add(node);
             g.connect_events(from, 0, key, 0);
-            tutti_midi_runtime::MidiKeys::new(writer)
+            tutti_midi_runtime::MidiKeys::new(writer, tutti_ump::MidiGroup::FIRST)
         });
         let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
         (

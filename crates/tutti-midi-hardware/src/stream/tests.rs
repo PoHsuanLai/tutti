@@ -31,7 +31,11 @@ struct Wire {
 fn session_over(os: UmpCapability, direction: PortDirection, device: Endpoint) -> Wire {
     let (backend, counters) = FakeBackend::build_with(vec![], vec![], usize::MAX);
     let ports = Arc::new(HardwareMidiInputs::new(Arc::new(
-        tutti_midi_runtime::DeviceInlets::new(4, 64, Duration::ZERO),
+        tutti_midi_runtime::DeviceInlets::new(
+            4,
+            tutti_graph::EventCapacity::of(64),
+            Duration::ZERO,
+        ),
     )));
     let session = MidiSession::open_over(backend, ports).unwrap();
     let mut info = endpoint(7, "Wire");
@@ -292,7 +296,11 @@ fn stream_messages_never_reach_the_graph() {
     use tutti_fixtures::midi::note_on;
     use tutti_ump::{MidiChannel, MidiGroup};
 
-    let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(2, 64, Duration::ZERO));
+    let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
+        2,
+        tutti_graph::EventCapacity::of(64),
+        Duration::ZERO,
+    ));
     let ports = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let start = Instant::now();
     let mut rig = Rig::over(&inlets, start);
@@ -531,7 +539,11 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     use tutti_fixtures::midi::note_on;
     use tutti_ump::{MidiChannel, MidiGroup, Utility};
 
-    let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(2, 64, Duration::ZERO));
+    let inlets = Arc::new(tutti_midi_runtime::DeviceInlets::new(
+        2,
+        tutti_graph::EventCapacity::of(64),
+        Duration::ZERO,
+    ));
     let ports = Arc::new(HardwareMidiInputs::new(Arc::clone(&inlets)));
     let mut rig = Rig::over(&inlets, Instant::now());
     rig.run(1);
@@ -546,7 +558,7 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     rig.run(8);
     let heard: Vec<_> = rig.take().into_iter().map(|(_, _, ump)| ump).collect();
     assert_eq!(heard, [note]);
-    assert_eq!(ports.dropped_events(), 0);
+    assert_eq!(ports.losses().dropped(), 0);
 }
 
 /// An output connected after its device settled is in the settled Protocol from

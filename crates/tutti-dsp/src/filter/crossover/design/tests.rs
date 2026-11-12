@@ -2,8 +2,8 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use super::*;
+use crate::Design;
 use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
-use crate::{Design, Effect, Realization};
 
 /// Mono, three bands: output `b` is band `b`, the model's own outputs.
 fn design() -> CrossoverDesign {
@@ -142,16 +142,17 @@ fn a_retarget_lands_whole() {
     let rate = SampleRate(48_000.0);
     let first = d.design(&controls(300.0, 3_000.0), rate);
     let second = d.design(&controls(900.0, 5_000.0), rate);
-    let mut r = d.realization();
+    let mut r = d.realized();
     r.retarget(&first);
     r.process(
         &[&[0.0; 40]],
         &mut [&mut [0.0; 40], &mut [0.0; 40], &mut [0.0; 40]],
+        40,
     );
     r.retarget(&second);
     let mut out = [[0.0f32; 1]; 3];
     let [a, b, c] = &mut out;
-    r.process(&[&[1.0]], &mut [a, b, c]);
+    r.process(&[&[1.0]], &mut [a, b, c], 1);
 
     let (low, all_pass) = (second.coeffs[0].low.b0, second.coeffs[1].all_pass.b0);
     assert_eq!(out[0][0], (low * low * all_pass) as f32);

@@ -762,7 +762,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   each) and thiserror, and `rand` under the `contract` feature only), keeps every
   module private but `contract` (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it; `contract`, behind the off-by-default `contract`
-  feature, is the one public module: the cases a `Design` and its `Realization` are
+  feature, is the one public module: the cases a `Design` and its `Realized` runner are
   held to, `design_contract!` and `realization_contract!`, doc 024 section 6), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
   control arrives per call as a plain typed value. It holds the real FFT, the
@@ -777,7 +777,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   float) and their models of doc 024 (`SvfModel`, an `Lti`; the small-signal
   `LadderModel`; `CrossoverModel`, the crossover's design apart from its state, a
   multi-output `Lti`; `Biquad`, the shared second-order section; the filters' one
-  `Design`, `Filter<K>` over a `ChannelKernel` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
+  `Design`, `Filter<R>` over a `ChannelRecurrence` (`Svf<F>`, `Ladder<F>`, `CrossoverTree`, with
   `SvfDesign<F>`, `LadderDesign<F>` and `CrossoverDesign` its aliases), whose channels run
   alone under `PerChannel`, with the glide of their coefficients and the held lane-group path
   written once), the dynamics curves, followers and kernels, the partitioned
@@ -787,17 +787,19 @@ list (normal and build edges; dev-dependencies may go anywhere).
   one figure of a resampled length; `ChunkSize`), the dither noise
   (`DitherNoise`, and `DitherSink`, the `tutti_types::Sink` adapter that applies it:
   the one dither path export and a recording opting in share, doc 025 stage 7), the Freeverb reverb (`Freeverb`, the state of
-  `FreeverbKernel`, the `Kernel` of `FreeverbDesign`), the feedback delay network
-  (`FdnDesign`, `FdnKernel`: both run by `Realized`, whose glides step between
+  `FreeverbRecurrence`, the `Recurrence` of `FreeverbDesign`), the feedback delay network
+  (`FdnDesign`, `FdnRecurrence`: both run by `Realized`, whose glides step between
   `retarget`s in 32-frame chunks counted from the last reset, so the output does
   not depend on the block length), the
   model of doc 024 (the `model` module, exported at the root: a `Design` maps controls
   to its `Model`, a `System` (`latency`, `tail`) and, for a linear time-invariant
   one, an `Lti` (`frequency_response`, `spectral_radius`, `l1_norm`, `hinf_norm`
-  and a stability test, all bounds stated as such); a `Realization<M>` (`Clone`, with a
-  default `fresh`) is one realization of a model and an `Effect<M>` its planar block shape;
-  every effect moved onto it is the one `Realized<K>` over a `Kernel` (its per-frame math),
-  whose coefficients approach each new model by a `Glide` (`Lerp`, `Approach`); prepared from a
+  and a stability test, all bounds stated as such); a `Recurrence` is one
+  realization of a model (its `coefficients_into` writes the coefficient point a model asks for,
+  its `Approach` glides to it, its `run` is the per-frame math), and `Realized<R>` is the one
+  runner over it, with the planar block shape `process(input, output, frames)`;
+  the coefficients approach each new point by an `Approach` (a `Glide` of a `Lerp`
+  set, or the FDN's own, a glide a field); prepared from a
   `Setup` and the design's `Sizes`, moved to each model by `retarget`; `Ceiling<R>`
   over a family's `Range` (`MaxDecay` for a reverb), `Effort` and `Cadence` (a period and an anchor: only a
   stream-anchored one is block independent) are the

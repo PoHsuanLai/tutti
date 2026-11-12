@@ -8,13 +8,13 @@
 //!
 //! [`Freeverb`] starts with the figures of the General MIDI reverb the SoundFont
 //! unit used to carry inside itself (room size 0.5, damping 0.5, width 1, wet 1).
-//! It is the state of [`FreeverbKernel`], the [`Kernel`] of
+//! It is the state of [`FreeverbRecurrence`], the [`Recurrence`] of
 //! [`FreeverbDesign`](crate::FreeverbDesign): the two coefficients a network
 //! carries (the comb feedback and damping) are the only figures its
-//! [`retarget`](crate::Realization::retarget) moves, and they glide, 20 ms in
+//! [`retarget`](crate::Realized::retarget) moves, and they glide, 20 ms in
 //! whole `CHUNK`s (a size or a damping that jumped would click), while the lines
 //! and the processing loops are untouched by it. It allocates in
-//! [`new`](Freeverb::new) and in [`prepare`](Kernel::prepare) at another rate,
+//! [`new`](Freeverb::new) and in [`prepare`](Recurrence::prepare) at another rate,
 //! and nowhere after.
 
 use std::cmp;
@@ -23,9 +23,9 @@ use tutti_types::{Db, SampleRate, Seconds};
 
 use core::ops::Range;
 
-use crate::reverb::fdn::kernel::{CHUNK, ramp};
+use crate::reverb::fdn::recurrence::{CHUNK, ramp};
 use crate::reverb::network::{Absorption, Network, NetworkSizes, Stage};
-use crate::{Approach, Effort, Glide, Kernel, Setup, Steps};
+use crate::{Approach, Effort, Glide, Recurrence, Setup, Steps};
 
 /// A Freeverb at one sample rate: mono in, stereo out, with the comb feedback and
 /// damping the only figures that move (`set_combs`).
@@ -262,29 +262,44 @@ impl Freeverb {
     }
 }
 
-/// The kernel of [`FreeverbDesign`](crate::FreeverbDesign): [`Freeverb`] is its
+/// The recurrence of [`FreeverbDesign`](crate::FreeverbDesign): [`Freeverb`] is its
 /// state and `run` is its comb and all-pass loops, untouched.
 ///
-/// `aim` takes the comb loop gain and the damping off the network's first
-/// recirculating stage (a one-pole absorption on its first line); they glide, in
-/// steps of a `CHUNK` (the FDN's, and 30 or so for the 20 ms: a step per frame
-/// would run the lines in one-frame slices for it). A network without a one-pole
-/// absorption, or with figures that are not finite or not a stable loop, is
-/// ignored. The network's pre-delay, width and wet gain are not read:
+/// κ ([`coefficients_into`](Recurrence::coefficients_into)) takes the comb loop gain
+/// and the damping off the network's first recirculating stage (a one-pole absorption
+/// on its first line); they glide, in steps of a `CHUNK` (the FDN's, and 30 or so for
+/// the 20 ms: a step per frame would run the lines in one-frame slices for it). A
+/// network without a one-pole absorption, or with figures that are not finite or not a
+/// stable loop, is ignored. The network's pre-delay, width and wet gain are not read:
 /// [`FreeverbDesign`](crate::FreeverbDesign) never sets them.
 #[derive(Clone, Debug)]
-pub struct FreeverbKernel {
-    ramp: Steps,
+pub struct FreeverbRecurrence;
+
+/// The comb feedback and damping [`FreeverbRecurrence`] asks for: what its κ writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FreeverbTarget {
+    feedback: f32,
+    damp: f32,
 }
 
-/// The comb feedback and damping [`FreeverbKernel`] approaches.
+/// The comb feedback and damping [`FreeverbRecurrence`] approaches, γ: two glides of
+/// 20 ms, each aimed only when its own target changes.
 #[derive(Clone, Debug)]
 pub struct FreeverbCoeffs {
     feedback: Glide<f32>,
     damp: Glide<f32>,
+    /// The steps of the 20 ms glide, at the rate prepared for.
+    ramp: Steps,
 }
 
 impl Approach for FreeverbCoeffs {
+    type Target = FreeverbTarget;
+
+    fn aim(&mut self, target: &FreeverbTarget) {
+        self.feedback.aim_by(target.feedback, self.ramp);
+        self.damp.aim_by(target.damp, self.ramp);
+    }
+
     fn step(&mut self) -> bool {
         self.feedback.step() | self.damp.step()
     }
@@ -295,29 +310,33 @@ impl Approach for FreeverbCoeffs {
     }
 }
 
-impl FreeverbKernel {
+impl FreeverbRecurrence {
     pub(crate) fn new() -> Self {
-        Self {
-            ramp: ramp(SampleRate::DEFAULT.get()),
-        }
+        Self
     }
 }
 
-impl Kernel for FreeverbKernel {
+impl Recurrence for FreeverbRecurrence {
     type Model = Network;
     type Bounds = NetworkSizes;
+    type Target = FreeverbTarget;
     type Coeffs = FreeverbCoeffs;
     type State = Freeverb;
 
     const STEP: usize = CHUNK;
 
-    fn start(&self, _: &Network) -> (FreeverbCoeffs, Freeverb) {
+    fn start(&self, _: &Network) -> (FreeverbCoeffs, Freeverb, FreeverbTarget) {
         (
             FreeverbCoeffs {
                 feedback: Glide::landed(Freeverb::ROOM_FEEDBACK),
                 damp: Glide::landed(Freeverb::DAMPING),
+                ramp: ramp(SampleRate::DEFAULT.get()),
             },
             Freeverb::new(SampleRate::DEFAULT),
+            FreeverbTarget {
+                feedback: Freeverb::ROOM_FEEDBACK,
+                damp: Freeverb::DAMPING,
+            },
         )
     }
 
@@ -328,16 +347,17 @@ impl Kernel for FreeverbKernel {
         &mut self,
         _: &NetworkSizes,
         setup: &Setup,
-        _: &mut FreeverbCoeffs,
+        c: &mut FreeverbCoeffs,
         state: &mut Freeverb,
+        _: &mut FreeverbTarget,
     ) {
-        self.ramp = ramp(setup.rate.get());
+        c.ramp = ramp(setup.rate.get());
         if setup.rate.get().round() != state.rate.get() {
             *state = Freeverb::new(setup.rate);
         }
     }
 
-    fn aim(&self, c: &mut FreeverbCoeffs, network: &Network) {
+    fn coefficients_into(&self, network: &Network, target: &mut FreeverbTarget) -> bool {
         let one_pole = network.stages.iter().find_map(|stage| match stage {
             Stage::Fdn(f) => match f.lines.first().map(|l| l.absorption) {
                 Some(Absorption::OnePole { gain, damp }) => Some((gain.get(), damp)),
@@ -351,9 +371,10 @@ impl Kernel for FreeverbKernel {
             && damp.is_finite()
             && damp.abs() < 1.0
         {
-            c.feedback.aim_by(feedback, self.ramp);
-            c.damp.aim_by(damp, self.ramp);
+            *target = FreeverbTarget { feedback, damp };
+            return true;
         }
+        false
     }
 
     fn clear(&self, state: &mut Freeverb) {
@@ -391,7 +412,7 @@ impl Kernel for FreeverbKernel {
 /// is aiming at (the combs themselves are set when a block runs). For the design's
 /// tests.
 #[cfg(test)]
-impl crate::Realized<FreeverbKernel> {
+impl crate::Realized<FreeverbRecurrence> {
     pub(crate) fn figures(&mut self) -> Figures {
         let (_, c, state) = self.parts_mut();
         state.set_combs(c.feedback.target(), c.damp.target());

@@ -4,7 +4,7 @@ use std::borrow::Borrow;
 
 use super::harness::{MAX_BLOCK, built, noise, rate_of, render, widths};
 use super::{DesignCase, Hook, RealizationCase};
-use crate::{Realization, Sizes, System};
+use crate::{Sizes, System};
 
 /// The hooks that return nothing and are not listed, and the listed ones that
 /// do return something: an error naming the first, or `Ok`.

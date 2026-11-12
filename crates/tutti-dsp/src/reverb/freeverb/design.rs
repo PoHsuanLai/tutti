@@ -1,6 +1,6 @@
 //! [`FreeverbDesign`]: [`Freeverb`] as a [`Design`].
 //!
-//! The network describes the linear filters of the reverb in `kernel.rs`: per
+//! The network describes the linear filters of the reverb in `recurrence.rs`: per
 //! channel eight parallel damped combs (a diagonal [`Fdn`] of one-pole lines,
 //! the right channel's 23 frames longer) feeding four series all-passes in
 //! [`AllPassForm::Freeverb`] (Freeverb's own, not the unit-magnitude lattice),
@@ -8,21 +8,21 @@
 //! flush of any value under 1e-6 to zero, a nonlinearity far below the tail's
 //! floor that no query models. The comb loop gain is `room * 0.28 + 0.7` and the
 //! damping `damp * 0.4`, computed in the same `f32` operations as
-//! [`Freeverb`]'s constants. The realization is [`Realized`] over
-//! [`FreeverbKernel`], which reads those two numbers from the
+//! [`Freeverb`]'s constants. The recurrence is [`FreeverbRecurrence`], run by
+//! [`Realized`](crate::Realized), which reads those two numbers from the
 //! network.
 
 use core::num::NonZeroU32;
 
 use tutti_types::{Amplitude, BusTopology, Mix, SampleRate};
 
-use crate::reverb::fdn::kernel::CHUNK;
-use crate::reverb::freeverb::kernel::{Freeverb, FreeverbKernel};
+use crate::reverb::fdn::recurrence::CHUNK;
+use crate::reverb::freeverb::recurrence::{Freeverb, FreeverbRecurrence};
 use crate::reverb::network::{
     Absorption, AllPass, AllPassForm, Fdn, Gains, Inline, Line, MAX_CHANNELS, MAX_LINES, Matrix,
     Modulation, Network, NetworkSizes, OutputMap, Stage,
 };
-use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Realized, Sizes};
+use crate::{Cadence, Ceiling, Channels, Design, MaxDecay, Sizes};
 
 const COMBS_LEFT: [usize; 8] = [
     Freeverb::CF_TUNING_L1,
@@ -100,7 +100,7 @@ impl Design for FreeverbDesign {
     type Model = Network;
     type Bounds = NetworkSizes;
     type Range = MaxDecay;
-    type Realization = Realized<FreeverbKernel>;
+    type Recurrence = FreeverbRecurrence;
 
     // The comb feedback and damping glide in whole chunks counted from the last
     // reset, so the render is a function of the stream whatever the blocks (the
@@ -118,9 +118,9 @@ impl Design for FreeverbDesign {
         Network::new(rate)
     }
 
-    /// A [`Freeverb`] at the default rate; the node's `prepare` re-tunes it.
-    fn realization(&self) -> Realized<FreeverbKernel> {
-        Realized::new(FreeverbKernel::new(), &self.blank(SampleRate::DEFAULT))
+    /// A [`Freeverb`] at the default rate; the runner's `prepare` re-tunes it.
+    fn recurrence(&self) -> FreeverbRecurrence {
+        FreeverbRecurrence::new()
     }
 
     fn design_into(&self, controls: &FreeverbControls, rate: SampleRate, out: &mut Network) {

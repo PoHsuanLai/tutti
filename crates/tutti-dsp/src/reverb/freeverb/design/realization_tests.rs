@@ -1,8 +1,8 @@
 use super::*;
+use crate::Setup;
 use crate::contract::RealizationCase;
 use crate::contract::cases::realization as cases;
 use crate::testing::flaws::{Defect, Defective};
-use crate::{Realization, Setup};
 
 fn controls(room: f32, damp: f32) -> FreeverbControls {
     FreeverbControls {
@@ -101,7 +101,7 @@ fn a_defective_realization_fails_its_case() {
     let m = Defective {
         inner: FreeverbDesign,
         defect: Defect::None,
-        tweak: |k| k.parts_mut().2.lengthen_last_comb(1722),
+        tweak: |k| k.parts_mut().2.inner.lengthen_last_comb(1722),
     };
     fails(cases::line_lengths(&m), "first echo");
     // reset that does nothing; fresh that keeps the state; a gain that
@@ -163,7 +163,7 @@ fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
     let rate = SampleRate(44_100.0);
     let fresh = Freeverb::new(rate);
     // Start from other figures so the retarget is seen to set them.
-    let mut realization = FreeverbDesign.realization();
+    let mut realization = FreeverbDesign.realized();
     realization.retarget(&FreeverbDesign.design(&controls(0.9, 0.9), rate));
     assert_ne!(realization.figures().comb, fresh.figures().comb);
     realization.retarget(&FreeverbDesign.design(&FreeverbControls::GENERAL_MIDI, rate));
@@ -180,7 +180,7 @@ fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
 #[test]
 fn a_network_it_does_not_understand_is_ignored() {
     let rate = SampleRate(44_100.0);
-    let mut realization = FreeverbDesign.realization();
+    let mut realization = FreeverbDesign.realized();
     let before = realization.figures().comb;
     realization.retarget(&Network::new(rate));
     let mut flat = FreeverbDesign.design(&controls(0.9, 0.9), rate);
@@ -199,7 +199,7 @@ fn a_network_it_does_not_understand_is_ignored() {
 /// retargeted to, and its lines are those of a `Freeverb` built at that rate.
 #[test]
 fn prepare_retunes_the_lines_and_keeps_the_coefficients() {
-    let mut realization = FreeverbDesign.realization();
+    let mut realization = FreeverbDesign.realized();
     realization.retarget(&FreeverbDesign.design(&controls(0.9, 0.2), SampleRate::DEFAULT));
     let want = realization.figures().comb;
     let rate = SampleRate(96_000.0);

@@ -6,12 +6,12 @@ use std::fmt::Debug;
 
 use tutti_types::{BusTopology, Db, SampleRate};
 
-use super::{Cadence, Ceiling, Range, Realization, Ring, System};
+use super::{Cadence, Ceiling, Range, Realized, Recurrence, Ring, System};
 
 /// The buses a [`Design`] is made for: its input, and its outputs, which are one
 /// topology repeated `bands` times, band-major (a crossover's), or once (every
 /// other design). Its node declares exactly these buses, so the graph's dry path
-/// folds the input onto band 0 by speaker, and the realization's outputs are the
+/// folds the input onto band 0 by speaker, and the runner's outputs are the
 /// bands in order: band `b` is the `b`-th run of [`output`](Self::output)'s width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channels {
@@ -82,7 +82,7 @@ impl Channels {
     }
 }
 
-/// The sizes a realization allocates for the worst case of a design: lines, taps,
+/// The sizes a recurrence allocates for the worst case of a design: lines, taps,
 /// an impulse response's length, a longest delay (design 024 section 4.4).
 /// Engineering, not mathematics, so it is the design's and not the model's.
 pub trait Sizes: Copy + Debug {
@@ -105,13 +105,14 @@ pub trait Sizes: Copy + Debug {
 
 /// The pure function from a family's controls to the parameters of a system
 /// (design 024 section 4.1): its controls, its [`Model`](Self::Model), and the
-/// [`Realization`] that runs it.
+/// [`Recurrence`] that runs it.
 ///
-/// The pure half is [`design_into`](Self::design_into) and
-/// [`bounds`](Self::bounds): no audio, no state and no graph type. The model is the
-/// description the realization is held to ([`Realization::retarget`] reads it, and
-/// the contract measures the realization against the model's queries); nothing
-/// here forces a runtime shape on the realization.
+/// This is φ, the family: controls to a member. The pure half is
+/// [`design_into`](Self::design_into) and [`bounds`](Self::bounds): no audio, no
+/// state and no graph type. The model is the description the recurrence is held to
+/// ([`Recurrence::coefficients_into`], κ, reads it, and the contract measures the
+/// render against the model's queries); nothing here forces a runtime shape on the
+/// recurrence.
 pub trait Design: Clone + Send {
     /// Plain values in tutti units, one struct per family.
     type Controls: Copy + PartialEq + Send;
@@ -119,15 +120,15 @@ pub trait Design: Clone + Send {
     /// The system a set of controls describes.
     type Model: System + Clone + Send + Borrow<<Self::Bounds as Sizes>::Source>;
 
-    /// The worst-case sizes of this design, the figures its realization
+    /// The worst-case sizes of this design, the figures its recurrence
     /// allocates from.
     type Bounds: Sizes;
 
     /// The family's limit on a control ([`Ceiling::range`]).
     type Range: Range;
 
-    /// What runs this design's models.
-    type Realization: Realization<Self::Model, Bounds = Self::Bounds>;
+    /// What runs this design's models: the recurrence [`Realized`] runs.
+    type Recurrence: Recurrence<Model = Self::Model, Bounds = Self::Bounds>;
 
     /// The grid on which `theta` is sampled, and so whether a render depends
     /// on how audio is split into blocks ([`Cadence::block_independent`]). The
@@ -162,12 +163,18 @@ pub trait Design: Clone + Send {
     }
 
     /// The worst case of [`design_into`](Self::design_into) over the controls'
-    /// declared ranges (and the limits in `ceiling`): what a realization
+    /// declared ranges (and the limits in `ceiling`): what a recurrence
     /// allocates for and what the node declares as its tail ceiling.
     fn bounds(&self, ceiling: &Ceiling<Self::Range>) -> Self::Bounds;
 
-    /// An unprepared realization for this design. Control side; allocates.
-    fn realization(&self) -> Self::Realization;
+    /// An unprepared recurrence for this design. Control side; allocates.
+    fn recurrence(&self) -> Self::Recurrence;
+
+    /// An unprepared runner of this design's recurrence, at rest on the design's blank
+    /// model. Control side; allocates.
+    fn realized(&self) -> Realized<Self::Recurrence> {
+        Realized::new(self.recurrence(), &self.blank(SampleRate::DEFAULT))
+    }
 }
 
 #[cfg(test)]

@@ -495,19 +495,35 @@ pub trait Family {
     fn channels(&self) -> Channels;
 }
 
-// κ, K, s₀ — the recurrence. Coefficients are an input; it owns no glide.
-pub trait Recurrence {
-    type Member: System;
-    type Coefficients;            // Θ
-    type State: Clone;            // S (sized when the recurrence was built)
+// κ, K, s₀ — the recurrence (built, step 1). It owns no glide: κ writes a target in place
+// and γ, the `Coeffs`, is aimed at it. `start`, `prepare` and `clear` stay as the way to s₀
+// (they are one thing in the target, `initial`; not merged yet).
+pub trait Recurrence: Clone + Debug + Send + 'static {
+    type Model;                   // the member (becomes `Member` with step 2)
+    type Bounds;                  // becomes `Capacity` with step 2
+    type Target: Clone + Debug + Send;                           // Θ, a point of coefficient space
+    type Coeffs: Approach<Target = Self::Target> + Clone + Debug + Send;  // γ's state
+    type State: Clone + Debug + Send;   // S
     const STEP: usize;
-    fn coefficients(&self, m: &Self::Member) -> Self::Coefficients;            // κ
-    fn initial(&self, setup: &Setup) -> Self::State;                           // s₀
-    type Input<'a>;               // X: `&'a [&'a [f32]]` for an effect, `()` for a generator
-    fn run(&self, θ: &Self::Coefficients, s: &mut Self::State,
-           input: Self::Input<'_>, output: &mut [&mut [f32]], frames: Range<usize>); // K, block form
+    fn start(&self, m: &Self::Model) -> (Self::Coeffs, Self::State, Self::Target);       // s₀ at rest
+    fn prepare(&mut self, b: &Self::Bounds, setup: &Setup,
+               c: &mut Self::Coeffs, s: &mut Self::State, t: &mut Self::Target) { .. } // s₀ sized
+    fn coefficients_into(&self, m: &Self::Model, t: &mut Self::Target) -> bool;          // κ, in place
+    fn clear(&self, s: &mut Self::State);                                                // s₀ again
+    fn run(&self, c: &Self::Coeffs, s: &mut Self::State,
+           input: &[&[f32]], output: &mut [&mut [f32]], frames: Range<usize>, into: usize); // K
     fn latency(&self) -> Samples { Samples::ZERO } // only latency the member does not have
-    fn effort(&self) -> Effort { Effort::default() }
+    fn effort(&self) -> Effort { Effort::Heavy }
+    // Not built yet: `type Input<'a>` (X: `&'a [&'a [f32]]` for an effect, `()` for a
+    // generator). `run` takes the effect shape, and the frame count is an argument of the runner.
+}
+
+// γ — the glide of the coefficients in flight toward the target κ wrote.
+pub trait Approach {
+    type Target;
+    fn aim(&mut self, t: &Self::Target);  // from where it is now, with its own rate policy
+    fn step(&mut self) -> bool;           // one step; `false` once there
+    fn settle(&mut self);                 // lands now
 }
 
 // H — only for an LTI member (today's `Lti`, unchanged: the queries are functions of H).
@@ -522,11 +538,20 @@ pub trait Grows: Family {
     fn reach(&self, r: &Reach<Self::Domain>) -> Self::Capacity;
 }
 
-// γ — generic over affine coefficients; no family writes one.
+// `Glide<Θ>` is the generic Approach for one affine Θ with one rate (its own number of
+// steps, set where it is built): the filters' (SVF, ladder, crossover) and any family whose
+// coefficients are one point. Two recurrences write their own Approach because their
+// coefficients glide per field at different rates, each aimed only when its own target moves:
+// Freeverb's (the comb feedback and damping) and the FDN's (a length by distance, the
+// pre-delay by distance, every gain by 20 ms; its Target is vector-sized, preallocated in
+// `prepare`).
 pub struct Glide<Θ: Lerp> { .. }
 
-// T̃ — the one runner: P = T̃ ∘ (γ ∘ κ ∘ φ, id). Takes the frame count from the call.
-pub struct Realized<R: Recurrence> { recurrence: R, coefficients: Glide<..>, state: R::State, blank: R::State }
+// T̃ — the one runner: P = T̃ ∘ (γ ∘ κ ∘ φ, id). A plain struct with inherent methods
+// `prepare`, `retarget` (κ, then γ's `aim` iff κ accepted the member, then the landing of the
+// first retarget), `reset`, `latency`, `effort`, `fresh` and `process(input, output, frames)`:
+// the frame count is an argument.
+pub struct Realized<R: Recurrence> { recurrence: R, coeffs: R::Coeffs, state: R::State, target: R::Target, .. }
 ```
 
 What this changes against main:
@@ -535,12 +560,13 @@ What this changes against main:
 |---|---|---|
 | trait `Design` (five associated types) | **`Family`** (`Controls`, `Member`) and, only where state grows, **`Grows`** | `φ` is all of the family; `Bounds` and `Range` were `need` and `reach`, forced on every filter as `FilterSizes` and `Range = ()` |
 | `Design::Model`, `design`, `design_into` | **`Member`**, **`member`**, **`member_into`** | `φ`'s codomain is the set of members |
-| trait `Kernel` with `start`, `prepare`, `aim`, `clear` | **`Recurrence`** with `coefficients` (`κ`), `initial` (`s₀`) and `run` (`K`) | `aim` coupled the glide `γ` into each kernel; `clear`, `prepare` and `start` were three ways of reaching `s₀` |
-| `Kernel::Coeffs: Approach` | **`Coefficients`**, glided by the runner's `Glide` (affine) or a crossfade | `γ` is one map over `Θ`, not a per-family method |
+| trait `Kernel` with `start`, `prepare`, `aim`, `clear` | **`Recurrence`** with `coefficients_into` (`κ`, built in step 1), `run` (`K`) and `start`/`prepare`/`clear` (kept as the way to `s₀`; one `initial` in the target) | `aim` coupled the glide `γ` into each kernel and read the model in the same breath; κ is now a function from a member to a point, written in place, and γ is the `Approach` |
+| `Kernel::Coeffs: Approach` | **`Recurrence::Coeffs: Approach<Target = Target>`**: `Approach { Target, aim, step, settle }`, with `Glide<Θ>` the generic one for an affine Θ with one rate and the FDN's and Freeverb's own for per-field rates | `γ` is one map over `Θ`; a family with one rate writes none, one with a rate a field writes its own |
 | `Sizes`, `Bounds`, `NetworkSizes`, `FilterSizes` | **`Capacity`**, `NetworkCapacity`; `FilterSizes` deleted | `𝒦`; a filter's capacity is a single point |
 | `Range`, `Ceiling<R>`, `bounds(&ceiling)` | **`Domain`**, **`Reach<D>`**, **`reach`** | `D ⊆ C` and the monotone map `reach` |
-| traits `Realization<M>` and `Effect<M>` | deleted; **`Realized<R>`** is the one runner, a struct | the lifecycle is derived from `s₀`, and the shape is `X`; the trait's only production implementer was `Realized<K>`, the others test doubles, which become recurrences or the runner's flaws |
-| `Realized::process` reads `input[0].len()` | the frame count is an argument, the input an associated type | a generator has `X = 1`, an instrument `X = E*` |
+| traits `Realization<M>` and `Effect<M>` | deleted (step 1); **`Realized<R>`** is the one runner, a struct with inherent `prepare`, `retarget`, `reset`, `latency`, `effort`, `fresh` and `process` | the lifecycle is derived from `s₀`, and the shape is `X`; the trait's only production implementer was `Realized<K>`, the others test doubles, which are recurrences (`GainRecurrence`, `EchoRecurrence`, `Unrun`, `Lie`), a wrapper recurrence (`Flawed`) or the runner's flaws |
+| `Realized::process` reads `input[0].len()` | the frame count is an argument (step 1); the input an associated type `Input<'a>` (not built yet: the effect shape only) | a generator has `X = 1`, an instrument `X = E*` |
+| `Design::Realization`, `Design::realization()` | `Design::Recurrence`, `Design::recurrence()`, and the provided `Design::realized()` (the runner at the blank) | step 1 |
 | `NodeDesign`, `DesignNode<D>`, `*Design` | **`NodeFamily`**, **`FamilyNode<F>`**, `SvfFamily`, `LadderFamily`, `CrossoverFamily`, `FreeverbFamily`, `FdnFamily` | the node over a family |
 | `design_contract!`, `DesignCase`, `realization_contract!`, `RealizationCase` | **`family_contract!`** (`φ`'s diagram), **`recurrence_contract!`** (laws 1 to 3) | the contract is the diagrams of section 2.7.4 |
 
@@ -554,9 +580,17 @@ become `Recurrence`s in their family lanes.
 This section is the target; the code moves in steps, each a PR that changes no render:
 
 1. **The maps without the renames' churn first:** `Recurrence` replaces `Kernel` (`aim` out,
-   `initial` in, the glide generic in the runner), `Realized` takes the frame count, and
-   `Realization`/`Effect` go. The four migrated families (SVF, ladder, crossover, the two
-   reverbs) move in the same PR, since they are the trait's only implementers.
+   `coefficients_into` in, the glide an `Approach` the recurrence names), `Realized` takes the
+   frame count, and `Realization`/`Effect` go. The four migrated families (SVF, ladder,
+   crossover, the two reverbs) move in the same PR, since they are the trait's only
+   implementers. *Refined 2026-11-12, as built:* the runner does not own one generic `Glide`.
+   The FDN glides per field at different rates (a length and the pre-delay by distance, the
+   gains by 20 ms) and its target is vector-sized, so `Recurrence` names its `Coeffs`, an
+   `Approach<Target = Target>`; `Glide<Θ>` is the generic one for an affine Θ with one rate (the
+   filters), and Freeverb and the FDN write their own. κ writes a preallocated `Target` in place
+   (`coefficients_into`, `false` for a member it cannot run), so `start` and `prepare` also
+   hand out the target. `start`, `prepare` and `clear` stay as the way to `s₀`, and
+   `Input<'a>` waits for the first generator.
 2. **`Design` splits** into `Family` and `Grows`, with the renames of section 2.7.5, and
    CLAUDE.md's `tutti-dsp` paragraph follows.
 3. **The contract becomes the diagrams:** `family_contract!` states each family's design
@@ -618,7 +652,7 @@ like, per CLAUDE.md "Unit types").
 | # | Class | Algorithm (where) | Realization today and controls | Verdict | Design, model, queries, or why not |
 |---|---|---|---|---|---|
 | 17 | 3 | **Waveshaper** (`waveshape.rs` `ShapeKind`, `Shaper`; `DistortionNode`) | `Shaper::shape`, `shape_block*`; memoryless. Typed: `Drive` | **Fits** | Design: `(ShapeKind, drive)` to `Shaper` (already a value). `Memoryless` with `In = Out = f32`. Exact queries from the curve: DC offset `eval(0)`, odd symmetry (`eval(-x) = -eval(x)`, hence no even harmonics for a sine), the harmonic amplitudes of a sine of amplitude `A` (the DFT of `eval(A sin t)` over one cycle, computed on the control side), and `Fidelity` as the aliasing bound (the highest harmonic above the floor against Nyquist; `Crush` is a quantiser and has none that decays). `latency` and `tail` zero |
-| 18 | 6 | **FFT resampler** (`resample/fft.rs`, `streaming.rs`; `tutti-export` `process/resample.rs`) | `FftResampler::process_into_buffer`, `StreamingResampler`, `ChunkSize`. Plain `SampleRate` pair | **Partly** | Design, model and queries fit: `(source, target, chunk size)` to the ratio (exact, from `gcd`), `latency` (`output_delay()` frames, a figure the file header already computes), `frequency_response` of the windowed-sinc low-pass (passband ripple, stopband attenuation, cutoff), `Fidelity`. The realization shape does not: input and output counts differ (`input_frames_next`, `output_frames_max`), so it is not an `Effect<M>`; it gets its own shape trait and no `DesignNode` |
+| 18 | 6 | **FFT resampler** (`resample/fft.rs`, `streaming.rs`; `tutti-export` `process/resample.rs`) | `FftResampler::process_into_buffer`, `StreamingResampler`, `ChunkSize`. Plain `SampleRate` pair | **Partly** | Design, model and queries fit: `(source, target, chunk size)` to the ratio (exact, from `gcd`), `latency` (`output_delay()` frames, a figure the file header already computes), `frequency_response` of the windowed-sinc low-pass (passband ripple, stopband attenuation, cutoff), `Fidelity`. The realization shape does not: input and output counts differ (`input_frames_next`, `output_frames_max`), so it is not a recurrence the one runner `Realized<R>` runs; it gets its own shape trait and no `DesignNode` |
 | 19 | 5 | **Dither** (`dither.rs`; `tutti-export` `process/dither.rs`) | `DitherNoise::apply` in place, xorshift32. Typed: `Amplitude` (the LSB) | **Partly** | The model is the noise's density: `Rectangular` has variance `lsb^2/12`, `Triangular` `lsb^2/6`, and the error power of a quantiser with it; these are the exact queries. It adds noise to silence, so `tail` is `Unbounded` and it never parks. In place, not planar in/out. One query (`noise power`) is not in the vocabulary; it is an inherent method, not a trait |
 | 20 | P | `control.rs` (`Ramp`, `segments`, `COEFF_INTERVAL`, `lane_group`) | helpers | **No** | The cadence machinery the node uses (section 4.5), not an algorithm |
 | 21 | P | `dynamics/window.rs` (`FixedDelay`, `MonotonicMinDeque`, private to the limiter; `buffer.rs` and the public `CircularBuffer` are gone) | containers | **No** | Containers below the shape |
@@ -652,7 +686,7 @@ like, per CLAUDE.md "Unit types").
 | 39 | 5 | **SoundFont LFO** (`lfo.rs`) | delay then a triangle at a frequency | **Fits** | Class 5, `Periodic`: a delay, then a triangle at a frequency; period and delay are exact. (Row 25's layering problem does not apply: `tutti-soundfont` owns its LFO and may take a `tutti-dsp` edge, as row 40 notes) |
 | 40 | 1 (2) | **SoundFont low-pass biquad** (`bi_quad_filter.rs`) | `set_low_pass_filter(cutoff, resonance)` then `process` | **Fits** | A biquad: the same `frequency_response`, stability and `tail` as row 1, with its model a coefficient set. `tutti-soundfont` depends on `tutti-dsp` (consolidation 4, landed) |
 | 41 | 6 | **SoundFont voice render** (`render.rs`, `voice.rs`, `region_ex.rs`; the generator sum of SF2 9.4) | sample playback with interpolation, oscillator | **Partly** | The design half is pure and fits: SF2 generators (cents, timecents, centibels) to voice parameters through the 9.3 conversions. The sample-playback oscillator is a resampling read whose model is a pitch ratio and a loop; no response to speak of |
-| 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `frequency_response`; the realization consumes at a variable rate (`input_rate`), so not an `Effect<M>`. Doc 026 gives it the shape: a `StretchDesign` with a `Retime<M>` realization (position-driven, `splice`, `reach`) |
+| 42 | 6 | **Stretch unit** (`tutti-sampler/src/stretch/unit.rs`; phase vocoder) | `Unit::tick`/`process`, source-pulled; latency depends on bypass | **Partly** | Fits: `(stretch factor, cents, FFT size, enabled)` to a model whose `latency` is `latency_samples()` (a function of the FFT size and whether it is processing, per the method's docs), the duration ratio, `Graded` (FFT size is the quality). Does not fit: nonlinear, so no `frequency_response`; the realization consumes at a variable rate (`input_rate`), so not a recurrence the one runner `Realized<R>` runs. Doc 026 gives it the shape: a `StretchDesign` with a `Retime<M>` realization (position-driven, `splice`, `reach`) |
 | 43 | E | **Sampler butler and voices** (`tutti-sampler/src/butler/`, `voice/`) | streaming I/O | **No** | I/O and scheduling, not an algorithm |
 | 44 | 1, order 0 | **VBAP** (the layout, solve and block kernel in `tutti-dsp/src/spatial/`, `SpeakerLayout`, `VbapKernel`; the node and the smoothing in `tutti-nodes/src/spatial/vbap/`) | `VbapKernel::gains` over `SpeakerLayout::gains_into` (the block kernel, `VbapGains::render_channel`), under `VbapPanner::solve_block`'s angle smoothing | **Fits** | Design: `(azimuth, elevation, spread, width, speaker layout)` to the gain matrix. Queries: the matrix; power normalisation (`sum g^2 = 1`); at most a few non-zero speakers; continuity in azimuth. The smoothing is the realization's |
 | 45 | 1 (2) | **HRTF binaural** (the convolver, sphere and face lookup in `tutti-dsp/src/spatial/`; the node and the de-zipper in `tutti-nodes/src/spatial/hrtf/`) | `HrtfBinaural`, HRIR convolution with a de-zipper | **Fits** | Design: `(azimuth, elevation, rate)` to an interpolated HRIR pair (from the sphere: data). `frequency_response` is the HRIR's FFT, `tail` is `ir_len - 1` (`ring_out`), `latency` the delay compensation. Published like row 16 |
@@ -676,7 +710,7 @@ consolidation list.
 | # | Class | Algorithm (where) | Realization today and controls | Verdict | Design, model, queries, or why not |
 |---|---|---|---|---|---|
 | 46 | 1 | **One-pole smoothers**: `AngleSmoother` (`tutti-nodes/src/spatial/target.rs`), `smooth_envelope` (`tutti-dsp/src/dynamics/curves.rs` ~110) | `y += c * (x - y)`, the same recurrence in both. `AngleSmoother` steps once per `stride` samples, has a closed form for `n` steps (`advance`, over `Smoother::gap_closed`) and takes the bearing along the short arc. `smooth_envelope` takes `c` as an argument. The follower node (`tutti-nodes/src/signal/follower.rs`, f64 envelope, attack and release coefficients) and the polysynth's `gain_glide` (`bank.rs`) are the same recurrence with a second coefficient or a fixed time. Typed: `Seconds` | **Fits** | Class 1, order 1: a pole at `1 - c`. Design: `(time, rate, stride)` to `c`. The solve is `Seconds::one_pole_coeff` in `tutti-types` and stays there, because `Param`, dsp and the graph all need it. Queries: DC gain 1, `spectral_radius` `1 - c`, the step response reaches 63% in `time`, `tail` from the pole. The attack/release switch of a follower is row 10 (class 4); the angle variant is not LTI (the wrap is a nonlinearity on the difference) and stays in spatial as an inherent piece. The polysynth portamento (`portamento.rs`) is not a variant: it is a finite ramp shaped by `PortamentoCurve` (row 51) |
-| 47 | 6 | **HRIR resampler** (`tutti-dsp/src/spatial/hrtf/sphere.rs` `resample_into`, `resample_batched`, ~203-262) | Blackman-windowed sinc, half-width 32 zero crossings, cutoff 0.95 of the lower Nyquist, weights evaluated once per output tap and applied to a batch of responses; runs when the sphere is built, never on the audio thread | **Partly** | Class 6 with an LTI prototype (the low-pass), the same shape as row 18. It duplicates the kernel of `tutti-dsp/src/resample/fft.rs` `sinc_filter`, and its window formula (`0.42 + 0.5 cos u + 0.08 cos 2u`) duplicates `CosineWindow::BLACKMAN` (`analysis/window.rs`). The two differ in what they compute: `sinc_filter` is a fixed FIR applied in the FFT domain at a ratio of integers, this one evaluates the kernel at a fractional offset per output tap. The shared piece is the windowed-sinc kernel, not the resampler. Partly for the reason of row 18: not an `Effect<M>` |
+| 47 | 6 | **HRIR resampler** (`tutti-dsp/src/spatial/hrtf/sphere.rs` `resample_into`, `resample_batched`, ~203-262) | Blackman-windowed sinc, half-width 32 zero crossings, cutoff 0.95 of the lower Nyquist, weights evaluated once per output tap and applied to a batch of responses; runs when the sphere is built, never on the audio thread | **Partly** | Class 6 with an LTI prototype (the low-pass), the same shape as row 18. It duplicates the kernel of `tutti-dsp/src/resample/fft.rs` `sinc_filter`, and its window formula (`0.42 + 0.5 cos u + 0.08 cos 2u`) duplicates `CosineWindow::BLACKMAN` (`analysis/window.rs`). The two differ in what they compute: `sinc_filter` is a fixed FIR applied in the FFT domain at a ratio of integers, this one evaluates the kernel at a fractional offset per output tap. The shared piece is the windowed-sinc kernel, not the resampler. Partly for the reason of row 18: not a recurrence the one runner `Realized<R>` runs |
 | 48 | 1, order 0 | **Fades and crossfades**: `CrossfadeCurve` (`tutti-graph/src/fade.rs` `gains`, ~84-96: `EqualPower`, `EqualAmplitude`), the sampler's loop-seam crossfade (`tutti-sampler/src/voice/loop_span.rs` `fade_at`, ~189-199), the wrap fade (`voice/memory_source.rs`, `clock.rs` `Wrap`, 5 ms) and a linear ramp in `voice/live_read.rs` | A gain pair per frame, `g_in(k) * a + g_out(k) * b`. `CrossfadeCurve::gains(k, len)` takes `x = (k + 1) / (len + 1)`. The wrap fade uses `EqualPower`; the loop seam and `live_read.rs` write `(k + 1) / (n + 1)` out by hand | **Fits** | Class 1, order 0, **time-varying by a prescribed schedule**: at each frame `k` a 1x2 gain row `[g_out g_in]`, so a gain matrix whose entries follow a curve. It is not class 2: `theta` is not slow, it sweeps its whole range inside the fade by design. The model is the curve pair, a pure function of `x`; the exact queries are the sum law (`g_in + g_out = 1` for `EqualAmplitude`, `g_in^2 + g_out^2 = 1` for `EqualPower`), monotonicity and the endpoints. The seam's linear weight is `CrossfadeCurve::gains` at `x` with `g_in = x`, a third variant, `Linear` (consolidation 5) |
 | 49 | E (1, order 0, time-varying) | **The engine's declick `Fader`** (`tutti-engine/src/engine.rs` ~878-940) | A gain carried across blocks, shaped per frame by a `GainPlan` of declicked commands over transport frames: a linear fall to zero on the command's frame, then a rise of `1/fade` a frame; one gain for every channel | **No** | Order-0 and time-varying like row 48, but what defines it is the plan (when a command lands, `At::NextBlock`, a late command, a jump), which is event logic over transport frames, and the only invariant is the slope bound `1/fade`. It is not a graph node (it shapes the engine's output buffer after the plan) and holds no model to query. It stays in `tutti-engine`, which owns `GainPlan` and the transport clock; the law it runs (a fall that multiplies the gain by `left / (left + 1)`, a rise that adds `1/fade`) is not a `CrossfadeCurve` |
 | 50 | M | **Level metering**: `block_stats` (`tutti-graph/src/meter.rs` ~104: peak and sum of squares, in lane order), `Ballistics`, `BallisticsState` and `step_ballistics` (`tutti-dsp/src/analysis/stereo.rs` ~159) | `block_stats` runs as the meter op in the plan (`Editor::open_meter`); `Ballistics` is the reader's | **No** | A measurement (row 23's kind): a functional of a signal, with no sound to realize. `block_stats` stays in `tutti-graph`: the meter is a plan op, and graph and dsp are both layer 2 with no edge between them, so graph cannot take it from dsp (nor from `tutti-measure`, layer 3). `Ballistics` moves with the analysis split to `tutti-measure` (section 9) |

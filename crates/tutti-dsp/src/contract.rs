@@ -1,5 +1,5 @@
 //! The contract: cases every [`Design`](crate::Design) and its
-//! [`Realization`](crate::Realization) are held to (design 024 section 6).
+//! [`Realized`](crate::Realized) runner are held to (design 024 section 6).
 //!
 //! Written once per class of system, behind the `contract` feature (off by
 //! default; it pulls `rand` for seeded noise). This is the one public module of

@@ -1,11 +1,11 @@
 //! The reverb: any [`Design`] as a graph node (design 022 section 5).
 //!
 //! [`DesignNode<D>`] is the one node over every reverb algorithm. It is generic
-//! rather than boxed: a [`Design`] has a `Controls` type and a [`Realization`] of its
+//! rather than boxed: a [`Design`] has a `Controls` type and a [`Recurrence`](tutti_dsp::Recurrence) of its
 //! own, and erasing them would bring back a settings bag. The node holds the
 //! design, its realization and the algorithm's [`Param`](tutti_types::Param) cells ([`Params`]),
 //! and per block it reads the cells once, designs a [`Model`](Design::Model) when the
-//! controls changed, moves the realization to it ([`Realization::retarget`]), renders, and
+//! controls changed, moves the realization to it ([`Realized::retarget`]), renders, and
 //! tells the graph how long the room will still ring ([`Io::report_tail`]).
 //!
 //! The node is wet only: its blend with its input, for use as an insert, is the
@@ -16,8 +16,8 @@
 use core::ops::Range as Frames;
 
 use tutti_dsp::{
-    Cadence, Ceiling, Channels, Design, Effect, Effort, FreeverbControls, FreeverbDesign,
-    MAX_CHANNELS, Range, Realization, Ring, Setup, Sizes, System,
+    Cadence, Ceiling, Channels, Design, Effort, FreeverbControls, FreeverbDesign, MAX_CHANNELS,
+    Range, Realized, Ring, Setup, Sizes, System,
 };
 use tutti_graph::{
     Bus, BusRole, Buses, Cost, Cx, HasParam, HasParams, IntoNode, Io, Node, NodeParts, OutBus,
@@ -40,7 +40,7 @@ const UNBOUNDED: u64 = u64::MAX;
 
 /// A [`Design`] a [`DesignNode`] can run: the design plus the cells of its
 /// controls.
-pub trait NodeDesign: Design<Realization: Effect<<Self as Design>::Model>> + 'static {
+pub trait NodeDesign: Design + 'static {
     /// The cells: the family's addresses and the conversion between its controls and
     /// the `f32`s the ports carry.
     type Set: ControlSet<Controls = Self::Controls>;
@@ -118,7 +118,7 @@ enum Mode<C> {
 /// Per block the node reads its cells once ([`Params`]), and when
 /// the controls differ from the last block's it designs the [`Model`](Design::Model) **in
 /// place** into one it owns ([`Design::design_into`]: a network is about 56 KB,
-/// too large to build on an audio thread) and calls [`Realization::retarget`], which
+/// too large to build on an audio thread) and calls [`Realized::retarget`], which
 /// moves the realization toward it. An unmodulated, unchanged reverb designs once.
 /// The audio thread is the only place that sees a modulated value (a lane
 /// writes the port, never the cell), so it is where the design runs, and it
@@ -129,7 +129,7 @@ enum Mode<C> {
 /// A graph node ([`IntoNode`], through [`tutti_graph::param_parts`]): inserted,
 /// its controls are a [`ParamSet`] over the
 /// algorithm's cells, and a fork starts from the values set with a
-/// [`Realization::fresh`] realization, silent (the graph's preroll warms it).
+/// [`Realized::fresh`] realization, silent (the graph's preroll warms it).
 ///
 /// **Latency** is the realization's, never a pre-delay. **The tail** is a ceiling
 /// ([`Shape::tail`], the design's worst case at the longest decay) that the
@@ -140,7 +140,7 @@ enum Mode<C> {
 /// is below -60 dB, and an idle node is a fresh one when it wakes.
 pub struct DesignNode<D: NodeDesign> {
     design: D,
-    realization: D::Realization,
+    realization: Realized<D::Recurrence>,
     params: Params<D::Set>,
     mode: Mode<D::Controls>,
     /// The model the realization was last retargeted to: designed in place.
@@ -205,7 +205,7 @@ impl<D: NodeDesign> DesignNode<D> {
         let out = ports(channels)
             .output_bus(0)
             .expect("a design has an output");
-        let realization = design.realization();
+        let realization = design.realized();
         let params = Params::new(design.set(&controls), &controls);
         let (network, longest) = (Box::new(design.blank(rate)), Box::new(design.blank(rate)));
         let mut node = Self {
@@ -356,7 +356,7 @@ impl<D: NodeDesign> DesignNode<D> {
         }
         let width = self.channels.output_width();
         self.realization
-            .process(&input[..inputs], &mut output[..width]);
+            .process(&input[..inputs], &mut output[..width], frames.len());
     }
 
     /// Renders the block one step of the sampling grid at a time, the block
@@ -552,7 +552,7 @@ impl<D: NodeDesign> Node for DesignNode<D> {
 }
 
 /// A clone shares the cells and starts silent: a copy of the realization with its
-/// state empty ([`Realization::fresh`]).
+/// state empty ([`Realized::fresh`]).
 impl<D: NodeDesign> Clone for DesignNode<D> {
     fn clone(&self) -> Self {
         Self {

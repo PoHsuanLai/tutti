@@ -1,17 +1,19 @@
-//! [`Realized`]: the one realization of every effect (design 024 section 4.3a,
-//! amendment B1), over a [`Kernel`] that holds what differs between effects.
+//! [`Realized`]: the one runner of every effect (design 024 section 2.7, amendments
+//! C), over a [`Recurrence`] that holds what differs between effects.
 //!
-//! A realization does four things: it starts from a design, aims at a new model,
-//! runs frames with the coefficients it holds and clears. What differs from one
-//! effect to the next is the per-frame math, the state, and how the coefficients
-//! approach a new model ([`Glide`], in a number of steps). The family is its
-//! [`Kernel`]; the realization is written once.
+//! A processor is maps. The design is the family φ
+//! ([`Design::design_into`](crate::Design::design_into)); the recurrence's
+//! [`coefficients_into`](Recurrence::coefficients_into) is κ, from a member of the
+//! family to the coefficient point it asks for; [`Approach`] is γ, the glide of the
+//! coefficients in flight toward that point; [`Recurrence::run`] is K, the per-frame
+//! math over the coefficients as they stand; and [`Realized`] is the one runner that
+//! composes them, written once.
 
 use core::ops::Range;
 
 use tutti_types::Samples;
 
-use super::{Effect, Effort, Realization, Setup};
+use super::{Effort, Setup};
 
 impl Lerp for f32 {
     #[inline]
@@ -39,20 +41,27 @@ pub enum Steps {
     Rate(f32),
 }
 
-/// A linear approach to a target in `n` steps, from where it was when it was aimed.
+/// A linear approach to a target in `n` steps, from where it was when it was aimed:
+/// γ for one coefficient set `T` that glides as a whole, with one rate.
 ///
 /// Step `k` is `from.lerp(to, k, n)`, so it lands exactly and a new aim starts from
 /// the value in flight, never jumping over a glide cut short. `n = 0` lands at once.
+/// The number of steps a [`Approach::aim`] takes is the glide's own, set where it is
+/// built ([`by`](Self::by)); [`aim_by`](Glide::aim_by) of a `Glide<f32>` takes a
+/// [`Steps`] per call instead, for a coefficient with a rate of its own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Glide<T: Lerp> {
     from: T,
     to: T,
     k: u32,
     n: u32,
+    /// The steps [`Approach::aim`] takes.
+    steps: u32,
 }
 
 impl<T: Lerp> Glide<T> {
-    /// A glide at rest on `value`.
+    /// A glide at rest on `value`, whose [`Approach::aim`] lands at once (see
+    /// [`by`](Self::by)).
     #[must_use]
     pub fn landed(value: T) -> Self {
         Self {
@@ -60,16 +69,24 @@ impl<T: Lerp> Glide<T> {
             to: value,
             k: 0,
             n: 0,
+            steps: 0,
         }
     }
 
+    /// The same glide, taking `steps` steps to each target it is [aimed](Approach::aim) at.
+    #[must_use]
+    pub fn by(self, steps: u32) -> Self {
+        Self { steps, ..self }
+    }
+
     /// Aims at `to`, arriving in `n` steps from the value in flight.
-    pub fn aim(&mut self, to: T, n: u32) {
+    pub fn aim_in(&mut self, to: T, n: u32) {
         *self = Self {
             from: self.now(),
             to,
             k: 0,
             n,
+            steps: self.steps,
         };
     }
 
@@ -108,12 +125,21 @@ impl Glide<f32> {
             Steps::Fixed(n) => n,
             Steps::Rate(rate) => ((to - self.now()).abs() / rate).ceil() as u32,
         };
-        self.aim(to, n);
+        self.aim_in(to, n);
     }
 }
 
-/// A coefficient set that approaches a target, a step at a time.
+/// γ: a coefficient set that approaches the point κ asked for, a step at a time.
 pub trait Approach {
+    /// The coefficient point it is aimed at: what
+    /// [`Recurrence::coefficients_into`] writes.
+    type Target;
+
+    /// Aims at `target`, from where the coefficients are now, with the rate policy
+    /// of its own (a number of steps, or a rate for each coefficient). Audio thread:
+    /// no allocation.
+    fn aim(&mut self, target: &Self::Target);
+
     /// Moves one step toward the target. `false` once it is there (or was
     /// already), when nothing moved and [`Realized`] runs the rest of a block whole.
     fn step(&mut self) -> bool;
@@ -123,6 +149,12 @@ pub trait Approach {
 }
 
 impl<T: Lerp> Approach for Glide<T> {
+    type Target = T;
+
+    fn aim(&mut self, target: &T) {
+        self.aim_in(*target, self.steps);
+    }
+
     #[inline]
     fn step(&mut self) -> bool {
         if self.k >= self.n {
@@ -142,38 +174,52 @@ impl<T: Lerp> Approach for Glide<T> {
     }
 }
 
-/// An effect's per-frame math, whatever its channel shape and its state.
-pub trait Kernel: Clone + core::fmt::Debug + Send + 'static {
-    /// The model it realizes.
+/// K: an effect's recurrence, the per-frame math over its coefficients and state,
+/// whatever its channel shape (design 024 section 2.7).
+///
+/// A recurrence says four things. What coefficient point a member of the family asks
+/// for ([`coefficients_into`](Self::coefficients_into), κ); how the coefficients move
+/// to it ([`Coeffs`](Self::Coeffs), an [`Approach`], γ); what a frame does to the
+/// state at the coefficients as they stand ([`run`](Self::run), K itself); and the
+/// way to its first state, s₀ ([`start`](Self::start), [`prepare`](Self::prepare),
+/// [`clear`](Self::clear)). [`Realized`] runs them.
+pub trait Recurrence: Clone + core::fmt::Debug + Send + 'static {
+    /// The member of the family it realizes: the model.
     type Model;
     /// The worst-case sizes it allocates from.
     type Bounds;
-    /// What approaches a new model.
-    type Coeffs: Approach + Clone + core::fmt::Debug + Send;
+    /// The coefficient point a member asks for: what κ writes and γ is aimed at.
+    type Target: Clone + core::fmt::Debug + Send;
+    /// What approaches a target.
+    type Coeffs: Approach<Target = Self::Target> + Clone + core::fmt::Debug + Send;
     /// What a block changes.
     type State: Clone + core::fmt::Debug + Send;
 
     /// Frames run with one coefficient step while the coefficients move.
     const STEP: usize;
 
-    /// The coefficients and state of an unprepared realization, at rest on `model`
+    /// The coefficients, state and target of an unprepared runner, at rest on `model`
     /// (the design's blank). Control side; allocates.
-    fn start(&self, model: &Self::Model) -> (Self::Coeffs, Self::State);
+    fn start(&self, model: &Self::Model) -> (Self::Coeffs, Self::State, Self::Target);
 
-    /// Sizes `coeffs` and `state` for `setup` from the worst case `bounds`, and keeps
-    /// what the kernel itself needs of them. Control side; allocates. A kernel that
-    /// allocates nothing from [`Bounds`](Self::Bounds) leaves the default.
+    /// Sizes `coeffs`, `state` and `target` for `setup` from the worst case `bounds`,
+    /// and keeps what the recurrence itself needs of them. Control side; allocates.
+    /// A recurrence that allocates nothing from [`Bounds`](Self::Bounds) leaves the
+    /// default.
     fn prepare(
         &mut self,
         _bounds: &Self::Bounds,
         _setup: &Setup,
         _coeffs: &mut Self::Coeffs,
         _state: &mut Self::State,
+        _target: &mut Self::Target,
     ) {
     }
 
-    /// Aims `coeffs` at `model`, in place; audio thread, no allocation.
-    fn aim(&self, coeffs: &mut Self::Coeffs, model: &Self::Model);
+    /// κ: writes the coefficient point `member` asks for into `target`, in place.
+    /// Audio thread, no allocation. `false` for a member this recurrence cannot run,
+    /// and then the target is as it was and the runner keeps the current aim.
+    fn coefficients_into(&self, member: &Self::Model, target: &mut Self::Target) -> bool;
 
     /// Clears the state to silence.
     fn clear(&self, state: &mut Self::State);
@@ -181,8 +227,8 @@ pub trait Kernel: Clone + core::fmt::Debug + Send + 'static {
     /// Renders `frames` of `input` into `output` with the coefficients as they
     /// stand: one step's worth while they move, the rest of a block once landed.
     /// `into` is how many frames of the current step came before `frames.start`
-    /// (always 0 for a `STEP` of 1), so a kernel that works once a step knows where
-    /// the steps begin on the stream.
+    /// (always 0 for a `STEP` of 1), so a recurrence that works once a step knows
+    /// where the steps begin on the stream.
     fn run(
         &self,
         coeffs: &Self::Coeffs,
@@ -193,7 +239,8 @@ pub trait Kernel: Clone + core::fmt::Debug + Send + 'static {
         into: usize,
     );
 
-    /// The processing latency, in frames.
+    /// The processing latency, in frames: never a pre-delay or a tap spacing
+    /// (musical delay is not latency). Zero for a time-domain recurrence.
     fn latency(&self) -> Samples {
         Samples::ZERO
     }
@@ -204,8 +251,8 @@ pub trait Kernel: Clone + core::fmt::Debug + Send + 'static {
     }
 }
 
-/// A deliberate flaw the contract's mutation records plant in a realization (design
-/// 024 section 6.1): test-only.
+/// A deliberate flaw the contract's mutation records plant in a runner (design 024
+/// section 6.1): test-only.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Flaw {
@@ -216,21 +263,30 @@ pub(crate) enum Flaw {
     /// `process` starts its step count over at every call, so a glide's clock is the
     /// block's, not the stream's.
     RestartClock,
+    /// `fresh` keeps the state.
+    FreshKeepsState,
 }
 
-/// The one realization: the kernel's coefficients approaching each new model, run a
-/// step at a time while they move and in one run once they have landed.
+/// The one runner: a [`Recurrence`]'s coefficients approaching the target κ asks of
+/// each new model, run a step at a time while they move and in one run once they
+/// have landed.
 ///
-/// The steps are counted from the first frame since the last [`reset`](Realization::reset)
-/// (or the first [`retarget`](Realization::retarget) after [`prepare`](Realization::prepare)),
+/// The steps are counted from the first frame since the last [`reset`](Self::reset)
+/// (or the first [`retarget`](Self::retarget) after [`prepare`](Self::prepare)),
 /// not from a block's edge, so the render does not depend on how the input is cut
 /// into blocks. That first retarget lands whole, with nothing to approach from;
 /// `reset` lands and clears.
+///
+/// Nothing is allocated after [`prepare`](Self::prepare): everything is sized there
+/// from the [`Bounds`](Recurrence::Bounds), and `retarget`, `process` and `reset`
+/// never allocate, lock or wait.
 #[derive(Clone, Debug)]
-pub struct Realized<K: Kernel> {
-    kernel: K,
-    coeffs: K::Coeffs,
-    state: K::State,
+pub struct Realized<R: Recurrence> {
+    recurrence: R,
+    coeffs: R::Coeffs,
+    state: R::State,
+    /// The coefficient point κ last wrote.
+    target: R::Target,
     /// Whether a model has been retargeted since `prepare`.
     landed: bool,
     /// Frames run of the current step.
@@ -239,15 +295,16 @@ pub struct Realized<K: Kernel> {
     flaw: Flaw,
 }
 
-impl<K: Kernel> Realized<K> {
-    /// A realization of `kernel`, at rest on `model`. Control side; allocates.
+impl<R: Recurrence> Realized<R> {
+    /// A runner of `recurrence`, at rest on `model`. Control side; allocates.
     #[must_use]
-    pub fn new(kernel: K, model: &K::Model) -> Self {
-        let (coeffs, state) = kernel.start(model);
+    pub fn new(recurrence: R, model: &R::Model) -> Self {
+        let (coeffs, state, target) = recurrence.start(model);
         Self {
-            kernel,
+            recurrence,
             coeffs,
             state,
+            target,
             landed: false,
             into: 0,
             #[cfg(test)]
@@ -261,25 +318,33 @@ impl<K: Kernel> Realized<K> {
         self.flaw = flaw;
     }
 
-    /// The kernel, its coefficients and its state, for the tests.
+    /// The recurrence, its coefficients and its state, for the tests.
     #[cfg(test)]
-    pub(crate) fn parts_mut(&mut self) -> (&K, &mut K::Coeffs, &mut K::State) {
-        (&self.kernel, &mut self.coeffs, &mut self.state)
+    pub(crate) fn parts_mut(&mut self) -> (&R, &mut R::Coeffs, &mut R::State) {
+        (&self.recurrence, &mut self.coeffs, &mut self.state)
     }
-}
 
-impl<K: Kernel> Realization<K::Model> for Realized<K> {
-    type Bounds = K::Bounds;
-
-    fn prepare(&mut self, bounds: &K::Bounds, setup: &Setup) {
-        self.kernel
-            .prepare(bounds, setup, &mut self.coeffs, &mut self.state);
+    /// Sizes the runner for `setup`, from the worst case `bounds`. Control side;
+    /// allocates. A runner never inspects a model to allocate.
+    pub fn prepare(&mut self, bounds: &R::Bounds, setup: &Setup) {
+        self.recurrence.prepare(
+            bounds,
+            setup,
+            &mut self.coeffs,
+            &mut self.state,
+            &mut self.target,
+        );
         self.landed = false;
         self.into = 0;
     }
 
-    fn retarget(&mut self, model: &K::Model) {
-        self.kernel.aim(&mut self.coeffs, model);
+    /// Moves toward `model`, once per block whose model changed: κ writes the target
+    /// it asks for and γ is aimed at it. Audio thread: never allocates or waits. A
+    /// model the recurrence cannot run leaves the aim as it was.
+    pub fn retarget(&mut self, model: &R::Model) {
+        if self.recurrence.coefficients_into(model, &mut self.target) {
+            self.coeffs.aim(&self.target);
+        }
         if !self.landed {
             self.coeffs.settle();
             self.landed = true;
@@ -287,55 +352,75 @@ impl<K: Kernel> Realization<K::Model> for Realized<K> {
         }
     }
 
-    fn reset(&mut self) {
+    /// Returns the runner to silence, keeping what it was retargeted to.
+    pub fn reset(&mut self) {
         #[cfg(test)]
         if self.flaw != Flaw::ResetKeepsGlides {
             self.coeffs.settle();
         }
         #[cfg(not(test))]
         self.coeffs.settle();
-        self.kernel.clear(&mut self.state);
+        self.recurrence.clear(&mut self.state);
         self.into = 0;
     }
 
-    fn latency(&self) -> Samples {
-        self.kernel.latency()
+    /// The processing latency, in frames: never a pre-delay or a tap spacing
+    /// (musical delay is not latency).
+    #[must_use]
+    pub fn latency(&self) -> Samples {
+        self.recurrence.latency()
     }
 
-    fn effort(&self) -> Effort {
-        self.kernel.effort()
+    /// How costly the runner is to run.
+    #[must_use]
+    pub fn effort(&self) -> Effort {
+        self.recurrence.effort()
     }
-}
 
-impl<K: Kernel> Effect<K::Model> for Realized<K> {
+    /// A runner of the same type, prepared for the same setup and retargeted to the
+    /// same model, with empty state: what a fork runs. A clone, reset. Control
+    /// side; allocates.
+    #[must_use]
+    pub fn fresh(&self) -> Self {
+        #[cfg(test)]
+        if self.flaw == Flaw::FreshKeepsState {
+            return self.clone();
+        }
+        let mut fresh = self.clone();
+        fresh.reset();
+        fresh
+    }
+
+    /// Renders `frames` frames of `output` from `input`, planar slices at least that
+    /// long, at most [`Setup::max_block`]. Audio thread. A reverb overwrites the
+    /// output with the **wet** signal alone: mixing is the node's.
+    ///
     /// Runs a step at a time while the coefficients move, so a glide cut by the end
     /// of a call goes on in the next, and the rest of the block in one run.
-    fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) {
+    pub fn process(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], frames: usize) {
         #[cfg(test)]
         if self.flaw == Flaw::RestartClock {
             self.into = 0;
         }
-        let len = input[0].len();
+        let step = R::STEP;
         let mut at = 0;
-        while at < len {
+        while at < frames {
             if self.into == 0 && !self.coeffs.step() {
                 break;
             }
-            let end = (at + K::STEP - self.into).min(len);
+            let end = (at + step - self.into).min(frames);
             self.run(input, output, at..end);
             at = end;
         }
-        if at < len {
-            self.run(input, output, at..len);
+        if at < frames {
+            self.run(input, output, at..frames);
         }
     }
-}
 
-impl<K: Kernel> Realized<K> {
     /// Runs `frames` and moves the step count on by them.
     fn run(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], frames: Range<usize>) {
         let n = frames.len();
-        self.kernel.run(
+        self.recurrence.run(
             &self.coeffs,
             &mut self.state,
             input,
@@ -343,7 +428,7 @@ impl<K: Kernel> Realized<K> {
             frames,
             self.into,
         );
-        self.into = (self.into + n) % K::STEP;
+        self.into = (self.into + n) % R::STEP;
     }
 }
 

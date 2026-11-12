@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use tutti_dsp::{
-    Ceiling, Design, Effect, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign,
-    Realization, Setup, System,
+    Ceiling, Design, FdnControls, FdnDesign, Freeverb, FreeverbControls, FreeverbDesign, Setup,
+    System,
 };
 use tutti_fixtures::Noise;
 use tutti_graph::contract::{assert_honest_tail, assert_param_fork, drive_input, prepared};
@@ -206,7 +206,7 @@ fn the_reported_tail_is_honest() {
 fn the_cut_discards_only_what_is_below_the_floor() {
     for c in [gm(), controls(0.9, 0.2), controls(0.1, 0.9)] {
         let tail = tail_of(c);
-        let mut tuned = FreeverbDesign.realization();
+        let mut tuned = FreeverbDesign.realized();
         tuned.prepare(
             &FreeverbDesign.bounds(&Ceiling::at(SR).unwrap()),
             &Setup {
@@ -219,7 +219,7 @@ fn the_cut_discards_only_what_is_below_the_floor() {
         let mut x = vec![0.0f32; frames];
         x[0] = 1.0;
         let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
-        tuned.process(&[&x], &mut [&mut l, &mut r]);
+        tuned.process(&[&x], &mut [&mut l, &mut r], frames);
         let peak = l.iter().chain(&r).fold(0.0f32, |m, s| m.max(s.abs()));
         let after = l[tail + 1..]
             .iter()

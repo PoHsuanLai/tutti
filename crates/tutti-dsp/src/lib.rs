@@ -13,15 +13,17 @@
 //!   [`latency`](System::latency) and [`tail`](System::tail)), and [`Lti`] the class of
 //!   a linear time-invariant one ([`frequency_response`](Lti::frequency_response),
 //!   [`spectral_radius`](Lti::spectral_radius), [`l1_norm`](Lti::l1_norm),
-//!   [`hinf_norm`](Lti::hinf_norm), with [`Complex64`]). A [`Realization`] runs a model;
-//!   the one in use is [`Realized`] over a [`Kernel`] (the per-frame math), whose
-//!   coefficients approach each new model by a [`Glide`]. [`Ceiling`] (with a family's
+//!   [`hinf_norm`](Lti::hinf_norm), with [`Complex64`]). A [`Recurrence`] runs a model:
+//!   its [`coefficients_into`](Recurrence::coefficients_into) asks for the coefficient point
+//!   of a model, its [`Approach`] (a [`Glide`]) moves the coefficients there, and its
+//!   [`run`](Recurrence::run) is the per-frame math; [`Realized`] is the one runner of
+//!   them. [`Ceiling`] (with a family's
 //!   [`Range`], [`MaxDecay`] for a reverb), [`Effort`] and [`Cadence`] are the
 //!   engineering that sizes and schedules it.
 //! - **Filters** (`filter/`): the SVF ([`SvfDesign`], [`SvfModel`], [`SvfType`]), the
 //!   ladder ([`LadderDesign`], [`LadderModel`], [`LadderType`]) and the Linkwitz-Riley
 //!   crossover ([`CrossoverDesign`], [`CrossoverModel`]; [`Crossover`], the block
-//!   processor the multiband node still runs), each a [`ChannelKernel`] under the one
+//!   processor the multiband node still runs), each a [`ChannelRecurrence`] under the one
 //!   [`Filter`] design, run by [`PerChannel`]; [`Real`], the `f32` or `f64` their state
 //!   runs in, and the [`Biquad`] section they share.
 //! - **Dynamics** (`dynamics/`): [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the
@@ -31,8 +33,8 @@
 //! - **Reverb** (`reverb/`, design 022): the model, a [`Network`] of [`Stage`]s with
 //!   analytic queries ([`Network::rt60`], [`tail`](System::tail),
 //!   [`is_stable`](Lti::is_stable), the densities) and a [`NetworkSizes`] worst case; and two
-//!   designs over it, [`FreeverbDesign`] (run by [`FreeverbKernel`]) and [`FdnDesign`]
-//!   (run by [`FdnKernel`]). [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula
+//!   designs over it, [`FreeverbDesign`] (run by [`FreeverbRecurrence`]) and [`FdnDesign`]
+//!   (run by [`FdnRecurrence`]). [`loop_gain`] and [`rt60_from_gain`] are the RT60 formula
 //!   both ways.
 //! - **Convolution**: [`Convolver`] over a shared [`IrSpectra`].
 //! - **Delay and modulation** (`delay.rs`, `modulation/`): [`DelayLine`] with an
@@ -58,7 +60,7 @@
 //! ## Feature flags
 //!
 //! - `contract` (off by default): the `contract` module, the cases a [`Design`] and
-//!   its [`Realization`] are held to, with `design_contract!` and
+//!   its [`Realized`] runner are held to, with `design_contract!` and
 //!   `realization_contract!`. Test support: enable it from a dev-dependency.
 //!
 //! ## Import paths
@@ -103,7 +105,7 @@ pub use dynamics::{
 };
 pub use fft::{Complex32, FftScratch, RealFft};
 pub use filter::{
-    Biquad, ChannelKernel, Crossover, CrossoverControls, CrossoverDesign, CrossoverError,
+    Biquad, ChannelRecurrence, Crossover, CrossoverControls, CrossoverDesign, CrossoverError,
     CrossoverModel, CrossoverTree, DirectForm1, Filter, FilterSizes, Ladder, LadderCoefficients,
     LadderCoeffs, LadderControls, LadderDesign, LadderModel, LadderType, Lanes, MAX_SPLITS,
     PerChannel, Real, SOLVE_CEILING, Svf, SvfCoefficients, SvfCoeffs, SvfControls, SvfDesign,
@@ -111,17 +113,16 @@ pub use filter::{
 };
 pub use interp::cubic_hermite;
 pub use model::{
-    Anchor, Approach, Cadence, Ceiling, Channels, Design, Effect, Effort, Glide, Kernel, Lerp, Lti,
-    MaxDecay, MaxDecayError, Period, Range, Realization, Realized, Ring, Setup, Sizes, Step, Steps,
-    System,
+    Anchor, Approach, Cadence, Ceiling, Channels, Design, Effort, Glide, Lerp, Lti, MaxDecay,
+    MaxDecayError, Period, Range, Realized, Recurrence, Ring, Setup, Sizes, Step, Steps, System,
 };
 pub use modulation::allpass::{allpass_chain, allpass_coeff, sweep_hz};
 pub use modulation::swept::SweptLines;
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::fdn::design::{FdnControls, FdnDesign, MAX_PRE_DELAY, MIN_DECAY};
-pub use reverb::fdn::kernel::FdnKernel;
+pub use reverb::fdn::recurrence::FdnRecurrence;
 pub use reverb::freeverb::design::{FreeverbControls, FreeverbDesign};
-pub use reverb::freeverb::kernel::{Freeverb, FreeverbKernel};
+pub use reverb::freeverb::recurrence::{Freeverb, FreeverbRecurrence};
 pub use reverb::network::{
     Absorption, AllPass, AllPassForm, Band, Fdn, FirSummary, Full, Gains, Inline, Line,
     MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation, Network,

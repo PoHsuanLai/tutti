@@ -3,9 +3,9 @@ use rand::{Rng, SeedableRng};
 use tutti_types::{Db, Hz, Q};
 
 use super::*;
+use crate::Design;
 use crate::SvfType;
 use crate::contract::{DesignCase, Figure, LtiCase, RealizationCase};
-use crate::{Design, Effect, Realization};
 
 const TYPES: [SvfType; 8] = [
     SvfType::LowPass,
@@ -190,17 +190,17 @@ fn a_blend_arrives_on_the_new_set_at_its_last_frame() {
     let d = design();
     let rate = SampleRate(48_000.0);
     let model = |hz| d.design(&controls(SvfType::LowPass, hz, 0.707, 0.0), rate);
-    let mut blended = d.realization();
+    let mut blended = d.realized();
     blended.retarget(&model(500.0));
     blended.retarget(&model(5_000.0));
-    let mut held = d.realization();
+    let mut held = d.realized();
     held.retarget(&model(5_000.0));
 
     let mut x = [0.0f32; 16];
     x[15] = 1.0;
     let (mut y, mut z) = ([0.0f32; 16], [0.0f32; 16]);
-    blended.process(&[&x], &mut [&mut y]);
-    held.process(&[&x], &mut [&mut z]);
+    blended.process(&[&x], &mut [&mut y], 16);
+    held.process(&[&x], &mut [&mut z], 16);
     assert_eq!(y[15], z[15]);
     assert_ne!(y[15], 0.0);
 }

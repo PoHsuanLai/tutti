@@ -12,15 +12,15 @@ pub use eq_band::EqBandNode;
 pub use ladder::LadderFilterNode;
 pub use svf::SvfFilterNode;
 
-use tutti_dsp::{Cadence, ChannelKernel, Design, Filter};
+use tutti_dsp::{Cadence, ChannelRecurrence, Design, Filter};
 use tutti_types::{BusTopology, ChannelLayout};
 
 use crate::params::ControlSet;
 use crate::reverb::NodeDesign;
 
-/// A filter kernel's control set: what [`Filter`] needs of it to be one [`NodeDesign`]
+/// A filter recurrence's control set: what [`Filter`] needs of it to be one [`NodeDesign`]
 /// for the SVF, the ladder and the crossover.
-pub trait NodeKernel: ChannelKernel {
+pub trait NodeRecurrence: ChannelRecurrence {
     /// The cells of the filter's controls.
     type Set: ControlSet<Controls = Self::Controls>;
 
@@ -30,14 +30,14 @@ pub trait NodeKernel: ChannelKernel {
 
 /// A filter declares an unknown tail and never parks; it reads its controls on its own
 /// grid, so a control that moves inside a block is in the render within 16 frames.
-impl<K: NodeKernel> NodeDesign for Filter<K> {
-    type Set = K::Set;
+impl<R: NodeRecurrence> NodeDesign for Filter<R> {
+    type Set = R::Set;
 
     const PARKS: bool = false;
     const SAMPLING: Cadence = <Self as Design>::CADENCE;
 
-    fn set(&self, initial: &K::Controls) -> K::Set {
-        self.kernel().set(initial)
+    fn set(&self, initial: &R::Controls) -> R::Set {
+        self.recurrence().set(initial)
     }
 }
 

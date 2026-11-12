@@ -88,6 +88,9 @@ pub struct ChannelState {
     /// The key last struck on the channel: what a glide with Portamento on
     /// starts from.
     pub(crate) last_key: Option<NoteNumber>,
+    /// The tuning bank (RPN 4) and program (RPN 3) the channel plays by.
+    pub(crate) tuning_bank: U7,
+    pub(crate) tuning_program: U7,
 }
 
 impl ChannelState {
@@ -121,6 +124,8 @@ impl ChannelState {
             legato: false,
             glide_from: None,
             last_key: None,
+            tuning_bank: U7::of(0),
+            tuning_program: U7::of(0),
         }
     }
 
@@ -180,7 +185,7 @@ impl ChannelState {
     /// each 14-bit controller as its MSB then, when nonzero, its LSB (M1
     /// p.12: an MSB zeroes the LSB), Portamento On and the Legato Footswitch
     /// as switches, the pending Portamento Control, Channel Pressure, the
-    /// pitch wheel, and RPN 0, 1, 2 and 5 as MIDI 2.0 Registered Controllers
+    /// pitch wheel, and RPN 0 to 5 as MIDI 2.0 Registered Controllers
     /// with the data words [`Voicing::step`](crate::Voicing::step) reads them
     /// from. A value equal to `fresh`'s is left out, so a channel nobody
     /// touched writes nothing. At most [`ChannelState::CHASE_MESSAGES`].
@@ -240,11 +245,13 @@ impl ChannelState {
         }
     }
 
-    /// The Registered Controllers this state holds: RPN 0, 1, 2 and 5.
-    const REGISTERED: [Rpn; 4] = [
+    /// The Registered Controllers this state holds: RPN 0, 1, 2, 3, 4 and 5.
+    const REGISTERED: [Rpn; 6] = [
         Rpn::PITCH_BEND_SENSITIVITY,
         Rpn::CHANNEL_FINE_TUNING,
         Rpn::CHANNEL_COARSE_TUNING,
+        Rpn::TUNING_PROGRAM_SELECT,
+        Rpn::TUNING_BANK_SELECT,
         Rpn::MODULATION_DEPTH_RANGE,
     ];
 
@@ -272,6 +279,8 @@ impl ChannelState {
                 let msb = (self.bend.coarse.get() + 64.0).round().clamp(0.0, 127.0);
                 Some((msb as u32) << 25)
             }
+            Rpn::TUNING_PROGRAM_SELECT => Some(u32::from(self.tuning_program.get()) << 25),
+            Rpn::TUNING_BANK_SELECT => Some(u32::from(self.tuning_bank.get()) << 25),
             Rpn::MODULATION_DEPTH_RANGE => {
                 // MSB semitones, LSB 100/128 cent: `set_modulation_range`'s inverse.
                 let cents = self.modulation_range.get().clamp(0.0, 12_700.0);
@@ -286,9 +295,21 @@ impl ChannelState {
     }
 
     /// The most messages `ChannelState::chase` writes: ten 14-bit halves, two
-    /// switches, a Portamento Control, pressure, the wheel and four registered
+    /// switches, a Portamento Control, pressure, the wheel and six registered
     /// controllers.
-    pub const CHASE_MESSAGES: usize = 19;
+    pub const CHASE_MESSAGES: usize = 21;
+
+    /// The tuning bank the channel plays by (RPN 4), 0 until set.
+    #[must_use]
+    pub fn tuning_bank(&self) -> U7 {
+        self.tuning_bank
+    }
+
+    /// The tuning program the channel plays by (RPN 3), 0 until set.
+    #[must_use]
+    pub fn tuning_program(&self) -> U7 {
+        self.tuning_program
+    }
 
     /// The Modulation Wheel's position, `0.0..=1.0` (CC 1 and 33).
     #[must_use]

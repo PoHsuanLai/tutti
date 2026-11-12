@@ -15,6 +15,9 @@
 //! - General MIDI System On and Off (M1 p.52, `09 01` and `09 02`).
 //! - Master Volume and Master Balance (M1 p.57, `04 01` and `04 02`).
 //! - Master Fine Tuning and Master Coarse Tuning (CA-025, `04 03` and `04 04`).
+//! - The MIDI Tuning Standard (`08`): [`TuningMessage`], with its
+//!   [frequency data](TuningFrequency). A dump whose checksum does not hold is
+//!   [`Read::BadChecksum`], not `Unread`.
 //!
 //! Anything else is [`Read::Unread`] when it is Universal (another sub-id, or one
 //! of these cut short or with data bytes over), and [`Read::Foreign`] when the
@@ -32,6 +35,8 @@
 //! p.57 requires: "received on its own ID", "received on the 'All Call' ID".
 
 mod read;
+
+use crate::tuning::TuningMessage;
 
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexMessage, SysexStep, U7, U14, Ump};
 
@@ -99,6 +104,8 @@ pub enum Universal {
     /// Master Coarse Tuning (`04 04`, CA-025): the MSB, `0x40` is A440 and a
     /// step is a semitone.
     MasterCoarseTuning(U7),
+    /// A MIDI Tuning Standard message (`08`, CA-020 and CA-021).
+    Tuning(TuningMessage),
 }
 
 /// A Universal message and the device id it names.
@@ -110,11 +117,27 @@ pub struct Addressed {
     pub message: Universal,
 }
 
+/// A dump that failed its checksum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BadChecksum {
+    /// The device id in the header.
+    pub device: DeviceId,
+    /// The checksum the bytes make.
+    pub expected: U7,
+    /// The checksum the message said.
+    pub found: U7,
+}
+
 /// What [`read()`](fn@read) made of one SysEx message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Read {
     /// A Universal message this crate reads.
     Universal(Addressed),
+    /// A tuning dump whose checksum field is not the XOR of the bytes before it
+    /// (MTS, "Checksum Calculation"). The spec says nothing of what a receiver
+    /// does with one; an instrument does not apply it ([`UniversalReader`]
+    /// counts it, [`corrupt`](UniversalReader::corrupt)).
+    BadChecksum(BadChecksum),
     /// Universal (`7E` or `7F`), but not one this crate reads, or one of them
     /// that does not parse (cut short, or with bytes after its end).
     Unread,
@@ -138,10 +161,21 @@ pub enum Read {
 pub fn read(message: SysexMessage<'_>) -> Read {
     let payload = message.payload();
     match payload.first() {
-        Some(&(read::NON_REAL_TIME | read::REAL_TIME)) => read::parse(payload)
-            .map_or(Read::Unread, |(device, message)| {
+        Some(&(read::NON_REAL_TIME | read::REAL_TIME)) => match read::parse(payload) {
+            read::Parsed::Message(device, message) => {
                 Read::Universal(Addressed { device, message })
+            }
+            read::Parsed::BadChecksum {
+                device,
+                expected,
+                found,
+            } => Read::BadChecksum(BadChecksum {
+                device,
+                expected,
+                found,
             }),
+            read::Parsed::Unread => Read::Unread,
+        },
         _ => Read::Foreign,
     }
 }
@@ -164,9 +198,10 @@ pub struct Heard {
     pub message: Universal,
 }
 
-/// The longest message the reader takes in, `F0` and `F7` included: an Identity
-/// Reply with a three-byte manufacturer id is 17 bytes.
-const MAX_MESSAGE: usize = 32;
+/// The longest message the reader takes in, `F0` and `F7` included: a Single
+/// Note Tuning Change of 127 changes with a bank is 517 bytes, a Key-Based
+/// Tuning Dump 409.
+const MAX_MESSAGE: usize = 528;
 
 /// An instrument's edge for Universal System Exclusive: one Group's UMPs in,
 /// the messages addressed to the instrument out.
@@ -179,6 +214,7 @@ pub struct UniversalReader {
     group: MidiGroup,
     device: DeviceId,
     assembler: SysexAssembler<Box<[u8]>>,
+    corrupt: u64,
 }
 
 impl UniversalReader {
@@ -190,6 +226,7 @@ impl UniversalReader {
             group,
             device,
             assembler: SysexAssembler::new(vec![0; room].into_boxed_slice(), MAX_MESSAGE, 1),
+            corrupt: 0,
         }
     }
 
@@ -212,7 +249,16 @@ impl UniversalReader {
         let SysexStep::Complete(done) = self.assembler.push(ump) else {
             return None;
         };
-        let Read::Universal(Addressed { device, message }) = read(self.assembler.message(done))
+        let Read::Universal(Addressed { device, message }) =
+            (match read(self.assembler.message(done)) {
+                Read::BadChecksum(bad) => {
+                    if bad.device.is_all_call() || bad.device == self.device {
+                        self.corrupt += 1;
+                    }
+                    return None;
+                }
+                other => other,
+            })
         else {
             return None;
         };
@@ -231,6 +277,13 @@ impl UniversalReader {
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.assembler.dropped()
+    }
+
+    /// Dumps addressed to this device that failed their checksum and were not
+    /// passed on ([`Read::BadChecksum`]).
+    #[must_use]
+    pub fn corrupt(&self) -> u64 {
+        self.corrupt
     }
 
     /// Forgets an open message.

@@ -39,6 +39,7 @@ mod holds;
 mod master;
 mod per_note;
 mod phase;
+mod tuning;
 mod voicing;
 
 pub use channel::{ChannelState, DEFAULT_MODULATION_RANGE};
@@ -47,6 +48,7 @@ pub use holds::{Holds, Release};
 pub use master::MasterGain;
 pub use per_note::{LIVE_NOTES, NOTE_CONTROLS, NoteControl, NoteEvent, PerNoteState};
 pub use phase::Phase;
+pub use tuning::{NoSuchTuning, TuningCapacity};
 pub use voicing::{
     Command, Glide, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, Voicing,
 };

@@ -971,7 +971,7 @@ fn test_mono_mode_retrigger() {
 ///
 /// It did not. `handle_note_on` multiplies the base frequency by
 /// `2^(semitones/12)`, while `apply_pitch_bend` fed `note + semitones` into
-/// `Tuning::fractional_note_to_freq`, which interpolates between *table*
+/// a lookup (since removed: the note logic now says how far each key sounds from equal temperament) that interpolated between *table*
 /// entries. Under equal temperament the table is geometric and the two
 /// agree exactly, which is why every existing test passed. Under any
 /// unequal scale they do not: measured at **3.9 cents** on
@@ -3665,4 +3665,151 @@ fn another_groups_sysex_is_not_this_synths() {
     let (before, _) = rms_after(&mut s, &[ev_note_on(0, 69, 100)]);
     let (same, _) = rms_after(&mut s, &sysex(1, &device_control(0x7F, 0x01, 0x00, 0x00)));
     assert!((same / before - 1.0).abs() < 0.01);
+}
+
+// ---- MIDI Tuning Standard (MIDI L7b part 2) ----
+
+/// A MIDI Tuning Single Note Tuning Change (`08 02` real time, or the bank form
+/// `08 07`) setting `key` to the frequency data `word`, for program 0.
+fn note_change(realtime: bool, key: u8, word: [u8; 3]) -> Vec<Ump> {
+    let mut bytes = vec![0xF0, if realtime { 0x7F } else { 0x7E }, 0x7F, 0x08];
+    if realtime {
+        bytes.extend([0x02, 0x00]);
+    } else {
+        bytes.extend([0x07, 0x00, 0x00]);
+    }
+    bytes.extend([0x01, key]);
+    bytes.extend(word);
+    bytes.push(0xF7);
+    sysex(0, &bytes)
+}
+
+/// Tuning Program Select (RPN 3) on `channel`.
+fn ev_tuning_program(channel: u8, program: u8) -> Ump {
+    Ump::from(tutti_ump::Message::Midi2(
+        tutti_ump::Address {
+            group: MidiGroup::FIRST,
+            channel: MidiChannel::of(channel),
+        },
+        Voice2::Registered {
+            bank: tutti_ump::Rpn::TUNING_PROGRAM_SELECT.bank(),
+            index: tutti_ump::Rpn::TUNING_PROGRAM_SELECT.index(),
+            value: u32::from(program) << 25,
+        },
+    ))
+}
+
+fn cents_above(freq: Hz, reference: f32) -> f32 {
+    tutti_types::Cents::from_pitch_ratio(freq.get() / reference).get()
+}
+
+/// The synth's construction-time scale is its tuning program 0 of bank 0: with
+/// just intonation (rooted on C, pinned at A4 = 440 Hz), the major third over C
+/// is 5/4, 386.31 cents, to the 0.0061 cents of the frequency data it travels as.
+#[test]
+fn the_construction_time_scale_is_the_initial_mts_table() {
+    let mut s = steady(|c| c.tuning = crate::Tuning::just_intonation());
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &[ev_note_on(0, 60, 100), ev_note_on(0, 64, 100)]);
+    s.tick(&[], &mut out);
+    let c = s.voices[0].sounding_freq();
+    let e = s.voices[1].sounding_freq();
+    assert!((cents_above(e, c.get()) - 386.3137).abs() < 0.02);
+    // A4 is the pin.
+    queue_midi(&mut s, &[ev_note_on(0, 69, 100)]);
+    s.tick(&[], &mut out);
+    assert!((s.voices[2].sounding_freq().get() - 440.0).abs() < 0.01);
+}
+
+/// MTS: a real-time Single Note Tuning Change "should instantly [...] re-tune"
+/// a sounding note with no new attack; the same key struck after has it too.
+/// `3D 00 00` for key 60 is note 61's pitch.
+#[test]
+fn a_real_time_single_note_change_retunes_a_sounding_note() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &[ev_note_on(0, 60, 100)]);
+    s.tick(&[], &mut out);
+    let before = s.voices[0].sounding_freq();
+    assert!((before.get() - 261.6256).abs() < 0.01);
+    queue_midi(&mut s, &note_change(true, 60, [0x3D, 0x00, 0x00]));
+    s.tick(&[], &mut out);
+    assert_eq!(s.active_voice_count(), 1, "no new voice, no cut");
+    assert!((cents_above(s.voices[0].sounding_freq(), before.get()) - 100.0).abs() < 0.1);
+    queue_midi(&mut s, &[ev_note_on(1, 60, 100)]);
+    s.tick(&[], &mut out);
+    let struck = s
+        .voices
+        .iter()
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
+        .unwrap();
+    assert!((cents_above(struck.sounding_freq(), before.get()) - 100.0).abs() < 0.1);
+}
+
+/// CA-020: the non-real-time bank form "will NOT update the currently sounding
+/// notes" but the next one has it.
+#[test]
+fn a_non_real_time_change_waits_for_the_next_note_on() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &[ev_note_on(0, 60, 100)]);
+    s.tick(&[], &mut out);
+    let before = s.voices[0].sounding_freq();
+    queue_midi(&mut s, &note_change(false, 60, [0x3E, 0x00, 0x00]));
+    s.tick(&[], &mut out);
+    assert_eq!(s.voices[0].sounding_freq(), before, "sounding note left");
+    queue_midi(&mut s, &[ev_note_on(1, 60, 100)]);
+    s.tick(&[], &mut out);
+    let struck = s
+        .voices
+        .iter()
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
+        .unwrap();
+    assert!((cents_above(struck.sounding_freq(), before.get()) - 200.0).abs() < 0.1);
+}
+
+/// MTS: Tuning Program Select (RPN 3) moves the channel to another stored
+/// tuning, instantly, on its sounding notes, and only that channel's.
+#[test]
+fn a_tuning_program_select_retunes_the_channels_sounding_note() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    // Program 1 of bank 0 (the bank form, `08 07 00 01`): key 60 a quarter tone up.
+    let bytes = [
+        0xF0, 0x7E, 0x7F, 0x08, 0x07, 0x00, 0x01, 0x01, 60, 60, 0x40, 0x00, 0xF7,
+    ];
+    queue_midi(&mut s, &sysex(0, &bytes));
+    queue_midi(&mut s, &[ev_note_on(0, 60, 100), ev_note_on(1, 60, 100)]);
+    s.tick(&[], &mut out);
+    let base = s.voices[0].sounding_freq();
+    queue_midi(&mut s, &[ev_tuning_program(0, 1)]);
+    s.tick(&[], &mut out);
+    assert!((cents_above(s.voices[0].sounding_freq(), base.get()) - 50.0).abs() < 0.1);
+    assert_eq!(
+        s.voices[1].sounding_freq(),
+        base,
+        "channel 1 plays program 0"
+    );
+}
+
+/// A Portamento Control glide leaves the pitch of its source key as the channel
+/// tunes it: key 60 tuned a semitone up by MTS, a note on key 64 glides from the
+/// tuned pitch (note 61's, 277.18 Hz), not from 60's equal-tempered one, over a
+/// glide too slow to move in a block.
+#[test]
+fn a_glide_leaves_its_source_keys_tuned_pitch() {
+    let mut s = steady(|_| {});
+    let mut out = [0.0f32; 2];
+    queue_midi(&mut s, &note_change(true, 60, [0x3D, 0x00, 0x00]));
+    queue_midi(
+        &mut s,
+        &[
+            ev_cc(0, CCNumber::PORTAMENTO_TIME, 127),
+            ev_cc(0, CCNumber::PORTAMENTO_CONTROL, 60),
+            ev_note_on(0, 64, 100),
+        ],
+    );
+    s.tick(&[], &mut out);
+    let freq = s.voices[0].sounding_freq().get();
+    assert!((freq - 277.1826).abs() < 0.3, "{freq}");
 }

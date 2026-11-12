@@ -396,35 +396,27 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
         ParamSteps::Continuous
     };
 
-    tutti_plugin_types::ParameterInfo {
-        // `clap_param_info.id` is a `clap_id` — an opaque plugin-chosen handle,
-        // the same concept VST3 spells `ParamID` and AU spells
-        // `AudioUnitParameterID`. The shared type names all three.
-        id: tutti_plugin_types::ParamId::new(info.id),
-        name: info.name,
-        // CLAP carries no unit string, so no unit is typed from one.
-        unit: String::new(),
-        // CLAP values are in the plugin's native plain range.
-        range: ParamRange::Plain {
+    // `clap_param_info.id` is a `clap_id`, an opaque plugin-chosen handle, the
+    // same concept VST3 spells `ParamID` and AU spells `AudioUnitParameterID`.
+    // CLAP carries no unit string, so no unit is typed from one, and it declares
+    // no role. Its values are in the plugin's native plain range.
+    //
+    // `clap_param_info.module` is a `/`-separated path ("Osc 1/Filter"), and
+    // CLAP documents it as a display hint rather than an addressing scheme. It
+    // passes through verbatim: splitting it here would impose a hierarchy the
+    // shared vocabulary does not model, and three of the four hosted formats
+    // could not fill.
+    tutti_plugin_types::ParameterInfo::new(tutti_plugin_types::ParamId::new(info.id), info.name)
+        .with_range(ParamRange::Plain {
             min: info.min_value,
             max: info.max_value,
             default: info.default_value,
-        },
-        steps,
-        flags,
-        known: KNOWN,
-        // `clap_param_info.module` is a `/`-separated path ("Osc 1/Filter"),
-        // and CLAP documents it as a display hint rather than an addressing
-        // scheme — a host is free to render or ignore it. It passes through
-        // verbatim: splitting it here would impose a hierarchy the shared
-        // vocabulary does not model, and three of the four hosted formats
-        // could not fill.
-        group: info.module,
-        measures: None,
-        role: None,
-    }
-    .with_measures(declared_measures(info.flags))
-    .with_role(declared_role(info.flags))
+        })
+        .with_steps(steps)
+        .with_flags(KNOWN, flags)
+        .with_group(info.module)
+        .with_measures(declared_measures(info.flags))
+        .with_role(declared_role(info.flags))
 }
 
 /// What a CLAP parameter's flags say it measures: an enumerated choice, and
@@ -458,7 +450,7 @@ mod grouping_tests {
         info.module = "Osc 1/Filter".to_string();
 
         let projected = project_param_info(info);
-        assert_eq!(projected.group, "Osc 1/Filter");
+        assert_eq!(projected.group(), "Osc 1/Filter");
         assert_eq!(projected.qualified_name(), "Osc 1/Filter / Cutoff");
     }
 
@@ -469,7 +461,7 @@ mod grouping_tests {
     #[test]
     fn a_clap_parameter_without_a_module_has_no_group() {
         let projected = project_param_info(ClapParamInfo::new(1, "Cutoff"));
-        assert!(projected.group.is_empty());
+        assert!(projected.group().is_empty());
         assert_eq!(projected.qualified_name(), "Cutoff");
     }
 }
@@ -493,20 +485,20 @@ mod measures_tests {
     #[test]
     fn the_enum_flag_gives_choice() {
         let choice = projected(ClapParamFlags::IS_ENUM | ClapParamFlags::STEPPED);
-        assert_eq!(choice.measures, Some(ParamUnit::Choice));
-        assert_eq!(projected(ClapParamFlags::STEPPED).measures, None);
-        assert_eq!(projected(ClapParamFlags::empty()).measures, None);
+        assert_eq!(choice.measures(), Some(ParamUnit::Choice));
+        assert_eq!(projected(ClapParamFlags::STEPPED).measures(), None);
+        assert_eq!(projected(ClapParamFlags::empty()).measures(), None);
     }
 
     /// The bypass flag is the `Bypass` role; no other flag gives a role.
     #[test]
     fn the_bypass_flag_gives_bypass() {
         assert_eq!(
-            projected(ClapParamFlags::BYPASS).role,
+            projected(ClapParamFlags::BYPASS).role(),
             Some(UnitParam::Bypass)
         );
-        assert_eq!(projected(ClapParamFlags::AUTOMATABLE).role, None);
-        assert_eq!(projected(ClapParamFlags::IS_ENUM).role, None);
+        assert_eq!(projected(ClapParamFlags::AUTOMATABLE).role(), None);
+        assert_eq!(projected(ClapParamFlags::IS_ENUM).role(), None);
     }
 
     /// `IS_ENUM` is the spec's bit 16 (`CLAP_PARAM_IS_ENUM`, clap/ext/params.h),

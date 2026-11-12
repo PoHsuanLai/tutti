@@ -7,8 +7,8 @@
 //! [`MainThread`](crate::MainThread).
 
 use crate::{
-    AutomationMode, BlockCounts, EditorError, Normalized, ParamId, ParameterInfo, PluginFailure,
-    RenderMode, SampleRate, StateError, TerminationReason,
+    AutomationMode, AutomationModeError, BlockCounts, Normalized, ParamId, ParameterInfo,
+    PluginFailure, RenderMode, SampleRate, StateError, TerminationReason,
 };
 
 /// What a loaded plugin answers from any thread, without a main-thread token.
@@ -103,10 +103,9 @@ pub trait AnyThread: Send + Sync {
     ///
     /// # Errors
     ///
-    /// An [`EditorError`] if the plugin is gone, the push was dropped (the
-    /// command queue was full), or this hosting carries no such advisory
-    /// ([`EditorError::GuiNotSupported`]).
-    fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError>;
+    /// [`AutomationModeError`]: the plugin is gone, the push was dropped (the
+    /// command queue was full), or this hosting carries no such advisory.
+    fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), AutomationModeError>;
 }
 
 /// The plugin's liveness as its host observes it.

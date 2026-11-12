@@ -51,10 +51,7 @@ fn session_with_probe() -> (Session, NodeKey) {
     s.graph().connect(node, Root).unwrap();
     let _ = s.update();
     assert!(
-        s.plugin(node)
-            .ok()
-            .and_then(|p| p.param_values())
-            .is_some_and(|m| m.is_ready()),
+        s.plugin(node).is_ok_and(|p| p.params().is_ready()),
         "an in-process plugin's values are read as it opens"
     );
     (s, node)
@@ -152,11 +149,12 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     );
     assert_eq!(
         s.plugin(node)
-            .ok()
-            .and_then(|p| p.param_values())
-            .expect("the mirror")
-            .get(ParamId::new(0)),
-        Some(Some(Normalized::of(0.5))),
+            .expect("hosted")
+            .params()
+            .get(ParamId::new(0))
+            .expect("declared")
+            .normalized(),
+        Normalized::of(0.5),
         "and the mirror"
     );
 }

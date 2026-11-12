@@ -375,7 +375,7 @@ impl PluginClient<Unbound> {
         // per-parameter delivery is sized from it. A `prepare` may not make
         // this round trip; a load already has.
         let params: Vec<ParamId> = match bridge.parameters() {
-            Some(list) => list.into_iter().map(|p| p.id).collect(),
+            Some(list) => list.into_iter().map(|p| p.id()).collect(),
             None => {
                 tracing::warn!(
                     "plugin-server listed no parameters at load; parameter \

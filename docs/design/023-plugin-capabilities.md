@@ -552,7 +552,7 @@ pub struct ParameterInfo {
 impl ParameterInfo {
     /// A plain value as a tutti unit, if the declared unit and the declared
     /// plain range allow it. `None` for a normalized-only parameter.
-    pub fn typed<U: FromPlain>(&self, plain: f64) -> Option<U>;
+    pub fn typed<U: PlainUnit>(&self, plain: f64) -> Option<U>;
 }
 ```
 
@@ -589,10 +589,10 @@ Rules that keep it honest.
 
 - **The API** is in `tutti-plugin-types`: `ParamUnit` (`#[non_exhaustive]`, the
   eighteen variants above), `ParamUnit::from_label` (the closed VST3/VST2 list,
-  one copy), `ParamUnit::fits` (the plausibility rule), the trait `FromPlain`
+  one copy), `ParamUnit::fits` (the plausibility rule), the trait `PlainUnit`
   ("reads a tutti unit out of a plain value measured in a declared `ParamUnit`"),
   `ParameterInfo::{measures, role, with_measures, with_role, typed}`. `with_measures`
-  applies `fits`, so a host cannot set a unit its range does not fit. `FromPlain`
+  applies `fits`, so a host cannot set a unit its range does not fit. `PlainUnit`
   is implemented for `Hz`, `Db`, `Seconds` (seconds and milliseconds), `Mix`
   (percent, `0..=100` only), `Pan`, `Cents`, `Semitones`, `Bpm`, `BeatDuration`,
   `ArcDegrees`, `Amplitude` and `PlaybackRate`; octaves and the MIDI numbers have

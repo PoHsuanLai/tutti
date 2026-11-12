@@ -272,7 +272,7 @@ what it replaces; no deprecated twin is kept.
 |---|---|---|---|
 | 1 (built) | **Identity and state.** `PluginRef` from `&PluginEntry`; the load passes the plugin id; `PluginState` and `StateError::OtherPlugin`; one `state()` view with `last_good()`, `withheld()`, `save()` and `restore()`; the acceptance example `crates/tutti/examples/plugin_host.rs` (scan, load, wire, MIDI, parameters, editor, save, bounce), which each later step rewrites to its shape | `PluginId` as a path; `snapshot()`; `Load::new()` in the open | the second plugin of the CLAP test bundle loads by its entry; a state restored into another plugin is refused |
 | 2 (view and events built; main-thread view and editor servicing open) | **The view, the main-thread view and events.** `Plugin<'_>`, `MainSession<'_>`, `MainThread` by value, `PluginEvent`; `update()` services editors; the editor's `Opened`, `resize`, `rescale` | `on_*` and `clear_*`, `editor_idle` calls, `poll_editor_resize_request`, `open_floating_editor`, the freeing paths' `debug_assert!` | a plugin's own edit arrives as `ParamChanged`; an editor that requests a size raises `EditorWantsSize`; a freeing path is unreachable without the view (compile-fail doctest) |
-| 3 | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
+| 3 (built) | **Parameters.** `Params`, `Param`, `TypedParam<U>`, `ParamEdit`; `ParameterInfo`'s fields private; automation mode moved | `any_thread()` in user code, `parameter_*` free calls in the prelude | a gesture guard dropped mid-drag ends the gesture; a `typed::<Db>` on a Hz parameter is refused; a set through a stale handle after a rescan is refused |
 | 4 | **Presets, health, diagnostics, modes.** `Presets`, `PresetError`, `Health`, `Diagnostics`; the per-plugin render mode goes; buses as graph handles | `presets() -> Option`, `load_preset -> Option<bool>`, the six liveness readers, `set_render_mode` on the handle | per format: a preset list loads by id, an unsupported format answers `Unsupported`; a killed server reads `Died` then `Reloading` |
 | 5 | **The spawner.** `spawn_with`, `Job`; jobs landed in `update()` | `land_snapshot`, `land_params`, `land_reload` as public calls; the `*Due` events | a reload completes with no host code but `update()` |
 | 6 | **The catalog and the facade.** `Catalog::open_db`, `scan()`; `Plugins::open` removed; the probe lists every plugin of a bundle (`FileState::Probed` already holds several); 021 step 6's `Hosting` as a `PluginRef` field (`Auto`, `InProcess`, `OutOfProcess`) | `with_fresh_scan`, `Plugins::open`, `Backend` | a blacklisted plugin is refused at load, not at open |
@@ -330,6 +330,100 @@ dropped off the main thread, and a VST3 plugin with an editor open, which used
 to be leaked whole (every COM object and the module), now does too: `Plugin`
 wraps its `Parts`, and its `Drop` hands them to the main thread. So whatever
 `Editor::collect` retires closes on the main thread, for every format.
+
+**As built (step 3, parameters).** `session.plugin(node)?.params()` is a
+`Params<'_>` (`tutti-session`'s `plugin_params` module), and the session holds
+what it shows: the descriptors and the value of each live in the record's
+`PluginParamValues` (`tutti-plugin-host`, now holding the `ParameterInfo`s as
+well, every parameter with a value: one the plugin did not answer reads as its
+declared default). The mirror is every hosted plugin's, no longer a
+`modulation` feature: `Session::add_plugin` reads it in the load job; a plugin
+the host inserted itself (`host_plugin`, `insert_plugin`) or a crossfade
+rebuilds it by the job the session hands out as `SessionEvent::PluginParamsDue`
+(run it, `Session::land_params`; step 5 replaces the event with the spawner);
+and a plugin's rescan, `PluginChange::ParamsRescanned` or `ParamTitlesChanged`,
+asks for the same read again, landing descriptors and values together. A read
+the plugin cannot answer (an in-process plugin whose main thread did not
+answer) leaves `Params::is_ready` false and `get` answers
+`PluginParamError::NotRead`.
+
+- **`Params`**: `get(id)? -> Param` (`PluginParamError::{NotRead, Unknown}`),
+  `typed::<U>(id)? -> TypedParam<U>`, `iter()`, `len()`, `is_ready()`,
+  `set_automation_mode(mode)`. `Param`: `info()`, `id()`, `normalized()`
+  (infallible: the mirror, which answers a value the host just set or the plugin
+  just reported at once, before the next update drains it), `set`, `text`,
+  `set_text`, `plain`, `set_plain` (the format's own map, §6.1), `edit()`, and,
+  with `modulation`, `target() -> ParamRef`.
+- **Stale handles are a borrow error, not a check.** `Plugin<'_>`, `Params`,
+  `Param`, `TypedParam` and `ParamGesture` all borrow the session, and the
+  only code that replaces what they show (a rescan landing, a reload, a
+  crossfade) takes `&mut Session`. So no handle can be held across a rescan,
+  and there is no generation counter to compare: what a host keeps is a
+  `ParamId`, which `get` refuses once the plugin stops declaring it (a
+  compile-fail doctest pins the borrow; a runtime test pins the replacement).
+  An index into the mirror (`Param`'s position) is valid for exactly the read
+  that made it, which the same borrow guarantees.
+- **Reads and writes are on the read view `Plugin<'_>`, not `MainPlugin`.**
+  Every call goes through the handle's token-free calls (`AnyThread`: a set goes
+  to the plugin's edit ring from any thread), so nothing here needs the main
+  thread, and `MainPlugin::view()` lends the same view. `text`, `set_text`,
+  `plain` and `set_plain` ask the plugin and may be a round trip (an in-process
+  plugin answers from its main thread), so a host does not make them per frame.
+- **A unit is checked once.** `typed::<U>` needs the parameter's declared
+  `ParamUnit` (`NoUnit` for none), `U::reads(unit)` (`UnitMismatch`: `Db` on a
+  hertz parameter) and a declared range `U` holds at both ends and the default
+  (`RangeUnfit`: a bipolar percentage is no `Mix`); `get() -> U` is then total
+  and `set(U)` refuses a value outside the declared range (`OutOfRange`; no
+  silent clamp) and goes through the format's `parameter_normalized`.
+  `FromPlain` became `PlainUnit` (`reads`, `from_plain`, `to_plain`) for the way
+  back.
+- **A gesture is the host's own, and the one owned handle.** `param.edit()? ->
+  ParamGesture` begins when it is made (refused up front for a read-only
+  parameter), each `set` moves the parameter, and `Drop` ends it, a drop in the
+  middle of a drag included. It has no lifetime: a drag is a mouse down, many
+  frames each calling `update()` (which takes `&mut Session`), and a mouse up, so
+  the guard must span them, while every other handle stays borrowed so that a
+  stale one does not compile. A shared `Gate` stands in for the borrow: the
+  record ends it when it is retired (`Graveyard::bury`) or its plugin is replaced
+  (`adopt`: a crossfade or a reload), and refreshes the declared ids whenever a
+  read lands. `ParamGesture::set` returns `PluginParamError::Gone` when the gate
+  is ended or the parameter is no longer declared, sending nothing, and the drop
+  then sends nothing. The guard holds the plugin's handle, the plugin's own
+  notice queue (no second channel) and a `ParamReporter` into the mirror. No hosted
+  format has a call that tells a plugin the host holds a parameter (CLAP's and
+  VST3's gesture events go from the plugin to the host, VST2 has none, AU's are
+  notifications to listeners), so the plugin hears the values and the session
+  reports the begin, the changes and the end as `PluginChange::{GestureBegan,
+  ParamChanged { recorded: true }, GestureEnded}`, in the order made, with the
+  plugin's own. A plain `param.set` is not a gesture and reports no event.
+- **`plain` and `set_plain` take a bare `f64`** because a plugin's plain value
+  has no tutti unit unless it declares one; `TypedParam<U>` is the typed door.
+- **`ParameterInfo`'s fields are private.** Read through `id`, `name`, `unit`,
+  `range`, `steps`, `group`, `measures`, `role` and `flag(f)`; the format
+  hosts build it with `new` and the `with_*` builders (`with_unit` and
+  `with_range` are new), and the `known` mask has no reader (`flag` is `None`
+  for a bit never reported). `apply_function_roles` and the tests that set a
+  field built a new value instead.
+- **`set_automation_mode`** moved to `Params`, with its own error
+  `AutomationModeError` (`Unsupported { format }`: no in-process format has the
+  channel; `Dropped`: the command queue was full; `PluginDead`) in
+  `tutti-plugin-types`, which `AnyThread` and `PluginHandle` return too.
+- **`ParamRef`.** `Param::target()` is `ParamRef::plugin(node, id)`, the type a
+  native node's `ParamRef::unit` gives, so a route targets either through one
+  type. §3.5's `synth.param(ParamId)` on `Key<Plugin>` is not built:
+  `add_plugin` still returns a `NodeKey`, and `Key<Plugin>` arrives with it.
+- **The umbrella.** `Params`, `TypedParam`, `ParamGesture` and
+  `PluginParamError` are in the prelude (`Param` is not: `tutti_types::Param` is
+  the native cell and holds the name); the prelude never held `PluginHandle`,
+  `AnyThread` or a `parameter_*` call, and `crates/tutti/examples/plugin_host.rs`
+  now lists, sets, reads the text of and drags a parameter through `params()`.
+  `Plugin::handle()` stays until step 4 (it still carries the editor and
+  presets), and `Plugin::param_values()` is gone.
+- **Tests** (`tests/plugin/plugin_params.rs`, and `vst2_params.rs` over the
+  reference VST2 plugin in process): a guard dropped mid-drag ends the gesture;
+  `typed::<Db>` on a hertz parameter is refused; an unknown id is refused; a
+  rescan replaces the declarations and values; a typed value round-trips
+  through VST2's own integer-range map.
 
 **As built (the typed cause, step 4's, done early).** The cause of a death is
 `tutti_plugin_types::PluginFailure`, latched by the bridge where it notices

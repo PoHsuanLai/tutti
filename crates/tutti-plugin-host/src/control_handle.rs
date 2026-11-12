@@ -9,8 +9,8 @@ use std::sync::Arc;
 use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{
-    AnyThread, AutomationMode, Control, EditorCapabilities, EditorError, Health, PluginError,
-    PluginFailure, StateError, TerminationReason, WindowHandle,
+    AnyThread, AutomationMode, AutomationModeError, Control, EditorCapabilities, EditorError,
+    Health, PluginError, PluginFailure, StateError, TerminationReason, WindowHandle,
 };
 use tutti_plugin_types::{ContentScale, EditorSize};
 use tutti_plugin_types::{
@@ -693,10 +693,10 @@ impl PluginHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`EditorError::GuiNotSupported`] when this hosting carries no
+    /// [`AutomationModeError::Unsupported`] when this hosting carries no
     /// automation-state advisory (in-process), and otherwise any error of
     /// [`AnyThread::set_automation_mode`].
-    pub fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError> {
+    pub fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), AutomationModeError> {
         self.any_thread.set_automation_mode(mode)
     }
 
@@ -875,8 +875,8 @@ mod tests {
             fn set_automation_mode(
                 &self,
                 _mode: AutomationMode,
-            ) -> std::result::Result<(), EditorError> {
-                Err(EditorError::PluginCrashed)
+            ) -> std::result::Result<(), tutti_plugin_types::AutomationModeError> {
+                Err(tutti_plugin_types::AutomationModeError::PluginDead)
             }
         }
         impl Health for Inert {

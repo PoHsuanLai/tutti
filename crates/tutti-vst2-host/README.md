@@ -117,11 +117,11 @@ does the type.
 let mut plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
 
 for info in plugin.parameters(&main) {
-    println!("{}: {} ({:?})", info.id, info.qualified_name(), info.bounds());
+    println!("{}: {} ({:?})", info.id(), info.qualified_name(), info.bounds());
 }
 
 // A normalized `0..=1` value, written to the parameter at position 0.
-let first = plugin.parameters(&main)[0].id;
+let first = plugin.parameters(&main)[0].id();
 plugin.set_parameter(&main, first, Normalized::of(0.5));
 # Ok(()) }
 ```

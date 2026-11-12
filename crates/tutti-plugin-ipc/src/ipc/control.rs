@@ -7,8 +7,8 @@
 //! ([`Ipc::bridge`]).
 
 use tutti_plugin_types::{
-    AnyThread, AutomationMode, BlockCounts, ContentScale, Control, Delivered, EditorCapabilities,
-    EditorError, EditorPresence, EditorSize, EditorWindow, Health, LoadedPlugin, MainThread,
+    AnyThread, AutomationMode, AutomationModeError, BlockCounts, ContentScale, Control, Delivered,
+    EditorCapabilities, EditorPresence, EditorSize, EditorWindow, Health, LoadedPlugin, MainThread,
     Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure, PluginResult,
     Preset, PresetId, RenderMode, Request, SampleRate, StateError, TerminationReason, WindowHandle,
 };
@@ -78,9 +78,9 @@ macro_rules! served_control {
             /// (the knob-glow lives in the GUI). [`Delivered`] says whether
             /// the command was *queued*; no format confirms the plugin
             /// visibly reacted.
-            fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError> {
+            fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), AutomationModeError> {
                 if self.link.bridge.is_crashed() {
-                    return Err(EditorError::PluginCrashed);
+                    return Err(AutomationModeError::PluginDead);
                 }
                 automation_push_outcome(self.link.bridge.set_automation_state_rt(mode))
             }
@@ -285,15 +285,11 @@ impl Health for IpcController {
 /// The two failures produce **different** errors because they call for
 /// different responses: a dropped push is transient and worth retrying, a dead
 /// plugin is permanent.
-fn automation_push_outcome(delivered: Delivered) -> Result<(), EditorError> {
+fn automation_push_outcome(delivered: Delivered) -> Result<(), AutomationModeError> {
     match delivered {
         Delivered::Yes => Ok(()),
-        Delivered::Dropped => Err(EditorError::PluginError(
-            "automation-state push dropped: the command queue is full; \
-             the next change should land"
-                .into(),
-        )),
-        Delivered::PluginDead => Err(EditorError::PluginCrashed),
+        Delivered::Dropped => Err(AutomationModeError::Dropped),
+        Delivered::PluginDead => Err(AutomationModeError::PluginDead),
     }
 }
 
@@ -316,11 +312,11 @@ mod automation_outcome_tests {
             .expect_err("a dead plugin is not a success");
 
         assert!(
-            matches!(dropped, EditorError::PluginError(_)),
+            matches!(dropped, AutomationModeError::Dropped),
             "a full queue is the plugin declining to be reached, not a crash: {dropped:?}"
         );
         assert!(
-            matches!(dead, EditorError::PluginCrashed),
+            matches!(dead, AutomationModeError::PluginDead),
             "a dead plugin must report as crashed: {dead:?}"
         );
         assert_ne!(

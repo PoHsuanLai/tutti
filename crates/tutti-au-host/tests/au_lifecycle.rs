@@ -456,15 +456,15 @@ mod halves {
         let target = Control::parameters(&controller, &main)
             .into_iter()
             .find(|p| {
-                p.range.bounds().is_some_and(|(_, max)| max > 2.0)
+                p.bounds().is_some_and(|(_, max)| max > 2.0)
                     && p.flag(ParamFlags::READ_ONLY) == Some(false)
             })
             .expect("AUDelay exposes a wide-range writable parameter");
-        let (min, max) = target.range.bounds().expect("a plain range");
+        let (min, max) = target.bounds().expect("a plain range");
 
         for (normalized, expected_plain) in [(1.0, max), (0.0, min)] {
             let mut changes = ParameterChanges::new();
-            let mut queue = ParameterQueue::with_capacity(target.id, 1);
+            let mut queue = ParameterQueue::with_capacity(target.id(), 1);
             queue.add_point(0, normalized);
             changes.add_queue(queue);
             let ctx = ProcessContext::new().params(&changes);
@@ -487,13 +487,13 @@ mod halves {
             };
             processor.process(&mut io).expect("the block renders");
 
-            let plain = tutti_au_host::parameters::get(controller.unit(), target.id.get())
+            let plain = tutti_au_host::parameters::get(controller.unit(), target.id().get())
                 .expect("the unit answers");
             assert!(
                 (f64::from(plain) - expected_plain).abs() < 1e-3 * (max - min).abs().max(1.0),
                 "{normalized} must land on {expected_plain}, not stay {plain}"
             );
-            let read = Control::parameter(&controller, &main, target.id).expect("declared");
+            let read = Control::parameter(&controller, &main, target.id()).expect("declared");
             assert!(
                 (read.get() - normalized).abs() < 1e-3,
                 "the read is normalized: {read:?} for {normalized}"
@@ -509,9 +509,9 @@ mod halves {
         let main = main_thread();
         let id = Control::parameters(&controller, &main)
             .into_iter()
-            .find(|p| p.range.bounds().is_some_and(|(_, max)| max > 2.0))
+            .find(|p| p.bounds().is_some_and(|(_, max)| max > 2.0))
             .expect("a wide-range parameter")
-            .id;
+            .id();
         Control::set_parameter(&mut controller, &main, id, Normalized::of(0.25));
         let read = Control::parameter(&controller, &main, id).unwrap();
         assert!((read.get() - 0.25).abs() < 1e-3, "{read:?}");

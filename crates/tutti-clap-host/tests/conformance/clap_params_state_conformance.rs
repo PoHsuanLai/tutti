@@ -230,7 +230,7 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     );
 
     let listed = loaded.parameter_list(&main_thread());
-    let got_ids: Vec<ParamId> = listed.iter().map(|p| p.id).collect();
+    let got_ids: Vec<ParamId> = listed.iter().map(|p| p.id()).collect();
     let want_ids: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
     assert_eq!(
         got_ids, want_ids,
@@ -249,29 +249,29 @@ fn host_projects_parameter_metadata_exactly() {
 
     for (i, want) in probe_params().iter().enumerate() {
         let got = &listed[i];
-        assert_eq!(got.id, want.id.into(), "param {i} id");
+        assert_eq!(got.id(), want.id.into(), "param {i} id");
         assert_eq!(
-            got.name.as_bytes(),
+            got.name().as_bytes(),
             want.name,
             "param {} name must round-trip through the C buffer",
             want.id
         );
         assert_eq!(
-            got.range.bounds(),
+            got.range().bounds(),
             Some((want.min, want.max)),
             "param {} bounds; CLAP declares a plain range, so this must not be \
              `None`",
             want.id
         );
         assert_eq!(
-            got.range.default_value(),
+            got.range().default_value(),
             want.default,
             "param {} default",
             want.id
         );
         // CLAP has no unit string; the projection must leave it empty rather
         // than inventing one.
-        assert!(got.unit.is_empty(), "param {} unit", want.id);
+        assert!(got.unit().is_empty(), "param {} unit", want.id);
     }
 }
 
@@ -297,7 +297,7 @@ fn host_derives_step_count_from_the_stepped_flag() {
     let mut multi_step_seen = false;
     for (i, want) in probe_params().iter().enumerate() {
         let stepped = want.flags & STEPPED != 0;
-        let got = listed[i].steps;
+        let got = listed[i].steps();
         if stepped {
             let span = (want.max - want.min) as u32;
             assert_eq!(
@@ -345,31 +345,31 @@ fn host_projects_parameter_flags() {
             p.flag(ParamFlags::AUTOMATABLE),
             Some(true),
             "param {} is AUTOMATABLE in the plugin's info",
-            p.id
+            p.id()
         );
         assert_eq!(
             p.flag(ParamFlags::READ_ONLY),
             Some(false),
             "param {} is not READONLY",
-            p.id
+            p.id()
         );
         assert_eq!(
             p.flag(ParamFlags::BYPASS),
             Some(false),
             "param {} is not BYPASS",
-            p.id
+            p.id()
         );
         assert_eq!(
             p.flag(ParamFlags::HIDDEN),
             Some(false),
             "param {} is not HIDDEN",
-            p.id
+            p.id()
         );
         assert_eq!(
             p.flag(ParamFlags::WRAP),
             Some(false),
             "param {} is not PERIODIC",
-            p.id
+            p.id()
         );
     }
 }

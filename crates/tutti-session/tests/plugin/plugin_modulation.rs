@@ -148,12 +148,7 @@ impl Drive {
 /// Updates until the plugin at `node` has its parameter values read.
 fn wait_for_values(drive: &mut Drive, s: &mut Session, node: NodeKey) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !s
-        .plugin(node)
-        .ok()
-        .and_then(|p| p.param_values())
-        .is_some_and(|m| m.is_ready())
-    {
+    while !s.plugin(node).is_ok_and(|p| p.params().is_ready()) {
         assert!(
             Instant::now() < deadline,
             "the plugin's parameter read never landed"
@@ -314,10 +309,7 @@ fn a_crossfaded_plugin_keeps_its_lane_and_a_removed_one_drops_it() {
     assert!(matches!(landed, Crossfade::Landed(())), "nothing waits");
     // Rebuilt by the crossfade: not ready until the job is run and landed.
     assert!(
-        !s.plugin(node)
-            .ok()
-            .and_then(|p| p.param_values())
-            .is_some_and(|m| m.is_ready()),
+        !s.plugin(node).is_ok_and(|p| p.params().is_ready()),
         "the incoming plugin's mirror starts unread"
     );
     wait_for_values(&mut drive, &mut s, node);

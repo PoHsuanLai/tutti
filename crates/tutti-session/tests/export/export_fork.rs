@@ -30,8 +30,8 @@ use tutti_nodes::testing::{Const, Osc, Sink};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::BufferMaster;
 use tutti_session::{
-    Bounce, BounceConfigError, BounceError, BounceLatency, ExportClock, GraphSource, PreparedGraph,
-    Range, Session, Stem,
+    Bounce, BounceConfigError, BounceError, BounceLatency, ExportClock, InPort, OutPort,
+    PreparedGraph, Range, Root, Session, Stem,
 };
 use tutti_types::ChannelLayout;
 use tutti_types::{Amplitude, Hz, Param, Q, SampleRate, Samples, Seconds, Tail, UnitParam};
@@ -132,10 +132,16 @@ fn chain(session: &mut Session) -> NodeKey {
         Hz(800.0),
         Q(1.0),
     ));
-    graph.set_source(filter, 0, GraphSource::Node(osc, 0));
-    graph.set_output_source(0, GraphSource::Node(filter, 0));
-    graph.set_output_source(1, GraphSource::Node(osc, 0));
-    filter
+    graph
+        .set_sources(InPort::new(filter, 0), [OutPort::new(osc, 0)])
+        .unwrap();
+    graph
+        .set_sources(Root::output(0), [OutPort::new(filter, 0)])
+        .unwrap();
+    graph
+        .set_sources(Root::output(1), [OutPort::new(osc, 0)])
+        .unwrap();
+    filter.erase()
 }
 
 /// [`chain`]'s units wired fresh, with `GraphBuilder`, and rendered in the
@@ -274,7 +280,7 @@ impl Node for Late {
 fn latency_and_tail_come_from_the_graph() {
     let mut session = session();
     let (late, _) = session.graph().insert(ForkByClone(Late { pos: 0 }));
-    session.graph().set_outputs_from(late);
+    session.graph().connect(late, Root).unwrap();
     let seconds = 0.01;
     let frames = (seconds * RATE) as usize;
     let planes = render(
@@ -293,7 +299,7 @@ fn latency_and_tail_come_from_the_graph() {
     let (unknown, _) = session.graph().insert(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
-    session.graph().set_outputs_from(unknown);
+    session.graph().connect(unknown, Root).unwrap();
     let planes = render(
         &mut session,
         buffers(seconds).tail(tutti_session::BounceTail::Graph {
@@ -316,7 +322,7 @@ fn latency_and_tail_come_from_the_graph() {
 fn the_trim_is_read_after_the_prepare_hook() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().set_outputs_from(dc);
+    session.graph().connect(dc, Root).unwrap();
     let request = buffers(0.01).latency(BounceLatency::Graph).edit(Box::new(
         |prepared: PreparedGraph<'_>| {
             let key = prepared.fresh_key();
@@ -345,7 +351,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
 fn a_prepare_hook_that_swaps_the_editor_fails_the_export() {
     let mut session = session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().set_outputs_from(dc);
+    session.graph().connect(dc, Root).unwrap();
     let request = buffers(0.01).edit(Box::new(|prepared: PreparedGraph<'_>| {
         let (other, _executor) = tutti_graph::Editor::new(Prepare::new(
             SampleRate(RATE),
@@ -368,7 +374,7 @@ fn a_graph_with_no_outputs_says_so() {
     let (node, _) = session.graph().insert(Osc::sine(Hz(220.0)));
     for with_stem in [false, true] {
         let bounce = if with_stem {
-            buffers(0.01).stem_with(Stem::buffers(node))
+            buffers(0.01).stem_with(Stem::buffers(node.erase()))
         } else {
             buffers(0.01)
         };
@@ -390,7 +396,7 @@ fn a_graph_with_no_outputs_says_so() {
 fn an_unrenderable_stem_is_refused_by_name() {
     let mut session = session();
     let (wired, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().set_outputs_from(wired);
+    session.graph().connect(wired, Root).unwrap();
     // `Sink::mono()` consumes one channel and produces nothing.
     let (orphan, _) = session.graph().insert(Sink::mono());
     let (loose, _) = session.graph().insert(Const::mono(0.25));
@@ -404,28 +410,28 @@ fn an_unrenderable_stem_is_refused_by_name() {
         refusal(&mut session, Stem::buffers(gone)),
         BounceConfigError::StemNotInGraph { node: gone }
     );
-    for node in [orphan, loose] {
+    for node in [orphan.erase(), loose.erase()] {
         assert_eq!(
             refusal(&mut session, Stem::buffers(node)),
             BounceConfigError::StemNotAudible { node }
         );
     }
     assert_eq!(
-        refusal(&mut session, Stem::buffers(wired).channels([0, 1])),
+        refusal(&mut session, Stem::buffers(wired.erase()).channels([0, 1])),
         BounceConfigError::StemChannelMissing {
-            node: wired,
+            node: wired.erase(),
             channel: 1
         }
     );
     assert_eq!(
-        refusal(&mut session, Stem::buffers(wired).channels([])),
+        refusal(&mut session, Stem::buffers(wired.erase()).channels([])),
         BounceConfigError::StemChannelMissing {
-            node: wired,
+            node: wired.erase(),
             channel: 0
         }
     );
     // Nothing was left in flight by a refusal, and the heard node renders.
-    let planes = stem_of(&mut session, wired, 0.01);
+    let planes = stem_of(&mut session, wired.erase(), 0.01);
     assert!(planes[0].iter().all(|&s| s == 0.5), "a heard node renders");
 }
 
@@ -438,8 +444,8 @@ fn an_unrenderable_stem_is_refused_by_name() {
 fn graph_with_one_node_on() -> (Session, NodeKey) {
     let mut session = session();
     let (node, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().set_outputs_from(node);
-    (session, node)
+    session.graph().connect(node, Root).unwrap();
+    (session, node.erase())
 }
 
 fn short() -> Bounce<NodeKey, BufferMaster> {
@@ -622,7 +628,7 @@ fn live_playback_continues_unaffected_while_an_export_renders() {
     let (node, _) = session.graph().insert(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
-    session.graph().set_outputs_from(node);
+    session.graph().connect(node, Root).unwrap();
     // Commit on this side, then hand the audio side to the "device".
     session.render_frame(&mut [0.0, 0.0]);
     let mut live = session.graph().take_audio_side();
@@ -686,7 +692,7 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
     let mut session = session();
     let (_mic, _) = session.graph().insert(tutti_graph::Unforkable(Mic));
     let (dc, _) = session.graph().insert(Const::mono(0.25));
-    session.graph().set_outputs_from(dc);
+    session.graph().connect(dc, Root).unwrap();
     let planes = render(&mut session, buffers(0.01));
     assert!(planes[0].iter().all(|&s| s == 0.25));
 }
@@ -702,25 +708,30 @@ fn an_unforkable_node_refuses_the_export_by_key() {
     let (osc, _) = session.graph().insert(Osc::sine(Hz(220.0)));
     session
         .graph()
-        .set_output_source(0, GraphSource::Node(mic, 0));
+        .set_sources(Root::output(0), [OutPort::new(mic, 0)])
+        .unwrap();
     session
         .graph()
-        .set_output_source(1, GraphSource::Node(osc, 0));
+        .set_sources(Root::output(1), [OutPort::new(osc, 0)])
+        .unwrap();
 
     match refused(&mut session, buffers(0.05)) {
         BounceError::NotForkable { node: key } => {
-            assert_eq!(key, mic);
+            assert_eq!(key, mic.erase());
             assert!(
                 tutti_export::Error::NotForkable { key }
                     .to_string()
-                    .contains(&format!("{mic:?}")),
+                    .contains(&format!("{:?}", mic.erase())),
                 "the message names it"
             );
         }
         other => panic!("expected a named refusal, got {other:?}"),
     }
-    match refused(&mut session, buffers(0.05).stem_with(Stem::buffers(osc))) {
-        BounceError::NotForkable { node: key } => assert_eq!(key, mic),
+    match refused(
+        &mut session,
+        buffers(0.05).stem_with(Stem::buffers(osc.erase())),
+    ) {
+        BounceError::NotForkable { node: key } => assert_eq!(key, mic.erase()),
         other => panic!("expected the same named refusal, got {other:?}"),
     }
 }
@@ -885,10 +896,12 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
     let (other, _) = session.graph().insert(Const::mono(9.0));
     session
         .graph()
-        .set_output_source(0, GraphSource::Node(slow_node, 0));
+        .set_sources(Root::output(0), [OutPort::new(slow_node, 0)])
+        .unwrap();
     session
         .graph()
-        .set_output_source(1, GraphSource::Node(level, 0));
+        .set_sources(Root::output(1), [OutPort::new(level, 0)])
+        .unwrap();
 
     let job = session
         .bounce_start(buffers(0.05))
@@ -901,7 +914,7 @@ fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
     // Edits after the start: none reaches the fork.
     cell.store(0.25f32.to_bits(), Ordering::SeqCst);
     session.graph().set_param(level, UnitParam::Volume, 0.25);
-    session.graph().set_outputs_from(other);
+    session.graph().connect(other, Root).unwrap();
     let _ = release.send(());
 
     let rendered = std::thread::spawn(move || job.run())
@@ -1023,10 +1036,12 @@ fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
     let (slow_node, _) = session.graph().insert(node);
     session
         .graph()
-        .set_output_source(0, GraphSource::Node(slow_node, 0));
+        .set_sources(Root::output(0), [OutPort::new(slow_node, 0)])
+        .unwrap();
     session
         .graph()
-        .set_output_source(1, GraphSource::Node(pinned, 0));
+        .set_sources(Root::output(1), [OutPort::new(pinned, 0)])
+        .unwrap();
     drop(release); // the slow build goes straight through
 
     let job = session
@@ -1061,10 +1076,12 @@ fn a_dropped_export_job_drops_its_fork_on_the_main_thread() {
     let (pinned, _) = session.graph().insert(PinnedNode(Arc::clone(&threads)));
     session
         .graph()
-        .set_output_source(0, GraphSource::Node(pinned, 0));
+        .set_sources(Root::output(0), [OutPort::new(pinned, 0)])
+        .unwrap();
     session
         .graph()
-        .set_output_source(1, GraphSource::Node(pinned, 0));
+        .set_sources(Root::output(1), [OutPort::new(pinned, 0)])
+        .unwrap();
 
     let job = session
         .bounce_start(buffers(0.05))
@@ -1144,10 +1161,12 @@ fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
     let (broken, _) = session.graph().insert(Broken);
     session
         .graph()
-        .set_output_source(0, GraphSource::Node(pinned, 0));
+        .set_sources(Root::output(0), [OutPort::new(pinned, 0)])
+        .unwrap();
     session
         .graph()
-        .set_output_source(1, GraphSource::Node(broken, 0));
+        .set_sources(Root::output(1), [OutPort::new(broken, 0)])
+        .unwrap();
 
     let job = session
         .bounce_start(buffers(0.05))
@@ -1157,7 +1176,7 @@ fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
         .expect("the render thread");
     match session.finish_bounce(rendered) {
         Err(BounceError::Fork(tutti_graph::ForkError::Source { key, cause })) => {
-            assert_eq!(key, broken);
+            assert_eq!(key, broken.erase());
             assert_eq!(cause.downcast_ref::<NoServer>(), Some(&NoServer));
         }
         other => panic!("expected the failing build named, got {other:?}"),
@@ -1197,7 +1216,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     // A build that fails.
     let mut session = session();
     let (broken, _) = session.graph().insert(Broken);
-    session.graph().set_outputs_from(broken);
+    session.graph().connect(broken, Root).unwrap();
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
         .bounce_start(witnessed(&drops))
@@ -1214,7 +1233,7 @@ fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
     // A job dropped before it ran.
     let mut session = self::session();
     let (dc, _) = session.graph().insert(Const::mono(0.5));
-    session.graph().set_outputs_from(dc);
+    session.graph().connect(dc, Root).unwrap();
     let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let job = session
         .bounce_start(witnessed(&drops))

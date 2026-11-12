@@ -88,7 +88,7 @@ fn offline() -> Session {
 fn tap(s: &mut Session) -> (NodeKey, Seen) {
     let seen = Seen::default();
     let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
-    (node, seen)
+    (node.erase(), seen)
 }
 
 /// A note-on/note-off pair as timed events.
@@ -208,7 +208,7 @@ fn a_target_without_an_event_input_takes_no_clip() {
         )));
     assert!(matches!(
         s.midi().play_clip(dc, std::iter::empty::<TimedMidiEvent>()),
-        Err(Error::NoEventInput(n)) if n == dc
+        Err(Error::NoEventInput(n)) if n == dc.erase()
     ));
     s.remove(dc);
     assert!(matches!(

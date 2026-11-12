@@ -14,6 +14,8 @@
 //! skip.
 
 use crate::support;
+use tutti_session::InPort;
+use tutti_session::Root;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -154,7 +156,7 @@ fn request() -> Bounce<NodeKey, BufferMaster> {
 /// update: returns its node and its realtime latency.
 fn wired_probe(s: &mut Session) -> (NodeKey, Samples) {
     let node = add_probe(s);
-    s.graph().set_outputs_from(node);
+    s.graph().connect(node, Root).unwrap();
     let _ = s.update();
     // Told Realtime by that update (it was never told): the latency it
     // reports realtime.
@@ -231,7 +233,7 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
 fn a_plugin_added_mid_export_is_told_offline() {
     let mut s = session(&[]);
     let (dc, _) = s.graph().insert(tutti_nodes::testing::Const::mono(0.0));
-    s.graph().set_outputs_from(dc);
+    s.graph().connect(dc, Root).unwrap();
     let _ = s.update();
     let job = s.bounce_start(request()).expect("starts");
     assert_eq!(s.render_mode(), RenderMode::Offline);
@@ -367,10 +369,18 @@ fn export_leftovers_drop_on_the_main_thread() {
         .insert(ForkByClone(DropWitness(Arc::clone(&drops))));
     let probe = add_probe(&mut s);
     s.graph()
-        .set_source(probe, 0, tutti_session::GraphSource::Node(witness, 0));
+        .set_sources(
+            InPort::new(probe, 0),
+            [tutti_session::OutPort::new(witness, 0)],
+        )
+        .unwrap();
     s.graph()
-        .set_source(probe, 1, tutti_session::GraphSource::Node(witness, 1));
-    s.graph().set_outputs_from(probe);
+        .set_sources(
+            InPort::new(probe, 1),
+            [tutti_session::OutPort::new(witness, 1)],
+        )
+        .unwrap();
+    s.graph().connect(probe, Root).unwrap();
     let _ = s.update();
     drops.lock().unwrap().clear();
 
@@ -1220,10 +1230,18 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
         handle: Arc::clone(&handle),
     }));
     s.graph()
-        .set_source(cancel, 0, tutti_session::GraphSource::Node(probe, 0));
+        .set_sources(
+            InPort::new(cancel, 0),
+            [tutti_session::OutPort::new(probe, 0)],
+        )
+        .unwrap();
     s.graph()
-        .set_source(cancel, 1, tutti_session::GraphSource::Node(probe, 1));
-    s.graph().set_outputs_from(cancel);
+        .set_sources(
+            InPort::new(cancel, 1),
+            [tutti_session::OutPort::new(probe, 1)],
+        )
+        .unwrap();
+    s.graph().connect(cancel, Root).unwrap();
     let _ = s.update();
     let live = servers();
 

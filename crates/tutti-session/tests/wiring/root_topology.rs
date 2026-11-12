@@ -6,7 +6,7 @@
 //! rules (`M3DB`), not read from another render.
 
 use tutti_nodes::testing::Const;
-use tutti_session::{Error, GraphSource, RootTopologyStatus, Session, SessionBuilder};
+use tutti_session::{Error, OutPort, Root, RootTopologyStatus, Session, SessionBuilder};
 use tutti_types::MaxBlock;
 use tutti_types::{
     ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB, SampleRate, Samples, Speaker,
@@ -20,7 +20,8 @@ fn feed(session: &mut Session, values: &[f32]) {
     for c in 0..values.len() {
         session
             .graph()
-            .set_output_source(c, GraphSource::Node(node, c));
+            .set_sources(Root::output(c), [OutPort::new(node, c)])
+            .unwrap();
     }
 }
 

@@ -9,7 +9,7 @@
 //! (`Graph::close_tap`).
 
 use tutti_nodes::testing::Const;
-use tutti_session::{GraphSource, Session};
+use tutti_session::{OutPort, Root, Session};
 use tutti_types::{SampleRate, Samples};
 
 /// A detached one-output session playing a constant 0.25.
@@ -19,7 +19,9 @@ fn session() -> Session {
         .build_detached(SampleRate(48_000.0))
         .expect("builds");
     let (dc, _) = s.graph().insert(Const::mono(0.25));
-    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    s.graph()
+        .set_sources(Root::output(0), [OutPort::new(dc, 0)])
+        .unwrap();
     s
 }
 

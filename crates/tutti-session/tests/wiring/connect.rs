@@ -5,7 +5,7 @@
 
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
-use tutti_session::{ConnectError, GraphSource, Session};
+use tutti_session::{ConnectError, OutPort, Root, Session};
 use tutti_types::{ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
 
 fn offline() -> Session {
@@ -28,7 +28,9 @@ fn first_frame(s: &mut Session) -> [f32; 2] {
 
 fn feed_root(s: &mut Session, node: NodeKey) {
     for c in 0..2 {
-        s.graph().set_output_source(c, GraphSource::Node(node, c));
+        s.graph()
+            .set_sources(Root::output(c), [OutPort::new(node, c)])
+            .unwrap();
     }
 }
 
@@ -41,7 +43,7 @@ fn connect_wires_each_channel_to_its_own() {
     let (src, _) = s.graph().insert(Const::frame(&[0.25, 0.5]));
     let (through, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
     s.graph().connect(src, through).expect("both are stereo");
-    feed_root(&mut s, through);
+    feed_root(&mut s, through.erase());
     assert_eq!(first_frame(&mut s), [0.25, 0.5]);
 }
 
@@ -52,8 +54,10 @@ fn chain_connects_each_node_to_the_next() {
     let (src, _) = s.graph().insert(Const::frame(&[0.25, 0.5]));
     let (a, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
     let (b, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    s.graph().chain([src, a, b]).expect("all stereo");
-    feed_root(&mut s, b);
+    s.graph()
+        .chain([src.erase(), a.erase(), b.erase()])
+        .expect("all stereo");
+    feed_root(&mut s, b.erase());
     assert_eq!(first_frame(&mut s), [0.25, 0.5]);
 }
 
@@ -67,7 +71,7 @@ fn connect_adds_to_what_feeds_the_input() {
     let (sink, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
     s.graph().connect(one, sink).unwrap();
     s.graph().connect(two, sink).unwrap();
-    feed_root(&mut s, sink);
+    feed_root(&mut s, sink.erase());
     assert_eq!(first_frame(&mut s), [0.75, 0.375]);
 }
 
@@ -86,18 +90,18 @@ fn a_width_mismatch_is_refused_and_stores_nothing() {
     assert_eq!(
         err,
         ConnectError::Width {
-            from: mono,
+            from: mono.erase(),
             from_width: 1,
-            to: stereo,
+            to: stereo.erase(),
             to_width: 2
         }
     );
     assert_eq!(
         s.graph().chain([stereo, more, narrow]).unwrap_err(),
         ConnectError::Width {
-            from: more,
+            from: more.erase(),
             from_width: 2,
-            to: narrow,
+            to: narrow.erase(),
             to_width: 1
         }
     );
@@ -109,11 +113,14 @@ fn a_width_mismatch_is_refused_and_stores_nothing() {
 fn a_node_that_is_not_there_or_feeds_itself_is_refused() {
     let mut s = offline();
     let (a, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
-    assert_eq!(s.graph().connect(a, a), Err(ConnectError::Itself(a)));
+    assert_eq!(
+        s.graph().connect(a, a).err(),
+        Some(ConnectError::Itself(a.erase()))
+    );
     let (gone, _) = s.graph().insert(Through::new(ChannelLayout::STEREO));
     s.graph().remove(gone);
     assert_eq!(
-        s.graph().connect(a, gone),
-        Err(ConnectError::NoSuchNode(gone))
+        s.graph().connect(a, gone).err(),
+        Some(ConnectError::NoSuchNode(gone.erase()))
     );
 }

@@ -2,7 +2,7 @@
 
 use tutti_graph::NodeKey;
 use tutti_sampler::Clip;
-use tutti_session::{GraphSource, Session};
+use tutti_session::{OutPort, Root, Session};
 use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
@@ -42,7 +42,8 @@ fn run(s: &Session, frames: usize) -> Vec<f32> {
 fn wire(s: &mut Session, clip: NodeKey) {
     for port in 0..2 {
         s.graph()
-            .set_output_source(port, GraphSource::Node(clip, port));
+            .set_sources(Root::output(port), [OutPort::new(clip, port)])
+            .unwrap();
     }
 }
 
@@ -59,7 +60,7 @@ fn a_clip_starts_on_its_beat_at_its_gain() {
             .at(Beat(1.0))
             .gain(Amplitude::new(0.5)),
     );
-    wire(&mut s, clip);
+    wire(&mut s, clip.erase());
     let _ = s.update();
     let out = run(&s, 40_000);
     assert!(out[..2 * 24_000].iter().all(|&x| x == 0.0), "silent before");
@@ -75,7 +76,7 @@ fn a_clip_starts_on_its_beat_at_its_gain() {
             .unwrap()
             .at(Beat(1.0)),
     );
-    wire(&mut full, whole);
+    wire(&mut full, whole.erase());
     let _ = full.update();
     let unscaled = run(&full, 40_000)[2 * 24_000 + 2];
     assert!(

@@ -345,11 +345,11 @@ impl SessionBuilder {
                 .expect("the clock node is in the graph with its event output");
             (
                 Some(crate::MidiNodes {
-                    input,
+                    input: input.erase(),
                     input_ports: self.midi_ports,
                     input_devices: self.midi_devices,
                     input_controls,
-                    clock,
+                    clock: clock.erase(),
                     clock_master,
                 }),
                 Some(tap),
@@ -361,7 +361,7 @@ impl SessionBuilder {
         Ok(Parts {
             graph,
             transport,
-            click: Some(click),
+            click: Some(click.erase()),
             click_settings,
             compensation: Arc::default(),
             #[cfg(feature = "midi")]

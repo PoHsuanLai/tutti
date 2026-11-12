@@ -84,7 +84,7 @@ fn offline() -> Session {
 fn tap(s: &mut Session) -> (NodeKey, Seen) {
     let seen = Seen::default();
     let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
-    (node, seen)
+    (node.erase(), seen)
 }
 
 fn blocks(s: &Session, n: usize) {

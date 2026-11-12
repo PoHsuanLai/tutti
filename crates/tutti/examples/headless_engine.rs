@@ -4,6 +4,7 @@
 //! `cargo run -p tutti --features device --example headless_engine`
 use tutti::graph::ForkByClone;
 use tutti::nodes::testing::Osc;
+use tutti::prelude::Root;
 use tutti::prelude::*;
 
 /// What `Session::update` found: faults and dropouts (a refused commit, a
@@ -18,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut live = SessionBuilder::default().build_device(Default::default())?;
     let tone = Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2));
     let (tone, _) = live.session_mut().graph().add(ForkByClone(tone));
-    live.session_mut().graph().set_outputs_from(tone);
+    live.session_mut().graph().connect(tone, Root).unwrap();
     report(live.session_mut().update());
     live.session_mut().play()?;
     std::thread::sleep(std::time::Duration::from_secs(2));

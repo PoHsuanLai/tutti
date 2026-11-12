@@ -1,6 +1,7 @@
 //! A session with one instrument in it, played and rendered a block at a time.
 
 use tutti_graph::NodeKey;
+use tutti_session::Root;
 use tutti_session::{InstrumentHandle, Session};
 use tutti_types::MaxBlock;
 use tutti_types::Moment;
@@ -42,7 +43,7 @@ impl Rig {
 
     /// A rig over a handle the session already made.
     pub fn wired(mut session: Session, handle: InstrumentHandle) -> Self {
-        session.graph().set_outputs_from(handle.out());
+        session.graph().connect(handle.out(), Root).unwrap();
         let _ = session.update();
         Self {
             session,

@@ -7,6 +7,7 @@ use instrument_support::Rig;
 use tutti_graph::{
     Cx, ForkByClone, Instrument, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status,
 };
+use tutti_session::Root;
 use tutti_session::SessionNode;
 use tutti_types::ChannelLayout;
 
@@ -107,38 +108,38 @@ fn the_handle_counts_what_its_queue_dropped() {
 }
 
 /// A root of five channels or more fed from an instrument with sends takes its
-/// main pair, repeated, and never a send: `set_outputs_from` wraps over every
-/// output (a five-output node on a five-wide root feeds the speakers its
-/// sends), `set_outputs_from_ports` with the handle's pair does not. Read from
-/// the graph's own topology.
+/// main pair, repeated, and never a send: connecting the node's whole main bus
+/// to the root feeds every output (a five-output node on a five-wide root feeds
+/// the speakers its sends), wiring the handle's pair onto each root channel
+/// does not. Read from the graph's own topology.
 #[test]
 fn a_wide_root_is_fed_from_the_main_pair_not_the_sends() {
-    use tutti_session::GraphSource;
+    use tutti_session::OutPort;
     let mut session = instrument_support::rig::offline_session();
     let (handle, ()) = session
         .add_instrument(Dressed(ForkByClone(Five)))
         .expect("an instrument");
     session.graph().widen_outputs(5).expect("a wider root");
     let node = handle.node();
-    session.graph().set_outputs_from(node);
+    session.graph().connect(node, Root).unwrap();
     let wrapped: Vec<_> = (0..5)
-        .map(|c| session.graph_ref().output_sources(c))
+        .map(|c| session.graph_ref().sources(Root::output(c)))
         .collect();
-    assert_eq!(
-        wrapped[4],
-        [GraphSource::node(node, 4)],
-        "the wrap feeds a send"
-    );
+    assert_eq!(wrapped[4], [OutPort::new(node, 4)], "the wrap feeds a send");
 
-    session
-        .graph()
-        .set_outputs_from_ports(node, &handle.main_outputs());
-    assert_eq!(handle.main_outputs(), [2, 3]);
+    let main = handle.main_outputs();
+    for c in 0..5 {
+        session
+            .graph()
+            .set_sources(Root::output(c), [OutPort::new(node, main[c % 2])])
+            .unwrap();
+    }
+    assert_eq!(main, [2, 3]);
     for c in 0..5 {
         let want = 2 + c % 2;
         assert_eq!(
-            session.graph_ref().output_sources(c),
-            [GraphSource::node(node, want)],
+            session.graph_ref().sources(Root::output(c)),
+            [OutPort::new(node, want)],
             "channel {c}"
         );
     }

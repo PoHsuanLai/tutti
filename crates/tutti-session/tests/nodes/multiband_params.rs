@@ -20,7 +20,7 @@ use tutti_nodes::testing::Osc;
 use tutti_nodes::{MultibandCompressorNode, MultibandControls};
 #[cfg(feature = "modulation")]
 use tutti_session::ParamRef;
-use tutti_session::{GraphSource, Session};
+use tutti_session::{InPort, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
 #[cfg(feature = "modulation")]
@@ -71,10 +71,14 @@ fn rig() -> (Session, NodeKey, MultibandControls) {
     let (low, _) = g.insert(Osc::sine(Hz(LOW as f32)).with_amplitude(Amplitude(A as f32)));
     let (high, _) = g.insert(Osc::sine(Hz(HIGH as f32)).with_amplitude(Amplitude(A as f32)));
     let (mb, controls) = g.add(MultibandCompressorNode::new(ChannelLayout::STEREO, 2).unwrap());
-    g.set_source(mb, 0, GraphSource::Node(low, 0));
-    g.set_source(mb, 1, GraphSource::Node(high, 0));
-    g.set_output_source(0, GraphSource::Node(mb, 0));
-    g.set_output_source(1, GraphSource::Node(mb, 1));
+    g.set_sources(InPort::new(mb, 0), [OutPort::new(low, 0)])
+        .unwrap();
+    g.set_sources(InPort::new(mb, 1), [OutPort::new(high, 0)])
+        .unwrap();
+    g.set_sources(Root::output(0), [OutPort::new(mb, 0)])
+        .unwrap();
+    g.set_sources(Root::output(1), [OutPort::new(mb, 1)])
+        .unwrap();
     // Unity ratio on both bands: nothing is reduced, the make-ups are the gains.
     for band in 0..2 {
         assert!(
@@ -84,7 +88,7 @@ fn rig() -> (Session, NodeKey, MultibandControls) {
         );
     }
     let _ = s.update();
-    (s, mb, controls)
+    (s, mb.erase(), controls)
 }
 
 /// Renders `frames` frames from a rolling transport, in blocks of 128.

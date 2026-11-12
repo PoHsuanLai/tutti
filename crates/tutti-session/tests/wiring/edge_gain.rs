@@ -11,7 +11,7 @@ use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
-use tutti_session::{EdgeGainError, EdgeRef, GraphSource, Session};
+use tutti_session::{Edge, EdgeGainError, InPort, OutPort, Root, Session};
 use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const A: f32 = 0.25;
@@ -62,19 +62,25 @@ fn rig() -> Rig {
     let (a, _) = g.insert(Const::mono(A));
     let (b, _) = g.insert(Const::mono(B));
     let (sink, _) = g.insert(Through::mono());
-    g.set_output_source(0, GraphSource::Node(sink, 0));
+    g.set_sources(Root::output(0), [OutPort::new(sink, 0)])
+        .unwrap();
     let _ = s.update();
     assert!(!s.graph_ref().is_edited());
-    Rig { s, a, b, sink }
+    Rig {
+        s,
+        a: a.erase(),
+        b: b.erase(),
+        sink: sink.erase(),
+    }
 }
 
-fn node(k: NodeKey) -> GraphSource {
-    GraphSource::Node(k, 0)
+fn node(k: NodeKey) -> OutPort {
+    OutPort::new(k, 0)
 }
 
 impl Rig {
-    fn edge_from(&self, from: NodeKey) -> EdgeRef {
-        EdgeRef::port(self.sink, 0, node(from))
+    fn edge_from(&self, from: NodeKey) -> Edge {
+        Edge::new(node(from), InPort::new(self.sink, 0))
     }
 }
 
@@ -85,26 +91,30 @@ impl Rig {
 #[test]
 fn an_edge_gain_sets_reads_and_clears() {
     let mut r = rig();
-    r.s.graph().add_source(r.sink, 0, node(r.a));
-    r.s.graph().add_source(r.sink, 0, node(r.b));
+    r.s.graph()
+        .connect(node(r.a), InPort::new(r.sink, 0))
+        .unwrap();
+    r.s.graph()
+        .connect(node(r.b), InPort::new(r.sink, 0))
+        .unwrap();
     assert!(all_are(&settled(&mut r.s, 0), A + B));
     let edge = r.edge_from(r.a);
-    assert_eq!(r.s.graph_ref().edge_gain(edge), None, "plain: no entry");
+    assert_eq!(edge.gain(r.s.graph_ref()), None, "plain: no entry");
 
-    r.s.graph().set_edge_gain(edge, amp(0.5)).expect("an edge");
+    edge.set_gain(r.s.graph(), amp(0.5)).expect("an edge");
     assert!(r.s.graph_ref().is_edited(), "a first gain is structural");
-    assert_eq!(r.s.graph_ref().edge_gain(edge), Some(amp(0.5)));
+    assert_eq!(edge.gain(r.s.graph_ref()), Some(amp(0.5)));
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 0.5 * A) + B));
 
-    r.s.graph().set_edge_gain(edge, amp(-2.0)).expect("an edge");
-    assert_eq!(r.s.graph_ref().edge_gain(edge), Some(amp(-2.0)));
+    edge.set_gain(r.s.graph(), amp(-2.0)).expect("an edge");
+    assert_eq!(edge.gain(r.s.graph_ref()), Some(amp(-2.0)));
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + -2.0 * A) + B));
 
-    assert!(r.s.graph().clear_edge_gain(edge));
+    assert!(edge.clear_gain(r.s.graph()));
     assert!(r.s.graph_ref().is_edited(), "clearing is structural");
-    assert_eq!(r.s.graph_ref().edge_gain(edge), None);
+    assert_eq!(edge.gain(r.s.graph_ref()), None);
     assert!(all_are(&settled(&mut r.s, 0), A + B), "the plain sum again");
-    assert!(!r.s.graph().clear_edge_gain(edge), "nothing left to clear");
+    assert!(!edge.clear_gain(r.s.graph()), "nothing left to clear");
     assert!(!r.s.graph_ref().is_edited());
 }
 
@@ -114,29 +124,26 @@ fn an_edge_gain_sets_reads_and_clears() {
 #[test]
 fn a_gain_on_a_missing_edge_or_a_bad_number_is_refused() {
     let mut r = rig();
-    r.s.graph().add_source(r.sink, 0, node(r.a));
+    r.s.graph()
+        .connect(node(r.a), InPort::new(r.sink, 0))
+        .unwrap();
     let _ = r.s.update();
     let missing = r.edge_from(r.b);
     assert_eq!(
-        r.s.graph().set_edge_gain(missing, amp(0.5)),
+        missing.set_gain(r.s.graph(), amp(0.5)),
         Err(EdgeGainError::NoSuchEdge(missing))
-    );
-    let silence = EdgeRef::port(r.sink, 0, GraphSource::Silence);
-    assert_eq!(
-        r.s.graph().set_edge_gain(silence, amp(0.5)),
-        Err(EdgeGainError::NoSuchEdge(silence))
     );
     let real = r.edge_from(r.a);
     assert_eq!(
-        r.s.graph().set_edge_gain(real, amp(f32::NAN)),
+        real.set_gain(r.s.graph(), amp(f32::NAN)),
         Err(EdgeGainError::NotFinite)
     );
     assert_eq!(
-        r.s.graph().set_edge_gain(real, amp(f32::INFINITY)),
+        real.set_gain(r.s.graph(), amp(f32::INFINITY)),
         Err(EdgeGainError::NotFinite)
     );
-    assert_eq!(r.s.graph_ref().edge_gain(real), None);
-    assert_eq!(r.s.graph_ref().edge_gain(missing), None);
+    assert_eq!(real.gain(r.s.graph_ref()), None);
+    assert_eq!(missing.gain(r.s.graph_ref()), None);
     assert!(!r.s.graph_ref().is_edited(), "a refusal edits nothing");
 }
 
@@ -149,35 +156,49 @@ fn add_source_weighted_adds_the_edge_and_its_weight() {
     let mut r = rig();
     let (a, b, sink) = (r.a, r.b, r.sink);
     r.s.graph()
-        .add_source_weighted(sink, 0, node(a), amp(0.5))
-        .expect("finite");
+        .connect(node(a), InPort::new(sink, 0))
+        .unwrap()
+        .gain(amp(0.5))
+        .unwrap();
     r.s.graph()
-        .add_source_weighted(sink, 0, node(b), amp(-0.25))
-        .expect("finite");
-    assert_eq!(r.s.graph_ref().sources(sink, 0), [node(a), node(b)]);
-    assert_eq!(r.s.graph_ref().edge_gain(r.edge_from(a)), Some(amp(0.5)));
-    assert_eq!(r.s.graph_ref().edge_gain(r.edge_from(b)), Some(amp(-0.25)));
+        .connect(node(b), InPort::new(sink, 0))
+        .unwrap()
+        .gain(amp(-0.25))
+        .unwrap();
+    assert_eq!(
+        r.s.graph_ref().sources(InPort::new(sink, 0)),
+        [node(a), node(b)]
+    );
+    assert_eq!(r.edge_from(a).gain(r.s.graph_ref()), Some(amp(0.5)));
+    assert_eq!(r.edge_from(b).gain(r.s.graph_ref()), Some(amp(-0.25)));
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 0.5 * A) + -0.25 * B));
 
     // Held already: the weight is set, nothing else changes.
     r.s.graph()
-        .add_source_weighted(sink, 0, node(a), amp(2.0))
-        .expect("finite");
-    assert_eq!(r.s.graph_ref().sources(sink, 0), [node(a), node(b)]);
+        .connect(node(a), InPort::new(sink, 0))
+        .unwrap()
+        .gain(amp(2.0))
+        .unwrap();
+    assert_eq!(
+        r.s.graph_ref().sources(InPort::new(sink, 0)),
+        [node(a), node(b)]
+    );
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 2.0 * A) + -0.25 * B));
 
-    // Silence is no edge; a bad weight adds nothing.
-    r.s.graph()
-        .add_source_weighted(sink, 0, GraphSource::Silence, amp(3.0))
-        .expect("a no-op");
-    assert_eq!(r.s.graph_ref().sources(sink, 0), [node(a), node(b)]);
+    // A bad weight adds nothing.
     let c = r.s.graph().insert(Const::mono(0.125)).0;
     assert_eq!(
         r.s.graph()
-            .add_source_weighted(sink, 0, node(c), amp(f32::NAN)),
-        Err(EdgeGainError::NotFinite)
+            .connect(node(c.erase()), InPort::new(sink, 0))
+            .unwrap()
+            .gain(amp(f32::NAN))
+            .err(),
+        Some(EdgeGainError::NotFinite)
     );
-    assert_eq!(r.s.graph_ref().sources(sink, 0), [node(a), node(b)]);
+    assert_eq!(
+        r.s.graph_ref().sources(InPort::new(sink, 0)),
+        [node(a), node(b)]
+    );
 }
 
 /// The output-channel twin: weights on what feeds global output 1, read on
@@ -187,23 +208,27 @@ fn add_output_source_weighted_weights_the_channel() {
     let mut r = rig();
     let (a, b) = (r.a, r.b);
     r.s.graph()
-        .add_output_source_weighted(1, node(a), amp(0.5))
-        .expect("finite");
+        .connect(node(a), Root::output(1))
+        .unwrap()
+        .gain(amp(0.5))
+        .unwrap();
     r.s.graph()
-        .add_output_source_weighted(1, node(b), amp(2.0))
-        .expect("finite");
-    assert_eq!(r.s.graph_ref().output_sources(1), [node(a), node(b)]);
+        .connect(node(b), Root::output(1))
+        .unwrap()
+        .gain(amp(2.0))
+        .unwrap();
+    assert_eq!(r.s.graph_ref().sources(Root::output(1)), [node(a), node(b)]);
     assert_eq!(
-        r.s.graph_ref().edge_gain(EdgeRef::output(1, node(a))),
+        Edge::new(node(a), Root::output(1)).gain(r.s.graph_ref()),
         Some(amp(0.5))
     );
     assert!(all_are(&settled(&mut r.s, 1), (0.0 + 0.5 * A) + 2.0 * B));
-    r.s.graph()
-        .set_edge_gain(EdgeRef::output(1, node(b)), amp(1.0))
+    Edge::new(node(b), Root::output(1))
+        .set_gain(r.s.graph(), amp(1.0))
         .expect("an edge");
     assert!(all_are(&settled(&mut r.s, 1), (0.0 + 0.5 * A) + 1.0 * B));
-    assert!(r.s.graph().clear_edge_gain(EdgeRef::output(1, node(a))));
-    assert!(r.s.graph().clear_edge_gain(EdgeRef::output(1, node(b))));
+    assert!(Edge::new(node(a), Root::output(1)).clear_gain(r.s.graph()));
+    assert!(Edge::new(node(b), Root::output(1)).clear_gain(r.s.graph()));
     assert!(all_are(&settled(&mut r.s, 1), A + B));
 }
 
@@ -217,41 +242,55 @@ fn removing_a_source_drops_its_weight() {
     let (a, b, sink) = (r.a, r.b, r.sink);
     let g = |r: &mut Rig| {
         r.s.graph()
-            .add_source_weighted(sink, 0, node(a), amp(0.5))
+            .connect(node(a), InPort::new(sink, 0))
+            .unwrap()
+            .gain(amp(0.5))
             .unwrap();
-        r.s.graph().add_source(sink, 0, node(b));
+        r.s.graph().connect(node(b), InPort::new(sink, 0)).unwrap();
     };
     g(&mut r);
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 0.5 * A) + B));
 
-    r.s.graph().remove_source(sink, 0, node(a));
-    assert_eq!(r.s.graph_ref().edge_gain(r.edge_from(a)), None);
+    r.s.graph().disconnect(node(a), InPort::new(sink, 0));
+    assert_eq!(r.edge_from(a).gain(r.s.graph_ref()), None);
     assert!(all_are(&settled(&mut r.s, 0), B), "valid, and just b");
-    r.s.graph().add_source(sink, 0, node(a));
+    r.s.graph().connect(node(a), InPort::new(sink, 0)).unwrap();
     assert!(
         all_are(&settled(&mut r.s, 0), A + B),
         "added back plain, no stale weight"
     );
 
     let edge = r.edge_from(a);
-    r.s.graph().set_edge_gain(edge, amp(0.5)).unwrap();
-    r.s.graph().set_sources(sink, 0, &[node(b)]);
-    assert_eq!(r.s.graph_ref().edge_gain(r.edge_from(a)), None);
+    edge.set_gain(r.s.graph(), amp(0.5)).unwrap();
+    r.s.graph()
+        .set_sources(InPort::new(sink, 0), [node(b)])
+        .unwrap();
+    assert_eq!(r.edge_from(a).gain(r.s.graph_ref()), None);
     assert!(all_are(&settled(&mut r.s, 0), B));
 
     r.s.graph()
-        .add_output_source_weighted(1, node(a), amp(0.5))
+        .connect(node(a), Root::output(1))
+        .unwrap()
+        .gain(amp(0.5))
         .unwrap();
-    r.s.graph().add_output_source(1, node(b));
+    r.s.graph().connect(node(b), Root::output(1)).unwrap();
     assert!(all_are(&settled(&mut r.s, 1), (0.0 + 0.5 * A) + B));
-    r.s.graph().remove_output_source(1, node(a));
-    assert_eq!(r.s.graph_ref().edge_gain(EdgeRef::output(1, node(a))), None);
+    r.s.graph().disconnect(node(a), Root::output(1));
+    assert_eq!(
+        Edge::new(node(a), Root::output(1)).gain(r.s.graph_ref()),
+        None
+    );
     assert!(all_are(&settled(&mut r.s, 1), B));
     r.s.graph()
-        .add_output_source_weighted(1, node(a), amp(0.5))
+        .connect(node(a), Root::output(1))
+        .unwrap()
+        .gain(amp(0.5))
         .unwrap();
-    r.s.graph().set_output_sources(1, &[node(b)]);
-    assert_eq!(r.s.graph_ref().edge_gain(EdgeRef::output(1, node(a))), None);
+    r.s.graph().set_sources(Root::output(1), [node(b)]).unwrap();
+    assert_eq!(
+        Edge::new(node(a), Root::output(1)).gain(r.s.graph_ref()),
+        None
+    );
     assert!(all_are(&settled(&mut r.s, 1), B));
 }
 
@@ -263,15 +302,19 @@ fn moving_a_weight_marks_no_recompile() {
     let mut r = rig();
     let (a, sink) = (r.a, r.sink);
     r.s.graph()
-        .add_source_weighted(sink, 0, node(a), amp(0.5))
+        .connect(node(a), InPort::new(sink, 0))
+        .unwrap()
+        .gain(amp(0.5))
         .unwrap();
-    r.s.graph().add_source(sink, 0, node(r.b));
+    r.s.graph()
+        .connect(node(r.b), InPort::new(sink, 0))
+        .unwrap();
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 0.5 * A) + B));
     let plan = r.s.graph_ref().sent_plan().expect("a plan");
     let commits = r.s.graph_ref().commits_sent();
 
     let edge = r.edge_from(a);
-    r.s.graph().set_edge_gain(edge, amp(1.5)).unwrap();
+    edge.set_gain(r.s.graph(), amp(1.5)).unwrap();
     assert!(!r.s.graph_ref().is_edited(), "a control, not a rewire");
     assert!(all_are(&settled(&mut r.s, 0), (0.0 + 1.5 * A) + B));
     assert!(Arc::ptr_eq(

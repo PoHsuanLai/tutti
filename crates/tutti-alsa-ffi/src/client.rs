@@ -29,6 +29,27 @@ pub enum Read {
     Skipped,
 }
 
+/// The MIDI protocol a UMP client asks the kernel to deliver (and to convert
+/// to, at the port boundary, from what a source sends).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UmpVersion {
+    /// MIDI 1.0 in UMP packets (type 2): a MIDI 1.0 source arrives as it is, and
+    /// a MIDI 2.0 source is narrowed by the kernel.
+    Midi1,
+    /// MIDI 2.0 Protocol in UMP packets (type 4): a MIDI 1.0 source is
+    /// up-converted by the kernel.
+    Midi2,
+}
+
+impl UmpVersion {
+    fn raw(self) -> i32 {
+        match self {
+            Self::Midi1 => sys::SND_SEQ_CLIENT_UMP_MIDI_1_0,
+            Self::Midi2 => sys::SND_SEQ_CLIENT_UMP_MIDI_2_0,
+        }
+    }
+}
+
 /// An open sequencer client that speaks UMP. Owns the `snd_seq_t` and closes it
 /// on drop.
 ///
@@ -52,11 +73,11 @@ pub struct Client {
 unsafe impl Send for Client {}
 
 impl Client {
-    /// Opens a client in UMP MIDI-2.0 mode, named `name` to other clients.
+    /// Opens a client in UMP mode with `version`, named `name` to other clients.
     ///
     /// Three steps, and all three matter:
     /// 1. `snd_seq_open`: an ordinary sequencer client.
-    /// 2. `snd_seq_set_client_midi_version(UMP_MIDI_2_0)`: **this is what makes
+    /// 2. `snd_seq_set_client_midi_version(version)`: **this is what makes
     ///    it a UMP client.** Without it the UMP event calls have nothing to
     ///    carry.
     /// 3. `snd_seq_set_client_ump_conversion(1)`: let the kernel translate at
@@ -70,7 +91,30 @@ impl Client {
     /// # Errors
     ///
     /// The step that failed, with alsa-lib's code.
-    pub fn open(name: &str, nonblock: bool) -> Result<Self> {
+    pub fn open(name: &str, nonblock: bool, version: UmpVersion) -> Result<Self> {
+        let client = Self::open_plain(name, nonblock)?;
+        client.set_ump_version(version)?;
+        // SAFETY: `client.seq` is open.
+        let rc = unsafe { sys::snd_seq_set_client_ump_conversion(client.seq, 1) };
+        check(rc, "snd_seq_set_client_ump_conversion")?;
+        Ok(client)
+    }
+
+    /// Changes the protocol this UMP client is delivered, for the events that
+    /// arrive after the call. A caller that learns its source's protocol only
+    /// from a query on an open client sets it before it subscribes.
+    ///
+    /// # Errors
+    ///
+    /// `snd_seq_set_client_midi_version`'s code.
+    pub fn set_ump_version(&self, version: UmpVersion) -> Result<()> {
+        // SAFETY: `self.seq` is open.
+        let rc = unsafe { sys::snd_seq_set_client_midi_version(self.seq, version.raw()) };
+        check(rc, "snd_seq_set_client_midi_version").map(drop)
+    }
+
+    /// `snd_seq_open` and the name: a client that is not yet a UMP client.
+    fn open_plain(name: &str, nonblock: bool) -> Result<Self> {
         // `"hw"`, not `"default"`. The sequencer is a kernel device, and `hw`
         // addresses it directly; `default` routes through a config-file plugin
         // that, on at least Ubuntu, **cannot be opened non-blocking**: it
@@ -95,14 +139,6 @@ impl Client {
         // SAFETY: `client.seq` is open; `cname` outlives the call.
         unsafe { sys::snd_seq_set_client_name(client.seq, cname.as_ptr()) };
 
-        // SAFETY: `client.seq` is open.
-        let rc = unsafe {
-            sys::snd_seq_set_client_midi_version(client.seq, sys::SND_SEQ_CLIENT_UMP_MIDI_2_0)
-        };
-        check(rc, "snd_seq_set_client_midi_version")?;
-        // SAFETY: `client.seq` is open.
-        let rc = unsafe { sys::snd_seq_set_client_ump_conversion(client.seq, 1) };
-        check(rc, "snd_seq_set_client_ump_conversion")?;
         // SAFETY: `client.seq` is open.
         let rc = unsafe { sys::snd_seq_client_id(client.seq) };
         client.id = check(rc, "snd_seq_client_id")?;
@@ -302,6 +338,73 @@ impl Client {
         self.seq
     }
 
+    /// Opens a **legacy** client (no UMP version: the kernel treats it as a
+    /// MIDI 1.0 byte-event application), the kind of source a MIDI 1.0 device
+    /// or an old application is. Its events are sent with
+    /// [`send_legacy_to_subscribers`](Self::send_legacy_to_subscribers); reading
+    /// UMP from it is an error.
+    ///
+    /// # Errors
+    ///
+    /// The step that failed, with alsa-lib's code.
+    #[cfg(feature = "test-support")]
+    pub fn open_legacy(name: &str, nonblock: bool) -> Result<Self> {
+        Self::open_plain(name, nonblock)
+    }
+
+    /// Sends one legacy channel event to everything subscribed to `port`.
+    ///
+    /// # Errors
+    ///
+    /// `snd_seq_event_output_direct`'s code, or `-EINVAL` when this client's id
+    /// is not an address byte.
+    #[cfg(feature = "test-support")]
+    pub fn send_legacy_to_subscribers(&self, port: u8, event: LegacyEvent) -> Result<()> {
+        let operation = "snd_seq_event_output_direct";
+        let client = u8::try_from(self.id).map_err(|_| Error {
+            operation,
+            code: EINVAL,
+        })?;
+        let mut ev = sys::snd_seq_event_t {
+            type_: 0,
+            flags: 0,
+            tag: 0,
+            queue: sys::SND_SEQ_QUEUE_DIRECT,
+            time: [0; 8],
+            source: sys::snd_seq_addr_t { client, port },
+            dest: sys::snd_seq_addr_t {
+                client: sys::SND_SEQ_ADDRESS_SUBSCRIBERS,
+                port: 0,
+            },
+            data: [0; 12],
+        };
+        match event {
+            LegacyEvent::NoteOn {
+                channel,
+                note,
+                velocity,
+            } => {
+                ev.type_ = sys::SND_SEQ_EVENT_NOTEON;
+                ev.data[..3].copy_from_slice(&[channel, note, velocity]);
+            }
+            LegacyEvent::Controller {
+                channel,
+                param,
+                value,
+            } => {
+                ev.type_ = sys::SND_SEQ_EVENT_CONTROLLER;
+                ev.data[0] = channel;
+                ev.data[4..8].copy_from_slice(&param.to_ne_bytes());
+                ev.data[8..12].copy_from_slice(&value.to_ne_bytes());
+            }
+        }
+        // SAFETY: `self.seq` is open; `ev` is a fully initialised event of the
+        // measured layout (the compile-time asserts in `sys`), which alsa-lib
+        // reads and does not retain.
+        let rc = unsafe { sys::snd_seq_event_output_direct(self.seq, &mut ev) };
+        check(rc, operation).map(drop)
+    }
+
     /// Renames this client; the sequencer announces the change.
     #[cfg(feature = "test-support")]
     pub fn rename(&self, name: &str) {
@@ -323,6 +426,30 @@ impl Client {
             unsafe { sys::snd_seq_port_info_set_capability(info, caps) };
         })
     }
+}
+
+/// A legacy (byte-oriented) channel event a [`Client::open_legacy`] client sends.
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyEvent {
+    /// A Note On.
+    NoteOn {
+        /// Channel, 0 to 15.
+        channel: u8,
+        /// Note number.
+        note: u8,
+        /// Velocity.
+        velocity: u8,
+    },
+    /// A control change.
+    Controller {
+        /// Channel, 0 to 15.
+        channel: u8,
+        /// Controller number.
+        param: u32,
+        /// Value.
+        value: i32,
+    },
 }
 
 /// Copies a message's words into an event's four, and leaves the rest zero; a

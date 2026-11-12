@@ -117,7 +117,11 @@ fn a_refused_rate_is_silent_visible_and_retried() {
     let handle = probe.handle.clone();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
-    handle.on_invalidate(move |e| sink.lock().unwrap().push(e));
+    let _subscription = handle.subscribe(move |n| {
+        if let tutti_plugin_host::Notice::Invalidate(e) = n {
+            sink.lock().unwrap().push(e);
+        }
+    });
 
     let mut unit = Rig::new(
         probe.client.bind(

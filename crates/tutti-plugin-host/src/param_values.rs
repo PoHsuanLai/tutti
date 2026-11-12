@@ -3,7 +3,7 @@
 //! The mirror is filled once, by a read that runs off the control thread
 //! (each value is a blocking round trip to the plugin), and kept current from
 //! the values the plugin reports afterwards (an edit in its GUI, a preset
-//! load), through [`PluginHandle::on_parameter_changed`].
+//! load), through [`PluginHandle::subscribe`].
 //!
 //! **The read is a job, and nothing here spawns it.** [`PluginParamValues::start`]
 //! installs the report callback and hands back the mirror plus a `Send`
@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::PluginHandle;
+use crate::{Notice, PluginHandle, Subscription};
 use tutti_plugin_types::{Normalized, ParamId};
 
 /// Edits the plugin reported, in order, waiting for [`PluginParamValues::drain_edits`].
@@ -34,7 +34,7 @@ type Edits = Arc<Mutex<Vec<(ParamId, Normalized)>>>;
 
 /// A loaded plugin's parameter values, by id: read once by a [`ParamRead`]
 /// (after its saved state is restored), then kept current from the values
-/// the plugin reports (`PluginHandle::on_parameter_changed`).
+/// the plugin reports (`PluginHandle::subscribe`).
 ///
 /// Ids are the `ParamId` a `ParamAddr::Id` names: a CLAP, VST3 or AU parameter
 /// id, or a VST2 index.
@@ -42,6 +42,9 @@ type Edits = Arc<Mutex<Vec<(ParamId, Normalized)>>>;
 pub struct PluginParamValues {
     values: Option<HashMap<ParamId, Normalized>>,
     edits: Edits,
+    /// The handle's subscription that fills `edits`; the mirror stops
+    /// following the plugin when it drops.
+    _subscription: Option<Subscription>,
 }
 
 /// The blocking half of reading a plugin's parameter values: every
@@ -87,16 +90,17 @@ impl PluginParamValues {
     /// read off the control thread and pass its result to
     /// [`land`](Self::land).
     ///
-    /// The callback takes the handle's single `on_parameter_changed` slot,
-    /// replacing any callback installed before, and one installed after
-    /// replaces it (the mirror then stops following the plugin).
+    /// The mirror holds its subscription to the handle, so it follows the
+    /// plugin until it drops.
     #[must_use = "run the `ParamRead` and `land` its values, or the mirror never becomes ready"]
     pub fn start(handle: &PluginHandle) -> (Self, ParamRead) {
         let edits: Edits = Arc::default();
         let queue = Arc::clone(&edits);
         // The mirror follows the changes; a gesture's ends carry no value.
-        handle.on_parameter_changed(move |edit| {
-            if let Some(value) = edit.value() {
+        let subscription = handle.subscribe(move |notice| {
+            if let Notice::Param(edit) = notice
+                && let Some(value) = edit.value()
+            {
                 queue
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -106,6 +110,7 @@ impl PluginParamValues {
         let mirror = Self {
             values: None,
             edits,
+            _subscription: Some(subscription),
         };
         let read = ParamRead {
             handle: handle.clone(),
@@ -120,6 +125,7 @@ impl PluginParamValues {
         Self {
             values: Some(values.into_iter().collect()),
             edits: Arc::default(),
+            _subscription: None,
         }
     }
 

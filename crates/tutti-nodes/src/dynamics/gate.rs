@@ -1,642 +1,339 @@
-//! Noise gate with external sidechain: attenuates below a threshold.
+//! The noise gate [`GateNode`]: closes below a threshold, keyed from a side-chain or from
+//! its own signal.
 
-use std::sync::Arc;
-use tutti_graph::{
-    Cx, InBus, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
-};
-use tutti_types::ChannelLayout;
-use tutti_types::UnitParam;
-use tutti_types::{AtomicF32, AtomicF64};
+use tutti_dsp::{GateControls, GateFamily, Key};
+use tutti_graph::ParamNode;
+use tutti_types::{BusTopology, Db, SampleRate, Seconds, UnitParam};
 
-use super::params::AttackRelease;
-use super::utils::{apply_gain_lane, sidechain_levels};
-use tutti_dsp::{GateBlock, GateKernel};
-use tutti_types::{Db, Param, SampleRate, Seconds, Tail};
+use crate::reverb::{FamilyNode, NodeFamily, Rings};
 
-use crate::buses::keyed;
-use crate::ramp::LastGood;
-
-/// Shared gate state used by the per-sample gain computation.
-#[derive(Clone, Debug)]
-pub(super) struct GateCore {
-    pub threshold_db: Param<Db>,
-    pub timing: AttackRelease,
-    pub hold: Param<Seconds>,
-    pub range_db: Param<Db>,
-
-    kernel: GateKernel,
-    /// The range the previous block ended on, the start of this block's ramp.
-    /// `None` until the first block, which starts on its own value.
-    last_range: Option<Db>,
-    /// Last finite threshold, range, attack, hold and release. The times
-    /// become the follower's coefficients and hold count, and the range the
-    /// start of every later ramp, so a non-finite write reads as unchanged
-    /// (see [`LastGood`]).
-    good: [LastGood; 5],
-}
-
-impl GateCore {
-    /// Builds the shared core. The follower is seeded at the placeholder
-    /// [`SampleRate::DEFAULT`]; `GateNode`'s `prepare` retunes it from
-    /// `timing` and `hold`, which is why those are kept as [`Seconds`] rather
-    /// than only as coefficients and a sample count — the seconds are the
-    /// recoverable form, the derived values are not.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
-    pub fn new(
-        threshold_db: impl Into<Db>,
-        attack: impl Into<Seconds>,
-        hold: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        let threshold_db = threshold_db.into();
-        let attack = attack.into();
-        let hold = hold.into();
-        let release = release.into();
-        Self {
-            threshold_db: Param::new(threshold_db),
-            timing: AttackRelease::new(attack, release),
-            hold: Param::new(hold),
-            range_db: Param::new(Db(-80.0)),
-            kernel: GateKernel::new(attack, hold, release, SampleRate::DEFAULT),
-            last_range: None,
-            good: [
-                LastGood::new(threshold_db.get(), 0.0),
-                LastGood::fixed(-80.0),
-                LastGood::new(attack.to_f32(), 0.0),
-                LastGood::new(hold.to_f32(), 0.0),
-                LastGood::new(release.to_f32(), 0.0),
-            ],
-        }
-    }
-
-    pub fn with_range(mut self, range_db: impl Into<Db>) -> Self {
-        self.range_db = Param::new(Db(range_db.into().get().min(0.0)));
-        self
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.kernel.is_open()
-    }
-
-    pub fn gate_level(&self) -> f32 {
-        self.kernel.gate_level()
-    }
-
-    pub fn reset(&mut self) {
-        self.kernel.reset();
-        // Ramp history is state like the envelope; see `CompressorCore::reset`.
-        self.last_range = None;
-    }
-
-    pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_types::SampleRate>) {
-        let (attack, hold, release) = self.times([None, None]);
-        self.kernel
-            .set_sample_rate(sample_rate, attack, hold, release);
-    }
-
-    /// `driven` is the block's attack and release from the node's param
-    /// ports where a lane drives them; `None` reads the cell.
-    #[inline]
-    pub fn update_coefficients(&mut self, driven: [Option<f32>; 2]) {
-        let (attack, hold, release) = self.times(driven);
-        self.kernel.update_coefficients(attack, hold, release);
-    }
-
-    /// Attack, hold and release, with non-finite writes held off; attack
-    /// and release floored as the setters floor them
-    /// ([`AttackRelease::clamp_time`]), driven or not.
-    #[inline]
-    fn times(&mut self, [attack, release]: [Option<f32>; 2]) -> (Seconds, Seconds, Seconds) {
-        (
-            Seconds::from_f32(AttackRelease::clamp_time(
-                self.good[2].read(attack.unwrap_or_else(|| self.timing.attack.load().to_f32())),
-            )),
-            Seconds::from_f32(self.good[3].read(self.hold.load().to_f32())),
-            Seconds::from_f32(AttackRelease::clamp_time(
-                self.good[4].read(release.unwrap_or_else(|| self.timing.release.load().to_f32())),
-            )),
-        )
-    }
-
-    /// Reads every block-rate control once, and moves the range ramp's start to
-    /// this block's end.
-    #[inline]
-    pub fn begin_block(&mut self) -> GateBlock {
-        let range_to = Db(self.good[1].read(self.range_db.load().get()));
-        let range_from = self.last_range.unwrap_or(range_to);
-        self.last_range = Some(range_to);
-        let threshold = Db(self.good[0].read(self.threshold_db.load().get()));
-        GateBlock::new(threshold, range_from, range_to)
-    }
-
-    /// Gate gain (linear) for frame `i` of an `n`-frame block; see
-    /// [`GateKernel::gain`].
-    #[inline]
-    pub fn gain(
-        &mut self,
-        block: &GateBlock,
-        i: usize,
-        n: usize,
-        sc_level: f32,
-        threshold_override: Option<Db>,
-    ) -> f32 {
-        self.kernel.gain(block, i, n, sc_level, threshold_override)
-    }
-}
-
-/// GateNode with external sidechain. Channel-count is runtime-configurable:
-/// `channels = N` means N audio inputs + N sidechain inputs + N outputs, with
-/// a single linked gate level computed from the max-abs of the sidechain channels.
+/// A noise gate: `channels = N` means N audio inputs, then (for a side-chain key) N key
+/// inputs, and N outputs, with one **linked** open/closed decision from the loudest key
+/// channel applied to every output.
 ///
-/// - `GateNode::mono(..)` — 2 inputs (audio + sidechain), 1 output.
-/// - `GateNode::stereo(..)` — 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gate.
-/// - `GateNode::with_channels(.., n)` — arbitrary N.
+/// A [`FamilyNode`] over [`GateFamily`], the detector and the gain being the family's
+/// recurrence; this file holds the cells and how the graph reaches them.
 ///
-/// # Modulated threshold
+/// # The key
 ///
-/// The audio inputs (`0..ch`) come first, then the sidechain inputs
-/// (`ch..2*ch`). The threshold is modulatable by the graph: a per-frame threshold in [`Db`] on the param
-/// port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold cell
-/// per sample. Unmodulated, the node reads its cell once per block, which is
-/// the common case; the arity never changes.
+/// The detector listens to a [`Key`], chosen when the node is built:
+///
+/// - [`mono`](Self::mono), [`stereo`](Self::stereo) and [`with_bus`](Self::with_bus) have a
+///   **side-chain** key: a second bus, as wide as the signal, after the audio inputs.
+///   **It must be wired**: the graph feeds an unconnected input silence, and a gate keyed
+///   by silence stays closed (at its range). Wire it with a bus edge, for example
+///   `graph.connect(kick.bus_out(0), gate.bus_in(1))` in `tutti-session`, or each key
+///   channel into the inputs after the audio.
+/// - [`own_key`](Self::own_key) has no key bus: the gate listens to its own signal, as an
+///   ordinary gate does, and needs nothing wired.
+///
+/// The node declares no tail: the release decays after the key goes silent, but it only
+/// scales, so a silent input is a silent output.
+///
+/// # Controls
+///
+/// Threshold, attack, hold, release and range are live [`Params`](crate::Params) shared
+/// across clones, set through the node's [`ParamSet`](tutti_graph::ParamSet) or the
+/// graph's `set_param` (a time under 0 reads as 0 and a range over 0 dB as 0 dB).
+///
+/// **The threshold is read per frame** when the graph drives it: a lane on its port is the
+/// recurrence's own ([`Feed`](tutti_dsp::Feed) lane 0), and the cell is the base a frame
+/// nobody drives (or a non-finite one) is compared against. **Every other control is on
+/// the stream grid** (16 frames from the last reset,
+/// [`Family::CADENCE`](tutti_dsp::Family::CADENCE)): a cell write or a driven port is
+/// sampled at the grid's solve frame, so it reaches the render within 16 frames and the
+/// render does not depend on how the stream is cut into blocks. The times land whole (the
+/// follower smooths them), and the range glides over
+/// [`GAIN_GLIDE`](tutti_dsp::GAIN_GLIDE), 5 ms.
 ///
 /// # In a graph
 ///
-/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
-/// over threshold, attack and release, and a fork of it starts from the
-/// values last set through that set. The graph prepares it at the device
-/// rate before its first block.
-pub struct GateNode {
-    core: GateCore,
-    /// Audio, then the key as a `Sidechain` bus; the output is the audio's.
-    ports: Shape,
-    /// The key's handle.
-    key: InBus,
-    /// The per-frame gain lane, sized to the prepared `MaxBlock`.
-    gains: Vec<f32>,
-}
-
-impl std::fmt::Debug for GateNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GateNode")
-            .field("core", &self.core)
-            .field("channels", &self.ports.audio_out())
-            .finish_non_exhaustive()
-    }
-}
-
-// The params a [`GateNode`] lets the graph modulate, in port order.
-tutti_graph::declare_params!([] GateNode, n {
-    Threshold => Db = &n.core.threshold_db,
-    Attack => Seconds = &n.core.timing.attack,
-    Release => Seconds = &n.core.timing.release,
-});
+/// A graph node ([`IntoNode`](tutti_graph::IntoNode)): inserted, a fork of it starts from
+/// the values last set through its [`ParamSet`](tutti_graph::ParamSet). The graph prepares
+/// it at the device rate before its first block.
+pub type GateNode = FamilyNode<GateFamily>;
 
 impl GateNode {
-    /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
+    /// Mono + mono side-chain: 2 inputs (audio, key), 1 output.
     ///
-    /// `threshold_db` is the sidechain level in [`Db`] at or above which the
-    /// gate opens. `attack` is how fast it opens, `hold` how long it stays open
-    /// after the signal falls back below the threshold, and `release` how fast
-    /// it then closes — all [`Seconds`]. Hold is what stops a gate chattering
-    /// on a signal hovering at the threshold.
+    /// `threshold_db` is the key level in [`Db`] at or above which the gate opens. `attack`
+    /// is how fast it opens, `hold` how long it stays open after the key falls back below
+    /// the threshold, and `release` how fast it then closes, all [`Seconds`]. Hold is what
+    /// stops a gate chattering on a key hovering at the threshold.
     ///
-    /// The closed floor is −80 dB; set it with [`with_range`](Self::with_range).
+    /// The closed floor is -80 dB; set it with [`with_range`](Self::with_range). **The key
+    /// is a side-chain that must be wired** (see the [type](GateNode)); for a gate that
+    /// listens to its own signal use [`own_key`](Self::own_key).
     ///
-    /// The attack and release coefficients and the hold count are derived
-    /// from the times at the rate [`Node::prepare`] hands it.
+    /// The attack and release coefficients and the hold count are derived from the times
+    /// at the rate [`Node::prepare`](tutti_graph::Node::prepare) hands it.
+    #[must_use]
     pub fn mono(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
         hold: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
-        Self::with_channels(threshold_db, attack, hold, release, 1)
+        Self::with_bus(BusTopology::MONO, threshold_db, attack, hold, release)
     }
 
-    /// Stereo + stereo sidechain: 4 inputs (L, R, SC-L, SC-R), 2 outputs.
+    /// Stereo + stereo side-chain: 4 inputs (L, R, key L, key R), 2 outputs.
     ///
-    /// The gate is **linked** — one open/closed decision from the loudest
-    /// sidechain channel, applied to both — so the two channels always gate
-    /// together. Parameters are as [`mono`](Self::mono).
+    /// The gate is **linked**: one open/closed decision from the loudest key channel,
+    /// applied to both, so the two channels always gate together. Parameters are as
+    /// [`mono`](Self::mono), and so is the key: a side-chain that must be wired (use
+    /// [`own_key`](Self::own_key) for one that listens to its own signal).
+    #[must_use]
     pub fn stereo(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
         hold: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
-        Self::with_channels(threshold_db, attack, hold, release, 2)
+        Self::with_bus(BusTopology::STEREO, threshold_db, attack, hold, release)
     }
 
-    /// Arbitrary channel count, clamped to at least 1.
-    ///
-    /// `N` audio inputs, then `N` sidechain inputs, then `N` outputs, with one
-    /// **linked** gate decision from the loudest sidechain channel. Parameters
-    /// are as [`mono`](Self::mono).
-    ///
-    /// # Panics
-    ///
-    /// If `channels` is past 16: a key that wide fits no bus.
-    pub fn with_channels(
+    /// A gate on the bus `input` with a side-chain key as wide: the main bus keeps its
+    /// speaker placement, the key (a level to read, not a placement) has none.
+    /// `with_bus(BusTopology::STEREO, ..)` is [`stereo`](Self::stereo); an `n`-channel one on
+    /// the engine's order for that width is `with_bus(BusTopology::assumed(n)?, ..)`, which
+    /// refuses a width past one bus. Parameters and the key are as [`mono`](Self::mono).
+    #[must_use]
+    pub fn with_bus(
+        input: BusTopology,
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
         hold: impl Into<Seconds>,
         release: impl Into<Seconds>,
-        channels: u8,
     ) -> Self {
-        let (ports, key) = keyed(ChannelLayout::from(channels.max(1)));
-        Self {
-            core: GateCore::new(threshold_db, attack, hold, release),
-            ports,
-            key,
-            gains: Vec::new(),
-        }
+        Self::keyed(Key::Sidechain, input, threshold_db, attack, hold, release)
     }
 
-    /// Sets how far the gate attenuates when closed, in [`Db`], clamped to at
-    /// most `0.0`.
-    ///
-    /// This is a *floor*, not a mute: `-80.0` (the default) is effectively
-    /// silent, while a gentler `-12.0` ducks the signal without removing it,
-    /// which sounds more natural on drums and room mics. `0.0` disables the
-    /// gate's effect entirely.
+    /// A gate on the bus `input` whose detector listens to **its own signal**: no key bus,
+    /// so `width` audio inputs and `width` outputs, and nothing to wire. The gate closes
+    /// when the signal itself falls under the threshold. Parameters are as
+    /// [`mono`](Self::mono).
     #[must_use]
-    pub fn with_range(mut self, range_db: impl Into<Db>) -> Self {
-        self.core = self.core.with_range(range_db);
+    pub fn own_key(
+        input: BusTopology,
+        threshold_db: impl Into<Db>,
+        attack: impl Into<Seconds>,
+        hold: impl Into<Seconds>,
+        release: impl Into<Seconds>,
+    ) -> Self {
+        Self::keyed(Key::Own, input, threshold_db, attack, hold, release)
+    }
+
+    fn keyed(
+        key: Key,
+        input: BusTopology,
+        threshold_db: impl Into<Db>,
+        attack: impl Into<Seconds>,
+        hold: impl Into<Seconds>,
+        release: impl Into<Seconds>,
+    ) -> Self {
+        Self::live(
+            GateFamily::new(input, key),
+            GateControls {
+                threshold: threshold_db.into(),
+                attack: attack.into(),
+                hold: hold.into(),
+                release: release.into(),
+                range: Db(-80.0),
+            },
+        )
+    }
+
+    /// Sets how far the gate attenuates when closed, in [`Db`], read as at most `0.0`.
+    ///
+    /// This is a *floor*, not a mute: `-80.0` (the default) is effectively silent, while a
+    /// gentler `-12.0` ducks the signal without removing it, which sounds more natural on
+    /// drums and room mics. `0.0` disables the gate's effect entirely.
+    #[must_use]
+    pub fn with_range(self, range_db: impl Into<Db>) -> Self {
+        self.cell(UnitParam::Range, range_db.into().get().min(0.0));
         self
     }
 
-    /// The audio channel width this gate was built for.
-    ///
-    /// It has `2 * channels` inputs (audio then sidechain) and `channels`
-    /// outputs, plus a threshold port if one was requested.
-    pub fn channels(&self) -> u8 {
-        self.ports.audio_out().count() as u8
-    }
-
-    /// The width this gate was built for, as the engine's channel vocabulary.
-    /// [`channels`](Self::channels) is the same number as a bare count, kept
-    /// for callers doing port arithmetic.
-    pub fn layout(&self) -> ChannelLayout {
-        self.ports.audio_out()
-    }
-
-    /// The shared threshold cell in [`Db`] — the sidechain level at or above
-    /// which the gate opens.
-    ///
-    /// **A threshold the graph feeds overrides this per sample.**
-    /// Shared across clones.
-    pub fn threshold(&self) -> Arc<AtomicF32> {
-        self.core.threshold_db.as_atomic()
-    }
-
-    /// The shared attack-time cell in [`Seconds`] — how fast the gate opens
-    /// once the sidechain crosses the threshold.
-    ///
-    /// Very short attacks can click on low-frequency material; longer ones
-    /// soften the onset.
-    pub fn attack_time(&self) -> Arc<AtomicF64> {
-        self.core.timing.attack.as_atomic()
-    }
-
-    /// The shared hold-time cell in [`Seconds`] — how long the gate stays fully
-    /// open after the sidechain falls back below the threshold.
-    ///
-    /// This is what stops chatter on a signal hovering at the threshold. The
-    /// release only begins once hold expires.
-    pub fn hold_time(&self) -> Arc<AtomicF64> {
-        self.core.hold.as_atomic()
-    }
-
-    /// The shared release-time cell in [`Seconds`] — how fast the gate closes
-    /// after the hold expires.
-    pub fn release_time(&self) -> Arc<AtomicF64> {
-        self.core.timing.release.as_atomic()
-    }
-
-    /// The shared range cell in [`Db`] — the attenuation floor when closed.
-    ///
-    /// At most `0.0`; `-80.0` is effectively silent, gentler values duck rather
-    /// than mute.
-    pub fn range(&self) -> Arc<AtomicF32> {
-        self.core.range_db.as_atomic()
-    }
-
-    /// Whether the gate is currently more than half open — a **measurement**,
-    /// for driving an open/closed indicator.
-    ///
-    /// A threshold over [`gate_level`](Self::gate_level), so it flips partway
-    /// through the attack and release rather than at their edges.
-    #[must_use]
-    pub fn is_open(&self) -> bool {
-        self.core.is_open()
-    }
-
-    /// The gate's open fraction, `0.0` (fully closed) to `1.0` (fully open) — a
-    /// **measurement**, for driving a gate indicator.
-    ///
-    /// Unitless, and deliberately not an `Amplitude`: it is how far through its
-    /// envelope the gate is, not a signal level. The applied attenuation is
-    /// this fraction scaled into the range.
-    pub fn gate_level(&self) -> f32 {
-        self.core.gate_level()
-    }
-
-    /// Sets the threshold in [`Db`], unclamped.
-    ///
-    /// While the graph modulates the threshold this sets the *base* its
-    /// modulation rides on.
-    pub fn set_threshold(&self, db: impl Into<Db>) {
-        self.core.threshold_db.store(db.into());
-    }
-
-    /// Sets the attack time in [`Seconds`], floored at 0.
-    pub fn set_attack(&self, seconds: impl Into<Seconds>) {
-        self.core
-            .timing
-            .attack
-            .store(AttackRelease::floor(seconds.into()));
-    }
-
-    /// Sets the release time in [`Seconds`], floored at 0.
-    ///
-    /// Takes effect only after the hold time expires.
-    pub fn set_release(&self, seconds: impl Into<Seconds>) {
-        self.core
-            .timing
-            .release
-            .store(AttackRelease::floor(seconds.into()));
+    /// Writes one control's cell: the controls are the cells, and the node designs from
+    /// them at its first block.
+    fn cell(&self, kind: UnitParam, value: f32) {
+        assert!(
+            self.param_set().set(kind, value),
+            "a gate has a {kind:?} control"
+        );
     }
 }
 
-impl Node for GateNode {
-    /// `2 * channels` in (audio, then sidechain), `channels` out, the
-    /// threshold, attack and release modulatable .
-    ///
-    /// No tail: the release envelope decays after the input goes silent,
-    /// but it only scales (`output = input * gain`), so a silent input is a
-    /// silent output whatever the envelope is doing.
-    fn shape(&self) -> Shape {
-        self.ports
-            .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::None)
-            .with_param_addrs(self.declared_ports().as_slice())
-    }
+/// The gate's controls: threshold, attack, hold, release and range.
+#[derive(Clone, Copy, Debug)]
+pub struct GateSet;
 
-    fn prepare(&mut self, p: &Prepare) {
-        self.core.set_sample_rate(p.sample_rate());
-        self.gains = vec![0.0; p.max_block().get()];
-    }
+control_set! {
+    GateSet(_s): GateControls = GateControls::DEFAULT;
+    live: (all);
+    Threshold => Db = threshold { fast },
+    Attack => Seconds = attack { whole },
+    Hold => Seconds = hold { whole },
+    Release => Seconds = release { whole },
+    // The range glides in the recurrence, over `GAIN_GLIDE`: the reader must not ramp it
+    // across the block as well.
+    Range => Db = range { whole };
 
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames();
-        self.core.update_coefficients([
-            self.declared_param::<{ UnitParam::Attack as u16 }>(&io)
-                .last_frame(),
-            self.declared_param::<{ UnitParam::Release as u16 }>(&io)
-                .last_frame(),
-        ]);
-        let block = self.core.begin_block();
-        // A modulated threshold overrides the cell per sample; the cell is
-        // the base the graph's modulation rides on.
-        let threshold_fed = self
-            .declared_param::<{ UnitParam::Threshold as u16 }>(&io)
-            .frames();
-        let (inputs, mut outputs) = io.split();
-
-        // Detector sample-outer (a recursive envelope with a hold counter),
-        // apply channel-outer over planar slices — see `CompressorNode::process`.
-        let gains = &mut self.gains[..size];
-        sidechain_levels(&inputs.bus(self.key), gains);
-        for (i, g) in gains.iter_mut().enumerate() {
-            let sc = *g;
-            let threshold = threshold_fed.map(|v| Db(v[i]));
-            *g = self.core.gain(&block, i, size, sc, threshold);
-        }
-        apply_gain_lane(gains, &inputs, &mut outputs);
-        Status::Modified
-    }
-
-    fn reset(&mut self) {
-        self.core.reset();
-    }
-
-    fn param_base(&self, k: usize) -> Option<f32> {
-        self.declared_base(k)
+    fn defaults(&self) -> GateControls {
+        GateControls::DEFAULT
     }
 }
 
-impl ParamNode for GateNode {
-    /// Threshold, attack and release: the addresses `set(Setting)` took.
-    /// Hold and range are reached through their cells.
-    fn param_set(&self) -> ParamSet {
-        self.declared_set()
+/// A gate rings on only as a gain (it scales its input), so it declares no tail and never
+/// parks: its follower must keep tracking the key, which the main input's silence says
+/// nothing of.
+impl NodeFamily for GateFamily {
+    type Set = GateSet;
+
+    const RINGS: Rings = Rings::Silent;
+    const SAMPLING: tutti_dsp::Cadence = <Self as tutti_dsp::Family>::CADENCE;
+
+    fn set(&self, _: &GateControls) -> GateSet {
+        GateSet
     }
 
-    /// A clone with every control cell detached (hold and range too), its
-    /// envelope cleared.
-    fn fork_fresh(&self) -> Self {
-        let mut fork = self.clone();
-        fork.core.threshold_db.detach();
-        fork.core.timing.detach();
-        fork.core.hold.detach();
-        fork.core.range_db.detach();
-        Node::reset(&mut fork);
-        fork
-    }
-}
-
-/// Inserted with its [`ParamSet`] as its controls and a fork from the values
-/// last set through it ([`tutti_graph::param_parts`]).
-impl IntoNode for GateNode {
-    type Controls = ParamSet;
-
-    fn into_parts(self) -> NodeParts<ParamSet> {
-        tutti_graph::param_parts(self)
-    }
-}
-
-/// Shares the control cells (the template [`tutti_graph::param_parts`]
-/// forks from); the detector state is copied.
-impl Clone for GateNode {
-    fn clone(&self) -> Self {
-        Self {
-            core: self.core.clone(),
-            ports: self.ports,
-            key: self.key,
-            gains: self.gains.clone(),
-        }
-    }
+    fn capacity(&self, _: SampleRate) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
-    use core::sync::atomic::Ordering;
     use tutti_graph::contract::{assert_param_fork, drive};
-    use tutti_types::UnitParam;
+    use tutti_graph::{Node, ParamNode};
 
-    /// A fork starts from the values last set through the node's
-    /// `ParamSet` and shares no cell with it.
-    #[test]
-    fn a_fork_shares_no_cell() {
-        assert_param_fork(GateNode::stereo(
-            Db::new(-30.0),
-            Seconds::new(0.001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        ));
+    fn gate(threshold: f32, attack: f64, hold: f64, release: f64) -> GateNode {
+        GateNode::mono(
+            Db::new(threshold),
+            Seconds::new(attack),
+            Seconds::new(hold),
+            Seconds::new(release),
+        )
     }
 
-    /// A block longer than 64 frames renders whole: the
-    /// gain lane is sized from the prepared `MaxBlock`.
+    /// A fork starts from the values last set through the node's `ParamSet` and shares no
+    /// cell with it.
     #[test]
-    fn a_block_up_to_the_prepared_maximum_renders() {
-        let mut gate = prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.0001),
+    fn a_fork_shares_no_cell() {
+        assert_param_fork(
+            GateNode::stereo(
+                Db::new(-30.0),
+                Seconds::new(0.001),
                 Seconds::new(0.01),
                 Seconds::new(0.1),
-            ),
-            RATE_44K,
+            )
+            .with_range(Db::new(-20.0)),
         );
+    }
+
+    /// A block longer than 64 frames renders whole: the gain lane is sized from the
+    /// prepared `MaxBlock`, not a constant.
+    #[test]
+    fn a_block_up_to_the_prepared_maximum_renders() {
+        let mut node = prepared_at(gate(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
         let audio = vec![0.5f32; 1024];
         let sc = vec![0.9f32; 1024];
-        let out = drive(&mut gate, RATE_44K, &[&audio, &sc], &[]).remove(0);
+        let out = drive(&mut node, RATE_44K, &[&audio, &sc], &[]).remove(0);
         assert!(out[1023] > 0.3, "the loud sidechain opened the gate");
     }
 
+    /// A new gate is closed: the first frames are the signal at the range, -80 dB.
     #[test]
-    fn test_gate_starts_closed() {
-        let gate = GateNode::mono(
-            Db::new(-30.0),
-            Seconds::new(0.001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        );
-        assert!(!gate.is_open());
-        assert_eq!(gate.gate_level(), 0.0);
+    fn a_new_gate_is_closed() {
+        let mut node = prepared_at(gate(-30.0, 0.001, 0.01, 0.1), RATE_44K);
+        let mut out = [0.0f32];
+        tick(&mut node, &[0.5, 0.0], &mut out);
+        assert!((out[0] / (0.5 * 1.0e-4) - 1.0).abs() < 1e-4, "{}", out[0]);
     }
 
     #[test]
-    fn test_gate_opens_on_loud_sidechain() {
-        let mut gate = prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
-        let mut output = [0.0f32];
-
+    fn a_loud_side_chain_opens_the_gate() {
+        let mut node = prepared_at(gate(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
+        let mut out = [0.0f32];
         for _ in 0..500 {
-            tick(&mut gate, &[0.5, 0.9], &mut output);
+            tick(&mut node, &[0.5, 0.9], &mut out);
         }
-
-        assert!(gate.is_open());
-        assert!(output[0] > 0.3);
+        assert!((out[0] - 0.5).abs() < 1e-3, "open: {}", out[0]);
     }
 
     #[test]
-    fn test_gate_closes_on_quiet_sidechain() {
-        let mut gate = prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.001),
-                Seconds::new(0.001),
-                Seconds::new(0.001),
-            )
-            .with_range(Db::new(-60.0)),
+    fn a_quiet_side_chain_closes_the_gate() {
+        let mut node = prepared_at(
+            gate(-20.0, 0.001, 0.001, 0.001).with_range(Db::new(-60.0)),
             RATE_44K,
         );
-
-        let mut output = [0.0f32];
-
+        let mut out = [0.0f32];
         for _ in 0..500 {
-            tick(&mut gate, &[0.5, 0.9], &mut output);
+            tick(&mut node, &[0.5, 0.9], &mut out);
         }
-        assert!(gate.is_open());
-
+        assert!(out[0] > 0.45);
         for _ in 0..2000 {
-            tick(&mut gate, &[0.5, 0.01], &mut output);
+            tick(&mut node, &[0.5, 0.01], &mut out);
         }
-
-        assert!(!gate.is_open());
-        assert!(output[0] < 0.1);
+        assert!(out[0] < 0.01, "closed to -60 dB: {}", out[0]);
     }
 
+    /// A range written over 0 dB reads as 0 dB: a closed gate that gains nothing and
+    /// loses nothing.
     #[test]
-    fn test_gate_range_clamps_to_non_positive() {
-        let gate = GateNode::mono(
-            Db::new(-20.0),
-            Seconds::new(0.001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        )
-        .with_range(Db::new(10.0));
-        assert_eq!(gate.range().load(Ordering::Acquire), 0.0);
-    }
-
-    #[test]
-    fn test_gate_range_attenuates_rather_than_mutes() {
-        let mut gate = prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.001),
-                Seconds::new(0.001),
-                Seconds::new(0.001),
-            )
-            .with_range(Db::new(-12.0)),
+    fn a_range_over_zero_reads_as_zero() {
+        let mut node = prepared_at(
+            gate(-20.0, 0.001, 0.01, 0.1).with_range(Db::new(10.0)),
             RATE_44K,
         );
+        let mut out = [0.0f32];
+        for _ in 0..100 {
+            tick(&mut node, &[0.5, 0.0], &mut out);
+        }
+        assert_eq!(out[0], 0.5);
+        assert!(node.param_set().set(UnitParam::Range, 6.0));
+        for _ in 0..100 {
+            tick(&mut node, &[0.5, 0.0], &mut out);
+        }
+        assert_eq!(out[0], 0.5);
+    }
 
-        let mut output = [0.0f32];
-
+    /// With a -12 dB range a closed gate attenuates the signal by that figure and does not
+    /// mute it.
+    #[test]
+    fn the_range_attenuates_rather_than_mutes() {
+        let mut node = prepared_at(
+            gate(-20.0, 0.001, 0.001, 0.001).with_range(Db::new(-12.0)),
+            RATE_44K,
+        );
+        let mut out = [0.0f32];
         for _ in 0..2000 {
-            tick(&mut gate, &[0.5, 0.01], &mut output);
+            tick(&mut node, &[0.5, 0.01], &mut out);
         }
-
-        assert!(!gate.is_open());
-        assert!(
-            output[0] > 0.05,
-            "With -12dB range, signal should be attenuated not muted: {}",
-            output[0]
-        );
-        assert!(output[0] < 0.5);
+        let want = 0.5 * 10f32.powf(-12.0 / 20.0);
+        assert!((out[0] - want).abs() < 1e-5, "{} vs {want}", out[0]);
     }
 
+    /// `reset` clears the follower and the hold: after it a gate that was open and holding
+    /// is closed.
     #[test]
-    fn test_gate_reset() {
-        let mut gate = prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
-        let mut output = [0.0f32];
+    fn a_reset_closes_the_gate() {
+        let mut node = prepared_at(gate(-20.0, 0.0001, 0.5, 0.1), RATE_44K);
+        let mut out = [0.0f32];
         for _ in 0..500 {
-            tick(&mut gate, &[0.5, 0.9], &mut output);
+            tick(&mut node, &[0.5, 0.9], &mut out);
         }
-        assert!(gate.is_open());
-
-        gate.reset();
-        assert!(!gate.is_open());
-        assert_eq!(gate.gate_level(), 0.0);
+        tick(&mut node, &[0.5, 0.0], &mut out);
+        assert!(out[0] > 0.49, "the hold keeps it open");
+        Node::reset(&mut node);
+        tick(&mut node, &[0.5, 0.0], &mut out);
+        assert!(out[0] < 1e-3, "a reset gate is closed: {}", out[0]);
     }
 
     #[test]
-    fn test_gate_stereo_opens_on_loud_sidechain() {
-        let mut gate = prepared_at(
+    fn a_stereo_gate_is_linked() {
+        let mut node = prepared_at(
             GateNode::stereo(
                 Db::new(-20.0),
                 Seconds::new(0.0001),
@@ -645,355 +342,161 @@ mod tests {
             ),
             RATE_44K,
         );
-
-        let mut output = [0.0f32; 2];
-
+        let mut out = [0.0f32; 2];
         for _ in 0..500 {
-            tick(&mut gate, &[0.5, 0.4, 0.9, 0.9], &mut output);
+            tick(&mut node, &[0.8, 0.3, 0.9, 0.001], &mut out);
         }
-
-        assert!(gate.is_open());
-        assert!(output[0] > 0.3);
-        assert!(output[1] > 0.2);
+        // Both channels open on the loudest key; the signal ratio is kept.
+        assert!(
+            (out[0] - 0.8).abs() < 1e-3 && (out[1] - 0.3).abs() < 1e-3,
+            "{out:?}"
+        );
     }
 
+    /// `2 * width` inputs (audio, then key) and `width` outputs for a side-chain gate, and
+    /// `width` inputs for an own-key one, at every width.
     #[test]
-    fn test_gate_stereo_channel_count() {
-        let mono = GateNode::mono(
-            Db::new(-20.0),
-            Seconds::new(0.001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        );
-        assert_eq!(mono.channels(), 1);
-        assert_eq!(mono.shape().audio_in().count(), 2);
-        assert_eq!(mono.shape().audio_out().count(), 1);
-
-        let stereo = GateNode::stereo(
-            Db::new(-20.0),
-            Seconds::new(0.001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        );
-        assert_eq!(stereo.channels(), 2);
-        assert_eq!(stereo.shape().audio_in().count(), 4);
-        assert_eq!(stereo.shape().audio_out().count(), 2);
-    }
-
-    #[test]
-    fn test_gate_stereo_linking() {
-        let mut gate = prepared_at(
-            GateNode::stereo(
+    fn the_key_choice_is_the_port_layout() {
+        let t = |s: BusTopology, own: bool| {
+            let (th, a, h, r) = (
                 Db::new(-20.0),
-                Seconds::new(0.0001),
+                Seconds::new(0.001),
                 Seconds::new(0.01),
                 Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
-        let mut output = [0.0f32; 2];
-
-        for _ in 0..500 {
-            tick(&mut gate, &[0.8, 0.3, 0.9, 0.9], &mut output);
-        }
-
-        let ratio = output[1] / output[0];
-        assert!(
-            (ratio - 0.3 / 0.8).abs() < 0.15,
-            "Both channels should have same gate gain, ratio: {}",
-            ratio
-        );
+            );
+            let node = if own {
+                GateNode::own_key(s, th, a, h, r)
+            } else {
+                GateNode::with_bus(s, th, a, h, r)
+            };
+            let shape = node.shape();
+            (shape.audio_in().count(), shape.audio_out().count())
+        };
+        assert_eq!(t(BusTopology::MONO, false), (2, 1));
+        assert_eq!(t(BusTopology::STEREO, false), (4, 2));
+        assert_eq!(t(BusTopology::MONO, true), (1, 1));
+        assert_eq!(t(BusTopology::STEREO, true), (2, 2));
     }
 
-    // ── Modulated threshold (the graph's param feed) ────────────────────────
+    /// An own-key gate listens to its signal: a loud one passes, one under the threshold is
+    /// closed to the range, and nothing is wired.
+    #[test]
+    fn an_own_key_gate_listens_to_its_signal() {
+        let mk = || {
+            GateNode::own_key(
+                BusTopology::MONO,
+                Db::new(-20.0),
+                Seconds::new(0.0001),
+                Seconds::new(0.001),
+                Seconds::new(0.001),
+            )
+            .with_range(Db::new(-40.0))
+        };
+        let mut out = [0.0f32];
+        let mut node = prepared_at(mk(), RATE_44K);
+        for _ in 0..500 {
+            tick(&mut node, &[0.5], &mut out);
+        }
+        assert!((out[0] - 0.5).abs() < 1e-3, "a loud signal opens itself");
+        let mut node = prepared_at(mk(), RATE_44K);
+        for _ in 0..500 {
+            tick(&mut node, &[0.01], &mut out);
+        }
+        assert!((out[0] / (0.01 * 0.01) - 1.0).abs() < 1e-3, "{}", out[0]);
+    }
 
-    /// The shape declares the threshold, attack and release, and it never
-    /// changes the arity: audio plus sidechain, at every width. (Doc 014
-    /// §12.6 widened the list: a route onto any of these was refused once
-    /// the frame-rate driver went.)
+    /// The shape declares every control in the order of the set (threshold, attack, hold,
+    /// release, range), with the cells as their bases, no latency and no tail.
     #[test]
     fn gate_declares_its_params() {
-        let m = GateNode::mono(
-            Db::new(-20.0),
-            Seconds::new(0.0001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        );
+        let m = gate(-20.0, 0.0001, 0.01, 0.1).with_range(Db::new(-30.0));
+        let shape = m.shape();
         assert_eq!(
-            m.shape().params.as_slice(),
-            &[UnitParam::Threshold, UnitParam::Attack, UnitParam::Release][..]
+            shape.params.as_slice(),
+            &[
+                UnitParam::Threshold,
+                UnitParam::Attack,
+                UnitParam::Hold,
+                UnitParam::Release,
+                UnitParam::Range
+            ][..]
         );
-        assert_eq!(m.shape().audio_in().count(), 2);
-        assert_eq!(
-            m.param_base(0),
-            Some(-20.0),
-            "the base is the threshold control"
-        );
-        assert_eq!(m.param_base(1), Some(0.0001), "the attack's base");
-        assert_eq!(m.param_base(2), Some(0.1), "the release's base");
-        let s = GateNode::stereo(
-            Db::new(-20.0),
-            Seconds::new(0.0001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        );
-        assert_eq!(s.shape().audio_in().count(), 4);
-    }
-
-    // ── The threshold compares in the linear domain ─────────────────────────
-
-    /// A mono gate at `-20 dB` (0.1 linear), 44.1 kHz, fast attack, no range
-    /// floor beyond the default.
-    fn gate_at_minus_20() -> GateNode {
-        prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.0102),
-                Seconds::new(0.001),
-            ),
-            RATE_44K,
-        )
-    }
-
-    /// Renders `frames` of a steady sidechain `sc` (audio 1.0) in one block.
-    fn run_steady(gate: &mut GateNode, sc: f32, frames: usize) -> Vec<f32> {
-        let audio = vec![1.0f32; frames];
-        let side = vec![sc; frames];
-        drive(gate, RATE_44K, &[&audio, &side], &[]).remove(0)
-    }
-
-    /// A steady sidechain a hair above the threshold opens the gate, a hair
-    /// below leaves it closed. The margin is 0.1 percent (0.009 dB), far
-    /// outside the rounding the comparison carries.
-    #[test]
-    fn a_steady_level_just_either_side_of_the_threshold_opens_or_closes_the_gate() {
-        let thr = 0.1f32; // -20 dB
-        let mut above = gate_at_minus_20();
-        run_steady(&mut above, thr * 1.001, 1024);
-        assert!(above.is_open(), "just above the threshold must open");
-        assert!(above.gate_level() > 0.999);
-
-        let mut below = gate_at_minus_20();
-        run_steady(&mut below, thr * 0.999, 1024);
-        assert!(
-            !below.is_open(),
-            "just below the threshold must stay closed"
-        );
-        assert_eq!(below.gate_level(), 0.0);
-    }
-
-    /// A threshold above 0 dB compares the same way: at `+6 dB` (1.995
-    /// linear) a steady level 0.1 percent over opens the gate and 0.1 percent
-    /// under leaves it closed.
-    #[test]
-    fn a_threshold_above_zero_db_opens_above_and_stays_closed_below() {
-        let thr = 10f32.powf(6.0 / 20.0);
-        let at_plus_6 = || {
-            prepared_at(
-                GateNode::mono(
-                    Db::new(6.0),
-                    Seconds::new(0.0001),
-                    Seconds::new(0.0102),
-                    Seconds::new(0.001),
-                ),
-                RATE_44K,
-            )
-        };
-
-        let mut above = at_plus_6();
-        run_steady(&mut above, thr * 1.001, 1024);
-        assert!(above.is_open(), "just above +6 dB must open");
-
-        let mut below = at_plus_6();
-        run_steady(&mut below, thr * 0.999, 1024);
-        assert!(!below.is_open(), "just below +6 dB must stay closed");
-        assert_eq!(below.gate_level(), 0.0);
-    }
-
-    /// The hold keeps an opened gate fully open for exactly `floor(hold *
-    /// rate)` frames after the level falls under the threshold; the release
-    /// starts on the next one.
-    #[test]
-    fn the_hold_keeps_the_gate_open_for_its_whole_length() {
-        let mut gate = gate_at_minus_20();
-        run_steady(&mut gate, 0.5, 1024);
-        let open = gate.gate_level();
-        assert!(open > 0.999);
-        // 0.0102 s at 44.1 kHz is 449.82 frames, floored.
-        run_steady(&mut gate, 0.001, 449);
-        assert_eq!(gate.gate_level(), open, "held for the whole hold");
-        run_steady(&mut gate, 0.001, 1);
-        assert!(
-            gate.gate_level() < open,
-            "the release starts after the hold"
-        );
-    }
-
-    /// Closed, the gain is the range in dB as a linear factor: `10^(dB/20)`.
-    #[test]
-    fn closed_the_gain_is_the_range_in_decibels() {
-        for (range_db, linear) in [
-            (-12.0f32, 0.251_188_64f32),
-            (-80.0, 1.0e-4),
-            (-6.0, 0.501_187_2),
-        ] {
-            let mut gate = prepared_at(
-                GateNode::mono(
-                    Db::new(-20.0),
-                    Seconds::new(0.001),
-                    Seconds::new(0.001),
-                    Seconds::new(0.001),
-                )
-                .with_range(Db::new(range_db)),
-                RATE_44K,
-            );
-            // Silent sidechain: closed from the first frame; a second block
-            // runs on the settled (held) range.
-            run_steady(&mut gate, 0.0, 256);
-            let out = run_steady(&mut gate, 0.0, 256);
-            for y in out {
-                assert!(
-                    (y - linear).abs() <= linear * 1e-5,
-                    "{range_db} dB: gain {y}, expected {linear}"
-                );
-            }
+        assert_eq!(shape.audio_in().count(), 2);
+        assert_eq!(shape.latency, tutti_types::Latency::ZERO);
+        assert_eq!(shape.tail, tutti_types::Tail::None);
+        for (k, base) in [-20.0, 0.0001, 0.01, 0.1, -30.0].into_iter().enumerate() {
+            assert_eq!(m.param_base(k), Some(base), "control {k}'s base");
         }
     }
 
-    /// Silence is pinned at [`Db::FLOOR`] (-144 dB) for the comparison, so a
-    /// threshold at or under the floor opens on a silent sidechain and one
-    /// above it does not. In the linear domain a silent `0.0` is under every
-    /// positive threshold, so this is carried by `silence_opens`.
+    /// A threshold written between blocks is read again: a key that was under it is over the
+    /// lowered one, and raising it closes the gate again.
     #[test]
-    fn a_threshold_at_or_under_the_floor_opens_on_silence() {
-        for (threshold, opens) in [(-200.0f32, true), (-144.0, true), (-143.0, false)] {
-            let mut gate = prepared_at(
-                GateNode::mono(
-                    Db::new(threshold),
-                    Seconds::new(0.0001),
-                    Seconds::new(0.01),
-                    Seconds::new(0.1),
-                ),
-                RATE_44K,
-            );
-            run_steady(&mut gate, 0.0, 1024);
-            assert_eq!(gate.is_open(), opens, "threshold {threshold} dB on silence");
+    fn a_changed_threshold_applies_within_a_grid_step() {
+        let mut node = prepared_at(gate(-20.0, 0.0, 0.0, 0.0), RATE_44K);
+        let mut out = [0.0f32];
+        for _ in 0..40 {
+            tick(&mut node, &[1.0, 0.05], &mut out); // -26 dB
         }
-        // A level well above a floor-pinned threshold still decides on its
-        // own: -150 dB is 3.2e-8, so 1e-10 (-200 dB) is below it.
-        let mut gate = prepared_at(
-            GateNode::mono(
-                Db::new(-150.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-        run_steady(&mut gate, 1.0e-10, 1024);
-        assert!(!gate.is_open(), "-200 dB is under a -150 dB threshold");
-        run_steady(&mut gate, 1.0e-7, 1024);
-        assert!(gate.is_open(), "-140 dB is over a -150 dB threshold");
+        assert!(out[0] < 0.01, "closed");
+        assert!(node.param_set().set(UnitParam::Threshold, -30.0));
+        for _ in 0..40 {
+            tick(&mut node, &[1.0, 0.05], &mut out);
+        }
+        assert_eq!(out[0], 1.0, "open");
+        assert!(node.param_set().set(UnitParam::Threshold, -20.0));
+        for _ in 0..40 {
+            tick(&mut node, &[1.0, 0.05], &mut out);
+        }
+        assert!(out[0] < 0.01, "raising it closes the gate again");
     }
 
-    /// A threshold written between blocks is converted again for the next
-    /// block: a level that was under it is over the lowered one.
+    /// A fed threshold is read per frame: a frame fed a threshold over the key is closed
+    /// where the cell's would open it, and one fed under it is open where the cell's would
+    /// not.
     #[test]
-    fn a_changed_threshold_applies_on_the_next_block() {
-        let mut gate = gate_at_minus_20();
-        run_steady(&mut gate, 0.05, 512); // -26 dB
-        assert!(!gate.is_open());
-        gate.set_threshold(Db::new(-30.0));
-        run_steady(&mut gate, 0.05, 512);
-        assert!(gate.is_open());
-        gate.set_threshold(Db::new(-20.0));
-        run_steady(&mut gate, 0.05, 1024);
-        assert!(!gate.is_open(), "raising it closes the gate again");
+    fn a_fed_threshold_is_the_one_read_per_frame() {
+        let (mut a, mut b) = ([0.0f32], [0.0f32]);
+        let mut open_base = prepared_at(gate(-30.0, 0.0, 0.0, 0.0), RATE_44K);
+        tick(&mut open_base, &[1.0, 0.1], &mut a); // -20 dB key over -30
+        assert_eq!(a[0], 1.0);
+        let mut fed = prepared_at(gate(-30.0, 0.0, 0.0, 0.0), RATE_44K);
+        tick_fed(&mut fed, &[1.0, 0.1], &[Some(-10.0)], &mut b);
+        assert!(b[0] < 0.01, "a fed -10 dB closes it: {}", b[0]);
+        let mut closed_base = prepared_at(gate(-10.0, 0.0, 0.0, 0.0), RATE_44K);
+        tick_fed(&mut closed_base, &[1.0, 0.1], &[Some(-30.0)], &mut b);
+        assert_eq!(b[0], 1.0, "a fed -30 dB opens it");
     }
 
-    /// A NaN detector level never makes the gate's state NaN: it compares as
-    /// not over the threshold (closed), and the gate recovers on the next
-    /// finite level. An infinite level is over every finite threshold.
+    /// NaN on the key is ignored by the max-abs detector (reads as silent): the gate stays
+    /// closed and finite, and opens on the next finite level. Audio NaN passes through, as
+    /// a gain does.
     #[test]
-    fn a_nan_detector_level_leaves_the_state_finite_and_closed() {
-        let mut core = GateCore::new(
-            Db::new(-20.0),
-            Seconds::new(0.0001),
-            Seconds::new(0.01),
-            Seconds::new(0.1),
-        );
-        core.set_sample_rate(RATE_44K);
-        core.update_coefficients([None, None]);
-        let block = core.begin_block();
-        for i in 0..64 {
-            let g = core.gain(&block, i, 64, f32::NAN, None);
-            assert!(g.is_finite(), "gain {g} at {i}");
-            assert_eq!(core.gate_level(), 0.0);
-        }
-        let block = core.begin_block();
-        for i in 0..2048 {
-            core.gain(&block, i % 64, 64, 0.5, None);
-        }
-        assert!(core.is_open(), "recovers on a finite level");
-        let g = core.gain(&block, 0, 64, f32::INFINITY, None);
-        assert!(g.is_finite() && core.gate_level().is_finite());
-    }
-
-    /// Through the node: NaN on the sidechain is ignored by the max-abs
-    /// detector (reads as silent), so the closed gain applies and the gate's
-    /// own state stays finite. Audio NaN passes through, as a gain does.
-    #[test]
-    fn a_nan_sidechain_block_does_not_poison_the_gate() {
-        let mut gate = gate_at_minus_20();
+    fn a_nan_key_does_not_poison_the_gate() {
+        let mut node = prepared_at(gate(-20.0, 0.0001, 0.01, 0.1), RATE_44K);
         let audio = vec![1.0f32; 64];
         let nan = vec![f32::NAN; 64];
-        let out = drive(&mut gate, RATE_44K, &[&audio, &nan], &[]).remove(0);
+        let out = drive(&mut node, RATE_44K, &[&audio, &nan], &[]).remove(0);
         assert!(out.iter().all(|y| y.is_finite()));
-        assert_eq!(gate.gate_level(), 0.0);
-        run_steady(&mut gate, 0.5, 1024);
-        assert!(gate.is_open());
+        assert!(out[63] < 1e-3, "closed");
+        let (audio, loud) = (vec![1.0f32; 1024], vec![0.5f32; 1024]);
+        let out = drive(&mut node, RATE_44K, &[&audio, &loud], &[]).remove(0);
+        assert!(out[1023] > 0.99, "recovers on a finite key");
     }
 
+    /// A control written NaN is read as the last value it held (`LastGood`): the gate
+    /// keeps its threshold and its output stays finite.
     #[test]
-    fn gate_unmodulated_matches_held_constant() {
-        // A modulated mono gate whose fed threshold is held at the same value
-        // as a plain gate's atomic must produce identical output.
-        let mut plain = prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
-        let mut modn = prepared_at(
-            GateNode::mono(
-                Db::new(-20.0),
-                Seconds::new(0.0001),
-                Seconds::new(0.01),
-                Seconds::new(0.1),
-            ),
-            RATE_44K,
-        );
-
-        let mut plain_out = [0.0f32];
-        let mut mod_out = [0.0f32];
-        for n in 0..1000 {
-            let audio = 0.5;
-            // Alternate loud/quiet sidechain to exercise open + close.
-            let sc = if n % 200 < 100 { 0.9 } else { 0.01 };
-            tick(&mut plain, &[audio, sc], &mut plain_out);
-            tick_fed(&mut modn, &[audio, sc], &[Some(-20.0)], &mut mod_out);
-            assert!(
-                (plain_out[0] - mod_out[0]).abs() < 1e-6,
-                "modulated-held output diverges from plain at sample {n}: {} vs {}",
-                plain_out[0],
-                mod_out[0]
-            );
+    fn a_nan_write_keeps_the_last_threshold() {
+        let mut node = prepared_at(gate(-20.0, 0.0, 0.0, 0.0), RATE_44K);
+        assert!(node.param_set().set(UnitParam::Threshold, f32::NAN));
+        let mut out = [0.0f32];
+        for _ in 0..40 {
+            tick(&mut node, &[1.0, 0.5], &mut out);
         }
+        assert_eq!(
+            out[0], 1.0,
+            "a -6 dB key is still over the -20 dB threshold"
+        );
     }
 }

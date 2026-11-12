@@ -19,13 +19,14 @@ ramps and the graph shape. Here they take plain typed values per call.
   designs are one `Filter<R>` over a `ChannelRecurrence`, run by `Realized<PerChannel<R>>`. `Real` is the `f32` or `f64` the state
   runs in; its transcendentals call `libm`, so results do not depend on the
   platform's C math library.
-- **Dynamics** — `EnvelopeFollower` and `GateEnvelopeFollower`; the curves
+- **Dynamics** — `EnvelopeFollower`; the curves
   `compute_compressor_gain_reduction`, `compute_limiter_gain` and
-  `LimiterCurve`; the compressor as a family (`CompressorFamily`, keyed, run by
-  `CompressorRecurrence`; its threshold a per-frame lane, its makeup gliding over
-  `GAIN_GLIDE`); the brickwall clipper (`BrickwallFamily`); `CompressorKernel` (the
-  multiband's bands') and `GateKernel`, whose `gain` takes a `CompressorBlock` or
-  `GateBlock`; and `LookaheadRing`, the limiter's delay with its sliding gain minimum.
+  `LimiterCurve`; the compressor and the noise gate as families (`CompressorFamily` and
+  `GateFamily`, each on a typed `Key`, a side-chain bus or the signal itself, run by
+  `CompressorRecurrence` and `GateRecurrence`; the threshold a per-frame lane, the makeup
+  and the range gliding over `GAIN_GLIDE`); the brickwall clipper (`BrickwallFamily`);
+  `CompressorKernel` (the multiband's bands'), whose `gain` takes a `CompressorBlock`; and
+  `LookaheadRing`, the limiter's delay with its sliding gain minimum.
 - **Convolution** — `Convolver`, a uniform or non-uniform partitioned FFT
   convolution over an IR's shared, read-only `IrSpectra`.
 - **Delay** — `DelayLine`, a fractional-read ring with an `InterpolationMode`,

@@ -91,13 +91,8 @@ pub fn compute_compressor_gain_reduction(
     }
 }
 
-/// Gate gain from gate level (unitless 0..1) and range in dB.
-#[inline]
-pub(crate) fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Amplitude {
-    gate_gain_at(gate_level, range_db.into().to_amplitude().get())
-}
-
-/// [`compute_gate_gain`] with the range already converted to linear.
+/// The gate's gain: `range_linear` closed (`gate_level` 0) to 1 open (`gate_level` 1),
+/// from the open fraction (unitless, 0..1) and the range already as an amplitude.
 #[inline]
 pub(crate) fn gate_gain_at(gate_level: f32, range_linear: f32) -> Amplitude {
     Amplitude(range_linear + gate_level * (1.0 - range_linear))

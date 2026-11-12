@@ -55,7 +55,9 @@ units! {
             Threshold => Db, Ratio => CompressionRatio, Attack => Seconds, Release => Seconds,
             GainDb => Db
         }
-        tutti_nodes::GateNode { Threshold => Db, Attack => Seconds, Release => Seconds }
+        tutti_nodes::GateNode {
+            Threshold => Db, Attack => Seconds, Hold => Seconds, Release => Seconds, Range => Db
+        }
         tutti_nodes::LimiterNode { Threshold => Db, Ceiling => Db, Release => Seconds }
         tutti_nodes::BrickwallLimiterNode { Ceiling => Db }
         tutti_nodes::DistortionNode { Drive => Drive }

@@ -5,16 +5,14 @@
 //! they share an envelope follower (`tutti_dsp::EnvelopeFollower`), a [`params`] vocabulary
 //! (attack/release, threshold/knee) and the dB conversions and gain curves of `tutti-dsp`. What
 //! differs is only the gain decision, which is why each keeps its own file and
-//! nothing here is a trait. The compressor and the brickwall have moved onto the family
-//! model (`FamilyNode` over `CompressorFamily` and `BrickwallFamily`, which hold the
-//! recurrence); the gate, the limiter and the multiband are still hand-written.
+//! nothing here is a trait. The compressor, the gate and the brickwall have moved onto the
+//! family model (`FamilyNode` over `CompressorFamily`, `GateFamily` and `BrickwallFamily`,
+//! which hold the recurrence); the limiter and the multiband are still hand-written.
 //!
-//! [`CompressorNode`] and [`GateNode`] take an **external sidechain**: their level
-//! detector reads separate inputs, so the signal being measured need not be the
-//! signal being shaped. [`MultibandCompressorNode`] runs one compressor core per
+//! [`CompressorNode`] and [`GateNode`] take a typed [`Key`](tutti_dsp::Key): an
+//! **external sidechain** (their level detector reads separate inputs, so the signal
+//! being measured need not be the signal being shaped) or their own signal. [`MultibandCompressorNode`] runs one compressor core per
 //! band of a [`Crossover`](tutti_dsp::Crossover), each detecting on its own band.
-
-mod utils;
 
 mod brickwall;
 mod compressor;

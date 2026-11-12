@@ -1,8 +1,9 @@
 //! [`CompressorFamily`]: the feed-forward compressor as a [`Family`] (design 024
 //! section 3, row 5).
 //!
-//! A compressor reads a **key** (the side-chain, as wide as the signal; an unwired key
-//! is silence and compresses nothing), finds its level (the loudest key channel at
+//! A compressor reads a **key**: the side-chain as wide as the signal (an unwired one is
+//! silence and compresses nothing) or the signal itself, as the family's [`Key`] says. It
+//! finds its level (the loudest key channel at
 //! each frame), turns the level over the threshold into a reduction by the static
 //! curve, smooths that reduction with an attack and a release, and multiplies **every**
 //! channel by one gain: the reduction's, plus the makeup. The gain is linked, so the
@@ -21,6 +22,7 @@ use core::ops::Range;
 use tutti_types::{Amplitude, BusTopology, CompressionRatio, Db, SampleRate, Samples, Seconds};
 
 use super::curves::{amplitude_to_db, compute_compressor_gain_reduction};
+use super::key::Key;
 use crate::control::COEFF_STREAM;
 use crate::smoother::Smoother;
 use crate::{
@@ -150,19 +152,20 @@ impl System for CompressorMember {
     }
 }
 
-/// The [`Family`] of the compressor, `input` wide with a key of the same width. One gain
-/// is computed from the loudest key channel and applied to every channel.
+/// The [`Family`] of the compressor, `input` wide, its detector on the [`Key`] it is
+/// given. One gain is computed from the loudest key channel and applied to every channel.
 #[derive(Clone, Copy, Debug)]
 pub struct CompressorFamily {
     input: BusTopology,
+    key: Key,
 }
 
 impl CompressorFamily {
-    /// A compressor on the bus `input`, with a key as wide, and one output bus where
-    /// the input is.
+    /// A compressor on the bus `input` whose detector reads `key`, and one output bus
+    /// where the input is. A [`Key::Sidechain`] is a second bus as wide as the input.
     #[must_use]
-    pub const fn new(input: BusTopology) -> Self {
-        Self { input }
+    pub const fn new(input: BusTopology, key: Key) -> Self {
+        Self { input, key }
     }
 }
 
@@ -177,7 +180,7 @@ impl Family for CompressorFamily {
     const CADENCE: Cadence = COEFF_STREAM;
 
     fn channels(&self) -> Channels {
-        Channels::keyed(self.input)
+        self.key.channels(self.input)
     }
 
     fn blank(&self, rate: SampleRate) -> CompressorMember {
@@ -211,7 +214,7 @@ impl Family for CompressorFamily {
     }
 
     fn recurrence(&self) -> CompressorRecurrence {
-        CompressorRecurrence
+        CompressorRecurrence { key: self.key }
     }
 }
 
@@ -282,7 +285,8 @@ pub struct CompressorState {
 
 /// The [`Recurrence`] of a [`CompressorFamily`].
 ///
-/// K, per frame: the key's level (the loudest channel; a NaN reads as quiet) in dB
+/// K, per frame: the key's level (the loudest channel of the [`Key`]'s source, the
+/// side-chain or the signal; a NaN reads as quiet) in dB
 /// (floored at [`Db::FLOOR`]), the static curve at the threshold (lane 0 of the
 /// [`Feed`] when it is finite, else the member's), the one-pole follower on the
 /// reduction (the attack coefficient while it rises, the release while it falls), and
@@ -292,7 +296,9 @@ pub struct CompressorState {
 /// **Lane 0 is the threshold in dB, per frame.** A frame that is not finite falls back
 /// to the member's threshold.
 #[derive(Clone, Copy, Debug)]
-pub struct CompressorRecurrence;
+pub struct CompressorRecurrence {
+    key: Key,
+}
 
 impl Recurrence for CompressorRecurrence {
     type Member = CompressorMember;
@@ -371,9 +377,10 @@ impl Recurrence for CompressorRecurrence {
     ) {
         let d = &coeffs.detector;
         let makeup = coeffs.makeup.now();
+        let detected = self.key.detected(feed);
         let gains = &mut state.gains[frames.clone()];
         for (g, i) in gains.iter_mut().zip(frames.clone()) {
-            let level = feed.key.iter().fold(0.0f32, |m, ch| m.max(ch[i].abs()));
+            let level = detected.iter().fold(0.0f32, |m, ch| m.max(ch[i].abs()));
             let input_db = amplitude_to_db(Amplitude::new(level));
             let threshold = feed.lanes[0]
                 .map(|lane| Db(lane[i]))

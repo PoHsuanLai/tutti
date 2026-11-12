@@ -1898,7 +1898,7 @@ impl Graph {
     ///   must be the same width, and a bus into the root may be narrower than
     ///   it (it feeds the first channels); a connection never truncates or
     ///   zero-fills, so a width change is a bus edge;
-    /// - a [`BusSource`] into a [`BusRef`](tutti_graph::BusRef) (`key.bus_out(i)`,
+    /// - a [`BusSource`] into a [`BusRef`] (`key.bus_out(i)`,
     ///   `key.bus_in(i)`) or into [`Root`]: **a bus edge**, a fold between two
     ///   declared topologies, lowered at the commit to one weighted lane per
     ///   contribution (`Fold::contributions`) and summed with any other source

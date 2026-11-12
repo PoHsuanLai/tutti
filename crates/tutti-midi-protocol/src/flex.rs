@@ -33,9 +33,9 @@ pub fn flex_tempo(field: u32) -> Option<Bpm> {
 /// The meter a Set Time Signature message declares: the numerator field is the
 /// beats per bar, the denominator field a negative power of 2 (2 is a quarter
 /// note, 3 an eighth). `None` for what the project's meter cannot hold: a
-/// numerator of 0 or above [`MAX_BEATS_PER_BAR`](tutti_types::MAX_BEATS_PER_BAR),
+/// numerator of 0 or above 64 ([`BeatsPerBar`]'s ceiling),
 /// a denominator field of 0 ("a non-standard denominator", section 7.5.4) or
-/// one that names a note shorter than [`MAX_NOTE_VALUE`](tutti_types::MAX_NOTE_VALUE).
+/// one that names a note shorter than a 64th note ([`NoteValue`]'s ceiling).
 ///
 /// The message's third field, the number of 1/32 notes in 24 MIDI Clocks, is
 /// how the sender relates a quarter note to its notation and does not change

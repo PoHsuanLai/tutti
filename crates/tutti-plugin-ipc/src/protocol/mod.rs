@@ -59,7 +59,11 @@ pub(crate) mod wire;
 ///   their replies, `ParameterPlain` and `ParameterNormalized`): the conversion
 ///   between a normalized value and the plugin's plain one is the format's, so
 ///   it is a request to the server, whose format answers it.
-pub const PROTOCOL_VERSION: u32 = 30;
+/// - **Version 31** carries parameter values as `f64`: `SetParameter`,
+///   `ParameterValue` and `ParameterChanged` held an `f32` (so 0.3 came back
+///   as 0.30000001192...), while automation points and text queries were
+///   already `f64`.
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///

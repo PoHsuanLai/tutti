@@ -565,7 +565,7 @@ core takes an `Instant`; the hardware layer only passes one on).
   three sends in all, and then the device is `Basis::Unanswered`, taken as the OS describes
   it (the protocol the OS reports, JR off, its blocks), never the core's blanket
   MIDI 1.0 fallback: an OS that has already discovered the device knows better. The result
-  is `DeviceStream` (`MidiSession::stream`, `SessionEvent::MidiStream`).
+  is `DeviceStream` (`MidiSession::stream`, `MidiEvent::StreamSettled`).
 - *`UmpCapability`* is built from an `Endpoint` (`UmpCapability::of`): the protocol in
   use and the Function Blocks.
 - *What each OS exposes.* ALSA: the kernel runs the USB discovery itself and keeps the
@@ -752,11 +752,11 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   `Devices` tests over the fake backend and compiles and lints the rest.
 - **A watch that dies says so.** An error or a panic in the watch thread sets
   the subscribers' `DeviceEvents::failure` and `recv_timeout` (and is logged); the list is then the last it saw.
-  The session reports `SessionEvent::MidiWatchFailed` once, and `bevy-tutti`
+  The session reports `MidiEvent::WatchFailed` once, and `bevy-tutti`
   logs it.
 - **Session.** `Phase::Poll` reads the session's `DeviceEvents`, reports each event as
-  `SessionEvent::MidiDevice`, and closes a held input or output whose device was
-  removed, reporting `MidiInputLost` or `MidiOutputLost` after it
+  `MidiEvent::{Added, Removed, Changed}`, and closes a held input or output whose device was
+  removed, reporting `MidiEvent::InputLost` or `OutputLost` after it
   (`SessionBuilder::midi_hardware_over` takes a `FakeBackend`). `bevy-tutti` writes
   `MidiHotplug` for each device event and clears its poll timer for a lost port.
 
@@ -1148,8 +1148,8 @@ copied into a ring a thread of your own drains.
 | What the reader gets | `TapEvent { frame: Frame, ump: Ump }`, 24 bytes, `Copy`. `frame` is `Env::frame_at(offset)` of the block the op ran in, after any alignment delay | An offset is relative to a block the reader never sees. An absolute frame on the graph's clock keeps the spacing between events whatever the block sizes were, orders events across taps and against the transport's `At::Frame`, and is what `ClockMap` converts to an OS time for output scheduling (§5, "Timing at the edge"). `u64`, so it does not wrap the way `MidiOutNode`'s `u32` stamp does |
 | A bypassed or muted node | Doc 013's `NodeMode`: a `Bypassed` or `Muted` node's event outputs are empty, so a tap on one reads nothing for those blocks (no loss is counted). An `EventInletNode` is not bypassed in practice; if it is, its waiting list holds and late events land at offset 0 when it runs again | Keeps M1 and E1 in agreement: `NodeMode` decides what a port carries, and the tap copies what it carries |
 | Capacity | An event count named at open (a count of events, a bare `usize` as `Shape::with_event_capacity` takes one: no unit covers it). The ring holds `note_off_room(capacity)`; an event that is not a note-off is refused once `capacity` are held | The ring that decides what a slow reader loses should keep what a hung note needs: the same rule the ports follow (§8). The check is the producer's own occupancy, which can only be an underestimate, as in `TapWriter` |
-| Loss | A refused event is counted once in an `Arc<AtomicU64>` shared with the reader: `EventTapReader::take_lost() -> u64`, events, cleared by the read. A block with no reader writes nothing and counts nothing | As `TapReader::take_lost`. The count is also the session's drop report (`MidiOutDropped`) |
-| Reader | One consumer: `&mut self`, not `Clone`. `pop_into(&mut self, &mut [TapEvent]) -> usize`, `available()`, `id()`, `watch()` | A second consumer is a second tap. Reading advances the read index |
+| Loss | A refused event is counted once in an `Arc<AtomicU64>` shared with the reader: `EventTapReader::take_lost() -> u64`, events, cleared by the read. A block with no reader writes nothing and counts nothing | As `TapReader::take_lost`. The count is also the session's drop report (`MidiEvent::OutputDropped`) |
+| Reader | One consumer: `&mut self`, not `Clone`. `pop_into(&mut self, &mut [TapEvent]) -> usize`, `drain() -> impl Iterator<Item = TapEvent>` (L1f-a), `available()`, `id()`, `watch()` | A second consumer is a second tap. Reading advances the read index |
 | Missing port | The port goes missing later (node replaced by one with fewer event outputs, node removed): the compiler emits no op, the writer stays in the plan's tap table, the commit succeeds, the reader sees no events and is not told, and nothing counts as lost. Opening refuses a source that does not exist now: `MissingSource::EventPort { node, port, width }` (the enum is `#[non_exhaustive]`; `Port` names an audio output) | Silence is the absence of events, so there is nothing to write. The writer is kept so a later commit that restores the port resumes it |
 | Closed and fork | A closed tap is not in the topology and compiles to no op, and its writer is freed on the control side with the old state. A fork carries none. Reopening an id replaces the tap. Reader dropped first: the tap writes nothing until reaped (`reap_taps` takes event taps too) | As `Op::Tap`. An export fork has no wire to send to, which is what `MidiOutNode`'s discarding fork did |
 | Commit | `EventTapWriter` rides the commit in a new `Commit.event_taps: Vec<(EventTapId, EventTapWriter)>`, carried by id across plans, as the audio writers are (`exec.rs:1307`) | No new mechanism. `EventTapId` is its own type: the audio `TapId` names a `Topology.taps` key, and the two maps must not share a namespace |
@@ -1355,7 +1355,7 @@ The hardware out is an `EventTapReader` on the clock node's event output
 (`TapAlign::ToOutput`, 1 024 events: the deleted ring's size), opened in the
 builder and held by the session's MIDI state; `Phase::MidiOut` reads it dry
 into the `UmpOut` and adds `take_lost` to the drop count that
-`SessionEvent::MidiOutDropped` reports. `MidiOutNode`, `MidiOutControls`,
+`MidiEvent::OutputDropped` reports. `MidiOutNode`, `MidiOutControls`,
 `MIDI_OUT_CAPACITY`, `MidiNodes::hardware_out` and `out_controls` and the
 `Feeder::Clock` variant are deleted. Built as specified, except:
 
@@ -3105,3 +3105,47 @@ such as reassembled SysEx; that is decided when that code is written.
   `into_candidates`; `for e in &events` over a `DeviceEvents`. Not done, by decision: a
   typestate `MidiSession`, a sealed `MidiEndpoints`, a blocking reader `Iterator`, serde on
   slot ids, `Extend` on `MidiMailbox`, `Clone` on `EventInletWriter`.
+
+### L1f-a (the session's MIDI front): as built
+
+- **One event, one error.** `SessionEvent::Midi(MidiEvent)` replaced the seven `Midi*` variants
+  of the session (`#[non_exhaustive]` at both levels). A variant about one device carries its
+  `DeviceId` as a field (`Added`, `Removed`, `Changed`, `InputLost`, `OutputLost`
+  `{ device, info }`, `StreamSettled { device, stream }`); a count over every input or the
+  output is its own variant with no device (`InputsDropped { total }`, `OutputDropped { total }`),
+  and `WatchFailed` is the watch's. `Error::Midi(MidiError)` is the one MIDI error of the
+  session: `Hardware`, `File`, `Send`, `NoSuchRoute` carry their cause as the `source`, beside the
+  session's own refusals (`NoEventInput`, `NoMidiInput`, `NoHardware`, `NotSessionMidi`,
+  `TwoRouteDeclarers`); the calls of `Midi` return `Result<_, MidiError>` and `?` converts a
+  cause (or a `MidiError`) into the session's `Error`. The umbrella names it `tutti::midi::Error`.
+- **Hardware through `s.midi()`.** `devices()`, `connect_input`, `disconnect_input`,
+  `connect_output` and `disconnect_output` take a `DeviceQuery` (`&DeviceId` or `&str`) and
+  forward to the session's `MidiSession`, which `Session::midi_io` no longer hands out (a test
+  reaches it by `Session::testing_midi_io`, behind `testing`). `connect_output` gives the
+  hardware out a sink when it has none. `reconnect_saved(&DeviceInfo) -> Result<Resolution>`
+  binds only an `Exact` device (`BindPolicy::ExactOnly`), in the directions it was saved with;
+  `SameName`, `Ambiguous` and `Missing` come back as `Resolution` variants, so an app that asks
+  has the candidates and nothing is opened unasked.
+- **MPE once.** The session holds one `MpeMode` (`Midi::set_mpe`, `mpe`; the builder's
+  `mpe_mode` is its start). The ingest node is told at once; a synth added through
+  `Session::add_instrument` is built in it through `SessionNode::bind_mpe`, **so the session's
+  mode wins over `SynthConfig::mpe`**. A synth already in the graph keeps the mode it was added
+  with, and one inserted with `Graph::add` is the caller's own.
+- **Senders take `impl Into<Ump>`** (`EventInletWriter::push`/`push_all`, `InstrumentHandle::send`,
+  `LiveInput::send`, `TimedMidiEvent::new`), so a decoded `Message` goes as it is. A `Voice1` or
+  `Voice2` needs an address, so it has no such conversion.
+- **A take.** `Midi::record(target, EventCapacity) -> EventTapReader` opens an event tap
+  (`TapAlign::Raw`) on the output of the target's live input, which every note sent through it
+  passes; a hardware player's notes, routed straight to the target, do not (tap the ingest
+  node's port for those). `EventTapReader::drain()` reads it. A take is placed by doc 030 §5.2:
+  `TakePlacement { input, output, lead, trim }::place(frame)` is `frame - (input + output + lead)
+  + trim`, at 0 where that reaches before the start of the clock; the figures are the device's
+  and the user's, which the session keeps none of.
+- **Routes.** `MidiRouteRule<T>::to` takes anything `Into<T>`, so a session's own rule takes a
+  `Key<N>` as it takes a `NodeKey`. A `NodeKey` names a node of one session, so a rule that is
+  saved is keyed by the app's own stable id: with the session's `serde` feature
+  `MidiRouteRule<AppId>` is `Serialize` and `Deserialize` (its Group and channel read back through
+  their range checks), and the app maps its id to a node in `set_routes`' `resolve`.
+- **Not built:** MIDI Time Code out, MIDI-CI and profiles beyond the codec, and the
+  `s.midi().input(target)` that replaces `live_input` (Core's S4). The acceptance program is
+  `crates/tutti/examples/midi_all.rs`, run as a test in CI.

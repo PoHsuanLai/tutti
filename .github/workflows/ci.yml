@@ -423,7 +423,7 @@ jobs:
           cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,serde --all-targets -- -D warnings
-          cargo clippy --locked -p tutti --features clap,export,modulation,sampler,dsp --all-targets -- -D warnings
+          cargo clippy --locked -p tutti --features clap,export,modulation,sampler,dsp,midi-hardware,synth --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti --no-default-features --features io --all-targets -- -D warnings
           cargo clippy --locked -p tutti-export --lib -- -D warnings
@@ -471,7 +471,7 @@ jobs:
           cargo nextest run --locked -p tutti-cpal --features capture
           cargo nextest run --locked -p tutti-session --features audio-io
           cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware,synth,soundfont,sampler,vst2,device,serde
-          cargo nextest run --locked -p tutti --features clap,export,modulation,sampler,dsp
+          cargo nextest run --locked -p tutti --features clap,export,modulation,sampler,dsp,midi-hardware,synth
           cargo nextest run --locked -p tutti --features audio-io
           cargo nextest run --locked -p tutti --no-default-features --features io
           cargo nextest run --locked -p tutti-session --features export-flac,export-aiff,export-ogg

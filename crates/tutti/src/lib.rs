@@ -151,6 +151,38 @@ pub use tutti_midi_runtime as midi_runtime;
 #[cfg(feature = "midi")]
 pub use tutti_midi_file as midi_file;
 
+/// The names of the common MIDI path in one place (design 030, convention 3):
+/// a file (`MidiFile`, `Track`, `Tick`), a message (`Message`, `Ump`,
+/// `MidiChannel`, `MidiGroup`, `NoteNumber`), a timed event, what a live input
+/// is sent with (`Stamp`) and a take read with (`TapEvent`, `EventTapReader`),
+/// the session's route rule, events and errors (`MidiRouteRule`, `MidiEvent`,
+/// [`midi::Error`](midi::Error)), and under `midi-hardware` a device (`DeviceId`,
+/// `DeviceInfo`) and what a saved one resolves to (`Resolution`). The
+/// lower layers (`Translator`, `Narrower`, `SysexAssembler`, `ClockMap`) are
+/// by path through [`ump`], [`midi_protocol`] and [`midi_runtime`]; the
+/// MIDI-CI codec is `tutti-midi-device`'s. Feature `midi`.
+#[cfg(feature = "midi")]
+pub mod midi {
+    pub use tutti_graph::{EventCapacity, EventTapReader, Stamp, TapEvent};
+    pub use tutti_midi_file::{MidiFile, Tick, Track};
+    pub use tutti_midi_runtime::TimedMidiEvent;
+    pub use tutti_ump::{Message, MidiChannel, MidiGroup, NoteNumber, Ump};
+
+    /// The session's one MIDI error (`tutti_session::MidiError`): each cause
+    /// (hardware, file, send, route) is its source.
+    #[cfg(feature = "session")]
+    pub use tutti_session::MidiError as Error;
+    #[cfg(feature = "session")]
+    pub use tutti_session::{
+        InstrumentHandle, LiveInput, Midi, MidiEvent, MidiRouteRule, SendError, TakePlacement,
+    };
+
+    #[cfg(feature = "midi-hardware")]
+    pub use tutti_midi_hardware::{DeviceId, DeviceInfo, DeviceQuery};
+    #[cfg(all(feature = "session", feature = "midi-hardware"))]
+    pub use tutti_session::Resolution;
+}
+
 /// OS MIDI I/O (`tutti-midi-hardware`): CoreMIDI, ALSA seq-UMP. Feature
 /// `midi-hardware`.
 #[cfg(feature = "midi-hardware")]
@@ -188,8 +220,9 @@ pub use tutti_plugin_host as plugin_host;
 /// `PluginLoadRequest`, `PluginRef`, `PluginState`, `ParamId` and `Normalized`
 /// (`plugin`), and, under `midi`, the names a
 /// MIDI file is written and played with (`MidiFile`, `Track`, `Tick`,
-/// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`; `MidiChannel` and
-/// `MidiGroup` are always in), with the offline timeline an export runs on.
+/// `Message`, `Ump`, `NoteNumber`, `TimedMidiEvent`, `MidiRouteRule` and
+/// `MidiEvent`; `MidiChannel` and `MidiGroup` are always in, `Stamp` and
+/// `TapEvent` are the graph's; the MIDI error is `midi::Error`), with the offline timeline an export runs on.
 /// The one `Error`, the sampler's `Clip` and `LoopSetting` (`sampler`), `Wave`
 /// (`codec`), `Format` and `Pcm` (`export`), `Lfo` and `Follower`
 /// (`modulation`) and the common nodes (`dsp`) are there too.
@@ -276,6 +309,8 @@ pub mod prelude {
     pub use tutti_session::{
         Bounce, BounceError, BounceLatency, BounceTail, Bounced, Range, Stem, StemGain,
     };
+    #[cfg(all(feature = "session", feature = "midi"))]
+    pub use tutti_session::{MidiEvent, MidiRouteRule};
     #[cfg(all(feature = "session", feature = "modulation"))]
     pub use tutti_session::{ParamRef, RouteSpec};
     #[cfg(feature = "midi")]

@@ -48,15 +48,8 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// A subscription that runs `unsubscribe` when it drops.
-    pub fn from_fn(unsubscribe: impl FnOnce() + Send + Sync + 'static) -> Self {
-        Self {
-            unsubscribe: Some(Box::new(unsubscribe)),
-        }
-    }
-
     /// One subscription that ends all of `parts` when it drops.
-    pub fn all(parts: impl IntoIterator<Item = Subscription>) -> Self {
+    pub(crate) fn all(parts: impl IntoIterator<Item = Subscription>) -> Self {
         let parts: Vec<Subscription> = parts.into_iter().collect();
         Self {
             unsubscribe: Some(Box::new(move || drop(parts))),
@@ -222,5 +215,47 @@ mod tests {
         drop(second_sub);
         listener.fire(5);
         assert_eq!(second.load(Ordering::Relaxed), 70);
+    }
+
+    /// **A callback may drop its own subscription and subscribe again from
+    /// inside the call.** `fire` calls a snapshot of the callbacks cloned out of
+    /// the lock; one that held the lock across the calls would deadlock here,
+    /// which the join deadline turns into a failure.
+    #[test]
+    fn a_callback_may_unsubscribe_and_subscribe_from_inside_a_fire() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let listener = Listener::<u32>::new();
+        let late = Arc::new(AtomicU32::new(0));
+        let own: Arc<Mutex<Option<Subscription>>> = Arc::default();
+        let again: Arc<Mutex<Vec<Subscription>>> = Arc::default();
+        let sub = {
+            let (listener, own, again, late) =
+                (listener.clone(), own.clone(), again.clone(), late.clone());
+            listener.clone().subscribe(move |_| {
+                // Drop this callback's own subscription, then add another.
+                drop(own.lock().take());
+                let late = late.clone();
+                again.lock().push(listener.subscribe(move |n| {
+                    late.fetch_add(n, Ordering::Relaxed);
+                }));
+            })
+        };
+        *own.lock() = Some(sub);
+        let (done, finished) = mpsc::channel();
+        let fired = listener.clone();
+        std::thread::spawn(move || {
+            fired.fire(1);
+            fired.fire(2);
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("fire deadlocked on a callback that changed its own subscribers");
+        assert_eq!(
+            late.load(Ordering::Relaxed),
+            2,
+            "the callback added inside the first fire hears the second; the first one, unsubscribed, ran once"
+        );
     }
 }

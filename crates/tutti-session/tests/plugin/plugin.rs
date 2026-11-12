@@ -645,7 +645,8 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
         change:
             PluginChange::Recovered {
                 state,
-                latency,
+                latency_before,
+                latency_after,
                 attempts,
             },
         ..
@@ -667,9 +668,9 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
         "{state:?}"
     );
     assert_eq!(*attempts, 1);
-    assert_eq!(latency.0, base);
+    assert_eq!(*latency_before, base);
     assert_eq!(
-        latency.1,
+        *latency_after,
         Samples(base.0 + EXTRA),
         "the replacement's latency"
     );

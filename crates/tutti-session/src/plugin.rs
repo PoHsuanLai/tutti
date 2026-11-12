@@ -562,9 +562,11 @@ pub enum PluginChange {
     Recovered {
         /// Whether its state came back, and from how long before.
         state: StateRestore,
-        /// The node's latency before the failure and now. PDC follows at the
-        /// next commit.
-        latency: (Samples, Samples),
+        /// The node's latency before the failure. PDC follows at the next
+        /// commit.
+        latency_before: Samples,
+        /// The node's latency now.
+        latency_after: Samples,
         /// Attempts it took.
         attempts: u32,
     },
@@ -1687,7 +1689,8 @@ impl Session {
             node,
             PluginChange::Recovered {
                 state: restore,
-                latency: (latency_before, latency_after),
+                latency_before,
+                latency_after,
                 attempts,
             },
         ));

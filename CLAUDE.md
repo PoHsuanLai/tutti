@@ -151,7 +151,8 @@ serial one.
   parallel. Share through an edge, or make it one node.
   A node's state for its successor travels the same way: `Node::chase`
   (declared by `Shape::with_chase`) is a port write the executor makes once, at
-  the swap (doc 013, "Nodes communicate only through ports").
+  the swap, and behind a running fade holds until that fade ends, then delivers
+  with no allocation (doc 013, "Nodes communicate only through ports").
 - **Op code is written once**, generic over `AudioSlots`/`EventSlots`
   (`tutti-graph/src/slots.rs`). Do not add an op path that reaches the arena,
   the event slots, a unit, a ring or an output except through them or a

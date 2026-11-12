@@ -323,9 +323,10 @@ order, one PR per step, each deleting what it replaces. It supersedes tasks
      `report_tail`, and what not to do, every example a doctest.
 4. **Modulation:** T4, T5, T9 (T1's typed range landed in 2c).
 5. **Graph surface 2** (doc 013): facets, plumbing, the failure rule; S8.
-   Then the deferred chase injection: preallocate the inject capacity of each
-   chasing unit, so that a chase whose takeover is delayed by a fade is delivered
-   when the fade ends (`end_fades`), not dropped.
+   Then the deferred chase injection (built): a chase whose takeover is delayed
+   by a fade is held in the queued crossfade, its injection sized with the plan,
+   and delivered when the fade ends (`end_fades`), not dropped; `chase_skipped_count`
+   is gone.
 6. **Playhead:** R2.
 7. **Device:** S1 (`add_input`), S2, S6, `Device::latency`, typed event
    errors.
